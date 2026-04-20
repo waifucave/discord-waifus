@@ -1,0 +1,29 @@
+{
+  "name": "waifu-orchestrator",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/waifucave/discord-waifus.git"
+  },
+  "homepage": "https://github.com/waifucave/discord-waifus",
+  "bugs": {
+    "url": "https://github.com/waifucave/discord-waifus/issues"
+  },
+  "packageManager": "pnpm@10.0.0",
+  "scripts": {
+    "dev": "concurrently \"pnpm --filter backend dev\" \"pnpm --filter dashboard dev\"",
+    "dev:backend": "pnpm --filter backend dev",
+    "dev:dashboard": "pnpm --filter dashboard dev",
+    "build": "pnpm --filter backend build && pnpm --filter dashboard build && pnpm --filter @discord-waifus/cli build",
+    "start": "pnpm --filter backend start",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "pnpm -r lint"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild"]
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "typescript": "^5.8.3"
+  }
+}
