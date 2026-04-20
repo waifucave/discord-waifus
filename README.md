@@ -61,6 +61,12 @@ On first run, `waifus` will:
 - initialize the local `.waifus/` runtime
 - start the backend and dashboard
 
+After that, starting the local stack again is just:
+
+```bash
+waifus
+```
+
 You can still use `waifus init ~/Discord-Waifus --repo https://github.com/<owner>/<repo>` if you want to choose the target directory manually.
 
 ## Runtime Layout
@@ -106,11 +112,10 @@ Key rules:
 
 Normal setup should happen through the dashboard after first start:
 
-1. `waifus init-config`
-2. `waifus build`
-3. `waifus start`
-4. `waifus open`
-5. configure providers, waifus, channels, orchestrator, and stage manager in the UI
+1. `npm install -g @starlight-ai/discord-waifus`
+2. `waifus`
+3. `waifus open`
+4. configure providers, waifus, channels, orchestrator, and stage manager in the UI
 
 Immediate dashboard/API writes still apply without requiring a restart. If you edit `.waifus/` files manually on disk, apply them with:
 
