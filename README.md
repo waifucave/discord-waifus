@@ -67,6 +67,12 @@ After that, starting the local stack again is just:
 waifus
 ```
 
+To refresh that downloaded copy later without losing `.waifus/`, run:
+
+```bash
+waifus update
+```
+
 You can still use `waifus init ~/Discord-Waifus --repo https://github.com/<owner>/<repo>` if you want to choose the target directory manually.
 
 ## Runtime Layout
@@ -130,6 +136,7 @@ waifus use <project-path>
 waifus init <target-dir> [--repo <github-repo>] [--ref <git-ref>]
 waifus doctor
 waifus init-config
+waifus update
 waifus build
 waifus start
 waifus stop
@@ -146,6 +153,7 @@ Important behavior:
 - `waifus doctor` validates the `defaults/` + `.waifus/` layout, build artifacts, and unresolved `env:` / `${...}` placeholders
 - `waifus init` downloads the project from GitHub into a fresh directory and registers it with the global CLI
 - `waifus init-config` bootstraps `.waifus/` from `defaults/`
+- `waifus update` refreshes an archive-bootstrapped install from GitHub, preserves local runtime data, reinstalls dependencies, and rebuilds
 - `waifus start/stop/restart/status/logs` manage local PM2-backed services
 - `waifus run backend` and `waifus run dashboard` run foreground services with the same fixed local env defaults used by PM2
 

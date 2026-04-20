@@ -14,13 +14,87 @@ export interface BootstrapRepoResult {
   sourceRef: string | null;
 }
 
+export interface UpdateRepoOptions {
+  preserveEntries?: string[];
+}
+
 export async function bootstrapRepoFromGitHubArchive(
   targetDir: string,
   options: BootstrapRepoOptions = {}
 ): Promise<BootstrapRepoResult> {
   const projectRoot = path.resolve(targetDir);
   await ensureTargetDirectoryIsEmpty(projectRoot);
+  const snapshot = await prepareRepoSnapshot(options);
 
+  try {
+    await fs.mkdir(projectRoot, { recursive: true });
+    await copyDirectoryContents(snapshot.extractedRoot, projectRoot);
+
+    return {
+      projectRoot,
+      sourceRepo: snapshot.sourceRepo,
+      sourceRef: snapshot.sourceRef
+    };
+  } finally {
+    await snapshot.cleanup();
+  }
+}
+
+export async function updateRepoFromGitHubArchive(
+  targetDir: string,
+  options: BootstrapRepoOptions = {},
+  updateOptions: UpdateRepoOptions = {}
+): Promise<BootstrapRepoResult> {
+  const projectRoot = path.resolve(targetDir);
+  const stats = await fs.stat(projectRoot).catch(() => null);
+  if (!stats?.isDirectory()) {
+    throw new Error(`Project directory does not exist: ${projectRoot}`);
+  }
+
+  const snapshot = await prepareRepoSnapshot(options);
+  const preserveEntries = new Set((updateOptions.preserveEntries ?? []).map((entry) => entry.trim()).filter(Boolean));
+
+  try {
+    await replaceProjectContents(projectRoot, snapshot.extractedRoot, preserveEntries);
+
+    return {
+      projectRoot,
+      sourceRepo: snapshot.sourceRepo,
+      sourceRef: snapshot.sourceRef
+    };
+  } finally {
+    await snapshot.cleanup();
+  }
+}
+
+async function ensureTargetDirectoryIsEmpty(targetDir: string): Promise<void> {
+  try {
+    const stats = await fs.stat(targetDir);
+    if (!stats.isDirectory()) {
+      throw new Error(`Target path exists and is not a directory: ${targetDir}`);
+    }
+
+    const entries = await fs.readdir(targetDir);
+    if (entries.length > 0) {
+      throw new Error(`Target directory is not empty: ${targetDir}`);
+    }
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    if (code === "ENOENT") {
+      return;
+    }
+    throw error;
+  }
+}
+
+async function prepareRepoSnapshot(
+  options: BootstrapRepoOptions
+): Promise<{
+  extractedRoot: string;
+  sourceRepo: string;
+  sourceRef: string | null;
+  cleanup: () => Promise<void>;
+}> {
   const repositoryUrl = options.repo?.trim() || (await resolveRepositoryFromPackageMetadata());
   if (!repositoryUrl) {
     throw new Error(
@@ -45,37 +119,18 @@ export async function bootstrapRepoFromGitHubArchive(
     await fs.mkdir(extractRoot, { recursive: true });
     await downloadFile(archiveUrl, archivePath);
     await extractTarGz(archivePath, extractRoot);
-
     const extractedRoot = await findSingleExtractedRoot(extractRoot);
-    await fs.mkdir(projectRoot, { recursive: true });
-    await copyDirectoryContents(extractedRoot, projectRoot);
 
     return {
-      projectRoot,
+      extractedRoot,
       sourceRepo: `https://github.com/${githubRepo.owner}/${githubRepo.repo}`,
-      sourceRef: ref
+      sourceRef: ref,
+      cleanup: async () => {
+        await fs.rm(tempRoot, { recursive: true, force: true });
+      }
     };
-  } finally {
-    await fs.rm(tempRoot, { recursive: true, force: true });
-  }
-}
-
-async function ensureTargetDirectoryIsEmpty(targetDir: string): Promise<void> {
-  try {
-    const stats = await fs.stat(targetDir);
-    if (!stats.isDirectory()) {
-      throw new Error(`Target path exists and is not a directory: ${targetDir}`);
-    }
-
-    const entries = await fs.readdir(targetDir);
-    if (entries.length > 0) {
-      throw new Error(`Target directory is not empty: ${targetDir}`);
-    }
   } catch (error) {
-    const code = (error as NodeJS.ErrnoException | undefined)?.code;
-    if (code === "ENOENT") {
-      return;
-    }
+    await fs.rm(tempRoot, { recursive: true, force: true });
     throw error;
   }
 }
@@ -176,6 +231,23 @@ async function copyDirectoryContents(sourceDir: string, targetDir: string): Prom
       })
     )
   );
+}
+
+async function replaceProjectContents(
+  targetDir: string,
+  sourceDir: string,
+  preserveEntries: Set<string>
+): Promise<void> {
+  const entries = await fs.readdir(targetDir, { withFileTypes: true });
+
+  for (const entry of entries) {
+    if (preserveEntries.has(entry.name)) {
+      continue;
+    }
+    await fs.rm(path.join(targetDir, entry.name), { recursive: true, force: true });
+  }
+
+  await copyDirectoryContents(sourceDir, targetDir);
 }
 
 async function spawnQuiet(command: string, args: string[]): Promise<void> {

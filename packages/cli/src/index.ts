@@ -38,7 +38,7 @@ import {
   startServices,
   stopServices
 } from "./pm2-manager.js";
-import { bootstrapRepoFromGitHubArchive } from "./repo-bootstrap.js";
+import { bootstrapRepoFromGitHubArchive, updateRepoFromGitHubArchive } from "./repo-bootstrap.js";
 import { getServiceEnv } from "./service-env.js";
 
 const cli = cac("waifus");
@@ -92,6 +92,63 @@ cli
       info(`- waifus build`);
       info(`- waifus init-config`);
       info(`- waifus start`);
+      info(`- waifus update`);
+    } catch (error) {
+      fail(error);
+    }
+  });
+
+cli
+  .command("update", "Refresh the downloaded Discord Waifus project from GitHub and preserve local runtime")
+  .option("--repo <repo>", "GitHub repo URL or owner/repo slug. If omitted, uses the package repository when available.")
+  .option("--ref <ref>", "Git ref, branch, or tag to download. Defaults to the repo default branch.")
+  .action(async (options: { repo?: string; ref?: string }) => {
+    try {
+      const projectRoot = await requireProjectRoot(cli.options as GlobalOptions);
+
+      if (await fileExists(path.join(projectRoot, ".git"))) {
+        throw new Error(
+          "This project root is a git clone.\nUse your normal git workflow here instead of `waifus update`."
+        );
+      }
+
+      const services = await listManagedServices();
+      const hadRunningServices = services.some(
+        (service) => service.cwd === projectRoot && service.status === "online"
+      );
+
+      if (hadRunningServices) {
+        info("Stopping managed services before update...");
+        await stopServices();
+      }
+
+      const result = await updateRepoFromGitHubArchive(
+        projectRoot,
+        {
+          repo: options.repo ?? null,
+          ref: options.ref ?? null
+        },
+        {
+          preserveEntries: [".waifus", "config", "data"]
+        }
+      );
+
+      success(`Updated project in ${result.projectRoot}`);
+      info(`Source: ${result.sourceRepo}${result.sourceRef ? ` @ ${result.sourceRef}` : ""}`);
+
+      info("Installing project dependencies with pnpm...");
+      await spawnPassthrough("pnpm", ["install"], result.projectRoot);
+      success("Dependencies installed.");
+
+      info("Building the project...");
+      await spawnPassthrough("pnpm", ["build"], result.projectRoot);
+      success("Build completed.");
+
+      if (hadRunningServices) {
+        await startManagedServices(result.projectRoot);
+      } else {
+        info("Run `waifus start` when you want to launch the stack.");
+      }
     } catch (error) {
       fail(error);
     }
