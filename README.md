@@ -53,7 +53,7 @@ waifus open
 
 ### Global CLI + no manual clone
 
-After publishing `@starlight-ai/discord-waifus`, users can install the global command and let it bootstrap everything on first run:
+Install the global command and let it bootstrap everything on first run:
 
 ```bash
 npm install -g @starlight-ai/discord-waifus
