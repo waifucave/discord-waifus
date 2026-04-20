@@ -4,6 +4,7 @@ import path from "node:path";
 import process from "node:process";
 import { spawnSync } from "node:child_process";
 import { promises as fs } from "node:fs";
+import { createRequire } from "node:module";
 import { cac } from "cac";
 import { parse as parseToml } from "smol-toml";
 import pc from "picocolors";
@@ -42,6 +43,9 @@ import { getServiceEnv } from "./service-env.js";
 
 const cli = cac("waifus");
 const DEFAULT_PROJECT_DIRNAME = "Discord-Waifus";
+const require = createRequire(import.meta.url);
+const packageJson = require("../package.json") as { version?: string };
+const CLI_VERSION = packageJson.version ?? "0.0.0";
 
 cli.option("--project <path>", "Override the project root for this command");
 
@@ -427,7 +431,7 @@ cli
   });
 
 cli.help();
-cli.version("0.1.0");
+cli.version(CLI_VERSION);
 
 if (process.argv.length <= 2) {
   runDefaultCommand().catch(fail);
