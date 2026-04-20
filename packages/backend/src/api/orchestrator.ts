@@ -15,18 +15,23 @@ export function setupOrchestratorRoutes(
   app: Express,
   deps: { config: ConfigManager }
 ): void {
-  app.get("/api/orchestrator", (_request, response) => {
-    response.json({
-      orchestrator: deps.config.orchestrator
-    });
-  });
+  app.get(
+    "/api/orchestrator",
+    asyncRoute(async (_request, response) => {
+      const composed = await deps.config.composer.compose();
+      response.json({
+        orchestrator: composed.orchestrator.value
+      });
+    })
+  );
 
   app.put(
     "/api/orchestrator",
     asyncRoute(async (request, response) => {
       const patch = updateOrchestratorSchema.parse(request.body);
+      const composed = await deps.config.composer.compose();
       const nextConfig = orchestratorConfigSchema.parse({
-        ...deps.config.orchestrator,
+        ...composed.orchestrator.value,
         ...patch
       });
 

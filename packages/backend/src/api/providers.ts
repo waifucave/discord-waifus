@@ -177,9 +177,12 @@ export function setupProviderRoutes(
       }
 
       if (!provider.isRuntimeCallable) {
+        const runtimeErrors = provider.enabled
+          ? provider.runtimeErrors
+          : ["Provider is disabled"];
         response.status(400).json({
-          error: "Provider is not fully configured",
-          runtimeErrors: provider.runtimeErrors,
+          error: provider.enabled ? "Provider is not fully configured" : "Provider is disabled",
+          runtimeErrors,
           models: provider.models,
           ok: false
         });
@@ -215,10 +218,13 @@ export function setupProviderRoutes(
       }
 
       if (!provider.isRuntimeCallable) {
+        const runtimeErrors = provider.enabled
+          ? provider.runtimeErrors
+          : ["Provider is disabled"];
         response.json({
           models: provider.models,
           discoveryAttempted: false,
-          runtimeErrors: provider.runtimeErrors
+          runtimeErrors
         });
         return;
       }

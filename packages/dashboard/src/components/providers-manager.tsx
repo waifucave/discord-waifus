@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, type ReactNode } from "react";
-import { Network, PlugZap, Save, Trash2 } from "lucide-react";
+import { Check, Network, PlugZap, Save, Trash2, X } from "lucide-react";
 import { api } from "@/lib/api";
 import type { ProviderConfig, WaifuEditorPayload } from "@/lib/types";
 import { Panel, Button, Input, Label, Textarea, Select, Badge } from "./ui";
@@ -64,7 +64,7 @@ export function ProvidersManager(): JSX.Element {
     void load();
   }, []);
 
-  const load = async () => {
+  const load = async (preferredId?: string) => {
     setLoading(true);
     try {
       const [providerResponse, waifuResponse] = await Promise.all([
@@ -73,9 +73,13 @@ export function ProvidersManager(): JSX.Element {
       ]);
       setProviders(providerResponse.providers);
       setWaifus(waifuResponse.waifus);
-      if (providerResponse.providers[0]) {
-        setSelectedId(providerResponse.providers[0].id);
-        setDraft(providerResponse.providers[0]);
+      const nextSelectedProvider =
+        providerResponse.providers.find((provider) => provider.id === preferredId) ??
+        providerResponse.providers.find((provider) => provider.id === selectedId) ??
+        providerResponse.providers[0];
+      if (nextSelectedProvider) {
+        setSelectedId(nextSelectedProvider.id);
+        setDraft(nextSelectedProvider);
       }
     } finally {
       setLoading(false);
@@ -94,7 +98,7 @@ export function ProvidersManager(): JSX.Element {
       await api.createProvider(draft);
       toast("Provider created.");
     }
-    await load();
+    await load(draft.id);
   };
 
   return (
@@ -193,77 +197,87 @@ export function ProvidersManager(): JSX.Element {
 
         <div className="mt-8 min-h-0 flex-1 overflow-y-auto pr-1">
           <div className="grid gap-6 lg:grid-cols-2">
-          <Field label="ID">
-            <Input
-              value={draft.id}
-              disabled={Boolean(selectedId)}
-              onChange={(event) => setDraft({ ...draft, id: event.target.value })}
-            />
-          </Field>
-          <Field label="Name">
-            <Input
-              value={draft.name}
-              disabled={draft.isBuiltIn}
-              onChange={(event) => setDraft({ ...draft, name: event.target.value })}
-            />
-          </Field>
-          <Field label="Type">
-            <Select
-              value={draft.type}
-              disabled={draft.isBuiltIn}
-              onChange={(event) =>
-                setDraft({
-                  ...draft,
-                  type: event.target.value as ProviderConfig["type"]
-                })
-              }
-            >
-              <option value="openai-compatible">OpenAI Compatible</option>
-              <option value="anthropic">Anthropic</option>
-            </Select>
-          </Field>
-          <Field label="Auth Mode">
-            <Select
-              value={draft.authMode}
-              disabled={draft.isBuiltIn}
-              onChange={(event) =>
-                setDraft({
-                  ...draft,
-                  authMode: event.target.value as ProviderConfig["authMode"]
-                })
-              }
-            >
-              <option value="required">API key required</option>
-              <option value="none">No API key</option>
-            </Select>
-          </Field>
-          <Field label="Base URL">
-            <Input
-              value={draft.baseUrl}
-              onChange={(event) => setDraft({ ...draft, baseUrl: event.target.value })}
-            />
-          </Field>
-          <Field className="lg:col-span-2" label="API Key">
-            <Input
-              type="password"
-              value={draft.keyValue}
-              onChange={(event) => setDraft({ ...draft, keyValue: event.target.value })}
-            />
-          </Field>
-          <Field className="lg:col-span-2" label="Models">
-            <Textarea
-              value={draft.models.join(", ")}
-              onChange={(event) =>
-                setDraft({
-                  ...draft,
-                  models: event.target.value
-                    .split(",")
-                    .map((value) => value.trim())
-                    .filter(Boolean)
-                })
-              }
-            />
-          </Field>
+            <Field label="Provider Enabled">
+              <Button
+                tone={draft.enabled ? "primary" : "ghost"}
+                onClick={() => setDraft({ ...draft, enabled: !draft.enabled })}
+                className="w-full justify-start"
+              >
+                {draft.enabled ? <Check className="mr-2 h-4 w-4" /> : <X className="mr-2 h-4 w-4" />}
+                {draft.enabled ? "Enabled" : "Disabled"}
+              </Button>
+            </Field>
+            <Field label="ID">
+              <Input
+                value={draft.id}
+                disabled={Boolean(selectedId)}
+                onChange={(event) => setDraft({ ...draft, id: event.target.value })}
+              />
+            </Field>
+            <Field label="Name">
+              <Input
+                value={draft.name}
+                disabled={draft.isBuiltIn}
+                onChange={(event) => setDraft({ ...draft, name: event.target.value })}
+              />
+            </Field>
+            <Field label="Type">
+              <Select
+                value={draft.type}
+                disabled={draft.isBuiltIn}
+                onChange={(event) =>
+                  setDraft({
+                    ...draft,
+                    type: event.target.value as ProviderConfig["type"]
+                  })
+                }
+              >
+                <option value="openai-compatible">OpenAI Compatible</option>
+                <option value="anthropic">Anthropic</option>
+              </Select>
+            </Field>
+            <Field label="Auth Mode">
+              <Select
+                value={draft.authMode}
+                disabled={draft.isBuiltIn}
+                onChange={(event) =>
+                  setDraft({
+                    ...draft,
+                    authMode: event.target.value as ProviderConfig["authMode"]
+                  })
+                }
+              >
+                <option value="required">API key required</option>
+                <option value="none">No API key</option>
+              </Select>
+            </Field>
+            <Field label="Base URL">
+              <Input
+                value={draft.baseUrl}
+                onChange={(event) => setDraft({ ...draft, baseUrl: event.target.value })}
+              />
+            </Field>
+            <Field className="lg:col-span-2" label="API Key">
+              <Input
+                type="password"
+                value={draft.keyValue}
+                onChange={(event) => setDraft({ ...draft, keyValue: event.target.value })}
+              />
+            </Field>
+            <Field className="lg:col-span-2" label="Models">
+              <Textarea
+                value={draft.models.join(", ")}
+                onChange={(event) =>
+                  setDraft({
+                    ...draft,
+                    models: event.target.value
+                      .split(",")
+                      .map((value) => value.trim())
+                      .filter(Boolean)
+                  })
+                }
+              />
+            </Field>
           </div>
 
         <div className="mt-6 flex flex-wrap gap-2">
