@@ -1,3 +1,10 @@
+## Install Now
+
+```bash
+npm install -g @starlight-ai/discord-waifus
+waifus
+```
+
 # Waifu Orchestrator
 
 Local-first Discord bot orchestration for multi-character AI group chats.
