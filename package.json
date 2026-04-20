@@ -14,7 +14,7 @@
     "dev": "concurrently \"pnpm --filter backend dev\" \"pnpm --filter dashboard dev\"",
     "dev:backend": "pnpm --filter backend dev",
     "dev:dashboard": "pnpm --filter dashboard dev",
-    "build": "pnpm --filter backend build && pnpm --filter dashboard build && pnpm --filter @discord-waifus/cli build",
+    "build": "pnpm --filter backend build && pnpm --filter dashboard build && pnpm --filter @starlight-ai/discord-waifus build",
     "start": "pnpm --filter backend start",
     "typecheck": "pnpm -r typecheck",
     "lint": "pnpm -r lint"

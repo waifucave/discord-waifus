@@ -35,8 +35,8 @@ Use `waifus open` instead of manually typing the dashboard URL.
 
 ```bash
 pnpm install
-pnpm --filter @discord-waifus/cli build
-pnpm --filter @discord-waifus/cli link --global
+pnpm --filter @starlight-ai/discord-waifus build
+pnpm --filter @starlight-ai/discord-waifus link --global
 waifus use "$(pwd)"
 waifus init-config
 waifus build
@@ -46,10 +46,10 @@ waifus open
 
 ### Global CLI + no manual clone
 
-After publishing `@discord-waifus/cli`, users can install the global command first and let it fetch the repo:
+After publishing `@starlight-ai/discord-waifus`, users can install the global command first and let it fetch the repo:
 
 ```bash
-pnpm add -g @discord-waifus/cli
+pnpm add -g @starlight-ai/discord-waifus
 waifus init ~/Discord-Waifus --repo https://github.com/<owner>/<repo>
 waifus build
 waifus init-config

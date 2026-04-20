@@ -1,5 +1,5 @@
 {
-  "name": "@discord-waifus/cli",
+  "name": "@starlight-ai/discord-waifus",
   "version": "0.1.0",
   "private": false,
   "description": "Global CLI for running the Discord Waifus local orchestration stack",

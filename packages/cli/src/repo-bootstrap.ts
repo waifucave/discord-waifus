@@ -141,7 +141,7 @@ function buildGitHubArchiveUrl(owner: string, repo: string, ref: string | null):
 async function downloadFile(url: string, destinationPath: string): Promise<void> {
   const response = await fetch(url, {
     headers: {
-      "User-Agent": "@discord-waifus/cli"
+      "User-Agent": "@starlight-ai/discord-waifus"
     },
     redirect: "follow"
   });
