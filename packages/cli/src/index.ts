@@ -8,7 +8,7 @@ import { cac } from "cac";
 import { parse as parseToml } from "smol-toml";
 import pc from "picocolors";
 import { saveCliConfig } from "./config-store.js";
-import { assertProjectRoot } from "./project-root.js";
+import { assertProjectRoot, resolveProjectRoot } from "./project-root.js";
 import {
   fileExists,
   GlobalOptions,
@@ -41,6 +41,7 @@ import { bootstrapRepoFromGitHubArchive } from "./repo-bootstrap.js";
 import { getServiceEnv } from "./service-env.js";
 
 const cli = cac("waifus");
+const DEFAULT_PROJECT_DIRNAME = "Discord-Waifus";
 
 cli.option("--project <path>", "Override the project root for this command");
 
@@ -289,22 +290,10 @@ cli
   .command("start", "Start backend and dashboard under PM2")
   .action(async () => {
     try {
-      const projectRoot = await requireProjectRoot(cli.options as GlobalOptions);
+      const projectRoot = await requireProjectRootForStart(cli.options as GlobalOptions);
       await assertNoPendingLegacyMigration(projectRoot);
-      for (const artifactFile of requiredBuildArtifacts(projectRoot)) {
-        if (!(await fileExists(artifactFile))) {
-          throw new Error(
-            `Missing build artifact: ${path.relative(projectRoot, artifactFile)}\nRun: waifus build`
-          );
-        }
-      }
-
-      await startServices(projectRoot);
-      success("Started waifus-backend and waifus-dashboard through PM2.");
-      info("Local dashboard: http://localhost:3000");
-      info("Local backend: http://127.0.0.1:4000");
-      warn("These services are local to this machine.");
-      info("If you edit config on disk, apply it with: waifus restart");
+      await ensureBuildArtifacts(projectRoot);
+      await startManagedServices(projectRoot);
     } catch (error) {
       fail(error);
     }
@@ -440,7 +429,11 @@ cli
 cli.help();
 cli.version("0.1.0");
 
-cli.parse(process.argv);
+if (process.argv.length <= 2) {
+  runDefaultCommand().catch(fail);
+} else {
+  cli.parse(process.argv);
+}
 
 function fail(error: unknown): never {
   const message = error instanceof Error ? error.message : "Unknown CLI error";
@@ -492,6 +485,94 @@ async function assertNoPendingLegacyMigration(projectRoot: string): Promise<void
   if (runtimeState.legacyLiveExists && runtimeState.migrationState?.status !== "import_completed") {
     throw new Error("Legacy live config still exists. Run: waifus migrate-local-config");
   }
+}
+
+async function requireProjectRootForStart(options: GlobalOptions): Promise<string> {
+  const resolvedProjectRoot = await resolveProjectRoot({
+    cwd: process.cwd(),
+    explicitProjectRoot: options.project ?? null
+  });
+
+  if (resolvedProjectRoot) {
+    return resolvedProjectRoot;
+  }
+
+  if (options.project) {
+    throw new Error(`No valid project root found at ${options.project}`);
+  }
+
+  return bootstrapDefaultProjectRoot();
+}
+
+async function runDefaultCommand(): Promise<void> {
+  const options = cli.options as GlobalOptions;
+  const projectRoot = await requireProjectRootForStart(options);
+  await assertNoPendingLegacyMigration(projectRoot);
+
+  if (!(await hasCanonicalRuntime(projectRoot))) {
+    info("Initializing local runtime...");
+    const written = await bootstrapLocalRuntime(projectRoot);
+    if (written.length === 0) {
+      info("Local runtime already initialized.");
+    } else {
+      for (const filePath of written) {
+        success(`Wrote ${path.relative(projectRoot, filePath)}`);
+      }
+    }
+  }
+
+  await ensureBuildArtifacts(projectRoot);
+  await startManagedServices(projectRoot);
+}
+
+async function bootstrapDefaultProjectRoot(): Promise<string> {
+  const targetDir = path.join(process.env.HOME ?? process.cwd(), DEFAULT_PROJECT_DIRNAME);
+  info(`No project configured. Bootstrapping into ${targetDir}`);
+
+  const result = await bootstrapRepoFromGitHubArchive(targetDir, {});
+  await assertProjectRoot(result.projectRoot);
+  await saveCliConfig({ defaultProjectRoot: result.projectRoot });
+
+  success(`Downloaded project into ${result.projectRoot}`);
+  info(`Source: ${result.sourceRepo}${result.sourceRef ? ` @ ${result.sourceRef}` : ""}`);
+  success(`Default project root saved: ${result.projectRoot}`);
+
+  info("Installing project dependencies with pnpm...");
+  await spawnPassthrough("pnpm", ["install"], result.projectRoot);
+  success("Dependencies installed.");
+
+  return result.projectRoot;
+}
+
+async function hasCanonicalRuntime(projectRoot: string): Promise<boolean> {
+  const runtimeState = await inspectRuntimeState(projectRoot);
+  return runtimeState.isCanonicalLocalRuntime;
+}
+
+async function ensureBuildArtifacts(projectRoot: string): Promise<void> {
+  const missingArtifacts = [];
+
+  for (const artifactFile of requiredBuildArtifacts(projectRoot)) {
+    if (!(await fileExists(artifactFile))) {
+      missingArtifacts.push(path.relative(projectRoot, artifactFile));
+    }
+  }
+
+  if (missingArtifacts.length === 0) {
+    return;
+  }
+
+  info("Build artifacts missing. Running `waifus build` automatically...");
+  await spawnPassthrough("pnpm", ["build"], projectRoot);
+}
+
+async function startManagedServices(projectRoot: string): Promise<void> {
+  await startServices(projectRoot);
+  success("Started waifus-backend and waifus-dashboard through PM2.");
+  info("Local dashboard: http://localhost:3000");
+  info("Local backend: http://127.0.0.1:4000");
+  warn("These services are local to this machine.");
+  info("If you edit config on disk, apply it with: waifus restart");
 }
 
 function findEnvReferences(value: unknown): Array<{ raw: string; variableName: string }> {

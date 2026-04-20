@@ -46,18 +46,22 @@ waifus open
 
 ### Global CLI + no manual clone
 
-After publishing `@starlight-ai/discord-waifus`, users can install the global command first and let it fetch the repo:
+After publishing `@starlight-ai/discord-waifus`, users can install the global command and let it bootstrap everything on first run:
 
 ```bash
-pnpm add -g @starlight-ai/discord-waifus
-waifus init ~/Discord-Waifus --repo https://github.com/<owner>/<repo>
-waifus build
-waifus init-config
-waifus start
+npm install -g @starlight-ai/discord-waifus
+waifus
 waifus open
 ```
 
-`waifus init` downloads the GitHub repository archive into the target directory, saves that path as the default project root, and runs `pnpm install` by default.
+On first run, `waifus` will:
+- download the repo into `~/Discord-Waifus`
+- install dependencies
+- build the app if needed
+- initialize the local `.waifus/` runtime
+- start the backend and dashboard
+
+You can still use `waifus init ~/Discord-Waifus --repo https://github.com/<owner>/<repo>` if you want to choose the target directory manually.
 
 ## Runtime Layout
 
