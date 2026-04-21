@@ -10,6 +10,10 @@ const require = createRequire(import.meta.url);
 export const backendProcessName = "waifus-backend";
 export const dashboardProcessName = "waifus-dashboard";
 
+// Resolve the pnpm bundled as a dependency of this CLI so pm2 doesn't have to
+// find pnpm on PATH. pm2 runs .cjs scripts under Node by default.
+const PNPM_BIN = require.resolve("pnpm/bin/pnpm.cjs");
+
 export interface ManagedProcessStatus {
   name: string;
   status: string;
@@ -24,7 +28,7 @@ export async function startServices(projectRoot: string): Promise<void> {
     await ensureStarted({
       name: backendProcessName,
       cwd: projectRoot,
-      script: "pnpm",
+      script: PNPM_BIN,
       args: ["--filter", "backend", "start"],
       env: getServiceEnv("backend")
     });
@@ -32,7 +36,7 @@ export async function startServices(projectRoot: string): Promise<void> {
     await ensureStarted({
       name: dashboardProcessName,
       cwd: projectRoot,
-      script: "pnpm",
+      script: PNPM_BIN,
       args: ["--filter", "dashboard", "start"],
       env: getServiceEnv("dashboard")
     });
@@ -51,7 +55,7 @@ export async function restartServices(projectRoot: string): Promise<void> {
     await restartOrStart({
       name: backendProcessName,
       cwd: projectRoot,
-      script: "pnpm",
+      script: PNPM_BIN,
       args: ["--filter", "backend", "start"],
       env: getServiceEnv("backend")
     });
@@ -59,7 +63,7 @@ export async function restartServices(projectRoot: string): Promise<void> {
     await restartOrStart({
       name: dashboardProcessName,
       cwd: projectRoot,
-      script: "pnpm",
+      script: PNPM_BIN,
       args: ["--filter", "dashboard", "start"],
       env: getServiceEnv("dashboard")
     });

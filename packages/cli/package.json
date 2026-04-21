@@ -1,6 +1,6 @@
 {
   "name": "@starlight-ai/discord-waifus",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "private": false,
   "description": "Global CLI for running the Discord Waifus local orchestration stack",
   "license": "MIT",
@@ -22,7 +22,7 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsup src/index.ts --format esm --dts --sourcemap --external pm2",
+    "build": "tsup src/index.ts --format esm --dts --sourcemap --external pm2 --external pnpm",
     "prepublishOnly": "pnpm build && pnpm typecheck",
     "typecheck": "tsc --noEmit",
     "lint": "tsc --noEmit"
@@ -34,6 +34,7 @@
     "cac": "^6.7.14",
     "picocolors": "^1.1.1",
     "pm2": "^5.4.3",
+    "pnpm": "^10.0.0",
     "smol-toml": "^1.6.1",
     "zod": "^3.25.67"
   },

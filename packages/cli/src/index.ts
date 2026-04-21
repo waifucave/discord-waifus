@@ -47,6 +47,19 @@ const require = createRequire(import.meta.url);
 const packageJson = require("../package.json") as { version?: string };
 const CLI_VERSION = packageJson.version ?? "0.0.0";
 
+// Resolve the pnpm bundled as a dependency of this CLI so users don't need it
+// globally on their PATH. require.resolve points at pnpm's bin script; we then
+// spawn it with the same Node that's running the CLI.
+const PNPM_BIN = require.resolve("pnpm/bin/pnpm.cjs");
+
+async function spawnPnpm(
+  args: string[],
+  cwd: string,
+  envOverrides: Record<string, string> = {}
+): Promise<void> {
+  await spawnPassthrough(process.execPath, [PNPM_BIN, ...args], cwd, envOverrides);
+}
+
 cli.option("--project <path>", "Override the project root for this command");
 
 cli
@@ -82,7 +95,7 @@ cli
 
       if (options.install !== false) {
         info("Installing project dependencies with pnpm...");
-        await spawnPassthrough("pnpm", ["install"], result.projectRoot);
+        await spawnPnpm(["install"], result.projectRoot);
         success("Dependencies installed.");
       } else {
         warn("Skipped pnpm install. Run `pnpm install` inside the project before building.");
@@ -137,11 +150,11 @@ cli
       info(`Source: ${result.sourceRepo}${result.sourceRef ? ` @ ${result.sourceRef}` : ""}`);
 
       info("Installing project dependencies with pnpm...");
-      await spawnPassthrough("pnpm", ["install"], result.projectRoot);
+      await spawnPnpm(["install"], result.projectRoot);
       success("Dependencies installed.");
 
       info("Building the project...");
-      await spawnPassthrough("pnpm", ["build"], result.projectRoot);
+      await spawnPnpm(["build"], result.projectRoot);
       success("Build completed.");
 
       if (hadRunningServices) {
@@ -160,7 +173,7 @@ cli
     try {
       const projectRoot = await requireProjectRoot(cli.options as GlobalOptions);
       const nodeMajor = Number.parseInt(process.versions.node.split(".")[0] ?? "0", 10);
-      const pnpmVersion = spawnSync("pnpm", ["--version"], { encoding: "utf8" });
+      const pnpmVersion = spawnSync(process.execPath, [PNPM_BIN, "--version"], { encoding: "utf8" });
       const configFiles = runtimeConfigFiles(projectRoot);
       const artifactFiles = requiredBuildArtifacts(projectRoot);
       const runtimeState = await inspectRuntimeState(projectRoot);
@@ -175,9 +188,9 @@ cli
       }
 
       if (pnpmVersion.status === 0) {
-        success(`pnpm ${pnpmVersion.stdout.trim()}`);
+        success(`pnpm ${pnpmVersion.stdout.trim()} (bundled)`);
       } else {
-        warn("pnpm not found in PATH");
+        warn("Bundled pnpm failed to run. Try reinstalling: npm install -g @starlight-ai/discord-waifus");
       }
 
       if (runtimeState.isCanonicalLocalRuntime) {
@@ -282,7 +295,7 @@ cli
 cli.command("build", "Build backend, dashboard, and CLI").action(async () => {
   try {
     const projectRoot = await requireProjectRoot(cli.options as GlobalOptions);
-    await spawnPassthrough("pnpm", ["build"], projectRoot);
+    await spawnPnpm(["build"], projectRoot);
   } catch (error) {
     fail(error);
   }
@@ -481,7 +494,7 @@ cli
       }
 
       const filterTarget = service === "backend" ? "backend" : "dashboard";
-      await spawnPassthrough("pnpm", ["--filter", filterTarget, "start"], projectRoot, getServiceEnv(service));
+      await spawnPnpm(["--filter", filterTarget, "start"], projectRoot, getServiceEnv(service));
     } catch (error) {
       fail(error);
     }
@@ -599,7 +612,7 @@ async function bootstrapDefaultProjectRoot(): Promise<string> {
   success(`Default project root saved: ${result.projectRoot}`);
 
   info("Installing project dependencies with pnpm...");
-  await spawnPassthrough("pnpm", ["install"], result.projectRoot);
+  await spawnPnpm(["install"], result.projectRoot);
   success("Dependencies installed.");
 
   return result.projectRoot;
@@ -624,7 +637,7 @@ async function ensureBuildArtifacts(projectRoot: string): Promise<void> {
   }
 
   info("Build artifacts missing. Running `waifus build` automatically...");
-  await spawnPassthrough("pnpm", ["build"], projectRoot);
+  await spawnPnpm(["build"], projectRoot);
 }
 
 async function startManagedServices(projectRoot: string): Promise<void> {

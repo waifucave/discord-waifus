@@ -17,3 +17,5 @@ data/stage-manager-state.json
 config/*.local.json
 config/assets/*
 !config/assets/.gitkeep
+PUBLISH_PROMPT.md
+_tmp*
