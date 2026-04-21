@@ -39,6 +39,7 @@ import {
   stopServices
 } from "./pm2-manager.js";
 import { bootstrapRepoFromGitHubArchive, updateRepoFromGitHubArchive } from "./repo-bootstrap.js";
+import { resolveBundledPnpmBin } from "./pnpm-bin.js";
 import { getServiceEnv } from "./service-env.js";
 
 const cli = cac("waifus");
@@ -48,9 +49,9 @@ const packageJson = require("../package.json") as { version?: string };
 const CLI_VERSION = packageJson.version ?? "0.0.0";
 
 // Resolve the pnpm bundled as a dependency of this CLI so users don't need it
-// globally on their PATH. require.resolve points at pnpm's bin script; we then
-// spawn it with the same Node that's running the CLI.
-const PNPM_BIN = require.resolve("pnpm/bin/pnpm.cjs");
+// globally on their PATH. We resolve pnpm's exported package entry first and
+// then derive the bin path to avoid Node 25+ export-subpath restrictions.
+const PNPM_BIN = resolveBundledPnpmBin();
 
 async function spawnPnpm(
   args: string[],

@@ -1,5 +1,6 @@
 import { createRequire } from "node:module";
 import path from "node:path";
+import { resolveBundledPnpmBin } from "./pnpm-bin.js";
 import { getServiceEnv } from "./service-env.js";
 
 type PM2Runtime = typeof import("pm2");
@@ -11,8 +12,9 @@ export const backendProcessName = "waifus-backend";
 export const dashboardProcessName = "waifus-dashboard";
 
 // Resolve the pnpm bundled as a dependency of this CLI so pm2 doesn't have to
-// find pnpm on PATH. pm2 runs .cjs scripts under Node by default.
-const PNPM_BIN = require.resolve("pnpm/bin/pnpm.cjs");
+// find pnpm on PATH. We avoid requiring an unexported subpath so this keeps
+// working on newer Node releases.
+const PNPM_BIN = resolveBundledPnpmBin();
 
 export interface ManagedProcessStatus {
   name: string;
