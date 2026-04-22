@@ -49,6 +49,7 @@ const require = createRequire(import.meta.url);
 const packageJson = require("../package.json") as { name?: string; version?: string };
 const CLI_PACKAGE_NAME = packageJson.name ?? "@starlight-ai/discord-waifus";
 const CLI_VERSION = packageJson.version ?? "0.0.0";
+const SKIP_SELF_UPDATE_ENV = "WAIFUS_SKIP_SELF_UPDATE";
 
 // Resolve the pnpm bundled as a dependency of this CLI so users don't need it
 // globally on their PATH. We resolve pnpm's exported package entry first and
@@ -120,14 +121,23 @@ cli
   .option("--ref <ref>", "Git ref, branch, or tag to download. Defaults to the repo default branch.")
   .action(async (options: { repo?: string; ref?: string }) => {
     try {
-      await maybeSelfUpdateCli({
+      const didSelfUpdate = await maybeSelfUpdateCli({
         packageName: CLI_PACKAGE_NAME,
         currentVersion: CLI_VERSION,
         cwd: process.cwd(),
         info,
         success,
-        warn
+        warn,
+        skip: process.env[SKIP_SELF_UPDATE_ENV] === "1"
       });
+
+      if (didSelfUpdate) {
+        info("Restarting waifus update with the newly installed CLI...");
+        await spawnPassthrough("waifus", process.argv.slice(2), process.cwd(), {
+          [SKIP_SELF_UPDATE_ENV]: "1"
+        });
+        return;
+      }
 
       const projectRoot = await requireProjectRoot(cli.options as GlobalOptions);
 

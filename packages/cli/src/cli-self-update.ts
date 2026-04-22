@@ -7,17 +7,22 @@ export interface CliSelfUpdateOptions {
   info: (message: string) => void;
   success: (message: string) => void;
   warn: (message: string) => void;
+  skip?: boolean;
 }
 
-export async function maybeSelfUpdateCli(options: CliSelfUpdateOptions): Promise<void> {
+export async function maybeSelfUpdateCli(options: CliSelfUpdateOptions): Promise<boolean> {
+  if (options.skip) {
+    return false;
+  }
+
   const latestVersion = await fetchLatestPackageVersion(options.packageName);
   if (!latestVersion) {
     options.warn("Could not check npm for a newer waifus CLI version. Continuing with app update.");
-    return;
+    return false;
   }
 
   if (!isNewerVersion(latestVersion, options.currentVersion)) {
-    return;
+    return false;
   }
 
   options.info(`CLI update available: ${options.currentVersion} -> ${latestVersion}`);
@@ -30,10 +35,12 @@ export async function maybeSelfUpdateCli(options: CliSelfUpdateOptions): Promise
       options.cwd
     );
     options.success(`CLI updated to ${latestVersion}.`);
+    return true;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     options.warn(`Failed to auto-update the global CLI: ${message}`);
     options.warn(`You can update it manually with: npm install -g ${options.packageName}`);
+    return false;
   }
 }
 
