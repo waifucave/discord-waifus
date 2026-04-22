@@ -9,6 +9,8 @@ waifus
 
 Local-first Discord bot orchestration for multi-character AI group chats.
 
+README test marker: update verification note.
+
 This repo uses a split runtime layout:
 
 - committed defaults and catalogs live in `defaults/`
