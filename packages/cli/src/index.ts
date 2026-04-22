@@ -41,11 +41,13 @@ import {
 import { bootstrapRepoFromGitHubArchive, updateRepoFromGitHubArchive } from "./repo-bootstrap.js";
 import { resolveBundledPnpmBin } from "./pnpm-bin.js";
 import { getServiceEnv } from "./service-env.js";
+import { maybeSelfUpdateCli } from "./cli-self-update.js";
 
 const cli = cac("waifus");
 const DEFAULT_PROJECT_DIRNAME = "Discord-Waifus";
 const require = createRequire(import.meta.url);
-const packageJson = require("../package.json") as { version?: string };
+const packageJson = require("../package.json") as { name?: string; version?: string };
+const CLI_PACKAGE_NAME = packageJson.name ?? "@starlight-ai/discord-waifus";
 const CLI_VERSION = packageJson.version ?? "0.0.0";
 
 // Resolve the pnpm bundled as a dependency of this CLI so users don't need it
@@ -118,6 +120,15 @@ cli
   .option("--ref <ref>", "Git ref, branch, or tag to download. Defaults to the repo default branch.")
   .action(async (options: { repo?: string; ref?: string }) => {
     try {
+      await maybeSelfUpdateCli({
+        packageName: CLI_PACKAGE_NAME,
+        currentVersion: CLI_VERSION,
+        cwd: process.cwd(),
+        info,
+        success,
+        warn
+      });
+
       const projectRoot = await requireProjectRoot(cli.options as GlobalOptions);
 
       if (await fileExists(path.join(projectRoot, ".git"))) {

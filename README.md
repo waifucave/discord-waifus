@@ -160,7 +160,7 @@ Important behavior:
 - `waifus doctor` validates the `defaults/` + `.waifus/` layout, build artifacts, and unresolved `env:` / `${...}` placeholders
 - `waifus init` downloads the project from GitHub into a fresh directory and registers it with the global CLI
 - `waifus init-config` bootstraps `.waifus/` from `defaults/`
-- `waifus update` refreshes an archive-bootstrapped install from GitHub, preserves local runtime data, reinstalls dependencies, and rebuilds
+- `waifus update` first checks npm for a newer global CLI, updates it when available, then refreshes an archive-bootstrapped install from GitHub, preserves local runtime data, reinstalls dependencies, and rebuilds
 - `waifus start/stop/restart/status/logs` manage local PM2-backed services
 - `waifus run backend` and `waifus run dashboard` run foreground services with the same fixed local env defaults used by PM2
 
