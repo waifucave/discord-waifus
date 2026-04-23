@@ -11,6 +11,7 @@ const INSTALLED_RELEASE_METADATA = ".waifus-release.json";
 export interface BootstrapReleaseOptions {
   repo?: string | null;
   release?: string | null;
+  onProgress?: ((message: string) => void) | null;
 }
 
 export interface BootstrapReleaseResult {
@@ -56,6 +57,7 @@ export async function bootstrapReleaseBundleFromGitHub(
   const snapshot = await prepareReleaseSnapshot(options);
 
   try {
+    options.onProgress?.(`Installing release bundle into ${projectRoot}...`);
     await fs.mkdir(projectRoot, { recursive: true });
     await copyDirectoryContents(snapshot.extractedRoot, projectRoot);
     return snapshot.result(projectRoot);
@@ -79,6 +81,7 @@ export async function updateReleaseBundleFromGitHub(
   const preserveEntries = new Set((updateOptions.preserveEntries ?? []).map((entry) => entry.trim()).filter(Boolean));
 
   try {
+    options.onProgress?.(`Applying release bundle to ${projectRoot}...`);
     await replaceProjectContents(projectRoot, snapshot.extractedRoot, preserveEntries);
     return snapshot.result(projectRoot);
   } finally {
@@ -143,6 +146,9 @@ async function prepareReleaseSnapshot(
   result: (projectRoot: string) => BootstrapReleaseResult;
   cleanup: () => Promise<void>;
 }> {
+  const reportProgress = (message: string): void => {
+    options.onProgress?.(message);
+  };
   const repositoryUrl = options.repo?.trim() || (await resolveRepositoryFromPackageMetadata());
   if (!repositoryUrl) {
     throw new Error(
@@ -158,6 +164,9 @@ async function prepareReleaseSnapshot(
   }
 
   const releaseTag = options.release?.trim() || null;
+  reportProgress(
+    `Resolving GitHub Release metadata${releaseTag ? ` for ${releaseTag}` : " for latest release"}...`
+  );
   const release = await fetchGitHubRelease(githubRepo.owner, githubRepo.repo, releaseTag);
   const assets = Array.isArray(release.assets) ? release.assets : [];
   const bundleAsset = assets.find((asset) => asset.name === APP_RELEASE_ASSET_NAME);
@@ -174,10 +183,13 @@ async function prepareReleaseSnapshot(
 
   try {
     await fs.mkdir(extractRoot, { recursive: true });
+    reportProgress(`Downloading ${APP_RELEASE_ASSET_NAME}...`);
     await downloadFile(bundleAsset.browser_download_url, archivePath);
 
     if (checksumAsset?.browser_download_url) {
+      reportProgress(`Downloading ${APP_RELEASE_CHECKSUM_ASSET_NAME}...`);
       const checksumText = await downloadTextFile(checksumAsset.browser_download_url);
+      reportProgress(`Verifying ${APP_RELEASE_ASSET_NAME} checksum...`);
       const expectedChecksum = parseChecksum(checksumText);
       const actualChecksum = await computeSha256(archivePath);
       if (expectedChecksum !== actualChecksum) {
@@ -187,8 +199,10 @@ async function prepareReleaseSnapshot(
       }
     }
 
+    reportProgress(`Extracting ${APP_RELEASE_ASSET_NAME}...`);
     await extractTarGz(archivePath, extractRoot);
     const extractedRoot = await findSingleExtractedRoot(extractRoot);
+    reportProgress("Preparing updated project files...");
     const installedMetadata = await readInstalledReleaseMetadata(extractedRoot);
     const tagName =
       typeof release.tag_name === "string" && release.tag_name.trim()

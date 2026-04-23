@@ -96,7 +96,8 @@ cli
     try {
       const result = await bootstrapReleaseBundleFromGitHub(targetDir, {
         repo: options.repo ?? null,
-        release: options.release ?? options.ref ?? null
+        release: options.release ?? options.ref ?? null,
+        onProgress: info
       });
       await assertProjectRoot(result.projectRoot);
 
@@ -174,7 +175,8 @@ cli
         projectRoot,
         {
           repo: options.repo ?? null,
-          release: options.release ?? options.ref ?? null
+          release: options.release ?? options.ref ?? null,
+          onProgress: info
         },
         {
           preserveEntries: [".waifus", "config", "data"]
@@ -639,19 +641,19 @@ async function bootstrapDefaultProjectRoot(): Promise<string> {
   const targetDir = path.join(process.env.HOME ?? process.cwd(), DEFAULT_PROJECT_DIRNAME);
   info(`No project configured. Bootstrapping into ${targetDir}`);
 
-  const result = await bootstrapReleaseBundleFromGitHub(targetDir, {});
-  await assertProjectRoot(result.projectRoot);
-  await saveCliConfig({ defaultProjectRoot: result.projectRoot });
+  const bootstrapResult = await bootstrapReleaseBundleFromGitHub(targetDir, { onProgress: info });
+  await assertProjectRoot(bootstrapResult.projectRoot);
+  await saveCliConfig({ defaultProjectRoot: bootstrapResult.projectRoot });
 
-  success(`Downloaded project into ${result.projectRoot}`);
-  info(formatInstalledRelease(result));
-  success(`Default project root saved: ${result.projectRoot}`);
+  success(`Downloaded project into ${bootstrapResult.projectRoot}`);
+  info(formatInstalledRelease(bootstrapResult));
+  success(`Default project root saved: ${bootstrapResult.projectRoot}`);
 
   info("Installing runtime dependencies with pnpm...");
-  await installRuntimeDependencies(result.projectRoot);
+  await installRuntimeDependencies(bootstrapResult.projectRoot);
   success("Dependencies installed.");
 
-  return result.projectRoot;
+  return bootstrapResult.projectRoot;
 }
 
 async function hasCanonicalRuntime(projectRoot: string): Promise<boolean> {
