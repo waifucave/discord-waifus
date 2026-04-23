@@ -19,5 +19,8 @@ config/assets/*
 !config/assets/.gitkeep
 PUBLISH_PROMPT.md
 _tmp*
+artifacts/
 *.md
 !/README.md
+!/RELEASE_DISTRIBUTION.md
+!/packages/cli/README.md

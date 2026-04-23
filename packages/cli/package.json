@@ -1,6 +1,6 @@
 {
   "name": "@starlight-ai/discord-waifus",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "private": false,
   "description": "Global CLI for running the Discord Waifus local orchestration stack",
   "license": "MIT",

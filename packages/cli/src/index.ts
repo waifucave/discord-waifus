@@ -38,7 +38,11 @@ import {
   startServices,
   stopServices
 } from "./pm2-manager.js";
-import { bootstrapRepoFromGitHubArchive, updateRepoFromGitHubArchive } from "./repo-bootstrap.js";
+import {
+  bootstrapReleaseBundleFromGitHub,
+  readInstalledReleaseMetadata,
+  updateReleaseBundleFromGitHub
+} from "./release-bootstrap.js";
 import { resolveBundledPnpmBin } from "./pnpm-bin.js";
 import { getServiceEnv } from "./service-env.js";
 import { maybeSelfUpdateCli } from "./cli-self-update.js";
@@ -64,6 +68,10 @@ async function spawnPnpm(
   await spawnPassthrough(process.execPath, [PNPM_BIN, ...args], cwd, envOverrides);
 }
 
+async function installRuntimeDependencies(projectRoot: string): Promise<void> {
+  await spawnPnpm(["install", "--prod", "--frozen-lockfile"], projectRoot);
+}
+
 cli.option("--project <path>", "Override the project root for this command");
 
 cli
@@ -79,34 +87,34 @@ cli
   });
 
 cli
-  .command("init <targetDir>", "Download the Discord Waifus repo into a target directory and register it")
+  .command("init <targetDir>", "Download the Discord Waifus release bundle into a target directory and register it")
   .option("--repo <repo>", "GitHub repo URL or owner/repo slug. If omitted, uses the package repository when available.")
-  .option("--ref <ref>", "Git ref, branch, or tag to download. Defaults to the repo default branch.")
+  .option("--release <tag>", "GitHub release tag to download. Defaults to the latest GitHub release.")
+  .option("--ref <tag>", "Deprecated alias for --release.")
   .option("--no-install", "Skip pnpm install after download")
-  .action(async (targetDir: string, options: { repo?: string; ref?: string; install?: boolean }) => {
+  .action(async (targetDir: string, options: { repo?: string; release?: string; ref?: string; install?: boolean }) => {
     try {
-      const result = await bootstrapRepoFromGitHubArchive(targetDir, {
+      const result = await bootstrapReleaseBundleFromGitHub(targetDir, {
         repo: options.repo ?? null,
-        ref: options.ref ?? null
+        release: options.release ?? options.ref ?? null
       });
       await assertProjectRoot(result.projectRoot);
 
       success(`Downloaded project into ${result.projectRoot}`);
-      info(`Source: ${result.sourceRepo}${result.sourceRef ? ` @ ${result.sourceRef}` : ""}`);
+      info(formatInstalledRelease(result));
 
       await saveCliConfig({ defaultProjectRoot: result.projectRoot });
       success(`Default project root saved: ${result.projectRoot}`);
 
       if (options.install !== false) {
-        info("Installing project dependencies with pnpm...");
-        await spawnPnpm(["install"], result.projectRoot);
+        info("Installing runtime dependencies with pnpm...");
+        await installRuntimeDependencies(result.projectRoot);
         success("Dependencies installed.");
       } else {
-        warn("Skipped pnpm install. Run `pnpm install` inside the project before building.");
+        warn("Skipped pnpm install. Run `pnpm install --prod --frozen-lockfile` inside the project before starting.");
       }
 
       info("Next steps:");
-      info(`- waifus build`);
       info(`- waifus init-config`);
       info(`- waifus start`);
       info(`- waifus update`);
@@ -116,10 +124,11 @@ cli
   });
 
 cli
-  .command("update", "Refresh the downloaded Discord Waifus project from GitHub and preserve local runtime")
+  .command("update", "Refresh the downloaded Discord Waifus release bundle from GitHub Releases and preserve local runtime")
   .option("--repo <repo>", "GitHub repo URL or owner/repo slug. If omitted, uses the package repository when available.")
-  .option("--ref <ref>", "Git ref, branch, or tag to download. Defaults to the repo default branch.")
-  .action(async (options: { repo?: string; ref?: string }) => {
+  .option("--release <tag>", "GitHub release tag to download. Defaults to the latest GitHub release.")
+  .option("--ref <tag>", "Deprecated alias for --release.")
+  .action(async (options: { repo?: string; release?: string; ref?: string }) => {
     try {
       const didSelfUpdate = await maybeSelfUpdateCli({
         packageName: CLI_PACKAGE_NAME,
@@ -157,11 +166,11 @@ cli
         await stopServices();
       }
 
-      const result = await updateRepoFromGitHubArchive(
+      const result = await updateReleaseBundleFromGitHub(
         projectRoot,
         {
           repo: options.repo ?? null,
-          ref: options.ref ?? null
+          release: options.release ?? options.ref ?? null
         },
         {
           preserveEntries: [".waifus", "config", "data"]
@@ -169,15 +178,11 @@ cli
       );
 
       success(`Updated project in ${result.projectRoot}`);
-      info(`Source: ${result.sourceRepo}${result.sourceRef ? ` @ ${result.sourceRef}` : ""}`);
+      info(formatInstalledRelease(result));
 
-      info("Installing project dependencies with pnpm...");
-      await spawnPnpm(["install"], result.projectRoot);
+      info("Installing runtime dependencies with pnpm...");
+      await installRuntimeDependencies(result.projectRoot);
       success("Dependencies installed.");
-
-      info("Building the project...");
-      await spawnPnpm(["build"], result.projectRoot);
-      success("Build completed.");
 
       if (hadRunningServices) {
         await startManagedServices(result.projectRoot);
@@ -199,9 +204,13 @@ cli
       const configFiles = runtimeConfigFiles(projectRoot);
       const artifactFiles = requiredBuildArtifacts(projectRoot);
       const runtimeState = await inspectRuntimeState(projectRoot);
+      const installedRelease = await readInstalledReleaseMetadata(projectRoot);
 
       console.log(pc.bold("waifus doctor"));
       info(`Project root: ${projectRoot}`);
+      if (installedRelease?.bundleVersion) {
+        info(`Installed app release: ${installedRelease.bundleVersion}`);
+      }
 
       if (Number.isFinite(nodeMajor) && nodeMajor >= 20) {
         success(`Node.js ${process.versions.node}`);
@@ -314,9 +323,10 @@ cli
     }
   });
 
-cli.command("build", "Build backend, dashboard, and CLI").action(async () => {
+cli.command("build", "Build backend and dashboard from source").action(async () => {
   try {
     const projectRoot = await requireProjectRoot(cli.options as GlobalOptions);
+    await assertBuildableProjectRoot(projectRoot);
     await spawnPnpm(["build"], projectRoot);
   } catch (error) {
     fail(error);
@@ -625,16 +635,16 @@ async function bootstrapDefaultProjectRoot(): Promise<string> {
   const targetDir = path.join(process.env.HOME ?? process.cwd(), DEFAULT_PROJECT_DIRNAME);
   info(`No project configured. Bootstrapping into ${targetDir}`);
 
-  const result = await bootstrapRepoFromGitHubArchive(targetDir, {});
+  const result = await bootstrapReleaseBundleFromGitHub(targetDir, {});
   await assertProjectRoot(result.projectRoot);
   await saveCliConfig({ defaultProjectRoot: result.projectRoot });
 
   success(`Downloaded project into ${result.projectRoot}`);
-  info(`Source: ${result.sourceRepo}${result.sourceRef ? ` @ ${result.sourceRef}` : ""}`);
+  info(formatInstalledRelease(result));
   success(`Default project root saved: ${result.projectRoot}`);
 
-  info("Installing project dependencies with pnpm...");
-  await spawnPnpm(["install"], result.projectRoot);
+  info("Installing runtime dependencies with pnpm...");
+  await installRuntimeDependencies(result.projectRoot);
   success("Dependencies installed.");
 
   return result.projectRoot;
@@ -658,8 +668,31 @@ async function ensureBuildArtifacts(projectRoot: string): Promise<void> {
     return;
   }
 
+  if (!(await hasBuildSources(projectRoot))) {
+    throw new Error(
+      `Missing build artifact(s): ${missingArtifacts.join(", ")}\nThis install uses a prebuilt release bundle. Run: waifus update`
+    );
+  }
+
   info("Build artifacts missing. Running `waifus build` automatically...");
   await spawnPnpm(["build"], projectRoot);
+}
+
+async function hasBuildSources(projectRoot: string): Promise<boolean> {
+  return (
+    (await fileExists(path.join(projectRoot, "packages", "backend", "src", "index.ts"))) &&
+    (await fileExists(path.join(projectRoot, "packages", "dashboard", "src", "app", "layout.tsx")))
+  );
+}
+
+async function assertBuildableProjectRoot(projectRoot: string): Promise<void> {
+  if (await hasBuildSources(projectRoot)) {
+    return;
+  }
+
+  throw new Error(
+    "This install is a prebuilt GitHub Release bundle and does not include source code.\nUse: waifus update"
+  );
 }
 
 async function startManagedServices(projectRoot: string): Promise<void> {
@@ -669,6 +702,22 @@ async function startManagedServices(projectRoot: string): Promise<void> {
   info("Local backend: http://127.0.0.1:4000");
   warn("These services are local to this machine.");
   info("If you edit config on disk, apply it with: waifus restart");
+}
+
+function formatInstalledRelease(result: {
+  sourceRepo: string;
+  releaseTag: string;
+  bundleVersion: string | null;
+  publishedAt?: string | null;
+}): string {
+  const details = [`Release: ${result.sourceRepo} @ ${result.releaseTag}`];
+  if (result.bundleVersion) {
+    details.push(`bundle ${result.bundleVersion}`);
+  }
+  if (result.publishedAt) {
+    details.push(`published ${result.publishedAt}`);
+  }
+  return details.join(" | ");
 }
 
 function findEnvReferences(value: unknown): Array<{ raw: string; variableName: string }> {

@@ -15,6 +15,7 @@
     "dev:backend": "pnpm --filter backend dev",
     "dev:dashboard": "pnpm --filter dashboard dev",
     "build": "pnpm --filter backend build && pnpm --filter dashboard build && pnpm --filter @starlight-ai/discord-waifus build",
+    "build:release-bundle": "node scripts/build-release-bundle.mjs",
     "start": "pnpm --filter backend start",
     "typecheck": "pnpm -r typecheck",
     "lint": "pnpm -r lint"
