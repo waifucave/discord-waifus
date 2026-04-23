@@ -130,6 +130,7 @@ cli
   .option("--ref <tag>", "Deprecated alias for --release.")
   .action(async (options: { repo?: string; release?: string; ref?: string }) => {
     try {
+      const projectRoot = await requireProjectRoot(cli.options as GlobalOptions);
       const didSelfUpdate = await maybeSelfUpdateCli({
         packageName: CLI_PACKAGE_NAME,
         currentVersion: CLI_VERSION,
@@ -142,13 +143,16 @@ cli
 
       if (didSelfUpdate) {
         info("Restarting waifus update with the newly installed CLI...");
-        await spawnPassthrough("waifus", process.argv.slice(2), process.cwd(), {
+        await spawnPassthrough(
+          "waifus",
+          ["--project", projectRoot, ...process.argv.slice(2)],
+          process.cwd(),
+          {
           [SKIP_SELF_UPDATE_ENV]: "1"
-        });
+          }
+        );
         return;
       }
-
-      const projectRoot = await requireProjectRoot(cli.options as GlobalOptions);
 
       if (await fileExists(path.join(projectRoot, ".git"))) {
         throw new Error(
