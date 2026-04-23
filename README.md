@@ -80,7 +80,7 @@ To refresh that downloaded copy later without losing `.waifus/`, run:
 waifus update
 ```
 
-You can still use `waifus init ~/Discord-Waifus --repo https://github.com/<owner>/<repo>` if you want to choose the target directory manually.
+You can still use `waifus init ~/Discord-Waifus --repo https://github.com/HeavenllyDemon/Discord-Waifus` if you want to choose the target directory manually.
 
 ## Runtime Layout
 

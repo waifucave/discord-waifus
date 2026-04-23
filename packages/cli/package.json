@@ -1,18 +1,18 @@
 {
   "name": "@starlight-ai/discord-waifus",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": false,
   "description": "Global CLI for running the Discord Waifus local orchestration stack",
   "license": "MIT",
   "type": "module",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/waifucave/discord-waifus.git",
+    "url": "git+https://github.com/HeavenllyDemon/Discord-Waifus.git",
     "directory": "packages/cli"
   },
-  "homepage": "https://github.com/waifucave/discord-waifus/tree/main/packages/cli",
+  "homepage": "https://github.com/HeavenllyDemon/Discord-Waifus/tree/main/packages/cli",
   "bugs": {
-    "url": "https://github.com/waifucave/discord-waifus/issues"
+    "url": "https://github.com/HeavenllyDemon/Discord-Waifus/issues"
   },
   "bin": {
     "waifus": "dist/index.js"

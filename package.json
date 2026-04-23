@@ -3,11 +3,11 @@
   "private": true,
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/waifucave/discord-waifus.git"
+    "url": "git+https://github.com/HeavenllyDemon/Discord-Waifus.git"
   },
-  "homepage": "https://github.com/waifucave/discord-waifus",
+  "homepage": "https://github.com/HeavenllyDemon/Discord-Waifus",
   "bugs": {
-    "url": "https://github.com/waifucave/discord-waifus/issues"
+    "url": "https://github.com/HeavenllyDemon/Discord-Waifus/issues"
   },
   "packageManager": "pnpm@10.0.0",
   "scripts": {
