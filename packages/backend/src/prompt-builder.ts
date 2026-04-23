@@ -162,6 +162,9 @@ export class PromptBuilder {
       "This is not a personality rewrite and not a long paragraph.",
       "Keep it short, concrete, and immediately actionable. One short sentence is usually enough.",
       "When referring to a specific user inside sceneDirection, use that user's actual name from chat history. Do not write generic phrases like \"the user\" when a specific person is meant.",
+      "Name the intended participants explicitly when the direction involves more than one person.",
+      "Do not use ambiguous group references like \"us\", \"them\", \"everyone\", or implied membership when specific names can be given.",
+      "If the beat is about including or excluding someone, state exactly who is already involved and who should be pulled in.",
       "sceneDirection does not always need to follow the current mood or flow exactly. It may deliberately start something new when that will improve the scene.",
       "Use natural bridges when pivoting when possible.",
       "If multiple waifus respond, each one may receive a different sceneDirection.",
@@ -216,10 +219,8 @@ export class PromptBuilder {
     waifu: WaifuConfig,
     context: PromptBuildContext,
     replyStyle: RespondingWaifuDecision["replyStyle"],
-    sceneDirection: string | null,
     baseSystemPrompt?: string | null
   ): string {
-    const normalizedSceneDirection = sceneDirection?.trim() ? sceneDirection.trim() : null;
     const relationshipLines = buildRenderedRelationshipLines(waifu, context);
     const memoryLines = (context.stageStateByWaifuId?.[waifu.id]?.memories ?? [])
       .slice()
@@ -307,24 +308,6 @@ export class PromptBuilder {
         ].join("\n")
     ];
 
-    if (normalizedSceneDirection) {
-      promptSections.push(
-        [
-          "## Scene Direction Handling",
-          "Treat the scene direction as an invisible director note for this turn only.",
-          "Follow it while staying fully in character.",
-          "Do not mention the existence of the direction or reveal that you were instructed.",
-          "If it asks for a pivot, bridge naturally from the existing conversation when possible.",
-          "Do not follow it in a way that breaks your identity or creates an obviously unnatural non sequitur unless the direction deliberately calls for a hard interruption.",
-          "Even when following the direction, keep the reply grounded as a Discord chat message unless the transcript clearly establishes in-person co-presence.",
-          "Do not introduce Unicode emoji even if the direction implies a playful or emotional tone.",
-          "",
-          "## Scene Direction For This Turn",
-          normalizedSceneDirection
-        ].join("\n")
-      );
-    }
-
     return promptSections.join("\n\n");
   }
 
@@ -361,14 +344,19 @@ export class PromptBuilder {
 
   buildWaifuReplyCue(
     waifu: WaifuConfig,
-    replyToMessage: Pick<FormattedMessage, "content" | "authorDisplayName"> | null = null
+    replyToMessage: Pick<FormattedMessage, "content" | "authorDisplayName"> | null = null,
+    sceneDirection: string | null = null
   ): ChatMessage {
+    const normalizedSceneDirection = sceneDirection?.trim() ? sceneDirection.trim() : null;
     const replyTargetInstruction = replyToMessage
       ? ` Reply to "${replyToMessage.content}" by ${replyToMessage.authorDisplayName}.`
       : "";
+    const sceneDirectionInstruction = normalizedSceneDirection
+      ? ` Scene direction for this turn only: ${normalizedSceneDirection} Follow it while staying fully in character. Do not mention the existence of the direction or reveal that you were instructed. If it asks for a pivot, bridge naturally from the existing conversation when possible. Do not follow it in a way that breaks your identity or creates an obviously unnatural non sequitur unless the direction deliberately calls for a hard interruption. When the direction names specific participants, preserve that social geometry instead of replacing it with vaguer group wording. Do not reinterpret ambiguous group membership on your own; stay faithful to the named participants and who is already present in the scene. Keep the reply grounded as a Discord chat message unless the transcript clearly establishes in-person co-presence. Do not introduce Unicode emoji even if the direction implies a playful or emotional tone.`
+      : "";
     return {
       role: "user",
-      content: `Continue the conversation as ${waifu.name}.${replyTargetInstruction} Write only one concise Discord message with no prefix and no Unicode emoji.`
+      content: `Continue the conversation as ${waifu.name}.${replyTargetInstruction}${sceneDirectionInstruction} Write only one concise Discord message with no prefix and no Unicode emoji.`
     };
   }
 

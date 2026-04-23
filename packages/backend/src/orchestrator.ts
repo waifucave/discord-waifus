@@ -554,7 +554,6 @@ export class Orchestrator {
         waifu,
         refreshedPromptContext,
         responseDecision.replyStyle,
-        responseDecision.sceneDirection,
         waifu.ai.systemPromptOverride
       );
       const replyToMessage =
@@ -570,7 +569,11 @@ export class Orchestrator {
           content: waifuSystemPrompt
         },
         ...this.promptBuilder.buildWaifuTranscriptMessages(refreshedPromptContext),
-        this.promptBuilder.buildWaifuReplyCue(waifu, replyToMessage)
+        this.promptBuilder.buildWaifuReplyCue(
+          waifu,
+          replyToMessage,
+          responseDecision.sceneDirection
+        )
       ];
 
       const completion = await this.aiRouter.complete({
