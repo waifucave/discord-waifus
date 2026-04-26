@@ -19,6 +19,7 @@ import {
 import { Logger } from "./utils/logger.js";
 
 type TriggerType = "message" | "idle" | "waifu_followup";
+type RunOutcome = "started" | "skipped_active" | "skipped_ineligible" | "skipped_unavailable";
 
 interface TriggerContext {
   channelId: string;
@@ -37,6 +38,9 @@ interface ActiveGeneration {
 }
 
 const WAIFU_CONTEXT_REFRESH_HEADSTART_MS = 1_000;
+const RETRIGGER_OVERLAP_RETRY_SECONDS = 15;
+const RETRIGGER_FAILURE_RETRY_SECONDS = 30;
+const RETRIGGER_UNAVAILABLE_RETRY_SECONDS = 30;
 
 export class Orchestrator {
   private readonly logger = new Logger("Orchestrator");
@@ -127,20 +131,20 @@ export class Orchestrator {
     }
   }
 
-  private async run(triggerContext: TriggerContext): Promise<void> {
+  private async run(triggerContext: TriggerContext): Promise<RunOutcome> {
     if (this.activeGenerations.has(triggerContext.channelId)) {
       this.logger.info("Skipping overlapping orchestration run", {
         channelId: triggerContext.channelId,
         trigger: triggerContext.trigger
       });
-      return;
+      return "skipped_active";
     }
 
     const channelConfig = this.configManager.channels.find(
       (entry) => entry.channelId === triggerContext.channelId && entry.enabled
     );
     if (!channelConfig) {
-      return;
+      return "skipped_ineligible";
     }
 
     if (
@@ -151,7 +155,7 @@ export class Orchestrator {
         channelId: triggerContext.channelId
       });
       this.scheduleRetrigger(triggerContext.channelId, 60);
-      return;
+      return "started";
     }
 
     const activeState: ActiveGeneration = {
@@ -161,164 +165,180 @@ export class Orchestrator {
     };
     this.activeGenerations.set(triggerContext.channelId, activeState);
 
-    const channel = await this.resolveChannel(channelConfig);
-    if (!channel) {
-      this.logger.warn("No text channel available for orchestration", {
-        channelId: triggerContext.channelId
-      });
-      this.clearActiveGenerationIfCurrent(triggerContext.channelId, activeState);
-      return;
-    }
-
-    const activeWaifus = this.getActiveWaifus(channelConfig);
-    if (activeWaifus.length === 0) {
-      this.clearActiveGenerationIfCurrent(triggerContext.channelId, activeState);
-      return;
-    }
-
-    const messages = await this.messageHandler.fetchContext(
-      channel,
-      channelConfig.contextMessageCount ?? 80,
-      channelConfig.contextAnchorMessageId ?? null
-    );
-    const promptContext: PromptBuildContext = {
-      activeWaifus,
-      knownWaifus: this.configManager.waifus,
-      messages,
-      channel: channelConfig,
-      availableServerEmojis: (
-        await this.botManager.getAvailableGuildEmojis(channelConfig.guildId)
-      ).slice(0, 40),
-      currentTimeUTC: new Date().toISOString(),
-      consecutiveWaifuMessages: triggerContext.consecutiveWaifuMessages,
-      trigger: triggerContext.trigger,
-      lastSpeakerWaifuId: triggerContext.lastSpeakerWaifuId ?? null,
-      stageStateByWaifuId: this.buildStageStateByWaifuId(activeWaifus, channelConfig)
-    };
-
-    let decision: OrchestratorDecision;
     try {
-      decision = await this.getDecision(
-        promptContext,
-        triggerContext.channelId,
-        activeState.abortController.signal
-      );
-      this.throwIfAborted(activeState.abortController.signal);
-    } catch (error) {
-      if (error instanceof AIRouterAbortError || isAbortError(error)) {
-        this.logger.info("Decision generation cancelled", {
+      const channel = await this.resolveChannel(channelConfig);
+      if (!channel) {
+        this.logger.warn("No text channel available for orchestration", {
           channelId: triggerContext.channelId
         });
-        this.clearActiveGenerationIfCurrent(triggerContext.channelId, activeState);
-        return;
+        return "skipped_unavailable";
       }
 
-      this.logger.error("Failed to generate orchestrator decision", {
+      const activeWaifus = this.getActiveWaifus(channelConfig);
+      if (activeWaifus.length === 0) {
+        return "skipped_ineligible";
+      }
+
+      const messages = await this.messageHandler.fetchContext(
+        channel,
+        channelConfig.contextMessageCount ?? 80,
+        channelConfig.contextAnchorMessageId ?? null
+      );
+      const promptContext: PromptBuildContext = {
+        activeWaifus,
+        knownWaifus: this.configManager.waifus,
+        messages,
+        channel: channelConfig,
+        availableServerEmojis: (
+          await this.botManager.getAvailableGuildEmojis(channelConfig.guildId)
+        ).slice(0, 40),
+        currentTimeUTC: new Date().toISOString(),
+        consecutiveWaifuMessages: triggerContext.consecutiveWaifuMessages,
+        trigger: triggerContext.trigger,
+        lastSpeakerWaifuId: triggerContext.lastSpeakerWaifuId ?? null,
+        stageStateByWaifuId: this.buildStageStateByWaifuId(activeWaifus, channelConfig)
+      };
+
+      let decision: OrchestratorDecision;
+      try {
+        decision = await this.getDecision(
+          promptContext,
+          triggerContext.channelId,
+          activeState.abortController.signal
+        );
+        this.throwIfAborted(activeState.abortController.signal);
+      } catch (error) {
+        if (error instanceof AIRouterAbortError || isAbortError(error)) {
+          this.logger.info("Decision generation cancelled", {
+            channelId: triggerContext.channelId
+          });
+          return "started";
+        }
+
+        this.logger.error("Failed to generate orchestrator decision", {
+          channelId: triggerContext.channelId,
+          error
+        });
+        this.events?.emit("generation:cancelled", {
+          channelId: triggerContext.channelId,
+          reason: "Orchestrator failure"
+        });
+        this.scheduleRetrigger(triggerContext.channelId, RETRIGGER_FAILURE_RETRY_SECONDS);
+        return "started";
+      }
+      this.events?.emit("orchestrator:decision", {
         channelId: triggerContext.channelId,
+        action: decision.action,
+        respondingWaifus: decision.respondingWaifus.map((entry) => ({
+          waifuId: entry.waifuId,
+          delaySeconds: entry.delaySeconds,
+          replyStyle: entry.replyStyle,
+          sceneDirection: entry.sceneDirection
+        })),
+        directInteraction: decision.directInteraction
+          ? {
+              waifuId: decision.directInteraction.waifuId,
+              delaySeconds: decision.directInteraction.delaySeconds,
+              emoji: decision.directInteraction.emoji
+            }
+          : null,
+        reasoning: decision.reasoning,
+        retriggerAfterSeconds: decision.retriggerAfterSeconds,
+        timestamp: new Date().toISOString()
+      });
+
+      const hasVisibleOutput =
+        decision.directInteraction !== null || decision.respondingWaifus.length > 0;
+      if (!hasVisibleOutput) {
+        if (triggerContext.allowNoReply && decision.retriggerAfterSeconds) {
+          this.scheduleRetrigger(triggerContext.channelId, decision.retriggerAfterSeconds);
+        }
+        return "started";
+      }
+
+      this.clearRetrigger(triggerContext.channelId);
+
+      try {
+        let lastSpeakerWaifuId: string | null = null;
+        // Preserve the existing sequential reply semantics. The emoji-only direct interaction,
+        // when present, runs before the normal respondingWaifus loop rather than introducing
+        // a global scheduler that would change current reply ordering behavior.
+        if (decision.directInteraction) {
+          this.throwIfAborted(activeState.abortController.signal);
+          activeState.phase = "delay";
+          activeState.waifuId = decision.directInteraction.waifuId;
+          lastSpeakerWaifuId = await this.executeDirectInteraction({
+            channel,
+            channelConfig,
+            directInteraction: decision.directInteraction,
+            activeState
+          });
+        }
+
+        for (const responseDecision of decision.respondingWaifus) {
+          this.throwIfAborted(activeState.abortController.signal);
+          activeState.phase = "delay";
+          activeState.waifuId = responseDecision.waifuId;
+          lastSpeakerWaifuId = await this.executeResponse({
+            channel,
+            channelConfig,
+            promptContext,
+            responseDecision,
+            activeState
+          });
+        }
+
+        if (activeState.pendingUserRerun) {
+          this.clearActiveGenerationIfCurrent(triggerContext.channelId, activeState);
+          this.consecutiveWaifuMessages.set(channel.id, 0);
+          await this.run({
+            channelId: channel.id,
+            trigger: "message",
+            consecutiveWaifuMessages: 0,
+            allowNoReply: true
+          });
+          return "started";
+        }
+
+        if (lastSpeakerWaifuId) {
+          const nextCount = this.consecutiveWaifuMessages.get(channel.id) ?? 0;
+          this.clearActiveGenerationIfCurrent(triggerContext.channelId, activeState);
+          await sleep(500, undefined, { signal: activeState.abortController.signal });
+          await this.run({
+            channelId: channel.id,
+            trigger: "waifu_followup",
+            lastSpeakerWaifuId,
+            consecutiveWaifuMessages: nextCount,
+            allowNoReply: true
+          });
+        }
+
+        return "started";
+      } catch (error) {
+        if (error instanceof AIRouterAbortError || isAbortError(error)) {
+          this.logger.info("Generation cancelled", { channelId: triggerContext.channelId });
+          return "started";
+        }
+        throw error;
+      }
+    } catch (error) {
+      if (error instanceof AIRouterAbortError || isAbortError(error)) {
+        this.logger.info("Generation cancelled", { channelId: triggerContext.channelId });
+        return "started";
+      }
+
+      this.logger.error("Orchestration run failed", {
+        channelId: triggerContext.channelId,
+        trigger: triggerContext.trigger,
         error
       });
       this.events?.emit("generation:cancelled", {
         channelId: triggerContext.channelId,
+        waifuId: activeState.waifuId,
         reason: "Orchestrator failure"
       });
-      this.scheduleRetrigger(triggerContext.channelId, 30);
-      this.clearActiveGenerationIfCurrent(triggerContext.channelId, activeState);
-      return;
-    }
-    this.events?.emit("orchestrator:decision", {
-      channelId: triggerContext.channelId,
-      action: decision.action,
-      respondingWaifus: decision.respondingWaifus.map((entry) => ({
-        waifuId: entry.waifuId,
-        delaySeconds: entry.delaySeconds,
-        replyStyle: entry.replyStyle,
-        sceneDirection: entry.sceneDirection
-      })),
-      directInteraction: decision.directInteraction
-        ? {
-            waifuId: decision.directInteraction.waifuId,
-            delaySeconds: decision.directInteraction.delaySeconds,
-            emoji: decision.directInteraction.emoji
-          }
-        : null,
-      reasoning: decision.reasoning,
-      retriggerAfterSeconds: decision.retriggerAfterSeconds,
-      timestamp: new Date().toISOString()
-    });
-
-    const hasVisibleOutput =
-      decision.directInteraction !== null || decision.respondingWaifus.length > 0;
-    if (!hasVisibleOutput) {
-      if (triggerContext.allowNoReply && decision.retriggerAfterSeconds) {
-        this.scheduleRetrigger(triggerContext.channelId, decision.retriggerAfterSeconds);
-      }
-      this.clearActiveGenerationIfCurrent(triggerContext.channelId, activeState);
-      return;
-    }
-
-    this.clearRetrigger(triggerContext.channelId);
-
-    try {
-      let lastSpeakerWaifuId: string | null = null;
-      // Preserve the existing sequential reply semantics. The emoji-only direct interaction,
-      // when present, runs before the normal respondingWaifus loop rather than introducing
-      // a global scheduler that would change current reply ordering behavior.
-      if (decision.directInteraction) {
-        this.throwIfAborted(activeState.abortController.signal);
-        activeState.phase = "delay";
-        activeState.waifuId = decision.directInteraction.waifuId;
-        lastSpeakerWaifuId = await this.executeDirectInteraction({
-          channel,
-          channelConfig,
-          directInteraction: decision.directInteraction,
-          activeState
-        });
-      }
-
-      for (const responseDecision of decision.respondingWaifus) {
-        this.throwIfAborted(activeState.abortController.signal);
-        activeState.phase = "delay";
-        activeState.waifuId = responseDecision.waifuId;
-        lastSpeakerWaifuId = await this.executeResponse({
-          channel,
-          channelConfig,
-          promptContext,
-          responseDecision,
-          activeState
-        });
-      }
-
-      if (activeState.pendingUserRerun) {
-        this.clearActiveGenerationIfCurrent(triggerContext.channelId, activeState);
-        this.consecutiveWaifuMessages.set(channel.id, 0);
-        await this.run({
-          channelId: channel.id,
-          trigger: "message",
-          consecutiveWaifuMessages: 0,
-          allowNoReply: true
-        });
-        return;
-      }
-
-      if (lastSpeakerWaifuId) {
-        const nextCount = this.consecutiveWaifuMessages.get(channel.id) ?? 0;
-        this.clearActiveGenerationIfCurrent(triggerContext.channelId, activeState);
-        await sleep(500, undefined, { signal: activeState.abortController.signal });
-        await this.run({
-          channelId: channel.id,
-          trigger: "waifu_followup",
-          lastSpeakerWaifuId,
-          consecutiveWaifuMessages: nextCount,
-          allowNoReply: true
-        });
-      }
-
-    } catch (error) {
-      if (error instanceof AIRouterAbortError || isAbortError(error)) {
-        this.logger.info("Generation cancelled", { channelId: triggerContext.channelId });
-        return;
-      }
-      throw error;
+      this.scheduleRetrigger(triggerContext.channelId, RETRIGGER_FAILURE_RETRY_SECONDS);
+      return "started";
     } finally {
       this.clearActiveGenerationIfCurrent(triggerContext.channelId, activeState);
     }
@@ -957,12 +977,42 @@ export class Orchestrator {
   private scheduleRetrigger(channelId: string, seconds: number): void {
     this.clearRetrigger(channelId);
     const timeout = setTimeout(() => {
+      if (this.retriggerTimers.get(channelId) !== timeout) {
+        return;
+      }
+
+      this.retriggerTimers.delete(channelId);
       void this.run({
         channelId,
         trigger: "idle",
         consecutiveWaifuMessages: this.consecutiveWaifuMessages.get(channelId) ?? 0,
         allowNoReply: false
-      });
+      })
+        .then((outcome) => {
+          const retryAfterSeconds =
+            outcome === "skipped_active"
+              ? RETRIGGER_OVERLAP_RETRY_SECONDS
+              : outcome === "skipped_unavailable"
+                ? RETRIGGER_UNAVAILABLE_RETRY_SECONDS
+                : null;
+          if (!retryAfterSeconds) {
+            return;
+          }
+
+          this.logger.info("Retrying orchestrator retrigger", {
+            channelId,
+            outcome,
+            retryAfterSeconds
+          });
+          this.scheduleRetrigger(channelId, retryAfterSeconds);
+        })
+        .catch((error) => {
+          this.logger.error("Scheduled orchestrator retrigger failed", {
+            channelId,
+            error
+          });
+          this.scheduleRetrigger(channelId, RETRIGGER_FAILURE_RETRY_SECONDS);
+        });
     }, seconds * 1_000);
     this.retriggerTimers.set(channelId, timeout);
   }

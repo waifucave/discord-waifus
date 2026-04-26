@@ -23,8 +23,17 @@ This repo uses a split runtime layout:
 ## Prerequisites
 
 - Node.js 20+
-- `pnpm` 10+
+- npm
 - 1 or more Discord bot applications
+
+For the global CLI flow, you do not need to install `pnpm` separately. The `waifus` CLI uses its bundled pnpm when it bootstraps, updates, builds, or runs the local stack.
+
+For source checkouts, use the repo-pinned package manager:
+
+```bash
+corepack enable
+pnpm install
+```
 
 ## Local URLs
 
@@ -63,7 +72,8 @@ waifus open
 
 On first run, `waifus` will:
 - download the latest GitHub Release bundle into `~/Discord-Waifus`
-- install runtime dependencies
+- verify the release checksum when the checksum asset is available
+- install runtime dependencies with the bundled pnpm
 - initialize the local `.waifus/` runtime
 - start the backend and dashboard
 
@@ -79,15 +89,19 @@ To refresh that downloaded copy later without losing `.waifus/`, run:
 waifus update
 ```
 
+During update, the CLI prints each long-running stage: resolving the GitHub Release, downloading the bundle, verifying the checksum, extracting, applying files, and installing runtime dependencies.
+
 You can still use `waifus init ~/Discord-Waifus --repo https://github.com/HeavenllyDemon/Discord-Waifus` if you want to choose the target directory manually, or `waifus init ~/Discord-Waifus --release app-v0.3.0` if you want a specific GitHub Release.
 
 ## Distribution Model
 
 - npm ships the small `waifus` installer/updater CLI
-- GitHub Releases ship the runnable app bundle as `discord-waifus-app.tar.gz`
+- GitHub Releases ship the source-free runnable app bundle as `discord-waifus-app.tar.gz`
 - GitHub source stays in this repository for development and docs
 
 That means app-only updates can go out through GitHub Releases without forcing a new npm publish every time.
+
+The release bundle is prebuilt, but it still installs runtime dependencies from npm using the bundle lockfile. The bundle does not include backend or dashboard source files.
 
 ## Runtime Layout
 
@@ -167,7 +181,7 @@ Important behavior:
 - `waifus doctor` validates the `defaults/` + `.waifus/` layout, build artifacts, and unresolved `env:` / `${...}` placeholders
 - `waifus init` downloads a prebuilt GitHub Release bundle into a fresh directory and registers it with the global CLI
 - `waifus init-config` bootstraps `.waifus/` from `defaults/`
-- `waifus update` first checks npm for a newer global CLI, updates it when available, then refreshes a release-bundle install from GitHub Releases, preserves local runtime data, and reinstalls runtime dependencies
+- `waifus update` first checks npm for a newer global CLI, updates it when available, then refreshes a release-bundle install from GitHub Releases, preserves `.waifus/`, `config/`, and `data/`, and reinstalls runtime dependencies
 - `waifus build` is only for source checkouts and local development; release-bundle installs should use `waifus update` instead
 - `waifus start/stop/restart/status/logs` manage local PM2-backed services
 - `waifus run backend` and `waifus run dashboard` run foreground services with the same fixed local env defaults used by PM2

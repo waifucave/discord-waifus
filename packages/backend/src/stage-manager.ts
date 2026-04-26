@@ -164,7 +164,13 @@ export class StageManager {
         : Math.max(0, this.configManager.stageManager.quietPeriodSeconds * 1_000);
     const runAt = new Date(Date.now() + delayMs).toISOString();
     const timer = setTimeout(() => {
-      void this.runChannel(channelId, reason);
+      void this.runChannel(channelId, reason).catch((error) => {
+        this.logger.error("Scheduled stage-manager run failed", {
+          channelId,
+          reason,
+          error
+        });
+      });
     }, delayMs);
 
     this.scheduledRuns.set(channelId, {

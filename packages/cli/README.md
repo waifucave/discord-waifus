@@ -4,8 +4,6 @@
 
 ## Install
 
-After publication:
-
 ```bash
 npm install -g @starlight-ai/discord-waifus
 ```
@@ -36,7 +34,7 @@ waifus
 waifus open
 ```
 
-On first run, `waifus` downloads the latest GitHub Release bundle into `~/Discord-Waifus`, saves that directory as the default project root, runs `pnpm install --prod --frozen-lockfile`, initializes local runtime files, and starts the local stack.
+On first run, `waifus` downloads the latest GitHub Release bundle into `~/Discord-Waifus`, verifies the checksum when available, saves that directory as the default project root, runs `pnpm install --prod --frozen-lockfile` with the bundled pnpm, initializes local runtime files, and starts the local stack.
 
 ### Refresh an existing release-bundle install
 
@@ -44,7 +42,7 @@ On first run, `waifus` downloads the latest GitHub Release bundle into `~/Discor
 waifus update
 ```
 
-`waifus update` downloads the latest GitHub Release bundle into the existing project root, preserves local runtime data such as `.waifus/`, reinstalls runtime dependencies, and restarts the stack if it was already running.
+`waifus update` downloads the latest GitHub Release bundle into the existing project root, preserves local runtime data such as `.waifus/`, reinstalls runtime dependencies, and restarts the stack if it was already running. It prints progress while resolving the release, downloading, verifying, extracting, applying files, and installing dependencies.
 
 ### Download from GitHub into a custom directory
 
