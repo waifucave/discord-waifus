@@ -285,7 +285,10 @@ export class AIRouter {
         }
 
         const data = JSON.parse(payload) as OpenAIStreamChunk;
-        const delta = data.choices?.[0]?.delta?.content;
+        const delta = normalizeStreamTextChunk(
+          content,
+          data.choices?.[0]?.delta?.content ?? data.choices?.[0]?.message?.content
+        );
         const nextFinishReason = data.choices?.[0]?.finish_reason;
         if (typeof delta === "string" && delta.length > 0) {
           content += delta;
@@ -339,7 +342,7 @@ export class AIRouter {
 
         const data = JSON.parse(payload) as AnthropicStreamEvent;
         if (data.type === "content_block_delta") {
-          const token = data.delta?.text;
+          const token = normalizeStreamTextChunk(content, data.delta?.text);
           if (typeof token === "string" && token.length > 0) {
             content += token;
             onToken(token);
@@ -499,6 +502,7 @@ interface OpenAIChatCompletionResponse {
 interface OpenAIStreamChunk {
   choices?: Array<{
     delta?: { content?: string };
+    message?: { content?: string };
     finish_reason?: string | null;
   }>;
 }
@@ -570,6 +574,14 @@ function toAnthropicToolChoice(toolChoice?: ToolChoice): unknown {
 
 function safeParseJson(input: string): unknown {
   return JSON.parse(input);
+}
+
+function normalizeStreamTextChunk(currentContent: string, incoming: string | undefined): string | undefined {
+  if (typeof incoming !== "string" || incoming.length === 0) {
+    return undefined;
+  }
+
+  return incoming.startsWith(currentContent) ? incoming.slice(currentContent.length) : incoming;
 }
 
 function formatAnthropicMessageContent(message: ChatMessage): string {
