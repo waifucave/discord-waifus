@@ -34,6 +34,11 @@ export interface GenerationStartEvent {
   channelId: string;
   waifuId: string;
   waifuName: string;
+  responseIndex: number;
+  replyStyle: "normal" | "short" | "long" | "sleepy";
+  delaySeconds: number;
+  replyToMessageId: string | null;
+  sceneDirection: string | null;
 }
 
 export interface GenerationTokenEvent {
@@ -49,6 +54,14 @@ export interface GenerationCompleteEvent {
   content: string;
   tokenCount: number;
   durationMs: number;
+  responseIndex: number;
+  messageId: string;
+  finishReason: string;
+  usage?: {
+    promptTokens: number;
+    completionTokens: number;
+  };
+  rawContent: string;
 }
 
 export interface GenerationCancelledEvent {

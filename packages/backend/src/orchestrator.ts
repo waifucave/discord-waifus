@@ -275,7 +275,7 @@ export class Orchestrator {
           });
         }
 
-        for (const responseDecision of decision.respondingWaifus) {
+        for (const [responseIndex, responseDecision] of decision.respondingWaifus.entries()) {
           this.throwIfAborted(activeState.abortController.signal);
           activeState.phase = "delay";
           activeState.waifuId = responseDecision.waifuId;
@@ -284,6 +284,7 @@ export class Orchestrator {
             channelConfig,
             promptContext,
             responseDecision,
+            responseIndex,
             activeState
           });
         }
@@ -397,8 +398,23 @@ export class Orchestrator {
     this.logger.info("Orchestrator decision received via tool call", {
       channelId,
       action: sanitizedDecision.action,
-      waifus: sanitizedDecision.respondingWaifus.map((entry) => entry.waifuId),
-      directInteractionWaifuId: sanitizedDecision.directInteraction?.waifuId ?? null
+      trigger: promptContext.trigger,
+      latestMessageId: promptContext.messages.at(-1)?.id ?? null,
+      latestMessageAuthor: promptContext.messages.at(-1)?.authorDisplayName ?? null,
+      responseCount: sanitizedDecision.respondingWaifus.length,
+      respondingWaifus: sanitizedDecision.respondingWaifus.map((entry, index) => ({
+        index,
+        waifuId: entry.waifuId,
+        delaySeconds: entry.delaySeconds,
+        replyStyle: entry.replyStyle,
+        shouldReact: entry.shouldReact,
+        reactionEmoji: entry.reactionEmoji,
+        replyToMessageId: entry.replyToMessageId ?? null,
+        sceneDirection: entry.sceneDirection
+      })),
+      directInteraction: sanitizedDecision.directInteraction,
+      reasoning: sanitizedDecision.reasoning,
+      retriggerAfterSeconds: sanitizedDecision.retriggerAfterSeconds
     });
     return sanitizedDecision;
   }
@@ -518,9 +534,10 @@ export class Orchestrator {
     channelConfig: ChannelConfig;
     promptContext: PromptBuildContext;
     responseDecision: RespondingWaifuDecision;
+    responseIndex: number;
     activeState: ActiveGeneration;
   }): Promise<string | null> {
-    const { channel, channelConfig, promptContext, responseDecision, activeState } = args;
+    const { channel, channelConfig, promptContext, responseDecision, responseIndex, activeState } = args;
     const waifu = this.configManager.waifus.find((entry) => entry.id === responseDecision.waifuId);
     if (!waifu) {
       this.logger.warn("Skipping unknown waifu in decision", {
@@ -554,7 +571,26 @@ export class Orchestrator {
     this.events?.emit("generation:start", {
       channelId: channel.id,
       waifuId: waifu.id,
-      waifuName: waifu.name
+      waifuName: waifu.name,
+      responseIndex,
+      replyStyle: responseDecision.replyStyle,
+      delaySeconds: responseDecision.delaySeconds,
+      replyToMessageId: responseDecision.replyToMessageId ?? null,
+      sceneDirection: responseDecision.sceneDirection
+    });
+    this.logger.info("Waifu generation started", {
+      channelId: channel.id,
+      waifuId: waifu.id,
+      waifuName: waifu.name,
+      responseIndex,
+      providerId: waifu.ai.providerId,
+      model: waifu.ai.model,
+      replyStyle: responseDecision.replyStyle,
+      delaySeconds: responseDecision.delaySeconds,
+      shouldReact: responseDecision.shouldReact,
+      reactionEmoji: responseDecision.reactionEmoji,
+      replyToMessageId: responseDecision.replyToMessageId ?? null,
+      sceneDirection: responseDecision.sceneDirection
     });
 
     try {
@@ -623,8 +659,12 @@ export class Orchestrator {
       this.logger.info("Waifu generation completed", {
         channelId: channel.id,
         waifuId: waifu.id,
+        responseIndex,
         finishReason: completion.finishReason,
-        usage: completion.usage
+        usage: completion.usage,
+        tokenCount,
+        rawContentLength: rawContent.length,
+        rawContent
       });
 
       const formattedContent = await this.formatOutboundContent(
@@ -633,14 +673,41 @@ export class Orchestrator {
         channelConfig.guildId
       );
       if (!formattedContent.trim() && !responseDecision.shouldReact) {
+        this.logger.info("Skipping empty waifu outbound message", {
+          channelId: channel.id,
+          waifuId: waifu.id,
+          responseIndex,
+          shouldReact: responseDecision.shouldReact,
+          rawContentLength: rawContent.length,
+          formattedContentLength: formattedContent.length
+        });
         return null;
       }
+
+      this.logger.info("Sending waifu outbound message", {
+        channelId: channel.id,
+        waifuId: waifu.id,
+        responseIndex,
+        replyToMessageId: responseDecision.replyToMessageId ?? null,
+        formattedContentLength: formattedContent.length,
+        formattedContent
+      });
 
       const outbound = await this.sendMessage({
         waifu,
         channel,
         content: formattedContent,
         responseDecision
+      });
+      this.logger.info("Waifu outbound message sent", {
+        channelId: channel.id,
+        waifuId: waifu.id,
+        responseIndex,
+        messageId: outbound.id,
+        replyToMessageId: outbound.reference?.messageId ?? null,
+        createdTimestamp: outbound.createdAt.toISOString(),
+        formattedContentLength: formattedContent.length,
+        formattedContent
       });
 
       if (responseDecision.shouldReact && responseDecision.reactionEmoji) {
@@ -674,7 +741,12 @@ export class Orchestrator {
         waifuId: waifu.id,
         content: formattedContent,
         tokenCount,
-        durationMs: Date.now() - startedAt
+        durationMs: Date.now() - startedAt,
+        responseIndex,
+        messageId: outbound.id,
+        finishReason: completion.finishReason,
+        usage: completion.usage,
+        rawContent
       });
 
       const nextCount = (this.consecutiveWaifuMessages.get(channel.id) ?? 0) + 1;

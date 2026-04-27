@@ -246,7 +246,12 @@ async function main(): Promise<void> {
       pushDebugEvent("generation.start", {
         channelId: payload.channelId,
         waifuId: payload.waifuId,
-        waifuName: payload.waifuName
+        waifuName: payload.waifuName,
+        responseIndex: payload.responseIndex,
+        replyStyle: payload.replyStyle,
+        delaySeconds: payload.delaySeconds,
+        replyToMessageId: payload.replyToMessageId,
+        sceneDirection: payload.sceneDirection
       });
     }
   );
@@ -259,8 +264,14 @@ async function main(): Promise<void> {
       pushDebugEvent("generation.complete", {
         channelId: payload.channelId,
         waifuId: payload.waifuId,
+        responseIndex: payload.responseIndex,
+        messageId: payload.messageId,
         tokenCount: payload.tokenCount,
-        durationMs: payload.durationMs
+        durationMs: payload.durationMs,
+        finishReason: payload.finishReason,
+        usage: payload.usage,
+        rawContent: payload.rawContent,
+        content: payload.content
       });
     }
   );
