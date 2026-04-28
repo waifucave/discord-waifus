@@ -66,9 +66,9 @@ export function StageManagerManager(): JSX.Element {
       <Panel className="p-6">
         <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div>
-            <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Memory Curator</p>
-            <h3 className="mt-2 font-display text-2xl">Stage Manager Settings</h3>
-            <p className="mt-2 text-sm text-slate-400">
+            <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-ink-subtle">Memory Curator</p>
+            <h3 className="mt-2 font-display text-lg font-semibold tracking-tight">Stage Manager Settings</h3>
+            <p className="mt-2 text-sm text-ink-muted">
               Quiet-period memory review with its own model and guild-scoped authored state.
             </p>
           </div>
@@ -278,7 +278,7 @@ export function StageManagerManager(): JSX.Element {
         <div className="mt-6 flex flex-wrap gap-2">
           <Badge>Effective provider: {effectiveProviderId || "orchestrator fallback"}</Badge>
           <Badge>Effective model: {effectiveModel || "orchestrator fallback"}</Badge>
-          <Badge className={!config.enabled ? "border-amber-400/30 text-amber-200" : undefined}>
+          <Badge className={!config.enabled ? "border-warn/25 bg-warn/[0.08] text-[rgb(252,211,77)]" : undefined}>
             {config.enabled ? "Guild-scoped state active" : "Disabled"}
           </Badge>
         </div>
@@ -286,15 +286,15 @@ export function StageManagerManager(): JSX.Element {
 
       <div className="grid min-h-0 gap-6 xl:grid-cols-[0.95fr_1.05fr]">
         <Panel className="flex min-h-0 flex-col p-6">
-          <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Guild Runtime</p>
-          <h3 className="mt-2 font-display text-2xl">Queues And Checkpoints</h3>
+          <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-ink-subtle">Guild Runtime</p>
+          <h3 className="mt-2 font-display text-lg font-semibold tracking-tight">Queues And Checkpoints</h3>
 
           <div className="mt-6 min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
             <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-              <p className="text-sm text-slate-400">Scheduled guild runs</p>
+              <p className="text-sm text-ink-muted">Scheduled guild runs</p>
               <div className="mt-3 space-y-2">
                 {runtime.scheduledGuilds.length === 0 ? (
-                  <p className="text-sm text-slate-400">No scheduled guild runs.</p>
+                  <p className="text-sm text-ink-muted">No scheduled guild runs.</p>
                 ) : (
                   runtime.scheduledGuilds.map((entry) => (
                     <div
@@ -302,9 +302,9 @@ export function StageManagerManager(): JSX.Element {
                       className="rounded-2xl border border-white/10 px-3 py-2 text-sm"
                     >
                       <p>{entry.guildId}</p>
-                      <p className="text-slate-400">{entry.reason}</p>
-                      <p className="text-slate-400">{formatTime(entry.runAt)}</p>
-                      <p className="text-xs text-slate-500">{entry.channelIds.join(", ")}</p>
+                      <p className="text-ink-muted">{entry.reason}</p>
+                      <p className="text-ink-muted">{formatTime(entry.runAt)}</p>
+                      <p className="text-xs text-ink-subtle">{entry.channelIds.join(", ")}</p>
                     </div>
                   ))
                 )}
@@ -312,35 +312,35 @@ export function StageManagerManager(): JSX.Element {
             </div>
 
             <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-              <p className="text-sm text-slate-400">Runtime markers</p>
+              <p className="text-sm text-ink-muted">Runtime markers</p>
               <div className="mt-3 flex flex-wrap gap-2">
                 {runtime.runningGuilds.map((guildId) => (
                   <Badge key={`running-${guildId}`}>Running: {guildId}</Badge>
                 ))}
                 {runtime.dirtyGuilds.map((guildId) => (
-                  <Badge key={`dirty-${guildId}`} className="border-amber-400/30 text-amber-200">
+                  <Badge key={`dirty-${guildId}`} className="border-warn/25 bg-warn/[0.08] text-[rgb(252,211,77)]">
                     Dirty: {guildId}
                   </Badge>
                 ))}
                 {runtime.runningGuilds.length === 0 && runtime.dirtyGuilds.length === 0 ? (
-                  <p className="text-sm text-slate-400">No guilds are queued or running.</p>
+                  <p className="text-sm text-ink-muted">No guilds are queued or running.</p>
                 ) : null}
               </div>
             </div>
 
             <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-              <p className="text-sm text-slate-400">Guild checkpoints</p>
+              <p className="text-sm text-ink-muted">Guild checkpoints</p>
               <div className="mt-3 space-y-2">
                 {state.guilds.length === 0 ? (
-                  <p className="text-sm text-slate-400">No guild state yet.</p>
+                  <p className="text-sm text-ink-muted">No guild state yet.</p>
                 ) : (
                   state.guilds.map((guild) => (
                     <div key={guild.guildId} className="rounded-2xl border border-white/10 px-3 py-2 text-sm">
                       <p>{guild.guildId}</p>
-                      <p className="text-slate-400">
+                      <p className="text-ink-muted">
                         Last run: {guild.checkpoint.lastRunAt ? formatTime(guild.checkpoint.lastRunAt) : "never"}
                       </p>
-                      <p className="text-slate-400">
+                      <p className="text-ink-muted">
                         Checkpoint: {guild.checkpoint.lastProcessedMessageId ?? "none"}
                       </p>
                     </div>
@@ -351,14 +351,14 @@ export function StageManagerManager(): JSX.Element {
 
             {lastRun ? (
               <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-                <p className="text-sm text-slate-400">Last manual run</p>
-                <div className="mt-3 space-y-2 text-sm text-slate-200">
+                <p className="text-sm text-ink-muted">Last manual run</p>
+                <div className="mt-3 space-y-2 text-sm text-ink">
                   <p>Messages reviewed: {lastRun.messageCount}</p>
                   <p>New messages: {lastRun.newMessageCount}</p>
                   <p>Relationship updates: {lastRun.applied.relationshipUpdateCount}</p>
                   <p>Memory updates: {lastRun.applied.memoryUpdateCount}</p>
                   <p>Fallback model: {lastRun.usedFallbackModel ? "yes" : "no"}</p>
-                  <p className="text-slate-400">{lastRun.decision.reasoning || "No reasoning returned."}</p>
+                  <p className="text-ink-muted">{lastRun.decision.reasoning || "No reasoning returned."}</p>
                 </div>
               </div>
             ) : null}
@@ -366,8 +366,8 @@ export function StageManagerManager(): JSX.Element {
         </Panel>
 
         <Panel className="flex min-h-0 flex-col p-6">
-          <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Guild Detail</p>
-          <h3 className="mt-2 font-display text-2xl">
+          <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-ink-subtle">Guild Detail</p>
+          <h3 className="mt-2 font-display text-lg font-semibold tracking-tight">
             {selectedGuild ? `Relationships And Memories: ${selectedGuild.guildId}` : "Relationships And Memories"}
           </h3>
 
@@ -389,7 +389,7 @@ export function StageManagerManager(): JSX.Element {
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <p className="font-medium">Source channels</p>
-                      <p className="text-sm text-slate-400">
+                      <p className="text-sm text-ink-muted">
                         Stage Manager runs once per guild and uses these channels as sources.
                       </p>
                     </div>
@@ -399,8 +399,8 @@ export function StageManagerManager(): JSX.Element {
                     {selectedGuild.channels.map((channel) => (
                       <div key={channel.channelId} className="rounded-2xl border border-white/10 px-3 py-2 text-sm">
                         <p>{channel.channelName}</p>
-                        <p className="text-slate-400">{channel.channelId}</p>
-                        <p className="text-xs text-slate-500">
+                        <p className="text-ink-muted">{channel.channelId}</p>
+                        <p className="text-xs text-ink-subtle">
                           Active waifus: {channel.activeWaifuIds.join(", ") || "none"}
                         </p>
                       </div>
@@ -413,7 +413,7 @@ export function StageManagerManager(): JSX.Element {
                     <div className="flex items-center justify-between gap-3">
                       <div>
                         <p className="font-medium">{waifu.displayName}</p>
-                        <p className="text-sm text-slate-400">{waifu.waifuId}</p>
+                        <p className="text-sm text-ink-muted">{waifu.waifuId}</p>
                       </div>
                       <div className="flex gap-2">
                         <Badge>{waifu.relationships.length} relationships</Badge>
@@ -423,10 +423,10 @@ export function StageManagerManager(): JSX.Element {
 
                     <div className="mt-4 grid gap-4 lg:grid-cols-2">
                       <div>
-                        <p className="text-xs uppercase tracking-[0.28em] text-slate-400">Relationships</p>
+                        <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-ink-subtle">Relationships</p>
                         <div className="mt-3 space-y-2">
                           {waifu.relationships.length === 0 ? (
-                            <p className="text-sm text-slate-400">None saved.</p>
+                            <p className="text-sm text-ink-muted">None saved.</p>
                           ) : (
                             waifu.relationships.map((entry) => (
                               <div
@@ -434,8 +434,8 @@ export function StageManagerManager(): JSX.Element {
                                 className="rounded-2xl border border-white/10 px-3 py-2 text-sm"
                               >
                                 <p className="font-medium">{entry.targetName}</p>
-                                <p className="mt-1 text-slate-300">{entry.relationship}</p>
-                                <p className="mt-1 text-xs text-slate-400">
+                                <p className="mt-1 text-ink-muted">{entry.relationship}</p>
+                                <p className="mt-1 text-xs text-ink-muted">
                                   {entry.participantKey} · {formatTime(entry.updatedAt)}
                                 </p>
                               </div>
@@ -445,10 +445,10 @@ export function StageManagerManager(): JSX.Element {
                       </div>
 
                       <div>
-                        <p className="text-xs uppercase tracking-[0.28em] text-slate-400">Memories</p>
+                        <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-ink-subtle">Memories</p>
                         <div className="mt-3 space-y-2">
                           {waifu.memories.length === 0 ? (
-                            <p className="text-sm text-slate-400">None saved.</p>
+                            <p className="text-sm text-ink-muted">None saved.</p>
                           ) : (
                             waifu.memories.map((entry) => (
                               <div
@@ -456,8 +456,8 @@ export function StageManagerManager(): JSX.Element {
                                 className="rounded-2xl border border-white/10 px-3 py-2 text-sm"
                               >
                                 <p className="font-medium">Slot {entry.slot}</p>
-                                <p className="mt-1 text-slate-300">{entry.note}</p>
-                                <p className="mt-1 text-xs text-slate-400">{formatTime(entry.updatedAt)}</p>
+                                <p className="mt-1 text-ink-muted">{entry.note}</p>
+                                <p className="mt-1 text-xs text-ink-muted">{formatTime(entry.updatedAt)}</p>
                               </div>
                             ))
                           )}
@@ -468,13 +468,13 @@ export function StageManagerManager(): JSX.Element {
                 ))}
 
                 {selectedGuild.waifus.length === 0 ? (
-                  <div className="rounded-2xl border border-dashed border-white/15 px-4 py-8 text-center text-sm text-slate-400">
+                  <div className="rounded-2xl border border-dashed border-white/15 px-4 py-8 text-center text-sm text-ink-muted">
                     No authored Stage Manager data for this guild yet.
                   </div>
                 ) : null}
               </>
             ) : (
-              <div className="rounded-2xl border border-dashed border-white/15 px-4 py-8 text-center text-sm text-slate-400">
+              <div className="rounded-2xl border border-dashed border-white/15 px-4 py-8 text-center text-sm text-ink-muted">
                 No guild state available.
               </div>
             )}

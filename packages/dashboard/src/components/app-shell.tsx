@@ -1,20 +1,60 @@
+"use client";
+
 import type { ReactNode } from "react";
 import Link from "next/link";
-import { BookOpen, Bot, Bug, Home, RadioTower, Settings2, SlidersHorizontal, Theater, WandSparkles } from "lucide-react";
+import {
+  BookOpen,
+  Bot,
+  Bug,
+  Home,
+  RadioTower,
+  Settings2,
+  SlidersHorizontal,
+  Sparkles,
+  Theater,
+  WandSparkles
+} from "lucide-react";
 import { StatusBeacon } from "./status-beacon";
 import { cn } from "@/lib/utils";
 
-const links = [
-  { href: "/", label: "Overview", icon: Home },
-  { href: "/orchestrator", label: "Orchestrator", icon: Theater },
-  { href: "/waifus", label: "Waifus", icon: Bot },
-  { href: "/stage-manager", label: "Stage Manager", icon: WandSparkles },
-  { href: "/providers", label: "Providers", icon: SlidersHorizontal },
-  { href: "/channels", label: "Channels", icon: Settings2 },
-  { href: "/live", label: "Live", icon: RadioTower },
-  { href: "/debug", label: "Debug", icon: Bug },
-  { href: "/instructions", label: "Instructions", icon: BookOpen }
+type NavItem = {
+  href: string;
+  label: string;
+  icon: React.ComponentType<{ className?: string }>;
+  description?: string;
+};
+
+const navSections: Array<{ heading: string; items: NavItem[] }> = [
+  {
+    heading: "Workspace",
+    items: [
+      { href: "/", label: "Overview", icon: Home, description: "At-a-glance fleet health" }
+    ]
+  },
+  {
+    heading: "Configure",
+    items: [
+      { href: "/orchestrator", label: "Orchestrator", icon: Theater, description: "Who speaks next" },
+      { href: "/waifus", label: "Waifus", icon: Bot, description: "Identities & personas" },
+      { href: "/stage-manager", label: "Stage Manager", icon: WandSparkles, description: "Memory curation" },
+      { href: "/providers", label: "Providers", icon: SlidersHorizontal, description: "AI routes" },
+      { href: "/channels", label: "Channels", icon: Settings2, description: "Discord rooms" }
+    ]
+  },
+  {
+    heading: "Observe",
+    items: [
+      { href: "/live", label: "Live", icon: RadioTower, description: "Realtime feed" },
+      { href: "/debug", label: "Debug", icon: Bug, description: "Runtime snapshot" }
+    ]
+  },
+  {
+    heading: "Help",
+    items: [{ href: "/instructions", label: "Instructions", icon: BookOpen, description: "Setup guide" }]
+  }
 ];
+
+const flatNav = navSections.flatMap((section) => section.items);
 
 export function AppShell({
   pathname,
@@ -23,50 +63,86 @@ export function AppShell({
   pathname: string;
   children: ReactNode;
 }): JSX.Element {
+  const active = flatNav.find((link) => link.href === pathname);
+
   return (
     <div className="min-h-screen">
-      <div className="mx-auto grid h-screen max-w-[1600px] grid-cols-1 gap-6 overflow-hidden px-4 py-6 lg:grid-cols-[280px_minmax(0,1fr)]">
-        <aside className="glass app-grid flex min-h-0 flex-col rounded-[32px] border border-white/10 px-6 py-7">
-          <div className="mb-10">
-            <p className="text-xs uppercase tracking-[0.4em] text-slate-400">Discord Waifus</p>
-            <h1 className="mt-3 font-display text-3xl font-semibold tracking-tight">Orchestrator</h1>
-            <p className="mt-3 text-sm text-slate-400">
-              Run the cast, tune the voices, and watch the room breathe.
-            </p>
+      <div className="mx-auto grid h-screen max-w-[1600px] grid-cols-1 gap-5 overflow-hidden px-4 py-5 lg:grid-cols-[260px_minmax(0,1fr)]">
+        <aside className="surface-raised flex min-h-0 flex-col overflow-hidden rounded-2xl">
+          <div className="flex items-center gap-2.5 px-5 pt-5">
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent/15 text-accent">
+              <Sparkles className="h-4 w-4" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-[11px] uppercase tracking-[0.18em] text-ink-subtle">
+                Discord Waifus
+              </p>
+              <p className="truncate font-display text-[13px] font-semibold text-ink">
+                Orchestrator
+              </p>
+            </div>
           </div>
 
-          <nav className="min-h-0 space-y-2 overflow-y-auto pr-1">
-            {links.map((link) => {
-              const Icon = link.icon;
-              const active = pathname === link.href;
-              return (
-                <Link
-                  key={link.href}
-                  href={link.href}
-                  className={cn(
-                    "flex items-center gap-3 rounded-2xl px-4 py-3 text-sm transition",
-                    active
-                      ? "bg-accent/15 text-white"
-                      : "text-slate-300 hover:bg-white/5 hover:text-white"
-                  )}
-                >
-                  <Icon className="h-4 w-4" />
-                  {link.label}
-                </Link>
-              );
-            })}
+          <nav className="mt-5 min-h-0 flex-1 space-y-5 overflow-y-auto px-3 pb-4">
+            {navSections.map((section) => (
+              <div key={section.heading}>
+                <p className="px-3 pb-1.5 text-[10px] font-semibold uppercase tracking-[0.2em] text-ink-subtle">
+                  {section.heading}
+                </p>
+                <ul className="space-y-0.5">
+                  {section.items.map((link) => {
+                    const Icon = link.icon;
+                    const isActive = pathname === link.href;
+                    return (
+                      <li key={link.href}>
+                        <Link
+                          href={link.href}
+                          className={cn(
+                            "group relative flex items-center gap-2.5 rounded-lg px-3 py-2 text-[13px] transition duration-150 ease-smooth",
+                            isActive
+                              ? "bg-white/[0.06] text-ink"
+                              : "text-ink-muted hover:bg-white/[0.03] hover:text-ink"
+                          )}
+                        >
+                          {isActive ? (
+                            <span className="absolute left-0 top-1/2 h-5 w-[2px] -translate-y-1/2 rounded-r bg-accent" />
+                          ) : null}
+                          <Icon
+                            className={cn(
+                              "h-4 w-4 shrink-0 transition",
+                              isActive ? "text-accent" : "text-ink-subtle group-hover:text-ink-muted"
+                            )}
+                          />
+                          <span className="truncate">{link.label}</span>
+                        </Link>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            ))}
           </nav>
+
+          <div className="border-t border-border-soft px-3 py-3">
+            <StatusBeacon />
+          </div>
         </aside>
 
-        <main className="flex min-h-0 flex-col gap-6 overflow-hidden">
-          <header className="flex flex-col gap-4 rounded-[32px] border border-white/10 bg-black/20 px-6 py-5 md:flex-row md:items-center md:justify-between">
-            <div>
-              <p className="text-xs uppercase tracking-[0.4em] text-slate-400">Control Room</p>
-              <h2 className="mt-2 font-display text-3xl font-semibold tracking-tight">
-                {links.find((link) => link.href === pathname)?.label ?? "Overview"}
-              </h2>
+        <main className="flex min-h-0 flex-col gap-5 overflow-hidden">
+          <header className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 text-xs text-ink-subtle">
+                <span>Dashboard</span>
+                <span className="text-ink-subtle/50">/</span>
+                <span className="text-ink-muted">{active?.label ?? "Overview"}</span>
+              </div>
+              <h1 className="mt-1 font-display text-2xl font-semibold tracking-tight text-ink">
+                {active?.label ?? "Overview"}
+              </h1>
+              {active?.description ? (
+                <p className="mt-1 text-[13px] text-ink-muted">{active.description}</p>
+              ) : null}
             </div>
-            <StatusBeacon />
           </header>
           <div className="min-h-0 flex-1 overflow-hidden">{children}</div>
         </main>

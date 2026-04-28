@@ -203,8 +203,8 @@ export function WaifuManager(): JSX.Element {
       <Panel className="flex min-h-0 flex-col p-5">
         <div className="flex items-center justify-between">
           <div>
-            <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Roster</p>
-            <h3 className="mt-2 font-display text-2xl">Waifu Cast</h3>
+            <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-ink-subtle">Roster</p>
+            <h3 className="mt-2 font-display text-lg font-semibold tracking-tight">Waifu Cast</h3>
           </div>
           <Button tone="ghost" onClick={() => void createDraft()} disabled={loadingTemplate}>
             <Plus className="mr-2 h-4 w-4" />
@@ -218,7 +218,7 @@ export function WaifuManager(): JSX.Element {
               key={waifu.waifu.id}
               className={`w-full rounded-2xl border px-4 py-3 text-left transition ${
                 selectedId === waifu.waifu.id
-                  ? "border-accent/70 bg-accent/10"
+                  ? "border-accent/40 bg-accent/[0.08]"
                   : "border-white/10 bg-white/5 hover:bg-white/10"
               }`}
               onClick={() => {
@@ -230,17 +230,17 @@ export function WaifuManager(): JSX.Element {
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <p className="font-medium">{waifu.waifu.displayName || waifu.waifu.name}</p>
-                  <p className="text-sm text-slate-400">
+                  <p className="text-sm text-ink-muted">
                     {waifu.waifu.personality.description || "No description yet"}
                   </p>
                 </div>
                 <Badge
                   className={
                     waifu.meta.isChatReady
-                      ? "border-emerald-400/30 text-emerald-200"
+                      ? "border-ok/25 bg-ok/[0.08] text-[rgb(110,231,183)]"
                       : waifu.meta.isDiscordReady
-                        ? "border-sky-400/30 text-sky-200"
-                        : "border-amber-400/30 text-amber-200"
+                        ? "border-accent/30 bg-accent/[0.08] text-[rgb(196,181,253)]"
+                        : "border-warn/25 bg-warn/[0.08] text-[rgb(252,211,77)]"
                   }
                 >
                   {waifu.meta.isChatReady
@@ -253,7 +253,7 @@ export function WaifuManager(): JSX.Element {
             </button>
           ))}
           {waifus.length === 0 ? (
-            <div className="rounded-2xl border border-dashed border-white/15 px-4 py-8 text-center text-sm text-slate-400">
+            <div className="rounded-2xl border border-dashed border-white/15 px-4 py-8 text-center text-sm text-ink-muted">
               No waifus saved yet.
             </div>
           ) : null}
@@ -280,16 +280,16 @@ export function WaifuManager(): JSX.Element {
       <Panel className="flex min-h-0 flex-col p-6">
         <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div>
-            <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Editor</p>
-            <h3 className="mt-2 font-display text-2xl">
+            <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-ink-subtle">Editor</p>
+            <h3 className="mt-2 font-display text-lg font-semibold tracking-tight">
               {selectedId ? draft.waifu.displayName || draft.waifu.name || "Waifu" : "New Waifu"}
             </h3>
             <div className="mt-3 flex flex-wrap gap-2">
               <Badge>{draft.meta.isDraft ? "Draft" : "Configured"}</Badge>
-              <Badge className={draft.meta.isDiscordReady ? "border-sky-400/30 text-sky-200" : undefined}>
+              <Badge className={draft.meta.isDiscordReady ? "border-accent/30 bg-accent/[0.08] text-[rgb(196,181,253)]" : undefined}>
                 {draft.meta.isDiscordReady ? "Discord Ready" : "Discord Incomplete"}
               </Badge>
-              <Badge className={draft.meta.isChatReady ? "border-emerald-400/30 text-emerald-200" : undefined}>
+              <Badge className={draft.meta.isChatReady ? "border-ok/25 bg-ok/[0.08] text-[rgb(110,231,183)]" : undefined}>
                 {draft.meta.isChatReady ? "Chat Ready" : "Chat Incomplete"}
               </Badge>
             </div>
@@ -308,12 +308,12 @@ export function WaifuManager(): JSX.Element {
 
         <div className="mt-4 flex flex-wrap gap-3">
           {draft.meta.runtimeValidationErrors.map((error) => (
-            <Badge key={error} className="border-amber-400/30 text-amber-200">
+            <Badge key={error} className="border-warn/25 bg-warn/[0.08] text-[rgb(252,211,77)]">
               {error}
             </Badge>
           ))}
           {draft.meta.migrationWarnings.map((warning) => (
-            <Badge key={`${warning.field}-${warning.message}`} className="border-amber-400/30 text-amber-200">
+            <Badge key={`${warning.field}-${warning.message}`} className="border-warn/25 bg-warn/[0.08] text-[rgb(252,211,77)]">
               {warning.field}: {warning.message}
             </Badge>
           ))}
@@ -369,7 +369,7 @@ export function WaifuManager(): JSX.Element {
                   value={draft.waifu.displayName}
                   onChange={(event) => updateWaifu({ displayName: event.target.value })}
                 />
-                <p className="text-sm text-slate-400">
+                <p className="text-sm text-ink-muted">
                   Discord guild nickname only. AI prompts always use the canonical Name, and DMs
                   still use the bot username rather than this nickname.
                 </p>
@@ -585,7 +585,7 @@ export function WaifuManager(): JSX.Element {
                     })
                   }
                 />
-                <p className="text-sm text-slate-400">
+                <p className="text-sm text-ink-muted">
                   Sent as provider-native repetition control when supported; ignored otherwise.
                 </p>
               </div>
@@ -732,7 +732,7 @@ export function WaifuManager(): JSX.Element {
                     </div>
                   ))}
                 {waifus.filter((waifu) => waifu.waifu.id !== draft.waifu.id).length === 0 ? (
-                  <p className="text-sm text-slate-400">No other waifus yet.</p>
+                  <p className="text-sm text-ink-muted">No other waifus yet.</p>
                 ) : null}
               </div>
             </Field>
@@ -753,7 +753,7 @@ export function WaifuManager(): JSX.Element {
                           <div className="flex items-start justify-between gap-3">
                             <div>
                               <p className="font-medium">{relationship.targetName}</p>
-                              <p className="text-xs text-slate-400">{relationship.participantKey}</p>
+                              <p className="text-xs text-ink-muted">{relationship.participantKey}</p>
                             </div>
                             <Button
                               tone="ghost"
@@ -783,7 +783,7 @@ export function WaifuManager(): JSX.Element {
                               }))
                             }
                           />
-                          <p className="mt-2 text-xs text-slate-400">
+                          <p className="mt-2 text-xs text-ink-muted">
                             {relationship.targetKind}
                             {relationship.targetUserId ? ` · user ${relationship.targetUserId}` : ""}
                             {relationship.targetWaifuId ? ` · waifu ${relationship.targetWaifuId}` : ""}
@@ -792,13 +792,13 @@ export function WaifuManager(): JSX.Element {
                         </div>
                       ))}
                       {guild.relationships.length === 0 ? (
-                        <p className="text-sm text-slate-400">No stage-manager relationships for this guild.</p>
+                        <p className="text-sm text-ink-muted">No stage-manager relationships for this guild.</p>
                       ) : null}
                     </div>
                   </div>
                 ))}
                 {draft.stageManager.guilds.length === 0 ? (
-                  <p className="text-sm text-slate-400">
+                  <p className="text-sm text-ink-muted">
                     No stage-manager-authored relationship data yet.
                   </p>
                 ) : null}
@@ -840,7 +840,7 @@ export function WaifuManager(): JSX.Element {
                           <div className="flex items-start justify-between gap-3">
                             <div>
                               <p className="font-medium">Slot {memory.slot}</p>
-                              <p className="text-xs text-slate-400">
+                              <p className="text-xs text-ink-muted">
                                 {memory.sourceMessageIds.length > 0
                                   ? `Sources: ${memory.sourceMessageIds.join(", ")}`
                                   : "No source message ids"}
@@ -872,17 +872,17 @@ export function WaifuManager(): JSX.Element {
                               }))
                             }
                           />
-                          <p className="mt-2 text-xs text-slate-400">Updated {memory.updatedAt}</p>
+                          <p className="mt-2 text-xs text-ink-muted">Updated {memory.updatedAt}</p>
                         </div>
                       ))}
                       {guild.memories.length === 0 ? (
-                        <p className="text-sm text-slate-400">No stage-manager memories for this guild.</p>
+                        <p className="text-sm text-ink-muted">No stage-manager memories for this guild.</p>
                       ) : null}
                     </div>
                   </div>
                 ))}
                 {draft.stageManager.guilds.length === 0 ? (
-                  <p className="text-sm text-slate-400">No stage-manager-authored memory data yet.</p>
+                  <p className="text-sm text-ink-muted">No stage-manager-authored memory data yet.</p>
                 ) : null}
               </div>
             </Field>
@@ -981,14 +981,14 @@ function UploadCard({
         </label>
       </div>
       {disabled ? (
-        <p className="mt-3 text-sm text-slate-400">Save the waifu once before uploading assets.</p>
+        <p className="mt-3 text-sm text-ink-muted">Save the waifu once before uploading assets.</p>
       ) : null}
       <div className="mt-4 overflow-hidden rounded-2xl border border-white/10 bg-black/20">
         {normalizedPreview ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img alt={title} src={normalizedPreview} className="h-40 w-full object-cover" />
         ) : (
-          <div className="flex h-40 items-center justify-center text-sm text-slate-400">
+          <div className="flex h-40 items-center justify-center text-sm text-ink-muted">
             No image uploaded
           </div>
         )}

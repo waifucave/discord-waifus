@@ -106,8 +106,8 @@ export function ProvidersManager(): JSX.Element {
       <Panel className="flex min-h-0 flex-col p-5">
         <div className="flex items-center justify-between">
           <div>
-            <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Providers</p>
-            <h3 className="mt-2 font-display text-2xl">AI Routes</h3>
+            <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-ink-subtle">Providers</p>
+            <h3 className="mt-2 font-display text-lg font-semibold tracking-tight">AI Routes</h3>
           </div>
           <Button
             tone="ghost"
@@ -126,7 +126,7 @@ export function ProvidersManager(): JSX.Element {
               key={provider.id}
               className={`w-full rounded-2xl border px-4 py-3 text-left ${
                 selectedId === provider.id
-                  ? "border-accent/70 bg-accent/10"
+                  ? "border-accent/40 bg-accent/[0.08]"
                   : "border-white/10 bg-white/5 hover:bg-white/10"
               }`}
               onClick={() => {
@@ -138,7 +138,7 @@ export function ProvidersManager(): JSX.Element {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="font-medium">{provider.name}</p>
-                  <p className="text-sm text-slate-400">{provider.baseUrl}</p>
+                  <p className="text-sm text-ink-muted">{provider.baseUrl}</p>
                 </div>
                 <div className="flex gap-2">
                   <Badge>{provider.isBuiltIn ? "Built-in" : "Custom"}</Badge>
@@ -153,8 +153,8 @@ export function ProvidersManager(): JSX.Element {
       <Panel className="flex min-h-0 flex-col p-6">
         <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div>
-            <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Editor</p>
-            <h3 className="mt-2 font-display text-2xl">{draft.name || "New Provider"}</h3>
+            <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-ink-subtle">Editor</p>
+            <h3 className="mt-2 font-display text-lg font-semibold tracking-tight">{draft.name || "New Provider"}</h3>
           </div>
           <div className="flex gap-3">
             <Button
@@ -282,14 +282,14 @@ export function ProvidersManager(): JSX.Element {
 
         <div className="mt-6 flex flex-wrap gap-2">
           <Badge>{draft.origin === "built-in" ? "Built-in seed" : "Custom provider"}</Badge>
-          <Badge className={draft.hasKey ? "border-emerald-400/30 text-emerald-200" : undefined}>
+          <Badge className={draft.hasKey ? "border-ok/25 bg-ok/[0.08] text-[rgb(110,231,183)]" : undefined}>
             {draft.authMode === "none" ? "Key not required" : draft.hasKey ? "Key configured" : "Key missing"}
           </Badge>
-          <Badge className={draft.isRuntimeCallable ? "border-emerald-400/30 text-emerald-200" : "border-amber-400/30 text-amber-200"}>
+          <Badge className={draft.isRuntimeCallable ? "border-ok/25 bg-ok/[0.08] text-[rgb(110,231,183)]" : "border-warn/25 bg-warn/[0.08] text-[rgb(252,211,77)]"}>
             {draft.isRuntimeCallable ? "Runtime callable" : "Needs configuration"}
           </Badge>
           {draft.runtimeErrors.map((error) => (
-            <Badge key={error} className="border-amber-400/30 text-amber-200">
+            <Badge key={error} className="border-warn/25 bg-warn/[0.08] text-[rgb(252,211,77)]">
               {error}
             </Badge>
           ))}
@@ -300,7 +300,7 @@ export function ProvidersManager(): JSX.Element {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm font-medium">Provider Test</p>
-                <p className="mt-1 text-sm text-slate-400">Runs a one-sentence hello prompt.</p>
+                <p className="mt-1 text-sm text-ink-muted">Runs a one-sentence hello prompt.</p>
               </div>
               <Button
                 tone="ghost"
@@ -320,14 +320,14 @@ export function ProvidersManager(): JSX.Element {
                 Test
               </Button>
             </div>
-            <p className="mt-3 text-sm text-slate-300">{testResult || "No test run yet."}</p>
+            <p className="mt-3 text-sm text-ink-muted">{testResult || "No test run yet."}</p>
           </Panel>
 
           <Panel className="border-white/10 p-4">
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm font-medium">Models</p>
-                <p className="mt-1 text-sm text-slate-400">Query dynamic model lists for local runtimes.</p>
+                <p className="mt-1 text-sm text-ink-muted">Query dynamic model lists for local runtimes.</p>
               </div>
               <Button
                 tone="ghost"
@@ -356,7 +356,7 @@ export function ProvidersManager(): JSX.Element {
         </div>
 
         <div className="mt-8">
-          <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Used By</p>
+          <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-ink-subtle">Used By</p>
           <div className="mt-3 flex flex-wrap gap-2">
             {waifus.filter((waifu) => waifu.waifu.ai.providerId === draft.id).map((waifu) => (
               <Badge key={waifu.waifu.id}>{waifu.waifu.displayName}</Badge>

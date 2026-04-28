@@ -61,9 +61,9 @@ export function InstructionsPage(): JSX.Element {
     <div className="grid h-full min-h-0 gap-6 xl:grid-cols-[1.05fr_0.95fr]">
       <Panel className="flex min-h-0 flex-col p-6">
         <div>
-          <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Setup Guide</p>
-          <h3 className="mt-2 font-display text-2xl">Discord Bot Checklist</h3>
-          <p className="mt-3 max-w-2xl text-sm text-slate-400">
+          <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-ink-subtle">Setup Guide</p>
+          <h3 className="mt-2 font-display text-lg font-semibold tracking-tight">Discord Bot Checklist</h3>
+          <p className="mt-3 max-w-2xl text-sm text-ink-muted">
             Follow these steps in order. Keep one waifu working first, then add more.
           </p>
         </div>
@@ -73,9 +73,9 @@ export function InstructionsPage(): JSX.Element {
             <div key={step.title} className="rounded-3xl border border-white/10 bg-white/5 p-5">
               <div className="flex items-center gap-3">
                 <Badge>{index + 1}</Badge>
-                <h4 className="font-display text-xl">{step.title}</h4>
+                <h4 className="font-display text-base font-semibold">{step.title}</h4>
               </div>
-              <div className="mt-4 space-y-2 text-sm text-slate-300">
+              <div className="mt-4 space-y-2 text-sm text-ink-muted">
                 {step.body.map((line) => (
                   <p key={line}>{line}</p>
                 ))}
@@ -87,20 +87,20 @@ export function InstructionsPage(): JSX.Element {
 
       <Panel className="flex min-h-0 flex-col p-6">
         <div>
-          <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Quick Notes</p>
-          <h3 className="mt-2 font-display text-2xl">What To Keep In Mind</h3>
+          <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-ink-subtle">Quick Notes</p>
+          <h3 className="mt-2 font-display text-lg font-semibold tracking-tight">What To Keep In Mind</h3>
         </div>
 
         <div className="mt-6 min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
           {notes.map((note) => (
             <div key={note} className="rounded-3xl border border-white/10 bg-white/5 p-5">
-              <p className="text-sm leading-6 text-slate-300">{note}</p>
+              <p className="text-sm leading-6 text-ink-muted">{note}</p>
             </div>
           ))}
 
           <div className="rounded-3xl border border-sky-400/20 bg-sky-400/10 p-5">
             <p className="text-xs uppercase tracking-[0.3em] text-sky-200/70">Field Mapping</p>
-            <div className="mt-4 space-y-3 text-sm text-slate-200">
+            <div className="mt-4 space-y-3 text-sm text-ink">
               <p><strong>Name</strong>: canonical waifu identity used by the orchestrator and waifu chat models</p>
               <p><strong>Guild Nickname</strong>: Discord server nickname only; does not affect DMs</p>
               <p><strong>Bot Token</strong>: Discord Developer Portal → Bot tab</p>

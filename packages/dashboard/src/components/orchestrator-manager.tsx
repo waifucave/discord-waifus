@@ -38,9 +38,9 @@ export function OrchestratorManager(): JSX.Element {
     <Panel className="flex h-full min-h-0 flex-col p-6">
       <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
         <div>
-          <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Brain</p>
-          <h3 className="mt-2 font-display text-2xl">Orchestrator Settings</h3>
-          <p className="mt-2 text-sm text-slate-400">
+          <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-ink-subtle">Brain</p>
+          <h3 className="mt-2 font-display text-lg font-semibold tracking-tight">Orchestrator Settings</h3>
+          <p className="mt-2 text-sm text-ink-muted">
             Choose the provider and model that decide who speaks next.
           </p>
         </div>

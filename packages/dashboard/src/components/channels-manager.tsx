@@ -58,8 +58,8 @@ export function ChannelsManager(): JSX.Element {
     <div className="grid h-full min-h-0 gap-6 xl:grid-cols-[340px_minmax(0,1fr)]">
       <Panel className="flex min-h-0 flex-col p-5">
         <div>
-          <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Channels</p>
-          <h3 className="mt-2 font-display text-2xl">Rooms</h3>
+          <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-ink-subtle">Channels</p>
+          <h3 className="mt-2 font-display text-lg font-semibold tracking-tight">Rooms</h3>
         </div>
         <div className="mt-6 min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
           {channels.map((channel) => (
@@ -67,7 +67,7 @@ export function ChannelsManager(): JSX.Element {
               key={channel.channelId}
               className={`w-full rounded-2xl border px-4 py-3 text-left ${
                 selectedId === channel.channelId
-                  ? "border-accent/70 bg-accent/10"
+                  ? "border-accent/40 bg-accent/[0.08]"
                   : "border-white/10 bg-white/5"
               }`}
               onClick={() => {
@@ -76,7 +76,7 @@ export function ChannelsManager(): JSX.Element {
               }}
             >
               <p className="font-medium">{channel.channelName}</p>
-              <p className="text-sm text-slate-400">{channel.channelId}</p>
+              <p className="text-sm text-ink-muted">{channel.channelId}</p>
             </button>
           ))}
         </div>
@@ -85,8 +85,8 @@ export function ChannelsManager(): JSX.Element {
       <Panel className="flex min-h-0 flex-col p-6">
         <div className="flex items-center justify-between">
           <div>
-            <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Editor</p>
-            <h3 className="mt-2 font-display text-2xl">{draft.channelName || "New Channel"}</h3>
+            <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-ink-subtle">Editor</p>
+            <h3 className="mt-2 font-display text-lg font-semibold tracking-tight">{draft.channelName || "New Channel"}</h3>
           </div>
           <div className="flex gap-3">
             <Button
@@ -230,7 +230,7 @@ export function ChannelsManager(): JSX.Element {
                     active
                       ? selectable
                         ? "border-accent/60 bg-accent/15"
-                        : "border-amber-400/30 bg-amber-400/10 text-amber-100"
+                        : "border-amber-400/30 bg-amber-400/10 text-[rgb(252,211,77)]"
                       : selectable
                         ? "border-white/10 bg-white/5"
                         : "border-white/10 bg-white/5 opacity-60"
@@ -248,7 +248,7 @@ export function ChannelsManager(): JSX.Element {
                 >
                   {waifu.waifu.displayName}
                   {!selectable ? (
-                    <span className="ml-2 text-xs uppercase tracking-[0.2em] text-amber-200">
+                    <span className="ml-2 text-xs uppercase tracking-[0.2em] text-[rgb(252,211,77)]">
                       Draft
                     </span>
                   ) : null}
@@ -259,7 +259,7 @@ export function ChannelsManager(): JSX.Element {
           {draft.activeWaifuIds.some(
             (waifuId) => !waifus.some((waifu) => waifu.waifu.id === waifuId && waifu.meta.isChatReady)
           ) ? (
-            <p className="mt-3 text-sm text-amber-200">
+            <p className="mt-3 text-sm text-[rgb(252,211,77)]">
               Saving will prune draft or missing waifu selections from this channel.
             </p>
           ) : null}
@@ -279,7 +279,7 @@ export function ChannelsManager(): JSX.Element {
               return (
                 <Badge
                   key={id}
-                  className={!waifu?.meta.isChatReady ? "border-amber-400/30 text-amber-200" : undefined}
+                  className={!waifu?.meta.isChatReady ? "border-warn/25 bg-warn/[0.08] text-[rgb(252,211,77)]" : undefined}
                 >
                   {waifu?.waifu.displayName ?? id}
                 </Badge>
@@ -294,7 +294,7 @@ export function ChannelsManager(): JSX.Element {
             {(draft.availableEmojis ?? []).length > 0 ? (
               (draft.availableEmojis ?? []).map((emoji) => <Badge key={emoji}>{emoji}</Badge>)
             ) : (
-              <p className="text-sm text-slate-400">No custom server emojis fetched for this guild.</p>
+              <p className="text-sm text-ink-muted">No custom server emojis fetched for this guild.</p>
             )}
           </div>
         </div>
@@ -310,7 +310,7 @@ export function ChannelsManager(): JSX.Element {
                 </Badge>
               ))
             ) : (
-              <p className="text-sm text-slate-400">No guild members fetched for this guild.</p>
+              <p className="text-sm text-ink-muted">No guild members fetched for this guild.</p>
             )}
           </div>
         </div>
