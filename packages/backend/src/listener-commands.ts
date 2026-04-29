@@ -75,10 +75,7 @@ export class ListenerCommandManager {
   private async handleContextAnchorHere(interaction: ChatInputCommandInteraction): Promise<void> {
     const channelConfig = this.findChannelConfig(interaction);
     if (!channelConfig) {
-      await interaction.reply({
-        content: "This channel is not configured in the orchestrator dashboard.",
-        ephemeral: true
-      });
+      await this.replyChannelNotConfigured(interaction);
       return;
     }
 
@@ -131,10 +128,7 @@ export class ListenerCommandManager {
   ): Promise<void> {
     const channelConfig = this.findChannelConfig(interaction);
     if (!channelConfig) {
-      await interaction.reply({
-        content: "This channel is not configured in the orchestrator dashboard.",
-        ephemeral: true
-      });
+      await this.replyChannelNotConfigured(interaction);
       return;
     }
 
@@ -179,10 +173,7 @@ export class ListenerCommandManager {
   ): Promise<void> {
     const channelConfig = this.findChannelConfig(interaction);
     if (!channelConfig) {
-      await interaction.reply({
-        content: "This channel is not configured in the orchestrator dashboard.",
-        ephemeral: true
-      });
+      await this.replyChannelNotConfigured(interaction);
       return;
     }
 
@@ -204,5 +195,34 @@ export class ListenerCommandManager {
       (channel) =>
         channel.guildId === interaction.guildId && channel.channelId === interaction.channelId
     );
+  }
+
+  private async replyChannelNotConfigured(
+    interaction: ChatInputCommandInteraction
+  ): Promise<void> {
+    const knownChannels = this.configManager.channels.map((channel) => ({
+      guildId: channel.guildId,
+      channelId: channel.channelId,
+      channelName: channel.channelName,
+      enabled: channel.enabled
+    }));
+
+    this.logger.warn("Listener command rejected for unconfigured channel", {
+      commandName: interaction.commandName,
+      guildId: interaction.guildId,
+      channelId: interaction.channelId,
+      knownChannels
+    });
+    this.onDebugEvent?.("command.channel_not_configured", {
+      commandName: interaction.commandName,
+      guildId: interaction.guildId,
+      channelId: interaction.channelId,
+      knownChannels
+    });
+
+    await interaction.reply({
+      content: "This channel is not configured in the orchestrator dashboard.",
+      ephemeral: true
+    });
   }
 }

@@ -74,6 +74,15 @@ export function setupChannelRoutes(
         response.status(404).json({ error: "Channel not found" });
         return;
       }
+      if (
+        patch.channelId &&
+        deps.config.channels.some(
+          (entry) => entry.channelId === patch.channelId && entry.channelId !== channelId
+        )
+      ) {
+        response.status(409).json({ error: "Channel already exists" });
+        return;
+      }
 
       const updated = createChannelSchema.parse({
         ...existing,

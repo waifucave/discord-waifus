@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, type ReactNode } from "react";
-import { Check, Save, Trash2, X } from "lucide-react";
+import { Check, Plus, Save, Trash2, X } from "lucide-react";
 import { api } from "@/lib/api";
 import type { ChannelConfig, WaifuEditorPayload } from "@/lib/types";
 import { Panel, Button, Input, Label, Badge } from "./ui";
@@ -28,11 +28,18 @@ export function ChannelsManager(): JSX.Element {
   const [loading, setLoading] = useState(true);
   const toast = useToast();
 
+  const createEmptyDraft = (): ChannelConfig => ({
+    ...emptyChannel,
+    activeWaifuIds: waifus
+      .filter((waifu) => waifu.meta.isChatReady)
+      .map((waifu) => waifu.waifu.id)
+  });
+
   useEffect(() => {
     void load();
   }, []);
 
-  const load = async () => {
+  const load = async (preferredSelectedId = selectedId) => {
     setLoading(true);
     try {
       const [channelResponse, waifuResponse] = await Promise.all([
@@ -41,9 +48,23 @@ export function ChannelsManager(): JSX.Element {
       ]);
       setChannels(channelResponse.channels);
       setWaifus(waifuResponse.waifus);
+      if (preferredSelectedId) {
+        const selectedChannel = channelResponse.channels.find(
+          (channel) => channel.channelId === preferredSelectedId
+        );
+        if (selectedChannel) {
+          setSelectedId(selectedChannel.channelId);
+          setDraft(selectedChannel);
+          return;
+        }
+      }
+
       if (channelResponse.channels[0]) {
         setSelectedId(channelResponse.channels[0].channelId);
         setDraft(channelResponse.channels[0]);
+      } else {
+        setSelectedId("");
+        setDraft(emptyChannel);
       }
     } finally {
       setLoading(false);
@@ -91,12 +112,22 @@ export function ChannelsManager(): JSX.Element {
           <div className="flex gap-3">
             <Button
               tone="ghost"
+              onClick={() => {
+                setSelectedId("");
+                setDraft(createEmptyDraft());
+              }}
+            >
+              <Plus className="mr-2 h-4 w-4" />
+              New
+            </Button>
+            <Button
+              tone="ghost"
               onClick={async () => {
                 if (!selectedId) return;
                 if (!window.confirm("Delete this channel?")) return;
                 await api.deleteChannel(selectedId);
                 toast("Channel deleted.");
-                await load();
+                await load("");
               }}
             >
               <Trash2 className="mr-2 h-4 w-4" />
@@ -111,13 +142,27 @@ export function ChannelsManager(): JSX.Element {
                   ...draft,
                   activeWaifuIds: draft.activeWaifuIds.filter((id) => validWaifuIds.has(id))
                 };
-                if (channels.some((channel) => channel.channelId === sanitizedDraft.channelId)) {
-                  await api.updateChannel(sanitizedDraft.channelId, sanitizedDraft);
+                const duplicateChannel = channels.find(
+                  (channel) =>
+                    channel.channelId === sanitizedDraft.channelId &&
+                    channel.channelId !== selectedId
+                );
+                if (duplicateChannel) {
+                  toast("A channel with that ID already exists.");
+                  return;
+                }
+
+                const nextSelectedId = sanitizedDraft.channelId;
+                if (selectedId) {
+                  await api.updateChannel(selectedId, sanitizedDraft);
                 } else {
-                  await api.createChannel(sanitizedDraft);
+                  await api.createChannel({
+                    ...sanitizedDraft,
+                    contextAnchorMessageId: null
+                  });
                 }
                 toast("Channel saved.");
-                await load();
+                await load(nextSelectedId);
               }}
             >
               <Save className="mr-2 h-4 w-4" />
