@@ -8,3 +8,6 @@ coverage/
 *.tgz
 *.log
 .DS_Store
+PLAN.md
+AGENT_PLAN.md
+codex-skills/
