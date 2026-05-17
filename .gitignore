@@ -1,0 +1,10 @@
+node_modules/
+dist/
+dist-frontend/
+coverage/
+.dc-waifus/
+.claude/
+.playwright-cli/
+*.tgz
+*.log
+.DS_Store

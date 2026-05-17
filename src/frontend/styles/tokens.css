@@ -1,0 +1,72 @@
+:root {
+  color-scheme: dark;
+
+  /* Surfaces */
+  --bg-app: #0c0e12;
+  --bg-sidebar: #0f1217;
+  --bg-panel: #12161d;
+  --bg-panel-hover: #161b24;
+  --bg-input: #0d1116;
+  --bg-elevated: #181d27;
+
+  /* Borders */
+  --border-subtle: #1c222d;
+  --border-default: #232b39;
+  --border-strong: #2c3647;
+  --border-focus: #3d6cf2;
+
+  /* Text */
+  --text-primary: #e7ecf3;
+  --text-secondary: #a4adbd;
+  --text-muted: #6b7587;
+  --text-disabled: #4a5161;
+
+  /* Accents — operational, not marketing */
+  --accent: #5b8def;
+  --accent-strong: #4a78dd;
+  --accent-text: #ffffff;
+
+  /* Status */
+  --ok: #2fbb70;
+  --ok-bg: rgba(47, 187, 112, 0.12);
+  --warn: #f3a83a;
+  --warn-bg: rgba(243, 168, 58, 0.14);
+  --err: #ef5b5b;
+  --err-bg: rgba(239, 91, 91, 0.14);
+  --info: #58a8df;
+  --info-bg: rgba(88, 168, 223, 0.12);
+  --neutral: #6b7587;
+  --neutral-bg: rgba(107, 117, 135, 0.16);
+
+  /* Sizing */
+  --sidebar-w: 224px;
+  --topbar-h: 48px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+
+  /* Spacing scale */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+
+  /* Typography */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "SF Mono", "JetBrains Mono", Menlo, Monaco, Consolas,
+    "Liberation Mono", monospace;
+
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-md: 13px;
+  --fs-lg: 15px;
+  --fs-xl: 18px;
+  --fs-2xl: 22px;
+
+  --shadow-1: 0 1px 0 rgba(0, 0, 0, 0.4);
+  --shadow-modal: 0 16px 48px rgba(0, 0, 0, 0.5);
+}
