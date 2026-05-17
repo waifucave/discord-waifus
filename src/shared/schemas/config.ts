@@ -10,10 +10,10 @@ export const HttpConfigSchema = z
 
 export const RuntimeConfigSchema = z
   .object({
-    autoConnectDiscord: z.boolean().default(false),
+    autoConnectDiscord: z.boolean().default(true),
     paused: z.boolean().default(false)
   })
-  .default({ autoConnectDiscord: false, paused: false });
+  .default({ autoConnectDiscord: true, paused: false });
 
 export const FrontendConfigSchema = z
   .object({

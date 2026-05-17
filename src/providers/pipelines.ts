@@ -182,7 +182,8 @@ class OpenAiResponsesPipeline implements ModelPipeline {
         temperature: request.temperature ?? this.model.defaultTemperature,
         top_p: request.topP ?? this.model.defaultTopP,
         max_output_tokens: request.maxOutputTokens,
-        ...reasoningFieldsForOpenAiResponses(this.model, request.reasoning)
+        ...reasoningFieldsForOpenAiResponses(this.model, request.reasoning),
+        ...openAiResponsesSamplingOverrides(this.model)
       },
       signal: request.signal,
       extract: extractOpenAiResponsesText,
@@ -205,7 +206,8 @@ class OpenAiResponsesPipeline implements ModelPipeline {
         max_output_tokens: request.maxOutputTokens,
         tools: [openAiResponsesOrchestratorTool(request.availableWaifuIds)],
         tool_choice: { type: "function", name: ORCHESTRATOR_TOOL_NAME },
-        ...reasoningFieldsForOpenAiResponses(this.model, request.reasoning)
+        ...reasoningFieldsForOpenAiResponses(this.model, request.reasoning),
+        ...openAiResponsesSamplingOverrides(this.model)
       },
       signal: request.signal,
       extract: (json) => extractOpenAiResponsesToolArguments(json, ORCHESTRATOR_TOOL_NAME),
@@ -231,7 +233,8 @@ class OpenAiResponsesPipeline implements ModelPipeline {
         max_output_tokens: request.maxOutputTokens,
         tools: [openAiResponsesStageManagerTool()],
         tool_choice: { type: "function", name: STAGE_MANAGER_TOOL_NAME },
-        ...reasoningFieldsForOpenAiResponses(this.model, request.reasoning)
+        ...reasoningFieldsForOpenAiResponses(this.model, request.reasoning),
+        ...openAiResponsesSamplingOverrides(this.model)
       },
       signal: request.signal,
       extract: (json) => extractOpenAiResponsesToolArguments(json, STAGE_MANAGER_TOOL_NAME),
@@ -253,7 +256,8 @@ class OpenAiResponsesPipeline implements ModelPipeline {
         max_output_tokens: request.maxOutputTokens ?? 64,
         tools: [openAiResponsesReviewerTool()],
         tool_choice: { type: "function", name: REVIEWER_TOOL_NAME },
-        ...reasoningFieldsForOpenAiResponses(this.model, request.reasoning)
+        ...reasoningFieldsForOpenAiResponses(this.model, request.reasoning),
+        ...openAiResponsesSamplingOverrides(this.model)
       },
       signal: request.signal,
       extract: (json) => extractOpenAiResponsesToolArguments(json, REVIEWER_TOOL_NAME),
@@ -1066,6 +1070,16 @@ function openAiChatSamplingOverrides(
 ): { temperature?: undefined; top_p?: undefined } {
   // DeepSeek thinking mode is incompatible with temperature/top_p/presence_penalty/frequency_penalty.
   if (model.providerId === "deepseek" && reasoning?.enabled === true) {
+    return { temperature: undefined, top_p: undefined };
+  }
+  return {};
+}
+
+function openAiResponsesSamplingOverrides(
+  model: ModelCapabilityMetadata
+): { temperature?: undefined; top_p?: undefined } {
+  // OpenAI gpt-5.x reasoning models reject temperature/top_p with a 400 unsupported_parameter error.
+  if (model.providerId === "openai" && model.reasoningControls.includes("reasoning.effort")) {
     return { temperature: undefined, top_p: undefined };
   }
   return {};

@@ -35,7 +35,7 @@ You must call the orchestrator_decision tool exactly once with your final decisi
 3. Mentions, quotes, relationships, reactions, timestamps, and recent momentum are all useful signals, but none of them are hard rules.
 4. Always pay special attention to the latest 10 messages. They are the strongest signal for what the room is currently doing, who may have been overlooked, and whether a loop is starting to form.
 5. The same waifu may speak again, a different waifu may jump in, or multiple waifus may chain if it feels right.
-6. Avoid repetitive follow-ups that merely restate the same beat. Continue only when the next message adds something new.
+6. If follow-ups are starting to restate the same beat, do not stall the room — keep the chain going, but you must attach a sceneDirection to the next waifu that explicitly forces a new beat (topic shift, escalation, interruption, callback, joke, reaction, emotional pivot, or callout). Never continue a repetitive thread without a sceneDirection that changes something.
 7. If a recent user message or direct ping went unnoticed while the room moved on, prefer steering someone to acknowledge it so the chat stays socially inclusive unless silence is clearly more natural.
 8. Use message timestamps and pacing. Slow gaps matter.
 9. For stage_manager and no_reply, retriggerAfterSeconds must be between 100 and 28800 seconds. Pick a natural delay for what should happen next.

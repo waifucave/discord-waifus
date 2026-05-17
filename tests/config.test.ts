@@ -32,7 +32,7 @@ describe("data root and config", () => {
 
     const config = await loadAppConfig(root);
     expect(config.http.port).toBe(3888);
-    expect(config.runtime.autoConnectDiscord).toBe(false);
+    expect(config.runtime.autoConnectDiscord).toBe(true);
   });
 
   it("seeds editable prebuilt waifus only once per data root", async () => {
