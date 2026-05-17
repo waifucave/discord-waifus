@@ -162,16 +162,19 @@ class FakePipeline implements ModelPipeline {
 
   async generateWaifu(request: WaifuGenerationRequest) {
     expect(request.systemPrompt).toContain("You are Yuki");
+    expect(request.systemPrompt).toMatch(
+      /<\/yuki_behavior>\n<current_time>\n\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z \(UTC\)\n<\/current_time>\n<available_server_emojis>/
+    );
     expect(request.sceneDirection).toBe("answer Kevin");
     return { content: "hello <@Kevin> <:cutecat:>" };
   }
 
   async decideOrchestrator(request: ProviderRequest): Promise<OrchestratorDecision> {
     expect(request.systemPrompt).toContain("decide");
-    expect(request.systemPrompt).toContain("## Active Waifus");
+    expect(request.systemPrompt).toContain("<active_waifus>");
     expect(request.systemPrompt).toContain("ID: yuki");
     expect(request.systemPrompt).toContain("kind");
-    expect(request.systemPrompt).toContain("## Current Time");
+    expect(request.systemPrompt).toContain("<current_time>");
     expect(request.availableWaifuIds).toEqual(["yuki"]);
     const decision = this.decisions.shift();
     if (!decision) throw new Error("No fake decision left.");

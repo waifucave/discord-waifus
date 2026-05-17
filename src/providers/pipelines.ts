@@ -89,7 +89,7 @@ class OpenAiCompatibleChatPipeline implements ModelPipeline {
       body: {
         model: request.modelId,
         messages: [
-          { role: "system", content: orchestratorSystemPrompt(request.systemPrompt) },
+          { role: "system", content: request.systemPrompt },
           contextToNamedUserMessage("messages", rendering)
         ],
         temperature: request.temperature ?? 0.2,
@@ -203,7 +203,7 @@ class OpenAiResponsesPipeline implements ModelPipeline {
       headers: bearerHeaders(this.apiKey),
       body: {
         model: request.modelId,
-        instructions: orchestratorSystemPrompt(request.systemPrompt),
+        instructions: request.systemPrompt,
         input: [contextToResponsesMessagesInput(rendering)],
         temperature: request.temperature ?? 0.2,
         top_p: request.topP,
@@ -314,7 +314,7 @@ class AnthropicMessagesPipeline implements ModelPipeline {
       headers: anthropicHeaders(this.apiKey),
       body: {
         model: request.modelId,
-        system: orchestratorSystemPrompt(request.systemPrompt),
+        system: request.systemPrompt,
         messages: [contextToAnthropicMessagesPrompt(rendering)],
         temperature: constrainsSampling ? 1 : request.temperature ?? 0.2,
         top_p: constrainsSampling ? undefined : request.topP,
@@ -559,10 +559,6 @@ function buildSuffix(message: ContextMessage, idToIndex: Map<string, number> | u
   return parts.length ? ` ${parts.join(" ")}` : "";
 }
 
-function orchestratorSystemPrompt(customPrompt?: string): string {
-  return [customPrompt?.trim(), orchestratorJsonInstruction()].filter(Boolean).join("\n\n");
-}
-
 function stageManagerSystemPrompt(customPrompt?: string): string {
   return [customPrompt?.trim(), stageManagerJsonInstruction()].filter(Boolean).join("\n\n");
 }
@@ -576,19 +572,6 @@ export function safeName(input: string): string {
     .replace(/^_+|_+$/g, "");
   if (!cleaned) return "user";
   return cleaned.slice(0, 64);
-}
-
-function orchestratorJsonInstruction(): string {
-  return `Each message in the context is tagged with [index: #N], [timestamp: ISO-8601 UTC], and [sender: DisplayName] before its body, optionally followed by [reactions: ...] and [replying to: ...]. Reference messages by their #N index.
-Tool usage: inspect the context, choose exactly one action, and call ${ORCHESTRATOR_TOOL_NAME} once with only the tool arguments. Do not write normal assistant text.
-Its arguments must match this TypeScript union:
-{ "action": "waifus", "selectedWaifus": [{ "waifuId": string, "sceneDirection"?: string, "replyToIndex"?: number }], "reasoning": string }
-OR { "action": "stage_manager", "retriggerAfterSeconds": number, "reasoning": string }
-OR { "action": "reviewer", "reasoning": string }
-OR { "action": "no_reply", "retriggerAfterSeconds": number, "reasoning": string }.
-replyToIndex must be one of the #N indices shown in the context above. Use replyToIndex only for an older message that is not the latest visible message; omit it to answer the latest message with a normal non-reply.
-Use reviewer only if you suspect a waifu message is hallucinating or leaking internals; the reviewer makes the final judgment.
-For stage_manager and no_reply, retriggerAfterSeconds must be between 100 and 28800.`;
 }
 
 function stageManagerJsonInstruction(): string {

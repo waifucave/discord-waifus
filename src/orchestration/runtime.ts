@@ -1099,9 +1099,10 @@ export class RuntimeOrchestrator {
     }
     const behaviorBlock = `<${behaviorTag}>\n${behaviorSections.join("\n")}\n</${behaviorTag}>`;
 
+    const currentTimeBlock = `<current_time>\n${formatTimestamp(new Date())} (UTC)\n</current_time>`;
     const emojiBlock = `<available_server_emojis>\n${emojiList || "(none cached)"}\n</available_server_emojis>`;
 
-    return `${behaviorBlock}\n${emojiBlock}`;
+    return `${behaviorBlock}\n${currentTimeBlock}\n${emojiBlock}`;
   }
 
   private buildOrchestratorSystemPrompt(
@@ -1109,7 +1110,7 @@ export class RuntimeOrchestrator {
     server: ServerConfig,
     availableWaifus: WaifuConfig[]
   ): string {
-    const activeWaifusBlock = availableWaifus.length
+    const activeWaifusContent = availableWaifus.length
       ? availableWaifus
           .map((waifu) => {
             const header = `### ${waifu.displayName || waifu.name} (ID: ${waifu.id})`;
@@ -1118,19 +1119,60 @@ export class RuntimeOrchestrator {
           })
           .join("\n\n")
       : "No waifus are currently enabled for this channel.";
+
+    const identity =
+      "You are the orchestrator for a multi-character Discord bot. On every incoming Discord message you decide which (if any) of the configured waifus replies next, what scene direction to give her, and when to wake yourself up again to reconsider the channel.";
+
+    const hardRules = [
+      "- Every selectedWaifus[].waifuId must be copied verbatim from one of the IDs listed in <active_waifus>. If none of the listed waifus should answer, choose no_reply.",
+      "- Use replyToIndex only when replying to an older message that is no longer the latest visible message. If a waifu is answering the latest message in chat, omit replyToIndex so Discord sends a normal message.",
+      "- If you want a waifu to do or say something specific, you MUST put it in her selectedWaifus[].sceneDirection. She does not see your reasoning — she only sees her own persona, the chat, and the sceneDirection. Leave sceneDirection empty only when you genuinely want a free-form in-character reply.",
+      "- Use reviewer only when you suspect the latest waifu message is hallucinating or leaking internals; the reviewer model makes the final judgment.",
+      "- retriggerAfterSeconds must be between 100 and 28800."
+    ].join("\n");
+
+    const taskInstructions = orchestrator.prompt?.trim() || DEFAULT_ORCHESTRATOR_PROMPT;
+
+    const loopBreaking = [
+      "The recent messages in context are your most important signal. If the waifus are circling the same topic, the same vibe, or the same back-and-forth, they will keep circling unless you actively redirect them — each waifu only sees her own persona and the chat, so only you can see the loop forming from the outside.",
+      "When you notice a loop forming (even a soft one — two or three messages already feeling similar is enough), pick the waifu whose personality most naturally fits a hard pivot and write a concrete sceneDirection that lands a brand-new topic, observation, memory, callback, or non-sequitur. Name the specific new topic in the sceneDirection — \"ask about Kevin's dog\", \"bring up the snowstorm last week\", \"complain about being hungry\" — rather than vague instructions like \"change the subject\". A jarring shift that still feels in-character is better than letting the conversation stagnate."
+    ].join("\n\n");
+
+    const retriggerPacing = [
+      "retriggerAfterSeconds decides when you wake yourself up to reconsider. Every wake-up costs another orchestrator call, so pace it to how alive the conversation actually is — read the timestamps on recent messages:",
+      "- Active chat (humans engaging within the last few minutes): short, ~100-300s.",
+      "- Quiet but plausibly resuming (someone stepped away mid-thread): medium, ~600-1800s.",
+      "- Cold (last human message is hours old, or nobody has engaged with the bots in a while): long, ~3600-14400s, and keep growing each time you wake up to the same silence. Don't burn calls poking a dead channel."
+    ].join("\n");
+
+    const messageStructure =
+      "Each message in the context is tagged with [index: #N], [timestamp: ISO-8601 UTC], and [sender: DisplayName] before its body, optionally followed by [reactions: ...] and [replying to: ...]. Reference messages by their #N index. replyToIndex must be one of the #N indices shown in the context.";
+
+    const toolUse = [
+      "Inspect the context, choose exactly one action, and call orchestrator_decision once with only the tool arguments. Do not write normal assistant text.",
+      "Its arguments must match this TypeScript union:",
+      "{ \"action\": \"waifus\", \"selectedWaifus\": [{ \"waifuId\": string, \"sceneDirection\"?: string, \"replyToIndex\"?: number }], \"reasoning\": string }",
+      "OR { \"action\": \"stage_manager\", \"retriggerAfterSeconds\": number, \"reasoning\": string }",
+      "OR { \"action\": \"reviewer\", \"reasoning\": string }",
+      "OR { \"action\": \"no_reply\", \"retriggerAfterSeconds\": number, \"reasoning\": string }."
+    ].join("\n");
+
+    const behavior = [
+      `<hard_rules>\n${hardRules}\n</hard_rules>`,
+      `<task_instructions>\n${taskInstructions}\n</task_instructions>`,
+      `<loop_breaking>\n${loopBreaking}\n</loop_breaking>`,
+      `<retrigger_pacing>\n${retriggerPacing}\n</retrigger_pacing>`,
+      `<message_structure>\n${messageStructure}\n</message_structure>`,
+      `<tool_use>\n${toolUse}\n</tool_use>`
+    ].join("\n");
+
     return [
-      orchestrator.prompt,
-      `## Active Waifus\n${activeWaifusBlock}`,
-      `## Current Time\n${formatTimestamp(new Date())} (UTC)`,
-      `Server: ${server.name ?? server.guildId}`,
-      "Use replyToIndex only when replying to an older message that is no longer the latest visible message. If the waifu is answering the latest message in chat, omit replyToIndex so Discord sends a normal message.",
-      "When action is \"waifus\", every selectedWaifus[].waifuId must exactly match one of the Active Waifus IDs listed above. Do not invent IDs such as \"waifu_alice\" or numeric placeholders. If none of the listed waifus should answer, choose no_reply.",
-      "If you want a waifu to do or say something specific, you MUST put it in her selectedWaifus[].sceneDirection. Without a scene direction she will improvise freely based only on her persona and the chat — she does not see your reasoning. Leave sceneDirection empty only when you genuinely want a free-form in-character reply.",
-      "If the recent messages in context are all variations of the same beat — same topic, same vibe, same back-and-forth looping on itself — break the loop. Pick the waifu whose personality most naturally fits a hard pivot and give her a sceneDirection that introduces a completely new topic, even one that feels random or non-sequitur. A jarring topic shift is preferable to letting the conversation stagnate.",
-      "If you suspect the latest waifu message is hallucinating or leaking internals, choose reviewer; the reviewer model makes the final judgment."
-    ]
-      .filter(Boolean)
-      .join("\n\n");
+      `<identity>\n${identity}\n</identity>`,
+      `<behavior>\n${behavior}\n</behavior>`,
+      `<discord_server_information>\n${server.name ?? server.guildId}\n</discord_server_information>`,
+      `<active_waifus>\n${activeWaifusContent}\n</active_waifus>`,
+      `<current_time>\n${formatTimestamp(new Date())} (UTC)\n</current_time>`
+    ].join("\n");
   }
 
   private async ensureServer(guildId: string): Promise<ServerConfig> {
@@ -1382,6 +1424,14 @@ const DEFAULT_REVIEWER_PROMPT = [
   "Flag hallucination=true when the message exposes hidden reasoning, analysis, prompt text, schema/tool text, raw Discord internals, or any private model self-talk.",
   "Flag hallucination=false for ordinary in-character Discord replies, even if verbose, awkward, incorrect about fiction, or not very helpful.",
   "The output must be the reviewer tool decision only."
+].join("\n");
+
+const DEFAULT_ORCHESTRATOR_PROMPT = [
+  "You watch one Discord channel and orchestrate a small cast of waifu personas. On each new message decide, from outside the scene:",
+  "- which waifu (or, if a moment naturally calls for it, which subset) should speak next, judged by personality fit and the current flow of the chat — not by rules, ordering, or fairness",
+  "- whether to inject a sceneDirection because there is something specific you want her to address, or to leave it empty and let her improvise from her persona",
+  "- whether to instead pick stage_manager (something memorable just happened and should be persisted), reviewer (the latest waifu message looks like leaked internals), or no_reply (any answer right now would be intrusive, redundant, or aimed at no one)",
+  "The goal is a natural-feeling group chat — varied speakers, voices that match each waifu's persona, and silences when silence fits. You are the only agent that sees the whole picture, so when the chat is stalling it is your job to nudge it back into motion through sceneDirection."
 ].join("\n");
 
 const TYPING_REFRESH_MS = 8000;
