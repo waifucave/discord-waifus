@@ -189,7 +189,7 @@ export function SetupView({ onNavigate }: { onNavigate: (view: string) => void }
             GUILD_MEMBERS (optional, privileged)
           </span>
           <span className="k">Bot permissions</span>
-          <span className="v">VIEW_CHANNEL · SEND_MESSAGES · READ_MESSAGE_HISTORY · ADD_REACTIONS</span>
+          <span className="v">Orchestrator: ADMINISTRATOR · Waifus: VIEW_CHANNEL · SEND_MESSAGES · READ_MESSAGE_HISTORY · ADD_REACTIONS</span>
           <span className="k">Application commands</span>
           <span className="v">Slash commands for setup, enable channel, pause/resume, trigger.</span>
         </div>

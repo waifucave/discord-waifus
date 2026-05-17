@@ -25,6 +25,7 @@ export interface DiscordGatewayFacade {
   onMessage?(listener: DiscordMessageListener): () => void;
   onReviewCommand?(listener: DiscordReviewCommandListener): () => void;
   onClearCommand?(listener: DiscordClearCommandListener): () => void;
+  onRunCommand?(listener: DiscordRunCommandListener): () => void;
   listGuilds?(): Promise<Array<{ guildId: string; name: string }>>;
   fetchFreshContext(input: {
     guildId: string;
@@ -74,9 +75,14 @@ export type DiscordSlashCommandEvent = {
 export type DiscordReviewCommandEvent = DiscordSlashCommandEvent;
 export type DiscordClearCommandEvent = DiscordSlashCommandEvent & {
   count?: number;
+  type?: DiscordClearType;
 };
+export type DiscordRunCommandEvent = DiscordSlashCommandEvent;
 export type DiscordReviewCommandListener = (event: DiscordReviewCommandEvent) => void | Promise<void>;
 export type DiscordClearCommandListener = (event: DiscordClearCommandEvent) => void | Promise<void>;
+export type DiscordRunCommandListener = (event: DiscordRunCommandEvent) => void | Promise<void>;
+
+export type DiscordClearType = "waifus" | "all";
 
 export type DiscordDeleteMessagesResult = {
   deletedMessageIds: string[];
@@ -105,6 +111,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   private readonly listeners = new Set<DiscordMessageListener>();
   private readonly reviewListeners = new Set<DiscordReviewCommandListener>();
   private readonly clearListeners = new Set<DiscordClearCommandListener>();
+  private readonly runListeners = new Set<DiscordRunCommandListener>();
   private readonly recentMentionRefreshes = new Map<string, number>();
 
   constructor(private readonly options: DiscordJsGatewayOptions) {}
@@ -150,6 +157,8 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
               void this.handleReviewInteraction(interaction);
             } else if (interaction.commandName === CLEAR_COMMAND_NAME) {
               void this.handleClearInteraction(interaction);
+            } else if (interaction.commandName === RUN_COMMAND_NAME) {
+              void this.handleRunInteraction(interaction);
             }
           });
         }
@@ -194,6 +203,11 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   onClearCommand(listener: DiscordClearCommandListener): () => void {
     this.clearListeners.add(listener);
     return () => this.clearListeners.delete(listener);
+  }
+
+  onRunCommand(listener: DiscordRunCommandListener): () => void {
+    this.runListeners.add(listener);
+    return () => this.runListeners.delete(listener);
   }
 
   async listGuilds(): Promise<Array<{ guildId: string; name: string }>> {
@@ -457,11 +471,31 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
       channelId: interaction.channelId,
       userId: interaction.user.id,
       count: interaction.options.getInteger(CLEAR_COUNT_OPTION_NAME) ?? 1,
+      type: parseClearType(interaction.options.getString(CLEAR_TYPE_OPTION_NAME)),
       respond: async (content) => {
         await interaction.editReply(content);
       }
     };
     for (const listener of this.clearListeners) {
+      void listener(event);
+    }
+  }
+
+  private async handleRunInteraction(interaction: ChatInputCommandInteraction): Promise<void> {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    if (!interaction.guildId || !interaction.channelId) {
+      await interaction.editReply("/run can only be used in a server channel.");
+      return;
+    }
+    const event: DiscordRunCommandEvent = {
+      guildId: interaction.guildId,
+      channelId: interaction.channelId,
+      userId: interaction.user.id,
+      respond: async (content) => {
+        await interaction.editReply(content);
+      }
+    };
+    for (const listener of this.runListeners) {
       void listener(event);
     }
   }
@@ -615,7 +649,9 @@ const SNOWFLAKE_PATTERN = /^\d{17,20}$/;
 const MENTION_REFRESH_COOLDOWN_MS = 5 * 60 * 1000;
 const REVIEW_COMMAND_NAME = "review";
 const CLEAR_COMMAND_NAME = "clear";
+const RUN_COMMAND_NAME = "run";
 const CLEAR_COUNT_OPTION_NAME = "count";
+const CLEAR_TYPE_OPTION_NAME = "type";
 const MAX_CLEAR_COUNT = 100;
 
 function sanitizeReplyTarget(value?: string): string | undefined {
@@ -642,8 +678,22 @@ async function registerOrchestratorCommands(client: Client, logger?: Logger): Pr
             required: false,
             min_value: 1,
             max_value: MAX_CLEAR_COUNT
+          },
+          {
+            type: ApplicationCommandOptionType.String as ApplicationCommandOptionType.String,
+            name: CLEAR_TYPE_OPTION_NAME,
+            description: "Which messages to clear.",
+            required: false,
+            choices: [
+              { name: "waifus", value: "waifus" },
+              { name: "all", value: "all" }
+            ]
           }
         ]
+      },
+      {
+        name: RUN_COMMAND_NAME,
+        description: "Run the orchestrator in this channel immediately if the runtime is idle."
       }
     ];
     const commands = await manager.fetch();
@@ -660,4 +710,8 @@ async function registerOrchestratorCommands(client: Client, logger?: Logger): Pr
       message: error instanceof Error ? error.message : String(error)
     });
   }
+}
+
+function parseClearType(value: string | null): DiscordClearType {
+  return value === "all" ? "all" : "waifus";
 }

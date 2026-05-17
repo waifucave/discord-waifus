@@ -3,6 +3,7 @@
 // and https://docs.discord.com/developers/events/gateway (intents).
 
 export const PERMISSIONS = {
+  ADMINISTRATOR: 8,
   VIEW_CHANNEL: 1024,
   SEND_MESSAGES: 2048,
   READ_MESSAGE_HISTORY: 65536,
@@ -24,6 +25,9 @@ export const INTENTS = {
 export type BotKind = "orchestrator" | "waifu";
 
 export function permissionBitsFor(kind: BotKind): number {
+  if (kind === "orchestrator") {
+    return Number(BigInt(PERMISSIONS.ADMINISTRATOR) | BigInt(PERMISSIONS.USE_APPLICATION_COMMANDS));
+  }
   const base =
     PERMISSIONS.VIEW_CHANNEL |
     PERMISSIONS.SEND_MESSAGES |
@@ -32,13 +36,13 @@ export function permissionBitsFor(kind: BotKind): number {
     PERMISSIONS.USE_EXTERNAL_EMOJIS |
     PERMISSIONS.EMBED_LINKS |
     PERMISSIONS.ATTACH_FILES;
-  if (kind === "waifu") return base;
-  // Orchestrator owns slash commands too. Use string math so the high bit
-  // doesn't get sign-truncated when serialized.
-  return Number(BigInt(base) | BigInt(PERMISSIONS.USE_APPLICATION_COMMANDS));
+  return base;
 }
 
 export function permissionListFor(kind: BotKind): string[] {
+  if (kind === "orchestrator") {
+    return ["Administrator", "Use Application Commands (slash)"];
+  }
   const names = [
     "View Channel",
     "Send Messages",
@@ -48,7 +52,6 @@ export function permissionListFor(kind: BotKind): string[] {
     "Embed Links",
     "Attach Files"
   ];
-  if (kind === "orchestrator") names.push("Use Application Commands (slash)");
   return names;
 }
 

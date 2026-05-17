@@ -4,8 +4,10 @@ import path from "node:path";
 import { Logger } from "../backend/logger.js";
 import {
   DiscordClearCommandEvent,
+  DiscordClearType,
   DiscordGatewayFacade,
   DiscordMessageEvent,
+  DiscordRunCommandEvent,
   DiscordReviewCommandEvent
 } from "../discord/client.js";
 import { modelVisibleEmojiToken, stripLeakedContextHeader } from "../discord/normalization.js";
@@ -68,6 +70,8 @@ export class RuntimeOrchestrator {
   private readonly sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
   private readonly recentSelfSentIds = new Map<string, number>();
   private readonly activeWaifuSendChannels = new Set<string>();
+  private readonly activeWaifuQueries = new Map<string, number>();
+  private readonly activeReviewerRuns = new Map<string, number>();
   private readonly channelRunVersions = new Map<string, number>();
   private static readonly SELF_SENT_TTL_MS = 60_000;
   private unsubscribes: Array<() => void> = [];
@@ -88,6 +92,9 @@ export class RuntimeOrchestrator {
       }),
       this.options.discord.onClearCommand?.((event) => {
         void this.handleClearCommand(event);
+      }),
+      this.options.discord.onRunCommand?.((event) => {
+        void this.handleRunCommand(event);
       })
     ].filter((unsubscribe): unsubscribe is () => void => Boolean(unsubscribe));
     if (this.options.discord.listGuilds) {
@@ -212,11 +219,11 @@ export class RuntimeOrchestrator {
 
   private async handleClearCommand(event: DiscordClearCommandEvent): Promise<void> {
     try {
-      const result = await this.clearLatestWaifuMessages(event.guildId, event.channelId, event.count ?? 1);
+      const result = await this.clearLatestMessages(event.guildId, event.channelId, event.count ?? 1, event.type ?? "waifus");
       if (result.messageIds.length === 0) {
-        await event.respond("No waifu message found to clear.");
+        await event.respond(event.type === "all" ? "No message found to clear." : "No waifu message found to clear.");
       } else if (result.deleted) {
-        const messageLabel = result.logicalMessageCount === 1 ? "waifu message" : "waifu messages";
+        const messageLabel = clearMessageLabel(event.type ?? "waifus", result.logicalMessageCount);
         const chunkSuffix = result.messageIds.length === result.logicalMessageCount
           ? ""
           : ` (${result.messageIds.length} Discord chunks)`;
@@ -232,6 +239,46 @@ export class RuntimeOrchestrator {
       });
       await event.respond(error instanceof Error ? error.message : "Clear failed.");
     }
+  }
+
+  private async handleRunCommand(event: DiscordRunCommandEvent): Promise<void> {
+    try {
+      const busyReason = this.runtimeBusyReason(event.guildId, event.channelId);
+      if (busyReason) {
+        await event.respond(busyReason);
+        return;
+      }
+      if (this.options.isPaused?.()) {
+        await event.respond("Runtime is paused; /run did not start.");
+        return;
+      }
+      await event.respond("Started orchestrator run.");
+      void this.startChannelRun(event.guildId, event.channelId, `slash-run:${event.userId}`);
+    } catch (error) {
+      this.options.logger.error("Run command failed", {
+        guildId: event.guildId,
+        channelId: event.channelId,
+        message: error instanceof Error ? error.message : String(error)
+      });
+      await event.respond(error instanceof Error ? error.message : "Run failed.");
+    }
+  }
+
+  private runtimeBusyReason(guildId: string, channelId: string): string | undefined {
+    const key = runKey(guildId);
+    const activeRun = this.activeRuns.get(key);
+    if (activeRun) {
+      return activeRun.channelId === channelId
+        ? "Orchestrator is already running in this channel."
+        : "Orchestrator is already running in another channel for this server.";
+    }
+    if ((this.activeWaifuQueries.get(key) ?? 0) > 0) {
+      return "A waifu response query is already in flight.";
+    }
+    if ((this.activeReviewerRuns.get(key) ?? 0) > 0) {
+      return "Reviewer is already running.";
+    }
+    return undefined;
   }
 
   private async startChannelRun(guildId: string, channelId: string, reason: string): Promise<void> {
@@ -414,6 +461,7 @@ export class RuntimeOrchestrator {
           signal
         });
         const waifuPipeline = await this.pipelineFor(waifu.modelId);
+        const waifuModelId = waifu.modelId;
         this.options.logger.info("Generating waifu reply", {
           guildId,
           channelId,
@@ -428,18 +476,26 @@ export class RuntimeOrchestrator {
         });
         try {
           const currentWaifuAuthorIds = await this.waifuAuthorIdsFor(waifu.botId);
-          const result = await waifuPipeline.generateWaifu({
-            modelId: waifu.modelId,
-            messages: waifuMessages,
-            systemPrompt: await this.buildWaifuSystemPrompt(guildId, waifu),
-            sceneDirection: selected.sceneDirection,
-            temperature: waifu.generation.temperature,
-            topP: waifu.generation.topP,
-            maxOutputTokens: waifu.generation.maxOutputTokens,
-            reasoning: waifu.reasoning,
-            currentWaifuAuthorIds,
-            signal
-          });
+          const waifuQueryKey = runKey(guildId);
+          incrementActive(this.activeWaifuQueries, waifuQueryKey);
+          const result = await (async () => {
+            try {
+              return await waifuPipeline.generateWaifu({
+                modelId: waifuModelId,
+                messages: waifuMessages,
+                systemPrompt: await this.buildWaifuSystemPrompt(guildId, waifu),
+                sceneDirection: selected.sceneDirection,
+                temperature: waifu.generation.temperature,
+                topP: waifu.generation.topP,
+                maxOutputTokens: waifu.generation.maxOutputTokens,
+                reasoning: waifu.reasoning,
+                currentWaifuAuthorIds,
+                signal
+              });
+            } finally {
+              decrementActive(this.activeWaifuQueries, waifuQueryKey);
+            }
+          })();
           const activeAuthorIds = waifuMessages.map((message) => message.authorId);
           const cleanedContent = stripLeakedContextHeader(result.content, {
             senderDisplayName: waifu.displayName
@@ -592,6 +648,22 @@ export class RuntimeOrchestrator {
     commandMessageId?: string;
     triggerAfterActiveRun?: boolean;
   }): Promise<{ hallucination: boolean; deleted: boolean; messageIds: string[] }> {
+    const key = runKey(input.guildId);
+    incrementActive(this.activeReviewerRuns, key);
+    try {
+      return await this.runReviewerInternal(input);
+    } finally {
+      decrementActive(this.activeReviewerRuns, key);
+    }
+  }
+
+  private async runReviewerInternal(input: {
+    guildId: string;
+    channelId: string;
+    userId?: string;
+    commandMessageId?: string;
+    triggerAfterActiveRun?: boolean;
+  }): Promise<{ hallucination: boolean; deleted: boolean; messageIds: string[] }> {
     const versionKey = timerKey(input.guildId, input.channelId);
     const runVersionAtStart = this.channelRunVersions.get(versionKey) ?? 0;
     const config = await this.readAgentConfig("reviewer", 20);
@@ -674,7 +746,7 @@ export class RuntimeOrchestrator {
     return { hallucination: decision.hallucination, deleted, messageIds };
   }
 
-  private async clearLatestWaifuMessages(guildId: string, channelId: string, count: number): Promise<{
+  private async clearLatestMessages(guildId: string, channelId: string, count: number, type: DiscordClearType): Promise<{
     deleted: boolean;
     logicalMessageCount: number;
     messageIds: string[];
@@ -688,7 +760,7 @@ export class RuntimeOrchestrator {
     });
     const targets = [...messages]
       .reverse()
-      .filter((message) => message.authorKind === "waifu")
+      .filter((message) => type === "all" || message.authorKind === "waifu")
       .slice(0, clearCount);
     const seenMessageIds = new Set<string>();
     const messageIds: string[] = [];
@@ -1267,6 +1339,24 @@ function summarizeProviderPipelineDetails(details: unknown): string {
 function normalizeClearCount(count: number): number {
   if (!Number.isFinite(count)) return 1;
   return Math.max(1, Math.min(MAX_CLEAR_COUNT, Math.trunc(count)));
+}
+
+function clearMessageLabel(type: DiscordClearType, count: number): string {
+  if (type === "all") return count === 1 ? "message" : "messages";
+  return count === 1 ? "waifu message" : "waifu messages";
+}
+
+function incrementActive(map: Map<string, number>, key: string): void {
+  map.set(key, (map.get(key) ?? 0) + 1);
+}
+
+function decrementActive(map: Map<string, number>, key: string): void {
+  const next = (map.get(key) ?? 0) - 1;
+  if (next > 0) {
+    map.set(key, next);
+  } else {
+    map.delete(key);
+  }
 }
 
 function defaultSleep(ms: number, signal?: AbortSignal): Promise<void> {

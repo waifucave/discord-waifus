@@ -8,6 +8,8 @@ import {
   DiscordClearCommandListener,
   DiscordReviewCommandEvent,
   DiscordReviewCommandListener,
+  DiscordRunCommandEvent,
+  DiscordRunCommandListener,
   DiscordRuntimeStatus
 } from "../src/discord/client.js";
 import {
@@ -46,6 +48,7 @@ class FakeDiscord implements DiscordGatewayFacade {
   deleted: Array<{ guildId: string; channelId: string; messageIds: string[]; authorId?: string }> = [];
   reviewListeners = new Set<DiscordReviewCommandListener>();
   clearListeners = new Set<DiscordClearCommandListener>();
+  runListeners = new Set<DiscordRunCommandListener>();
   contexts: ContextMessage[][] = [
     [contextMessage("m1", "user", "Kevin", "hello")],
     [contextMessage("m1", "user", "Kevin", "hello")],
@@ -68,6 +71,11 @@ class FakeDiscord implements DiscordGatewayFacade {
     return () => this.clearListeners.delete(listener);
   }
 
+  onRunCommand(listener: DiscordRunCommandListener): () => void {
+    this.runListeners.add(listener);
+    return () => this.runListeners.delete(listener);
+  }
+
   async emitReviewCommand(
     event: Omit<DiscordReviewCommandEvent, "respond"> & { respond?: DiscordReviewCommandEvent["respond"] }
   ): Promise<void> {
@@ -86,6 +94,19 @@ class FakeDiscord implements DiscordGatewayFacade {
   ): Promise<void> {
     await Promise.all(
       [...this.clearListeners].map((listener) =>
+        listener({
+          ...event,
+          respond: event.respond ?? (async () => undefined)
+        })
+      )
+    );
+  }
+
+  async emitRunCommand(
+    event: Omit<DiscordRunCommandEvent, "respond"> & { respond?: DiscordRunCommandEvent["respond"] }
+  ): Promise<void> {
+    await Promise.all(
+      [...this.runListeners].map((listener) =>
         listener({
           ...event,
           respond: event.respond ?? (async () => undefined)
@@ -505,6 +526,299 @@ describe("RuntimeOrchestrator", () => {
       }
     ]);
     expect(responses).toEqual(["Cleared 2 waifu messages (3 Discord chunks)."]);
+  });
+
+  it("clears latest messages from any author when /clear type is all", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.contexts = [
+      [
+        contextMessage("old-waifu", "waifu", "Yuki", "old reply"),
+        contextMessage("user-1", "user", "Kevin", "first user message"),
+        contextMessage("waifu-2", "waifu", "Yuki", "latest waifu reply", ["waifu-1", "waifu-2"]),
+        contextMessage("user-2", "user", "Kevin", "latest user message")
+      ]
+    ];
+
+    await seedRuntimeConfig(storage);
+
+    const runtime = new RuntimeOrchestrator({
+      storage,
+      discord,
+      createPipeline: () => ({
+        async generateWaifu() {
+          return { content: "unused" };
+        }
+      }),
+      logger: {
+        debug: () => undefined,
+        info: () => undefined,
+        warn: () => undefined,
+        error: () => undefined
+      }
+    });
+    await runtime.start();
+
+    const responses: string[] = [];
+    let resolveClear: () => void = () => undefined;
+    const cleared = new Promise<void>((resolve) => {
+      resolveClear = resolve;
+    });
+    await discord.emitClearCommand({
+      guildId: "guild-1",
+      channelId: "channel-1",
+      userId: "moderator-user",
+      count: 2,
+      type: "all",
+      respond: async (content) => {
+        responses.push(content);
+        resolveClear();
+      }
+    });
+    await Promise.race([
+      cleared,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("clear command did not respond")), 1000))
+    ]);
+    await runtime.stop();
+
+    expect(discord.deleted).toEqual([
+      {
+        guildId: "guild-1",
+        channelId: "channel-1",
+        messageIds: ["user-2"],
+        authorId: "u1"
+      },
+      {
+        guildId: "guild-1",
+        channelId: "channel-1",
+        messageIds: ["waifu-1", "waifu-2"],
+        authorId: "yuki-bot"
+      }
+    ]);
+    expect(responses).toEqual(["Cleared 2 messages (3 Discord chunks)."]);
+  });
+
+  it("runs the orchestrator from /run when the channel is idle", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.contexts = [[contextMessage("m1", "user", "Kevin", "hello")]];
+
+    let resolveOrchestrated: () => void = () => undefined;
+    const orchestrated = new Promise<void>((resolve) => {
+      resolveOrchestrated = resolve;
+    });
+    const pipeline: ModelPipeline = {
+      async generateWaifu() {
+        return { content: "unused" };
+      },
+      async decideOrchestrator() {
+        resolveOrchestrated();
+        return { action: "no_reply", retriggerAfterSeconds: 100, reasoning: "manual run complete" };
+      }
+    };
+
+    await seedRuntimeConfig(storage);
+
+    const runtime = new RuntimeOrchestrator({
+      storage,
+      discord,
+      createPipeline: () => pipeline,
+      logger: {
+        debug: () => undefined,
+        info: () => undefined,
+        warn: () => undefined,
+        error: () => undefined
+      }
+    });
+    await runtime.start();
+
+    const responses: string[] = [];
+    let resolveRun: () => void = () => undefined;
+    const runResponded = new Promise<void>((resolve) => {
+      resolveRun = resolve;
+    });
+    await discord.emitRunCommand({
+      guildId: "guild-1",
+      channelId: "channel-1",
+      userId: "runner-user",
+      respond: async (content) => {
+        responses.push(content);
+        resolveRun();
+      }
+    });
+    await Promise.all([
+      Promise.race([
+        runResponded,
+        new Promise((_, reject) => setTimeout(() => reject(new Error("run command did not respond")), 1000))
+      ]),
+      Promise.race([
+        orchestrated,
+        new Promise((_, reject) => setTimeout(() => reject(new Error("orchestrator did not run")), 1000))
+      ])
+    ]);
+    await runtime.stop();
+
+    expect(responses).toEqual(["Started orchestrator run."]);
+  });
+
+  it("does not restart an already active run from /run", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.contexts = [[contextMessage("m1", "user", "Kevin", "hello")]];
+
+    let orchestratorCalls = 0;
+    let resolveEntered: () => void = () => undefined;
+    let releaseOrchestrator: () => void = () => undefined;
+    const entered = new Promise<void>((resolve) => {
+      resolveEntered = resolve;
+    });
+    const release = new Promise<void>((resolve) => {
+      releaseOrchestrator = resolve;
+    });
+    const pipeline: ModelPipeline = {
+      async generateWaifu() {
+        return { content: "unused" };
+      },
+      async decideOrchestrator() {
+        orchestratorCalls += 1;
+        resolveEntered();
+        await release;
+        return { action: "no_reply", retriggerAfterSeconds: 100, reasoning: "active run complete" };
+      }
+    };
+
+    await seedRuntimeConfig(storage);
+
+    const runtime = new RuntimeOrchestrator({
+      storage,
+      discord,
+      createPipeline: () => pipeline,
+      logger: {
+        debug: () => undefined,
+        info: () => undefined,
+        warn: () => undefined,
+        error: () => undefined
+      }
+    });
+    await runtime.start();
+
+    const running = runtime.triggerChannel("guild-1", "channel-1", "test-active-run");
+    await Promise.race([
+      entered,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("orchestrator did not enter")), 1000))
+    ]);
+
+    const responses: string[] = [];
+    let resolveRun: () => void = () => undefined;
+    const runResponded = new Promise<void>((resolve) => {
+      resolveRun = resolve;
+    });
+    await discord.emitRunCommand({
+      guildId: "guild-1",
+      channelId: "channel-1",
+      userId: "runner-user",
+      respond: async (content) => {
+        responses.push(content);
+        resolveRun();
+      }
+    });
+    await Promise.race([
+      runResponded,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("run command did not respond")), 1000))
+    ]);
+    releaseOrchestrator();
+    await running;
+    await runtime.stop();
+
+    expect(responses).toEqual(["Orchestrator is already running in this channel."]);
+    expect(orchestratorCalls).toBe(1);
+  });
+
+  it("does not start /run while reviewer is in flight", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.contexts = [
+      [contextMessage("waifu-message", "waifu", "Yuki", "latest waifu reply")]
+    ];
+
+    let resolveReviewerEntered: () => void = () => undefined;
+    let releaseReviewer: () => void = () => undefined;
+    const reviewerEntered = new Promise<void>((resolve) => {
+      resolveReviewerEntered = resolve;
+    });
+    const reviewerRelease = new Promise<void>((resolve) => {
+      releaseReviewer = resolve;
+    });
+    const pipeline: ModelPipeline = {
+      async generateWaifu() {
+        return { content: "unused" };
+      },
+      async decideReviewer() {
+        resolveReviewerEntered();
+        await reviewerRelease;
+        return { hallucination: false };
+      },
+      async decideOrchestrator() {
+        return { action: "no_reply", retriggerAfterSeconds: 100, reasoning: "review complete" };
+      }
+    };
+
+    await seedRuntimeConfig(storage);
+
+    const runtime = new RuntimeOrchestrator({
+      storage,
+      discord,
+      createPipeline: () => pipeline,
+      logger: {
+        debug: () => undefined,
+        info: () => undefined,
+        warn: () => undefined,
+        error: () => undefined
+      }
+    });
+    await runtime.start();
+
+    const reviewing = runtime.triggerReviewer("guild-1", "channel-1", "reviewer-user");
+    await Promise.race([
+      reviewerEntered,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("reviewer did not enter")), 1000))
+    ]);
+
+    const responses: string[] = [];
+    let resolveRun: () => void = () => undefined;
+    const runResponded = new Promise<void>((resolve) => {
+      resolveRun = resolve;
+    });
+    await discord.emitRunCommand({
+      guildId: "guild-1",
+      channelId: "channel-1",
+      userId: "runner-user",
+      respond: async (content) => {
+        responses.push(content);
+        resolveRun();
+      }
+    });
+    await Promise.race([
+      runResponded,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("run command did not respond")), 1000))
+    ]);
+    releaseReviewer();
+    await reviewing;
+    await runtime.stop();
+
+    expect(responses).toEqual(["Reviewer is already running."]);
   });
 
   it("lets the orchestrator delegate suspected hallucinations to the reviewer", async () => {
