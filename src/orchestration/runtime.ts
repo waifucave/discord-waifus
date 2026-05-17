@@ -212,11 +212,15 @@ export class RuntimeOrchestrator {
 
   private async handleClearCommand(event: DiscordClearCommandEvent): Promise<void> {
     try {
-      const result = await this.clearLatestWaifuMessage(event.guildId, event.channelId);
+      const result = await this.clearLatestWaifuMessages(event.guildId, event.channelId, event.count ?? 1);
       if (result.messageIds.length === 0) {
         await event.respond("No waifu message found to clear.");
       } else if (result.deleted) {
-        await event.respond(`Cleared ${result.messageIds.length} waifu message chunk${result.messageIds.length === 1 ? "" : "s"}.`);
+        const messageLabel = result.logicalMessageCount === 1 ? "waifu message" : "waifu messages";
+        const chunkSuffix = result.messageIds.length === result.logicalMessageCount
+          ? ""
+          : ` (${result.messageIds.length} Discord chunks)`;
+        await event.respond(`Cleared ${result.logicalMessageCount} ${messageLabel}${chunkSuffix}.`);
       } else {
         await event.respond("Clear failed. Check bot message permissions.");
       }
@@ -670,32 +674,57 @@ export class RuntimeOrchestrator {
     return { hallucination: decision.hallucination, deleted, messageIds };
   }
 
-  private async clearLatestWaifuMessage(guildId: string, channelId: string): Promise<{
+  private async clearLatestWaifuMessages(guildId: string, channelId: string, count: number): Promise<{
     deleted: boolean;
+    logicalMessageCount: number;
     messageIds: string[];
   }> {
+    const clearCount = normalizeClearCount(count);
     const server = await this.ensureServer(guildId);
     const messages = await this.options.discord.fetchFreshContext({
       guildId,
       channelId,
-      limit: server.contextWindows.waifu
+      limit: Math.max(server.contextWindows.waifu, clearCount)
     });
-    const target = [...messages].reverse().find((message) => message.authorKind === "waifu");
-    const messageIds = target ? target.sourceMessageIds ?? [target.id] : [];
-    if (!target || messageIds.length === 0) {
-      return { deleted: false, messageIds: [] };
+    const targets = [...messages]
+      .reverse()
+      .filter((message) => message.authorKind === "waifu")
+      .slice(0, clearCount);
+    const seenMessageIds = new Set<string>();
+    const messageIds: string[] = [];
+    const messageIdsByAuthor = new Map<string, string[]>();
+    for (const target of targets) {
+      const targetMessageIds = target.sourceMessageIds ?? [target.id];
+      for (const messageId of targetMessageIds) {
+        if (seenMessageIds.has(messageId)) continue;
+        seenMessageIds.add(messageId);
+        messageIds.push(messageId);
+        const authorMessageIds = messageIdsByAuthor.get(target.authorId) ?? [];
+        authorMessageIds.push(messageId);
+        messageIdsByAuthor.set(target.authorId, authorMessageIds);
+      }
+    }
+    if (targets.length === 0 || messageIds.length === 0) {
+      return { deleted: false, logicalMessageCount: 0, messageIds: [] };
     }
     if (!this.options.discord.deleteMessages) {
       throw new Error("Discord message deletion is not available.");
     }
-    const deletion = await this.options.discord.deleteMessages({
-      guildId,
-      channelId,
-      messageIds,
-      authorId: target.authorId
-    });
+    const deletedMessageIds = new Set<string>();
+    for (const [authorId, authorMessageIds] of messageIdsByAuthor) {
+      const deletion = await this.options.discord.deleteMessages({
+        guildId,
+        channelId,
+        messageIds: authorMessageIds,
+        authorId
+      });
+      for (const deletedMessageId of deletion.deletedMessageIds) {
+        deletedMessageIds.add(deletedMessageId);
+      }
+    }
     return {
-      deleted: messageIds.every((messageId) => deletion.deletedMessageIds.includes(messageId)),
+      deleted: messageIds.every((messageId) => deletedMessageIds.has(messageId)),
+      logicalMessageCount: targets.length,
       messageIds
     };
   }
@@ -1235,6 +1264,11 @@ function summarizeProviderPipelineDetails(details: unknown): string {
   }
 }
 
+function normalizeClearCount(count: number): number {
+  if (!Number.isFinite(count)) return 1;
+  return Math.max(1, Math.min(MAX_CLEAR_COUNT, Math.trunc(count)));
+}
+
 function defaultSleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
@@ -1261,6 +1295,7 @@ const DEFAULT_REVIEWER_PROMPT = [
 ].join("\n");
 
 const TYPING_REFRESH_MS = 8000;
+const MAX_CLEAR_COUNT = 100;
 
 type TypingScope = { stop: () => void };
 

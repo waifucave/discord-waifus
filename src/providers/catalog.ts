@@ -61,7 +61,7 @@ export const PROVIDER_CATALOG: ProviderMetadata[] = [
     id: "zai",
     displayName: "Z.AI",
     credentialName: "ZAI_API_KEY",
-    baseUrl: "https://api.z.ai/api/paas/v4",
+    baseUrl: "https://api.z.ai/api/coding/paas/v4",
     docsUrl: "https://docs.z.ai/guides/overview/migrate-to-glm-new",
     models: [
       zaiModel("glm-4.7", "GLM 4.7"),

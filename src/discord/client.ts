@@ -1,4 +1,4 @@
-import { Client, Events, GatewayIntentBits, MessageFlags, Partials } from "discord.js";
+import { ApplicationCommandOptionType, Client, Events, GatewayIntentBits, MessageFlags, Partials } from "discord.js";
 import type { ChatInputCommandInteraction } from "discord.js";
 import { Logger } from "../backend/logger.js";
 import { ContextMessage } from "../orchestration/context.js";
@@ -72,7 +72,9 @@ export type DiscordSlashCommandEvent = {
 };
 
 export type DiscordReviewCommandEvent = DiscordSlashCommandEvent;
-export type DiscordClearCommandEvent = DiscordSlashCommandEvent;
+export type DiscordClearCommandEvent = DiscordSlashCommandEvent & {
+  count?: number;
+};
 export type DiscordReviewCommandListener = (event: DiscordReviewCommandEvent) => void | Promise<void>;
 export type DiscordClearCommandListener = (event: DiscordClearCommandEvent) => void | Promise<void>;
 
@@ -454,6 +456,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
       guildId: interaction.guildId,
       channelId: interaction.channelId,
       userId: interaction.user.id,
+      count: interaction.options.getInteger(CLEAR_COUNT_OPTION_NAME) ?? 1,
       respond: async (content) => {
         await interaction.editReply(content);
       }
@@ -612,6 +615,8 @@ const SNOWFLAKE_PATTERN = /^\d{17,20}$/;
 const MENTION_REFRESH_COOLDOWN_MS = 5 * 60 * 1000;
 const REVIEW_COMMAND_NAME = "review";
 const CLEAR_COMMAND_NAME = "clear";
+const CLEAR_COUNT_OPTION_NAME = "count";
+const MAX_CLEAR_COUNT = 100;
 
 function sanitizeReplyTarget(value?: string): string | undefined {
   return value && SNOWFLAKE_PATTERN.test(value) ? value : undefined;
@@ -628,7 +633,17 @@ async function registerOrchestratorCommands(client: Client, logger?: Logger): Pr
       },
       {
         name: CLEAR_COMMAND_NAME,
-        description: "Delete the latest waifu message without running reviewer judgment."
+        description: "Delete the latest waifu messages without running reviewer judgment.",
+        options: [
+          {
+            type: ApplicationCommandOptionType.Integer as ApplicationCommandOptionType.Integer,
+            name: CLEAR_COUNT_OPTION_NAME,
+            description: "How many latest waifu messages to delete.",
+            required: false,
+            min_value: 1,
+            max_value: MAX_CLEAR_COUNT
+          }
+        ]
       }
     ];
     const commands = await manager.fetch();

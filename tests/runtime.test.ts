@@ -436,9 +436,75 @@ describe("RuntimeOrchestrator", () => {
         authorId: "yuki-bot"
       }
     ]);
-    expect(responses).toEqual(["Cleared 2 waifu message chunks."]);
+    expect(responses).toEqual(["Cleared 1 waifu message (2 Discord chunks)."]);
     expect(reviewerCalls).toBe(0);
     expect(orchestratorCalls).toBe(0);
+  });
+
+  it("clears the requested number of latest logical waifu messages", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.contexts = [
+      [
+        contextMessage("old", "waifu", "Yuki", "old reply"),
+        contextMessage("m1", "user", "Kevin", "hello"),
+        contextMessage("mid-2", "waifu", "Yuki", "middle reply", ["mid-1", "mid-2"]),
+        contextMessage("new", "waifu", "Yuki", "new reply")
+      ]
+    ];
+
+    await seedRuntimeConfig(storage);
+
+    const runtime = new RuntimeOrchestrator({
+      storage,
+      discord,
+      createPipeline: () => ({
+        async generateWaifu() {
+          return { content: "unused" };
+        }
+      }),
+      logger: {
+        debug: () => undefined,
+        info: () => undefined,
+        warn: () => undefined,
+        error: () => undefined
+      }
+    });
+    await runtime.start();
+
+    const responses: string[] = [];
+    let resolveClear: () => void = () => undefined;
+    const cleared = new Promise<void>((resolve) => {
+      resolveClear = resolve;
+    });
+    await discord.emitClearCommand({
+      guildId: "guild-1",
+      channelId: "channel-1",
+      userId: "moderator-user",
+      count: 2,
+      respond: async (content) => {
+        responses.push(content);
+        resolveClear();
+      }
+    });
+    await Promise.race([
+      cleared,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("clear command did not respond")), 1000))
+    ]);
+    await runtime.stop();
+
+    expect(discord.deleted).toEqual([
+      {
+        guildId: "guild-1",
+        channelId: "channel-1",
+        messageIds: ["new", "mid-1", "mid-2"],
+        authorId: "yuki-bot"
+      }
+    ]);
+    expect(responses).toEqual(["Cleared 2 waifu messages (3 Discord chunks)."]);
   });
 
   it("lets the orchestrator delegate suspected hallucinations to the reviewer", async () => {
