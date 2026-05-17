@@ -142,6 +142,46 @@ describe("provider-native decision tools", () => {
   });
 });
 
+describe("scene direction payloads", () => {
+  it("wraps OpenAI-compatible chat scene direction without a name field", async () => {
+    mockFetch({ choices: [{ message: { content: "ok" } }] });
+
+    const pipeline = createModelPipeline("grok-4.3", { apiKey: "xai-test" });
+    await pipeline.generateWaifu({
+      modelId: "grok-4.3",
+      messages: context,
+      systemPrompt: "stay in character",
+      sceneDirection: "answer Kevin"
+    });
+
+    const query = recentQueries().at(-1);
+    const messages = query?.payload.messages as Array<{ role: string; name?: string; content: string }>;
+    expect(messages.at(-1)).toEqual({
+      role: "system",
+      content: "<scene_direction>answer Kevin</scene_direction>"
+    });
+  });
+
+  it("wraps OpenAI Responses scene direction without a name field", async () => {
+    mockFetch({ output_text: "ok" });
+
+    const pipeline = createModelPipeline("gpt-4o-mini", { apiKey: "openai-test" });
+    await pipeline.generateWaifu({
+      modelId: "gpt-4o-mini",
+      messages: context,
+      systemPrompt: "stay in character",
+      sceneDirection: "answer Kevin"
+    });
+
+    const query = recentQueries().at(-1);
+    const input = query?.payload.input as Array<{ role: string; name?: string; content: string }>;
+    expect(input.at(-1)).toEqual({
+      role: "system",
+      content: "<scene_direction>answer Kevin</scene_direction>"
+    });
+  });
+});
+
 function mockFetch(json: unknown): void {
   vi.stubGlobal(
     "fetch",

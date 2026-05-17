@@ -63,7 +63,9 @@ class OpenAiCompatibleChatPipeline implements ModelPipeline {
         messages: [
           { role: "system", content: request.systemPrompt },
           ...contextToChatMessagesForWaifu(request.messages, request.currentWaifuAuthorIds ?? []),
-          ...(request.sceneDirection ? [{ role: "system", name: "scene_direction", content: request.sceneDirection }] : [])
+          ...(request.sceneDirection
+            ? [{ role: "system", content: `<scene_direction>${request.sceneDirection}</scene_direction>` }]
+            : [])
         ],
         temperature: request.temperature ?? this.model.defaultTemperature,
         top_p: request.topP ?? this.model.defaultTopP,
@@ -177,7 +179,9 @@ class OpenAiResponsesPipeline implements ModelPipeline {
         instructions: request.systemPrompt,
         input: [
           ...contextToResponsesInputForWaifu(request.messages, request.currentWaifuAuthorIds ?? []),
-          ...(request.sceneDirection ? [{ role: "system", name: "scene_direction", content: request.sceneDirection }] : [])
+          ...(request.sceneDirection
+            ? [{ role: "system", content: `<scene_direction>${request.sceneDirection}</scene_direction>` }]
+            : [])
         ],
         temperature: request.temperature ?? this.model.defaultTemperature,
         top_p: request.topP ?? this.model.defaultTopP,
