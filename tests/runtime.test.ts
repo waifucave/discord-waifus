@@ -163,7 +163,7 @@ class FakePipeline implements ModelPipeline {
   async generateWaifu(request: WaifuGenerationRequest) {
     expect(request.systemPrompt).toContain("You are Yuki");
     expect(request.systemPrompt).toMatch(
-      /<\/yuki_behavior>\n<current_time>\n\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z \(UTC\)\n<\/current_time>\n<available_server_emojis>/
+      /<\/yuki_behavior>\n<available_server_emojis>[\s\S]*<\/available_server_emojis>\n<current_time>\n\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z \(UTC\)\n<\/current_time>/
     );
     expect(request.sceneDirection).toBe("answer Kevin");
     return { content: "hello <@Kevin> <:cutecat:>" };

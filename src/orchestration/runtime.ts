@@ -1102,7 +1102,7 @@ export class RuntimeOrchestrator {
     const currentTimeBlock = `<current_time>\n${formatTimestamp(new Date())} (UTC)\n</current_time>`;
     const emojiBlock = `<available_server_emojis>\n${emojiList || "(none cached)"}\n</available_server_emojis>`;
 
-    return `${behaviorBlock}\n${currentTimeBlock}\n${emojiBlock}`;
+    return `${behaviorBlock}\n${emojiBlock}\n${currentTimeBlock}`;
   }
 
   private buildOrchestratorSystemPrompt(
@@ -1131,7 +1131,7 @@ export class RuntimeOrchestrator {
       "- retriggerAfterSeconds must be between 100 and 28800."
     ].join("\n");
 
-    const taskInstructions = orchestrator.prompt?.trim() || DEFAULT_ORCHESTRATOR_PROMPT;
+    const taskInstructions = DEFAULT_ORCHESTRATOR_PROMPT;
 
     const loopBreaking = [
       "The recent messages in context are your most important signal. If the waifus are circling the same topic, the same vibe, or the same back-and-forth, they will keep circling unless you actively redirect them — each waifu only sees her own persona and the chat, so only you can see the loop forming from the outside.",
@@ -1427,11 +1427,19 @@ const DEFAULT_REVIEWER_PROMPT = [
 ].join("\n");
 
 const DEFAULT_ORCHESTRATOR_PROMPT = [
-  "You watch one Discord channel and orchestrate a small cast of waifu personas. On each new message decide, from outside the scene:",
-  "- which waifu (or, if a moment naturally calls for it, which subset) should speak next, judged by personality fit and the current flow of the chat — not by rules, ordering, or fairness",
-  "- whether to inject a sceneDirection because there is something specific you want her to address, or to leave it empty and let her improvise from her persona",
-  "- whether to instead pick stage_manager (something memorable just happened and should be persisted), reviewer (the latest waifu message looks like leaked internals), or no_reply (any answer right now would be intrusive, redundant, or aimed at no one)",
-  "The goal is a natural-feeling group chat — varied speakers, voices that match each waifu's persona, and silences when silence fits. You are the only agent that sees the whole picture, so when the chat is stalling it is your job to nudge it back into motion through sceneDirection."
+  "You watch one Discord channel and orchestrate a small cast of waifu personas. On each new message, decide from outside the scene which (if any) waifu should speak next, in what order, and with what scene direction.",
+  "",
+  "Be natural. Real group chats do not require everyone to reply every time, and not every beat needs a response — treat the room like a living scene, not a turn-taking queue. Pacing, silence, interruption, overlap, comedy, and escalation are all valid moves. Pick the waifu whose personality fits the moment based on her voice and the current flow; the same waifu may speak again, a different one may jump in, or two may chain if it feels right.",
+  "",
+  "Choose between the four actions based on what the room actually needs:",
+  "- waifus when one or more waifus should respond now.",
+  "- no_reply when answering right now would be intrusive, redundant, or aimed at no one — silence is a valid choice when the scene fits it.",
+  "- stage_manager when something memorable has happened (a new fact about a user, a relationship change, an event worth remembering) and the memory pass should run before the next reply.",
+  "- reviewer when the latest waifu message looks like leaked internals or hallucinated private model text.",
+  "",
+  "If a recent user message or direct ping was missed while the room moved on, prefer steering a waifu to acknowledge it so the chat stays socially inclusive — unless silence is clearly the more natural choice.",
+  "",
+  "Reach for sceneDirection when the next reply needs steering that personality alone won't provide: redirecting topic, closing a beat, creating an interruption, shifting momentum, or deliberately starting something new even when it cuts against the current flow. Prefer a natural bridge when pivoting, but a jarring shift is fine if the scene needs it. Keep sceneDirection short, concrete, and immediately actionable — one sentence is usually enough. When you refer to a specific person, use their actual display name from the chat history, never generic phrases like \"the user\". Name intended participants explicitly when more than one person is involved; avoid ambiguous group references like \"us\", \"them\", or \"everyone\". If multiple waifus respond in the same turn, each may receive a different sceneDirection."
 ].join("\n");
 
 const TYPING_REFRESH_MS = 8000;
