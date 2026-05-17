@@ -2,7 +2,12 @@ import { randomUUID } from "node:crypto";
 import { readdir } from "node:fs/promises";
 import path from "node:path";
 import { Logger } from "../backend/logger.js";
-import { DiscordGatewayFacade, DiscordMessageEvent, DiscordReviewCommandEvent } from "../discord/client.js";
+import {
+  DiscordClearCommandEvent,
+  DiscordGatewayFacade,
+  DiscordMessageEvent,
+  DiscordReviewCommandEvent
+} from "../discord/client.js";
 import { modelVisibleEmojiToken, stripLeakedContextHeader } from "../discord/normalization.js";
 import { splitWaifuReply, typingDelayMs } from "./messageSplit.js";
 import { getModel } from "../providers/catalog.js";
@@ -80,6 +85,9 @@ export class RuntimeOrchestrator {
       }),
       this.options.discord.onReviewCommand?.((event) => {
         void this.handleReviewCommand(event);
+      }),
+      this.options.discord.onClearCommand?.((event) => {
+        void this.handleClearCommand(event);
       })
     ].filter((unsubscribe): unsubscribe is () => void => Boolean(unsubscribe));
     if (this.options.discord.listGuilds) {
@@ -202,6 +210,26 @@ export class RuntimeOrchestrator {
     }
   }
 
+  private async handleClearCommand(event: DiscordClearCommandEvent): Promise<void> {
+    try {
+      const result = await this.clearLatestWaifuMessage(event.guildId, event.channelId);
+      if (result.messageIds.length === 0) {
+        await event.respond("No waifu message found to clear.");
+      } else if (result.deleted) {
+        await event.respond(`Cleared ${result.messageIds.length} waifu message chunk${result.messageIds.length === 1 ? "" : "s"}.`);
+      } else {
+        await event.respond("Clear failed. Check bot message permissions.");
+      }
+    } catch (error) {
+      this.options.logger.error("Clear command failed", {
+        guildId: event.guildId,
+        channelId: event.channelId,
+        message: error instanceof Error ? error.message : String(error)
+      });
+      await event.respond(error instanceof Error ? error.message : "Clear failed.");
+    }
+  }
+
   private async startChannelRun(guildId: string, channelId: string, reason: string): Promise<void> {
     const key = runKey(guildId);
     const versionKey = timerKey(guildId, channelId);
@@ -291,7 +319,7 @@ export class RuntimeOrchestrator {
         decision = await pipeline.decideOrchestrator({
           modelId: orchestrator.modelId,
           messages,
-          systemPrompt: this.buildOrchestratorSystemPrompt(orchestrator, server, channel, availableWaifus),
+          systemPrompt: this.buildOrchestratorSystemPrompt(orchestrator, server, availableWaifus),
           availableWaifuIds: availableWaifus.map((waifu) => waifu.id),
           reasoning: orchestrator.reasoning,
           signal
@@ -642,6 +670,36 @@ export class RuntimeOrchestrator {
     return { hallucination: decision.hallucination, deleted, messageIds };
   }
 
+  private async clearLatestWaifuMessage(guildId: string, channelId: string): Promise<{
+    deleted: boolean;
+    messageIds: string[];
+  }> {
+    const server = await this.ensureServer(guildId);
+    const messages = await this.options.discord.fetchFreshContext({
+      guildId,
+      channelId,
+      limit: server.contextWindows.waifu
+    });
+    const target = [...messages].reverse().find((message) => message.authorKind === "waifu");
+    const messageIds = target ? target.sourceMessageIds ?? [target.id] : [];
+    if (!target || messageIds.length === 0) {
+      return { deleted: false, messageIds: [] };
+    }
+    if (!this.options.discord.deleteMessages) {
+      throw new Error("Discord message deletion is not available.");
+    }
+    const deletion = await this.options.discord.deleteMessages({
+      guildId,
+      channelId,
+      messageIds,
+      authorId: target.authorId
+    });
+    return {
+      deleted: messageIds.every((messageId) => deletion.deletedMessageIds.includes(messageId)),
+      messageIds
+    };
+  }
+
   private async applyStageManagerCalls(calls: StageManagerToolCall[]): Promise<{
     changed: boolean;
     historyEntries: Array<{
@@ -926,7 +984,7 @@ export class RuntimeOrchestrator {
       "Keep replies short. One or two sentences is the norm; match the casual pacing of a Discord conversation rather than writing paragraphs.",
       "If you really need to express something longer, prefer splitting it into multiple short sentences rather than one long run-on. Each sentence in your reply is delivered as a separate Discord message, so short sentences read as a natural back-and-forth instead of a wall of text.",
       "Reply with only what you would actually type — no narration, no meta commentary, no describing yourself in the third person.",
-      "Mention users as <@DisplayName>, never raw Discord IDs.",
+      "To ping a user, write <@sender> — where `sender` is copied verbatim from the [sender: ...] tag on one of their messages. Example: a message tagged [sender: Kevin] is pinged as <@Kevin>. Never use raw Discord IDs.",
       "Use only listed server emojis."
     ].join("\n");
 
@@ -948,7 +1006,6 @@ export class RuntimeOrchestrator {
   private buildOrchestratorSystemPrompt(
     orchestrator: AgentConfig,
     server: ServerConfig,
-    channel: ServerConfig["channels"][string],
     availableWaifus: WaifuConfig[]
   ): string {
     const activeWaifusBlock = availableWaifus.length
@@ -965,9 +1022,10 @@ export class RuntimeOrchestrator {
       `## Active Waifus\n${activeWaifusBlock}`,
       `## Current Time\n${formatTimestamp(new Date())} (UTC)`,
       `Server: ${server.name ?? server.guildId}`,
-      `Channel ID: ${channel.channelId}${channel.name ? ` (${channel.name})` : ""}`,
       "Use replyToIndex only when replying to an older message that is no longer the latest visible message. If the waifu is answering the latest message in chat, omit replyToIndex so Discord sends a normal message.",
       "When action is \"waifus\", every selectedWaifus[].waifuId must exactly match one of the Active Waifus IDs listed above. Do not invent IDs such as \"waifu_alice\" or numeric placeholders. If none of the listed waifus should answer, choose no_reply.",
+      "If you want a waifu to do or say something specific, you MUST put it in her selectedWaifus[].sceneDirection. Without a scene direction she will improvise freely based only on her persona and the chat — she does not see your reasoning. Leave sceneDirection empty only when you genuinely want a free-form in-character reply.",
+      "If the recent messages in context are all variations of the same beat — same topic, same vibe, same back-and-forth looping on itself — break the loop. Pick the waifu whose personality most naturally fits a hard pivot and give her a sceneDirection that introduces a completely new topic, even one that feels random or non-sequitur. A jarring topic shift is preferable to letting the conversation stagnate.",
       "If you suspect the latest waifu message is hallucinating or leaking internals, choose reviewer; the reviewer model makes the final judgment."
     ]
       .filter(Boolean)

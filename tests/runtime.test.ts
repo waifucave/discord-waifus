@@ -4,6 +4,8 @@ import { ContextMessage } from "../src/orchestration/context.js";
 import { OrchestratorDecision } from "../src/orchestration/decisions.js";
 import {
   DiscordGatewayFacade,
+  DiscordClearCommandEvent,
+  DiscordClearCommandListener,
   DiscordReviewCommandEvent,
   DiscordReviewCommandListener,
   DiscordRuntimeStatus
@@ -43,6 +45,7 @@ class FakeDiscord implements DiscordGatewayFacade {
   typingCalls: Array<{ channelId: string; senderBotId?: string }> = [];
   deleted: Array<{ guildId: string; channelId: string; messageIds: string[]; authorId?: string }> = [];
   reviewListeners = new Set<DiscordReviewCommandListener>();
+  clearListeners = new Set<DiscordClearCommandListener>();
   contexts: ContextMessage[][] = [
     [contextMessage("m1", "user", "Kevin", "hello")],
     [contextMessage("m1", "user", "Kevin", "hello")],
@@ -60,11 +63,29 @@ class FakeDiscord implements DiscordGatewayFacade {
     return () => this.reviewListeners.delete(listener);
   }
 
+  onClearCommand(listener: DiscordClearCommandListener): () => void {
+    this.clearListeners.add(listener);
+    return () => this.clearListeners.delete(listener);
+  }
+
   async emitReviewCommand(
     event: Omit<DiscordReviewCommandEvent, "respond"> & { respond?: DiscordReviewCommandEvent["respond"] }
   ): Promise<void> {
     await Promise.all(
       [...this.reviewListeners].map((listener) =>
+        listener({
+          ...event,
+          respond: event.respond ?? (async () => undefined)
+        })
+      )
+    );
+  }
+
+  async emitClearCommand(
+    event: Omit<DiscordClearCommandEvent, "respond"> & { respond?: DiscordClearCommandEvent["respond"] }
+  ): Promise<void> {
+    await Promise.all(
+      [...this.clearListeners].map((listener) =>
         listener({
           ...event,
           respond: event.respond ?? (async () => undefined)
@@ -341,6 +362,83 @@ describe("RuntimeOrchestrator", () => {
       hallucination: true,
       deleted: true
     });
+  });
+
+  it("clears the latest waifu chunk group without running reviewer or retriggering orchestration", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.contexts = [
+      [
+        contextMessage("m1", "user", "Kevin", "hello"),
+        contextMessage("chunk-2", "waifu", "Yuki", "bad reply", ["chunk-1", "chunk-2"])
+      ]
+    ];
+
+    let reviewerCalls = 0;
+    let orchestratorCalls = 0;
+    const pipeline: ModelPipeline = {
+      async generateWaifu() {
+        return { content: "unused" };
+      },
+      async decideReviewer() {
+        reviewerCalls += 1;
+        return { hallucination: true };
+      },
+      async decideOrchestrator() {
+        orchestratorCalls += 1;
+        return { action: "no_reply", retriggerAfterSeconds: 100, reasoning: "unused" };
+      }
+    };
+
+    await seedRuntimeConfig(storage);
+
+    const runtime = new RuntimeOrchestrator({
+      storage,
+      discord,
+      createPipeline: () => pipeline,
+      logger: {
+        debug: () => undefined,
+        info: () => undefined,
+        warn: () => undefined,
+        error: () => undefined
+      }
+    });
+    await runtime.start();
+
+    const responses: string[] = [];
+    let resolveClear: () => void = () => undefined;
+    const cleared = new Promise<void>((resolve) => {
+      resolveClear = resolve;
+    });
+    await discord.emitClearCommand({
+      guildId: "guild-1",
+      channelId: "channel-1",
+      userId: "moderator-user",
+      respond: async (content) => {
+        responses.push(content);
+        resolveClear();
+      }
+    });
+    await Promise.race([
+      cleared,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("clear command did not respond")), 1000))
+    ]);
+    await runtime.stop();
+
+    expect(discord.deleted).toEqual([
+      {
+        guildId: "guild-1",
+        channelId: "channel-1",
+        messageIds: ["chunk-1", "chunk-2"],
+        authorId: "yuki-bot"
+      }
+    ]);
+    expect(responses).toEqual(["Cleared 2 waifu message chunks."]);
+    expect(reviewerCalls).toBe(0);
+    expect(orchestratorCalls).toBe(0);
   });
 
   it("lets the orchestrator delegate suspected hallucinations to the reviewer", async () => {

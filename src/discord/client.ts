@@ -24,6 +24,7 @@ export interface DiscordGatewayFacade {
   disconnect(): Promise<void>;
   onMessage?(listener: DiscordMessageListener): () => void;
   onReviewCommand?(listener: DiscordReviewCommandListener): () => void;
+  onClearCommand?(listener: DiscordClearCommandListener): () => void;
   listGuilds?(): Promise<Array<{ guildId: string; name: string }>>;
   fetchFreshContext(input: {
     guildId: string;
@@ -62,7 +63,7 @@ export type DiscordMessageEvent = {
 
 export type DiscordMessageListener = (event: DiscordMessageEvent) => void | Promise<void>;
 
-export type DiscordReviewCommandEvent = {
+export type DiscordSlashCommandEvent = {
   guildId: string;
   channelId: string;
   userId: string;
@@ -70,7 +71,10 @@ export type DiscordReviewCommandEvent = {
   respond: (content: string) => Promise<void>;
 };
 
+export type DiscordReviewCommandEvent = DiscordSlashCommandEvent;
+export type DiscordClearCommandEvent = DiscordSlashCommandEvent;
 export type DiscordReviewCommandListener = (event: DiscordReviewCommandEvent) => void | Promise<void>;
+export type DiscordClearCommandListener = (event: DiscordClearCommandEvent) => void | Promise<void>;
 
 export type DiscordDeleteMessagesResult = {
   deletedMessageIds: string[];
@@ -98,6 +102,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   private readonly clients = new Map<string, Client>();
   private readonly listeners = new Set<DiscordMessageListener>();
   private readonly reviewListeners = new Set<DiscordReviewCommandListener>();
+  private readonly clearListeners = new Set<DiscordClearCommandListener>();
   private readonly recentMentionRefreshes = new Map<string, number>();
 
   constructor(private readonly options: DiscordJsGatewayOptions) {}
@@ -138,14 +143,18 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
             }
           });
           client.on(Events.InteractionCreate, (interaction) => {
-            if (!interaction.isChatInputCommand() || interaction.commandName !== REVIEW_COMMAND_NAME) return;
-            void this.handleReviewInteraction(interaction);
+            if (!interaction.isChatInputCommand()) return;
+            if (interaction.commandName === REVIEW_COMMAND_NAME) {
+              void this.handleReviewInteraction(interaction);
+            } else if (interaction.commandName === CLEAR_COMMAND_NAME) {
+              void this.handleClearInteraction(interaction);
+            }
           });
         }
         await loginAndWaitUntilReady(client, bot.token);
         this.clients.set(bot.id, client);
         if (bot.id === this.options.orchestrator.id) {
-          await registerReviewCommand(client, this.options.logger);
+          await registerOrchestratorCommands(client, this.options.logger);
         }
         this.options.logger?.info("Discord bot connected", {
           botId: bot.id,
@@ -178,6 +187,11 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   onReviewCommand(listener: DiscordReviewCommandListener): () => void {
     this.reviewListeners.add(listener);
     return () => this.reviewListeners.delete(listener);
+  }
+
+  onClearCommand(listener: DiscordClearCommandListener): () => void {
+    this.clearListeners.add(listener);
+    return () => this.clearListeners.delete(listener);
   }
 
   async listGuilds(): Promise<Array<{ guildId: string; name: string }>> {
@@ -429,6 +443,25 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
       void listener(event);
     }
   }
+
+  private async handleClearInteraction(interaction: ChatInputCommandInteraction): Promise<void> {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    if (!interaction.guildId || !interaction.channelId) {
+      await interaction.editReply("/clear can only be used in a server channel.");
+      return;
+    }
+    const event: DiscordClearCommandEvent = {
+      guildId: interaction.guildId,
+      channelId: interaction.channelId,
+      userId: interaction.user.id,
+      respond: async (content) => {
+        await interaction.editReply(content);
+      }
+    };
+    for (const listener of this.clearListeners) {
+      void listener(event);
+    }
+  }
 }
 
 export class DiscordGatewayNotConfigured implements DiscordGatewayFacade {
@@ -578,28 +611,37 @@ function throwIfAborted(signal?: AbortSignal): void {
 const SNOWFLAKE_PATTERN = /^\d{17,20}$/;
 const MENTION_REFRESH_COOLDOWN_MS = 5 * 60 * 1000;
 const REVIEW_COMMAND_NAME = "review";
+const CLEAR_COMMAND_NAME = "clear";
 
 function sanitizeReplyTarget(value?: string): string | undefined {
   return value && SNOWFLAKE_PATTERN.test(value) ? value : undefined;
 }
 
-async function registerReviewCommand(client: Client, logger?: Logger): Promise<void> {
+async function registerOrchestratorCommands(client: Client, logger?: Logger): Promise<void> {
   try {
     const manager = client.application?.commands;
     if (!manager) return;
-    const payload = {
-      name: REVIEW_COMMAND_NAME,
-      description: "Review and remove the latest waifu message if it leaked hallucinated internals."
-    };
+    const payloads = [
+      {
+        name: REVIEW_COMMAND_NAME,
+        description: "Review and remove the latest waifu message if it leaked hallucinated internals."
+      },
+      {
+        name: CLEAR_COMMAND_NAME,
+        description: "Delete the latest waifu message without running reviewer judgment."
+      }
+    ];
     const commands = await manager.fetch();
-    const existing = commands.find((command) => command.name === REVIEW_COMMAND_NAME);
-    if (existing) {
-      await manager.edit(existing.id, payload);
-    } else {
-      await manager.create(payload);
+    for (const payload of payloads) {
+      const existing = commands.find((command) => command.name === payload.name);
+      if (existing) {
+        await manager.edit(existing.id, payload);
+      } else {
+        await manager.create(payload);
+      }
     }
   } catch (error) {
-    logger?.warn("Failed to register /review command", {
+    logger?.warn("Failed to register orchestrator slash commands", {
       message: error instanceof Error ? error.message : String(error)
     });
   }
