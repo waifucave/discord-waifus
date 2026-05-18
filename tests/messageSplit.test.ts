@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { splitWaifuReply, typingDelayMs } from "../src/orchestration/messageSplit.js";
+import { planWaifuReplyChunks, splitWaifuReply, typingDelayMs } from "../src/orchestration/messageSplit.js";
 
 describe("splitWaifuReply", () => {
   it("splits the user's example into three chunks", () => {
@@ -22,6 +22,22 @@ describe("splitWaifuReply", () => {
 
   it("does not split a decimal like 3.14", () => {
     expect(splitWaifuReply("Pi is 3.14 roughly.")).toEqual(["Pi is 3.14 roughly."]);
+  });
+});
+
+describe("planWaifuReplyChunks", () => {
+  it("keeps only the first two chunks when the third chunk is 18 characters or longer", () => {
+    expect(planWaifuReplyChunks(["One.", "Two.", "123456789 12345678", "Four."])).toEqual({
+      immediateChunks: ["One.", "Two."],
+      cachedChunks: ["123456789 12345678", "Four."]
+    });
+  });
+
+  it("allows the third chunk when it is shorter than 18 characters including spaces", () => {
+    expect(planWaifuReplyChunks(["One.", "Two.", "short third", "Four."])).toEqual({
+      immediateChunks: ["One.", "Two.", "short third"],
+      cachedChunks: ["Four."]
+    });
   });
 });
 

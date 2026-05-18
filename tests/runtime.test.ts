@@ -174,7 +174,7 @@ class FakePipeline implements ModelPipeline {
     expect(request.systemPrompt).toContain("<active_waifus>");
     expect(request.systemPrompt).toContain("ID: yuki");
     expect(request.systemPrompt).toContain("kind");
-    expect(request.systemPrompt).toContain("<current_time>");
+    expect(request.systemPrompt).not.toContain("<current_time>");
     expect(request.availableWaifuIds).toEqual(["yuki"]);
     const decision = this.decisions.shift();
     if (!decision) throw new Error("No fake decision left.");
@@ -951,6 +951,187 @@ describe("RuntimeOrchestrator", () => {
     expect(discord.sent[2].replyToMessageId).toBeUndefined();
     expect(discord.typingCalls.some((call) => call.senderBotId === "yuki-bot")).toBe(true);
     expect(discord.typingCalls.some((call) => call.senderBotId === undefined)).toBe(true);
+  });
+
+  it("caches overflow reply chunks and sends them after channel idle without another waifu query", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+
+    class OverflowPipeline implements ModelPipeline {
+      generateCalls = 0;
+      decisions: OrchestratorDecision[] = [
+        {
+          action: "waifus",
+          selectedWaifus: [{ waifuId: "yuki", sceneDirection: "answer", replyToMessageId: "m1" }],
+          reasoning: "Reply to Kevin."
+        },
+        { action: "no_reply", retriggerAfterSeconds: 100, reasoning: "wait" }
+      ];
+      async generateWaifu() {
+        this.generateCalls += 1;
+        return { content: "One. Two. This third chunk is too long. Four." };
+      }
+      async decideOrchestrator() {
+        const next = this.decisions.shift();
+        if (!next) throw new Error("no decision");
+        return next;
+      }
+    }
+
+    await seedRuntimeConfig(storage);
+
+    const pipeline = new OverflowPipeline();
+    const runtime = new RuntimeOrchestrator({
+      storage,
+      discord,
+      maxAutomaticTurns: 3,
+      continuationIdleMs: 1,
+      createPipeline: () => pipeline,
+      sleep: async () => undefined,
+      logger: {
+        debug: () => undefined,
+        info: () => undefined,
+        warn: () => undefined,
+        error: () => undefined
+      }
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await runtime.stop();
+
+    expect(discord.sent.map((entry) => entry.content)).toEqual([
+      "One.",
+      "Two.",
+      "This third chunk is too long.",
+      "Four."
+    ]);
+    expect(pipeline.generateCalls).toBe(1);
+  });
+
+  it("uses cached chunks when the orchestrator selects the same waifu with no scene direction", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+
+    class SameWaifuContinuationPipeline implements ModelPipeline {
+      generateCalls = 0;
+      decisions: OrchestratorDecision[] = [
+        {
+          action: "waifus",
+          selectedWaifus: [{ waifuId: "yuki", sceneDirection: "answer", replyToMessageId: "m1" }],
+          reasoning: "Reply to Kevin."
+        },
+        {
+          action: "waifus",
+          selectedWaifus: [{ waifuId: "yuki" }],
+          reasoning: "Let Yuki continue."
+        },
+        { action: "no_reply", retriggerAfterSeconds: 100, reasoning: "done" }
+      ];
+      async generateWaifu() {
+        this.generateCalls += 1;
+        return { content: "One. Two. This third chunk is too long. Four." };
+      }
+      async decideOrchestrator() {
+        const next = this.decisions.shift();
+        if (!next) throw new Error("no decision");
+        return next;
+      }
+    }
+
+    await seedRuntimeConfig(storage);
+
+    const pipeline = new SameWaifuContinuationPipeline();
+    const runtime = new RuntimeOrchestrator({
+      storage,
+      discord,
+      maxAutomaticTurns: 4,
+      continuationIdleMs: 60_000,
+      createPipeline: () => pipeline,
+      sleep: async () => undefined,
+      logger: {
+        debug: () => undefined,
+        info: () => undefined,
+        warn: () => undefined,
+        error: () => undefined
+      }
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    expect(discord.sent.map((entry) => entry.content)).toEqual([
+      "One.",
+      "Two.",
+      "This third chunk is too long.",
+      "Four."
+    ]);
+    expect(pipeline.generateCalls).toBe(1);
+  });
+
+  it("discards cached chunks when chat activity arrives after the trimmed waifu message", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+
+    class ActivityClearsContinuationPipeline implements ModelPipeline {
+      decisions: OrchestratorDecision[] = [
+        {
+          action: "waifus",
+          selectedWaifus: [{ waifuId: "yuki", sceneDirection: "answer", replyToMessageId: "m1" }],
+          reasoning: "Reply to Kevin."
+        },
+        { action: "no_reply", retriggerAfterSeconds: 100, reasoning: "wait" },
+        { action: "no_reply", retriggerAfterSeconds: 100, reasoning: "user spoke" }
+      ];
+      async generateWaifu() {
+        return { content: "One. Two. This third chunk is too long. Four." };
+      }
+      async decideOrchestrator() {
+        const next = this.decisions.shift();
+        if (!next) throw new Error("no decision");
+        return next;
+      }
+    }
+
+    await seedRuntimeConfig(storage);
+
+    const pipeline = new ActivityClearsContinuationPipeline();
+    const runtime = new RuntimeOrchestrator({
+      storage,
+      discord,
+      maxAutomaticTurns: 3,
+      continuationIdleMs: 100,
+      createPipeline: () => pipeline,
+      sleep: async () => undefined,
+      logger: {
+        debug: () => undefined,
+        info: () => undefined,
+        warn: () => undefined,
+        error: () => undefined
+      }
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.handleDiscordMessage({
+      guildId: "guild-1",
+      channelId: "channel-1",
+      messageId: "user-after-trim",
+      authorId: "kevin",
+      authorBot: false
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await runtime.stop();
+
+    expect(discord.sent.map((entry) => entry.content)).toEqual(["One.", "Two."]);
   });
 
   it("keeps Discord reply targets only for older non-latest messages", async () => {

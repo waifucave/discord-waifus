@@ -166,9 +166,9 @@ async function stopCommand(dataRoot: string, options: { quiet?: boolean } = {}):
     return 0;
   }
   process.kill(pidState.pid, "SIGTERM");
-  const stopped = await waitForExit(pidState.pid, 5_000);
+  const stopped = await waitForExit(pidState.pid, 10_000);
   if (!stopped) {
-    console.error(`pid ${pidState.pid} did not stop within 5s`);
+    console.error(`pid ${pidState.pid} did not stop within 10s`);
     return 1;
   }
   await rm(appDataPath(dataRoot, "pid.json"), { force: true });

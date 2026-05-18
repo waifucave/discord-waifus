@@ -8,6 +8,7 @@ import type {
   DiscordBotsFile,
   ModelsResponse,
   OrchestratorHistoryFile,
+  OrchestratorPromptSections,
   ProvidersResponse,
   ServersResponse
 } from "../api/types";
@@ -16,8 +17,16 @@ import { Empty } from "../components/Empty";
 import { Skeleton } from "../components/Skeleton";
 import { DiscordBotGuide } from "../components/DiscordBotGuide";
 import { Pill } from "../components/Pill";
+import { Toggle } from "../components/Toggle";
 import { ReasoningControls, hasReasoningControls } from "../components/ReasoningControls";
 import type { ReasoningConfig } from "../api/types";
+
+const PROMPT_SECTION_OPTIONS: Array<{ key: keyof OrchestratorPromptSections; label: string }> = [
+  { key: "loopBreaking", label: "<loop_breaking>" },
+  { key: "retriggerPacing", label: "<retrigger_pacing>" },
+  { key: "messageStructure", label: "<message_structure>" },
+  { key: "toolUse", label: "<tool_use>" }
+];
 
 export function OrchestratorView() {
   const providers = useApi<ProvidersResponse>((s) => api.providers(s), []);
@@ -29,6 +38,12 @@ export function OrchestratorView() {
   const [providerId, setProviderId] = useState<string>("");
   const [modelId, setModelId] = useState<string>("");
   const [reasoning, setReasoning] = useState<ReasoningConfig>({});
+  const [promptSections, setPromptSections] = useState<OrchestratorPromptSections>({
+    loopBreaking: true,
+    retriggerPacing: true,
+    messageStructure: true,
+    toolUse: true
+  });
   const [botDisplayName, setBotDisplayName] = useState("Orchestrator");
   const [botApplicationId, setBotApplicationId] = useState("");
   const [botToken, setBotToken] = useState("");
@@ -42,6 +57,7 @@ export function OrchestratorView() {
     setProviderId(remoteConfig.data.providerId ?? "");
     setModelId(remoteConfig.data.modelId ?? "");
     setReasoning(remoteConfig.data.reasoning ?? {});
+    setPromptSections(remoteConfig.data.promptSections);
   }, [remoteConfig.data]);
 
   useEffect(() => {
@@ -67,7 +83,8 @@ export function OrchestratorView() {
         providerId: providerId ? (providerId as AgentConfig["providerId"]) : undefined,
         modelId: modelId || undefined,
         enabled: true,
-        reasoning
+        reasoning,
+        promptSections
       });
       remoteConfig.setData(saved);
       if (bots.data) {
@@ -271,6 +288,25 @@ export function OrchestratorView() {
             Selected model does not expose reasoning controls.
           </span>
         )}
+      </section>
+
+      <section className="section">
+        <div className="section-header">
+          <h3 className="section-title">Prompt sections</h3>
+          <span className="section-description">
+            Toggle optional sections of the orchestrator system prompt. Identity, hard rules, task instructions, server info, and active waifus are always included.
+          </span>
+        </div>
+        <div className="grid grid-2">
+          {PROMPT_SECTION_OPTIONS.map((option) => (
+            <Toggle
+              key={option.key}
+              label={option.label}
+              checked={promptSections[option.key]}
+              onChange={(next) => setPromptSections((prev) => ({ ...prev, [option.key]: next }))}
+            />
+          ))}
+        </div>
       </section>
 
       <section className="section">

@@ -45,13 +45,29 @@ export const DiscordBotsFileSchema = RevisionedRecordSchema.extend({
 });
 export type DiscordBotsFile = z.infer<typeof DiscordBotsFileSchema>;
 
+export const OrchestratorPromptSectionsSchema = z
+  .object({
+    loopBreaking: z.boolean().default(true),
+    retriggerPacing: z.boolean().default(true),
+    messageStructure: z.boolean().default(true),
+    toolUse: z.boolean().default(true)
+  })
+  .default({
+    loopBreaking: true,
+    retriggerPacing: true,
+    messageStructure: true,
+    toolUse: true
+  });
+export type OrchestratorPromptSections = z.infer<typeof OrchestratorPromptSectionsSchema>;
+
 export const AgentConfigSchema = RevisionedRecordSchema.extend({
   enabled: z.boolean().default(false),
   providerId: z.union([ProviderIdSchema, z.null()]).optional().transform((value) => value ?? undefined),
   modelId: z.union([z.string(), z.null()]).optional().transform((value) => value ?? undefined),
   contextWindow: z.number().int().min(1).max(100).default(20),
   prompt: z.string().default(""),
-  reasoning: ReasoningConfigSchema
+  reasoning: ReasoningConfigSchema,
+  promptSections: OrchestratorPromptSectionsSchema
 });
 export type AgentConfig = z.infer<typeof AgentConfigSchema>;
 

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ContextMessage } from "../orchestration/context.js";
+import { ContextMessage, formatTimestamp } from "../orchestration/context.js";
 import { OrchestratorDecision, OrchestratorDecisionSchema } from "../orchestration/decisions.js";
 import { ReviewerDecision, ReviewerDecisionSchema } from "../orchestration/reviewer.js";
 import { StageManagerToolCall, StageManagerToolCallSchema } from "../orchestration/stageManager.js";
@@ -90,7 +90,8 @@ class OpenAiCompatibleChatPipeline implements ModelPipeline {
         model: request.modelId,
         messages: [
           { role: "system", content: request.systemPrompt },
-          contextToNamedUserMessage("messages", rendering)
+          contextToNamedUserMessage("messages", rendering),
+          { role: "user", content: currentTimeBlock() }
         ],
         temperature: request.temperature ?? 0.2,
         top_p: request.topP,
@@ -204,7 +205,7 @@ class OpenAiResponsesPipeline implements ModelPipeline {
       body: {
         model: request.modelId,
         instructions: request.systemPrompt,
-        input: [contextToResponsesMessagesInput(rendering)],
+        input: [contextToResponsesMessagesInput(rendering), { role: "user", content: currentTimeBlock() }],
         temperature: request.temperature ?? 0.2,
         top_p: request.topP,
         max_output_tokens: request.maxOutputTokens,
@@ -315,7 +316,15 @@ class AnthropicMessagesPipeline implements ModelPipeline {
       body: {
         model: request.modelId,
         system: request.systemPrompt,
-        messages: [contextToAnthropicMessagesPrompt(rendering)],
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: rendering.block },
+              { type: "text", text: currentTimeBlock() }
+            ]
+          }
+        ],
         temperature: constrainsSampling ? 1 : request.temperature ?? 0.2,
         top_p: constrainsSampling ? undefined : request.topP,
         max_tokens: maxTokens,
@@ -472,6 +481,10 @@ function renderContext(messages: ContextMessage[]): ContextRendering {
   });
   const lines = messages.map((message, i) => formatContextMessage(message, i + 1, idToIndex));
   return { block: lines.join("\n"), idToIndex, indexToId };
+}
+
+function currentTimeBlock(): string {
+  return `<current_time>\n${formatTimestamp(new Date())} (UTC)\n</current_time>`;
 }
 
 function contextToNamedUserMessage(name: string, rendering: ContextRendering) {

@@ -80,6 +80,13 @@ export type DiscordBotsFile = Revisioned & {
   waifus: DiscordBotConfig[];
 };
 
+export type OrchestratorPromptSections = {
+  loopBreaking: boolean;
+  retriggerPacing: boolean;
+  messageStructure: boolean;
+  toolUse: boolean;
+};
+
 export type AgentConfig = Revisioned & {
   enabled: boolean;
   providerId?: ProviderId;
@@ -87,6 +94,7 @@ export type AgentConfig = Revisioned & {
   contextWindow: number;
   prompt: string;
   reasoning: ReasoningConfig;
+  promptSections: OrchestratorPromptSections;
 };
 
 export type ModelCapability = {

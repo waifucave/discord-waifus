@@ -11,7 +11,7 @@ import {
   DiscordReviewCommandEvent
 } from "../discord/client.js";
 import { modelVisibleEmojiToken, stripLeakedContextHeader } from "../discord/normalization.js";
-import { splitWaifuReply, typingDelayMs } from "./messageSplit.js";
+import { planWaifuReplyChunks, splitWaifuReply, typingDelayMs } from "./messageSplit.js";
 import { getModel } from "../providers/catalog.js";
 import { createModelPipeline, PipelineCredentials, ProviderPipelineError } from "../providers/pipelines.js";
 import { ModelPipeline } from "../providers/types.js";
@@ -49,6 +49,7 @@ export type RuntimeOrchestratorOptions = {
   discord: DiscordGatewayFacade;
   logger: Logger;
   maxAutomaticTurns?: number;
+  continuationIdleMs?: number;
   isPaused?: () => boolean;
   onActiveRunsChange?: (activeRuns: number) => void;
   createPipeline?: (modelId: string, credentials: PipelineCredentials) => ModelPipeline;
@@ -62,10 +63,18 @@ type ActiveChannelRun = {
   promise: Promise<void>;
 };
 
+type ContinuationTimer = {
+  guildId: string;
+  channelId: string;
+  timer: NodeJS.Timeout;
+};
+
 export class RuntimeOrchestrator {
   private readonly activeRuns = new Map<string, ActiveChannelRun>();
   private readonly retriggerTimers = new Map<string, NodeJS.Timeout>();
+  private readonly continuationTimers = new Map<string, ContinuationTimer>();
   private readonly maxAutomaticTurns: number;
+  private readonly continuationIdleMs: number;
   private readonly createPipeline: (modelId: string, credentials: PipelineCredentials) => ModelPipeline;
   private readonly sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
   private readonly recentSelfSentIds = new Map<string, number>();
@@ -74,10 +83,12 @@ export class RuntimeOrchestrator {
   private readonly activeReviewerRuns = new Map<string, number>();
   private readonly channelRunVersions = new Map<string, number>();
   private static readonly SELF_SENT_TTL_MS = 60_000;
+  private static readonly CONTINUATION_IDLE_MS = 120_000;
   private unsubscribes: Array<() => void> = [];
 
   constructor(private readonly options: RuntimeOrchestratorOptions) {
     this.maxAutomaticTurns = options.maxAutomaticTurns ?? 8;
+    this.continuationIdleMs = options.continuationIdleMs ?? RuntimeOrchestrator.CONTINUATION_IDLE_MS;
     this.createPipeline = options.createPipeline ?? createModelPipeline;
     this.sleep = options.sleep ?? defaultSleep;
   }
@@ -115,10 +126,20 @@ export class RuntimeOrchestrator {
       clearTimeout(timer);
     }
     this.retriggerTimers.clear();
+    const continuationTimers = [...this.continuationTimers.values()];
+    for (const entry of continuationTimers) {
+      clearTimeout(entry.timer);
+    }
+    this.continuationTimers.clear();
     for (const run of this.activeRuns.values()) {
       run.controller.abort(new Error("runtime paused"));
     }
     await Promise.allSettled([...this.activeRuns.values()].map((run) => run.promise));
+    await Promise.allSettled(
+      continuationTimers.map((entry) =>
+        this.clearCachedWaifuContinuation(entry.guildId, entry.channelId, "runtime paused")
+      )
+    );
     this.activeRuns.clear();
     this.options.onActiveRunsChange?.(0);
   }
@@ -131,6 +152,7 @@ export class RuntimeOrchestrator {
     if (event.authorBot && this.activeWaifuSendChannels.has(event.channelId)) {
       return;
     }
+    await this.clearCachedWaifuContinuation(event.guildId, event.channelId, "new Discord activity");
     if (this.options.isPaused?.()) {
       this.options.logger.info("Discord message ignored because runtime is paused", {
         guildId: event.guildId,
@@ -437,14 +459,6 @@ export class RuntimeOrchestrator {
           });
           continue;
         }
-        if (!waifu.modelId) {
-          this.options.logger.warn("Orchestrator selected a waifu without a configured model", {
-            guildId,
-            channelId,
-            selectedWaifuId: selected.waifuId
-          });
-          continue;
-        }
         if (!waifu.botId) {
           this.options.logger.warn("Orchestrator selected a waifu without a linked Discord bot", {
             guildId,
@@ -453,6 +467,25 @@ export class RuntimeOrchestrator {
           });
           continue;
         }
+        if (await this.sendCachedContinuationForSelection({
+          guildId,
+          channelId,
+          selectedWaifuId: selected.waifuId,
+          sceneDirection: selected.sceneDirection,
+          signal
+        })) {
+          sentCount += 1;
+          continue;
+        }
+        if (!waifu.modelId) {
+          this.options.logger.warn("Orchestrator selected a waifu without a configured model", {
+            guildId,
+            channelId,
+            selectedWaifuId: selected.waifuId
+          });
+          continue;
+        }
+        await this.clearCachedWaifuContinuation(guildId, channelId, "new waifu generation");
         await this.setActivePipeline(guildId, channelId, "waifu");
         const waifuMessages = await this.options.discord.fetchFreshContext({
           guildId,
@@ -517,6 +550,7 @@ export class RuntimeOrchestrator {
               waifuId: waifu.id
             });
           }
+          const plannedChunks = planWaifuReplyChunks(chunks);
           const replyToMessageId = replyTargetForFreshContext(selected.replyToMessageId, waifuMessages);
           if (selected.replyToMessageId && !replyToMessageId) {
             this.options.logger.info("Omitting reply target because it is the latest context message", {
@@ -526,36 +560,26 @@ export class RuntimeOrchestrator {
               replyToMessageId: selected.replyToMessageId
             });
           }
-          this.activeWaifuSendChannels.add(channelId);
-          try {
-            for (let i = 0; i < chunks.length; i++) {
-              throwIfAborted(signal);
-              if (i > 0) {
-                void this.options.discord
-                  .sendTyping({ guildId, channelId, senderBotId: waifu.botId })
-                  .catch(() => undefined);
-                await this.sleep(typingDelayMs(chunks[i]), signal);
-              }
-              const sentResult = await this.options.discord.sendWaifuMessage({
-                guildId,
-                channelId,
-                senderBotId: waifu.botId,
-                content: chunks[i],
-                replyToMessageId: i === 0 ? replyToMessageId : undefined,
-                allowedUserMentionIds: activeAuthorIds
-              });
-              this.rememberSelfSent(sentResult.messageId);
-              this.options.logger.info("Waifu message chunk sent", {
-                guildId,
-                channelId,
-                waifuId: waifu.id,
-                chunkIndex: i,
-                chunkCount: chunks.length,
-                chunkLength: chunks[i].length
-              });
-            }
-          } finally {
-            this.activeWaifuSendChannels.delete(channelId);
+          await this.sendWaifuChunks({
+            guildId,
+            channelId,
+            waifuId: waifu.id,
+            senderBotId: waifu.botId,
+            chunks: plannedChunks.immediateChunks,
+            totalChunkCount: chunks.length,
+            replyToMessageId,
+            allowedUserMentionIds: activeAuthorIds,
+            signal
+          });
+          if (plannedChunks.cachedChunks.length > 0) {
+            await this.cacheWaifuContinuation({
+              guildId,
+              channelId,
+              waifuId: waifu.id,
+              senderBotId: waifu.botId,
+              chunks: plannedChunks.cachedChunks,
+              allowedUserMentionIds: activeAuthorIds
+            });
           }
         } finally {
           waifuTyping.stop();
@@ -947,6 +971,202 @@ export class RuntimeOrchestrator {
     this.retriggerTimers.set(key, timer);
   }
 
+  private async sendCachedContinuationForSelection(input: {
+    guildId: string;
+    channelId: string;
+    selectedWaifuId: string;
+    sceneDirection?: string;
+    signal: AbortSignal;
+  }): Promise<boolean> {
+    if (input.sceneDirection?.trim()) {
+      return false;
+    }
+    const state = await this.readChannelSession(input.guildId, input.channelId);
+    const cached = state.cachedWaifuContinuation;
+    if (!cached || cached.waifuId !== input.selectedWaifuId) {
+      return false;
+    }
+    return this.sendCachedWaifuContinuation(input.guildId, input.channelId, "same-waifu-no-scene-direction", input.signal);
+  }
+
+  private async sendCachedWaifuContinuation(
+    guildId: string,
+    channelId: string,
+    reason: string,
+    signal?: AbortSignal
+  ): Promise<boolean> {
+    throwIfAborted(signal);
+    const state = await this.readChannelSession(guildId, channelId);
+    const cached = state.cachedWaifuContinuation;
+    if (!cached) {
+      return false;
+    }
+
+    await this.clearCachedWaifuContinuation(guildId, channelId, `sending cached continuation: ${reason}`);
+    this.options.logger.info("Sending cached waifu continuation", {
+      guildId,
+      channelId,
+      waifuId: cached.waifuId,
+      reason,
+      chunkCount: cached.chunks.length
+    });
+    await this.sendWaifuChunks({
+      guildId,
+      channelId,
+      waifuId: cached.waifuId,
+      senderBotId: cached.senderBotId,
+      chunks: cached.chunks,
+      totalChunkCount: cached.chunks.length,
+      allowedUserMentionIds: cached.allowedUserMentionIds,
+      signal
+    });
+    return true;
+  }
+
+  private async sendCachedContinuationAfterIdle(guildId: string, channelId: string): Promise<void> {
+    if (this.options.isPaused?.()) {
+      await this.clearCachedWaifuContinuation(guildId, channelId, "runtime paused before cached continuation");
+      return;
+    }
+    if (this.activeRuns.has(runKey(guildId))) {
+      this.setContinuationTimer(guildId, channelId, Math.min(1000, Math.max(1, this.continuationIdleMs)));
+      return;
+    }
+    await this.sendCachedWaifuContinuation(guildId, channelId, "idle-timeout");
+  }
+
+  private async cacheWaifuContinuation(input: {
+    guildId: string;
+    channelId: string;
+    waifuId: string;
+    senderBotId: string;
+    chunks: string[];
+    allowedUserMentionIds: string[];
+  }): Promise<void> {
+    if (input.chunks.length === 0) {
+      return;
+    }
+
+    const cachedAt = nowIso();
+    const idleAfter = new Date(Date.now() + this.continuationIdleMs).toISOString();
+    await this.updateSession(input.guildId, input.channelId, (current) => ({
+      ...current,
+      cachedWaifuContinuation: {
+        waifuId: input.waifuId,
+        senderBotId: input.senderBotId,
+        chunks: input.chunks,
+        allowedUserMentionIds: input.allowedUserMentionIds,
+        cachedAt,
+        idleAfter
+      }
+    }));
+    this.scheduleContinuationTimer(input.guildId, input.channelId, idleAfter);
+    this.options.logger.info("Cached unsent waifu continuation chunks", {
+      guildId: input.guildId,
+      channelId: input.channelId,
+      waifuId: input.waifuId,
+      chunkCount: input.chunks.length,
+      idleAfter
+    });
+  }
+
+  private async clearCachedWaifuContinuation(guildId: string, channelId: string, reason: string): Promise<void> {
+    const key = timerKey(guildId, channelId);
+    const timer = this.continuationTimers.get(key);
+    if (timer) {
+      clearTimeout(timer.timer);
+      this.continuationTimers.delete(key);
+    }
+
+    const state = await this.readChannelSession(guildId, channelId);
+    if (!state.cachedWaifuContinuation) {
+      return;
+    }
+    const cached = state.cachedWaifuContinuation;
+    await this.updateSession(guildId, channelId, (current) => ({
+      ...current,
+      cachedWaifuContinuation: null
+    }));
+    this.options.logger.info("Cleared cached waifu continuation chunks", {
+      guildId,
+      channelId,
+      waifuId: cached.waifuId,
+      reason,
+      chunkCount: cached.chunks.length
+    });
+  }
+
+  private scheduleContinuationTimer(guildId: string, channelId: string, idleAfter: string): void {
+    const delayMs = Math.max(0, new Date(idleAfter).getTime() - Date.now());
+    this.setContinuationTimer(guildId, channelId, delayMs);
+  }
+
+  private setContinuationTimer(guildId: string, channelId: string, delayMs: number): void {
+    const key = timerKey(guildId, channelId);
+    const existing = this.continuationTimers.get(key);
+    if (existing) {
+      clearTimeout(existing.timer);
+    }
+    const timer = setTimeout(() => {
+      this.continuationTimers.delete(key);
+      void this.sendCachedContinuationAfterIdle(guildId, channelId).catch((error) => {
+        this.options.logger.error("Cached waifu continuation failed", {
+          guildId,
+          channelId,
+          message: error instanceof Error ? error.message : String(error)
+        });
+      });
+    }, delayMs);
+    this.continuationTimers.set(key, { guildId, channelId, timer });
+  }
+
+  private async sendWaifuChunks(input: {
+    guildId: string;
+    channelId: string;
+    waifuId: string;
+    senderBotId: string;
+    chunks: string[];
+    totalChunkCount: number;
+    replyToMessageId?: string;
+    allowedUserMentionIds: string[];
+    signal?: AbortSignal;
+  }): Promise<void> {
+    if (input.chunks.length === 0) {
+      return;
+    }
+    this.activeWaifuSendChannels.add(input.channelId);
+    try {
+      for (let i = 0; i < input.chunks.length; i++) {
+        throwIfAborted(input.signal);
+        if (i > 0) {
+          void this.options.discord
+            .sendTyping({ guildId: input.guildId, channelId: input.channelId, senderBotId: input.senderBotId })
+            .catch(() => undefined);
+          await this.sleep(typingDelayMs(input.chunks[i]), input.signal);
+        }
+        const sentResult = await this.options.discord.sendWaifuMessage({
+          guildId: input.guildId,
+          channelId: input.channelId,
+          senderBotId: input.senderBotId,
+          content: input.chunks[i],
+          replyToMessageId: i === 0 ? input.replyToMessageId : undefined,
+          allowedUserMentionIds: input.allowedUserMentionIds
+        });
+        this.rememberSelfSent(sentResult.messageId);
+        this.options.logger.info("Waifu message chunk sent", {
+          guildId: input.guildId,
+          channelId: input.channelId,
+          waifuId: input.waifuId,
+          chunkIndex: i,
+          chunkCount: input.totalChunkCount,
+          chunkLength: input.chunks[i].length
+        });
+      }
+    } finally {
+      this.activeWaifuSendChannels.delete(input.channelId);
+    }
+  }
+
   private async setActivePipeline(guildId: string, channelId: string, kind: "orchestrator" | "waifu") {
     await this.updateSession(guildId, channelId, (current) => ({
       ...current,
@@ -1140,9 +1360,9 @@ export class RuntimeOrchestrator {
 
     const retriggerPacing = [
       "retriggerAfterSeconds decides when you wake yourself up to reconsider. Every wake-up costs another orchestrator call, so pace it to how alive the conversation actually is — read the timestamps on recent messages:",
-      "- Active chat (humans engaging within the last few minutes): short, ~100-300s.",
+      "- Active chat (participants engaging within the last few minutes): short, ~100-300s.",
       "- Quiet but plausibly resuming (someone stepped away mid-thread): medium, ~600-1800s.",
-      "- Cold (last human message is hours old, or nobody has engaged with the bots in a while): long, ~3600-14400s, and keep growing each time you wake up to the same silence. Don't burn calls poking a dead channel."
+      "- Cold (last participant message is hours old, or nobody has engaged with the bots in a while): long, ~3600-14400s, and keep growing each time you wake up to the same silence. Don't burn calls poking a dead channel."
     ].join("\n");
 
     const messageStructure =
@@ -1157,21 +1377,23 @@ export class RuntimeOrchestrator {
       "OR { \"action\": \"no_reply\", \"retriggerAfterSeconds\": number, \"reasoning\": string }."
     ].join("\n");
 
+    const sections = orchestrator.promptSections;
     const behavior = [
       `<hard_rules>\n${hardRules}\n</hard_rules>`,
       `<task_instructions>\n${taskInstructions}\n</task_instructions>`,
-      `<loop_breaking>\n${loopBreaking}\n</loop_breaking>`,
-      `<retrigger_pacing>\n${retriggerPacing}\n</retrigger_pacing>`,
-      `<message_structure>\n${messageStructure}\n</message_structure>`,
-      `<tool_use>\n${toolUse}\n</tool_use>`
-    ].join("\n");
+      sections.loopBreaking ? `<loop_breaking>\n${loopBreaking}\n</loop_breaking>` : null,
+      sections.retriggerPacing ? `<retrigger_pacing>\n${retriggerPacing}\n</retrigger_pacing>` : null,
+      sections.messageStructure ? `<message_structure>\n${messageStructure}\n</message_structure>` : null,
+      sections.toolUse ? `<tool_use>\n${toolUse}\n</tool_use>` : null
+    ]
+      .filter((section): section is string => Boolean(section))
+      .join("\n");
 
     return [
       `<identity>\n${identity}\n</identity>`,
       `<behavior>\n${behavior}\n</behavior>`,
       `<discord_server_information>\n${server.name ?? server.guildId}\n</discord_server_information>`,
-      `<active_waifus>\n${activeWaifusContent}\n</active_waifus>`,
-      `<current_time>\n${formatTimestamp(new Date())} (UTC)\n</current_time>`
+      `<active_waifus>\n${activeWaifusContent}\n</active_waifus>`
     ].join("\n");
   }
 
@@ -1220,6 +1442,17 @@ export class RuntimeOrchestrator {
       fallback: createEmptyChannelSessionState(guildId, channelId),
       transform: (current) => current
     });
+  }
+
+  private async readChannelSession(guildId: string, channelId: string): Promise<ChannelSessionState> {
+    return this.options.storage.withLocks(
+      [`session:${guildId}:${channelId}`],
+      () => this.options.storage.readJson(
+        sessionRelativePath(guildId, channelId),
+        ChannelSessionStateSchema,
+        createEmptyChannelSessionState(guildId, channelId)
+      )
+    );
   }
 
   private async updateSession(
@@ -1364,8 +1597,8 @@ function replyTargetForFreshContext(
   return latestMessage?.id === replyToMessageId ? undefined : replyToMessageId;
 }
 
-function throwIfAborted(signal: AbortSignal): void {
-  if (signal.aborted) {
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
     throw signal.reason instanceof Error ? signal.reason : new Error("Request aborted.");
   }
 }
@@ -1437,7 +1670,7 @@ const DEFAULT_ORCHESTRATOR_PROMPT = [
   "- stage_manager when something memorable has happened (a new fact about a user, a relationship change, an event worth remembering) and the memory pass should run before the next reply.",
   "- reviewer when the latest waifu message looks like leaked internals or hallucinated private model text.",
   "",
-  "If a recent user message or direct ping was missed while the room moved on, prefer steering a waifu to acknowledge it so the chat stays socially inclusive — unless silence is clearly the more natural choice.",
+  "If a recent chat participant message or direct ping was missed while the room moved on, prefer steering a waifu to acknowledge it so the chat stays socially inclusive — unless silence is clearly the more natural choice.",
   "",
   "Reach for sceneDirection when the next reply needs steering that personality alone won't provide: redirecting topic, closing a beat, creating an interruption, shifting momentum, or deliberately starting something new even when it cuts against the current flow. Prefer a natural bridge when pivoting, but a jarring shift is fine if the scene needs it. Keep sceneDirection short, concrete, and immediately actionable — one sentence is usually enough. When you refer to a specific person, use their actual display name from the chat history, never generic phrases like \"the user\". Name intended participants explicitly when more than one person is involved; avoid ambiguous group references like \"us\", \"them\", or \"everyone\". If multiple waifus respond in the same turn, each may receive a different sceneDirection."
 ].join("\n");
