@@ -29,6 +29,14 @@ export const ContextMessageSchema = z.object({
 
 export type ContextMessage = z.infer<typeof ContextMessageSchema>;
 
+export const OrchestratorNoReplyMarkerSchema = z.object({
+  kind: z.literal("no_reply"),
+  timestamp: z.string(),
+  retriggerAfterSeconds: z.number().int(),
+  reasoning: z.string()
+});
+export type OrchestratorNoReplyMarker = z.infer<typeof OrchestratorNoReplyMarkerSchema>;
+
 export type MessageLikeForContext = {
   id: string;
   channelId: string;
@@ -66,7 +74,7 @@ export function buildContextMessages(
   const waifuIds = new Set(options.waifuAuthorIds ?? []);
 
   const filtered = messages.filter((message) => !orchestratorIds.has(message.authorId));
-  const coalesced = coalesceWaifuChunks(filtered, waifuIds);
+  const coalesced = coalesceAdjacentChunks(filtered, waifuIds);
 
   return coalesced.map((message) =>
     ContextMessageSchema.parse({
@@ -90,22 +98,28 @@ export function formatTimestamp(then: Date): string {
   return then.toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
-function coalesceWaifuChunks(
+function coalesceAdjacentChunks(
   messages: MessageLikeForContext[],
   waifuAuthorIds: Set<string>
 ): MessageLikeForContext[] {
+  const replyTargetIds = new Set(messages.flatMap((message) => message.replyTo?.messageId ? [message.replyTo.messageId] : []));
   const result: MessageLikeForContext[] = [];
   for (const message of messages) {
     const prev = result[result.length - 1];
-    const sameWaifu =
-      prev &&
-      waifuAuthorIds.has(message.authorId) &&
-      prev.authorId === message.authorId;
+    const sameAuthor = prev && prev.authorId === message.authorId;
     const withinWindow =
-      sameWaifu &&
+      sameAuthor &&
       message.createdAt.getTime() - prev.createdAt.getTime() <= WAIFU_CHUNK_COALESCE_WINDOW_MS;
-    if (sameWaifu && withinWindow) {
-      result[result.length - 1] = mergeChunk(prev, message);
+    if (
+      sameAuthor &&
+      withinWindow &&
+      !replyTargetIds.has(prev.id) &&
+      !replyTargetIds.has(message.id) &&
+      compatibleReplyTargets(prev, message)
+    ) {
+      result[result.length - 1] = mergeChunk(prev, message, {
+        authorKind: waifuAuthorIds.has(message.authorId) ? "waifu" : "user"
+      });
     } else {
       result.push(message);
     }
@@ -115,15 +129,38 @@ function coalesceWaifuChunks(
 
 function mergeChunk(
   first: MessageLikeForContext,
-  next: MessageLikeForContext
+  next: MessageLikeForContext,
+  options: { authorKind: "user" | "waifu" }
 ): MessageLikeForContext {
   return {
     ...first,
-    content: `${first.content} ${next.content}`.trim(),
+    content: joinChunkContent(first.content, next.content, options.authorKind),
     createdAt: next.createdAt,
     sourceMessageIds: [...(first.sourceMessageIds ?? [first.id]), ...(next.sourceMessageIds ?? [next.id])],
     reactions: mergeReactions(first.reactions, next.reactions)
   };
+}
+
+function compatibleReplyTargets(
+  first: MessageLikeForContext,
+  next: MessageLikeForContext
+): boolean {
+  const firstReplyId = first.replyTo?.messageId;
+  const nextReplyId = next.replyTo?.messageId;
+  return nextReplyId === undefined || firstReplyId === nextReplyId;
+}
+
+function joinChunkContent(first: string, next: string, authorKind: "user" | "waifu"): string {
+  const firstTrimmed = first.trim();
+  const nextTrimmed = next.trim();
+  if (!firstTrimmed) return nextTrimmed;
+  if (!nextTrimmed) return firstTrimmed;
+  const separator = authorKind === "user" && !endsWithPunctuation(firstTrimmed) ? ", " : " ";
+  return `${firstTrimmed}${separator}${nextTrimmed}`;
+}
+
+function endsWithPunctuation(value: string): boolean {
+  return /[.!?,:;…]$/u.test(value);
 }
 
 function mergeReactions(

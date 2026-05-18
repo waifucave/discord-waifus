@@ -67,6 +67,79 @@ describe("provider-native decision tools", () => {
     });
   });
 
+  it("renders reply targets against split logical context messages", async () => {
+    mockFetch({
+      choices: [
+        {
+          message: {
+            tool_calls: [
+              {
+                function: {
+                  name: "orchestrator_decision",
+                  arguments: JSON.stringify({
+                    action: "no_reply",
+                    retriggerAfterSeconds: 100,
+                    reasoning: "wait"
+                  })
+                }
+              }
+            ]
+          }
+        }
+      ]
+    });
+
+    const pipeline = createModelPipeline("grok-4.3", { apiKey: "xai-test" });
+    await pipeline.decideOrchestrator?.({
+      modelId: "grok-4.3",
+      messages: [
+        {
+          id: "chunk-1",
+          channelId: "c1",
+          guildId: "g1",
+          authorKind: "waifu",
+          authorId: "aria-bot",
+          name: "Aria",
+          displayName: "Aria",
+          content: "one two",
+          sourceMessageIds: ["chunk-1", "chunk-2"],
+          timestamp: "2026-05-16T12:00:02Z",
+          reactions: []
+        },
+        {
+          id: "chunk-3",
+          channelId: "c1",
+          guildId: "g1",
+          authorKind: "waifu",
+          authorId: "aria-bot",
+          name: "Aria",
+          displayName: "Aria",
+          content: "three",
+          timestamp: "2026-05-16T12:00:03Z",
+          reactions: []
+        },
+        {
+          id: "reply",
+          channelId: "c1",
+          guildId: "g1",
+          authorKind: "user",
+          authorId: "u1",
+          name: "Kevin",
+          displayName: "Kevin",
+          content: "that one",
+          timestamp: "2026-05-16T12:00:04Z",
+          replyTo: { messageId: "chunk-3", authorName: "Aria", contentPreview: "three" },
+          reactions: []
+        }
+      ],
+      systemPrompt: "decide"
+    });
+
+    const query = recentQueries().at(-1);
+    const messages = query?.payload.messages as Array<{ content: string }>;
+    expect(messages.some((message) => message.content.includes("[sender: Kevin] that one [replying to: #2]"))).toBe(true);
+  });
+
   it("uses a single OpenAI Responses tool for stage-manager edits", async () => {
     mockFetch({
       output: [

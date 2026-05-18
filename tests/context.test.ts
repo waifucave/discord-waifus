@@ -82,11 +82,35 @@ describe("buildContextMessages coalescing", () => {
     expect(out).toHaveLength(2);
   });
 
-  it("does not merge consecutive human messages", () => {
+  it("merges consecutive same-user messages with comma separators when unpunctuated", () => {
     const t0 = new Date("2026-05-16T12:00:00Z");
     const messages = [
-      msg({ id: "1", authorId: "user1", content: "im bored", createdAt: t0 }),
-      msg({ id: "2", authorId: "user1", content: "play with me", createdAt: new Date(t0.getTime() + 1000) })
+      msg({ id: "1", authorId: "user1", content: "wait", createdAt: t0 }),
+      msg({ id: "2", authorId: "user1", content: "i mean this", createdAt: new Date(t0.getTime() + 1000) }),
+      msg({ id: "3", authorId: "user1", content: "actually nvm", createdAt: new Date(t0.getTime() + 2000) })
+    ];
+    const out = buildContextMessages(messages, { waifuAuthorIds: [] });
+    expect(out).toHaveLength(1);
+    expect(out[0].content).toBe("wait, i mean this, actually nvm");
+    expect(out[0].sourceMessageIds).toEqual(["1", "2", "3"]);
+  });
+
+  it("merges consecutive same-user messages with spaces after punctuation", () => {
+    const t0 = new Date("2026-05-16T12:00:00Z");
+    const messages = [
+      msg({ id: "1", authorId: "user1", content: "wait.", createdAt: t0 }),
+      msg({ id: "2", authorId: "user1", content: "i mean this", createdAt: new Date(t0.getTime() + 1000) })
+    ];
+    const out = buildContextMessages(messages, { waifuAuthorIds: [] });
+    expect(out).toHaveLength(1);
+    expect(out[0].content).toBe("wait. i mean this");
+  });
+
+  it("does not merge messages from different users", () => {
+    const t0 = new Date("2026-05-16T12:00:00Z");
+    const messages = [
+      msg({ id: "1", authorId: "user1", content: "wait", createdAt: t0 }),
+      msg({ id: "2", authorId: "user2", content: "what", createdAt: new Date(t0.getTime() + 1000) })
     ];
     const out = buildContextMessages(messages, { waifuAuthorIds: [] });
     expect(out).toHaveLength(2);
@@ -118,5 +142,48 @@ describe("buildContextMessages coalescing", () => {
         expect.objectContaining({ emoji: "🎉", count: 1 })
       ])
     );
+  });
+
+  it("keeps a replied-to waifu chunk separate and does not merge across it", () => {
+    const t0 = new Date("2026-05-16T12:00:00Z");
+    const messages = [
+      msg({ id: "chunk-1", authorId: "aria-bot", content: "one", createdAt: t0 }),
+      msg({ id: "chunk-2", authorId: "aria-bot", content: "two", createdAt: new Date(t0.getTime() + 1000) }),
+      msg({ id: "chunk-3", authorId: "aria-bot", content: "three", createdAt: new Date(t0.getTime() + 2000) }),
+      msg({ id: "chunk-4", authorId: "aria-bot", content: "four", createdAt: new Date(t0.getTime() + 3000) }),
+      msg({
+        id: "reply",
+        authorId: "user1",
+        content: "this one",
+        createdAt: new Date(t0.getTime() + 4000),
+        replyTo: { messageId: "chunk-3", authorName: "Aria", contentPreview: "three" }
+      })
+    ];
+    const out = buildContextMessages(messages, { waifuAuthorIds: ["aria-bot"] });
+    expect(out.map((message) => message.content)).toEqual(["one two", "three", "four", "this one"]);
+    expect(out[0].sourceMessageIds).toEqual(["chunk-1", "chunk-2"]);
+    expect(out[1].id).toBe("chunk-3");
+    expect(out[2].id).toBe("chunk-4");
+    expect(out[3].replyTo?.messageId).toBe("chunk-3");
+  });
+
+  it("keeps a replied-to user chunk separate and does not merge across it", () => {
+    const t0 = new Date("2026-05-16T12:00:00Z");
+    const messages = [
+      msg({ id: "user-1", authorId: "user1", content: "wait", createdAt: t0 }),
+      msg({ id: "user-2", authorId: "user1", content: "i mean this", createdAt: new Date(t0.getTime() + 1000) }),
+      msg({ id: "user-3", authorId: "user1", content: "actually nvm", createdAt: new Date(t0.getTime() + 2000) }),
+      msg({
+        id: "reply",
+        authorId: "user2",
+        content: "which part",
+        createdAt: new Date(t0.getTime() + 3000),
+        replyTo: { messageId: "user-2", authorName: "user1", contentPreview: "i mean this" }
+      })
+    ];
+    const out = buildContextMessages(messages, { waifuAuthorIds: [] });
+    expect(out.map((message) => message.content)).toEqual(["wait", "i mean this", "actually nvm", "which part"]);
+    expect(out[1].id).toBe("user-2");
+    expect(out[3].replyTo?.messageId).toBe("user-2");
   });
 });

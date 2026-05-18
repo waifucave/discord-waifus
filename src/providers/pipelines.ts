@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ContextMessage, formatTimestamp } from "../orchestration/context.js";
+import { ContextMessage, OrchestratorNoReplyMarker, formatTimestamp } from "../orchestration/context.js";
 import { OrchestratorDecision, OrchestratorDecisionSchema } from "../orchestration/decisions.js";
 import { ReviewerDecision, ReviewerDecisionSchema } from "../orchestration/reviewer.js";
 import { StageManagerToolCall, StageManagerToolCallSchema } from "../orchestration/stageManager.js";
@@ -82,7 +82,7 @@ class OpenAiCompatibleChatPipeline implements ModelPipeline {
   }
 
   async decideOrchestrator(request: ProviderRequest): Promise<OrchestratorDecision> {
-    const rendering = renderContext(request.messages);
+    const rendering = renderContext(request.messages, request.decisionMarkers);
     const text = await postJsonAndExtractText({
       url: `${this.provider.baseUrl}${this.model.endpoint}`,
       headers: bearerHeaders(this.apiKey),
@@ -198,7 +198,7 @@ class OpenAiResponsesPipeline implements ModelPipeline {
   }
 
   async decideOrchestrator(request: ProviderRequest): Promise<OrchestratorDecision> {
-    const rendering = renderContext(request.messages);
+    const rendering = renderContext(request.messages, request.decisionMarkers);
     const text = await postJsonAndExtractText({
       url: `${this.provider.baseUrl}${this.model.endpoint}`,
       headers: bearerHeaders(this.apiKey),
@@ -306,7 +306,7 @@ class AnthropicMessagesPipeline implements ModelPipeline {
   }
 
   async decideOrchestrator(request: ProviderRequest): Promise<OrchestratorDecision> {
-    const rendering = renderContext(request.messages);
+    const rendering = renderContext(request.messages, request.decisionMarkers);
     const maxTokens = request.maxOutputTokens ?? 1024;
     const thinking = anthropicThinkingPayload(this.model, request.reasoning, maxTokens);
     const constrainsSampling = anthropicThinkingConstrainsSampling(thinking);
@@ -471,7 +471,10 @@ type ContextRendering = {
   indexToId: Map<number, string>;
 };
 
-function renderContext(messages: ContextMessage[]): ContextRendering {
+function renderContext(
+  messages: ContextMessage[],
+  markers: OrchestratorNoReplyMarker[] = []
+): ContextRendering {
   const idToIndex = new Map<string, number>();
   const indexToId = new Map<number, string>();
   messages.forEach((message, i) => {
@@ -479,8 +482,33 @@ function renderContext(messages: ContextMessage[]): ContextRendering {
     idToIndex.set(message.id, index);
     indexToId.set(index, message.id);
   });
-  const lines = messages.map((message, i) => formatContextMessage(message, i + 1, idToIndex));
+  type Item =
+    | { kind: "message"; message: ContextMessage; index: number }
+    | { kind: "marker"; marker: OrchestratorNoReplyMarker };
+  const items: Item[] = [
+    ...messages.map((message, i): Item => ({ kind: "message", message, index: i + 1 })),
+    ...markers.map((marker): Item => ({ kind: "marker", marker }))
+  ];
+  items.sort((a, b) => {
+    const ta = a.kind === "message" ? a.message.timestamp : a.marker.timestamp;
+    const tb = b.kind === "message" ? b.message.timestamp : b.marker.timestamp;
+    if (ta === tb) {
+      if (a.kind === b.kind) return 0;
+      return a.kind === "message" ? -1 : 1;
+    }
+    return ta < tb ? -1 : 1;
+  });
+  const lines = items.map((item) =>
+    item.kind === "message"
+      ? formatContextMessage(item.message, item.index, idToIndex)
+      : formatNoReplyMarker(item.marker)
+  );
   return { block: lines.join("\n"), idToIndex, indexToId };
+}
+
+function formatNoReplyMarker(marker: OrchestratorNoReplyMarker): string {
+  const reason = marker.reasoning.replace(/\s+/g, " ").trim();
+  return `[timestamp: ${marker.timestamp}] [type: no_reply] [retrigger: ${marker.retriggerAfterSeconds}s] [reason: ${reason}]`;
 }
 
 function currentTimeBlock(): string {

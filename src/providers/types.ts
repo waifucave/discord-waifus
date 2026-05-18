@@ -1,5 +1,5 @@
 import { ProviderId, ReasoningConfig } from "../shared/schemas/domain.js";
-import { ContextMessage } from "../orchestration/context.js";
+import { ContextMessage, OrchestratorNoReplyMarker } from "../orchestration/context.js";
 import { OrchestratorDecision } from "../orchestration/decisions.js";
 import { StageManagerToolCall } from "../orchestration/stageManager.js";
 import { ReviewerDecision } from "../orchestration/reviewer.js";
@@ -38,6 +38,7 @@ export type ProviderMetadata = {
 export type ProviderRequest = {
   modelId: string;
   messages: ContextMessage[];
+  decisionMarkers?: OrchestratorNoReplyMarker[];
   systemPrompt?: string;
   availableWaifuIds?: string[];
   temperature?: number;

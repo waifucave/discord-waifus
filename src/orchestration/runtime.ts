@@ -42,7 +42,7 @@ import {
   ChannelSessionStateSchema,
   createEmptyChannelSessionState
 } from "./session.js";
-import { formatTimestamp } from "./context.js";
+import { ContextMessage, OrchestratorNoReplyMarker, formatTimestamp } from "./context.js";
 
 export type RuntimeOrchestratorOptions = {
   storage: StorageService;
@@ -386,12 +386,14 @@ export class RuntimeOrchestrator {
         throw new Error(`Model ${orchestrator.modelId} does not implement orchestrator decisions.`);
       }
       const availableWaifus = await this.listAvailableWaifusForChannel(channel);
+      const decisionMarkers = await this.readRecentNoReplyMarkers(guildId, channelId, messages);
       const orchestratorTyping = startTypingScope(this.options.discord, { guildId, channelId });
       let decision;
       try {
         decision = await pipeline.decideOrchestrator({
           modelId: orchestrator.modelId,
           messages,
+          decisionMarkers,
           systemPrompt: this.buildOrchestratorSystemPrompt(orchestrator, server, availableWaifus),
           availableWaifuIds: availableWaifus.map((waifu) => waifu.id),
           reasoning: orchestrator.reasoning,
@@ -1368,8 +1370,10 @@ export class RuntimeOrchestrator {
       "- Cold (last participant message is hours old, or nobody has engaged with the bots in a while): long, ~3600-14400s, and keep growing each time you wake up to the same silence. Don't burn calls poking a dead channel."
     ].join("\n");
 
-    const messageStructure =
-      "Each message in the context is tagged with [index: #N], [timestamp: ISO-8601 UTC], and [sender: DisplayName] before its body, optionally followed by [reactions: ...] and [replying to: ...]. Reference messages by their #N index. replyToIndex must be one of the #N indices shown in the context.";
+    const messageStructure = [
+      "Each message in the context is tagged with [index: #N], [timestamp: ISO-8601 UTC], and [sender: DisplayName] before its body, optionally followed by [reactions: ...] and [replying to: ...]. Reference messages by their #N index. replyToIndex must be one of the #N indices shown in the context.",
+      "Some lines are your own prior decisions, interleaved with the chat by timestamp. They look like [timestamp: ...] [type: no_reply] [retrigger: Ns] [reason: ...] and have no #N index, no sender, no reactions, and no replying-to. They are not Discord messages — nobody else sees them. Use them to gauge how long the channel has actually been silent under your watch and to avoid stacking redundant no_reply choices."
+    ].join("\n");
 
     const toolUse = [
       "Inspect the context, choose exactly one action, and call orchestrator_decision once with only the tool arguments. Do not write normal assistant text.",
@@ -1470,6 +1474,36 @@ export class RuntimeOrchestrator {
       fallback: createEmptyChannelSessionState(guildId, channelId),
       transform
     });
+  }
+
+  private async readRecentNoReplyMarkers(
+    guildId: string,
+    channelId: string,
+    messages: ContextMessage[]
+  ): Promise<OrchestratorNoReplyMarker[]> {
+    if (!messages.length) return [];
+    const earliest = messages[0].timestamp;
+    const history = await this.options.storage.readJson(
+      "user/orchestrator/history.json",
+      OrchestratorHistoryFileSchema,
+      OrchestratorHistoryFileSchema.parse(createEmptyRevisionedFile({ decisions: [] }))
+    );
+    const markers: OrchestratorNoReplyMarker[] = [];
+    for (const decision of history.decisions) {
+      if (decision.action !== "no_reply") continue;
+      if (decision.guildId !== guildId) continue;
+      if (decision.channelId !== channelId) continue;
+      if (decision.retriggerAfterSeconds === undefined) continue;
+      const timestamp = formatTimestamp(new Date(decision.createdAt));
+      if (timestamp < earliest) continue;
+      markers.push({
+        kind: "no_reply",
+        timestamp,
+        retriggerAfterSeconds: decision.retriggerAfterSeconds,
+        reasoning: decision.reasoning
+      });
+    }
+    return markers;
   }
 
   private async appendOrchestratorHistory(entry: {
