@@ -140,6 +140,50 @@ describe("provider-native decision tools", () => {
     expect(messages.some((message) => message.content.includes("[sender: Kevin] that one [replying to: #2]"))).toBe(true);
   });
 
+  it("renders orchestrator no_reply markers before timestamp with retrigger after reason", async () => {
+    mockFetch({
+      choices: [
+        {
+          message: {
+            tool_calls: [
+              {
+                function: {
+                  name: "orchestrator_decision",
+                  arguments: JSON.stringify({
+                    action: "no_reply",
+                    retriggerAfterSeconds: 100,
+                    reasoning: "wait"
+                  })
+                }
+              }
+            ]
+          }
+        }
+      ]
+    });
+
+    const pipeline = createModelPipeline("grok-4.3", { apiKey: "xai-test" });
+    await pipeline.decideOrchestrator?.({
+      modelId: "grok-4.3",
+      messages: context,
+      decisionMarkers: [
+        {
+          kind: "no_reply",
+          timestamp: "2026-05-16T12:05:00Z",
+          retriggerAfterSeconds: 600,
+          reasoning: "wait   for   Kevin"
+        }
+      ],
+      systemPrompt: "decide"
+    });
+
+    const query = recentQueries().at(-1);
+    const messages = query?.payload.messages as Array<{ content: string }>;
+    const renderedContext = messages.find((message) => message.content.includes("[no_reply]"))?.content ?? "";
+    expect(renderedContext).toContain("[no_reply] [timestamp: 2026-05-16T12:05:00Z] [reason: wait for Kevin] [retrigger: 600s]");
+    expect(renderedContext).not.toContain("[type: no_reply]");
+  });
+
   it("uses a single OpenAI Responses tool for stage-manager edits", async () => {
     mockFetch({
       output: [

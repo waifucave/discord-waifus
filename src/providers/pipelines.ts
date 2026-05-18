@@ -508,7 +508,7 @@ function renderContext(
 
 function formatNoReplyMarker(marker: OrchestratorNoReplyMarker): string {
   const reason = marker.reasoning.replace(/\s+/g, " ").trim();
-  return `[timestamp: ${marker.timestamp}] [type: no_reply] [retrigger: ${marker.retriggerAfterSeconds}s] [reason: ${reason}]`;
+  return `[no_reply] [timestamp: ${marker.timestamp}] [reason: ${reason}] [retrigger: ${marker.retriggerAfterSeconds}s]`;
 }
 
 function currentTimeBlock(): string {

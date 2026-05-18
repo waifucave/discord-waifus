@@ -1372,7 +1372,7 @@ export class RuntimeOrchestrator {
 
     const messageStructure = [
       "Each message in the context is tagged with [index: #N], [timestamp: ISO-8601 UTC], and [sender: DisplayName] before its body, optionally followed by [reactions: ...] and [replying to: ...]. Reference messages by their #N index. replyToIndex must be one of the #N indices shown in the context.",
-      "Some lines are your own prior decisions, interleaved with the chat by timestamp. They look like [timestamp: ...] [type: no_reply] [retrigger: Ns] [reason: ...] and have no #N index, no sender, no reactions, and no replying-to. They are not Discord messages — nobody else sees them. Use them to gauge how long the channel has actually been silent under your watch and to avoid stacking redundant no_reply choices."
+      "Some lines are your own prior decisions, interleaved with the chat by timestamp. They look like [no_reply] [timestamp: ...] [reason: ...] [retrigger: Ns] and have no #N index, no sender, no reactions, and no replying-to. They are not Discord messages — nobody else sees them. Use them to gauge how long the channel has actually been silent under your watch and to avoid stacking redundant no_reply choices."
     ].join("\n");
 
     const toolUse = [
@@ -1482,7 +1482,10 @@ export class RuntimeOrchestrator {
     messages: ContextMessage[]
   ): Promise<OrchestratorNoReplyMarker[]> {
     if (!messages.length) return [];
-    const earliest = messages[0].timestamp;
+    const latest = messages.reduce(
+      (latestTimestamp, message) => message.timestamp > latestTimestamp ? message.timestamp : latestTimestamp,
+      messages[0].timestamp
+    );
     const history = await this.options.storage.readJson(
       "user/orchestrator/history.json",
       OrchestratorHistoryFileSchema,
@@ -1495,7 +1498,7 @@ export class RuntimeOrchestrator {
       if (decision.channelId !== channelId) continue;
       if (decision.retriggerAfterSeconds === undefined) continue;
       const timestamp = formatTimestamp(new Date(decision.createdAt));
-      if (timestamp < earliest) continue;
+      if (timestamp <= latest) continue;
       markers.push({
         kind: "no_reply",
         timestamp,

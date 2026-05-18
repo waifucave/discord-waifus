@@ -233,6 +233,96 @@ describe("RuntimeOrchestrator", () => {
     expect(session.scheduledRetriggerAt).toBeDefined();
   });
 
+  it("sends only no_reply markers created after the latest chat message", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.contexts = [
+      [
+        {
+          ...contextMessage("m1", "user", "Kevin", "latest user message"),
+          timestamp: "2026-05-16T12:10:00Z"
+        }
+      ]
+    ];
+
+    class MarkerCapturePipeline implements ModelPipeline {
+      capturedMarkers: ProviderRequest["decisionMarkers"] = [];
+
+      async generateWaifu() {
+        return { content: "unused" };
+      }
+
+      async decideOrchestrator(request: ProviderRequest) {
+        this.capturedMarkers = request.decisionMarkers ?? [];
+        return { action: "no_reply", retriggerAfterSeconds: 100, reasoning: "done" };
+      }
+    }
+
+    await seedRuntimeConfig(storage);
+    await storage.writeJson(
+      "orchestrator:history",
+      "user/orchestrator/history.json",
+      OrchestratorHistoryFileSchema,
+      OrchestratorHistoryFileSchema.parse(
+        createEmptyRevisionedFile({
+          decisions: [
+            {
+              id: "before-latest-chat",
+              guildId: "guild-1",
+              channelId: "channel-1",
+              action: "no_reply",
+              selectedWaifuIds: [],
+              reasoning: "before latest user message",
+              sceneDirections: [],
+              retriggerAfterSeconds: 300,
+              createdAt: "2026-05-16T12:09:00.000Z"
+            },
+            {
+              id: "after-latest-chat",
+              guildId: "guild-1",
+              channelId: "channel-1",
+              action: "no_reply",
+              selectedWaifuIds: [],
+              reasoning: "after latest user message",
+              sceneDirections: [],
+              retriggerAfterSeconds: 600,
+              createdAt: "2026-05-16T12:11:00.000Z"
+            }
+          ]
+        })
+      )
+    );
+
+    const pipeline = new MarkerCapturePipeline();
+    const runtime = new RuntimeOrchestrator({
+      storage,
+      discord,
+      maxAutomaticTurns: 1,
+      createPipeline: () => pipeline,
+      logger: {
+        debug: () => undefined,
+        info: () => undefined,
+        warn: () => undefined,
+        error: () => undefined
+      }
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    expect(pipeline.capturedMarkers).toEqual([
+      {
+        kind: "no_reply",
+        timestamp: "2026-05-16T12:11:00Z",
+        retriggerAfterSeconds: 600,
+        reasoning: "after latest user message"
+      }
+    ]);
+  });
+
   it("runs stage-manager tool calls in the background and updates memories", async () => {
     const root = await makeTempRoot();
     roots.push(root);
