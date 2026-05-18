@@ -1349,7 +1349,8 @@ export class RuntimeOrchestrator {
       "- Use replyToIndex only when replying to an older message that is no longer the latest visible message. If a waifu is answering the latest message in chat, omit replyToIndex so Discord sends a normal message.",
       "- If you want a waifu to do or say something specific, you MUST put it in her selectedWaifus[].sceneDirection. She does not see your reasoning — she only sees her own persona, the chat, and the sceneDirection. Leave sceneDirection empty only when you genuinely want a free-form in-character reply.",
       "- Use reviewer only when you suspect the latest waifu message is hallucinating or leaking internals; the reviewer model makes the final judgment.",
-      "- retriggerAfterSeconds must be between 100 and 28800."
+      "- retriggerAfterSeconds must be between 100 and 28800.",
+      "- Consecutive waifu messages are a soft signal, not a ban. More consecutive messages require a stronger reason: a fresh beat, escalation, interruption, joke, reaction, or emotional shift."
     ].join("\n");
 
     const taskInstructions = DEFAULT_ORCHESTRATOR_PROMPT;
@@ -1360,10 +1361,24 @@ export class RuntimeOrchestrator {
     ].join("\n\n");
 
     const retriggerPacing = [
-      "retriggerAfterSeconds decides when you wake yourself up to reconsider. Every wake-up costs another orchestrator call, so pace it to how alive the conversation actually is — read the timestamps on recent messages:",
-      "- Active chat (participants engaging within the last few minutes): short, ~100-300s.",
-      "- Quiet but plausibly resuming (someone stepped away mid-thread): medium, ~600-1800s.",
-      "- Cold (last participant message is hours old, or nobody has engaged with the bots in a while): long, ~3600-14400s, and keep growing each time you wake up to the same silence. Don't burn calls poking a dead channel."
+      "retriggerAfterSeconds is not just a generic check-back timer. It is a delayed opportunity for the orchestrator to make a waifu speak later if no human message arrives first.",
+      "",
+      "Use it only when there is a plausible future beat: a waifu might naturally follow up, tease, interrupt, revive a dangling thread, pull someone back into the conversation, react after a pause, or start a new angle after letting the moment breathe.",
+      "",
+      "If you do not have a specific conversational reason for a waifu to maybe speak later, do not set a low retriggerAfterSeconds. Human messages will automatically trigger the orchestrator again, so there is no need to wake up soon just to check whether someone talked.",
+      "",
+      "When choosing retriggerAfterSeconds, think in terms of intent:",
+      "- Shorter delays are for moments that feel alive and may benefit from a natural waifu follow-up if nobody responds first.",
+      "- Longer delays are for quiet rooms where a waifu might eventually revive the chat, but not soon.",
+      "- Very long delays are for cases where you are mostly waiting for humans and have no clear bot-led follow-up in mind.",
+      "",
+      "Do not burn calls polling the channel. A wake-up should represent a possible planned scene beat, not simple monitoring.",
+      "",
+      "If the next natural move is to wait for a human, choose no_reply with a long retriggerAfterSeconds.",
+      "",
+      "If the next natural move is \"let the current message sit for a bit, then maybe have a waifu continue if nobody answers,\" choose no_reply with a retriggerAfterSeconds that matches that intended pause.",
+      "",
+      "If the wake-up happens and the same silence remains, only make a waifu speak if it now feels natural. Otherwise choose no_reply again and increase the delay."
     ].join("\n");
 
     const messageStructure = [
@@ -1382,12 +1397,12 @@ export class RuntimeOrchestrator {
 
     const sections = orchestrator.promptSections;
     const behavior = [
-      `<hard_rules>\n${hardRules}\n</hard_rules>`,
       `<task_instructions>\n${taskInstructions}\n</task_instructions>`,
       sections.loopBreaking ? `<loop_breaking>\n${loopBreaking}\n</loop_breaking>` : null,
       sections.retriggerPacing ? `<retrigger_pacing>\n${retriggerPacing}\n</retrigger_pacing>` : null,
       sections.messageStructure ? `<message_structure>\n${messageStructure}\n</message_structure>` : null,
-      sections.toolUse ? `<tool_use>\n${toolUse}\n</tool_use>` : null
+      sections.toolUse ? `<tool_use>\n${toolUse}\n</tool_use>` : null,
+      `<hard_rules>\n${hardRules}\n</hard_rules>`
     ]
       .filter((section): section is string => Boolean(section))
       .join("\n");
@@ -1717,7 +1732,15 @@ const DEFAULT_ORCHESTRATOR_PROMPT = [
   "",
   "If a recent chat participant message or direct ping was missed while the room moved on, prefer steering a waifu to acknowledge it so the chat stays socially inclusive — unless silence is clearly the more natural choice.",
   "",
-  "Reach for sceneDirection when the next reply needs steering that personality alone won't provide: redirecting topic, closing a beat, creating an interruption, shifting momentum, or deliberately starting something new even when it cuts against the current flow. Prefer a natural bridge when pivoting, but a jarring shift is fine if the scene needs it. Keep sceneDirection short, concrete, and immediately actionable — one sentence is usually enough. When you refer to a specific person, use their actual display name from the chat history, never generic phrases like \"the user\". Name intended participants explicitly when more than one person is involved; avoid ambiguous group references like \"us\", \"them\", or \"everyone\". If multiple waifus respond in the same turn, each may receive a different sceneDirection."
+  "Reach for sceneDirection when the next reply needs steering that personality alone won't provide: redirecting topic, closing a beat, creating an interruption, shifting momentum, or deliberately starting something new even when it cuts against the current flow. Prefer a natural bridge when pivoting, but a jarring shift is fine if the scene needs it. Keep sceneDirection short, concrete, and immediately actionable — one sentence is usually enough. When you refer to a specific person, use their actual display name from the chat history, never generic phrases like \"the user\". Name intended participants explicitly when more than one person is involved; avoid ambiguous group references like \"us\", \"them\", or \"everyone\". If multiple waifus respond in the same turn, each may receive a different sceneDirection.",
+  "",
+  "When the trigger is a waifu follow-up, do not treat the last waifu as the default speaker. Re-evaluate the room from outside the scene: the same waifu may continue, another waifu may cut in, multiple waifus may chain, or the room may go quiet.",
+  "",
+  "Pay special attention to the latest 10 messages and the recent speaker pattern. If the same waifu has been carrying the scene for multiple beats, strongly consider switching to another waifu, using no_reply, or using sceneDirection to create a fresh beat.",
+  "",
+  "Do not wait for humans to explicitly call a different waifu before rotating speakers. A different waifu may naturally interrupt, tease, redirect, react, or start a new angle when it would make the chat more fun or less repetitive.",
+  "",
+  "Continue a waifu-to-waifu chain only when the next message adds something new: escalation, interruption, joke, emotional shift, contradiction, surprise, or a new topic. Do not continue just to restate the same mood."
 ].join("\n");
 
 const TYPING_REFRESH_MS = 8000;
