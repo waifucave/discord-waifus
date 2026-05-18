@@ -51,6 +51,7 @@ export interface DiscordGatewayFacade {
     channelId: string;
     messageIds: string[];
     authorId?: string;
+    authorIdByMessageId?: Record<string, string>;
   }): Promise<DiscordDeleteMessagesResult>;
 }
 
@@ -366,18 +367,69 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
     channelId: string;
     messageIds: string[];
     authorId?: string;
+    authorIdByMessageId?: Record<string, string>;
   }): Promise<DiscordDeleteMessagesResult> {
-    const client = this.clientForAuthor(input.authorId);
-    const channel = await client.channels.fetch(input.channelId);
-    if (!channel || !("messages" in channel)) {
-      throw new Error(`Discord channel ${input.channelId} is not message-manageable.`);
-    }
     const result: DiscordDeleteMessagesResult = {
       deletedMessageIds: [],
       failedMessageIds: []
     };
-    for (const messageId of input.messageIds) {
+    if (input.messageIds.length === 0) return result;
+
+    const orchestrator = this.orchestratorClient();
+    const orchestratorChannel = await orchestrator.channels.fetch(input.channelId);
+    if (!orchestratorChannel || !("messages" in orchestratorChannel)) {
+      throw new Error(`Discord channel ${input.channelId} is not message-manageable.`);
+    }
+
+    const remaining = new Set(input.messageIds);
+    const supportsBulkDelete =
+      "bulkDelete" in orchestratorChannel &&
+      typeof (orchestratorChannel as { bulkDelete?: unknown }).bulkDelete === "function";
+    if (input.messageIds.length >= 2 && supportsBulkDelete) {
       try {
+        const bulkChannel = orchestratorChannel as unknown as {
+          bulkDelete(messages: string[], filterOld?: boolean): Promise<{ keys(): IterableIterator<string> }>;
+        };
+        const bulkDeleted = await bulkChannel.bulkDelete(input.messageIds, true);
+        for (const id of bulkDeleted.keys()) {
+          if (remaining.has(id)) {
+            result.deletedMessageIds.push(id);
+            remaining.delete(id);
+          }
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.options.logger?.warn(
+          "Discord bulk delete failed, falling back to per-message deletes",
+          {
+            guildId: input.guildId,
+            channelId: input.channelId,
+            messageCount: input.messageIds.length,
+            message
+          }
+        );
+      }
+    }
+
+    if (remaining.size === 0) return result;
+
+    const channelByBotId = new Map<string, typeof orchestratorChannel>();
+    channelByBotId.set(this.options.orchestrator.id, orchestratorChannel);
+    for (const messageId of input.messageIds) {
+      if (!remaining.has(messageId)) continue;
+      const messageAuthorId = input.authorIdByMessageId?.[messageId] ?? input.authorId;
+      const client = this.clientForAuthor(messageAuthorId);
+      const botId = this.botIdForClient(client);
+      let channel = botId ? channelByBotId.get(botId) : undefined;
+      try {
+        if (!channel) {
+          const fetched = await client.channels.fetch(input.channelId);
+          if (!fetched || !("messages" in fetched)) {
+            throw new Error(`Discord channel ${input.channelId} is not message-manageable from this bot.`);
+          }
+          channel = fetched;
+          if (botId) channelByBotId.set(botId, fetched);
+        }
         await channel.messages.delete(messageId);
         result.deletedMessageIds.push(messageId);
       } catch (error) {
@@ -387,8 +439,8 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
           guildId: input.guildId,
           channelId: input.channelId,
           messageId,
-          authorId: input.authorId,
-          deletingBotId: this.botIdForClient(client),
+          authorId: messageAuthorId,
+          deletingBotId: botId,
           message
         });
       }

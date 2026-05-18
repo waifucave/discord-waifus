@@ -45,7 +45,13 @@ afterEach(async () => {
 class FakeDiscord implements DiscordGatewayFacade {
   sent: Array<{ content: string; senderBotId?: string; replyToMessageId?: string }> = [];
   typingCalls: Array<{ channelId: string; senderBotId?: string }> = [];
-  deleted: Array<{ guildId: string; channelId: string; messageIds: string[]; authorId?: string }> = [];
+  deleted: Array<{
+    guildId: string;
+    channelId: string;
+    messageIds: string[];
+    authorId?: string;
+    authorIdByMessageId?: Record<string, string>;
+  }> = [];
   reviewListeners = new Set<DiscordReviewCommandListener>();
   clearListeners = new Set<DiscordClearCommandListener>();
   runListeners = new Set<DiscordRunCommandListener>();
@@ -137,6 +143,7 @@ class FakeDiscord implements DiscordGatewayFacade {
     channelId: string;
     messageIds: string[];
     authorId?: string;
+    authorIdByMessageId?: Record<string, string>;
   }) {
     this.deleted.push(input);
     return {
@@ -549,7 +556,7 @@ describe("RuntimeOrchestrator", () => {
         guildId: "guild-1",
         channelId: "channel-1",
         messageIds: ["chunk-1", "chunk-2"],
-        authorId: "yuki-bot"
+        authorIdByMessageId: { "chunk-1": "yuki-bot", "chunk-2": "yuki-bot" }
       }
     ]);
     expect(responses).toEqual(["Cleared 1 waifu message (2 Discord chunks)."]);
@@ -617,7 +624,11 @@ describe("RuntimeOrchestrator", () => {
         guildId: "guild-1",
         channelId: "channel-1",
         messageIds: ["new", "mid-1", "mid-2"],
-        authorId: "yuki-bot"
+        authorIdByMessageId: {
+          new: "yuki-bot",
+          "mid-1": "yuki-bot",
+          "mid-2": "yuki-bot"
+        }
       }
     ]);
     expect(responses).toEqual(["Cleared 2 waifu messages (3 Discord chunks)."]);
@@ -683,14 +694,12 @@ describe("RuntimeOrchestrator", () => {
       {
         guildId: "guild-1",
         channelId: "channel-1",
-        messageIds: ["user-2"],
-        authorId: "u1"
-      },
-      {
-        guildId: "guild-1",
-        channelId: "channel-1",
-        messageIds: ["waifu-1", "waifu-2"],
-        authorId: "yuki-bot"
+        messageIds: ["user-2", "waifu-1", "waifu-2"],
+        authorIdByMessageId: {
+          "user-2": "u1",
+          "waifu-1": "yuki-bot",
+          "waifu-2": "yuki-bot"
+        }
       }
     ]);
     expect(responses).toEqual(["Cleared 2 messages (3 Discord chunks)."]);

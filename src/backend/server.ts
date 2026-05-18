@@ -129,13 +129,26 @@ export async function startBackend(options: StartBackendOptions): Promise<Runnin
     url: `http://${host}:${port}`,
     runtime,
     close: async () => {
+      const shutdownStartedAt = Date.now();
+      logger.info("Shutdown step start", { step: "orchestrator.stop" });
+      let stepStartedAt = Date.now();
       await runtimeOrchestrator?.stop();
+      logger.info("Shutdown step done", { step: "orchestrator.stop", ms: Date.now() - stepStartedAt });
+
+      logger.info("Shutdown step start", { step: "discord.disconnect" });
+      stepStartedAt = Date.now();
       await gateway?.disconnect();
+      logger.info("Shutdown step done", { step: "discord.disconnect", ms: Date.now() - stepStartedAt });
+
+      logger.info("Shutdown step start", { step: "fastify.close" });
+      stepStartedAt = Date.now();
       await app.close();
+      logger.info("Shutdown step done", { step: "fastify.close", ms: Date.now() - stepStartedAt });
+
       await rm(appDataPath(options.dataRoot, "pid.json"), { force: true });
       runtime.updatedAt = new Date().toISOString();
       await atomicWriteJson(appDataPath(options.dataRoot, "runtime.json"), runtime);
-      logger.info("Backend stopped", { dataRoot: options.dataRoot });
+      logger.info("Backend stopped", { dataRoot: options.dataRoot, totalMs: Date.now() - shutdownStartedAt });
     }
   };
 }

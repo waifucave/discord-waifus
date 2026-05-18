@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
-import { readFile, rm } from "node:fs/promises";
+import { open, readFile, rm, stat } from "node:fs/promises";
 import { ensureDataLayout } from "../config/layout.js";
 import { appDataPath, DATA_ROOT_ENV, getDataRoot, resolveDataPath } from "../config/paths.js";
 import { loadAppConfig } from "../config/appConfig.js";
@@ -196,10 +196,37 @@ async function stopCommand(dataRoot: string, options: { quiet?: boolean } = {}):
     }
     return 0;
   }
+  const logFile = appDataPath(dataRoot, "logs", "backend.log");
+  const logStartOffset = await fileSize(logFile);
+  const tailController = new AbortController();
+  const tailDone = options.quiet
+    ? Promise.resolve()
+    : tailShutdownLog(logFile, logStartOffset, tailController.signal);
+
+  if (!options.quiet) {
+    console.log(`sending SIGTERM to pid ${pidState.pid}`);
+  }
   process.kill(pidState.pid, "SIGTERM");
-  const stopped = await waitForExit(pidState.pid, 10_000);
+  let stopped = await waitForExit(pidState.pid, 20_000);
   if (!stopped) {
-    console.error(`pid ${pidState.pid} did not stop within 10s`);
+    if (!options.quiet) {
+      console.log(`pid ${pidState.pid} did not exit within 20s of SIGTERM; escalating to SIGKILL`);
+    }
+    try {
+      process.kill(pidState.pid, "SIGKILL");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ESRCH") {
+        tailController.abort();
+        await tailDone;
+        throw error;
+      }
+    }
+    stopped = await waitForExit(pidState.pid, 3_000);
+  }
+  tailController.abort();
+  await tailDone;
+  if (!stopped) {
+    console.error(`pid ${pidState.pid} is still alive after SIGKILL`);
     return 1;
   }
   await rm(appDataPath(dataRoot, "pid.json"), { force: true });
@@ -436,6 +463,67 @@ async function waitForExit(pid: number, timeoutMs: number): Promise<boolean> {
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   return !isProcessAlive(pid);
+}
+
+async function fileSize(filePath: string): Promise<number> {
+  try {
+    const info = await stat(filePath);
+    return info.size;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return 0;
+    }
+    throw error;
+  }
+}
+
+async function tailShutdownLog(logFile: string, fromOffset: number, signal: AbortSignal): Promise<void> {
+  let offset = fromOffset;
+  let pending = "";
+  while (!signal.aborted) {
+    let size: number;
+    try {
+      size = (await stat(logFile)).size;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      continue;
+    }
+    if (size > offset) {
+      const handle = await open(logFile, "r");
+      try {
+        const buf = Buffer.alloc(size - offset);
+        await handle.read(buf, 0, buf.length, offset);
+        offset = size;
+        pending += buf.toString("utf8");
+        const lines = pending.split("\n");
+        pending = lines.pop() ?? "";
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          let entry: { message?: unknown; context?: { step?: unknown; ms?: unknown; totalMs?: unknown } };
+          try {
+            entry = JSON.parse(line);
+          } catch {
+            continue;
+          }
+          const message = typeof entry.message === "string" ? entry.message : "";
+          const step = typeof entry.context?.step === "string" ? entry.context.step : undefined;
+          if (message === "Shutdown step start" && step) {
+            console.log(`  ${step} ...`);
+          } else if (message === "Shutdown step done" && step) {
+            const ms = typeof entry.context?.ms === "number" ? entry.context.ms : undefined;
+            console.log(`  ${step} done${ms !== undefined ? ` in ${ms}ms` : ""}`);
+          } else if (message === "Backend stopped") {
+            const totalMs = typeof entry.context?.totalMs === "number" ? entry.context.totalMs : undefined;
+            console.log(`  backend stopped${totalMs !== undefined ? ` (total ${totalMs}ms)` : ""}`);
+          }
+        }
+      } finally {
+        await handle.close();
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
 }
 
 async function waitForBackendStart(dataRoot: string, pid: number, timeoutMs: number) {

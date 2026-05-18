@@ -790,16 +790,14 @@ export class RuntimeOrchestrator {
       .slice(0, clearCount);
     const seenMessageIds = new Set<string>();
     const messageIds: string[] = [];
-    const messageIdsByAuthor = new Map<string, string[]>();
+    const authorIdByMessageId: Record<string, string> = {};
     for (const target of targets) {
       const targetMessageIds = target.sourceMessageIds ?? [target.id];
       for (const messageId of targetMessageIds) {
         if (seenMessageIds.has(messageId)) continue;
         seenMessageIds.add(messageId);
         messageIds.push(messageId);
-        const authorMessageIds = messageIdsByAuthor.get(target.authorId) ?? [];
-        authorMessageIds.push(messageId);
-        messageIdsByAuthor.set(target.authorId, authorMessageIds);
+        authorIdByMessageId[messageId] = target.authorId;
       }
     }
     if (targets.length === 0 || messageIds.length === 0) {
@@ -808,18 +806,13 @@ export class RuntimeOrchestrator {
     if (!this.options.discord.deleteMessages) {
       throw new Error("Discord message deletion is not available.");
     }
-    const deletedMessageIds = new Set<string>();
-    for (const [authorId, authorMessageIds] of messageIdsByAuthor) {
-      const deletion = await this.options.discord.deleteMessages({
-        guildId,
-        channelId,
-        messageIds: authorMessageIds,
-        authorId
-      });
-      for (const deletedMessageId of deletion.deletedMessageIds) {
-        deletedMessageIds.add(deletedMessageId);
-      }
-    }
+    const deletion = await this.options.discord.deleteMessages({
+      guildId,
+      channelId,
+      messageIds,
+      authorIdByMessageId
+    });
+    const deletedMessageIds = new Set(deletion.deletedMessageIds);
     return {
       deleted: messageIds.every((messageId) => deletedMessageIds.has(messageId)),
       logicalMessageCount: targets.length,
