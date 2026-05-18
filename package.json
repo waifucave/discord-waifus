@@ -1,6 +1,6 @@
 {
   "name": "@starlight-ai/discord-waifus",
-  "version": "1.1.4",
+  "version": "1.3.4",
   "description": "Local Discord waifu orchestrator backend, web UI, and CLI.",
   "type": "module",
   "private": false,
@@ -39,7 +39,8 @@
     "bin/",
     "dist/",
     "dist-frontend/",
-    "docs/",
+    "docs/api.md",
+    "docs/old-orchestrator-prompt.md",
     "README.md",
     "package.json"
   ],

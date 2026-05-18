@@ -172,7 +172,9 @@ class FakePipeline implements ModelPipeline {
   async decideOrchestrator(request: ProviderRequest): Promise<OrchestratorDecision> {
     expect(request.systemPrompt).toContain("decide");
     expect(request.systemPrompt).toContain("<active_waifus>");
-    expect(request.systemPrompt).toContain("ID: yuki");
+    expect(request.systemPrompt).toMatch(
+      /<active_waifus>\n<yuki>\nID: yuki\nDisplay name: Yuki\nPersona:\nkind\n<\/yuki>\n<\/active_waifus>/
+    );
     expect(request.systemPrompt).toContain("kind");
     expect(request.systemPrompt).not.toContain("<current_time>");
     expect(request.availableWaifuIds).toEqual(["yuki"]);

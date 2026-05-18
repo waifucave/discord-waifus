@@ -1308,7 +1308,8 @@ export class RuntimeOrchestrator {
       "Write one Discord-safe message per turn.",
       "Do not output physical actions, roleplay narration, or stage directions. No asterisks-wrapped actions like *smiles* or *waves*, no parenthetical stage notes like (hugs them), no bracketed cues like [walks over]. Only write what you would actually type into a chat box.",
       "Keep replies short. One or two sentences is the norm; match the casual pacing of a Discord conversation rather than writing paragraphs.",
-      "If you really need to express something longer, prefer splitting it into multiple short sentences rather than one long run-on. Each sentence in your reply is delivered as a separate Discord message, so short sentences read as a natural back-and-forth instead of a wall of text.",
+      "Avoid long sentences and long replies.",
+      "If a reply would otherwise become long, break it into shorter, standalone sentences instead of writing one run-on sentence. Each sentence in your reply is delivered as a separate Discord message, so short sentences read as a natural back-and-forth instead of a wall of text.",
       "Reply with only what you would actually type — no narration, no meta commentary, no describing yourself in the third person.",
       "To ping a user, write <@sender> — where `sender` is copied verbatim from the [sender: ...] tag on one of their messages. Example: a message tagged [sender: Kevin] is pinged as <@Kevin>. Never use raw Discord IDs.",
       "Use only listed server emojis."
@@ -1338,9 +1339,11 @@ export class RuntimeOrchestrator {
     const activeWaifusContent = availableWaifus.length
       ? availableWaifus
           .map((waifu) => {
-            const header = `### ${waifu.displayName || waifu.name} (ID: ${waifu.id})`;
+            const tagName = promptTagName(waifu.name || waifu.id);
+            const displayName = waifu.displayName || waifu.name;
             const persona = waifu.persona.trim();
-            return persona ? `${header}\n${persona}` : `${header}\n(no persona configured)`;
+            const personaBlock = persona || "(no persona configured)";
+            return `<${tagName}>\nID: ${waifu.id}\nDisplay name: ${displayName}\nPersona:\n${personaBlock}\n</${tagName}>`;
           })
           .join("\n\n")
       : "No waifus are currently enabled for this channel.";
@@ -1672,6 +1675,15 @@ function decrementActive(map: Map<string, number>, key: string): void {
   } else {
     map.delete(key);
   }
+}
+
+function promptTagName(value: string): string {
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return /^[a-z]/.test(normalized) ? normalized : `waifu_${normalized || "unknown"}`;
 }
 
 function defaultSleep(ms: number, signal?: AbortSignal): Promise<void> {

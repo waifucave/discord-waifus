@@ -133,6 +133,10 @@ export function denormalizeModelContentForDiscord(
 }
 
 const LEADING_BRACKET_TAG_RE = /^\s*\[[A-Za-z_][A-Za-z0-9 _-]*:[^\]\n]*\]\s*/;
+const INLINE_LEAKED_HEADER_RE =
+  /(?<=\n)[ \t]*\[(?:timestamp|sender|index):[^\]\n]*\][ \t]*(?:\[[A-Za-z_][A-Za-z0-9 _-]*:[^\]\n]*\][ \t]*)*/gi;
+const ORPHAN_META_LINE_RE = /(?<=\n)[ \t]*\[(?:replying to|reactions):[^\]\n]*\][ \t]*(?=\n)/gi;
+const COLLAPSE_BLANK_LINES_RE = /\n{3,}/g;
 const LEGACY_LEADING_INDEX_RE = /^\s*#\d+\b[ \t]*/;
 const LEGACY_LEADING_TIMESTAMP_RE = /^\s*\[(?:just now|yesterday|\d+\s+(?:min|mins|minute|minutes|hr|hrs|hour|hours|day|days)\s+ago)\][ \t]*/i;
 const LEGACY_LEADING_REPLY_LINE_RE = /^\s*reply_to:[^\n]*(?:\r?\n|$)/i;
@@ -186,7 +190,18 @@ export function stripLeakedContextHeader(
       changed = true;
     }
   }
+  text = stripInlineLeakedContextEntries(text);
   return stripLeakedModelAnalysis(text);
+}
+
+function stripInlineLeakedContextEntries(content: string): string {
+  const before = content;
+  let text = content
+    .replace(INLINE_LEAKED_HEADER_RE, "")
+    .replace(ORPHAN_META_LINE_RE, "");
+  if (text === before) return content;
+  text = text.replace(COLLAPSE_BLANK_LINES_RE, "\n\n");
+  return text.trim();
 }
 
 function stripLeakedModelAnalysis(content: string): string {

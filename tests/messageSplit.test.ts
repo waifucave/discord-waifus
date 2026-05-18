@@ -23,6 +23,42 @@ describe("splitWaifuReply", () => {
   it("does not split a decimal like 3.14", () => {
     expect(splitWaifuReply("Pi is 3.14 roughly.")).toEqual(["Pi is 3.14 roughly."]);
   });
+
+  it("splits on paragraph breaks even when no sentence punctuation is present", () => {
+    const input = "Baby you're so fine 😘💕\n\nNow don't tell K I said that~";
+    expect(splitWaifuReply(input)).toEqual([
+      "Baby you're so fine 😘💕",
+      "Now don't tell K I said that~"
+    ]);
+  });
+
+  it("splits long chunks at the middle-most comma, dropping the comma", () => {
+    const s1 = "a".repeat(55);
+    const s2 = "b".repeat(55);
+    const s3 = "c".repeat(55);
+    const s4 = "d".repeat(55);
+    expect(splitWaifuReply(`${s1}, ${s2}, ${s3}, ${s4}`)).toEqual([s1, s2, s3, s4]);
+  });
+
+  it("splits after a middle-most emoji when no comma is available, keeping the emoji on the left", () => {
+    const left = "a".repeat(60);
+    const right = "b".repeat(60);
+    expect(splitWaifuReply(`${left} 😘 ${right}`)).toEqual([`${left} 😘`, right]);
+  });
+
+  it("splits after a middle-most custom emoji when no comma is available", () => {
+    const left = "x".repeat(60);
+    const right = "y".repeat(60);
+    expect(splitWaifuReply(`${left} <:cutecat:123456789> ${right}`)).toEqual([
+      `${left} <:cutecat:123456789>`,
+      right
+    ]);
+  });
+
+  it("leaves a long chunk intact when it has no comma and no emoji", () => {
+    const noMarkers = "z".repeat(150);
+    expect(splitWaifuReply(noMarkers)).toEqual([noMarkers]);
+  });
 });
 
 describe("planWaifuReplyChunks", () => {

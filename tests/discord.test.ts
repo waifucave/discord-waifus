@@ -208,4 +208,38 @@ describe("stripLeakedContextHeader", () => {
       stripLeakedContextHeader("Kevin: stop saying that", { senderDisplayName: "Aria" })
     ).toBe("Kevin: stop saying that");
   });
+
+  it("strips a context-header chain that appears mid-reply after a paragraph break", () => {
+    const leaked =
+      "K's just salty I called him Portuguese instead of Finnish~ 😘💕\n\n[timestamp: 2026-05-18T14:38:40Z] [sender: Stupid hoe] And baby Ali, a lady never reveals all her secrets~ 👀✨";
+    expect(stripLeakedContextHeader(leaked, { senderDisplayName: "Stupid hoe" })).toBe(
+      "K's just salty I called him Portuguese instead of Finnish~ 😘💕\n\nAnd baby Ali, a lady never reveals all her secrets~ 👀✨"
+    );
+  });
+
+  it("strips a mid-reply header even when the body is on the next line", () => {
+    const leaked =
+      "first line body 😘\n[timestamp: 2026-05-18T14:38:40Z] [sender: Aria]\nsecond line body";
+    expect(stripLeakedContextHeader(leaked, { senderDisplayName: "Aria" })).toBe(
+      "first line body 😘\n\nsecond line body"
+    );
+  });
+
+  it("strips orphan replying-to and reactions lines left between hallucinated entries", () => {
+    const leaked = [
+      "first body line",
+      "[replying to: K: hi there]",
+      "[reactions: 🔥 x2]",
+      "[timestamp: 2026-05-18T14:38:40Z] [sender: Aria] second body line"
+    ].join("\n");
+    expect(stripLeakedContextHeader(leaked, { senderDisplayName: "Aria" })).toBe(
+      "first body line\n\nsecond body line"
+    );
+  });
+
+  it("still preserves a legitimate inline bracket mention on the same line", () => {
+    expect(stripLeakedContextHeader("Hey [timestamp: now] friend")).toBe(
+      "Hey [timestamp: now] friend"
+    );
+  });
 });

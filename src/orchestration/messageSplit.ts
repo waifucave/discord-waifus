@@ -1,10 +1,82 @@
+const PARAGRAPH_SPLIT_RE = /\n+/;
+const SENTENCE_SPLIT_RE = /(?<=[.?!])\s+/;
+const MAX_CHUNK_CHARS = 100;
+const COMMA_FINDER_RE = /,/g;
+const EMOJI_FINDER_RE =
+  /<a?:[A-Za-z0-9_]+:\d+>|[0-9#*]\uFE0F?\u20E3|(?:\p{Extended_Pictographic}|\p{Regional_Indicator})(?:[\uFE0E\uFE0F]|\p{Emoji_Modifier})?(?:\u200D(?:\p{Extended_Pictographic}|\p{Regional_Indicator})(?:[\uFE0E\uFE0F]|\p{Emoji_Modifier})?)*/gu;
+
 export function splitWaifuReply(content: string): string[] {
   const trimmed = content.trim();
   if (!trimmed) return [];
-  return trimmed
-    .split(/(?<=[.?!])\s+/)
-    .map((chunk) => chunk.trim())
-    .filter((chunk) => chunk.length > 0);
+  const sentenceChunks: string[] = [];
+  for (const paragraph of trimmed.split(PARAGRAPH_SPLIT_RE)) {
+    for (const part of paragraph.split(SENTENCE_SPLIT_RE)) {
+      const piece = part.trim();
+      if (piece.length > 0) sentenceChunks.push(piece);
+    }
+  }
+  const result: string[] = [];
+  for (const chunk of sentenceChunks) splitLongChunk(chunk, result);
+  return result;
+}
+
+function splitLongChunk(chunk: string, out: string[]): void {
+  if (characterCount(chunk) <= MAX_CHUNK_CHARS) {
+    out.push(chunk);
+    return;
+  }
+  const split = trySplitLongChunk(chunk);
+  if (!split) {
+    out.push(chunk);
+    return;
+  }
+  splitLongChunk(split[0], out);
+  splitLongChunk(split[1], out);
+}
+
+function trySplitLongChunk(chunk: string): [string, string] | null {
+  const mid = chunk.length / 2;
+  const commaSplit = bestCommaSplit(chunk, mid);
+  if (commaSplit) return commaSplit;
+  return bestEmojiSplit(chunk, mid);
+}
+
+function bestCommaSplit(chunk: string, mid: number): [string, string] | null {
+  let bestIndex: number | null = null;
+  let bestDist = Infinity;
+  for (const match of chunk.matchAll(COMMA_FINDER_RE)) {
+    const idx = match.index ?? 0;
+    if (idx === 0 || idx === chunk.length - 1) continue;
+    const dist = Math.abs(idx - mid);
+    if (dist < bestDist) {
+      bestDist = dist;
+      bestIndex = idx;
+    }
+  }
+  if (bestIndex === null) return null;
+  const left = chunk.slice(0, bestIndex).trimEnd();
+  const right = chunk.slice(bestIndex + 1).trimStart();
+  if (!left || !right) return null;
+  return [left, right];
+}
+
+function bestEmojiSplit(chunk: string, mid: number): [string, string] | null {
+  let bestEnd: number | null = null;
+  let bestDist = Infinity;
+  for (const match of chunk.matchAll(EMOJI_FINDER_RE)) {
+    const end = (match.index ?? 0) + match[0].length;
+    if (end >= chunk.length) continue;
+    const dist = Math.abs(end - mid);
+    if (dist < bestDist) {
+      bestDist = dist;
+      bestEnd = end;
+    }
+  }
+  if (bestEnd === null) return null;
+  const left = chunk.slice(0, bestEnd).trimEnd();
+  const right = chunk.slice(bestEnd).trimStart();
+  if (!left || !right) return null;
+  return [left, right];
 }
 
 const IMMEDIATE_CHUNK_LIMIT = 2;
