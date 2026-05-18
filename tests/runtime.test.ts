@@ -953,28 +953,38 @@ describe("RuntimeOrchestrator", () => {
     expect(discord.typingCalls.some((call) => call.senderBotId === undefined)).toBe(true);
   });
 
-  it("caches overflow reply chunks and sends them after channel idle without another waifu query", async () => {
+  it("caches overflow reply chunks, sends them after channel idle, and reruns the orchestrator", async () => {
     const root = await makeTempRoot();
     roots.push(root);
     await ensureDataLayout(root);
     const storage = new StorageService(root);
     const discord = new FakeDiscord();
+    let resolveThirdDecision!: () => void;
+    const thirdDecision = new Promise<void>((resolve) => {
+      resolveThirdDecision = resolve;
+    });
 
     class OverflowPipeline implements ModelPipeline {
       generateCalls = 0;
+      decisionCalls = 0;
       decisions: OrchestratorDecision[] = [
         {
           action: "waifus",
           selectedWaifus: [{ waifuId: "yuki", sceneDirection: "answer", replyToMessageId: "m1" }],
           reasoning: "Reply to Kevin."
         },
-        { action: "no_reply", retriggerAfterSeconds: 100, reasoning: "wait" }
+        { action: "no_reply", retriggerAfterSeconds: 100, reasoning: "wait" },
+        { action: "no_reply", retriggerAfterSeconds: 100, reasoning: "cached chunks posted" }
       ];
       async generateWaifu() {
         this.generateCalls += 1;
         return { content: "One. Two. This third chunk is too long. Four." };
       }
       async decideOrchestrator() {
+        this.decisionCalls += 1;
+        if (this.decisionCalls === 3) {
+          resolveThirdDecision();
+        }
         const next = this.decisions.shift();
         if (!next) throw new Error("no decision");
         return next;
@@ -984,6 +994,14 @@ describe("RuntimeOrchestrator", () => {
     await seedRuntimeConfig(storage);
 
     const pipeline = new OverflowPipeline();
+    const decisionCallsDuringCachedSends: number[] = [];
+    const originalSend = discord.sendWaifuMessage.bind(discord);
+    discord.sendWaifuMessage = async (input) => {
+      if (input.content === "This third chunk is too long." || input.content === "Four.") {
+        decisionCallsDuringCachedSends.push(pipeline.decisionCalls);
+      }
+      return originalSend(input);
+    };
     const runtime = new RuntimeOrchestrator({
       storage,
       discord,
@@ -1000,7 +1018,10 @@ describe("RuntimeOrchestrator", () => {
     });
 
     await runtime.triggerChannel("guild-1", "channel-1");
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await Promise.race([
+      thirdDecision,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("cached continuation did not rerun orchestrator")), 1000))
+    ]);
     await runtime.stop();
 
     expect(discord.sent.map((entry) => entry.content)).toEqual([
@@ -1010,6 +1031,8 @@ describe("RuntimeOrchestrator", () => {
       "Four."
     ]);
     expect(pipeline.generateCalls).toBe(1);
+    expect(pipeline.decisionCalls).toBe(3);
+    expect(decisionCallsDuringCachedSends).toEqual([2, 2]);
   });
 
   it("uses cached chunks when the orchestrator selects the same waifu with no scene direction", async () => {
@@ -1021,6 +1044,7 @@ describe("RuntimeOrchestrator", () => {
 
     class SameWaifuContinuationPipeline implements ModelPipeline {
       generateCalls = 0;
+      decisionCalls = 0;
       decisions: OrchestratorDecision[] = [
         {
           action: "waifus",
@@ -1039,6 +1063,7 @@ describe("RuntimeOrchestrator", () => {
         return { content: "One. Two. This third chunk is too long. Four." };
       }
       async decideOrchestrator() {
+        this.decisionCalls += 1;
         const next = this.decisions.shift();
         if (!next) throw new Error("no decision");
         return next;
@@ -1073,6 +1098,7 @@ describe("RuntimeOrchestrator", () => {
       "Four."
     ]);
     expect(pipeline.generateCalls).toBe(1);
+    expect(pipeline.decisionCalls).toBe(3);
   });
 
   it("discards cached chunks when chat activity arrives after the trimmed waifu message", async () => {

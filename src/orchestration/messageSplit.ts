@@ -9,16 +9,24 @@ export function splitWaifuReply(content: string): string[] {
 
 const IMMEDIATE_CHUNK_LIMIT = 2;
 const SHORT_THIRD_CHUNK_CHAR_LIMIT = 18;
+const THIRD_CHUNK_INDEX = 2;
+const FOURTH_CHUNK_INDEX = 3;
+const CUSTOM_EMOJI_ONLY_RE = /^<a?:[A-Za-z0-9_]+:(?:\d+)?>$/;
+const KEYCAP_EMOJI_ONLY_RE = /^[0-9#*]\uFE0F?\u20E3$/u;
+const UNICODE_EMOJI_ONLY_RE =
+  /^(?:(?:\p{Extended_Pictographic}|\p{Regional_Indicator})(?:[\uFE0E\uFE0F]|\p{Emoji_Modifier})?(?:\u200D(?:\p{Extended_Pictographic}|\p{Regional_Indicator})(?:[\uFE0E\uFE0F]|\p{Emoji_Modifier})?)*)$/u;
 
 export function planWaifuReplyChunks(chunks: string[]): {
   immediateChunks: string[];
   cachedChunks: string[];
 } {
-  const immediateLimit =
-    chunks[IMMEDIATE_CHUNK_LIMIT] &&
-    characterCount(chunks[IMMEDIATE_CHUNK_LIMIT]) < SHORT_THIRD_CHUNK_CHAR_LIMIT
-      ? IMMEDIATE_CHUNK_LIMIT + 1
-      : IMMEDIATE_CHUNK_LIMIT;
+  let immediateLimit = IMMEDIATE_CHUNK_LIMIT;
+  if (chunks[THIRD_CHUNK_INDEX] && characterCount(chunks[THIRD_CHUNK_INDEX]) < SHORT_THIRD_CHUNK_CHAR_LIMIT) {
+    immediateLimit = THIRD_CHUNK_INDEX + 1;
+  }
+  if (immediateLimit === THIRD_CHUNK_INDEX + 1 && chunks[FOURTH_CHUNK_INDEX] && isEmojiOnlyChunk(chunks[FOURTH_CHUNK_INDEX])) {
+    immediateLimit = FOURTH_CHUNK_INDEX + 1;
+  }
 
   return {
     immediateChunks: chunks.slice(0, immediateLimit),
@@ -36,4 +44,9 @@ export function typingDelayMs(chunk: string): number {
 
 function characterCount(value: string): number {
   return Array.from(value).length;
+}
+
+function isEmojiOnlyChunk(value: string): boolean {
+  const trimmed = value.trim();
+  return CUSTOM_EMOJI_ONLY_RE.test(trimmed) || KEYCAP_EMOJI_ONLY_RE.test(trimmed) || UNICODE_EMOJI_ONLY_RE.test(trimmed);
 }

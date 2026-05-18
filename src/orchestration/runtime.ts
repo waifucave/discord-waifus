@@ -83,7 +83,7 @@ export class RuntimeOrchestrator {
   private readonly activeReviewerRuns = new Map<string, number>();
   private readonly channelRunVersions = new Map<string, number>();
   private static readonly SELF_SENT_TTL_MS = 60_000;
-  private static readonly CONTINUATION_IDLE_MS = 120_000;
+  private static readonly CONTINUATION_IDLE_MS = 480_000;
   private unsubscribes: Array<() => void> = [];
 
   constructor(private readonly options: RuntimeOrchestratorOptions) {
@@ -1032,7 +1032,10 @@ export class RuntimeOrchestrator {
       this.setContinuationTimer(guildId, channelId, Math.min(1000, Math.max(1, this.continuationIdleMs)));
       return;
     }
-    await this.sendCachedWaifuContinuation(guildId, channelId, "idle-timeout");
+    const sent = await this.sendCachedWaifuContinuation(guildId, channelId, "idle-timeout");
+    if (sent) {
+      await this.startChannelRun(guildId, channelId, "cached-continuation");
+    }
   }
 
   private async cacheWaifuContinuation(input: {

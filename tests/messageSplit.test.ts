@@ -39,6 +39,27 @@ describe("planWaifuReplyChunks", () => {
       cachedChunks: ["Four."]
     });
   });
+
+  it("allows the fourth chunk when the third was allowed and the fourth is a server emoji", () => {
+    expect(planWaifuReplyChunks(["One.", "Two.", "short third", "<:cutecat:>", "Five."])).toEqual({
+      immediateChunks: ["One.", "Two.", "short third", "<:cutecat:>"],
+      cachedChunks: ["Five."]
+    });
+  });
+
+  it("allows the fourth chunk when the third was allowed and the fourth is a unicode emoji", () => {
+    expect(planWaifuReplyChunks(["One.", "Two.", "short third", "🥹", "Five."])).toEqual({
+      immediateChunks: ["One.", "Two.", "short third", "🥹"],
+      cachedChunks: ["Five."]
+    });
+  });
+
+  it("keeps the fourth chunk cached when the third chunk was too long", () => {
+    expect(planWaifuReplyChunks(["One.", "Two.", "This third chunk is too long.", "🥹"])).toEqual({
+      immediateChunks: ["One.", "Two."],
+      cachedChunks: ["This third chunk is too long.", "🥹"]
+    });
+  });
 });
 
 describe("typingDelayMs", () => {
