@@ -11,7 +11,38 @@ import { StorageService } from "../storage/storageService.js";
 import { DiscordBotsFileSchema, ProviderCredentialsFileSchema, createEmptyRevisionedFile } from "../shared/schemas/domain.js";
 import { ParsedCli, flagBoolean, flagNumber, flagString } from "./parser.js";
 
-export async function runCommand(parsed: ParsedCli): Promise<number> {
+const PACKAGE_NAME = "@starlight-ai/discord-waifus";
+const PACKAGE_SPEC = `${PACKAGE_NAME}@latest`;
+const GITHUB_RELEASES_API = "https://api.github.com/repos/HeavenllyDemon/Discord-Waifus/releases/latest";
+const GITHUB_RELEASE_TARBALL_PREFIX = "starlight-ai-discord-waifus-";
+
+export type CliProcessOptions = {
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+};
+
+export type CliProcessRunner = {
+  run(command: string, args: string[], options?: CliProcessOptions): Promise<number>;
+};
+
+export type GitHubReleaseAsset = {
+  name: string;
+  browser_download_url: string;
+};
+
+export type GitHubRelease = {
+  tag_name?: string;
+  assets?: GitHubReleaseAsset[];
+};
+
+export type CliRuntimeOptions = {
+  processRunner?: CliProcessRunner;
+  githubReleaseFetcher?: () => Promise<GitHubRelease>;
+  env?: NodeJS.ProcessEnv;
+  platform?: NodeJS.Platform;
+};
+
+export async function runCommand(parsed: ParsedCli, options: CliRuntimeOptions = {}): Promise<number> {
   const dataRoot = resolveCliDataRoot(parsed);
 
   switch (parsed.command) {
@@ -38,7 +69,7 @@ export async function runCommand(parsed: ParsedCli): Promise<number> {
     case "clean":
       return cleanCommand(parsed, dataRoot);
     case "update":
-      return updateCommand();
+      return updateCommand(parsed, options);
   }
 }
 
@@ -59,7 +90,7 @@ Usage:
   waifus status [--data-root PATH]
   waifus doctor [--data-root PATH]
   waifus clean [--force] [--include-logs] [--data-root PATH]
-  waifus update
+  waifus update [--npm | --github]
 
 Environment:
   ${DATA_ROOT_ENV}=PATH overrides the default ~/.dc-waifus data root.
@@ -258,20 +289,121 @@ async function cleanCommand(parsed: ParsedCli, dataRoot: string): Promise<number
   return 0;
 }
 
-async function updateCommand(): Promise<number> {
-  console.log(`waifus update does not mutate files directly yet.
+async function updateCommand(parsed: ParsedCli, options: CliRuntimeOptions): Promise<number> {
+  const runner = options.processRunner ?? defaultProcessRunner;
+  const forceNpm = flagBoolean(parsed.flags, "npm") || flagBoolean(parsed.flags, "global");
+  const forceGithub = flagBoolean(parsed.flags, "github") || flagBoolean(parsed.flags, "release");
 
-Global npm users can update with:
-  npm install -g @starlight-ai/discord-waifus@latest
+  if (flagBoolean(parsed.flags, "git")) {
+    console.error(
+      "waifus update only updates installed packages. For source checkouts, run git pull, npm install, and npm run build yourself."
+    );
+    return 1;
+  }
 
-Git checkout users should pull and reinstall only when their worktree is clean:
-  git status --short
-  git pull --ff-only
-  npm install
-  npm run build
+  if (forceNpm && forceGithub) {
+    console.error("Use either --npm/--global or --github/--release, not both.");
+    return 1;
+  }
 
-No files were changed by this command.`);
+  if (forceGithub) {
+    return updateGithubReleasePackage(runner, options);
+  }
+  return updateGlobalNpmPackage(runner, options);
+}
+
+async function updateGlobalNpmPackage(runner: CliProcessRunner, options: CliRuntimeOptions): Promise<number> {
+  const npm = npmCommand(options.platform ?? process.platform);
+  console.log(`Updating ${PACKAGE_NAME} from npm...`);
+  const code = await runner.run(npm, ["install", "-g", PACKAGE_SPEC], {
+    env: options.env ?? process.env
+  });
+  if (code !== 0) {
+    console.error(`Failed to update ${PACKAGE_NAME}; npm exited with code ${code}.`);
+    return code;
+  }
+  console.log(`Updated ${PACKAGE_NAME} globally. Restart any running waifus backend to use the new version.`);
   return 0;
+}
+
+async function updateGithubReleasePackage(runner: CliProcessRunner, options: CliRuntimeOptions): Promise<number> {
+  const fetchRelease = options.githubReleaseFetcher ?? fetchLatestGithubRelease;
+  console.log(`Checking latest GitHub release for ${PACKAGE_NAME}...`);
+  const release = await fetchRelease();
+  const asset = selectGithubReleaseTarball(release);
+  if (!asset) {
+    console.error(`Latest GitHub release does not include a ${GITHUB_RELEASE_TARBALL_PREFIX}*.tgz asset.`);
+    return 1;
+  }
+
+  const npm = npmCommand(options.platform ?? process.platform);
+  const label = release.tag_name ? ` ${release.tag_name}` : "";
+  console.log(`Updating ${PACKAGE_NAME} from GitHub release${label}...`);
+  const code = await runner.run(npm, ["install", "-g", asset.browser_download_url], {
+    env: options.env ?? process.env
+  });
+  if (code !== 0) {
+    console.error(`Failed to update ${PACKAGE_NAME}; npm exited with code ${code}.`);
+    return code;
+  }
+  console.log(`Updated ${PACKAGE_NAME} from GitHub release. Restart any running waifus backend to use the new version.`);
+  return 0;
+}
+
+const defaultProcessRunner: CliProcessRunner = {
+  run: runProcess
+};
+
+async function runProcess(command: string, args: string[], options: CliProcessOptions = {}): Promise<number> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const settle = (code: number) => {
+      if (!settled) {
+        settled = true;
+        resolve(code);
+      }
+    };
+    const child = spawn(command, args, {
+      cwd: options.cwd,
+      env: options.env ?? process.env,
+      stdio: "inherit"
+    });
+    child.once("error", (error) => {
+      console.error(`Failed to start ${command}: ${error.message}`);
+      settle(1);
+    });
+    child.once("exit", (code, signal) => {
+      if (signal) {
+        console.error(`${command} exited from signal ${signal}.`);
+        settle(1);
+        return;
+      }
+      settle(code ?? 1);
+    });
+  });
+}
+
+async function fetchLatestGithubRelease(): Promise<GitHubRelease> {
+  const response = await fetch(GITHUB_RELEASES_API, {
+    headers: {
+      accept: "application/vnd.github+json",
+      "user-agent": "discord-waifus-cli"
+    }
+  });
+  if (!response.ok) {
+    throw new Error(`GitHub release lookup failed: ${response.status} ${response.statusText}`);
+  }
+  return (await response.json()) as GitHubRelease;
+}
+
+function selectGithubReleaseTarball(release: GitHubRelease): GitHubReleaseAsset | undefined {
+  return release.assets?.find(
+    (asset) => asset.name.startsWith(GITHUB_RELEASE_TARBALL_PREFIX) && asset.name.endsWith(".tgz")
+  );
+}
+
+function npmCommand(platform: NodeJS.Platform): string {
+  return platform === "win32" ? "npm.cmd" : "npm";
 }
 
 async function readRuntimeFile(dataRoot: string, name: "pid.json" | "runtime.json") {

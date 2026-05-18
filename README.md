@@ -28,6 +28,12 @@ npm install -g ./starlight-ai-discord-waifus-1.0.0.tgz
 waifus start
 ```
 
+GitHub release installs can update from the next release asset with:
+
+```sh
+waifus update --github
+```
+
 ## Build From Source
 
 ```sh
@@ -55,10 +61,15 @@ waifus restart [--host 127.0.0.1] [--port 3888] [--data-root PATH]
 waifus status [--data-root PATH]
 waifus doctor [--data-root PATH]
 waifus clean [--force] [--include-logs] [--data-root PATH]
-waifus update
+waifus update [--npm | --github]
 ```
 
 `DC_WAIFUS_HOME=PATH` overrides the default `~/.dc-waifus` data root.
+
+`waifus update` updates the installed package, not source checkouts. By default it runs
+`npm install -g @starlight-ai/discord-waifus@latest`. Use `waifus update --github`
+to install the latest `.tgz` asset from the GitHub releases page. If you built from
+source, run `git pull`, `npm install`, and `npm run build` yourself.
 
 ## Discord Setup
 
