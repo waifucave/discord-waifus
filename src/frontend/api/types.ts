@@ -82,7 +82,7 @@ export type DiscordBotsFile = Revisioned & {
 
 export type OrchestratorPromptSections = {
   loopBreaking: boolean;
-  retriggerPacing: boolean;
+  idleTriggerPacing: boolean;
   messageStructure: boolean;
   toolUse: boolean;
 };
@@ -145,15 +145,19 @@ export type ModelsResponse = {
   models: ModelCapability[];
 };
 
+export type OrchestratorDecisionStep = {
+  kind: string;
+  sceneDirection?: string;
+  replyToMessageId?: string;
+};
+
 export type OrchestratorDecisionHistoryEntry = {
   id: string;
   guildId?: string;
   channelId?: string;
-  action: "waifus" | "stage_manager" | "reviewer" | "no_reply";
-  selectedWaifuIds: string[];
+  steps: OrchestratorDecisionStep[];
+  idleTrigger?: 180 | 300 | 900 | 1800 | 3600 | 7200 | 14400;
   reasoning: string;
-  sceneDirections: string[];
-  retriggerAfterSeconds?: number;
   createdAt: string;
 };
 

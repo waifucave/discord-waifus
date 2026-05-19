@@ -19,7 +19,7 @@ export const ChannelSessionStateSchema = RevisionedRecordSchema.extend({
       startedAt: IsoDateStringSchema.optional()
     })
     .default({ active: false }),
-  scheduledRetriggerAt: IsoDateStringSchema.optional(),
+  scheduledIdleTriggerAt: IsoDateStringSchema.optional(),
   pendingMessageIds: z.array(z.string()).default([]),
   cachedWaifuContinuation: z
     .object({

@@ -33,8 +33,8 @@ describe("provider-native decision tools", () => {
                 function: {
                   name: "orchestrator_decision",
                   arguments: JSON.stringify({
-                    action: "no_reply",
-                    retriggerAfterSeconds: 100,
+                    steps: [{ kind: "no_reply" }],
+                    idleTrigger: 180,
                     reasoning: "wait for more context"
                   })
                 }
@@ -53,14 +53,14 @@ describe("provider-native decision tools", () => {
       availableWaifuIds: ["yuki", "mika"]
     });
 
-    expect(decision).toMatchObject({ action: "no_reply", retriggerAfterSeconds: 100 });
+    expect(decision).toMatchObject({ steps: [{ kind: "no_reply" }], idleTrigger: 180 });
     const query = recentQueries().at(-1);
     expect(query?.role).toBe("orchestrator");
     expect((query?.payload.tools as Array<{ function: { name: string } }>)[0].function.name).toBe("orchestrator_decision");
-    const waifuIdSchema = (query?.payload.tools as Array<{
-      function: { parameters: { properties: { selectedWaifus: { items: { properties: { waifuId: { enum?: string[] } } } } } } };
-    }>)[0].function.parameters.properties.selectedWaifus.items.properties.waifuId;
-    expect(waifuIdSchema.enum).toEqual(["yuki", "mika"]);
+    const stepKindSchema = (query?.payload.tools as Array<{
+      function: { parameters: { properties: { steps: { items: { properties: { kind: { enum?: string[] } } } } } } };
+    }>)[0].function.parameters.properties.steps.items.properties.kind;
+    expect(stepKindSchema.enum).toEqual(["yuki", "mika", "no_reply"]);
     expect(query?.payload.tool_choice).toEqual({
       type: "function",
       function: { name: "orchestrator_decision" }
@@ -77,8 +77,8 @@ describe("provider-native decision tools", () => {
                 function: {
                   name: "orchestrator_decision",
                   arguments: JSON.stringify({
-                    action: "no_reply",
-                    retriggerAfterSeconds: 100,
+                    steps: [{ kind: "no_reply" }],
+                    idleTrigger: 180,
                     reasoning: "wait"
                   })
                 }
@@ -140,7 +140,7 @@ describe("provider-native decision tools", () => {
     expect(messages.some((message) => message.content.includes("[sender: Kevin] that one [replying to: #2]"))).toBe(true);
   });
 
-  it("renders orchestrator no_reply markers before timestamp with retrigger after reason", async () => {
+  it("renders orchestrator no_reply markers before timestamp with idle_trigger after reason", async () => {
     mockFetch({
       choices: [
         {
@@ -150,8 +150,8 @@ describe("provider-native decision tools", () => {
                 function: {
                   name: "orchestrator_decision",
                   arguments: JSON.stringify({
-                    action: "no_reply",
-                    retriggerAfterSeconds: 100,
+                    steps: [{ kind: "no_reply" }],
+                    idleTrigger: 180,
                     reasoning: "wait"
                   })
                 }
@@ -170,7 +170,7 @@ describe("provider-native decision tools", () => {
         {
           kind: "no_reply",
           timestamp: "2026-05-16T12:05:00Z",
-          retriggerAfterSeconds: 600,
+          idleTrigger: 600,
           reasoning: "wait   for   Kevin"
         }
       ],
@@ -180,7 +180,7 @@ describe("provider-native decision tools", () => {
     const query = recentQueries().at(-1);
     const messages = query?.payload.messages as Array<{ content: string }>;
     const renderedContext = messages.find((message) => message.content.includes("[no_reply]"))?.content ?? "";
-    expect(renderedContext).toContain("[no_reply] [timestamp: 2026-05-16T12:05:00Z] [reason: wait for Kevin] [retrigger: 600s]");
+    expect(renderedContext).toContain("[no_reply] [timestamp: 2026-05-16T12:05:00Z] [reason: wait for Kevin] [idle_trigger: 600s]");
     expect(renderedContext).not.toContain("[type: no_reply]");
   });
 
@@ -236,9 +236,9 @@ describe("provider-native decision tools", () => {
           type: "tool_use",
           name: "orchestrator_decision",
           input: {
-            action: "stage_manager",
-            retriggerAfterSeconds: 300,
-            reasoning: "new durable memory may be needed"
+            steps: [{ kind: "yuki" }, { kind: "no_reply" }],
+            idleTrigger: 300,
+            reasoning: "yuki replies then we wait"
           }
         }
       ]
@@ -248,10 +248,14 @@ describe("provider-native decision tools", () => {
     const decision = await pipeline.decideOrchestrator?.({
       modelId: "claude-haiku-4-5-20251001",
       messages: context,
-      systemPrompt: "decide"
+      systemPrompt: "decide",
+      availableWaifuIds: ["yuki"]
     });
 
-    expect(decision).toMatchObject({ action: "stage_manager" });
+    expect(decision).toMatchObject({
+      steps: [{ kind: "yuki" }, { kind: "no_reply" }],
+      idleTrigger: 300
+    });
     const query = recentQueries().at(-1);
     expect(query?.role).toBe("orchestrator");
     expect((query?.payload.tools as Array<{ name: string }>)[0].name).toBe("orchestrator_decision");

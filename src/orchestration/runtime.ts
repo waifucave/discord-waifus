@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readdir } from "node:fs/promises";
 import path from "node:path";
+import { setTimeout as setTimeoutPromise } from "node:timers/promises";
 import { Logger } from "../backend/logger.js";
 import {
   DiscordClearCommandEvent,
@@ -43,6 +44,12 @@ import {
   createEmptyChannelSessionState
 } from "./session.js";
 import { ContextMessage, OrchestratorNoReplyMarker, formatTimestamp } from "./context.js";
+import {
+  IDLE_TRIGGER_VALUES,
+  NO_REPLY_STEP_KIND,
+  OrchestratorDecision,
+  OrchestratorStep
+} from "./decisions.js";
 
 export type RuntimeOrchestratorOptions = {
   storage: StorageService;
@@ -71,7 +78,7 @@ type ContinuationTimer = {
 
 export class RuntimeOrchestrator {
   private readonly activeRuns = new Map<string, ActiveChannelRun>();
-  private readonly retriggerTimers = new Map<string, NodeJS.Timeout>();
+  private readonly idleTriggerTimers = new Map<string, NodeJS.Timeout>();
   private readonly continuationTimers = new Map<string, ContinuationTimer>();
   private readonly maxAutomaticTurns: number;
   private readonly continuationIdleMs: number;
@@ -122,10 +129,10 @@ export class RuntimeOrchestrator {
   }
 
   async pause(): Promise<void> {
-    for (const timer of this.retriggerTimers.values()) {
+    for (const timer of this.idleTriggerTimers.values()) {
       clearTimeout(timer);
     }
-    this.retriggerTimers.clear();
+    this.idleTriggerTimers.clear();
     const continuationTimers = [...this.continuationTimers.values()];
     for (const entry of continuationTimers) {
       clearTimeout(entry.timer);
@@ -318,10 +325,10 @@ export class RuntimeOrchestrator {
       existing.controller.abort(new Error(`restarted by ${reason}`));
       void this.markSessionIdle(existing.guildId, existing.channelId);
     }
-    const timer = this.retriggerTimers.get(timerKey(guildId, channelId));
+    const timer = this.idleTriggerTimers.get(timerKey(guildId, channelId));
     if (timer) {
       clearTimeout(timer);
-      this.retriggerTimers.delete(timerKey(guildId, channelId));
+      this.idleTriggerTimers.delete(timerKey(guildId, channelId));
     }
 
     const controller = new AbortController();
@@ -402,62 +409,60 @@ export class RuntimeOrchestrator {
       } finally {
         orchestratorTyping.stop();
       }
+      const historySteps = decision.steps.map((step) => ({
+        kind: step.kind,
+        sceneDirection: step.sceneDirection,
+        replyToMessageId: step.replyToMessageId
+      }));
       await this.appendOrchestratorHistory({
         id: randomUUID(),
         guildId,
         channelId,
-        action: decision.action,
-        selectedWaifuIds: decision.action === "waifus" ? decision.selectedWaifus.map((waifu) => waifu.waifuId) : [],
-        sceneDirections: decision.action === "waifus" ? decision.selectedWaifus.flatMap((waifu) => waifu.sceneDirection ? [waifu.sceneDirection] : []) : [],
+        steps: historySteps,
+        idleTrigger: decision.idleTrigger,
         reasoning: decision.reasoning,
-        retriggerAfterSeconds: "retriggerAfterSeconds" in decision ? decision.retriggerAfterSeconds : undefined,
         createdAt: nowIso()
       });
       this.options.logger.info("Orchestrator decision recorded", {
         guildId,
         channelId,
-        action: decision.action,
-        selectedWaifuIds: decision.action === "waifus" ? decision.selectedWaifus.map((waifu) => waifu.waifuId) : [],
-        retriggerAfterSeconds: "retriggerAfterSeconds" in decision ? decision.retriggerAfterSeconds : undefined,
+        steps: historySteps.map((step) => step.kind),
+        idleTrigger: decision.idleTrigger,
         reasoning: decision.reasoning
       });
 
-      if (decision.action === "no_reply") {
-        await this.scheduleRetrigger(guildId, channelId, decision.retriggerAfterSeconds);
-        return;
-      }
-      if (decision.action === "stage_manager") {
-        void this.runStageManager(guildId, channelId);
-        await this.scheduleRetrigger(guildId, channelId, decision.retriggerAfterSeconds);
-        return;
-      }
-      if (decision.action === "reviewer") {
-        await this.runReviewer({
-          guildId,
-          channelId,
-          triggerAfterActiveRun: true
-        });
-        return;
-      }
-
-      let sentCount = 0;
+      let executedCount = 0;
       const allowedWaifus = new Set(channel.enabledWaifuIds ?? []);
-      for (const selected of decision.selectedWaifus) {
+      for (const step of decision.steps) {
         throwIfAborted(signal);
-        if (!allowedWaifus.has(selected.waifuId)) {
+        if (step.kind === NO_REPLY_STEP_KIND) {
+          if (decision.idleTrigger === undefined) continue;
+          await this.setActivePipeline(guildId, channelId, "orchestrator");
+          this.options.logger.info("Chain pause", {
+            guildId,
+            channelId,
+            idleTrigger: decision.idleTrigger
+          });
+          await this.sleep(decision.idleTrigger * 1000, signal);
+          throwIfAborted(signal);
+          executedCount += 1;
+          continue;
+        }
+        const waifuId = step.kind;
+        if (!allowedWaifus.has(waifuId)) {
           this.options.logger.warn("Orchestrator selected a waifu that is not enabled for channel", {
             guildId,
             channelId,
-            selectedWaifuId: selected.waifuId
+            selectedWaifuId: waifuId
           });
           continue;
         }
-        const waifu = await this.readWaifu(selected.waifuId).catch(() => undefined);
+        const waifu = await this.readWaifu(waifuId).catch(() => undefined);
         if (!waifu) {
           this.options.logger.warn("Orchestrator selected an unknown waifu", {
             guildId,
             channelId,
-            selectedWaifuId: selected.waifuId
+            selectedWaifuId: waifuId
           });
           continue;
         }
@@ -465,25 +470,25 @@ export class RuntimeOrchestrator {
           this.options.logger.warn("Orchestrator selected a waifu without a linked Discord bot", {
             guildId,
             channelId,
-            selectedWaifuId: selected.waifuId
+            selectedWaifuId: waifuId
           });
           continue;
         }
         if (await this.sendCachedContinuationForSelection({
           guildId,
           channelId,
-          selectedWaifuId: selected.waifuId,
-          sceneDirection: selected.sceneDirection,
+          selectedWaifuId: waifuId,
+          sceneDirection: step.sceneDirection,
           signal
         })) {
-          sentCount += 1;
+          executedCount += 1;
           continue;
         }
         if (!waifu.modelId) {
           this.options.logger.warn("Orchestrator selected a waifu without a configured model", {
             guildId,
             channelId,
-            selectedWaifuId: selected.waifuId
+            selectedWaifuId: waifuId
           });
           continue;
         }
@@ -519,7 +524,7 @@ export class RuntimeOrchestrator {
                 modelId: waifuModelId,
                 messages: waifuMessages,
                 systemPrompt: await this.buildWaifuSystemPrompt(guildId, waifu),
-                sceneDirection: selected.sceneDirection,
+                sceneDirection: step.sceneDirection,
                 temperature: waifu.generation.temperature,
                 topP: waifu.generation.topP,
                 maxOutputTokens: waifu.generation.maxOutputTokens,
@@ -553,13 +558,13 @@ export class RuntimeOrchestrator {
             });
           }
           const plannedChunks = planWaifuReplyChunks(chunks);
-          const replyToMessageId = replyTargetForFreshContext(selected.replyToMessageId, waifuMessages);
-          if (selected.replyToMessageId && !replyToMessageId) {
+          const replyToMessageId = replyTargetForFreshContext(step.replyToMessageId, waifuMessages);
+          if (step.replyToMessageId && !replyToMessageId) {
             this.options.logger.info("Omitting reply target because it is the latest context message", {
               guildId,
               channelId,
               waifuId: waifu.id,
-              replyToMessageId: selected.replyToMessageId
+              replyToMessageId: step.replyToMessageId
             });
           }
           await this.sendWaifuChunks({
@@ -586,10 +591,10 @@ export class RuntimeOrchestrator {
         } finally {
           waifuTyping.stop();
         }
-        sentCount += 1;
+        executedCount += 1;
       }
-      if (sentCount === 0) {
-        this.options.logger.info("Channel runtime loop stopped because no waifu messages were sent", {
+      if (executedCount === 0) {
+        this.options.logger.info("Channel runtime loop stopped because no steps were executed", {
           guildId,
           channelId
         });
@@ -603,7 +608,7 @@ export class RuntimeOrchestrator {
       channelId,
       maxAutomaticTurns: this.maxAutomaticTurns
     });
-    await this.scheduleRetrigger(guildId, channelId, 100);
+    await this.scheduleIdleTrigger(guildId, channelId, 100);
   }
 
   private async runStageManager(guildId: string, channelId: string): Promise<void> {
@@ -950,20 +955,20 @@ export class RuntimeOrchestrator {
     return { changed, historyEntries };
   }
 
-  private async scheduleRetrigger(guildId: string, channelId: string, seconds: number): Promise<void> {
+  private async scheduleIdleTrigger(guildId: string, channelId: string, seconds: number): Promise<void> {
     const bounded = Math.max(100, Math.min(28_800, seconds));
     const key = timerKey(guildId, channelId);
     const at = new Date(Date.now() + bounded * 1000).toISOString();
     await this.updateSession(guildId, channelId, (current) => ({
       ...current,
-      scheduledRetriggerAt: at,
+      scheduledIdleTriggerAt: at,
       activePipeline: null
     }));
     const timer = setTimeout(() => {
-      this.retriggerTimers.delete(key);
-      void this.startChannelRun(guildId, channelId, "scheduled-retrigger");
+      this.idleTriggerTimers.delete(key);
+      void this.startChannelRun(guildId, channelId, "scheduled-idle-trigger");
     }, bounded * 1000);
-    this.retriggerTimers.set(key, timer);
+    this.idleTriggerTimers.set(key, timer);
   }
 
   private async sendCachedContinuationForSelection(input: {
@@ -1342,15 +1347,16 @@ export class RuntimeOrchestrator {
       : "No waifus are currently enabled for this channel.";
 
     const identity =
-      "You are the orchestrator for a multi-character Discord bot. On every incoming Discord message you decide which (if any) of the configured waifus replies next, what scene direction to give her, and when to wake yourself up again to reconsider the channel.";
+      "You are the orchestrator for a multi-character Discord bot. On every incoming Discord message you decide an ordered chain of next moves — which (if any) waifus reply, in what order, with what scene direction, and where to insert paced pauses before the chain continues.";
 
+    const idleTriggerEnumDisplay = IDLE_TRIGGER_VALUES.join(", ");
     const hardRules = [
-      "- Every selectedWaifus[].waifuId must be copied verbatim from one of the IDs listed in <active_waifus>. If none of the listed waifus should answer, choose no_reply.",
-      "- Use replyToIndex only when replying to an older message that is no longer the latest visible message. If a waifu is answering the latest message in chat, omit replyToIndex so Discord sends a normal message.",
-      "- If you want a waifu to do or say something specific, you MUST put it in her selectedWaifus[].sceneDirection. She does not see your reasoning — she only sees her own persona, the chat, and the sceneDirection. Leave sceneDirection empty only when you genuinely want a free-form in-character reply.",
-      "- Use reviewer only when you suspect the latest waifu message is hallucinating or leaking internals; the reviewer model makes the final judgment.",
-      "- retriggerAfterSeconds must be between 100 and 28800.",
-      "- Consecutive waifu messages are a soft signal, not a ban. More consecutive messages require a stronger reason: a fresh beat, escalation, interruption, joke, reaction, or emotional shift."
+      "- Every waifu step's kind must be copied verbatim from one of the IDs listed in <active_waifus>. The only other allowed kind is the literal \"no_reply\".",
+      "- steps is an ordered, non-empty list. Steps execute sequentially: waifu steps post that waifu's reply; no_reply steps sleep for idleTrigger seconds. Any incoming chat message cancels the rest of the chain.",
+      `- idleTrigger must be one of: ${idleTriggerEnumDisplay}. Include it only when steps contains at least one \"no_reply\"; omit it otherwise.`,
+      "- Use replyToIndex only when replying to an older message that is no longer the latest visible message, and only on waifu steps. If a waifu is answering the latest message in chat, omit replyToIndex so Discord sends a normal message.",
+      "- If you want a waifu to do or say something specific, you MUST put it in her step's sceneDirection. She does not see your reasoning — she only sees her own persona, the chat, and the sceneDirection. sceneDirection is only valid on waifu steps.",
+      "- Consecutive waifu messages are a soft signal, not a ban. More consecutive waifus in a chain require a stronger reason: a fresh beat, escalation, interruption, joke, reaction, or emotional shift."
     ].join("\n");
 
     const taskInstructions = DEFAULT_ORCHESTRATOR_PROMPT;
@@ -1360,46 +1366,56 @@ export class RuntimeOrchestrator {
       "When you notice a loop forming (even a soft one — two or three messages already feeling similar is enough), pick the waifu whose personality most naturally fits a hard pivot and write a concrete sceneDirection that lands a brand-new topic, observation, memory, callback, or non-sequitur. Name the specific new topic in the sceneDirection — \"ask about Kevin's dog\", \"bring up the snowstorm last week\", \"complain about being hungry\" — rather than vague instructions like \"change the subject\". A jarring shift that still feels in-character is better than letting the conversation stagnate."
     ].join("\n\n");
 
-    const retriggerPacing = [
-      "retriggerAfterSeconds is not just a generic check-back timer. It is a delayed opportunity for the orchestrator to make a waifu speak later if no human message arrives first.",
+    const idleTriggerPacing = [
+      `idleTrigger is the duration (in seconds) of each "no_reply" pause in the chain. It is constrained to one of: ${idleTriggerEnumDisplay}.`,
       "",
-      "Use it only when there is a plausible future beat: a waifu might naturally follow up, tease, interrupt, revive a dangling thread, pull someone back into the conversation, react after a pause, or start a new angle after letting the moment breathe.",
+      "A no_reply step is not a generic monitoring tick. It is a deliberate, planned pause inserted between or after waifu replies — a delayed opportunity for a future beat. If you have no specific conversational reason for a future beat, do not insert a no_reply.",
       "",
-      "If you do not have a specific conversational reason for a waifu to maybe speak later, do not set a low retriggerAfterSeconds. Human messages will automatically trigger the orchestrator again, so there is no need to wake up soon just to check whether someone talked.",
+      "Human messages automatically retrigger the orchestrator, so there is no need to wake up soon just to check whether someone talked. Any incoming chat message during a no_reply pause also cancels the remaining chain and triggers a fresh orchestrator pass.",
       "",
-      "When choosing retriggerAfterSeconds, think in terms of intent:",
-      "- Shorter delays are for moments that feel alive and may benefit from a natural waifu follow-up if nobody responds first.",
-      "- Longer delays are for quiet rooms where a waifu might eventually revive the chat, but not soon.",
-      "- Very long delays are for cases where you are mostly waiting for humans and have no clear bot-led follow-up in mind.",
+      "When choosing idleTrigger, think in terms of intent:",
+      "- 180s / 300s: moments that feel alive and may benefit from a natural waifu follow-up shortly after, if nobody responds first.",
+      "- 900s / 1800s: cooling rooms where a waifu might revive the chat soon, but not immediately.",
+      "- 3600s / 7200s / 14400s: quiet rooms where you are mostly waiting for humans and the next bot-led beat is a long shot.",
       "",
-      "Do not burn calls polling the channel. A wake-up should represent a possible planned scene beat, not simple monitoring.",
+      "Patterns to think in:",
+      "- [waifu1] — one waifu replies; no pause, no trailing wake-up. Use when a single reply is enough and the next move should be left to humans.",
+      "- [waifu1, waifu2] — chain two waifus back-to-back; the second only fires if waifu1 isn't interrupted. Use when two waifus' voices belong in sequence.",
+      "- [waifu1, no_reply, waifu2] with idleTrigger — waifu1 replies, then a pause, then waifu2 if nobody interrupted. The pause is for breathing room or letting the room react.",
+      "- [waifu1, no_reply] with idleTrigger — waifu1 replies, then the orchestrator wakes after the pause to re-evaluate. Use when you might want a follow-up but want to give the room a chance first.",
+      "- [no_reply] with idleTrigger — pure wait. Use when no waifu should speak now but you want to re-check the room after a delay.",
       "",
-      "If the next natural move is to wait for a human, choose no_reply with a long retriggerAfterSeconds.",
-      "",
-      "If the next natural move is \"let the current message sit for a bit, then maybe have a waifu continue if nobody answers,\" choose no_reply with a retriggerAfterSeconds that matches that intended pause.",
-      "",
-      "If the wake-up happens and the same silence remains, only make a waifu speak if it now feels natural. Otherwise choose no_reply again and increase the delay."
+      "If the wake-up fires and the room is still quiet, you can choose no_reply again with a longer idleTrigger. Don't grind on a dead channel."
     ].join("\n");
 
     const messageStructure = [
       "Each message in the context is tagged with [index: #N], [timestamp: ISO-8601 UTC], and [sender: DisplayName] before its body, optionally followed by [reactions: ...] and [replying to: ...]. Reference messages by their #N index. replyToIndex must be one of the #N indices shown in the context.",
-      "Some lines are your own prior decisions, interleaved with the chat by timestamp. They look like [no_reply] [timestamp: ...] [reason: ...] [retrigger: Ns] and have no #N index, no sender, no reactions, and no replying-to. They are not Discord messages — nobody else sees them. Use them to gauge how long the channel has actually been silent under your watch and to avoid stacking redundant no_reply choices."
+      "Some lines are your own prior decisions, interleaved with the chat by timestamp. They look like [no_reply] [timestamp: ...] [reason: ...] [idle_trigger: Ns] and have no #N index, no sender, no reactions, and no replying-to. They are not Discord messages — nobody else sees them. Use them to gauge how long the channel has actually been silent under your watch and to avoid stacking redundant no_reply choices."
     ].join("\n");
 
     const toolUse = [
-      "Inspect the context, choose exactly one action, and call orchestrator_decision once with only the tool arguments. Do not write normal assistant text.",
-      "Its arguments must match this TypeScript union:",
-      "{ \"action\": \"waifus\", \"selectedWaifus\": [{ \"waifuId\": string, \"sceneDirection\"?: string, \"replyToIndex\"?: number }], \"reasoning\": string }",
-      "OR { \"action\": \"stage_manager\", \"retriggerAfterSeconds\": number, \"reasoning\": string }",
-      "OR { \"action\": \"reviewer\", \"reasoning\": string }",
-      "OR { \"action\": \"no_reply\", \"retriggerAfterSeconds\": number, \"reasoning\": string }."
+      "Inspect the context and call orchestrator_decision once with the tool arguments. Do not write normal assistant text.",
+      "Argument shape:",
+      "{",
+      "  \"steps\": [",
+      "    { \"kind\": waifuId | \"no_reply\", \"sceneDirection\"?: string, \"replyToIndex\"?: number },",
+      "    ...",
+      "  ],",
+      `  \"idleTrigger\"?: ${idleTriggerEnumDisplay},`,
+      "  \"reasoning\": string",
+      "}",
+      "Rules:",
+      "- steps must be non-empty and ordered. Steps execute sequentially; any incoming chat message cancels the remainder of the chain.",
+      "- Each step's kind is either a waifu id from <active_waifus> or the literal \"no_reply\". Use \"no_reply\" only when you want a paced pause in the chain.",
+      "- sceneDirection and replyToIndex are only valid on waifu steps. Omit them on \"no_reply\" steps.",
+      `- Include idleTrigger (one of ${idleTriggerEnumDisplay}) when steps contains at least one \"no_reply\"; omit it otherwise. The same idleTrigger applies to every no_reply step in the chain.`
     ].join("\n");
 
     const sections = orchestrator.promptSections;
     const behavior = [
       `<task_instructions>\n${taskInstructions}\n</task_instructions>`,
       sections.loopBreaking ? `<loop_breaking>\n${loopBreaking}\n</loop_breaking>` : null,
-      sections.retriggerPacing ? `<retrigger_pacing>\n${retriggerPacing}\n</retrigger_pacing>` : null,
+      sections.idleTriggerPacing ? `<idle_trigger_pacing>\n${idleTriggerPacing}\n</idle_trigger_pacing>` : null,
       sections.messageStructure ? `<message_structure>\n${messageStructure}\n</message_structure>` : null,
       sections.toolUse ? `<tool_use>\n${toolUse}\n</tool_use>` : null,
       `<hard_rules>\n${hardRules}\n</hard_rules>`
@@ -1504,18 +1520,21 @@ export class RuntimeOrchestrator {
     );
     const markers: OrchestratorNoReplyMarker[] = [];
     for (const decision of history.decisions) {
-      if (decision.action !== "no_reply") continue;
       if (decision.guildId !== guildId) continue;
       if (decision.channelId !== channelId) continue;
-      if (decision.retriggerAfterSeconds === undefined) continue;
+      if (decision.idleTrigger === undefined) continue;
+      const noReplyCount = decision.steps.filter((step) => step.kind === NO_REPLY_STEP_KIND).length;
+      if (noReplyCount === 0) continue;
       const timestamp = formatTimestamp(new Date(decision.createdAt));
       if (timestamp <= latest) continue;
-      markers.push({
-        kind: "no_reply",
-        timestamp,
-        retriggerAfterSeconds: decision.retriggerAfterSeconds,
-        reasoning: decision.reasoning
-      });
+      for (let i = 0; i < noReplyCount; i += 1) {
+        markers.push({
+          kind: "no_reply",
+          timestamp,
+          idleTrigger: decision.idleTrigger,
+          reasoning: decision.reasoning
+        });
+      }
     }
     return markers;
   }
@@ -1524,11 +1543,9 @@ export class RuntimeOrchestrator {
     id: string;
     guildId: string;
     channelId: string;
-    action: "waifus" | "stage_manager" | "reviewer" | "no_reply";
-    selectedWaifuIds: string[];
-    sceneDirections: string[];
+    steps: Array<{ kind: string; sceneDirection?: string; replyToMessageId?: string }>;
+    idleTrigger?: 180 | 300 | 900 | 1800 | 3600 | 7200 | 14400;
     reasoning: string;
-    retriggerAfterSeconds?: number;
     createdAt: string;
   }) {
     await this.options.storage.updateRevisionedJson({
@@ -1720,15 +1737,11 @@ const DEFAULT_REVIEWER_PROMPT = [
 ].join("\n");
 
 const DEFAULT_ORCHESTRATOR_PROMPT = [
-  "You watch one Discord channel and orchestrate a small cast of waifu personas. On each new message, decide from outside the scene which (if any) waifu should speak next, in what order, and with what scene direction.",
+  "You watch one Discord channel and orchestrate a small cast of waifu personas. On each new message, decide from outside the scene an ordered chain of steps: which waifus speak (in what order, with what scene direction) and where to insert paced \"no_reply\" pauses before the chain continues.",
   "",
   "Be natural. Real group chats do not require everyone to reply every time, and not every beat needs a response — treat the room like a living scene, not a turn-taking queue. Pacing, silence, interruption, overlap, comedy, and escalation are all valid moves. Pick the waifu whose personality fits the moment based on her voice and the current flow; the same waifu may speak again, a different one may jump in, or two may chain if it feels right.",
   "",
-  "Choose between the four actions based on what the room actually needs:",
-  "- waifus when one or more waifus should respond now.",
-  "- no_reply when answering right now would be intrusive, redundant, or aimed at no one — silence is a valid choice when the scene fits it.",
-  "- stage_manager when something memorable has happened (a new fact about a user, a relationship change, an event worth remembering) and the memory pass should run before the next reply.",
-  "- reviewer when the latest waifu message looks like leaked internals or hallucinated private model text.",
+  "Each step in your chain is either a waifu id (post that waifu's reply) or the literal \"no_reply\" (sleep idleTrigger seconds before continuing). A chain of just one no_reply means \"don't speak now; re-evaluate after the pause.\" Steps run sequentially and any incoming chat message cancels the remainder, so plan the chain you'd commit to if nobody interrupts.",
   "",
   "If a recent chat participant message or direct ping was missed while the room moved on, prefer steering a waifu to acknowledge it so the chat stays socially inclusive — unless silence is clearly the more natural choice.",
   "",

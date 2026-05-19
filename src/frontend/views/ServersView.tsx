@@ -302,7 +302,7 @@ function ServerDetail({
           />
         </div>
         <div className="row" style={{ marginTop: 12 }}>
-          <span className="field-hint">Auto-retrigger bounds: 100–28800 seconds.</span>
+          <span className="field-hint">Idle-trigger bounds: 100–28800 seconds.</span>
           <span className="spacer" />
           <button className="btn primary" onClick={save} disabled={saving}>
             {saving ? "Saving…" : "Save server"}

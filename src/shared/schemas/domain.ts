@@ -48,13 +48,13 @@ export type DiscordBotsFile = z.infer<typeof DiscordBotsFileSchema>;
 export const OrchestratorPromptSectionsSchema = z
   .object({
     loopBreaking: z.boolean().default(true),
-    retriggerPacing: z.boolean().default(true),
+    idleTriggerPacing: z.boolean().default(true),
     messageStructure: z.boolean().default(true),
     toolUse: z.boolean().default(true)
   })
   .default({
     loopBreaking: true,
-    retriggerPacing: true,
+    idleTriggerPacing: true,
     messageStructure: true,
     toolUse: true
   });
@@ -189,15 +189,30 @@ export const MemoryStoreSchema = RevisionedRecordSchema.extend({
 });
 export type MemoryStore = z.infer<typeof MemoryStoreSchema>;
 
+export const OrchestratorDecisionStepSchema = z.object({
+  kind: z.string().min(1),
+  sceneDirection: z.string().min(1).optional(),
+  replyToMessageId: z.string().min(1).optional()
+});
+export type OrchestratorDecisionStep = z.infer<typeof OrchestratorDecisionStepSchema>;
+
 export const OrchestratorDecisionHistoryEntrySchema = z.object({
   id: z.string().min(1),
   guildId: z.string().optional(),
   channelId: z.string().optional(),
-  action: z.enum(["waifus", "stage_manager", "reviewer", "no_reply"]),
-  selectedWaifuIds: z.array(z.string()).default([]),
+  steps: z.array(OrchestratorDecisionStepSchema).default([]),
+  idleTrigger: z
+    .union([
+      z.literal(180),
+      z.literal(300),
+      z.literal(900),
+      z.literal(1800),
+      z.literal(3600),
+      z.literal(7200),
+      z.literal(14400)
+    ])
+    .optional(),
   reasoning: z.string().default(""),
-  sceneDirections: z.array(z.string()).default([]),
-  retriggerAfterSeconds: z.number().int().min(100).max(28_800).optional(),
   createdAt: IsoDateStringSchema
 });
 export type OrchestratorDecisionHistoryEntry = z.infer<typeof OrchestratorDecisionHistoryEntrySchema>;

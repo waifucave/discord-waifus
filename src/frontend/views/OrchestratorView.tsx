@@ -23,7 +23,7 @@ import type { ReasoningConfig } from "../api/types";
 
 const PROMPT_SECTION_OPTIONS: Array<{ key: keyof OrchestratorPromptSections; label: string }> = [
   { key: "loopBreaking", label: "<loop_breaking>" },
-  { key: "retriggerPacing", label: "<retrigger_pacing>" },
+  { key: "idleTriggerPacing", label: "<idle_trigger_pacing>" },
   { key: "messageStructure", label: "<message_structure>" },
   { key: "toolUse", label: "<tool_use>" }
 ];
@@ -40,7 +40,7 @@ export function OrchestratorView() {
   const [reasoning, setReasoning] = useState<ReasoningConfig>({});
   const [promptSections, setPromptSections] = useState<OrchestratorPromptSections>({
     loopBreaking: true,
-    retriggerPacing: true,
+    idleTriggerPacing: true,
     messageStructure: true,
     toolUse: true
   });
@@ -334,13 +334,18 @@ export function OrchestratorView() {
           <h3 className="section-title">Decision tool schema (read-only)</h3>
   <span className="section-description">Orchestrator must emit exactly one structured decision.</span>
         </div>
-        <pre className="code-block">{`type OrchestratorDecision =
-  | { action: "waifus"; selectedWaifus: { waifuId: string; sceneDirection?: string; replyToIndex?: number }[]; reasoning: string }
-  | { action: "stage_manager"; retriggerAfterSeconds: number; reasoning: string }
-  | { action: "reviewer"; reasoning: string }
-  | { action: "no_reply"; retriggerAfterSeconds: number; reasoning: string };
+        <pre className="code-block">{`type OrchestratorDecision = {
+  steps: Array<{
+    kind: waifuId | "no_reply";
+    sceneDirection?: string;   // only on waifu steps
+    replyToIndex?: number;     // only on waifu steps
+  }>;
+  idleTrigger?: 180 | 300 | 900 | 1800 | 3600 | 7200 | 14400;  // required iff any step is "no_reply"
+  reasoning: string;
+};
 
-// Use replyToIndex only for older messages; omit it for the latest message.`}</pre>
+// Use replyToIndex only for older messages; omit it for the latest message.
+// idleTrigger applies as the pause length to each "no_reply" step.`}</pre>
       </section>
 
       <section className="section">
@@ -356,15 +361,15 @@ export function OrchestratorView() {
           <div className="table">
             <div className="tr head">
               <span>Time</span>
-              <span>Action</span>
-              <span>Waifus</span>
+              <span>Steps</span>
+              <span>Idle</span>
               <span>Reasoning</span>
             </div>
             {history.data?.decisions.map((entry) => (
               <div className="tr" key={entry.id}>
                 <span>{new Date(entry.createdAt).toLocaleTimeString()}</span>
-                <span>{entry.action}</span>
-                <span>{entry.selectedWaifuIds.join(", ") || "—"}</span>
+                <span>{entry.steps.map((step) => step.kind).join(" → ") || "—"}</span>
+                <span>{entry.idleTrigger ? `${entry.idleTrigger}s` : "—"}</span>
                 <span>{entry.reasoning}</span>
               </div>
             ))}
