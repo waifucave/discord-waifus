@@ -1,66 +1,66 @@
 import { z } from "zod";
 
-export const IDLE_TRIGGER_VALUES = [180, 300, 900, 1800, 3600, 7200, 14400] as const;
-export type IdleTriggerSeconds = (typeof IDLE_TRIGGER_VALUES)[number];
+export const REPLY_STYLE_VALUES = ["normal", "short", "long", "sleepy"] as const;
+export type ReplyStyle = (typeof REPLY_STYLE_VALUES)[number];
+export const ReplyStyleSchema = z.enum(REPLY_STYLE_VALUES);
 
-export const IdleTriggerSchema = z.union([
-  z.literal(180),
-  z.literal(300),
-  z.literal(900),
-  z.literal(1800),
-  z.literal(3600),
-  z.literal(7200),
-  z.literal(14400)
-]);
+export const ORCHESTRATOR_ACTION_VALUES = ["reply", "no_reply"] as const;
+export type OrchestratorAction = (typeof ORCHESTRATOR_ACTION_VALUES)[number];
+export const OrchestratorActionSchema = z.enum(ORCHESTRATOR_ACTION_VALUES);
 
-export const NO_REPLY_STEP_KIND = "no_reply" as const;
+export const RETRIGGER_MIN_SECONDS = 100;
+export const RETRIGGER_MAX_SECONDS = 7200;
 
-export const OrchestratorStepSchema = z.object({
-  kind: z.string().min(1),
-  sceneDirection: z.string().min(1).optional(),
-  replyToMessageId: z.string().min(1).optional()
+export const RespondingWaifuSchema = z.object({
+  waifuId: z.string().min(1),
+  delaySeconds: z.number().min(0),
+  replyStyle: ReplyStyleSchema,
+  replyToMessageId: z.string().min(1).optional(),
+  sceneDirection: z.string().min(1).optional()
 });
-export type OrchestratorStep = z.infer<typeof OrchestratorStepSchema>;
+export type RespondingWaifu = z.infer<typeof RespondingWaifuSchema>;
 
 export const OrchestratorDecisionSchema = z
   .object({
-    steps: z.array(OrchestratorStepSchema).min(1),
-    idleTrigger: IdleTriggerSchema.optional(),
+    action: OrchestratorActionSchema,
+    respondingWaifus: z.array(RespondingWaifuSchema).default([]),
+    retriggerAfterSeconds: z
+      .number()
+      .min(RETRIGGER_MIN_SECONDS)
+      .max(RETRIGGER_MAX_SECONDS)
+      .optional(),
     reasoning: z.string().min(1)
   })
   .superRefine((value, ctx) => {
-    const hasNoReply = value.steps.some((step) => step.kind === NO_REPLY_STEP_KIND);
-    if (hasNoReply && value.idleTrigger === undefined) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["idleTrigger"],
-        message: "idleTrigger is required when any step is no_reply."
-      });
-    }
-    if (!hasNoReply && value.idleTrigger !== undefined) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["idleTrigger"],
-        message: "idleTrigger must be omitted when steps contain no no_reply."
-      });
-    }
-    for (let index = 0; index < value.steps.length; index += 1) {
-      const step = value.steps[index];
-      if (step.kind === NO_REPLY_STEP_KIND) {
-        if (step.sceneDirection !== undefined) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            path: ["steps", index, "sceneDirection"],
-            message: "sceneDirection is only valid on waifu steps."
-          });
-        }
-        if (step.replyToMessageId !== undefined) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            path: ["steps", index, "replyToMessageId"],
-            message: "replyToMessageId is only valid on waifu steps."
-          });
-        }
+    if (value.action === "reply") {
+      if (value.respondingWaifus.length === 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["respondingWaifus"],
+          message: "respondingWaifus must be non-empty when action is reply."
+        });
+      }
+      if (value.retriggerAfterSeconds !== undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["retriggerAfterSeconds"],
+          message: "retriggerAfterSeconds must be omitted when action is reply."
+        });
+      }
+    } else {
+      if (value.respondingWaifus.length > 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["respondingWaifus"],
+          message: "respondingWaifus must be empty when action is no_reply."
+        });
+      }
+      if (value.retriggerAfterSeconds === undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["retriggerAfterSeconds"],
+          message: "retriggerAfterSeconds is required when action is no_reply."
+        });
       }
     }
   });

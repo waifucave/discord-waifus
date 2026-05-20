@@ -19,19 +19,8 @@ export const ChannelSessionStateSchema = RevisionedRecordSchema.extend({
       startedAt: IsoDateStringSchema.optional()
     })
     .default({ active: false }),
-  scheduledIdleTriggerAt: IsoDateStringSchema.optional(),
-  pendingMessageIds: z.array(z.string()).default([]),
-  cachedWaifuContinuation: z
-    .object({
-      waifuId: z.string().min(1),
-      senderBotId: z.string().min(1),
-      chunks: z.array(z.string().min(1)).min(1),
-      allowedUserMentionIds: z.array(z.string()).default([]),
-      cachedAt: IsoDateStringSchema,
-      idleAfter: IsoDateStringSchema
-    })
-    .nullable()
-    .default(null)
+  scheduledRetriggerAt: IsoDateStringSchema.optional(),
+  pendingMessageIds: z.array(z.string()).default([])
 });
 
 export type ChannelSessionState = z.infer<typeof ChannelSessionStateSchema>;

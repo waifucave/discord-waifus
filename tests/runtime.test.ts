@@ -156,12 +156,13 @@ class FakeDiscord implements DiscordGatewayFacade {
 class FakePipeline implements ModelPipeline {
   decisions: OrchestratorDecision[] = [
     {
-      steps: [{ kind: "yuki", sceneDirection: "answer Kevin", replyToMessageId: "m1" }],
+      action: "reply", respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal", sceneDirection: "answer Kevin", replyToMessageId: "m1" }],
       reasoning: "Kevin should get a reply."
     },
     {
-      steps: [{ kind: "no_reply" }],
-      idleTrigger: 180,
+      action: "no_reply",
+      respondingWaifus: [],
+      retriggerAfterSeconds: 180,
       reasoning: "Wait now."
     }
   ];
@@ -233,9 +234,14 @@ describe("RuntimeOrchestrator", () => {
       "user/orchestrator/history.json",
       OrchestratorHistoryFileSchema
     );
-    expect(history.decisions.map((entry) => entry.steps.map((step) => step.kind))).toEqual([
-      ["no_reply"],
-      ["yuki"]
+    expect(
+      history.decisions.map((entry) => ({
+        action: entry.action,
+        ids: entry.respondingWaifus.map((responder) => responder.waifuId)
+      }))
+    ).toEqual([
+      { action: "no_reply", ids: [] },
+      { action: "reply", ids: ["yuki"] }
     ]);
 
     const session = await storage.readJson(
@@ -269,7 +275,7 @@ describe("RuntimeOrchestrator", () => {
 
       async decideOrchestrator(request: ProviderRequest) {
         this.capturedMarkers = request.decisionMarkers ?? [];
-        return { steps: [{ kind: "no_reply" }], idleTrigger: 180, reasoning: "done" };
+        return { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, reasoning: "done" };
       }
     }
 
@@ -285,18 +291,20 @@ describe("RuntimeOrchestrator", () => {
               id: "before-latest-chat",
               guildId: "guild-1",
               channelId: "channel-1",
-              steps: [{ kind: "no_reply" }],
+              action: "no_reply",
+              respondingWaifus: [],
+              retriggerAfterSeconds: 300,
               reasoning: "before latest user message",
-              idleTrigger: 300,
               createdAt: "2026-05-16T12:09:00.000Z"
             },
             {
               id: "after-latest-chat",
               guildId: "guild-1",
               channelId: "channel-1",
-              steps: [{ kind: "no_reply" }],
+              action: "no_reply",
+              respondingWaifus: [],
+              retriggerAfterSeconds: 1800,
               reasoning: "after latest user message",
-              idleTrigger: 1800,
               createdAt: "2026-05-16T12:11:00.000Z"
             }
           ]
@@ -326,7 +334,7 @@ describe("RuntimeOrchestrator", () => {
       {
         kind: "no_reply",
         timestamp: "2026-05-16T12:11:00Z",
-        idleTrigger: 1800,
+        retriggerAfterSeconds: 1800,
         reasoning: "after latest user message"
       }
     ]);
@@ -424,7 +432,7 @@ describe("RuntimeOrchestrator", () => {
       async decideOrchestrator() {
         orchestratorCalls += 1;
         resolveOrchestrated();
-        return { steps: [{ kind: "no_reply" }], idleTrigger: 180, reasoning: "post-review" };
+        return { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, reasoning: "post-review" };
       }
     };
 
@@ -514,7 +522,7 @@ describe("RuntimeOrchestrator", () => {
       },
       async decideOrchestrator() {
         orchestratorCalls += 1;
-        return { steps: [{ kind: "no_reply" }], idleTrigger: 180, reasoning: "unused" };
+        return { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, reasoning: "unused" };
       }
     };
 
@@ -728,7 +736,7 @@ describe("RuntimeOrchestrator", () => {
       },
       async decideOrchestrator() {
         resolveOrchestrated();
-        return { steps: [{ kind: "no_reply" }], idleTrigger: 180, reasoning: "manual run complete" };
+        return { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, reasoning: "manual run complete" };
       }
     };
 
@@ -802,7 +810,7 @@ describe("RuntimeOrchestrator", () => {
         orchestratorCalls += 1;
         resolveEntered();
         await release;
-        return { steps: [{ kind: "no_reply" }], idleTrigger: 180, reasoning: "active run complete" };
+        return { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, reasoning: "active run complete" };
       }
     };
 
@@ -883,7 +891,7 @@ describe("RuntimeOrchestrator", () => {
         return { hallucination: false };
       },
       async decideOrchestrator() {
-        return { steps: [{ kind: "no_reply" }], idleTrigger: 180, reasoning: "review complete" };
+        return { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, reasoning: "review complete" };
       }
     };
 
@@ -944,10 +952,10 @@ describe("RuntimeOrchestrator", () => {
     class MultiChunkPipeline implements ModelPipeline {
       decisions: OrchestratorDecision[] = [
         {
-          steps: [{ kind: "yuki", sceneDirection: "answer", replyToMessageId: "m1" }],
+          action: "reply", respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal", sceneDirection: "answer", replyToMessageId: "m1" }],
           reasoning: "Reply to Kevin."
         },
-        { steps: [{ kind: "no_reply" }], idleTrigger: 180, reasoning: "done" }
+        { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, reasoning: "done" }
       ];
       async generateWaifu() {
         return { content: "Hi there. How are you today? Want to play?" };
@@ -968,7 +976,6 @@ describe("RuntimeOrchestrator", () => {
       discord,
       maxAutomaticTurns: 3,
       createPipeline: () => pipeline,
-      sleep: async () => undefined,
       logger: {
         debug: () => undefined,
         info: () => undefined,
@@ -992,27 +999,31 @@ describe("RuntimeOrchestrator", () => {
     expect(discord.typingCalls.some((call) => call.senderBotId === undefined)).toBe(true);
   });
 
-  it("caches overflow reply chunks, sends them after channel idle, and reruns the orchestrator", async () => {
+  it("sends a multi-chunk reply in full as one waifu turn", async () => {
     const root = await makeTempRoot();
     roots.push(root);
     await ensureDataLayout(root);
     const storage = new StorageService(root);
     const discord = new FakeDiscord();
-    let resolveThirdDecision!: () => void;
-    const thirdDecision = new Promise<void>((resolve) => {
-      resolveThirdDecision = resolve;
-    });
 
-    class OverflowPipeline implements ModelPipeline {
+    class FullChunkPipeline implements ModelPipeline {
       generateCalls = 0;
       decisionCalls = 0;
       decisions: OrchestratorDecision[] = [
         {
-          steps: [{ kind: "yuki", sceneDirection: "answer", replyToMessageId: "m1" }],
+          action: "reply",
+          respondingWaifus: [
+            {
+              waifuId: "yuki",
+              delaySeconds: 0,
+              replyStyle: "normal",
+              sceneDirection: "answer",
+              replyToMessageId: "m1"
+            }
+          ],
           reasoning: "Reply to Kevin."
         },
-        { steps: [{ kind: "no_reply" }], idleTrigger: 180, reasoning: "wait" },
-        { steps: [{ kind: "no_reply" }], idleTrigger: 180, reasoning: "cached chunks posted" }
+        { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, reasoning: "done" }
       ];
       async generateWaifu() {
         this.generateCalls += 1;
@@ -1020,9 +1031,6 @@ describe("RuntimeOrchestrator", () => {
       }
       async decideOrchestrator() {
         this.decisionCalls += 1;
-        if (this.decisionCalls === 3) {
-          resolveThirdDecision();
-        }
         const next = this.decisions.shift();
         if (!next) throw new Error("no decision");
         return next;
@@ -1031,91 +1039,13 @@ describe("RuntimeOrchestrator", () => {
 
     await seedRuntimeConfig(storage);
 
-    const pipeline = new OverflowPipeline();
-    const decisionCallsDuringCachedSends: number[] = [];
-    const originalSend = discord.sendWaifuMessage.bind(discord);
-    discord.sendWaifuMessage = async (input) => {
-      if (input.content === "This third chunk is too long." || input.content === "Four.") {
-        decisionCallsDuringCachedSends.push(pipeline.decisionCalls);
-      }
-      return originalSend(input);
-    };
+    const pipeline = new FullChunkPipeline();
     const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
       storage,
       discord,
       maxAutomaticTurns: 2,
-      continuationIdleMs: 1,
       createPipeline: () => pipeline,
-      sleep: async () => undefined,
-      logger: {
-        debug: () => undefined,
-        info: () => undefined,
-        warn: () => undefined,
-        error: () => undefined
-      }
-    });
-
-    await runtime.triggerChannel("guild-1", "channel-1");
-    await Promise.race([
-      thirdDecision,
-      new Promise((_, reject) => setTimeout(() => reject(new Error("cached continuation did not rerun orchestrator")), 1000))
-    ]);
-    await runtime.stop();
-
-    expect(discord.sent.map((entry) => entry.content)).toEqual([
-      "One.",
-      "Two.",
-      "This third chunk is too long.",
-      "Four."
-    ]);
-    expect(pipeline.generateCalls).toBe(1);
-    expect(pipeline.decisionCalls).toBe(3);
-    expect(decisionCallsDuringCachedSends).toEqual([2, 2]);
-  });
-
-  it("uses cached chunks when the orchestrator selects the same waifu with no scene direction", async () => {
-    const root = await makeTempRoot();
-    roots.push(root);
-    await ensureDataLayout(root);
-    const storage = new StorageService(root);
-    const discord = new FakeDiscord();
-
-    class SameWaifuContinuationPipeline implements ModelPipeline {
-      generateCalls = 0;
-      decisionCalls = 0;
-      decisions: OrchestratorDecision[] = [
-        {
-          steps: [{ kind: "yuki", sceneDirection: "answer", replyToMessageId: "m1" }],
-          reasoning: "Reply to Kevin."
-        },
-        {
-          steps: [{ kind: "yuki" }],
-          reasoning: "Let Yuki continue."
-        },
-        { steps: [{ kind: "no_reply" }], idleTrigger: 180, reasoning: "done" }
-      ];
-      async generateWaifu() {
-        this.generateCalls += 1;
-        return { content: "One. Two. This third chunk is too long. Four." };
-      }
-      async decideOrchestrator() {
-        this.decisionCalls += 1;
-        const next = this.decisions.shift();
-        if (!next) throw new Error("no decision");
-        return next;
-      }
-    }
-
-    await seedRuntimeConfig(storage);
-
-    const pipeline = new SameWaifuContinuationPipeline();
-    const runtime = new RuntimeOrchestrator({
-      storage,
-      discord,
-      maxAutomaticTurns: 3,
-      continuationIdleMs: 60_000,
-      createPipeline: () => pipeline,
-      sleep: async () => undefined,
       logger: {
         debug: () => undefined,
         info: () => undefined,
@@ -1134,66 +1064,7 @@ describe("RuntimeOrchestrator", () => {
       "Four."
     ]);
     expect(pipeline.generateCalls).toBe(1);
-    expect(pipeline.decisionCalls).toBe(3);
-  });
-
-  it("discards cached chunks when chat activity arrives after the trimmed waifu message", async () => {
-    const root = await makeTempRoot();
-    roots.push(root);
-    await ensureDataLayout(root);
-    const storage = new StorageService(root);
-    const discord = new FakeDiscord();
-
-    class ActivityClearsContinuationPipeline implements ModelPipeline {
-      decisions: OrchestratorDecision[] = [
-        {
-          steps: [{ kind: "yuki", sceneDirection: "answer", replyToMessageId: "m1" }],
-          reasoning: "Reply to Kevin."
-        },
-        { steps: [{ kind: "no_reply" }], idleTrigger: 180, reasoning: "wait" },
-        { steps: [{ kind: "no_reply" }], idleTrigger: 180, reasoning: "user spoke" }
-      ];
-      async generateWaifu() {
-        return { content: "One. Two. This third chunk is too long. Four." };
-      }
-      async decideOrchestrator() {
-        const next = this.decisions.shift();
-        if (!next) throw new Error("no decision");
-        return next;
-      }
-    }
-
-    await seedRuntimeConfig(storage);
-
-    const pipeline = new ActivityClearsContinuationPipeline();
-    const runtime = new RuntimeOrchestrator({
-      sleep: async () => undefined,
-      storage,
-      discord,
-      maxAutomaticTurns: 3,
-      continuationIdleMs: 100,
-      createPipeline: () => pipeline,
-      sleep: async () => undefined,
-      logger: {
-        debug: () => undefined,
-        info: () => undefined,
-        warn: () => undefined,
-        error: () => undefined
-      }
-    });
-
-    await runtime.triggerChannel("guild-1", "channel-1");
-    await runtime.handleDiscordMessage({
-      guildId: "guild-1",
-      channelId: "channel-1",
-      messageId: "user-after-trim",
-      authorId: "kevin",
-      authorBot: false
-    });
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    await runtime.stop();
-
-    expect(discord.sent.map((entry) => entry.content)).toEqual(["One.", "Two."]);
+    expect(pipeline.decisionCalls).toBe(2);
   });
 
   it("keeps Discord reply targets only for older non-latest messages", async () => {
@@ -1217,10 +1088,10 @@ describe("RuntimeOrchestrator", () => {
     class OlderReplyPipeline implements ModelPipeline {
       decisions: OrchestratorDecision[] = [
         {
-          steps: [{ kind: "yuki", sceneDirection: "answer older", replyToMessageId: "m1" }],
+          action: "reply", respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal", sceneDirection: "answer older", replyToMessageId: "m1" }],
           reasoning: "Reply to the older message."
         },
-        { steps: [{ kind: "no_reply" }], idleTrigger: 180, reasoning: "done" }
+        { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, reasoning: "done" }
       ];
       async generateWaifu() {
         return { content: "answering the older one" };
@@ -1264,10 +1135,10 @@ describe("RuntimeOrchestrator", () => {
     class StubPipeline implements ModelPipeline {
       decisions: OrchestratorDecision[] = [
         {
-          steps: [{ kind: "yuki", sceneDirection: "answer", replyToMessageId: "m1" }],
+          action: "reply", respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal", sceneDirection: "answer", replyToMessageId: "m1" }],
           reasoning: "respond"
         },
-        { steps: [{ kind: "no_reply" }], idleTrigger: 180, reasoning: "done" }
+        { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, reasoning: "done" }
       ];
       async generateWaifu() {
         return { content: "Hi. How are you? Want to play?" };
@@ -1288,7 +1159,6 @@ describe("RuntimeOrchestrator", () => {
       discord,
       maxAutomaticTurns: 3,
       createPipeline: () => pipeline,
-      sleep: async () => undefined,
       logger: {
         debug: () => undefined,
         info: () => undefined,
@@ -1334,10 +1204,10 @@ describe("RuntimeOrchestrator", () => {
     class StubPipeline implements ModelPipeline {
       decisions: OrchestratorDecision[] = [
         {
-          steps: [{ kind: "yuki", sceneDirection: "answer", replyToMessageId: "m1" }],
+          action: "reply", respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal", sceneDirection: "answer", replyToMessageId: "m1" }],
           reasoning: "respond"
         },
-        { steps: [{ kind: "no_reply" }], idleTrigger: 180, reasoning: "done" }
+        { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, reasoning: "done" }
       ];
       async generateWaifu() {
         return { content: "Hi. How are you? Want to play?" };
@@ -1358,7 +1228,6 @@ describe("RuntimeOrchestrator", () => {
       discord,
       maxAutomaticTurns: 3,
       createPipeline: () => pipeline,
-      sleep: async () => undefined,
       logger: {
         debug: () => undefined,
         info: () => undefined,

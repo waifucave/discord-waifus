@@ -563,8 +563,9 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     }
     const history = await appendOrchestratorHistory(storage, {
       id: randomUUID(),
-      steps: [{ kind: "no_reply" }],
-      idleTrigger: 180,
+      action: "no_reply",
+      respondingWaifus: [],
+      retriggerAfterSeconds: 180,
       reasoning: "Manual trigger accepted without a target guild/channel.",
       createdAt: nowIso()
     });

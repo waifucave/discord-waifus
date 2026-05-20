@@ -48,13 +48,13 @@ export type DiscordBotsFile = z.infer<typeof DiscordBotsFileSchema>;
 export const OrchestratorPromptSectionsSchema = z
   .object({
     loopBreaking: z.boolean().default(true),
-    idleTriggerPacing: z.boolean().default(true),
+    retriggerPacing: z.boolean().default(true),
     messageStructure: z.boolean().default(true),
     toolUse: z.boolean().default(true)
   })
   .default({
     loopBreaking: true,
-    idleTriggerPacing: true,
+    retriggerPacing: true,
     messageStructure: true,
     toolUse: true
   });
@@ -66,6 +66,7 @@ export const AgentConfigSchema = RevisionedRecordSchema.extend({
   modelId: z.union([z.string(), z.null()]).optional().transform((value) => value ?? undefined),
   contextWindow: z.number().int().min(1).max(100).default(20),
   prompt: z.string().default(""),
+  useLegacyPrompt: z.boolean().default(false),
   reasoning: ReasoningConfigSchema,
   promptSections: OrchestratorPromptSectionsSchema
 });
@@ -189,29 +190,27 @@ export const MemoryStoreSchema = RevisionedRecordSchema.extend({
 });
 export type MemoryStore = z.infer<typeof MemoryStoreSchema>;
 
-export const OrchestratorDecisionStepSchema = z.object({
-  kind: z.string().min(1),
-  sceneDirection: z.string().min(1).optional(),
-  replyToMessageId: z.string().min(1).optional()
+export const OrchestratorReplyStyleSchema = z.enum(["normal", "short", "long", "sleepy"]);
+export type OrchestratorReplyStyle = z.infer<typeof OrchestratorReplyStyleSchema>;
+
+export const OrchestratorRespondingWaifuSchema = z.object({
+  waifuId: z.string().min(1),
+  delaySeconds: z.number().min(0),
+  replyStyle: OrchestratorReplyStyleSchema,
+  replyToMessageId: z.string().min(1).optional(),
+  sceneDirection: z.string().min(1).optional()
 });
-export type OrchestratorDecisionStep = z.infer<typeof OrchestratorDecisionStepSchema>;
+export type OrchestratorRespondingWaifu = z.infer<typeof OrchestratorRespondingWaifuSchema>;
+
+export const OrchestratorActionLogSchema = z.enum(["reply", "no_reply"]);
 
 export const OrchestratorDecisionHistoryEntrySchema = z.object({
   id: z.string().min(1),
   guildId: z.string().optional(),
   channelId: z.string().optional(),
-  steps: z.array(OrchestratorDecisionStepSchema).default([]),
-  idleTrigger: z
-    .union([
-      z.literal(180),
-      z.literal(300),
-      z.literal(900),
-      z.literal(1800),
-      z.literal(3600),
-      z.literal(7200),
-      z.literal(14400)
-    ])
-    .optional(),
+  action: OrchestratorActionLogSchema.default("reply"),
+  respondingWaifus: z.array(OrchestratorRespondingWaifuSchema).default([]),
+  retriggerAfterSeconds: z.number().min(0).optional(),
   reasoning: z.string().default(""),
   createdAt: IsoDateStringSchema
 });

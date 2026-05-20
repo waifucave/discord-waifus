@@ -189,7 +189,11 @@ describe("Backend API", () => {
 
       const history = await app.inject({ method: "GET", url: "/api/orchestrator/history" });
       expect(history.statusCode).toBe(200);
-      expect(history.json().decisions[0].steps).toEqual([{ kind: "no_reply" }]);
+      expect(history.json().decisions[0]).toMatchObject({
+        action: "no_reply",
+        respondingWaifus: [],
+        retriggerAfterSeconds: 180
+      });
     } finally {
       await app.close();
     }

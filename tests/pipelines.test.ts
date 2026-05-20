@@ -33,8 +33,9 @@ describe("provider-native decision tools", () => {
                 function: {
                   name: "orchestrator_decision",
                   arguments: JSON.stringify({
-                    steps: [{ kind: "no_reply" }],
-                    idleTrigger: 180,
+                    action: "no_reply",
+                    respondingWaifus: [],
+                    retriggerAfterSeconds: 600,
                     reasoning: "wait for more context"
                   })
                 }
@@ -53,14 +54,50 @@ describe("provider-native decision tools", () => {
       availableWaifuIds: ["yuki", "mika"]
     });
 
-    expect(decision).toMatchObject({ steps: [{ kind: "no_reply" }], idleTrigger: 180 });
+    expect(decision).toMatchObject({
+      action: "no_reply",
+      respondingWaifus: [],
+      retriggerAfterSeconds: 600
+    });
     const query = recentQueries().at(-1);
     expect(query?.role).toBe("orchestrator");
     expect((query?.payload.tools as Array<{ function: { name: string } }>)[0].function.name).toBe("orchestrator_decision");
-    const stepKindSchema = (query?.payload.tools as Array<{
-      function: { parameters: { properties: { steps: { items: { properties: { kind: { enum?: string[] } } } } } } };
-    }>)[0].function.parameters.properties.steps.items.properties.kind;
-    expect(stepKindSchema.enum).toEqual(["yuki", "mika", "no_reply"]);
+    const waifuIdSchema = (query?.payload.tools as Array<{
+      function: {
+        parameters: {
+          properties: {
+            respondingWaifus: {
+              items: {
+                properties: {
+                  waifuId: { enum?: string[] };
+                  repleyToMessageIndex?: unknown;
+                  replyToMessageId?: unknown;
+                };
+              };
+            };
+          };
+        };
+      };
+    }>)[0].function.parameters.properties.respondingWaifus.items.properties.waifuId;
+    const responderProperties = (query?.payload.tools as Array<{
+      function: {
+        parameters: {
+          properties: {
+            respondingWaifus: {
+              items: {
+                properties: {
+                  repleyToMessageIndex?: unknown;
+                  replyToMessageId?: unknown;
+                };
+              };
+            };
+          };
+        };
+      };
+    }>)[0].function.parameters.properties.respondingWaifus.items.properties;
+    expect(waifuIdSchema.enum).toEqual(["yuki", "mika"]);
+    expect(responderProperties.repleyToMessageIndex).toBeDefined();
+    expect(responderProperties.replyToMessageId).toBeUndefined();
     expect(query?.payload.tool_choice).toEqual({
       type: "function",
       function: { name: "orchestrator_decision" }
@@ -77,8 +114,9 @@ describe("provider-native decision tools", () => {
                 function: {
                   name: "orchestrator_decision",
                   arguments: JSON.stringify({
-                    steps: [{ kind: "no_reply" }],
-                    idleTrigger: 180,
+                    action: "no_reply",
+                    respondingWaifus: [],
+                    retriggerAfterSeconds: 180,
                     reasoning: "wait"
                   })
                 }
@@ -137,10 +175,11 @@ describe("provider-native decision tools", () => {
 
     const query = recentQueries().at(-1);
     const messages = query?.payload.messages as Array<{ content: string }>;
+    expect(messages.some((message) => message.content.includes("[message_id:"))).toBe(false);
     expect(messages.some((message) => message.content.includes("[sender: Kevin] that one [replying to: #2]"))).toBe(true);
   });
 
-  it("renders orchestrator no_reply markers before timestamp with idle_trigger after reason", async () => {
+  it("renders orchestrator no_reply markers with retrigger after reason", async () => {
     mockFetch({
       choices: [
         {
@@ -150,8 +189,9 @@ describe("provider-native decision tools", () => {
                 function: {
                   name: "orchestrator_decision",
                   arguments: JSON.stringify({
-                    steps: [{ kind: "no_reply" }],
-                    idleTrigger: 180,
+                    action: "no_reply",
+                    respondingWaifus: [],
+                    retriggerAfterSeconds: 180,
                     reasoning: "wait"
                   })
                 }
@@ -170,7 +210,7 @@ describe("provider-native decision tools", () => {
         {
           kind: "no_reply",
           timestamp: "2026-05-16T12:05:00Z",
-          idleTrigger: 600,
+          retriggerAfterSeconds: 600,
           reasoning: "wait   for   Kevin"
         }
       ],
@@ -180,7 +220,7 @@ describe("provider-native decision tools", () => {
     const query = recentQueries().at(-1);
     const messages = query?.payload.messages as Array<{ content: string }>;
     const renderedContext = messages.find((message) => message.content.includes("[no_reply]"))?.content ?? "";
-    expect(renderedContext).toContain("[no_reply] [timestamp: 2026-05-16T12:05:00Z] [reason: wait for Kevin] [idle_trigger: 600s]");
+    expect(renderedContext).toContain("[no_reply] [timestamp: 2026-05-16T12:05:00Z] [reason: wait for Kevin] [retrigger: 600s]");
     expect(renderedContext).not.toContain("[type: no_reply]");
   });
 
@@ -236,9 +276,18 @@ describe("provider-native decision tools", () => {
           type: "tool_use",
           name: "orchestrator_decision",
           input: {
-            steps: [{ kind: "yuki" }, { kind: "no_reply" }],
-            idleTrigger: 300,
-            reasoning: "yuki replies then we wait"
+            action: "reply",
+            respondingWaifus: [
+              {
+                waifuId: "yuki",
+                delaySeconds: 1,
+                replyStyle: "normal",
+                repleyToMessageIndex: 1,
+                sceneDirection: null
+              }
+            ],
+            retriggerAfterSeconds: null,
+            reasoning: "yuki should answer"
           }
         }
       ]
@@ -253,13 +302,80 @@ describe("provider-native decision tools", () => {
     });
 
     expect(decision).toMatchObject({
-      steps: [{ kind: "yuki" }, { kind: "no_reply" }],
-      idleTrigger: 300
+      action: "reply",
+      respondingWaifus: [
+        {
+          waifuId: "yuki",
+          delaySeconds: 1,
+          replyStyle: "normal",
+          replyToMessageId: "m1"
+        }
+      ]
     });
     const query = recentQueries().at(-1);
     expect(query?.role).toBe("orchestrator");
     expect((query?.payload.tools as Array<{ name: string }>)[0].name).toBe("orchestrator_decision");
     expect(query?.payload.tool_choice).toEqual({ type: "tool", name: "orchestrator_decision" });
+  });
+
+  it("passes waifu stop sequences to OpenAI-compatible chat", async () => {
+    mockFetch({ choices: [{ message: { content: "ok" } }] });
+
+    const pipeline = createModelPipeline("grok-4.3", { apiKey: "xai-test" });
+    await pipeline.generateWaifu({
+      modelId: "grok-4.3",
+      messages: context,
+      systemPrompt: "stay in character"
+    });
+
+    const query = recentQueries().at(-1);
+    expect(query?.payload.stop).toEqual(["\n[timestamp:", "\n[sender:"]);
+  });
+
+  it("passes waifu stop sequences to Anthropic Messages", async () => {
+    mockFetch({ content: [{ type: "text", text: "ok" }] });
+
+    const pipeline = createModelPipeline("claude-haiku-4-5-20251001", { apiKey: "anthropic-test" });
+    await pipeline.generateWaifu({
+      modelId: "claude-haiku-4-5-20251001",
+      messages: context,
+      systemPrompt: "stay in character"
+    });
+
+    const query = recentQueries().at(-1);
+    expect(query?.payload.stop_sequences).toEqual(["\n[timestamp:", "\n[sender:"]);
+  });
+
+  it("injects a reply_style hint when non-normal", async () => {
+    mockFetch({ choices: [{ message: { content: "ok" } }] });
+
+    const pipeline = createModelPipeline("grok-4.3", { apiKey: "xai-test" });
+    await pipeline.generateWaifu({
+      modelId: "grok-4.3",
+      messages: context,
+      systemPrompt: "stay in character",
+      replyStyle: "short"
+    });
+
+    const query = recentQueries().at(-1);
+    const messages = query?.payload.messages as Array<{ role: string; content: string }>;
+    expect(messages.some((message) => message.content === "<reply_style>short</reply_style>")).toBe(true);
+  });
+
+  it("does not inject a reply_style hint when normal", async () => {
+    mockFetch({ choices: [{ message: { content: "ok" } }] });
+
+    const pipeline = createModelPipeline("grok-4.3", { apiKey: "xai-test" });
+    await pipeline.generateWaifu({
+      modelId: "grok-4.3",
+      messages: context,
+      systemPrompt: "stay in character",
+      replyStyle: "normal"
+    });
+
+    const query = recentQueries().at(-1);
+    const messages = query?.payload.messages as Array<{ role: string; content: string }>;
+    expect(messages.some((message) => message.content.includes("<reply_style>"))).toBe(false);
   });
 });
 

@@ -32,7 +32,7 @@ export type ContextMessage = z.infer<typeof ContextMessageSchema>;
 export const OrchestratorNoReplyMarkerSchema = z.object({
   kind: z.literal("no_reply"),
   timestamp: z.string(),
-  idleTrigger: z.number().int(),
+  retriggerAfterSeconds: z.number().int(),
   reasoning: z.string()
 });
 export type OrchestratorNoReplyMarker = z.infer<typeof OrchestratorNoReplyMarkerSchema>;

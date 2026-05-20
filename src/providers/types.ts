@@ -1,6 +1,6 @@
 import { ProviderId, ReasoningConfig } from "../shared/schemas/domain.js";
 import { ContextMessage, OrchestratorNoReplyMarker } from "../orchestration/context.js";
-import { OrchestratorDecision } from "../orchestration/decisions.js";
+import { OrchestratorDecision, ReplyStyle } from "../orchestration/decisions.js";
 import { StageManagerToolCall } from "../orchestration/stageManager.js";
 import { ReviewerDecision } from "../orchestration/reviewer.js";
 import { WaifuMemory } from "../shared/schemas/domain.js";
@@ -51,6 +51,7 @@ export type ProviderRequest = {
 export type WaifuGenerationRequest = ProviderRequest & {
   systemPrompt: string;
   sceneDirection?: string;
+  replyStyle?: ReplyStyle;
   currentWaifuAuthorIds?: string[];
 };
 

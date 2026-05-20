@@ -1,10 +1,14 @@
 import { z } from "zod";
 import { ContextMessage, OrchestratorNoReplyMarker, formatTimestamp } from "../orchestration/context.js";
 import {
-  IdleTriggerSchema,
-  NO_REPLY_STEP_KIND,
+  OrchestratorActionSchema,
   OrchestratorDecision,
-  OrchestratorDecisionSchema
+  OrchestratorDecisionSchema,
+  REPLY_STYLE_VALUES,
+  ReplyStyle,
+  ReplyStyleSchema,
+  RETRIGGER_MAX_SECONDS,
+  RETRIGGER_MIN_SECONDS
 } from "../orchestration/decisions.js";
 import { ReviewerDecision, ReviewerDecisionSchema } from "../orchestration/reviewer.js";
 import { StageManagerToolCall, StageManagerToolCallSchema } from "../orchestration/stageManager.js";
@@ -34,6 +38,8 @@ export class ProviderPipelineError extends Error {
 export type PipelineCredentials = {
   apiKey: string;
 };
+
+const WAIFU_STOP_SEQUENCES = ["\n[timestamp:", "\n[sender:"];
 
 export function createModelPipeline(modelId: string, credentials: PipelineCredentials): ModelPipeline {
   const model = getModel(modelId);
@@ -68,6 +74,7 @@ class OpenAiCompatibleChatPipeline implements ModelPipeline {
         messages: [
           { role: "system", content: request.systemPrompt },
           ...contextToChatMessagesForWaifu(request.messages, request.currentWaifuAuthorIds ?? []),
+          ...replyStyleMessagesForChat(request.replyStyle),
           ...(request.sceneDirection
             ? [{ role: "system", content: `<scene_direction>${request.sceneDirection}</scene_direction>` }]
             : [])
@@ -75,6 +82,7 @@ class OpenAiCompatibleChatPipeline implements ModelPipeline {
         temperature: request.temperature ?? this.model.defaultTemperature,
         top_p: request.topP ?? this.model.defaultTopP,
         max_tokens: request.maxOutputTokens,
+        stop: WAIFU_STOP_SEQUENCES,
         stream: false,
         ...reasoningFieldsForOpenAiChat(this.model, request.reasoning),
         ...openAiChatSamplingOverrides(this.model, request.reasoning)
@@ -185,6 +193,7 @@ class OpenAiResponsesPipeline implements ModelPipeline {
         instructions: request.systemPrompt,
         input: [
           ...contextToResponsesInputForWaifu(request.messages, request.currentWaifuAuthorIds ?? []),
+          ...replyStyleMessagesForChat(request.replyStyle),
           ...(request.sceneDirection
             ? [{ role: "system", content: `<scene_direction>${request.sceneDirection}</scene_direction>` }]
             : [])
@@ -192,6 +201,7 @@ class OpenAiResponsesPipeline implements ModelPipeline {
         temperature: request.temperature ?? this.model.defaultTemperature,
         top_p: request.topP ?? this.model.defaultTopP,
         max_output_tokens: request.maxOutputTokens,
+        stop: WAIFU_STOP_SEQUENCES,
         ...reasoningFieldsForOpenAiResponses(this.model, request.reasoning),
         ...openAiResponsesSamplingOverrides(this.model)
       },
@@ -296,11 +306,13 @@ class AnthropicMessagesPipeline implements ModelPipeline {
         system: request.systemPrompt,
         messages: [
           ...contextToAnthropicMessagesForWaifu(request.messages, request.currentWaifuAuthorIds ?? []),
+          ...replyStyleMessagesForAnthropic(request.replyStyle),
           ...(request.sceneDirection ? [{ role: "user", content: `<scene_direction>${request.sceneDirection}</scene_direction>` }] : [])
         ],
         temperature: constrainsSampling ? 1 : request.temperature ?? this.model.defaultTemperature,
         top_p: constrainsSampling ? undefined : request.topP ?? this.model.defaultTopP,
         max_tokens: maxTokens,
+        stop_sequences: WAIFU_STOP_SEQUENCES,
         ...(thinking ? { thinking } : {})
       },
       signal: request.signal,
@@ -513,7 +525,7 @@ function renderContext(
 
 function formatNoReplyMarker(marker: OrchestratorNoReplyMarker): string {
   const reason = marker.reasoning.replace(/\s+/g, " ").trim();
-  return `[no_reply] [timestamp: ${marker.timestamp}] [reason: ${reason}] [idle_trigger: ${marker.idleTrigger}s]`;
+  return `[no_reply] [timestamp: ${marker.timestamp}] [reason: ${reason}] [retrigger: ${marker.retriggerAfterSeconds}s]`;
 }
 
 function currentTimeBlock(): string {
@@ -540,6 +552,21 @@ function contextToAnthropicMessagesPrompt(rendering: ContextRendering) {
     role: "user",
     content: rendering.block
   };
+}
+
+function replyStyleHint(replyStyle: ReplyStyle | undefined): string | undefined {
+  if (!replyStyle || replyStyle === "normal") return undefined;
+  return `<reply_style>${replyStyle}</reply_style>`;
+}
+
+function replyStyleMessagesForChat(replyStyle: ReplyStyle | undefined): Array<{ role: "system"; content: string }> {
+  const hint = replyStyleHint(replyStyle);
+  return hint ? [{ role: "system", content: hint }] : [];
+}
+
+function replyStyleMessagesForAnthropic(replyStyle: ReplyStyle | undefined): Array<{ role: "user"; content: string }> {
+  const hint = replyStyleHint(replyStyle);
+  return hint ? [{ role: "user", content: hint }] : [];
 }
 
 function contextToChatMessagesForWaifu(messages: ContextMessage[], currentWaifuAuthorIds: string[]) {
@@ -667,59 +694,73 @@ const REVIEWER_TOOL_PARAMETERS = {
 };
 
 const ORCHESTRATOR_TOOL_NAME = "orchestrator_decision";
-const ORCHESTRATOR_TOOL_DESCRIPTION = "Plan the next ordered chain of waifu replies and pauses for the current Discord context.";
-
-const IDLE_TRIGGER_ENUM = [180, 300, 900, 1800, 3600, 7200, 14400] as const;
+const ORCHESTRATOR_TOOL_DESCRIPTION = "Choose whether a waifu should reply next and which waifu(s) should respond.";
 
 export const ORCHESTRATOR_TOOL_PARAMETERS = orchestratorToolParameters();
 
 function orchestratorToolParameters(availableWaifuIds?: string[]): object {
   const waifuIds = [...new Set((availableWaifuIds ?? []).filter(Boolean))];
-  const kindEnum = [...waifuIds, "no_reply"];
-  const kindSchema = {
+  const waifuIdSchema: Record<string, unknown> = {
     type: "string",
     description: waifuIds.length
-      ? `Either a configured waifu id (one of: ${waifuIds.join(", ")}) or the literal "no_reply" to insert a paced pause.`
-      : "Either a configured waifu id or the literal \"no_reply\" to insert a paced pause.",
-    enum: kindEnum
+      ? `Must be one of the configured waifu ids: ${waifuIds.join(", ")}.`
+      : "Configured waifu id."
   };
+  if (waifuIds.length) {
+    waifuIdSchema.enum = waifuIds;
+  }
   return {
     type: "object",
     additionalProperties: false,
     properties: {
-      steps: {
+      action: {
+        type: "string",
+        enum: ["reply", "no_reply"],
+        description: "\"reply\" when at least one waifu should answer; \"no_reply\" when nobody should speak now."
+      },
+      respondingWaifus: {
         type: "array",
-        description: "Ordered list of steps. Each step is either a waifu id (post that waifu's reply) or \"no_reply\" (sleep for idleTrigger seconds before continuing). Steps execute sequentially; any incoming chat message cancels the remainder of the chain.",
-        minItems: 1,
+        description: "Ordered list of waifus that will reply, in send order. Must be non-empty when action is \"reply\" and must be empty when action is \"no_reply\". Waifus speak one after the other; any incoming chat message cancels the rest of the chain.",
         items: {
           type: "object",
           additionalProperties: false,
           properties: {
-            kind: kindSchema,
-            sceneDirection: {
-              type: "string",
-              description: "Optional private direction for this waifu's reply. Only valid when kind is a waifu id."
+            waifuId: waifuIdSchema,
+            delaySeconds: {
+              type: "number",
+              minimum: 0,
+              description: "Realistic reading/typing delay before this waifu starts replying, in seconds. 0 means start immediately."
             },
-            replyToIndex: {
-              type: "integer",
-              minimum: 1,
-              description: "Optional #N context index to reply to; use only for older non-latest messages. Only valid when kind is a waifu id."
+            replyStyle: {
+              type: "string",
+              enum: [...REPLY_STYLE_VALUES],
+              description: "Soft hint for this reply's length and tone: \"normal\" is the default, \"short\" is one terse line, \"long\" leans toward a slightly longer reply, \"sleepy\" sounds tired/low-energy."
+            },
+            repleyToMessageIndex: {
+              anyOf: [{ type: "integer", minimum: 1 }, { type: "null" }],
+              description: "Optional #N context index to reply to; only set when intentionally anchoring to a specific older message. Otherwise null."
+            },
+            sceneDirection: {
+              anyOf: [{ type: "string" }, { type: "null" }],
+              description: "Optional one-line invisible direction shaping this waifu's next message. Use when the persona alone won't carry the beat. Null when no special steering is needed."
             }
           },
-          required: ["kind"]
+          required: ["waifuId", "delaySeconds", "replyStyle", "repleyToMessageIndex", "sceneDirection"]
         }
       },
-      idleTrigger: {
-        type: "integer",
-        enum: [...IDLE_TRIGGER_ENUM],
-        description: "Pause duration in seconds applied to each \"no_reply\" step. Required when steps contains \"no_reply\"; must be omitted otherwise."
+      retriggerAfterSeconds: {
+        anyOf: [
+          { type: "number", minimum: RETRIGGER_MIN_SECONDS, maximum: RETRIGGER_MAX_SECONDS },
+          { type: "null" }
+        ],
+        description: `Required when action is \"no_reply\": seconds to wait before the orchestrator re-evaluates the room (${RETRIGGER_MIN_SECONDS}..${RETRIGGER_MAX_SECONDS}). Must be null when action is \"reply\".`
       },
       reasoning: {
         type: "string",
-        description: "Brief operational reason for the chain."
+        description: "Brief operational reason for this decision."
       }
     },
-    required: ["steps", "reasoning"]
+    required: ["action", "respondingWaifus", "retriggerAfterSeconds", "reasoning"]
   };
 }
 
@@ -869,15 +910,20 @@ const ImportanceSchema = z.union([
   z.literal(5)
 ]);
 
-const RawOrchestratorStepSchema = z.object({
-  kind: z.string().min(1),
-  sceneDirection: z.string().min(1).optional(),
-  replyToIndex: z.number().int().min(1).optional()
+const RawRespondingWaifuSchema = z.object({
+  waifuId: z.string().min(1),
+  delaySeconds: z.number().min(0),
+  replyStyle: ReplyStyleSchema,
+  repleyToMessageIndex: z.union([z.number().int().min(1), z.null()]).optional(),
+  sceneDirection: z.union([z.string().min(1), z.null()]).optional()
 });
 
 const RawOrchestratorDecisionSchema = z.object({
-  steps: z.array(RawOrchestratorStepSchema).min(1),
-  idleTrigger: IdleTriggerSchema.optional(),
+  action: OrchestratorActionSchema,
+  respondingWaifus: z.array(RawRespondingWaifuSchema).default([]),
+  retriggerAfterSeconds: z
+    .union([z.number().min(RETRIGGER_MIN_SECONDS).max(RETRIGGER_MAX_SECONDS), z.null()])
+    .optional(),
   reasoning: z.string().min(1)
 });
 
@@ -925,17 +971,16 @@ function parseDecision(text: string, indexToId: Map<number, string>): Orchestrat
     const parsed = JSON.parse(stripCodeFence(text));
     const raw = RawOrchestratorDecisionSchema.parse(parsed);
     return OrchestratorDecisionSchema.parse({
-      steps: raw.steps.map((step) =>
-        step.kind === NO_REPLY_STEP_KIND
-          ? { kind: NO_REPLY_STEP_KIND }
-          : {
-              kind: step.kind,
-              sceneDirection: step.sceneDirection,
-              replyToMessageId:
-                step.replyToIndex !== undefined ? indexToId.get(step.replyToIndex) : undefined
-            }
-      ),
-      idleTrigger: raw.idleTrigger,
+      action: raw.action,
+      respondingWaifus: raw.respondingWaifus.map((entry) => ({
+        waifuId: entry.waifuId,
+        delaySeconds: entry.delaySeconds,
+        replyStyle: entry.replyStyle,
+        replyToMessageId: replyToMessageIdForIndex(entry.repleyToMessageIndex, indexToId),
+        sceneDirection: entry.sceneDirection ?? undefined
+      })),
+      retriggerAfterSeconds:
+        raw.retriggerAfterSeconds === null ? undefined : raw.retriggerAfterSeconds,
       reasoning: raw.reasoning
     });
   } catch (error) {
@@ -944,6 +989,20 @@ function parseDecision(text: string, indexToId: Map<number, string>): Orchestrat
       error: error instanceof Error ? error.message : String(error)
     });
   }
+}
+
+function replyToMessageIdForIndex(
+  repleyToMessageIndex: number | null | undefined,
+  indexToId: Map<number, string>
+): string | undefined {
+  if (repleyToMessageIndex === null || repleyToMessageIndex === undefined) {
+    return undefined;
+  }
+  const messageId = indexToId.get(repleyToMessageIndex);
+  if (!messageId) {
+    throw new Error(`repleyToMessageIndex #${repleyToMessageIndex} does not exist in the provided context.`);
+  }
+  return messageId;
 }
 
 function parseStageManagerCalls(text: string, indexToId: Map<number, string>): StageManagerToolCall[] {

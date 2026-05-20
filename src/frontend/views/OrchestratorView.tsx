@@ -23,7 +23,7 @@ import type { ReasoningConfig } from "../api/types";
 
 const PROMPT_SECTION_OPTIONS: Array<{ key: keyof OrchestratorPromptSections; label: string }> = [
   { key: "loopBreaking", label: "<loop_breaking>" },
-  { key: "idleTriggerPacing", label: "<idle_trigger_pacing>" },
+  { key: "retriggerPacing", label: "<retrigger_pacing>" },
   { key: "messageStructure", label: "<message_structure>" },
   { key: "toolUse", label: "<tool_use>" }
 ];
@@ -40,10 +40,11 @@ export function OrchestratorView() {
   const [reasoning, setReasoning] = useState<ReasoningConfig>({});
   const [promptSections, setPromptSections] = useState<OrchestratorPromptSections>({
     loopBreaking: true,
-    idleTriggerPacing: true,
+    retriggerPacing: true,
     messageStructure: true,
     toolUse: true
   });
+  const [useLegacyPrompt, setUseLegacyPrompt] = useState(false);
   const [botDisplayName, setBotDisplayName] = useState("Orchestrator");
   const [botApplicationId, setBotApplicationId] = useState("");
   const [botToken, setBotToken] = useState("");
@@ -58,6 +59,7 @@ export function OrchestratorView() {
     setModelId(remoteConfig.data.modelId ?? "");
     setReasoning(remoteConfig.data.reasoning ?? {});
     setPromptSections(remoteConfig.data.promptSections);
+    setUseLegacyPrompt(remoteConfig.data.useLegacyPrompt ?? false);
   }, [remoteConfig.data]);
 
   useEffect(() => {
@@ -84,7 +86,8 @@ export function OrchestratorView() {
         modelId: modelId || undefined,
         enabled: true,
         reasoning,
-        promptSections
+        promptSections,
+        useLegacyPrompt
       });
       remoteConfig.setData(saved);
       if (bots.data) {
@@ -292,21 +295,28 @@ export function OrchestratorView() {
 
       <section className="section">
         <div className="section-header">
-          <h3 className="section-title">Prompt sections</h3>
+          <h3 className="section-title">Prompt</h3>
           <span className="section-description">
-            Toggle optional sections of the orchestrator system prompt. Identity, hard rules, task instructions, server info, and active waifus are always included.
+            Toggle optional sections of the orchestrator system prompt. Identity, hard rules, task instructions, server info, and active waifus are always included. Turning on the legacy prompt overrides everything and uses the recovered original prompt instead.
           </span>
         </div>
-        <div className="grid grid-2">
-          {PROMPT_SECTION_OPTIONS.map((option) => (
-            <Toggle
-              key={option.key}
-              label={option.label}
-              checked={promptSections[option.key]}
-              onChange={(next) => setPromptSections((prev) => ({ ...prev, [option.key]: next }))}
-            />
-          ))}
-        </div>
+        <Toggle
+          label="Use legacy prompt (overrides all sections)"
+          checked={useLegacyPrompt}
+          onChange={setUseLegacyPrompt}
+        />
+        {!useLegacyPrompt && (
+          <div className="grid grid-2" style={{ marginTop: 12 }}>
+            {PROMPT_SECTION_OPTIONS.map((option) => (
+              <Toggle
+                key={option.key}
+                label={option.label}
+                checked={promptSections[option.key]}
+                onChange={(next) => setPromptSections((prev) => ({ ...prev, [option.key]: next }))}
+              />
+            ))}
+          </div>
+        )}
       </section>
 
       <section className="section">
@@ -335,17 +345,20 @@ export function OrchestratorView() {
   <span className="section-description">Orchestrator must emit exactly one structured decision.</span>
         </div>
         <pre className="code-block">{`type OrchestratorDecision = {
-  steps: Array<{
-    kind: waifuId | "no_reply";
-    sceneDirection?: string;   // only on waifu steps
-    replyToIndex?: number;     // only on waifu steps
+  action: "reply" | "no_reply";
+  respondingWaifus: Array<{
+    waifuId: string;
+    delaySeconds: number;                  // >= 0
+    replyStyle: "normal" | "short" | "long" | "sleepy";
+    repleyToMessageIndex: number | null;
+    sceneDirection: string | null;
   }>;
-  idleTrigger?: 180 | 300 | 900 | 1800 | 3600 | 7200 | 14400;  // required iff any step is "no_reply"
+  retriggerAfterSeconds: number | null;    // required when action="no_reply", 100..7200
   reasoning: string;
 };
 
-// Use replyToIndex only for older messages; omit it for the latest message.
-// idleTrigger applies as the pause length to each "no_reply" step.`}</pre>
+// action="reply"   -> respondingWaifus non-empty, retriggerAfterSeconds null
+// action="no_reply" -> respondingWaifus empty,    retriggerAfterSeconds in [100, 7200]`}</pre>
       </section>
 
       <section className="section">
@@ -361,15 +374,17 @@ export function OrchestratorView() {
           <div className="table">
             <div className="tr head">
               <span>Time</span>
-              <span>Steps</span>
-              <span>Idle</span>
+              <span>Action</span>
+              <span>Responders</span>
+              <span>Retrigger</span>
               <span>Reasoning</span>
             </div>
             {history.data?.decisions.map((entry) => (
               <div className="tr" key={entry.id}>
                 <span>{new Date(entry.createdAt).toLocaleTimeString()}</span>
-                <span>{entry.steps.map((step) => step.kind).join(" → ") || "—"}</span>
-                <span>{entry.idleTrigger ? `${entry.idleTrigger}s` : "—"}</span>
+                <span>{entry.action}</span>
+                <span>{entry.respondingWaifus.map((responder) => responder.waifuId).join(" → ") || "—"}</span>
+                <span>{entry.retriggerAfterSeconds ? `${entry.retriggerAfterSeconds}s` : "—"}</span>
                 <span>{entry.reasoning}</span>
               </div>
             ))}

@@ -11,6 +11,8 @@ export type CapturedQuery = {
     input?: unknown;
     tools?: unknown;
     tool_choice?: unknown;
+    stop?: unknown;
+    stop_sequences?: unknown;
   };
 };
 
@@ -29,6 +31,8 @@ export function recordProviderQuery(role: QueryRole, body: Record<string, unknow
   if (body.input !== undefined) payload.input = body.input;
   if (body.tools !== undefined) payload.tools = body.tools;
   if (body.tool_choice !== undefined) payload.tool_choice = body.tool_choice;
+  if (body.stop !== undefined) payload.stop = body.stop;
+  if (body.stop_sequences !== undefined) payload.stop_sequences = body.stop_sequences;
   const entry: CapturedQuery = {
     id: nextId++,
     time: new Date().toISOString(),
