@@ -4,6 +4,7 @@ import {
   OrchestratorActionSchema,
   OrchestratorDecision,
   OrchestratorDecisionSchema,
+  MAX_WAIFU_DELAY_SECONDS,
   REPLY_STYLE_VALUES,
   ReplyStyle,
   ReplyStyleSchema,
@@ -66,7 +67,7 @@ class OpenAiCompatibleChatPipeline implements ModelPipeline {
 
   async generateWaifu(request: WaifuGenerationRequest): Promise<WaifuGenerationResult> {
     throwIfAborted(request.signal);
-    const text = await postJsonAndExtractText({
+    const result = await postJsonAndExtractText<WaifuGenerationResult>({
       url: `${this.provider.baseUrl}${this.model.endpoint}`,
       headers: bearerHeaders(this.apiKey),
       body: {
@@ -82,16 +83,17 @@ class OpenAiCompatibleChatPipeline implements ModelPipeline {
         temperature: request.temperature ?? this.model.defaultTemperature,
         top_p: request.topP ?? this.model.defaultTopP,
         max_tokens: request.maxOutputTokens,
+        ...openAiChatPickNextWaifuToolPayload(this.model, request),
         stop: WAIFU_STOP_SEQUENCES,
         stream: false,
         ...reasoningFieldsForOpenAiChat(this.model, request.reasoning),
         ...openAiChatSamplingOverrides(this.model, request.reasoning)
       },
       signal: request.signal,
-      extract: extractOpenAiChatText,
+      extract: (json) => extractOpenAiChatWaifuResult(json, request.availableWaifuIds),
       queryRole: "waifu"
     });
-    return { content: text };
+    return result;
   }
 
   async decideOrchestrator(request: ProviderRequest): Promise<OrchestratorDecision> {
@@ -185,7 +187,7 @@ class OpenAiResponsesPipeline implements ModelPipeline {
   ) {}
 
   async generateWaifu(request: WaifuGenerationRequest): Promise<WaifuGenerationResult> {
-    const text = await postJsonAndExtractText({
+    const result = await postJsonAndExtractText<WaifuGenerationResult>({
       url: `${this.provider.baseUrl}${this.model.endpoint}`,
       headers: bearerHeaders(this.apiKey),
       body: {
@@ -201,15 +203,16 @@ class OpenAiResponsesPipeline implements ModelPipeline {
         temperature: request.temperature ?? this.model.defaultTemperature,
         top_p: request.topP ?? this.model.defaultTopP,
         max_output_tokens: request.maxOutputTokens,
+        ...openAiResponsesPickNextWaifuToolPayload(this.model, request),
         stop: WAIFU_STOP_SEQUENCES,
         ...reasoningFieldsForOpenAiResponses(this.model, request.reasoning),
         ...openAiResponsesSamplingOverrides(this.model)
       },
       signal: request.signal,
-      extract: extractOpenAiResponsesText,
+      extract: (json) => extractOpenAiResponsesWaifuResult(json, request.availableWaifuIds),
       queryRole: "waifu"
     });
-    return { content: text };
+    return result;
   }
 
   async decideOrchestrator(request: ProviderRequest): Promise<OrchestratorDecision> {
@@ -298,7 +301,7 @@ class AnthropicMessagesPipeline implements ModelPipeline {
     const maxTokens = request.maxOutputTokens ?? 1024;
     const thinking = anthropicThinkingPayload(this.model, request.reasoning, maxTokens);
     const constrainsSampling = anthropicThinkingConstrainsSampling(thinking);
-    const text = await postJsonAndExtractText({
+    const result = await postJsonAndExtractText<WaifuGenerationResult>({
       url: `${this.provider.baseUrl}${this.model.endpoint}`,
       headers: anthropicHeaders(this.apiKey),
       body: {
@@ -312,14 +315,15 @@ class AnthropicMessagesPipeline implements ModelPipeline {
         temperature: constrainsSampling ? 1 : request.temperature ?? this.model.defaultTemperature,
         top_p: constrainsSampling ? undefined : request.topP ?? this.model.defaultTopP,
         max_tokens: maxTokens,
+        ...anthropicPickNextWaifuToolPayload(this.model, request),
         stop_sequences: WAIFU_STOP_SEQUENCES,
         ...(thinking ? { thinking } : {})
       },
       signal: request.signal,
-      extract: extractAnthropicText,
+      extract: (json) => extractAnthropicWaifuResult(json, request.availableWaifuIds),
       queryRole: "waifu"
     });
-    return { content: text };
+    return result;
   }
 
   async decideOrchestrator(request: ProviderRequest): Promise<OrchestratorDecision> {
@@ -416,11 +420,13 @@ type JsonPostOptions = {
   headers: Record<string, string>;
   body: Record<string, unknown>;
   signal?: AbortSignal;
-  extract: (json: unknown) => string;
+  extract: (json: unknown) => unknown;
   queryRole: QueryRole;
 };
 
-async function postJsonAndExtractText(options: JsonPostOptions): Promise<string> {
+async function postJsonAndExtractText<T = string>(options: JsonPostOptions & {
+  extract: (json: unknown) => T;
+}): Promise<T> {
   throwIfAborted(options.signal);
   const body = stripUndefined(options.body);
   recordProviderQuery(options.queryRole, body);
@@ -445,14 +451,29 @@ async function postJsonAndExtractText(options: JsonPostOptions): Promise<string>
     if (!response.ok) {
       throw new ProviderPipelineError(`Provider request failed with HTTP ${response.status}.`, json);
     }
-    const content = options.extract(json).trim();
-    if (!content) {
+    const extracted = options.extract(json);
+    if (typeof extracted === "string") {
+      const content = extracted.trim();
+      if (!content) {
+        throw new ProviderPipelineError("Provider returned an empty response.", json);
+      }
+      return content as T;
+    }
+    if (isRecord(extracted) && typeof extracted.content === "string") {
+      const content = extracted.content.trim();
+      return { ...extracted, content } as T;
+    }
+    if (extracted === undefined || extracted === null) {
       throw new ProviderPipelineError("Provider returned an empty response.", json);
     }
-    return content;
+    return extracted as T;
   } finally {
     requestSignal.cleanup();
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function providerRequestSignal(parent?: AbortSignal, timeoutMs = 180_000): {
@@ -698,6 +719,10 @@ const ORCHESTRATOR_TOOL_DESCRIPTION = "Choose whether a waifu should reply next 
 
 export const ORCHESTRATOR_TOOL_PARAMETERS = orchestratorToolParameters();
 
+const PICK_NEXT_WAIFU_TOOL_NAME = "PickNextWaifu";
+const PICK_NEXT_WAIFU_TOOL_DESCRIPTION =
+  "Optionally pick one configured waifu to reply immediately after this waifu message.";
+
 function orchestratorToolParameters(availableWaifuIds?: string[]): object {
   const waifuIds = [...new Set((availableWaifuIds ?? []).filter(Boolean))];
   const waifuIdSchema: Record<string, unknown> = {
@@ -729,7 +754,8 @@ function orchestratorToolParameters(availableWaifuIds?: string[]): object {
             delaySeconds: {
               type: "number",
               minimum: 0,
-              description: "Realistic reading/typing delay before this waifu starts replying, in seconds. 0 means start immediately."
+              maximum: MAX_WAIFU_DELAY_SECONDS,
+              description: `Realistic reading/typing delay before this waifu starts replying, in seconds. 0 means start immediately; maximum is ${MAX_WAIFU_DELAY_SECONDS}.`
             },
             replyStyle: {
               type: "string",
@@ -761,6 +787,27 @@ function orchestratorToolParameters(availableWaifuIds?: string[]): object {
       }
     },
     required: ["action", "respondingWaifus", "retriggerAfterSeconds", "reasoning"]
+  };
+}
+
+function pickNextWaifuToolParameters(availableWaifuIds?: string[]): object {
+  const waifuIds = [...new Set((availableWaifuIds ?? []).filter(Boolean))];
+  const waifuIdSchema: Record<string, unknown> = {
+    type: "string",
+    description: waifuIds.length
+      ? `Must be one of these configured waifu ids: ${waifuIds.join(", ")}.`
+      : "Configured waifu id."
+  };
+  if (waifuIds.length) {
+    waifuIdSchema.enum = waifuIds;
+  }
+  return {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      waifuId: waifuIdSchema
+    },
+    required: ["waifuId"]
   };
 }
 
@@ -849,6 +896,18 @@ function anthropicOrchestratorTool(availableWaifuIds?: string[]) {
   return anthropicTool(ORCHESTRATOR_TOOL_NAME, ORCHESTRATOR_TOOL_DESCRIPTION, orchestratorToolParameters(availableWaifuIds));
 }
 
+function openAiChatPickNextWaifuTool(availableWaifuIds?: string[]) {
+  return openAiChatTool(PICK_NEXT_WAIFU_TOOL_NAME, PICK_NEXT_WAIFU_TOOL_DESCRIPTION, pickNextWaifuToolParameters(availableWaifuIds));
+}
+
+function openAiResponsesPickNextWaifuTool(availableWaifuIds?: string[]) {
+  return openAiResponsesTool(PICK_NEXT_WAIFU_TOOL_NAME, PICK_NEXT_WAIFU_TOOL_DESCRIPTION, pickNextWaifuToolParameters(availableWaifuIds));
+}
+
+function anthropicPickNextWaifuTool(availableWaifuIds?: string[]) {
+  return anthropicTool(PICK_NEXT_WAIFU_TOOL_NAME, PICK_NEXT_WAIFU_TOOL_DESCRIPTION, pickNextWaifuToolParameters(availableWaifuIds));
+}
+
 function openAiChatStageManagerTool() {
   return openAiChatTool(STAGE_MANAGER_TOOL_NAME, STAGE_MANAGER_TOOL_DESCRIPTION, STAGE_MANAGER_TOOL_PARAMETERS);
 }
@@ -871,6 +930,50 @@ function openAiResponsesReviewerTool() {
 
 function anthropicReviewerTool() {
   return anthropicTool(REVIEWER_TOOL_NAME, REVIEWER_TOOL_DESCRIPTION, REVIEWER_TOOL_PARAMETERS);
+}
+
+function shouldExposePickNextWaifuTool(
+  model: ModelCapabilityMetadata,
+  request: WaifuGenerationRequest
+): boolean {
+  return Boolean(
+    model.supportsTools &&
+    request.pickNextWaifuToolEnabled &&
+    (request.availableWaifuIds?.length ?? 0) > 0
+  );
+}
+
+function openAiChatPickNextWaifuToolPayload(
+  model: ModelCapabilityMetadata,
+  request: WaifuGenerationRequest
+): { tools?: unknown[]; tool_choice?: "auto" } {
+  if (!shouldExposePickNextWaifuTool(model, request)) return {};
+  return {
+    tools: [openAiChatPickNextWaifuTool(request.availableWaifuIds)],
+    tool_choice: "auto"
+  };
+}
+
+function openAiResponsesPickNextWaifuToolPayload(
+  model: ModelCapabilityMetadata,
+  request: WaifuGenerationRequest
+): { tools?: unknown[]; tool_choice?: "auto" } {
+  if (!shouldExposePickNextWaifuTool(model, request)) return {};
+  return {
+    tools: [openAiResponsesPickNextWaifuTool(request.availableWaifuIds)],
+    tool_choice: "auto"
+  };
+}
+
+function anthropicPickNextWaifuToolPayload(
+  model: ModelCapabilityMetadata,
+  request: WaifuGenerationRequest
+): { tools?: unknown[]; tool_choice?: { type: "auto" } } {
+  if (!shouldExposePickNextWaifuTool(model, request)) return {};
+  return {
+    tools: [anthropicPickNextWaifuTool(request.availableWaifuIds)],
+    tool_choice: { type: "auto" }
+  };
 }
 
 function openAiChatTool(name: string, description: string, parameters: object) {
@@ -916,6 +1019,10 @@ const RawRespondingWaifuSchema = z.object({
   replyStyle: ReplyStyleSchema,
   repleyToMessageIndex: z.union([z.number().int().min(1), z.null()]).optional(),
   sceneDirection: z.union([z.string().min(1), z.null()]).optional()
+});
+
+const PickNextWaifuCallSchema = z.object({
+  waifuId: z.string().min(1)
 });
 
 const RawOrchestratorDecisionSchema = z.object({
@@ -1060,6 +1167,28 @@ function extractOpenAiChatText(json: unknown): string {
   return parsed.choices?.[0]?.message?.content ?? "";
 }
 
+function extractOpenAiChatWaifuResult(json: unknown, availableWaifuIds?: string[]): WaifuGenerationResult {
+  const parsed = json as {
+    choices?: Array<{
+      message?: {
+        content?: string | null;
+        tool_calls?: Array<{
+          function?: {
+            name?: string;
+            arguments?: unknown;
+          };
+        }>;
+      };
+    }>;
+  };
+  const message = parsed.choices?.[0]?.message;
+  const toolCall = message?.tool_calls?.find((call) => call.function?.name === PICK_NEXT_WAIFU_TOOL_NAME);
+  return {
+    content: message?.content ?? "",
+    pickedNextWaifuId: parsePickedNextWaifuId(toolCall?.function?.arguments, availableWaifuIds)
+  };
+}
+
 function extractOpenAiChatToolArguments(json: unknown, toolName: string): string {
   const parsed = json as {
     choices?: Array<{
@@ -1098,6 +1227,23 @@ function extractOpenAiResponsesText(json: unknown): string {
   );
 }
 
+function extractOpenAiResponsesWaifuResult(json: unknown, availableWaifuIds?: string[]): WaifuGenerationResult {
+  const parsed = json as {
+    output?: Array<{
+      type?: string;
+      name?: string;
+      arguments?: unknown;
+      content?: Array<{ text?: string; type?: string }>;
+    }>;
+    output_text?: string;
+  };
+  const call = parsed.output?.find((item) => item.type === "function_call" && item.name === PICK_NEXT_WAIFU_TOOL_NAME);
+  return {
+    content: extractOpenAiResponsesText(parsed),
+    pickedNextWaifuId: parsePickedNextWaifuId(call?.arguments, availableWaifuIds)
+  };
+}
+
 function extractOpenAiResponsesToolArguments(json: unknown, toolName: string): string {
   const parsed = json as {
     output?: Array<{
@@ -1121,6 +1267,22 @@ function extractAnthropicText(json: unknown): string {
   return parsed.content?.map((part) => part.text ?? "").join("") ?? "";
 }
 
+function extractAnthropicWaifuResult(json: unknown, availableWaifuIds?: string[]): WaifuGenerationResult {
+  const parsed = json as {
+    content?: Array<{
+      type?: string;
+      name?: string;
+      input?: unknown;
+      text?: string;
+    }>;
+  };
+  const toolUse = parsed.content?.find((part) => part.type === "tool_use" && part.name === PICK_NEXT_WAIFU_TOOL_NAME);
+  return {
+    content: extractAnthropicText(parsed),
+    pickedNextWaifuId: parsePickedNextWaifuId(toolUse?.input, availableWaifuIds)
+  };
+}
+
 function extractAnthropicToolArguments(json: unknown, toolName: string): string {
   const parsed = json as {
     content?: Array<{
@@ -1136,6 +1298,24 @@ function extractAnthropicToolArguments(json: unknown, toolName: string): string 
   if (typeof toolUse?.input === "string") return toolUse.input;
   if (toolUse?.input && typeof toolUse.input === "object") return JSON.stringify(toolUse.input);
   return extractAnthropicText(parsed);
+}
+
+function parsePickedNextWaifuId(argumentsValue: unknown, availableWaifuIds?: string[]): string | undefined {
+  if (argumentsValue === undefined || argumentsValue === null) return undefined;
+  try {
+    const parsed =
+      typeof argumentsValue === "string"
+        ? JSON.parse(stripCodeFence(argumentsValue))
+        : argumentsValue;
+    const call = PickNextWaifuCallSchema.parse(parsed);
+    const allowed = new Set(availableWaifuIds ?? []);
+    if (allowed.size > 0 && !allowed.has(call.waifuId)) {
+      return undefined;
+    }
+    return call.waifuId;
+  } catch {
+    return undefined;
+  }
 }
 
 function openAiChatSamplingOverrides(

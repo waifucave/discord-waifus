@@ -72,6 +72,7 @@ describe("provider-native decision tools", () => {
                   waifuId: { enum?: string[] };
                   repleyToMessageIndex?: unknown;
                   replyToMessageId?: unknown;
+                  delaySeconds?: { maximum?: number };
                 };
               };
             };
@@ -98,6 +99,7 @@ describe("provider-native decision tools", () => {
     expect(waifuIdSchema.enum).toEqual(["yuki", "mika"]);
     expect(responderProperties.repleyToMessageIndex).toBeDefined();
     expect(responderProperties.replyToMessageId).toBeUndefined();
+    expect(responderProperties.delaySeconds?.maximum).toBe(30);
     expect(query?.payload.tool_choice).toEqual({
       type: "function",
       function: { name: "orchestrator_decision" }
@@ -330,6 +332,112 @@ describe("provider-native decision tools", () => {
 
     const query = recentQueries().at(-1);
     expect(query?.payload.stop).toEqual(["\n[timestamp:", "\n[sender:"]);
+  });
+
+  it("exposes optional PickNextWaifu for waifu generation", async () => {
+    mockFetch({
+      choices: [
+        {
+          message: {
+            content: "mika should take this",
+            tool_calls: [
+              {
+                function: {
+                  name: "PickNextWaifu",
+                  arguments: JSON.stringify({ waifuId: "mika" })
+                }
+              }
+            ]
+          }
+        }
+      ]
+    });
+
+    const pipeline = createModelPipeline("grok-4.3", { apiKey: "xai-test" });
+    const result = await pipeline.generateWaifu({
+      modelId: "grok-4.3",
+      messages: context,
+      systemPrompt: "stay in character",
+      availableWaifuIds: ["mika"],
+      pickNextWaifuToolEnabled: true
+    });
+
+    expect(result).toEqual({
+      content: "mika should take this",
+      pickedNextWaifuId: "mika"
+    });
+    const query = recentQueries().at(-1);
+    expect(query?.role).toBe("waifu");
+    expect((query?.payload.tools as Array<{ function: { name: string } }>)[0].function.name).toBe("PickNextWaifu");
+    expect(query?.payload.tool_choice).toBe("auto");
+  });
+
+  it("ignores malformed PickNextWaifu calls and keeps the normal waifu message", async () => {
+    mockFetch({
+      choices: [
+        {
+          message: {
+            content: "normal reply still sends",
+            tool_calls: [
+              {
+                function: {
+                  name: "PickNextWaifu",
+                  arguments: "{not json"
+                }
+              }
+            ]
+          }
+        }
+      ]
+    });
+
+    const pipeline = createModelPipeline("grok-4.3", { apiKey: "xai-test" });
+    const result = await pipeline.generateWaifu({
+      modelId: "grok-4.3",
+      messages: context,
+      systemPrompt: "stay in character",
+      availableWaifuIds: ["mika"],
+      pickNextWaifuToolEnabled: true
+    });
+
+    expect(result).toEqual({
+      content: "normal reply still sends",
+      pickedNextWaifuId: undefined
+    });
+  });
+
+  it("treats an empty waifu message with a bad PickNextWaifu call as no handoff instead of a pipeline error", async () => {
+    mockFetch({
+      choices: [
+        {
+          message: {
+            content: "",
+            tool_calls: [
+              {
+                function: {
+                  name: "PickNextWaifu",
+                  arguments: JSON.stringify({ waifuId: "not-enabled" })
+                }
+              }
+            ]
+          }
+        }
+      ]
+    });
+
+    const pipeline = createModelPipeline("grok-4.3", { apiKey: "xai-test" });
+    const result = await pipeline.generateWaifu({
+      modelId: "grok-4.3",
+      messages: context,
+      systemPrompt: "stay in character",
+      availableWaifuIds: ["mika"],
+      pickNextWaifuToolEnabled: true
+    });
+
+    expect(result).toEqual({
+      content: "",
+      pickedNextWaifuId: undefined
+    });
   });
 
   it("passes waifu stop sequences to Anthropic Messages", async () => {

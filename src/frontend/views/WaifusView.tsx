@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ArrowLeft, Image as ImageIcon, MessageSquare, Plus, Save, Sparkles, Trash2 } from "lucide-react";
+import { ArrowLeft, Clock, Image as ImageIcon, MessageSquare, Plus, Save, Sparkles, Trash2 } from "lucide-react";
 import { api, ConflictError } from "../api/client";
 import { useApi } from "../api/useApi";
 import type {
@@ -7,7 +7,10 @@ import type {
   ModelsResponse,
   ProvidersResponse,
   UpdateWaifuBody,
+  WaifuAvailability,
+  WaifuBusyInterval,
   WaifuConfig,
+  WaifuToolSettings,
   WaifusResponse
 } from "../api/types";
 import { Empty } from "../components/Empty";
@@ -17,6 +20,7 @@ import { Notice } from "../components/Notice";
 import { Skeleton, SkeletonRows } from "../components/Skeleton";
 import { DiscordBotGuide } from "../components/DiscordBotGuide";
 import { ReasoningControls, hasReasoningControls } from "../components/ReasoningControls";
+import { Toggle } from "../components/Toggle";
 import { slugify, timeAgo } from "../utils/format";
 
 export function WaifusView() {
@@ -151,6 +155,8 @@ function CreateWaifuModal({
 }) {
   const [name, setName] = useState("");
   const [displayName, setDisplayName] = useState("");
+  const [availability, setAvailability] = useState<WaifuAvailability>(() => defaultAvailability());
+  const [tools, setTools] = useState<WaifuToolSettings>(() => defaultToolSettings());
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | undefined>(undefined);
 
@@ -165,7 +171,9 @@ function CreateWaifuModal({
       const created = await api.createWaifu({
         name: name.trim(),
         displayName: displayName.trim(),
-        id: slugify(name)
+        id: slugify(name),
+        availability,
+        tools
       });
       onCreated(created);
     } catch (e) {
@@ -180,6 +188,7 @@ function CreateWaifuModal({
       open
       onClose={() => !busy && onClose()}
       title="Create waifu"
+      wide
       footer={
         <>
           <button className="btn" onClick={onClose} disabled={busy}>Cancel</button>
@@ -209,6 +218,8 @@ function CreateWaifuModal({
           placeholder="Aria"
         />
       </div>
+      <ScheduleEditor value={availability} onChange={setAvailability} />
+      <ToolSettingsEditor value={tools} onChange={setTools} />
       {err && <Notice tone="err">{err}</Notice>}
     </Modal>
   );
@@ -318,7 +329,9 @@ function WaifuEditor({
       botId: draft.botId,
       contextWindow: draft.contextWindow,
       generation: draft.generation,
-      reasoning: draft.reasoning
+      reasoning: draft.reasoning,
+      availability: draft.availability,
+      tools: draft.tools
     };
     const updated = await api.updateWaifu(draft.id, body);
     setWaifu(updated);
@@ -605,6 +618,16 @@ function WaifuEditor({
             </span>
           )}
 
+          <ScheduleEditor
+            value={waifu.availability}
+            onChange={(availability) => set({ availability })}
+          />
+
+          <ToolSettingsEditor
+            value={waifu.tools}
+            onChange={(tools) => set({ tools })}
+          />
+
           {botState.error && <Notice tone="err">{botState.error.message}</Notice>}
           {botMessage && <Notice tone="ok">{botMessage}</Notice>}
 
@@ -727,6 +750,221 @@ function WaifuEditor({
       )}
     </Modal>
   );
+}
+
+function ScheduleEditor({
+  value,
+  onChange
+}: {
+  value: WaifuAvailability;
+  onChange: (next: WaifuAvailability) => void;
+}) {
+  const overlapping = busyOverlapIndexes(value.busy);
+  const setSleep = (patch: Partial<WaifuAvailability["sleep"]>) => {
+    onChange({ ...value, sleep: { ...value.sleep, ...patch } });
+  };
+  const setBusy = (index: number, patch: Partial<WaifuBusyInterval>) => {
+    onChange({
+      ...value,
+      busy: value.busy.map((interval, i) => (i === index ? { ...interval, ...patch } : interval))
+    });
+  };
+  const addBusy = () => {
+    onChange({
+      ...value,
+      busy: [...value.busy, { start: "09:00", end: "10:00", reason: "busy" }]
+    });
+  };
+  const removeBusy = (index: number) => {
+    onChange({ ...value, busy: value.busy.filter((_interval, i) => i !== index) });
+  };
+
+  return (
+    <section className="section" style={{ marginTop: 16 }}>
+      <div className="section-header">
+        <h3 className="section-title">
+          <Clock className="icon" style={{ verticalAlign: "-2px" }} /> Availability
+        </h3>
+        <span className="section-description">Daily local-time context for orchestrator decisions.</span>
+      </div>
+      <div className="grid grid-3">
+        <div className="field">
+          <label className="field-label">Sleep window</label>
+          <Toggle
+            checked={value.sleep.enabled}
+            onChange={(enabled) => setSleep({ enabled })}
+            label={value.sleep.enabled ? "Enabled" : "Disabled"}
+          />
+          <span className="field-hint">Soft context only; this never blocks replies.</span>
+        </div>
+        <div className="field">
+          <label className="field-label">Sleep start</label>
+          <input
+            className="input"
+            type="time"
+            value={value.sleep.start}
+            disabled={!value.sleep.enabled}
+            onChange={(e) => setSleep({ start: e.target.value })}
+          />
+        </div>
+        <div className="field">
+          <label className="field-label">Sleep end</label>
+          <input
+            className="input"
+            type="time"
+            value={value.sleep.end}
+            disabled={!value.sleep.enabled}
+            onChange={(e) => setSleep({ end: e.target.value })}
+          />
+        </div>
+      </div>
+
+      <div className="field" style={{ marginTop: 12 }}>
+        <div className="row" style={{ justifyContent: "space-between" }}>
+          <label className="field-label">Busy intervals</label>
+          <button className="btn sm" type="button" onClick={addBusy}>
+            <Plus className="icon" /> Add busy time
+          </button>
+        </div>
+        {value.busy.length === 0 && (
+          <span className="field-hint">No busy intervals configured.</span>
+        )}
+        {value.busy.map((interval, index) => (
+          <div className="grid grid-4" key={index} style={{ alignItems: "end" }}>
+            <div className="field">
+              <label className="field-label">Start</label>
+              <input
+                className="input"
+                type="time"
+                value={interval.start}
+                onChange={(e) => setBusy(index, { start: e.target.value })}
+              />
+            </div>
+            <div className="field">
+              <label className="field-label">End</label>
+              <input
+                className="input"
+                type="time"
+                value={interval.end}
+                onChange={(e) => setBusy(index, { end: e.target.value })}
+              />
+            </div>
+            <div className="field">
+              <label className="field-label">Reason</label>
+              <input
+                className="input"
+                value={interval.reason}
+                onChange={(e) => setBusy(index, { reason: e.target.value })}
+                placeholder="class, work, commute..."
+              />
+              {overlapping.has(index) && (
+                <span className="field-hint" style={{ color: "var(--warn)" }}>
+                  Busy intervals cannot overlap.
+                </span>
+              )}
+            </div>
+            <div className="field">
+              <label className="field-label">Remove</label>
+              <button
+                className="btn danger"
+                type="button"
+                onClick={() => removeBusy(index)}
+                aria-label="Remove busy interval"
+                title="Remove busy interval"
+              >
+                <Trash2 className="icon" />
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function ToolSettingsEditor({
+  value,
+  onChange
+}: {
+  value: WaifuToolSettings;
+  onChange: (next: WaifuToolSettings) => void;
+}) {
+  return (
+    <section className="section">
+      <div className="section-header">
+        <h3 className="section-title">Waifu tools</h3>
+        <span className="section-description">Optional handoff controls for this waifu model.</span>
+      </div>
+      <div className="grid grid-2">
+        <div className="field">
+          <Toggle
+            checked={value.toolUse}
+            onChange={(toolUse) => onChange({ ...value, toolUse })}
+            label="<tool_use> instructions"
+          />
+          <span className="field-hint">Adds tool instructions at the bottom of the waifu behavior block.</span>
+        </div>
+        <div className="field">
+          <Toggle
+            checked={value.pickNextWaifu}
+            onChange={(pickNextWaifu) => onChange({ ...value, pickNextWaifu })}
+            label="PickNextWaifu tool"
+          />
+          <span className="field-hint">Lets this waifu choose one next waifu before orchestration resumes.</span>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function defaultAvailability(): WaifuAvailability {
+  return {
+    sleep: {
+      enabled: false,
+      start: "23:00",
+      end: "07:00"
+    },
+    busy: []
+  };
+}
+
+function defaultToolSettings(): WaifuToolSettings {
+  return {
+    toolUse: true,
+    pickNextWaifu: true
+  };
+}
+
+function busyOverlapIndexes(intervals: WaifuBusyInterval[]): Set<number> {
+  const indexes = new Set<number>();
+  for (let i = 0; i < intervals.length; i += 1) {
+    for (let j = i + 1; j < intervals.length; j += 1) {
+      if (dailyIntervalsOverlap(intervals[i], intervals[j])) {
+        indexes.add(i);
+        indexes.add(j);
+      }
+    }
+  }
+  return indexes;
+}
+
+function dailyIntervalsOverlap(a: WaifuBusyInterval, b: WaifuBusyInterval): boolean {
+  return dailyIntervalRanges(a).some(([aStart, aEnd]) =>
+    dailyIntervalRanges(b).some(([bStart, bEnd]) => Math.max(aStart, bStart) < Math.min(aEnd, bEnd))
+  );
+}
+
+function dailyIntervalRanges(interval: { start: string; end: string }): Array<[number, number]> {
+  const start = timeInputMinutes(interval.start);
+  const end = timeInputMinutes(interval.end);
+  if (start === end) return [];
+  if (start < end) return [[start, end]];
+  return [[start, 24 * 60], [0, end]];
+}
+
+function timeInputMinutes(value: string): number {
+  const [hours = "0", minutes = "0"] = value.split(":");
+  return Number(hours) * 60 + Number(minutes);
 }
 
 function AssetUpload({

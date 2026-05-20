@@ -53,6 +53,7 @@ export type WaifuGenerationRequest = ProviderRequest & {
   sceneDirection?: string;
   replyStyle?: ReplyStyle;
   currentWaifuAuthorIds?: string[];
+  pickNextWaifuToolEnabled?: boolean;
 };
 
 export type StageManagerRequest = ProviderRequest & {
@@ -61,6 +62,7 @@ export type StageManagerRequest = ProviderRequest & {
 
 export type WaifuGenerationResult = {
   content: string;
+  pickedNextWaifuId?: string;
   usage?: Record<string, number>;
 };
 

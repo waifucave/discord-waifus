@@ -171,6 +171,28 @@ export type OrchestratorHistoryFile = Revisioned & {
   decisions: OrchestratorDecisionHistoryEntry[];
 };
 
+export type WaifuSleepSchedule = {
+  enabled: boolean;
+  start: string;
+  end: string;
+};
+
+export type WaifuBusyInterval = {
+  start: string;
+  end: string;
+  reason: string;
+};
+
+export type WaifuAvailability = {
+  sleep: WaifuSleepSchedule;
+  busy: WaifuBusyInterval[];
+};
+
+export type WaifuToolSettings = {
+  toolUse: boolean;
+  pickNextWaifu: boolean;
+};
+
 export type StageManagerEditHistoryEntry = {
   id: string;
   guildId?: string;
@@ -216,6 +238,8 @@ export type WaifuConfig = Revisioned & {
     maxOutputTokens?: number;
   };
   reasoning: ReasoningConfig;
+  availability: WaifuAvailability;
+  tools: WaifuToolSettings;
 };
 
 export type WaifusResponse = { waifus: WaifuConfig[] };
@@ -231,6 +255,8 @@ export type CreateWaifuBody = {
   botId?: string;
   contextWindow?: number;
   generation?: WaifuConfig["generation"];
+  availability?: WaifuAvailability;
+  tools?: WaifuToolSettings;
 };
 
 export type UpdateWaifuBody = Partial<Omit<WaifuConfig, "schemaVersion" | "updatedAt">> & {

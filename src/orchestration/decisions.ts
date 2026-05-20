@@ -10,6 +10,7 @@ export const OrchestratorActionSchema = z.enum(ORCHESTRATOR_ACTION_VALUES);
 
 export const RETRIGGER_MIN_SECONDS = 100;
 export const RETRIGGER_MAX_SECONDS = 7200;
+export const MAX_WAIFU_DELAY_SECONDS = 30;
 
 export const RespondingWaifuSchema = z.object({
   waifuId: z.string().min(1),

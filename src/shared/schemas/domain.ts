@@ -16,6 +16,112 @@ export const ReasoningConfigSchema = z
   .default({});
 export type ReasoningConfig = z.infer<typeof ReasoningConfigSchema>;
 
+export const TimeOfDaySchema = z
+  .string()
+  .regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Use 24-hour HH:mm time.");
+export type TimeOfDay = z.infer<typeof TimeOfDaySchema>;
+
+type DailyInterval = {
+  start: string;
+  end: string;
+};
+
+function timeOfDayMinutes(value: string): number {
+  const [hours = "0", minutes = "0"] = value.split(":");
+  return Number(hours) * 60 + Number(minutes);
+}
+
+function dailyIntervalRanges(interval: DailyInterval): Array<[number, number]> {
+  const start = timeOfDayMinutes(interval.start);
+  const end = timeOfDayMinutes(interval.end);
+  if (start < end) return [[start, end]];
+  return [[start, 24 * 60], [0, end]];
+}
+
+function dailyIntervalsOverlap(a: DailyInterval, b: DailyInterval): boolean {
+  return dailyIntervalRanges(a).some(([aStart, aEnd]) =>
+    dailyIntervalRanges(b).some(([bStart, bEnd]) => Math.max(aStart, bStart) < Math.min(aEnd, bEnd))
+  );
+}
+
+export const WaifuSleepScheduleSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    start: TimeOfDaySchema.default("23:00"),
+    end: TimeOfDaySchema.default("07:00")
+  })
+  .superRefine((value, ctx) => {
+    if (value.enabled && value.start === value.end) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["end"],
+        message: "Sleep end time must differ from start time."
+      });
+    }
+  })
+  .default({
+    enabled: false,
+    start: "23:00",
+    end: "07:00"
+  });
+export type WaifuSleepSchedule = z.infer<typeof WaifuSleepScheduleSchema>;
+
+export const WaifuBusyIntervalSchema = z
+  .object({
+    start: TimeOfDaySchema,
+    end: TimeOfDaySchema,
+    reason: z.string().min(1)
+  })
+  .superRefine((value, ctx) => {
+    if (value.start === value.end) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["end"],
+        message: "Busy end time must differ from start time."
+      });
+    }
+  });
+export type WaifuBusyInterval = z.infer<typeof WaifuBusyIntervalSchema>;
+
+export const WaifuAvailabilitySchema = z
+  .object({
+    sleep: WaifuSleepScheduleSchema,
+    busy: z.array(WaifuBusyIntervalSchema).default([])
+  })
+  .superRefine((value, ctx) => {
+    for (let i = 0; i < value.busy.length; i += 1) {
+      for (let j = i + 1; j < value.busy.length; j += 1) {
+        if (dailyIntervalsOverlap(value.busy[i], value.busy[j])) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["busy", j],
+            message: "Busy intervals cannot overlap."
+          });
+        }
+      }
+    }
+  })
+  .default({
+    sleep: {
+      enabled: false,
+      start: "23:00",
+      end: "07:00"
+    },
+    busy: []
+  });
+export type WaifuAvailability = z.infer<typeof WaifuAvailabilitySchema>;
+
+export const WaifuToolSettingsSchema = z
+  .object({
+    toolUse: z.boolean().default(true),
+    pickNextWaifu: z.boolean().default(true)
+  })
+  .default({
+    toolUse: true,
+    pickNextWaifu: true
+  });
+export type WaifuToolSettings = z.infer<typeof WaifuToolSettingsSchema>;
+
 export const ProviderCredentialsSchema = z.object({
   providerId: ProviderIdSchema,
   apiKey: z.string().min(1),
@@ -89,7 +195,9 @@ export const WaifuConfigSchema = RevisionedRecordSchema.extend({
       maxOutputTokens: z.number().int().positive().optional()
     })
     .default({}),
-  reasoning: ReasoningConfigSchema
+  reasoning: ReasoningConfigSchema,
+  availability: WaifuAvailabilitySchema,
+  tools: WaifuToolSettingsSchema
 });
 export type WaifuConfig = z.infer<typeof WaifuConfigSchema>;
 
