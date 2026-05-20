@@ -169,6 +169,8 @@ class FakePipeline implements ModelPipeline {
 
   async generateWaifu(request: WaifuGenerationRequest) {
     expect(request.systemPrompt).toContain("You are Yuki");
+    expect(request.systemPrompt).toContain("Default to one short sentence");
+    expect(request.systemPrompt).toContain("Do not write three or more sentences");
     expect(request.systemPrompt).toMatch(
       /<\/yuki_behavior>\n<available_server_emojis>[\s\S]*<\/available_server_emojis>\n<current_time>\n\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z \(UTC\)\n<\/current_time>/
     );
@@ -184,6 +186,7 @@ class FakePipeline implements ModelPipeline {
     );
     expect(request.systemPrompt).toContain("kind");
     expect(request.systemPrompt).toContain("do not default to no_reply");
+    expect(request.systemPrompt).toContain("Prefer a two-waifu chain");
     expect(request.systemPrompt).toContain("0 to 30");
     expect(request.systemPrompt).not.toContain("<current_time>");
     expect(request.availableWaifuIds).toEqual(["yuki"]);
@@ -369,6 +372,82 @@ describe("RuntimeOrchestrator", () => {
       { content: "mika should take this", senderBotId: "yuki-bot" },
       { content: "got it", senderBotId: "mika-bot" }
     ]);
+  });
+
+  it("logs invalid PickNextWaifu calls, sends the normal message, and returns to orchestration", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    const warnings: Array<{ message: string; meta?: Record<string, unknown> }> = [];
+
+    await seedRuntimeConfig(storage);
+
+    class InvalidPickPipeline implements ModelPipeline {
+      events: string[] = [];
+      decisions: OrchestratorDecision[] = [
+        {
+          action: "reply",
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal" }],
+          reasoning: "Yuki starts."
+        },
+        {
+          action: "no_reply",
+          respondingWaifus: [],
+          retriggerAfterSeconds: 180,
+          reasoning: "Back to orchestrator."
+        }
+      ];
+
+      async generateWaifu() {
+        this.events.push("waifu:yuki");
+        return {
+          content: "still a normal reply",
+          rejectedPickNextWaifu: {
+            reason: "unavailable_waifu" as const,
+            waifuId: "yuki"
+          }
+        };
+      }
+
+      async decideOrchestrator() {
+        this.events.push("orchestrator");
+        const decision = this.decisions.shift();
+        if (!decision) throw new Error("No fake decision left.");
+        return decision;
+      }
+    }
+
+    const pipeline = new InvalidPickPipeline();
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 2,
+      createPipeline: () => pipeline,
+      logger: {
+        debug: () => undefined,
+        info: () => undefined,
+        warn: (message, meta) => warnings.push({ message, meta }),
+        error: () => undefined
+      }
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    expect(pipeline.events).toEqual(["orchestrator", "waifu:yuki", "orchestrator"]);
+    expect(discord.sent.map((entry) => entry.content)).toEqual(["still a normal reply"]);
+    expect(warnings).toContainEqual({
+      message: "Ignoring invalid PickNextWaifu call from waifu",
+      meta: expect.objectContaining({
+        waifuId: "yuki",
+        attemptedWaifuId: "yuki",
+        attemptedSelfPick: true,
+        reason: "unavailable_waifu"
+      })
+    });
   });
 
   it("caps orchestrator waifu delay seconds at 30 before waiting and recording history", async () => {

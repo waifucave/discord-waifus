@@ -1185,7 +1185,7 @@ function extractOpenAiChatWaifuResult(json: unknown, availableWaifuIds?: string[
   const toolCall = message?.tool_calls?.find((call) => call.function?.name === PICK_NEXT_WAIFU_TOOL_NAME);
   return {
     content: message?.content ?? "",
-    pickedNextWaifuId: parsePickedNextWaifuId(toolCall?.function?.arguments, availableWaifuIds)
+    ...parsePickedNextWaifu(toolCall?.function?.arguments, availableWaifuIds)
   };
 }
 
@@ -1240,7 +1240,7 @@ function extractOpenAiResponsesWaifuResult(json: unknown, availableWaifuIds?: st
   const call = parsed.output?.find((item) => item.type === "function_call" && item.name === PICK_NEXT_WAIFU_TOOL_NAME);
   return {
     content: extractOpenAiResponsesText(parsed),
-    pickedNextWaifuId: parsePickedNextWaifuId(call?.arguments, availableWaifuIds)
+    ...parsePickedNextWaifu(call?.arguments, availableWaifuIds)
   };
 }
 
@@ -1279,7 +1279,7 @@ function extractAnthropicWaifuResult(json: unknown, availableWaifuIds?: string[]
   const toolUse = parsed.content?.find((part) => part.type === "tool_use" && part.name === PICK_NEXT_WAIFU_TOOL_NAME);
   return {
     content: extractAnthropicText(parsed),
-    pickedNextWaifuId: parsePickedNextWaifuId(toolUse?.input, availableWaifuIds)
+    ...parsePickedNextWaifu(toolUse?.input, availableWaifuIds)
   };
 }
 
@@ -1300,8 +1300,11 @@ function extractAnthropicToolArguments(json: unknown, toolName: string): string 
   return extractAnthropicText(parsed);
 }
 
-function parsePickedNextWaifuId(argumentsValue: unknown, availableWaifuIds?: string[]): string | undefined {
-  if (argumentsValue === undefined || argumentsValue === null) return undefined;
+function parsePickedNextWaifu(
+  argumentsValue: unknown,
+  availableWaifuIds?: string[]
+): Pick<WaifuGenerationResult, "pickedNextWaifuId" | "rejectedPickNextWaifu"> {
+  if (argumentsValue === undefined || argumentsValue === null) return {};
   try {
     const parsed =
       typeof argumentsValue === "string"
@@ -1310,11 +1313,20 @@ function parsePickedNextWaifuId(argumentsValue: unknown, availableWaifuIds?: str
     const call = PickNextWaifuCallSchema.parse(parsed);
     const allowed = new Set(availableWaifuIds ?? []);
     if (allowed.size > 0 && !allowed.has(call.waifuId)) {
-      return undefined;
+      return {
+        rejectedPickNextWaifu: {
+          reason: "unavailable_waifu",
+          waifuId: call.waifuId
+        }
+      };
     }
-    return call.waifuId;
+    return { pickedNextWaifuId: call.waifuId };
   } catch {
-    return undefined;
+    return {
+      rejectedPickNextWaifu: {
+        reason: "malformed"
+      }
+    };
   }
 }
 

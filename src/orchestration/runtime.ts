@@ -556,7 +556,16 @@ export class RuntimeOrchestrator {
             allowedUserMentionIds: activeAuthorIds,
             signal
           });
-          if (result.pickedNextWaifuId && directHandoffCount < this.maxAutomaticTurns) {
+          if (result.rejectedPickNextWaifu) {
+            this.options.logger.warn("Ignoring invalid PickNextWaifu call from waifu", {
+              guildId,
+              channelId,
+              waifuId: waifu.id,
+              attemptedWaifuId: result.rejectedPickNextWaifu.waifuId,
+              attemptedSelfPick: result.rejectedPickNextWaifu.waifuId === waifu.id,
+              reason: result.rejectedPickNextWaifu.reason
+            });
+          } else if (result.pickedNextWaifuId && directHandoffCount < this.maxAutomaticTurns) {
             directHandoffCount += 1;
             this.options.logger.info("Waifu picked next waifu; skipping orchestrator for direct handoff", {
               guildId,
@@ -1150,9 +1159,9 @@ export class RuntimeOrchestrator {
       "You are chatting in a live Discord text channel — this is a real chat room with real users, not a roleplay scene, story, or chat fiction.",
       "Write one Discord-safe message per turn.",
       "Do not output physical actions, roleplay narration, or stage directions. No asterisks-wrapped actions like *smiles* or *waves*, no parenthetical stage notes like (hugs them), no bracketed cues like [walks over]. Only write what you would actually type into a chat box.",
-      "Keep replies short. One or two sentences is the norm; match the casual pacing of a Discord conversation rather than writing paragraphs.",
-      "Avoid long sentences and long replies.",
-      "If a reply would otherwise become long, break it into shorter, standalone sentences instead of writing one run-on sentence. Each sentence in your reply is delivered as a separate Discord message, so short sentences read as a natural back-and-forth instead of a wall of text.",
+      "Default to one short sentence. Use two short sentences only when the second adds a new beat. Do not write three or more sentences unless a scene_direction explicitly asks for it.",
+      "Avoid long sentences, stacked clauses, and multi-line replies. Do not explain every angle; land one conversational beat and stop.",
+      "Each sentence in your reply may be delivered as a separate Discord message, so fewer sentences is better. A sharp one-liner is usually stronger than a mini speech.",
       "Reply with only what you would actually type — no narration, no meta commentary, no describing yourself in the third person.",
       "To ping a user, write <@sender> — where `sender` is copied verbatim from the [sender: ...] tag on one of their messages. Example: a message tagged [sender: Kevin] is pinged as <@Kevin>. Never use raw Discord IDs.",
       "Use only listed server emojis."
@@ -1213,6 +1222,7 @@ export class RuntimeOrchestrator {
       "- repleyToMessageIndex should usually be null. Set it only when a waifu is reviving or anchoring to a specific older message that is no longer the latest visible message; never to the immediately previous message.",
       "- sceneDirection is the only private channel between you and that waifu. If you want her to do or say something specific, you MUST put it there. She does not see your reasoning. Use null when no special steering is needed.",
       "- After a single waifu message, do not default to no_reply just because a waifu already spoke. Actively consider whether another waifu should react, interrupt, tease, disagree, answer a missed user, or carry the beat one step further.",
+      "- Prefer a two-waifu chain over a one-waifu reply when the second waifu has a distinct reaction that would make the room feel alive. Give the second waifu a small delaySeconds value so it feels like a timed follow-up, not simultaneous spam.",
       "- Consecutive waifu replies in a single decision are allowed when they add a fresh beat: escalation, interruption, joke, reaction, disagreement, emotional shift, or a new topic. Avoid only empty echoing or repetitive back-and-forth."
     ].join("\n");
 
@@ -1229,7 +1239,7 @@ export class RuntimeOrchestrator {
       "Human messages automatically wake the orchestrator, so retriggerAfterSeconds is not a generic monitoring tick — it is a deliberate, planned pause to give the room a chance to react. If a fresh chat message arrives before the timer fires, the timer is replaced by the new orchestrator pass.",
       "",
       "Rough intent ranges:",
-      "- 100s–300s: moments that feel alive and may benefit from a natural waifu follow-up shortly after, if nobody responds first.",
+      "- 100s–300s: moments that feel alive but do not have an obvious second waifu reaction. If there is an obvious second reaction, prefer respondingWaifus with two waifus and a short delay instead of no_reply.",
       "- 600s–1800s: cooling rooms where a waifu might revive the chat soon, but not immediately.",
       "- 3600s–7200s: quiet rooms where you are mostly waiting for humans and the next bot-led beat is a long shot.",
       "",
@@ -1263,6 +1273,7 @@ export class RuntimeOrchestrator {
       "- action=\"reply\" => respondingWaifus is non-empty; retriggerAfterSeconds is null.",
       "- action=\"no_reply\" => respondingWaifus is empty; retriggerAfterSeconds is a number in [100, 7200].",
       "- Order matters in respondingWaifus: the first waifu speaks first, then the next, and so on. Each waifu's delay starts only after the previous waifu has finished. Any new chat message interrupts the rest of the chain.",
+      "- When choosing two waifus, give each entry its own delaySeconds. Use 0 for the first when she should start immediately, then a small delay like 3-12 seconds for the second when it should feel like a natural follow-up.",
       "- All five fields on each respondingWaifus entry are required; set repleyToMessageIndex and sceneDirection to null when not needed."
     ].join("\n");
 
@@ -1673,6 +1684,8 @@ const DEFAULT_ORCHESTRATOR_PROMPT = [
   "",
   "When action=\"reply\", list the waifus in respondingWaifus in the order they should speak. Order matters: the next waifu only sees the chat after the previous one has finished. Any new chat message between two replies cancels the rest of the chain. Plan the chain you'd commit to if nobody interrupts.",
   "",
+  "When the beat can support it, prefer a planned two-waifu chain over one waifu followed by no_reply. The second waifu should have a distinct angle — reaction, interruption, tease, disagreement, missed-user acknowledgment, or escalation — and a small delaySeconds value so it feels like a natural follow-up.",
+  "",
   "When action=\"no_reply\", set retriggerAfterSeconds to the number of seconds you want to wait before re-evaluating the room. The orchestrator also wakes up automatically on any new chat message, so retriggerAfterSeconds is a planned pause, not a polling tick. A chain of one no_reply means \"don't speak now; re-check after the pause.\"",
   "",
   "After a single waifu message, do not treat no_reply as the automatic cleanup move. Ask whether the room would feel more alive if another waifu reacts, cuts in, disagrees, lightly teases, answers a missed user, or follows the beat one step further. Choose no_reply when the beat has genuinely landed, the next bot message would feel repetitive, or silence creates better pacing.",
@@ -1728,18 +1741,19 @@ function buildLegacyOrchestratorPrompt(server: ServerConfig, availableWaifus: Wa
     "4. Always pay special attention to the latest 10 messages. They are the strongest signal for what the room is currently doing, who may have been overlooked, and whether a loop is starting to form.",
     "5. Sleep time, busy time, and consecutive-message heuristics are soft preferences. Break them whenever doing so would clearly improve conversational flow, realism, or enjoyment.",
     "6. The same waifu may speak again, a different waifu may jump in, or multiple waifus may chain if it feels right.",
-    "7. After a single waifu message, do not default to no_reply. Consider whether another waifu should react, interrupt, disagree, tease, answer a missed user, or carry the beat one step further.",
-    "8. Avoid repetitive follow-ups that merely restate the same beat. Continue when the next message adds something new.",
-    "9. If a recent user message or direct ping went unnoticed while the room moved on, prefer steering someone to acknowledge it so the chat stays socially inclusive unless silence is clearly more natural.",
-    "10. \"no_reply\" is valid. If you choose it, set retriggerAfterSeconds to a natural delay between 100 and 7200 seconds. respondingWaifus must be empty.",
-    "11. Use timestamps and pacing. Slow gaps matter.",
-    `12. delaySeconds should reflect realistic reading and typing time from 0 to ${MAX_WAIFU_DELAY_SECONDS}. 0 means start immediately.`,
-    "13. replyStyle is a soft hint: \"normal\" by default; \"short\" for one terse line; \"long\" for a slightly fuller reply; \"sleepy\" for a low-energy voice. Use \"normal\" when in doubt.",
-    "14. repleyToMessageIndex is optional. Leave it null by default.",
-    "15. Most waifu messages should be normal messages, not Discord replies.",
-    "16. Do not set repleyToMessageIndex to the immediately previous message. If a waifu is simply responding to the latest beat, send a normal message instead.",
-    "17. If you are reviving, acknowledging, or directly answering an older user message or direct ping that went overlooked, you should usually set repleyToMessageIndex to that message's #N context index so the response stays anchored to the right person and beat.",
-    "18. Use repleyToMessageIndex only when targeting a specific older message materially improves clarity, isolates a side thread, answers an earlier question, or creates a specific social effect. Copy the #N index from the chat history.",
+    "7. Prefer a planned two-waifu chain when the second waifu has a distinct reaction and can follow after a small delaySeconds value.",
+    "8. After a single waifu message, do not default to no_reply. Consider whether another waifu should react, interrupt, disagree, tease, answer a missed user, or carry the beat one step further.",
+    "9. Avoid repetitive follow-ups that merely restate the same beat. Continue when the next message adds something new.",
+    "10. If a recent user message or direct ping went unnoticed while the room moved on, prefer steering someone to acknowledge it so the chat stays socially inclusive unless silence is clearly more natural.",
+    "11. \"no_reply\" is valid. If you choose it, set retriggerAfterSeconds to a natural delay between 100 and 7200 seconds. respondingWaifus must be empty.",
+    "12. Use timestamps and pacing. Slow gaps matter.",
+    `13. delaySeconds should reflect realistic reading and typing time from 0 to ${MAX_WAIFU_DELAY_SECONDS}. 0 means start immediately.`,
+    "14. replyStyle is a soft hint: \"normal\" by default; \"short\" for one terse line; \"long\" for a slightly fuller reply; \"sleepy\" for a low-energy voice. Use \"normal\" when in doubt.",
+    "15. repleyToMessageIndex is optional. Leave it null by default.",
+    "16. Most waifu messages should be normal messages, not Discord replies.",
+    "17. Do not set repleyToMessageIndex to the immediately previous message. If a waifu is simply responding to the latest beat, send a normal message instead.",
+    "18. If you are reviving, acknowledging, or directly answering an older user message or direct ping that went overlooked, you should usually set repleyToMessageIndex to that message's #N context index so the response stays anchored to the right person and beat.",
+    "19. Use repleyToMessageIndex only when targeting a specific older message materially improves clarity, isolates a side thread, answers an earlier question, or creates a specific social effect. Copy the #N index from the chat history.",
     "",
     "## sceneDirection",
     "sceneDirection is an invisible director note for that waifu's next message only.",

@@ -63,6 +63,10 @@ export type StageManagerRequest = ProviderRequest & {
 export type WaifuGenerationResult = {
   content: string;
   pickedNextWaifuId?: string;
+  rejectedPickNextWaifu?: {
+    reason: "malformed" | "unavailable_waifu";
+    waifuId?: string;
+  };
   usage?: Record<string, number>;
 };
 

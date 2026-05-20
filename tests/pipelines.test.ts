@@ -402,7 +402,9 @@ describe("provider-native decision tools", () => {
 
     expect(result).toEqual({
       content: "normal reply still sends",
-      pickedNextWaifuId: undefined
+      rejectedPickNextWaifu: {
+        reason: "malformed"
+      }
     });
   });
 
@@ -436,7 +438,10 @@ describe("provider-native decision tools", () => {
 
     expect(result).toEqual({
       content: "",
-      pickedNextWaifuId: undefined
+      rejectedPickNextWaifu: {
+        reason: "unavailable_waifu",
+        waifuId: "not-enabled"
+      }
     });
   });
 
