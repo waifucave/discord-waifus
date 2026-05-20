@@ -550,7 +550,15 @@ function formatNoReplyMarker(marker: OrchestratorNoReplyMarker): string {
 }
 
 function currentTimeBlock(): string {
-  return `<current_time>\n${formatTimestamp(new Date())} (UTC)\n</current_time>`;
+  return `<current_time>\n${formatPromptCurrentHour(new Date())}\n</current_time>`;
+}
+
+function formatPromptCurrentHour(date: Date): string {
+  return [
+    String(date.getFullYear()).padStart(4, "0"),
+    String(date.getMonth() + 1).padStart(2, "0"),
+    String(date.getDate()).padStart(2, "0")
+  ].join("-") + `T${String(date.getHours()).padStart(2, "0")}`;
 }
 
 function contextToNamedUserMessage(name: string, rendering: ContextRendering) {

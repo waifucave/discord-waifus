@@ -169,10 +169,26 @@ class FakePipeline implements ModelPipeline {
 
   async generateWaifu(request: WaifuGenerationRequest) {
     expect(request.systemPrompt).toContain("You are Yuki");
-    expect(request.systemPrompt).toContain("Default to one short sentence");
-    expect(request.systemPrompt).toContain("Do not write three or more sentences");
     expect(request.systemPrompt).toMatch(
-      /<\/yuki_behavior>\n<available_server_emojis>[\s\S]*<\/available_server_emojis>\n<current_time>\n\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z \(UTC\)\n<\/current_time>/
+      /<behavior>\n<personality_instructions>[\s\S]*You are Yuki[\s\S]*kind[\s\S]*<\/personality_instructions>\n<your_schedule>[\s\S]*configured routine[\s\S]*changes only when your schedule is edited[\s\S]*Sleep: 23:00-07:00 daily[\s\S]*09:00-10:00: school focus block[\s\S]*<\/your_schedule>\n<environment_instructions>[\s\S]*<\/environment_instructions>\n<hard_rules>[\s\S]*Default to one short sentence[\s\S]*Do not write three or more sentences[\s\S]*Do not ping a user who is already active[\s\S]*Use only listed server emojis[\s\S]*<\/hard_rules>/
+    );
+    expect(request.systemPrompt).not.toContain("<yuki_behavior>");
+    expect(request.systemPrompt).not.toContain("</yuki_behavior>");
+    expect(request.systemPrompt).not.toMatch(/<your_schedule>[\s\S]*(Current local schedule time|currently busy|currently inside sleep time)[\s\S]*<\/your_schedule>/);
+    expect(request.systemPrompt).not.toMatch(
+      /<environment_instructions>[\s\S]*Default to one short sentence[\s\S]*<\/environment_instructions>/
+    );
+    expect(request.systemPrompt).not.toMatch(
+      /<environment_instructions>[\s\S]*Use only listed server emojis[\s\S]*<\/environment_instructions>/
+    );
+    if (request.systemPrompt.includes("<memories>")) {
+      expect(request.systemPrompt).toMatch(
+        /<\/behavior>\n<memories>\n- Yuki remembers Kevin likes tea\.\n<\/memories>\n<server_emojis>/
+      );
+      expect(request.systemPrompt).not.toMatch(/<behavior>[\s\S]*<memories>[\s\S]*<\/behavior>/);
+    }
+    expect(request.systemPrompt).toMatch(
+      /<\/behavior>(?:\n<memories>[\s\S]*<\/memories>)?\n<server_emojis>[\s\S]*<\/server_emojis>\n<current_time>\n\d{4}-\d{2}-\d{2}T\d{2}\n<\/current_time>/
     );
     expect(request.sceneDirection).toBe("answer Kevin");
     return { content: "hello <@Kevin> <:cutecat:>" };
@@ -206,6 +222,29 @@ describe("RuntimeOrchestrator", () => {
     const pipeline = new FakePipeline();
 
     await seedRuntimeConfig(storage);
+    const now = new Date().toISOString();
+    await storage.writeJson(
+      "memories:global",
+      "user/memories.json",
+      MemoryStoreSchema,
+      MemoryStoreSchema.parse(
+        createEmptyRevisionedFile({
+          memories: [
+            {
+              id: "memory-1",
+              waifuId: "yuki",
+              scope: "global",
+              content: "Yuki remembers Kevin likes tea.",
+              importance: 3,
+              createdAt: now,
+              updatedAt: now,
+              sourceMessageIds: ["m1"],
+              status: "active"
+            }
+          ]
+        })
+      )
+    );
 
     const runtime = new RuntimeOrchestrator({
       sleep: async () => undefined,

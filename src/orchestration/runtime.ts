@@ -1140,51 +1140,58 @@ export class RuntimeOrchestrator {
       .filter((emoji) => emoji.available)
       .map(modelVisibleEmojiToken)
       .join(" ");
-    const behaviorTag = `${sanitizeTagName(waifu.name)}_behavior`;
     const hardRules = [
       "Each incoming message in this conversation arrives wrapped in inbound-only metadata tags so you can read context:",
       "a `[timestamp: ISO-8601 UTC]` prefix telling you when the message was sent, a `[sender: DisplayName]` prefix telling you who said it,",
       "and optionally `[reactions: ...]` and `[replying to: ...]` suffixes after the body.",
       "These tags are framing only — they are NOT part of what the speaker actually wrote, and they are NOT how Discord messages look.",
       "Your reply is the raw message body that will be sent verbatim to Discord. It MUST NOT contain any bracketed metadata tag (no `[timestamp: ...]`, no `[sender: ...]`, no `[reactions: ...]`, no `[replying to: ...]`, no `[index: ...]`, no `[scene_direction: ...]`, no other `[tag: value]` constructions).",
-      "It MUST NOT begin with your own display name followed by a colon, and MUST NOT quote or paraphrase any prior message's framing tags. Begin with the first word you are actually saying."
-    ].join(" ");
+      "It MUST NOT begin with your own display name followed by a colon, and MUST NOT quote or paraphrase any prior message's framing tags. Begin with the first word you are actually saying.",
+      "Default to one short sentence. Use two short sentences only when the second adds a new beat. Do not write three or more sentences unless a scene_direction explicitly asks for it.",
+      "Avoid long sentences, stacked clauses, and multi-line replies. Do not explain every angle; land one conversational beat and stop.",
+      "Each sentence in your reply may be delivered as a separate Discord message, so fewer sentences is better. A sharp one-liner is usually stronger than a mini speech.",
+      "Do not ping a user who is already active in the recent chat or who just spoke. Mention their display name in plain text instead. Only ping when you are reviving an older missed message, pulling back someone who has gone quiet, or a scene_direction explicitly asks for a ping.",
+      "Use only listed server emojis."
+    ].join("\n");
 
     const personaText = waifu.persona.trim();
     const personalityContent = personaText
       ? `You are ${waifu.displayName}. Stay in character.\n${personaText}`
       : `You are ${waifu.displayName}. Stay in character.`;
+    const scheduleContent = formatWaifuScheduleForPrompt(waifu);
 
     const environmentRules = [
       "You are chatting in a live Discord text channel — this is a real chat room with real users, not a roleplay scene, story, or chat fiction.",
       "Write one Discord-safe message per turn.",
       "Do not output physical actions, roleplay narration, or stage directions. No asterisks-wrapped actions like *smiles* or *waves*, no parenthetical stage notes like (hugs them), no bracketed cues like [walks over]. Only write what you would actually type into a chat box.",
-      "Default to one short sentence. Use two short sentences only when the second adds a new beat. Do not write three or more sentences unless a scene_direction explicitly asks for it.",
-      "Avoid long sentences, stacked clauses, and multi-line replies. Do not explain every angle; land one conversational beat and stop.",
-      "Each sentence in your reply may be delivered as a separate Discord message, so fewer sentences is better. A sharp one-liner is usually stronger than a mini speech.",
       "Reply with only what you would actually type — no narration, no meta commentary, no describing yourself in the third person.",
-      "To ping a user, write <@sender> — where `sender` is copied verbatim from the [sender: ...] tag on one of their messages. Example: a message tagged [sender: Kevin] is pinged as <@Kevin>. Never use raw Discord IDs.",
-      "Use only listed server emojis."
+      "To ping a user, write <@sender> — where `sender` is copied verbatim from the [sender: ...] tag on one of their messages. Example: a message tagged [sender: Kevin] is pinged as <@Kevin>. Never use raw Discord IDs."
     ].join("\n");
 
     const behaviorSections: string[] = [
-      `<hard_rules>\n${hardRules}\n</hard_rules>`,
       `<personality_instructions>\n${personalityContent}\n</personality_instructions>`,
-      `<environment_instructions>\n${environmentRules}\n</environment_instructions>`
+      `<your_schedule>\n${scheduleContent}\n</your_schedule>`,
+      `<environment_instructions>\n${environmentRules}\n</environment_instructions>`,
+      `<hard_rules>\n${hardRules}\n</hard_rules>`
     ];
-    if (memories) {
-      behaviorSections.push(`<memories>\n${memories}\n</memories>`);
-    }
     const toolUse = buildWaifuToolUseInstructions(waifu, availableWaifus);
     if (toolUse) {
       behaviorSections.push(`<tool_use>\n${toolUse}\n</tool_use>`);
     }
-    const behaviorBlock = `<${behaviorTag}>\n${behaviorSections.join("\n")}\n</${behaviorTag}>`;
+    const behaviorBlock = `<behavior>\n${behaviorSections.join("\n")}\n</behavior>`;
+    const memoryBlock = memories ? `<memories>\n${memories}\n</memories>` : null;
 
-    const currentTimeBlock = `<current_time>\n${formatTimestamp(new Date())} (UTC)\n</current_time>`;
-    const emojiBlock = `<available_server_emojis>\n${emojiList || "(none cached)"}\n</available_server_emojis>`;
+    const currentTimeBlock = `<current_time>\n${formatPromptCurrentHour(new Date())}\n</current_time>`;
+    const emojiBlock = `<server_emojis>\n${emojiList || "(none cached)"}\n</server_emojis>`;
 
-    return `${behaviorBlock}\n${emojiBlock}\n${currentTimeBlock}`;
+    return [
+      behaviorBlock,
+      memoryBlock,
+      emojiBlock,
+      currentTimeBlock
+    ]
+      .filter((section): section is string => Boolean(section))
+      .join("\n");
   }
 
   private buildOrchestratorSystemPrompt(
@@ -1204,7 +1211,7 @@ export class RuntimeOrchestrator {
             const displayName = waifu.displayName || waifu.name;
             const persona = waifu.persona.trim();
             const personaBlock = persona || "(no persona configured)";
-            const availability = formatWaifuAvailabilityForPrompt(waifu, scheduleNow);
+            const availability = formatWaifuAvailabilityForOrchestratorPrompt(waifu, scheduleNow);
             return `<${tagName}>\nID: ${waifu.id}\nDisplay name: ${displayName}\nPersona:\n${personaBlock}\nAvailability:\n${availability}\n</${tagName}>`;
           })
           .join("\n\n")
@@ -1522,7 +1529,31 @@ function buildWaifuToolUseInstructions(waifu: WaifuConfig, availableWaifus: Waif
   ].join("\n");
 }
 
-function formatWaifuAvailabilityForPrompt(waifu: WaifuConfig, now: Date): string {
+function formatWaifuScheduleForPrompt(waifu: WaifuConfig): string {
+  const availability = waifu.availability;
+  const lines = [
+    "- This is your configured routine. Treat it as background for your energy and timing, not as a live status readout.",
+    "- It changes only when your schedule is edited."
+  ];
+  if (availability.sleep.enabled) {
+    lines.push(
+      `- Sleep: ${availability.sleep.start}-${availability.sleep.end} daily. This is your usual downtime, not a hard rule; you can still answer if you were just active, directly addressed, or joining helps the room.`
+    );
+  } else {
+    lines.push("- Sleep: none configured.");
+  }
+  if (availability.busy.length > 0) {
+    lines.push("- Busy:");
+    for (const interval of availability.busy) {
+      lines.push(`  - ${interval.start}-${interval.end}: ${interval.reason}`);
+    }
+  } else {
+    lines.push("- Busy: none configured.");
+  }
+  return lines.join("\n");
+}
+
+function formatWaifuAvailabilityForOrchestratorPrompt(waifu: WaifuConfig, now: Date): string {
   const availability = waifu.availability;
   const currentMinutes = localTimeOfDayMinutes(now);
   const lines = [`- Current local schedule time: ${formatLocalTimeOfDay(now)}.`];
@@ -1571,8 +1602,12 @@ function indentLines(value: string, indent: string): string {
   return value.split("\n").map((line) => `${indent}${line}`).join("\n");
 }
 
-function sanitizeTagName(value: string): string {
-  return value.trim().toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "") || "waifu";
+function formatPromptCurrentHour(date: Date): string {
+  return [
+    String(date.getFullYear()).padStart(4, "0"),
+    String(date.getMonth() + 1).padStart(2, "0"),
+    String(date.getDate()).padStart(2, "0")
+  ].join("-") + `T${String(date.getHours()).padStart(2, "0")}`;
 }
 
 function runKey(guildId: string): string {
@@ -1712,13 +1747,13 @@ function buildLegacyOrchestratorPrompt(server: ServerConfig, availableWaifus: Wa
         .map((waifu) => {
           const displayName = waifu.displayName || waifu.name || waifu.id;
           const persona = waifu.persona.trim() || "(no persona configured)";
-          const availability = formatWaifuAvailabilityForPrompt(waifu, scheduleNow);
+          const availability = formatWaifuAvailabilityForOrchestratorPrompt(waifu, scheduleNow);
           return `### ${displayName} (ID: ${waifu.id})\n- Personality: ${persona}\n- Availability:\n${indentLines(availability, "  ")}`;
         })
         .join("\n\n")
     : "No waifus are currently enabled for this channel.";
 
-  const currentTime = `${formatTimestamp(new Date())} (UTC)`;
+  const currentTime = formatPromptCurrentHour(new Date());
 
   return [
     "You are the Orchestrator for a Discord group chat inhabited by AI waifus (characters).",
