@@ -52,7 +52,6 @@ export type WaifuGenerationRequest = ProviderRequest & {
   systemPrompt: string;
   sceneDirection?: string;
   replyStyle?: ReplyStyle;
-  currentWaifuAuthorIds?: string[];
   pickNextWaifuToolEnabled?: boolean;
 };
 

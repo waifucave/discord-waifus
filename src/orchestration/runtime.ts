@@ -489,7 +489,6 @@ export class RuntimeOrchestrator {
           senderBotId: waifu.botId
         });
         try {
-          const currentWaifuAuthorIds = await this.waifuAuthorIdsFor(waifu.botId);
           const nextWaifuIds = availableWaifus
             .filter((candidate) => candidate.id !== waifu.id && candidate.botId && candidate.modelId)
             .map((candidate) => candidate.id);
@@ -501,7 +500,7 @@ export class RuntimeOrchestrator {
                 modelId: waifuModelId,
                 messages: waifuMessages,
                 systemPrompt: await this.buildWaifuSystemPrompt(guildId, waifu, availableWaifus),
-                sceneDirection: responder.sceneDirection,
+                sceneDirection: clipSceneDirectionForWaifu(responder.sceneDirection),
                 replyStyle: responder.replyStyle,
                 availableWaifuIds: nextWaifuIds,
                 pickNextWaifuToolEnabled: waifu.tools.pickNextWaifu,
@@ -509,7 +508,6 @@ export class RuntimeOrchestrator {
                 topP: waifu.generation.topP,
                 maxOutputTokens: waifu.generation.maxOutputTokens,
                 reasoning: waifu.reasoning,
-                currentWaifuAuthorIds,
                 signal
               });
             } finally {
@@ -1147,9 +1145,9 @@ export class RuntimeOrchestrator {
       "These tags are framing only — they are NOT part of what the speaker actually wrote, and they are NOT how Discord messages look.",
       "Your reply is the raw message body that will be sent verbatim to Discord. It MUST NOT contain any bracketed metadata tag (no `[timestamp: ...]`, no `[sender: ...]`, no `[reactions: ...]`, no `[replying to: ...]`, no `[index: ...]`, no `[scene_direction: ...]`, no other `[tag: value]` constructions).",
       "It MUST NOT begin with your own display name followed by a colon, and MUST NOT quote or paraphrase any prior message's framing tags. Begin with the first word you are actually saying.",
-      "Default to one short sentence. Use two short sentences only when the second adds a new beat. Do not write three or more sentences unless a scene_direction explicitly asks for it.",
-      "Avoid long sentences, stacked clauses, and multi-line replies. Do not explain every angle; land one conversational beat and stop.",
-      "Each sentence in your reply may be delivered as a separate Discord message, so fewer sentences is better. A sharp one-liner is usually stronger than a mini speech.",
+      "Write exactly one short phrase or one very short sentence, usually under 12 words. Never write a second sentence.",
+      "This length rule overrides your persona, reply_style, and scene_direction. Even when asked for a longer or more thoughtful reply, compress it to one tiny conversational beat.",
+      "Avoid stacked clauses, multi-line replies, setup-plus-punchline chains, and explanations. A sharp fragment is usually stronger than a complete mini speech.",
       "Do not ping a user who is already active in the recent chat or who just spoke. Mention their display name in plain text instead. Only ping when you are reviving an older missed message, pulling back someone who has gone quiet, or a scene_direction explicitly asks for a ping.",
       "Use only listed server emojis."
     ].join("\n");
@@ -1495,16 +1493,6 @@ export class RuntimeOrchestrator {
     return bots.waifus.some((bot) => bot.id === authorId || bot.applicationId === authorId);
   }
 
-  private async waifuAuthorIdsFor(botId: string): Promise<string[]> {
-    const bots = await this.options.storage.readJson(
-      "user/discord-bots.json",
-      DiscordBotsFileSchema,
-      DiscordBotsFileSchema.parse(createEmptyRevisionedFile({ orchestrator: null, waifus: [] }))
-    );
-    const match = bots.waifus.find((bot) => bot.id === botId);
-    if (!match) return [botId];
-    return [match.id, match.applicationId].filter((id): id is string => Boolean(id));
-  }
 }
 
 function emptyMemoryStore(): MemoryStore {
@@ -1629,6 +1617,21 @@ function replyTargetForFreshContext(
   if (!replyToMessageId) return undefined;
   const latestMessage = messages.at(-1);
   return latestMessage?.id === replyToMessageId ? undefined : replyToMessageId;
+}
+
+const SCENE_DIRECTION_PUNCTUATION_RE = /[.!?,;:\n\r\u2026\u2013\u2014]/u;
+const SCENE_DIRECTION_CONJUNCTION_RE = /\b(?:and|or)\b/iu;
+
+export function clipSceneDirectionForWaifu(sceneDirection: string | undefined): string | undefined {
+  const trimmed = sceneDirection?.trim();
+  if (!trimmed) return undefined;
+  const punctuationIndex = SCENE_DIRECTION_PUNCTUATION_RE.exec(trimmed)?.index;
+  const conjunctionIndex = SCENE_DIRECTION_CONJUNCTION_RE.exec(trimmed)?.index;
+  const cutIndex = [punctuationIndex, conjunctionIndex]
+    .filter((index): index is number => index !== undefined)
+    .sort((a, b) => a - b)[0];
+  const clipped = cutIndex === undefined ? trimmed : trimmed.slice(0, cutIndex).trim();
+  return clipped || undefined;
 }
 
 function capDecisionDelays(decision: OrchestratorDecision): OrchestratorDecision {

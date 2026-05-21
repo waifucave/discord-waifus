@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { RuntimeOrchestrator } from "../src/orchestration/runtime.js";
+import { RuntimeOrchestrator, clipSceneDirectionForWaifu } from "../src/orchestration/runtime.js";
 import { ContextMessage } from "../src/orchestration/context.js";
 import { OrchestratorDecision } from "../src/orchestration/decisions.js";
 import {
@@ -156,7 +156,7 @@ class FakeDiscord implements DiscordGatewayFacade {
 class FakePipeline implements ModelPipeline {
   decisions: OrchestratorDecision[] = [
     {
-      action: "reply", respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal", sceneDirection: "answer Kevin", replyToMessageId: "m1" }],
+      action: "reply", respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal", sceneDirection: "answer Kevin, then pull in Mira", replyToMessageId: "m1" }],
       reasoning: "Kevin should get a reply."
     },
     {
@@ -170,13 +170,13 @@ class FakePipeline implements ModelPipeline {
   async generateWaifu(request: WaifuGenerationRequest) {
     expect(request.systemPrompt).toContain("You are Yuki");
     expect(request.systemPrompt).toMatch(
-      /<behavior>\n<personality_instructions>[\s\S]*You are Yuki[\s\S]*kind[\s\S]*<\/personality_instructions>\n<your_schedule>[\s\S]*configured routine[\s\S]*changes only when your schedule is edited[\s\S]*Sleep: 23:00-07:00 daily[\s\S]*09:00-10:00: school focus block[\s\S]*<\/your_schedule>\n<environment_instructions>[\s\S]*<\/environment_instructions>\n<hard_rules>[\s\S]*Default to one short sentence[\s\S]*Do not write three or more sentences[\s\S]*Do not ping a user who is already active[\s\S]*Use only listed server emojis[\s\S]*<\/hard_rules>/
+      /<behavior>\n<personality_instructions>[\s\S]*You are Yuki[\s\S]*kind[\s\S]*<\/personality_instructions>\n<your_schedule>[\s\S]*configured routine[\s\S]*changes only when your schedule is edited[\s\S]*Sleep: 23:00-07:00 daily[\s\S]*09:00-10:00: school focus block[\s\S]*<\/your_schedule>\n<environment_instructions>[\s\S]*<\/environment_instructions>\n<hard_rules>[\s\S]*Write exactly one short phrase[\s\S]*Never write a second sentence[\s\S]*This length rule overrides your persona, reply_style, and scene_direction[\s\S]*Do not ping a user who is already active[\s\S]*Use only listed server emojis[\s\S]*<\/hard_rules>/
     );
     expect(request.systemPrompt).not.toContain("<yuki_behavior>");
     expect(request.systemPrompt).not.toContain("</yuki_behavior>");
     expect(request.systemPrompt).not.toMatch(/<your_schedule>[\s\S]*(Current local schedule time|currently busy|currently inside sleep time)[\s\S]*<\/your_schedule>/);
     expect(request.systemPrompt).not.toMatch(
-      /<environment_instructions>[\s\S]*Default to one short sentence[\s\S]*<\/environment_instructions>/
+      /<environment_instructions>[\s\S]*Write exactly one short phrase[\s\S]*<\/environment_instructions>/
     );
     expect(request.systemPrompt).not.toMatch(
       /<environment_instructions>[\s\S]*Use only listed server emojis[\s\S]*<\/environment_instructions>/
@@ -213,6 +213,14 @@ class FakePipeline implements ModelPipeline {
 }
 
 describe("RuntimeOrchestrator", () => {
+  it("clips sceneDirection before sending it to the waifu model", () => {
+    expect(clipSceneDirectionForWaifu("answer Kevin, then ask Mira")).toBe("answer Kevin");
+    expect(clipSceneDirectionForWaifu("answer Kevin and ask Mira")).toBe("answer Kevin");
+    expect(clipSceneDirectionForWaifu("answer Kevin or ask Mira")).toBe("answer Kevin");
+    expect(clipSceneDirectionForWaifu("answer candy or ask Mira")).toBe("answer candy");
+    expect(clipSceneDirectionForWaifu("or ask Mira")).toBeUndefined();
+  });
+
   it("runs orchestrator -> waifu -> orchestrator and persists history/session", async () => {
     const root = await makeTempRoot();
     roots.push(root);

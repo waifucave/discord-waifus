@@ -18,6 +18,34 @@ const context: ContextMessage[] = [
   }
 ];
 
+const contextWithWaifus: ContextMessage[] = [
+  context[0],
+  {
+    id: "m2",
+    channelId: "c1",
+    guildId: "g1",
+    authorKind: "waifu",
+    authorId: "yuki-bot",
+    name: "Yuki",
+    displayName: "Yuki",
+    content: "tea is serious business",
+    timestamp: "2026-05-16T12:00:01Z",
+    reactions: []
+  },
+  {
+    id: "m3",
+    channelId: "c1",
+    guildId: "g1",
+    authorKind: "waifu",
+    authorId: "mika-bot",
+    name: "Mika",
+    displayName: "Mika",
+    content: "Kevin has taste",
+    timestamp: "2026-05-16T12:00:02Z",
+    reactions: []
+  }
+];
+
 afterEach(() => {
   vi.unstubAllGlobals();
 });
@@ -334,6 +362,40 @@ describe("provider-native decision tools", () => {
     expect(query?.payload.stop).toEqual(["\n[timestamp:", "\n[sender:"]);
   });
 
+  it("sends every waifu context message as assistant to OpenAI-compatible chat", async () => {
+    mockFetch({ choices: [{ message: { content: "ok" } }] });
+
+    const pipeline = createModelPipeline("grok-4.3", { apiKey: "xai-test" });
+    await pipeline.generateWaifu({
+      modelId: "grok-4.3",
+      messages: contextWithWaifus,
+      systemPrompt: "stay in character"
+    });
+
+    const query = recentQueries().at(-1);
+    const messages = query?.payload.messages as Array<{ role: string; content: string }>;
+    expect(messages.slice(1).map((message) => message.role)).toEqual(["user", "assistant", "assistant"]);
+    expect(messages[2].content).toContain("[sender: Yuki]");
+    expect(messages[3].content).toContain("[sender: Mika]");
+  });
+
+  it("sends every waifu context message as assistant to OpenAI Responses", async () => {
+    mockFetch({ output_text: "ok" });
+
+    const pipeline = createModelPipeline("gpt-4o-mini", { apiKey: "openai-test" });
+    await pipeline.generateWaifu({
+      modelId: "gpt-4o-mini",
+      messages: contextWithWaifus,
+      systemPrompt: "stay in character"
+    });
+
+    const query = recentQueries().at(-1);
+    const input = query?.payload.input as Array<{ role: string; content: string }>;
+    expect(input.map((message) => message.role)).toEqual(["user", "assistant", "assistant"]);
+    expect(input[1].content).toContain("[sender: Yuki]");
+    expect(input[2].content).toContain("[sender: Mika]");
+  });
+
   it("exposes optional PickNextWaifu for waifu generation", async () => {
     mockFetch({
       choices: [
@@ -457,6 +519,23 @@ describe("provider-native decision tools", () => {
 
     const query = recentQueries().at(-1);
     expect(query?.payload.stop_sequences).toEqual(["\n[timestamp:", "\n[sender:"]);
+  });
+
+  it("sends every waifu context message as assistant to Anthropic Messages", async () => {
+    mockFetch({ content: [{ type: "text", text: "ok" }] });
+
+    const pipeline = createModelPipeline("claude-haiku-4-5-20251001", { apiKey: "anthropic-test" });
+    await pipeline.generateWaifu({
+      modelId: "claude-haiku-4-5-20251001",
+      messages: contextWithWaifus,
+      systemPrompt: "stay in character"
+    });
+
+    const query = recentQueries().at(-1);
+    const messages = query?.payload.messages as Array<{ role: string; content: string }>;
+    expect(messages.map((message) => message.role)).toEqual(["user", "assistant", "assistant"]);
+    expect(messages[1].content).toContain("[sender: Yuki]");
+    expect(messages[2].content).toContain("[sender: Mika]");
   });
 
   it("injects a reply_style hint when non-normal", async () => {

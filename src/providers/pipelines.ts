@@ -74,7 +74,7 @@ class OpenAiCompatibleChatPipeline implements ModelPipeline {
         model: request.modelId,
         messages: [
           { role: "system", content: request.systemPrompt },
-          ...contextToChatMessagesForWaifu(request.messages, request.currentWaifuAuthorIds ?? []),
+          ...contextToChatMessagesForWaifu(request.messages),
           ...replyStyleMessagesForChat(request.replyStyle),
           ...(request.sceneDirection
             ? [{ role: "system", content: `<scene_direction>${request.sceneDirection}</scene_direction>` }]
@@ -194,7 +194,7 @@ class OpenAiResponsesPipeline implements ModelPipeline {
         model: request.modelId,
         instructions: request.systemPrompt,
         input: [
-          ...contextToResponsesInputForWaifu(request.messages, request.currentWaifuAuthorIds ?? []),
+          ...contextToResponsesInputForWaifu(request.messages),
           ...replyStyleMessagesForChat(request.replyStyle),
           ...(request.sceneDirection
             ? [{ role: "system", content: `<scene_direction>${request.sceneDirection}</scene_direction>` }]
@@ -308,7 +308,7 @@ class AnthropicMessagesPipeline implements ModelPipeline {
         model: request.modelId,
         system: request.systemPrompt,
         messages: [
-          ...contextToAnthropicMessagesForWaifu(request.messages, request.currentWaifuAuthorIds ?? []),
+          ...contextToAnthropicMessagesForWaifu(request.messages),
           ...replyStyleMessagesForAnthropic(request.replyStyle),
           ...(request.sceneDirection ? [{ role: "user", content: `<scene_direction>${request.sceneDirection}</scene_direction>` }] : [])
         ],
@@ -598,10 +598,9 @@ function replyStyleMessagesForAnthropic(replyStyle: ReplyStyle | undefined): Arr
   return hint ? [{ role: "user", content: hint }] : [];
 }
 
-function contextToChatMessagesForWaifu(messages: ContextMessage[], currentWaifuAuthorIds: string[]) {
-  const selfIds = new Set(currentWaifuAuthorIds);
+function contextToChatMessagesForWaifu(messages: ContextMessage[]) {
   return messages.map((message) => ({
-    role: selfIds.has(message.authorId) ? "assistant" : "user",
+    role: roleForWaifuContext(message),
     name: pickProviderName(message),
     content: formatWaifuContextLine(message)
   }));
@@ -613,20 +612,22 @@ function pickProviderName(message: ContextMessage): string {
   return safeName(message.name);
 }
 
-function contextToResponsesInputForWaifu(messages: ContextMessage[], currentWaifuAuthorIds: string[]) {
-  const selfIds = new Set(currentWaifuAuthorIds);
+function contextToResponsesInputForWaifu(messages: ContextMessage[]) {
   return messages.map((message) => ({
-    role: selfIds.has(message.authorId) ? "assistant" : "user",
+    role: roleForWaifuContext(message),
     content: formatWaifuContextLine(message)
   }));
 }
 
-function contextToAnthropicMessagesForWaifu(messages: ContextMessage[], currentWaifuAuthorIds: string[]) {
-  const selfIds = new Set(currentWaifuAuthorIds);
+function contextToAnthropicMessagesForWaifu(messages: ContextMessage[]) {
   return messages.map((message) => ({
-    role: selfIds.has(message.authorId) ? "assistant" : "user",
+    role: roleForWaifuContext(message),
     content: formatWaifuContextLine(message)
   }));
+}
+
+function roleForWaifuContext(message: ContextMessage): "assistant" | "user" {
+  return message.authorKind === "waifu" ? "assistant" : "user";
 }
 
 function formatWaifuContextLine(message: ContextMessage): string {
