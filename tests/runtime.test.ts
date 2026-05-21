@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { RuntimeOrchestrator, clipSceneDirectionForWaifu } from "../src/orchestration/runtime.js";
 import { ContextMessage } from "../src/orchestration/context.js";
 import { OrchestratorDecision } from "../src/orchestration/decisions.js";
@@ -10,6 +10,8 @@ import {
   DiscordReviewCommandListener,
   DiscordRunCommandEvent,
   DiscordRunCommandListener,
+  DiscordStopCommandEvent,
+  DiscordStopCommandListener,
   DiscordRuntimeStatus
 } from "../src/discord/client.js";
 import {
@@ -38,6 +40,7 @@ import { makeTempRoot, removeTempRoot } from "./testUtils.js";
 let roots: string[] = [];
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(roots.map(removeTempRoot));
   roots = [];
 });
@@ -55,6 +58,7 @@ class FakeDiscord implements DiscordGatewayFacade {
   reviewListeners = new Set<DiscordReviewCommandListener>();
   clearListeners = new Set<DiscordClearCommandListener>();
   runListeners = new Set<DiscordRunCommandListener>();
+  stopListeners = new Set<DiscordStopCommandListener>();
   contexts: ContextMessage[][] = [
     [contextMessage("m1", "user", "Kevin", "hello")],
     [contextMessage("m1", "user", "Kevin", "hello")],
@@ -80,6 +84,11 @@ class FakeDiscord implements DiscordGatewayFacade {
   onRunCommand(listener: DiscordRunCommandListener): () => void {
     this.runListeners.add(listener);
     return () => this.runListeners.delete(listener);
+  }
+
+  onStopCommand(listener: DiscordStopCommandListener): () => void {
+    this.stopListeners.add(listener);
+    return () => this.stopListeners.delete(listener);
   }
 
   async emitReviewCommand(
@@ -113,6 +122,19 @@ class FakeDiscord implements DiscordGatewayFacade {
   ): Promise<void> {
     await Promise.all(
       [...this.runListeners].map((listener) =>
+        listener({
+          ...event,
+          respond: event.respond ?? (async () => undefined)
+        })
+      )
+    );
+  }
+
+  async emitStopCommand(
+    event: Omit<DiscordStopCommandEvent, "respond"> & { respond?: DiscordStopCommandEvent["respond"] }
+  ): Promise<void> {
+    await Promise.all(
+      [...this.stopListeners].map((listener) =>
         listener({
           ...event,
           respond: event.respond ?? (async () => undefined)
@@ -503,6 +525,7 @@ describe("RuntimeOrchestrator", () => {
     await ensureDataLayout(root);
     const storage = new StorageService(root);
     const discord = new FakeDiscord();
+    discord.contexts = [[contextMessage("w1", "waifu", "Yuki", "still here")]];
     const sleepCalls: number[] = [];
 
     await seedRuntimeConfig(storage);
@@ -559,6 +582,145 @@ describe("RuntimeOrchestrator", () => {
       OrchestratorHistoryFileSchema
     );
     expect(history.decisions.find((entry) => entry.action === "reply")?.respondingWaifus[0].delaySeconds).toBe(30);
+  });
+
+  it("ignores the first waifu delay and counts later delays from decision time when recent context has a user", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.contexts = [
+      [
+        contextMessage("old-waifu", "waifu", "Yuki", "old beat"),
+        contextMessage("user-1", "user", "Kevin", "jumping in"),
+        contextMessage("waifu-2", "waifu", "Yuki", "reaction"),
+        contextMessage("waifu-3", "waifu", "Mika", "another reaction")
+      ]
+    ];
+    const sleepCalls: number[] = [];
+    let nowMs = 100_000;
+    vi.spyOn(Date, "now").mockImplementation(() => nowMs);
+
+    await seedRuntimeConfig(storage);
+    await seedWaifu(storage, "mika", "Mika", "mika-bot", "direct");
+    await seedWaifu(storage, "aria", "Aria", "aria-bot", "dry");
+    await enableWaifus(storage, ["yuki", "mika", "aria"]);
+
+    class RecentUserDelayPipeline implements ModelPipeline {
+      events: string[] = [];
+
+      async decideOrchestrator() {
+        return {
+          action: "reply" as const,
+          respondingWaifus: [
+            { waifuId: "yuki", delaySeconds: 12, replyStyle: "normal" as const },
+            { waifuId: "mika", delaySeconds: 5, replyStyle: "normal" as const },
+            { waifuId: "aria", delaySeconds: 9, replyStyle: "normal" as const }
+          ],
+          reasoning: "Recent user activity should make the chain feel immediate."
+        };
+      }
+
+      async generateWaifu(request: WaifuGenerationRequest) {
+        if (request.systemPrompt.includes("You are Yuki")) {
+          this.events.push("yuki");
+          nowMs = 107_000;
+          return { content: "one" };
+        }
+        if (request.systemPrompt.includes("You are Mika")) {
+          this.events.push("mika");
+          return { content: "two" };
+        }
+        this.events.push("aria");
+        return { content: "three" };
+      }
+    }
+
+    const pipeline = new RecentUserDelayPipeline();
+    const runtime = new RuntimeOrchestrator({
+      sleep: async (ms) => {
+        sleepCalls.push(ms);
+        nowMs += ms;
+      },
+      storage,
+      discord,
+      maxAutomaticTurns: 1,
+      createPipeline: () => pipeline,
+      logger: {
+        debug: () => undefined,
+        info: () => undefined,
+        warn: () => undefined,
+        error: () => undefined
+      }
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    expect(pipeline.events).toEqual(["yuki", "mika", "aria"]);
+    expect(sleepCalls).toEqual([2000]);
+    expect(discord.sent.map((entry) => entry.content)).toEqual(["one", "two", "three"]);
+  });
+
+  it("keeps sequential waifu delays when the latest four messages have no user", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.contexts = [
+      [
+        contextMessage("waifu-1", "waifu", "Yuki", "one"),
+        contextMessage("waifu-2", "waifu", "Mika", "two"),
+        contextMessage("waifu-3", "waifu", "Yuki", "three"),
+        contextMessage("waifu-4", "waifu", "Mika", "four")
+      ]
+    ];
+    const sleepCalls: number[] = [];
+
+    await seedRuntimeConfig(storage);
+    await seedWaifu(storage, "mika", "Mika", "mika-bot", "direct");
+    await enableWaifus(storage, ["yuki", "mika"]);
+
+    class SequentialDelayPipeline implements ModelPipeline {
+      async decideOrchestrator() {
+        return {
+          action: "reply" as const,
+          respondingWaifus: [
+            { waifuId: "yuki", delaySeconds: 3, replyStyle: "normal" as const },
+            { waifuId: "mika", delaySeconds: 4, replyStyle: "normal" as const }
+          ],
+          reasoning: "No recent user message, so use the normal chained pacing."
+        };
+      }
+
+      async generateWaifu(request: WaifuGenerationRequest) {
+        return { content: request.systemPrompt.includes("You are Yuki") ? "one" : "two" };
+      }
+    }
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async (ms) => {
+        sleepCalls.push(ms);
+      },
+      storage,
+      discord,
+      maxAutomaticTurns: 1,
+      createPipeline: () => new SequentialDelayPipeline(),
+      logger: {
+        debug: () => undefined,
+        info: () => undefined,
+        warn: () => undefined,
+        error: () => undefined
+      }
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    expect(sleepCalls).toEqual([3000, 4000]);
+    expect(discord.sent.map((entry) => entry.content)).toEqual(["one", "two"]);
   });
 
   it("sends only no_reply markers created after the latest chat message", async () => {
@@ -1173,6 +1335,82 @@ describe("RuntimeOrchestrator", () => {
     expect(orchestratorCalls).toBe(1);
   });
 
+  it("stops an in-flight waifu generation from /stop", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.contexts = [[contextMessage("m1", "user", "Kevin", "hello")]];
+
+    let resolveWaifuEntered: () => void = () => undefined;
+    const waifuEntered = new Promise<void>((resolve) => {
+      resolveWaifuEntered = resolve;
+    });
+    let waifuAborted = false;
+    const pipeline: ModelPipeline = {
+      async decideOrchestrator() {
+        return {
+          action: "reply",
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal" }],
+          reasoning: "Start waifu."
+        };
+      },
+      async generateWaifu(request) {
+        resolveWaifuEntered();
+        await new Promise<never>((_resolve, reject) => {
+          request.signal?.addEventListener(
+            "abort",
+            () => {
+              waifuAborted = true;
+              reject(request.signal?.reason instanceof Error ? request.signal.reason : new Error("aborted"));
+            },
+            { once: true }
+          );
+        });
+        return { content: "should not send" };
+      }
+    };
+
+    await seedRuntimeConfig(storage);
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      createPipeline: () => pipeline,
+      logger: {
+        debug: () => undefined,
+        info: () => undefined,
+        warn: () => undefined,
+        error: () => undefined
+      }
+    });
+    await runtime.start();
+
+    const running = runtime.triggerChannel("guild-1", "channel-1", "test-stop-waifu");
+    await Promise.race([
+      waifuEntered,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("waifu did not enter")), 1000))
+    ]);
+
+    const responses: string[] = [];
+    await discord.emitStopCommand({
+      guildId: "guild-1",
+      channelId: "channel-1",
+      userId: "stop-user",
+      respond: async (content) => {
+        responses.push(content);
+      }
+    });
+    await running;
+    await runtime.stop();
+
+    expect(responses).toEqual(["Stopped orchestrator and waifu work in this channel."]);
+    expect(waifuAborted).toBe(true);
+    expect(discord.sent).toEqual([]);
+  });
+
   it("does not start /run while reviewer is in flight", async () => {
     const root = await makeTempRoot();
     roots.push(root);
@@ -1697,6 +1935,52 @@ async function seedRuntimeConfig(storage: StorageService) {
         toolUse: true,
         pickNextWaifu: true
       }
+    })
+  );
+}
+
+async function enableWaifus(storage: StorageService, waifuIds: string[]) {
+  await storage.writeJson(
+    "server:guild-1",
+    "user/servers/guild-1/server.json",
+    ServerConfigSchema,
+    ServerConfigSchema.parse({
+      ...createRevisionedBase(),
+      guildId: "guild-1",
+      enabled: true,
+      channels: {
+        "channel-1": {
+          channelId: "channel-1",
+          enabled: true,
+          enabledWaifuIds: waifuIds
+        }
+      }
+    })
+  );
+}
+
+async function seedWaifu(
+  storage: StorageService,
+  id: string,
+  displayName: string,
+  botId: string,
+  persona: string
+) {
+  await storage.writeJson(
+    `waifu:${id}`,
+    `user/waifus/${id}/waifu.json`,
+    WaifuConfigSchema,
+    WaifuConfigSchema.parse({
+      ...createRevisionedBase(),
+      id,
+      name: displayName,
+      displayName,
+      enabled: true,
+      providerId: "openai",
+      modelId: "gpt-5.4-mini",
+      botId,
+      persona,
+      contextWindow: 50
     })
   );
 }

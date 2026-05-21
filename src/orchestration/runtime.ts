@@ -8,7 +8,8 @@ import {
   DiscordGatewayFacade,
   DiscordMessageEvent,
   DiscordRunCommandEvent,
-  DiscordReviewCommandEvent
+  DiscordReviewCommandEvent,
+  DiscordStopCommandEvent
 } from "../discord/client.js";
 import { modelVisibleEmojiToken, stripLeakedContextHeader } from "../discord/normalization.js";
 import { splitWaifuReply, typingDelayMs } from "./messageSplit.js";
@@ -102,6 +103,9 @@ export class RuntimeOrchestrator {
       }),
       this.options.discord.onRunCommand?.((event) => {
         void this.handleRunCommand(event);
+      }),
+      this.options.discord.onStopCommand?.((event) => {
+        void this.handleStopCommand(event);
       })
     ].filter((unsubscribe): unsubscribe is () => void => Boolean(unsubscribe));
     if (this.options.discord.listGuilds) {
@@ -183,6 +187,32 @@ export class RuntimeOrchestrator {
       return;
     }
     await this.startChannelRun(guildId, channelId, reason);
+  }
+
+  async stopChannel(guildId: string, channelId: string, reason = "manual-stop"): Promise<{
+    stoppedRun: boolean;
+    clearedRetrigger: boolean;
+    activeInAnotherChannel: boolean;
+  }> {
+    const key = runKey(guildId);
+    const versionKey = timerKey(guildId, channelId);
+    this.channelRunVersions.set(versionKey, (this.channelRunVersions.get(versionKey) ?? 0) + 1);
+
+    const clearedRetrigger = this.clearRetriggerTimer(guildId, channelId);
+    if (clearedRetrigger) {
+      await this.clearScheduledRetrigger(guildId, channelId);
+    }
+
+    const activeRun = this.activeRuns.get(key);
+    const stoppedRun = Boolean(activeRun && activeRun.channelId === channelId);
+    const activeInAnotherChannel = Boolean(activeRun && activeRun.channelId !== channelId);
+    if (activeRun && stoppedRun) {
+      this.options.logger.info("Stopping active channel run", { guildId, channelId, reason });
+      activeRun.controller.abort(new Error(reason));
+      void this.markSessionIdle(guildId, channelId);
+    }
+
+    return { stoppedRun, clearedRetrigger, activeInAnotherChannel };
   }
 
   async triggerStageManager(guildId: string, channelId: string): Promise<void> {
@@ -271,6 +301,26 @@ export class RuntimeOrchestrator {
     }
   }
 
+  private async handleStopCommand(event: DiscordStopCommandEvent): Promise<void> {
+    try {
+      const result = await this.stopChannel(event.guildId, event.channelId, `slash-stop:${event.userId}`);
+      if (result.stoppedRun || result.clearedRetrigger) {
+        await event.respond("Stopped orchestrator and waifu work in this channel.");
+      } else if (result.activeInAnotherChannel) {
+        await event.respond("No work was running in this channel. Another channel in this server is active.");
+      } else {
+        await event.respond("No orchestrator or waifu work was running in this channel.");
+      }
+    } catch (error) {
+      this.options.logger.error("Stop command failed", {
+        guildId: event.guildId,
+        channelId: event.channelId,
+        message: error instanceof Error ? error.message : String(error)
+      });
+      await event.respond(error instanceof Error ? error.message : "Stop failed.");
+    }
+  }
+
   private runtimeBusyReason(guildId: string, channelId: string): string | undefined {
     const key = runKey(guildId);
     const activeRun = this.activeRuns.get(key);
@@ -303,11 +353,7 @@ export class RuntimeOrchestrator {
       existing.controller.abort(new Error(`restarted by ${reason}`));
       void this.markSessionIdle(existing.guildId, existing.channelId);
     }
-    const timer = this.retriggerTimers.get(timerKey(guildId, channelId));
-    if (timer) {
-      clearTimeout(timer);
-      this.retriggerTimers.delete(timerKey(guildId, channelId));
-    }
+    this.clearRetriggerTimer(guildId, channelId);
 
     const controller = new AbortController();
     const promise = this.runChannelLoop(guildId, channelId, controller.signal)
@@ -388,6 +434,8 @@ export class RuntimeOrchestrator {
         orchestratorTyping.stop();
       }
       decision = capDecisionDelays(decision);
+      const decisionDelayBaseMs = Date.now();
+      const useDecisionRelativeDelays = hasRecentUserMessage(messages, 4);
       await this.appendOrchestratorHistory({
         id: randomUUID(),
         guildId,
@@ -417,10 +465,13 @@ export class RuntimeOrchestrator {
       let directHandoffCount = 0;
       const allowedWaifus = new Set(channel.enabledWaifuIds ?? []);
       const responderQueue = [...decision.respondingWaifus];
+      let responderIndex = 0;
       while (responderQueue.length > 0) {
         throwIfAborted(signal);
         const responder = responderQueue.shift();
         if (!responder) continue;
+        const currentResponderIndex = responderIndex;
+        responderIndex += 1;
         if (!allowedWaifus.has(responder.waifuId)) {
           this.options.logger.warn("Orchestrator selected a waifu that is not enabled for channel", {
             guildId,
@@ -454,16 +505,22 @@ export class RuntimeOrchestrator {
           });
           continue;
         }
-        if (responder.delaySeconds > 0) {
-          const cappedDelaySeconds = Math.min(responder.delaySeconds, MAX_WAIFU_DELAY_SECONDS);
-          const cappedDelayMs = cappedDelaySeconds * 1000;
+        const waitMs = waitMsBeforeWaifuReply({
+          delaySeconds: responder.delaySeconds,
+          decisionDelayBaseMs,
+          responderIndex: currentResponderIndex,
+          useDecisionRelativeDelays
+        });
+        if (waitMs > 0) {
           this.options.logger.info("Waiting before waifu reply", {
             guildId,
             channelId,
             waifuId: waifu.id,
-            delaySeconds: cappedDelaySeconds
+            plannedDelaySeconds: responder.delaySeconds,
+            waitMs,
+            delayMode: useDecisionRelativeDelays ? "decision-relative" : "sequential"
           });
-          await this.sleep(cappedDelayMs, signal);
+          await this.sleep(waitMs, signal);
           throwIfAborted(signal);
         }
         await this.setActivePipeline(guildId, channelId, "waifu");
@@ -972,6 +1029,25 @@ export class RuntimeOrchestrator {
     this.retriggerTimers.set(key, timer);
   }
 
+  private clearRetriggerTimer(guildId: string, channelId: string): boolean {
+    const key = timerKey(guildId, channelId);
+    const timer = this.retriggerTimers.get(key);
+    if (!timer) return false;
+    clearTimeout(timer);
+    this.retriggerTimers.delete(key);
+    return true;
+  }
+
+  private async clearScheduledRetrigger(guildId: string, channelId: string): Promise<void> {
+    await this.updateSession(guildId, channelId, (current) => {
+      const { scheduledRetriggerAt: _scheduledRetriggerAt, ...rest } = current;
+      return {
+        ...rest,
+        activePipeline: null
+      };
+    });
+  }
+
   private async sendWaifuChunks(input: {
     guildId: string;
     channelId: string;
@@ -1228,6 +1304,7 @@ export class RuntimeOrchestrator {
       "- sceneDirection is the only private channel between you and that waifu. If you want her to do or say something specific, you MUST put it there. She does not see your reasoning. Use null when no special steering is needed.",
       "- After a single waifu message, do not default to no_reply just because a waifu already spoke. Actively consider whether another waifu should react, interrupt, tease, disagree, answer a missed user, or carry the beat one step further.",
       "- Prefer a two-waifu chain over a one-waifu reply when the second waifu has a distinct reaction that would make the room feel alive. Give the second waifu a small delaySeconds value so it feels like a timed follow-up, not simultaneous spam.",
+      "- Runtime pacing note: when any of the latest four chat messages is from a human user, the first waifu starts immediately regardless of delaySeconds, and later waifus treat delaySeconds as an offset from this decision time. If an earlier waifu is still replying when a later offset arrives, the later waifu starts after the earlier waifu finishes.",
       "- Consecutive waifu replies in a single decision are allowed when they add a fresh beat: escalation, interruption, joke, reaction, disagreement, emotional shift, or a new topic. Avoid only empty echoing or repetitive back-and-forth."
     ].join("\n");
 
@@ -1277,7 +1354,7 @@ export class RuntimeOrchestrator {
       "Rules:",
       "- action=\"reply\" => respondingWaifus is non-empty; retriggerAfterSeconds is null.",
       "- action=\"no_reply\" => respondingWaifus is empty; retriggerAfterSeconds is a number in [100, 7200].",
-      "- Order matters in respondingWaifus: the first waifu speaks first, then the next, and so on. Each waifu's delay starts only after the previous waifu has finished. Any new chat message interrupts the rest of the chain.",
+      "- Order matters in respondingWaifus: the first waifu speaks first, then the next, and so on. When none of the latest four chat messages is from a human user, each waifu's delay starts only after the previous waifu has finished. When a human user is present in the latest four messages, the first waifu starts immediately and later delays are counted from this orchestrator decision. Any new chat message interrupts the rest of the chain.",
       "- When choosing two waifus, give each entry its own delaySeconds. Use 0 for the first when she should start immediately, then a small delay like 3-12 seconds for the second when it should feel like a natural follow-up.",
       "- All five fields on each respondingWaifus entry are required; set repleyToMessageIndex and sceneDirection to null when not needed."
     ].join("\n");
@@ -1644,6 +1721,26 @@ function capDecisionDelays(decision: OrchestratorDecision): OrchestratorDecision
   };
 }
 
+function hasRecentUserMessage(messages: ContextMessage[], count: number): boolean {
+  return messages.slice(-count).some((message) => message.authorKind === "user");
+}
+
+function waitMsBeforeWaifuReply(input: {
+  delaySeconds: number;
+  decisionDelayBaseMs: number;
+  responderIndex: number;
+  useDecisionRelativeDelays: boolean;
+}): number {
+  const delayMs = input.delaySeconds * 1000;
+  if (!input.useDecisionRelativeDelays) {
+    return delayMs;
+  }
+  if (input.responderIndex === 0) {
+    return 0;
+  }
+  return Math.max(0, input.decisionDelayBaseMs + delayMs - Date.now());
+}
+
 function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) {
     throw signal.reason instanceof Error ? signal.reason : new Error("Request aborted.");
@@ -1732,7 +1829,7 @@ const DEFAULT_ORCHESTRATOR_PROMPT = [
   "",
   "Reach for sceneDirection when the next reply needs steering that personality alone won't provide: redirecting topic, closing a beat, creating an interruption, shifting momentum, or deliberately starting something new even when it cuts against the current flow. Prefer a natural bridge when pivoting, but a jarring shift is fine if the scene needs it. Keep sceneDirection short, concrete, and immediately actionable — one sentence is usually enough. When you refer to a specific person, use their actual display name from the chat history, never generic phrases like \"the user\". Name intended participants explicitly when more than one person is involved; avoid ambiguous group references like \"us\", \"them\", or \"everyone\". If multiple waifus respond in the same turn, each may receive a different sceneDirection.",
   "",
-  `delaySeconds is a realistic reading/typing delay before that waifu starts replying, capped at ${MAX_WAIFU_DELAY_SECONDS} seconds. Use 0 to start immediately; small values feel natural for short replies; larger values fit longer or more thoughtful replies. Keep it grounded in the chat's pace.`,
+  `delaySeconds is a realistic reading/typing delay before that waifu starts replying, capped at ${MAX_WAIFU_DELAY_SECONDS} seconds. Use 0 to start immediately; small values feel natural for short replies; larger values fit longer or more thoughtful replies. Keep it grounded in the chat's pace. Runtime detail: when any of the latest four chat messages is from a human user, the first waifu starts immediately regardless of delaySeconds and later delaySeconds values are counted from this orchestrator decision; otherwise delays are counted after the previous waifu finishes.`,
   "",
   "replyStyle is a soft hint for that one reply: \"normal\" by default, \"short\" for a one-line beat, \"long\" for a slightly fuller reply, \"sleepy\" for a low-energy tone. The waifu's persona still does most of the work.",
   "",
@@ -1785,7 +1882,7 @@ function buildLegacyOrchestratorPrompt(server: ServerConfig, availableWaifus: Wa
     "10. If a recent user message or direct ping went unnoticed while the room moved on, prefer steering someone to acknowledge it so the chat stays socially inclusive unless silence is clearly more natural.",
     "11. \"no_reply\" is valid. If you choose it, set retriggerAfterSeconds to a natural delay between 100 and 7200 seconds. respondingWaifus must be empty.",
     "12. Use timestamps and pacing. Slow gaps matter.",
-    `13. delaySeconds should reflect realistic reading and typing time from 0 to ${MAX_WAIFU_DELAY_SECONDS}. 0 means start immediately.`,
+    `13. delaySeconds should reflect realistic reading and typing time from 0 to ${MAX_WAIFU_DELAY_SECONDS}. 0 means start immediately. When any of the latest four chat messages is from a human user, the first waifu starts immediately and later delays count from this decision time; otherwise delays count after the previous waifu finishes.`,
     "14. replyStyle is a soft hint: \"normal\" by default; \"short\" for one terse line; \"long\" for a slightly fuller reply; \"sleepy\" for a low-energy voice. Use \"normal\" when in doubt.",
     "15. repleyToMessageIndex is optional. Leave it null by default.",
     "16. Most waifu messages should be normal messages, not Discord replies.",

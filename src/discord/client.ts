@@ -26,6 +26,7 @@ export interface DiscordGatewayFacade {
   onReviewCommand?(listener: DiscordReviewCommandListener): () => void;
   onClearCommand?(listener: DiscordClearCommandListener): () => void;
   onRunCommand?(listener: DiscordRunCommandListener): () => void;
+  onStopCommand?(listener: DiscordStopCommandListener): () => void;
   listGuilds?(): Promise<Array<{ guildId: string; name: string }>>;
   fetchFreshContext(input: {
     guildId: string;
@@ -79,9 +80,11 @@ export type DiscordClearCommandEvent = DiscordSlashCommandEvent & {
   type?: DiscordClearType;
 };
 export type DiscordRunCommandEvent = DiscordSlashCommandEvent;
+export type DiscordStopCommandEvent = DiscordSlashCommandEvent;
 export type DiscordReviewCommandListener = (event: DiscordReviewCommandEvent) => void | Promise<void>;
 export type DiscordClearCommandListener = (event: DiscordClearCommandEvent) => void | Promise<void>;
 export type DiscordRunCommandListener = (event: DiscordRunCommandEvent) => void | Promise<void>;
+export type DiscordStopCommandListener = (event: DiscordStopCommandEvent) => void | Promise<void>;
 
 export type DiscordClearType = "waifus" | "all";
 
@@ -113,6 +116,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   private readonly reviewListeners = new Set<DiscordReviewCommandListener>();
   private readonly clearListeners = new Set<DiscordClearCommandListener>();
   private readonly runListeners = new Set<DiscordRunCommandListener>();
+  private readonly stopListeners = new Set<DiscordStopCommandListener>();
   private readonly recentMentionRefreshes = new Map<string, number>();
 
   constructor(private readonly options: DiscordJsGatewayOptions) {}
@@ -160,6 +164,8 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
               void this.handleClearInteraction(interaction);
             } else if (interaction.commandName === RUN_COMMAND_NAME) {
               void this.handleRunInteraction(interaction);
+            } else if (interaction.commandName === STOP_COMMAND_NAME) {
+              void this.handleStopInteraction(interaction);
             }
           });
         }
@@ -209,6 +215,11 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   onRunCommand(listener: DiscordRunCommandListener): () => void {
     this.runListeners.add(listener);
     return () => this.runListeners.delete(listener);
+  }
+
+  onStopCommand(listener: DiscordStopCommandListener): () => void {
+    this.stopListeners.add(listener);
+    return () => this.stopListeners.delete(listener);
   }
 
   async listGuilds(): Promise<Array<{ guildId: string; name: string }>> {
@@ -551,6 +562,25 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
       void listener(event);
     }
   }
+
+  private async handleStopInteraction(interaction: ChatInputCommandInteraction): Promise<void> {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    if (!interaction.guildId || !interaction.channelId) {
+      await interaction.editReply("/stop can only be used in a server channel.");
+      return;
+    }
+    const event: DiscordStopCommandEvent = {
+      guildId: interaction.guildId,
+      channelId: interaction.channelId,
+      userId: interaction.user.id,
+      respond: async (content) => {
+        await interaction.editReply(content);
+      }
+    };
+    for (const listener of this.stopListeners) {
+      void listener(event);
+    }
+  }
 }
 
 export class DiscordGatewayNotConfigured implements DiscordGatewayFacade {
@@ -702,6 +732,7 @@ const MENTION_REFRESH_COOLDOWN_MS = 5 * 60 * 1000;
 const REVIEW_COMMAND_NAME = "review";
 const CLEAR_COMMAND_NAME = "clear";
 const RUN_COMMAND_NAME = "run";
+const STOP_COMMAND_NAME = "stop";
 const CLEAR_COUNT_OPTION_NAME = "count";
 const CLEAR_TYPE_OPTION_NAME = "type";
 const MAX_CLEAR_COUNT = 100;
@@ -746,6 +777,10 @@ async function registerOrchestratorCommands(client: Client, logger?: Logger): Pr
       {
         name: RUN_COMMAND_NAME,
         description: "Run the orchestrator in this channel immediately if the runtime is idle."
+      },
+      {
+        name: STOP_COMMAND_NAME,
+        description: "Stop the current orchestrator and waifu work in this channel."
       }
     ];
     const commands = await manager.fetch();
