@@ -95,7 +95,8 @@ const ChannelConfigBodySchema = z.object({
 const CreateMemoryBodySchema = z.object({
   revision: z.number().int().nonnegative().optional(),
   waifuId: z.string().min(1),
-  scope: z.enum(["global", "guild", "channel", "user"]),
+  guildId: z.string().min(1),
+  scope: z.literal("guild").optional(),
   content: z.string().min(1),
   importance: z.union([
     z.literal(1),
@@ -484,7 +485,8 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
           {
             id: randomUUID(),
             waifuId: body.waifuId,
-            scope: body.scope,
+            scope: "guild" as const,
+            guildId: body.guildId,
             content: body.content,
             importance: body.importance,
             createdAt: now,
@@ -920,10 +922,11 @@ function updateMemoryOrThrow(
       return memory;
     }
     found = true;
-    const { revision: _revision, ...editable } = patch;
+    const { revision: _revision, scope: _scope, ...editable } = patch;
     return {
       ...memory,
       ...editable,
+      scope: "guild",
       updatedAt: now
     };
   });

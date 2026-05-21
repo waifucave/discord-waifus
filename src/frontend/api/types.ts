@@ -339,7 +339,7 @@ export type GuildRolesFile = Revisioned & {
   roles: GuildRoleCacheEntry[];
 };
 
-export type MemoryScope = "global" | "guild" | "channel" | "user";
+export type MemoryScope = "guild";
 export type MemoryStatus = "active" | "archived";
 export type MemoryImportance = 1 | 2 | 3 | 4 | 5;
 
@@ -347,6 +347,7 @@ export type WaifuMemory = {
   id: string;
   waifuId: string;
   scope: MemoryScope;
+  guildId?: string;
   content: string;
   importance: MemoryImportance;
   createdAt: string;
@@ -362,7 +363,8 @@ export type MemoryStore = Revisioned & {
 export type CreateMemoryBody = {
   revision?: number;
   waifuId: string;
-  scope: MemoryScope;
+  guildId: string;
+  scope?: MemoryScope;
   content: string;
   importance: MemoryImportance;
   sourceMessageIds?: string[];

@@ -1,15 +1,37 @@
 import { z } from "zod";
-import { WaifuMemorySchema } from "../shared/schemas/domain.js";
+
+const ImportanceSchema = z.union([
+  z.literal(1),
+  z.literal(2),
+  z.literal(3),
+  z.literal(4),
+  z.literal(5)
+]);
+
+const StageManagerMemoryInputSchema = z.object({
+  waifuId: z.string().min(1),
+  content: z.string().min(1),
+  importance: ImportanceSchema,
+  sourceMessageIds: z.array(z.string())
+});
+
+const StageManagerMemoryPatchSchema = z.object({
+  waifuId: z.string().min(1).optional(),
+  content: z.string().min(1).optional(),
+  importance: ImportanceSchema.optional(),
+  sourceMessageIds: z.array(z.string()).optional(),
+  status: z.enum(["active", "archived"]).optional()
+});
 
 export const StageManagerToolCallSchema = z.discriminatedUnion("tool", [
   z.object({
     tool: z.literal("add_memory"),
-    memory: WaifuMemorySchema.omit({ id: true, createdAt: true, updatedAt: true, status: true })
+    memory: StageManagerMemoryInputSchema
   }),
   z.object({
     tool: z.literal("update_memory"),
     memoryId: z.string().min(1),
-    patch: WaifuMemorySchema.partial().omit({ id: true, createdAt: true })
+    patch: StageManagerMemoryPatchSchema
   }),
   z.object({
     tool: z.literal("archive_memory"),
@@ -27,9 +49,3 @@ export const StageManagerToolCallSchema = z.discriminatedUnion("tool", [
 ]);
 
 export type StageManagerToolCall = z.infer<typeof StageManagerToolCallSchema>;
-
-export type StageManagerMemoryApplyResult = {
-  changed: boolean;
-  syntheticContextEntry?: "[memories updated]";
-  warnings: string[];
-};

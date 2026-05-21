@@ -266,7 +266,6 @@ describe("provider-native decision tools", () => {
                 tool: "add_memory",
                 memory: {
                   waifuId: "yuki",
-                  scope: "global",
                   content: "Kevin likes tea.",
                   importance: 3,
                   sourceMessageIndices: [1]
@@ -297,6 +296,35 @@ describe("provider-native decision tools", () => {
     expect(query?.role).toBe("stage_manager");
     expect((query?.payload.tools as Array<{ name: string }>)[0].name).toBe("manage_memories");
     expect(query?.payload.tool_choice).toEqual({ type: "function", name: "manage_memories" });
+    const memorySchema = (query?.payload.tools as Array<{
+      parameters: {
+        properties: {
+          toolCalls: {
+            items: {
+              properties: {
+                memory: { properties: Record<string, unknown> };
+                patch: { properties: Record<string, unknown> };
+              };
+            };
+          };
+        };
+      };
+    }>)[0].parameters.properties.toolCalls.items.properties.memory.properties;
+    const patchSchema = (query?.payload.tools as Array<{
+      parameters: {
+        properties: {
+          toolCalls: {
+            items: {
+              properties: {
+                patch: { properties: Record<string, unknown> };
+              };
+            };
+          };
+        };
+      };
+    }>)[0].parameters.properties.toolCalls.items.properties.patch.properties;
+    expect(memorySchema.scope).toBeUndefined();
+    expect(patchSchema.scope).toBeUndefined();
   });
 
   it("uses a single Anthropic tool for orchestrator decisions", async () => {

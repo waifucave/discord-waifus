@@ -6,6 +6,7 @@ import {
   DiscordClearCommandEvent,
   DiscordClearType,
   DiscordGatewayFacade,
+  DiscordMemoriesCommandEvent,
   DiscordMessageEvent,
   DiscordRunCommandEvent,
   DiscordReviewCommandEvent,
@@ -61,6 +62,8 @@ export type RuntimeOrchestratorOptions = {
   onActiveRunsChange?: (activeRuns: number) => void;
   createPipeline?: (modelId: string, credentials: PipelineCredentials) => ModelPipeline;
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+  stageManagerActiveIntervalMs?: number;
+  stageManagerIdleDelayMs?: number;
 };
 
 type ActiveChannelRun = {
@@ -70,24 +73,45 @@ type ActiveChannelRun = {
   promise: Promise<void>;
 };
 
+export type StageManagerRunResult = {
+  status: "updated" | "no_change" | "already_running" | "disabled" | "failed";
+  message?: string;
+};
+
+type StageManagerSchedule = {
+  activityVersion: number;
+  throttleTimer?: NodeJS.Timeout;
+  idleTimer?: NodeJS.Timeout;
+};
+
 export class RuntimeOrchestrator {
   private readonly activeRuns = new Map<string, ActiveChannelRun>();
   private readonly retriggerTimers = new Map<string, NodeJS.Timeout>();
+  private readonly stageManagerSchedules = new Map<string, StageManagerSchedule>();
+  private readonly activeStageManagerRuns = new Set<Promise<StageManagerRunResult>>();
   private readonly maxAutomaticTurns: number;
   private readonly createPipeline: (modelId: string, credentials: PipelineCredentials) => ModelPipeline;
   private readonly sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
+  private readonly stageManagerActiveIntervalMs: number;
+  private readonly stageManagerIdleDelayMs: number;
   private readonly recentSelfSentIds = new Map<string, number>();
   private readonly activeWaifuSendChannels = new Set<string>();
   private readonly activeWaifuQueries = new Map<string, number>();
   private readonly activeReviewerRuns = new Map<string, number>();
   private readonly channelRunVersions = new Map<string, number>();
   private static readonly SELF_SENT_TTL_MS = 60_000;
+  private static readonly STAGE_MANAGER_ACTIVE_INTERVAL_MS = 5 * 60 * 1000;
+  private static readonly STAGE_MANAGER_IDLE_DELAY_MS = 60 * 60 * 1000;
   private unsubscribes: Array<() => void> = [];
 
   constructor(private readonly options: RuntimeOrchestratorOptions) {
     this.maxAutomaticTurns = options.maxAutomaticTurns ?? 8;
     this.createPipeline = options.createPipeline ?? createModelPipeline;
     this.sleep = options.sleep ?? defaultSleep;
+    this.stageManagerActiveIntervalMs =
+      options.stageManagerActiveIntervalMs ?? RuntimeOrchestrator.STAGE_MANAGER_ACTIVE_INTERVAL_MS;
+    this.stageManagerIdleDelayMs =
+      options.stageManagerIdleDelayMs ?? RuntimeOrchestrator.STAGE_MANAGER_IDLE_DELAY_MS;
   }
 
   async start(): Promise<void> {
@@ -106,6 +130,9 @@ export class RuntimeOrchestrator {
       }),
       this.options.discord.onStopCommand?.((event) => {
         void this.handleStopCommand(event);
+      }),
+      this.options.discord.onMemoriesCommand?.((event) => {
+        void this.handleMemoriesCommand(event);
       })
     ].filter((unsubscribe): unsubscribe is () => void => Boolean(unsubscribe));
     if (this.options.discord.listGuilds) {
@@ -126,11 +153,13 @@ export class RuntimeOrchestrator {
       clearTimeout(timer);
     }
     this.retriggerTimers.clear();
+    this.clearAllStageManagerTimers();
     for (const run of this.activeRuns.values()) {
       run.controller.abort(new Error("runtime paused"));
     }
     await Promise.allSettled([...this.activeRuns.values()].map((run) => run.promise));
     this.activeRuns.clear();
+    await Promise.allSettled([...this.activeStageManagerRuns]);
     this.options.onActiveRunsChange?.(0);
   }
 
@@ -178,6 +207,7 @@ export class RuntimeOrchestrator {
       messageId: event.messageId,
       authorBot: event.authorBot
     });
+    this.noteStageManagerActivity(event.guildId, event.channelId);
     await this.startChannelRun(event.guildId, event.channelId, `message:${event.messageId}`);
   }
 
@@ -202,6 +232,7 @@ export class RuntimeOrchestrator {
     if (clearedRetrigger) {
       await this.clearScheduledRetrigger(guildId, channelId);
     }
+    this.clearStageManagerTimers(guildId, channelId);
 
     const activeRun = this.activeRuns.get(key);
     const stoppedRun = Boolean(activeRun && activeRun.channelId === channelId);
@@ -215,8 +246,8 @@ export class RuntimeOrchestrator {
     return { stoppedRun, clearedRetrigger, activeInAnotherChannel };
   }
 
-  async triggerStageManager(guildId: string, channelId: string): Promise<void> {
-    await this.runStageManager(guildId, channelId);
+  async triggerStageManager(guildId: string, channelId: string): Promise<StageManagerRunResult> {
+    return this.startStageManagerRun(guildId, channelId);
   }
 
   async triggerReviewer(guildId: string, channelId: string, userId?: string): Promise<{
@@ -318,6 +349,30 @@ export class RuntimeOrchestrator {
         message: error instanceof Error ? error.message : String(error)
       });
       await event.respond(error instanceof Error ? error.message : "Stop failed.");
+    }
+  }
+
+  private async handleMemoriesCommand(event: DiscordMemoriesCommandEvent): Promise<void> {
+    try {
+      const result = await this.triggerStageManager(event.guildId, event.channelId);
+      if (result.status === "updated") {
+        await event.respond("Stage manager updated memories.");
+      } else if (result.status === "no_change") {
+        await event.respond("Stage manager found no memory changes.");
+      } else if (result.status === "already_running") {
+        await event.respond("Stage manager is already running in this channel.");
+      } else if (result.status === "disabled") {
+        await event.respond("Stage manager is disabled or missing a model.");
+      } else {
+        await event.respond(result.message ?? "Stage manager failed. Check logs.");
+      }
+    } catch (error) {
+      this.options.logger.error("Memories command failed", {
+        guildId: event.guildId,
+        channelId: event.channelId,
+        message: error instanceof Error ? error.message : String(error)
+      });
+      await event.respond(error instanceof Error ? error.message : "Stage manager failed.");
     }
   }
 
@@ -665,9 +720,55 @@ export class RuntimeOrchestrator {
     await this.scheduleRetrigger(guildId, channelId, RETRIGGER_MIN_SECONDS);
   }
 
-  private async runStageManager(guildId: string, channelId: string): Promise<void> {
+  private noteStageManagerActivity(guildId: string, channelId: string): void {
+    const key = timerKey(guildId, channelId);
+    const schedule = this.stageManagerSchedules.get(key) ?? { activityVersion: 0 };
+    schedule.activityVersion += 1;
+    this.stageManagerSchedules.set(key, schedule);
+
+    if (!schedule.throttleTimer) {
+      this.scheduleStageManagerThrottle(guildId, channelId, schedule);
+    }
+
+    if (schedule.idleTimer) {
+      clearTimeout(schedule.idleTimer);
+    }
+    schedule.idleTimer = setTimeout(() => {
+      const current = this.stageManagerSchedules.get(key);
+      if (!current) return;
+      current.idleTimer = undefined;
+      void this.startStageManagerRun(guildId, channelId);
+      if (!current.throttleTimer) {
+        this.stageManagerSchedules.delete(key);
+      }
+    }, this.stageManagerIdleDelayMs);
+  }
+
+  private scheduleStageManagerThrottle(guildId: string, channelId: string, schedule: StageManagerSchedule): void {
+    const key = timerKey(guildId, channelId);
+    const scheduledVersion = schedule.activityVersion;
+    schedule.throttleTimer = setTimeout(() => {
+      const current = this.stageManagerSchedules.get(key);
+      if (!current) return;
+      current.throttleTimer = undefined;
+      const shouldContinue = current.activityVersion > scheduledVersion;
+      void this.startStageManagerRun(guildId, channelId).finally(() => {
+        const latest = this.stageManagerSchedules.get(key);
+        if (!latest) return;
+        if (shouldContinue && !latest.throttleTimer) {
+          this.scheduleStageManagerThrottle(guildId, channelId, latest);
+        } else if (!latest.idleTimer) {
+          this.stageManagerSchedules.delete(key);
+        }
+      });
+    }, this.stageManagerActiveIntervalMs);
+  }
+
+  private async runStageManager(guildId: string, channelId: string): Promise<StageManagerRunResult> {
     const state = await this.ensureChannelSession(guildId, channelId);
-    if (state.stageManager.active) return;
+    if (state.stageManager.active) {
+      return { status: "already_running" };
+    }
     await this.updateSession(guildId, channelId, (current) => ({
       ...current,
       stageManager: { active: true, startedAt: nowIso() }
@@ -676,7 +777,7 @@ export class RuntimeOrchestrator {
       const server = await this.ensureServer(guildId);
       const config = await this.readAgentConfig("stage-manager", 80);
       if (!config.enabled || !config.modelId) {
-        return;
+        return { status: "disabled" };
       }
       const pipeline = await this.pipelineFor(config.modelId);
       if (!pipeline.decideStageManager) {
@@ -692,10 +793,10 @@ export class RuntimeOrchestrator {
         modelId: config.modelId,
         messages,
         systemPrompt: config.prompt,
-        memories: store.memories,
+        memories: guildMemories(store.memories, guildId),
         reasoning: config.reasoning
       });
-      const result = await this.applyStageManagerCalls(calls);
+      const result = await this.applyStageManagerCalls(guildId, calls);
       for (const entry of result.historyEntries) {
         await this.appendStageManagerHistory({
           ...entry,
@@ -703,27 +804,32 @@ export class RuntimeOrchestrator {
           channelId
         });
       }
-      if (result.changed) {
-        const sent = await this.options.discord.sendWaifuMessage({
-          guildId,
-          channelId,
-          content: "memories updated",
-          allowedUserMentionIds: []
-        });
-        this.rememberSelfSent(sent.messageId);
-      }
+      return { status: result.changed ? "updated" : "no_change" };
     } catch (error) {
       this.options.logger.error("Stage manager failed", {
         guildId,
         channelId,
         message: error instanceof Error ? error.message : String(error)
       });
+      return {
+        status: "failed",
+        message: error instanceof Error ? error.message : "Stage manager failed."
+      };
     } finally {
       await this.updateSession(guildId, channelId, (current) => ({
         ...current,
         stageManager: { active: false }
       }));
     }
+  }
+
+  private startStageManagerRun(guildId: string, channelId: string): Promise<StageManagerRunResult> {
+    const promise = this.runStageManager(guildId, channelId);
+    this.activeStageManagerRuns.add(promise);
+    void promise.finally(() => {
+      this.activeStageManagerRuns.delete(promise);
+    });
+    return promise;
   }
 
   private async runReviewer(input: {
@@ -879,7 +985,7 @@ export class RuntimeOrchestrator {
     };
   }
 
-  private async applyStageManagerCalls(calls: StageManagerToolCall[]): Promise<{
+  private async applyStageManagerCalls(guildId: string, calls: StageManagerToolCall[]): Promise<{
     changed: boolean;
     historyEntries: Array<{
       id: string;
@@ -898,8 +1004,8 @@ export class RuntimeOrchestrator {
       createdAt: string;
     }> = [];
 
-    const changed = calls.some((call) => call.tool !== "no_change");
-    if (!changed) {
+    const requestedChange = calls.some((call) => call.tool !== "no_change");
+    if (!requestedChange) {
       for (const call of calls) {
         if (call.tool === "no_change") {
           historyEntries.push({
@@ -914,6 +1020,7 @@ export class RuntimeOrchestrator {
       return { changed: false, historyEntries };
     }
 
+    let changed = false;
     await this.options.storage.updateRevisionedJson({
       resourceKey: "memories:global",
       relativePath: "user/memories.json",
@@ -927,7 +1034,8 @@ export class RuntimeOrchestrator {
             memories.push({
               id,
               waifuId: call.memory.waifuId,
-              scope: call.memory.scope,
+              scope: "guild" as const,
+              guildId,
               content: call.memory.content,
               importance: call.memory.importance,
               sourceMessageIds: call.memory.sourceMessageIds,
@@ -942,12 +1050,33 @@ export class RuntimeOrchestrator {
               summary: call.memory.content,
               createdAt: now
             });
+            changed = true;
           } else if (call.tool === "update_memory") {
-            memories = memories.map((memory) =>
-              memory.id === call.memoryId
-                ? { ...memory, ...call.patch, id: memory.id, createdAt: memory.createdAt, updatedAt: now }
-                : memory
-            );
+            const target = memories.find((memory) => memory.id === call.memoryId && memory.guildId === guildId);
+            if (!target) {
+              historyEntries.push({
+                id: randomUUID(),
+                tool: call.tool,
+                affectedMemoryIds: [],
+                summary: "Skipped memory outside current guild",
+                createdAt: now
+              });
+              continue;
+            }
+            memories = memories.map((memory) => {
+              if (memory.id !== call.memoryId || memory.guildId !== guildId) {
+                return memory;
+              }
+              return {
+                ...memory,
+                ...call.patch,
+                id: memory.id,
+                scope: "guild" as const,
+                guildId: memory.guildId,
+                createdAt: memory.createdAt,
+                updatedAt: now
+              };
+            });
             historyEntries.push({
               id: randomUUID(),
               tool: call.tool,
@@ -955,9 +1084,23 @@ export class RuntimeOrchestrator {
               summary: "Updated memory",
               createdAt: now
             });
+            changed = true;
           } else if (call.tool === "archive_memory") {
+            const target = memories.find((memory) => memory.id === call.memoryId && memory.guildId === guildId);
+            if (!target) {
+              historyEntries.push({
+                id: randomUUID(),
+                tool: call.tool,
+                affectedMemoryIds: [],
+                summary: "Skipped memory outside current guild",
+                createdAt: now
+              });
+              continue;
+            }
             memories = memories.map((memory) =>
-              memory.id === call.memoryId ? { ...memory, status: "archived", updatedAt: now } : memory
+              memory.id === call.memoryId && memory.guildId === guildId
+                ? { ...memory, status: "archived" as const, updatedAt: now }
+                : memory
             );
             historyEntries.push({
               id: randomUUID(),
@@ -966,19 +1109,32 @@ export class RuntimeOrchestrator {
               summary: "Archived memory",
               createdAt: now
             });
+            changed = true;
           } else if (call.tool === "merge_memories") {
             const id = randomUUID();
-            const source = memories.filter((memory) => call.sourceMemoryIds.includes(memory.id));
+            const source = memories.filter((memory) => memory.guildId === guildId && call.sourceMemoryIds.includes(memory.id));
+            if (source.length < 2) {
+              historyEntries.push({
+                id: randomUUID(),
+                tool: call.tool,
+                affectedMemoryIds: [],
+                summary: "Skipped merge outside current guild",
+                createdAt: now
+              });
+              continue;
+            }
+            const sourceIds = new Set(source.map((memory) => memory.id));
             memories = memories
               .map((memory) =>
-                call.sourceMemoryIds.includes(memory.id)
+                memory.guildId === guildId && sourceIds.has(memory.id)
                   ? { ...memory, status: "archived" as const, updatedAt: now }
                   : memory
               )
               .concat({
                 id,
-                waifuId: source[0]?.waifuId ?? "global",
-                scope: source[0]?.scope ?? "global",
+                waifuId: source[0].waifuId,
+                scope: "guild" as const,
+                guildId,
                 content: call.mergedContent,
                 importance: 3,
                 sourceMessageIds: [...new Set(source.flatMap((memory) => memory.sourceMessageIds))],
@@ -989,10 +1145,11 @@ export class RuntimeOrchestrator {
             historyEntries.push({
               id: randomUUID(),
               tool: call.tool,
-              affectedMemoryIds: [id, ...call.sourceMemoryIds],
+              affectedMemoryIds: [id, ...source.map((memory) => memory.id)],
               summary: call.mergedContent,
               createdAt: now
             });
+            changed = true;
           } else {
             historyEntries.push({
               id: randomUUID(),
@@ -1036,6 +1193,31 @@ export class RuntimeOrchestrator {
     clearTimeout(timer);
     this.retriggerTimers.delete(key);
     return true;
+  }
+
+  private clearStageManagerTimers(guildId: string, channelId: string): void {
+    const key = timerKey(guildId, channelId);
+    const schedule = this.stageManagerSchedules.get(key);
+    if (!schedule) return;
+    if (schedule.throttleTimer) {
+      clearTimeout(schedule.throttleTimer);
+    }
+    if (schedule.idleTimer) {
+      clearTimeout(schedule.idleTimer);
+    }
+    this.stageManagerSchedules.delete(key);
+  }
+
+  private clearAllStageManagerTimers(): void {
+    for (const schedule of this.stageManagerSchedules.values()) {
+      if (schedule.throttleTimer) {
+        clearTimeout(schedule.throttleTimer);
+      }
+      if (schedule.idleTimer) {
+        clearTimeout(schedule.idleTimer);
+      }
+    }
+    this.stageManagerSchedules.clear();
   }
 
   private async clearScheduledRetrigger(guildId: string, channelId: string): Promise<void> {
@@ -1207,7 +1389,7 @@ export class RuntimeOrchestrator {
       )
     ]);
     const memories = store.memories
-      .filter((memory) => memory.waifuId === waifu.id && memory.status === "active")
+      .filter((memory) => memory.guildId === guildId && memory.waifuId === waifu.id && memory.status === "active")
       .map((memory) => `- ${memory.content}`)
       .join("\n");
     const emojiList = emojis.emojis
@@ -1574,6 +1756,10 @@ export class RuntimeOrchestrator {
 
 function emptyMemoryStore(): MemoryStore {
   return MemoryStoreSchema.parse(createEmptyRevisionedFile({ memories: [] }));
+}
+
+function guildMemories(memories: WaifuMemory[], guildId: string): WaifuMemory[] {
+  return memories.filter((memory) => memory.guildId === guildId);
 }
 
 function buildWaifuToolUseInstructions(waifu: WaifuConfig, availableWaifus: WaifuConfig[]): string | undefined {

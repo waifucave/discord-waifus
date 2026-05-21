@@ -6,6 +6,8 @@ import {
   DiscordGatewayFacade,
   DiscordClearCommandEvent,
   DiscordClearCommandListener,
+  DiscordMemoriesCommandEvent,
+  DiscordMemoriesCommandListener,
   DiscordReviewCommandEvent,
   DiscordReviewCommandListener,
   DiscordRunCommandEvent,
@@ -41,6 +43,7 @@ let roots: string[] = [];
 
 afterEach(async () => {
   vi.restoreAllMocks();
+  vi.useRealTimers();
   await Promise.all(roots.map(removeTempRoot));
   roots = [];
 });
@@ -59,6 +62,7 @@ class FakeDiscord implements DiscordGatewayFacade {
   clearListeners = new Set<DiscordClearCommandListener>();
   runListeners = new Set<DiscordRunCommandListener>();
   stopListeners = new Set<DiscordStopCommandListener>();
+  memoriesListeners = new Set<DiscordMemoriesCommandListener>();
   contexts: ContextMessage[][] = [
     [contextMessage("m1", "user", "Kevin", "hello")],
     [contextMessage("m1", "user", "Kevin", "hello")],
@@ -89,6 +93,11 @@ class FakeDiscord implements DiscordGatewayFacade {
   onStopCommand(listener: DiscordStopCommandListener): () => void {
     this.stopListeners.add(listener);
     return () => this.stopListeners.delete(listener);
+  }
+
+  onMemoriesCommand(listener: DiscordMemoriesCommandListener): () => void {
+    this.memoriesListeners.add(listener);
+    return () => this.memoriesListeners.delete(listener);
   }
 
   async emitReviewCommand(
@@ -135,6 +144,19 @@ class FakeDiscord implements DiscordGatewayFacade {
   ): Promise<void> {
     await Promise.all(
       [...this.stopListeners].map((listener) =>
+        listener({
+          ...event,
+          respond: event.respond ?? (async () => undefined)
+        })
+      )
+    );
+  }
+
+  async emitMemoriesCommand(
+    event: Omit<DiscordMemoriesCommandEvent, "respond"> & { respond?: DiscordMemoriesCommandEvent["respond"] }
+  ): Promise<void> {
+    await Promise.all(
+      [...this.memoriesListeners].map((listener) =>
         listener({
           ...event,
           respond: event.respond ?? (async () => undefined)
@@ -263,7 +285,8 @@ describe("RuntimeOrchestrator", () => {
             {
               id: "memory-1",
               waifuId: "yuki",
-              scope: "global",
+              scope: "guild",
+              guildId: "guild-1",
               content: "Yuki remembers Kevin likes tea.",
               importance: 3,
               createdAt: now,
@@ -824,12 +847,12 @@ describe("RuntimeOrchestrator", () => {
       },
       async decideStageManager(request: StageManagerRequest) {
         expect(request.systemPrompt).toBe("memories");
+        expect(request.memories).toEqual([]);
         return [
           {
             tool: "add_memory",
             memory: {
               waifuId: "yuki",
-              scope: "global",
               content: "Kevin likes tea.",
               importance: 3,
               sourceMessageIds: ["m1"]
@@ -858,13 +881,450 @@ describe("RuntimeOrchestrator", () => {
 
     const memories = await storage.readJson("user/memories.json", MemoryStoreSchema);
     expect(memories.memories[0].content).toBe("Kevin likes tea.");
-    expect(discord.sent[0].content).toBe("memories updated");
+    expect(memories.memories[0]).toMatchObject({
+      scope: "guild",
+      guildId: "guild-1"
+    });
+    expect(discord.sent).toEqual([]);
 
     const history = await storage.readJson(
       "user/stage-manager/history.json",
       StageManagerHistoryFileSchema
     );
     expect(history.edits[0].tool).toBe("add_memory");
+  });
+
+  it("keeps stage-manager memory input and edits inside the current guild", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    const now = new Date().toISOString();
+
+    await seedRuntimeConfig(storage);
+    await storage.writeJson(
+      "memories:global",
+      "user/memories.json",
+      MemoryStoreSchema,
+      MemoryStoreSchema.parse(
+        createEmptyRevisionedFile({
+          memories: [
+            {
+              id: "same-guild",
+              waifuId: "yuki",
+              scope: "guild",
+              guildId: "guild-1",
+              content: "Kevin likes tea.",
+              importance: 3,
+              createdAt: now,
+              updatedAt: now,
+              sourceMessageIds: ["m1"],
+              status: "active"
+            },
+            {
+              id: "other-guild",
+              waifuId: "yuki",
+              scope: "guild",
+              guildId: "guild-2",
+              content: "Other guild secret.",
+              importance: 3,
+              createdAt: now,
+              updatedAt: now,
+              sourceMessageIds: ["m2"],
+              status: "active"
+            }
+          ]
+        })
+      )
+    );
+
+    const pipeline: ModelPipeline = {
+      async generateWaifu() {
+        return { content: "unused" };
+      },
+      async decideStageManager(request: StageManagerRequest) {
+        expect(request.memories.map((memory) => memory.id)).toEqual(["same-guild"]);
+        return [
+          { tool: "update_memory", memoryId: "other-guild", patch: { content: "leaked update" } },
+          { tool: "archive_memory", memoryId: "same-guild" },
+          {
+            tool: "add_memory",
+            memory: {
+              waifuId: "yuki",
+              content: "Guild one only.",
+              importance: 3,
+              sourceMessageIds: ["m1"]
+            }
+          }
+        ];
+      }
+    };
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      createPipeline: () => pipeline,
+      logger: {
+        debug: () => undefined,
+        info: () => undefined,
+        warn: () => undefined,
+        error: () => undefined
+      }
+    });
+
+    await runtime.triggerStageManager("guild-1", "channel-1");
+
+    const memories = await storage.readJson("user/memories.json", MemoryStoreSchema);
+    expect(memories.memories.find((memory) => memory.id === "other-guild")).toMatchObject({
+      guildId: "guild-2",
+      content: "Other guild secret.",
+      status: "active"
+    });
+    expect(memories.memories.find((memory) => memory.id === "same-guild")?.status).toBe("archived");
+    expect(memories.memories.find((memory) => memory.content === "Guild one only.")).toMatchObject({
+      guildId: "guild-1",
+      scope: "guild"
+    });
+  });
+
+  it("hides cross-guild memories from waifu prompts", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    const now = new Date().toISOString();
+
+    await seedRuntimeConfig(storage);
+    await storage.writeJson(
+      "memories:global",
+      "user/memories.json",
+      MemoryStoreSchema,
+      MemoryStoreSchema.parse(
+        createEmptyRevisionedFile({
+          memories: [
+            {
+              id: "same",
+              waifuId: "yuki",
+              scope: "guild",
+              guildId: "guild-1",
+              content: "Kevin likes tea.",
+              importance: 3,
+              createdAt: now,
+              updatedAt: now,
+              sourceMessageIds: ["m1"],
+              status: "active"
+            },
+            {
+              id: "cross",
+              waifuId: "yuki",
+              scope: "guild",
+              guildId: "guild-2",
+              content: "Kevin hates tea.",
+              importance: 3,
+              createdAt: now,
+              updatedAt: now,
+              sourceMessageIds: ["m2"],
+              status: "active"
+            }
+          ]
+        })
+      )
+    );
+
+    const pipeline: ModelPipeline = {
+      async decideOrchestrator() {
+        return {
+          action: "reply",
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal" }],
+          reasoning: "reply"
+        };
+      },
+      async generateWaifu(request: WaifuGenerationRequest) {
+        expect(request.systemPrompt).toContain("Kevin likes tea.");
+        expect(request.systemPrompt).not.toContain("Kevin hates tea.");
+        return { content: "noted" };
+      }
+    };
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 1,
+      createPipeline: () => pipeline,
+      logger: {
+        debug: () => undefined,
+        info: () => undefined,
+        warn: () => undefined,
+        error: () => undefined
+      }
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+  });
+
+  it("schedules stage-manager runs after activity and once after silence", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    let stageCalls = 0;
+    const stageWaiters: Array<() => void> = [];
+    const waitForStageCalls = (count: number) => {
+      if (stageCalls >= count) return Promise.resolve();
+      return new Promise<void>((resolve) => {
+        stageWaiters.push(() => {
+          if (stageCalls >= count) resolve();
+        });
+      });
+    };
+
+    await seedRuntimeConfig(storage);
+    const pipeline: ModelPipeline = {
+      async generateWaifu() {
+        return { content: "unused" };
+      },
+      async decideOrchestrator() {
+        return { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 7200, reasoning: "wait" };
+      },
+      async decideStageManager() {
+        stageCalls += 1;
+        for (const waiter of stageWaiters) waiter();
+        return [{ tool: "no_change", reason: "none" }];
+      }
+    };
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      stageManagerActiveIntervalMs: 80,
+      stageManagerIdleDelayMs: 180,
+      createPipeline: () => pipeline,
+      logger: {
+        debug: () => undefined,
+        info: () => undefined,
+        warn: () => undefined,
+        error: () => undefined
+      }
+    });
+
+    await runtime.handleDiscordMessage({
+      guildId: "guild-1",
+      channelId: "channel-1",
+      messageId: "user-1",
+      authorId: "u1",
+      authorBot: false
+    });
+    expect(stageCalls).toBe(0);
+
+    await waitForStageCalls(1);
+    expect(stageCalls).toBe(1);
+
+    await waitForStageCalls(2);
+    expect(stageCalls).toBe(2);
+
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    expect(stageCalls).toBe(2);
+    await runtime.stop();
+  });
+
+  it("keeps the five-minute stage-manager cadence while activity continues", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    let stageCalls = 0;
+    const stageWaiters: Array<() => void> = [];
+    const waitForStageCalls = (count: number) => {
+      if (stageCalls >= count) return Promise.resolve();
+      return new Promise<void>((resolve) => {
+        stageWaiters.push(() => {
+          if (stageCalls >= count) resolve();
+        });
+      });
+    };
+
+    await seedRuntimeConfig(storage);
+    const pipeline: ModelPipeline = {
+      async generateWaifu() {
+        return { content: "unused" };
+      },
+      async decideOrchestrator() {
+        return { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 7200, reasoning: "wait" };
+      },
+      async decideStageManager() {
+        stageCalls += 1;
+        for (const waiter of stageWaiters) waiter();
+        return [{ tool: "no_change", reason: "none" }];
+      }
+    };
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      stageManagerActiveIntervalMs: 100,
+      stageManagerIdleDelayMs: 300,
+      createPipeline: () => pipeline,
+      logger: {
+        debug: () => undefined,
+        info: () => undefined,
+        warn: () => undefined,
+        error: () => undefined
+      }
+    });
+
+    await runtime.handleDiscordMessage({
+      guildId: "guild-1",
+      channelId: "channel-1",
+      messageId: "user-1",
+      authorId: "u1",
+      authorBot: false
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await runtime.handleDiscordMessage({
+      guildId: "guild-1",
+      channelId: "channel-1",
+      messageId: "user-2",
+      authorId: "u1",
+      authorBot: false
+    });
+
+    await waitForStageCalls(1);
+    expect(stageCalls).toBe(1);
+    await waitForStageCalls(2);
+    expect(stageCalls).toBe(2);
+    await runtime.stop();
+  });
+
+  it("does not schedule stage-manager work for inactive channels and clears timers on pause", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    let stageCalls = 0;
+
+    await seedRuntimeConfig(storage);
+    await enableWaifus(storage, []);
+    const pipeline: ModelPipeline = {
+      async generateWaifu() {
+        return { content: "unused" };
+      },
+      async decideStageManager() {
+        stageCalls += 1;
+        return [{ tool: "no_change", reason: "none" }];
+      }
+    };
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      stageManagerActiveIntervalMs: 50,
+      stageManagerIdleDelayMs: 100,
+      createPipeline: () => pipeline,
+      logger: {
+        debug: () => undefined,
+        info: () => undefined,
+        warn: () => undefined,
+        error: () => undefined
+      }
+    });
+
+    await runtime.handleDiscordMessage({
+      guildId: "guild-1",
+      channelId: "channel-1",
+      messageId: "inactive",
+      authorId: "u1",
+      authorBot: false
+    });
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(stageCalls).toBe(0);
+
+    await enableWaifus(storage, ["yuki"]);
+    await runtime.handleDiscordMessage({
+      guildId: "guild-1",
+      channelId: "channel-1",
+      messageId: "active",
+      authorId: "u1",
+      authorBot: false
+    });
+    await runtime.pause();
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    expect(stageCalls).toBe(0);
+  });
+
+  it("responds to /memories ephemerally without sending a public channel message", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+
+    await seedRuntimeConfig(storage);
+    const pipeline: ModelPipeline = {
+      async generateWaifu() {
+        return { content: "unused" };
+      },
+      async decideStageManager() {
+        return [
+          {
+            tool: "add_memory",
+            memory: {
+              waifuId: "yuki",
+              content: "Kevin likes tea.",
+              importance: 3,
+              sourceMessageIds: ["m1"]
+            }
+          }
+        ];
+      }
+    };
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      createPipeline: () => pipeline,
+      logger: {
+        debug: () => undefined,
+        info: () => undefined,
+        warn: () => undefined,
+        error: () => undefined
+      }
+    });
+    await runtime.start();
+
+    const responses: string[] = [];
+    let resolveResponded: () => void = () => undefined;
+    const responded = new Promise<void>((resolve) => {
+      resolveResponded = resolve;
+    });
+    await discord.emitMemoriesCommand({
+      guildId: "guild-1",
+      channelId: "channel-1",
+      userId: "memory-user",
+      respond: async (content) => {
+        responses.push(content);
+        resolveResponded();
+      }
+    });
+    await Promise.race([
+      responded,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("memories command did not respond")), 1000))
+    ]);
+    await runtime.stop();
+
+    expect(responses).toEqual(["Stage manager updated memories."]);
+    expect(discord.sent).toEqual([]);
   });
 
   it("reviews the latest waifu chunk group, deletes hallucinated chunks, and retriggers orchestration", async () => {

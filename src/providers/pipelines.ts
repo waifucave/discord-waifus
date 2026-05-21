@@ -679,10 +679,11 @@ export function safeName(input: string): string {
 
 function stageManagerJsonInstruction(): string {
   return `Each message in the context is tagged with [index: #N], [timestamp: ISO-8601 UTC], and [sender: DisplayName] before its body, optionally followed by [reactions: ...] and [replying to: ...]. Reference messages by their #N index.
-Tool usage: compare the context to existing memories, choose all needed memory edits, and call ${STAGE_MANAGER_TOOL_NAME} exactly once with a toolCalls array. Do not write normal assistant text.
+Tool usage: compare the context to existing memories for this Discord server, choose all needed memory edits, and call ${STAGE_MANAGER_TOOL_NAME} exactly once with a toolCalls array. Do not write normal assistant text.
+All memory edits apply only to the current Discord server. Do not choose or mention global, channel, or user scopes.
 Each toolCalls item must match one of:
-{ "tool": "add_memory", "memory": { "waifuId": string, "scope": "global"|"guild"|"channel"|"user", "content": string, "importance": 1|2|3|4|5, "sourceMessageIndices": number[] } }
-{ "tool": "update_memory", "memoryId": string, "patch": { "waifuId"?: string, "scope"?: "global"|"guild"|"channel"|"user", "content"?: string, "importance"?: 1|2|3|4|5, "status"?: "active"|"archived" } }
+{ "tool": "add_memory", "memory": { "waifuId": string, "content": string, "importance": 1|2|3|4|5, "sourceMessageIndices": number[] } }
+{ "tool": "update_memory", "memoryId": string, "patch": { "waifuId"?: string, "content"?: string, "importance"?: 1|2|3|4|5, "status"?: "active"|"archived" } }
 { "tool": "archive_memory", "memoryId": string }
 { "tool": "merge_memories", "sourceMemoryIds": string[], "mergedContent": string }
 { "tool": "no_change", "reason"?: string }.
@@ -844,7 +845,6 @@ export const STAGE_MANAGER_TOOL_PARAMETERS = {
             additionalProperties: false,
             properties: {
               waifuId: { type: "string" },
-              scope: { type: "string", enum: ["global", "guild", "channel", "user"] },
               content: { type: "string" },
               importance: { type: "integer", enum: [1, 2, 3, 4, 5] },
               sourceMessageIndices: {
@@ -853,7 +853,7 @@ export const STAGE_MANAGER_TOOL_PARAMETERS = {
                 description: "#N context indices supporting this memory."
               }
             },
-            required: ["waifuId", "scope", "content", "importance"]
+            required: ["waifuId", "content", "importance"]
           },
           memoryId: {
             type: "string",
@@ -865,7 +865,6 @@ export const STAGE_MANAGER_TOOL_PARAMETERS = {
             additionalProperties: false,
             properties: {
               waifuId: { type: "string" },
-              scope: { type: "string", enum: ["global", "guild", "channel", "user"] },
               content: { type: "string" },
               importance: { type: "integer", enum: [1, 2, 3, 4, 5] },
               status: { type: "string", enum: ["active", "archived"] }
@@ -1045,7 +1044,6 @@ const RawOrchestratorDecisionSchema = z.object({
 
 const RawStageManagerPatchSchema = z.object({
   waifuId: z.string().min(1).optional(),
-  scope: z.enum(["global", "guild", "channel", "user"]).optional(),
   content: z.string().min(1).optional(),
   importance: ImportanceSchema.optional(),
   status: z.enum(["active", "archived"]).optional()
@@ -1056,7 +1054,6 @@ const RawStageManagerToolCallSchema = z.discriminatedUnion("tool", [
     tool: z.literal("add_memory"),
     memory: z.object({
       waifuId: z.string().min(1),
-      scope: z.enum(["global", "guild", "channel", "user"]),
       content: z.string().min(1),
       importance: ImportanceSchema,
       sourceMessageIndices: z.array(z.number().int().min(1)).default([])
@@ -1135,7 +1132,6 @@ function parseStageManagerCalls(text: string, indexToId: Map<number, string>): S
           tool: "add_memory",
           memory: {
             waifuId: raw.memory.waifuId,
-            scope: raw.memory.scope,
             content: raw.memory.content,
             importance: raw.memory.importance,
             sourceMessageIds

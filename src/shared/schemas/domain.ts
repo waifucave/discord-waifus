@@ -274,23 +274,34 @@ export const GuildRolesFileSchema = RevisionedRecordSchema.extend({
 });
 export type GuildRolesFile = z.infer<typeof GuildRolesFileSchema>;
 
-export const WaifuMemorySchema = z.object({
-  id: z.string().min(1),
-  waifuId: z.string().min(1),
-  scope: z.enum(["global", "guild", "channel", "user"]),
-  content: z.string().min(1),
-  importance: z.union([
-    z.literal(1),
-    z.literal(2),
-    z.literal(3),
-    z.literal(4),
-    z.literal(5)
-  ]),
-  createdAt: IsoDateStringSchema,
-  updatedAt: IsoDateStringSchema,
-  sourceMessageIds: z.array(z.string()),
-  status: z.enum(["active", "archived"])
-});
+export const WaifuMemorySchema = z
+  .object({
+    id: z.string().min(1),
+    waifuId: z.string().min(1),
+    scope: z.literal("guild"),
+    guildId: z.string().min(1).optional(),
+    content: z.string().min(1),
+    importance: z.union([
+      z.literal(1),
+      z.literal(2),
+      z.literal(3),
+      z.literal(4),
+      z.literal(5)
+    ]),
+    createdAt: IsoDateStringSchema,
+    updatedAt: IsoDateStringSchema,
+    sourceMessageIds: z.array(z.string()),
+    status: z.enum(["active", "archived"])
+  })
+  .superRefine((memory, ctx) => {
+    if (memory.status === "active" && !memory.guildId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["guildId"],
+        message: "Active memories must be assigned to a guild."
+      });
+    }
+  });
 export type WaifuMemory = z.infer<typeof WaifuMemorySchema>;
 
 export const MemoryStoreSchema = RevisionedRecordSchema.extend({

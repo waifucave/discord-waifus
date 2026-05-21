@@ -27,6 +27,7 @@ export interface DiscordGatewayFacade {
   onClearCommand?(listener: DiscordClearCommandListener): () => void;
   onRunCommand?(listener: DiscordRunCommandListener): () => void;
   onStopCommand?(listener: DiscordStopCommandListener): () => void;
+  onMemoriesCommand?(listener: DiscordMemoriesCommandListener): () => void;
   listGuilds?(): Promise<Array<{ guildId: string; name: string }>>;
   fetchFreshContext(input: {
     guildId: string;
@@ -81,10 +82,12 @@ export type DiscordClearCommandEvent = DiscordSlashCommandEvent & {
 };
 export type DiscordRunCommandEvent = DiscordSlashCommandEvent;
 export type DiscordStopCommandEvent = DiscordSlashCommandEvent;
+export type DiscordMemoriesCommandEvent = DiscordSlashCommandEvent;
 export type DiscordReviewCommandListener = (event: DiscordReviewCommandEvent) => void | Promise<void>;
 export type DiscordClearCommandListener = (event: DiscordClearCommandEvent) => void | Promise<void>;
 export type DiscordRunCommandListener = (event: DiscordRunCommandEvent) => void | Promise<void>;
 export type DiscordStopCommandListener = (event: DiscordStopCommandEvent) => void | Promise<void>;
+export type DiscordMemoriesCommandListener = (event: DiscordMemoriesCommandEvent) => void | Promise<void>;
 
 export type DiscordClearType = "waifus" | "all";
 
@@ -117,6 +120,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   private readonly clearListeners = new Set<DiscordClearCommandListener>();
   private readonly runListeners = new Set<DiscordRunCommandListener>();
   private readonly stopListeners = new Set<DiscordStopCommandListener>();
+  private readonly memoriesListeners = new Set<DiscordMemoriesCommandListener>();
   private readonly recentMentionRefreshes = new Map<string, number>();
 
   constructor(private readonly options: DiscordJsGatewayOptions) {}
@@ -166,6 +170,8 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
               void this.handleRunInteraction(interaction);
             } else if (interaction.commandName === STOP_COMMAND_NAME) {
               void this.handleStopInteraction(interaction);
+            } else if (interaction.commandName === MEMORIES_COMMAND_NAME) {
+              void this.handleMemoriesInteraction(interaction);
             }
           });
         }
@@ -220,6 +226,11 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   onStopCommand(listener: DiscordStopCommandListener): () => void {
     this.stopListeners.add(listener);
     return () => this.stopListeners.delete(listener);
+  }
+
+  onMemoriesCommand(listener: DiscordMemoriesCommandListener): () => void {
+    this.memoriesListeners.add(listener);
+    return () => this.memoriesListeners.delete(listener);
   }
 
   async listGuilds(): Promise<Array<{ guildId: string; name: string }>> {
@@ -581,6 +592,25 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
       void listener(event);
     }
   }
+
+  private async handleMemoriesInteraction(interaction: ChatInputCommandInteraction): Promise<void> {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    if (!interaction.guildId || !interaction.channelId) {
+      await interaction.editReply("/memories can only be used in a server channel.");
+      return;
+    }
+    const event: DiscordMemoriesCommandEvent = {
+      guildId: interaction.guildId,
+      channelId: interaction.channelId,
+      userId: interaction.user.id,
+      respond: async (content) => {
+        await interaction.editReply(content);
+      }
+    };
+    for (const listener of this.memoriesListeners) {
+      void listener(event);
+    }
+  }
 }
 
 export class DiscordGatewayNotConfigured implements DiscordGatewayFacade {
@@ -733,6 +763,7 @@ const REVIEW_COMMAND_NAME = "review";
 const CLEAR_COMMAND_NAME = "clear";
 const RUN_COMMAND_NAME = "run";
 const STOP_COMMAND_NAME = "stop";
+const MEMORIES_COMMAND_NAME = "memories";
 const CLEAR_COUNT_OPTION_NAME = "count";
 const CLEAR_TYPE_OPTION_NAME = "type";
 const MAX_CLEAR_COUNT = 100;
@@ -781,6 +812,10 @@ async function registerOrchestratorCommands(client: Client, logger?: Logger): Pr
       {
         name: STOP_COMMAND_NAME,
         description: "Stop the current orchestrator and waifu work in this channel."
+      },
+      {
+        name: MEMORIES_COMMAND_NAME,
+        description: "Run the stage manager for this channel and update guild memories."
       }
     ];
     const commands = await manager.fetch();

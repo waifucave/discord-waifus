@@ -4,9 +4,9 @@ import { api, ConflictError } from "../api/client";
 import { useApi } from "../api/useApi";
 import type {
   MemoryImportance,
-  MemoryScope,
   MemoryStatus,
   MemoryStore,
+  ServersResponse,
   WaifuMemory,
   WaifusResponse
 } from "../api/types";
@@ -17,16 +17,16 @@ import { Notice } from "../components/Notice";
 import { SkeletonRows } from "../components/Skeleton";
 import { timeAgo } from "../utils/format";
 
-const SCOPES: MemoryScope[] = ["global", "guild", "channel", "user"];
 const STATUSES: MemoryStatus[] = ["active", "archived"];
 const IMPORTANCES: MemoryImportance[] = [1, 2, 3, 4, 5];
 
 export function MemoriesView() {
   const memories = useApi<MemoryStore>((s) => api.memories(s), []);
   const waifus = useApi<WaifusResponse>((s) => api.waifus(s), []);
+  const servers = useApi<ServersResponse>((s) => api.servers(s), []);
 
   const [filterWaifu, setFilterWaifu] = useState<string>("");
-  const [filterScope, setFilterScope] = useState<string>("");
+  const [filterGuild, setFilterGuild] = useState<string>("");
   const [filterStatus, setFilterStatus] = useState<string>("active");
   const [filterImportance, setFilterImportance] = useState<string>("");
   const [filterText, setFilterText] = useState<string>("");
@@ -39,13 +39,13 @@ export function MemoriesView() {
     const all = memories.data?.memories ?? [];
     return all.filter((m) => {
       if (filterWaifu && m.waifuId !== filterWaifu) return false;
-      if (filterScope && m.scope !== filterScope) return false;
+      if (filterGuild && m.guildId !== filterGuild) return false;
       if (filterStatus && m.status !== filterStatus) return false;
       if (filterImportance && String(m.importance) !== filterImportance) return false;
       if (filterText && !m.content.toLowerCase().includes(filterText.toLowerCase())) return false;
       return true;
     });
-  }, [memories.data, filterWaifu, filterScope, filterStatus, filterImportance, filterText]);
+  }, [memories.data, filterWaifu, filterGuild, filterStatus, filterImportance, filterText]);
 
   return (
     <>
@@ -53,7 +53,7 @@ export function MemoriesView() {
         <div>
           <h2 className="view-title">Memories</h2>
           <p className="view-subtitle">
-            Per-waifu memory store. Shared with the stage manager; writes use the same revision lock.
+            Per-waifu guild memory store. Shared with the stage manager; writes use the same revision lock.
           </p>
         </div>
         <div className="view-actions">
@@ -88,11 +88,11 @@ export function MemoriesView() {
             </option>
           ))}
         </select>
-        <select className="select" value={filterScope} onChange={(e) => setFilterScope(e.target.value)} style={{ maxWidth: 140 }}>
-          <option value="">All scopes</option>
-          {SCOPES.map((s) => (
-            <option key={s} value={s}>
-              {s}
+        <select className="select" value={filterGuild} onChange={(e) => setFilterGuild(e.target.value)} style={{ maxWidth: 220 }}>
+          <option value="">All guilds</option>
+          {(servers.data?.servers ?? []).map((s) => (
+            <option key={s.guildId} value={s.guildId}>
+              {s.name || s.guildId}
             </option>
           ))}
         </select>
@@ -136,7 +136,7 @@ export function MemoriesView() {
             <thead>
               <tr>
                 <th>Waifu</th>
-                <th>Scope</th>
+                <th>Guild</th>
                 <th>Importance</th>
                 <th>Status</th>
                 <th>Content</th>
@@ -152,7 +152,7 @@ export function MemoriesView() {
                     {(waifus.data?.waifus.find((w) => w.id === m.waifuId)?.displayName) || m.waifuId}
                   </td>
                   <td>
-                    <Pill>{m.scope}</Pill>
+                    <Pill>{serverLabel(servers.data?.servers ?? [], m.guildId)}</Pill>
                   </td>
                   <td>★ {m.importance}</td>
                   <td>
@@ -229,6 +229,7 @@ export function MemoriesView() {
         <MemoryEditor
           mode="create"
           waifus={waifus.data?.waifus ?? []}
+          servers={servers.data?.servers ?? []}
           revision={memories.data?.revision ?? 0}
           onClose={() => setCreating(false)}
           onSaved={(store, conflict) => {
@@ -243,6 +244,7 @@ export function MemoriesView() {
         <MemoryEditor
           mode="edit"
           waifus={waifus.data?.waifus ?? []}
+          servers={servers.data?.servers ?? []}
           revision={memories.data?.revision ?? 0}
           memory={editing}
           onClose={() => setEditing(undefined)}
@@ -260,6 +262,7 @@ export function MemoriesView() {
 function MemoryEditor({
   mode,
   waifus,
+  servers,
   revision,
   memory,
   onClose,
@@ -267,13 +270,14 @@ function MemoryEditor({
 }: {
   mode: "create" | "edit";
   waifus: WaifusResponse["waifus"];
+  servers: ServersResponse["servers"];
   revision: number;
   memory?: WaifuMemory;
   onClose: () => void;
   onSaved: (store: MemoryStore | undefined, conflict: MemoryStore | undefined) => void;
 }) {
   const [waifuId, setWaifuId] = useState(memory?.waifuId ?? waifus[0]?.id ?? "");
-  const [scope, setScope] = useState<MemoryScope>(memory?.scope ?? "global");
+  const [guildId, setGuildId] = useState(memory?.guildId ?? servers[0]?.guildId ?? "");
   const [content, setContent] = useState(memory?.content ?? "");
   const [importance, setImportance] = useState<MemoryImportance>(memory?.importance ?? 3);
   const [status, setStatus] = useState<MemoryStatus>(memory?.status ?? "active");
@@ -282,8 +286,8 @@ function MemoryEditor({
   const [err, setErr] = useState<string | undefined>(undefined);
 
   const submit = async () => {
-    if (!waifuId || !content.trim()) {
-      setErr("Waifu and content are required.");
+    if (!waifuId || !guildId || !content.trim()) {
+      setErr("Waifu, guild, and content are required.");
       return;
     }
     setBusy(true);
@@ -297,7 +301,7 @@ function MemoryEditor({
         const next = await api.createMemory({
           revision,
           waifuId,
-          scope,
+          guildId,
           content: content.trim(),
           importance,
           sourceMessageIds
@@ -307,7 +311,7 @@ function MemoryEditor({
         const next = await api.updateMemory(memory.id, {
           revision,
           waifuId,
-          scope,
+          guildId,
           content: content.trim(),
           importance,
           sourceMessageIds,
@@ -354,11 +358,12 @@ function MemoryEditor({
           </select>
         </div>
         <div className="field">
-          <label className="field-label">Scope</label>
-          <select className="select" value={scope} onChange={(e) => setScope(e.target.value as MemoryScope)}>
-            {SCOPES.map((s) => (
-              <option key={s} value={s}>
-                {s}
+          <label className="field-label">Guild</label>
+          <select className="select" value={guildId} onChange={(e) => setGuildId(e.target.value)}>
+            <option value="">— Select —</option>
+            {servers.map((s) => (
+              <option key={s.guildId} value={s.guildId}>
+                {s.name || s.guildId}
               </option>
             ))}
           </select>
@@ -419,4 +424,9 @@ function MemoryEditor({
       {err && <Notice tone="err">{err}</Notice>}
     </Modal>
   );
+}
+
+function serverLabel(servers: ServersResponse["servers"], guildId?: string): string {
+  if (!guildId) return "unassigned";
+  return servers.find((server) => server.guildId === guildId)?.name || guildId;
 }

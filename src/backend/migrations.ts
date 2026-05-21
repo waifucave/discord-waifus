@@ -22,6 +22,9 @@ export async function runMigrations(dataRoot: string): Promise<MigrationResult> 
   if (sessionsRenamed > 0) {
     applied.push(`migrate-scheduled-retrigger-at-${sessionsRenamed}`);
   }
+  if (await migrateLegacyMemories(dataRoot)) {
+    applied.push("migrate-memories-to-guild-scope");
+  }
 
   return { applied };
 }
@@ -270,4 +273,88 @@ async function migrateSessionFiles(dataRoot: string): Promise<number> {
     }
   }
   return count;
+}
+
+async function migrateLegacyMemories(dataRoot: string): Promise<boolean> {
+  const filePath = path.join(dataRoot, "user", "memories.json");
+  const data = await readJsonOrUndefined(filePath);
+  if (!isObject(data) || !Array.isArray(data.memories)) return false;
+
+  const [historyGuilds, configuredGuildIds] = await Promise.all([
+    memoryGuildsFromStageManagerHistory(dataRoot),
+    listConfiguredGuildIds(dataRoot)
+  ]);
+  const onlyConfiguredGuildId = configuredGuildIds.length === 1 ? configuredGuildIds[0] : undefined;
+
+  let changed = false;
+  for (const memory of data.memories) {
+    if (!isObject(memory)) continue;
+    if (memory.scope !== "guild") {
+      memory.scope = "guild";
+      changed = true;
+    }
+
+    const memoryId = typeof memory.id === "string" ? memory.id : undefined;
+    const existingGuildId = typeof memory.guildId === "string" && memory.guildId.length > 0
+      ? memory.guildId
+      : undefined;
+    const historyGuildId = memoryId ? singleValue(historyGuilds.get(memoryId)) : undefined;
+    const guildId = existingGuildId ?? historyGuildId ?? onlyConfiguredGuildId;
+
+    if (guildId) {
+      if (memory.guildId !== guildId) {
+        memory.guildId = guildId;
+        changed = true;
+      }
+    } else if (memory.status !== "archived") {
+      memory.status = "archived";
+      changed = true;
+    }
+  }
+
+  if (!changed) return false;
+  await atomicWriteJson(filePath, data);
+  return true;
+}
+
+async function memoryGuildsFromStageManagerHistory(dataRoot: string): Promise<Map<string, Set<string>>> {
+  const data = await readJsonOrUndefined(path.join(dataRoot, "user", "stage-manager", "history.json"));
+  const guildsByMemoryId = new Map<string, Set<string>>();
+  if (!isObject(data) || !Array.isArray(data.edits)) return guildsByMemoryId;
+  for (const entry of data.edits) {
+    if (!isObject(entry) || typeof entry.guildId !== "string" || !Array.isArray(entry.affectedMemoryIds)) {
+      continue;
+    }
+    for (const memoryId of entry.affectedMemoryIds) {
+      if (typeof memoryId !== "string" || !memoryId) continue;
+      const guilds = guildsByMemoryId.get(memoryId) ?? new Set<string>();
+      guilds.add(entry.guildId);
+      guildsByMemoryId.set(memoryId, guilds);
+    }
+  }
+  return guildsByMemoryId;
+}
+
+async function listConfiguredGuildIds(dataRoot: string): Promise<string[]> {
+  const serversRoot = path.join(dataRoot, "user", "servers");
+  let entries: string[];
+  try {
+    entries = await readdir(serversRoot);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+  const guildIds: string[] = [];
+  for (const entry of entries) {
+    const data = await readJsonOrUndefined(path.join(serversRoot, entry, "server.json"));
+    if (isObject(data) && typeof data.guildId === "string" && data.guildId.length > 0) {
+      guildIds.push(data.guildId);
+    }
+  }
+  return guildIds;
+}
+
+function singleValue(values: Set<string> | undefined): string | undefined {
+  if (!values || values.size !== 1) return undefined;
+  return [...values][0];
 }
