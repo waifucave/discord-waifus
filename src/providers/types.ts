@@ -55,8 +55,15 @@ export type WaifuGenerationRequest = ProviderRequest & {
   pickNextWaifuToolEnabled?: boolean;
 };
 
+export type StageManagerMemory = {
+  memoryIndex: number;
+  waifuId: string;
+  content: string;
+  importance: WaifuMemory["importance"];
+};
+
 export type StageManagerRequest = ProviderRequest & {
-  memories: WaifuMemory[];
+  memories: StageManagerMemory[];
 };
 
 export type WaifuGenerationResult = {

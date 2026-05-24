@@ -854,8 +854,7 @@ describe("RuntimeOrchestrator", () => {
             memory: {
               waifuId: "yuki",
               content: "Kevin likes tea.",
-              importance: 3,
-              sourceMessageIds: ["m1"]
+              importance: 3
             }
           }
         ];
@@ -883,7 +882,8 @@ describe("RuntimeOrchestrator", () => {
     expect(memories.memories[0].content).toBe("Kevin likes tea.");
     expect(memories.memories[0]).toMatchObject({
       scope: "guild",
-      guildId: "guild-1"
+      guildId: "guild-1",
+      sourceMessageIds: []
     });
     expect(discord.sent).toEqual([]);
 
@@ -923,6 +923,18 @@ describe("RuntimeOrchestrator", () => {
               status: "active"
             },
             {
+              id: "same-guild-archived",
+              waifuId: "yuki",
+              scope: "guild",
+              guildId: "guild-1",
+              content: "Old archived note.",
+              importance: 3,
+              createdAt: now,
+              updatedAt: now,
+              sourceMessageIds: ["m0"],
+              status: "archived"
+            },
+            {
               id: "other-guild",
               waifuId: "yuki",
               scope: "guild",
@@ -944,17 +956,23 @@ describe("RuntimeOrchestrator", () => {
         return { content: "unused" };
       },
       async decideStageManager(request: StageManagerRequest) {
-        expect(request.memories.map((memory) => memory.id)).toEqual(["same-guild"]);
+        expect(request.memories).toEqual([
+          {
+            memoryIndex: 1,
+            waifuId: "yuki",
+            content: "Kevin likes tea.",
+            importance: 3
+          }
+        ]);
         return [
-          { tool: "update_memory", memoryId: "other-guild", patch: { content: "leaked update" } },
-          { tool: "archive_memory", memoryId: "same-guild" },
+          { tool: "update_memory", memoryIndex: 2, patch: { content: "leaked update" } },
+          { tool: "archive_memory", memoryIndex: 1 },
           {
             tool: "add_memory",
             memory: {
               waifuId: "yuki",
               content: "Guild one only.",
-              importance: 3,
-              sourceMessageIds: ["m1"]
+              importance: 3
             }
           }
         ];
@@ -986,6 +1004,106 @@ describe("RuntimeOrchestrator", () => {
     expect(memories.memories.find((memory) => memory.content === "Guild one only.")).toMatchObject({
       guildId: "guild-1",
       scope: "guild"
+    });
+  });
+
+  it("merges stage-manager memories by memory index", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    const now = new Date().toISOString();
+
+    await seedRuntimeConfig(storage);
+    await storage.writeJson(
+      "memories:global",
+      "user/memories.json",
+      MemoryStoreSchema,
+      MemoryStoreSchema.parse(
+        createEmptyRevisionedFile({
+          memories: [
+            {
+              id: "first",
+              waifuId: "yuki",
+              scope: "guild",
+              guildId: "guild-1",
+              content: "Kevin likes tea.",
+              importance: 3,
+              createdAt: now,
+              updatedAt: now,
+              sourceMessageIds: ["m1"],
+              status: "active"
+            },
+            {
+              id: "second",
+              waifuId: "yuki",
+              scope: "guild",
+              guildId: "guild-1",
+              content: "Kevin likes green tea.",
+              importance: 4,
+              createdAt: now,
+              updatedAt: now,
+              sourceMessageIds: ["m2"],
+              status: "active"
+            }
+          ]
+        })
+      )
+    );
+
+    const pipeline: ModelPipeline = {
+      async generateWaifu() {
+        return { content: "unused" };
+      },
+      async decideStageManager(request: StageManagerRequest) {
+        expect(request.memories).toEqual([
+          {
+            memoryIndex: 1,
+            waifuId: "yuki",
+            content: "Kevin likes tea.",
+            importance: 3
+          },
+          {
+            memoryIndex: 2,
+            waifuId: "yuki",
+            content: "Kevin likes green tea.",
+            importance: 4
+          }
+        ]);
+        return [
+          {
+            tool: "merge_memories",
+            sourceMemoryIndices: [1, 2],
+            mergedContent: "Kevin likes tea, especially green tea."
+          }
+        ];
+      }
+    };
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      createPipeline: () => pipeline,
+      logger: {
+        debug: () => undefined,
+        info: () => undefined,
+        warn: () => undefined,
+        error: () => undefined
+      }
+    });
+
+    await runtime.triggerStageManager("guild-1", "channel-1");
+
+    const memories = await storage.readJson("user/memories.json", MemoryStoreSchema);
+    expect(memories.memories.find((memory) => memory.id === "first")?.status).toBe("archived");
+    expect(memories.memories.find((memory) => memory.id === "second")?.status).toBe("archived");
+    expect(memories.memories.find((memory) => memory.content === "Kevin likes tea, especially green tea.")).toMatchObject({
+      waifuId: "yuki",
+      guildId: "guild-1",
+      sourceMessageIds: ["m1", "m2"],
+      status: "active"
     });
   });
 
@@ -1281,8 +1399,7 @@ describe("RuntimeOrchestrator", () => {
             memory: {
               waifuId: "yuki",
               content: "Kevin likes tea.",
-              importance: 3,
-              sourceMessageIds: ["m1"]
+              importance: 3
             }
           }
         ];

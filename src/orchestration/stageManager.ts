@@ -11,16 +11,13 @@ const ImportanceSchema = z.union([
 const StageManagerMemoryInputSchema = z.object({
   waifuId: z.string().min(1),
   content: z.string().min(1),
-  importance: ImportanceSchema,
-  sourceMessageIds: z.array(z.string())
+  importance: ImportanceSchema
 });
 
 const StageManagerMemoryPatchSchema = z.object({
   waifuId: z.string().min(1).optional(),
   content: z.string().min(1).optional(),
-  importance: ImportanceSchema.optional(),
-  sourceMessageIds: z.array(z.string()).optional(),
-  status: z.enum(["active", "archived"]).optional()
+  importance: ImportanceSchema.optional()
 });
 
 export const StageManagerToolCallSchema = z.discriminatedUnion("tool", [
@@ -30,16 +27,16 @@ export const StageManagerToolCallSchema = z.discriminatedUnion("tool", [
   }),
   z.object({
     tool: z.literal("update_memory"),
-    memoryId: z.string().min(1),
+    memoryIndex: z.number().int().min(1),
     patch: StageManagerMemoryPatchSchema
   }),
   z.object({
     tool: z.literal("archive_memory"),
-    memoryId: z.string().min(1)
+    memoryIndex: z.number().int().min(1)
   }),
   z.object({
     tool: z.literal("merge_memories"),
-    sourceMemoryIds: z.array(z.string().min(1)).min(2),
+    sourceMemoryIndices: z.array(z.number().int().min(1)).min(2),
     mergedContent: z.string().min(1)
   }),
   z.object({

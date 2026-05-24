@@ -46,6 +46,9 @@ const contextWithWaifus: ContextMessage[] = [
   }
 ];
 
+const directorNotes = "<director_notes>\nKeep your reply short.\nDo not repeat what the previous waifu just said.\n</director_notes>";
+const directorNotesWithSceneDirection = "<director_notes>\nKeep your reply short.\nDo not repeat what the previous waifu just said.\nScene direction: answer Kevin\n</director_notes>";
+
 afterEach(() => {
   vi.unstubAllGlobals();
 });
@@ -267,8 +270,7 @@ describe("provider-native decision tools", () => {
                 memory: {
                   waifuId: "yuki",
                   content: "Kevin likes tea.",
-                  importance: 3,
-                  sourceMessageIndices: [1]
+                  importance: 3
                 }
               }
             ]
@@ -281,50 +283,66 @@ describe("provider-native decision tools", () => {
     const calls = await pipeline.decideStageManager?.({
       modelId: "gpt-4o-mini",
       messages: context,
-      memories: [],
+      memories: [
+        {
+          memoryIndex: 1,
+          waifuId: "yuki",
+          content: "Kevin likes tea.",
+          importance: 3
+        }
+      ],
       systemPrompt: "memories"
     });
 
-    expect(calls?.[0]).toMatchObject({
+    expect(calls?.[0]).toEqual({
       tool: "add_memory",
       memory: {
         content: "Kevin likes tea.",
-        sourceMessageIds: ["m1"]
+        importance: 3,
+        waifuId: "yuki"
       }
     });
     const query = recentQueries().at(-1);
     expect(query?.role).toBe("stage_manager");
     expect((query?.payload.tools as Array<{ name: string }>)[0].name).toBe("manage_memories");
     expect(query?.payload.tool_choice).toEqual({ type: "function", name: "manage_memories" });
-    const memorySchema = (query?.payload.tools as Array<{
+    const toolParameters = (query?.payload.tools as Array<{
       parameters: {
         properties: {
           toolCalls: {
             items: {
               properties: {
                 memory: { properties: Record<string, unknown> };
+                memoryIndex?: unknown;
                 patch: { properties: Record<string, unknown> };
+                sourceMemoryIndices?: unknown;
+                [key: string]: unknown;
               };
             };
           };
         };
       };
-    }>)[0].parameters.properties.toolCalls.items.properties.memory.properties;
-    const patchSchema = (query?.payload.tools as Array<{
-      parameters: {
-        properties: {
-          toolCalls: {
-            items: {
-              properties: {
-                patch: { properties: Record<string, unknown> };
-              };
-            };
-          };
-        };
-      };
-    }>)[0].parameters.properties.toolCalls.items.properties.patch.properties;
+    }>)[0].parameters.properties.toolCalls.items.properties;
+    const memorySchema = toolParameters.memory.properties;
+    const patchSchema = toolParameters.patch.properties;
+    expect(toolParameters.memoryIndex).toBeDefined();
+    expect(toolParameters.sourceMemoryIndices).toBeDefined();
+    expect(toolParameters.memoryId).toBeUndefined();
+    expect(toolParameters.sourceMemoryIds).toBeUndefined();
     expect(memorySchema.scope).toBeUndefined();
+    expect(memorySchema.sourceMessageIndices).toBeUndefined();
     expect(patchSchema.scope).toBeUndefined();
+    expect(patchSchema.status).toBeUndefined();
+    expect(patchSchema.sourceMessageIds).toBeUndefined();
+    const memoryInput = (query?.payload.input as Array<{ content: string }>)[1].content;
+    expect(memoryInput).toContain("\"memoryIndex\":1");
+    expect(memoryInput).not.toContain("\"id\"");
+    expect(memoryInput).not.toContain("sourceMessageIds");
+    expect(memoryInput).not.toContain("createdAt");
+    expect(memoryInput).not.toContain("updatedAt");
+    expect(memoryInput).not.toContain("guildId");
+    expect(memoryInput).not.toContain("\"scope\"");
+    expect(memoryInput).not.toContain("\"status\"");
   });
 
   it("uses a single Anthropic tool for orchestrator decisions", async () => {
@@ -402,7 +420,7 @@ describe("provider-native decision tools", () => {
 
     const query = recentQueries().at(-1);
     const messages = query?.payload.messages as Array<{ role: string; content: string }>;
-    expect(messages.slice(1).map((message) => message.role)).toEqual(["user", "assistant", "assistant"]);
+    expect(messages.slice(1).map((message) => message.role)).toEqual(["user", "assistant", "assistant", "system"]);
     expect(messages[2].content).toContain("[sender: Yuki]");
     expect(messages[3].content).toContain("[sender: Mika]");
   });
@@ -419,7 +437,7 @@ describe("provider-native decision tools", () => {
 
     const query = recentQueries().at(-1);
     const input = query?.payload.input as Array<{ role: string; content: string }>;
-    expect(input.map((message) => message.role)).toEqual(["user", "assistant", "assistant"]);
+    expect(input.map((message) => message.role)).toEqual(["user", "assistant", "assistant", "system"]);
     expect(input[1].content).toContain("[sender: Yuki]");
     expect(input[2].content).toContain("[sender: Mika]");
   });
@@ -561,7 +579,7 @@ describe("provider-native decision tools", () => {
 
     const query = recentQueries().at(-1);
     const messages = query?.payload.messages as Array<{ role: string; content: string }>;
-    expect(messages.map((message) => message.role)).toEqual(["user", "assistant", "assistant"]);
+    expect(messages.map((message) => message.role)).toEqual(["user", "assistant", "assistant", "user"]);
     expect(messages[1].content).toContain("[sender: Yuki]");
     expect(messages[2].content).toContain("[sender: Mika]");
   });
@@ -599,8 +617,26 @@ describe("provider-native decision tools", () => {
   });
 });
 
-describe("scene direction payloads", () => {
-  it("wraps OpenAI-compatible chat scene direction without a name field", async () => {
+describe("director note payloads", () => {
+  it("always sends OpenAI-compatible chat director notes without a name field", async () => {
+    mockFetch({ choices: [{ message: { content: "ok" } }] });
+
+    const pipeline = createModelPipeline("grok-4.3", { apiKey: "xai-test" });
+    await pipeline.generateWaifu({
+      modelId: "grok-4.3",
+      messages: context,
+      systemPrompt: "stay in character"
+    });
+
+    const query = recentQueries().at(-1);
+    const messages = query?.payload.messages as Array<{ role: string; name?: string; content: string }>;
+    expect(messages.at(-1)).toEqual({
+      role: "system",
+      content: directorNotes
+    });
+  });
+
+  it("injects OpenAI-compatible chat scene direction into director notes", async () => {
     mockFetch({ choices: [{ message: { content: "ok" } }] });
 
     const pipeline = createModelPipeline("grok-4.3", { apiKey: "xai-test" });
@@ -615,11 +651,11 @@ describe("scene direction payloads", () => {
     const messages = query?.payload.messages as Array<{ role: string; name?: string; content: string }>;
     expect(messages.at(-1)).toEqual({
       role: "system",
-      content: "<scene_direction>answer Kevin</scene_direction>"
+      content: directorNotesWithSceneDirection
     });
   });
 
-  it("wraps OpenAI Responses scene direction without a name field", async () => {
+  it("injects OpenAI Responses scene direction into director notes", async () => {
     mockFetch({ output_text: "ok" });
 
     const pipeline = createModelPipeline("gpt-4o-mini", { apiKey: "openai-test" });
@@ -634,7 +670,26 @@ describe("scene direction payloads", () => {
     const input = query?.payload.input as Array<{ role: string; name?: string; content: string }>;
     expect(input.at(-1)).toEqual({
       role: "system",
-      content: "<scene_direction>answer Kevin</scene_direction>"
+      content: directorNotesWithSceneDirection
+    });
+  });
+
+  it("sends Anthropic director notes as the trailing user message", async () => {
+    mockFetch({ content: [{ type: "text", text: "ok" }] });
+
+    const pipeline = createModelPipeline("claude-haiku-4-5-20251001", { apiKey: "anthropic-test" });
+    await pipeline.generateWaifu({
+      modelId: "claude-haiku-4-5-20251001",
+      messages: context,
+      systemPrompt: "stay in character",
+      sceneDirection: "answer Kevin"
+    });
+
+    const query = recentQueries().at(-1);
+    const messages = query?.payload.messages as Array<{ role: string; name?: string; content: string }>;
+    expect(messages.at(-1)).toEqual({
+      role: "user",
+      content: directorNotesWithSceneDirection
     });
   });
 });

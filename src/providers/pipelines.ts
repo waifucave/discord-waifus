@@ -76,9 +76,7 @@ class OpenAiCompatibleChatPipeline implements ModelPipeline {
           { role: "system", content: request.systemPrompt },
           ...contextToChatMessagesForWaifu(request.messages),
           ...replyStyleMessagesForChat(request.replyStyle),
-          ...(request.sceneDirection
-            ? [{ role: "system", content: `<scene_direction>${request.sceneDirection}</scene_direction>` }]
-            : [])
+          { role: "system", content: directorNotesContent(request.sceneDirection) }
         ],
         temperature: request.temperature ?? this.model.defaultTemperature,
         top_p: request.topP ?? this.model.defaultTopP,
@@ -149,7 +147,7 @@ class OpenAiCompatibleChatPipeline implements ModelPipeline {
       extract: (json) => extractOpenAiChatToolArguments(json, STAGE_MANAGER_TOOL_NAME),
       queryRole: "stage_manager"
     });
-    return parseStageManagerCalls(text, rendering.indexToId);
+    return parseStageManagerCalls(text);
   }
 
   async decideReviewer(request: ProviderRequest & { message: string }): Promise<ReviewerDecision> {
@@ -196,9 +194,7 @@ class OpenAiResponsesPipeline implements ModelPipeline {
         input: [
           ...contextToResponsesInputForWaifu(request.messages),
           ...replyStyleMessagesForChat(request.replyStyle),
-          ...(request.sceneDirection
-            ? [{ role: "system", content: `<scene_direction>${request.sceneDirection}</scene_direction>` }]
-            : [])
+          { role: "system", content: directorNotesContent(request.sceneDirection) }
         ],
         temperature: request.temperature ?? this.model.defaultTemperature,
         top_p: request.topP ?? this.model.defaultTopP,
@@ -263,7 +259,7 @@ class OpenAiResponsesPipeline implements ModelPipeline {
       extract: (json) => extractOpenAiResponsesToolArguments(json, STAGE_MANAGER_TOOL_NAME),
       queryRole: "stage_manager"
     });
-    return parseStageManagerCalls(text, rendering.indexToId);
+    return parseStageManagerCalls(text);
   }
 
   async decideReviewer(request: ProviderRequest & { message: string }): Promise<ReviewerDecision> {
@@ -310,7 +306,7 @@ class AnthropicMessagesPipeline implements ModelPipeline {
         messages: [
           ...contextToAnthropicMessagesForWaifu(request.messages),
           ...replyStyleMessagesForAnthropic(request.replyStyle),
-          ...(request.sceneDirection ? [{ role: "user", content: `<scene_direction>${request.sceneDirection}</scene_direction>` }] : [])
+          { role: "user", content: directorNotesContent(request.sceneDirection) }
         ],
         temperature: constrainsSampling ? 1 : request.temperature ?? this.model.defaultTemperature,
         top_p: constrainsSampling ? undefined : request.topP ?? this.model.defaultTopP,
@@ -386,7 +382,7 @@ class AnthropicMessagesPipeline implements ModelPipeline {
       extract: (json) => extractAnthropicToolArguments(json, STAGE_MANAGER_TOOL_NAME),
       queryRole: "stage_manager"
     });
-    return parseStageManagerCalls(text, rendering.indexToId);
+    return parseStageManagerCalls(text);
   }
 
   async decideReviewer(request: ProviderRequest & { message: string }): Promise<ReviewerDecision> {
@@ -598,6 +594,17 @@ function replyStyleMessagesForAnthropic(replyStyle: ReplyStyle | undefined): Arr
   return hint ? [{ role: "user", content: hint }] : [];
 }
 
+function directorNotesContent(sceneDirection: string | undefined): string {
+  const notes = [
+    "Keep your reply short.",
+    "Do not repeat what the previous waifu just said."
+  ];
+  if (sceneDirection) {
+    notes.push(`Scene direction: ${sceneDirection}`);
+  }
+  return `<director_notes>\n${notes.join("\n")}\n</director_notes>`;
+}
+
 function contextToChatMessagesForWaifu(messages: ContextMessage[]) {
   return messages.map((message) => ({
     role: roleForWaifuContext(message),
@@ -679,15 +686,15 @@ export function safeName(input: string): string {
 
 function stageManagerJsonInstruction(): string {
   return `Each message in the context is tagged with [index: #N], [timestamp: ISO-8601 UTC], and [sender: DisplayName] before its body, optionally followed by [reactions: ...] and [replying to: ...]. Reference messages by their #N index.
+Each existing memory in the memories input has a memoryIndex. Reference existing memories by memoryIndex.
 Tool usage: compare the context to existing memories for this Discord server, choose all needed memory edits, and call ${STAGE_MANAGER_TOOL_NAME} exactly once with a toolCalls array. Do not write normal assistant text.
 All memory edits apply only to the current Discord server. Do not choose or mention global, channel, or user scopes.
 Each toolCalls item must match one of:
-{ "tool": "add_memory", "memory": { "waifuId": string, "content": string, "importance": 1|2|3|4|5, "sourceMessageIndices": number[] } }
-{ "tool": "update_memory", "memoryId": string, "patch": { "waifuId"?: string, "content"?: string, "importance"?: 1|2|3|4|5, "status"?: "active"|"archived" } }
-{ "tool": "archive_memory", "memoryId": string }
-{ "tool": "merge_memories", "sourceMemoryIds": string[], "mergedContent": string }
+{ "tool": "add_memory", "memory": { "waifuId": string, "content": string, "importance": 1|2|3|4|5 } }
+{ "tool": "update_memory", "memoryIndex": number, "patch": { "waifuId"?: string, "content"?: string, "importance"?: 1|2|3|4|5 } }
+{ "tool": "archive_memory", "memoryIndex": number }
+{ "tool": "merge_memories", "sourceMemoryIndices": number[], "mergedContent": string }
 { "tool": "no_change", "reason"?: string }.
-sourceMessageIndices entries must be #N indices from the context above.
 Use no_change when no durable memory edit is needed.`;
 }
 
@@ -846,17 +853,13 @@ export const STAGE_MANAGER_TOOL_PARAMETERS = {
             properties: {
               waifuId: { type: "string" },
               content: { type: "string" },
-              importance: { type: "integer", enum: [1, 2, 3, 4, 5] },
-              sourceMessageIndices: {
-                type: "array",
-                items: { type: "integer", minimum: 1 },
-                description: "#N context indices supporting this memory."
-              }
+              importance: { type: "integer", enum: [1, 2, 3, 4, 5] }
             },
             required: ["waifuId", "content", "importance"]
           },
-          memoryId: {
-            type: "string",
+          memoryIndex: {
+            type: "integer",
+            minimum: 1,
             description: "Required for update_memory or archive_memory."
           },
           patch: {
@@ -866,15 +869,14 @@ export const STAGE_MANAGER_TOOL_PARAMETERS = {
             properties: {
               waifuId: { type: "string" },
               content: { type: "string" },
-              importance: { type: "integer", enum: [1, 2, 3, 4, 5] },
-              status: { type: "string", enum: ["active", "archived"] }
+              importance: { type: "integer", enum: [1, 2, 3, 4, 5] }
             }
           },
-          sourceMemoryIds: {
+          sourceMemoryIndices: {
             type: "array",
             description: "Required when tool is merge_memories.",
             minItems: 2,
-            items: { type: "string" }
+            items: { type: "integer", minimum: 1 }
           },
           mergedContent: {
             type: "string",
@@ -1045,8 +1047,7 @@ const RawOrchestratorDecisionSchema = z.object({
 const RawStageManagerPatchSchema = z.object({
   waifuId: z.string().min(1).optional(),
   content: z.string().min(1).optional(),
-  importance: ImportanceSchema.optional(),
-  status: z.enum(["active", "archived"]).optional()
+  importance: ImportanceSchema.optional()
 });
 
 const RawStageManagerToolCallSchema = z.discriminatedUnion("tool", [
@@ -1055,22 +1056,21 @@ const RawStageManagerToolCallSchema = z.discriminatedUnion("tool", [
     memory: z.object({
       waifuId: z.string().min(1),
       content: z.string().min(1),
-      importance: ImportanceSchema,
-      sourceMessageIndices: z.array(z.number().int().min(1)).default([])
+      importance: ImportanceSchema
     })
   }),
   z.object({
     tool: z.literal("update_memory"),
-    memoryId: z.string().min(1),
+    memoryIndex: z.number().int().min(1),
     patch: RawStageManagerPatchSchema
   }),
   z.object({
     tool: z.literal("archive_memory"),
-    memoryId: z.string().min(1)
+    memoryIndex: z.number().int().min(1)
   }),
   z.object({
     tool: z.literal("merge_memories"),
-    sourceMemoryIds: z.array(z.string().min(1)).min(2),
+    sourceMemoryIndices: z.array(z.number().int().min(1)).min(2),
     mergedContent: z.string().min(1)
   }),
   z.object({
@@ -1118,26 +1118,12 @@ function replyToMessageIdForIndex(
   return messageId;
 }
 
-function parseStageManagerCalls(text: string, indexToId: Map<number, string>): StageManagerToolCall[] {
+function parseStageManagerCalls(text: string): StageManagerToolCall[] {
   try {
     const parsed = JSON.parse(stripCodeFence(text));
     const calls = Array.isArray(parsed) ? parsed : (parsed.toolCalls ?? parsed.calls ?? []);
     return calls.map((call: unknown) => {
       const raw = RawStageManagerToolCallSchema.parse(call);
-      if (raw.tool === "add_memory") {
-        const sourceMessageIds = raw.memory.sourceMessageIndices
-          .map((index) => indexToId.get(index))
-          .filter((id): id is string => Boolean(id));
-        return StageManagerToolCallSchema.parse({
-          tool: "add_memory",
-          memory: {
-            waifuId: raw.memory.waifuId,
-            content: raw.memory.content,
-            importance: raw.memory.importance,
-            sourceMessageIds
-          }
-        });
-      }
       return StageManagerToolCallSchema.parse(raw);
     });
   } catch (error) {

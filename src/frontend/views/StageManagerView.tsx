@@ -227,10 +227,10 @@ export function StageManagerView() {
         <div className="section-header">
           <h3 className="section-title">Tools</h3>
         </div>
-        <pre className="code-block">{`add_memory(content, scope, importance, sourceMessageIndices[])
-update_memory(memoryId, fields)
-archive_memory(memoryId)
-merge_memories(memoryIds[])
+        <pre className="code-block">{`add_memory(waifuId, content, importance)
+update_memory(memoryIndex, fields)
+archive_memory(memoryIndex)
+merge_memories(sourceMemoryIndices[], mergedContent)
 no_change(reason)`}</pre>
       </section>
 

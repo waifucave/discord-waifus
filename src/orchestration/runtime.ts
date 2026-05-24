@@ -16,7 +16,7 @@ import { modelVisibleEmojiToken, stripLeakedContextHeader } from "../discord/nor
 import { splitWaifuReply, typingDelayMs } from "./messageSplit.js";
 import { getModel } from "../providers/catalog.js";
 import { createModelPipeline, PipelineCredentials, ProviderPipelineError } from "../providers/pipelines.js";
-import { ModelPipeline } from "../providers/types.js";
+import { ModelPipeline, StageManagerMemory } from "../providers/types.js";
 import {
   AgentConfig,
   AgentConfigSchema,
@@ -789,14 +789,15 @@ export class RuntimeOrchestrator {
         limit: server.contextWindows.stageManager ?? config.contextWindow
       });
       const store = await this.readMemoryStore();
+      const memoryInput = stageManagerMemories(store.memories, guildId);
       const calls = await pipeline.decideStageManager({
         modelId: config.modelId,
         messages,
         systemPrompt: config.prompt,
-        memories: guildMemories(store.memories, guildId),
+        memories: memoryInput.memories,
         reasoning: config.reasoning
       });
-      const result = await this.applyStageManagerCalls(guildId, calls);
+      const result = await this.applyStageManagerCalls(guildId, calls, memoryInput.memoryIdByIndex);
       for (const entry of result.historyEntries) {
         await this.appendStageManagerHistory({
           ...entry,
@@ -985,7 +986,11 @@ export class RuntimeOrchestrator {
     };
   }
 
-  private async applyStageManagerCalls(guildId: string, calls: StageManagerToolCall[]): Promise<{
+  private async applyStageManagerCalls(
+    guildId: string,
+    calls: StageManagerToolCall[],
+    memoryIdByIndex: Map<number, string>
+  ): Promise<{
     changed: boolean;
     historyEntries: Array<{
       id: string;
@@ -1038,7 +1043,7 @@ export class RuntimeOrchestrator {
               guildId,
               content: call.memory.content,
               importance: call.memory.importance,
-              sourceMessageIds: call.memory.sourceMessageIds,
+              sourceMessageIds: [],
               createdAt: now,
               updatedAt: now,
               status: "active"
@@ -1052,7 +1057,18 @@ export class RuntimeOrchestrator {
             });
             changed = true;
           } else if (call.tool === "update_memory") {
-            const target = memories.find((memory) => memory.id === call.memoryId && memory.guildId === guildId);
+            const memoryId = memoryIdByIndex.get(call.memoryIndex);
+            if (!memoryId) {
+              historyEntries.push({
+                id: randomUUID(),
+                tool: call.tool,
+                affectedMemoryIds: [],
+                summary: `Skipped unknown memory index #${call.memoryIndex}`,
+                createdAt: now
+              });
+              continue;
+            }
+            const target = memories.find((memory) => memory.id === memoryId && memory.guildId === guildId);
             if (!target) {
               historyEntries.push({
                 id: randomUUID(),
@@ -1064,7 +1080,7 @@ export class RuntimeOrchestrator {
               continue;
             }
             memories = memories.map((memory) => {
-              if (memory.id !== call.memoryId || memory.guildId !== guildId) {
+              if (memory.id !== memoryId || memory.guildId !== guildId) {
                 return memory;
               }
               return {
@@ -1080,13 +1096,24 @@ export class RuntimeOrchestrator {
             historyEntries.push({
               id: randomUUID(),
               tool: call.tool,
-              affectedMemoryIds: [call.memoryId],
+              affectedMemoryIds: [memoryId],
               summary: "Updated memory",
               createdAt: now
             });
             changed = true;
           } else if (call.tool === "archive_memory") {
-            const target = memories.find((memory) => memory.id === call.memoryId && memory.guildId === guildId);
+            const memoryId = memoryIdByIndex.get(call.memoryIndex);
+            if (!memoryId) {
+              historyEntries.push({
+                id: randomUUID(),
+                tool: call.tool,
+                affectedMemoryIds: [],
+                summary: `Skipped unknown memory index #${call.memoryIndex}`,
+                createdAt: now
+              });
+              continue;
+            }
+            const target = memories.find((memory) => memory.id === memoryId && memory.guildId === guildId);
             if (!target) {
               historyEntries.push({
                 id: randomUUID(),
@@ -1098,27 +1125,28 @@ export class RuntimeOrchestrator {
               continue;
             }
             memories = memories.map((memory) =>
-              memory.id === call.memoryId && memory.guildId === guildId
+              memory.id === memoryId && memory.guildId === guildId
                 ? { ...memory, status: "archived" as const, updatedAt: now }
                 : memory
             );
             historyEntries.push({
               id: randomUUID(),
               tool: call.tool,
-              affectedMemoryIds: [call.memoryId],
+              affectedMemoryIds: [memoryId],
               summary: "Archived memory",
               createdAt: now
             });
             changed = true;
           } else if (call.tool === "merge_memories") {
             const id = randomUUID();
-            const source = memories.filter((memory) => memory.guildId === guildId && call.sourceMemoryIds.includes(memory.id));
+            const sourceMemoryIds = memoryIdsForIndices(call.sourceMemoryIndices, memoryIdByIndex);
+            const source = memories.filter((memory) => memory.guildId === guildId && sourceMemoryIds.includes(memory.id));
             if (source.length < 2) {
               historyEntries.push({
                 id: randomUUID(),
                 tool: call.tool,
                 affectedMemoryIds: [],
-                summary: "Skipped merge outside current guild",
+                summary: "Skipped merge with unknown or duplicate memory indices",
                 createdAt: now
               });
               continue;
@@ -1758,8 +1786,35 @@ function emptyMemoryStore(): MemoryStore {
   return MemoryStoreSchema.parse(createEmptyRevisionedFile({ memories: [] }));
 }
 
-function guildMemories(memories: WaifuMemory[], guildId: string): WaifuMemory[] {
-  return memories.filter((memory) => memory.guildId === guildId);
+function stageManagerMemories(memories: WaifuMemory[], guildId: string): {
+  memories: StageManagerMemory[];
+  memoryIdByIndex: Map<number, string>;
+} {
+  const activeMemories = memories.filter((memory) => memory.guildId === guildId && memory.status === "active");
+  const memoryIdByIndex = new Map<number, string>();
+  return {
+    memories: activeMemories.map((memory, index) => {
+      const memoryIndex = index + 1;
+      memoryIdByIndex.set(memoryIndex, memory.id);
+      return {
+        memoryIndex,
+        waifuId: memory.waifuId,
+        content: memory.content,
+        importance: memory.importance
+      };
+    }),
+    memoryIdByIndex
+  };
+}
+
+function memoryIdsForIndices(indices: number[], memoryIdByIndex: Map<number, string>): string[] {
+  const memoryIds: string[] = [];
+  for (const index of new Set(indices)) {
+    const memoryId = memoryIdByIndex.get(index);
+    if (!memoryId) return [];
+    memoryIds.push(memoryId);
+  }
+  return memoryIds;
 }
 
 function buildWaifuToolUseInstructions(waifu: WaifuConfig, availableWaifus: WaifuConfig[]): string | undefined {
