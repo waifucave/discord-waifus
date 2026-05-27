@@ -25,6 +25,14 @@ const members: GuildMemberCacheEntry[] = [
     guildDisplayName: "Kevin",
     bot: false,
     perChannelLastSeenAt: {}
+  },
+  {
+    userId: "500",
+    username: "mira",
+    globalDisplayName: "Mira",
+    guildDisplayName: "Mira",
+    bot: false,
+    perChannelLastSeenAt: {}
   }
 ];
 
@@ -79,6 +87,46 @@ describe("Discord normalization", () => {
     expect(result.allowedMentions.users).toEqual([]);
     expect(result.allowedMentions.parse).toEqual([]);
     expect(result.warnings[0]).toContain("could not be resolved");
+  });
+
+  it("denormalizes missing-close model mentions with the normal resolver", () => {
+    const result = denormalizeModelContentForDiscord("come back <@Mira", {
+      members,
+      emojis
+    });
+    expect(result.content).toBe("come back <@500>");
+    expect(result.allowedMentions.users).toEqual(["500"]);
+    expect(result.allowedMentions.parse).toBeUndefined();
+  });
+
+  it("denormalizes plain at-name model mentions with exact cached member matches", () => {
+    const result = denormalizeModelContentForDiscord("come back @Mira", {
+      members,
+      emojis
+    });
+    expect(result.content).toBe("come back <@500>");
+    expect(result.allowedMentions.users).toEqual(["500"]);
+  });
+
+  it("leaves ambiguous plain at-name model mentions unpinged", () => {
+    const result = denormalizeModelContentForDiscord("come back @Kevin", {
+      members,
+      emojis
+    });
+    expect(result.content).toBe("come back @Kevin");
+    expect(result.allowedMentions.users).toEqual([]);
+    expect(result.allowedMentions.parse).toEqual([]);
+    expect(result.warnings[0]).toContain("could not be resolved");
+  });
+
+  it("leaves unknown plain at-name text unpinged", () => {
+    const result = denormalizeModelContentForDiscord("come back @Someone", {
+      members,
+      emojis
+    });
+    expect(result.content).toBe("come back @Someone");
+    expect(result.allowedMentions.users).toEqual([]);
+    expect(result.allowedMentions.parse).toEqual([]);
   });
 
   it("hides raw role mentions from model context", () => {

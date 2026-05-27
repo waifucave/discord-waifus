@@ -85,25 +85,39 @@ export function denormalizeModelContentForDiscord(
   const activeIds = new Set(cache.activeAuthorIds ?? []);
   const membersByName = groupMembersByModelName(cache.members ?? []);
   const emojisByToken = groupEmojisByModelToken(cache.emojis ?? []);
+  const modelMentionRe = modelUserMentionRe(cache.members ?? []);
+
+  const resolveModelMention = (raw: string, displayName: string) => {
+    const candidates = membersByName.get(displayName.trim().toLowerCase()) ?? [];
+    const activeCandidates = candidates.filter((member) => activeIds.has(member.userId));
+    const resolved =
+      activeCandidates.length === 1
+        ? activeCandidates[0]
+        : candidates.length === 1
+          ? candidates[0]
+          : undefined;
+
+    if (!resolved) {
+      warnings.push(`Model mention ${raw} could not be resolved uniquely and was left unpinged.`);
+      return `@${displayName}`;
+    }
+    allowedUsers.add(resolved.userId);
+    return `<@${resolved.userId}>`;
+  };
 
   let denormalized = sanitizeMassMentions(content).replace(
-    MODEL_USER_MENTION_RE,
-    (raw, displayName: string) => {
-      const candidates = membersByName.get(displayName.trim().toLowerCase()) ?? [];
-      const activeCandidates = candidates.filter((member) => activeIds.has(member.userId));
-      const resolved =
-        activeCandidates.length === 1
-          ? activeCandidates[0]
-          : candidates.length === 1
-            ? candidates[0]
-            : undefined;
-
-      if (!resolved) {
-        warnings.push(`Model mention ${raw} could not be resolved uniquely and was left unpinged.`);
-        return `@${displayName}`;
+    modelMentionRe,
+    (
+      raw,
+      validDisplayName: string | undefined,
+      prefix: string | undefined,
+      marker: string | undefined,
+      malformedDisplayName: string | undefined
+    ) => {
+      if (validDisplayName !== undefined) {
+        return resolveModelMention(raw, validDisplayName);
       }
-      allowedUsers.add(resolved.userId);
-      return `<@${resolved.userId}>`;
+      return `${prefix ?? ""}${resolveModelMention(`${marker}${malformedDisplayName}`, malformedDisplayName ?? "")}`;
     }
   );
 
@@ -246,6 +260,26 @@ function groupMembersByModelName(members: GuildMemberCacheEntry[]): Map<string, 
   return map;
 }
 
+function modelUserMentionRe(members: GuildMemberCacheEntry[]): RegExp {
+  const names = modelVisibleMemberNames(members);
+  if (!names.length) return MODEL_USER_MENTION_RE;
+  const namePattern = names.map(escapeRegExp).join("|");
+  return new RegExp(`${MODEL_USER_MENTION_RE.source}|(^|[^A-Za-z0-9_<])(<@|@)(${namePattern})(?=$|[\\s.,!?;:)\\]}])`, "gi");
+}
+
+function modelVisibleMemberNames(members: GuildMemberCacheEntry[]): string[] {
+  const seen = new Set<string>();
+  const names: string[] = [];
+  for (const member of members) {
+    const name = modelVisibleMemberName(member).trim();
+    const key = name.toLowerCase();
+    if (!name || seen.has(key)) continue;
+    seen.add(key);
+    names.push(name);
+  }
+  return names.sort((a, b) => b.length - a.length);
+}
+
 function groupEmojisByModelToken(emojis: GuildEmojiCacheEntry[]): Map<string, GuildEmojiCacheEntry> {
   const map = new Map<string, GuildEmojiCacheEntry>();
   for (const emoji of emojis) {
@@ -258,4 +292,8 @@ function groupEmojisByModelToken(emojis: GuildEmojiCacheEntry[]): Map<string, Gu
 
 function sanitizeMassMentions(content: string): string {
   return content.replace(/@everyone/g, "@ everyone").replace(/@here/g, "@ here");
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

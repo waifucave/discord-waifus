@@ -187,3 +187,54 @@ describe("buildContextMessages coalescing", () => {
     expect(out[3].replyTo?.messageId).toBe("user-2");
   });
 });
+
+describe("buildContextMessages image attachments", () => {
+  it("carries image attachments onto the context message", () => {
+    const t0 = new Date("2026-05-16T12:00:00Z");
+    const messages = [
+      msg({
+        id: "1",
+        authorId: "user1",
+        content: "look",
+        createdAt: t0,
+        images: [{ url: "https://cdn.example/a.png", contentType: "image/png" }]
+      })
+    ];
+    const out = buildContextMessages(messages, { waifuAuthorIds: [] });
+    expect(out[0].images).toEqual([{ url: "https://cdn.example/a.png", contentType: "image/png" }]);
+  });
+
+  it("merges images when coalescing adjacent chunks", () => {
+    const t0 = new Date("2026-05-16T12:00:00Z");
+    const messages = [
+      msg({
+        id: "1",
+        authorId: "user1",
+        content: "first",
+        createdAt: t0,
+        images: [{ url: "https://cdn.example/a.png" }]
+      }),
+      msg({
+        id: "2",
+        authorId: "user1",
+        content: "second",
+        createdAt: new Date(t0.getTime() + 1000),
+        images: [{ url: "https://cdn.example/b.png" }]
+      })
+    ];
+    const out = buildContextMessages(messages, { waifuAuthorIds: [] });
+    expect(out).toHaveLength(1);
+    expect(out[0].images).toEqual([
+      { url: "https://cdn.example/a.png" },
+      { url: "https://cdn.example/b.png" }
+    ]);
+  });
+
+  it("leaves images undefined when there are none", () => {
+    const t0 = new Date("2026-05-16T12:00:00Z");
+    const out = buildContextMessages([msg({ id: "1", authorId: "user1", content: "hi", createdAt: t0 })], {
+      waifuAuthorIds: []
+    });
+    expect(out[0].images).toBeUndefined();
+  });
+});

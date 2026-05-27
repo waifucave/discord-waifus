@@ -74,7 +74,7 @@ class OpenAiCompatibleChatPipeline implements ModelPipeline {
         model: request.modelId,
         messages: [
           { role: "system", content: request.systemPrompt },
-          ...contextToChatMessagesForWaifu(request.messages),
+          ...contextToChatMessagesForWaifu(request.messages, this.model.supportsImageInput),
           ...replyStyleMessagesForChat(request.replyStyle),
           { role: "system", content: directorNotesContent(request.sceneDirection) }
         ],
@@ -192,7 +192,7 @@ class OpenAiResponsesPipeline implements ModelPipeline {
         model: request.modelId,
         instructions: request.systemPrompt,
         input: [
-          ...contextToResponsesInputForWaifu(request.messages),
+          ...contextToResponsesInputForWaifu(request.messages, this.model.supportsImageInput),
           ...replyStyleMessagesForChat(request.replyStyle),
           { role: "system", content: directorNotesContent(request.sceneDirection) }
         ],
@@ -304,7 +304,7 @@ class AnthropicMessagesPipeline implements ModelPipeline {
         model: request.modelId,
         system: request.systemPrompt,
         messages: [
-          ...contextToAnthropicMessagesForWaifu(request.messages),
+          ...contextToAnthropicMessagesForWaifu(request.messages, this.model.supportsImageInput),
           ...replyStyleMessagesForAnthropic(request.replyStyle),
           { role: "user", content: directorNotesContent(request.sceneDirection) }
         ],
@@ -597,7 +597,9 @@ function replyStyleMessagesForAnthropic(replyStyle: ReplyStyle | undefined): Arr
 function directorNotesContent(sceneDirection: string | undefined): string {
   const notes = [
     "Keep your reply short.",
-    "Do not repeat what the previous waifu just said."
+    "Do not repeat what the previous waifu just said.",
+    "Do not repeat a person's name when recent context already makes the target clear.",
+    "To pull a quiet person back in, use their <@Name> tag instead of repeating their name; do not tag them again if anyone already tagged them recently."
   ];
   if (sceneDirection) {
     notes.push(`Scene direction: ${sceneDirection}`);
@@ -605,11 +607,23 @@ function directorNotesContent(sceneDirection: string | undefined): string {
   return `<director_notes>\n${notes.join("\n")}\n</director_notes>`;
 }
 
-function contextToChatMessagesForWaifu(messages: ContextMessage[]) {
-  return messages.map((message) => ({
-    role: roleForWaifuContext(message),
-    name: pickProviderName(message),
-    content: formatWaifuContextLine(message)
+function contextToChatMessagesForWaifu(messages: ContextMessage[], includeImages: boolean) {
+  return messages.map((message) => {
+    const role = roleForWaifuContext(message);
+    const text = formatWaifuContextLine(message);
+    const imageBlocks = includeImages && role === "user" ? chatImageBlocks(message) : [];
+    return {
+      role,
+      name: pickProviderName(message),
+      content: imageBlocks.length ? [{ type: "text", text }, ...imageBlocks] : text
+    };
+  });
+}
+
+function chatImageBlocks(message: ContextMessage) {
+  return (message.images ?? []).map((image) => ({
+    type: "image_url" as const,
+    image_url: { url: image.url }
   }));
 }
 
@@ -619,17 +633,41 @@ function pickProviderName(message: ContextMessage): string {
   return safeName(message.name);
 }
 
-function contextToResponsesInputForWaifu(messages: ContextMessage[]) {
-  return messages.map((message) => ({
-    role: roleForWaifuContext(message),
-    content: formatWaifuContextLine(message)
+function contextToResponsesInputForWaifu(messages: ContextMessage[], includeImages: boolean) {
+  return messages.map((message) => {
+    const role = roleForWaifuContext(message);
+    const text = formatWaifuContextLine(message);
+    const imageBlocks = includeImages && role === "user" ? responsesImageBlocks(message) : [];
+    return {
+      role,
+      content: imageBlocks.length ? [{ type: "input_text" as const, text }, ...imageBlocks] : text
+    };
+  });
+}
+
+function responsesImageBlocks(message: ContextMessage) {
+  return (message.images ?? []).map((image) => ({
+    type: "input_image" as const,
+    image_url: image.url
   }));
 }
 
-function contextToAnthropicMessagesForWaifu(messages: ContextMessage[]) {
-  return messages.map((message) => ({
-    role: roleForWaifuContext(message),
-    content: formatWaifuContextLine(message)
+function contextToAnthropicMessagesForWaifu(messages: ContextMessage[], includeImages: boolean) {
+  return messages.map((message) => {
+    const role = roleForWaifuContext(message);
+    const text = formatWaifuContextLine(message);
+    const imageBlocks = includeImages && role === "user" ? anthropicImageBlocks(message) : [];
+    return {
+      role,
+      content: imageBlocks.length ? [{ type: "text" as const, text }, ...imageBlocks] : text
+    };
+  });
+}
+
+function anthropicImageBlocks(message: ContextMessage) {
+  return (message.images ?? []).map((image) => ({
+    type: "image" as const,
+    source: { type: "url" as const, url: image.url }
   }));
 }
 
@@ -651,6 +689,9 @@ function formatContextMessage(message: ContextMessage, index: number, idToIndex:
 
 function buildSuffix(message: ContextMessage, idToIndex: Map<string, number> | undefined): string {
   const parts: string[] = [];
+  if (message.images?.length) {
+    parts.push(`[images: ${message.images.length}]`);
+  }
   if (message.reactions.length) {
     parts.push(
       `[reactions: ${message.reactions.map((reaction) => `${reaction.emoji} x${reaction.count}`).join(", ")}]`

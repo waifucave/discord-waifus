@@ -46,8 +46,8 @@ const contextWithWaifus: ContextMessage[] = [
   }
 ];
 
-const directorNotes = "<director_notes>\nKeep your reply short.\nDo not repeat what the previous waifu just said.\n</director_notes>";
-const directorNotesWithSceneDirection = "<director_notes>\nKeep your reply short.\nDo not repeat what the previous waifu just said.\nScene direction: answer Kevin\n</director_notes>";
+const directorNotes = "<director_notes>\nKeep your reply short.\nDo not repeat what the previous waifu just said.\nDo not repeat a person's name when recent context already makes the target clear.\nTo pull a quiet person back in, use their <@Name> tag instead of repeating their name; do not tag them again if anyone already tagged them recently.\n</director_notes>";
+const directorNotesWithSceneDirection = "<director_notes>\nKeep your reply short.\nDo not repeat what the previous waifu just said.\nDo not repeat a person's name when recent context already makes the target clear.\nTo pull a quiet person back in, use their <@Name> tag instead of repeating their name; do not tag them again if anyone already tagged them recently.\nScene direction: answer Kevin\n</director_notes>";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -614,6 +614,96 @@ describe("provider-native decision tools", () => {
     const query = recentQueries().at(-1);
     const messages = query?.payload.messages as Array<{ role: string; content: string }>;
     expect(messages.some((message) => message.content.includes("<reply_style>"))).toBe(false);
+  });
+});
+
+describe("image attachments", () => {
+  const contextWithImage: ContextMessage[] = [
+    {
+      id: "img1",
+      channelId: "c1",
+      guildId: "g1",
+      authorKind: "user",
+      authorId: "u1",
+      name: "Kevin",
+      displayName: "Kevin",
+      content: "what is this?",
+      timestamp: "2026-05-16T12:00:00Z",
+      images: [{ url: "https://cdn.example/cat.png", contentType: "image/png" }],
+      reactions: []
+    }
+  ];
+
+  it("attaches an image_url block for vision-capable OpenAI-compatible chat models", async () => {
+    mockFetch({ choices: [{ message: { content: "ok" } }] });
+
+    const pipeline = createModelPipeline("grok-4.3", { apiKey: "xai-test" });
+    await pipeline.generateWaifu({
+      modelId: "grok-4.3",
+      messages: contextWithImage,
+      systemPrompt: "stay in character"
+    });
+
+    const query = recentQueries().at(-1);
+    const messages = query?.payload.messages as Array<{ role: string; content: unknown }>;
+    const userMessage = messages[1];
+    expect(userMessage.role).toBe("user");
+    expect(userMessage.content).toEqual([
+      { type: "text", text: expect.stringContaining("[images: 1]") },
+      { type: "image_url", image_url: { url: "https://cdn.example/cat.png" } }
+    ]);
+  });
+
+  it("attaches an input_image block for vision-capable OpenAI Responses models", async () => {
+    mockFetch({ output_text: "ok" });
+
+    const pipeline = createModelPipeline("gpt-4o-mini", { apiKey: "openai-test" });
+    await pipeline.generateWaifu({
+      modelId: "gpt-4o-mini",
+      messages: contextWithImage,
+      systemPrompt: "stay in character"
+    });
+
+    const query = recentQueries().at(-1);
+    const input = query?.payload.input as Array<{ role: string; content: unknown }>;
+    expect(input[0].content).toEqual([
+      { type: "input_text", text: expect.stringContaining("[images: 1]") },
+      { type: "input_image", image_url: "https://cdn.example/cat.png" }
+    ]);
+  });
+
+  it("attaches an image source block for vision-capable Anthropic models", async () => {
+    mockFetch({ content: [{ type: "text", text: "ok" }] });
+
+    const pipeline = createModelPipeline("claude-haiku-4-5-20251001", { apiKey: "anthropic-test" });
+    await pipeline.generateWaifu({
+      modelId: "claude-haiku-4-5-20251001",
+      messages: contextWithImage,
+      systemPrompt: "stay in character"
+    });
+
+    const query = recentQueries().at(-1);
+    const messages = query?.payload.messages as Array<{ role: string; content: unknown }>;
+    expect(messages[0].content).toEqual([
+      { type: "text", text: expect.stringContaining("[images: 1]") },
+      { type: "image", source: { type: "url", url: "https://cdn.example/cat.png" } }
+    ]);
+  });
+
+  it("keeps text-only content for non-vision models but still notes the image", async () => {
+    mockFetch({ choices: [{ message: { content: "ok" } }] });
+
+    const pipeline = createModelPipeline("deepseek-v4-pro", { apiKey: "deepseek-test" });
+    await pipeline.generateWaifu({
+      modelId: "deepseek-v4-pro",
+      messages: contextWithImage,
+      systemPrompt: "stay in character"
+    });
+
+    const query = recentQueries().at(-1);
+    const messages = query?.payload.messages as Array<{ role: string; content: unknown }>;
+    expect(typeof messages[1].content).toBe("string");
+    expect(messages[1].content).toContain("[images: 1]");
   });
 });
 

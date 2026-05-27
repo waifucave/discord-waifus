@@ -11,12 +11,12 @@ export const PROVIDER_CATALOG: ProviderMetadata[] = [
     baseUrl: "https://api.x.ai/v1",
     docsUrl: "https://docs.x.ai/developers/models",
     models: [
-      xaiModel("grok-4.3", "Grok 4.3", ["reasoning.effort"]),
-      xaiModel("grok-4.20-0309-reasoning", "Grok 4.20 Reasoning", []),
-      xaiModel("grok-4.20-0309-non-reasoning", "Grok 4.20 Non-Reasoning", []),
-      xaiModel("grok-4.20-multi-agent-0309", "Grok 4.20 Multi-Agent", ["agent_count"]),
-      xaiModel("grok-4-1-fast-reasoning", "Grok 4.1 Fast Reasoning", []),
-      xaiModel("grok-4-1-fast-non-reasoning", "Grok 4.1 Fast Non-Reasoning", [])
+      xaiModel("grok-4.3", "Grok 4.3", ["reasoning.effort"], true),
+      xaiModel("grok-4.20-0309-reasoning", "Grok 4.20 Reasoning", [], true),
+      xaiModel("grok-4.20-0309-non-reasoning", "Grok 4.20 Non-Reasoning", [], true),
+      xaiModel("grok-4.20-multi-agent-0309", "Grok 4.20 Multi-Agent", ["agent_count"], true),
+      xaiModel("grok-4-1-fast-reasoning", "Grok 4.1 Fast Reasoning", [], true),
+      xaiModel("grok-4-1-fast-non-reasoning", "Grok 4.1 Fast Non-Reasoning", [], true)
     ]
   },
   {
@@ -26,8 +26,8 @@ export const PROVIDER_CATALOG: ProviderMetadata[] = [
     baseUrl: "https://api.deepseek.com",
     docsUrl: "https://api-docs.deepseek.com/api/create-chat-completion",
     models: [
-      deepSeekModel("deepseek-v4-flash", "DeepSeek V4 Flash"),
-      deepSeekModel("deepseek-v4-pro", "DeepSeek V4 Pro")
+      deepSeekModel("deepseek-v4-flash", "DeepSeek V4 Flash", false),
+      deepSeekModel("deepseek-v4-pro", "DeepSeek V4 Pro", false)
     ]
   },
   {
@@ -37,9 +37,9 @@ export const PROVIDER_CATALOG: ProviderMetadata[] = [
     baseUrl: "https://api.anthropic.com",
     docsUrl: "https://platform.claude.com/docs/en/about-claude/models/overview",
     models: [
-      anthropicModel("claude-opus-4-7", "Claude Opus 4.7", ["reasoning.effort"]),
-      anthropicModel("claude-sonnet-4-6", "Claude Sonnet 4.6", ["reasoning.enabled", "reasoning.effort"]),
-      anthropicModel("claude-haiku-4-5-20251001", "Claude Haiku 4.5", ["reasoning.enabled", "reasoning.budget_tokens"])
+      anthropicModel("claude-opus-4-7", "Claude Opus 4.7", ["reasoning.effort"], true),
+      anthropicModel("claude-sonnet-4-6", "Claude Sonnet 4.6", ["reasoning.enabled", "reasoning.effort"], true),
+      anthropicModel("claude-haiku-4-5-20251001", "Claude Haiku 4.5", ["reasoning.enabled", "reasoning.budget_tokens"], true)
     ]
   },
   {
@@ -49,12 +49,12 @@ export const PROVIDER_CATALOG: ProviderMetadata[] = [
     baseUrl: "https://api.openai.com/v1",
     docsUrl: "https://developers.openai.com/api/docs/models",
     models: [
-      openAiModel("gpt-5.5", "GPT-5.5", ["reasoning.effort"]),
-      openAiModel("gpt-5.4", "GPT-5.4", ["reasoning.effort"]),
-      openAiModel("gpt-5.4-mini", "GPT-5.4 Mini", ["reasoning.effort"]),
-      openAiModel("gpt-5.4-nano", "GPT-5.4 Nano", ["reasoning.effort"]),
-      openAiModel("gpt-4o", "GPT-4o", []),
-      openAiModel("gpt-4o-mini", "GPT-4o mini", [])
+      openAiModel("gpt-5.5", "GPT-5.5", ["reasoning.effort"], true),
+      openAiModel("gpt-5.4", "GPT-5.4", ["reasoning.effort"], true),
+      openAiModel("gpt-5.4-mini", "GPT-5.4 Mini", ["reasoning.effort"], true),
+      openAiModel("gpt-5.4-nano", "GPT-5.4 Nano", ["reasoning.effort"], true),
+      openAiModel("gpt-4o", "GPT-4o", [], true),
+      openAiModel("gpt-4o-mini", "GPT-4o mini", [], true)
     ]
   },
   {
@@ -64,10 +64,10 @@ export const PROVIDER_CATALOG: ProviderMetadata[] = [
     baseUrl: "https://api.z.ai/api/coding/paas/v4",
     docsUrl: "https://docs.z.ai/guides/overview/migrate-to-glm-new",
     models: [
-      zaiModel("glm-4.7", "GLM 4.7"),
-      zaiModel("glm-5", "GLM 5"),
-      zaiModel("glm-5-turbo", "GLM 5 Turbo"),
-      zaiModel("glm-5.1", "GLM 5.1")
+      zaiModel("glm-4.7", "GLM 4.7", true),
+      zaiModel("glm-5", "GLM 5", true),
+      zaiModel("glm-5-turbo", "GLM 5 Turbo", true),
+      zaiModel("glm-5.1", "GLM 5.1", true)
     ]
   }
 ];
@@ -91,7 +91,8 @@ export function getProviderForModel(modelId: string): ProviderMetadata | undefin
 function xaiModel(
   modelId: string,
   displayName: string,
-  reasoningControls: string[]
+  reasoningControls: string[],
+  supportsImageInput: boolean
 ): ModelCapabilityMetadata {
   return {
     providerId: "xai",
@@ -104,6 +105,7 @@ function xaiModel(
     supportsTools: true,
     supportsStructuredOutput: true,
     supportsStreaming: true,
+    supportsImageInput,
     reasoningControls,
     defaultTemperature: 0.7,
     defaultTopP: 1,
@@ -111,7 +113,11 @@ function xaiModel(
   };
 }
 
-function deepSeekModel(modelId: string, displayName: string): ModelCapabilityMetadata {
+function deepSeekModel(
+  modelId: string,
+  displayName: string,
+  supportsImageInput: boolean
+): ModelCapabilityMetadata {
   return {
     providerId: "deepseek",
     modelId,
@@ -123,6 +129,7 @@ function deepSeekModel(modelId: string, displayName: string): ModelCapabilityMet
     supportsTools: true,
     supportsStructuredOutput: true,
     supportsStreaming: true,
+    supportsImageInput,
     reasoningControls: ["reasoning.enabled", "reasoning.effort"],
     defaultTemperature: 0.7,
     defaultTopP: 1,
@@ -133,7 +140,8 @@ function deepSeekModel(modelId: string, displayName: string): ModelCapabilityMet
 function anthropicModel(
   modelId: string,
   displayName: string,
-  reasoningControls: string[]
+  reasoningControls: string[],
+  supportsImageInput: boolean
 ): ModelCapabilityMetadata {
   return {
     providerId: "anthropic",
@@ -146,6 +154,7 @@ function anthropicModel(
     supportsTools: true,
     supportsStructuredOutput: true,
     supportsStreaming: true,
+    supportsImageInput,
     reasoningControls,
     defaultTemperature: 0.7,
     defaultTopP: 1,
@@ -156,7 +165,8 @@ function anthropicModel(
 function openAiModel(
   modelId: string,
   displayName: string,
-  reasoningControls: string[]
+  reasoningControls: string[],
+  supportsImageInput: boolean
 ): ModelCapabilityMetadata {
   return {
     providerId: "openai",
@@ -169,6 +179,7 @@ function openAiModel(
     supportsTools: true,
     supportsStructuredOutput: true,
     supportsStreaming: true,
+    supportsImageInput,
     reasoningControls,
     defaultTemperature: 0.7,
     defaultTopP: 1,
@@ -176,7 +187,11 @@ function openAiModel(
   };
 }
 
-function zaiModel(modelId: string, displayName: string): ModelCapabilityMetadata {
+function zaiModel(
+  modelId: string,
+  displayName: string,
+  supportsImageInput: boolean
+): ModelCapabilityMetadata {
   return {
     providerId: "zai",
     modelId,
@@ -188,6 +203,7 @@ function zaiModel(modelId: string, displayName: string): ModelCapabilityMetadata
     supportsTools: true,
     supportsStructuredOutput: true,
     supportsStreaming: true,
+    supportsImageInput,
     reasoningControls: ["reasoning.enabled"],
     defaultTemperature: 0.7,
     defaultTopP: 1,

@@ -308,6 +308,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
           authorBot: message.author.bot,
           content: message.content,
           createdAt: message.createdAt,
+          images: collectImageAttachments(message),
           replyTo,
           reactions
         };
@@ -648,6 +649,26 @@ async function loginAndWaitUntilReady(client: Client, token: string): Promise<vo
 
 function botAuthorIds(bots: DiscordBotConfig[]): string[] {
   return bots.flatMap((bot) => [bot.id, bot.applicationId].filter((id): id is string => Boolean(id)));
+}
+
+function collectImageAttachments(message: {
+  attachments?: { values(): Iterable<{ url: string; contentType?: string | null; name?: string | null }> };
+}): Array<{ url: string; contentType?: string }> | undefined {
+  if (!message.attachments) return undefined;
+  const images: Array<{ url: string; contentType?: string }> = [];
+  for (const attachment of message.attachments.values()) {
+    if (!attachment.url) continue;
+    const contentType = attachment.contentType ?? undefined;
+    if (isImageAttachment(contentType, attachment.name ?? undefined)) {
+      images.push({ url: attachment.url, contentType });
+    }
+  }
+  return images.length ? images : undefined;
+}
+
+function isImageAttachment(contentType: string | undefined, name: string | undefined): boolean {
+  if (contentType) return contentType.startsWith("image/");
+  return /\.(png|jpe?g|webp|gif)$/i.test(name ?? "");
 }
 
 async function resolveReplyReference(message: {

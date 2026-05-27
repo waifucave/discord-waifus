@@ -6,6 +6,12 @@ export const ReactionSummarySchema = z.object({
   users: z.array(z.string()).optional()
 });
 
+export const AttachmentImageSchema = z.object({
+  url: z.string(),
+  contentType: z.string().optional()
+});
+export type AttachmentImage = z.infer<typeof AttachmentImageSchema>;
+
 export const ContextMessageSchema = z.object({
   id: z.string(),
   channelId: z.string(),
@@ -17,6 +23,7 @@ export const ContextMessageSchema = z.object({
   content: z.string(),
   timestamp: z.string(),
   sourceMessageIds: z.array(z.string()).optional(),
+  images: z.array(AttachmentImageSchema).optional(),
   replyTo: z
     .object({
       messageId: z.string(),
@@ -48,6 +55,7 @@ export type MessageLikeForContext = {
   content: string;
   createdAt: Date;
   sourceMessageIds?: string[];
+  images?: AttachmentImage[];
   replyTo?: {
     messageId: string;
     authorName?: string;
@@ -88,6 +96,7 @@ export function buildContextMessages(
       content: message.content,
       timestamp: formatTimestamp(message.createdAt),
       sourceMessageIds: message.sourceMessageIds,
+      images: message.images,
       replyTo: message.replyTo,
       reactions: message.reactions ?? []
     })
@@ -137,8 +146,17 @@ function mergeChunk(
     content: joinChunkContent(first.content, next.content, options.authorKind),
     createdAt: next.createdAt,
     sourceMessageIds: [...(first.sourceMessageIds ?? [first.id]), ...(next.sourceMessageIds ?? [next.id])],
+    images: mergeImages(first.images, next.images),
     reactions: mergeReactions(first.reactions, next.reactions)
   };
+}
+
+function mergeImages(
+  a: AttachmentImage[] | undefined,
+  b: AttachmentImage[] | undefined
+): AttachmentImage[] | undefined {
+  const merged = [...(a ?? []), ...(b ?? [])];
+  return merged.length ? merged : undefined;
 }
 
 function compatibleReplyTargets(

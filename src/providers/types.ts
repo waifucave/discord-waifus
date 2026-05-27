@@ -18,6 +18,7 @@ export type ModelCapabilityMetadata = {
   supportsTools: boolean;
   supportsStructuredOutput: boolean;
   supportsStreaming: boolean;
+  supportsImageInput: boolean;
   reasoningControls: string[];
   maxContextTokens?: number;
   maxOutputTokens?: number;
