@@ -690,7 +690,7 @@ describe("image attachments", () => {
     ]);
   });
 
-  it("keeps text-only content for non-vision models but still notes the image", async () => {
+  it("attaches an image_url block for DeepSeek (vision-capable openai-compatible chat)", async () => {
     mockFetch({ choices: [{ message: { content: "ok" } }] });
 
     const pipeline = createModelPipeline("deepseek-v4-pro", { apiKey: "deepseek-test" });
@@ -702,8 +702,10 @@ describe("image attachments", () => {
 
     const query = recentQueries().at(-1);
     const messages = query?.payload.messages as Array<{ role: string; content: unknown }>;
-    expect(typeof messages[1].content).toBe("string");
-    expect(messages[1].content).toContain("[images: 1]");
+    expect(messages[1].content).toEqual([
+      { type: "text", text: expect.stringContaining("[images: 1]") },
+      { type: "image_url", image_url: { url: "https://cdn.example/cat.png" } }
+    ]);
   });
 });
 

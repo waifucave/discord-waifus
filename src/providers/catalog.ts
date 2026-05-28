@@ -26,8 +26,8 @@ export const PROVIDER_CATALOG: ProviderMetadata[] = [
     baseUrl: "https://api.deepseek.com",
     docsUrl: "https://api-docs.deepseek.com/api/create-chat-completion",
     models: [
-      deepSeekModel("deepseek-v4-flash", "DeepSeek V4 Flash", false),
-      deepSeekModel("deepseek-v4-pro", "DeepSeek V4 Pro", false)
+      deepSeekModel("deepseek-v4-flash", "DeepSeek V4 Flash", true),
+      deepSeekModel("deepseek-v4-pro", "DeepSeek V4 Pro", true)
     ]
   },
   {
