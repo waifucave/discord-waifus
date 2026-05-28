@@ -61,6 +61,7 @@ async function copyDarwinLibraries(packageDir, manifest, binaryDest, licenseDest
   const libDest = resolvePackagePath(packageDir, "lib");
   await mkdir(libDest, { recursive: true });
   const copied = new Map();
+  const copiedByDependency = new Map();
   const queue = [binaryDest];
 
   for (let index = 0; index < queue.length; index += 1) {
@@ -68,8 +69,8 @@ async function copyDarwinLibraries(packageDir, manifest, binaryDest, licenseDest
     const deps = await darwinDependencies(file);
     for (const dep of deps) {
       if (isDarwinSystemLibrary(dep)) continue;
-      const source = await realpath(dep).catch(() => dep);
-      const basename = path.basename(source);
+      const source = await resolveDarwinDependencySource(dep, file);
+      const basename = path.basename(dep);
       if (!copied.has(basename)) {
         const dest = path.join(libDest, basename);
         await copyExecutable(source, dest);
@@ -77,6 +78,7 @@ async function copyDarwinLibraries(packageDir, manifest, binaryDest, licenseDest
         queue.push(dest);
         await copyLicenseFiles(await findFormulaRoot(source), path.join(licenseDest, basename.replace(/\.dylib$/u, ""))).catch(() => undefined);
       }
+      copiedByDependency.set(dep, copied.get(basename));
     }
   }
 
@@ -87,8 +89,9 @@ async function copyDarwinLibraries(packageDir, manifest, binaryDest, licenseDest
       await execFileAsync("install_name_tool", ["-id", `@loader_path/${path.basename(file)}`, file]);
     }
     for (const dep of deps) {
-      const basename = path.basename(dep);
-      if (!copied.has(basename)) continue;
+      const entry = copiedByDependency.get(dep);
+      if (!entry) continue;
+      const basename = path.basename(entry.dest);
       const replacement = isLibrary ? `@loader_path/${basename}` : `@loader_path/../lib/${basename}`;
       await execFileAsync("install_name_tool", ["-change", dep, replacement, file]);
     }
@@ -147,6 +150,51 @@ async function darwinDependencies(file) {
     .slice(1)
     .map((line) => line.trim().split(/\s+\(/u)[0])
     .filter(Boolean);
+}
+
+async function darwinRpaths(file) {
+  const { stdout } = await execFileAsync("otool", ["-l", file], { maxBuffer: 512 * 1024 });
+  const lines = stdout.split(/\r?\n/u);
+  const rpaths = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    if (!lines[index]?.includes("LC_RPATH")) continue;
+    const pathLine = lines.slice(index, index + 6).find((line) => line.trim().startsWith("path "));
+    const match = pathLine?.trim().match(/^path\s+(\S+)/u);
+    if (match?.[1]) rpaths.push(match[1]);
+  }
+  return rpaths;
+}
+
+async function resolveDarwinDependencySource(dep, referencingFile) {
+  const candidates = [];
+  if (dep.startsWith("@loader_path/")) {
+    candidates.push(path.resolve(path.dirname(referencingFile), dep.slice("@loader_path/".length)));
+  } else if (dep.startsWith("@executable_path/")) {
+    candidates.push(path.resolve(path.dirname(referencingFile), dep.slice("@executable_path/".length)));
+  } else if (dep.startsWith("@rpath/")) {
+    const suffix = dep.slice("@rpath/".length);
+    for (const rpath of await darwinRpaths(referencingFile)) {
+      candidates.push(path.join(resolveDarwinTokenPath(rpath, referencingFile), suffix));
+    }
+    candidates.push(path.join("/opt/homebrew/lib", suffix), path.join("/usr/local/lib", suffix));
+  } else {
+    candidates.push(dep);
+  }
+
+  for (const candidate of candidates) {
+    if (await isFile(candidate)) return realpath(candidate).catch(() => candidate);
+  }
+  throw new Error(`Could not resolve macOS library dependency ${dep} referenced by ${referencingFile}.`);
+}
+
+function resolveDarwinTokenPath(value, referencingFile) {
+  if (value === "@loader_path") {
+    return path.dirname(referencingFile);
+  }
+  if (value.startsWith("@loader_path/")) {
+    return path.resolve(path.dirname(referencingFile), value.slice("@loader_path/".length));
+  }
+  return value;
 }
 
 async function linuxDependencies(file) {
@@ -292,7 +340,7 @@ function resolvePackagePath(packageDir, relativePath) {
 }
 
 function isDarwinSystemLibrary(dep) {
-  return dep.startsWith("/usr/lib/") || dep.startsWith("/System/Library/") || dep.startsWith("@");
+  return dep.startsWith("/usr/lib/") || dep.startsWith("/System/Library/");
 }
 
 function isLinuxCoreLibrary(basename) {
