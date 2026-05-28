@@ -23,7 +23,7 @@ describe("CLI parser", () => {
 });
 
 describe("waifus update", () => {
-  it("updates npm packages globally by default", async () => {
+  it("updates npm packages globally with the matching OCR package by default", async () => {
     silenceCliOutput();
     const env = { PATH: "/usr/bin" };
     const { calls, runner } = createRunner();
@@ -31,6 +31,8 @@ describe("waifus update", () => {
     const code = await runCommand(parseCliArgs(["update"]), {
       env,
       platform: "linux",
+      arch: "x64",
+      libc: "glibc",
       processRunner: runner
     });
 
@@ -38,7 +40,35 @@ describe("waifus update", () => {
     expect(calls).toEqual([
       {
         command: "npm",
-        args: ["install", "-g", "@starlight-ai/discord-waifus@latest"],
+        args: [
+          "install",
+          "-g",
+          "--include=optional",
+          "@starlight-ai/discord-waifus@latest",
+          "@starlight-ai/discord-waifus-ocr-linux-x64-gnu@latest"
+        ],
+        options: { env }
+      }
+    ]);
+  });
+
+  it("updates npm packages globally without OCR when no matching OCR package exists", async () => {
+    silenceCliOutput();
+    const env = { PATH: "/usr/bin" };
+    const { calls, runner } = createRunner();
+
+    const code = await runCommand(parseCliArgs(["update"]), {
+      env,
+      platform: "linux",
+      arch: "arm64",
+      processRunner: runner
+    });
+
+    expect(code).toBe(0);
+    expect(calls).toEqual([
+      {
+        command: "npm",
+        args: ["install", "-g", "--include=optional", "@starlight-ai/discord-waifus@latest"],
         options: { env }
       }
     ]);

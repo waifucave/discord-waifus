@@ -358,8 +358,18 @@ async function updateCommand(parsed: ParsedCli, options: CliRuntimeOptions): Pro
 
 async function updateGlobalNpmPackage(runner: CliProcessRunner, options: CliRuntimeOptions): Promise<number> {
   const npm = npmCommand(options.platform ?? process.platform);
+  const packageSpecs = [PACKAGE_SPEC];
+  const ocrPackageName = bundledOcrPackageName({
+    platform: options.platform ?? process.platform,
+    arch: options.arch ?? process.arch,
+    libc: options.libc ?? detectLibc()
+  });
+  if (ocrPackageName) {
+    packageSpecs.push(`${ocrPackageName}@latest`);
+  }
+
   console.log(`Updating ${PACKAGE_NAME} from npm...`);
-  const code = await runner.run(npm, ["install", "-g", PACKAGE_SPEC], {
+  const code = await runner.run(npm, ["install", "-g", "--include=optional", ...packageSpecs], {
     env: options.env ?? process.env
   });
   if (code !== 0) {
