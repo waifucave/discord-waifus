@@ -27,7 +27,7 @@ jobs:
             install: brew install tesseract
           - package: packages/ocr-darwin-x64
             artifact: ocr-darwin-x64
-            runner: macos-13
+            runner: macos-15-intel
             install: brew install tesseract
           - package: packages/ocr-linux-x64-gnu
             artifact: ocr-linux-x64-gnu
