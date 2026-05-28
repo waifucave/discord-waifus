@@ -2,8 +2,13 @@ name: OCR Packages
 
 on:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag to attach packages to and publish packages for."
+        required: false
+        type: string
   release:
-    types: [created]
+    types: [created, published]
 
 permissions:
   contents: write
@@ -62,14 +67,16 @@ jobs:
           if-no-files-found: error
 
       - name: Attach package to release
-        if: github.event_name == 'release'
+        if: github.event_name == 'release' || inputs.release_tag != ''
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
-        run: gh release upload "${{ github.event.release.tag_name }}" artifacts/*.tgz --clobber
+        run: |
+          tag="${{ github.event.release.tag_name || inputs.release_tag }}"
+          gh release upload "$tag" artifacts/*.tgz --clobber
 
       - name: Publish package to npm
-        if: github.event_name == 'release'
+        if: github.event_name == 'release' || inputs.release_tag != ''
         working-directory: ${{ matrix.package }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
