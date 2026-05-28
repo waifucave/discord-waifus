@@ -40,4 +40,4 @@ jobs:
         shell: bash
         run: |
           version="${RELEASE_TAG#v}"
-          npm publish "artifacts/starlight-ai-discord-waifus-${version}.tgz" --access public
+          npm publish "./artifacts/starlight-ai-discord-waifus-${version}.tgz" --access public
