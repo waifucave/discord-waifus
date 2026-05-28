@@ -8,7 +8,9 @@ export const ReactionSummarySchema = z.object({
 
 export const AttachmentImageSchema = z.object({
   url: z.string(),
-  contentType: z.string().optional()
+  contentType: z.string().optional(),
+  contentLengthBytes: z.number().int().nonnegative().optional(),
+  ocrText: z.string().optional()
 });
 export type AttachmentImage = z.infer<typeof AttachmentImageSchema>;
 

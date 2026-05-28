@@ -8,6 +8,7 @@ import { resolveDataPath, userDataPath } from "../config/paths.js";
 import { Logger, createLogger } from "../backend/logger.js";
 import { RuntimeState } from "../backend/runtime.js";
 import { RuntimeOrchestrator } from "../orchestration/runtime.js";
+import { clearOcrArtifacts } from "../orchestration/ocr.js";
 import { listModels, listProviders } from "../providers/catalog.js";
 import {
   AgentConfig,
@@ -212,6 +213,14 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     options.runtime.paused = saved.runtime.paused;
     await options.runtimeControl?.reload("config-updated");
     return saved;
+  });
+
+  app.post("/api/cache/ocr/clear", async () => {
+    await clearOcrArtifacts(options.dataRoot);
+    return {
+      accepted: true,
+      message: "OCR cache and temporary OCR files cleared."
+    };
   });
 
   app.get("/api/discord-bots", async () => sanitizeDiscordBots(await readDiscordBots(storage)));

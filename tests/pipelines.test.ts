@@ -690,7 +690,7 @@ describe("image attachments", () => {
     ]);
   });
 
-  it("attaches an image_url block for DeepSeek (vision-capable openai-compatible chat)", async () => {
+  it("does not attach image blocks for DeepSeek text-only API models", async () => {
     mockFetch({ choices: [{ message: { content: "ok" } }] });
 
     const pipeline = createModelPipeline("deepseek-v4-pro", { apiKey: "deepseek-test" });
@@ -702,10 +702,33 @@ describe("image attachments", () => {
 
     const query = recentQueries().at(-1);
     const messages = query?.payload.messages as Array<{ role: string; content: unknown }>;
-    expect(messages[1].content).toEqual([
-      { type: "text", text: expect.stringContaining("[images: 1]") },
-      { type: "image_url", image_url: { url: "https://cdn.example/cat.png" } }
-    ]);
+    expect(messages[1].content).toEqual(expect.stringContaining("[images: 1]"));
+  });
+
+  it("renders OCR text as text context for DeepSeek text-only API models", async () => {
+    mockFetch({ choices: [{ message: { content: "ok" } }] });
+
+    const pipeline = createModelPipeline("deepseek-v4-pro", { apiKey: "deepseek-test" });
+    await pipeline.generateWaifu({
+      modelId: "deepseek-v4-pro",
+      messages: [
+        {
+          ...contextWithImage[0],
+          images: [
+            {
+              url: "https://cdn.example/cat.png",
+              contentType: "image/png",
+              ocrText: "Start chatting with Instant\nVision tab"
+            }
+          ]
+        }
+      ],
+      systemPrompt: "stay in character"
+    });
+
+    const query = recentQueries().at(-1);
+    const messages = query?.payload.messages as Array<{ role: string; content: unknown }>;
+    expect(messages[1].content).toEqual(expect.stringContaining("[image_text #1: Start chatting with Instant Vision tab]"));
   });
 });
 

@@ -691,6 +691,12 @@ function buildSuffix(message: ContextMessage, idToIndex: Map<string, number> | u
   const parts: string[] = [];
   if (message.images?.length) {
     parts.push(`[images: ${message.images.length}]`);
+    message.images.forEach((image, index) => {
+      const text = formatOcrText(image.ocrText);
+      if (text) {
+        parts.push(`[image_text #${index + 1}: ${text}]`);
+      }
+    });
   }
   if (message.reactions.length) {
     parts.push(
@@ -708,6 +714,14 @@ function buildSuffix(message: ContextMessage, idToIndex: Map<string, number> | u
     }
   }
   return parts.length ? ` ${parts.join(" ")}` : "";
+}
+
+function formatOcrText(text: string | undefined): string | undefined {
+  const normalized = text
+    ?.replace(/\s+/g, " ")
+    .replace(/[\u0000-\u001F\u007F]/g, "")
+    .trim();
+  return normalized || undefined;
 }
 
 function stageManagerSystemPrompt(customPrompt?: string): string {

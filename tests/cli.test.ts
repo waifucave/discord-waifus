@@ -79,6 +79,48 @@ describe("waifus update", () => {
     ]);
   });
 
+  it("adds the matching OCR package when updating from GitHub releases", async () => {
+    silenceCliOutput();
+    const env = { PATH: "/usr/bin" };
+    const { calls, runner } = createRunner();
+
+    const code = await runCommand(parseCliArgs(["update", "--github"]), {
+      env,
+      githubReleaseFetcher: async () => ({
+        tag_name: "v1.2.0",
+        assets: [
+          {
+            name: "starlight-ai-discord-waifus-ocr-win32-x64-1.2.0.tgz",
+            browser_download_url:
+              "https://github.com/HeavenllyDemon/Discord-Waifus/releases/download/v1.2.0/starlight-ai-discord-waifus-ocr-win32-x64-1.2.0.tgz"
+          },
+          {
+            name: "starlight-ai-discord-waifus-1.2.0.tgz",
+            browser_download_url:
+              "https://github.com/HeavenllyDemon/Discord-Waifus/releases/download/v1.2.0/starlight-ai-discord-waifus-1.2.0.tgz"
+          }
+        ]
+      }),
+      platform: "win32",
+      arch: "x64",
+      processRunner: runner
+    });
+
+    expect(code).toBe(0);
+    expect(calls).toEqual([
+      {
+        command: "npm.cmd",
+        args: [
+          "install",
+          "-g",
+          "https://github.com/HeavenllyDemon/Discord-Waifus/releases/download/v1.2.0/starlight-ai-discord-waifus-1.2.0.tgz",
+          "https://github.com/HeavenllyDemon/Discord-Waifus/releases/download/v1.2.0/starlight-ai-discord-waifus-ocr-win32-x64-1.2.0.tgz"
+        ],
+        options: { env }
+      }
+    ]);
+  });
+
   it("refuses source checkout updates", async () => {
     silenceCliOutput();
     const { calls, runner } = createRunner();

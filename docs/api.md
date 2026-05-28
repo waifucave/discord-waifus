@@ -37,6 +37,7 @@ Normal configuration changes apply at runtime. `PUT /api/config`, `PUT /api/disc
 
 - `GET /api/config`
 - `PUT /api/config`
+- `POST /api/cache/ocr/clear`
 - `GET /api/discord-bots`
 - `PUT /api/discord-bots`
 - `GET /api/orchestrator/config`
@@ -52,10 +53,21 @@ Config is backed by `config.toml` under the data root. Default config:
 {
   "schemaVersion": 1,
   "http": { "host": "127.0.0.1", "port": 3888 },
-  "runtime": { "autoConnectDiscord": false, "paused": false },
-  "frontend": {}
+  "runtime": { "autoConnectDiscord": true, "paused": false },
+  "frontend": {},
+  "ocr": {
+    "enabled": true,
+    "engine": "auto",
+    "cacheTtlHours": 24,
+    "timeoutMs": 1500,
+    "maxImageBytes": 8388608,
+    "maxImagesPerModelCall": 4,
+    "maxTextCharsPerImage": 1500
+  }
 }
 ```
+
+OCR is used only as a fallback for models that are not marked as vision-capable. `engine = "auto"` tries native OS OCR first where supported, then the platform-specific bundled Tesseract package, then an explicit system Tesseract fallback. Valid engine values are `auto`, `apple-vision`, `bundled-tesseract`, and `system-tesseract`; legacy `tesseract` configs load as `system-tesseract`. Temporary image downloads live under `app/tmp/ocr`; cached text results live under `app/cache/ocr` and expire by `cacheTtlHours`. `POST /api/cache/ocr/clear` removes OCR cache and temporary OCR files.
 
 ## Providers And Models
 

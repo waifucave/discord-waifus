@@ -13,6 +13,10 @@ npm install -g @starlight-ai/discord-waifus@latest
 waifus start
 ```
 
+The npm install also pulls the matching optional OCR runtime package for your
+platform when one is available, so image text fallback does not require a global
+Tesseract install.
+
 Open the web UI:
 
 ```text
@@ -28,11 +32,24 @@ npm install -g ./starlight-ai-discord-waifus-1.0.0.tgz
 waifus start
 ```
 
+For zero-install OCR from a GitHub release, install the matching OCR asset in
+the same command, for example:
+
+```sh
+npm install -g ./starlight-ai-discord-waifus-1.0.0.tgz ./starlight-ai-discord-waifus-ocr-darwin-arm64-1.0.0.tgz
+```
+
 GitHub release installs can update from the next release asset with:
 
 ```sh
 waifus update --github
 ```
+
+When the release includes platform OCR assets, `waifus update --github` installs
+the main package plus the OCR asset matching the current OS and CPU.
+
+`waifus doctor` reports whether the matching bundled OCR package is installed
+and whether its Tesseract binary and English traineddata are usable.
 
 ## Build From Source
 
@@ -122,6 +139,8 @@ Important folders:
 ~/.dc-waifus/user/servers/
 ~/.dc-waifus/user/memories.json
 ~/.dc-waifus/app/logs/
+~/.dc-waifus/app/cache/ocr/
+~/.dc-waifus/app/tmp/ocr/
 ```
 
 Use `waifus clean` only when you intentionally want to delete saved user data.

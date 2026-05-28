@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "engine": "tesseract",
+  "platform": "linux",
+  "arch": "x64",
+  "libc": "glibc",
+  "binary": "bin/tesseract",
+  "tessdata": "share/tessdata",
+  "env": {
+    "LD_LIBRARY_PATH": [
+      "lib"
+    ]
+  }
+}

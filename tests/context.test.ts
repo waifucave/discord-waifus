@@ -237,4 +237,18 @@ describe("buildContextMessages image attachments", () => {
     });
     expect(out[0].images).toBeUndefined();
   });
+
+  it("carries OCR text on image attachments", () => {
+    const t0 = new Date("2026-05-16T12:00:00Z");
+    const out = buildContextMessages([
+      msg({
+        id: "1",
+        authorId: "user1",
+        content: "look",
+        createdAt: t0,
+        images: [{ url: "https://cdn.example/a.png", ocrText: "menu text" }]
+      })
+    ], { waifuAuthorIds: [] });
+    expect(out[0].images?.[0].ocrText).toBe("menu text");
+  });
 });

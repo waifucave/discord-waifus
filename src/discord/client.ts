@@ -652,15 +652,19 @@ function botAuthorIds(bots: DiscordBotConfig[]): string[] {
 }
 
 function collectImageAttachments(message: {
-  attachments?: { values(): Iterable<{ url: string; contentType?: string | null; name?: string | null }> };
-}): Array<{ url: string; contentType?: string }> | undefined {
+  attachments?: { values(): Iterable<{ url: string; contentType?: string | null; name?: string | null; size?: number | null }> };
+}): Array<{ url: string; contentType?: string; contentLengthBytes?: number }> | undefined {
   if (!message.attachments) return undefined;
-  const images: Array<{ url: string; contentType?: string }> = [];
+  const images: Array<{ url: string; contentType?: string; contentLengthBytes?: number }> = [];
   for (const attachment of message.attachments.values()) {
     if (!attachment.url) continue;
     const contentType = attachment.contentType ?? undefined;
     if (isImageAttachment(contentType, attachment.name ?? undefined)) {
-      images.push({ url: attachment.url, contentType });
+      images.push({
+        url: attachment.url,
+        contentType,
+        contentLengthBytes: attachment.size ?? undefined
+      });
     }
   }
   return images.length ? images : undefined;

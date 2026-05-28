@@ -63,6 +63,15 @@ export type AppConfig = {
   http: { host: string; port: number };
   runtime: { autoConnectDiscord: boolean; paused: boolean };
   frontend: { staticDir?: string };
+  ocr: {
+    enabled: boolean;
+    engine: "auto" | "apple-vision" | "bundled-tesseract" | "system-tesseract";
+    cacheTtlHours: number;
+    timeoutMs: number;
+    maxImageBytes: number;
+    maxImagesPerModelCall: number;
+    maxTextCharsPerImage: number;
+  };
 };
 
 export type DiscordBotConfig = {

@@ -61,6 +61,9 @@ export type RuntimeOrchestratorOptions = {
   isPaused?: () => boolean;
   onActiveRunsChange?: (activeRuns: number) => void;
   createPipeline?: (modelId: string, credentials: PipelineCredentials) => ModelPipeline;
+  ocr?: {
+    enrichMessages(messages: ContextMessage[], options?: { signal?: AbortSignal }): Promise<ContextMessage[]>;
+  };
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   stageManagerActiveIntervalMs?: number;
   stageManagerIdleDelayMs?: number;
@@ -455,12 +458,13 @@ export class RuntimeOrchestrator {
         this.options.logger.warn("Orchestrator model is not configured; channel loop stopped", { guildId, channelId });
         return;
       }
-      const messages = await this.options.discord.fetchFreshContext({
+      let messages = await this.options.discord.fetchFreshContext({
         guildId,
         channelId,
         limit: server.contextWindows.orchestrator ?? orchestrator.contextWindow,
         signal
       });
+      messages = await this.messagesForModel(messages, orchestrator.modelId, signal);
       this.options.logger.info("Fetched Discord context for orchestrator", {
         guildId,
         channelId,
@@ -579,14 +583,15 @@ export class RuntimeOrchestrator {
           throwIfAborted(signal);
         }
         await this.setActivePipeline(guildId, channelId, "waifu");
-        const waifuMessages = await this.options.discord.fetchFreshContext({
+        const waifuModelId = waifu.modelId;
+        let waifuMessages = await this.options.discord.fetchFreshContext({
           guildId,
           channelId,
           limit: waifu.contextWindow || server.contextWindows.waifu,
           signal
         });
+        waifuMessages = await this.messagesForModel(waifuMessages, waifuModelId, signal);
         const waifuPipeline = await this.pipelineFor(waifu.modelId);
-        const waifuModelId = waifu.modelId;
         this.options.logger.info("Generating waifu reply", {
           guildId,
           channelId,
@@ -783,11 +788,12 @@ export class RuntimeOrchestrator {
       if (!pipeline.decideStageManager) {
         throw new Error(`Model ${config.modelId} does not implement stage-manager decisions.`);
       }
-      const messages = await this.options.discord.fetchFreshContext({
+      let messages = await this.options.discord.fetchFreshContext({
         guildId,
         channelId,
         limit: server.contextWindows.stageManager ?? config.contextWindow
       });
+      messages = await this.messagesForModel(messages, config.modelId);
       const store = await this.readMemoryStore();
       const memoryInput = stageManagerMemories(store.memories, guildId);
       const calls = await pipeline.decideStageManager({
@@ -1347,6 +1353,26 @@ export class RuntimeOrchestrator {
       throw new Error(`Provider ${model.providerId} is missing API credentials.`);
     }
     return this.createPipeline(modelId, { apiKey: saved.apiKey });
+  }
+
+  private async messagesForModel(
+    messages: ContextMessage[],
+    modelId: string,
+    signal?: AbortSignal
+  ): Promise<ContextMessage[]> {
+    const model = getModel(modelId);
+    if (!model || model.supportsImageInput || !this.options.ocr) {
+      return messages;
+    }
+    try {
+      return await this.options.ocr.enrichMessages(messages, { signal });
+    } catch (error) {
+      this.options.logger.warn("OCR enrichment failed; continuing without OCR text", {
+        modelId,
+        message: error instanceof Error ? error.message : String(error)
+      });
+      return messages;
+    }
   }
 
   private async readProviderCredentials(): Promise<ProviderCredentialsFile> {

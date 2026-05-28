@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "engine": "tesseract",
+  "platform": "win32",
+  "arch": "x64",
+  "binary": "bin/tesseract.exe",
+  "tessdata": "share/tessdata",
+  "env": {
+    "PATH": [
+      "bin"
+    ]
+  }
+}

@@ -348,6 +348,159 @@ describe("RuntimeOrchestrator", () => {
     expect(session.guildId).toBe("guild-1");
   });
 
+  it("adds OCR text before non-vision model calls", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    const imageMessage = imageContextMessage();
+    discord.contexts = [[imageMessage], [imageMessage]];
+    await seedRuntimeConfig(storage);
+    await setPrimaryRuntimeModel(storage, "deepseek", "deepseek-v4-pro");
+
+    let orchestratorMessages: ContextMessage[] = [];
+    let waifuMessages: ContextMessage[] = [];
+    const ocr = {
+      enrichMessages: vi.fn(async (messages: ContextMessage[]) =>
+        messages.map((message) => ({
+          ...message,
+          images: message.images?.map((image) => ({ ...image, ocrText: "Start chatting with Instant" }))
+        }))
+      )
+    };
+    const pipeline: ModelPipeline = {
+      async decideOrchestrator(request) {
+        orchestratorMessages = request.messages;
+        return {
+          action: "reply",
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal" }],
+          reasoning: "image text is useful"
+        };
+      },
+      async generateWaifu(request) {
+        waifuMessages = request.messages;
+        return { content: "Got it." };
+      }
+    };
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 1,
+      ocr,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    expect(ocr.enrichMessages).toHaveBeenCalledTimes(2);
+    expect(orchestratorMessages[0].images?.[0].ocrText).toBe("Start chatting with Instant");
+    expect(waifuMessages[0].images?.[0].ocrText).toBe("Start chatting with Instant");
+    expect(discord.sent[0].content).toBe("Got it.");
+  });
+
+  it("skips OCR for vision-capable model calls", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    const imageMessage = imageContextMessage();
+    discord.contexts = [[imageMessage], [imageMessage]];
+    await seedRuntimeConfig(storage);
+
+    const ocr = {
+      enrichMessages: vi.fn(async (messages: ContextMessage[]) => messages)
+    };
+    const pipeline: ModelPipeline = {
+      async decideOrchestrator() {
+        return {
+          action: "reply",
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal" }],
+          reasoning: "openai can see images"
+        };
+      },
+      async generateWaifu() {
+        return { content: "Seen." };
+      }
+    };
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 1,
+      ocr,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    expect(ocr.enrichMessages).not.toHaveBeenCalled();
+    expect(discord.sent[0].content).toBe("Seen.");
+  });
+
+  it("continues without OCR text when OCR enrichment fails", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    const imageMessage = imageContextMessage();
+    discord.contexts = [[imageMessage], [imageMessage]];
+    await seedRuntimeConfig(storage);
+    await setPrimaryRuntimeModel(storage, "deepseek", "deepseek-v4-pro");
+
+    const warn = vi.fn();
+    let waifuMessages: ContextMessage[] = [];
+    const pipeline: ModelPipeline = {
+      async decideOrchestrator() {
+        return {
+          action: "reply",
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal" }],
+          reasoning: "continue"
+        };
+      },
+      async generateWaifu(request) {
+        waifuMessages = request.messages;
+        return { content: "Still works." };
+      }
+    };
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 1,
+      ocr: {
+        enrichMessages: vi.fn(async () => {
+          throw new Error("ocr unavailable");
+        })
+      },
+      createPipeline: () => pipeline,
+      logger: {
+        ...quietLogger(),
+        warn
+      }
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    expect(waifuMessages[0].images?.[0].ocrText).toBeUndefined();
+    expect(discord.sent[0].content).toBe("Still works.");
+    expect(warn).toHaveBeenCalledWith(
+      "OCR enrichment failed; continuing without OCR text",
+      expect.objectContaining({ modelId: "deepseek-v4-pro" })
+    );
+  });
+
   it("lets PickNextWaifu hand off once before orchestration resumes", async () => {
     const root = await makeTempRoot();
     roots.push(root);
@@ -2426,6 +2579,12 @@ async function seedRuntimeConfig(storage: StorageService) {
             apiKey: "sk-test",
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString()
+          },
+          deepseek: {
+            providerId: "deepseek",
+            apiKey: "deepseek-test",
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
           }
         }
       })
@@ -2516,6 +2675,51 @@ async function seedRuntimeConfig(storage: StorageService) {
   );
 }
 
+async function setPrimaryRuntimeModel(
+  storage: StorageService,
+  providerId: "openai" | "deepseek",
+  modelId: string
+) {
+  await storage.writeJson(
+    "orchestrator",
+    "user/orchestrator/config.json",
+    AgentConfigSchema,
+    AgentConfigSchema.parse({
+      ...createRevisionedBase(),
+      enabled: true,
+      providerId,
+      modelId,
+      contextWindow: 20,
+      prompt: "decide"
+    })
+  );
+  await storage.writeJson(
+    "waifu:yuki",
+    "user/waifus/yuki/waifu.json",
+    WaifuConfigSchema,
+    WaifuConfigSchema.parse({
+      ...createRevisionedBase(),
+      id: "yuki",
+      name: "Yuki",
+      displayName: "Yuki",
+      enabled: true,
+      providerId,
+      modelId,
+      botId: "yuki-bot",
+      persona: "kind",
+      contextWindow: 50,
+      availability: {
+        sleep: { enabled: true, start: "23:00", end: "07:00" },
+        busy: []
+      },
+      tools: {
+        toolUse: true,
+        pickNextWaifu: true
+      }
+    })
+  );
+}
+
 async function enableWaifus(storage: StorageService, waifuIds: string[]) {
   await storage.writeJson(
     "server:guild-1",
@@ -2581,5 +2785,21 @@ function contextMessage(
     sourceMessageIds,
     timestamp: "2026-05-16T12:00:00Z",
     reactions: []
+  };
+}
+
+function imageContextMessage(): ContextMessage {
+  return {
+    ...contextMessage("m1", "user", "Kevin", "look at this"),
+    images: [{ url: "https://cdn.example/screenshot.png", contentType: "image/png" }]
+  };
+}
+
+function quietLogger() {
+  return {
+    debug: () => undefined,
+    info: () => undefined,
+    warn: () => undefined,
+    error: () => undefined
   };
 }

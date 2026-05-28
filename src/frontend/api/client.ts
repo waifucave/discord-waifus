@@ -123,6 +123,8 @@ export const api = {
   // Config
   getConfig: (signal?: AbortSignal) => request<AppConfig>("GET", "/api/config", { signal }),
   putConfig: (config: AppConfig) => request<AppConfig>("PUT", "/api/config", { body: config }),
+  clearOcrCache: () =>
+    request<{ accepted: boolean; message: string }>("POST", "/api/cache/ocr/clear"),
   discordBots: (signal?: AbortSignal) =>
     request<DiscordBotsFile>("GET", "/api/discord-bots", { signal }),
   putDiscordBots: (bots: DiscordBotsFile) =>

@@ -1,0 +1,76 @@
+name: OCR Packages
+
+on:
+  workflow_dispatch:
+  release:
+    types: [created]
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    name: ${{ matrix.package }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - package: packages/ocr-darwin-arm64
+            runner: macos-14
+            install: brew install tesseract
+          - package: packages/ocr-darwin-x64
+            runner: macos-13
+            install: brew install tesseract
+          - package: packages/ocr-linux-x64-gnu
+            runner: ubuntu-latest
+            install: sudo apt-get update && sudo apt-get install -y tesseract-ocr tesseract-ocr-eng
+          - package: packages/ocr-win32-x64
+            runner: windows-latest
+            install: choco install tesseract -y --no-progress
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      - name: Install JS dependencies
+        run: npm ci --omit=optional
+
+      - name: Install native OCR dependency
+        shell: bash
+        run: ${{ matrix.install }}
+
+      - name: Assemble OCR package
+        shell: bash
+        run: npm run ocr:assemble -- --package "${{ matrix.package }}"
+
+      - name: Pack OCR package
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          (cd "${{ matrix.package }}" && npm pack --pack-destination "$GITHUB_WORKSPACE/artifacts")
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.package }}
+          path: artifacts/*.tgz
+          if-no-files-found: error
+
+      - name: Attach package to release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: gh release upload "${{ github.event.release.tag_name }}" artifacts/*.tgz --clobber
+
+      - name: Publish package to npm
+        if: github.event_name == 'release'
+        working-directory: ${{ matrix.package }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public --ignore-scripts

@@ -7,6 +7,13 @@ import { appDataPath, DATA_ROOT_ENV, getDataRoot, resolveDataPath } from "../con
 import { loadAppConfig } from "../config/appConfig.js";
 import { startBackend } from "../backend/server.js";
 import { RuntimeStateSchema } from "../backend/runtime.js";
+import {
+  bundledOcrPackageName,
+  detectLibc,
+  diagnoseBundledOcr,
+  npmPackTarballPrefix,
+  type LibcFlavor
+} from "../orchestration/ocrPackages.js";
 import { StorageService } from "../storage/storageService.js";
 import { DiscordBotsFileSchema, ProviderCredentialsFileSchema, createEmptyRevisionedFile } from "../shared/schemas/domain.js";
 import { ParsedCli, flagBoolean, flagNumber, flagString } from "./parser.js";
@@ -40,6 +47,8 @@ export type CliRuntimeOptions = {
   githubReleaseFetcher?: () => Promise<GitHubRelease>;
   env?: NodeJS.ProcessEnv;
   platform?: NodeJS.Platform;
+  arch?: NodeJS.Architecture;
+  libc?: LibcFlavor;
 };
 
 export async function runCommand(parsed: ParsedCli, options: CliRuntimeOptions = {}): Promise<number> {
@@ -271,6 +280,7 @@ async function doctorCommand(dataRoot: string): Promise<number> {
     DiscordBotsFileSchema.parse(createEmptyRevisionedFile({ orchestrator: null, waifus: [] }))
   );
   const nodeMajor = Number.parseInt(process.versions.node.split(".")[0] ?? "0", 10);
+  const bundledOcr = await diagnoseBundledOcr();
   const result = {
     node: {
       version: process.versions.node,
@@ -278,6 +288,13 @@ async function doctorCommand(dataRoot: string): Promise<number> {
     },
     dataRoot,
     config,
+    ocr: {
+      config: config.ocr,
+      platform: process.platform,
+      arch: process.arch,
+      libc: detectLibc(),
+      bundled: bundledOcr
+    },
     providersConfigured: Object.keys(providerFile.providers),
     discord: {
       orchestratorConfigured: discordFile.orchestrator?.token !== undefined,
@@ -363,10 +380,25 @@ async function updateGithubReleasePackage(runner: CliProcessRunner, options: Cli
     return 1;
   }
 
+  const packageSpecs = [asset.browser_download_url];
+  const ocrPackageName = bundledOcrPackageName({
+    platform: options.platform ?? process.platform,
+    arch: options.arch ?? process.arch,
+    libc: options.libc ?? detectLibc()
+  });
+  if (ocrPackageName) {
+    const ocrAsset = selectPackageTarball(release, ocrPackageName);
+    if (ocrAsset) {
+      packageSpecs.push(ocrAsset.browser_download_url);
+    } else {
+      console.error(`Latest GitHub release does not include a matching ${ocrPackageName}*.tgz asset; OCR can still use native OS fallback or system Tesseract.`);
+    }
+  }
+
   const npm = npmCommand(options.platform ?? process.platform);
   const label = release.tag_name ? ` ${release.tag_name}` : "";
   console.log(`Updating ${PACKAGE_NAME} from GitHub release${label}...`);
-  const code = await runner.run(npm, ["install", "-g", asset.browser_download_url], {
+  const code = await runner.run(npm, ["install", "-g", ...packageSpecs], {
     env: options.env ?? process.env
   });
   if (code !== 0) {
@@ -424,9 +456,19 @@ async function fetchLatestGithubRelease(): Promise<GitHubRelease> {
 }
 
 function selectGithubReleaseTarball(release: GitHubRelease): GitHubReleaseAsset | undefined {
+  return selectPackageTarball(release, PACKAGE_NAME);
+}
+
+function selectPackageTarball(release: GitHubRelease, packageName: string): GitHubReleaseAsset | undefined {
+  const prefix = npmPackTarballPrefix(packageName);
   return release.assets?.find(
-    (asset) => asset.name.startsWith(GITHUB_RELEASE_TARBALL_PREFIX) && asset.name.endsWith(".tgz")
+    (asset) => asset.name.startsWith(prefix) && asset.name.endsWith(".tgz") && looksLikeNpmPackVersion(asset.name, prefix)
   );
+}
+
+function looksLikeNpmPackVersion(assetName: string, prefix: string): boolean {
+  const suffix = assetName.slice(prefix.length, -".tgz".length);
+  return /^\d+\.\d+\.\d+(?:[-+].*)?$/u.test(suffix);
 }
 
 function npmCommand(platform: NodeJS.Platform): string {

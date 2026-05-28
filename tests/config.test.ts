@@ -1,4 +1,4 @@
-import { access, readFile, rm } from "node:fs/promises";
+import { access, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ensureDataLayout } from "../src/config/layout.js";
@@ -28,12 +28,84 @@ describe("data root and config", () => {
 
     await expect(access(path.join(root, "app", "logs"))).resolves.toBeUndefined();
     await expect(access(path.join(root, "app", "cache"))).resolves.toBeUndefined();
+    await expect(access(path.join(root, "app", "cache", "ocr", "results"))).resolves.toBeUndefined();
+    await expect(access(path.join(root, "app", "tmp", "ocr"))).resolves.toBeUndefined();
     await expect(access(path.join(root, "user", "waifus"))).resolves.toBeUndefined();
     await expect(access(path.join(root, "user", "servers"))).resolves.toBeUndefined();
 
     const config = await loadAppConfig(root);
     expect(config.http.port).toBe(3888);
     expect(config.runtime.autoConnectDiscord).toBe(true);
+    expect(config.ocr).toMatchObject({
+      enabled: true,
+      engine: "auto",
+      cacheTtlHours: 24,
+      timeoutMs: 1500,
+      maxImageBytes: 8 * 1024 * 1024,
+      maxImagesPerModelCall: 4,
+      maxTextCharsPerImage: 1500
+    });
+  });
+
+  it("fills OCR defaults when loading older config files", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    await writeFile(
+      path.join(root, "config.toml"),
+      [
+        "schemaVersion = 1",
+        "",
+        "[http]",
+        "host = \"127.0.0.1\"",
+        "port = 3888",
+        "",
+        "[runtime]",
+        "autoConnectDiscord = true",
+        "paused = false",
+        "",
+        "[frontend]",
+        ""
+      ].join("\n")
+    );
+
+    const config = await loadAppConfig(root);
+    expect(config.ocr.enabled).toBe(true);
+    expect(config.ocr.engine).toBe("auto");
+  });
+
+  it("keeps legacy Tesseract OCR configs as system Tesseract", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    await writeFile(
+      path.join(root, "config.toml"),
+      [
+        "schemaVersion = 1",
+        "",
+        "[http]",
+        "host = \"127.0.0.1\"",
+        "port = 3888",
+        "",
+        "[runtime]",
+        "autoConnectDiscord = true",
+        "paused = false",
+        "",
+        "[frontend]",
+        "",
+        "[ocr]",
+        "enabled = true",
+        "engine = \"tesseract\"",
+        "cacheTtlHours = 24",
+        "timeoutMs = 1500",
+        `maxImageBytes = ${8 * 1024 * 1024}`,
+        "maxImagesPerModelCall = 4",
+        "maxTextCharsPerImage = 1500"
+      ].join("\n")
+    );
+
+    const config = await loadAppConfig(root);
+    expect(config.ocr.engine).toBe("system-tesseract");
   });
 
   it("seeds editable prebuilt waifus only once per data root", async () => {

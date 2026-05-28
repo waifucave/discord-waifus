@@ -299,6 +299,26 @@ describe("Backend API", () => {
     }
   });
 
+  it("clears OCR cache and temporary OCR files", async () => {
+    const { app, root } = await makeApp();
+    const cached = path.join(root, "app", "cache", "ocr", "results", "cached.json");
+    const temp = path.join(root, "app", "tmp", "ocr", "download.png");
+    try {
+      await mkdir(path.dirname(cached), { recursive: true });
+      await mkdir(path.dirname(temp), { recursive: true });
+      await writeFile(cached, "{}");
+      await writeFile(temp, "image");
+
+      const response = await app.inject({ method: "POST", url: "/api/cache/ocr/clear" });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({ accepted: true });
+      await expect(readFile(cached, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(readFile(temp, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await app.close();
+    }
+  });
+
   it("serves configured frontend static files", async () => {
     const { app, root } = await makeApp();
     try {

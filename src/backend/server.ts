@@ -8,6 +8,7 @@ import { StorageService } from "../storage/storageService.js";
 import { DiscordJsGateway, DiscordRuntimeStatus } from "../discord/client.js";
 import { mergeConfiguredBotsIntoMembers } from "../discord/memberCache.js";
 import { RuntimeOrchestrator } from "../orchestration/runtime.js";
+import { ImageOcrService } from "../orchestration/ocr.js";
 import {
   DiscordBotsFileSchema,
   GuildEmojisFileSchema,
@@ -63,17 +64,35 @@ export async function startBackend(options: StartBackendOptions): Promise<Runnin
   let gateway: DiscordJsGateway | undefined;
   let runtimeOrchestrator: RuntimeOrchestrator | undefined;
 
-  const makeRuntimeOrchestrator = (nextGateway: DiscordJsGateway) =>
-    new RuntimeOrchestrator({
+  const cleanupOcr = async (currentConfig = config) => {
+    const ocr = new ImageOcrService({
+      dataRoot: options.dataRoot,
+      config: currentConfig.ocr,
+      logger
+    });
+    await ocr.cleanupExpired().catch((error) => {
+      logger.warn("OCR cleanup failed", { message: error instanceof Error ? error.message : String(error) });
+    });
+  };
+
+  const makeRuntimeOrchestrator = (nextGateway: DiscordJsGateway, currentConfig = config) => {
+    const ocr = new ImageOcrService({
+      dataRoot: options.dataRoot,
+      config: currentConfig.ocr,
+      logger
+    });
+    return new RuntimeOrchestrator({
       storage,
       discord: nextGateway,
       logger,
+      ocr,
       isPaused: () => runtime.paused,
       onActiveRunsChange: (activeRuns) => {
         runtime.queues.active = activeRuns;
         runtime.updatedAt = new Date().toISOString();
       }
     });
+  };
 
   const reloadRuntime = async (reason: string) => {
     logger.info("Reloading runtime", { reason });
@@ -84,12 +103,13 @@ export async function startBackend(options: StartBackendOptions): Promise<Runnin
     runtime.queues.active = 0;
 
     const currentConfig = await loadAppConfig(options.dataRoot);
+    await cleanupOcr(currentConfig);
     runtime.paused = currentConfig.runtime.paused;
     const connected = await maybeConnectDiscord(storage, currentConfig.runtime.autoConnectDiscord, logger);
     runtime.discord = connected.status;
     gateway = connected.gateway;
     if (gateway) {
-      runtimeOrchestrator = makeRuntimeOrchestrator(gateway);
+      runtimeOrchestrator = makeRuntimeOrchestrator(gateway, currentConfig);
       await runtimeOrchestrator.start();
     }
     runtime.queues.configuredGuilds = await countConfiguredGuilds(storage);
