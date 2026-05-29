@@ -11,6 +11,7 @@ const require = createRequire(import.meta.url);
 
 const OCR_PACKAGE_PREFIX = "@starlight-ai/discord-waifus-ocr";
 const MANIFEST_FILE = "ocr-manifest.json";
+const DIAGNOSTIC_TIMEOUT_MS = 10_000;
 
 export type LibcFlavor = "glibc" | "musl";
 
@@ -138,7 +139,7 @@ export async function diagnoseBundledOcr(target: OcrPackageTarget = {}): Promise
     await access(path.join(bundle.tessdataPath, "eng.traineddata"));
     const { stdout } = await execFileAsync(bundle.binaryPath, ["--version"], {
       env: buildBundledOcrEnv(bundle),
-      timeout: 2_000,
+      timeout: DIAGNOSTIC_TIMEOUT_MS,
       maxBuffer: 64 * 1024
     });
     return {
@@ -214,5 +215,15 @@ function existingPathKey(env: NodeJS.ProcessEnv): string {
 }
 
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  if (!(error instanceof Error)) return String(error);
+  const details: string[] = [];
+  const processError = error as Error & {
+    code?: string | number | null;
+    killed?: boolean;
+    signal?: NodeJS.Signals | null;
+  };
+  if (processError.killed) details.push("killed=true");
+  if (processError.signal) details.push(`signal=${processError.signal}`);
+  if (processError.code !== undefined && processError.code !== null) details.push(`code=${processError.code}`);
+  return details.length > 0 ? `${error.message.trim()} (${details.join(", ")})` : error.message;
 }
