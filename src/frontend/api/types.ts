@@ -114,7 +114,6 @@ export type ModelCapability = {
   endpoint: string;
   client: "openai-compatible-chat" | "openai-responses" | "anthropic-messages";
   supportedRoles: string[];
-  supportsName: boolean;
   supportsTools: boolean;
   supportsStructuredOutput: boolean;
   supportsStreaming: boolean;

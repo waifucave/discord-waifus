@@ -103,7 +103,7 @@ class OpenAiCompatibleChatPipeline implements ModelPipeline {
         model: request.modelId,
         messages: [
           { role: "system", content: request.systemPrompt },
-          contextToNamedUserMessage("messages", rendering),
+          contextToUserMessage(rendering),
           { role: "user", content: currentTimeBlock() }
         ],
         temperature: request.temperature ?? 0.2,
@@ -131,8 +131,8 @@ class OpenAiCompatibleChatPipeline implements ModelPipeline {
         model: request.modelId,
         messages: [
           { role: "system", content: stageManagerSystemPrompt(request.systemPrompt) },
-          contextToNamedUserMessage("messages", rendering),
-          { role: "user", name: "memories", content: JSON.stringify(request.memories) }
+          contextToUserMessage(rendering),
+          { role: "user", content: `memories: ${JSON.stringify(request.memories)}` }
         ],
         temperature: request.temperature ?? 0.2,
         top_p: request.topP,
@@ -219,7 +219,7 @@ class OpenAiResponsesPipeline implements ModelPipeline {
       body: {
         model: request.modelId,
         instructions: request.systemPrompt,
-        input: [contextToResponsesMessagesInput(rendering), { role: "user", content: currentTimeBlock() }],
+        input: [contextToUserMessage(rendering), { role: "user", content: currentTimeBlock() }],
         temperature: request.temperature ?? 0.2,
         top_p: request.topP,
         max_output_tokens: request.maxOutputTokens,
@@ -244,7 +244,7 @@ class OpenAiResponsesPipeline implements ModelPipeline {
         model: request.modelId,
         instructions: stageManagerSystemPrompt(request.systemPrompt),
         input: [
-          contextToResponsesMessagesInput(rendering),
+          contextToUserMessage(rendering),
           { role: "user", content: `memories: ${JSON.stringify(request.memories)}` }
         ],
         temperature: request.temperature ?? 0.2,
@@ -368,7 +368,7 @@ class AnthropicMessagesPipeline implements ModelPipeline {
         model: request.modelId,
         system: stageManagerSystemPrompt(request.systemPrompt),
         messages: [
-          contextToAnthropicMessagesPrompt(rendering),
+          contextToUserMessage(rendering),
           { role: "user", content: `memories: ${JSON.stringify(request.memories)}` }
         ],
         temperature: constrainsSampling ? 1 : request.temperature ?? 0.2,
@@ -557,22 +557,7 @@ function formatPromptCurrentHour(date: Date): string {
   ].join("-") + `T${String(date.getHours()).padStart(2, "0")}`;
 }
 
-function contextToNamedUserMessage(name: string, rendering: ContextRendering) {
-  return {
-    role: "user",
-    name: safeName(name),
-    content: rendering.block
-  };
-}
-
-function contextToResponsesMessagesInput(rendering: ContextRendering) {
-  return {
-    role: "user",
-    content: rendering.block
-  };
-}
-
-function contextToAnthropicMessagesPrompt(rendering: ContextRendering) {
+function contextToUserMessage(rendering: ContextRendering) {
   return {
     role: "user",
     content: rendering.block
@@ -614,7 +599,6 @@ function contextToChatMessagesForWaifu(messages: ContextMessage[], includeImages
     const imageBlocks = includeImages && role === "user" ? chatImageBlocks(message) : [];
     return {
       role,
-      name: pickProviderName(message),
       content: imageBlocks.length ? [{ type: "text", text }, ...imageBlocks] : text
     };
   });
@@ -625,12 +609,6 @@ function chatImageBlocks(message: ContextMessage) {
     type: "image_url" as const,
     image_url: { url: image.url }
   }));
-}
-
-function pickProviderName(message: ContextMessage): string {
-  const fromDisplay = safeName(message.displayName);
-  if (fromDisplay !== "user") return fromDisplay;
-  return safeName(message.name);
 }
 
 function contextToResponsesInputForWaifu(messages: ContextMessage[], includeImages: boolean) {
@@ -726,17 +704,6 @@ function formatOcrText(text: string | undefined): string | undefined {
 
 function stageManagerSystemPrompt(customPrompt?: string): string {
   return [customPrompt?.trim(), stageManagerJsonInstruction()].filter(Boolean).join("\n\n");
-}
-
-export function safeName(input: string): string {
-  if (!input) return "user";
-  const decomposed = input.normalize("NFKD");
-  const cleaned = decomposed
-    .replace(/\p{M}/gu, "")
-    .replace(/[^a-zA-Z0-9_-]+/g, "_")
-    .replace(/^_+|_+$/g, "");
-  if (!cleaned) return "user";
-  return cleaned.slice(0, 64);
 }
 
 function stageManagerJsonInstruction(): string {

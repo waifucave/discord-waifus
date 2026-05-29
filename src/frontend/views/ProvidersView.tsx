@@ -155,7 +155,6 @@ function ModelCard({ model }: { model: ModelCapability }) {
         {model.supportsStructuredOutput && <Pill tone="info">structured</Pill>}
         {model.supportsStreaming && <Pill tone="info">stream</Pill>}
         {model.supportsImageInput && <Pill tone="info">vision</Pill>}
-        {model.supportsName && <Pill tone="neutral">name</Pill>}
         {reasoning && <Pill tone="warn">{reasoning}</Pill>}
       </div>
       <div className="sub" style={{ fontSize: "var(--fs-xs)", color: "var(--text-muted)" }}>

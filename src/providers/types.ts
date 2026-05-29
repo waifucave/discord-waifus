@@ -14,7 +14,6 @@ export type ModelCapabilityMetadata = {
   endpoint: string;
   client: "openai-compatible-chat" | "openai-responses" | "anthropic-messages";
   supportedRoles: Array<"system" | "developer" | "user" | "assistant" | "tool">;
-  supportsName: boolean;
   supportsTools: boolean;
   supportsStructuredOutput: boolean;
   supportsStreaming: boolean;
