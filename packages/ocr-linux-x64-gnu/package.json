@@ -1,6 +1,6 @@
 {
   "name": "@starlight-ai/discord-waifus-ocr-linux-x64-gnu",
-  "version": "1.5.113",
+  "version": "1.5.114",
   "description": "Bundled Tesseract OCR runtime for Discord Waifus on Linux x64 glibc.",
   "type": "module",
   "private": false,
@@ -19,11 +19,12 @@
     "lib/",
     "share/tessdata/",
     "licenses/",
+    "LICENSE",
     "README.md",
     "THIRD_PARTY_NOTICES.md"
   ],
   "publishConfig": {
     "access": "public"
   },
-  "license": "UNLICENSED"
+  "license": "MIT"
 }

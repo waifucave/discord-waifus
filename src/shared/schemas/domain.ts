@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { CURRENT_SCHEMA_VERSION, IsoDateStringSchema, RevisionedRecordSchema } from "./common.js";
 
-export const ProviderIdSchema = z.enum(["xai", "deepseek", "anthropic", "openai", "zai"]);
+export const ProviderIdSchema = z.enum(["xai", "deepseek", "anthropic", "openai", "zai", "google-ai-studio"]);
 export type ProviderId = z.infer<typeof ProviderIdSchema>;
 
 export const ReasoningEffortSchema = z.enum(["low", "medium", "high"]);

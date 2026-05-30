@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ContextMessage, OrchestratorNoReplyMarker, formatTimestamp } from "../orchestration/context.js";
+import { AttachmentImage, ContextMessage, OrchestratorNoReplyMarker, formatTimestamp } from "../orchestration/context.js";
 import {
   OrchestratorActionSchema,
   OrchestratorDecision,
@@ -55,6 +55,8 @@ export function createModelPipeline(modelId: string, credentials: PipelineCreden
       return new OpenAiResponsesPipeline(provider, model, credentials.apiKey);
     case "anthropic-messages":
       return new AnthropicMessagesPipeline(provider, model, credentials.apiKey);
+    case "google-generative-language":
+      return new GoogleGenerativeLanguagePipeline(provider, model, credentials.apiKey);
   }
 }
 
@@ -405,6 +407,128 @@ class AnthropicMessagesPipeline implements ModelPipeline {
       },
       signal: request.signal,
       extract: (json) => extractAnthropicToolArguments(json, REVIEWER_TOOL_NAME),
+      queryRole: "reviewer"
+    });
+    return parseReviewerDecision(text);
+  }
+}
+
+class GoogleGenerativeLanguagePipeline implements ModelPipeline {
+  constructor(
+    private readonly provider: ProviderMetadata,
+    private readonly model: ModelCapabilityMetadata,
+    private readonly apiKey: string
+  ) {}
+
+  async generateWaifu(request: WaifuGenerationRequest): Promise<WaifuGenerationResult> {
+    const contextContents = await contextToGoogleMessagesForWaifu(
+      request.messages,
+      this.model.supportsImageInput
+    );
+    const replyHint = replyStyleHint(request.replyStyle);
+    const contents = [
+      ...contextContents,
+      ...(replyHint ? [googleUserTurn(replyHint)] : []),
+      googleUserTurn(directorNotesContent(request.sceneDirection))
+    ];
+    const result = await postJsonAndExtractText<WaifuGenerationResult>({
+      url: googleAiStudioUrl(this.provider, this.model),
+      headers: googleAiStudioHeaders(this.apiKey),
+      body: stripUndefined({
+        systemInstruction: request.systemPrompt ? { parts: [{ text: request.systemPrompt }] } : undefined,
+        contents,
+        generationConfig: googleGenerationConfig(this.model, {
+          temperature: request.temperature ?? this.model.defaultTemperature,
+          topP: request.topP ?? this.model.defaultTopP,
+          maxOutputTokens: request.maxOutputTokens,
+          stopSequences: WAIFU_STOP_SEQUENCES,
+          reasoning: request.reasoning
+        }),
+        safetySettings: googleSafetySettings,
+        ...googleAiStudioPickNextWaifuToolPayload(this.model, request)
+      }),
+      signal: request.signal,
+      extract: (json) => extractGoogleWaifuResult(json, request.availableWaifuIds),
+      queryRole: "waifu"
+    });
+    return result;
+  }
+
+  async decideOrchestrator(request: ProviderRequest): Promise<OrchestratorDecision> {
+    const rendering = renderContext(request.messages, request.decisionMarkers);
+    const text = await postJsonAndExtractText({
+      url: googleAiStudioUrl(this.provider, this.model),
+      headers: googleAiStudioHeaders(this.apiKey),
+      body: stripUndefined({
+        systemInstruction: request.systemPrompt ? { parts: [{ text: request.systemPrompt }] } : undefined,
+        contents: [
+          googleUserTurn(rendering.block),
+          googleUserTurn(currentTimeBlock())
+        ],
+        generationConfig: googleGenerationConfig(this.model, {
+          temperature: request.temperature ?? 0.2,
+          topP: request.topP,
+          maxOutputTokens: request.maxOutputTokens,
+          reasoning: request.reasoning
+        }),
+        safetySettings: googleSafetySettings,
+        tools: [googleAiStudioOrchestratorTool(request.availableWaifuIds)],
+        toolConfig: googleForceToolConfig(ORCHESTRATOR_TOOL_NAME)
+      }),
+      signal: request.signal,
+      extract: (json) => extractGoogleToolArguments(json, ORCHESTRATOR_TOOL_NAME),
+      queryRole: "orchestrator"
+    });
+    return parseDecision(text, rendering.indexToId);
+  }
+
+  async decideStageManager(request: StageManagerRequest): Promise<StageManagerToolCall[]> {
+    const rendering = renderContext(request.messages);
+    const text = await postJsonAndExtractText({
+      url: googleAiStudioUrl(this.provider, this.model),
+      headers: googleAiStudioHeaders(this.apiKey),
+      body: stripUndefined({
+        systemInstruction: { parts: [{ text: stageManagerSystemPrompt(request.systemPrompt) }] },
+        contents: [
+          googleUserTurn(rendering.block),
+          googleUserTurn(`memories: ${JSON.stringify(request.memories)}`)
+        ],
+        generationConfig: googleGenerationConfig(this.model, {
+          temperature: request.temperature ?? 0.2,
+          topP: request.topP,
+          maxOutputTokens: request.maxOutputTokens,
+          reasoning: request.reasoning
+        }),
+        safetySettings: googleSafetySettings,
+        tools: [googleAiStudioStageManagerTool()],
+        toolConfig: googleForceToolConfig(STAGE_MANAGER_TOOL_NAME)
+      }),
+      signal: request.signal,
+      extract: (json) => extractGoogleToolArguments(json, STAGE_MANAGER_TOOL_NAME),
+      queryRole: "stage_manager"
+    });
+    return parseStageManagerCalls(text);
+  }
+
+  async decideReviewer(request: ProviderRequest & { message: string }): Promise<ReviewerDecision> {
+    const text = await postJsonAndExtractText({
+      url: googleAiStudioUrl(this.provider, this.model),
+      headers: googleAiStudioHeaders(this.apiKey),
+      body: stripUndefined({
+        systemInstruction: { parts: [{ text: reviewerSystemPrompt(request.systemPrompt) }] },
+        contents: [googleUserTurn(request.message)],
+        generationConfig: googleGenerationConfig(this.model, {
+          temperature: request.temperature ?? 0,
+          topP: request.topP,
+          maxOutputTokens: request.maxOutputTokens ?? 64,
+          reasoning: request.reasoning
+        }),
+        safetySettings: googleSafetySettings,
+        tools: [googleAiStudioReviewerTool()],
+        toolConfig: googleForceToolConfig(REVIEWER_TOOL_NAME)
+      }),
+      signal: request.signal,
+      extract: (json) => extractGoogleToolArguments(json, REVIEWER_TOOL_NAME),
       queryRole: "reviewer"
     });
     return parseReviewerDecision(text);
@@ -1468,4 +1592,210 @@ export function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) {
     throw signal.reason instanceof Error ? signal.reason : new Error("Request aborted.");
   }
+}
+
+function googleAiStudioHeaders(apiKey: string): Record<string, string> {
+  return { "x-goog-api-key": apiKey };
+}
+
+function googleAiStudioUrl(provider: ProviderMetadata, model: ModelCapabilityMetadata): string {
+  return `${provider.baseUrl}${model.endpoint}/${model.modelId}:generateContent`;
+}
+
+const googleSafetySettings = [
+  { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
+  { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
+  { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
+  { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" }
+];
+
+function googleUserTurn(text: string) {
+  return { role: "user" as const, parts: [{ text }] };
+}
+
+function googleGenerationConfig(
+  model: ModelCapabilityMetadata,
+  opts: {
+    temperature?: number;
+    topP?: number;
+    maxOutputTokens?: number;
+    stopSequences?: string[];
+    reasoning?: ReasoningConfig;
+  }
+): Record<string, unknown> {
+  return stripUndefined({
+    temperature: opts.temperature,
+    topP: opts.topP,
+    maxOutputTokens: opts.maxOutputTokens,
+    stopSequences: opts.stopSequences,
+    thinkingConfig: googleThinkingConfig(model, opts.reasoning)
+  });
+}
+
+function googleThinkingConfig(
+  model: ModelCapabilityMetadata,
+  reasoning?: ReasoningConfig
+): Record<string, unknown> | undefined {
+  const modelId = model.modelId;
+  // Gemini 3.x flash family uses thinkingLevel (minimal | low | medium | high).
+  if (modelId.startsWith("gemini-3")) {
+    if (reasoning?.enabled === false) return { thinkingLevel: "minimal" };
+    if (reasoning?.effort) return { thinkingLevel: reasoning.effort };
+    return undefined;
+  }
+  // Gemini 2.5 Flash: thinkingBudget; 0 disables; max 24576.
+  if (modelId === "gemini-2.5-flash") {
+    if (reasoning?.enabled === false) return { thinkingBudget: 0 };
+    if (reasoning?.budgetTokens && reasoning.budgetTokens > 0) {
+      return { thinkingBudget: Math.min(reasoning.budgetTokens, 24576) };
+    }
+    return undefined;
+  }
+  // Gemini 2.5 Flash Lite: cannot disable; budget clamped to [512, 24576].
+  if (modelId === "gemini-2.5-flash-lite") {
+    if (reasoning?.budgetTokens && reasoning.budgetTokens > 0) {
+      return { thinkingBudget: Math.max(512, Math.min(reasoning.budgetTokens, 24576)) };
+    }
+    return undefined;
+  }
+  return undefined;
+}
+
+function googleAiStudioTool(name: string, description: string, parameters: object) {
+  return { functionDeclarations: [{ name, description, parameters }] };
+}
+
+function googleForceToolConfig(name: string) {
+  return { functionCallingConfig: { mode: "ANY", allowedFunctionNames: [name] } };
+}
+
+function googleAiStudioOrchestratorTool(availableWaifuIds?: string[]) {
+  return googleAiStudioTool(ORCHESTRATOR_TOOL_NAME, ORCHESTRATOR_TOOL_DESCRIPTION, orchestratorToolParameters(availableWaifuIds));
+}
+
+function googleAiStudioStageManagerTool() {
+  return googleAiStudioTool(STAGE_MANAGER_TOOL_NAME, STAGE_MANAGER_TOOL_DESCRIPTION, STAGE_MANAGER_TOOL_PARAMETERS);
+}
+
+function googleAiStudioReviewerTool() {
+  return googleAiStudioTool(REVIEWER_TOOL_NAME, REVIEWER_TOOL_DESCRIPTION, REVIEWER_TOOL_PARAMETERS);
+}
+
+function googleAiStudioPickNextWaifuTool(availableWaifuIds?: string[]) {
+  return googleAiStudioTool(PICK_NEXT_WAIFU_TOOL_NAME, PICK_NEXT_WAIFU_TOOL_DESCRIPTION, pickNextWaifuToolParameters(availableWaifuIds));
+}
+
+function googleAiStudioPickNextWaifuToolPayload(
+  model: ModelCapabilityMetadata,
+  request: WaifuGenerationRequest
+): { tools?: unknown[]; toolConfig?: { functionCallingConfig: { mode: "AUTO" } } } {
+  if (!shouldExposePickNextWaifuTool(model, request)) return {};
+  return {
+    tools: [googleAiStudioPickNextWaifuTool(request.availableWaifuIds)],
+    toolConfig: { functionCallingConfig: { mode: "AUTO" } }
+  };
+}
+
+async function contextToGoogleMessagesForWaifu(
+  messages: ContextMessage[],
+  includeImages: boolean
+): Promise<Array<{ role: "user" | "model"; parts: Array<Record<string, unknown>> }>> {
+  return Promise.all(
+    messages.map(async (message) => {
+      const role: "user" | "model" = roleForWaifuContext(message) === "assistant" ? "model" : "user";
+      const text = formatWaifuContextLine(message);
+      const imageParts = includeImages && role === "user" ? await googleImageParts(message) : [];
+      return {
+        role,
+        parts: [{ text }, ...imageParts]
+      };
+    })
+  );
+}
+
+async function googleImageParts(
+  message: ContextMessage
+): Promise<Array<{ inlineData: { mimeType: string; data: string } }>> {
+  const parts = await Promise.all((message.images ?? []).map((image) => googleInlineImagePart(image)));
+  return parts.filter((part): part is { inlineData: { mimeType: string; data: string } } => part !== undefined);
+}
+
+async function googleInlineImagePart(
+  image: AttachmentImage
+): Promise<{ inlineData: { mimeType: string; data: string } } | undefined> {
+  try {
+    const response = await fetch(image.url);
+    if (!response.ok) return undefined;
+    const headerType = response.headers.get("content-type") ?? undefined;
+    const fromHeader = headerType && headerType.toLowerCase().startsWith("image/")
+      ? headerType.split(";")[0].trim()
+      : undefined;
+    const mimeType = fromHeader ?? image.contentType ?? guessImageMimeFromUrl(image.url);
+    if (!mimeType || !mimeType.startsWith("image/")) return undefined;
+    const buffer = await response.arrayBuffer();
+    const data = Buffer.from(buffer).toString("base64");
+    return { inlineData: { mimeType, data } };
+  } catch {
+    return undefined;
+  }
+}
+
+function guessImageMimeFromUrl(url: string): string | undefined {
+  const match = url.toLowerCase().match(/\.([a-z0-9]+)(?:\?|#|$)/);
+  if (!match) return undefined;
+  switch (match[1]) {
+    case "png": return "image/png";
+    case "jpg":
+    case "jpeg": return "image/jpeg";
+    case "webp": return "image/webp";
+    case "gif": return "image/gif";
+    case "heic": return "image/heic";
+    case "heif": return "image/heif";
+    default: return undefined;
+  }
+}
+
+function extractGoogleText(json: unknown): string {
+  const parsed = json as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
+  return parsed.candidates?.[0]?.content?.parts?.map((part) => part.text ?? "").join("") ?? "";
+}
+
+function extractGoogleWaifuResult(json: unknown, availableWaifuIds?: string[]): WaifuGenerationResult {
+  const parsed = json as {
+    candidates?: Array<{
+      content?: {
+        parts?: Array<{
+          text?: string;
+          functionCall?: { name?: string; args?: unknown };
+        }>;
+      };
+    }>;
+  };
+  const parts = parsed.candidates?.[0]?.content?.parts ?? [];
+  const pickCall = parts.find((part) => part.functionCall?.name === PICK_NEXT_WAIFU_TOOL_NAME)?.functionCall;
+  return {
+    content: extractGoogleText(parsed),
+    ...parsePickedNextWaifu(pickCall?.args, availableWaifuIds)
+  };
+}
+
+function extractGoogleToolArguments(json: unknown, toolName: string): string {
+  const parsed = json as {
+    candidates?: Array<{
+      content?: {
+        parts?: Array<{
+          text?: string;
+          functionCall?: { name?: string; args?: unknown };
+        }>;
+      };
+    }>;
+  };
+  const parts = parsed.candidates?.[0]?.content?.parts ?? [];
+  const call =
+    parts.find((part) => part.functionCall?.name === toolName)?.functionCall
+    ?? parts.find((part) => part.functionCall)?.functionCall;
+  const args = call?.args;
+  if (typeof args === "string") return args;
+  if (args && typeof args === "object") return JSON.stringify(args);
+  return extractGoogleText(parsed);
 }

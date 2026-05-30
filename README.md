@@ -145,6 +145,12 @@ Important folders:
 
 Use `waifus clean` only when you intentionally want to delete saved user data.
 
+## License
+
+Discord Waifus is licensed under the MIT License. Bundled OCR packages include
+third-party Tesseract, Leptonica, traineddata, and runtime library notices under
+their package `licenses/` folders and `THIRD_PARTY_NOTICES.md` files.
+
 ## Release Notes
 
 Version `1.0.0` is the first stable release for the local backend, web UI, Discord runtime, npm CLI, and prebuilt waifu configuration flow.

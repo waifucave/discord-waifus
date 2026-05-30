@@ -809,6 +809,263 @@ describe("director note payloads", () => {
   });
 });
 
+describe("Google AI Studio (Gemini) pipeline", () => {
+  it("forces the orchestrator tool, routes to the model-scoped URL, and parses functionCall args", async () => {
+    mockFetch({
+      candidates: [
+        {
+          content: {
+            parts: [
+              {
+                functionCall: {
+                  name: "orchestrator_decision",
+                  args: {
+                    action: "no_reply",
+                    respondingWaifus: [],
+                    retriggerAfterSeconds: 300,
+                    reasoning: "hold"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ]
+    });
+
+    const pipeline = createModelPipeline("gemini-2.5-flash", { apiKey: "g-test" });
+    const decision = await pipeline.decideOrchestrator?.({
+      modelId: "gemini-2.5-flash",
+      messages: context,
+      systemPrompt: "decide",
+      availableWaifuIds: ["yuki", "mika"]
+    });
+
+    expect(decision).toMatchObject({ action: "no_reply", retriggerAfterSeconds: 300 });
+
+    const fetchMock = (globalThis.fetch as unknown) as ReturnType<typeof vi.fn>;
+    expect(fetchMock).toHaveBeenCalled();
+    const calledUrl = fetchMock.mock.calls[0]![0] as string;
+    expect(calledUrl).toBe("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent");
+    const calledInit = fetchMock.mock.calls[0]![1] as { headers: Record<string, string> };
+    expect(calledInit.headers["x-goog-api-key"]).toBe("g-test");
+
+    const query = recentQueries().at(-1);
+    expect(query?.role).toBe("orchestrator");
+    const tools = query?.payload.tools as Array<{ functionDeclarations: Array<{ name: string }> }>;
+    expect(tools[0].functionDeclarations[0].name).toBe("orchestrator_decision");
+    expect(query?.payload.toolConfig).toEqual({
+      functionCallingConfig: { mode: "ANY", allowedFunctionNames: ["orchestrator_decision"] }
+    });
+    expect(query?.payload.systemInstruction).toEqual({ parts: [{ text: "decide" }] });
+  });
+
+  it("forces the stage-manager tool and sends a memories user-turn", async () => {
+    mockFetch({
+      candidates: [
+        {
+          content: {
+            parts: [
+              {
+                functionCall: {
+                  name: "manage_memories",
+                  args: {
+                    toolCalls: [
+                      {
+                        tool: "add_memory",
+                        memory: { waifuId: "yuki", content: "Kevin likes tea.", importance: 3 }
+                      }
+                    ]
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ]
+    });
+
+    const pipeline = createModelPipeline("gemini-2.5-flash-lite", { apiKey: "g-test" });
+    const calls = await pipeline.decideStageManager?.({
+      modelId: "gemini-2.5-flash-lite",
+      messages: context,
+      memories: [{ memoryIndex: 1, waifuId: "yuki", content: "Kevin likes tea.", importance: 3 }],
+      systemPrompt: "memories"
+    });
+
+    expect(calls?.[0]).toMatchObject({ tool: "add_memory" });
+    const query = recentQueries().at(-1);
+    const contents = query?.payload.contents as Array<{ role: string; parts: Array<{ text: string }> }>;
+    expect(contents.at(-1)?.parts[0].text).toContain("memories: ");
+    expect(query?.payload.toolConfig).toEqual({
+      functionCallingConfig: { mode: "ANY", allowedFunctionNames: ["manage_memories"] }
+    });
+  });
+
+  it("forces the reviewer tool with a single user turn", async () => {
+    mockFetch({
+      candidates: [
+        {
+          content: {
+            parts: [{ functionCall: { name: "review_message", args: { hallucination: false } } }]
+          }
+        }
+      ]
+    });
+
+    const pipeline = createModelPipeline("gemini-2.5-flash", { apiKey: "g-test" });
+    await pipeline.decideReviewer?.({
+      modelId: "gemini-2.5-flash",
+      messages: context,
+      systemPrompt: "review",
+      message: "hello?"
+    });
+
+    const query = recentQueries().at(-1);
+    const contents = query?.payload.contents as Array<{ role: string; parts: Array<{ text: string }> }>;
+    expect(contents).toHaveLength(1);
+    expect(contents[0]).toEqual({ role: "user", parts: [{ text: "hello?" }] });
+    expect(query?.payload.toolConfig).toEqual({
+      functionCallingConfig: { mode: "ANY", allowedFunctionNames: ["review_message"] }
+    });
+  });
+
+  it("maps waifu turns to role 'model' and puts the system prompt under systemInstruction", async () => {
+    mockFetch({ candidates: [{ content: { parts: [{ text: "ok" }] } }] });
+
+    const pipeline = createModelPipeline("gemini-2.5-flash", { apiKey: "g-test" });
+    await pipeline.generateWaifu({
+      modelId: "gemini-2.5-flash",
+      messages: contextWithWaifus,
+      systemPrompt: "stay in character"
+    });
+
+    const query = recentQueries().at(-1);
+    expect(query?.payload.systemInstruction).toEqual({ parts: [{ text: "stay in character" }] });
+    const contents = query?.payload.contents as Array<{ role: string; parts: Array<{ text: string }> }>;
+    expect(contents.slice(0, 3).map((turn) => turn.role)).toEqual(["user", "model", "model"]);
+    expect(contents.at(-1)?.parts[0].text).toContain("<director_notes>");
+  });
+
+  it("attaches inlineData parts with base64 image bytes", async () => {
+    const apiResponse = {
+      candidates: [{ content: { parts: [{ text: "nice cat" }] } }]
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: unknown) => {
+        const url = typeof input === "string" ? input : String(input);
+        if (url.startsWith("https://cdn.example/")) {
+          return new Response(new Uint8Array([1, 2, 3, 4]), {
+            status: 200,
+            headers: { "content-type": "image/png" }
+          });
+        }
+        return new Response(JSON.stringify(apiResponse), { status: 200 });
+      })
+    );
+
+    const pipeline = createModelPipeline("gemini-2.5-flash", { apiKey: "g-test" });
+    await pipeline.generateWaifu({
+      modelId: "gemini-2.5-flash",
+      messages: [
+        {
+          id: "img1",
+          channelId: "c1",
+          guildId: "g1",
+          authorKind: "user",
+          authorId: "u1",
+          name: "Kevin",
+          displayName: "Kevin",
+          content: "what is this?",
+          timestamp: "2026-05-16T12:00:00Z",
+          images: [{ url: "https://cdn.example/cat.png", contentType: "image/png" }],
+          reactions: []
+        }
+      ],
+      systemPrompt: "stay in character"
+    });
+
+    const query = recentQueries().at(-1);
+    const contents = query?.payload.contents as Array<{ role: string; parts: Array<Record<string, unknown>> }>;
+    const userTurn = contents[0];
+    expect(userTurn.role).toBe("user");
+    expect(userTurn.parts).toEqual([
+      { text: expect.stringContaining("[images: 1]") },
+      { inlineData: { mimeType: "image/png", data: Buffer.from([1, 2, 3, 4]).toString("base64") } }
+    ]);
+  });
+
+  it("translates reasoning.effort to thinkingLevel on Gemini 3.x flash models", async () => {
+    mockFetch({ candidates: [{ content: { parts: [{ text: "ok" }] } }] });
+
+    const pipeline = createModelPipeline("gemini-3-flash", { apiKey: "g-test" });
+    await pipeline.generateWaifu({
+      modelId: "gemini-3-flash",
+      messages: context,
+      systemPrompt: "stay in character",
+      reasoning: { effort: "medium" }
+    });
+
+    const query = recentQueries().at(-1);
+    const generationConfig = query?.payload.generationConfig as { thinkingConfig?: { thinkingLevel?: string } };
+    expect(generationConfig.thinkingConfig).toEqual({ thinkingLevel: "medium" });
+  });
+
+  it("sets thinkingBudget:0 when reasoning is disabled on Gemini 2.5 Flash", async () => {
+    mockFetch({ candidates: [{ content: { parts: [{ text: "ok" }] } }] });
+
+    const pipeline = createModelPipeline("gemini-2.5-flash", { apiKey: "g-test" });
+    await pipeline.generateWaifu({
+      modelId: "gemini-2.5-flash",
+      messages: context,
+      systemPrompt: "stay in character",
+      reasoning: { enabled: false }
+    });
+
+    const query = recentQueries().at(-1);
+    const generationConfig = query?.payload.generationConfig as { thinkingConfig?: { thinkingBudget?: number } };
+    expect(generationConfig.thinkingConfig).toEqual({ thinkingBudget: 0 });
+  });
+
+  it("clamps thinkingBudget to 512 on Gemini 2.5 Flash Lite (cannot disable)", async () => {
+    mockFetch({ candidates: [{ content: { parts: [{ text: "ok" }] } }] });
+
+    const pipeline = createModelPipeline("gemini-2.5-flash-lite", { apiKey: "g-test" });
+    await pipeline.generateWaifu({
+      modelId: "gemini-2.5-flash-lite",
+      messages: context,
+      systemPrompt: "stay in character",
+      reasoning: { budgetTokens: 100 }
+    });
+
+    const query = recentQueries().at(-1);
+    const generationConfig = query?.payload.generationConfig as { thinkingConfig?: { thinkingBudget?: number } };
+    expect(generationConfig.thinkingConfig).toEqual({ thinkingBudget: 512 });
+  });
+
+  it("sends BLOCK_NONE safety settings on all four configurable categories", async () => {
+    mockFetch({ candidates: [{ content: { parts: [{ text: "ok" }] } }] });
+
+    const pipeline = createModelPipeline("gemini-2.5-flash", { apiKey: "g-test" });
+    await pipeline.generateWaifu({
+      modelId: "gemini-2.5-flash",
+      messages: context,
+      systemPrompt: "stay in character"
+    });
+
+    const query = recentQueries().at(-1);
+    const safety = query?.payload.safetySettings as Array<{ category: string; threshold: string }>;
+    expect(safety.map((entry) => entry.category).sort()).toEqual([
+      "HARM_CATEGORY_DANGEROUS_CONTENT",
+      "HARM_CATEGORY_HARASSMENT",
+      "HARM_CATEGORY_HATE_SPEECH",
+      "HARM_CATEGORY_SEXUALLY_EXPLICIT"
+    ]);
+    expect(safety.every((entry) => entry.threshold === "BLOCK_NONE")).toBe(true);
+  });
+});
+
 function mockFetch(json: unknown): void {
   vi.stubGlobal(
     "fetch",

@@ -14,10 +14,15 @@ type CapturedQuery = {
   payload: {
     system?: unknown;
     instructions?: unknown;
+    systemInstruction?: unknown;
     messages?: unknown;
     input?: unknown;
+    contents?: unknown;
     tools?: unknown;
     tool_choice?: unknown;
+    toolConfig?: unknown;
+    generationConfig?: unknown;
+    safetySettings?: unknown;
   };
 };
 
@@ -223,6 +228,7 @@ function querySummary(payload: CapturedQuery["payload"]): string {
   const parts: string[] = [];
   if (Array.isArray(payload.messages)) parts.push(`${payload.messages.length} messages`);
   if (Array.isArray(payload.input)) parts.push(`${payload.input.length} input items`);
+  if (Array.isArray(payload.contents)) parts.push(`${payload.contents.length} turns`);
   if (Array.isArray(payload.tools)) parts.push(`${payload.tools.length} tools`);
   if (typeof payload.system === "string") {
     parts.push(`system ${payload.system.length}ch`);

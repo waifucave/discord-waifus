@@ -2,6 +2,7 @@ import { ModelCapabilityMetadata, ProviderMetadata } from "./types.js";
 
 const openAiCompatibleRoles = ["system", "developer", "user", "assistant", "tool"] as const;
 const anthropicRoles = ["user", "assistant", "tool"] as const;
+const googleAiStudioRoles = ["user", "model"] as const;
 
 export const PROVIDER_CATALOG: ProviderMetadata[] = [
   {
@@ -68,6 +69,20 @@ export const PROVIDER_CATALOG: ProviderMetadata[] = [
       zaiModel("glm-5", "GLM 5", true),
       zaiModel("glm-5-turbo", "GLM 5 Turbo", true),
       zaiModel("glm-5.1", "GLM 5.1", true)
+    ]
+  },
+  {
+    id: "google-ai-studio",
+    displayName: "Google AI Studio",
+    credentialName: "GOOGLE_AI_STUDIO_API_KEY",
+    baseUrl: "https://generativelanguage.googleapis.com",
+    docsUrl: "https://ai.google.dev/gemini-api/docs",
+    models: [
+      googleAiStudioModel("gemini-3.5-flash", "Gemini 3.5 Flash", ["reasoning.effort"]),
+      googleAiStudioModel("gemini-3.1-flash-lite", "Gemini 3.1 Flash Lite", ["reasoning.effort"]),
+      googleAiStudioModel("gemini-3-flash", "Gemini 3 Flash", ["reasoning.effort"]),
+      googleAiStudioModel("gemini-2.5-flash", "Gemini 2.5 Flash", ["reasoning.enabled", "reasoning.budget_tokens"]),
+      googleAiStudioModel("gemini-2.5-flash-lite", "Gemini 2.5 Flash Lite", ["reasoning.budget_tokens"])
     ]
   }
 ];
@@ -200,6 +215,29 @@ function zaiModel(
     supportsStreaming: true,
     supportsImageInput,
     reasoningControls: ["reasoning.enabled"],
+    defaultTemperature: 0.7,
+    defaultTopP: 1,
+    safeDefaultRoles: ["orchestrator", "waifu", "stage_manager"]
+  };
+}
+
+function googleAiStudioModel(
+  modelId: string,
+  displayName: string,
+  reasoningControls: string[]
+): ModelCapabilityMetadata {
+  return {
+    providerId: "google-ai-studio",
+    modelId,
+    displayName,
+    endpoint: "/v1beta/models",
+    client: "google-generative-language",
+    supportedRoles: [...googleAiStudioRoles],
+    supportsTools: true,
+    supportsStructuredOutput: true,
+    supportsStreaming: true,
+    supportsImageInput: true,
+    reasoningControls,
     defaultTemperature: 0.7,
     defaultTopP: 1,
     safeDefaultRoles: ["orchestrator", "waifu", "stage_manager"]

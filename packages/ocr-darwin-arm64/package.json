@@ -1,6 +1,6 @@
 {
   "name": "@starlight-ai/discord-waifus-ocr-darwin-arm64",
-  "version": "1.5.113",
+  "version": "1.5.114",
   "description": "Bundled Tesseract OCR runtime for Discord Waifus on macOS arm64.",
   "type": "module",
   "private": false,
@@ -16,11 +16,12 @@
     "lib/",
     "share/tessdata/",
     "licenses/",
+    "LICENSE",
     "README.md",
     "THIRD_PARTY_NOTICES.md"
   ],
   "publishConfig": {
     "access": "public"
   },
-  "license": "UNLICENSED"
+  "license": "MIT"
 }

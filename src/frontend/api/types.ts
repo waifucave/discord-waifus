@@ -1,7 +1,7 @@
 // Types mirror docs/api.md and src/shared/schemas/*.ts.
 // They are hand-aligned, not generated. Keep narrow and tolerant.
 
-export type ProviderId = "xai" | "deepseek" | "anthropic" | "openai" | "zai";
+export type ProviderId = "xai" | "deepseek" | "anthropic" | "openai" | "zai" | "google-ai-studio";
 
 export type ReasoningEffort = "low" | "medium" | "high";
 
@@ -112,7 +112,7 @@ export type ModelCapability = {
   modelId: string;
   displayName: string;
   endpoint: string;
-  client: "openai-compatible-chat" | "openai-responses" | "anthropic-messages";
+  client: "openai-compatible-chat" | "openai-responses" | "anthropic-messages" | "google-generative-language";
   supportedRoles: string[];
   supportsTools: boolean;
   supportsStructuredOutput: boolean;

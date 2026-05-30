@@ -99,6 +99,9 @@ function toggleHint(model: ModelCapability): string {
   if (model.providerId === "zai") {
     return "Toggles GLM thinking mode per call.";
   }
+  if (model.providerId === "google-ai-studio") {
+    return "Off sets thinkingBudget=0 (Gemini 2.5 Flash only). Flash Lite cannot disable thinking.";
+  }
   return "Toggle the model's thinking / chain-of-thought.";
 }
 
@@ -114,6 +117,9 @@ function effortHint(model: ModelCapability): string {
   }
   if (model.providerId === "deepseek") {
     return "DeepSeek only honors high and max; low/medium are mapped to high.";
+  }
+  if (model.providerId === "google-ai-studio") {
+    return "Maps to Gemini's thinkingLevel. Low ≈ minimal latency, High ≈ deepest reasoning.";
   }
   return "Higher effort spends more thinking tokens per call.";
 }
