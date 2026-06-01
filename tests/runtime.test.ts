@@ -12,6 +12,8 @@ import {
   DiscordReviewCommandListener,
   DiscordRunCommandEvent,
   DiscordRunCommandListener,
+  DiscordRunWaifuAutocompleteEvent,
+  DiscordRunWaifuAutocompleteListener,
   DiscordStopCommandEvent,
   DiscordStopCommandListener,
   DiscordRuntimeStatus
@@ -61,6 +63,7 @@ class FakeDiscord implements DiscordGatewayFacade {
   reviewListeners = new Set<DiscordReviewCommandListener>();
   clearListeners = new Set<DiscordClearCommandListener>();
   runListeners = new Set<DiscordRunCommandListener>();
+  runWaifuAutocompleteListeners = new Set<DiscordRunWaifuAutocompleteListener>();
   stopListeners = new Set<DiscordStopCommandListener>();
   memoriesListeners = new Set<DiscordMemoriesCommandListener>();
   contexts: ContextMessage[][] = [
@@ -88,6 +91,11 @@ class FakeDiscord implements DiscordGatewayFacade {
   onRunCommand(listener: DiscordRunCommandListener): () => void {
     this.runListeners.add(listener);
     return () => this.runListeners.delete(listener);
+  }
+
+  onRunWaifuAutocomplete(listener: DiscordRunWaifuAutocompleteListener): () => void {
+    this.runWaifuAutocompleteListeners.add(listener);
+    return () => this.runWaifuAutocompleteListeners.delete(listener);
   }
 
   onStopCommand(listener: DiscordStopCommandListener): () => void {
@@ -131,6 +139,21 @@ class FakeDiscord implements DiscordGatewayFacade {
   ): Promise<void> {
     await Promise.all(
       [...this.runListeners].map((listener) =>
+        listener({
+          ...event,
+          respond: event.respond ?? (async () => undefined)
+        })
+      )
+    );
+  }
+
+  async emitRunWaifuAutocomplete(
+    event: Omit<DiscordRunWaifuAutocompleteEvent, "respond"> & {
+      respond?: DiscordRunWaifuAutocompleteEvent["respond"];
+    }
+  ): Promise<void> {
+    await Promise.all(
+      [...this.runWaifuAutocompleteListeners].map((listener) =>
         listener({
           ...event,
           respond: event.respond ?? (async () => undefined)
@@ -2195,6 +2218,61 @@ describe("RuntimeOrchestrator", () => {
     expect(waifuCalls).toEqual(["mika", "yuki"]);
     expect(discord.sent.map((message) => message.content)).toEqual(["mika first", "yuki next"]);
     expect(discord.sent.map((message) => message.senderBotId)).toEqual(["mika-bot", "yuki-bot"]);
+  });
+
+  it("suggests channel-enabled waifus for /run autocomplete", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+
+    await seedRuntimeConfig(storage);
+    await seedWaifu(storage, "mika", "Mika", "mika-bot", "bold");
+    await enableWaifus(storage, ["yuki", "mika"]);
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      createPipeline: () => new FakePipeline(),
+      logger: {
+        debug: () => undefined,
+        info: () => undefined,
+        warn: () => undefined,
+        error: () => undefined
+      }
+    });
+    await runtime.start();
+
+    expect(discord.runWaifuAutocompleteListeners.size).toBe(1);
+
+    let choices: Array<{ name: string; value: string }> = [];
+    await discord.emitRunWaifuAutocomplete({
+      guildId: "guild-1",
+      channelId: "channel-1",
+      focusedValue: "",
+      respond: async (nextChoices) => {
+        choices = nextChoices;
+      }
+    });
+
+    expect(choices).toEqual([
+      { name: "Yuki (yuki)", value: "yuki" },
+      { name: "Mika (mika)", value: "mika" }
+    ]);
+
+    await discord.emitRunWaifuAutocomplete({
+      guildId: "guild-1",
+      channelId: "channel-1",
+      focusedValue: "mi",
+      respond: async (nextChoices) => {
+        choices = nextChoices;
+      }
+    });
+    await runtime.stop();
+
+    expect(choices).toEqual([{ name: "Mika (mika)", value: "mika" }]);
   });
 
   it("rejects scene direction on /run without a selected waifu", async () => {

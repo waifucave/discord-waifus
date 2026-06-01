@@ -1,5 +1,5 @@
 import { ApplicationCommandOptionType, Client, Events, GatewayIntentBits, MessageFlags, Partials } from "discord.js";
-import type { ChatInputCommandInteraction } from "discord.js";
+import type { AutocompleteInteraction, ChatInputCommandInteraction } from "discord.js";
 import { Logger } from "../backend/logger.js";
 import { ContextMessage } from "../orchestration/context.js";
 import {
@@ -26,6 +26,7 @@ export interface DiscordGatewayFacade {
   onReviewCommand?(listener: DiscordReviewCommandListener): () => void;
   onClearCommand?(listener: DiscordClearCommandListener): () => void;
   onRunCommand?(listener: DiscordRunCommandListener): () => void;
+  onRunWaifuAutocomplete?(listener: DiscordRunWaifuAutocompleteListener): () => void;
   onStopCommand?(listener: DiscordStopCommandListener): () => void;
   onMemoriesCommand?(listener: DiscordMemoriesCommandListener): () => void;
   listGuilds?(): Promise<Array<{ guildId: string; name: string }>>;
@@ -84,11 +85,22 @@ export type DiscordRunCommandEvent = DiscordSlashCommandEvent & {
   waifuId?: string;
   sceneDirection?: string;
 };
+export type DiscordAutocompleteChoice = {
+  name: string;
+  value: string;
+};
+export type DiscordRunWaifuAutocompleteEvent = {
+  guildId?: string;
+  channelId?: string;
+  focusedValue: string;
+  respond: (choices: DiscordAutocompleteChoice[]) => Promise<void>;
+};
 export type DiscordStopCommandEvent = DiscordSlashCommandEvent;
 export type DiscordMemoriesCommandEvent = DiscordSlashCommandEvent;
 export type DiscordReviewCommandListener = (event: DiscordReviewCommandEvent) => void | Promise<void>;
 export type DiscordClearCommandListener = (event: DiscordClearCommandEvent) => void | Promise<void>;
 export type DiscordRunCommandListener = (event: DiscordRunCommandEvent) => void | Promise<void>;
+export type DiscordRunWaifuAutocompleteListener = (event: DiscordRunWaifuAutocompleteEvent) => void | Promise<void>;
 export type DiscordStopCommandListener = (event: DiscordStopCommandEvent) => void | Promise<void>;
 export type DiscordMemoriesCommandListener = (event: DiscordMemoriesCommandEvent) => void | Promise<void>;
 
@@ -122,6 +134,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   private readonly reviewListeners = new Set<DiscordReviewCommandListener>();
   private readonly clearListeners = new Set<DiscordClearCommandListener>();
   private readonly runListeners = new Set<DiscordRunCommandListener>();
+  private readonly runWaifuAutocompleteListeners = new Set<DiscordRunWaifuAutocompleteListener>();
   private readonly stopListeners = new Set<DiscordStopCommandListener>();
   private readonly memoriesListeners = new Set<DiscordMemoriesCommandListener>();
   private readonly recentMentionRefreshes = new Map<string, number>();
@@ -164,6 +177,12 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
             }
           });
           client.on(Events.InteractionCreate, (interaction) => {
+            if (interaction.isAutocomplete()) {
+              if (interaction.commandName === RUN_COMMAND_NAME) {
+                void this.handleRunAutocompleteInteraction(interaction);
+              }
+              return;
+            }
             if (!interaction.isChatInputCommand()) return;
             if (interaction.commandName === REVIEW_COMMAND_NAME) {
               void this.handleReviewInteraction(interaction);
@@ -224,6 +243,11 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   onRunCommand(listener: DiscordRunCommandListener): () => void {
     this.runListeners.add(listener);
     return () => this.runListeners.delete(listener);
+  }
+
+  onRunWaifuAutocomplete(listener: DiscordRunWaifuAutocompleteListener): () => void {
+    this.runWaifuAutocompleteListeners.add(listener);
+    return () => this.runWaifuAutocompleteListeners.delete(listener);
   }
 
   onStopCommand(listener: DiscordStopCommandListener): () => void {
@@ -580,6 +604,27 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
     }
   }
 
+  private async handleRunAutocompleteInteraction(interaction: AutocompleteInteraction): Promise<void> {
+    const focused = interaction.options.getFocused(true);
+    if (focused.name !== RUN_WAIFU_OPTION_NAME) {
+      await interaction.respond([]);
+      return;
+    }
+    const event: DiscordRunWaifuAutocompleteEvent = {
+      guildId: interaction.guildId ?? undefined,
+      channelId: interaction.channelId ?? undefined,
+      focusedValue: typeof focused.value === "string" ? focused.value : String(focused.value ?? ""),
+      respond: async (choices) => {
+        await interaction.respond(choices.slice(0, MAX_AUTOCOMPLETE_CHOICES));
+      }
+    };
+    if (this.runWaifuAutocompleteListeners.size === 0) {
+      await interaction.respond([]);
+      return;
+    }
+    await Promise.all([...this.runWaifuAutocompleteListeners].map((listener) => listener(event)));
+  }
+
   private async handleStopInteraction(interaction: ChatInputCommandInteraction): Promise<void> {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     if (!interaction.guildId || !interaction.channelId) {
@@ -799,6 +844,7 @@ const CLEAR_TYPE_OPTION_NAME = "type";
 const RUN_WAIFU_OPTION_NAME = "waifu";
 const RUN_SCENE_DIRECTION_OPTION_NAME = "scene_direction";
 const MAX_CLEAR_COUNT = 100;
+const MAX_AUTOCOMPLETE_CHOICES = 25;
 
 function sanitizeReplyTarget(value?: string): string | undefined {
   return value && SNOWFLAKE_PATTERN.test(value) ? value : undefined;
@@ -850,7 +896,8 @@ async function registerOrchestratorCommands(client: Client, logger?: Logger): Pr
             type: ApplicationCommandOptionType.String as ApplicationCommandOptionType.String,
             name: RUN_WAIFU_OPTION_NAME,
             description: "Optional waifu id or display name to speak first.",
-            required: false
+            required: false,
+            autocomplete: true
           },
           {
             type: ApplicationCommandOptionType.String as ApplicationCommandOptionType.String,

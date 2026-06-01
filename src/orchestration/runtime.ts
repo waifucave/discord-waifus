@@ -5,10 +5,12 @@ import { Logger } from "../backend/logger.js";
 import {
   DiscordClearCommandEvent,
   DiscordClearType,
+  DiscordAutocompleteChoice,
   DiscordGatewayFacade,
   DiscordMemoriesCommandEvent,
   DiscordMessageEvent,
   DiscordRunCommandEvent,
+  DiscordRunWaifuAutocompleteEvent,
   DiscordReviewCommandEvent,
   DiscordStopCommandEvent
 } from "../discord/client.js";
@@ -152,6 +154,7 @@ export class RuntimeOrchestrator {
       this.options.discord.onRunCommand?.((event) => {
         void this.handleRunCommand(event);
       }),
+      this.options.discord.onRunWaifuAutocomplete?.((event) => this.handleRunWaifuAutocomplete(event)),
       this.options.discord.onStopCommand?.((event) => {
         void this.handleStopCommand(event);
       }),
@@ -380,6 +383,43 @@ export class RuntimeOrchestrator {
         message: error instanceof Error ? error.message : String(error)
       });
       await event.respond(error instanceof Error ? error.message : "Run failed.");
+    }
+  }
+
+  private async handleRunWaifuAutocomplete(event: DiscordRunWaifuAutocompleteEvent): Promise<void> {
+    try {
+      if (!event.guildId || !event.channelId) {
+        await event.respond([]);
+        return;
+      }
+      const server = await this.ensureServer(event.guildId);
+      const channel = server.channels[event.channelId];
+      if (!this.channelHasWaifus(channel)) {
+        await event.respond([]);
+        return;
+      }
+      const query = normalizeRunWaifuName(event.focusedValue);
+      const choices = (await this.listAvailableWaifusForChannel(channel))
+        .filter((waifu) => waifu.botId && waifu.modelId)
+        .filter((waifu) => {
+          if (!query) return true;
+          return [waifu.id, waifu.name, waifu.displayName].some((value) =>
+            normalizeRunWaifuName(value).includes(query)
+          );
+        })
+        .map((waifu): DiscordAutocompleteChoice => ({
+          name: autocompleteWaifuName(waifu),
+          value: waifu.id
+        }))
+        .slice(0, 25);
+      await event.respond(choices);
+    } catch (error) {
+      this.options.logger.warn("Run waifu autocomplete failed", {
+        guildId: event.guildId,
+        channelId: event.channelId,
+        message: error instanceof Error ? error.message : String(error)
+      });
+      await event.respond([]);
     }
   }
 
@@ -2326,6 +2366,10 @@ function timerKey(guildId: string, channelId: string): string {
 
 function normalizeRunWaifuName(value: string): string {
   return value.trim().toLowerCase();
+}
+
+function autocompleteWaifuName(waifu: WaifuConfig): string {
+  return waifu.displayName === waifu.id ? waifu.id : `${waifu.displayName} (${waifu.id})`;
 }
 
 function manualRunReplyRequiredInstruction(): string {
