@@ -13,6 +13,12 @@ on:
 permissions:
   contents: write
 
+env:
+  NPM_CONFIG_AUDIT: "false"
+  NPM_CONFIG_FUND: "false"
+  NPM_CONFIG_LOGLEVEL: error
+  NPM_CONFIG_PROGRESS: "false"
+
 jobs:
   package:
     name: ${{ matrix.package }}
@@ -24,19 +30,19 @@ jobs:
           - package: packages/ocr-darwin-arm64
             artifact: ocr-darwin-arm64
             runner: macos-14
-            install: brew install tesseract
+            install: brew install --quiet tesseract
           - package: packages/ocr-darwin-x64
             artifact: ocr-darwin-x64
             runner: macos-15-intel
-            install: brew install tesseract
+            install: brew install --quiet tesseract
           - package: packages/ocr-linux-x64-gnu
             artifact: ocr-linux-x64-gnu
             runner: ubuntu-latest
-            install: sudo apt-get update && sudo apt-get install -y tesseract-ocr tesseract-ocr-eng
+            install: sudo apt-get update -qq && sudo apt-get install -y -qq tesseract-ocr tesseract-ocr-eng
           - package: packages/ocr-win32-x64
             artifact: ocr-win32-x64
             runner: windows-latest
-            install: choco install tesseract -y --no-progress && printf '%s\n' 'C:\Program Files\Tesseract-OCR' >> "$GITHUB_PATH"
+            install: choco install tesseract -y --no-progress --limit-output && printf '%s\n' 'C:\Program Files\Tesseract-OCR' >> "$GITHUB_PATH"
 
     steps:
       - uses: actions/checkout@v4
@@ -47,8 +53,20 @@ jobs:
           cache: npm
           registry-url: https://registry.npmjs.org
 
+      - name: Validate release tag
+        if: github.event_name == 'release' || inputs.release_tag != ''
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
+        shell: bash
+        run: |
+          set +x
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Invalid release tag."
+            exit 1
+          fi
+
       - name: Install JS dependencies
-        run: npm install --omit=optional --ignore-scripts --no-audit --no-fund
+        run: npm install --omit=optional --ignore-scripts
 
       - name: Install native OCR dependency
         shell: bash
@@ -61,8 +79,9 @@ jobs:
       - name: Pack OCR package
         shell: bash
         run: |
+          set +x
           mkdir -p artifacts
-          (cd "${{ matrix.package }}" && npm pack --pack-destination "$GITHUB_WORKSPACE/artifacts")
+          (cd "${{ matrix.package }}" && npm pack --pack-destination "$GITHUB_WORKSPACE/artifacts" --json > "$GITHUB_WORKSPACE/artifacts/${{ matrix.artifact }}-pack.json")
 
       - uses: actions/upload-artifact@v4
         with:
@@ -74,10 +93,11 @@ jobs:
         if: github.event_name == 'release' || inputs.release_tag != ''
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
         shell: bash
         run: |
-          tag="${{ github.event.release.tag_name || inputs.release_tag }}"
-          gh release upload "$tag" artifacts/*.tgz --clobber
+          set +x
+          gh release upload "$RELEASE_TAG" artifacts/*.tgz --clobber
 
       - name: Publish package to npm
         if: github.event_name == 'release' || inputs.release_tag != ''
@@ -86,6 +106,7 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         shell: bash
         run: |
+          set +x
           name="$(node -p "require('./package.json').name")"
           version="$(node -p "require('./package.json').version")"
           if npm view "$name@$version" version --silent >/dev/null 2>&1; then
