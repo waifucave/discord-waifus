@@ -323,6 +323,9 @@ export type OrchestratorRespondingWaifu = z.infer<typeof OrchestratorRespondingW
 
 export const OrchestratorActionLogSchema = z.enum(["reply", "no_reply"]);
 
+export const OrchestratorDecisionStatusSchema = z.enum(["pending", "completed", "interrupted"]);
+export type OrchestratorDecisionStatus = z.infer<typeof OrchestratorDecisionStatusSchema>;
+
 export const OrchestratorDecisionHistoryEntrySchema = z.object({
   id: z.string().min(1),
   guildId: z.string().optional(),
@@ -331,6 +334,8 @@ export const OrchestratorDecisionHistoryEntrySchema = z.object({
   respondingWaifus: z.array(OrchestratorRespondingWaifuSchema).default([]),
   retriggerAfterSeconds: z.number().min(0).optional(),
   reasoning: z.string().default(""),
+  status: OrchestratorDecisionStatusSchema.default("completed"),
+  waifuMessageIds: z.array(z.string()).default([]),
   createdAt: IsoDateStringSchema
 });
 export type OrchestratorDecisionHistoryEntry = z.infer<typeof OrchestratorDecisionHistoryEntrySchema>;

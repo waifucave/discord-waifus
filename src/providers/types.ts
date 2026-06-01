@@ -1,4 +1,4 @@
-import { ProviderId, ReasoningConfig } from "../shared/schemas/domain.js";
+import { OrchestratorDecisionHistoryEntry, ProviderId, ReasoningConfig } from "../shared/schemas/domain.js";
 import { ContextMessage, OrchestratorNoReplyMarker } from "../orchestration/context.js";
 import { OrchestratorDecision, ReplyStyle } from "../orchestration/decisions.js";
 import { StageManagerToolCall } from "../orchestration/stageManager.js";
@@ -39,6 +39,8 @@ export type ProviderRequest = {
   modelId: string;
   messages: ContextMessage[];
   decisionMarkers?: OrchestratorNoReplyMarker[];
+  pastDecisions?: OrchestratorDecisionHistoryEntry[];
+  trailingPrompt?: string;
   systemPrompt?: string;
   availableWaifuIds?: string[];
   temperature?: number;

@@ -578,6 +578,8 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
       respondingWaifus: [],
       retriggerAfterSeconds: 180,
       reasoning: "Manual trigger accepted without a target guild/channel.",
+      status: "completed",
+      waifuMessageIds: [],
       createdAt: nowIso()
     });
     return {

@@ -240,15 +240,18 @@ class FakePipeline implements ModelPipeline {
 
   async decideOrchestrator(request: ProviderRequest): Promise<OrchestratorDecision> {
     expect(request.systemPrompt).toContain("decide");
-    expect(request.systemPrompt).toContain("<active_waifus>");
-    expect(request.systemPrompt).toMatch(
-      /<active_waifus>\n<yuki>\nID: yuki\nDisplay name: Yuki\nPersona:\nkind\nAvailability:\n[\s\S]*Sleep: 23:00-07:00 daily[\s\S]*Busy:[\s\S]*09:00-10:00: school focus block[\s\S]*<\/yuki>\n<\/active_waifus>/
-    );
-    expect(request.systemPrompt).toContain("kind");
+    expect(request.systemPrompt).not.toMatch(/<active_waifus>\n[\s\S]*<\/active_waifus>/);
+    expect(request.systemPrompt).not.toMatch(/<task_instructions>\n[\s\S]*<\/task_instructions>/);
+    expect(request.systemPrompt).not.toMatch(/<current_time>\n[\s\S]*<\/current_time>/);
     expect(request.systemPrompt).toContain("do not default to no_reply");
     expect(request.systemPrompt).toContain("Prefer a two-waifu chain");
     expect(request.systemPrompt).toContain("0 to 30");
-    expect(request.systemPrompt).not.toContain("<current_time>");
+    expect(request.trailingPrompt).toBeTruthy();
+    expect(request.trailingPrompt).toMatch(/<task_instructions>\n[\s\S]*<\/task_instructions>/);
+    expect(request.trailingPrompt).toMatch(
+      /<active_waifus>\n<yuki>\nID: yuki\nDisplay name: Yuki\nPersona:\nkind\nAvailability:\n[\s\S]*Sleep: 23:00-07:00 daily[\s\S]*Busy:[\s\S]*09:00-10:00: school focus block[\s\S]*<\/yuki>\n<\/active_waifus>/
+    );
+    expect(request.trailingPrompt).toMatch(/<current_time>\n[\s\S]*<\/current_time>/);
     expect(request.availableWaifuIds).toEqual(["yuki"]);
     const decision = this.decisions.shift();
     if (!decision) throw new Error("No fake decision left.");
@@ -334,11 +337,13 @@ describe("RuntimeOrchestrator", () => {
     expect(
       history.decisions.map((entry) => ({
         action: entry.action,
-        ids: entry.respondingWaifus.map((responder) => responder.waifuId)
+        ids: entry.respondingWaifus.map((responder) => responder.waifuId),
+        status: entry.status,
+        waifuMessageCount: entry.waifuMessageIds.length
       }))
     ).toEqual([
-      { action: "no_reply", ids: [] },
-      { action: "reply", ids: ["yuki"] }
+      { action: "no_reply", ids: [], status: "completed", waifuMessageCount: 0 },
+      { action: "reply", ids: ["yuki"], status: "completed", waifuMessageCount: 1 }
     ]);
 
     const session = await storage.readJson(
@@ -899,7 +904,7 @@ describe("RuntimeOrchestrator", () => {
     expect(discord.sent.map((entry) => entry.content)).toEqual(["one", "two"]);
   });
 
-  it("sends only no_reply markers created after the latest chat message", async () => {
+  it("passes completed past orchestrator decisions to the pipeline", async () => {
     const root = await makeTempRoot();
     roots.push(root);
     await ensureDataLayout(root);
@@ -915,14 +920,14 @@ describe("RuntimeOrchestrator", () => {
     ];
 
     class MarkerCapturePipeline implements ModelPipeline {
-      capturedMarkers: ProviderRequest["decisionMarkers"] = [];
+      capturedDecisions: ProviderRequest["pastDecisions"] = [];
 
       async generateWaifu() {
         return { content: "unused" };
       }
 
       async decideOrchestrator(request: ProviderRequest) {
-        this.capturedMarkers = request.decisionMarkers ?? [];
+        this.capturedDecisions = request.pastDecisions ?? [];
         return { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, reasoning: "done" };
       }
     }
@@ -978,14 +983,66 @@ describe("RuntimeOrchestrator", () => {
     await runtime.triggerChannel("guild-1", "channel-1");
     await runtime.stop();
 
-    expect(pipeline.capturedMarkers).toEqual([
-      {
-        kind: "no_reply",
-        timestamp: "2026-05-16T12:11:00Z",
-        retriggerAfterSeconds: 1800,
-        reasoning: "after latest user message"
+    expect(pipeline.capturedDecisions?.map((d) => d.id).sort()).toEqual(
+      ["after-latest-chat", "before-latest-chat"].sort()
+    );
+    for (const decision of pipeline.capturedDecisions ?? []) {
+      expect(decision.status).toBe("completed");
+    }
+  });
+
+  it("heals leftover pending decisions to interrupted on startup", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+
+    await seedRuntimeConfig(storage);
+    await storage.writeJson(
+      "orchestrator:history",
+      "user/orchestrator/history.json",
+      OrchestratorHistoryFileSchema,
+      OrchestratorHistoryFileSchema.parse(
+        createEmptyRevisionedFile({
+          decisions: [
+            {
+              id: "leftover-pending",
+              guildId: "guild-1",
+              channelId: "channel-1",
+              action: "reply",
+              respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal" }],
+              reasoning: "leftover",
+              status: "pending",
+              waifuMessageIds: [],
+              createdAt: "2026-05-16T12:05:00.000Z"
+            }
+          ]
+        })
+      )
+    );
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 0,
+      createPipeline: () => ({ generateWaifu: async () => ({ content: "" }) } as ModelPipeline),
+      logger: {
+        debug: () => undefined,
+        info: () => undefined,
+        warn: () => undefined,
+        error: () => undefined
       }
-    ]);
+    });
+    await runtime.start();
+    await runtime.stop();
+
+    const history = await storage.readJson(
+      "user/orchestrator/history.json",
+      OrchestratorHistoryFileSchema
+    );
+    expect(history.decisions.find((entry) => entry.id === "leftover-pending")?.status).toBe("interrupted");
   });
 
   it("runs stage-manager tool calls in the background and updates memories", async () => {

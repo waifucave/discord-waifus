@@ -99,11 +99,14 @@ describe("runMigrations", () => {
     expect(history.decisions[0]).not.toHaveProperty("steps");
     expect(history.decisions[0]).not.toHaveProperty("idleTrigger");
     expect(history.decisions[0]).not.toHaveProperty("retriggerAfterSeconds");
+    expect(history.decisions[0]).toMatchObject({ status: "completed", waifuMessageIds: [] });
     expect(history.decisions[1]).toMatchObject({
       id: "short-no-reply",
       action: "no_reply",
       respondingWaifus: [],
-      retriggerAfterSeconds: 100
+      retriggerAfterSeconds: 100,
+      status: "completed",
+      waifuMessageIds: []
     });
 
     const config = await readJson<{ promptSections: Record<string, unknown> }>(

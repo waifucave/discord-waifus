@@ -24,6 +24,8 @@ import {
   GuildEmojisFileSchema,
   MemoryStore,
   MemoryStoreSchema,
+  OrchestratorDecisionHistoryEntry,
+  OrchestratorDecisionStatus,
   OrchestratorHistoryFileSchema,
   OrchestratorRespondingWaifu,
   ProviderCredentialsFile,
@@ -141,6 +143,7 @@ export class RuntimeOrchestrator {
     if (this.options.discord.listGuilds) {
       await this.syncGuilds();
     }
+    await this.healPendingOrchestratorDecisions();
   }
 
   async stop(): Promise<void> {
@@ -476,14 +479,16 @@ export class RuntimeOrchestrator {
         throw new Error(`Model ${orchestrator.modelId} does not implement orchestrator decisions.`);
       }
       const availableWaifus = await this.listAvailableWaifusForChannel(channel);
-      const decisionMarkers = await this.readRecentNoReplyMarkers(guildId, channelId, messages);
+      const pastDecisions = await this.readCompletedOrchestratorDecisionsForChannel(guildId, channelId);
+      const trailingPrompt = this.buildOrchestratorTrailingPrompt(orchestrator, availableWaifus);
       const orchestratorTyping = startTypingScope(this.options.discord, { guildId, channelId });
       let decision: OrchestratorDecision;
       try {
         decision = await pipeline.decideOrchestrator({
           modelId: orchestrator.modelId,
           messages,
-          decisionMarkers,
+          pastDecisions,
+          trailingPrompt,
           systemPrompt: this.buildOrchestratorSystemPrompt(orchestrator, server, availableWaifus),
           availableWaifuIds: availableWaifus.map((waifu) => waifu.id),
           reasoning: orchestrator.reasoning,
@@ -495,14 +500,19 @@ export class RuntimeOrchestrator {
       decision = capDecisionDelays(decision);
       const decisionDelayBaseMs = Date.now();
       const useDecisionRelativeDelays = hasRecentUserMessage(messages, 4);
+      const decisionId = randomUUID();
+      const initialDecisionStatus: OrchestratorDecisionStatus =
+        decision.action === "reply" ? "pending" : "completed";
       await this.appendOrchestratorHistory({
-        id: randomUUID(),
+        id: decisionId,
         guildId,
         channelId,
         action: decision.action,
         respondingWaifus: decision.respondingWaifus,
         retriggerAfterSeconds: decision.retriggerAfterSeconds,
         reasoning: decision.reasoning,
+        status: initialDecisionStatus,
+        waifuMessageIds: [],
         createdAt: nowIso()
       });
       this.options.logger.info("Orchestrator decision recorded", {
@@ -525,6 +535,8 @@ export class RuntimeOrchestrator {
       const allowedWaifus = new Set(channel.enabledWaifuIds ?? []);
       const responderQueue = [...decision.respondingWaifus];
       let responderIndex = 0;
+      let decisionFinalized = false;
+      try {
       while (responderQueue.length > 0) {
         throwIfAborted(signal);
         const responder = responderQueue.shift();
@@ -669,6 +681,7 @@ export class RuntimeOrchestrator {
             chunks,
             replyToMessageId,
             allowedUserMentionIds: activeAuthorIds,
+            orchestratorDecisionId: decisionId,
             signal
           });
           if (result.rejectedPickNextWaifu) {
@@ -706,6 +719,25 @@ export class RuntimeOrchestrator {
           waifuTyping.stop();
         }
         executedCount += 1;
+      }
+      await this.updateOrchestratorDecisionStatus(decisionId, "completed");
+      decisionFinalized = true;
+      } catch (error) {
+        if (!decisionFinalized) {
+          const status: OrchestratorDecisionStatus = signal.aborted ? "interrupted" : "completed";
+          try {
+            await this.updateOrchestratorDecisionStatus(decisionId, status);
+          } catch (writeError) {
+            this.options.logger.warn("Failed to finalize orchestrator decision status after error", {
+              guildId,
+              channelId,
+              decisionId,
+              status,
+              message: writeError instanceof Error ? writeError.message : String(writeError)
+            });
+          }
+        }
+        throw error;
       }
       if (executedCount === 0) {
         this.options.logger.info("Channel runtime loop stopped because no responders were executed", {
@@ -1272,6 +1304,7 @@ export class RuntimeOrchestrator {
     chunks: string[];
     replyToMessageId?: string;
     allowedUserMentionIds: string[];
+    orchestratorDecisionId?: string;
     signal?: AbortSignal;
   }): Promise<void> {
     if (input.chunks.length === 0) {
@@ -1296,6 +1329,9 @@ export class RuntimeOrchestrator {
           allowedUserMentionIds: input.allowedUserMentionIds
         });
         this.rememberSelfSent(sentResult.messageId);
+        if (input.orchestratorDecisionId) {
+          await this.recordOrchestratorDecisionWaifuMessage(input.orchestratorDecisionId, sentResult.messageId);
+        }
         this.options.logger.info("Waifu message chunk sent", {
           guildId: input.guildId,
           channelId: input.channelId,
@@ -1451,11 +1487,10 @@ export class RuntimeOrchestrator {
       .map(modelVisibleEmojiToken)
       .join(" ");
     const hardRules = [
-      "Each incoming message in this conversation arrives wrapped in inbound-only metadata tags so you can read context:",
-      "a `[timestamp: ISO-8601 UTC]` prefix telling you when the message was sent, a `[sender: DisplayName]` prefix telling you who said it,",
-      "and optionally `[reactions: ...]` and `[replying to: ...]` suffixes after the body.",
+      "Each incoming message in this conversation arrives wrapped in inbound-only metadata tags on their own lines so you can read context:",
+      "a `[sender: DisplayName]` line opens the message, the body follows on the next lines, then optional `[attachments: Nx image]`, optional `[image_text: ...]` lines (one per image with extracted text), and an optional `[replying to: AuthorName: preview]` line.",
       "These tags are framing only — they are NOT part of what the speaker actually wrote, and they are NOT how Discord messages look.",
-      "Your reply is the raw message body that will be sent verbatim to Discord. It MUST NOT contain any bracketed metadata tag (no `[timestamp: ...]`, no `[sender: ...]`, no `[reactions: ...]`, no `[replying to: ...]`, no `[index: ...]`, no `[scene_direction: ...]`, no other `[tag: value]` constructions).",
+      "Your reply is the raw message body that will be sent verbatim to Discord. It MUST NOT contain any bracketed metadata tag (no `[sender: ...]`, no `[attachments: ...]`, no `[image_text: ...]`, no `[replying to: ...]`, no `[timestamp: ...]`, no `[reactions: ...]`, no `[index: ...]`, no `[scene_direction: ...]`, no other `[tag: value]` constructions).",
       "It MUST NOT begin with your own display name followed by a colon, and MUST NOT quote or paraphrase any prior message's framing tags. Begin with the first word you are actually saying.",
       "Write exactly one short phrase or one very short sentence, usually under 12 words. Never write a second sentence.",
       "This length rule overrides your persona, reply_style, and scene_direction. Even when asked for a longer or more thoughtful reply, compress it to one tiny conversational beat.",
@@ -1544,8 +1579,6 @@ export class RuntimeOrchestrator {
       "- Consecutive waifu replies in a single decision are allowed when they add a fresh beat: escalation, interruption, joke, reaction, disagreement, emotional shift, or a new topic. Avoid only empty echoing or repetitive back-and-forth."
     ].join("\n");
 
-    const taskInstructions = DEFAULT_ORCHESTRATOR_PROMPT;
-
     const loopBreaking = [
       "The recent messages in context are your most important signal. If the waifus are circling the same topic, the same vibe, or the same back-and-forth, they will keep circling unless you actively redirect them — each waifu only sees her own persona and the chat, so only you can see the loop forming from the outside.",
       "When you notice a loop forming (even a soft one — two or three messages already feeling similar is enough), pick the waifu whose personality most naturally fits a hard pivot and write a concrete sceneDirection that lands a brand-new topic, observation, memory, callback, or non-sequitur. Name the specific new topic in the sceneDirection — \"ask about Kevin's dog\", \"bring up the snowstorm last week\", \"complain about being hungry\" — rather than vague instructions like \"change the subject\". A jarring shift that still feels in-character is better than letting the conversation stagnate."
@@ -1565,8 +1598,8 @@ export class RuntimeOrchestrator {
     ].join("\n");
 
     const messageStructure = [
-      "Each message in the context is tagged with [index: #N], [timestamp: ISO-8601 UTC], and [sender: DisplayName] before its body, optionally followed by [reactions: ...] and [replying to: ...]. Reference older messages by their #N index using repleyToMessageIndex. The runtime maps that index to the actual Discord message id; raw message ids are not shown.",
-      "Some lines are your own prior no_reply decisions, interleaved with the chat by timestamp. They look like [no_reply] [timestamp: ...] [reason: ...] [retrigger: Ns] and have no #N index, no sender, no reactions, and no replying-to. They are not Discord messages — nobody else sees them. Use them to gauge how long the channel has actually been silent under your watch and to avoid stacking redundant no_reply choices."
+      "Each Discord message in the context is its own user-role turn. Bodies are tagged with [sender: DisplayName] before the content, optionally followed by [attachments: Nx image] when the message has images and [replying to: AuthorName: preview] when it replies to another. No indices, timestamps, reactions, or raw IDs are shown. Set repleyToMessageIndex to null — references by index are not supported in this format.",
+      "Your own previous orchestrator_decision tool calls appear as past assistant moves interleaved with the chat in real order, so you can see the recent pattern of replies and no_reply pauses. They are not Discord messages — nobody else sees them. Use them to gauge how long the channel has actually been silent under your watch and to avoid stacking redundant no_reply choices."
     ].join("\n");
 
     const toolUse = [
@@ -1597,7 +1630,6 @@ export class RuntimeOrchestrator {
 
     const sections = orchestrator.promptSections;
     const behavior = [
-      `<task_instructions>\n${taskInstructions}\n</task_instructions>`,
       sections.loopBreaking ? `<loop_breaking>\n${loopBreaking}\n</loop_breaking>` : null,
       sections.retriggerPacing ? `<retrigger_pacing>\n${retriggerPacing}\n</retrigger_pacing>` : null,
       sections.messageStructure ? `<message_structure>\n${messageStructure}\n</message_structure>` : null,
@@ -1610,8 +1642,36 @@ export class RuntimeOrchestrator {
     return [
       `<identity>\n${identity}\n</identity>`,
       `<behavior>\n${behavior}\n</behavior>`,
-      `<discord_server_information>\n${server.name ?? server.guildId}\n</discord_server_information>`,
-      `<active_waifus>\n${activeWaifusContent}\n</active_waifus>`
+      `<discord_server_information>\n${server.name ?? server.guildId}\n</discord_server_information>`
+    ].join("\n");
+  }
+
+  private buildOrchestratorTrailingPrompt(
+    orchestrator: AgentConfig,
+    availableWaifus: WaifuConfig[]
+  ): string {
+    if (orchestrator.useLegacyPrompt) {
+      return `<current_time>\n${formatPromptCurrentHour(new Date())}\n</current_time>`;
+    }
+
+    const scheduleNow = new Date();
+    const activeWaifusContent = availableWaifus.length
+      ? availableWaifus
+          .map((waifu) => {
+            const tagName = promptTagName(waifu.name || waifu.id);
+            const displayName = waifu.displayName || waifu.name;
+            const persona = waifu.persona.trim();
+            const personaBlock = persona || "(no persona configured)";
+            const availability = formatWaifuAvailabilityForOrchestratorPrompt(waifu, scheduleNow);
+            return `<${tagName}>\nID: ${waifu.id}\nDisplay name: ${displayName}\nPersona:\n${personaBlock}\nAvailability:\n${availability}\n</${tagName}>`;
+          })
+          .join("\n\n")
+      : "No waifus are currently enabled for this channel.";
+    const currentTime = `<current_time>\n${formatPromptCurrentHour(new Date())}\n</current_time>`;
+    return [
+      `<task_instructions>\n${DEFAULT_ORCHESTRATOR_PROMPT}\n</task_instructions>`,
+      `<active_waifus>\n${activeWaifusContent}\n</active_waifus>`,
+      currentTime
     ].join("\n");
   }
 
@@ -1687,6 +1747,23 @@ export class RuntimeOrchestrator {
     });
   }
 
+  private async readCompletedOrchestratorDecisionsForChannel(
+    guildId: string,
+    channelId: string
+  ): Promise<OrchestratorDecisionHistoryEntry[]> {
+    const history = await this.options.storage.readJson(
+      "user/orchestrator/history.json",
+      OrchestratorHistoryFileSchema,
+      OrchestratorHistoryFileSchema.parse(createEmptyRevisionedFile({ decisions: [] }))
+    );
+    return history.decisions.filter(
+      (decision) =>
+        decision.guildId === guildId &&
+        decision.channelId === channelId &&
+        decision.status === "completed"
+    );
+  }
+
   private async readRecentNoReplyMarkers(
     guildId: string,
     channelId: string,
@@ -1728,6 +1805,8 @@ export class RuntimeOrchestrator {
     respondingWaifus: OrchestratorRespondingWaifu[];
     retriggerAfterSeconds?: number;
     reasoning: string;
+    status: OrchestratorDecisionStatus;
+    waifuMessageIds: string[];
     createdAt: string;
   }) {
     await this.options.storage.updateRevisionedJson({
@@ -1736,6 +1815,53 @@ export class RuntimeOrchestrator {
       schema: OrchestratorHistoryFileSchema,
       fallback: OrchestratorHistoryFileSchema.parse(createEmptyRevisionedFile({ decisions: [] })),
       transform: (current) => ({ ...current, decisions: [entry, ...current.decisions].slice(0, 200) })
+    });
+  }
+
+  private async updateOrchestratorDecisionStatus(id: string, status: OrchestratorDecisionStatus): Promise<void> {
+    await this.options.storage.updateRevisionedJson({
+      resourceKey: "orchestrator:history",
+      relativePath: "user/orchestrator/history.json",
+      schema: OrchestratorHistoryFileSchema,
+      fallback: OrchestratorHistoryFileSchema.parse(createEmptyRevisionedFile({ decisions: [] })),
+      transform: (current) => ({
+        ...current,
+        decisions: current.decisions.map((decision) =>
+          decision.id === id ? { ...decision, status } : decision
+        )
+      })
+    });
+  }
+
+  private async recordOrchestratorDecisionWaifuMessage(id: string, messageId: string): Promise<void> {
+    await this.options.storage.updateRevisionedJson({
+      resourceKey: "orchestrator:history",
+      relativePath: "user/orchestrator/history.json",
+      schema: OrchestratorHistoryFileSchema,
+      fallback: OrchestratorHistoryFileSchema.parse(createEmptyRevisionedFile({ decisions: [] })),
+      transform: (current) => ({
+        ...current,
+        decisions: current.decisions.map((decision) =>
+          decision.id === id
+            ? { ...decision, waifuMessageIds: [...decision.waifuMessageIds, messageId] }
+            : decision
+        )
+      })
+    });
+  }
+
+  private async healPendingOrchestratorDecisions(): Promise<void> {
+    await this.options.storage.updateRevisionedJson({
+      resourceKey: "orchestrator:history",
+      relativePath: "user/orchestrator/history.json",
+      schema: OrchestratorHistoryFileSchema,
+      fallback: OrchestratorHistoryFileSchema.parse(createEmptyRevisionedFile({ decisions: [] })),
+      transform: (current) => ({
+        ...current,
+        decisions: current.decisions.map((decision) =>
+          decision.status === "pending" ? { ...decision, status: "interrupted" as const } : decision
+        )
+      })
     });
   }
 

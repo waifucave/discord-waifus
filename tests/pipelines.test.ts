@@ -209,10 +209,15 @@ describe("provider-native decision tools", () => {
     const query = recentQueries().at(-1);
     const messages = query?.payload.messages as Array<{ content: string }>;
     expect(messages.some((message) => message.content.includes("[message_id:"))).toBe(false);
-    expect(messages.some((message) => message.content.includes("[sender: Kevin] that one [replying to: #2]"))).toBe(true);
+    expect(messages.some((message) => message.content.includes("[index:"))).toBe(false);
+    expect(
+      messages.some((message) =>
+        message.content === "[sender: Kevin]\nthat one\n[replying to: Aria: three]"
+      )
+    ).toBe(true);
   });
 
-  it("renders orchestrator no_reply markers with retrigger after reason", async () => {
+  it("replays past completed orchestrator decisions as assistant tool_calls", async () => {
     mockFetch({
       choices: [
         {
@@ -239,22 +244,100 @@ describe("provider-native decision tools", () => {
     await pipeline.decideOrchestrator?.({
       modelId: "grok-4.3",
       messages: context,
-      decisionMarkers: [
+      pastDecisions: [
         {
-          kind: "no_reply",
-          timestamp: "2026-05-16T12:05:00Z",
+          id: "decision-1",
+          guildId: "g1",
+          channelId: "c1",
+          action: "no_reply",
+          respondingWaifus: [],
           retriggerAfterSeconds: 600,
-          reasoning: "wait   for   Kevin"
+          reasoning: "wait for Kevin",
+          status: "completed",
+          waifuMessageIds: [],
+          createdAt: "2026-05-16T12:05:00Z"
+        }
+      ],
+      trailingPrompt: "trailing-block",
+      systemPrompt: "decide"
+    });
+
+    const query = recentQueries().at(-1);
+    const messages = query?.payload.messages as Array<{
+      role: string;
+      content: string | null;
+      tool_call_id?: string;
+      tool_calls?: Array<{ id: string; type: string; function: { name: string; arguments: string } }>;
+    }>;
+    const toolCallMessage = messages.find((m) => m.role === "assistant" && m.tool_calls);
+    expect(toolCallMessage?.tool_calls?.[0].id).toBe("decision-1");
+    expect(toolCallMessage?.tool_calls?.[0].function.name).toBe("orchestrator_decision");
+    const args = JSON.parse(toolCallMessage?.tool_calls?.[0].function.arguments ?? "{}");
+    expect(args).toEqual({
+      action: "no_reply",
+      respondingWaifus: [],
+      retriggerAfterSeconds: 600,
+      reasoning: "wait for Kevin"
+    });
+    const toolResultMessage = messages.find((m) => m.role === "tool");
+    expect(toolResultMessage?.tool_call_id).toBe("decision-1");
+    const trailing = messages[messages.length - 1];
+    expect(trailing.role).toBe("system");
+    expect(trailing.content).toBe("trailing-block");
+  });
+
+  it("orchestrator messages no longer carry no_reply text markers", async () => {
+    mockFetch({
+      choices: [
+        {
+          message: {
+            tool_calls: [
+              {
+                function: {
+                  name: "orchestrator_decision",
+                  arguments: JSON.stringify({
+                    action: "no_reply",
+                    respondingWaifus: [],
+                    retriggerAfterSeconds: 180,
+                    reasoning: "wait"
+                  })
+                }
+              }
+            ]
+          }
+        }
+      ]
+    });
+
+    const pipeline = createModelPipeline("grok-4.3", { apiKey: "xai-test" });
+    await pipeline.decideOrchestrator?.({
+      modelId: "grok-4.3",
+      messages: context,
+      pastDecisions: [
+        {
+          id: "decision-noreply",
+          guildId: "g1",
+          channelId: "c1",
+          action: "no_reply",
+          respondingWaifus: [],
+          retriggerAfterSeconds: 600,
+          reasoning: "wait for Kevin",
+          status: "completed",
+          waifuMessageIds: [],
+          createdAt: "2026-05-16T12:05:00Z"
         }
       ],
       systemPrompt: "decide"
     });
 
     const query = recentQueries().at(-1);
-    const messages = query?.payload.messages as Array<{ content: string }>;
-    const renderedContext = messages.find((message) => message.content.includes("[no_reply]"))?.content ?? "";
-    expect(renderedContext).toContain("[no_reply] [timestamp: 2026-05-16T12:05:00Z] [reason: wait for Kevin] [retrigger: 600s]");
-    expect(renderedContext).not.toContain("[type: no_reply]");
+    const messages = query?.payload.messages as Array<{ content: string | null }>;
+    expect(
+      messages.some((message) => typeof message.content === "string" && message.content.includes("[no_reply]"))
+    ).toBe(false);
+    expect(
+      messages.some((message) => typeof message.content === "string" && message.content.includes("[type: no_reply]"))
+    ).toBe(false);
   });
 
   it("uses a single OpenAI Responses tool for stage-manager edits", async () => {
@@ -358,7 +441,7 @@ describe("provider-native decision tools", () => {
                 waifuId: "yuki",
                 delaySeconds: 1,
                 replyStyle: "normal",
-                repleyToMessageIndex: 1,
+                repleyToMessageIndex: null,
                 sceneDirection: null
               }
             ],
@@ -383,11 +466,11 @@ describe("provider-native decision tools", () => {
         {
           waifuId: "yuki",
           delaySeconds: 1,
-          replyStyle: "normal",
-          replyToMessageId: "m1"
+          replyStyle: "normal"
         }
       ]
     });
+    expect(decision?.respondingWaifus?.[0].replyToMessageId).toBeUndefined();
     const query = recentQueries().at(-1);
     expect(query?.role).toBe("orchestrator");
     expect((query?.payload.tools as Array<{ name: string }>)[0].name).toBe("orchestrator_decision");
@@ -649,7 +732,7 @@ describe("image attachments", () => {
     const userMessage = messages[1];
     expect(userMessage.role).toBe("user");
     expect(userMessage.content).toEqual([
-      { type: "text", text: expect.stringContaining("[images: 1]") },
+      { type: "text", text: expect.stringContaining("[attachments: 1x image]") },
       { type: "image_url", image_url: { url: "https://cdn.example/cat.png" } }
     ]);
   });
@@ -667,7 +750,7 @@ describe("image attachments", () => {
     const query = recentQueries().at(-1);
     const input = query?.payload.input as Array<{ role: string; content: unknown }>;
     expect(input[0].content).toEqual([
-      { type: "input_text", text: expect.stringContaining("[images: 1]") },
+      { type: "input_text", text: expect.stringContaining("[attachments: 1x image]") },
       { type: "input_image", image_url: "https://cdn.example/cat.png" }
     ]);
   });
@@ -685,7 +768,7 @@ describe("image attachments", () => {
     const query = recentQueries().at(-1);
     const messages = query?.payload.messages as Array<{ role: string; content: unknown }>;
     expect(messages[0].content).toEqual([
-      { type: "text", text: expect.stringContaining("[images: 1]") },
+      { type: "text", text: expect.stringContaining("[attachments: 1x image]") },
       { type: "image", source: { type: "url", url: "https://cdn.example/cat.png" } }
     ]);
   });
@@ -702,7 +785,7 @@ describe("image attachments", () => {
 
     const query = recentQueries().at(-1);
     const messages = query?.payload.messages as Array<{ role: string; content: unknown }>;
-    expect(messages[1].content).toEqual(expect.stringContaining("[images: 1]"));
+    expect(messages[1].content).toEqual(expect.stringContaining("[attachments: 1x image]"));
   });
 
   it("renders OCR text as text context for DeepSeek text-only API models", async () => {
@@ -728,7 +811,34 @@ describe("image attachments", () => {
 
     const query = recentQueries().at(-1);
     const messages = query?.payload.messages as Array<{ role: string; content: unknown }>;
-    expect(messages[1].content).toEqual(expect.stringContaining("[image_text #1: Start chatting with Instant Vision tab]"));
+    expect(messages[1].content).toEqual(expect.stringContaining("[image_text: Start chatting with Instant Vision tab]"));
+  });
+
+  it("renders one [image_text] line per OCR-equipped image with no #N index", async () => {
+    mockFetch({ choices: [{ message: { content: "ok" } }] });
+
+    const pipeline = createModelPipeline("deepseek-v4-pro", { apiKey: "deepseek-test" });
+    await pipeline.generateWaifu({
+      modelId: "deepseek-v4-pro",
+      messages: [
+        {
+          ...contextWithImage[0],
+          images: [
+            { url: "https://cdn.example/a.png", contentType: "image/png", ocrText: "first ocr" },
+            { url: "https://cdn.example/b.png", contentType: "image/png" }
+          ]
+        }
+      ],
+      systemPrompt: "stay in character"
+    });
+
+    const query = recentQueries().at(-1);
+    const messages = query?.payload.messages as Array<{ role: string; content: string }>;
+    const rendered = messages[1].content;
+    expect(rendered).toContain("[attachments: 2x image]");
+    expect(rendered).toContain("[image_text: first ocr]");
+    expect(rendered).not.toMatch(/\[image_text #\d+:/);
+    expect(rendered.match(/\[image_text:/g)?.length).toBe(1);
   });
 });
 
@@ -991,7 +1101,7 @@ describe("Google AI Studio (Gemini) pipeline", () => {
     const userTurn = contents[0];
     expect(userTurn.role).toBe("user");
     expect(userTurn.parts).toEqual([
-      { text: expect.stringContaining("[images: 1]") },
+      { text: expect.stringContaining("[attachments: 1x image]") },
       { inlineData: { mimeType: "image/png", data: Buffer.from([1, 2, 3, 4]).toString("base64") } }
     ]);
   });

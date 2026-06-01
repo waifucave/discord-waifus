@@ -109,6 +109,62 @@ export function formatTimestamp(then: Date): string {
   return then.toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
+const COMPACT_REPLY_PREVIEW_LIMIT = 80;
+
+function clipReplyPreview(preview: string): string {
+  return preview.length > COMPACT_REPLY_PREVIEW_LIMIT
+    ? `${preview.slice(0, COMPACT_REPLY_PREVIEW_LIMIT - 1)}…`
+    : preview;
+}
+
+function replyToLine(message: ContextMessage): string | null {
+  if (!message.replyTo) return null;
+  const authorName = message.replyTo.authorName?.trim();
+  const preview = message.replyTo.contentPreview?.trim();
+  if (authorName && preview) {
+    return `[replying to: ${authorName}: ${clipReplyPreview(preview)}]`;
+  }
+  if (authorName) {
+    return `[replying to: ${authorName}]`;
+  }
+  if (preview) {
+    return `[replying to: ${clipReplyPreview(preview)}]`;
+  }
+  return null;
+}
+
+export function formatOrchestratorMessageBlock(message: ContextMessage): string {
+  const lines: string[] = [];
+  lines.push(`[sender: ${message.displayName}]`);
+  lines.push(message.content);
+  const imageCount = message.images?.length ?? 0;
+  if (imageCount > 0) {
+    lines.push(`[attachments: ${imageCount}x image]`);
+  }
+  const reply = replyToLine(message);
+  if (reply) lines.push(reply);
+  return lines.join("\n");
+}
+
+export function formatWaifuContextBlock(message: ContextMessage): string {
+  const lines: string[] = [];
+  lines.push(`[sender: ${message.displayName}]`);
+  lines.push(message.content);
+  const imageCount = message.images?.length ?? 0;
+  if (imageCount > 0) {
+    lines.push(`[attachments: ${imageCount}x image]`);
+    for (const image of message.images ?? []) {
+      const ocr = image.ocrText?.replace(/\s+/g, " ").trim();
+      if (ocr) {
+        lines.push(`[image_text: ${ocr}]`);
+      }
+    }
+  }
+  const reply = replyToLine(message);
+  if (reply) lines.push(reply);
+  return lines.join("\n");
+}
+
 function coalesceAdjacentChunks(
   messages: MessageLikeForContext[],
   waifuAuthorIds: Set<string>

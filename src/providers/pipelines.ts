@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { AttachmentImage, ContextMessage, OrchestratorNoReplyMarker, formatTimestamp } from "../orchestration/context.js";
+import { AttachmentImage, ContextMessage, OrchestratorNoReplyMarker, formatOrchestratorMessageBlock, formatTimestamp, formatWaifuContextBlock } from "../orchestration/context.js";
 import {
   OrchestratorActionSchema,
   OrchestratorDecision,
@@ -13,7 +13,7 @@ import {
 } from "../orchestration/decisions.js";
 import { ReviewerDecision, ReviewerDecisionSchema } from "../orchestration/reviewer.js";
 import { StageManagerToolCall, StageManagerToolCallSchema } from "../orchestration/stageManager.js";
-import { ReasoningConfig } from "../shared/schemas/domain.js";
+import { OrchestratorDecisionHistoryEntry, ReasoningConfig } from "../shared/schemas/domain.js";
 import { getModel, getProviderForModel } from "./catalog.js";
 import {
   ModelCapabilityMetadata,
@@ -97,17 +97,17 @@ class OpenAiCompatibleChatPipeline implements ModelPipeline {
   }
 
   async decideOrchestrator(request: ProviderRequest): Promise<OrchestratorDecision> {
-    const rendering = renderContext(request.messages, request.decisionMarkers);
     const text = await postJsonAndExtractText({
       url: `${this.provider.baseUrl}${this.model.endpoint}`,
       headers: bearerHeaders(this.apiKey),
       body: {
         model: request.modelId,
-        messages: [
-          { role: "system", content: request.systemPrompt },
-          contextToUserMessage(rendering),
-          { role: "user", content: currentTimeBlock() }
-        ],
+        messages: buildOpenAiChatOrchestratorMessages({
+          systemPrompt: request.systemPrompt ?? "",
+          messages: request.messages,
+          decisions: request.pastDecisions ?? [],
+          trailingPrompt: request.trailingPrompt ?? ""
+        }),
         temperature: request.temperature ?? 0.2,
         top_p: request.topP,
         max_tokens: request.maxOutputTokens,
@@ -121,7 +121,7 @@ class OpenAiCompatibleChatPipeline implements ModelPipeline {
       extract: (json) => extractOpenAiChatToolArguments(json, ORCHESTRATOR_TOOL_NAME),
       queryRole: "orchestrator"
     });
-    return parseDecision(text, rendering.indexToId);
+    return parseDecision(text, new Map());
   }
 
   async decideStageManager(request: StageManagerRequest): Promise<StageManagerToolCall[]> {
@@ -214,14 +214,17 @@ class OpenAiResponsesPipeline implements ModelPipeline {
   }
 
   async decideOrchestrator(request: ProviderRequest): Promise<OrchestratorDecision> {
-    const rendering = renderContext(request.messages, request.decisionMarkers);
     const text = await postJsonAndExtractText({
       url: `${this.provider.baseUrl}${this.model.endpoint}`,
       headers: bearerHeaders(this.apiKey),
       body: {
         model: request.modelId,
         instructions: request.systemPrompt,
-        input: [contextToUserMessage(rendering), { role: "user", content: currentTimeBlock() }],
+        input: buildOpenAiResponsesOrchestratorInput({
+          messages: request.messages,
+          decisions: request.pastDecisions ?? [],
+          trailingPrompt: request.trailingPrompt ?? ""
+        }),
         temperature: request.temperature ?? 0.2,
         top_p: request.topP,
         max_output_tokens: request.maxOutputTokens,
@@ -234,7 +237,7 @@ class OpenAiResponsesPipeline implements ModelPipeline {
       extract: (json) => extractOpenAiResponsesToolArguments(json, ORCHESTRATOR_TOOL_NAME),
       queryRole: "orchestrator"
     });
-    return parseDecision(text, rendering.indexToId);
+    return parseDecision(text, new Map());
   }
 
   async decideStageManager(request: StageManagerRequest): Promise<StageManagerToolCall[]> {
@@ -325,7 +328,6 @@ class AnthropicMessagesPipeline implements ModelPipeline {
   }
 
   async decideOrchestrator(request: ProviderRequest): Promise<OrchestratorDecision> {
-    const rendering = renderContext(request.messages, request.decisionMarkers);
     const maxTokens = request.maxOutputTokens ?? 1024;
     const thinking = anthropicThinkingPayload(this.model, request.reasoning, maxTokens);
     const constrainsSampling = anthropicThinkingConstrainsSampling(thinking);
@@ -335,15 +337,11 @@ class AnthropicMessagesPipeline implements ModelPipeline {
       body: {
         model: request.modelId,
         system: request.systemPrompt,
-        messages: [
-          {
-            role: "user",
-            content: [
-              { type: "text", text: rendering.block },
-              { type: "text", text: currentTimeBlock() }
-            ]
-          }
-        ],
+        messages: buildAnthropicOrchestratorMessages({
+          messages: request.messages,
+          decisions: request.pastDecisions ?? [],
+          trailingPrompt: request.trailingPrompt ?? ""
+        }),
         temperature: constrainsSampling ? 1 : request.temperature ?? 0.2,
         top_p: constrainsSampling ? undefined : request.topP,
         max_tokens: maxTokens,
@@ -355,7 +353,7 @@ class AnthropicMessagesPipeline implements ModelPipeline {
       extract: (json) => extractAnthropicToolArguments(json, ORCHESTRATOR_TOOL_NAME),
       queryRole: "orchestrator"
     });
-    return parseDecision(text, rendering.indexToId);
+    return parseDecision(text, new Map());
   }
 
   async decideStageManager(request: StageManagerRequest): Promise<StageManagerToolCall[]> {
@@ -455,16 +453,16 @@ class GoogleGenerativeLanguagePipeline implements ModelPipeline {
   }
 
   async decideOrchestrator(request: ProviderRequest): Promise<OrchestratorDecision> {
-    const rendering = renderContext(request.messages, request.decisionMarkers);
     const text = await postJsonAndExtractText({
       url: googleAiStudioUrl(this.provider, this.model),
       headers: googleAiStudioHeaders(this.apiKey),
       body: stripUndefined({
         systemInstruction: request.systemPrompt ? { parts: [{ text: request.systemPrompt }] } : undefined,
-        contents: [
-          googleUserTurn(rendering.block),
-          googleUserTurn(currentTimeBlock())
-        ],
+        contents: buildGoogleOrchestratorContents({
+          messages: request.messages,
+          decisions: request.pastDecisions ?? [],
+          trailingPrompt: request.trailingPrompt ?? ""
+        }),
         generationConfig: googleGenerationConfig(this.model, {
           temperature: request.temperature ?? 0.2,
           topP: request.topP,
@@ -479,7 +477,7 @@ class GoogleGenerativeLanguagePipeline implements ModelPipeline {
       extract: (json) => extractGoogleToolArguments(json, ORCHESTRATOR_TOOL_NAME),
       queryRole: "orchestrator"
     });
-    return parseDecision(text, rendering.indexToId);
+    return parseDecision(text, new Map());
   }
 
   async decideStageManager(request: StageManagerRequest): Promise<StageManagerToolCall[]> {
@@ -688,6 +686,192 @@ function contextToUserMessage(rendering: ContextRendering) {
   };
 }
 
+const ORCHESTRATOR_TOOL_RESULT_PLACEHOLDER = "ok";
+
+type OrchestratorTimelineItem =
+  | { kind: "message"; message: ContextMessage; timestamp: string }
+  | { kind: "decision"; decision: OrchestratorDecisionHistoryEntry; timestamp: string };
+
+function buildOrchestratorTimeline(
+  messages: ContextMessage[],
+  decisions: OrchestratorDecisionHistoryEntry[]
+): OrchestratorTimelineItem[] {
+  const oldestMessageTimestamp = messages.length ? messages[0].timestamp : undefined;
+  const items: OrchestratorTimelineItem[] = [
+    ...messages.map((message): OrchestratorTimelineItem => ({
+      kind: "message",
+      message,
+      timestamp: message.timestamp
+    })),
+    ...decisions
+      .filter((decision) =>
+        oldestMessageTimestamp === undefined ? false : decision.createdAt >= oldestMessageTimestamp
+      )
+      .map((decision): OrchestratorTimelineItem => ({
+        kind: "decision",
+        decision,
+        timestamp: decision.createdAt
+      }))
+  ];
+  items.sort((a, b) => {
+    if (a.timestamp === b.timestamp) {
+      if (a.kind === b.kind) return 0;
+      return a.kind === "message" ? -1 : 1;
+    }
+    return a.timestamp < b.timestamp ? -1 : 1;
+  });
+  return items;
+}
+
+function serializeOrchestratorDecisionArguments(decision: OrchestratorDecisionHistoryEntry): Record<string, unknown> {
+  return {
+    action: decision.action,
+    respondingWaifus: decision.respondingWaifus.map((responder) => ({
+      waifuId: responder.waifuId,
+      delaySeconds: responder.delaySeconds,
+      replyStyle: responder.replyStyle,
+      repleyToMessageIndex: null,
+      sceneDirection: responder.sceneDirection ?? null
+    })),
+    retriggerAfterSeconds:
+      decision.action === "no_reply" ? decision.retriggerAfterSeconds ?? null : null,
+    reasoning: decision.reasoning
+  };
+}
+
+type OrchestratorQueryInput = {
+  messages: ContextMessage[];
+  decisions: OrchestratorDecisionHistoryEntry[];
+  trailingPrompt: string;
+};
+
+function buildOpenAiChatOrchestratorMessages(
+  input: OrchestratorQueryInput & { systemPrompt: string }
+): Array<Record<string, unknown>> {
+  const messages: Array<Record<string, unknown>> = [{ role: "system", content: input.systemPrompt }];
+  for (const item of buildOrchestratorTimeline(input.messages, input.decisions)) {
+    if (item.kind === "message") {
+      messages.push({ role: "user", content: formatOrchestratorMessageBlock(item.message) });
+    } else {
+      const args = serializeOrchestratorDecisionArguments(item.decision);
+      messages.push({
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: item.decision.id,
+            type: "function",
+            function: {
+              name: ORCHESTRATOR_TOOL_NAME,
+              arguments: JSON.stringify(args)
+            }
+          }
+        ]
+      });
+      messages.push({
+        role: "tool",
+        tool_call_id: item.decision.id,
+        content: ORCHESTRATOR_TOOL_RESULT_PLACEHOLDER
+      });
+    }
+  }
+  messages.push({ role: "system", content: input.trailingPrompt });
+  return messages;
+}
+
+function buildOpenAiResponsesOrchestratorInput(input: OrchestratorQueryInput): Array<Record<string, unknown>> {
+  const items: Array<Record<string, unknown>> = [];
+  for (const item of buildOrchestratorTimeline(input.messages, input.decisions)) {
+    if (item.kind === "message") {
+      items.push({ role: "user", content: formatOrchestratorMessageBlock(item.message) });
+    } else {
+      const args = serializeOrchestratorDecisionArguments(item.decision);
+      items.push({
+        type: "function_call",
+        call_id: item.decision.id,
+        name: ORCHESTRATOR_TOOL_NAME,
+        arguments: JSON.stringify(args)
+      });
+      items.push({
+        type: "function_call_output",
+        call_id: item.decision.id,
+        output: ORCHESTRATOR_TOOL_RESULT_PLACEHOLDER
+      });
+    }
+  }
+  items.push({
+    role: "user",
+    content: [{ type: "input_text", text: input.trailingPrompt }]
+  });
+  return items;
+}
+
+function buildAnthropicOrchestratorMessages(input: OrchestratorQueryInput): Array<Record<string, unknown>> {
+  const result: Array<Record<string, unknown>> = [];
+  let userBlocks: Array<Record<string, unknown>> = [];
+  const flushUser = () => {
+    if (userBlocks.length > 0) {
+      result.push({ role: "user", content: userBlocks });
+      userBlocks = [];
+    }
+  };
+  for (const item of buildOrchestratorTimeline(input.messages, input.decisions)) {
+    if (item.kind === "message") {
+      userBlocks.push({ type: "text", text: formatOrchestratorMessageBlock(item.message) });
+    } else {
+      flushUser();
+      const args = serializeOrchestratorDecisionArguments(item.decision);
+      result.push({
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: item.decision.id,
+            name: ORCHESTRATOR_TOOL_NAME,
+            input: args
+          }
+        ]
+      });
+      userBlocks.push({
+        type: "tool_result",
+        tool_use_id: item.decision.id,
+        content: ORCHESTRATOR_TOOL_RESULT_PLACEHOLDER
+      });
+    }
+  }
+  userBlocks.push({ type: "text", text: input.trailingPrompt });
+  flushUser();
+  return result;
+}
+
+function buildGoogleOrchestratorContents(input: OrchestratorQueryInput): Array<Record<string, unknown>> {
+  const contents: Array<Record<string, unknown>> = [];
+  for (const item of buildOrchestratorTimeline(input.messages, input.decisions)) {
+    if (item.kind === "message") {
+      contents.push(googleUserTurn(formatOrchestratorMessageBlock(item.message)));
+    } else {
+      const args = serializeOrchestratorDecisionArguments(item.decision);
+      contents.push({
+        role: "model",
+        parts: [{ functionCall: { name: ORCHESTRATOR_TOOL_NAME, args } }]
+      });
+      contents.push({
+        role: "function",
+        parts: [
+          {
+            functionResponse: {
+              name: ORCHESTRATOR_TOOL_NAME,
+              response: { output: ORCHESTRATOR_TOOL_RESULT_PLACEHOLDER }
+            }
+          }
+        ]
+      });
+    }
+  }
+  contents.push(googleUserTurn(input.trailingPrompt));
+  return contents;
+}
+
 function replyStyleHint(replyStyle: ReplyStyle | undefined): string | undefined {
   if (!replyStyle || replyStyle === "normal") return undefined;
   return `<reply_style>${replyStyle}</reply_style>`;
@@ -719,7 +903,7 @@ function directorNotesContent(sceneDirection: string | undefined): string {
 function contextToChatMessagesForWaifu(messages: ContextMessage[], includeImages: boolean) {
   return messages.map((message) => {
     const role = roleForWaifuContext(message);
-    const text = formatWaifuContextLine(message);
+    const text = formatWaifuContextBlock(message);
     const imageBlocks = includeImages && role === "user" ? chatImageBlocks(message) : [];
     return {
       role,
@@ -738,7 +922,7 @@ function chatImageBlocks(message: ContextMessage) {
 function contextToResponsesInputForWaifu(messages: ContextMessage[], includeImages: boolean) {
   return messages.map((message) => {
     const role = roleForWaifuContext(message);
-    const text = formatWaifuContextLine(message);
+    const text = formatWaifuContextBlock(message);
     const imageBlocks = includeImages && role === "user" ? responsesImageBlocks(message) : [];
     return {
       role,
@@ -757,7 +941,7 @@ function responsesImageBlocks(message: ContextMessage) {
 function contextToAnthropicMessagesForWaifu(messages: ContextMessage[], includeImages: boolean) {
   return messages.map((message) => {
     const role = roleForWaifuContext(message);
-    const text = formatWaifuContextLine(message);
+    const text = formatWaifuContextBlock(message);
     const imageBlocks = includeImages && role === "user" ? anthropicImageBlocks(message) : [];
     return {
       role,
@@ -775,12 +959,6 @@ function anthropicImageBlocks(message: ContextMessage) {
 
 function roleForWaifuContext(message: ContextMessage): "assistant" | "user" {
   return message.authorKind === "waifu" ? "assistant" : "user";
-}
-
-function formatWaifuContextLine(message: ContextMessage): string {
-  const prefix = `[timestamp: ${message.timestamp}] [sender: ${message.displayName}]`;
-  const suffix = buildSuffix(message, undefined);
-  return `${prefix} ${message.content}${suffix}`;
 }
 
 function formatContextMessage(message: ContextMessage, index: number, idToIndex: Map<string, number>): string {
@@ -1703,7 +1881,7 @@ async function contextToGoogleMessagesForWaifu(
   return Promise.all(
     messages.map(async (message) => {
       const role: "user" | "model" = roleForWaifuContext(message) === "assistant" ? "model" : "user";
-      const text = formatWaifuContextLine(message);
+      const text = formatWaifuContextBlock(message);
       const imageParts = includeImages && role === "user" ? await googleImageParts(message) : [];
       return {
         role,
