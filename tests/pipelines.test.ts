@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ContextMessage } from "../src/orchestration/context.js";
+import { listModels } from "../src/providers/catalog.js";
 import { createModelPipeline } from "../src/providers/pipelines.js";
 import { recentQueries } from "../src/shared/queryLog.js";
 
@@ -135,6 +136,180 @@ describe("provider-native decision tools", () => {
       type: "function",
       function: { name: "orchestrator_decision" }
     });
+  });
+
+  it("uses Z.AI's coding chat endpoint and provider-safe auto tool choice", async () => {
+    mockFetch({
+      choices: [
+        {
+          message: {
+            tool_calls: [
+              {
+                function: {
+                  name: "orchestrator_decision",
+                  arguments: JSON.stringify({
+                    action: "no_reply",
+                    respondingWaifus: [],
+                    retriggerAfterSeconds: 600,
+                    reasoning: "wait for more context"
+                  })
+                }
+              }
+            ]
+          }
+        }
+      ]
+    });
+
+    const pipeline = createModelPipeline("glm-5.1", { apiKey: "zai-test" });
+    await pipeline.decideOrchestrator?.({
+      modelId: "glm-5.1",
+      messages: context,
+      systemPrompt: "decide",
+      availableWaifuIds: ["yuki", "mika"]
+    });
+
+    const fetchMock = (globalThis.fetch as unknown) as ReturnType<typeof vi.fn>;
+    expect(fetchMock.mock.calls[0]![0]).toBe("https://api.z.ai/api/coding/paas/v4/chat/completions");
+    const query = recentQueries().at(-1);
+    expect(query?.payload.tool_choice).toBe("auto");
+  });
+
+  it("disables DeepSeek thinking before forcing tool calls on both V4 models", async () => {
+    mockFetch({
+      choices: [
+        {
+          message: {
+            tool_calls: [
+              {
+                function: {
+                  name: "orchestrator_decision",
+                  arguments: JSON.stringify({
+                    action: "no_reply",
+                    respondingWaifus: [],
+                    retriggerAfterSeconds: 600,
+                    reasoning: "wait for more context"
+                  })
+                }
+              }
+            ]
+          }
+        }
+      ]
+    });
+
+    for (const modelId of ["deepseek-v4-flash", "deepseek-v4-pro"]) {
+      const pipeline = createModelPipeline(modelId, { apiKey: "deepseek-test" });
+      await pipeline.decideOrchestrator?.({
+        modelId,
+        messages: context,
+        systemPrompt: "decide",
+        availableWaifuIds: ["yuki", "mika"],
+        reasoning: { enabled: true, effort: "max" }
+      });
+
+      const body = lastFetchJsonBody();
+      expect(body.model).toBe(modelId);
+      expect(body.thinking).toEqual({ type: "disabled" });
+      expect(body).not.toHaveProperty("reasoning_effort");
+      expect(body.tool_choice).toEqual({
+        type: "function",
+        function: { name: "orchestrator_decision" }
+      });
+    }
+  });
+
+  it("sends DeepSeek reasoning_effort at top level only when thinking is enabled", async () => {
+    mockFetch({ choices: [{ message: { content: "ok" } }] });
+
+    for (const modelId of ["deepseek-v4-flash", "deepseek-v4-pro"]) {
+      const pipeline = createModelPipeline(modelId, { apiKey: "deepseek-test" });
+      await pipeline.generateWaifu({
+        modelId,
+        messages: context,
+        systemPrompt: "stay in character",
+        reasoning: { enabled: true, effort: "max" }
+      });
+
+      const body = lastFetchJsonBody();
+      expect(body.model).toBe(modelId);
+      expect(body.thinking).toEqual({ type: "enabled" });
+      expect(body.reasoning_effort).toBe("max");
+      expect(body).not.toHaveProperty("temperature");
+      expect(body).not.toHaveProperty("top_p");
+    }
+  });
+
+  it("keeps DeepSeek optional waifu tools out of thinking mode", async () => {
+    mockFetch({
+      choices: [
+        {
+          message: {
+            content: "ok",
+            tool_calls: [
+              {
+                function: {
+                  name: "PickNextWaifu",
+                  arguments: JSON.stringify({ waifuId: "mika" })
+                }
+              }
+            ]
+          }
+        }
+      ]
+    });
+
+    const pipeline = createModelPipeline("deepseek-v4-pro", { apiKey: "deepseek-test" });
+    await pipeline.generateWaifu({
+      modelId: "deepseek-v4-pro",
+      messages: context,
+      systemPrompt: "stay in character",
+      availableWaifuIds: ["mika"],
+      pickNextWaifuToolEnabled: true,
+      reasoning: { enabled: true, effort: "max" }
+    });
+
+    const body = lastFetchJsonBody();
+    expect(body.thinking).toEqual({ type: "disabled" });
+    expect(body).not.toHaveProperty("reasoning_effort");
+    expect(body).not.toHaveProperty("tool_choice");
+  });
+
+  it("uses Z.AI-compatible stop and top_p fields for chat completions", async () => {
+    mockFetch({ choices: [{ message: { content: "ok" } }] });
+
+    const pipeline = createModelPipeline("glm-5.1", { apiKey: "zai-test" });
+    await pipeline.generateWaifu({
+      modelId: "glm-5.1",
+      messages: context,
+      systemPrompt: "stay in character",
+      topP: 0
+    });
+
+    const body = lastFetchJsonBody();
+    expect(body.temperature).toBe(1);
+    expect(body.stop).toEqual(["\n[timestamp:"]);
+    expect(body).not.toHaveProperty("top_p");
+  });
+
+  it("does not expose xAI multi-agent models through the chat/tools pipeline", () => {
+    const ids = listModels().map((model) => model.modelId);
+    expect(ids).not.toContain("grok-4.20-multi-agent-0309");
+    expect(ids).not.toContain("grok-4-1-fast-reasoning");
+    expect(ids).not.toContain("grok-4-1-fast-non-reasoning");
+  });
+
+  it("uses provider-specific catalog roles, image support, and output caps", () => {
+    const models = new Map(listModels().map((model) => [model.modelId, model]));
+    expect(models.get("grok-4.3")?.supportedRoles).not.toContain("developer");
+    expect(models.get("deepseek-v4-pro")?.supportedRoles).not.toContain("developer");
+    expect(models.get("deepseek-v4-pro")?.maxOutputTokens).toBe(384000);
+    expect(models.get("claude-opus-4-7")?.supportedRoles).toEqual(["user", "assistant"]);
+    expect(models.get("claude-opus-4-7")?.maxOutputTokens).toBe(128000);
+    expect(models.get("glm-5.1")?.supportedRoles).not.toContain("developer");
+    expect(models.get("glm-5.1")?.supportsImageInput).toBe(false);
+    expect(models.get("glm-5.1")?.maxOutputTokens).toBe(131072);
+    expect(models.get("gpt-4o-mini")?.maxOutputTokens).toBe(16384);
   });
 
   it("renders reply targets against split logical context messages", async () => {
@@ -477,7 +652,93 @@ describe("provider-native decision tools", () => {
     expect(query?.payload.tool_choice).toEqual({ type: "tool", name: "orchestrator_decision" });
   });
 
-  it("passes waifu stop sequences to OpenAI-compatible chat", async () => {
+  it("omits Anthropic thinking when a tool is forced", async () => {
+    mockFetch({
+      content: [
+        {
+          type: "tool_use",
+          name: "orchestrator_decision",
+          input: {
+            action: "no_reply",
+            respondingWaifus: [],
+            retriggerAfterSeconds: 600,
+            reasoning: "wait"
+          }
+        }
+      ]
+    });
+
+    const pipeline = createModelPipeline("claude-opus-4-7", { apiKey: "anthropic-test" });
+    await pipeline.decideOrchestrator?.({
+      modelId: "claude-opus-4-7",
+      messages: context,
+      systemPrompt: "decide",
+      availableWaifuIds: ["yuki"],
+      reasoning: { effort: "high" }
+    });
+
+    const body = lastFetchJsonBody();
+    expect(body.tool_choice).toEqual({ type: "tool", name: "orchestrator_decision" });
+    expect(body).not.toHaveProperty("thinking");
+    expect(body).not.toHaveProperty("temperature");
+    expect(body).not.toHaveProperty("top_p");
+  });
+
+  it("sends Anthropic adaptive effort through output_config", async () => {
+    mockFetch({ content: [{ type: "text", text: "ok" }] });
+
+    const pipeline = createModelPipeline("claude-opus-4-7", { apiKey: "anthropic-test" });
+    await pipeline.generateWaifu({
+      modelId: "claude-opus-4-7",
+      messages: context,
+      systemPrompt: "stay in character",
+      reasoning: { effort: "xhigh" }
+    });
+
+    const body = lastFetchJsonBody();
+    expect(body.thinking).toEqual({ type: "adaptive" });
+    expect(body.output_config).toEqual({ effort: "xhigh" });
+    expect(body).not.toHaveProperty("temperature");
+    expect(body).not.toHaveProperty("top_p");
+  });
+
+  it("keeps Anthropic Haiku manual thinking below max_tokens by default", async () => {
+    mockFetch({ content: [{ type: "text", text: "ok" }] });
+
+    const pipeline = createModelPipeline("claude-haiku-4-5-20251001", { apiKey: "anthropic-test" });
+    await pipeline.generateWaifu({
+      modelId: "claude-haiku-4-5-20251001",
+      messages: context,
+      systemPrompt: "stay in character",
+      reasoning: { enabled: true }
+    });
+
+    const body = lastFetchJsonBody();
+    expect(body.max_tokens).toBe(2048);
+    expect(body.thinking).toEqual({ type: "enabled", budget_tokens: 1024 });
+    expect(body.temperature).toBe(1);
+    expect(body).not.toHaveProperty("top_p");
+  });
+
+  it("omits Anthropic Haiku manual thinking when max_tokens is too low for the minimum budget", async () => {
+    mockFetch({ content: [{ type: "text", text: "ok" }] });
+
+    const pipeline = createModelPipeline("claude-haiku-4-5-20251001", { apiKey: "anthropic-test" });
+    await pipeline.generateWaifu({
+      modelId: "claude-haiku-4-5-20251001",
+      messages: context,
+      systemPrompt: "stay in character",
+      maxOutputTokens: 512,
+      reasoning: { enabled: true }
+    });
+
+    const body = lastFetchJsonBody();
+    expect(body.max_tokens).toBe(512);
+    expect(body).not.toHaveProperty("thinking");
+    expect(body.temperature).toBe(0.7);
+  });
+
+  it("omits stop for xAI reasoning models and keeps it for non-reasoning models", async () => {
     mockFetch({ choices: [{ message: { content: "ok" } }] });
 
     const pipeline = createModelPipeline("grok-4.3", { apiKey: "xai-test" });
@@ -487,8 +748,32 @@ describe("provider-native decision tools", () => {
       systemPrompt: "stay in character"
     });
 
-    const query = recentQueries().at(-1);
-    expect(query?.payload.stop).toEqual(["\n[timestamp:", "\n[sender:"]);
+    expect(recentQueries().at(-1)?.payload).not.toHaveProperty("stop");
+
+    const nonReasoningPipeline = createModelPipeline("grok-4.20-0309-non-reasoning", { apiKey: "xai-test" });
+    await nonReasoningPipeline.generateWaifu({
+      modelId: "grok-4.20-0309-non-reasoning",
+      messages: context,
+      systemPrompt: "stay in character"
+    });
+
+    expect(recentQueries().at(-1)?.payload.stop).toEqual(["\n[timestamp:", "\n[sender:"]);
+  });
+
+  it("maps xAI disabled reasoning to reasoning_effort none", async () => {
+    mockFetch({ choices: [{ message: { content: "ok" } }] });
+
+    const pipeline = createModelPipeline("grok-4.3", { apiKey: "xai-test" });
+    await pipeline.generateWaifu({
+      modelId: "grok-4.3",
+      messages: context,
+      systemPrompt: "stay in character",
+      reasoning: { enabled: false }
+    });
+
+    const body = lastFetchJsonBody();
+    expect(body.reasoning_effort).toBe("none");
+    expect(body.stop).toEqual(["\n[timestamp:", "\n[sender:"]);
   });
 
   it("sends every waifu context message as assistant to OpenAI-compatible chat", async () => {
@@ -523,6 +808,68 @@ describe("provider-native decision tools", () => {
     expect(input.map((message) => message.role)).toEqual(["user", "assistant", "assistant", "system"]);
     expect(input[1].content).toContain("[sender: Yuki]");
     expect(input[2].content).toContain("[sender: Mika]");
+  });
+
+  it("omits unsupported stop from OpenAI Responses and trims stop markers locally", async () => {
+    mockFetch({
+      output: [
+        {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "hello\n[sender: Kevin]" }]
+        }
+      ]
+    });
+
+    const pipeline = createModelPipeline("gpt-4o-mini", { apiKey: "openai-test" });
+    const result = await pipeline.generateWaifu({
+      modelId: "gpt-4o-mini",
+      messages: context,
+      systemPrompt: "stay in character"
+    });
+
+    const body = lastFetchJsonBody();
+    expect(body).not.toHaveProperty("stop");
+    expect(result.content).toBe("hello");
+  });
+
+  it("passes expanded OpenAI reasoning efforts through Responses", async () => {
+    mockFetch({ output: [{ type: "message", content: [{ type: "output_text", text: "ok" }] }] });
+
+    const pipeline = createModelPipeline("gpt-5.5", { apiKey: "openai-test" });
+    await pipeline.generateWaifu({
+      modelId: "gpt-5.5",
+      messages: context,
+      systemPrompt: "stay in character",
+      reasoning: { effort: "xhigh" }
+    });
+
+    expect(lastFetchJsonBody().reasoning).toEqual({ effort: "xhigh" });
+
+    await pipeline.generateWaifu({
+      modelId: "gpt-5.5",
+      messages: context,
+      systemPrompt: "stay in character",
+      reasoning: { effort: "none" }
+    });
+
+    expect(lastFetchJsonBody().reasoning).toEqual({ effort: "none" });
+  });
+
+  it("rejects max output token values above catalog limits before calling providers", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const pipeline = createModelPipeline("gpt-4o-mini", { apiKey: "openai-test" });
+    await expect(
+      pipeline.generateWaifu({
+        modelId: "gpt-4o-mini",
+        messages: context,
+        systemPrompt: "stay in character",
+        maxOutputTokens: 20_000
+      })
+    ).rejects.toThrow("supports at most 16384 output tokens");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("exposes optional PickNextWaifu for waifu generation", async () => {
@@ -814,6 +1161,33 @@ describe("image attachments", () => {
     expect(messages[1].content).toEqual(expect.stringContaining("[image_text: Start chatting with Instant Vision tab]"));
   });
 
+  it("renders OCR text instead of image_url blocks for Z.AI text models", async () => {
+    mockFetch({ choices: [{ message: { content: "ok" } }] });
+
+    const pipeline = createModelPipeline("glm-5.1", { apiKey: "zai-test" });
+    await pipeline.generateWaifu({
+      modelId: "glm-5.1",
+      messages: [
+        {
+          ...contextWithImage[0],
+          images: [
+            {
+              url: "https://cdn.example/cat.png",
+              contentType: "image/png",
+              ocrText: "cat says hello"
+            }
+          ]
+        }
+      ],
+      systemPrompt: "stay in character"
+    });
+
+    const body = lastFetchJsonBody();
+    const messages = body.messages as Array<{ role: string; content: unknown }>;
+    expect(messages[1].content).toEqual(expect.stringContaining("[image_text: cat says hello]"));
+    expect(JSON.stringify(messages[1].content)).not.toContain("image_url");
+  });
+
   it("renders one [image_text] line per OCR-equipped image with no #N index", async () => {
     mockFetch({ choices: [{ message: { content: "ok" } }] });
 
@@ -970,6 +1344,133 @@ describe("Google AI Studio (Gemini) pipeline", () => {
     expect(query?.payload.systemInstruction).toEqual({ parts: [{ text: "decide" }] });
   });
 
+  it("sanitizes Google tool schemas for Gemini function declarations", async () => {
+    mockFetch({
+      candidates: [
+        {
+          content: {
+            parts: [
+              {
+                functionCall: {
+                  name: "orchestrator_decision",
+                  args: {
+                    action: "no_reply",
+                    respondingWaifus: [],
+                    retriggerAfterSeconds: 300,
+                    reasoning: "hold"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ]
+    });
+
+    const pipeline = createModelPipeline("gemini-3.1-flash-lite", { apiKey: "g-test" });
+    await pipeline.decideOrchestrator?.({
+      modelId: "gemini-3.1-flash-lite",
+      messages: context,
+      systemPrompt: "decide",
+      availableWaifuIds: ["lumi", "aria", "stupid-hoe"]
+    });
+
+    const query = recentQueries().at(-1);
+    const tools = query?.payload.tools as Array<{
+      functionDeclarations: Array<{
+        parameters: {
+          additionalProperties?: unknown;
+          anyOf?: unknown;
+          properties: {
+            respondingWaifus: {
+              items: {
+                additionalProperties?: unknown;
+                properties: {
+                  repleyToMessageIndex: Record<string, unknown>;
+                  sceneDirection: Record<string, unknown>;
+                };
+              };
+            };
+            retriggerAfterSeconds: Record<string, unknown>;
+          };
+        };
+      }>;
+    }>;
+    const parameters = tools[0]!.functionDeclarations[0]!.parameters;
+    const respondingItem = parameters.properties.respondingWaifus.items;
+
+    expect(JSON.stringify(parameters)).not.toContain("additionalProperties");
+    expect(JSON.stringify(parameters)).not.toContain("\"anyOf\"");
+    expect(parameters).not.toHaveProperty("additionalProperties");
+    expect(respondingItem).not.toHaveProperty("additionalProperties");
+    expect(respondingItem.properties.repleyToMessageIndex).toMatchObject({
+      type: "integer",
+      minimum: 1,
+      nullable: true
+    });
+    expect(respondingItem.properties.sceneDirection).toMatchObject({
+      type: "string",
+      nullable: true
+    });
+    expect(parameters.properties.retriggerAfterSeconds).toMatchObject({
+      type: "number",
+      minimum: 100,
+      maximum: 7200,
+      nullable: true
+    });
+  });
+
+  it("replays Google function responses as user turns", async () => {
+    mockFetch({
+      candidates: [
+        {
+          content: {
+            parts: [
+              {
+                functionCall: {
+                  name: "orchestrator_decision",
+                  args: {
+                    action: "no_reply",
+                    respondingWaifus: [],
+                    retriggerAfterSeconds: 300,
+                    reasoning: "hold"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ]
+    });
+
+    const pipeline = createModelPipeline("gemini-2.5-flash", { apiKey: "g-test" });
+    await pipeline.decideOrchestrator?.({
+      modelId: "gemini-2.5-flash",
+      messages: context,
+      pastDecisions: [
+        {
+          id: "decision-1",
+          guildId: "g1",
+          channelId: "c1",
+          action: "no_reply",
+          respondingWaifus: [],
+          retriggerAfterSeconds: 600,
+          reasoning: "wait for Kevin",
+          status: "completed",
+          waifuMessageIds: [],
+          createdAt: "2026-05-16T12:05:00Z"
+        }
+      ],
+      systemPrompt: "decide",
+      availableWaifuIds: ["yuki"]
+    });
+
+    const query = recentQueries().at(-1);
+    const contents = query?.payload.contents as Array<{ role: string; parts: Array<Record<string, unknown>> }>;
+    const responseTurn = contents.find((turn) => turn.parts.some((part) => part.functionResponse));
+    expect(responseTurn?.role).toBe("user");
+  });
+
   it("forces the stage-manager tool and sends a memories user-turn", async () => {
     mockFetch({
       candidates: [
@@ -1109,9 +1610,9 @@ describe("Google AI Studio (Gemini) pipeline", () => {
   it("translates reasoning.effort to thinkingLevel on Gemini 3.x flash models", async () => {
     mockFetch({ candidates: [{ content: { parts: [{ text: "ok" }] } }] });
 
-    const pipeline = createModelPipeline("gemini-3-flash", { apiKey: "g-test" });
+    const pipeline = createModelPipeline("gemini-3-flash-preview", { apiKey: "g-test" });
     await pipeline.generateWaifu({
-      modelId: "gemini-3-flash",
+      modelId: "gemini-3-flash-preview",
       messages: context,
       systemPrompt: "stay in character",
       reasoning: { effort: "medium" }
@@ -1120,6 +1621,8 @@ describe("Google AI Studio (Gemini) pipeline", () => {
     const query = recentQueries().at(-1);
     const generationConfig = query?.payload.generationConfig as { thinkingConfig?: { thinkingLevel?: string } };
     expect(generationConfig.thinkingConfig).toEqual({ thinkingLevel: "medium" });
+    const fetchMock = (globalThis.fetch as unknown) as ReturnType<typeof vi.fn>;
+    expect(fetchMock.mock.calls[0]![0]).toBe("https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent");
   });
 
   it("sets thinkingBudget:0 when reasoning is disabled on Gemini 2.5 Flash", async () => {
@@ -1138,7 +1641,34 @@ describe("Google AI Studio (Gemini) pipeline", () => {
     expect(generationConfig.thinkingConfig).toEqual({ thinkingBudget: 0 });
   });
 
-  it("clamps thinkingBudget to 512 on Gemini 2.5 Flash Lite (cannot disable)", async () => {
+  it("supports disabling and dynamic thinking on Gemini 2.5 Flash Lite", async () => {
+    mockFetch({ candidates: [{ content: { parts: [{ text: "ok" }] } }] });
+
+    const pipeline = createModelPipeline("gemini-2.5-flash-lite", { apiKey: "g-test" });
+    await pipeline.generateWaifu({
+      modelId: "gemini-2.5-flash-lite",
+      messages: context,
+      systemPrompt: "stay in character",
+      reasoning: { enabled: false }
+    });
+
+    let query = recentQueries().at(-1);
+    let generationConfig = query?.payload.generationConfig as { thinkingConfig?: { thinkingBudget?: number } };
+    expect(generationConfig.thinkingConfig).toEqual({ thinkingBudget: 0 });
+
+    await pipeline.generateWaifu({
+      modelId: "gemini-2.5-flash-lite",
+      messages: context,
+      systemPrompt: "stay in character",
+      reasoning: { enabled: true }
+    });
+
+    query = recentQueries().at(-1);
+    generationConfig = query?.payload.generationConfig as { thinkingConfig?: { thinkingBudget?: number } };
+    expect(generationConfig.thinkingConfig).toEqual({ thinkingBudget: -1 });
+  });
+
+  it("clamps thinkingBudget to 512 on Gemini 2.5 Flash Lite", async () => {
     mockFetch({ candidates: [{ content: { parts: [{ text: "ok" }] } }] });
 
     const pipeline = createModelPipeline("gemini-2.5-flash-lite", { apiKey: "g-test" });
@@ -1181,4 +1711,11 @@ function mockFetch(json: unknown): void {
     "fetch",
     vi.fn(async () => new Response(JSON.stringify(json), { status: 200 }))
   );
+}
+
+function lastFetchJsonBody(): Record<string, unknown> {
+  const fetchMock = (globalThis.fetch as unknown) as ReturnType<typeof vi.fn>;
+  const init = fetchMock.mock.calls.at(-1)?.[1] as { body?: string } | undefined;
+  if (!init?.body) throw new Error("No fetch body recorded.");
+  return JSON.parse(init.body) as Record<string, unknown>;
 }

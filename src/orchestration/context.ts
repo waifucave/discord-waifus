@@ -140,6 +140,7 @@ export function formatOrchestratorMessageBlock(message: ContextMessage): string 
   const imageCount = message.images?.length ?? 0;
   if (imageCount > 0) {
     lines.push(`[attachments: ${imageCount}x image]`);
+    appendImageTextLines(lines, message.images);
   }
   const reply = replyToLine(message);
   if (reply) lines.push(reply);
@@ -153,16 +154,20 @@ export function formatWaifuContextBlock(message: ContextMessage): string {
   const imageCount = message.images?.length ?? 0;
   if (imageCount > 0) {
     lines.push(`[attachments: ${imageCount}x image]`);
-    for (const image of message.images ?? []) {
-      const ocr = image.ocrText?.replace(/\s+/g, " ").trim();
-      if (ocr) {
-        lines.push(`[image_text: ${ocr}]`);
-      }
-    }
+    appendImageTextLines(lines, message.images);
   }
   const reply = replyToLine(message);
   if (reply) lines.push(reply);
   return lines.join("\n");
+}
+
+function appendImageTextLines(lines: string[], images: AttachmentImage[] | undefined): void {
+  for (const image of images ?? []) {
+    const ocr = image.ocrText?.replace(/\s+/g, " ").trim();
+    if (ocr) {
+      lines.push(`[image_text: ${ocr}]`);
+    }
+  }
 }
 
 function coalesceAdjacentChunks(

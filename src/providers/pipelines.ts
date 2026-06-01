@@ -69,53 +69,58 @@ class OpenAiCompatibleChatPipeline implements ModelPipeline {
 
   async generateWaifu(request: WaifuGenerationRequest): Promise<WaifuGenerationResult> {
     throwIfAborted(request.signal);
+    validateMaxOutputTokens(this.model, request.maxOutputTokens);
+    const reasoning = openAiChatReasoningForWaifu(this.model, request);
     const result = await postJsonAndExtractText<WaifuGenerationResult>({
       url: `${this.provider.baseUrl}${this.model.endpoint}`,
       headers: bearerHeaders(this.apiKey),
       body: {
         model: request.modelId,
-        messages: [
+        messages: openAiChatMessagesForModel(this.model, [
           { role: "system", content: request.systemPrompt },
           ...contextToChatMessagesForWaifu(request.messages, this.model.supportsImageInput),
           ...replyStyleMessagesForChat(request.replyStyle),
           { role: "system", content: directorNotesContent(request.sceneDirection) }
-        ],
-        temperature: request.temperature ?? this.model.defaultTemperature,
-        top_p: request.topP ?? this.model.defaultTopP,
+        ]),
+        temperature: openAiChatTemperature(this.model, request.temperature ?? this.model.defaultTemperature),
+        top_p: openAiChatTopP(this.model, request.topP ?? this.model.defaultTopP),
         max_tokens: request.maxOutputTokens,
         ...openAiChatPickNextWaifuToolPayload(this.model, request),
-        stop: WAIFU_STOP_SEQUENCES,
+        stop: openAiChatStopSequences(this.model, reasoning),
         stream: false,
-        ...reasoningFieldsForOpenAiChat(this.model, request.reasoning),
-        ...openAiChatSamplingOverrides(this.model, request.reasoning)
+        ...reasoningFieldsForOpenAiChat(this.model, reasoning),
+        ...openAiChatSamplingOverrides(this.model, reasoning)
       },
       signal: request.signal,
       extract: (json) => extractOpenAiChatWaifuResult(json, request.availableWaifuIds),
       queryRole: "waifu"
     });
-    return result;
+    return trimWaifuGenerationResult(result);
   }
 
   async decideOrchestrator(request: ProviderRequest): Promise<OrchestratorDecision> {
+    validateMaxOutputTokens(this.model, request.maxOutputTokens);
+    const reasoning = openAiChatReasoningForForcedTool(this.model, request.reasoning);
     const text = await postJsonAndExtractText({
       url: `${this.provider.baseUrl}${this.model.endpoint}`,
       headers: bearerHeaders(this.apiKey),
       body: {
         model: request.modelId,
-        messages: buildOpenAiChatOrchestratorMessages({
+        messages: openAiChatMessagesForModel(this.model, buildOpenAiChatOrchestratorMessages({
+          model: this.model,
           systemPrompt: request.systemPrompt ?? "",
           messages: request.messages,
           decisions: request.pastDecisions ?? [],
           trailingPrompt: request.trailingPrompt ?? ""
-        }),
-        temperature: request.temperature ?? 0.2,
-        top_p: request.topP,
+        })),
+        temperature: openAiChatTemperature(this.model, request.temperature ?? 0.2),
+        top_p: openAiChatTopP(this.model, request.topP),
         max_tokens: request.maxOutputTokens,
         tools: [openAiChatOrchestratorTool(request.availableWaifuIds)],
-        tool_choice: { type: "function", function: { name: ORCHESTRATOR_TOOL_NAME } },
+        tool_choice: openAiChatForcedToolChoice(this.model, ORCHESTRATOR_TOOL_NAME),
         stream: false,
-        ...reasoningFieldsForOpenAiChat(this.model, request.reasoning),
-        ...openAiChatSamplingOverrides(this.model, request.reasoning)
+        ...reasoningFieldsForOpenAiChat(this.model, reasoning),
+        ...openAiChatSamplingOverrides(this.model, reasoning)
       },
       signal: request.signal,
       extract: (json) => extractOpenAiChatToolArguments(json, ORCHESTRATOR_TOOL_NAME),
@@ -125,25 +130,27 @@ class OpenAiCompatibleChatPipeline implements ModelPipeline {
   }
 
   async decideStageManager(request: StageManagerRequest): Promise<StageManagerToolCall[]> {
+    validateMaxOutputTokens(this.model, request.maxOutputTokens);
     const rendering = renderContext(request.messages);
+    const reasoning = openAiChatReasoningForForcedTool(this.model, request.reasoning);
     const text = await postJsonAndExtractText({
       url: `${this.provider.baseUrl}${this.model.endpoint}`,
       headers: bearerHeaders(this.apiKey),
       body: {
         model: request.modelId,
-        messages: [
+        messages: openAiChatMessagesForModel(this.model, [
           { role: "system", content: stageManagerSystemPrompt(request.systemPrompt) },
           contextToUserMessage(rendering),
           { role: "user", content: `memories: ${JSON.stringify(request.memories)}` }
-        ],
-        temperature: request.temperature ?? 0.2,
-        top_p: request.topP,
+        ]),
+        temperature: openAiChatTemperature(this.model, request.temperature ?? 0.2),
+        top_p: openAiChatTopP(this.model, request.topP),
         max_tokens: request.maxOutputTokens,
         tools: [openAiChatStageManagerTool()],
-        tool_choice: { type: "function", function: { name: STAGE_MANAGER_TOOL_NAME } },
+        tool_choice: openAiChatForcedToolChoice(this.model, STAGE_MANAGER_TOOL_NAME),
         stream: false,
-        ...reasoningFieldsForOpenAiChat(this.model, request.reasoning),
-        ...openAiChatSamplingOverrides(this.model, request.reasoning)
+        ...reasoningFieldsForOpenAiChat(this.model, reasoning),
+        ...openAiChatSamplingOverrides(this.model, reasoning)
       },
       signal: request.signal,
       extract: (json) => extractOpenAiChatToolArguments(json, STAGE_MANAGER_TOOL_NAME),
@@ -153,23 +160,25 @@ class OpenAiCompatibleChatPipeline implements ModelPipeline {
   }
 
   async decideReviewer(request: ProviderRequest & { message: string }): Promise<ReviewerDecision> {
+    validateMaxOutputTokens(this.model, request.maxOutputTokens ?? 64);
+    const reasoning = openAiChatReasoningForForcedTool(this.model, request.reasoning);
     const text = await postJsonAndExtractText({
       url: `${this.provider.baseUrl}${this.model.endpoint}`,
       headers: bearerHeaders(this.apiKey),
       body: {
         model: request.modelId,
-        messages: [
+        messages: openAiChatMessagesForModel(this.model, [
           { role: "system", content: reviewerSystemPrompt(request.systemPrompt) },
           { role: "user", content: request.message }
-        ],
-        temperature: request.temperature ?? 0,
-        top_p: request.topP,
+        ]),
+        temperature: openAiChatTemperature(this.model, request.temperature ?? 0),
+        top_p: openAiChatTopP(this.model, request.topP),
         max_tokens: request.maxOutputTokens ?? 64,
         tools: [openAiChatReviewerTool()],
-        tool_choice: { type: "function", function: { name: REVIEWER_TOOL_NAME } },
+        tool_choice: openAiChatForcedToolChoice(this.model, REVIEWER_TOOL_NAME),
         stream: false,
-        ...reasoningFieldsForOpenAiChat(this.model, request.reasoning),
-        ...openAiChatSamplingOverrides(this.model, request.reasoning)
+        ...reasoningFieldsForOpenAiChat(this.model, reasoning),
+        ...openAiChatSamplingOverrides(this.model, reasoning)
       },
       signal: request.signal,
       extract: (json) => extractOpenAiChatToolArguments(json, REVIEWER_TOOL_NAME),
@@ -187,6 +196,7 @@ class OpenAiResponsesPipeline implements ModelPipeline {
   ) {}
 
   async generateWaifu(request: WaifuGenerationRequest): Promise<WaifuGenerationResult> {
+    validateMaxOutputTokens(this.model, request.maxOutputTokens);
     const result = await postJsonAndExtractText<WaifuGenerationResult>({
       url: `${this.provider.baseUrl}${this.model.endpoint}`,
       headers: bearerHeaders(this.apiKey),
@@ -202,7 +212,6 @@ class OpenAiResponsesPipeline implements ModelPipeline {
         top_p: request.topP ?? this.model.defaultTopP,
         max_output_tokens: request.maxOutputTokens,
         ...openAiResponsesPickNextWaifuToolPayload(this.model, request),
-        stop: WAIFU_STOP_SEQUENCES,
         ...reasoningFieldsForOpenAiResponses(this.model, request.reasoning),
         ...openAiResponsesSamplingOverrides(this.model)
       },
@@ -210,10 +219,11 @@ class OpenAiResponsesPipeline implements ModelPipeline {
       extract: (json) => extractOpenAiResponsesWaifuResult(json, request.availableWaifuIds),
       queryRole: "waifu"
     });
-    return result;
+    return trimWaifuGenerationResult(result);
   }
 
   async decideOrchestrator(request: ProviderRequest): Promise<OrchestratorDecision> {
+    validateMaxOutputTokens(this.model, request.maxOutputTokens);
     const text = await postJsonAndExtractText({
       url: `${this.provider.baseUrl}${this.model.endpoint}`,
       headers: bearerHeaders(this.apiKey),
@@ -241,6 +251,7 @@ class OpenAiResponsesPipeline implements ModelPipeline {
   }
 
   async decideStageManager(request: StageManagerRequest): Promise<StageManagerToolCall[]> {
+    validateMaxOutputTokens(this.model, request.maxOutputTokens);
     const rendering = renderContext(request.messages);
     const text = await postJsonAndExtractText({
       url: `${this.provider.baseUrl}${this.model.endpoint}`,
@@ -268,6 +279,7 @@ class OpenAiResponsesPipeline implements ModelPipeline {
   }
 
   async decideReviewer(request: ProviderRequest & { message: string }): Promise<ReviewerDecision> {
+    validateMaxOutputTokens(this.model, request.maxOutputTokens ?? 64);
     const text = await postJsonAndExtractText({
       url: `${this.provider.baseUrl}${this.model.endpoint}`,
       headers: bearerHeaders(this.apiKey),
@@ -299,9 +311,9 @@ class AnthropicMessagesPipeline implements ModelPipeline {
   ) {}
 
   async generateWaifu(request: WaifuGenerationRequest): Promise<WaifuGenerationResult> {
-    const maxTokens = request.maxOutputTokens ?? 1024;
+    const maxTokens = request.maxOutputTokens ?? anthropicDefaultMaxTokens(this.model, request.reasoning);
+    validateMaxOutputTokens(this.model, maxTokens);
     const thinking = anthropicThinkingPayload(this.model, request.reasoning, maxTokens);
-    const constrainsSampling = anthropicThinkingConstrainsSampling(thinking);
     const result = await postJsonAndExtractText<WaifuGenerationResult>({
       url: `${this.provider.baseUrl}${this.model.endpoint}`,
       headers: anthropicHeaders(this.apiKey),
@@ -313,24 +325,28 @@ class AnthropicMessagesPipeline implements ModelPipeline {
           ...replyStyleMessagesForAnthropic(request.replyStyle),
           { role: "user", content: directorNotesContent(request.sceneDirection) }
         ],
-        temperature: constrainsSampling ? 1 : request.temperature ?? this.model.defaultTemperature,
-        top_p: constrainsSampling ? undefined : request.topP ?? this.model.defaultTopP,
+        ...anthropicSamplingPayload(
+          this.model,
+          request.temperature ?? this.model.defaultTemperature,
+          request.topP ?? this.model.defaultTopP,
+          thinking
+        ),
         max_tokens: maxTokens,
         ...anthropicPickNextWaifuToolPayload(this.model, request),
         stop_sequences: WAIFU_STOP_SEQUENCES,
+        ...anthropicOutputConfig(this.model, request.reasoning, thinking),
         ...(thinking ? { thinking } : {})
       },
       signal: request.signal,
       extract: (json) => extractAnthropicWaifuResult(json, request.availableWaifuIds),
       queryRole: "waifu"
     });
-    return result;
+    return trimWaifuGenerationResult(result);
   }
 
   async decideOrchestrator(request: ProviderRequest): Promise<OrchestratorDecision> {
     const maxTokens = request.maxOutputTokens ?? 1024;
-    const thinking = anthropicThinkingPayload(this.model, request.reasoning, maxTokens);
-    const constrainsSampling = anthropicThinkingConstrainsSampling(thinking);
+    validateMaxOutputTokens(this.model, maxTokens);
     const text = await postJsonAndExtractText({
       url: `${this.provider.baseUrl}${this.model.endpoint}`,
       headers: anthropicHeaders(this.apiKey),
@@ -342,12 +358,10 @@ class AnthropicMessagesPipeline implements ModelPipeline {
           decisions: request.pastDecisions ?? [],
           trailingPrompt: request.trailingPrompt ?? ""
         }),
-        temperature: constrainsSampling ? 1 : request.temperature ?? 0.2,
-        top_p: constrainsSampling ? undefined : request.topP,
+        ...anthropicSamplingPayload(this.model, request.temperature ?? 0.2, request.topP, undefined),
         max_tokens: maxTokens,
         tools: [anthropicOrchestratorTool(request.availableWaifuIds)],
-        tool_choice: { type: "tool", name: ORCHESTRATOR_TOOL_NAME },
-        ...(thinking ? { thinking } : {})
+        tool_choice: { type: "tool", name: ORCHESTRATOR_TOOL_NAME }
       },
       signal: request.signal,
       extract: (json) => extractAnthropicToolArguments(json, ORCHESTRATOR_TOOL_NAME),
@@ -359,8 +373,7 @@ class AnthropicMessagesPipeline implements ModelPipeline {
   async decideStageManager(request: StageManagerRequest): Promise<StageManagerToolCall[]> {
     const rendering = renderContext(request.messages);
     const maxTokens = request.maxOutputTokens ?? 1024;
-    const thinking = anthropicThinkingPayload(this.model, request.reasoning, maxTokens);
-    const constrainsSampling = anthropicThinkingConstrainsSampling(thinking);
+    validateMaxOutputTokens(this.model, maxTokens);
     const text = await postJsonAndExtractText({
       url: `${this.provider.baseUrl}${this.model.endpoint}`,
       headers: anthropicHeaders(this.apiKey),
@@ -371,12 +384,10 @@ class AnthropicMessagesPipeline implements ModelPipeline {
           contextToUserMessage(rendering),
           { role: "user", content: `memories: ${JSON.stringify(request.memories)}` }
         ],
-        temperature: constrainsSampling ? 1 : request.temperature ?? 0.2,
-        top_p: constrainsSampling ? undefined : request.topP,
+        ...anthropicSamplingPayload(this.model, request.temperature ?? 0.2, request.topP, undefined),
         max_tokens: maxTokens,
         tools: [anthropicStageManagerTool()],
-        tool_choice: { type: "tool", name: STAGE_MANAGER_TOOL_NAME },
-        ...(thinking ? { thinking } : {})
+        tool_choice: { type: "tool", name: STAGE_MANAGER_TOOL_NAME }
       },
       signal: request.signal,
       extract: (json) => extractAnthropicToolArguments(json, STAGE_MANAGER_TOOL_NAME),
@@ -386,9 +397,8 @@ class AnthropicMessagesPipeline implements ModelPipeline {
   }
 
   async decideReviewer(request: ProviderRequest & { message: string }): Promise<ReviewerDecision> {
-    const maxTokens = request.maxOutputTokens ?? (request.reasoning?.enabled || request.reasoning?.effort ? 2048 : 256);
-    const thinking = anthropicThinkingPayload(this.model, request.reasoning, maxTokens);
-    const constrainsSampling = anthropicThinkingConstrainsSampling(thinking);
+    const maxTokens = request.maxOutputTokens ?? 256;
+    validateMaxOutputTokens(this.model, maxTokens);
     const text = await postJsonAndExtractText({
       url: `${this.provider.baseUrl}${this.model.endpoint}`,
       headers: anthropicHeaders(this.apiKey),
@@ -396,12 +406,10 @@ class AnthropicMessagesPipeline implements ModelPipeline {
         model: request.modelId,
         system: reviewerSystemPrompt(request.systemPrompt),
         messages: [{ role: "user", content: request.message }],
-        temperature: constrainsSampling ? 1 : request.temperature ?? 0,
-        top_p: constrainsSampling ? undefined : request.topP,
+        ...anthropicSamplingPayload(this.model, request.temperature ?? 0, request.topP, undefined),
         max_tokens: maxTokens,
         tools: [anthropicReviewerTool()],
-        tool_choice: { type: "tool", name: REVIEWER_TOOL_NAME },
-        ...(thinking ? { thinking } : {})
+        tool_choice: { type: "tool", name: REVIEWER_TOOL_NAME }
       },
       signal: request.signal,
       extract: (json) => extractAnthropicToolArguments(json, REVIEWER_TOOL_NAME),
@@ -419,6 +427,7 @@ class GoogleGenerativeLanguagePipeline implements ModelPipeline {
   ) {}
 
   async generateWaifu(request: WaifuGenerationRequest): Promise<WaifuGenerationResult> {
+    validateMaxOutputTokens(this.model, request.maxOutputTokens);
     const contextContents = await contextToGoogleMessagesForWaifu(
       request.messages,
       this.model.supportsImageInput
@@ -449,10 +458,11 @@ class GoogleGenerativeLanguagePipeline implements ModelPipeline {
       extract: (json) => extractGoogleWaifuResult(json, request.availableWaifuIds),
       queryRole: "waifu"
     });
-    return result;
+    return trimWaifuGenerationResult(result);
   }
 
   async decideOrchestrator(request: ProviderRequest): Promise<OrchestratorDecision> {
+    validateMaxOutputTokens(this.model, request.maxOutputTokens);
     const text = await postJsonAndExtractText({
       url: googleAiStudioUrl(this.provider, this.model),
       headers: googleAiStudioHeaders(this.apiKey),
@@ -481,6 +491,7 @@ class GoogleGenerativeLanguagePipeline implements ModelPipeline {
   }
 
   async decideStageManager(request: StageManagerRequest): Promise<StageManagerToolCall[]> {
+    validateMaxOutputTokens(this.model, request.maxOutputTokens);
     const rendering = renderContext(request.messages);
     const text = await postJsonAndExtractText({
       url: googleAiStudioUrl(this.provider, this.model),
@@ -509,6 +520,7 @@ class GoogleGenerativeLanguagePipeline implements ModelPipeline {
   }
 
   async decideReviewer(request: ProviderRequest & { message: string }): Promise<ReviewerDecision> {
+    validateMaxOutputTokens(this.model, request.maxOutputTokens ?? 64);
     const text = await postJsonAndExtractText({
       url: googleAiStudioUrl(this.provider, this.model),
       headers: googleAiStudioHeaders(this.apiKey),
@@ -746,7 +758,7 @@ type OrchestratorQueryInput = {
 };
 
 function buildOpenAiChatOrchestratorMessages(
-  input: OrchestratorQueryInput & { systemPrompt: string }
+  input: OrchestratorQueryInput & { model: ModelCapabilityMetadata; systemPrompt: string }
 ): Array<Record<string, unknown>> {
   const messages: Array<Record<string, unknown>> = [{ role: "system", content: input.systemPrompt }];
   for (const item of buildOrchestratorTimeline(input.messages, input.decisions)) {
@@ -754,9 +766,9 @@ function buildOpenAiChatOrchestratorMessages(
       messages.push({ role: "user", content: formatOrchestratorMessageBlock(item.message) });
     } else {
       const args = serializeOrchestratorDecisionArguments(item.decision);
-      messages.push({
+      messages.push(stripUndefined({
         role: "assistant",
-        content: null,
+        content: input.model.providerId === "zai" ? undefined : null,
         tool_calls: [
           {
             id: item.decision.id,
@@ -767,7 +779,7 @@ function buildOpenAiChatOrchestratorMessages(
             }
           }
         ]
-      });
+      }));
       messages.push({
         role: "tool",
         tool_call_id: item.decision.id,
@@ -856,7 +868,7 @@ function buildGoogleOrchestratorContents(input: OrchestratorQueryInput): Array<R
         parts: [{ functionCall: { name: ORCHESTRATOR_TOOL_NAME, args } }]
       });
       contents.push({
-        role: "function",
+        role: "user",
         parts: [
           {
             functionResponse: {
@@ -1282,6 +1294,11 @@ function openAiChatPickNextWaifuToolPayload(
   request: WaifuGenerationRequest
 ): { tools?: unknown[]; tool_choice?: "auto" } {
   if (!shouldExposePickNextWaifuTool(model, request)) return {};
+  if (model.providerId === "deepseek") {
+    return {
+      tools: [openAiChatPickNextWaifuTool(request.availableWaifuIds)]
+    };
+  }
   return {
     tools: [openAiChatPickNextWaifuTool(request.availableWaifuIds)],
     tool_choice: "auto"
@@ -1645,6 +1662,111 @@ function parsePickedNextWaifu(
   }
 }
 
+function validateMaxOutputTokens(model: ModelCapabilityMetadata, maxOutputTokens: number | undefined): void {
+  if (maxOutputTokens === undefined || model.maxOutputTokens === undefined) return;
+  if (maxOutputTokens > model.maxOutputTokens) {
+    throw new ProviderPipelineError(
+      `${model.modelId} supports at most ${model.maxOutputTokens} output tokens; received ${maxOutputTokens}.`
+    );
+  }
+}
+
+function trimWaifuGenerationResult(result: WaifuGenerationResult): WaifuGenerationResult {
+  return {
+    ...result,
+    content: trimAtStopSequences(result.content)
+  };
+}
+
+function trimAtStopSequences(content: string): string {
+  const firstStop = WAIFU_STOP_SEQUENCES
+    .map((stop) => content.indexOf(stop))
+    .filter((index) => index >= 0)
+    .sort((a, b) => a - b)[0];
+  return firstStop === undefined ? content : content.slice(0, firstStop).trimEnd();
+}
+
+function openAiChatMessagesForModel(
+  model: ModelCapabilityMetadata,
+  messages: Array<Record<string, unknown>>
+): Array<Record<string, unknown>> {
+  if (model.providerId !== "zai" || messages.some((message) => message.role === "user")) {
+    return messages;
+  }
+  const lastIndex = messages.length - 1;
+  return messages.map((message, index) =>
+    index === lastIndex ? { ...message, role: "user" } : message
+  );
+}
+
+function openAiChatTemperature(
+  model: ModelCapabilityMetadata,
+  temperature: number | undefined
+): number | undefined {
+  if (model.providerId === "zai" && temperature !== undefined) {
+    return Math.max(0, Math.min(1, temperature));
+  }
+  return temperature;
+}
+
+function openAiChatForcedToolChoice(
+  model: ModelCapabilityMetadata,
+  toolName: string
+): "auto" | { type: "function"; function: { name: string } } {
+  // Z.AI documents tool_choice as an enum with only "auto"; forced OpenAI-style objects return 400.
+  if (model.providerId === "zai") return "auto";
+  return { type: "function", function: { name: toolName } };
+}
+
+function openAiChatStopSequences(
+  model: ModelCapabilityMetadata,
+  reasoning?: ReasoningConfig
+): string[] | undefined {
+  // Z.AI currently accepts a single stop word despite the OpenAI-compatible shape.
+  if (model.providerId === "zai") return [WAIFU_STOP_SEQUENCES[0]];
+  if (isXaiReasoningRequest(model, reasoning)) return undefined;
+  return WAIFU_STOP_SEQUENCES;
+}
+
+function openAiChatTopP(
+  model: ModelCapabilityMetadata,
+  topP: number | undefined
+): number | undefined {
+  if (model.providerId === "zai" && topP !== undefined && topP < 0.01) {
+    return undefined;
+  }
+  return topP;
+}
+
+function openAiChatReasoningForForcedTool(
+  model: ModelCapabilityMetadata,
+  reasoning: ReasoningConfig | undefined
+): ReasoningConfig | undefined {
+  // DeepSeek V4 defaults to thinking mode; keep forced tool calls in non-thinking mode.
+  if (model.providerId === "deepseek") return { enabled: false };
+  return reasoning;
+}
+
+function openAiChatReasoningForWaifu(
+  model: ModelCapabilityMetadata,
+  request: WaifuGenerationRequest
+): ReasoningConfig | undefined {
+  if (model.providerId !== "deepseek") return request.reasoning;
+  if (shouldExposePickNextWaifuTool(model, request)) return { enabled: false };
+  if (request.reasoning?.enabled === true) return request.reasoning;
+  return { enabled: false };
+}
+
+function isXaiReasoningRequest(model: ModelCapabilityMetadata, reasoning?: ReasoningConfig): boolean {
+  if (model.providerId !== "xai") return false;
+  if (model.modelId === "grok-4.20-0309-reasoning") return true;
+  if (model.modelId === "grok-4.20-0309-non-reasoning") return false;
+  if (model.modelId === "grok-4.3") {
+    return reasoning?.enabled === false || reasoning?.effort === "none" ? false : true;
+  }
+  return false;
+}
+
 function openAiChatSamplingOverrides(
   model: ModelCapabilityMetadata,
   reasoning?: ReasoningConfig
@@ -1673,24 +1795,28 @@ function reasoningFieldsForOpenAiChat(
   if (!reasoning) return {};
   const controls = new Set(model.reasoningControls);
   if (model.providerId === "xai") {
+    if (controls.has("reasoning.enabled") && reasoning.enabled === false) {
+      return { reasoning_effort: "none" };
+    }
     if (controls.has("reasoning.effort") && reasoning.effort) {
-      return { reasoning_effort: reasoning.effort };
+      const effort = xaiReasoningEffort(reasoning.effort);
+      return effort ? { reasoning_effort: effort } : {};
     }
     return {};
   }
   if (model.providerId === "deepseek") {
-    const thinking: Record<string, unknown> = {};
+    const fields: Record<string, unknown> = {};
     if (controls.has("reasoning.enabled") && reasoning.enabled !== undefined) {
-      thinking.type = reasoning.enabled ? "enabled" : "disabled";
+      fields.thinking = { type: reasoning.enabled ? "enabled" : "disabled" };
     }
-    if (controls.has("reasoning.effort") && reasoning.effort) {
-      thinking.reasoning_effort = reasoning.effort;
+    if (reasoning.enabled !== false && controls.has("reasoning.effort") && reasoning.effort) {
+      fields.reasoning_effort = deepSeekReasoningEffort(reasoning.effort);
     }
-    return Object.keys(thinking).length ? { thinking } : {};
+    return fields;
   }
   if (model.providerId === "zai") {
     if (controls.has("reasoning.enabled") && reasoning.enabled !== undefined) {
-      return { thinking: { type: reasoning.enabled ? "enabled" : "disabled" } };
+      return { thinking: { type: reasoning.enabled ? "enabled" : "disabled", clear_thinking: true } };
     }
     return {};
   }
@@ -1704,15 +1830,51 @@ function reasoningFieldsForOpenAiResponses(
   if (!reasoning) return {};
   const controls = new Set(model.reasoningControls);
   if (controls.has("reasoning.effort") && reasoning.effort) {
-    return { reasoning: { effort: reasoning.effort } };
+    const effort = openAiReasoningEffort(reasoning.effort);
+    return effort ? { reasoning: { effort } } : {};
   }
   return {};
 }
 
+function xaiReasoningEffort(effort: ReasoningConfig["effort"]): "none" | "low" | "medium" | "high" | undefined {
+  if (effort === "none" || effort === "low" || effort === "medium" || effort === "high") return effort;
+  return undefined;
+}
+
+function deepSeekReasoningEffort(effort: ReasoningConfig["effort"]): "high" | "max" {
+  return effort === "max" ? "max" : "high";
+}
+
+function openAiReasoningEffort(
+  effort: ReasoningConfig["effort"]
+): "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | undefined {
+  if (
+    effort === "none" ||
+    effort === "minimal" ||
+    effort === "low" ||
+    effort === "medium" ||
+    effort === "high" ||
+    effort === "xhigh"
+  ) {
+    return effort;
+  }
+  return undefined;
+}
+
 type AnthropicThinking =
   | { type: "enabled"; budget_tokens: number }
-  | { type: "adaptive"; effort?: "low" | "medium" | "high" }
+  | { type: "adaptive" }
   | { type: "disabled" };
+
+function anthropicDefaultMaxTokens(
+  model: ModelCapabilityMetadata,
+  reasoning: ReasoningConfig | undefined
+): number {
+  if (model.modelId.startsWith("claude-haiku-4-5") && reasoning?.enabled === true) {
+    return 2048;
+  }
+  return 1024;
+}
 
 function anthropicThinkingPayload(
   model: ModelCapabilityMetadata,
@@ -1720,15 +1882,17 @@ function anthropicThinkingPayload(
   maxTokens: number
 ): AnthropicThinking | undefined {
   const modelId = model.modelId;
-  // Opus 4.7: adaptive-only. Always send adaptive; cannot be disabled.
+  // Opus 4.7: adaptive is the only thinking-on mode, but it must be requested explicitly.
   if (modelId === "claude-opus-4-7") {
-    return { type: "adaptive", effort: reasoning?.effort ?? "high" };
+    if (reasoning?.enabled === false) return undefined;
+    if (reasoning?.enabled === true || reasoning?.effort) return { type: "adaptive" };
+    return undefined;
   }
   // Sonnet 4.6: adaptive recommended; can be disabled.
   if (modelId === "claude-sonnet-4-6") {
     if (reasoning?.enabled === false) return { type: "disabled" };
     if (reasoning?.enabled === true || reasoning?.effort) {
-      return { type: "adaptive", effort: reasoning?.effort ?? "high" };
+      return { type: "adaptive" };
     }
     return undefined;
   }
@@ -1739,7 +1903,9 @@ function anthropicThinkingPayload(
     const requested = reasoning.budgetTokens && reasoning.budgetTokens > 0
       ? reasoning.budgetTokens
       : 1024;
-    const budget = Math.max(1024, Math.min(requested, Math.max(1024, maxTokens - 1)));
+    const maxBudget = maxTokens - 1;
+    if (maxBudget < 1024) return undefined;
+    const budget = Math.max(1024, Math.min(requested, maxBudget));
     return { type: "enabled", budget_tokens: budget };
   }
   return undefined;
@@ -1747,6 +1913,42 @@ function anthropicThinkingPayload(
 
 function anthropicThinkingConstrainsSampling(thinking: AnthropicThinking | undefined): boolean {
   return thinking?.type === "enabled" || thinking?.type === "adaptive";
+}
+
+function anthropicOutputConfig(
+  model: ModelCapabilityMetadata,
+  reasoning: ReasoningConfig | undefined,
+  thinking: AnthropicThinking | undefined
+): Record<string, unknown> {
+  if (thinking?.type !== "adaptive") return {};
+  const effort = anthropicEffort(model, reasoning?.effort);
+  return effort ? { output_config: { effort } } : {};
+}
+
+function anthropicEffort(
+  model: ModelCapabilityMetadata,
+  effort: ReasoningConfig["effort"]
+): "low" | "medium" | "high" | "max" | "xhigh" | undefined {
+  if (effort === "low" || effort === "medium" || effort === "high") return effort;
+  if (effort === "max") return "max";
+  if (model.modelId === "claude-opus-4-7" && effort === "xhigh") return "xhigh";
+  return undefined;
+}
+
+function anthropicSamplingPayload(
+  model: ModelCapabilityMetadata,
+  temperature: number | undefined,
+  topP: number | undefined,
+  thinking: AnthropicThinking | undefined
+): { temperature?: number; top_p?: number } {
+  if (model.modelId === "claude-opus-4-7") return {};
+  if (anthropicThinkingConstrainsSampling(thinking)) {
+    return { temperature: 1 };
+  }
+  return {
+    temperature,
+    top_p: topP
+  };
 }
 
 function bearerHeaders(apiKey: string): Record<string, string> {
@@ -1829,8 +2031,10 @@ function googleThinkingConfig(
     }
     return undefined;
   }
-  // Gemini 2.5 Flash Lite: cannot disable; budget clamped to [512, 24576].
+  // Gemini 2.5 Flash Lite: 0 disables, -1 requests dynamic thinking, positive budgets clamp to [512, 24576].
   if (modelId === "gemini-2.5-flash-lite") {
+    if (reasoning?.enabled === false) return { thinkingBudget: 0 };
+    if (reasoning?.enabled === true && !reasoning.budgetTokens) return { thinkingBudget: -1 };
     if (reasoning?.budgetTokens && reasoning.budgetTokens > 0) {
       return { thinkingBudget: Math.max(512, Math.min(reasoning.budgetTokens, 24576)) };
     }
@@ -1840,7 +2044,49 @@ function googleThinkingConfig(
 }
 
 function googleAiStudioTool(name: string, description: string, parameters: object) {
-  return { functionDeclarations: [{ name, description, parameters }] };
+  return { functionDeclarations: [{ name, description, parameters: googleAiStudioSchema(parameters) }] };
+}
+
+function googleAiStudioSchema(schema: unknown): unknown {
+  if (Array.isArray(schema)) {
+    return schema.map((item) => googleAiStudioSchema(item));
+  }
+  if (!isRecord(schema)) return schema;
+
+  const converted: Record<string, unknown> = {};
+  let nullable = false;
+
+  for (const [key, value] of Object.entries(schema)) {
+    if (key === "additionalProperties" || key === "anyOf") continue;
+    if (key === "type" && Array.isArray(value)) {
+      const nonNullTypes = value.filter((item) => item !== "null");
+      nullable = nonNullTypes.length !== value.length;
+      converted.type = nonNullTypes.length === 1 ? nonNullTypes[0] : googleAiStudioSchema(nonNullTypes);
+      continue;
+    }
+    converted[key] = googleAiStudioSchema(value);
+  }
+
+  const anyOf = schema.anyOf;
+  if (Array.isArray(anyOf)) {
+    const nonNullSchemas = anyOf.filter((item) => !(isRecord(item) && item.type === "null"));
+    const hasNullSchema = nonNullSchemas.length !== anyOf.length;
+    if (hasNullSchema && nonNullSchemas.length === 1) {
+      const base = googleAiStudioSchema(nonNullSchemas[0]);
+      if (isRecord(base)) {
+        const parentFields = { ...converted };
+        Object.assign(converted, base, parentFields);
+        nullable = true;
+      }
+    } else {
+      converted.anyOf = anyOf.map((item) => googleAiStudioSchema(item));
+    }
+  }
+
+  if (nullable) {
+    converted.nullable = true;
+  }
+  return converted;
 }
 
 function googleForceToolConfig(name: string) {

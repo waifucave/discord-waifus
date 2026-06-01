@@ -3,7 +3,7 @@
 
 export type ProviderId = "xai" | "deepseek" | "anthropic" | "openai" | "zai" | "google-ai-studio";
 
-export type ReasoningEffort = "low" | "medium" | "high";
+export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "max" | "xhigh";
 
 export type ReasoningConfig = {
   enabled?: boolean;

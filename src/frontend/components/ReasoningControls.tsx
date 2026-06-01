@@ -24,6 +24,7 @@ export function ReasoningControls({
   const supportsToggle = controls.has("reasoning.enabled");
   const supportsEffort = controls.has("reasoning.effort");
   const supportsBudget = controls.has("reasoning.budget_tokens");
+  const effortOptions = modelEffortOptions(model!);
 
   return (
     <>
@@ -52,9 +53,11 @@ export function ReasoningControls({
             }
           >
             <option value="">— Provider default —</option>
-            <option value="low">Low</option>
-            <option value="medium">Medium</option>
-            <option value="high">High</option>
+            {effortOptions.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
           </select>
           <span className="field-hint">{effortHint(model!)}</span>
         </div>
@@ -65,7 +68,7 @@ export function ReasoningControls({
           <input
             className="input"
             type="number"
-            min={1024}
+            min={budgetMin(model!)}
             step={256}
             value={value.budgetTokens ?? ""}
             onChange={(e) =>
@@ -74,10 +77,10 @@ export function ReasoningControls({
                 budgetTokens:
                   e.target.value === ""
                     ? undefined
-                    : Math.max(1024, Number(e.target.value) || 1024)
+                    : Math.max(budgetMin(model!), Number(e.target.value) || budgetMin(model!))
               })
             }
-            placeholder="1024"
+            placeholder={String(budgetMin(model!))}
             disabled={supportsToggle && !value.enabled}
           />
           <span className="field-hint">
@@ -91,7 +94,7 @@ export function ReasoningControls({
 
 function toggleHint(model: ModelCapability): string {
   if (model.providerId === "anthropic") {
-    return "Sends thinking.type=disabled when off. Temperature is forced to 1 when on.";
+    return "Turns adaptive/manual thinking on or off for compatible Claude models.";
   }
   if (model.providerId === "deepseek") {
     return "When enabled, DeepSeek ignores temperature and top_p.";
@@ -100,7 +103,7 @@ function toggleHint(model: ModelCapability): string {
     return "Toggles GLM thinking mode per call.";
   }
   if (model.providerId === "google-ai-studio") {
-    return "Off sets thinkingBudget=0 (Gemini 2.5 Flash only). Flash Lite cannot disable thinking.";
+    return "Off sets thinkingBudget=0 where supported. Flash Lite uses -1 for dynamic thinking when enabled.";
   }
   return "Toggle the model's thinking / chain-of-thought.";
 }
@@ -108,7 +111,7 @@ function toggleHint(model: ModelCapability): string {
 function effortHint(model: ModelCapability): string {
   if (model.providerId === "anthropic") {
     if (model.modelId === "claude-opus-4-7") {
-      return "Opus 4.7 uses adaptive thinking — always on. Effort guides depth.";
+      return "Opus 4.7 uses adaptive thinking when enabled. Effort guides depth.";
     }
     return "Adaptive thinking effort. Higher = deeper reasoning.";
   }
@@ -122,4 +125,59 @@ function effortHint(model: ModelCapability): string {
     return "Maps to Gemini's thinkingLevel. Low ≈ minimal latency, High ≈ deepest reasoning.";
   }
   return "Higher effort spends more thinking tokens per call.";
+}
+
+function modelEffortOptions(model: ModelCapability): Array<{ value: ReasoningEffort; label: string }> {
+  if (model.providerId === "openai") {
+    return [
+      { value: "none", label: "None" },
+      { value: "low", label: "Low" },
+      { value: "medium", label: "Medium" },
+      { value: "high", label: "High" },
+      { value: "xhigh", label: "XHigh" }
+    ];
+  }
+  if (model.providerId === "xai" && model.modelId === "grok-4.3") {
+    return [
+      { value: "none", label: "None" },
+      { value: "low", label: "Low" },
+      { value: "medium", label: "Medium" },
+      { value: "high", label: "High" }
+    ];
+  }
+  if (model.providerId === "deepseek") {
+    return [
+      { value: "high", label: "High" },
+      { value: "max", label: "Max" }
+    ];
+  }
+  if (model.providerId === "anthropic") {
+    const options: Array<{ value: ReasoningEffort; label: string }> = [
+      { value: "low", label: "Low" },
+      { value: "medium", label: "Medium" },
+      { value: "high", label: "High" },
+      { value: "max", label: "Max" }
+    ];
+    if (model.modelId === "claude-opus-4-7") {
+      options.push({ value: "xhigh", label: "XHigh" });
+    }
+    return options;
+  }
+  if (model.providerId === "google-ai-studio" && model.modelId.startsWith("gemini-3")) {
+    return [
+      { value: "minimal", label: "Minimal" },
+      { value: "low", label: "Low" },
+      { value: "medium", label: "Medium" },
+      { value: "high", label: "High" }
+    ];
+  }
+  return [
+    { value: "low", label: "Low" },
+    { value: "medium", label: "Medium" },
+    { value: "high", label: "High" }
+  ];
+}
+
+function budgetMin(model: ModelCapability): number {
+  return model.providerId === "google-ai-studio" ? 512 : 1024;
 }
