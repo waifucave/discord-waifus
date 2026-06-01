@@ -126,6 +126,7 @@ describe("runMigrations", () => {
     const root = await makeTempRoot();
     roots.push(root);
 
+    await writeWaifuStub(root, "yuki");
     await writeJson(root, "user/memories.json", {
       schemaVersion: 1,
       revision: 0,
@@ -204,6 +205,7 @@ describe("runMigrations", () => {
     const root = await makeTempRoot();
     roots.push(root);
 
+    await writeWaifuStub(root, "yuki");
     await writeJson(root, "user/memories.json", {
       schemaVersion: 1,
       revision: 0,
@@ -238,12 +240,61 @@ describe("runMigrations", () => {
       status: "active"
     });
   });
+
+  it("archives active memories assigned to non-waifu ids", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+
+    await writeWaifuStub(root, "yuki");
+    await writeJson(root, "user/memories.json", {
+      schemaVersion: 1,
+      revision: 0,
+      updatedAt: "2026-05-16T12:00:00.000Z",
+      memories: [
+        {
+          id: "valid",
+          waifuId: "yuki",
+          scope: "guild",
+          guildId: "guild-1",
+          content: "Yuki remembers Kevin likes tea.",
+          importance: 3,
+          createdAt: "2026-05-16T12:00:00.000Z",
+          updatedAt: "2026-05-16T12:00:00.000Z",
+          sourceMessageIds: [],
+          status: "active"
+        },
+        {
+          id: "invalid-user",
+          waifuId: "K",
+          scope: "guild",
+          guildId: "guild-1",
+          content: "K is a user, not a waifu.",
+          importance: 3,
+          createdAt: "2026-05-16T12:00:00.000Z",
+          updatedAt: "2026-05-16T12:00:00.000Z",
+          sourceMessageIds: [],
+          status: "active"
+        }
+      ]
+    });
+
+    const result = await runMigrations(root);
+
+    expect(result.applied).toContain("archive-memories-with-unknown-waifus");
+    const store = await readJson<{ memories: Array<Record<string, unknown>> }>(root, "user/memories.json");
+    expect(store.memories.find((memory) => memory.id === "valid")).toMatchObject({ status: "active" });
+    expect(store.memories.find((memory) => memory.id === "invalid-user")).toMatchObject({ status: "archived" });
+  });
 });
 
 async function writeJson(root: string, relativePath: string, value: unknown): Promise<void> {
   const filePath = path.join(root, relativePath);
   await mkdir(path.dirname(filePath), { recursive: true });
   await writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
+
+async function writeWaifuStub(root: string, id: string): Promise<void> {
+  await writeJson(root, `user/waifus/${id}/waifu.json`, { id });
 }
 
 async function readJson<T>(root: string, relativePath: string): Promise<T> {

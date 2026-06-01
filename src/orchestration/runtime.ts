@@ -78,6 +78,25 @@ type ActiveChannelRun = {
   promise: Promise<void>;
 };
 
+type ChannelRunOptions = {
+  initialResponders?: OrchestratorRespondingWaifu[];
+  initialReason?: string;
+  firstOrchestratorMustReply?: boolean;
+};
+
+type ExecuteResponderDecisionInput = {
+  guildId: string;
+  channelId: string;
+  server: ServerConfig;
+  channel: ServerConfig["channels"][string];
+  decision: OrchestratorDecision;
+  decisionId: string;
+  decisionDelayBaseMs: number;
+  useDecisionRelativeDelays: boolean;
+  availableWaifus: WaifuConfig[];
+  signal: AbortSignal;
+};
+
 export type StageManagerRunResult = {
   status: "updated" | "no_change" | "already_running" | "disabled" | "failed";
   message?: string;
@@ -326,8 +345,34 @@ export class RuntimeOrchestrator {
         await event.respond("Runtime is paused; /run did not start.");
         return;
       }
+      if (event.sceneDirection && !event.waifuId) {
+        await event.respond("scene_direction requires a waifu option.");
+        return;
+      }
+      if (event.waifuId) {
+        const resolved = await this.resolveRunWaifu(event.guildId, event.channelId, event.waifuId);
+        if (typeof resolved === "string") {
+          await event.respond(resolved);
+          return;
+        }
+        await event.respond(`Started directed run for ${resolved.displayName}.`);
+        void this.startChannelRun(event.guildId, event.channelId, `slash-run:${event.userId}:${resolved.id}`, {
+          initialResponders: [
+            {
+              waifuId: resolved.id,
+              delaySeconds: 0,
+              replyStyle: "normal",
+              sceneDirection: event.sceneDirection
+            }
+          ],
+          initialReason: `Manual /run selected ${resolved.id}.`
+        });
+        return;
+      }
       await event.respond("Started orchestrator run.");
-      void this.startChannelRun(event.guildId, event.channelId, `slash-run:${event.userId}`);
+      void this.startChannelRun(event.guildId, event.channelId, `slash-run:${event.userId}`, {
+        firstOrchestratorMustReply: true
+      });
     } catch (error) {
       this.options.logger.error("Run command failed", {
         guildId: event.guildId,
@@ -399,7 +444,12 @@ export class RuntimeOrchestrator {
     return undefined;
   }
 
-  private async startChannelRun(guildId: string, channelId: string, reason: string): Promise<void> {
+  private async startChannelRun(
+    guildId: string,
+    channelId: string,
+    reason: string,
+    options: ChannelRunOptions = {}
+  ): Promise<void> {
     const key = runKey(guildId);
     const versionKey = timerKey(guildId, channelId);
     this.channelRunVersions.set(versionKey, (this.channelRunVersions.get(versionKey) ?? 0) + 1);
@@ -417,7 +467,7 @@ export class RuntimeOrchestrator {
     this.clearRetriggerTimer(guildId, channelId);
 
     const controller = new AbortController();
-    const promise = this.runChannelLoop(guildId, channelId, controller.signal)
+    const promise = this.runChannelLoop(guildId, channelId, controller.signal, options)
       .catch((error) => {
         if (controller.signal.aborted) return;
         this.options.logger.error("Channel runtime loop failed", {
@@ -440,8 +490,58 @@ export class RuntimeOrchestrator {
     await promise;
   }
 
-  private async runChannelLoop(guildId: string, channelId: string, signal: AbortSignal): Promise<void> {
+  private async runChannelLoop(
+    guildId: string,
+    channelId: string,
+    signal: AbortSignal,
+    options: ChannelRunOptions = {}
+  ): Promise<void> {
     let turns = 0;
+    if (options.initialResponders?.length) {
+      const server = await this.ensureServer(guildId);
+      const channel = server.channels[channelId];
+      if (!this.channelHasWaifus(channel)) {
+        this.options.logger.info("Directed channel run stopped because no waifus are enabled for channel", {
+          guildId,
+          channelId
+        });
+        return;
+      }
+      const availableWaifus = await this.listAvailableWaifusForChannel(channel);
+      const decision: OrchestratorDecision = {
+        action: "reply",
+        respondingWaifus: options.initialResponders,
+        reasoning: options.initialReason ?? "Manual directed run."
+      };
+      const decisionId = randomUUID();
+      await this.recordOrchestratorDecision({
+        guildId,
+        channelId,
+        decisionId,
+        decision,
+        status: "pending"
+      });
+      const executedCount = await this.executeResponderDecision({
+        guildId,
+        channelId,
+        server,
+        channel,
+        decision,
+        decisionId,
+        decisionDelayBaseMs: Date.now(),
+        useDecisionRelativeDelays: true,
+        availableWaifus,
+        signal
+      });
+      if (executedCount === 0) {
+        this.options.logger.info("Directed channel run stopped because no responders were executed", {
+          guildId,
+          channelId
+        });
+        return;
+      }
+    }
+
     await this.setActivePipeline(guildId, channelId, "orchestrator");
     while (turns < this.maxAutomaticTurns) {
       throwIfAborted(signal);
@@ -480,7 +580,8 @@ export class RuntimeOrchestrator {
       }
       const availableWaifus = await this.listAvailableWaifusForChannel(channel);
       const pastDecisions = await this.readCompletedOrchestratorDecisionsForChannel(guildId, channelId);
-      const trailingPrompt = this.buildOrchestratorTrailingPrompt(orchestrator, availableWaifus);
+      const requireReply = Boolean(options.firstOrchestratorMustReply && turns === 1);
+      const trailingPrompt = this.buildOrchestratorTrailingPrompt(orchestrator, availableWaifus, requireReply);
       const orchestratorTyping = startTypingScope(this.options.discord, { guildId, channelId });
       let decision: OrchestratorDecision;
       try {
@@ -489,8 +590,9 @@ export class RuntimeOrchestrator {
           messages,
           pastDecisions,
           trailingPrompt,
-          systemPrompt: this.buildOrchestratorSystemPrompt(orchestrator, server, availableWaifus),
+          systemPrompt: this.buildOrchestratorSystemPrompt(orchestrator, server, availableWaifus, requireReply),
           availableWaifuIds: availableWaifus.map((waifu) => waifu.id),
+          replyRequired: requireReply,
           reasoning: orchestrator.reasoning,
           signal
         });
@@ -503,25 +605,12 @@ export class RuntimeOrchestrator {
       const decisionId = randomUUID();
       const initialDecisionStatus: OrchestratorDecisionStatus =
         decision.action === "reply" ? "pending" : "completed";
-      await this.appendOrchestratorHistory({
-        id: decisionId,
+      await this.recordOrchestratorDecision({
         guildId,
         channelId,
-        action: decision.action,
-        respondingWaifus: decision.respondingWaifus,
-        retriggerAfterSeconds: decision.retriggerAfterSeconds,
-        reasoning: decision.reasoning,
-        status: initialDecisionStatus,
-        waifuMessageIds: [],
-        createdAt: nowIso()
-      });
-      this.options.logger.info("Orchestrator decision recorded", {
-        guildId,
-        channelId,
-        action: decision.action,
-        responders: decision.respondingWaifus.map((entry) => entry.waifuId),
-        retriggerAfterSeconds: decision.retriggerAfterSeconds,
-        reasoning: decision.reasoning
+        decisionId,
+        decision,
+        status: initialDecisionStatus
       });
 
       if (decision.action === "no_reply") {
@@ -530,215 +619,18 @@ export class RuntimeOrchestrator {
         return;
       }
 
-      let executedCount = 0;
-      let directHandoffCount = 0;
-      const allowedWaifus = new Set(channel.enabledWaifuIds ?? []);
-      const responderQueue = [...decision.respondingWaifus];
-      let responderIndex = 0;
-      let decisionFinalized = false;
-      try {
-      while (responderQueue.length > 0) {
-        throwIfAborted(signal);
-        const responder = responderQueue.shift();
-        if (!responder) continue;
-        const currentResponderIndex = responderIndex;
-        responderIndex += 1;
-        if (!allowedWaifus.has(responder.waifuId)) {
-          this.options.logger.warn("Orchestrator selected a waifu that is not enabled for channel", {
-            guildId,
-            channelId,
-            selectedWaifuId: responder.waifuId
-          });
-          continue;
-        }
-        const waifu = await this.readWaifu(responder.waifuId).catch(() => undefined);
-        if (!waifu) {
-          this.options.logger.warn("Orchestrator selected an unknown waifu", {
-            guildId,
-            channelId,
-            selectedWaifuId: responder.waifuId
-          });
-          continue;
-        }
-        if (!waifu.botId) {
-          this.options.logger.warn("Orchestrator selected a waifu without a linked Discord bot", {
-            guildId,
-            channelId,
-            selectedWaifuId: responder.waifuId
-          });
-          continue;
-        }
-        if (!waifu.modelId) {
-          this.options.logger.warn("Orchestrator selected a waifu without a configured model", {
-            guildId,
-            channelId,
-            selectedWaifuId: responder.waifuId
-          });
-          continue;
-        }
-        const waitMs = waitMsBeforeWaifuReply({
-          delaySeconds: responder.delaySeconds,
-          decisionDelayBaseMs,
-          responderIndex: currentResponderIndex,
-          useDecisionRelativeDelays
-        });
-        if (waitMs > 0) {
-          this.options.logger.info("Waiting before waifu reply", {
-            guildId,
-            channelId,
-            waifuId: waifu.id,
-            plannedDelaySeconds: responder.delaySeconds,
-            waitMs,
-            delayMode: useDecisionRelativeDelays ? "decision-relative" : "sequential"
-          });
-          await this.sleep(waitMs, signal);
-          throwIfAborted(signal);
-        }
-        await this.setActivePipeline(guildId, channelId, "waifu");
-        const waifuModelId = waifu.modelId;
-        let waifuMessages = await this.options.discord.fetchFreshContext({
-          guildId,
-          channelId,
-          limit: waifu.contextWindow || server.contextWindows.waifu,
-          signal
-        });
-        waifuMessages = await this.messagesForModel(waifuMessages, waifuModelId, signal);
-        const waifuPipeline = await this.pipelineFor(waifu.modelId);
-        this.options.logger.info("Generating waifu reply", {
-          guildId,
-          channelId,
-          waifuId: waifu.id,
-          modelId: waifu.modelId,
-          messageCount: waifuMessages.length,
-          replyStyle: responder.replyStyle
-        });
-        const waifuTyping = startTypingScope(this.options.discord, {
-          guildId,
-          channelId,
-          senderBotId: waifu.botId
-        });
-        try {
-          const nextWaifuIds = availableWaifus
-            .filter((candidate) => candidate.id !== waifu.id && candidate.botId && candidate.modelId)
-            .map((candidate) => candidate.id);
-          const waifuQueryKey = runKey(guildId);
-          incrementActive(this.activeWaifuQueries, waifuQueryKey);
-          const result = await (async () => {
-            try {
-              return await waifuPipeline.generateWaifu({
-                modelId: waifuModelId,
-                messages: waifuMessages,
-                systemPrompt: await this.buildWaifuSystemPrompt(guildId, waifu, availableWaifus),
-                sceneDirection: clipSceneDirectionForWaifu(responder.sceneDirection),
-                replyStyle: responder.replyStyle,
-                availableWaifuIds: nextWaifuIds,
-                pickNextWaifuToolEnabled: waifu.tools.pickNextWaifu,
-                temperature: waifu.generation.temperature,
-                topP: waifu.generation.topP,
-                maxOutputTokens: waifu.generation.maxOutputTokens,
-                reasoning: waifu.reasoning,
-                signal
-              });
-            } finally {
-              decrementActive(this.activeWaifuQueries, waifuQueryKey);
-            }
-          })();
-          const activeAuthorIds = waifuMessages.map((message) => message.authorId);
-          const cleanedContent = stripLeakedContextHeader(result.content, {
-            senderDisplayName: waifu.displayName
-          });
-          if (cleanedContent !== result.content) {
-            this.options.logger.warn("Stripped leaked context header from waifu reply", {
-              guildId,
-              channelId,
-              waifuId: waifu.id,
-              before: result.content.slice(0, 80),
-              after: cleanedContent.slice(0, 80)
-            });
-          }
-          const chunks = splitWaifuReply(cleanedContent);
-          if (chunks.length === 0) {
-            this.options.logger.warn("Waifu reply was empty after cleaning; nothing sent", {
-              guildId,
-              channelId,
-              waifuId: waifu.id
-            });
-          }
-          const replyToMessageId = replyTargetForFreshContext(responder.replyToMessageId, waifuMessages);
-          if (responder.replyToMessageId && !replyToMessageId) {
-            this.options.logger.info("Omitting reply target because it is the latest context message", {
-              guildId,
-              channelId,
-              waifuId: waifu.id,
-              replyToMessageId: responder.replyToMessageId
-            });
-          }
-          await this.sendWaifuChunks({
-            guildId,
-            channelId,
-            waifuId: waifu.id,
-            senderBotId: waifu.botId,
-            chunks,
-            replyToMessageId,
-            allowedUserMentionIds: activeAuthorIds,
-            orchestratorDecisionId: decisionId,
-            signal
-          });
-          if (result.rejectedPickNextWaifu) {
-            this.options.logger.warn("Ignoring invalid PickNextWaifu call from waifu", {
-              guildId,
-              channelId,
-              waifuId: waifu.id,
-              attemptedWaifuId: result.rejectedPickNextWaifu.waifuId,
-              attemptedSelfPick: result.rejectedPickNextWaifu.waifuId === waifu.id,
-              reason: result.rejectedPickNextWaifu.reason
-            });
-          } else if (result.pickedNextWaifuId && directHandoffCount < this.maxAutomaticTurns) {
-            directHandoffCount += 1;
-            this.options.logger.info("Waifu picked next waifu; skipping orchestrator for direct handoff", {
-              guildId,
-              channelId,
-              waifuId: waifu.id,
-              pickedNextWaifuId: result.pickedNextWaifuId
-            });
-            responderQueue.splice(0, responderQueue.length, {
-              waifuId: result.pickedNextWaifuId,
-              delaySeconds: 0,
-              replyStyle: "normal"
-            });
-          } else if (result.pickedNextWaifuId) {
-            this.options.logger.warn("Ignoring PickNextWaifu handoff because the automatic handoff limit was reached", {
-              guildId,
-              channelId,
-              waifuId: waifu.id,
-              pickedNextWaifuId: result.pickedNextWaifuId,
-              maxAutomaticTurns: this.maxAutomaticTurns
-            });
-          }
-        } finally {
-          waifuTyping.stop();
-        }
-        executedCount += 1;
-      }
-      await this.updateOrchestratorDecisionStatus(decisionId, "completed");
-      decisionFinalized = true;
-      } catch (error) {
-        if (!decisionFinalized) {
-          const status: OrchestratorDecisionStatus = signal.aborted ? "interrupted" : "completed";
-          try {
-            await this.updateOrchestratorDecisionStatus(decisionId, status);
-          } catch (writeError) {
-            this.options.logger.warn("Failed to finalize orchestrator decision status after error", {
-              guildId,
-              channelId,
-              decisionId,
-              status,
-              message: writeError instanceof Error ? writeError.message : String(writeError)
-            });
-          }
-        }
-        throw error;
-      }
+      const executedCount = await this.executeResponderDecision({
+        guildId,
+        channelId,
+        server,
+        channel,
+        decision,
+        decisionId,
+        decisionDelayBaseMs,
+        useDecisionRelativeDelays,
+        availableWaifus,
+        signal
+      });
       if (executedCount === 0) {
         this.options.logger.info("Channel runtime loop stopped because no responders were executed", {
           guildId,
@@ -755,6 +647,248 @@ export class RuntimeOrchestrator {
       maxAutomaticTurns: this.maxAutomaticTurns
     });
     await this.scheduleRetrigger(guildId, channelId, RETRIGGER_MIN_SECONDS);
+  }
+
+  private async recordOrchestratorDecision(input: {
+    guildId: string;
+    channelId: string;
+    decisionId: string;
+    decision: OrchestratorDecision;
+    status: OrchestratorDecisionStatus;
+  }): Promise<void> {
+    await this.appendOrchestratorHistory({
+      id: input.decisionId,
+      guildId: input.guildId,
+      channelId: input.channelId,
+      action: input.decision.action,
+      respondingWaifus: input.decision.respondingWaifus,
+      retriggerAfterSeconds: input.decision.retriggerAfterSeconds,
+      reasoning: input.decision.reasoning,
+      status: input.status,
+      waifuMessageIds: [],
+      createdAt: nowIso()
+    });
+    this.options.logger.info("Orchestrator decision recorded", {
+      guildId: input.guildId,
+      channelId: input.channelId,
+      action: input.decision.action,
+      responders: input.decision.respondingWaifus.map((entry) => entry.waifuId),
+      retriggerAfterSeconds: input.decision.retriggerAfterSeconds,
+      reasoning: input.decision.reasoning
+    });
+  }
+
+  private async executeResponderDecision(input: ExecuteResponderDecisionInput): Promise<number> {
+    let executedCount = 0;
+    let directHandoffCount = 0;
+    const allowedWaifus = new Set(input.channel.enabledWaifuIds ?? []);
+    const responderQueue = [...input.decision.respondingWaifus];
+    let responderIndex = 0;
+    let decisionFinalized = false;
+    try {
+      while (responderQueue.length > 0) {
+        throwIfAborted(input.signal);
+        const responder = responderQueue.shift();
+        if (!responder) continue;
+        const currentResponderIndex = responderIndex;
+        responderIndex += 1;
+        if (!allowedWaifus.has(responder.waifuId)) {
+          this.options.logger.warn("Orchestrator selected a waifu that is not enabled for channel", {
+            guildId: input.guildId,
+            channelId: input.channelId,
+            selectedWaifuId: responder.waifuId
+          });
+          continue;
+        }
+        const waifu = await this.readWaifu(responder.waifuId).catch(() => undefined);
+        if (!waifu) {
+          this.options.logger.warn("Orchestrator selected an unknown waifu", {
+            guildId: input.guildId,
+            channelId: input.channelId,
+            selectedWaifuId: responder.waifuId
+          });
+          continue;
+        }
+        if (!waifu.botId) {
+          this.options.logger.warn("Orchestrator selected a waifu without a linked Discord bot", {
+            guildId: input.guildId,
+            channelId: input.channelId,
+            selectedWaifuId: responder.waifuId
+          });
+          continue;
+        }
+        if (!waifu.modelId) {
+          this.options.logger.warn("Orchestrator selected a waifu without a configured model", {
+            guildId: input.guildId,
+            channelId: input.channelId,
+            selectedWaifuId: responder.waifuId
+          });
+          continue;
+        }
+        const waitMs = waitMsBeforeWaifuReply({
+          delaySeconds: responder.delaySeconds,
+          decisionDelayBaseMs: input.decisionDelayBaseMs,
+          responderIndex: currentResponderIndex,
+          useDecisionRelativeDelays: input.useDecisionRelativeDelays
+        });
+        if (waitMs > 0) {
+          this.options.logger.info("Waiting before waifu reply", {
+            guildId: input.guildId,
+            channelId: input.channelId,
+            waifuId: waifu.id,
+            plannedDelaySeconds: responder.delaySeconds,
+            waitMs,
+            delayMode: input.useDecisionRelativeDelays ? "decision-relative" : "sequential"
+          });
+          await this.sleep(waitMs, input.signal);
+          throwIfAborted(input.signal);
+        }
+        await this.setActivePipeline(input.guildId, input.channelId, "waifu");
+        const waifuModelId = waifu.modelId;
+        let waifuMessages = await this.options.discord.fetchFreshContext({
+          guildId: input.guildId,
+          channelId: input.channelId,
+          limit: waifu.contextWindow || input.server.contextWindows.waifu,
+          signal: input.signal
+        });
+        waifuMessages = await this.messagesForModel(waifuMessages, waifuModelId, input.signal);
+        const waifuPipeline = await this.pipelineFor(waifu.modelId);
+        this.options.logger.info("Generating waifu reply", {
+          guildId: input.guildId,
+          channelId: input.channelId,
+          waifuId: waifu.id,
+          modelId: waifu.modelId,
+          messageCount: waifuMessages.length,
+          replyStyle: responder.replyStyle
+        });
+        const waifuTyping = startTypingScope(this.options.discord, {
+          guildId: input.guildId,
+          channelId: input.channelId,
+          senderBotId: waifu.botId
+        });
+        try {
+          const nextWaifuIds = input.availableWaifus
+            .filter((candidate) => candidate.id !== waifu.id && candidate.botId && candidate.modelId)
+            .map((candidate) => candidate.id);
+          const waifuQueryKey = runKey(input.guildId);
+          incrementActive(this.activeWaifuQueries, waifuQueryKey);
+          const result = await (async () => {
+            try {
+              return await waifuPipeline.generateWaifu({
+                modelId: waifuModelId,
+                messages: waifuMessages,
+                systemPrompt: await this.buildWaifuSystemPrompt(input.guildId, waifu, input.availableWaifus),
+                sceneDirection: clipSceneDirectionForWaifu(responder.sceneDirection),
+                replyStyle: responder.replyStyle,
+                availableWaifuIds: nextWaifuIds,
+                pickNextWaifuToolEnabled: waifu.tools.pickNextWaifu,
+                temperature: waifu.generation.temperature,
+                topP: waifu.generation.topP,
+                maxOutputTokens: waifu.generation.maxOutputTokens,
+                reasoning: waifu.reasoning,
+                signal: input.signal
+              });
+            } finally {
+              decrementActive(this.activeWaifuQueries, waifuQueryKey);
+            }
+          })();
+          const activeAuthorIds = waifuMessages.map((message) => message.authorId);
+          const cleanedContent = stripLeakedContextHeader(result.content, {
+            senderDisplayName: waifu.displayName
+          });
+          if (cleanedContent !== result.content) {
+            this.options.logger.warn("Stripped leaked context header from waifu reply", {
+              guildId: input.guildId,
+              channelId: input.channelId,
+              waifuId: waifu.id,
+              before: result.content.slice(0, 80),
+              after: cleanedContent.slice(0, 80)
+            });
+          }
+          const chunks = splitWaifuReply(cleanedContent);
+          if (chunks.length === 0) {
+            this.options.logger.warn("Waifu reply was empty after cleaning; nothing sent", {
+              guildId: input.guildId,
+              channelId: input.channelId,
+              waifuId: waifu.id
+            });
+          }
+          const replyToMessageId = replyTargetForFreshContext(responder.replyToMessageId, waifuMessages);
+          if (responder.replyToMessageId && !replyToMessageId) {
+            this.options.logger.info("Omitting reply target because it is the latest context message", {
+              guildId: input.guildId,
+              channelId: input.channelId,
+              waifuId: waifu.id,
+              replyToMessageId: responder.replyToMessageId
+            });
+          }
+          await this.sendWaifuChunks({
+            guildId: input.guildId,
+            channelId: input.channelId,
+            waifuId: waifu.id,
+            senderBotId: waifu.botId,
+            chunks,
+            replyToMessageId,
+            allowedUserMentionIds: activeAuthorIds,
+            orchestratorDecisionId: input.decisionId,
+            signal: input.signal
+          });
+          if (result.rejectedPickNextWaifu) {
+            this.options.logger.warn("Ignoring invalid PickNextWaifu call from waifu", {
+              guildId: input.guildId,
+              channelId: input.channelId,
+              waifuId: waifu.id,
+              attemptedWaifuId: result.rejectedPickNextWaifu.waifuId,
+              attemptedSelfPick: result.rejectedPickNextWaifu.waifuId === waifu.id,
+              reason: result.rejectedPickNextWaifu.reason
+            });
+          } else if (result.pickedNextWaifuId && directHandoffCount < this.maxAutomaticTurns) {
+            directHandoffCount += 1;
+            this.options.logger.info("Waifu picked next waifu; skipping orchestrator for direct handoff", {
+              guildId: input.guildId,
+              channelId: input.channelId,
+              waifuId: waifu.id,
+              pickedNextWaifuId: result.pickedNextWaifuId
+            });
+            responderQueue.splice(0, responderQueue.length, {
+              waifuId: result.pickedNextWaifuId,
+              delaySeconds: 0,
+              replyStyle: "normal"
+            });
+          } else if (result.pickedNextWaifuId) {
+            this.options.logger.warn("Ignoring PickNextWaifu handoff because the automatic handoff limit was reached", {
+              guildId: input.guildId,
+              channelId: input.channelId,
+              waifuId: waifu.id,
+              pickedNextWaifuId: result.pickedNextWaifuId,
+              maxAutomaticTurns: this.maxAutomaticTurns
+            });
+          }
+        } finally {
+          waifuTyping.stop();
+        }
+        executedCount += 1;
+      }
+      await this.updateOrchestratorDecisionStatus(input.decisionId, "completed");
+      decisionFinalized = true;
+    } catch (error) {
+      if (!decisionFinalized) {
+        const status: OrchestratorDecisionStatus = input.signal.aborted ? "interrupted" : "completed";
+        try {
+          await this.updateOrchestratorDecisionStatus(input.decisionId, status);
+        } catch (writeError) {
+          this.options.logger.warn("Failed to finalize orchestrator decision status after error", {
+            guildId: input.guildId,
+            channelId: input.channelId,
+            decisionId: input.decisionId,
+            status,
+            message: writeError instanceof Error ? writeError.message : String(writeError)
+          });
+        }
+      }
+      throw error;
+    }
+    return executedCount;
   }
 
   private noteStageManagerActivity(guildId: string, channelId: string): void {
@@ -820,6 +954,8 @@ export class RuntimeOrchestrator {
       if (!pipeline.decideStageManager) {
         throw new Error(`Model ${config.modelId} does not implement stage-manager decisions.`);
       }
+      const channel = server.channels[channelId];
+      const availableWaifus = channel ? await this.listAvailableWaifusForChannel(channel) : [];
       let messages = await this.options.discord.fetchFreshContext({
         guildId,
         channelId,
@@ -827,15 +963,25 @@ export class RuntimeOrchestrator {
       });
       messages = await this.messagesForModel(messages, config.modelId);
       const store = await this.readMemoryStore();
-      const memoryInput = stageManagerMemories(store.memories, guildId);
+      const memoryInput = stageManagerMemories(
+        store.memories,
+        guildId,
+        availableWaifus.map((waifu) => waifu.id)
+      );
       const calls = await pipeline.decideStageManager({
         modelId: config.modelId,
         messages,
         systemPrompt: config.prompt,
         memories: memoryInput.memories,
+        availableWaifuIds: availableWaifus.map((waifu) => waifu.id),
         reasoning: config.reasoning
       });
-      const result = await this.applyStageManagerCalls(guildId, calls, memoryInput.memoryIdByIndex);
+      const result = await this.applyStageManagerCalls(
+        guildId,
+        calls,
+        memoryInput.memoryIdByIndex,
+        availableWaifus.map((waifu) => waifu.id)
+      );
       for (const entry of result.historyEntries) {
         await this.appendStageManagerHistory({
           ...entry,
@@ -1027,7 +1173,8 @@ export class RuntimeOrchestrator {
   private async applyStageManagerCalls(
     guildId: string,
     calls: StageManagerToolCall[],
-    memoryIdByIndex: Map<number, string>
+    memoryIdByIndex: Map<number, string>,
+    allowedWaifuIds: string[]
   ): Promise<{
     changed: boolean;
     historyEntries: Array<{
@@ -1046,6 +1193,7 @@ export class RuntimeOrchestrator {
       summary: string;
       createdAt: string;
     }> = [];
+    const allowedWaifus = new Set(allowedWaifuIds);
 
     const requestedChange = calls.some((call) => call.tool !== "no_change");
     if (!requestedChange) {
@@ -1073,6 +1221,16 @@ export class RuntimeOrchestrator {
         let memories = [...current.memories];
         for (const call of calls) {
           if (call.tool === "add_memory") {
+            if (!allowedWaifus.has(call.memory.waifuId)) {
+              historyEntries.push({
+                id: randomUUID(),
+                tool: call.tool,
+                affectedMemoryIds: [],
+                summary: `Skipped invalid waifu id ${call.memory.waifuId}`,
+                createdAt: now
+              });
+              continue;
+            }
             const id = randomUUID();
             memories.push({
               id,
@@ -1095,6 +1253,16 @@ export class RuntimeOrchestrator {
             });
             changed = true;
           } else if (call.tool === "update_memory") {
+            if (call.patch.waifuId && !allowedWaifus.has(call.patch.waifuId)) {
+              historyEntries.push({
+                id: randomUUID(),
+                tool: call.tool,
+                affectedMemoryIds: [],
+                summary: `Skipped invalid waifu id ${call.patch.waifuId}`,
+                createdAt: now
+              });
+              continue;
+            }
             const memoryId = memoryIdByIndex.get(call.memoryIndex);
             if (!memoryId) {
               historyEntries.push({
@@ -1185,6 +1353,16 @@ export class RuntimeOrchestrator {
                 tool: call.tool,
                 affectedMemoryIds: [],
                 summary: "Skipped merge with unknown or duplicate memory indices",
+                createdAt: now
+              });
+              continue;
+            }
+            if (!allowedWaifus.has(source[0].waifuId)) {
+              historyEntries.push({
+                id: randomUUID(),
+                tool: call.tool,
+                affectedMemoryIds: [],
+                summary: `Skipped invalid waifu id ${source[0].waifuId}`,
                 createdAt: now
               });
               continue;
@@ -1437,6 +1615,54 @@ export class RuntimeOrchestrator {
     return this.options.storage.readJson(path.join("user", "waifus", waifuId, "waifu.json"), WaifuConfigSchema);
   }
 
+  private async resolveRunWaifu(guildId: string, channelId: string, value: string): Promise<WaifuConfig | string> {
+    const server = await this.ensureServer(guildId);
+    const channel = server.channels[channelId];
+    if (!this.channelHasWaifus(channel)) {
+      return "No waifus are enabled in this channel.";
+    }
+    const waifus = await this.listWaifus();
+    const waifusById = new Map(waifus.map((waifu) => [waifu.id, waifu]));
+    const channelWaifus = (channel.enabledWaifuIds ?? [])
+      .map((waifuId) => waifusById.get(waifuId))
+      .filter((waifu): waifu is WaifuConfig => Boolean(waifu));
+
+    const exactId = channelWaifus.find((waifu) => waifu.id === value);
+    if (exactId) {
+      return this.validateRunWaifuTarget(exactId);
+    }
+
+    const query = normalizeRunWaifuName(value);
+    const matches = channelWaifus.filter((waifu) =>
+      [waifu.name, waifu.displayName].some((candidate) => normalizeRunWaifuName(candidate) === query)
+    );
+    if (matches.length === 1) {
+      return this.validateRunWaifuTarget(matches[0]);
+    }
+    if (matches.length > 1) {
+      return `Waifu "${value}" is ambiguous; use the exact waifu id.`;
+    }
+
+    const anyWaifuMatch = waifus.find((waifu) =>
+      waifu.id === value ||
+      [waifu.name, waifu.displayName].some((candidate) => normalizeRunWaifuName(candidate) === query)
+    );
+    if (anyWaifuMatch) {
+      return `${anyWaifuMatch.displayName} is not enabled in this channel.`;
+    }
+    return `Waifu "${value}" was not found.`;
+  }
+
+  private validateRunWaifuTarget(waifu: WaifuConfig): WaifuConfig | string {
+    if (!waifu.botId) {
+      return `${waifu.displayName} does not have a linked Discord bot.`;
+    }
+    if (!waifu.modelId) {
+      return `${waifu.displayName} does not have a configured model.`;
+    }
+    return waifu;
+  }
+
   private async listWaifus(): Promise<WaifuConfig[]> {
     let entries: string[];
     try {
@@ -1542,10 +1768,14 @@ export class RuntimeOrchestrator {
   private buildOrchestratorSystemPrompt(
     orchestrator: AgentConfig,
     server: ServerConfig,
-    availableWaifus: WaifuConfig[]
+    availableWaifus: WaifuConfig[],
+    replyRequired = false
   ): string {
     if (orchestrator.useLegacyPrompt) {
-      return buildLegacyOrchestratorPrompt(server, availableWaifus);
+      return [
+        buildLegacyOrchestratorPrompt(server, availableWaifus),
+        replyRequired ? manualRunReplyRequiredInstruction() : null
+      ].filter(Boolean).join("\n\n");
     }
 
     const scheduleNow = new Date();
@@ -1562,12 +1792,15 @@ export class RuntimeOrchestrator {
           .join("\n\n")
       : "No waifus are currently enabled for this channel.";
 
-    const identity =
-      "You are the orchestrator for a multi-character Discord bot. On every incoming Discord message you decide whether any waifu should reply right now, which waifus speak in what order, and how long to wait before re-evaluating when nobody speaks.";
+    const identity = replyRequired
+      ? "You are the orchestrator for a multi-character Discord bot. This manual /run requires you to choose at least one waifu to reply now."
+      : "You are the orchestrator for a multi-character Discord bot. On every incoming Discord message you decide whether any waifu should reply right now, which waifus speak in what order, and how long to wait before re-evaluating when nobody speaks.";
 
     const hardRules = [
       "- Every respondingWaifus[].waifuId must be copied verbatim from one of the IDs listed in <active_waifus>.",
-      "- action=\"reply\" requires a non-empty respondingWaifus array and a null retriggerAfterSeconds. action=\"no_reply\" requires respondingWaifus=[] and a retriggerAfterSeconds in [100, 7200].",
+      replyRequired
+        ? "- action must be \"reply\" for this manual /run. Choose at least one responding waifu and set retriggerAfterSeconds to null."
+        : "- action=\"reply\" requires a non-empty respondingWaifus array and a null retriggerAfterSeconds. action=\"no_reply\" requires respondingWaifus=[] and a retriggerAfterSeconds in [100, 7200].",
       `- delaySeconds is a realistic reading/typing delay before that waifu starts replying, in seconds, from 0 to ${MAX_WAIFU_DELAY_SECONDS}. Use 0 if she should start immediately.`,
       "- replyStyle is a soft hint for length/tone: \"normal\" by default; \"short\" for one terse line; \"long\" for a slightly fuller reply; \"sleepy\" for tired/low-energy voice.",
       "- Sleep and busy availability in <active_waifus> is soft context, not a hard rule. A sleeping or busy waifu can still answer if recent momentum suggests she is awake, if she just spoke, if she was directly pulled in, or if waking her improves the room.",
@@ -1606,7 +1839,7 @@ export class RuntimeOrchestrator {
       "Inspect the context and call orchestrator_decision once with the tool arguments. Do not write normal assistant text.",
       "Argument shape:",
       "{",
-      "  \"action\": \"reply\" | \"no_reply\",",
+      replyRequired ? "  \"action\": \"reply\"," : "  \"action\": \"reply\" | \"no_reply\",",
       "  \"respondingWaifus\": [",
       "    {",
       "      \"waifuId\": string,",
@@ -1617,21 +1850,27 @@ export class RuntimeOrchestrator {
       "    },",
       "    ...",
       "  ],",
-      "  \"retriggerAfterSeconds\": number (100..7200) | null,",
+      replyRequired ? "  \"retriggerAfterSeconds\": null," : "  \"retriggerAfterSeconds\": number (100..7200) | null,",
       "  \"reasoning\": string",
       "}",
       "Rules:",
-      "- action=\"reply\" => respondingWaifus is non-empty; retriggerAfterSeconds is null.",
-      "- action=\"no_reply\" => respondingWaifus is empty; retriggerAfterSeconds is a number in [100, 7200].",
+      replyRequired
+        ? "- This manual /run must return action=\"reply\" with at least one respondingWaifus entry and retriggerAfterSeconds null."
+        : "- action=\"reply\" => respondingWaifus is non-empty; retriggerAfterSeconds is null.",
+      replyRequired
+        ? null
+        : "- action=\"no_reply\" => respondingWaifus is empty; retriggerAfterSeconds is a number in [100, 7200].",
       "- Order matters in respondingWaifus: the first waifu speaks first, then the next, and so on. When none of the latest four chat messages is from a human user, each waifu's delay starts only after the previous waifu has finished. When a human user is present in the latest four messages, the first waifu starts immediately and later delays are counted from this orchestrator decision. Any new chat message interrupts the rest of the chain.",
       "- When choosing two waifus, give each entry its own delaySeconds. Use 0 for the first when she should start immediately, then a small delay like 3-12 seconds for the second when it should feel like a natural follow-up.",
       "- All five fields on each respondingWaifus entry are required; set repleyToMessageIndex and sceneDirection to null when not needed."
-    ].join("\n");
+    ]
+      .filter((line): line is string => Boolean(line))
+      .join("\n");
 
     const sections = orchestrator.promptSections;
     const behavior = [
       sections.loopBreaking ? `<loop_breaking>\n${loopBreaking}\n</loop_breaking>` : null,
-      sections.retriggerPacing ? `<retrigger_pacing>\n${retriggerPacing}\n</retrigger_pacing>` : null,
+      sections.retriggerPacing && !replyRequired ? `<retrigger_pacing>\n${retriggerPacing}\n</retrigger_pacing>` : null,
       sections.messageStructure ? `<message_structure>\n${messageStructure}\n</message_structure>` : null,
       sections.toolUse ? `<tool_use>\n${toolUse}\n</tool_use>` : null,
       `<hard_rules>\n${hardRules}\n</hard_rules>`
@@ -1648,10 +1887,14 @@ export class RuntimeOrchestrator {
 
   private buildOrchestratorTrailingPrompt(
     orchestrator: AgentConfig,
-    availableWaifus: WaifuConfig[]
+    availableWaifus: WaifuConfig[],
+    replyRequired = false
   ): string {
     if (orchestrator.useLegacyPrompt) {
-      return `<current_time>\n${formatPromptCurrentHour(new Date())}\n</current_time>`;
+      return [
+        `<current_time>\n${formatPromptCurrentHour(new Date())}\n</current_time>`,
+        replyRequired ? manualRunReplyRequiredInstruction() : null
+      ].filter(Boolean).join("\n");
     }
 
     const scheduleNow = new Date();
@@ -1669,7 +1912,7 @@ export class RuntimeOrchestrator {
       : "No waifus are currently enabled for this channel.";
     const currentTime = `<current_time>\n${formatPromptCurrentHour(new Date())}\n</current_time>`;
     return [
-      `<task_instructions>\n${DEFAULT_ORCHESTRATOR_PROMPT}\n</task_instructions>`,
+      `<task_instructions>\n${replyRequired ? `${DEFAULT_ORCHESTRATOR_PROMPT}\n\n${manualRunReplyRequiredInstruction()}` : DEFAULT_ORCHESTRATOR_PROMPT}\n</task_instructions>`,
       `<active_waifus>\n${activeWaifusContent}\n</active_waifus>`,
       currentTime
     ].join("\n");
@@ -1708,7 +1951,9 @@ export class RuntimeOrchestrator {
     });
   }
 
-  private channelHasWaifus(channel: ServerConfig["channels"][string] | undefined): boolean {
+  private channelHasWaifus(
+    channel: ServerConfig["channels"][string] | undefined
+  ): channel is ServerConfig["channels"][string] {
     return Boolean(channel && (channel.enabledWaifuIds?.length ?? 0) > 0);
   }
 
@@ -1938,11 +2183,14 @@ function emptyMemoryStore(): MemoryStore {
   return MemoryStoreSchema.parse(createEmptyRevisionedFile({ memories: [] }));
 }
 
-function stageManagerMemories(memories: WaifuMemory[], guildId: string): {
+function stageManagerMemories(memories: WaifuMemory[], guildId: string, allowedWaifuIds: string[]): {
   memories: StageManagerMemory[];
   memoryIdByIndex: Map<number, string>;
 } {
-  const activeMemories = memories.filter((memory) => memory.guildId === guildId && memory.status === "active");
+  const allowedWaifus = new Set(allowedWaifuIds);
+  const activeMemories = memories.filter((memory) =>
+    memory.guildId === guildId && memory.status === "active" && allowedWaifus.has(memory.waifuId)
+  );
   const memoryIdByIndex = new Map<number, string>();
   return {
     memories: activeMemories.map((memory, index) => {
@@ -2074,6 +2322,14 @@ function runKey(guildId: string): string {
 
 function timerKey(guildId: string, channelId: string): string {
   return `${guildId}:${channelId}`;
+}
+
+function normalizeRunWaifuName(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function manualRunReplyRequiredInstruction(): string {
+  return "Manual /run override: choose action=\"reply\" now. Do not choose no_reply for this decision.";
 }
 
 function sessionRelativePath(guildId: string, channelId: string): string {

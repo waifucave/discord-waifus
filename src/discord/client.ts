@@ -80,7 +80,10 @@ export type DiscordClearCommandEvent = DiscordSlashCommandEvent & {
   count?: number;
   type?: DiscordClearType;
 };
-export type DiscordRunCommandEvent = DiscordSlashCommandEvent;
+export type DiscordRunCommandEvent = DiscordSlashCommandEvent & {
+  waifuId?: string;
+  sceneDirection?: string;
+};
 export type DiscordStopCommandEvent = DiscordSlashCommandEvent;
 export type DiscordMemoriesCommandEvent = DiscordSlashCommandEvent;
 export type DiscordReviewCommandListener = (event: DiscordReviewCommandEvent) => void | Promise<void>;
@@ -566,6 +569,8 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
       guildId: interaction.guildId,
       channelId: interaction.channelId,
       userId: interaction.user.id,
+      waifuId: sanitizeRunString(interaction.options.getString(RUN_WAIFU_OPTION_NAME)),
+      sceneDirection: sanitizeRunString(interaction.options.getString(RUN_SCENE_DIRECTION_OPTION_NAME)),
       respond: async (content) => {
         await interaction.editReply(content);
       }
@@ -791,10 +796,17 @@ const STOP_COMMAND_NAME = "stop";
 const MEMORIES_COMMAND_NAME = "memories";
 const CLEAR_COUNT_OPTION_NAME = "count";
 const CLEAR_TYPE_OPTION_NAME = "type";
+const RUN_WAIFU_OPTION_NAME = "waifu";
+const RUN_SCENE_DIRECTION_OPTION_NAME = "scene_direction";
 const MAX_CLEAR_COUNT = 100;
 
 function sanitizeReplyTarget(value?: string): string | undefined {
   return value && SNOWFLAKE_PATTERN.test(value) ? value : undefined;
+}
+
+function sanitizeRunString(value: string | null): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed || undefined;
 }
 
 async function registerOrchestratorCommands(client: Client, logger?: Logger): Promise<void> {
@@ -832,7 +844,21 @@ async function registerOrchestratorCommands(client: Client, logger?: Logger): Pr
       },
       {
         name: RUN_COMMAND_NAME,
-        description: "Run the orchestrator in this channel immediately if the runtime is idle."
+        description: "Run the orchestrator in this channel immediately if the runtime is idle.",
+        options: [
+          {
+            type: ApplicationCommandOptionType.String as ApplicationCommandOptionType.String,
+            name: RUN_WAIFU_OPTION_NAME,
+            description: "Optional waifu id or display name to speak first.",
+            required: false
+          },
+          {
+            type: ApplicationCommandOptionType.String as ApplicationCommandOptionType.String,
+            name: RUN_SCENE_DIRECTION_OPTION_NAME,
+            description: "Optional private scene direction for the selected waifu.",
+            required: false
+          }
+        ]
       },
       {
         name: STOP_COMMAND_NAME,

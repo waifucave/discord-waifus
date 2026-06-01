@@ -25,6 +25,9 @@ export async function runMigrations(dataRoot: string): Promise<MigrationResult> 
   if (await migrateLegacyMemories(dataRoot)) {
     applied.push("migrate-memories-to-guild-scope");
   }
+  if (await archiveMemoriesWithUnknownWaifus(dataRoot)) {
+    applied.push("archive-memories-with-unknown-waifus");
+  }
 
   return { applied };
 }
@@ -34,7 +37,7 @@ async function readJsonOrUndefined(filePath: string): Promise<unknown | undefine
     const content = await readFile(filePath, "utf8");
     return JSON.parse(content);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    if (["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) return undefined;
     throw error;
   }
 }
@@ -326,6 +329,29 @@ async function migrateLegacyMemories(dataRoot: string): Promise<boolean> {
   return true;
 }
 
+async function archiveMemoriesWithUnknownWaifus(dataRoot: string): Promise<boolean> {
+  const filePath = path.join(dataRoot, "user", "memories.json");
+  const data = await readJsonOrUndefined(filePath);
+  if (!isObject(data) || !Array.isArray(data.memories)) return false;
+  const configuredWaifuIds = new Set(await listConfiguredWaifuIds(dataRoot));
+  const now = new Date().toISOString();
+
+  let changed = false;
+  for (const memory of data.memories) {
+    if (!isObject(memory)) continue;
+    const waifuId = typeof memory.waifuId === "string" ? memory.waifuId : undefined;
+    if (memory.status === "active" && (!waifuId || !configuredWaifuIds.has(waifuId))) {
+      memory.status = "archived";
+      memory.updatedAt = now;
+      changed = true;
+    }
+  }
+
+  if (!changed) return false;
+  await atomicWriteJson(filePath, data);
+  return true;
+}
+
 async function memoryGuildsFromStageManagerHistory(dataRoot: string): Promise<Map<string, Set<string>>> {
   const data = await readJsonOrUndefined(path.join(dataRoot, "user", "stage-manager", "history.json"));
   const guildsByMemoryId = new Map<string, Set<string>>();
@@ -361,6 +387,25 @@ async function listConfiguredGuildIds(dataRoot: string): Promise<string[]> {
     }
   }
   return guildIds;
+}
+
+async function listConfiguredWaifuIds(dataRoot: string): Promise<string[]> {
+  const waifusRoot = path.join(dataRoot, "user", "waifus");
+  let entries: string[];
+  try {
+    entries = await readdir(waifusRoot);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+  const waifuIds: string[] = [];
+  for (const entry of entries) {
+    const data = await readJsonOrUndefined(path.join(waifusRoot, entry, "waifu.json"));
+    if (isObject(data) && typeof data.id === "string" && data.id.length > 0) {
+      waifuIds.push(data.id);
+    }
+  }
+  return waifuIds;
 }
 
 function singleValue(values: Set<string> | undefined): string | undefined {

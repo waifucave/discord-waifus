@@ -138,6 +138,53 @@ describe("provider-native decision tools", () => {
     });
   });
 
+  it("removes no_reply from the orchestrator tool for reply-required runs", async () => {
+    mockFetch({
+      choices: [
+        {
+          message: {
+            tool_calls: [
+              {
+                function: {
+                  name: "orchestrator_decision",
+                  arguments: JSON.stringify({
+                    action: "reply",
+                    respondingWaifus: [
+                      {
+                        waifuId: "yuki",
+                        delaySeconds: 0,
+                        replyStyle: "normal",
+                        repleyToMessageIndex: null,
+                        sceneDirection: null
+                      }
+                    ],
+                    retriggerAfterSeconds: null,
+                    reasoning: "manual run should speak"
+                  })
+                }
+              }
+            ]
+          }
+        }
+      ]
+    });
+
+    const pipeline = createModelPipeline("grok-4.3", { apiKey: "xai-test" });
+    const decision = await pipeline.decideOrchestrator?.({
+      modelId: "grok-4.3",
+      messages: context,
+      systemPrompt: "decide",
+      availableWaifuIds: ["yuki", "mika"],
+      replyRequired: true
+    });
+
+    expect(decision?.action).toBe("reply");
+    const actionSchema = (recentQueries().at(-1)?.payload.tools as Array<{
+      function: { parameters: { properties: { action: { enum?: string[] } } } };
+    }>)[0].function.parameters.properties.action;
+    expect(actionSchema.enum).toEqual(["reply"]);
+  });
+
   it("uses Z.AI's coding chat endpoint and provider-safe auto tool choice", async () => {
     mockFetch({
       choices: [
@@ -541,6 +588,7 @@ describe("provider-native decision tools", () => {
     const calls = await pipeline.decideStageManager?.({
       modelId: "gpt-4o-mini",
       messages: context,
+      availableWaifuIds: ["yuki", "mika"],
       memories: [
         {
           memoryIndex: 1,
@@ -588,7 +636,9 @@ describe("provider-native decision tools", () => {
     expect(toolParameters.memoryId).toBeUndefined();
     expect(toolParameters.sourceMemoryIds).toBeUndefined();
     expect(memorySchema.scope).toBeUndefined();
+    expect(memorySchema.waifuId).toMatchObject({ enum: ["yuki", "mika"] });
     expect(memorySchema.sourceMessageIndices).toBeUndefined();
+    expect(patchSchema.waifuId).toMatchObject({ enum: ["yuki", "mika"] });
     expect(patchSchema.scope).toBeUndefined();
     expect(patchSchema.status).toBeUndefined();
     expect(patchSchema.sourceMessageIds).toBeUndefined();

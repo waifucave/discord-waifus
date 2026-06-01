@@ -43,6 +43,7 @@ export type ProviderRequest = {
   trailingPrompt?: string;
   systemPrompt?: string;
   availableWaifuIds?: string[];
+  replyRequired?: boolean;
   temperature?: number;
   topP?: number;
   maxOutputTokens?: number;
@@ -66,6 +67,7 @@ export type StageManagerMemory = {
 
 export type StageManagerRequest = ProviderRequest & {
   memories: StageManagerMemory[];
+  availableWaifuIds?: string[];
 };
 
 export type WaifuGenerationResult = {

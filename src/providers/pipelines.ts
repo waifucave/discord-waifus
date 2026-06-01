@@ -116,7 +116,7 @@ class OpenAiCompatibleChatPipeline implements ModelPipeline {
         temperature: openAiChatTemperature(this.model, request.temperature ?? 0.2),
         top_p: openAiChatTopP(this.model, request.topP),
         max_tokens: request.maxOutputTokens,
-        tools: [openAiChatOrchestratorTool(request.availableWaifuIds)],
+        tools: [openAiChatOrchestratorTool(request.availableWaifuIds, request.replyRequired)],
         tool_choice: openAiChatForcedToolChoice(this.model, ORCHESTRATOR_TOOL_NAME),
         stream: false,
         ...reasoningFieldsForOpenAiChat(this.model, reasoning),
@@ -126,7 +126,7 @@ class OpenAiCompatibleChatPipeline implements ModelPipeline {
       extract: (json) => extractOpenAiChatToolArguments(json, ORCHESTRATOR_TOOL_NAME),
       queryRole: "orchestrator"
     });
-    return parseDecision(text, new Map());
+    return parseDecision(text, new Map(), request.replyRequired);
   }
 
   async decideStageManager(request: StageManagerRequest): Promise<StageManagerToolCall[]> {
@@ -139,14 +139,14 @@ class OpenAiCompatibleChatPipeline implements ModelPipeline {
       body: {
         model: request.modelId,
         messages: openAiChatMessagesForModel(this.model, [
-          { role: "system", content: stageManagerSystemPrompt(request.systemPrompt) },
+          { role: "system", content: stageManagerSystemPrompt(request.systemPrompt, request.availableWaifuIds) },
           contextToUserMessage(rendering),
           { role: "user", content: `memories: ${JSON.stringify(request.memories)}` }
         ]),
         temperature: openAiChatTemperature(this.model, request.temperature ?? 0.2),
         top_p: openAiChatTopP(this.model, request.topP),
         max_tokens: request.maxOutputTokens,
-        tools: [openAiChatStageManagerTool()],
+        tools: [openAiChatStageManagerTool(request.availableWaifuIds)],
         tool_choice: openAiChatForcedToolChoice(this.model, STAGE_MANAGER_TOOL_NAME),
         stream: false,
         ...reasoningFieldsForOpenAiChat(this.model, reasoning),
@@ -238,7 +238,7 @@ class OpenAiResponsesPipeline implements ModelPipeline {
         temperature: request.temperature ?? 0.2,
         top_p: request.topP,
         max_output_tokens: request.maxOutputTokens,
-        tools: [openAiResponsesOrchestratorTool(request.availableWaifuIds)],
+        tools: [openAiResponsesOrchestratorTool(request.availableWaifuIds, request.replyRequired)],
         tool_choice: { type: "function", name: ORCHESTRATOR_TOOL_NAME },
         ...reasoningFieldsForOpenAiResponses(this.model, request.reasoning),
         ...openAiResponsesSamplingOverrides(this.model)
@@ -247,7 +247,7 @@ class OpenAiResponsesPipeline implements ModelPipeline {
       extract: (json) => extractOpenAiResponsesToolArguments(json, ORCHESTRATOR_TOOL_NAME),
       queryRole: "orchestrator"
     });
-    return parseDecision(text, new Map());
+    return parseDecision(text, new Map(), request.replyRequired);
   }
 
   async decideStageManager(request: StageManagerRequest): Promise<StageManagerToolCall[]> {
@@ -258,7 +258,7 @@ class OpenAiResponsesPipeline implements ModelPipeline {
       headers: bearerHeaders(this.apiKey),
       body: {
         model: request.modelId,
-        instructions: stageManagerSystemPrompt(request.systemPrompt),
+        instructions: stageManagerSystemPrompt(request.systemPrompt, request.availableWaifuIds),
         input: [
           contextToUserMessage(rendering),
           { role: "user", content: `memories: ${JSON.stringify(request.memories)}` }
@@ -266,7 +266,7 @@ class OpenAiResponsesPipeline implements ModelPipeline {
         temperature: request.temperature ?? 0.2,
         top_p: request.topP,
         max_output_tokens: request.maxOutputTokens,
-        tools: [openAiResponsesStageManagerTool()],
+        tools: [openAiResponsesStageManagerTool(request.availableWaifuIds)],
         tool_choice: { type: "function", name: STAGE_MANAGER_TOOL_NAME },
         ...reasoningFieldsForOpenAiResponses(this.model, request.reasoning),
         ...openAiResponsesSamplingOverrides(this.model)
@@ -360,14 +360,14 @@ class AnthropicMessagesPipeline implements ModelPipeline {
         }),
         ...anthropicSamplingPayload(this.model, request.temperature ?? 0.2, request.topP, undefined),
         max_tokens: maxTokens,
-        tools: [anthropicOrchestratorTool(request.availableWaifuIds)],
+        tools: [anthropicOrchestratorTool(request.availableWaifuIds, request.replyRequired)],
         tool_choice: { type: "tool", name: ORCHESTRATOR_TOOL_NAME }
       },
       signal: request.signal,
       extract: (json) => extractAnthropicToolArguments(json, ORCHESTRATOR_TOOL_NAME),
       queryRole: "orchestrator"
     });
-    return parseDecision(text, new Map());
+    return parseDecision(text, new Map(), request.replyRequired);
   }
 
   async decideStageManager(request: StageManagerRequest): Promise<StageManagerToolCall[]> {
@@ -379,14 +379,14 @@ class AnthropicMessagesPipeline implements ModelPipeline {
       headers: anthropicHeaders(this.apiKey),
       body: {
         model: request.modelId,
-        system: stageManagerSystemPrompt(request.systemPrompt),
+        system: stageManagerSystemPrompt(request.systemPrompt, request.availableWaifuIds),
         messages: [
           contextToUserMessage(rendering),
           { role: "user", content: `memories: ${JSON.stringify(request.memories)}` }
         ],
         ...anthropicSamplingPayload(this.model, request.temperature ?? 0.2, request.topP, undefined),
         max_tokens: maxTokens,
-        tools: [anthropicStageManagerTool()],
+        tools: [anthropicStageManagerTool(request.availableWaifuIds)],
         tool_choice: { type: "tool", name: STAGE_MANAGER_TOOL_NAME }
       },
       signal: request.signal,
@@ -480,14 +480,14 @@ class GoogleGenerativeLanguagePipeline implements ModelPipeline {
           reasoning: request.reasoning
         }),
         safetySettings: googleSafetySettings,
-        tools: [googleAiStudioOrchestratorTool(request.availableWaifuIds)],
+        tools: [googleAiStudioOrchestratorTool(request.availableWaifuIds, request.replyRequired)],
         toolConfig: googleForceToolConfig(ORCHESTRATOR_TOOL_NAME)
       }),
       signal: request.signal,
       extract: (json) => extractGoogleToolArguments(json, ORCHESTRATOR_TOOL_NAME),
       queryRole: "orchestrator"
     });
-    return parseDecision(text, new Map());
+    return parseDecision(text, new Map(), request.replyRequired);
   }
 
   async decideStageManager(request: StageManagerRequest): Promise<StageManagerToolCall[]> {
@@ -497,7 +497,7 @@ class GoogleGenerativeLanguagePipeline implements ModelPipeline {
       url: googleAiStudioUrl(this.provider, this.model),
       headers: googleAiStudioHeaders(this.apiKey),
       body: stripUndefined({
-        systemInstruction: { parts: [{ text: stageManagerSystemPrompt(request.systemPrompt) }] },
+        systemInstruction: { parts: [{ text: stageManagerSystemPrompt(request.systemPrompt, request.availableWaifuIds) }] },
         contents: [
           googleUserTurn(rendering.block),
           googleUserTurn(`memories: ${JSON.stringify(request.memories)}`)
@@ -509,7 +509,7 @@ class GoogleGenerativeLanguagePipeline implements ModelPipeline {
           reasoning: request.reasoning
         }),
         safetySettings: googleSafetySettings,
-        tools: [googleAiStudioStageManagerTool()],
+        tools: [googleAiStudioStageManagerTool(request.availableWaifuIds)],
         toolConfig: googleForceToolConfig(STAGE_MANAGER_TOOL_NAME)
       }),
       signal: request.signal,
@@ -1016,13 +1016,17 @@ function formatOcrText(text: string | undefined): string | undefined {
   return normalized || undefined;
 }
 
-function stageManagerSystemPrompt(customPrompt?: string): string {
-  return [customPrompt?.trim(), stageManagerJsonInstruction()].filter(Boolean).join("\n\n");
+function stageManagerSystemPrompt(customPrompt?: string, availableWaifuIds?: string[]): string {
+  return [customPrompt?.trim(), stageManagerJsonInstruction(availableWaifuIds)].filter(Boolean).join("\n\n");
 }
 
-function stageManagerJsonInstruction(): string {
+function stageManagerJsonInstruction(availableWaifuIds?: string[]): string {
+  const waifuInstruction = availableWaifuIds?.length
+    ? `Allowed memory waifuId values: ${availableWaifuIds.join(", ")}. waifuId is the waifu that receives this memory in her prompt; it is never a human user name from chat.`
+    : "No waifus are available for memory ownership in this channel; use no_change.";
   return `Each message in the context is tagged with [index: #N], [timestamp: ISO-8601 UTC], and [sender: DisplayName] before its body, optionally followed by [reactions: ...] and [replying to: ...]. Reference messages by their #N index.
 Each existing memory in the memories input has a memoryIndex. Reference existing memories by memoryIndex.
+${waifuInstruction}
 Tool usage: compare the context to existing memories for this Discord server, choose all needed memory edits, and call ${STAGE_MANAGER_TOOL_NAME} exactly once with a toolCalls array. Do not write normal assistant text.
 All memory edits apply only to the current Discord server. Do not choose or mention global, channel, or user scopes.
 Each toolCalls item must match one of:
@@ -1076,7 +1080,7 @@ const PICK_NEXT_WAIFU_TOOL_NAME = "PickNextWaifu";
 const PICK_NEXT_WAIFU_TOOL_DESCRIPTION =
   "Optionally pick one configured waifu to reply immediately after this waifu message.";
 
-function orchestratorToolParameters(availableWaifuIds?: string[]): object {
+function orchestratorToolParameters(availableWaifuIds?: string[], replyRequired = false): object {
   const waifuIds = [...new Set((availableWaifuIds ?? []).filter(Boolean))];
   const waifuIdSchema: Record<string, unknown> = {
     type: "string",
@@ -1093,8 +1097,10 @@ function orchestratorToolParameters(availableWaifuIds?: string[]): object {
     properties: {
       action: {
         type: "string",
-        enum: ["reply", "no_reply"],
-        description: "\"reply\" when at least one waifu should answer; \"no_reply\" when nobody should speak now."
+        enum: replyRequired ? ["reply"] : ["reply", "no_reply"],
+        description: replyRequired
+          ? "\"reply\" is required for this manual run."
+          : "\"reply\" when at least one waifu should answer; \"no_reply\" when nobody should speak now."
       },
       respondingWaifus: {
         type: "array",
@@ -1166,80 +1172,94 @@ function pickNextWaifuToolParameters(availableWaifuIds?: string[]): object {
 
 const STAGE_MANAGER_TOOL_NAME = "manage_memories";
 const STAGE_MANAGER_TOOL_DESCRIPTION = "Return the complete set of memory edits needed for the current Discord context.";
-export const STAGE_MANAGER_TOOL_PARAMETERS = {
-  type: "object",
-  additionalProperties: false,
-  properties: {
-    toolCalls: {
-      type: "array",
-      description: "Memory edit operations to apply. Use one no_change item when no edit is needed.",
-      minItems: 1,
-      items: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          tool: {
-            type: "string",
-            enum: ["add_memory", "update_memory", "archive_memory", "merge_memories", "no_change"]
-          },
-          memory: {
-            type: "object",
-            description: "Required when tool is add_memory.",
-            additionalProperties: false,
-            properties: {
-              waifuId: { type: "string" },
-              content: { type: "string" },
-              importance: { type: "integer", enum: [1, 2, 3, 4, 5] }
+export const STAGE_MANAGER_TOOL_PARAMETERS = stageManagerToolParameters();
+
+function stageManagerToolParameters(availableWaifuIds?: string[]): object {
+  const waifuIds = [...new Set((availableWaifuIds ?? []).filter(Boolean))];
+  const waifuIdSchema: Record<string, unknown> = {
+    type: "string",
+    description: waifuIds.length
+      ? `Must be one of the configured waifu ids: ${waifuIds.join(", ")}. This is the memory owner, not a human user.`
+      : "Configured waifu id."
+  };
+  if (waifuIds.length) {
+    waifuIdSchema.enum = waifuIds;
+  }
+  return {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      toolCalls: {
+        type: "array",
+        description: "Memory edit operations to apply. Use one no_change item when no edit is needed.",
+        minItems: 1,
+        items: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            tool: {
+              type: "string",
+              enum: ["add_memory", "update_memory", "archive_memory", "merge_memories", "no_change"]
             },
-            required: ["waifuId", "content", "importance"]
-          },
-          memoryIndex: {
-            type: "integer",
-            minimum: 1,
-            description: "Required for update_memory or archive_memory."
-          },
-          patch: {
-            type: "object",
-            description: "Required when tool is update_memory.",
-            additionalProperties: false,
-            properties: {
-              waifuId: { type: "string" },
-              content: { type: "string" },
-              importance: { type: "integer", enum: [1, 2, 3, 4, 5] }
+            memory: {
+              type: "object",
+              description: "Required when tool is add_memory.",
+              additionalProperties: false,
+              properties: {
+                waifuId: waifuIdSchema,
+                content: { type: "string" },
+                importance: { type: "integer", enum: [1, 2, 3, 4, 5] }
+              },
+              required: ["waifuId", "content", "importance"]
+            },
+            memoryIndex: {
+              type: "integer",
+              minimum: 1,
+              description: "Required for update_memory or archive_memory."
+            },
+            patch: {
+              type: "object",
+              description: "Required when tool is update_memory.",
+              additionalProperties: false,
+              properties: {
+                waifuId: waifuIdSchema,
+                content: { type: "string" },
+                importance: { type: "integer", enum: [1, 2, 3, 4, 5] }
+              }
+            },
+            sourceMemoryIndices: {
+              type: "array",
+              description: "Required when tool is merge_memories.",
+              minItems: 2,
+              items: { type: "integer", minimum: 1 }
+            },
+            mergedContent: {
+              type: "string",
+              description: "Required when tool is merge_memories."
+            },
+            reason: {
+              type: "string",
+              description: "Optional explanation for no_change."
             }
           },
-          sourceMemoryIndices: {
-            type: "array",
-            description: "Required when tool is merge_memories.",
-            minItems: 2,
-            items: { type: "integer", minimum: 1 }
-          },
-          mergedContent: {
-            type: "string",
-            description: "Required when tool is merge_memories."
-          },
-          reason: {
-            type: "string",
-            description: "Optional explanation for no_change."
-          }
-        },
-        required: ["tool"]
+          required: ["tool"]
+        }
       }
-    }
-  },
-  required: ["toolCalls"]
-};
-
-function openAiChatOrchestratorTool(availableWaifuIds?: string[]) {
-  return openAiChatTool(ORCHESTRATOR_TOOL_NAME, ORCHESTRATOR_TOOL_DESCRIPTION, orchestratorToolParameters(availableWaifuIds));
+    },
+    required: ["toolCalls"]
+  };
 }
 
-function openAiResponsesOrchestratorTool(availableWaifuIds?: string[]) {
-  return openAiResponsesTool(ORCHESTRATOR_TOOL_NAME, ORCHESTRATOR_TOOL_DESCRIPTION, orchestratorToolParameters(availableWaifuIds));
+function openAiChatOrchestratorTool(availableWaifuIds?: string[], replyRequired = false) {
+  return openAiChatTool(ORCHESTRATOR_TOOL_NAME, ORCHESTRATOR_TOOL_DESCRIPTION, orchestratorToolParameters(availableWaifuIds, replyRequired));
 }
 
-function anthropicOrchestratorTool(availableWaifuIds?: string[]) {
-  return anthropicTool(ORCHESTRATOR_TOOL_NAME, ORCHESTRATOR_TOOL_DESCRIPTION, orchestratorToolParameters(availableWaifuIds));
+function openAiResponsesOrchestratorTool(availableWaifuIds?: string[], replyRequired = false) {
+  return openAiResponsesTool(ORCHESTRATOR_TOOL_NAME, ORCHESTRATOR_TOOL_DESCRIPTION, orchestratorToolParameters(availableWaifuIds, replyRequired));
+}
+
+function anthropicOrchestratorTool(availableWaifuIds?: string[], replyRequired = false) {
+  return anthropicTool(ORCHESTRATOR_TOOL_NAME, ORCHESTRATOR_TOOL_DESCRIPTION, orchestratorToolParameters(availableWaifuIds, replyRequired));
 }
 
 function openAiChatPickNextWaifuTool(availableWaifuIds?: string[]) {
@@ -1254,16 +1274,16 @@ function anthropicPickNextWaifuTool(availableWaifuIds?: string[]) {
   return anthropicTool(PICK_NEXT_WAIFU_TOOL_NAME, PICK_NEXT_WAIFU_TOOL_DESCRIPTION, pickNextWaifuToolParameters(availableWaifuIds));
 }
 
-function openAiChatStageManagerTool() {
-  return openAiChatTool(STAGE_MANAGER_TOOL_NAME, STAGE_MANAGER_TOOL_DESCRIPTION, STAGE_MANAGER_TOOL_PARAMETERS);
+function openAiChatStageManagerTool(availableWaifuIds?: string[]) {
+  return openAiChatTool(STAGE_MANAGER_TOOL_NAME, STAGE_MANAGER_TOOL_DESCRIPTION, stageManagerToolParameters(availableWaifuIds));
 }
 
-function openAiResponsesStageManagerTool() {
-  return openAiResponsesTool(STAGE_MANAGER_TOOL_NAME, STAGE_MANAGER_TOOL_DESCRIPTION, STAGE_MANAGER_TOOL_PARAMETERS);
+function openAiResponsesStageManagerTool(availableWaifuIds?: string[]) {
+  return openAiResponsesTool(STAGE_MANAGER_TOOL_NAME, STAGE_MANAGER_TOOL_DESCRIPTION, stageManagerToolParameters(availableWaifuIds));
 }
 
-function anthropicStageManagerTool() {
-  return anthropicTool(STAGE_MANAGER_TOOL_NAME, STAGE_MANAGER_TOOL_DESCRIPTION, STAGE_MANAGER_TOOL_PARAMETERS);
+function anthropicStageManagerTool(availableWaifuIds?: string[]) {
+  return anthropicTool(STAGE_MANAGER_TOOL_NAME, STAGE_MANAGER_TOOL_DESCRIPTION, stageManagerToolParameters(availableWaifuIds));
 }
 
 function openAiChatReviewerTool() {
@@ -1420,10 +1440,13 @@ const RawStageManagerToolCallSchema = z.discriminatedUnion("tool", [
   })
 ]);
 
-function parseDecision(text: string, indexToId: Map<number, string>): OrchestratorDecision {
+function parseDecision(text: string, indexToId: Map<number, string>, replyRequired = false): OrchestratorDecision {
   try {
     const parsed = JSON.parse(stripCodeFence(text));
     const raw = RawOrchestratorDecisionSchema.parse(parsed);
+    if (replyRequired && raw.action !== "reply") {
+      throw new Error("Manual /run requires action=reply.");
+    }
     return OrchestratorDecisionSchema.parse({
       action: raw.action,
       respondingWaifus: raw.respondingWaifus.map((entry) => ({
@@ -2093,12 +2116,12 @@ function googleForceToolConfig(name: string) {
   return { functionCallingConfig: { mode: "ANY", allowedFunctionNames: [name] } };
 }
 
-function googleAiStudioOrchestratorTool(availableWaifuIds?: string[]) {
-  return googleAiStudioTool(ORCHESTRATOR_TOOL_NAME, ORCHESTRATOR_TOOL_DESCRIPTION, orchestratorToolParameters(availableWaifuIds));
+function googleAiStudioOrchestratorTool(availableWaifuIds?: string[], replyRequired = false) {
+  return googleAiStudioTool(ORCHESTRATOR_TOOL_NAME, ORCHESTRATOR_TOOL_DESCRIPTION, orchestratorToolParameters(availableWaifuIds, replyRequired));
 }
 
-function googleAiStudioStageManagerTool() {
-  return googleAiStudioTool(STAGE_MANAGER_TOOL_NAME, STAGE_MANAGER_TOOL_DESCRIPTION, STAGE_MANAGER_TOOL_PARAMETERS);
+function googleAiStudioStageManagerTool(availableWaifuIds?: string[]) {
+  return googleAiStudioTool(STAGE_MANAGER_TOOL_NAME, STAGE_MANAGER_TOOL_DESCRIPTION, stageManagerToolParameters(availableWaifuIds));
 }
 
 function googleAiStudioReviewerTool() {
