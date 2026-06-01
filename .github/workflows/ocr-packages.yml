@@ -48,7 +48,7 @@ jobs:
           registry-url: https://registry.npmjs.org
 
       - name: Install JS dependencies
-        run: npm ci --omit=optional
+        run: npm install --omit=optional --ignore-scripts --no-audit --no-fund
 
       - name: Install native OCR dependency
         shell: bash
@@ -84,4 +84,12 @@ jobs:
         working-directory: ${{ matrix.package }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish --access public --ignore-scripts
+        shell: bash
+        run: |
+          name="$(node -p "require('./package.json').name")"
+          version="$(node -p "require('./package.json').version")"
+          if npm view "$name@$version" version --silent >/dev/null 2>&1; then
+            echo "$name@$version already published; skipping."
+          else
+            npm publish --access public --ignore-scripts
+          fi
