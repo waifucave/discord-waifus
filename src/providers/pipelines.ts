@@ -83,7 +83,10 @@ class OpenAiCompatibleChatPipeline implements ModelPipeline {
         model: request.modelId,
         messages: openAiChatMessagesForModel(this.model, [
           { role: "system", content: request.systemPrompt },
-          ...contextToChatMessagesForWaifu(request.messages, this.model.supportsImageInput),
+          ...injectMemoriesIntoChatContext(
+            contextToChatMessagesForWaifu(request.messages, this.model.supportsImageInput),
+            request.memoriesBlock ? { role: "system", content: request.memoriesBlock } : undefined
+          ),
           ...replyStyleMessagesForChat(request.replyStyle),
           { role: "system", content: directorNotesContent(request.sceneDirection) }
         ]),
@@ -237,7 +240,10 @@ class OpenAiResponsesPipeline implements ModelPipeline {
         model: request.modelId,
         instructions: request.systemPrompt,
         input: [
-          ...contextToResponsesInputForWaifu(request.messages, this.model.supportsImageInput),
+          ...injectMemoriesIntoChatContext(
+            contextToResponsesInputForWaifu(request.messages, this.model.supportsImageInput),
+            request.memoriesBlock ? { role: "system", content: request.memoriesBlock } : undefined
+          ),
           ...replyStyleMessagesForChat(request.replyStyle),
           { role: "system", content: directorNotesContent(request.sceneDirection) }
         ],
@@ -378,7 +384,10 @@ class AnthropicMessagesPipeline implements ModelPipeline {
         model: request.modelId,
         system: request.systemPrompt,
         messages: [
-          ...contextToAnthropicMessagesForWaifu(request.messages, this.model.supportsImageInput),
+          ...injectMemoriesIntoChatContext(
+            contextToAnthropicMessagesForWaifu(request.messages, this.model.supportsImageInput),
+            request.memoriesBlock ? { role: "user" as const, content: request.memoriesBlock } : undefined
+          ),
           ...replyStyleMessagesForAnthropic(request.replyStyle),
           { role: "user", content: directorNotesContent(request.sceneDirection) }
         ],
@@ -513,7 +522,10 @@ class GoogleGenerativeLanguagePipeline implements ModelPipeline {
     );
     const replyHint = replyStyleHint(request.replyStyle);
     const contents = [
-      ...contextContents,
+      ...injectMemoriesIntoChatContext(
+        contextContents,
+        request.memoriesBlock ? googleUserTurn(request.memoriesBlock) : undefined
+      ),
       ...(replyHint ? [googleUserTurn(replyHint)] : []),
       googleUserTurn(directorNotesContent(request.sceneDirection))
     ];
@@ -1011,7 +1023,7 @@ function directorNotesContent(sceneDirection: string | undefined): string {
     "To pull a quiet person back in, use their <@Name> tag instead of repeating their name; do not tag them again if anyone already tagged them recently."
   ];
   if (sceneDirection) {
-    notes.push(`Scene direction: ${sceneDirection}`);
+    notes.push(`<scene_direction>${sceneDirection}</scene_direction>`);
   }
   return `<director_notes>\n${notes.join("\n")}\n</director_notes>`;
 }
@@ -1026,6 +1038,15 @@ function contextToChatMessagesForWaifu(messages: ContextMessage[], includeImages
       content: imageBlocks.length ? [{ type: "text", text }, ...imageBlocks] : text
     };
   });
+}
+
+function injectMemoriesIntoChatContext<T, M>(
+  contextMessages: T[],
+  memoriesMessage: M | undefined
+): Array<T | M> {
+  if (!memoriesMessage) return contextMessages;
+  const insertAt = Math.max(0, contextMessages.length - 2);
+  return [...contextMessages.slice(0, insertAt), memoriesMessage, ...contextMessages.slice(insertAt)];
 }
 
 function chatImageBlocks(message: ContextMessage) {
@@ -1460,6 +1481,68 @@ function stageManagerToolParameters(availableWaifuIds?: string[]): object {
   };
 }
 
+function flatStageManagerToolParameters(availableWaifuIds?: string[]): object {
+  const waifuIds = [...new Set((availableWaifuIds ?? []).filter(Boolean))];
+  const waifuIdSchema: Record<string, unknown> = {
+    type: "string",
+    description: waifuIds.length
+      ? `Configured waifu id; must be one of: ${waifuIds.join(", ")}.`
+      : "Configured waifu id."
+  };
+  if (waifuIds.length) {
+    waifuIdSchema.enum = waifuIds;
+  }
+  return {
+    type: "object",
+    properties: {
+      toolCalls: {
+        type: "array",
+        description: "Memory edit operations to apply. Use one no_change item when no edit is needed.",
+        minItems: 1,
+        items: {
+          type: "object",
+          properties: {
+            tool: {
+              type: "string",
+              enum: ["add_memory", "update_memory", "archive_memory", "merge_memories", "no_change"]
+            },
+            waifuId: {
+              ...waifuIdSchema,
+              description: "Required for add_memory. Optional for update_memory."
+            },
+            content: {
+              type: "string",
+              description: "Memory content for add_memory/update_memory, or the merged content for merge_memories."
+            },
+            importance: {
+              type: "integer",
+              enum: [1, 2, 3, 4, 5],
+              description: "Required for add_memory. Optional for update_memory."
+            },
+            memoryIndex: {
+              type: "integer",
+              minimum: 1,
+              description: "Required for update_memory or archive_memory."
+            },
+            sourceMemoryIndices: {
+              type: "array",
+              description: "Required for merge_memories.",
+              minItems: 2,
+              items: { type: "integer", minimum: 1 }
+            },
+            reason: {
+              type: "string",
+              description: "Optional explanation for no_change."
+            }
+          },
+          required: ["tool"]
+        }
+      }
+    },
+    required: ["toolCalls"]
+  };
+}
+
 function openAiChatOrchestratorTool(availableWaifuIds?: string[], replyRequired = false) {
   return openAiChatTool(ORCHESTRATOR_TOOL_NAME, ORCHESTRATOR_TOOL_DESCRIPTION, orchestratorToolParameters(availableWaifuIds, replyRequired));
 }
@@ -1744,6 +1827,17 @@ const RawStageManagerToolCallSchema = z.discriminatedUnion("tool", [
   })
 ]);
 
+const RawFlatStageManagerToolCallSchema = z.object({
+  tool: z.enum(["add_memory", "update_memory", "archive_memory", "merge_memories", "no_change"]),
+  waifuId: z.string().min(1).optional(),
+  content: z.string().min(1).optional(),
+  importance: ImportanceSchema.optional(),
+  memoryIndex: z.number().int().min(1).optional(),
+  sourceMemoryIndices: z.array(z.number().int().min(1)).min(2).optional(),
+  mergedContent: z.string().min(1).optional(),
+  reason: z.string().optional()
+});
+
 function parseDecision(text: string, indexToId: Map<number, string>, replyRequired = false): OrchestratorDecision {
   try {
     const parsed = JSON.parse(stripCodeFence(text));
@@ -1790,15 +1884,58 @@ function parseStageManagerCalls(text: string): StageManagerToolCall[] {
   try {
     const parsed = JSON.parse(stripCodeFence(text));
     const calls = Array.isArray(parsed) ? parsed : (parsed.toolCalls ?? parsed.calls ?? []);
-    return calls.map((call: unknown) => {
-      const raw = RawStageManagerToolCallSchema.parse(call);
-      return StageManagerToolCallSchema.parse(raw);
-    });
+    return calls.map((call: unknown) => normalizeStageManagerToolCall(call));
   } catch (error) {
     throw new ProviderPipelineError("Provider did not return valid stage-manager tool calls.", {
       text,
       error: error instanceof Error ? error.message : String(error)
     });
+  }
+}
+
+function normalizeStageManagerToolCall(call: unknown): StageManagerToolCall {
+  const nested = RawStageManagerToolCallSchema.safeParse(call);
+  if (nested.success) {
+    return StageManagerToolCallSchema.parse(nested.data);
+  }
+
+  const raw = RawFlatStageManagerToolCallSchema.parse(call);
+  switch (raw.tool) {
+    case "add_memory":
+      return StageManagerToolCallSchema.parse({
+        tool: raw.tool,
+        memory: {
+          waifuId: raw.waifuId,
+          content: raw.content,
+          importance: raw.importance
+        }
+      });
+    case "update_memory":
+      return StageManagerToolCallSchema.parse({
+        tool: raw.tool,
+        memoryIndex: raw.memoryIndex,
+        patch: stripUndefined({
+          waifuId: raw.waifuId,
+          content: raw.content,
+          importance: raw.importance
+        })
+      });
+    case "archive_memory":
+      return StageManagerToolCallSchema.parse({
+        tool: raw.tool,
+        memoryIndex: raw.memoryIndex
+      });
+    case "merge_memories":
+      return StageManagerToolCallSchema.parse({
+        tool: raw.tool,
+        sourceMemoryIndices: raw.sourceMemoryIndices,
+        mergedContent: raw.mergedContent ?? raw.content
+      });
+    case "no_change":
+      return StageManagerToolCallSchema.parse({
+        tool: raw.tool,
+        reason: raw.reason
+      });
   }
 }
 
@@ -2457,7 +2594,7 @@ function googleAiStudioOrchestratorTool(availableWaifuIds?: string[], replyRequi
 }
 
 function googleAiStudioStageManagerTool(availableWaifuIds?: string[]) {
-  return googleAiStudioTool(STAGE_MANAGER_TOOL_NAME, STAGE_MANAGER_TOOL_DESCRIPTION, stageManagerToolParameters(availableWaifuIds));
+  return googleAiStudioTool(STAGE_MANAGER_TOOL_NAME, STAGE_MANAGER_TOOL_DESCRIPTION, flatStageManagerToolParameters(availableWaifuIds));
 }
 
 function googleAiStudioObserverTool(availableWaifuIds?: string[]) {

@@ -26,6 +26,7 @@ import {
   StageManagerRequest,
   WaifuGenerationRequest
 } from "../src/providers/types.js";
+import { ProviderPipelineError } from "../src/providers/pipelines.js";
 import { ensureDataLayout } from "../src/config/layout.js";
 import { StorageService } from "../src/storage/storageService.js";
 import {
@@ -250,15 +251,16 @@ class FakePipeline implements ModelPipeline {
     expect(request.systemPrompt).not.toMatch(
       /<environment_instructions>[\s\S]*Use only listed server emojis[\s\S]*<\/environment_instructions>/
     );
-    if (request.systemPrompt.includes("<memories>")) {
-      expect(request.systemPrompt).toMatch(
-        /<\/behavior>\n<memories>\n- Yuki remembers Kevin likes tea\.\n<\/memories>\n<server_emojis>/
-      );
-      expect(request.systemPrompt).not.toMatch(/<behavior>[\s\S]*<memories>[\s\S]*<\/behavior>/);
-    }
+    expect(request.systemPrompt).not.toMatch(/<memories>/);
+    expect(request.systemPrompt).not.toMatch(/<short_term_memory>/);
     expect(request.systemPrompt).toMatch(
-      /<\/behavior>(?:\n<memories>[\s\S]*<\/memories>)?\n<server_emojis>[\s\S]*<\/server_emojis>\n<current_time>\n\d{4}-\d{2}-\d{2}T\d{2}\n<\/current_time>/
+      /<\/behavior>\n<server_emojis>[\s\S]*<\/server_emojis>\n<current_time>\n\d{4}-\d{2}-\d{2}T\d{2}\n<\/current_time>/
     );
+    if (request.memoriesBlock) {
+      expect(request.memoriesBlock).toMatch(
+        /<memories>\n<long_term>\n- Yuki remembers Kevin likes tea\.\n<\/long_term>\n<\/memories>/
+      );
+    }
     expect(request.sceneDirection).toBe("answer Kevin, then pull in Mira");
     return { content: "hello <@Kevin> <:cutecat:>" };
   }
@@ -1138,6 +1140,56 @@ describe("RuntimeOrchestrator", () => {
     );
     expect(history.edits[0].tool).toBe("add_memory");
     expect(history.edits[0].observationCount).toBe(1);
+  });
+
+  it("logs provider error details when stage-manager fails", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    const pipeline: ModelPipeline = {
+      async generateWaifu() {
+        return { content: "unused" };
+      },
+      async decideStageManagerObservations() {
+        throw new ProviderPipelineError("Provider request failed with HTTP 400.", {
+          error: {
+            status: "INVALID_ARGUMENT",
+            message: "ANY mode rejected deeply nested schema."
+          }
+        });
+      },
+      async decideStageManager() {
+        return [];
+      }
+    };
+    const loggedErrors: Array<{ message: string; context?: unknown }> = [];
+
+    await seedRuntimeConfig(storage);
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      createPipeline: () => pipeline,
+      logger: {
+        debug: () => undefined,
+        info: () => undefined,
+        warn: () => undefined,
+        error: (message, context) => loggedErrors.push({ message, context })
+      }
+    });
+
+    const result = await runtime.triggerStageManager("guild-1", "channel-1");
+
+    expect(result.status).toBe("failed");
+    expect(loggedErrors).toHaveLength(1);
+    expect(loggedErrors[0].message).toBe("Stage manager failed");
+    expect(loggedErrors[0].context).toMatchObject({
+      message: "Provider request failed with HTTP 400.",
+      details: expect.stringContaining("deeply nested schema")
+    });
   });
 
   it("skips stage-manager memory writes for user names in waifuId", async () => {
@@ -3404,6 +3456,7 @@ describe("RuntimeOrchestrator", () => {
 
     let waifuRun = 0;
     const capturedSystemPrompts: string[] = [];
+    const capturedMemoriesBlocks: Array<string | undefined> = [];
     const pipeline: ModelPipeline = {
       async decideOrchestrator() {
         return {
@@ -3414,6 +3467,7 @@ describe("RuntimeOrchestrator", () => {
       },
       async generateWaifu(request: WaifuGenerationRequest) {
         capturedSystemPrompts.push(request.systemPrompt);
+        capturedMemoriesBlocks.push(request.memoriesBlock);
         waifuRun += 1;
         if (waifuRun === 1) {
           return {
@@ -3463,7 +3517,11 @@ describe("RuntimeOrchestrator", () => {
     await runtime.stop();
 
     const secondPrompt = capturedSystemPrompts[1];
-    expect(secondPrompt).toMatch(/<short_term_memory>[\s\S]*Kevin is heading out at 5pm\.[\s\S]*Kevin prefers green tea today\.[\s\S]*<\/short_term_memory>/);
+    expect(secondPrompt).not.toMatch(/<short_term_memory>/);
+    expect(secondPrompt).not.toMatch(/<memories>/);
+    const secondMemoriesBlock = capturedMemoriesBlocks[1];
+    expect(secondMemoriesBlock).toBeDefined();
+    expect(secondMemoriesBlock).toMatch(/<memories>[\s\S]*<short_term>[\s\S]*Kevin is heading out at 5pm\.[\s\S]*Kevin prefers green tea today\.[\s\S]*<\/short_term>[\s\S]*<\/memories>/);
   });
 
   it("scopes short-term memories per waifu — waifu B does not see waifu A's notes", async () => {
@@ -3502,7 +3560,7 @@ describe("RuntimeOrchestrator", () => {
       )
     );
 
-    const promptsByWaifu = new Map<string, string>();
+    const memoriesByWaifu = new Map<string, string | undefined>();
     const pipeline: ModelPipeline = {
       async decideOrchestrator() {
         return {
@@ -3513,7 +3571,7 @@ describe("RuntimeOrchestrator", () => {
       },
       async generateWaifu(request: WaifuGenerationRequest) {
         const match = request.systemPrompt.match(/You are (\w+)\./);
-        if (match) promptsByWaifu.set(match[1], request.systemPrompt);
+        if (match) memoriesByWaifu.set(match[1], request.memoriesBlock);
         return { content: "ok" };
       }
     };
@@ -3530,10 +3588,12 @@ describe("RuntimeOrchestrator", () => {
     await runtime.triggerChannel("guild-1", "channel-1");
     await runtime.stop();
 
-    const mikaPrompt = promptsByWaifu.get("Mika");
-    expect(mikaPrompt).toBeDefined();
-    expect(mikaPrompt).not.toMatch(/<short_term_memory>/);
-    expect(mikaPrompt).not.toContain("Kevin promised to ping Yuki tonight.");
+    expect(memoriesByWaifu.has("Mika")).toBe(true);
+    const mikaMemories = memoriesByWaifu.get("Mika");
+    // Mika has no notes of her own, so memoriesBlock should be undefined or not contain Yuki's note.
+    if (mikaMemories) {
+      expect(mikaMemories).not.toContain("Kevin promised to ping Yuki tonight.");
+    }
   });
 
   it("drops expired short-term entries from the file on next write and omits them from the prompt", async () => {
@@ -3571,6 +3631,7 @@ describe("RuntimeOrchestrator", () => {
     );
 
     let capturedSystemPrompt = "";
+    let capturedMemoriesBlock: string | undefined;
     const pipeline: ModelPipeline = {
       async decideOrchestrator() {
         return {
@@ -3581,6 +3642,7 @@ describe("RuntimeOrchestrator", () => {
       },
       async generateWaifu(request: WaifuGenerationRequest) {
         capturedSystemPrompt = request.systemPrompt;
+        capturedMemoriesBlock = request.memoriesBlock;
         return {
           content: "fresh",
           shortTermMemoryEntries: ["Kevin is back from lunch."]
@@ -3601,6 +3663,7 @@ describe("RuntimeOrchestrator", () => {
     await runtime.stop();
 
     expect(capturedSystemPrompt).not.toContain("stale note from yesterday");
+    expect(capturedMemoriesBlock ?? "").not.toContain("stale note from yesterday");
     const after = await storage.readJson("user/short-term-memories.json", ShortTermMemoryStoreSchema);
     expect(after.entries.map((entry) => entry.content)).toEqual(["Kevin is back from lunch."]);
   });

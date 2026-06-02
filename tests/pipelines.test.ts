@@ -48,7 +48,7 @@ const contextWithWaifus: ContextMessage[] = [
 ];
 
 const directorNotes = "<director_notes>\nKeep your reply short.\nDo not repeat what the previous waifu just said.\nDo not repeat a person's name when recent context already makes the target clear.\nTo pull a quiet person back in, use their <@Name> tag instead of repeating their name; do not tag them again if anyone already tagged them recently.\n</director_notes>";
-const directorNotesWithSceneDirection = "<director_notes>\nKeep your reply short.\nDo not repeat what the previous waifu just said.\nDo not repeat a person's name when recent context already makes the target clear.\nTo pull a quiet person back in, use their <@Name> tag instead of repeating their name; do not tag them again if anyone already tagged them recently.\nScene direction: answer Kevin\n</director_notes>";
+const directorNotesWithSceneDirection = "<director_notes>\nKeep your reply short.\nDo not repeat what the previous waifu just said.\nDo not repeat a person's name when recent context already makes the target clear.\nTo pull a quiet person back in, use their <@Name> tag instead of repeating their name; do not tag them again if anyone already tagged them recently.\n<scene_direction>answer Kevin</scene_direction>\n</director_notes>";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -1386,6 +1386,106 @@ describe("director note payloads", () => {
   });
 });
 
+describe("waifu memories block injection", () => {
+  const memoriesPayload = "<memories>\n<long_term>\n- example\n</long_term>\n</memories>";
+
+  it("OpenAI Chat: inserts memories system at contextLen - 2, leaving 2 chat messages before director notes", async () => {
+    mockFetch({ choices: [{ message: { content: "ok" } }] });
+
+    const pipeline = createModelPipeline("grok-4.3", { apiKey: "xai-test" });
+    await pipeline.generateWaifu({
+      modelId: "grok-4.3",
+      messages: contextWithWaifus,
+      systemPrompt: "stay in character",
+      memoriesBlock: memoriesPayload
+    });
+
+    const query = recentQueries().at(-1);
+    const messages = query?.payload.messages as Array<{ role: string; content: string }>;
+    // [leading, chat[0], memories, chat[1], chat[2], director] — length 6
+    expect(messages).toHaveLength(6);
+    expect(messages[0].role).toBe("system");
+    expect(messages.at(-4)).toEqual({ role: "system", content: memoriesPayload });
+    expect(messages.at(-1)?.role).toBe("system");
+    expect(messages.at(-1)?.content).toMatch(/<director_notes>/);
+  });
+
+  it("OpenAI Chat: no insertion when memoriesBlock is undefined", async () => {
+    mockFetch({ choices: [{ message: { content: "ok" } }] });
+
+    const pipeline = createModelPipeline("grok-4.3", { apiKey: "xai-test" });
+    await pipeline.generateWaifu({
+      modelId: "grok-4.3",
+      messages: contextWithWaifus,
+      systemPrompt: "stay in character"
+    });
+
+    const query = recentQueries().at(-1);
+    const messages = query?.payload.messages as Array<{ role: string; content: string }>;
+    expect(messages).toHaveLength(5);
+    expect(messages.every((m) => m.content !== memoriesPayload)).toBe(true);
+  });
+
+  it("OpenAI Responses: inserts memories into input at contextLen - 2", async () => {
+    mockFetch({ output_text: "ok" });
+
+    const pipeline = createModelPipeline("gpt-4o-mini", { apiKey: "openai-test" });
+    await pipeline.generateWaifu({
+      modelId: "gpt-4o-mini",
+      messages: contextWithWaifus,
+      systemPrompt: "stay in character",
+      memoriesBlock: memoriesPayload
+    });
+
+    const query = recentQueries().at(-1);
+    const input = query?.payload.input as Array<{ role: string; content: string }>;
+    // [chat[0], memories, chat[1], chat[2], director] — instructions holds leading, length 5
+    expect(input).toHaveLength(5);
+    expect(input.at(-4)).toEqual({ role: "system", content: memoriesPayload });
+    expect(input.at(-1)?.role).toBe("system");
+    expect(input.at(-1)?.content).toMatch(/<director_notes>/);
+  });
+
+  it("Anthropic: inserts memories as a mid-conversation user message at contextLen - 2", async () => {
+    mockFetch({ content: [{ type: "text", text: "ok" }] });
+
+    const pipeline = createModelPipeline("claude-haiku-4-5-20251001", { apiKey: "anthropic-test" });
+    await pipeline.generateWaifu({
+      modelId: "claude-haiku-4-5-20251001",
+      messages: contextWithWaifus,
+      systemPrompt: "stay in character",
+      memoriesBlock: memoriesPayload
+    });
+
+    const query = recentQueries().at(-1);
+    const messages = query?.payload.messages as Array<{ role: string; content: unknown }>;
+    // [chat[0], memories, chat[1], chat[2], director] — system field holds leading, length 5
+    expect(messages).toHaveLength(5);
+    expect(messages.at(-4)).toEqual({ role: "user", content: memoriesPayload });
+    expect(messages.at(-1)?.role).toBe("user");
+    expect(messages.at(-1)?.content).toMatch(/<director_notes>/);
+  });
+
+  it("Google: inserts memories as a googleUserTurn at contextLen - 2", async () => {
+    mockFetch({ candidates: [{ content: { parts: [{ text: "ok" }] } }] });
+
+    const pipeline = createModelPipeline("gemini-2.5-flash-lite", { apiKey: "g-test" });
+    await pipeline.generateWaifu({
+      modelId: "gemini-2.5-flash-lite",
+      messages: contextWithWaifus,
+      systemPrompt: "stay in character",
+      memoriesBlock: memoriesPayload
+    });
+
+    const query = recentQueries().at(-1);
+    const contents = query?.payload.contents as Array<{ role: string; parts: Array<{ text: string }> }>;
+    // [chat[0], memories, chat[1], chat[2], director] — systemInstruction holds leading, length 5
+    expect(contents).toHaveLength(5);
+    expect(contents.at(-4)).toEqual({ role: "user", parts: [{ text: memoriesPayload }] });
+    expect(contents.at(-1)?.parts[0].text).toMatch(/<director_notes>/);
+  });
+});
+
 describe("Google AI Studio (Gemini) pipeline", () => {
   it("forces the orchestrator tool, routes to the model-scoped URL, and parses functionCall args", async () => {
     mockFetch({
@@ -1601,6 +1701,79 @@ describe("Google AI Studio (Gemini) pipeline", () => {
     const query = recentQueries().at(-1);
     const contents = query?.payload.contents as Array<{ role: string; parts: Array<{ text: string }> }>;
     expect(contents.at(-1)?.parts[0].text).toContain("memories: ");
+    expect(query?.payload.toolConfig).toEqual({
+      functionCallingConfig: { mode: "ANY", allowedFunctionNames: ["manage_memories"] }
+    });
+  });
+
+  it("uses a shallow Google stage-manager schema and parses flat memory edits", async () => {
+    mockFetch({
+      candidates: [
+        {
+          content: {
+            parts: [
+              {
+                functionCall: {
+                  name: "manage_memories",
+                  args: {
+                    toolCalls: [
+                      { tool: "add_memory", waifuId: "yuki", content: "Kevin likes tea.", importance: 3 },
+                      { tool: "update_memory", memoryIndex: 1, content: "Kevin likes green tea.", importance: 4 },
+                      { tool: "merge_memories", sourceMemoryIndices: [1, 2], content: "Kevin likes green tea." },
+                      { tool: "archive_memory", memoryIndex: 3 },
+                      { tool: "no_change", reason: "done" }
+                    ]
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ]
+    });
+
+    const pipeline = createModelPipeline("gemini-3.1-flash-lite", { apiKey: "g-test" });
+    const calls = await pipeline.decideStageManager?.({
+      modelId: "gemini-3.1-flash-lite",
+      messages: context,
+      memories: [{ memoryIndex: 1, waifuId: "yuki", content: "Kevin likes tea.", importance: 3 }],
+      observations: [{ waifuId: "yuki", content: "Kevin likes green tea.", importance: 4, kind: "preference" }],
+      availableWaifuIds: ["yuki"],
+      systemPrompt: "memories",
+      reasoning: { effort: "high" }
+    });
+
+    expect(calls).toEqual([
+      { tool: "add_memory", memory: { waifuId: "yuki", content: "Kevin likes tea.", importance: 3 } },
+      { tool: "update_memory", memoryIndex: 1, patch: { content: "Kevin likes green tea.", importance: 4 } },
+      { tool: "merge_memories", sourceMemoryIndices: [1, 2], mergedContent: "Kevin likes green tea." },
+      { tool: "archive_memory", memoryIndex: 3 },
+      { tool: "no_change", reason: "done" }
+    ]);
+
+    const query = recentQueries().at(-1);
+    const generationConfig = query?.payload.generationConfig as { thinkingConfig?: { thinkingLevel?: string } };
+    expect(generationConfig.thinkingConfig).toEqual({ thinkingLevel: "high" });
+    const tools = query?.payload.tools as Array<{
+      functionDeclarations: Array<{
+        parameters: {
+          properties: {
+            toolCalls: {
+              items: { properties: Record<string, unknown> };
+            };
+          };
+        };
+      }>;
+    }>;
+    const itemProperties = tools[0]!.functionDeclarations[0]!.parameters.properties.toolCalls.items.properties;
+    expect(itemProperties).toHaveProperty("waifuId");
+    expect(itemProperties).toHaveProperty("content");
+    expect(itemProperties).toHaveProperty("importance");
+    expect(itemProperties).toHaveProperty("memoryIndex");
+    expect(itemProperties).toHaveProperty("sourceMemoryIndices");
+    expect(itemProperties).not.toHaveProperty("memory");
+    expect(itemProperties).not.toHaveProperty("patch");
+    expect(itemProperties).not.toHaveProperty("mergedContent");
     expect(query?.payload.toolConfig).toEqual({
       functionCallingConfig: { mode: "ANY", allowedFunctionNames: ["manage_memories"] }
     });

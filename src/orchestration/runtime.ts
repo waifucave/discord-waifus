@@ -819,12 +819,19 @@ export class RuntimeOrchestrator {
           incrementActive(this.activeWaifuQueries, waifuQueryKey);
           const participantDisplayNames = waifuParticipantDisplayNames(waifu, input.availableWaifus);
           const waifuStopSequences = participantDisplayNames.map((name) => `\n${name}:`);
+          const { systemPrompt, memoriesBlock } = await this.buildWaifuPromptParts(
+            input.guildId,
+            waifu,
+            input.availableWaifus,
+            { channelId: input.channelId }
+          );
           const result = await (async () => {
             try {
               return await waifuPipeline.generateWaifu({
                 modelId: waifuModelId,
                 messages: waifuMessages,
-                systemPrompt: await this.buildWaifuSystemPrompt(input.guildId, waifu, input.availableWaifus, { channelId: input.channelId }),
+                systemPrompt,
+                memoriesBlock,
                 sceneDirection: sceneDirectionForWaifu(
                   responder.sceneDirection,
                   input.sceneDirectionClippingEnabled
@@ -1070,7 +1077,8 @@ export class RuntimeOrchestrator {
       this.options.logger.error("Stage manager failed", {
         guildId,
         channelId,
-        message: error instanceof Error ? error.message : String(error)
+        message: error instanceof Error ? error.message : String(error),
+        details: error instanceof ProviderPipelineError ? summarizeProviderPipelineDetails(error.details) : undefined
       });
       return {
         status: "failed",
@@ -1801,12 +1809,12 @@ export class RuntimeOrchestrator {
     });
   }
 
-  private async buildWaifuSystemPrompt(
+  private async buildWaifuPromptParts(
     guildId: string,
     waifu: WaifuConfig,
     availableWaifus: WaifuConfig[],
     options?: { channelId?: string }
-  ): Promise<string> {
+  ): Promise<{ systemPrompt: string; memoriesBlock?: string }> {
     const [store, emojis, shortTermStore] = await Promise.all([
       this.readMemoryStore(),
       this.options.storage.readJson(
@@ -1816,10 +1824,9 @@ export class RuntimeOrchestrator {
       ),
       this.readShortTermMemoryStore()
     ]);
-    const memories = store.memories
+    const longTermLines = store.memories
       .filter((memory) => memory.guildId === guildId && memory.waifuId === waifu.id && memory.status === "active")
-      .map((memory) => `- ${memory.content}`)
-      .join("\n");
+      .map((memory) => `- ${memory.content}`);
     const channelId = options?.channelId;
     const now = Date.now();
     const shortTermLines = channelId
@@ -1878,23 +1885,28 @@ export class RuntimeOrchestrator {
       behaviorSections.push(`<tool_use>\n${toolUse}\n</tool_use>`);
     }
     const behaviorBlock = `<behavior>\n${behaviorSections.join("\n")}\n</behavior>`;
-    const memoryBlock = memories ? `<memories>\n${memories}\n</memories>` : null;
-    const shortTermBlock = shortTermLines.length
-      ? `<short_term_memory>\n${shortTermLines.join("\n")}\n</short_term_memory>`
-      : null;
+
+    const memoriesSubsections: string[] = [];
+    if (longTermLines.length) {
+      memoriesSubsections.push(`<long_term>\n${longTermLines.join("\n")}\n</long_term>`);
+    }
+    if (shortTermLines.length) {
+      memoriesSubsections.push(`<short_term>\n${shortTermLines.join("\n")}\n</short_term>`);
+    }
+    const memoriesBlock = memoriesSubsections.length
+      ? `<memories>\n${memoriesSubsections.join("\n")}\n</memories>`
+      : undefined;
 
     const currentTimeBlock = `<current_time>\n${formatPromptCurrentHour(new Date())}\n</current_time>`;
     const emojiBlock = `<server_emojis>\n${emojiList || "(none cached)"}\n</server_emojis>`;
 
-    return [
+    const systemPrompt = [
       behaviorBlock,
-      memoryBlock,
-      shortTermBlock,
       emojiBlock,
       currentTimeBlock
-    ]
-      .filter((section): section is string => Boolean(section))
-      .join("\n");
+    ].join("\n");
+
+    return { systemPrompt, memoriesBlock };
   }
 
   private buildOrchestratorSystemPrompt(

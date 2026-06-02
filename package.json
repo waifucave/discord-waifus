@@ -1,6 +1,6 @@
 {
   "name": "@starlight-ai/discord-waifus",
-  "version": "1.5.120",
+  "version": "1.5.121",
   "description": "Local Discord waifu orchestrator backend, web UI, and CLI.",
   "type": "module",
   "private": false,
@@ -35,7 +35,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p src/frontend/tsconfig.json --noEmit",
     "ocr:assemble": "node ./scripts/assemble-ocr-package.mjs",
     "ocr:validate": "node ./scripts/validate-ocr-package.mjs",
-    "prepublishOnly": "npm run test && npm run build"
+    "prepublishOnly": "npm run test && npm run build",
+    "release:beta": "node ./scripts/release.mjs"
   },
   "files": [
     "bin/",
@@ -61,10 +62,10 @@
     "zod": "^4.4.3"
   },
   "optionalDependencies": {
-    "@starlight-ai/discord-waifus-ocr-darwin-arm64": "1.5.120",
-    "@starlight-ai/discord-waifus-ocr-darwin-x64": "1.5.120",
-    "@starlight-ai/discord-waifus-ocr-linux-x64-gnu": "1.5.120",
-    "@starlight-ai/discord-waifus-ocr-win32-x64": "1.5.120"
+    "@starlight-ai/discord-waifus-ocr-darwin-arm64": "1.5.121",
+    "@starlight-ai/discord-waifus-ocr-darwin-x64": "1.5.121",
+    "@starlight-ai/discord-waifus-ocr-linux-x64-gnu": "1.5.121",
+    "@starlight-ai/discord-waifus-ocr-win32-x64": "1.5.121"
   },
   "devDependencies": {
     "@types/node": "^25.8.0",
