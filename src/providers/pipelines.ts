@@ -1770,6 +1770,19 @@ const ImportanceSchema = z.union([
   z.literal(4),
   z.literal(5)
 ]);
+const RawImportanceSchema = z.preprocess((value) => {
+  if (typeof value === "string" && /^[1-5]$/.test(value)) {
+    return Number(value);
+  }
+  return value;
+}, ImportanceSchema);
+
+const RawStageManagerObservationSchema = z.object({
+  waifuId: z.string().min(1),
+  content: z.string().min(1),
+  importance: RawImportanceSchema,
+  kind: z.enum(OBSERVATION_KINDS)
+});
 
 const RawRespondingWaifuSchema = z.object({
   waifuId: z.string().min(1),
@@ -1795,7 +1808,7 @@ const RawOrchestratorDecisionSchema = z.object({
 const RawStageManagerPatchSchema = z.object({
   waifuId: z.string().min(1).optional(),
   content: z.string().min(1).optional(),
-  importance: ImportanceSchema.optional()
+  importance: RawImportanceSchema.optional()
 });
 
 const RawStageManagerToolCallSchema = z.discriminatedUnion("tool", [
@@ -1804,7 +1817,7 @@ const RawStageManagerToolCallSchema = z.discriminatedUnion("tool", [
     memory: z.object({
       waifuId: z.string().min(1),
       content: z.string().min(1),
-      importance: ImportanceSchema
+      importance: RawImportanceSchema
     })
   }),
   z.object({
@@ -1831,7 +1844,7 @@ const RawFlatStageManagerToolCallSchema = z.object({
   tool: z.enum(["add_memory", "update_memory", "archive_memory", "merge_memories", "no_change"]),
   waifuId: z.string().min(1).optional(),
   content: z.string().min(1).optional(),
-  importance: ImportanceSchema.optional(),
+  importance: RawImportanceSchema.optional(),
   memoryIndex: z.number().int().min(1).optional(),
   sourceMemoryIndices: z.array(z.number().int().min(1)).min(2).optional(),
   mergedContent: z.string().min(1).optional(),
@@ -1943,7 +1956,7 @@ function parseStageManagerObservations(text: string): StageManagerObservation[] 
   try {
     const parsed = JSON.parse(stripCodeFence(text));
     const raw = Array.isArray(parsed) ? parsed : (parsed.observations ?? []);
-    return raw.map((item: unknown) => StageManagerObservationSchema.parse(item));
+    return raw.map((item: unknown) => StageManagerObservationSchema.parse(RawStageManagerObservationSchema.parse(item)));
   } catch (error) {
     throw new ProviderPipelineError("Provider did not return valid stage-manager observations.", {
       text,
@@ -2554,6 +2567,10 @@ function googleAiStudioSchema(schema: unknown): unknown {
 
   for (const [key, value] of Object.entries(schema)) {
     if (key === "additionalProperties" || key === "anyOf") continue;
+    if (key === "enum" && Array.isArray(value)) {
+      converted.enum = value.map(String);
+      continue;
+    }
     if (key === "type" && Array.isArray(value)) {
       const nonNullTypes = value.filter((item) => item !== "null");
       nullable = nonNullTypes.length !== value.length;

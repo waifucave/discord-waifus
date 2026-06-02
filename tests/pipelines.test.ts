@@ -1717,8 +1717,8 @@ describe("Google AI Studio (Gemini) pipeline", () => {
                   name: "manage_memories",
                   args: {
                     toolCalls: [
-                      { tool: "add_memory", waifuId: "yuki", content: "Kevin likes tea.", importance: 3 },
-                      { tool: "update_memory", memoryIndex: 1, content: "Kevin likes green tea.", importance: 4 },
+                      { tool: "add_memory", waifuId: "yuki", content: "Kevin likes tea.", importance: "3" },
+                      { tool: "update_memory", memoryIndex: 1, content: "Kevin likes green tea.", importance: "4" },
                       { tool: "merge_memories", sourceMemoryIndices: [1, 2], content: "Kevin likes green tea." },
                       { tool: "archive_memory", memoryIndex: 3 },
                       { tool: "no_change", reason: "done" }
@@ -1769,6 +1769,7 @@ describe("Google AI Studio (Gemini) pipeline", () => {
     expect(itemProperties).toHaveProperty("waifuId");
     expect(itemProperties).toHaveProperty("content");
     expect(itemProperties).toHaveProperty("importance");
+    expect(itemProperties.importance).toMatchObject({ type: "integer", enum: ["1", "2", "3", "4", "5"] });
     expect(itemProperties).toHaveProperty("memoryIndex");
     expect(itemProperties).toHaveProperty("sourceMemoryIndices");
     expect(itemProperties).not.toHaveProperty("memory");
@@ -1998,7 +1999,7 @@ describe("Google AI Studio (Gemini) pipeline", () => {
                   name: "record_observations",
                   arguments: JSON.stringify({
                     observations: [
-                      { waifuId: "yuki", content: "Kevin likes tea.", importance: 3, kind: "preference" }
+                      { waifuId: "yuki", content: "Kevin likes tea.", importance: "3", kind: "preference" }
                     ]
                   })
                 }
@@ -2130,7 +2131,7 @@ describe("Google AI Studio (Gemini) pipeline", () => {
       availableWaifuIds: ["yuki"]
     });
 
-    expect(observations?.[0]).toMatchObject({ kind: "preference" });
+    expect(observations?.[0]).toMatchObject({ kind: "preference", importance: 3 });
     const query = recentQueries().at(-1);
     expect(query?.payload.toolConfig).toEqual({
       functionCallingConfig: { mode: "ANY", allowedFunctionNames: ["record_observations"] }
@@ -2139,6 +2140,22 @@ describe("Google AI Studio (Gemini) pipeline", () => {
     expect(contents).toHaveLength(1);
     expect(contents[0].parts[0].text).not.toContain("memories:");
     expect(contents[0].parts[0].text).not.toContain("observations:");
+    const toolParameters = (query?.payload.tools as Array<{
+      functionDeclarations: Array<{
+        parameters: {
+          properties: {
+            observations: {
+              items: {
+                properties: {
+                  importance: Record<string, unknown>;
+                };
+              };
+            };
+          };
+        };
+      }>;
+    }>)[0].functionDeclarations[0].parameters.properties.observations.items.properties;
+    expect(toolParameters.importance).toMatchObject({ type: "integer", enum: ["1", "2", "3", "4", "5"] });
   });
 
   it("OpenAI Chat: collects all record_short_term_memory calls alongside the optional PickNextWaifu", async () => {
