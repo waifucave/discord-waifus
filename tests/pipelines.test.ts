@@ -322,7 +322,7 @@ describe("provider-native decision tools", () => {
     expect(body).not.toHaveProperty("tool_choice");
   });
 
-  it("uses Z.AI-compatible stop and top_p fields for chat completions", async () => {
+  it("uses Z.AI-compatible top_p clamping for chat completions", async () => {
     mockFetch({ choices: [{ message: { content: "ok" } }] });
 
     const pipeline = createModelPipeline("glm-5.1", { apiKey: "zai-test" });
@@ -335,8 +335,8 @@ describe("provider-native decision tools", () => {
 
     const body = lastFetchJsonBody();
     expect(body.temperature).toBe(1);
-    expect(body.stop).toEqual(["\n[timestamp:"]);
     expect(body).not.toHaveProperty("top_p");
+    expect(body).not.toHaveProperty("stop");
   });
 
   it("does not expose xAI multi-agent models through the chat/tools pipeline", () => {
@@ -434,7 +434,7 @@ describe("provider-native decision tools", () => {
     expect(messages.some((message) => message.content.includes("[index:"))).toBe(false);
     expect(
       messages.some((message) =>
-        message.content === "[sender: Kevin]\nthat one\n[replying to: Aria: three]"
+        message.content === "> Aria: three\nKevin: that one"
       )
     ).toBe(true);
   });
@@ -807,7 +807,7 @@ describe("provider-native decision tools", () => {
       systemPrompt: "stay in character"
     });
 
-    expect(recentQueries().at(-1)?.payload.stop).toEqual(["\n[timestamp:", "\n[sender:"]);
+    expect(recentQueries().at(-1)?.payload).not.toHaveProperty("stop");
   });
 
   it("maps xAI disabled reasoning to reasoning_effort none", async () => {
@@ -823,7 +823,7 @@ describe("provider-native decision tools", () => {
 
     const body = lastFetchJsonBody();
     expect(body.reasoning_effort).toBe("none");
-    expect(body.stop).toEqual(["\n[timestamp:", "\n[sender:"]);
+    expect(body).not.toHaveProperty("stop");
   });
 
   it("sends every waifu context message as assistant to OpenAI-compatible chat", async () => {
@@ -839,8 +839,8 @@ describe("provider-native decision tools", () => {
     const query = recentQueries().at(-1);
     const messages = query?.payload.messages as Array<{ role: string; content: string }>;
     expect(messages.slice(1).map((message) => message.role)).toEqual(["user", "assistant", "assistant", "system"]);
-    expect(messages[2].content).toContain("[sender: Yuki]");
-    expect(messages[3].content).toContain("[sender: Mika]");
+    expect(messages[2].content).toContain("Yuki:");
+    expect(messages[3].content).toContain("Mika:");
   });
 
   it("sends every waifu context message as assistant to OpenAI Responses", async () => {
@@ -856,17 +856,17 @@ describe("provider-native decision tools", () => {
     const query = recentQueries().at(-1);
     const input = query?.payload.input as Array<{ role: string; content: string }>;
     expect(input.map((message) => message.role)).toEqual(["user", "assistant", "assistant", "system"]);
-    expect(input[1].content).toContain("[sender: Yuki]");
-    expect(input[2].content).toContain("[sender: Mika]");
+    expect(input[1].content).toContain("Yuki:");
+    expect(input[2].content).toContain("Mika:");
   });
 
-  it("omits unsupported stop from OpenAI Responses and trims stop markers locally", async () => {
+  it("never sends a stop field from the OpenAI Responses waifu path", async () => {
     mockFetch({
       output: [
         {
           type: "message",
           role: "assistant",
-          content: [{ type: "output_text", text: "hello\n[sender: Kevin]" }]
+          content: [{ type: "output_text", text: "hello" }]
         }
       ]
     });
@@ -1033,7 +1033,7 @@ describe("provider-native decision tools", () => {
     });
   });
 
-  it("passes waifu stop sequences to Anthropic Messages", async () => {
+  it("does not send a stop_sequences field on the Anthropic Messages waifu path", async () => {
     mockFetch({ content: [{ type: "text", text: "ok" }] });
 
     const pipeline = createModelPipeline("claude-haiku-4-5-20251001", { apiKey: "anthropic-test" });
@@ -1044,7 +1044,7 @@ describe("provider-native decision tools", () => {
     });
 
     const query = recentQueries().at(-1);
-    expect(query?.payload.stop_sequences).toEqual(["\n[timestamp:", "\n[sender:"]);
+    expect(query?.payload).not.toHaveProperty("stop_sequences");
   });
 
   it("sends every waifu context message as assistant to Anthropic Messages", async () => {
@@ -1060,8 +1060,8 @@ describe("provider-native decision tools", () => {
     const query = recentQueries().at(-1);
     const messages = query?.payload.messages as Array<{ role: string; content: string }>;
     expect(messages.map((message) => message.role)).toEqual(["user", "assistant", "assistant", "user"]);
-    expect(messages[1].content).toContain("[sender: Yuki]");
-    expect(messages[2].content).toContain("[sender: Mika]");
+    expect(messages[1].content).toContain("Yuki:");
+    expect(messages[2].content).toContain("Mika:");
   });
 
   it("injects a reply_style hint when non-normal", async () => {
@@ -1753,6 +1753,160 @@ describe("Google AI Studio (Gemini) pipeline", () => {
       "HARM_CATEGORY_SEXUALLY_EXPLICIT"
     ]);
     expect(safety.every((entry) => entry.threshold === "BLOCK_NONE")).toBe(true);
+  });
+
+  it("forces the OpenAI Chat observer tool with chat context only", async () => {
+    mockFetch({
+      choices: [
+        {
+          message: {
+            tool_calls: [
+              {
+                function: {
+                  name: "record_observations",
+                  arguments: JSON.stringify({
+                    observations: [
+                      { waifuId: "yuki", content: "Kevin likes tea.", importance: 3, kind: "preference" }
+                    ]
+                  })
+                }
+              }
+            ]
+          }
+        }
+      ]
+    });
+
+    const pipeline = createModelPipeline("grok-4.3", { apiKey: "xai-test" });
+    const observations = await pipeline.decideStageManagerObservations?.({
+      modelId: "grok-4.3",
+      messages: context,
+      systemPrompt: "extract",
+      availableWaifuIds: ["yuki"]
+    });
+
+    expect(observations).toEqual([
+      { waifuId: "yuki", content: "Kevin likes tea.", importance: 3, kind: "preference" }
+    ]);
+    const query = recentQueries().at(-1);
+    expect(query?.role).toBe("stage_manager");
+    expect((query?.payload.tools as Array<{ function: { name: string } }>)[0].function.name).toBe("record_observations");
+    expect(query?.payload.tool_choice).toMatchObject({ function: { name: "record_observations" } });
+    const messages = query?.payload.messages as Array<{ role: string; content: string }>;
+    expect(messages.some((message) => typeof message.content === "string" && message.content.includes("memories:"))).toBe(false);
+    expect(messages.some((message) => typeof message.content === "string" && message.content.includes("observations:"))).toBe(false);
+  });
+
+  it("forces the OpenAI Responses observer tool with chat context only", async () => {
+    mockFetch({
+      output: [
+        {
+          type: "function_call",
+          name: "record_observations",
+          arguments: JSON.stringify({
+            observations: [
+              { waifuId: "yuki", content: "Kevin likes tea.", importance: 3, kind: "preference" }
+            ]
+          })
+        }
+      ]
+    });
+
+    const pipeline = createModelPipeline("gpt-4o-mini", { apiKey: "openai-test" });
+    const observations = await pipeline.decideStageManagerObservations?.({
+      modelId: "gpt-4o-mini",
+      messages: context,
+      systemPrompt: "extract",
+      availableWaifuIds: ["yuki", "mika"]
+    });
+
+    expect(observations?.[0]).toMatchObject({ waifuId: "yuki", kind: "preference" });
+    const query = recentQueries().at(-1);
+    expect((query?.payload.tools as Array<{ name: string }>)[0].name).toBe("record_observations");
+    expect(query?.payload.tool_choice).toEqual({ type: "function", name: "record_observations" });
+    const inputMessages = query?.payload.input as Array<{ content: string }>;
+    expect(inputMessages).toHaveLength(1);
+    expect(inputMessages[0].content).not.toContain("memories:");
+    expect(inputMessages[0].content).not.toContain("observations:");
+    const toolParameters = (query?.payload.tools as Array<{
+      parameters: { properties: { observations: { items: { properties: { waifuId: Record<string, unknown>; kind: Record<string, unknown> } } } } };
+    }>)[0].parameters.properties.observations.items.properties;
+    expect(toolParameters.waifuId).toMatchObject({ enum: ["yuki", "mika"] });
+    expect(toolParameters.kind).toMatchObject({ enum: ["fact", "preference", "relationship", "event", "commitment"] });
+  });
+
+  it("forces the Anthropic observer tool with chat context only", async () => {
+    mockFetch({
+      content: [
+        {
+          type: "tool_use",
+          name: "record_observations",
+          input: {
+            observations: [
+              { waifuId: "yuki", content: "Kevin likes tea.", importance: 3, kind: "preference" }
+            ]
+          }
+        }
+      ]
+    });
+
+    const pipeline = createModelPipeline("claude-haiku-4-5-20251001", { apiKey: "anthropic-test" });
+    const observations = await pipeline.decideStageManagerObservations?.({
+      modelId: "claude-haiku-4-5-20251001",
+      messages: context,
+      systemPrompt: "extract",
+      availableWaifuIds: ["yuki"]
+    });
+
+    expect(observations?.[0]).toMatchObject({ waifuId: "yuki" });
+    const query = recentQueries().at(-1);
+    expect((query?.payload.tools as Array<{ name: string }>)[0].name).toBe("record_observations");
+    expect(query?.payload.tool_choice).toEqual({ type: "tool", name: "record_observations" });
+    const messages = query?.payload.messages as Array<{ role: string; content: string }>;
+    expect(messages).toHaveLength(1);
+    expect(messages[0].content).not.toContain("memories:");
+    expect(messages[0].content).not.toContain("observations:");
+  });
+
+  it("forces the Google observer tool with chat context only", async () => {
+    mockFetch({
+      candidates: [
+        {
+          content: {
+            parts: [
+              {
+                functionCall: {
+                  name: "record_observations",
+                  args: {
+                    observations: [
+                      { waifuId: "yuki", content: "Kevin likes tea.", importance: 3, kind: "preference" }
+                    ]
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ]
+    });
+
+    const pipeline = createModelPipeline("gemini-2.5-flash-lite", { apiKey: "g-test" });
+    const observations = await pipeline.decideStageManagerObservations?.({
+      modelId: "gemini-2.5-flash-lite",
+      messages: context,
+      systemPrompt: "extract",
+      availableWaifuIds: ["yuki"]
+    });
+
+    expect(observations?.[0]).toMatchObject({ kind: "preference" });
+    const query = recentQueries().at(-1);
+    expect(query?.payload.toolConfig).toEqual({
+      functionCallingConfig: { mode: "ANY", allowedFunctionNames: ["record_observations"] }
+    });
+    const contents = query?.payload.contents as Array<{ role: string; parts: Array<{ text: string }> }>;
+    expect(contents).toHaveLength(1);
+    expect(contents[0].parts[0].text).not.toContain("memories:");
+    expect(contents[0].parts[0].text).not.toContain("observations:");
   });
 });
 

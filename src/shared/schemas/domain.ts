@@ -173,6 +173,7 @@ export const AgentConfigSchema = RevisionedRecordSchema.extend({
   contextWindow: z.number().int().min(1).max(100).default(20),
   prompt: z.string().default(""),
   useLegacyPrompt: z.boolean().default(false),
+  clipSceneDirection: z.boolean().default(false),
   reasoning: ReasoningConfigSchema,
   promptSections: OrchestratorPromptSectionsSchema
 });
@@ -352,6 +353,7 @@ export const StageManagerEditHistoryEntrySchema = z.object({
   tool: z.enum(["add_memory", "update_memory", "archive_memory", "merge_memories", "no_change"]),
   affectedMemoryIds: z.array(z.string()).default([]),
   summary: z.string().default(""),
+  observationCount: z.number().int().min(0).optional(),
   createdAt: IsoDateStringSchema
 });
 export type StageManagerEditHistoryEntry = z.infer<typeof StageManagerEditHistoryEntrySchema>;

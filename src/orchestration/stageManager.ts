@@ -8,6 +8,17 @@ const ImportanceSchema = z.union([
   z.literal(5)
 ]);
 
+export const OBSERVATION_KINDS = ["fact", "preference", "relationship", "event", "commitment"] as const;
+
+export const StageManagerObservationSchema = z.object({
+  waifuId: z.string().min(1),
+  content: z.string().min(1),
+  importance: ImportanceSchema,
+  kind: z.enum(OBSERVATION_KINDS)
+});
+
+export type StageManagerObservation = z.infer<typeof StageManagerObservationSchema>;
+
 const StageManagerMemoryInputSchema = z.object({
   waifuId: z.string().min(1),
   content: z.string().min(1),

@@ -117,48 +117,50 @@ function clipReplyPreview(preview: string): string {
     : preview;
 }
 
-function replyToLine(message: ContextMessage): string | null {
+function replyQuoteLine(message: ContextMessage): string | null {
   if (!message.replyTo) return null;
   const authorName = message.replyTo.authorName?.trim();
   const preview = message.replyTo.contentPreview?.trim();
   if (authorName && preview) {
-    return `[replying to: ${authorName}: ${clipReplyPreview(preview)}]`;
+    return `> ${authorName}: ${clipReplyPreview(preview)}`;
   }
   if (authorName) {
-    return `[replying to: ${authorName}]`;
+    return `> ${authorName}`;
   }
   if (preview) {
-    return `[replying to: ${clipReplyPreview(preview)}]`;
+    return `> ${clipReplyPreview(preview)}`;
   }
   return null;
 }
 
 export function formatOrchestratorMessageBlock(message: ContextMessage): string {
   const lines: string[] = [];
-  lines.push(`[sender: ${message.displayName}]`);
-  lines.push(message.content);
+  const quote = replyQuoteLine(message);
+  if (quote) lines.push(quote);
+  lines.push(senderPrefixedContent(message.displayName, message.content));
   const imageCount = message.images?.length ?? 0;
   if (imageCount > 0) {
     lines.push(`[attachments: ${imageCount}x image]`);
     appendImageTextLines(lines, message.images);
   }
-  const reply = replyToLine(message);
-  if (reply) lines.push(reply);
   return lines.join("\n");
 }
 
 export function formatWaifuContextBlock(message: ContextMessage): string {
   const lines: string[] = [];
-  lines.push(`[sender: ${message.displayName}]`);
-  lines.push(message.content);
+  const quote = replyQuoteLine(message);
+  if (quote) lines.push(quote);
+  lines.push(senderPrefixedContent(message.displayName, message.content));
   const imageCount = message.images?.length ?? 0;
   if (imageCount > 0) {
     lines.push(`[attachments: ${imageCount}x image]`);
     appendImageTextLines(lines, message.images);
   }
-  const reply = replyToLine(message);
-  if (reply) lines.push(reply);
   return lines.join("\n");
+}
+
+function senderPrefixedContent(displayName: string, content: string): string {
+  return content.length > 0 ? `${displayName}: ${content}` : `${displayName}:`;
 }
 
 function appendImageTextLines(lines: string[], images: AttachmentImage[] | undefined): void {

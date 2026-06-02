@@ -45,6 +45,7 @@ export function OrchestratorView() {
     toolUse: true
   });
   const [useLegacyPrompt, setUseLegacyPrompt] = useState(false);
+  const [clipSceneDirection, setClipSceneDirection] = useState(false);
   const [botDisplayName, setBotDisplayName] = useState("Orchestrator");
   const [botApplicationId, setBotApplicationId] = useState("");
   const [botToken, setBotToken] = useState("");
@@ -60,6 +61,7 @@ export function OrchestratorView() {
     setReasoning(remoteConfig.data.reasoning ?? {});
     setPromptSections(remoteConfig.data.promptSections);
     setUseLegacyPrompt(remoteConfig.data.useLegacyPrompt ?? false);
+    setClipSceneDirection(remoteConfig.data.clipSceneDirection ?? false);
   }, [remoteConfig.data]);
 
   useEffect(() => {
@@ -87,7 +89,8 @@ export function OrchestratorView() {
         enabled: true,
         reasoning,
         promptSections,
-        useLegacyPrompt
+        useLegacyPrompt,
+        clipSceneDirection
       });
       remoteConfig.setData(saved);
       if (bots.data) {
@@ -304,6 +307,11 @@ export function OrchestratorView() {
           label="Use legacy prompt (overrides all sections)"
           checked={useLegacyPrompt}
           onChange={setUseLegacyPrompt}
+        />
+        <Toggle
+          label="Clip scene direction before waifu call"
+          checked={clipSceneDirection}
+          onChange={setClipSceneDirection}
         />
         {!useLegacyPrompt && (
           <div className="grid grid-2" style={{ marginTop: 12 }}>

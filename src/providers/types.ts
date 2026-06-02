@@ -1,7 +1,7 @@
 import { OrchestratorDecisionHistoryEntry, ProviderId, ReasoningConfig } from "../shared/schemas/domain.js";
 import { ContextMessage, OrchestratorNoReplyMarker } from "../orchestration/context.js";
 import { OrchestratorDecision, ReplyStyle } from "../orchestration/decisions.js";
-import { StageManagerToolCall } from "../orchestration/stageManager.js";
+import { StageManagerObservation, StageManagerToolCall } from "../orchestration/stageManager.js";
 import { ReviewerDecision } from "../orchestration/reviewer.js";
 import { WaifuMemory } from "../shared/schemas/domain.js";
 
@@ -68,6 +68,11 @@ export type StageManagerMemory = {
 export type StageManagerRequest = ProviderRequest & {
   memories: StageManagerMemory[];
   availableWaifuIds?: string[];
+  observations?: StageManagerObservation[];
+};
+
+export type StageManagerObserveRequest = ProviderRequest & {
+  availableWaifuIds?: string[];
 };
 
 export type WaifuGenerationResult = {
@@ -83,6 +88,7 @@ export type WaifuGenerationResult = {
 export interface ModelPipeline {
   generateWaifu(request: WaifuGenerationRequest): Promise<WaifuGenerationResult>;
   decideOrchestrator?(request: ProviderRequest): Promise<OrchestratorDecision>;
+  decideStageManagerObservations?(request: StageManagerObserveRequest): Promise<StageManagerObservation[]>;
   decideStageManager?(request: StageManagerRequest): Promise<StageManagerToolCall[]>;
   decideReviewer?(request: ProviderRequest & { message: string }): Promise<ReviewerDecision>;
 }

@@ -16,6 +16,7 @@ import {
 } from "../discord/client.js";
 import { modelVisibleEmojiToken, stripLeakedContextHeader } from "../discord/normalization.js";
 import { splitWaifuReply, typingDelayMs } from "./messageSplit.js";
+import { extractReplyQuote } from "./replyQuote.js";
 import { getModel } from "../providers/catalog.js";
 import { createModelPipeline, PipelineCredentials, ProviderPipelineError } from "../providers/pipelines.js";
 import { ModelPipeline, StageManagerMemory } from "../providers/types.js";
@@ -43,7 +44,7 @@ import {
 } from "../shared/schemas/domain.js";
 import { createRevisionedBase, nowIso } from "../shared/schemas/common.js";
 import { StorageService } from "../storage/storageService.js";
-import { StageManagerToolCall } from "./stageManager.js";
+import { StageManagerObservation, StageManagerToolCall } from "./stageManager.js";
 import {
   ChannelSessionState,
   ChannelSessionStateSchema,
@@ -84,6 +85,7 @@ type ChannelRunOptions = {
   initialResponders?: OrchestratorRespondingWaifu[];
   initialReason?: string;
   firstOrchestratorMustReply?: boolean;
+  firstResponderSceneDirectionOverride?: string;
 };
 
 type ExecuteResponderDecisionInput = {
@@ -96,6 +98,7 @@ type ExecuteResponderDecisionInput = {
   decisionDelayBaseMs: number;
   useDecisionRelativeDelays: boolean;
   availableWaifus: WaifuConfig[];
+  sceneDirectionClippingEnabled: boolean;
   signal: AbortSignal;
 };
 
@@ -348,10 +351,6 @@ export class RuntimeOrchestrator {
         await event.respond("Runtime is paused; /run did not start.");
         return;
       }
-      if (event.sceneDirection && !event.waifuId) {
-        await event.respond("scene_direction requires a waifu option.");
-        return;
-      }
       if (event.waifuId) {
         const resolved = await this.resolveRunWaifu(event.guildId, event.channelId, event.waifuId);
         if (typeof resolved === "string") {
@@ -372,9 +371,10 @@ export class RuntimeOrchestrator {
         });
         return;
       }
-      await event.respond("Started orchestrator run.");
+      await event.respond(event.sceneDirection ? "Started orchestrator run with scene direction." : "Started orchestrator run.");
       void this.startChannelRun(event.guildId, event.channelId, `slash-run:${event.userId}`, {
-        firstOrchestratorMustReply: true
+        firstOrchestratorMustReply: true,
+        firstResponderSceneDirectionOverride: event.sceneDirection
       });
     } catch (error) {
       this.options.logger.error("Run command failed", {
@@ -548,6 +548,7 @@ export class RuntimeOrchestrator {
         return;
       }
       const availableWaifus = await this.listAvailableWaifusForChannel(channel);
+      const orchestrator = await this.readAgentConfig("orchestrator", 20);
       const decision: OrchestratorDecision = {
         action: "reply",
         respondingWaifus: options.initialResponders,
@@ -571,6 +572,7 @@ export class RuntimeOrchestrator {
         decisionDelayBaseMs: Date.now(),
         useDecisionRelativeDelays: true,
         availableWaifus,
+        sceneDirectionClippingEnabled: sceneDirectionClippingEnabled(orchestrator),
         signal
       });
       if (executedCount === 0) {
@@ -640,6 +642,12 @@ export class RuntimeOrchestrator {
         orchestratorTyping.stop();
       }
       decision = capDecisionDelays(decision);
+      if (requireReply) {
+        decision = applyFirstResponderSceneDirectionOverride(
+          decision,
+          options.firstResponderSceneDirectionOverride
+        );
+      }
       const decisionDelayBaseMs = Date.now();
       const useDecisionRelativeDelays = hasRecentUserMessage(messages, 4);
       const decisionId = randomUUID();
@@ -669,6 +677,7 @@ export class RuntimeOrchestrator {
         decisionDelayBaseMs,
         useDecisionRelativeDelays,
         availableWaifus,
+        sceneDirectionClippingEnabled: sceneDirectionClippingEnabled(orchestrator),
         signal
       });
       if (executedCount === 0) {
@@ -818,7 +827,10 @@ export class RuntimeOrchestrator {
                 modelId: waifuModelId,
                 messages: waifuMessages,
                 systemPrompt: await this.buildWaifuSystemPrompt(input.guildId, waifu, input.availableWaifus),
-                sceneDirection: clipSceneDirectionForWaifu(responder.sceneDirection),
+                sceneDirection: sceneDirectionForWaifu(
+                  responder.sceneDirection,
+                  input.sceneDirectionClippingEnabled
+                ),
                 replyStyle: responder.replyStyle,
                 availableWaifuIds: nextWaifuIds,
                 pickNextWaifuToolEnabled: waifu.tools.pickNextWaifu,
@@ -833,18 +845,29 @@ export class RuntimeOrchestrator {
             }
           })();
           const activeAuthorIds = waifuMessages.map((message) => message.authorId);
-          const cleanedContent = stripLeakedContextHeader(result.content, {
+          const strippedContent = stripLeakedContextHeader(result.content, {
             senderDisplayName: waifu.displayName
           });
-          if (cleanedContent !== result.content) {
+          if (strippedContent !== result.content) {
             this.options.logger.warn("Stripped leaked context header from waifu reply", {
               guildId: input.guildId,
               channelId: input.channelId,
               waifuId: waifu.id,
               before: result.content.slice(0, 80),
-              after: cleanedContent.slice(0, 80)
+              after: strippedContent.slice(0, 80)
             });
           }
+          const quoteExtraction = extractReplyQuote(strippedContent, waifuMessages);
+          if (strippedContent !== quoteExtraction.cleanedContent) {
+            this.options.logger.info("Extracted leading reply quote from waifu reply", {
+              guildId: input.guildId,
+              channelId: input.channelId,
+              waifuId: waifu.id,
+              matchedMessageId: quoteExtraction.replyToMessageId ?? null,
+              quotePreview: strippedContent.slice(0, 120)
+            });
+          }
+          const cleanedContent = quoteExtraction.cleanedContent;
           const chunks = splitWaifuReply(cleanedContent);
           if (chunks.length === 0) {
             this.options.logger.warn("Waifu reply was empty after cleaning; nothing sent", {
@@ -853,13 +876,14 @@ export class RuntimeOrchestrator {
               waifuId: waifu.id
             });
           }
-          const replyToMessageId = replyTargetForFreshContext(responder.replyToMessageId, waifuMessages);
-          if (responder.replyToMessageId && !replyToMessageId) {
+          const chosenReplyTarget = quoteExtraction.replyToMessageId ?? responder.replyToMessageId;
+          const replyToMessageId = replyTargetForFreshContext(chosenReplyTarget, waifuMessages);
+          if (chosenReplyTarget && !replyToMessageId) {
             this.options.logger.info("Omitting reply target because it is the latest context message", {
               guildId: input.guildId,
               channelId: input.channelId,
               waifuId: waifu.id,
-              replyToMessageId: responder.replyToMessageId
+              replyToMessageId: chosenReplyTarget
             });
           }
           await this.sendWaifuChunks({
@@ -991,42 +1015,72 @@ export class RuntimeOrchestrator {
         return { status: "disabled" };
       }
       const pipeline = await this.pipelineFor(config.modelId);
-      if (!pipeline.decideStageManager) {
+      if (!pipeline.decideStageManagerObservations || !pipeline.decideStageManager) {
         throw new Error(`Model ${config.modelId} does not implement stage-manager decisions.`);
       }
       const channel = server.channels[channelId];
       const availableWaifus = channel ? await this.listAvailableWaifusForChannel(channel) : [];
+      const allowedWaifuIds = availableWaifus.map((waifu) => waifu.id);
       let messages = await this.options.discord.fetchFreshContext({
         guildId,
         channelId,
         limit: server.contextWindows.stageManager ?? config.contextWindow
       });
       messages = await this.messagesForModel(messages, config.modelId);
+
+      const observations = await pipeline.decideStageManagerObservations({
+        modelId: config.modelId,
+        messages,
+        systemPrompt: config.prompt,
+        availableWaifuIds: allowedWaifuIds,
+        reasoning: config.reasoning
+      });
+      const allowedObservations = observations.filter((observation) => allowedWaifuIds.includes(observation.waifuId));
+
+      if (allowedObservations.length === 0) {
+        await this.appendStageManagerHistory({
+          id: randomUUID(),
+          guildId,
+          channelId,
+          tool: "no_change",
+          affectedMemoryIds: [],
+          summary: observations.length === 0
+            ? "No observations extracted"
+            : `Dropped ${observations.length} observation(s) with unknown waifu ids`,
+          observationCount: observations.length,
+          createdAt: nowIso()
+        });
+        return { status: "no_change" };
+      }
+
       const store = await this.readMemoryStore();
       const memoryInput = stageManagerMemories(
         store.memories,
         guildId,
-        availableWaifus.map((waifu) => waifu.id)
+        allowedWaifuIds,
+        { observations: allowedObservations }
       );
       const calls = await pipeline.decideStageManager({
         modelId: config.modelId,
-        messages,
+        messages: [],
         systemPrompt: config.prompt,
         memories: memoryInput.memories,
-        availableWaifuIds: availableWaifus.map((waifu) => waifu.id),
+        observations: allowedObservations,
+        availableWaifuIds: allowedWaifuIds,
         reasoning: config.reasoning
       });
       const result = await this.applyStageManagerCalls(
         guildId,
         calls,
         memoryInput.memoryIdByIndex,
-        availableWaifus.map((waifu) => waifu.id)
+        allowedWaifuIds
       );
       for (const entry of result.historyEntries) {
         await this.appendStageManagerHistory({
           ...entry,
           guildId,
-          channelId
+          channelId,
+          observationCount: allowedObservations.length
         });
       }
       return { status: result.changed ? "updated" : "no_change" };
@@ -1753,11 +1807,12 @@ export class RuntimeOrchestrator {
       .map(modelVisibleEmojiToken)
       .join(" ");
     const hardRules = [
-      "Each incoming message in this conversation arrives wrapped in inbound-only metadata tags on their own lines so you can read context:",
-      "a `[sender: DisplayName]` line opens the message, the body follows on the next lines, then optional `[attachments: Nx image]`, optional `[image_text: ...]` lines (one per image with extracted text), and an optional `[replying to: AuthorName: preview]` line.",
-      "These tags are framing only — they are NOT part of what the speaker actually wrote, and they are NOT how Discord messages look.",
-      "Your reply is the raw message body that will be sent verbatim to Discord. It MUST NOT contain any bracketed metadata tag (no `[sender: ...]`, no `[attachments: ...]`, no `[image_text: ...]`, no `[replying to: ...]`, no `[timestamp: ...]`, no `[reactions: ...]`, no `[index: ...]`, no `[scene_direction: ...]`, no other `[tag: value]` constructions).",
-      "It MUST NOT begin with your own display name followed by a colon, and MUST NOT quote or paraphrase any prior message's framing tags. Begin with the first word you are actually saying.",
+      "Each incoming message in this conversation arrives in a chat-transcript shape so you can read context:",
+      "an optional `> Author: preview` line appears first when the message is replying to an earlier one (Discord blockquote shape); the next line is `DisplayName: <body>` (the body may continue on additional lines); then optional `[attachments: Nx image]` and optional `[image_text: ...]` lines (one per image with extracted text).",
+      "The `> Author: ...` quote, the `DisplayName:` prefix, and any bracketed lines are framing only — they are NOT part of what the speaker actually wrote, and they are NOT how Discord messages look.",
+      "Your reply is the raw message body that will be sent verbatim to Discord. It MUST NOT contain any bracketed metadata tag (no `[attachments: ...]`, no `[image_text: ...]`, no `[replying to: ...]`, no `[timestamp: ...]`, no `[reactions: ...]`, no `[index: ...]`, no `[scene_direction: ...]`, no other `[tag: value]` constructions).",
+      "It MUST NOT begin with your own display name followed by a colon, and MUST NOT echo or paraphrase any prior message's bracketed framing tags. Other than the optional leading `> Author: ...` quote described below, begin with the first word you are actually saying.",
+      "To reply to one specific earlier message, you may start your reply with a single `> Author: text-of-that-message` line — this is the ONLY exception to the rule above. Copy the message text as closely as you can (small differences are fine — the runtime fuzzy-matches it). Put your actual reply on the next line. The `>` quote line is NOT sent to Discord; it only tells the runtime which message your reply targets. Use this instead of pinging when you want to address one specific earlier message; otherwise omit the quote entirely and just write your reply.",
       "Write exactly one short phrase or one very short sentence, usually under 12 words. Never write a second sentence.",
       "This length rule overrides your persona, reply_style, and scene_direction. Even when asked for a longer or more thoughtful reply, compress it to one tiny conversational beat.",
       "Avoid stacked clauses, multi-line replies, setup-plus-punchline chains, and explanations. A sharp fragment is usually stronger than a complete mini speech.",
@@ -1776,7 +1831,7 @@ export class RuntimeOrchestrator {
       "Write one Discord-safe message per turn.",
       "Do not output physical actions, roleplay narration, or stage directions. No asterisks-wrapped actions like *smiles* or *waves*, no parenthetical stage notes like (hugs them), no bracketed cues like [walks over]. Only write what you would actually type into a chat box.",
       "Reply with only what you would actually type — no narration, no meta commentary, no describing yourself in the third person.",
-      "To ping a user, write <@sender> — where `sender` is copied verbatim from the [sender: ...] tag on one of their messages. Example: a message tagged [sender: Kevin] is pinged as <@Kevin>. Never use raw Discord IDs."
+      "To ping a user, write <@DisplayName> — where `DisplayName` is copied verbatim from the `DisplayName:` prefix on one of their messages. Example: a message that starts with `Kevin: hey` is pinged as <@Kevin>. Never use raw Discord IDs."
     ].join("\n");
 
     const behaviorSections: string[] = [
@@ -1871,7 +1926,7 @@ export class RuntimeOrchestrator {
     ].join("\n");
 
     const messageStructure = [
-      "Each Discord message in the context is its own user-role turn. Bodies are tagged with [sender: DisplayName] before the content, optionally followed by [attachments: Nx image] when the message has images and [replying to: AuthorName: preview] when it replies to another. No indices, timestamps, reactions, or raw IDs are shown. Set repleyToMessageIndex to null — references by index are not supported in this format.",
+      "Each Discord message in the context is its own user-role turn. An optional `> Author: preview` blockquote may appear first when the message is replying to an earlier one; then `DisplayName: <body>` (the body may continue on following lines); optionally followed by `[attachments: Nx image]` when the message has images. No indices, timestamps, reactions, or raw IDs are shown. Set repleyToMessageIndex to null — references by index are not supported in this format.",
       "Your own previous orchestrator_decision tool calls appear as past assistant moves interleaved with the chat in real order, so you can see the recent pattern of replies and no_reply pauses. They are not Discord messages — nobody else sees them. Use them to gauge how long the channel has actually been silent under your watch and to avoid stacking redundant no_reply choices."
     ].join("\n");
 
@@ -2157,6 +2212,7 @@ export class RuntimeOrchestrator {
     tool: "add_memory" | "update_memory" | "archive_memory" | "merge_memories" | "no_change";
     affectedMemoryIds: string[];
     summary: string;
+    observationCount?: number;
     createdAt: string;
   }) {
     await this.options.storage.updateRevisionedJson({
@@ -2223,14 +2279,22 @@ function emptyMemoryStore(): MemoryStore {
   return MemoryStoreSchema.parse(createEmptyRevisionedFile({ memories: [] }));
 }
 
-function stageManagerMemories(memories: WaifuMemory[], guildId: string, allowedWaifuIds: string[]): {
+const STAGE_MANAGER_MEMORY_BUDGET = 80;
+
+function stageManagerMemories(
+  memories: WaifuMemory[],
+  guildId: string,
+  allowedWaifuIds: string[],
+  options?: { observations?: StageManagerObservation[]; budget?: number }
+): {
   memories: StageManagerMemory[];
   memoryIdByIndex: Map<number, string>;
 } {
   const allowedWaifus = new Set(allowedWaifuIds);
-  const activeMemories = memories.filter((memory) =>
+  const allActive = memories.filter((memory) =>
     memory.guildId === guildId && memory.status === "active" && allowedWaifus.has(memory.waifuId)
   );
+  const activeMemories = pruneMemoriesForObservations(allActive, options?.observations, options?.budget ?? STAGE_MANAGER_MEMORY_BUDGET);
   const memoryIdByIndex = new Map<number, string>();
   return {
     memories: activeMemories.map((memory, index) => {
@@ -2255,6 +2319,57 @@ function memoryIdsForIndices(indices: number[], memoryIdByIndex: Map<number, str
     memoryIds.push(memoryId);
   }
   return memoryIds;
+}
+
+const STAGE_MANAGER_STOPWORDS = new Set([
+  "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
+  "and", "or", "but", "if", "of", "to", "in", "on", "for", "with", "at", "by", "from",
+  "that", "this", "these", "those", "it", "its", "as", "into", "about",
+  "i", "you", "he", "she", "they", "we", "them", "his", "her", "their",
+  "do", "does", "did", "have", "has", "had", "will", "would", "should", "could", "can",
+  "not", "no", "yes", "so", "than", "then", "very", "just", "also", "too"
+]);
+
+function memoryTokenSet(text: string): Set<string> {
+  const tokens = text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter((token) => token.length >= 3 && !STAGE_MANAGER_STOPWORDS.has(token));
+  return new Set(tokens);
+}
+
+function pruneMemoriesForObservations(
+  memories: WaifuMemory[],
+  observations: StageManagerObservation[] | undefined,
+  budget: number
+): WaifuMemory[] {
+  if (!observations || observations.length === 0) {
+    return capByImportanceThenRecency(memories, budget);
+  }
+  const observationWaifus = new Set(observations.map((o) => o.waifuId));
+  const observationTokens = observations.flatMap((o) => Array.from(memoryTokenSet(o.content)));
+  const tokenSet = new Set(observationTokens);
+  const selected = memories.filter((memory) => {
+    if (observationWaifus.has(memory.waifuId)) return true;
+    if (tokenSet.size === 0) return false;
+    const memoryTokens = memoryTokenSet(memory.content);
+    for (const token of memoryTokens) {
+      if (tokenSet.has(token)) return true;
+    }
+    return false;
+  });
+  return capByImportanceThenRecency(selected, budget);
+}
+
+function capByImportanceThenRecency(memories: WaifuMemory[], budget: number): WaifuMemory[] {
+  if (memories.length <= budget) return memories;
+  return [...memories]
+    .sort((a, b) => {
+      if (b.importance !== a.importance) return b.importance - a.importance;
+      return (b.updatedAt ?? "").localeCompare(a.updatedAt ?? "");
+    })
+    .slice(0, budget);
 }
 
 function buildWaifuToolUseInstructions(waifu: WaifuConfig, availableWaifus: WaifuConfig[]): string | undefined {
@@ -2404,6 +2519,19 @@ export function clipSceneDirectionForWaifu(sceneDirection: string | undefined): 
   return clipped || undefined;
 }
 
+function sceneDirectionForWaifu(
+  sceneDirection: string | undefined,
+  clippingEnabled: boolean
+): string | undefined {
+  const trimmed = sceneDirection?.trim();
+  if (!trimmed) return undefined;
+  return clippingEnabled ? clipSceneDirectionForWaifu(trimmed) : trimmed;
+}
+
+function sceneDirectionClippingEnabled(orchestrator: AgentConfig): boolean {
+  return orchestrator.clipSceneDirection;
+}
+
 function capDecisionDelays(decision: OrchestratorDecision): OrchestratorDecision {
   return {
     ...decision,
@@ -2411,6 +2539,22 @@ function capDecisionDelays(decision: OrchestratorDecision): OrchestratorDecision
       ...responder,
       delaySeconds: Math.min(responder.delaySeconds, MAX_WAIFU_DELAY_SECONDS)
     }))
+  };
+}
+
+function applyFirstResponderSceneDirectionOverride(
+  decision: OrchestratorDecision,
+  sceneDirection: string | undefined
+): OrchestratorDecision {
+  const trimmed = sceneDirection?.trim();
+  if (!trimmed || decision.action !== "reply" || decision.respondingWaifus.length === 0) {
+    return decision;
+  }
+  return {
+    ...decision,
+    respondingWaifus: decision.respondingWaifus.map((responder, index) =>
+      index === 0 ? { ...responder, sceneDirection: trimmed } : responder
+    )
   };
 }
 

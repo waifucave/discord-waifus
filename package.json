@@ -1,6 +1,6 @@
 {
   "name": "@starlight-ai/discord-waifus",
-  "version": "1.5.118",
+  "version": "1.5.119",
   "description": "Local Discord waifu orchestrator backend, web UI, and CLI.",
   "type": "module",
   "private": false,
@@ -61,10 +61,10 @@
     "zod": "^4.4.3"
   },
   "optionalDependencies": {
-    "@starlight-ai/discord-waifus-ocr-darwin-arm64": "1.5.118",
-    "@starlight-ai/discord-waifus-ocr-darwin-x64": "1.5.118",
-    "@starlight-ai/discord-waifus-ocr-linux-x64-gnu": "1.5.118",
-    "@starlight-ai/discord-waifus-ocr-win32-x64": "1.5.118"
+    "@starlight-ai/discord-waifus-ocr-darwin-arm64": "1.5.119",
+    "@starlight-ai/discord-waifus-ocr-darwin-x64": "1.5.119",
+    "@starlight-ai/discord-waifus-ocr-linux-x64-gnu": "1.5.119",
+    "@starlight-ai/discord-waifus-ocr-win32-x64": "1.5.119"
   },
   "devDependencies": {
     "@types/node": "^25.8.0",

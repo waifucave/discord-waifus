@@ -16,9 +16,9 @@ import { Toggle } from "../components/Toggle";
 import { ReasoningControls, hasReasoningControls } from "../components/ReasoningControls";
 import type { ReasoningConfig } from "../api/types";
 
-const DEFAULT_PROMPT = `Review the recent messages and memories. Decide if memories need to be added,
-updated, archived, or merged. Tools: add_memory, update_memory, archive_memory,
-merge_memories, no_change. Avoid duplicate or redundant edits.`;
+const DEFAULT_PROMPT = `Extract durable, atomic facts about the people the waifus interact with —
+preferences, relationships, commitments, allergies, and other things worth
+knowing a week from now. Skip narration and recaps of what was said.`;
 
 export function StageManagerView() {
   const providers = useApi<ProvidersResponse>((s) => api.providers(s), []);
@@ -225,13 +225,17 @@ export function StageManagerView() {
 
       <section className="section">
         <div className="section-header">
-          <h3 className="section-title">Tools</h3>
+          <h3 className="section-title">Pipeline</h3>
         </div>
-        <pre className="code-block">{`add_memory(waifuId, content, importance)
-update_memory(memoryIndex, fields)
-archive_memory(memoryIndex)
-merge_memories(sourceMemoryIndices[], mergedContent)
-no_change(reason)`}</pre>
+        <pre className="code-block">{`Pass 1 — Observer: extract atomic durable observations from chat.
+  record_observations(observations[{ waifuId, content, importance, kind }])
+
+Pass 2 — Librarian: reconcile observations with existing memories.
+  add_memory(waifuId, content, importance)
+  update_memory(memoryIndex, fields)
+  archive_memory(memoryIndex)
+  merge_memories(sourceMemoryIndices[], mergedContent)
+  no_change(reason)`}</pre>
       </section>
 
       <section className="section">
@@ -247,6 +251,7 @@ no_change(reason)`}</pre>
             <div className="tr head">
               <span>Time</span>
               <span>Tool</span>
+              <span>Obs</span>
               <span>Memory IDs</span>
               <span>Summary</span>
             </div>
@@ -254,6 +259,7 @@ no_change(reason)`}</pre>
               <div className="tr" key={entry.id}>
                 <span>{new Date(entry.createdAt).toLocaleTimeString()}</span>
                 <span>{entry.tool}</span>
+                <span>{entry.observationCount ?? "—"}</span>
                 <span>{entry.affectedMemoryIds.join(", ") || "—"}</span>
                 <span>{entry.summary}</span>
               </div>

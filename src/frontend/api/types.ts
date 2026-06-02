@@ -103,6 +103,7 @@ export type AgentConfig = Revisioned & {
   contextWindow: number;
   prompt: string;
   useLegacyPrompt: boolean;
+  clipSceneDirection: boolean;
   reasoning: ReasoningConfig;
   promptSections: OrchestratorPromptSections;
 };
@@ -209,6 +210,7 @@ export type StageManagerEditHistoryEntry = {
   tool: "add_memory" | "update_memory" | "archive_memory" | "merge_memories" | "no_change";
   affectedMemoryIds: string[];
   summary: string;
+  observationCount?: number;
   createdAt: string;
 };
 
