@@ -1897,7 +1897,26 @@ function parseStageManagerCalls(text: string): StageManagerToolCall[] {
   try {
     const parsed = JSON.parse(stripCodeFence(text));
     const calls = Array.isArray(parsed) ? parsed : (parsed.toolCalls ?? parsed.calls ?? []);
-    return calls.map((call: unknown) => normalizeStageManagerToolCall(call));
+    if (!Array.isArray(calls)) {
+      throw new Error("stage-manager response did not contain a toolCalls array.");
+    }
+    const validCalls: StageManagerToolCall[] = [];
+    const invalidCalls: string[] = [];
+    calls.forEach((call: unknown, index: number) => {
+      try {
+        validCalls.push(normalizeStageManagerToolCall(call));
+      } catch (error) {
+        invalidCalls.push(`#${index + 1}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    });
+    if (validCalls.length > 0) {
+      return validCalls;
+    }
+    throw new Error(
+      invalidCalls.length
+        ? `No valid stage-manager tool calls. Invalid calls: ${invalidCalls.join("; ")}`
+        : "Provider returned no stage-manager tool calls."
+    );
   } catch (error) {
     throw new ProviderPipelineError("Provider did not return valid stage-manager tool calls.", {
       text,

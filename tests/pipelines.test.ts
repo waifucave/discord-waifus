@@ -1780,6 +1780,92 @@ describe("Google AI Studio (Gemini) pipeline", () => {
     });
   });
 
+  it("skips malformed stage-manager tool-call items when later items are valid", async () => {
+    mockFetch({
+      candidates: [
+        {
+          content: {
+            parts: [
+              {
+                functionCall: {
+                  name: "manage_memories",
+                  args: {
+                    toolCalls: [
+                      { tool: "add_memory", waifuId: "lumi" },
+                      {
+                        tool: "add_memory",
+                        waifuId: "lumi",
+                        content: "Lumi used to play old-school RPGs.",
+                        importance: 2
+                      },
+                      {
+                        tool: "add_memory",
+                        waifuId: "aria",
+                        content: "Aria thinks the Trix Rabbit would fight dirty.",
+                        importance: 2
+                      }
+                    ]
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ]
+    });
+
+    const pipeline = createModelPipeline("gemini-3.1-flash-lite", { apiKey: "g-test" });
+    const calls = await pipeline.decideStageManager?.({
+      modelId: "gemini-3.1-flash-lite",
+      messages: context,
+      memories: [],
+      observations: [{ waifuId: "lumi", content: "Lumi used to play old-school RPGs.", importance: 2, kind: "fact" }],
+      availableWaifuIds: ["lumi", "aria"],
+      systemPrompt: "memories"
+    });
+
+    expect(calls).toEqual([
+      { tool: "add_memory", memory: { waifuId: "lumi", content: "Lumi used to play old-school RPGs.", importance: 2 } },
+      { tool: "add_memory", memory: { waifuId: "aria", content: "Aria thinks the Trix Rabbit would fight dirty.", importance: 2 } }
+    ]);
+  });
+
+  it("still fails stage-manager parsing when every returned tool-call item is malformed", async () => {
+    mockFetch({
+      candidates: [
+        {
+          content: {
+            parts: [
+              {
+                functionCall: {
+                  name: "manage_memories",
+                  args: {
+                    toolCalls: [
+                      { tool: "add_memory", waifuId: "lumi" },
+                      { tool: "archive_memory" }
+                    ]
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ]
+    });
+
+    const pipeline = createModelPipeline("gemini-3.1-flash-lite", { apiKey: "g-test" });
+    await expect(
+      pipeline.decideStageManager?.({
+        modelId: "gemini-3.1-flash-lite",
+        messages: context,
+        memories: [],
+        observations: [{ waifuId: "lumi", content: "Lumi used to play old-school RPGs.", importance: 2, kind: "fact" }],
+        availableWaifuIds: ["lumi"],
+        systemPrompt: "memories"
+      })
+    ).rejects.toThrow("Provider did not return valid stage-manager tool calls.");
+  });
+
   it("forces the reviewer tool with a single user turn", async () => {
     mockFetch({
       candidates: [
