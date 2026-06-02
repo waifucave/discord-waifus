@@ -114,11 +114,13 @@ export type WaifuAvailability = z.infer<typeof WaifuAvailabilitySchema>;
 export const WaifuToolSettingsSchema = z
   .object({
     toolUse: z.boolean().default(true),
-    pickNextWaifu: z.boolean().default(true)
+    pickNextWaifu: z.boolean().default(true),
+    shortTermMemory: z.boolean().default(false)
   })
   .default({
     toolUse: true,
-    pickNextWaifu: true
+    pickNextWaifu: true,
+    shortTermMemory: false
   });
 export type WaifuToolSettings = z.infer<typeof WaifuToolSettingsSchema>;
 
@@ -309,6 +311,22 @@ export const MemoryStoreSchema = RevisionedRecordSchema.extend({
   memories: z.array(WaifuMemorySchema)
 });
 export type MemoryStore = z.infer<typeof MemoryStoreSchema>;
+
+export const ShortTermMemorySchema = z.object({
+  id: z.string().min(1),
+  guildId: z.string().min(1),
+  channelId: z.string().min(1),
+  waifuId: z.string().min(1),
+  content: z.string().min(1),
+  createdAt: IsoDateStringSchema,
+  expiresAt: IsoDateStringSchema
+});
+export type ShortTermMemory = z.infer<typeof ShortTermMemorySchema>;
+
+export const ShortTermMemoryStoreSchema = RevisionedRecordSchema.extend({
+  entries: z.array(ShortTermMemorySchema)
+});
+export type ShortTermMemoryStore = z.infer<typeof ShortTermMemoryStoreSchema>;
 
 export const OrchestratorReplyStyleSchema = z.enum(["normal", "short", "long", "sleepy"]);
 export type OrchestratorReplyStyle = z.infer<typeof OrchestratorReplyStyleSchema>;

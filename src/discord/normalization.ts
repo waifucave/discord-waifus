@@ -167,13 +167,13 @@ const DRAFT_MARKER_RE =
 
 export function stripLeakedContextHeader(
   content: string,
-  options: { senderDisplayName?: string } = {}
+  options: { senderDisplayName?: string; participantDisplayNames?: string[] } = {}
 ): string {
   let text = content;
-  const escapedName = options.senderDisplayName
+  const escapedSender = options.senderDisplayName
     ? options.senderDisplayName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
     : null;
-  const senderPrefixRe = escapedName ? new RegExp(`^\\s*${escapedName}\\s*:[ \\t]*`, "i") : null;
+  const senderPrefixRe = escapedSender ? new RegExp(`^\\s*${escapedSender}\\s*:[ \\t]*`, "i") : null;
 
   const leadingPatterns = [
     LEADING_WHITESPACE_RE,
@@ -205,7 +205,43 @@ export function stripLeakedContextHeader(
     }
   }
   text = stripInlineLeakedContextEntries(text);
-  return stripLeakedModelAnalysis(text);
+  text = stripLeakedModelAnalysis(text);
+  return stripImpersonationLines(text, options.senderDisplayName, options.participantDisplayNames);
+}
+
+function stripImpersonationLines(
+  content: string,
+  senderDisplayName: string | undefined,
+  participantDisplayNames: string[] | undefined
+): string {
+  if (!senderDisplayName && !participantDisplayNames?.length) return content;
+  const escape = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const senderRe = senderDisplayName
+    ? new RegExp(`^\\s*${escape(senderDisplayName)}\\s*:[ \\t]*`, "i")
+    : null;
+  const otherRes: RegExp[] = [];
+  const seen = new Set<string>();
+  for (const name of participantDisplayNames ?? []) {
+    const trimmed = name?.trim();
+    if (!trimmed) continue;
+    const key = trimmed.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (senderDisplayName && key === senderDisplayName.toLowerCase()) continue;
+    otherRes.push(new RegExp(`^\\s*${escape(trimmed)}\\s*:`, "i"));
+  }
+  if (!senderRe && otherRes.length === 0) return content;
+  const lines = content.split("\n");
+  const kept: string[] = [];
+  for (const line of lines) {
+    if (senderRe && senderRe.test(line)) {
+      kept.push(line.replace(senderRe, ""));
+      continue;
+    }
+    if (otherRes.some((re) => re.test(line))) continue;
+    kept.push(line);
+  }
+  return kept.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
 function stripInlineLeakedContextEntries(content: string): string {

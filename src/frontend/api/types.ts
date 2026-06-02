@@ -201,6 +201,21 @@ export type WaifuAvailability = {
 export type WaifuToolSettings = {
   toolUse: boolean;
   pickNextWaifu: boolean;
+  shortTermMemory: boolean;
+};
+
+export type ShortTermMemory = {
+  id: string;
+  guildId: string;
+  channelId: string;
+  waifuId: string;
+  content: string;
+  createdAt: string;
+  expiresAt: string;
+};
+
+export type ShortTermMemoryStore = Revisioned & {
+  entries: ShortTermMemory[];
 };
 
 export type StageManagerEditHistoryEntry = {

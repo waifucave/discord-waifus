@@ -339,6 +339,34 @@ describe("provider-native decision tools", () => {
     expect(body).not.toHaveProperty("stop");
   });
 
+  it("forwards stopSequences as the OpenAI chat `stop` field when supplied", async () => {
+    mockFetch({ choices: [{ message: { content: "ok" } }] });
+
+    const pipeline = createModelPipeline("grok-4.20-0309-non-reasoning", { apiKey: "xai-test" });
+    await pipeline.generateWaifu({
+      modelId: "grok-4.20-0309-non-reasoning",
+      messages: context,
+      systemPrompt: "stay in character",
+      stopSequences: ["\nAria:", "\nRiko:"]
+    });
+
+    expect(lastFetchJsonBody().stop).toEqual(["\nAria:", "\nRiko:"]);
+  });
+
+  it("clamps Z.AI stopSequences to the first entry only", async () => {
+    mockFetch({ choices: [{ message: { content: "ok" } }] });
+
+    const pipeline = createModelPipeline("glm-5.1", { apiKey: "zai-test" });
+    await pipeline.generateWaifu({
+      modelId: "glm-5.1",
+      messages: context,
+      systemPrompt: "stay in character",
+      stopSequences: ["\nAria:", "\nRiko:", "\nLumi:"]
+    });
+
+    expect(lastFetchJsonBody().stop).toEqual(["\nAria:"]);
+  });
+
   it("does not expose xAI multi-agent models through the chat/tools pipeline", () => {
     const ids = listModels().map((model) => model.modelId);
     expect(ids).not.toContain("grok-4.20-multi-agent-0309");
@@ -1033,7 +1061,7 @@ describe("provider-native decision tools", () => {
     });
   });
 
-  it("does not send a stop_sequences field on the Anthropic Messages waifu path", async () => {
+  it("does not send a stop_sequences field on the Anthropic Messages waifu path when none are supplied", async () => {
     mockFetch({ content: [{ type: "text", text: "ok" }] });
 
     const pipeline = createModelPipeline("claude-haiku-4-5-20251001", { apiKey: "anthropic-test" });
@@ -1045,6 +1073,21 @@ describe("provider-native decision tools", () => {
 
     const query = recentQueries().at(-1);
     expect(query?.payload).not.toHaveProperty("stop_sequences");
+  });
+
+  it("forwards stopSequences as stop_sequences on the Anthropic Messages waifu path", async () => {
+    mockFetch({ content: [{ type: "text", text: "ok" }] });
+
+    const pipeline = createModelPipeline("claude-haiku-4-5-20251001", { apiKey: "anthropic-test" });
+    await pipeline.generateWaifu({
+      modelId: "claude-haiku-4-5-20251001",
+      messages: context,
+      systemPrompt: "stay in character",
+      stopSequences: ["\nAria:", "\nRiko:"]
+    });
+
+    const query = recentQueries().at(-1);
+    expect(query?.payload.stop_sequences).toEqual(["\nAria:", "\nRiko:"]);
   });
 
   it("sends every waifu context message as assistant to Anthropic Messages", async () => {
@@ -1608,6 +1651,22 @@ describe("Google AI Studio (Gemini) pipeline", () => {
     expect(contents.at(-1)?.parts[0].text).toContain("<director_notes>");
   });
 
+  it("forwards stopSequences inside generationConfig on the Google waifu path", async () => {
+    mockFetch({ candidates: [{ content: { parts: [{ text: "ok" }] } }] });
+
+    const pipeline = createModelPipeline("gemini-2.5-flash", { apiKey: "g-test" });
+    await pipeline.generateWaifu({
+      modelId: "gemini-2.5-flash",
+      messages: context,
+      systemPrompt: "stay in character",
+      stopSequences: ["\nAria:", "\nRiko:"]
+    });
+
+    const query = recentQueries().at(-1);
+    const generationConfig = query?.payload.generationConfig as { stopSequences?: string[] };
+    expect(generationConfig.stopSequences).toEqual(["\nAria:", "\nRiko:"]);
+  });
+
   it("attaches inlineData parts with base64 image bytes", async () => {
     const apiResponse = {
       candidates: [{ content: { parts: [{ text: "nice cat" }] } }]
@@ -1907,6 +1966,137 @@ describe("Google AI Studio (Gemini) pipeline", () => {
     expect(contents).toHaveLength(1);
     expect(contents[0].parts[0].text).not.toContain("memories:");
     expect(contents[0].parts[0].text).not.toContain("observations:");
+  });
+
+  it("OpenAI Chat: collects all record_short_term_memory calls alongside the optional PickNextWaifu", async () => {
+    mockFetch({
+      choices: [
+        {
+          message: {
+            content: "noted",
+            tool_calls: [
+              { function: { name: "PickNextWaifu", arguments: JSON.stringify({ waifuId: "mika" }) } },
+              { function: { name: "record_short_term_memory", arguments: JSON.stringify({ content: "Kevin heading out at 5pm." }) } },
+              { function: { name: "record_short_term_memory", arguments: JSON.stringify({ content: "Kevin prefers green tea today." }) } }
+            ]
+          }
+        }
+      ]
+    });
+
+    const pipeline = createModelPipeline("grok-4.3", { apiKey: "xai-test" });
+    const result = await pipeline.generateWaifu({
+      modelId: "grok-4.3",
+      messages: context,
+      systemPrompt: "stay in character",
+      availableWaifuIds: ["mika"],
+      pickNextWaifuToolEnabled: true,
+      shortTermMemoryToolEnabled: true
+    });
+
+    expect(result.pickedNextWaifuId).toBe("mika");
+    expect(result.shortTermMemoryEntries).toEqual([
+      "Kevin heading out at 5pm.",
+      "Kevin prefers green tea today."
+    ]);
+    const query = recentQueries().at(-1);
+    const toolNames = (query?.payload.tools as Array<{ function: { name: string } }>).map((t) => t.function.name);
+    expect(toolNames).toEqual(["PickNextWaifu", "record_short_term_memory"]);
+  });
+
+  it("OpenAI Chat: omits the short-term tool when the gate is off", async () => {
+    mockFetch({ choices: [{ message: { content: "hi" } }] });
+
+    const pipeline = createModelPipeline("grok-4.3", { apiKey: "xai-test" });
+    await pipeline.generateWaifu({
+      modelId: "grok-4.3",
+      messages: context,
+      systemPrompt: "stay in character",
+      availableWaifuIds: ["mika"],
+      pickNextWaifuToolEnabled: true,
+      shortTermMemoryToolEnabled: false
+    });
+
+    const query = recentQueries().at(-1);
+    const toolNames = (query?.payload.tools as Array<{ function: { name: string } }> | undefined)?.map(
+      (t) => t.function.name
+    ) ?? [];
+    expect(toolNames).not.toContain("record_short_term_memory");
+  });
+
+  it("OpenAI Responses: collects multiple record_short_term_memory calls", async () => {
+    mockFetch({
+      output: [
+        { type: "function_call", name: "record_short_term_memory", arguments: JSON.stringify({ content: "note one" }) },
+        { type: "function_call", name: "record_short_term_memory", arguments: JSON.stringify({ content: "note two" }) }
+      ],
+      output_text: "ok"
+    });
+
+    const pipeline = createModelPipeline("gpt-4o-mini", { apiKey: "openai-test" });
+    const result = await pipeline.generateWaifu({
+      modelId: "gpt-4o-mini",
+      messages: context,
+      systemPrompt: "stay in character",
+      shortTermMemoryToolEnabled: true
+    });
+
+    expect(result.shortTermMemoryEntries).toEqual(["note one", "note two"]);
+    const query = recentQueries().at(-1);
+    const toolNames = (query?.payload.tools as Array<{ name: string }>).map((t) => t.name);
+    expect(toolNames).toContain("record_short_term_memory");
+  });
+
+  it("Anthropic: collects multiple record_short_term_memory calls", async () => {
+    mockFetch({
+      content: [
+        { type: "text", text: "ok" },
+        { type: "tool_use", name: "record_short_term_memory", input: { content: "first" } },
+        { type: "tool_use", name: "record_short_term_memory", input: { content: "second" } }
+      ]
+    });
+
+    const pipeline = createModelPipeline("claude-haiku-4-5-20251001", { apiKey: "anthropic-test" });
+    const result = await pipeline.generateWaifu({
+      modelId: "claude-haiku-4-5-20251001",
+      messages: context,
+      systemPrompt: "stay in character",
+      shortTermMemoryToolEnabled: true
+    });
+
+    expect(result.shortTermMemoryEntries).toEqual(["first", "second"]);
+    const query = recentQueries().at(-1);
+    const toolNames = (query?.payload.tools as Array<{ name: string }>).map((t) => t.name);
+    expect(toolNames).toContain("record_short_term_memory");
+  });
+
+  it("Google: collects multiple record_short_term_memory calls", async () => {
+    mockFetch({
+      candidates: [
+        {
+          content: {
+            parts: [
+              { text: "ok" },
+              { functionCall: { name: "record_short_term_memory", args: { content: "alpha" } } },
+              { functionCall: { name: "record_short_term_memory", args: { content: "beta" } } }
+            ]
+          }
+        }
+      ]
+    });
+
+    const pipeline = createModelPipeline("gemini-2.5-flash-lite", { apiKey: "g-test" });
+    const result = await pipeline.generateWaifu({
+      modelId: "gemini-2.5-flash-lite",
+      messages: context,
+      systemPrompt: "stay in character",
+      shortTermMemoryToolEnabled: true
+    });
+
+    expect(result.shortTermMemoryEntries).toEqual(["alpha", "beta"]);
+    const query = recentQueries().at(-1);
+    const toolConfig = query?.payload.toolConfig as { functionCallingConfig?: { allowedFunctionNames?: string[] } };
+    expect(toolConfig?.functionCallingConfig?.allowedFunctionNames).toBeUndefined();
   });
 });
 

@@ -107,4 +107,74 @@ describe("extractReplyQuote", () => {
     expect(result.replyToMessageId).toBe("m1");
     expect(result.cleanedContent).toBe("hi");
   });
+
+  it("normalizes an implicit `Name: text` first line into a reply target when text matches", () => {
+    const result = extractReplyQuote("K: hello world\nyeah", [
+      ctxMessage({ id: "m1", content: "hello world", displayName: "K", name: "K" })
+    ]);
+    expect(result.replyToMessageId).toBe("m1");
+    expect(result.cleanedContent).toBe("yeah");
+  });
+
+  it("normalizes an implicit quote via substring containment", () => {
+    const result = extractReplyQuote(
+      "K: blind bitch u cant even see whats on this image\nThat's your victory lap?",
+      [ctxMessage({ id: "m1", content: "@Aria blind bitch u cant even see whats on this image" })]
+    );
+    expect(result.replyToMessageId).toBe("m1");
+    expect(result.cleanedContent).toBe("That's your victory lap?");
+  });
+
+  it("leaves implicit `Name: text` untouched when nothing in context matches", () => {
+    const result = extractReplyQuote("K: totally unrelated random words\nyeah", [
+      ctxMessage({ id: "m1", content: "the quick brown fox" })
+    ]);
+    expect(result.replyToMessageId).toBeUndefined();
+    expect(result.cleanedContent).toBe("K: totally unrelated random words\nyeah");
+  });
+
+  it("does not fire implicit-quote when the first line has no `Name:` shape", () => {
+    const result = extractReplyQuote("hello there\nmore", [
+      ctxMessage({ id: "m1", content: "hello there" })
+    ]);
+    expect(result.replyToMessageId).toBeUndefined();
+    expect(result.cleanedContent).toBe("hello there\nmore");
+  });
+
+  it("resolves quotes against image-bearing context messages (attachments ignored)", () => {
+    const candidate = ctxMessage({
+      id: "m1",
+      content: "blind bitch u cant even see whats on this image",
+      images: [{ url: "https://cdn.example/star.png", ocrText: "" }]
+    });
+    const implicit = extractReplyQuote(
+      "K: blind bitch u cant even see whats on this image\nThat's your victory lap?",
+      [candidate]
+    );
+    expect(implicit.replyToMessageId).toBe("m1");
+    const explicit = extractReplyQuote(
+      "> K: blind bitch u cant even see whats on this image\nThat's your victory lap?",
+      [candidate]
+    );
+    expect(explicit.replyToMessageId).toBe("m1");
+  });
+
+  it("does not fire implicit-quote on short opener phrases (Note: ok / PS: done / etc.)", () => {
+    const candidates = [
+      ctxMessage({ id: "m1", content: "ok" }),
+      ctxMessage({ id: "m2", content: "yeah we shipped it yesterday around 3pm" })
+    ];
+    expect(extractReplyQuote("Note: ok\nlol", candidates).replyToMessageId).toBeUndefined();
+    expect(extractReplyQuote("Update: shipped it\nfinally", candidates).replyToMessageId).toBeUndefined();
+    expect(extractReplyQuote("PS: forgot it\nsorry", candidates).replyToMessageId).toBeUndefined();
+  });
+
+  it("explicit `>` quote still wins and does not fall through to implicit", () => {
+    const result = extractReplyQuote("> Alice: hey\nyeah", [
+      ctxMessage({ id: "explicit", content: "hey" }),
+      ctxMessage({ id: "implicit", content: "different text" })
+    ]);
+    expect(result.replyToMessageId).toBe("explicit");
+    expect(result.cleanedContent).toBe("yeah");
+  });
 });

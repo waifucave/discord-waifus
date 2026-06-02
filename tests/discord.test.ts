@@ -290,4 +290,56 @@ describe("stripLeakedContextHeader", () => {
       "Hey [timestamp: now] friend"
     );
   });
+
+  it("drops a leading other-waifu impersonation line entirely", () => {
+    expect(
+      stripLeakedContextHeader("Riko: Bravo, you cracked the code!\nokay", {
+        senderDisplayName: "Aria",
+        participantDisplayNames: ["Aria", "Riko", "Stupid hoe"]
+      })
+    ).toBe("okay");
+  });
+
+  it("ignores a leading name not present in participantDisplayNames", () => {
+    expect(
+      stripLeakedContextHeader("Kevin: stop saying that", {
+        senderDisplayName: "Aria",
+        participantDisplayNames: ["Aria", "Riko"]
+      })
+    ).toBe("Kevin: stop saying that");
+  });
+
+  it("strips a leading own-name prefix case-insensitively", () => {
+    expect(
+      stripLeakedContextHeader("aria: hello there", {
+        senderDisplayName: "Aria",
+        participantDisplayNames: ["Aria"]
+      })
+    ).toBe("hello there");
+  });
+
+  it("drops mid-message lines that impersonate another waifu and strips own-name prefix on remaining lines", () => {
+    const leaked = [
+      "Riko: Bravo, you cracked the code!",
+      "🔥",
+      "Stupid hoe: proud of you for figuring out a basic discord feature babe",
+      "Aria: He finally graduated from his own tutorial.",
+      "Slow clap."
+    ].join("\n");
+    expect(
+      stripLeakedContextHeader(leaked, {
+        senderDisplayName: "Aria",
+        participantDisplayNames: ["Aria", "Riko", "Stupid hoe", "Lumi"]
+      })
+    ).toBe("🔥\nHe finally graduated from his own tutorial.\nSlow clap.");
+  });
+
+  it("keeps a line whose name prefix is not in the participants list", () => {
+    expect(
+      stripLeakedContextHeader("Kevin: ok\nyeah", {
+        senderDisplayName: "Aria",
+        participantDisplayNames: ["Aria", "Riko"]
+      })
+    ).toBe("Kevin: ok\nyeah");
+  });
 });

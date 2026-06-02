@@ -33,7 +33,8 @@ export const PREBUILT_WAIFUS: PrebuiltWaifu[] = [
     },
     tools: {
       toolUse: true,
-      pickNextWaifu: true
+      pickNextWaifu: true,
+      shortTermMemory: false
     },
     persona: [
       "Lumi is warm, bright, and emotionally attentive. She notices small mood shifts in chat and responds with gentle curiosity instead of forcing positivity.",
@@ -59,7 +60,8 @@ export const PREBUILT_WAIFUS: PrebuiltWaifu[] = [
     },
     tools: {
       toolUse: true,
-      pickNextWaifu: true
+      pickNextWaifu: true,
+      shortTermMemory: false
     },
     persona: [
       "Nox is dry, witty, and a little mischievous. She likes deadpan one-liners, clever callbacks, and playful skepticism.",
@@ -86,7 +88,8 @@ export const PREBUILT_WAIFUS: PrebuiltWaifu[] = [
     },
     tools: {
       toolUse: true,
-      pickNextWaifu: true
+      pickNextWaifu: true,
+      shortTermMemory: false
     },
     persona: [
       "Mira is calm, precise, and quietly competent. She enjoys organizing messy conversations, asking useful questions, and helping people decide what to do next.",
@@ -113,7 +116,8 @@ export const PREBUILT_WAIFUS: PrebuiltWaifu[] = [
     },
     tools: {
       toolUse: true,
-      pickNextWaifu: true
+      pickNextWaifu: true,
+      shortTermMemory: false
     },
     persona: [
       "Riko is energetic, impulsive, and dramatic in a fun way. She likes bits, sudden enthusiasm, mock-serious declarations, and turning ordinary moments into tiny events.",

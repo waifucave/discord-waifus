@@ -36,6 +36,9 @@ import {
   ReviewerHistoryFileSchema,
   ServerConfig,
   ServerConfigSchema,
+  ShortTermMemory,
+  ShortTermMemoryStore,
+  ShortTermMemoryStoreSchema,
   StageManagerHistoryFileSchema,
   WaifuConfig,
   WaifuConfigSchema,
@@ -70,7 +73,6 @@ export type RuntimeOrchestratorOptions = {
     enrichMessages(messages: ContextMessage[], options?: { signal?: AbortSignal }): Promise<ContextMessage[]>;
   };
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
-  stageManagerActiveIntervalMs?: number;
   stageManagerIdleDelayMs?: number;
 };
 
@@ -108,8 +110,6 @@ export type StageManagerRunResult = {
 };
 
 type StageManagerSchedule = {
-  activityVersion: number;
-  throttleTimer?: NodeJS.Timeout;
   idleTimer?: NodeJS.Timeout;
 };
 
@@ -121,7 +121,6 @@ export class RuntimeOrchestrator {
   private readonly maxAutomaticTurns: number;
   private readonly createPipeline: (modelId: string, credentials: PipelineCredentials) => ModelPipeline;
   private readonly sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
-  private readonly stageManagerActiveIntervalMs: number;
   private readonly stageManagerIdleDelayMs: number;
   private readonly recentSelfSentIds = new Map<string, number>();
   private readonly activeWaifuSendChannels = new Set<string>();
@@ -129,7 +128,6 @@ export class RuntimeOrchestrator {
   private readonly activeReviewerRuns = new Map<string, number>();
   private readonly channelRunVersions = new Map<string, number>();
   private static readonly SELF_SENT_TTL_MS = 60_000;
-  private static readonly STAGE_MANAGER_ACTIVE_INTERVAL_MS = 5 * 60 * 1000;
   private static readonly STAGE_MANAGER_IDLE_DELAY_MS = 60 * 60 * 1000;
   private unsubscribes: Array<() => void> = [];
 
@@ -137,8 +135,6 @@ export class RuntimeOrchestrator {
     this.maxAutomaticTurns = options.maxAutomaticTurns ?? 8;
     this.createPipeline = options.createPipeline ?? createModelPipeline;
     this.sleep = options.sleep ?? defaultSleep;
-    this.stageManagerActiveIntervalMs =
-      options.stageManagerActiveIntervalMs ?? RuntimeOrchestrator.STAGE_MANAGER_ACTIVE_INTERVAL_MS;
     this.stageManagerIdleDelayMs =
       options.stageManagerIdleDelayMs ?? RuntimeOrchestrator.STAGE_MANAGER_IDLE_DELAY_MS;
   }
@@ -821,12 +817,14 @@ export class RuntimeOrchestrator {
             .map((candidate) => candidate.id);
           const waifuQueryKey = runKey(input.guildId);
           incrementActive(this.activeWaifuQueries, waifuQueryKey);
+          const participantDisplayNames = waifuParticipantDisplayNames(waifu, input.availableWaifus);
+          const waifuStopSequences = participantDisplayNames.map((name) => `\n${name}:`);
           const result = await (async () => {
             try {
               return await waifuPipeline.generateWaifu({
                 modelId: waifuModelId,
                 messages: waifuMessages,
-                systemPrompt: await this.buildWaifuSystemPrompt(input.guildId, waifu, input.availableWaifus),
+                systemPrompt: await this.buildWaifuSystemPrompt(input.guildId, waifu, input.availableWaifus, { channelId: input.channelId }),
                 sceneDirection: sceneDirectionForWaifu(
                   responder.sceneDirection,
                   input.sceneDirectionClippingEnabled
@@ -834,10 +832,12 @@ export class RuntimeOrchestrator {
                 replyStyle: responder.replyStyle,
                 availableWaifuIds: nextWaifuIds,
                 pickNextWaifuToolEnabled: waifu.tools.pickNextWaifu,
+                shortTermMemoryToolEnabled: waifu.tools.shortTermMemory,
                 temperature: waifu.generation.temperature,
                 topP: waifu.generation.topP,
                 maxOutputTokens: waifu.generation.maxOutputTokens,
                 reasoning: waifu.reasoning,
+                stopSequences: waifuStopSequences,
                 signal: input.signal
               });
             } finally {
@@ -846,7 +846,8 @@ export class RuntimeOrchestrator {
           })();
           const activeAuthorIds = waifuMessages.map((message) => message.authorId);
           const strippedContent = stripLeakedContextHeader(result.content, {
-            senderDisplayName: waifu.displayName
+            senderDisplayName: waifu.displayName,
+            participantDisplayNames
           });
           if (strippedContent !== result.content) {
             this.options.logger.warn("Stripped leaked context header from waifu reply", {
@@ -897,6 +898,14 @@ export class RuntimeOrchestrator {
             orchestratorDecisionId: input.decisionId,
             signal: input.signal
           });
+          if (result.shortTermMemoryEntries?.length && waifu.tools.shortTermMemory) {
+            await this.recordShortTermMemoryEntries({
+              guildId: input.guildId,
+              channelId: input.channelId,
+              waifuId: waifu.id,
+              entries: result.shortTermMemoryEntries
+            });
+          }
           if (result.rejectedPickNextWaifu) {
             this.options.logger.warn("Ignoring invalid PickNextWaifu call from waifu", {
               guildId: input.guildId,
@@ -957,13 +966,8 @@ export class RuntimeOrchestrator {
 
   private noteStageManagerActivity(guildId: string, channelId: string): void {
     const key = timerKey(guildId, channelId);
-    const schedule = this.stageManagerSchedules.get(key) ?? { activityVersion: 0 };
-    schedule.activityVersion += 1;
+    const schedule = this.stageManagerSchedules.get(key) ?? {};
     this.stageManagerSchedules.set(key, schedule);
-
-    if (!schedule.throttleTimer) {
-      this.scheduleStageManagerThrottle(guildId, channelId, schedule);
-    }
 
     if (schedule.idleTimer) {
       clearTimeout(schedule.idleTimer);
@@ -972,31 +976,9 @@ export class RuntimeOrchestrator {
       const current = this.stageManagerSchedules.get(key);
       if (!current) return;
       current.idleTimer = undefined;
+      this.stageManagerSchedules.delete(key);
       void this.startStageManagerRun(guildId, channelId);
-      if (!current.throttleTimer) {
-        this.stageManagerSchedules.delete(key);
-      }
     }, this.stageManagerIdleDelayMs);
-  }
-
-  private scheduleStageManagerThrottle(guildId: string, channelId: string, schedule: StageManagerSchedule): void {
-    const key = timerKey(guildId, channelId);
-    const scheduledVersion = schedule.activityVersion;
-    schedule.throttleTimer = setTimeout(() => {
-      const current = this.stageManagerSchedules.get(key);
-      if (!current) return;
-      current.throttleTimer = undefined;
-      const shouldContinue = current.activityVersion > scheduledVersion;
-      void this.startStageManagerRun(guildId, channelId).finally(() => {
-        const latest = this.stageManagerSchedules.get(key);
-        if (!latest) return;
-        if (shouldContinue && !latest.throttleTimer) {
-          this.scheduleStageManagerThrottle(guildId, channelId, latest);
-        } else if (!latest.idleTimer) {
-          this.stageManagerSchedules.delete(key);
-        }
-      });
-    }, this.stageManagerActiveIntervalMs);
   }
 
   private async runStageManager(guildId: string, channelId: string): Promise<StageManagerRunResult> {
@@ -1537,9 +1519,6 @@ export class RuntimeOrchestrator {
     const key = timerKey(guildId, channelId);
     const schedule = this.stageManagerSchedules.get(key);
     if (!schedule) return;
-    if (schedule.throttleTimer) {
-      clearTimeout(schedule.throttleTimer);
-    }
     if (schedule.idleTimer) {
       clearTimeout(schedule.idleTimer);
     }
@@ -1548,9 +1527,6 @@ export class RuntimeOrchestrator {
 
   private clearAllStageManagerTimers(): void {
     for (const schedule of this.stageManagerSchedules.values()) {
-      if (schedule.throttleTimer) {
-        clearTimeout(schedule.throttleTimer);
-      }
       if (schedule.idleTimer) {
         clearTimeout(schedule.idleTimer);
       }
@@ -1785,23 +1761,78 @@ export class RuntimeOrchestrator {
     return this.options.storage.readJson("user/memories.json", MemoryStoreSchema, emptyMemoryStore());
   }
 
+  private async readShortTermMemoryStore(): Promise<ShortTermMemoryStore> {
+    return this.options.storage.readJson(
+      "user/short-term-memories.json",
+      ShortTermMemoryStoreSchema,
+      emptyShortTermMemoryStore()
+    );
+  }
+
+  private async recordShortTermMemoryEntries(input: {
+    guildId: string;
+    channelId: string;
+    waifuId: string;
+    entries: string[];
+  }): Promise<void> {
+    if (input.entries.length === 0) return;
+    const capped = input.entries.slice(0, SHORT_TERM_MEMORY_MAX_PER_REPLY);
+    const now = Date.now();
+    const createdAt = new Date(now).toISOString();
+    const expiresAt = new Date(now + SHORT_TERM_MEMORY_LIFESPAN_MS).toISOString();
+    await this.options.storage.updateRevisionedJson({
+      resourceKey: "short-term-memories:global",
+      relativePath: "user/short-term-memories.json",
+      schema: ShortTermMemoryStoreSchema,
+      fallback: emptyShortTermMemoryStore(),
+      transform: (current) => {
+        const surviving = current.entries.filter((entry) => Date.parse(entry.expiresAt) > now);
+        const additions: ShortTermMemory[] = capped.map((content) => ({
+          id: randomUUID(),
+          guildId: input.guildId,
+          channelId: input.channelId,
+          waifuId: input.waifuId,
+          content,
+          createdAt,
+          expiresAt
+        }));
+        return { ...current, entries: [...surviving, ...additions] };
+      }
+    });
+  }
+
   private async buildWaifuSystemPrompt(
     guildId: string,
     waifu: WaifuConfig,
-    availableWaifus: WaifuConfig[]
+    availableWaifus: WaifuConfig[],
+    options?: { channelId?: string }
   ): Promise<string> {
-    const [store, emojis] = await Promise.all([
+    const [store, emojis, shortTermStore] = await Promise.all([
       this.readMemoryStore(),
       this.options.storage.readJson(
         path.join("user", "servers", guildId, "emojis.json"),
         GuildEmojisFileSchema,
         GuildEmojisFileSchema.parse(createEmptyRevisionedFile({ guildId, emojis: [] }))
-      )
+      ),
+      this.readShortTermMemoryStore()
     ]);
     const memories = store.memories
       .filter((memory) => memory.guildId === guildId && memory.waifuId === waifu.id && memory.status === "active")
       .map((memory) => `- ${memory.content}`)
       .join("\n");
+    const channelId = options?.channelId;
+    const now = Date.now();
+    const shortTermLines = channelId
+      ? shortTermStore.entries
+          .filter((entry) =>
+            entry.guildId === guildId &&
+            entry.channelId === channelId &&
+            entry.waifuId === waifu.id &&
+            Date.parse(entry.expiresAt) > now
+          )
+          .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+          .map((entry) => `- [${formatShortTermAge(entry.createdAt, now)}] ${entry.content}`)
+      : [];
     const emojiList = emojis.emojis
       .filter((emoji) => emoji.available)
       .map(modelVisibleEmojiToken)
@@ -1811,8 +1842,10 @@ export class RuntimeOrchestrator {
       "an optional `> Author: preview` line appears first when the message is replying to an earlier one (Discord blockquote shape); the next line is `DisplayName: <body>` (the body may continue on additional lines); then optional `[attachments: Nx image]` and optional `[image_text: ...]` lines (one per image with extracted text).",
       "The `> Author: ...` quote, the `DisplayName:` prefix, and any bracketed lines are framing only — they are NOT part of what the speaker actually wrote, and they are NOT how Discord messages look.",
       "Your reply is the raw message body that will be sent verbatim to Discord. It MUST NOT contain any bracketed metadata tag (no `[attachments: ...]`, no `[image_text: ...]`, no `[replying to: ...]`, no `[timestamp: ...]`, no `[reactions: ...]`, no `[index: ...]`, no `[scene_direction: ...]`, no other `[tag: value]` constructions).",
+      "Your turn is exactly one Discord message body — never a transcript. You MUST NOT write `Name: ...` lines for ANY character, including yourself and every other waifu in the channel — except inside the optional leading `> Author: ...` reply-quote described below, where the `Author:` form is part of the quote shape. The `DisplayName:` shape only appears in the context you receive; it must NEVER appear in what you write. If you find yourself drafting another waifu's reply, stop — that line belongs to someone else.",
       "It MUST NOT begin with your own display name followed by a colon, and MUST NOT echo or paraphrase any prior message's bracketed framing tags. Other than the optional leading `> Author: ...` quote described below, begin with the first word you are actually saying.",
       "To reply to one specific earlier message, you may start your reply with a single `> Author: text-of-that-message` line — this is the ONLY exception to the rule above. Copy the message text as closely as you can (small differences are fine — the runtime fuzzy-matches it). Put your actual reply on the next line. The `>` quote line is NOT sent to Discord; it only tells the runtime which message your reply targets. Use this instead of pinging when you want to address one specific earlier message; otherwise omit the quote entirely and just write your reply.",
+      "Quote example — to reply specifically to Kevin's earlier `what's the weather like?` message, write:\n  > Kevin: what's the weather like?\n  sunny and warm\nThe runtime consumes the `> Kevin: …` line to set Discord's reply target; only `sunny and warm` is sent.",
       "Write exactly one short phrase or one very short sentence, usually under 12 words. Never write a second sentence.",
       "This length rule overrides your persona, reply_style, and scene_direction. Even when asked for a longer or more thoughtful reply, compress it to one tiny conversational beat.",
       "Avoid stacked clauses, multi-line replies, setup-plus-punchline chains, and explanations. A sharp fragment is usually stronger than a complete mini speech.",
@@ -1846,6 +1879,9 @@ export class RuntimeOrchestrator {
     }
     const behaviorBlock = `<behavior>\n${behaviorSections.join("\n")}\n</behavior>`;
     const memoryBlock = memories ? `<memories>\n${memories}\n</memories>` : null;
+    const shortTermBlock = shortTermLines.length
+      ? `<short_term_memory>\n${shortTermLines.join("\n")}\n</short_term_memory>`
+      : null;
 
     const currentTimeBlock = `<current_time>\n${formatPromptCurrentHour(new Date())}\n</current_time>`;
     const emojiBlock = `<server_emojis>\n${emojiList || "(none cached)"}\n</server_emojis>`;
@@ -1853,6 +1889,7 @@ export class RuntimeOrchestrator {
     return [
       behaviorBlock,
       memoryBlock,
+      shortTermBlock,
       emojiBlock,
       currentTimeBlock
     ]
@@ -2279,6 +2316,13 @@ function emptyMemoryStore(): MemoryStore {
   return MemoryStoreSchema.parse(createEmptyRevisionedFile({ memories: [] }));
 }
 
+function emptyShortTermMemoryStore(): ShortTermMemoryStore {
+  return ShortTermMemoryStoreSchema.parse(createEmptyRevisionedFile({ entries: [] }));
+}
+
+const SHORT_TERM_MEMORY_LIFESPAN_MS = 24 * 60 * 60 * 1000;
+const SHORT_TERM_MEMORY_MAX_PER_REPLY = 5;
+
 const STAGE_MANAGER_MEMORY_BUDGET = 80;
 
 function stageManagerMemories(
@@ -2373,21 +2417,49 @@ function capByImportanceThenRecency(memories: WaifuMemory[], budget: number): Wa
 }
 
 function buildWaifuToolUseInstructions(waifu: WaifuConfig, availableWaifus: WaifuConfig[]): string | undefined {
-  if (!waifu.tools.toolUse || !waifu.tools.pickNextWaifu) return undefined;
+  if (!waifu.tools.toolUse) return undefined;
   const model = waifu.modelId ? getModel(waifu.modelId) : undefined;
   if (!model?.supportsTools) return undefined;
   const candidates = availableWaifus
     .filter((candidate) => candidate.id !== waifu.id && candidate.botId && candidate.modelId)
     .map((candidate) => `${candidate.id} (${candidate.displayName || candidate.name})`);
-  if (candidates.length === 0) return undefined;
-  return [
-    "You have one optional tool: PickNextWaifu.",
-    "Use it only after writing your Discord reply when another waifu should immediately speak next and the orchestrator should be skipped for that handoff.",
-    "Do not call it if your message should be the end of this beat.",
-    "Arguments: { \"waifuId\": string }.",
-    "Available waifus:",
-    ...candidates.map((candidate) => `- ${candidate}`)
-  ].join("\n");
+  const sections: string[] = [];
+  if (waifu.tools.pickNextWaifu && candidates.length > 0) {
+    sections.push(
+      [
+        "PickNextWaifu — handoff tool.",
+        "Use it only after writing your Discord reply when another waifu should immediately speak next and the orchestrator should be skipped for that handoff.",
+        "Do not call it if your message should be the end of this beat.",
+        "Arguments: { \"waifuId\": string }.",
+        "Available waifus:",
+        ...candidates.map((candidate) => `- ${candidate}`)
+      ].join("\n")
+    );
+  }
+  if (waifu.tools.shortTermMemory) {
+    sections.push(
+      [
+        "record_short_term_memory — scratchpad for the next day.",
+        "Call this with a single short standalone sentence when something in the conversation is worth remembering for the next ~24 hours: a stated time, a plan, a name to follow up on, a one-off detail you might need before tomorrow.",
+        "You may call it multiple times in one reply (up to 5) to record separate notes.",
+        "Do not use it for trivial chitchat, repeat lines you already wrote, or things that belong in long-term memory. Entries auto-expire after 24h.",
+        "Arguments: { \"content\": string }."
+      ].join("\n")
+    );
+  }
+  if (sections.length === 0) return undefined;
+  return ["You have the following optional tools.", ...sections].join("\n\n");
+}
+
+function formatShortTermAge(createdAt: string, nowMs: number): string {
+  const created = Date.parse(createdAt);
+  if (Number.isNaN(created)) return "just now";
+  const diffMin = Math.max(0, Math.floor((nowMs - created) / 60000));
+  if (diffMin < 1) return "just now";
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const hours = Math.floor(diffMin / 60);
+  const minutes = diffMin % 60;
+  return minutes === 0 ? `${hours}h ago` : `${hours}h ${minutes}m ago`;
 }
 
 function formatWaifuScheduleForPrompt(waifu: WaifuConfig): string {
@@ -2502,6 +2574,20 @@ function replyTargetForFreshContext(
   if (!replyToMessageId) return undefined;
   const latestMessage = messages.at(-1);
   return latestMessage?.id === replyToMessageId ? undefined : replyToMessageId;
+}
+
+function waifuParticipantDisplayNames(self: WaifuConfig, availableWaifus: WaifuConfig[]): string[] {
+  const names: string[] = [];
+  const seen = new Set<string>();
+  for (const candidate of [self, ...availableWaifus]) {
+    const name = candidate.displayName?.trim();
+    if (!name) continue;
+    const key = name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    names.push(name);
+  }
+  return names;
 }
 
 const SCENE_DIRECTION_PUNCTUATION_RE = /[.!?,;:\n\r\u2026\u2013\u2014]/u;

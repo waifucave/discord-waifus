@@ -90,7 +90,8 @@ class OpenAiCompatibleChatPipeline implements ModelPipeline {
         temperature: openAiChatTemperature(this.model, request.temperature ?? this.model.defaultTemperature),
         top_p: openAiChatTopP(this.model, request.topP ?? this.model.defaultTopP),
         max_tokens: request.maxOutputTokens,
-        ...openAiChatPickNextWaifuToolPayload(this.model, request),
+        ...openAiChatWaifuToolsPayload(this.model, request),
+        stop: openAiChatStopSequences(this.model, reasoning, request.stopSequences),
         stream: false,
         ...reasoningFieldsForOpenAiChat(this.model, reasoning),
         ...openAiChatSamplingOverrides(this.model, reasoning)
@@ -243,7 +244,7 @@ class OpenAiResponsesPipeline implements ModelPipeline {
         temperature: request.temperature ?? this.model.defaultTemperature,
         top_p: request.topP ?? this.model.defaultTopP,
         max_output_tokens: request.maxOutputTokens,
-        ...openAiResponsesPickNextWaifuToolPayload(this.model, request),
+        ...openAiResponsesWaifuToolsPayload(this.model, request),
         ...reasoningFieldsForOpenAiResponses(this.model, request.reasoning),
         ...openAiResponsesSamplingOverrides(this.model)
       },
@@ -388,7 +389,8 @@ class AnthropicMessagesPipeline implements ModelPipeline {
           thinking
         ),
         max_tokens: maxTokens,
-        ...anthropicPickNextWaifuToolPayload(this.model, request),
+        ...anthropicWaifuToolsPayload(this.model, request),
+        stop_sequences: request.stopSequences?.length ? request.stopSequences : undefined,
         ...anthropicOutputConfig(this.model, request.reasoning, thinking),
         ...(thinking ? { thinking } : {})
       },
@@ -525,10 +527,11 @@ class GoogleGenerativeLanguagePipeline implements ModelPipeline {
           temperature: request.temperature ?? this.model.defaultTemperature,
           topP: request.topP ?? this.model.defaultTopP,
           maxOutputTokens: request.maxOutputTokens,
+          stopSequences: request.stopSequences,
           reasoning: request.reasoning
         }),
         safetySettings: googleSafetySettings,
-        ...googleAiStudioPickNextWaifuToolPayload(this.model, request)
+        ...googleAiStudioWaifuToolsPayload(this.model, request)
       }),
       signal: request.signal,
       extract: (json) => extractGoogleWaifuResult(json, request.availableWaifuIds),
@@ -1230,6 +1233,24 @@ const PICK_NEXT_WAIFU_TOOL_NAME = "PickNextWaifu";
 const PICK_NEXT_WAIFU_TOOL_DESCRIPTION =
   "Optionally pick one configured waifu to reply immediately after this waifu message.";
 
+const SHORT_TERM_MEMORY_TOOL_NAME = "record_short_term_memory";
+const SHORT_TERM_MEMORY_TOOL_DESCRIPTION =
+  "Optionally write one short standalone sentence to remember for the next day. Call this multiple times in one reply to record multiple distinct notes. Skip trivial chitchat; entries expire after 24 hours.";
+
+function shortTermMemoryToolParameters(): object {
+  return {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      content: {
+        type: "string",
+        description: "One short standalone sentence about the current conversation state (a stated time, a plan, a name to follow up on)."
+      }
+    },
+    required: ["content"]
+  };
+}
+
 function orchestratorToolParameters(availableWaifuIds?: string[], replyRequired = false): object {
   const waifuIds = [...new Set((availableWaifuIds ?? []).filter(Boolean))];
   const waifuIdSchema: Record<string, unknown> = {
@@ -1463,6 +1484,18 @@ function anthropicPickNextWaifuTool(availableWaifuIds?: string[]) {
   return anthropicTool(PICK_NEXT_WAIFU_TOOL_NAME, PICK_NEXT_WAIFU_TOOL_DESCRIPTION, pickNextWaifuToolParameters(availableWaifuIds));
 }
 
+function openAiChatShortTermMemoryTool() {
+  return openAiChatTool(SHORT_TERM_MEMORY_TOOL_NAME, SHORT_TERM_MEMORY_TOOL_DESCRIPTION, shortTermMemoryToolParameters());
+}
+
+function openAiResponsesShortTermMemoryTool() {
+  return openAiResponsesTool(SHORT_TERM_MEMORY_TOOL_NAME, SHORT_TERM_MEMORY_TOOL_DESCRIPTION, shortTermMemoryToolParameters());
+}
+
+function anthropicShortTermMemoryTool() {
+  return anthropicTool(SHORT_TERM_MEMORY_TOOL_NAME, SHORT_TERM_MEMORY_TOOL_DESCRIPTION, shortTermMemoryToolParameters());
+}
+
 function openAiChatStageManagerTool(availableWaifuIds?: string[]) {
   return openAiChatTool(STAGE_MANAGER_TOOL_NAME, STAGE_MANAGER_TOOL_DESCRIPTION, stageManagerToolParameters(availableWaifuIds));
 }
@@ -1510,6 +1543,13 @@ function shouldExposePickNextWaifuTool(
   );
 }
 
+function shouldExposeShortTermMemoryTool(
+  model: ModelCapabilityMetadata,
+  request: WaifuGenerationRequest
+): boolean {
+  return Boolean(model.supportsTools && request.shortTermMemoryToolEnabled);
+}
+
 function openAiChatPickNextWaifuToolPayload(
   model: ModelCapabilityMetadata,
   request: WaifuGenerationRequest
@@ -1546,6 +1586,69 @@ function anthropicPickNextWaifuToolPayload(
     tools: [anthropicPickNextWaifuTool(request.availableWaifuIds)],
     tool_choice: { type: "auto" }
   };
+}
+
+function openAiChatShortTermMemoryToolPayload(
+  model: ModelCapabilityMetadata,
+  request: WaifuGenerationRequest
+): { tools?: unknown[]; tool_choice?: "auto" } {
+  if (!shouldExposeShortTermMemoryTool(model, request)) return {};
+  if (model.providerId === "deepseek") {
+    return { tools: [openAiChatShortTermMemoryTool()] };
+  }
+  return { tools: [openAiChatShortTermMemoryTool()], tool_choice: "auto" };
+}
+
+function openAiResponsesShortTermMemoryToolPayload(
+  model: ModelCapabilityMetadata,
+  request: WaifuGenerationRequest
+): { tools?: unknown[]; tool_choice?: "auto" } {
+  if (!shouldExposeShortTermMemoryTool(model, request)) return {};
+  return { tools: [openAiResponsesShortTermMemoryTool()], tool_choice: "auto" };
+}
+
+function anthropicShortTermMemoryToolPayload(
+  model: ModelCapabilityMetadata,
+  request: WaifuGenerationRequest
+): { tools?: unknown[]; tool_choice?: { type: "auto" } } {
+  if (!shouldExposeShortTermMemoryTool(model, request)) return {};
+  return { tools: [anthropicShortTermMemoryTool()], tool_choice: { type: "auto" } };
+}
+
+function openAiChatWaifuToolsPayload(
+  model: ModelCapabilityMetadata,
+  request: WaifuGenerationRequest
+): { tools?: unknown[]; tool_choice?: "auto" } {
+  const pick = openAiChatPickNextWaifuToolPayload(model, request);
+  const mem = openAiChatShortTermMemoryToolPayload(model, request);
+  const tools = [...(pick.tools ?? []), ...(mem.tools ?? [])];
+  if (!tools.length) return {};
+  const tool_choice = pick.tool_choice ?? mem.tool_choice;
+  return tool_choice ? { tools, tool_choice } : { tools };
+}
+
+function openAiResponsesWaifuToolsPayload(
+  model: ModelCapabilityMetadata,
+  request: WaifuGenerationRequest
+): { tools?: unknown[]; tool_choice?: "auto" } {
+  const pick = openAiResponsesPickNextWaifuToolPayload(model, request);
+  const mem = openAiResponsesShortTermMemoryToolPayload(model, request);
+  const tools = [...(pick.tools ?? []), ...(mem.tools ?? [])];
+  if (!tools.length) return {};
+  const tool_choice = pick.tool_choice ?? mem.tool_choice;
+  return tool_choice ? { tools, tool_choice } : { tools };
+}
+
+function anthropicWaifuToolsPayload(
+  model: ModelCapabilityMetadata,
+  request: WaifuGenerationRequest
+): { tools?: unknown[]; tool_choice?: { type: "auto" } } {
+  const pick = anthropicPickNextWaifuToolPayload(model, request);
+  const mem = anthropicShortTermMemoryToolPayload(model, request);
+  const tools = [...(pick.tools ?? []), ...(mem.tools ?? [])];
+  if (!tools.length) return {};
+  const tool_choice = pick.tool_choice ?? mem.tool_choice;
+  return tool_choice ? { tools, tool_choice } : { tools };
 }
 
 function openAiChatTool(name: string, description: string, parameters: object) {
@@ -1752,9 +1855,14 @@ function extractOpenAiChatWaifuResult(json: unknown, availableWaifuIds?: string[
   };
   const message = parsed.choices?.[0]?.message;
   const toolCall = message?.tool_calls?.find((call) => call.function?.name === PICK_NEXT_WAIFU_TOOL_NAME);
+  const shortTermMemoryEntries = (message?.tool_calls ?? [])
+    .filter((call) => call.function?.name === SHORT_TERM_MEMORY_TOOL_NAME)
+    .map((call) => parseShortTermMemoryArguments(call.function?.arguments))
+    .filter((entry): entry is string => Boolean(entry));
   return {
     content: message?.content ?? "",
-    ...parsePickedNextWaifu(toolCall?.function?.arguments, availableWaifuIds)
+    ...parsePickedNextWaifu(toolCall?.function?.arguments, availableWaifuIds),
+    ...(shortTermMemoryEntries.length ? { shortTermMemoryEntries } : {})
   };
 }
 
@@ -1807,9 +1915,14 @@ function extractOpenAiResponsesWaifuResult(json: unknown, availableWaifuIds?: st
     output_text?: string;
   };
   const call = parsed.output?.find((item) => item.type === "function_call" && item.name === PICK_NEXT_WAIFU_TOOL_NAME);
+  const shortTermMemoryEntries = (parsed.output ?? [])
+    .filter((item) => item.type === "function_call" && item.name === SHORT_TERM_MEMORY_TOOL_NAME)
+    .map((item) => parseShortTermMemoryArguments(item.arguments))
+    .filter((entry): entry is string => Boolean(entry));
   return {
     content: extractOpenAiResponsesText(parsed),
-    ...parsePickedNextWaifu(call?.arguments, availableWaifuIds)
+    ...parsePickedNextWaifu(call?.arguments, availableWaifuIds),
+    ...(shortTermMemoryEntries.length ? { shortTermMemoryEntries } : {})
   };
 }
 
@@ -1846,9 +1959,14 @@ function extractAnthropicWaifuResult(json: unknown, availableWaifuIds?: string[]
     }>;
   };
   const toolUse = parsed.content?.find((part) => part.type === "tool_use" && part.name === PICK_NEXT_WAIFU_TOOL_NAME);
+  const shortTermMemoryEntries = (parsed.content ?? [])
+    .filter((part) => part.type === "tool_use" && part.name === SHORT_TERM_MEMORY_TOOL_NAME)
+    .map((part) => parseShortTermMemoryArguments(part.input))
+    .filter((entry): entry is string => Boolean(entry));
   return {
     content: extractAnthropicText(parsed),
-    ...parsePickedNextWaifu(toolUse?.input, availableWaifuIds)
+    ...parsePickedNextWaifu(toolUse?.input, availableWaifuIds),
+    ...(shortTermMemoryEntries.length ? { shortTermMemoryEntries } : {})
   };
 }
 
@@ -1867,6 +1985,24 @@ function extractAnthropicToolArguments(json: unknown, toolName: string): string 
   if (typeof toolUse?.input === "string") return toolUse.input;
   if (toolUse?.input && typeof toolUse.input === "object") return JSON.stringify(toolUse.input);
   return extractAnthropicText(parsed);
+}
+
+const ShortTermMemoryCallSchema = z.object({
+  content: z.string().min(1)
+});
+
+function parseShortTermMemoryArguments(argumentsValue: unknown): string | undefined {
+  if (argumentsValue === undefined || argumentsValue === null) return undefined;
+  try {
+    const parsed =
+      typeof argumentsValue === "string"
+        ? JSON.parse(stripCodeFence(argumentsValue))
+        : argumentsValue;
+    const call = ShortTermMemoryCallSchema.parse(parsed);
+    return call.content.trim() || undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function parsePickedNextWaifu(
@@ -1948,6 +2084,17 @@ function openAiChatTopP(
     return undefined;
   }
   return topP;
+}
+
+function openAiChatStopSequences(
+  model: ModelCapabilityMetadata,
+  reasoning: ReasoningConfig | undefined,
+  stopSequences: string[] | undefined
+): string[] | undefined {
+  if (!stopSequences?.length) return undefined;
+  if (isXaiReasoningRequest(model, reasoning)) return undefined;
+  if (model.providerId === "zai") return [stopSequences[0]];
+  return stopSequences;
 }
 
 function openAiChatReasoningForForcedTool(
@@ -2211,6 +2358,7 @@ function googleGenerationConfig(
     temperature?: number;
     topP?: number;
     maxOutputTokens?: number;
+    stopSequences?: string[];
     reasoning?: ReasoningConfig;
   }
 ): Record<string, unknown> {
@@ -2218,6 +2366,7 @@ function googleGenerationConfig(
     temperature: opts.temperature,
     topP: opts.topP,
     maxOutputTokens: opts.maxOutputTokens,
+    stopSequences: opts.stopSequences?.length ? opts.stopSequences : undefined,
     thinkingConfig: googleThinkingConfig(model, opts.reasoning)
   });
 }
@@ -2323,6 +2472,10 @@ function googleAiStudioPickNextWaifuTool(availableWaifuIds?: string[]) {
   return googleAiStudioTool(PICK_NEXT_WAIFU_TOOL_NAME, PICK_NEXT_WAIFU_TOOL_DESCRIPTION, pickNextWaifuToolParameters(availableWaifuIds));
 }
 
+function googleAiStudioShortTermMemoryTool() {
+  return googleAiStudioTool(SHORT_TERM_MEMORY_TOOL_NAME, SHORT_TERM_MEMORY_TOOL_DESCRIPTION, shortTermMemoryToolParameters());
+}
+
 function googleAiStudioPickNextWaifuToolPayload(
   model: ModelCapabilityMetadata,
   request: WaifuGenerationRequest
@@ -2332,6 +2485,29 @@ function googleAiStudioPickNextWaifuToolPayload(
     tools: [googleAiStudioPickNextWaifuTool(request.availableWaifuIds)],
     toolConfig: { functionCallingConfig: { mode: "AUTO" } }
   };
+}
+
+function googleAiStudioShortTermMemoryToolPayload(
+  model: ModelCapabilityMetadata,
+  request: WaifuGenerationRequest
+): { tools?: unknown[]; toolConfig?: { functionCallingConfig: { mode: "AUTO" } } } {
+  if (!shouldExposeShortTermMemoryTool(model, request)) return {};
+  return {
+    tools: [googleAiStudioShortTermMemoryTool()],
+    toolConfig: { functionCallingConfig: { mode: "AUTO" } }
+  };
+}
+
+function googleAiStudioWaifuToolsPayload(
+  model: ModelCapabilityMetadata,
+  request: WaifuGenerationRequest
+): { tools?: unknown[]; toolConfig?: { functionCallingConfig: { mode: "AUTO" } } } {
+  const pick = googleAiStudioPickNextWaifuToolPayload(model, request);
+  const mem = googleAiStudioShortTermMemoryToolPayload(model, request);
+  const tools = [...(pick.tools ?? []), ...(mem.tools ?? [])];
+  if (!tools.length) return {};
+  const toolConfig = pick.toolConfig ?? mem.toolConfig;
+  return toolConfig ? { tools, toolConfig } : { tools };
 }
 
 async function contextToGoogleMessagesForWaifu(
@@ -2411,9 +2587,14 @@ function extractGoogleWaifuResult(json: unknown, availableWaifuIds?: string[]): 
   };
   const parts = parsed.candidates?.[0]?.content?.parts ?? [];
   const pickCall = parts.find((part) => part.functionCall?.name === PICK_NEXT_WAIFU_TOOL_NAME)?.functionCall;
+  const shortTermMemoryEntries = parts
+    .filter((part) => part.functionCall?.name === SHORT_TERM_MEMORY_TOOL_NAME)
+    .map((part) => parseShortTermMemoryArguments(part.functionCall?.args))
+    .filter((entry): entry is string => Boolean(entry));
   return {
     content: extractGoogleText(parsed),
-    ...parsePickedNextWaifu(pickCall?.args, availableWaifuIds)
+    ...parsePickedNextWaifu(pickCall?.args, availableWaifuIds),
+    ...(shortTermMemoryEntries.length ? { shortTermMemoryEntries } : {})
   };
 }
 

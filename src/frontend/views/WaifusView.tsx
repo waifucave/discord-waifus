@@ -912,6 +912,14 @@ function ToolSettingsEditor({
           />
           <span className="field-hint">Lets this waifu choose one next waifu before orchestration resumes.</span>
         </div>
+        <div className="field">
+          <Toggle
+            checked={value.shortTermMemory}
+            onChange={(shortTermMemory) => onChange({ ...value, shortTermMemory })}
+            label="Short-term memory tool"
+          />
+          <span className="field-hint">Lets this waifu jot per-channel scratchpad notes that auto-expire after 24h. Only she sees them.</span>
+        </div>
       </div>
     </section>
   );
@@ -931,7 +939,8 @@ function defaultAvailability(): WaifuAvailability {
 function defaultToolSettings(): WaifuToolSettings {
   return {
     toolUse: true,
-    pickNextWaifu: true
+    pickNextWaifu: true,
+    shortTermMemory: false
   };
 }
 

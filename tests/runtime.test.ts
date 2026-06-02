@@ -35,6 +35,7 @@ import {
   ProviderCredentialsFileSchema,
   ReviewerHistoryFileSchema,
   ServerConfigSchema,
+  ShortTermMemoryStoreSchema,
   StageManagerHistoryFileSchema,
   WaifuConfigSchema,
   createEmptyRevisionedFile
@@ -1679,8 +1680,7 @@ describe("RuntimeOrchestrator", () => {
       sleep: async () => undefined,
       storage,
       discord,
-      stageManagerActiveIntervalMs: 80,
-      stageManagerIdleDelayMs: 180,
+      stageManagerIdleDelayMs: 120,
       createPipeline: () => pipeline,
       logger: {
         debug: () => undefined,
@@ -1702,15 +1702,12 @@ describe("RuntimeOrchestrator", () => {
     await waitForStageCalls(1);
     expect(stageCalls).toBe(1);
 
-    await waitForStageCalls(2);
-    expect(stageCalls).toBe(2);
-
-    await new Promise((resolve) => setTimeout(resolve, 120));
-    expect(stageCalls).toBe(2);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(stageCalls).toBe(1);
     await runtime.stop();
   });
 
-  it("keeps the five-minute stage-manager cadence while activity continues", async () => {
+  it("rearms the idle timer on each new message instead of firing on a fixed cadence", async () => {
     const root = await makeTempRoot();
     roots.push(root);
     await ensureDataLayout(root);
@@ -1749,8 +1746,7 @@ describe("RuntimeOrchestrator", () => {
       sleep: async () => undefined,
       storage,
       discord,
-      stageManagerActiveIntervalMs: 100,
-      stageManagerIdleDelayMs: 300,
+      stageManagerIdleDelayMs: 200,
       createPipeline: () => pipeline,
       logger: {
         debug: () => undefined,
@@ -1767,7 +1763,7 @@ describe("RuntimeOrchestrator", () => {
       authorId: "u1",
       authorBot: false
     });
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await new Promise((resolve) => setTimeout(resolve, 120));
     await runtime.handleDiscordMessage({
       guildId: "guild-1",
       channelId: "channel-1",
@@ -1775,11 +1771,13 @@ describe("RuntimeOrchestrator", () => {
       authorId: "u1",
       authorBot: false
     });
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    expect(stageCalls).toBe(0);
 
     await waitForStageCalls(1);
     expect(stageCalls).toBe(1);
-    await waitForStageCalls(2);
-    expect(stageCalls).toBe(2);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(stageCalls).toBe(1);
     await runtime.stop();
   });
 
@@ -1810,7 +1808,6 @@ describe("RuntimeOrchestrator", () => {
       sleep: async () => undefined,
       storage,
       discord,
-      stageManagerActiveIntervalMs: 50,
       stageManagerIdleDelayMs: 100,
       createPipeline: () => pipeline,
       logger: {
@@ -3081,6 +3078,157 @@ describe("RuntimeOrchestrator", () => {
     expect(discord.sent[0].content).toBe("here is the answer");
   });
 
+  it("salvages an implicit `Name: text` quote (missing `>`) into a real Discord reply", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.contexts = [
+      [
+        contextMessage("m1", "user", "Kevin", "hello there"),
+        contextMessage("m2", "user", "Kevin", "anyone home")
+      ],
+      [
+        contextMessage("m1", "user", "Kevin", "hello there"),
+        contextMessage("m2", "user", "Kevin", "anyone home")
+      ],
+      [contextMessage("m3", "waifu", "Yuki", "done")]
+    ];
+
+    class ImplicitQuotePipeline implements ModelPipeline {
+      decisions: OrchestratorDecision[] = [
+        {
+          action: "reply",
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal", sceneDirection: "answer" }],
+          reasoning: "Yuki replies with an implicit quote."
+        },
+        { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, reasoning: "done" }
+      ];
+      async generateWaifu() {
+        return { content: "Kevin: hello there\nthats your victory lap" };
+      }
+      async decideOrchestrator() {
+        const next = this.decisions.shift();
+        if (!next) throw new Error("no decision");
+        return next;
+      }
+    }
+
+    await seedRuntimeConfig(storage);
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 3,
+      createPipeline: () => new ImplicitQuotePipeline(),
+      logger: {
+        debug: () => undefined,
+        info: () => undefined,
+        warn: () => undefined,
+        error: () => undefined
+      }
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    expect(discord.sent[0].replyToMessageId).toBe("m1");
+    expect(discord.sent[0].content).toBe("thats your victory lap");
+  });
+
+  it("strips a leading other-waifu name prefix and passes participant stop sequences", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.contexts = [
+      [contextMessage("m1", "user", "Kevin", "tell me a joke")],
+      [contextMessage("m1", "user", "Kevin", "tell me a joke")],
+      [contextMessage("m2", "waifu", "Yuki", "done")]
+    ];
+
+    await seedRuntimeConfig(storage);
+    await storage.writeJson(
+      "server:guild-1",
+      "user/servers/guild-1/server.json",
+      ServerConfigSchema,
+      ServerConfigSchema.parse({
+        ...createRevisionedBase(),
+        guildId: "guild-1",
+        enabled: true,
+        channels: {
+          "channel-1": {
+            channelId: "channel-1",
+            enabled: true,
+            enabledWaifuIds: ["yuki", "mika"]
+          }
+        }
+      })
+    );
+    await storage.writeJson(
+      "waifu:mika",
+      "user/waifus/mika/waifu.json",
+      WaifuConfigSchema,
+      WaifuConfigSchema.parse({
+        ...createRevisionedBase(),
+        id: "mika",
+        name: "Mika",
+        displayName: "Mika",
+        enabled: true,
+        providerId: "openai",
+        modelId: "gpt-5.4-mini",
+        botId: "mika-bot",
+        persona: "direct",
+        contextWindow: 50
+      })
+    );
+
+    class ImpersonationPipeline implements ModelPipeline {
+      receivedStopSequences: string[] | undefined;
+      decisions: OrchestratorDecision[] = [
+        {
+          action: "reply",
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal", sceneDirection: "answer" }],
+          reasoning: "Yuki answers."
+        },
+        { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, reasoning: "done" }
+      ];
+      async generateWaifu(request: { stopSequences?: string[] }) {
+        this.receivedStopSequences = request.stopSequences;
+        return { content: "hello there\nMika: this should drop\nokay" };
+      }
+      async decideOrchestrator() {
+        const next = this.decisions.shift();
+        if (!next) throw new Error("no decision");
+        return next;
+      }
+    }
+
+    const pipeline = new ImpersonationPipeline();
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 3,
+      createPipeline: () => pipeline,
+      logger: {
+        debug: () => undefined,
+        info: () => undefined,
+        warn: () => undefined,
+        error: () => undefined
+      }
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    expect(discord.sent.map((message) => message.content)).toEqual(["hello there", "okay"]);
+    expect(pipeline.receivedStopSequences).toEqual(expect.arrayContaining(["\nYuki:", "\nMika:"]));
+  });
+
   it("ignores gateway echoes of its own waifu messages so chunked replies finish", async () => {
     const root = await makeTempRoot();
     roots.push(root);
@@ -3242,7 +3390,235 @@ describe("RuntimeOrchestrator", () => {
     await runtime.triggerChannel("guild-1", "channel-1");
     expect(discord.sent).toEqual([]);
   });
+
+  it("persists short-term entries returned by a waifu and shows them in her next system prompt", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+
+    await seedRuntimeConfig(storage);
+    await enableShortTermMemory(storage, "yuki");
+    await enableWaifus(storage, ["yuki"]);
+
+    let waifuRun = 0;
+    const capturedSystemPrompts: string[] = [];
+    const pipeline: ModelPipeline = {
+      async decideOrchestrator() {
+        return {
+          action: "reply",
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal" }],
+          reasoning: "talk"
+        };
+      },
+      async generateWaifu(request: WaifuGenerationRequest) {
+        capturedSystemPrompts.push(request.systemPrompt);
+        waifuRun += 1;
+        if (waifuRun === 1) {
+          return {
+            content: "noted",
+            shortTermMemoryEntries: [
+              "Kevin is heading out at 5pm.",
+              "Kevin prefers green tea today.",
+              "extra 3",
+              "extra 4",
+              "extra 5",
+              "extra 6 should be dropped",
+              "extra 7 should be dropped"
+            ]
+          };
+        }
+        return { content: "ok" };
+      }
+    };
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 1,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+
+    const stored = await storage.readJson("user/short-term-memories.json", ShortTermMemoryStoreSchema);
+    expect(stored.entries).toHaveLength(5);
+    expect(stored.entries.map((entry) => entry.content)).toEqual([
+      "Kevin is heading out at 5pm.",
+      "Kevin prefers green tea today.",
+      "extra 3",
+      "extra 4",
+      "extra 5"
+    ]);
+    expect(stored.entries[0]).toMatchObject({
+      guildId: "guild-1",
+      channelId: "channel-1",
+      waifuId: "yuki"
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    const secondPrompt = capturedSystemPrompts[1];
+    expect(secondPrompt).toMatch(/<short_term_memory>[\s\S]*Kevin is heading out at 5pm\.[\s\S]*Kevin prefers green tea today\.[\s\S]*<\/short_term_memory>/);
+  });
+
+  it("scopes short-term memories per waifu — waifu B does not see waifu A's notes", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+
+    await seedRuntimeConfig(storage);
+    await seedWaifu(storage, "mika", "Mika", "mika-bot", "mika persona");
+    await enableShortTermMemory(storage, "yuki");
+    await enableShortTermMemory(storage, "mika");
+    await enableWaifus(storage, ["yuki", "mika"]);
+
+    const now = new Date().toISOString();
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    await storage.writeJson(
+      "short-term-memories:global",
+      "user/short-term-memories.json",
+      ShortTermMemoryStoreSchema,
+      ShortTermMemoryStoreSchema.parse(
+        createEmptyRevisionedFile({
+          entries: [
+            {
+              id: "yuki-1",
+              guildId: "guild-1",
+              channelId: "channel-1",
+              waifuId: "yuki",
+              content: "Kevin promised to ping Yuki tonight.",
+              createdAt: now,
+              expiresAt
+            }
+          ]
+        })
+      )
+    );
+
+    const promptsByWaifu = new Map<string, string>();
+    const pipeline: ModelPipeline = {
+      async decideOrchestrator() {
+        return {
+          action: "reply",
+          respondingWaifus: [{ waifuId: "mika", delaySeconds: 0, replyStyle: "normal" }],
+          reasoning: "mika answers"
+        };
+      },
+      async generateWaifu(request: WaifuGenerationRequest) {
+        const match = request.systemPrompt.match(/You are (\w+)\./);
+        if (match) promptsByWaifu.set(match[1], request.systemPrompt);
+        return { content: "ok" };
+      }
+    };
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 1,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    const mikaPrompt = promptsByWaifu.get("Mika");
+    expect(mikaPrompt).toBeDefined();
+    expect(mikaPrompt).not.toMatch(/<short_term_memory>/);
+    expect(mikaPrompt).not.toContain("Kevin promised to ping Yuki tonight.");
+  });
+
+  it("drops expired short-term entries from the file on next write and omits them from the prompt", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+
+    await seedRuntimeConfig(storage);
+    await enableShortTermMemory(storage, "yuki");
+    await enableWaifus(storage, ["yuki"]);
+
+    const longAgo = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+    const longAgoExpired = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    await storage.writeJson(
+      "short-term-memories:global",
+      "user/short-term-memories.json",
+      ShortTermMemoryStoreSchema,
+      ShortTermMemoryStoreSchema.parse(
+        createEmptyRevisionedFile({
+          entries: [
+            {
+              id: "expired",
+              guildId: "guild-1",
+              channelId: "channel-1",
+              waifuId: "yuki",
+              content: "stale note from yesterday",
+              createdAt: longAgo,
+              expiresAt: longAgoExpired
+            }
+          ]
+        })
+      )
+    );
+
+    let capturedSystemPrompt = "";
+    const pipeline: ModelPipeline = {
+      async decideOrchestrator() {
+        return {
+          action: "reply",
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal" }],
+          reasoning: "talk"
+        };
+      },
+      async generateWaifu(request: WaifuGenerationRequest) {
+        capturedSystemPrompt = request.systemPrompt;
+        return {
+          content: "fresh",
+          shortTermMemoryEntries: ["Kevin is back from lunch."]
+        };
+      }
+    };
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 1,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    expect(capturedSystemPrompt).not.toContain("stale note from yesterday");
+    const after = await storage.readJson("user/short-term-memories.json", ShortTermMemoryStoreSchema);
+    expect(after.entries.map((entry) => entry.content)).toEqual(["Kevin is back from lunch."]);
+  });
 });
+
+async function enableShortTermMemory(storage: StorageService, waifuId: string) {
+  const path = `user/waifus/${waifuId}/waifu.json`;
+  const config = await storage.readJson(path, WaifuConfigSchema);
+  await storage.writeJson(
+    `waifu:${waifuId}`,
+    path,
+    WaifuConfigSchema,
+    WaifuConfigSchema.parse({
+      ...config,
+      tools: { ...config.tools, shortTermMemory: true }
+    })
+  );
+}
 
 async function seedRuntimeConfig(storage: StorageService, orchestratorConfig: Record<string, unknown> = {}) {
   await storage.writeJson(

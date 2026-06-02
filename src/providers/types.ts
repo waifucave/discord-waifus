@@ -56,6 +56,8 @@ export type WaifuGenerationRequest = ProviderRequest & {
   sceneDirection?: string;
   replyStyle?: ReplyStyle;
   pickNextWaifuToolEnabled?: boolean;
+  shortTermMemoryToolEnabled?: boolean;
+  stopSequences?: string[];
 };
 
 export type StageManagerMemory = {
@@ -82,6 +84,7 @@ export type WaifuGenerationResult = {
     reason: "malformed" | "unavailable_waifu";
     waifuId?: string;
   };
+  shortTermMemoryEntries?: string[];
   usage?: Record<string, number>;
 };
 
