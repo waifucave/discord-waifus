@@ -343,3 +343,90 @@ describe("stripLeakedContextHeader", () => {
     ).toBe("Kevin: ok\nyeah");
   });
 });
+
+describe("stripLeakedContextHeader — clip audit pins", () => {
+  const opts = { senderDisplayName: "Aria", participantDisplayNames: ["Aria", "Riko"] };
+
+  it("strips a leading `#N` legacy-index prefix", () => {
+    expect(stripLeakedContextHeader("#3 hot take", opts)).toBe("hot take");
+  });
+
+  it("does not strip a leading `#word` hashtag (no digit after #)", () => {
+    expect(stripLeakedContextHeader("loving #anime today", opts)).toBe("loving #anime today");
+  });
+
+  it("strips a leading `[just now]` legacy timestamp", () => {
+    expect(stripLeakedContextHeader("[just now] hello", opts)).toBe("hello");
+  });
+
+  it("strips a leading `[N min ago]` legacy timestamp", () => {
+    expect(stripLeakedContextHeader("[3 mins ago] hello", opts)).toBe("hello");
+  });
+
+  it("does not strip the words `just now` in the body when not bracketed at start", () => {
+    expect(stripLeakedContextHeader("that was just now lol", opts)).toBe("that was just now lol");
+  });
+
+  it("strips a trailing `[mood: hyped]` style bracket tag", () => {
+    expect(stripLeakedContextHeader("hello", opts)).toBe("hello");
+    expect(stripLeakedContextHeader("hello [mood: hyped]", opts)).toBe("hello");
+  });
+
+  it("leaves trailing punctuation/emoticons alone (no false trailing-bracket strip)", () => {
+    expect(stripLeakedContextHeader("hello :)", opts)).toBe("hello :)");
+  });
+
+  it("strips a leading `<thinking>...</thinking>` block followed by the real reply", () => {
+    expect(stripLeakedContextHeader("<thinking>scratch</thinking>hello", opts)).toBe("hello");
+  });
+
+  it("does not eat an inline `<3` emoticon (not a tag)", () => {
+    expect(stripLeakedContextHeader("that's a <3 moment", opts)).toBe("that's a <3 moment");
+  });
+
+  it("does not treat the bare word `reasoning` as a leaked analysis marker", () => {
+    expect(stripLeakedContextHeader("the reasoning was sound", opts)).toBe(
+      "the reasoning was sound"
+    );
+  });
+
+  it("does not strip a mid-line `Aria:` (only leading prefixes are sender-stripped)", () => {
+    expect(stripLeakedContextHeader("omg Aria: did i say that?", opts)).toBe(
+      "omg Aria: did i say that?"
+    );
+  });
+
+  it("does not strip a mid-line `Riko:` (other-waifu drop only fires at line start)", () => {
+    expect(stripLeakedContextHeader("omg Riko: was that you lol", opts)).toBe(
+      "omg Riko: was that you lol"
+    );
+  });
+
+  // Trade-off pin: a leading `Riko:` line — even if Aria intended it as quoted
+  // dialogue, not impersonation — gets dropped. Keeping this behavior so transcript
+  // impersonation is consistently caught; the runtime's retry-once compensates when
+  // it would otherwise empty the entire turn.
+  it("drops a standalone `Riko: …` line even if the body would have been benign", () => {
+    expect(stripLeakedContextHeader("Riko: lol omg", opts)).toBe("");
+  });
+
+  it("strips a leading `reactions: …` line", () => {
+    expect(stripLeakedContextHeader("reactions: 🔥 x2\nhello", opts)).toBe("hello");
+  });
+
+  it("does not eat the word `reactions` mid-sentence", () => {
+    expect(stripLeakedContextHeader("got some weird reactions today", opts)).toBe(
+      "got some weird reactions today"
+    );
+  });
+
+  it("strips a leading `[note: hello]` bracket tag", () => {
+    expect(stripLeakedContextHeader("[note: hello] body", opts)).toBe("body");
+  });
+
+  it("does not strip an inline `[vibing]` bracketed word (no colon → not a tag shape)", () => {
+    expect(stripLeakedContextHeader("hello [vibing] tonight", opts)).toBe(
+      "hello [vibing] tonight"
+    );
+  });
+});

@@ -177,4 +177,24 @@ describe("extractReplyQuote", () => {
     expect(result.replyToMessageId).toBe("explicit");
     expect(result.cleanedContent).toBe("yeah");
   });
+
+  it("does not false-positive a `Spotify: Now Playing X` opener against unrelated context", () => {
+    const result = extractReplyQuote("Spotify: Now Playing Bach\nlol classic", [
+      ctxMessage({ id: "m1", content: "did you eat lunch yet?" })
+    ]);
+    expect(result.replyToMessageId).toBeUndefined();
+    expect(result.cleanedContent).toBe("Spotify: Now Playing Bach\nlol classic");
+  });
+
+  // Pinning the replyQuote-only contract: in isolation, an `Aria: hello there` opener
+  // matches an `Aria` candidate with content "hello there". The runtime never reaches
+  // this branch (its own-name strip runs first), but the standalone module should
+  // still salvage the salvageable shape if asked.
+  it("salvages an implicit `Aria: hello there` opener against an Aria-authored candidate", () => {
+    const result = extractReplyQuote("Aria: hello there\nyeah", [
+      ctxMessage({ id: "m1", content: "hello there", displayName: "Aria", name: "Aria" })
+    ]);
+    expect(result.replyToMessageId).toBe("m1");
+    expect(result.cleanedContent).toBe("yeah");
+  });
 });

@@ -47,8 +47,6 @@ const contextWithWaifus: ContextMessage[] = [
   }
 ];
 
-const directorNotes = "<director_notes>\nKeep your reply short.\nDo not repeat what the previous waifu just said.\nDo not repeat a person's name when recent context already makes the target clear.\nTo pull a quiet person back in, use their <@Name> tag instead of repeating their name; do not tag them again if anyone already tagged them recently.\n</director_notes>";
-const directorNotesWithSceneDirection = "<director_notes>\nKeep your reply short.\nDo not repeat what the previous waifu just said.\nDo not repeat a person's name when recent context already makes the target clear.\nTo pull a quiet person back in, use their <@Name> tag instead of repeating their name; do not tag them again if anyone already tagged them recently.\n<scene_direction>answer Kevin</scene_direction>\n</director_notes>";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -866,7 +864,7 @@ describe("provider-native decision tools", () => {
 
     const query = recentQueries().at(-1);
     const messages = query?.payload.messages as Array<{ role: string; content: string }>;
-    expect(messages.slice(1).map((message) => message.role)).toEqual(["user", "assistant", "assistant", "system"]);
+    expect(messages.slice(1).map((message) => message.role)).toEqual(["user", "assistant", "assistant"]);
     expect(messages[2].content).toContain("Yuki:");
     expect(messages[3].content).toContain("Mika:");
   });
@@ -883,7 +881,7 @@ describe("provider-native decision tools", () => {
 
     const query = recentQueries().at(-1);
     const input = query?.payload.input as Array<{ role: string; content: string }>;
-    expect(input.map((message) => message.role)).toEqual(["user", "assistant", "assistant", "system"]);
+    expect(input.map((message) => message.role)).toEqual(["user", "assistant", "assistant"]);
     expect(input[1].content).toContain("Yuki:");
     expect(input[2].content).toContain("Mika:");
   });
@@ -1102,7 +1100,7 @@ describe("provider-native decision tools", () => {
 
     const query = recentQueries().at(-1);
     const messages = query?.payload.messages as Array<{ role: string; content: string }>;
-    expect(messages.map((message) => message.role)).toEqual(["user", "assistant", "assistant", "user"]);
+    expect(messages.map((message) => message.role)).toEqual(["user", "assistant", "assistant"]);
     expect(messages[1].content).toContain("Yuki:");
     expect(messages[2].content).toContain("Mika:");
   });
@@ -1309,8 +1307,30 @@ describe("image attachments", () => {
   });
 });
 
-describe("director note payloads", () => {
-  it("always sends OpenAI-compatible chat director notes without a name field", async () => {
+describe("trailing system message payloads", () => {
+  const trailingWithSceneDirection = "<personality>\nYou are Yuki\n</personality>\n<scene_direction>answer Kevin</scene_direction>";
+  const trailingWithoutSceneDirection = "<personality>\nYou are Yuki\n</personality>";
+
+  it("OpenAI Chat: places trailingSystemBlock as the last system message", async () => {
+    mockFetch({ choices: [{ message: { content: "ok" } }] });
+
+    const pipeline = createModelPipeline("grok-4.3", { apiKey: "xai-test" });
+    await pipeline.generateWaifu({
+      modelId: "grok-4.3",
+      messages: context,
+      systemPrompt: "stay in character",
+      trailingSystemBlock: trailingWithSceneDirection
+    });
+
+    const query = recentQueries().at(-1);
+    const messages = query?.payload.messages as Array<{ role: string; content: string }>;
+    expect(messages.at(-1)).toEqual({
+      role: "system",
+      content: trailingWithSceneDirection
+    });
+  });
+
+  it("OpenAI Chat: omits the trailing message entirely when trailingSystemBlock is unset", async () => {
     mockFetch({ choices: [{ message: { content: "ok" } }] });
 
     const pipeline = createModelPipeline("grok-4.3", { apiKey: "xai-test" });
@@ -1321,33 +1341,12 @@ describe("director note payloads", () => {
     });
 
     const query = recentQueries().at(-1);
-    const messages = query?.payload.messages as Array<{ role: string; name?: string; content: string }>;
-    expect(messages.at(-1)).toEqual({
-      role: "system",
-      content: directorNotes
-    });
+    const messages = query?.payload.messages as Array<{ role: string; content: string }>;
+    const lastSystemContent = messages.at(-1)?.content ?? "";
+    expect(lastSystemContent).not.toMatch(/<personality>|<director_notes>/);
   });
 
-  it("injects OpenAI-compatible chat scene direction into director notes", async () => {
-    mockFetch({ choices: [{ message: { content: "ok" } }] });
-
-    const pipeline = createModelPipeline("grok-4.3", { apiKey: "xai-test" });
-    await pipeline.generateWaifu({
-      modelId: "grok-4.3",
-      messages: context,
-      systemPrompt: "stay in character",
-      sceneDirection: "answer Kevin"
-    });
-
-    const query = recentQueries().at(-1);
-    const messages = query?.payload.messages as Array<{ role: string; name?: string; content: string }>;
-    expect(messages.at(-1)).toEqual({
-      role: "system",
-      content: directorNotesWithSceneDirection
-    });
-  });
-
-  it("injects OpenAI Responses scene direction into director notes", async () => {
+  it("OpenAI Responses: places trailingSystemBlock as the last input message", async () => {
     mockFetch({ output_text: "ok" });
 
     const pipeline = createModelPipeline("gpt-4o-mini", { apiKey: "openai-test" });
@@ -1355,98 +1354,100 @@ describe("director note payloads", () => {
       modelId: "gpt-4o-mini",
       messages: context,
       systemPrompt: "stay in character",
-      sceneDirection: "answer Kevin"
-    });
-
-    const query = recentQueries().at(-1);
-    const input = query?.payload.input as Array<{ role: string; name?: string; content: string }>;
-    expect(input.at(-1)).toEqual({
-      role: "system",
-      content: directorNotesWithSceneDirection
-    });
-  });
-
-  it("sends Anthropic director notes as the trailing user message", async () => {
-    mockFetch({ content: [{ type: "text", text: "ok" }] });
-
-    const pipeline = createModelPipeline("claude-haiku-4-5-20251001", { apiKey: "anthropic-test" });
-    await pipeline.generateWaifu({
-      modelId: "claude-haiku-4-5-20251001",
-      messages: context,
-      systemPrompt: "stay in character",
-      sceneDirection: "answer Kevin"
-    });
-
-    const query = recentQueries().at(-1);
-    const messages = query?.payload.messages as Array<{ role: string; name?: string; content: string }>;
-    expect(messages.at(-1)).toEqual({
-      role: "user",
-      content: directorNotesWithSceneDirection
-    });
-  });
-});
-
-describe("waifu memories block injection", () => {
-  const memoriesPayload = "<memories>\n<long_term>\n- example\n</long_term>\n</memories>";
-
-  it("OpenAI Chat: inserts memories system at contextLen - 2, leaving 2 chat messages before director notes", async () => {
-    mockFetch({ choices: [{ message: { content: "ok" } }] });
-
-    const pipeline = createModelPipeline("grok-4.3", { apiKey: "xai-test" });
-    await pipeline.generateWaifu({
-      modelId: "grok-4.3",
-      messages: contextWithWaifus,
-      systemPrompt: "stay in character",
-      memoriesBlock: memoriesPayload
-    });
-
-    const query = recentQueries().at(-1);
-    const messages = query?.payload.messages as Array<{ role: string; content: string }>;
-    // [leading, chat[0], memories, chat[1], chat[2], director] — length 6
-    expect(messages).toHaveLength(6);
-    expect(messages[0].role).toBe("system");
-    expect(messages.at(-4)).toEqual({ role: "system", content: memoriesPayload });
-    expect(messages.at(-1)?.role).toBe("system");
-    expect(messages.at(-1)?.content).toMatch(/<director_notes>/);
-  });
-
-  it("OpenAI Chat: no insertion when memoriesBlock is undefined", async () => {
-    mockFetch({ choices: [{ message: { content: "ok" } }] });
-
-    const pipeline = createModelPipeline("grok-4.3", { apiKey: "xai-test" });
-    await pipeline.generateWaifu({
-      modelId: "grok-4.3",
-      messages: contextWithWaifus,
-      systemPrompt: "stay in character"
-    });
-
-    const query = recentQueries().at(-1);
-    const messages = query?.payload.messages as Array<{ role: string; content: string }>;
-    expect(messages).toHaveLength(5);
-    expect(messages.every((m) => m.content !== memoriesPayload)).toBe(true);
-  });
-
-  it("OpenAI Responses: inserts memories into input at contextLen - 2", async () => {
-    mockFetch({ output_text: "ok" });
-
-    const pipeline = createModelPipeline("gpt-4o-mini", { apiKey: "openai-test" });
-    await pipeline.generateWaifu({
-      modelId: "gpt-4o-mini",
-      messages: contextWithWaifus,
-      systemPrompt: "stay in character",
-      memoriesBlock: memoriesPayload
+      trailingSystemBlock: trailingWithoutSceneDirection
     });
 
     const query = recentQueries().at(-1);
     const input = query?.payload.input as Array<{ role: string; content: string }>;
-    // [chat[0], memories, chat[1], chat[2], director] — instructions holds leading, length 5
-    expect(input).toHaveLength(5);
-    expect(input.at(-4)).toEqual({ role: "system", content: memoriesPayload });
-    expect(input.at(-1)?.role).toBe("system");
-    expect(input.at(-1)?.content).toMatch(/<director_notes>/);
+    expect(input.at(-1)).toEqual({
+      role: "system",
+      content: trailingWithoutSceneDirection
+    });
   });
 
-  it("Anthropic: inserts memories as a mid-conversation user message at contextLen - 2", async () => {
+  it("Anthropic: sends trailingSystemBlock as the trailing user message", async () => {
+    mockFetch({ content: [{ type: "text", text: "ok" }] });
+
+    const pipeline = createModelPipeline("claude-haiku-4-5-20251001", { apiKey: "anthropic-test" });
+    await pipeline.generateWaifu({
+      modelId: "claude-haiku-4-5-20251001",
+      messages: context,
+      systemPrompt: "stay in character",
+      trailingSystemBlock: trailingWithSceneDirection
+    });
+
+    const query = recentQueries().at(-1);
+    const messages = query?.payload.messages as Array<{ role: string; content: string }>;
+    expect(messages.at(-1)).toEqual({
+      role: "user",
+      content: trailingWithSceneDirection
+    });
+  });
+});
+
+describe("mid-system block injection", () => {
+  const midPayload = "<director_notes>\nKeep it short.\n</director_notes>\n<memories>\n<long_term>\n- example\n</long_term>\n</memories>";
+  const trailingPayload = "<personality>\nYou are Yuki\n</personality>";
+
+  it("OpenAI Chat: inserts midSystemBlock at contextLen - 2, leaving 2 chat messages before trailing", async () => {
+    mockFetch({ choices: [{ message: { content: "ok" } }] });
+
+    const pipeline = createModelPipeline("grok-4.3", { apiKey: "xai-test" });
+    await pipeline.generateWaifu({
+      modelId: "grok-4.3",
+      messages: contextWithWaifus,
+      systemPrompt: "stay in character",
+      midSystemBlock: midPayload,
+      trailingSystemBlock: trailingPayload
+    });
+
+    const query = recentQueries().at(-1);
+    const messages = query?.payload.messages as Array<{ role: string; content: string }>;
+    // [leading, chat[0], mid, chat[1], chat[2], trailing] — length 6
+    expect(messages).toHaveLength(6);
+    expect(messages[0].role).toBe("system");
+    expect(messages.at(-4)).toEqual({ role: "system", content: midPayload });
+    expect(messages.at(-1)).toEqual({ role: "system", content: trailingPayload });
+  });
+
+  it("OpenAI Chat: no insertion when midSystemBlock is undefined", async () => {
+    mockFetch({ choices: [{ message: { content: "ok" } }] });
+
+    const pipeline = createModelPipeline("grok-4.3", { apiKey: "xai-test" });
+    await pipeline.generateWaifu({
+      modelId: "grok-4.3",
+      messages: contextWithWaifus,
+      systemPrompt: "stay in character",
+      trailingSystemBlock: trailingPayload
+    });
+
+    const query = recentQueries().at(-1);
+    const messages = query?.payload.messages as Array<{ role: string; content: string }>;
+    expect(messages).toHaveLength(5);
+    expect(messages.every((m) => m.content !== midPayload)).toBe(true);
+  });
+
+  it("OpenAI Responses: inserts midSystemBlock into input at contextLen - 2", async () => {
+    mockFetch({ output_text: "ok" });
+
+    const pipeline = createModelPipeline("gpt-4o-mini", { apiKey: "openai-test" });
+    await pipeline.generateWaifu({
+      modelId: "gpt-4o-mini",
+      messages: contextWithWaifus,
+      systemPrompt: "stay in character",
+      midSystemBlock: midPayload,
+      trailingSystemBlock: trailingPayload
+    });
+
+    const query = recentQueries().at(-1);
+    const input = query?.payload.input as Array<{ role: string; content: string }>;
+    // [chat[0], mid, chat[1], chat[2], trailing] — instructions holds leading, length 5
+    expect(input).toHaveLength(5);
+    expect(input.at(-4)).toEqual({ role: "system", content: midPayload });
+    expect(input.at(-1)).toEqual({ role: "system", content: trailingPayload });
+  });
+
+  it("Anthropic: inserts midSystemBlock as a mid-conversation user message at contextLen - 2", async () => {
     mockFetch({ content: [{ type: "text", text: "ok" }] });
 
     const pipeline = createModelPipeline("claude-haiku-4-5-20251001", { apiKey: "anthropic-test" });
@@ -1454,19 +1455,19 @@ describe("waifu memories block injection", () => {
       modelId: "claude-haiku-4-5-20251001",
       messages: contextWithWaifus,
       systemPrompt: "stay in character",
-      memoriesBlock: memoriesPayload
+      midSystemBlock: midPayload,
+      trailingSystemBlock: trailingPayload
     });
 
     const query = recentQueries().at(-1);
     const messages = query?.payload.messages as Array<{ role: string; content: unknown }>;
-    // [chat[0], memories, chat[1], chat[2], director] — system field holds leading, length 5
+    // [chat[0], mid, chat[1], chat[2], trailing] — system field holds leading, length 5
     expect(messages).toHaveLength(5);
-    expect(messages.at(-4)).toEqual({ role: "user", content: memoriesPayload });
-    expect(messages.at(-1)?.role).toBe("user");
-    expect(messages.at(-1)?.content).toMatch(/<director_notes>/);
+    expect(messages.at(-4)).toEqual({ role: "user", content: midPayload });
+    expect(messages.at(-1)).toEqual({ role: "user", content: trailingPayload });
   });
 
-  it("Google: inserts memories as a googleUserTurn at contextLen - 2", async () => {
+  it("Google: inserts midSystemBlock as a googleUserTurn at contextLen - 2", async () => {
     mockFetch({ candidates: [{ content: { parts: [{ text: "ok" }] } }] });
 
     const pipeline = createModelPipeline("gemini-2.5-flash-lite", { apiKey: "g-test" });
@@ -1474,15 +1475,16 @@ describe("waifu memories block injection", () => {
       modelId: "gemini-2.5-flash-lite",
       messages: contextWithWaifus,
       systemPrompt: "stay in character",
-      memoriesBlock: memoriesPayload
+      midSystemBlock: midPayload,
+      trailingSystemBlock: trailingPayload
     });
 
     const query = recentQueries().at(-1);
     const contents = query?.payload.contents as Array<{ role: string; parts: Array<{ text: string }> }>;
-    // [chat[0], memories, chat[1], chat[2], director] — systemInstruction holds leading, length 5
+    // [chat[0], mid, chat[1], chat[2], trailing] — systemInstruction holds leading, length 5
     expect(contents).toHaveLength(5);
-    expect(contents.at(-4)).toEqual({ role: "user", parts: [{ text: memoriesPayload }] });
-    expect(contents.at(-1)?.parts[0].text).toMatch(/<director_notes>/);
+    expect(contents.at(-4)).toEqual({ role: "user", parts: [{ text: midPayload }] });
+    expect(contents.at(-1)).toEqual({ role: "user", parts: [{ text: trailingPayload }] });
   });
 });
 
@@ -1907,8 +1909,8 @@ describe("Google AI Studio (Gemini) pipeline", () => {
     const query = recentQueries().at(-1);
     expect(query?.payload.systemInstruction).toEqual({ parts: [{ text: "stay in character" }] });
     const contents = query?.payload.contents as Array<{ role: string; parts: Array<{ text: string }> }>;
-    expect(contents.slice(0, 3).map((turn) => turn.role)).toEqual(["user", "model", "model"]);
-    expect(contents.at(-1)?.parts[0].text).toContain("<director_notes>");
+    expect(contents.map((turn) => turn.role)).toEqual(["user", "model", "model"]);
+    expect(contents.at(-1)?.parts[0].text).toContain("Mika:");
   });
 
   it("forwards stopSequences inside generationConfig on the Google waifu path", async () => {

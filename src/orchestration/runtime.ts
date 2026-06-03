@@ -16,10 +16,10 @@ import {
 } from "../discord/client.js";
 import { modelVisibleEmojiToken, stripLeakedContextHeader } from "../discord/normalization.js";
 import { splitWaifuReply, typingDelayMs } from "./messageSplit.js";
-import { extractReplyQuote } from "./replyQuote.js";
+import { ReplyQuoteExtraction, extractReplyQuote } from "./replyQuote.js";
 import { getModel } from "../providers/catalog.js";
 import { createModelPipeline, PipelineCredentials, ProviderPipelineError } from "../providers/pipelines.js";
-import { ModelPipeline, StageManagerMemory } from "../providers/types.js";
+import { ModelPipeline, StageManagerMemory, WaifuGenerationResult } from "../providers/types.js";
 import {
   AgentConfig,
   AgentConfigSchema,
@@ -816,72 +816,97 @@ export class RuntimeOrchestrator {
             .filter((candidate) => candidate.id !== waifu.id && candidate.botId && candidate.modelId)
             .map((candidate) => candidate.id);
           const waifuQueryKey = runKey(input.guildId);
-          incrementActive(this.activeWaifuQueries, waifuQueryKey);
           const participantDisplayNames = waifuParticipantDisplayNames(waifu, input.availableWaifus);
           const waifuStopSequences = participantDisplayNames.map((name) => `\n${name}:`);
-          const { systemPrompt, memoriesBlock } = await this.buildWaifuPromptParts(
+          const clippedSceneDirection = sceneDirectionForWaifu(
+            responder.sceneDirection,
+            input.sceneDirectionClippingEnabled
+          );
+          const { systemPrompt, midSystemBlock, trailingSystemBlock } = await this.buildWaifuPromptParts(
             input.guildId,
             waifu,
             input.availableWaifus,
-            { channelId: input.channelId }
+            { channelId: input.channelId, sceneDirection: clippedSceneDirection }
           );
-          const result = await (async () => {
-            try {
-              return await waifuPipeline.generateWaifu({
-                modelId: waifuModelId,
-                messages: waifuMessages,
-                systemPrompt,
-                memoriesBlock,
-                sceneDirection: sceneDirectionForWaifu(
-                  responder.sceneDirection,
-                  input.sceneDirectionClippingEnabled
-                ),
-                replyStyle: responder.replyStyle,
-                availableWaifuIds: nextWaifuIds,
-                pickNextWaifuToolEnabled: waifu.tools.pickNextWaifu,
-                shortTermMemoryToolEnabled: waifu.tools.shortTermMemory,
-                temperature: waifu.generation.temperature,
-                topP: waifu.generation.topP,
-                maxOutputTokens: waifu.generation.maxOutputTokens,
-                reasoning: waifu.reasoning,
-                stopSequences: waifuStopSequences,
-                signal: input.signal
-              });
-            } finally {
-              decrementActive(this.activeWaifuQueries, waifuQueryKey);
-            }
-          })();
           const activeAuthorIds = waifuMessages.map((message) => message.authorId);
-          const strippedContent = stripLeakedContextHeader(result.content, {
-            senderDisplayName: waifu.displayName,
-            participantDisplayNames
-          });
-          if (strippedContent !== result.content) {
-            this.options.logger.warn("Stripped leaked context header from waifu reply", {
+          const MAX_GENERATE_ATTEMPTS = 2;
+          let result: WaifuGenerationResult = { content: "" };
+          let strippedContent = "";
+          let quoteExtraction: ReplyQuoteExtraction = {
+            replyToMessageId: undefined,
+            cleanedContent: ""
+          };
+          let chunks: string[] = [];
+          let attemptsRun = 0;
+          for (let attempt = 1; attempt <= MAX_GENERATE_ATTEMPTS; attempt += 1) {
+            attemptsRun = attempt;
+            incrementActive(this.activeWaifuQueries, waifuQueryKey);
+            result = await (async () => {
+              try {
+                return await waifuPipeline.generateWaifu({
+                  modelId: waifuModelId,
+                  messages: waifuMessages,
+                  systemPrompt,
+                  midSystemBlock,
+                  trailingSystemBlock,
+                  replyStyle: responder.replyStyle,
+                  availableWaifuIds: nextWaifuIds,
+                  pickNextWaifuToolEnabled: waifu.tools.pickNextWaifu,
+                  shortTermMemoryToolEnabled: waifu.tools.shortTermMemory,
+                  temperature: waifu.generation.temperature,
+                  topP: waifu.generation.topP,
+                  maxOutputTokens: waifu.generation.maxOutputTokens,
+                  reasoning: waifu.reasoning,
+                  stopSequences: waifuStopSequences,
+                  signal: input.signal
+                });
+              } finally {
+                decrementActive(this.activeWaifuQueries, waifuQueryKey);
+              }
+            })();
+            strippedContent = stripLeakedContextHeader(result.content, {
+              senderDisplayName: waifu.displayName,
+              participantDisplayNames
+            });
+            if (strippedContent !== result.content) {
+              this.options.logger.warn("Stripped leaked context header from waifu reply", {
+                guildId: input.guildId,
+                channelId: input.channelId,
+                waifuId: waifu.id,
+                attempt,
+                before: result.content.slice(0, 80),
+                after: strippedContent.slice(0, 80)
+              });
+            }
+            quoteExtraction = extractReplyQuote(strippedContent, waifuMessages);
+            if (strippedContent !== quoteExtraction.cleanedContent) {
+              this.options.logger.info("Extracted leading reply quote from waifu reply", {
+                guildId: input.guildId,
+                channelId: input.channelId,
+                waifuId: waifu.id,
+                attempt,
+                matchedMessageId: quoteExtraction.replyToMessageId ?? null,
+                quotePreview: strippedContent.slice(0, 120)
+              });
+            }
+            chunks = splitWaifuReply(quoteExtraction.cleanedContent);
+            const becameEmptyDueToStrip =
+              chunks.length === 0 && strippedContent.length === 0 && result.content.length > 0;
+            if (!becameEmptyDueToStrip || attempt === MAX_GENERATE_ATTEMPTS) break;
+            this.options.logger.warn("Waifu reply was entirely impersonation; retrying once", {
               guildId: input.guildId,
               channelId: input.channelId,
               waifuId: waifu.id,
-              before: result.content.slice(0, 80),
-              after: strippedContent.slice(0, 80)
+              originalPreview: result.content.slice(0, 120)
             });
           }
-          const quoteExtraction = extractReplyQuote(strippedContent, waifuMessages);
-          if (strippedContent !== quoteExtraction.cleanedContent) {
-            this.options.logger.info("Extracted leading reply quote from waifu reply", {
-              guildId: input.guildId,
-              channelId: input.channelId,
-              waifuId: waifu.id,
-              matchedMessageId: quoteExtraction.replyToMessageId ?? null,
-              quotePreview: strippedContent.slice(0, 120)
-            });
-          }
-          const cleanedContent = quoteExtraction.cleanedContent;
-          const chunks = splitWaifuReply(cleanedContent);
           if (chunks.length === 0) {
             this.options.logger.warn("Waifu reply was empty after cleaning; nothing sent", {
               guildId: input.guildId,
               channelId: input.channelId,
-              waifuId: waifu.id
+              waifuId: waifu.id,
+              attempts: attemptsRun,
+              lastOriginalPreview: result.content.slice(0, 120)
             });
           }
           const chosenReplyTarget = quoteExtraction.replyToMessageId ?? responder.replyToMessageId;
@@ -1813,8 +1838,8 @@ export class RuntimeOrchestrator {
     guildId: string,
     waifu: WaifuConfig,
     availableWaifus: WaifuConfig[],
-    options?: { channelId?: string }
-  ): Promise<{ systemPrompt: string; memoriesBlock?: string }> {
+    options?: { channelId?: string; sceneDirection?: string }
+  ): Promise<{ systemPrompt: string; midSystemBlock: string; trailingSystemBlock: string }> {
     const [store, emojis, shortTermStore] = await Promise.all([
       this.readMemoryStore(),
       this.options.storage.readJson(
@@ -1897,16 +1922,28 @@ export class RuntimeOrchestrator {
       ? `<memories>\n${memoriesSubsections.join("\n")}\n</memories>`
       : undefined;
 
-    const currentTimeBlock = `<current_time>\n${formatPromptCurrentHour(new Date())}\n</current_time>`;
-    const emojiBlock = `<server_emojis>\n${emojiList || "(none cached)"}\n</server_emojis>`;
+    const directorNotesBlock = buildDirectorNotesBlock();
+    const availableEmojisBlock = `<available_emojis>\n${emojiList || "(none cached)"}\n</available_emojis>`;
+    const midSystemBlock = [directorNotesBlock, availableEmojisBlock, memoriesBlock]
+      .filter((section): section is string => Boolean(section))
+      .join("\n");
 
-    const systemPrompt = [
-      behaviorBlock,
-      emojiBlock,
-      currentTimeBlock
-    ].join("\n");
+    const personalityBlock = `<personality>\n${personalityContent}\n</personality>`;
+    const currentlyDoing = currentlyDoingForWaifu(waifu, new Date());
+    const currentlyDoingBlock = currentlyDoing
+      ? `<currently_doing>${currentlyDoing}</currently_doing>`
+      : undefined;
+    const sceneDirectionText = options?.sceneDirection?.trim();
+    const sceneDirectionBlock = sceneDirectionText
+      ? `<scene_direction>${sceneDirectionText}</scene_direction>`
+      : undefined;
+    const trailingSystemBlock = [personalityBlock, currentlyDoingBlock, sceneDirectionBlock]
+      .filter((section): section is string => Boolean(section))
+      .join("\n");
 
-    return { systemPrompt, memoriesBlock };
+    const systemPrompt = behaviorBlock;
+
+    return { systemPrompt, midSystemBlock, trailingSystemBlock };
   }
 
   private buildOrchestratorSystemPrompt(
@@ -2524,6 +2561,30 @@ function formatWaifuAvailabilityForOrchestratorPrompt(waifu: WaifuConfig, now: D
 
 function localTimeOfDayMinutes(date: Date): number {
   return date.getHours() * 60 + date.getMinutes();
+}
+
+function buildDirectorNotesBlock(): string {
+  const notes = [
+    "Keep your reply short.",
+    "Do not repeat what the previous waifu just said.",
+    "Do not repeat a person's name when recent context already makes the target clear.",
+    "To pull a quiet person back in, use their <@Name> tag instead of repeating their name; do not tag them again if anyone already tagged them recently."
+  ];
+  return `<director_notes>\n${notes.join("\n")}\n</director_notes>`;
+}
+
+export function currentlyDoingForWaifu(waifu: WaifuConfig, now: Date): string | undefined {
+  const currentMinutes = localTimeOfDayMinutes(now);
+  for (const interval of waifu.availability.busy) {
+    if (dailyIntervalContains(currentMinutes, interval)) {
+      const reason = interval.reason.trim();
+      if (reason) return reason;
+    }
+  }
+  if (waifu.availability.sleep.enabled && dailyIntervalContains(currentMinutes, waifu.availability.sleep)) {
+    return "sleepy";
+  }
+  return undefined;
 }
 
 function formatLocalTimeOfDay(date: Date): string {

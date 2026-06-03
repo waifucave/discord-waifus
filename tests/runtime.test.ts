@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { RuntimeOrchestrator, clipSceneDirectionForWaifu } from "../src/orchestration/runtime.js";
+import { RuntimeOrchestrator, clipSceneDirectionForWaifu, currentlyDoingForWaifu } from "../src/orchestration/runtime.js";
 import { ContextMessage } from "../src/orchestration/context.js";
 import { OrchestratorDecision } from "../src/orchestration/decisions.js";
 import {
@@ -38,6 +38,7 @@ import {
   ServerConfigSchema,
   ShortTermMemoryStoreSchema,
   StageManagerHistoryFileSchema,
+  WaifuConfig,
   WaifuConfigSchema,
   createEmptyRevisionedFile
 } from "../src/shared/schemas/domain.js";
@@ -253,15 +254,21 @@ class FakePipeline implements ModelPipeline {
     );
     expect(request.systemPrompt).not.toMatch(/<memories>/);
     expect(request.systemPrompt).not.toMatch(/<short_term_memory>/);
-    expect(request.systemPrompt).toMatch(
-      /<\/behavior>\n<server_emojis>[\s\S]*<\/server_emojis>\n<current_time>\n\d{4}-\d{2}-\d{2}T\d{2}\n<\/current_time>/
-    );
-    if (request.memoriesBlock) {
-      expect(request.memoriesBlock).toMatch(
+    expect(request.systemPrompt).not.toMatch(/<server_emojis>/);
+    expect(request.systemPrompt).not.toMatch(/<available_emojis>/);
+    expect(request.systemPrompt).not.toMatch(/<current_time>/);
+    expect(request.systemPrompt).toMatch(/<\/behavior>$/);
+    expect(request.midSystemBlock).toBeDefined();
+    expect(request.midSystemBlock).toMatch(/<director_notes>[\s\S]*Keep your reply short\.[\s\S]*<\/director_notes>/);
+    expect(request.midSystemBlock).toMatch(/<available_emojis>[\s\S]*<\/available_emojis>/);
+    if (request.midSystemBlock?.includes("<memories>")) {
+      expect(request.midSystemBlock).toMatch(
         /<memories>\n<long_term>\n- Yuki remembers Kevin likes tea\.\n<\/long_term>\n<\/memories>/
       );
     }
-    expect(request.sceneDirection).toBe("answer Kevin, then pull in Mira");
+    expect(request.trailingSystemBlock).toBeDefined();
+    expect(request.trailingSystemBlock).toMatch(/<personality>[\s\S]*You are Yuki[\s\S]*<\/personality>/);
+    expect(request.trailingSystemBlock).toMatch(/<scene_direction>answer Kevin, then pull in Mira<\/scene_direction>/);
     return { content: "hello <@Kevin> <:cutecat:>" };
   }
 
@@ -293,6 +300,52 @@ describe("RuntimeOrchestrator", () => {
     expect(clipSceneDirectionForWaifu("answer Kevin or ask Mira")).toBe("answer Kevin");
     expect(clipSceneDirectionForWaifu("answer candy or ask Mira")).toBe("answer candy");
     expect(clipSceneDirectionForWaifu("or ask Mira")).toBeUndefined();
+  });
+
+  describe("currentlyDoingForWaifu", () => {
+    const baseWaifu = {
+      availability: {
+        sleep: { enabled: true, start: "23:00", end: "07:00" },
+        busy: [{ start: "09:00", end: "11:00", reason: "university lectures" }]
+      }
+    } as unknown as WaifuConfig;
+
+    it("returns the busy interval's reason when the local time is inside a busy window", () => {
+      const now = new Date(2026, 5, 3, 9, 30, 0);
+      expect(currentlyDoingForWaifu(baseWaifu, now)).toBe("university lectures");
+    });
+
+    it("returns \"sleepy\" when in the sleep window with no busy match", () => {
+      const now = new Date(2026, 5, 3, 23, 30, 0);
+      expect(currentlyDoingForWaifu(baseWaifu, now)).toBe("sleepy");
+    });
+
+    it("returns undefined when the waifu is free", () => {
+      const now = new Date(2026, 5, 3, 14, 0, 0);
+      expect(currentlyDoingForWaifu(baseWaifu, now)).toBeUndefined();
+    });
+
+    it("prefers busy reason over sleepy on overlap", () => {
+      const overlappingWaifu = {
+        availability: {
+          sleep: { enabled: true, start: "08:00", end: "12:00" },
+          busy: [{ start: "09:00", end: "11:00", reason: "morning class" }]
+        }
+      } as unknown as WaifuConfig;
+      const now = new Date(2026, 5, 3, 10, 0, 0);
+      expect(currentlyDoingForWaifu(overlappingWaifu, now)).toBe("morning class");
+    });
+
+    it("ignores empty busy reasons but still falls through to sleepy", () => {
+      const emptyReasonWaifu = {
+        availability: {
+          sleep: { enabled: true, start: "09:00", end: "11:00" },
+          busy: [{ start: "09:00", end: "11:00", reason: "" }]
+        }
+      } as unknown as WaifuConfig;
+      const now = new Date(2026, 5, 3, 10, 0, 0);
+      expect(currentlyDoingForWaifu(emptyReasonWaifu, now)).toBe("sleepy");
+    });
   });
 
   it("runs orchestrator -> waifu -> orchestrator and persists history/session", async () => {
@@ -2383,11 +2436,11 @@ describe("RuntimeOrchestrator", () => {
       async generateWaifu(request) {
         if (request.systemPrompt.includes("You are Mika")) {
           waifuCalls.push("mika");
-          expect(request.sceneDirection).toBe("start topic");
+          expect(request.trailingSystemBlock).toContain("<scene_direction>start topic</scene_direction>");
           return { content: "mika first", pickedNextWaifuId: "yuki" };
         }
         waifuCalls.push("yuki");
-        expect(request.sceneDirection).toBeUndefined();
+        expect(request.trailingSystemBlock ?? "").not.toMatch(/<scene_direction>/);
         return { content: "yuki next" };
       },
       async decideOrchestrator(request) {
@@ -2462,7 +2515,7 @@ describe("RuntimeOrchestrator", () => {
     });
     const pipeline: ModelPipeline = {
       async generateWaifu(request) {
-        expect(request.sceneDirection).toBe("answer Kevin");
+        expect(request.trailingSystemBlock).toContain("<scene_direction>answer Kevin</scene_direction>");
         resolveGenerated();
         return { content: "clipped" };
       },
@@ -2584,7 +2637,8 @@ describe("RuntimeOrchestrator", () => {
       },
       async generateWaifu(request) {
         const waifuId = request.systemPrompt.includes("You are Mika") ? "mika" : "yuki";
-        waifuCalls.push({ waifuId, sceneDirection: request.sceneDirection });
+        const sceneDirectionMatch = request.trailingSystemBlock?.match(/<scene_direction>([^<]+)<\/scene_direction>/);
+        waifuCalls.push({ waifuId, sceneDirection: sceneDirectionMatch?.[1] });
         if (waifuCalls.length === 2) {
           resolveGenerated();
         }
@@ -3281,6 +3335,205 @@ describe("RuntimeOrchestrator", () => {
     expect(pipeline.receivedStopSequences).toEqual(expect.arrayContaining(["\nYuki:", "\nMika:"]));
   });
 
+  it("retries once when the entire reply is stripped as impersonation, and sends the recovered reply", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.contexts = [
+      [contextMessage("m1", "user", "Kevin", "tell me a joke")],
+      [contextMessage("m1", "user", "Kevin", "tell me a joke")],
+      [contextMessage("m2", "waifu", "Yuki", "oh wait that was me sorry")]
+    ];
+
+    await seedRuntimeConfig(storage);
+    await storage.writeJson(
+      "server:guild-1",
+      "user/servers/guild-1/server.json",
+      ServerConfigSchema,
+      ServerConfigSchema.parse({
+        ...createRevisionedBase(),
+        guildId: "guild-1",
+        enabled: true,
+        channels: {
+          "channel-1": {
+            channelId: "channel-1",
+            enabled: true,
+            enabledWaifuIds: ["yuki", "mika"]
+          }
+        }
+      })
+    );
+    await storage.writeJson(
+      "waifu:mika",
+      "user/waifus/mika/waifu.json",
+      WaifuConfigSchema,
+      WaifuConfigSchema.parse({
+        ...createRevisionedBase(),
+        id: "mika",
+        name: "Mika",
+        displayName: "Mika",
+        enabled: true,
+        providerId: "openai",
+        modelId: "gpt-5.4-mini",
+        botId: "mika-bot",
+        persona: "direct",
+        contextWindow: 50
+      })
+    );
+
+    class RetryRecoversPipeline implements ModelPipeline {
+      waifuCalls = 0;
+      decisions: OrchestratorDecision[] = [
+        {
+          action: "reply",
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal", sceneDirection: "answer" }],
+          reasoning: "Yuki answers."
+        },
+        { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, reasoning: "done" }
+      ];
+      async generateWaifu() {
+        this.waifuCalls += 1;
+        return this.waifuCalls === 1
+          ? { content: "Mika: i meant to let Yuki go first" }
+          : { content: "oh wait that was me sorry" };
+      }
+      async decideOrchestrator() {
+        const next = this.decisions.shift();
+        if (!next) throw new Error("no decision");
+        return next;
+      }
+    }
+
+    const pipeline = new RetryRecoversPipeline();
+    const warnings: Array<{ message: string; meta?: Record<string, unknown> }> = [];
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 3,
+      createPipeline: () => pipeline,
+      logger: {
+        debug: () => undefined,
+        info: () => undefined,
+        warn: (message, meta) => warnings.push({ message, meta }),
+        error: () => undefined
+      }
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    expect(pipeline.waifuCalls).toBe(2);
+    expect(discord.sent.map((m) => m.content)).toEqual(["oh wait that was me sorry"]);
+    expect(warnings).toContainEqual(
+      expect.objectContaining({
+        message: "Waifu reply was entirely impersonation; retrying once",
+        meta: expect.objectContaining({ waifuId: "yuki" })
+      })
+    );
+    expect(warnings.some((w) => w.message === "Waifu reply was empty after cleaning; nothing sent")).toBe(false);
+  });
+
+  it("gives up after one retry when the second attempt is also full impersonation", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.contexts = [
+      [contextMessage("m1", "user", "Kevin", "tell me a joke")],
+      [contextMessage("m1", "user", "Kevin", "tell me a joke")],
+      [contextMessage("m2", "user", "Kevin", "tell me a joke")]
+    ];
+
+    await seedRuntimeConfig(storage);
+    await storage.writeJson(
+      "server:guild-1",
+      "user/servers/guild-1/server.json",
+      ServerConfigSchema,
+      ServerConfigSchema.parse({
+        ...createRevisionedBase(),
+        guildId: "guild-1",
+        enabled: true,
+        channels: {
+          "channel-1": {
+            channelId: "channel-1",
+            enabled: true,
+            enabledWaifuIds: ["yuki", "mika"]
+          }
+        }
+      })
+    );
+    await storage.writeJson(
+      "waifu:mika",
+      "user/waifus/mika/waifu.json",
+      WaifuConfigSchema,
+      WaifuConfigSchema.parse({
+        ...createRevisionedBase(),
+        id: "mika",
+        name: "Mika",
+        displayName: "Mika",
+        enabled: true,
+        providerId: "openai",
+        modelId: "gpt-5.4-mini",
+        botId: "mika-bot",
+        persona: "direct",
+        contextWindow: 50
+      })
+    );
+
+    class AlwaysImpersonatesPipeline implements ModelPipeline {
+      waifuCalls = 0;
+      decisions: OrchestratorDecision[] = [
+        {
+          action: "reply",
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal", sceneDirection: "answer" }],
+          reasoning: "Yuki answers."
+        },
+        { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, reasoning: "done" }
+      ];
+      async generateWaifu() {
+        this.waifuCalls += 1;
+        return { content: `Mika: attempt ${this.waifuCalls} pretending to be someone else` };
+      }
+      async decideOrchestrator() {
+        const next = this.decisions.shift();
+        if (!next) throw new Error("no decision");
+        return next;
+      }
+    }
+
+    const pipeline = new AlwaysImpersonatesPipeline();
+    const warnings: Array<{ message: string; meta?: Record<string, unknown> }> = [];
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 3,
+      createPipeline: () => pipeline,
+      logger: {
+        debug: () => undefined,
+        info: () => undefined,
+        warn: (message, meta) => warnings.push({ message, meta }),
+        error: () => undefined
+      }
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    expect(pipeline.waifuCalls).toBe(2);
+    expect(discord.sent).toHaveLength(0);
+    expect(warnings).toContainEqual(
+      expect.objectContaining({
+        message: "Waifu reply was empty after cleaning; nothing sent",
+        meta: expect.objectContaining({ waifuId: "yuki", attempts: 2 })
+      })
+    );
+  });
+
   it("ignores gateway echoes of its own waifu messages so chunked replies finish", async () => {
     const root = await makeTempRoot();
     roots.push(root);
@@ -3467,7 +3720,7 @@ describe("RuntimeOrchestrator", () => {
       },
       async generateWaifu(request: WaifuGenerationRequest) {
         capturedSystemPrompts.push(request.systemPrompt);
-        capturedMemoriesBlocks.push(request.memoriesBlock);
+        capturedMemoriesBlocks.push(request.midSystemBlock);
         waifuRun += 1;
         if (waifuRun === 1) {
           return {
@@ -3571,7 +3824,7 @@ describe("RuntimeOrchestrator", () => {
       },
       async generateWaifu(request: WaifuGenerationRequest) {
         const match = request.systemPrompt.match(/You are (\w+)\./);
-        if (match) memoriesByWaifu.set(match[1], request.memoriesBlock);
+        if (match) memoriesByWaifu.set(match[1], request.midSystemBlock);
         return { content: "ok" };
       }
     };
@@ -3642,7 +3895,7 @@ describe("RuntimeOrchestrator", () => {
       },
       async generateWaifu(request: WaifuGenerationRequest) {
         capturedSystemPrompt = request.systemPrompt;
-        capturedMemoriesBlock = request.memoriesBlock;
+        capturedMemoriesBlock = request.midSystemBlock;
         return {
           content: "fresh",
           shortTermMemoryEntries: ["Kevin is back from lunch."]

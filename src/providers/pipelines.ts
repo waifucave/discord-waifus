@@ -85,10 +85,10 @@ class OpenAiCompatibleChatPipeline implements ModelPipeline {
           { role: "system", content: request.systemPrompt },
           ...injectMemoriesIntoChatContext(
             contextToChatMessagesForWaifu(request.messages, this.model.supportsImageInput),
-            request.memoriesBlock ? { role: "system", content: request.memoriesBlock } : undefined
+            request.midSystemBlock ? { role: "system", content: request.midSystemBlock } : undefined
           ),
           ...replyStyleMessagesForChat(request.replyStyle),
-          { role: "system", content: directorNotesContent(request.sceneDirection) }
+          ...(request.trailingSystemBlock ? [{ role: "system", content: request.trailingSystemBlock }] : [])
         ]),
         temperature: openAiChatTemperature(this.model, request.temperature ?? this.model.defaultTemperature),
         top_p: openAiChatTopP(this.model, request.topP ?? this.model.defaultTopP),
@@ -242,10 +242,10 @@ class OpenAiResponsesPipeline implements ModelPipeline {
         input: [
           ...injectMemoriesIntoChatContext(
             contextToResponsesInputForWaifu(request.messages, this.model.supportsImageInput),
-            request.memoriesBlock ? { role: "system", content: request.memoriesBlock } : undefined
+            request.midSystemBlock ? { role: "system", content: request.midSystemBlock } : undefined
           ),
           ...replyStyleMessagesForChat(request.replyStyle),
-          { role: "system", content: directorNotesContent(request.sceneDirection) }
+          ...(request.trailingSystemBlock ? [{ role: "system", content: request.trailingSystemBlock }] : [])
         ],
         temperature: request.temperature ?? this.model.defaultTemperature,
         top_p: request.topP ?? this.model.defaultTopP,
@@ -386,10 +386,10 @@ class AnthropicMessagesPipeline implements ModelPipeline {
         messages: [
           ...injectMemoriesIntoChatContext(
             contextToAnthropicMessagesForWaifu(request.messages, this.model.supportsImageInput),
-            request.memoriesBlock ? { role: "user" as const, content: request.memoriesBlock } : undefined
+            request.midSystemBlock ? { role: "user" as const, content: request.midSystemBlock } : undefined
           ),
           ...replyStyleMessagesForAnthropic(request.replyStyle),
-          { role: "user", content: directorNotesContent(request.sceneDirection) }
+          ...(request.trailingSystemBlock ? [{ role: "user" as const, content: request.trailingSystemBlock }] : [])
         ],
         ...anthropicSamplingPayload(
           this.model,
@@ -524,10 +524,10 @@ class GoogleGenerativeLanguagePipeline implements ModelPipeline {
     const contents = [
       ...injectMemoriesIntoChatContext(
         contextContents,
-        request.memoriesBlock ? googleUserTurn(request.memoriesBlock) : undefined
+        request.midSystemBlock ? googleUserTurn(request.midSystemBlock) : undefined
       ),
       ...(replyHint ? [googleUserTurn(replyHint)] : []),
-      googleUserTurn(directorNotesContent(request.sceneDirection))
+      ...(request.trailingSystemBlock ? [googleUserTurn(request.trailingSystemBlock)] : [])
     ];
     const result = await postJsonAndExtractText<WaifuGenerationResult>({
       url: googleAiStudioUrl(this.provider, this.model),
@@ -1013,19 +1013,6 @@ function replyStyleMessagesForChat(replyStyle: ReplyStyle | undefined): Array<{ 
 function replyStyleMessagesForAnthropic(replyStyle: ReplyStyle | undefined): Array<{ role: "user"; content: string }> {
   const hint = replyStyleHint(replyStyle);
   return hint ? [{ role: "user", content: hint }] : [];
-}
-
-function directorNotesContent(sceneDirection: string | undefined): string {
-  const notes = [
-    "Keep your reply short.",
-    "Do not repeat what the previous waifu just said.",
-    "Do not repeat a person's name when recent context already makes the target clear.",
-    "To pull a quiet person back in, use their <@Name> tag instead of repeating their name; do not tag them again if anyone already tagged them recently."
-  ];
-  if (sceneDirection) {
-    notes.push(`<scene_direction>${sceneDirection}</scene_direction>`);
-  }
-  return `<director_notes>\n${notes.join("\n")}\n</director_notes>`;
 }
 
 function contextToChatMessagesForWaifu(messages: ContextMessage[], includeImages: boolean) {

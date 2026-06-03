@@ -53,8 +53,8 @@ export type ProviderRequest = {
 
 export type WaifuGenerationRequest = ProviderRequest & {
   systemPrompt: string;
-  memoriesBlock?: string;
-  sceneDirection?: string;
+  midSystemBlock?: string;
+  trailingSystemBlock?: string;
   replyStyle?: ReplyStyle;
   pickNextWaifuToolEnabled?: boolean;
   shortTermMemoryToolEnabled?: boolean;
