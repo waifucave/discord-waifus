@@ -5,7 +5,12 @@ import { Empty } from "../components/Empty";
 import { Pill } from "../components/Pill";
 import { shortTime, safeJsonText } from "../utils/format";
 
-type QueryRole = "orchestrator" | "waifu" | "stage_manager" | "reviewer";
+type QueryRole =
+  | "orchestrator"
+  | "waifu"
+  | "stage_manager_observer"
+  | "stage_manager_librarian"
+  | "reviewer";
 
 type CapturedQuery = {
   id: number;
@@ -29,14 +34,16 @@ type CapturedQuery = {
 const ROLE_LABEL: Record<QueryRole, string> = {
   orchestrator: "orchestrator",
   waifu: "waifu",
-  stage_manager: "stage manager",
+  stage_manager_observer: "stage mgr · observer",
+  stage_manager_librarian: "stage mgr · librarian",
   reviewer: "reviewer"
 };
 
 const ROLE_TONE: Record<QueryRole, "ok" | "info" | "warn"> = {
   orchestrator: "info",
   waifu: "ok",
-  stage_manager: "warn",
+  stage_manager_observer: "info",
+  stage_manager_librarian: "warn",
   reviewer: "warn"
 };
 
@@ -131,7 +138,8 @@ export function QueriesView() {
           <option value="">All roles</option>
           <option value="orchestrator">Orchestrator</option>
           <option value="waifu">Waifu</option>
-          <option value="stage_manager">Stage manager</option>
+          <option value="stage_manager_observer">Stage mgr · observer</option>
+          <option value="stage_manager_librarian">Stage mgr · librarian</option>
           <option value="reviewer">Reviewer</option>
         </select>
         <Pill tone={paused ? "warn" : "ok"} dot>
@@ -167,7 +175,7 @@ export function QueriesView() {
                   </span>
                   <span className="src">
                     <Pill tone={ROLE_TONE[entry.role]} dot>
-                      {entry.role}
+                      {ROLE_LABEL[entry.role]}
                     </Pill>
                   </span>
                   <span className="msg">{querySummary(entry.payload)}</span>

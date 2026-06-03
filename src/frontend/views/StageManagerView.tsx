@@ -16,10 +16,6 @@ import { Toggle } from "../components/Toggle";
 import { ReasoningControls, hasReasoningControls } from "../components/ReasoningControls";
 import type { ReasoningConfig } from "../api/types";
 
-const DEFAULT_PROMPT = `Extract durable, atomic facts about the people the waifus interact with —
-preferences, relationships, commitments, allergies, and other things worth
-knowing a week from now. Skip narration and recaps of what was said.`;
-
 export function StageManagerView() {
   const providers = useApi<ProvidersResponse>((s) => api.providers(s), []);
   const models = useApi<ModelsResponse>((s) => api.models(s), []);
@@ -28,7 +24,6 @@ export function StageManagerView() {
   const history = useApi<StageManagerHistoryFile>((s) => api.stageManagerHistory(s), []);
   const [providerId, setProviderId] = useState<string>("");
   const [modelId, setModelId] = useState<string>("");
-  const [prompt, setPrompt] = useState(DEFAULT_PROMPT);
   const [enabled, setEnabled] = useState(false);
   const [reasoning, setReasoning] = useState<ReasoningConfig>({});
   const [pending, setPending] = useState(false);
@@ -40,7 +35,6 @@ export function StageManagerView() {
     if (!remoteConfig.data) return;
     setProviderId(remoteConfig.data.providerId ?? "");
     setModelId(remoteConfig.data.modelId ?? "");
-    setPrompt(remoteConfig.data.prompt || DEFAULT_PROMPT);
     setEnabled(remoteConfig.data.enabled);
     setReasoning(remoteConfig.data.reasoning ?? {});
   }, [remoteConfig.data]);
@@ -61,7 +55,6 @@ export function StageManagerView() {
         providerId: providerId ? (providerId as AgentConfig["providerId"]) : undefined,
         modelId: modelId || undefined,
         enabled,
-        prompt,
         reasoning
       });
       remoteConfig.setData(saved);
@@ -188,19 +181,6 @@ export function StageManagerView() {
             Selected model does not expose reasoning controls.
           </span>
         )}
-      </section>
-
-      <section className="section">
-        <div className="section-header">
-          <h3 className="section-title">Prompt</h3>
-          <span className="section-description">Default review prompt.</span>
-        </div>
-        <textarea
-          className="textarea"
-          value={prompt}
-          onChange={(e) => setPrompt(e.target.value)}
-          rows={9}
-        />
       </section>
 
       <section className="section">

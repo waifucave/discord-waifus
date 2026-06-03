@@ -683,7 +683,7 @@ describe("provider-native decision tools", () => {
       }
     });
     const query = recentQueries().at(-1);
-    expect(query?.role).toBe("stage_manager");
+    expect(query?.role).toBe("stage_manager_librarian");
     expect((query?.payload.tools as Array<{ name: string }>)[0].name).toBe("manage_memories");
     expect(query?.payload.tool_choice).toEqual({ type: "function", name: "manage_memories" });
     const toolParameters = (query?.payload.tools as Array<{
@@ -1434,7 +1434,7 @@ describe("trailing system message payloads", () => {
 });
 
 describe("mid-system block injection", () => {
-  const midPayload = "<director_notes>\nKeep it short.\n</director_notes>\n<memories>\n<long_term>\n- example\n</long_term>\n</memories>";
+  const midPayload = "<director_notes>\nKeep it short.\n</director_notes>\n<memories>\n- example\n</memories>";
   const trailingPayload = "<personality>\nYou are Yuki\n</personality>";
 
   it("OpenAI Chat: inserts midSystemBlock at contextLen - 2, leaving 2 chat messages before trailing", async () => {
@@ -2158,7 +2158,7 @@ describe("Google AI Studio (Gemini) pipeline", () => {
       { waifuId: "yuki", content: "Kevin likes tea.", importance: 3, kind: "preference" }
     ]);
     const query = recentQueries().at(-1);
-    expect(query?.role).toBe("stage_manager");
+    expect(query?.role).toBe("stage_manager_observer");
     expect((query?.payload.tools as Array<{ function: { name: string } }>)[0].function.name).toBe("record_observations");
     expect(query?.payload.tool_choice).toMatchObject({ function: { name: "record_observations" } });
     const messages = query?.payload.messages as Array<{ role: string; content: string }>;
@@ -2294,7 +2294,7 @@ describe("Google AI Studio (Gemini) pipeline", () => {
     expect(toolParameters.importance).toMatchObject({ type: "integer", enum: ["1", "2", "3", "4", "5"] });
   });
 
-  it("OpenAI Chat: collects all record_short_term_memory calls alongside the optional PickNextWaifu", async () => {
+  it("OpenAI Chat: collects all add_memory calls alongside the optional PickNextWaifu", async () => {
     mockFetch({
       choices: [
         {
@@ -2302,8 +2302,8 @@ describe("Google AI Studio (Gemini) pipeline", () => {
             content: "noted",
             tool_calls: [
               { function: { name: "PickNextWaifu", arguments: JSON.stringify({ waifuId: "mika" }) } },
-              { function: { name: "record_short_term_memory", arguments: JSON.stringify({ content: "Kevin heading out at 5pm." }) } },
-              { function: { name: "record_short_term_memory", arguments: JSON.stringify({ content: "Kevin prefers green tea today." }) } }
+              { function: { name: "add_memory", arguments: JSON.stringify({ content: "Kevin heading out at 5pm." }) } },
+              { function: { name: "add_memory", arguments: JSON.stringify({ content: "Kevin prefers green tea today." }) } }
             ]
           }
         }
@@ -2327,7 +2327,7 @@ describe("Google AI Studio (Gemini) pipeline", () => {
     ]);
     const query = recentQueries().at(-1);
     const toolNames = (query?.payload.tools as Array<{ function: { name: string } }>).map((t) => t.function.name);
-    expect(toolNames).toEqual(["PickNextWaifu", "record_short_term_memory"]);
+    expect(toolNames).toEqual(["PickNextWaifu", "add_memory"]);
   });
 
   it("OpenAI Chat: omits the short-term tool when the gate is off", async () => {
@@ -2347,14 +2347,14 @@ describe("Google AI Studio (Gemini) pipeline", () => {
     const toolNames = (query?.payload.tools as Array<{ function: { name: string } }> | undefined)?.map(
       (t) => t.function.name
     ) ?? [];
-    expect(toolNames).not.toContain("record_short_term_memory");
+    expect(toolNames).not.toContain("add_memory");
   });
 
-  it("OpenAI Responses: collects multiple record_short_term_memory calls", async () => {
+  it("OpenAI Responses: collects multiple add_memory calls", async () => {
     mockFetch({
       output: [
-        { type: "function_call", name: "record_short_term_memory", arguments: JSON.stringify({ content: "note one" }) },
-        { type: "function_call", name: "record_short_term_memory", arguments: JSON.stringify({ content: "note two" }) }
+        { type: "function_call", name: "add_memory", arguments: JSON.stringify({ content: "note one" }) },
+        { type: "function_call", name: "add_memory", arguments: JSON.stringify({ content: "note two" }) }
       ],
       output_text: "ok"
     });
@@ -2370,15 +2370,15 @@ describe("Google AI Studio (Gemini) pipeline", () => {
     expect(result.shortTermMemoryEntries).toEqual(["note one", "note two"]);
     const query = recentQueries().at(-1);
     const toolNames = (query?.payload.tools as Array<{ name: string }>).map((t) => t.name);
-    expect(toolNames).toContain("record_short_term_memory");
+    expect(toolNames).toContain("add_memory");
   });
 
-  it("Anthropic: collects multiple record_short_term_memory calls", async () => {
+  it("Anthropic: collects multiple add_memory calls", async () => {
     mockFetch({
       content: [
         { type: "text", text: "ok" },
-        { type: "tool_use", name: "record_short_term_memory", input: { content: "first" } },
-        { type: "tool_use", name: "record_short_term_memory", input: { content: "second" } }
+        { type: "tool_use", name: "add_memory", input: { content: "first" } },
+        { type: "tool_use", name: "add_memory", input: { content: "second" } }
       ]
     });
 
@@ -2393,18 +2393,18 @@ describe("Google AI Studio (Gemini) pipeline", () => {
     expect(result.shortTermMemoryEntries).toEqual(["first", "second"]);
     const query = recentQueries().at(-1);
     const toolNames = (query?.payload.tools as Array<{ name: string }>).map((t) => t.name);
-    expect(toolNames).toContain("record_short_term_memory");
+    expect(toolNames).toContain("add_memory");
   });
 
-  it("Google: collects multiple record_short_term_memory calls", async () => {
+  it("Google: collects multiple add_memory calls", async () => {
     mockFetch({
       candidates: [
         {
           content: {
             parts: [
               { text: "ok" },
-              { functionCall: { name: "record_short_term_memory", args: { content: "alpha" } } },
-              { functionCall: { name: "record_short_term_memory", args: { content: "beta" } } }
+              { functionCall: { name: "add_memory", args: { content: "alpha" } } },
+              { functionCall: { name: "add_memory", args: { content: "beta" } } }
             ]
           }
         }

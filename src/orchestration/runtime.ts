@@ -1065,14 +1065,25 @@ export class RuntimeOrchestrator {
       });
       messages = await this.messagesForModel(messages, config.modelId);
 
+      this.options.logger.info("Stage manager observer started", {
+        guildId,
+        channelId,
+        modelId: config.modelId,
+        contextMessages: messages.length
+      });
       const observations = await pipeline.decideStageManagerObservations({
         modelId: config.modelId,
         messages,
-        systemPrompt: config.prompt,
         availableWaifuIds: allowedWaifuIds,
         reasoning: config.reasoning
       });
       const allowedObservations = observations.filter((observation) => allowedWaifuIds.includes(observation.waifuId));
+      this.options.logger.info("Stage manager observer finished", {
+        guildId,
+        channelId,
+        observations: observations.length,
+        allowedObservations: allowedObservations.length
+      });
 
       if (allowedObservations.length === 0) {
         await this.appendStageManagerHistory({
@@ -1097,14 +1108,25 @@ export class RuntimeOrchestrator {
         allowedWaifuIds,
         { observations: allowedObservations }
       );
+      this.options.logger.info("Stage manager librarian started", {
+        guildId,
+        channelId,
+        modelId: config.modelId,
+        observations: allowedObservations.length,
+        memories: memoryInput.memories.length
+      });
       const calls = await pipeline.decideStageManager({
         modelId: config.modelId,
         messages: [],
-        systemPrompt: config.prompt,
         memories: memoryInput.memories,
         observations: allowedObservations,
         availableWaifuIds: allowedWaifuIds,
         reasoning: config.reasoning
+      });
+      this.options.logger.info("Stage manager librarian finished", {
+        guildId,
+        channelId,
+        calls: calls.length
       });
       const result = await this.applyStageManagerCalls(
         guildId,
@@ -1900,7 +1922,7 @@ export class RuntimeOrchestrator {
             Date.parse(entry.expiresAt) > now
           )
           .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
-          .map((entry) => `- [${formatShortTermAge(entry.createdAt, now)}] ${entry.content}`)
+          .map((entry) => `- ${entry.content}`)
       : [];
     const emojiList = emojis.emojis
       .filter((emoji) => emoji.available)
@@ -1948,15 +1970,9 @@ export class RuntimeOrchestrator {
     }
     const behaviorBlock = `<behavior>\n${behaviorSections.join("\n")}\n</behavior>`;
 
-    const memoriesSubsections: string[] = [];
-    if (longTermLines.length) {
-      memoriesSubsections.push(`<long_term>\n${longTermLines.join("\n")}\n</long_term>`);
-    }
-    if (shortTermLines.length) {
-      memoriesSubsections.push(`<short_term>\n${shortTermLines.join("\n")}\n</short_term>`);
-    }
-    const memoriesBlock = memoriesSubsections.length
-      ? `<memories>\n${memoriesSubsections.join("\n")}\n</memories>`
+    const allMemoryLines = [...longTermLines, ...shortTermLines];
+    const memoriesBlock = allMemoryLines.length
+      ? `<memories>\n${allMemoryLines.join("\n")}\n</memories>`
       : undefined;
 
     const directorNotesBlock = buildDirectorNotesBlock();
@@ -2525,7 +2541,7 @@ function buildWaifuToolUseInstructions(waifu: WaifuConfig, availableWaifus: Waif
   if (waifu.tools.shortTermMemory) {
     sections.push(
       [
-        "record_short_term_memory — scratchpad for the next day.",
+        "add_memory — scratchpad to remember until the next day.",
         "Call this with a single short standalone sentence when something in the conversation is worth remembering for the next ~24 hours: a stated time, a plan, a name to follow up on, a one-off detail you might need before tomorrow.",
         "You may call it multiple times in one reply (up to 5) to record separate notes.",
         "Do not use it for trivial chitchat, repeat lines you already wrote, or things that belong in long-term memory. Entries auto-expire after 24h.",
@@ -2535,17 +2551,6 @@ function buildWaifuToolUseInstructions(waifu: WaifuConfig, availableWaifus: Waif
   }
   if (sections.length === 0) return undefined;
   return ["You have the following optional tools.", ...sections].join("\n\n");
-}
-
-function formatShortTermAge(createdAt: string, nowMs: number): string {
-  const created = Date.parse(createdAt);
-  if (Number.isNaN(created)) return "just now";
-  const diffMin = Math.max(0, Math.floor((nowMs - created) / 60000));
-  if (diffMin < 1) return "just now";
-  if (diffMin < 60) return `${diffMin}m ago`;
-  const hours = Math.floor(diffMin / 60);
-  const minutes = diffMin % 60;
-  return minutes === 0 ? `${hours}h ago` : `${hours}h ${minutes}m ago`;
 }
 
 function formatWaifuScheduleForPrompt(waifu: WaifuConfig): string {

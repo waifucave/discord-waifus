@@ -1,4 +1,9 @@
-export type QueryRole = "orchestrator" | "waifu" | "stage_manager" | "reviewer";
+export type QueryRole =
+  | "orchestrator"
+  | "waifu"
+  | "stage_manager_observer"
+  | "stage_manager_librarian"
+  | "reviewer";
 
 export type CapturedQuery = {
   id: number;

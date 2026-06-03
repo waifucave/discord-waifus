@@ -26,6 +26,9 @@ import {
   GuildRolesFileSchema,
   MemoryStore,
   MemoryStoreSchema,
+  ShortTermMemory,
+  ShortTermMemoryStore,
+  ShortTermMemoryStoreSchema,
   OrchestratorHistoryFile,
   OrchestratorHistoryFileSchema,
   ProviderCredentialsFile,
@@ -112,6 +115,12 @@ const CreateMemoryBodySchema = z.object({
 const UpdateMemoryBodySchema = CreateMemoryBodySchema.partial().extend({
   revision: z.number().int().nonnegative().optional(),
   status: z.enum(["active", "archived"]).optional()
+});
+
+const UpdateShortTermMemoryBodySchema = z.object({
+  revision: z.number().int().nonnegative().optional(),
+  content: z.string().min(1).optional(),
+  waifuId: z.string().min(1).optional()
 });
 
 const AgentConfigBodySchema = AgentConfigSchema.partial().extend({
@@ -543,6 +552,49 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     });
   });
 
+  app.get("/api/short-term-memories", async () => {
+    const store = await readShortTermMemoryStore(storage);
+    const now = Date.now();
+    return {
+      ...store,
+      entries: store.entries.filter((entry) => Date.parse(entry.expiresAt) > now)
+    };
+  });
+
+  app.put("/api/short-term-memories/:entryId", async (request) => {
+    const { entryId } = parseIdParam(request.params, "entryId");
+    const body = UpdateShortTermMemoryBodySchema.parse(request.body);
+    requireRevision(request, body);
+    return storage.updateRevisionedJson({
+      resourceKey: "short-term-memories:global",
+      relativePath: "user/short-term-memories.json",
+      schema: ShortTermMemoryStoreSchema,
+      fallback: emptyShortTermMemoryStore(),
+      expectedRevision: expectedRevision(request, body),
+      transform: (current) => updateShortTermMemoryOrThrow(current, entryId, body)
+    });
+  });
+
+  app.delete("/api/short-term-memories/:entryId", async (request) => {
+    const { entryId } = parseIdParam(request.params, "entryId");
+    const body = z.object({ revision: z.number().int().nonnegative().optional() }).optional().parse(request.body);
+    const revision = expectedRevision(request, body);
+    if (revision === undefined) {
+      throw preconditionRequired("DELETE /api/short-term-memories/:entryId requires revision or If-Match.");
+    }
+    return storage.updateRevisionedJson({
+      resourceKey: "short-term-memories:global",
+      relativePath: "user/short-term-memories.json",
+      schema: ShortTermMemoryStoreSchema,
+      fallback: emptyShortTermMemoryStore(),
+      expectedRevision: revision,
+      transform: (current) => ({
+        ...current,
+        entries: current.entries.filter((entry) => entry.id !== entryId)
+      })
+    });
+  });
+
   app.post("/api/runtime/pause", async () => {
     options.runtime.paused = true;
     await (options.runtimeControl?.pause() ?? options.runtimeOrchestrator?.pause());
@@ -919,6 +971,44 @@ async function readMemoryStore(storage: StorageService): Promise<MemoryStore> {
 
 function emptyMemoryStore(): MemoryStore {
   return MemoryStoreSchema.parse(createEmptyRevisionedFile({ memories: [] }));
+}
+
+async function readShortTermMemoryStore(storage: StorageService): Promise<ShortTermMemoryStore> {
+  return storage.readJson(
+    "user/short-term-memories.json",
+    ShortTermMemoryStoreSchema,
+    emptyShortTermMemoryStore()
+  );
+}
+
+function emptyShortTermMemoryStore(): ShortTermMemoryStore {
+  return ShortTermMemoryStoreSchema.parse(createEmptyRevisionedFile({ entries: [] }));
+}
+
+function updateShortTermMemoryOrThrow(
+  current: ShortTermMemoryStore,
+  entryId: string,
+  patch: z.infer<typeof UpdateShortTermMemoryBodySchema>
+): ShortTermMemoryStore {
+  let found = false;
+  const entries = current.entries.map((entry): ShortTermMemory => {
+    if (entry.id !== entryId) {
+      return entry;
+    }
+    found = true;
+    const { revision: _revision, ...editable } = patch;
+    return {
+      ...entry,
+      ...editable
+    };
+  });
+  if (!found) {
+    throw notFound(`Short-term memory ${entryId} was not found.`);
+  }
+  return {
+    ...current,
+    entries
+  };
 }
 
 function updateMemoryOrThrow(

@@ -281,7 +281,7 @@ class FakePipeline implements ModelPipeline {
     expect(request.midSystemBlock).toMatch(/<available_emojis>[\s\S]*<\/available_emojis>/);
     if (request.midSystemBlock?.includes("<memories>")) {
       expect(request.midSystemBlock).toMatch(
-        /<memories>\n<long_term>\n- Yuki remembers Kevin likes tea\.\n<\/long_term>\n<\/memories>/
+        /<memories>\n- Yuki remembers Kevin likes tea\.\n<\/memories>/
       );
     }
     expect(request.trailingSystemBlock).toBeDefined();
@@ -1154,7 +1154,7 @@ describe("RuntimeOrchestrator", () => {
         return { content: "unused" };
       },
       async decideStageManagerObservations(request: StageManagerObserveRequest) {
-        expect(request.systemPrompt).toBe("memories");
+        expect(request.systemPrompt).toBeUndefined();
         expect(request.availableWaifuIds).toEqual(["yuki"]);
         return [
           { waifuId: "yuki", content: "Kevin likes tea.", importance: 3, kind: "preference" as const }
@@ -3946,7 +3946,9 @@ describe("RuntimeOrchestrator", () => {
     expect(secondPrompt).not.toMatch(/<memories>/);
     const secondMemoriesBlock = capturedMemoriesBlocks[1];
     expect(secondMemoriesBlock).toBeDefined();
-    expect(secondMemoriesBlock).toMatch(/<memories>[\s\S]*<short_term>[\s\S]*Kevin is heading out at 5pm\.[\s\S]*Kevin prefers green tea today\.[\s\S]*<\/short_term>[\s\S]*<\/memories>/);
+    expect(secondMemoriesBlock).toMatch(/<memories>[\s\S]*Kevin is heading out at 5pm\.[\s\S]*Kevin prefers green tea today\.[\s\S]*<\/memories>/);
+    expect(secondMemoriesBlock).not.toMatch(/<short_term>/);
+    expect(secondMemoriesBlock).not.toMatch(/<long_term>/);
   });
 
   it("scopes short-term memories per waifu — waifu B does not see waifu A's notes", async () => {

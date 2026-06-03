@@ -20,11 +20,13 @@ import type {
   RuntimeState,
   ServerConfig,
   ServersResponse,
+  ShortTermMemoryStore,
   StageManagerHistoryFile,
   ReviewerHistoryFile,
   StatusResponse,
   UpdateMemoryBody,
   UpdateServerBody,
+  UpdateShortTermMemoryBody,
   UpdateWaifuBody,
   WaifuConfig,
   WaifusResponse
@@ -220,7 +222,23 @@ export const api = {
   deleteMemory: (id: string, revision: number) =>
     request<MemoryStore>("DELETE", `/api/memories/${encodeURIComponent(id)}`, {
       body: { revision }
-    })
+    }),
+
+  // Short-term memories (created only by the model via add_memory tool)
+  shortTermMemories: (signal?: AbortSignal) =>
+    request<ShortTermMemoryStore>("GET", "/api/short-term-memories", { signal }),
+  updateShortTermMemory: (id: string, body: UpdateShortTermMemoryBody) =>
+    request<ShortTermMemoryStore>(
+      "PUT",
+      `/api/short-term-memories/${encodeURIComponent(id)}`,
+      { body }
+    ),
+  deleteShortTermMemory: (id: string, revision: number) =>
+    request<ShortTermMemoryStore>(
+      "DELETE",
+      `/api/short-term-memories/${encodeURIComponent(id)}`,
+      { body: { revision } }
+    )
 };
 
 /**

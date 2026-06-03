@@ -218,6 +218,12 @@ export type ShortTermMemoryStore = Revisioned & {
   entries: ShortTermMemory[];
 };
 
+export type UpdateShortTermMemoryBody = {
+  revision: number;
+  content?: string;
+  waifuId?: string;
+};
+
 export type StageManagerEditHistoryEntry = {
   id: string;
   guildId?: string;

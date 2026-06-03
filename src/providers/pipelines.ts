@@ -161,7 +161,7 @@ class OpenAiCompatibleChatPipeline implements ModelPipeline {
       },
       signal: request.signal,
       extract: (json) => extractOpenAiChatToolArguments(json, OBSERVER_TOOL_NAME),
-      queryRole: "stage_manager"
+      queryRole: "stage_manager_observer"
     });
     return parseStageManagerObservations(text);
   }
@@ -190,7 +190,7 @@ class OpenAiCompatibleChatPipeline implements ModelPipeline {
       },
       signal: request.signal,
       extract: (json) => extractOpenAiChatToolArguments(json, STAGE_MANAGER_TOOL_NAME),
-      queryRole: "stage_manager"
+      queryRole: "stage_manager_librarian"
     });
     return parseStageManagerCalls(text);
   }
@@ -309,7 +309,7 @@ class OpenAiResponsesPipeline implements ModelPipeline {
       },
       signal: request.signal,
       extract: (json) => extractOpenAiResponsesToolArguments(json, OBSERVER_TOOL_NAME),
-      queryRole: "stage_manager"
+      queryRole: "stage_manager_observer"
     });
     return parseStageManagerObservations(text);
   }
@@ -336,7 +336,7 @@ class OpenAiResponsesPipeline implements ModelPipeline {
       },
       signal: request.signal,
       extract: (json) => extractOpenAiResponsesToolArguments(json, STAGE_MANAGER_TOOL_NAME),
-      queryRole: "stage_manager"
+      queryRole: "stage_manager_librarian"
     });
     return parseStageManagerCalls(text);
   }
@@ -454,7 +454,7 @@ class AnthropicMessagesPipeline implements ModelPipeline {
       },
       signal: request.signal,
       extract: (json) => extractAnthropicToolArguments(json, OBSERVER_TOOL_NAME),
-      queryRole: "stage_manager"
+      queryRole: "stage_manager_observer"
     });
     return parseStageManagerObservations(text);
   }
@@ -479,7 +479,7 @@ class AnthropicMessagesPipeline implements ModelPipeline {
       },
       signal: request.signal,
       extract: (json) => extractAnthropicToolArguments(json, STAGE_MANAGER_TOOL_NAME),
-      queryRole: "stage_manager"
+      queryRole: "stage_manager_librarian"
     });
     return parseStageManagerCalls(text);
   }
@@ -602,7 +602,7 @@ class GoogleGenerativeLanguagePipeline implements ModelPipeline {
       }),
       signal: request.signal,
       extract: (json) => extractGoogleToolArguments(json, OBSERVER_TOOL_NAME),
-      queryRole: "stage_manager"
+      queryRole: "stage_manager_observer"
     });
     return parseStageManagerObservations(text);
   }
@@ -630,7 +630,7 @@ class GoogleGenerativeLanguagePipeline implements ModelPipeline {
       }),
       signal: request.signal,
       extract: (json) => extractGoogleToolArguments(json, STAGE_MANAGER_TOOL_NAME),
-      queryRole: "stage_manager"
+      queryRole: "stage_manager_librarian"
     });
     return parseStageManagerCalls(text);
   }
@@ -1245,9 +1245,9 @@ const PICK_NEXT_WAIFU_TOOL_NAME = "PickNextWaifu";
 const PICK_NEXT_WAIFU_TOOL_DESCRIPTION =
   "Optionally pick one configured waifu to reply immediately after this waifu message.";
 
-const SHORT_TERM_MEMORY_TOOL_NAME = "record_short_term_memory";
+const SHORT_TERM_MEMORY_TOOL_NAME = "add_memory";
 const SHORT_TERM_MEMORY_TOOL_DESCRIPTION =
-  "Optionally write one short standalone sentence to remember for the next day. Call this multiple times in one reply to record multiple distinct notes. Skip trivial chitchat; entries expire after 24 hours.";
+  "Optionally write one short standalone sentence to remember until the next day. Call this multiple times in one reply to record multiple distinct notes. Skip trivial chitchat; entries expire after 24 hours.";
 
 function shortTermMemoryToolParameters(): object {
   return {
