@@ -127,6 +127,10 @@ export class RuntimeOrchestrator {
   private readonly activeWaifuQueries = new Map<string, number>();
   private readonly activeReviewerRuns = new Map<string, number>();
   private readonly channelRunVersions = new Map<string, number>();
+  // One-shot: when a waifu in this channel just emitted a tool-only reply
+  // (add_memory call with no Discord text), drop the memory tool from the
+  // next decision so the chain doesn't loop on silent memory-tool turns.
+  private readonly suppressMemoryToolOnce = new Set<string>();
   private static readonly SELF_SENT_TTL_MS = 60_000;
   private static readonly STAGE_MANAGER_IDLE_DELAY_MS = 60 * 60 * 1000;
   private unsubscribes: Array<() => void> = [];
@@ -753,6 +757,15 @@ export class RuntimeOrchestrator {
     const responderQueue = [...input.decision.respondingWaifus];
     let responderIndex = 0;
     let decisionFinalized = false;
+    const channelKey = timerKey(input.guildId, input.channelId);
+    const suppressMemoryToolThisDecision = this.suppressMemoryToolOnce.has(channelKey);
+    this.suppressMemoryToolOnce.delete(channelKey);
+    if (suppressMemoryToolThisDecision) {
+      this.options.logger.info("Suppressing add_memory tool for this decision (previous turn was tool-only)", {
+        guildId: input.guildId,
+        channelId: input.channelId
+      });
+    }
     try {
       while (responderQueue.length > 0) {
         throwIfAborted(input.signal);
@@ -845,11 +858,16 @@ export class RuntimeOrchestrator {
             responder.sceneDirection,
             input.sceneDirectionClippingEnabled
           );
+          const effectiveShortTermMemory = waifu.tools.shortTermMemory && !suppressMemoryToolThisDecision;
           const { systemPrompt, midSystemBlock, trailingSystemBlock } = await this.buildWaifuPromptParts(
             input.guildId,
             waifu,
             input.availableWaifus,
-            { channelId: input.channelId, sceneDirection: clippedSceneDirection }
+            {
+              channelId: input.channelId,
+              sceneDirection: clippedSceneDirection,
+              shortTermMemoryToolOverride: effectiveShortTermMemory
+            }
           );
           const activeAuthorIds = waifuMessages.map((message) => message.authorId);
           const MAX_GENERATE_ATTEMPTS = 2;
@@ -875,7 +893,7 @@ export class RuntimeOrchestrator {
                   replyStyle: responder.replyStyle,
                   availableWaifuIds: nextWaifuIds,
                   pickNextWaifuToolEnabled: waifu.tools.pickNextWaifu,
-                  shortTermMemoryToolEnabled: waifu.tools.shortTermMemory,
+                  shortTermMemoryToolEnabled: effectiveShortTermMemory,
                   temperature: waifu.generation.temperature,
                   topP: waifu.generation.topP,
                   maxOutputTokens: waifu.generation.maxOutputTokens,
@@ -953,13 +971,21 @@ export class RuntimeOrchestrator {
             orchestratorDecisionId: input.decisionId,
             signal: input.signal
           });
-          if (result.shortTermMemoryEntries?.length && waifu.tools.shortTermMemory) {
+          if (result.shortTermMemoryEntries?.length && effectiveShortTermMemory) {
             await this.recordShortTermMemoryEntries({
               guildId: input.guildId,
               channelId: input.channelId,
               waifuId: waifu.id,
               entries: result.shortTermMemoryEntries
             });
+            if (chunks.length === 0) {
+              this.suppressMemoryToolOnce.add(channelKey);
+              this.options.logger.info("Waifu tool-only reply detected; suppressing add_memory tool on next decision", {
+                guildId: input.guildId,
+                channelId: input.channelId,
+                waifuId: waifu.id
+              });
+            }
           }
           if (result.rejectedPickNextWaifu) {
             this.options.logger.warn("Ignoring invalid PickNextWaifu call from waifu", {
@@ -1879,15 +1905,33 @@ export class RuntimeOrchestrator {
       fallback: emptyShortTermMemoryStore(),
       transform: (current) => {
         const surviving = current.entries.filter((entry) => Date.parse(entry.expiresAt) > now);
-        const additions: ShortTermMemory[] = capped.map((content) => ({
-          id: randomUUID(),
-          guildId: input.guildId,
-          channelId: input.channelId,
-          waifuId: input.waifuId,
-          content,
-          createdAt,
-          expiresAt
-        }));
+        // Dedup against entries already stored for this waifu in this channel —
+        // model frequently re-records the same fact on a later turn.
+        const existingForScope = new Set(
+          surviving
+            .filter(
+              (entry) =>
+                entry.guildId === input.guildId &&
+                entry.channelId === input.channelId &&
+                entry.waifuId === input.waifuId
+            )
+            .map((entry) => normalizeShortTermContent(entry.content))
+        );
+        const additions: ShortTermMemory[] = [];
+        for (const content of capped) {
+          const key = normalizeShortTermContent(content);
+          if (!key || existingForScope.has(key)) continue;
+          existingForScope.add(key);
+          additions.push({
+            id: randomUUID(),
+            guildId: input.guildId,
+            channelId: input.channelId,
+            waifuId: input.waifuId,
+            content,
+            createdAt,
+            expiresAt
+          });
+        }
         return { ...current, entries: [...surviving, ...additions] };
       }
     });
@@ -1897,8 +1941,10 @@ export class RuntimeOrchestrator {
     guildId: string,
     waifu: WaifuConfig,
     availableWaifus: WaifuConfig[],
-    options?: { channelId?: string; sceneDirection?: string }
+    options?: { channelId?: string; sceneDirection?: string; shortTermMemoryToolOverride?: boolean }
   ): Promise<{ systemPrompt: string; midSystemBlock: string; trailingSystemBlock: string }> {
+    const shortTermMemoryToolActive =
+      options?.shortTermMemoryToolOverride ?? waifu.tools.shortTermMemory;
     const [store, emojis, shortTermStore] = await Promise.all([
       this.readMemoryStore(),
       this.options.storage.readJson(
@@ -1964,7 +2010,7 @@ export class RuntimeOrchestrator {
       `<environment_instructions>\n${environmentRules}\n</environment_instructions>`,
       `<hard_rules>\n${hardRules}\n</hard_rules>`
     ];
-    const toolUse = buildWaifuToolUseInstructions(waifu, availableWaifus);
+    const toolUse = buildWaifuToolUseInstructions(waifu, availableWaifus, shortTermMemoryToolActive);
     if (toolUse) {
       behaviorSections.push(`<tool_use>\n${toolUse}\n</tool_use>`);
     }
@@ -2425,6 +2471,10 @@ function emptyShortTermMemoryStore(): ShortTermMemoryStore {
 const SHORT_TERM_MEMORY_LIFESPAN_MS = 24 * 60 * 60 * 1000;
 const SHORT_TERM_MEMORY_MAX_PER_REPLY = 5;
 
+function normalizeShortTermContent(content: string): string {
+  return content.trim().toLowerCase().replace(/\s+/g, " ").replace(/[.!?]+$/, "");
+}
+
 const STAGE_MANAGER_MEMORY_BUDGET = 80;
 
 function stageManagerMemories(
@@ -2518,7 +2568,11 @@ function capByImportanceThenRecency(memories: WaifuMemory[], budget: number): Wa
     .slice(0, budget);
 }
 
-function buildWaifuToolUseInstructions(waifu: WaifuConfig, availableWaifus: WaifuConfig[]): string | undefined {
+function buildWaifuToolUseInstructions(
+  waifu: WaifuConfig,
+  availableWaifus: WaifuConfig[],
+  shortTermMemoryActive: boolean
+): string | undefined {
   if (!waifu.tools.toolUse) return undefined;
   const model = waifu.modelId ? getModel(waifu.modelId) : undefined;
   if (!model?.supportsTools) return undefined;
@@ -2538,13 +2592,15 @@ function buildWaifuToolUseInstructions(waifu: WaifuConfig, availableWaifus: Waif
       ].join("\n")
     );
   }
-  if (waifu.tools.shortTermMemory) {
+  if (shortTermMemoryActive) {
     sections.push(
       [
         "add_memory — scratchpad to remember until the next day.",
         "Call this with a single short standalone sentence when something in the conversation is worth remembering for the next ~24 hours: a stated time, a plan, a name to follow up on, a one-off detail you might need before tomorrow.",
         "You may call it multiple times in one reply (up to 5) to record separate notes.",
+        "Calling add_memory does NOT replace your Discord reply. Always also write your normal message body in the same turn — the tool call alone leaves the room silent.",
         "Do not use it for trivial chitchat, repeat lines you already wrote, or things that belong in long-term memory. Entries auto-expire after 24h.",
+        "Before calling, scan the memories list above — if the fact is already listed (even paraphrased), do NOT call add_memory for it again.",
         "Arguments: { \"content\": string }."
       ].join("\n")
     );

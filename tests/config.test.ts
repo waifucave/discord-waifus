@@ -119,7 +119,7 @@ describe("data root and config", () => {
     expect(seeded.displayName).toBe(first.displayName);
     expect(seeded.availability.sleep.enabled).toBe(true);
     expect(seeded.availability.busy.length).toBeGreaterThan(0);
-    expect(seeded.tools).toEqual({ toolUse: true, pickNextWaifu: true, shortTermMemory: false });
+    expect(seeded.tools).toEqual({ toolUse: true, pickNextWaifu: true, shortTermMemory: true });
     expect(seeded.modelId).toBeUndefined();
     expect(seeded.botId).toBeUndefined();
 

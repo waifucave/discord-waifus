@@ -115,12 +115,12 @@ export const WaifuToolSettingsSchema = z
   .object({
     toolUse: z.boolean().default(true),
     pickNextWaifu: z.boolean().default(true),
-    shortTermMemory: z.boolean().default(false)
+    shortTermMemory: z.boolean().default(true)
   })
   .default({
     toolUse: true,
     pickNextWaifu: true,
-    shortTermMemory: false
+    shortTermMemory: true
   });
 export type WaifuToolSettings = z.infer<typeof WaifuToolSettingsSchema>;
 
