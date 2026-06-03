@@ -314,11 +314,34 @@ export class RuntimeOrchestrator {
 
   private async handleClearCommand(event: DiscordClearCommandEvent): Promise<void> {
     try {
-      const result = await this.clearLatestMessages(event.guildId, event.channelId, event.count ?? 1, event.type ?? "waifus");
+      if (!event.type) {
+        await event.respond("Clear type is required. Choose waifus, users, both, or everything.");
+        return;
+      }
+      if (event.type === "everything") {
+        const result = await this.clearAllChannelMessages(event.guildId, event.channelId);
+        if (result.deletedCount === 0 && result.failedCount === 0) {
+          await event.respond("No messages found to clear.");
+        } else if (result.failedCount > 0) {
+          const deletedLabel = clearMessageLabel("everything", result.deletedCount);
+          const failedLabel = clearMessageLabel("everything", result.failedCount);
+          await event.respond(
+            `Cleared ${result.deletedCount} ${deletedLabel}. Failed to delete ${result.failedCount} ${failedLabel}. Check bot message permissions.`
+          );
+        } else {
+          await event.respond(`Cleared ${result.deletedCount} ${clearMessageLabel("everything", result.deletedCount)}.`);
+        }
+        return;
+      }
+      if (event.count === undefined) {
+        await event.respond("Count is required for this clear type.");
+        return;
+      }
+      const result = await this.clearLatestMessages(event.guildId, event.channelId, event.count, event.type);
       if (result.messageIds.length === 0) {
-        await event.respond(event.type === "all" ? "No message found to clear." : "No waifu message found to clear.");
+        await event.respond(noClearTargetsMessage(event.type));
       } else if (result.deleted) {
-        const messageLabel = clearMessageLabel(event.type ?? "waifus", result.logicalMessageCount);
+        const messageLabel = clearMessageLabel(event.type, result.logicalMessageCount);
         const chunkSuffix = result.messageIds.length === result.logicalMessageCount
           ? ""
           : ` (${result.messageIds.length} Discord chunks)`;
@@ -1245,7 +1268,7 @@ export class RuntimeOrchestrator {
     });
     const targets = [...messages]
       .reverse()
-      .filter((message) => type === "all" || message.authorKind === "waifu")
+      .filter((message) => isClearTarget(message, type))
       .slice(0, clearCount);
     const seenMessageIds = new Set<string>();
     const messageIds: string[] = [];
@@ -1276,6 +1299,20 @@ export class RuntimeOrchestrator {
       deleted: messageIds.every((messageId) => deletedMessageIds.has(messageId)),
       logicalMessageCount: targets.length,
       messageIds
+    };
+  }
+
+  private async clearAllChannelMessages(guildId: string, channelId: string): Promise<{
+    deletedCount: number;
+    failedCount: number;
+  }> {
+    if (!this.options.discord.deleteAllMessages) {
+      throw new Error("Discord full-channel message deletion is not available.");
+    }
+    const deletion = await this.options.discord.deleteAllMessages({ guildId, channelId });
+    return {
+      deletedCount: deletion.deletedCount,
+      failedCount: deletion.failedCount
     };
   }
 
@@ -2756,8 +2793,33 @@ function normalizeClearCount(count: number): number {
   return Math.max(1, Math.min(MAX_CLEAR_COUNT, Math.trunc(count)));
 }
 
+function isClearTarget(message: ContextMessage, type: DiscordClearType): boolean {
+  if (type === "waifus") {
+    return message.authorKind === "waifu";
+  }
+  if (type === "users") {
+    return isHumanUserMessage(message);
+  }
+  if (type === "both") {
+    return message.authorKind === "waifu" || isHumanUserMessage(message);
+  }
+  return true;
+}
+
+function isHumanUserMessage(message: ContextMessage): boolean {
+  return message.authorKind === "user" && message.authorBot !== true;
+}
+
+function noClearTargetsMessage(type: DiscordClearType): string {
+  if (type === "waifus") return "No waifu message found to clear.";
+  if (type === "users") return "No user message found to clear.";
+  if (type === "both") return "No waifu or user message found to clear.";
+  return "No message found to clear.";
+}
+
 function clearMessageLabel(type: DiscordClearType, count: number): string {
-  if (type === "all") return count === 1 ? "message" : "messages";
+  if (type === "users") return count === 1 ? "user message" : "user messages";
+  if (type === "both" || type === "everything") return count === 1 ? "message" : "messages";
   return count === 1 ? "waifu message" : "waifu messages";
 }
 

@@ -116,6 +116,17 @@ describe("buildContextMessages coalescing", () => {
     expect(out).toHaveLength(2);
   });
 
+  it("preserves bot authorship metadata on context messages", () => {
+    const t0 = new Date("2026-05-16T12:00:00Z");
+    const out = buildContextMessages([
+      msg({ id: "1", authorId: "helper-bot", authorBot: true, content: "bot notice", createdAt: t0 })
+    ], { waifuAuthorIds: [] });
+    expect(out[0]).toMatchObject({
+      authorKind: "user",
+      authorBot: true
+    });
+  });
+
   it("aggregates reactions when merging chunks", () => {
     const t0 = new Date("2026-05-16T12:00:00Z");
     const messages = [

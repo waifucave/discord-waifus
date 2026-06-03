@@ -4,6 +4,7 @@ import {
   normalizeDiscordContentForModel,
   stripLeakedContextHeader
 } from "../src/discord/normalization.js";
+import { DiscordJsGateway } from "../src/discord/client.js";
 import { mergeConfiguredBotsIntoMembers, unresolvedMentionIds } from "../src/discord/memberCache.js";
 import { GuildEmojiCacheEntry, GuildMemberCacheEntry } from "../src/shared/schemas/domain.js";
 
@@ -176,6 +177,76 @@ describe("Discord member cache helpers", () => {
   });
 });
 
+describe("DiscordJsGateway message deletion", () => {
+  it("bulk deletes recent messages and individually deletes messages older than two weeks", async () => {
+    const recentTimestamp = Date.now() - 60_000;
+    const oldTimestamp = Date.now() - 15 * 24 * 60 * 60 * 1000;
+    const pages = new Map<string, Array<{ id: string; createdTimestamp: number }>>([
+      [
+        "first",
+        [
+          { id: "recent-1", createdTimestamp: recentTimestamp },
+          { id: "recent-2", createdTimestamp: recentTimestamp - 1_000 },
+          { id: "old-1", createdTimestamp: oldTimestamp }
+        ]
+      ],
+      ["old-1", [{ id: "old-2", createdTimestamp: oldTimestamp - 1_000 }]],
+      ["old-2", []]
+    ]);
+    const fetchCalls: Array<{ limit?: number; before?: string }> = [];
+    const bulkDeletes: string[][] = [];
+    const singleDeletes: string[] = [];
+    const channel = {
+      messages: {
+        async fetch(options: { limit?: number; before?: string }) {
+          fetchCalls.push(options);
+          const page = pages.get(options.before ?? "first") ?? [];
+          return { values: () => page.values() };
+        },
+        async delete(messageId: string) {
+          singleDeletes.push(messageId);
+        }
+      },
+      async bulkDelete(messageIds: string[]) {
+        bulkDeletes.push(messageIds);
+        return { keys: () => messageIds.values() };
+      }
+    };
+    const gateway = new DiscordJsGateway({
+      orchestrator: {
+        id: "orchestrator",
+        displayName: "Orchestrator",
+        token: "token"
+      },
+      logger: quietLogger()
+    });
+    const clients = (gateway as unknown as { clients: Map<string, unknown> }).clients;
+    clients.set("orchestrator", {
+      channels: {
+        async fetch() {
+          return channel;
+        }
+      }
+    });
+
+    const result = await gateway.deleteAllMessages({ guildId: "guild-1", channelId: "channel-1" });
+
+    expect(fetchCalls).toEqual([
+      { limit: 100 },
+      { limit: 100, before: "old-1" },
+      { limit: 100, before: "old-2" }
+    ]);
+    expect(bulkDeletes).toEqual([["recent-1", "recent-2"]]);
+    expect(singleDeletes).toEqual(["old-1", "old-2"]);
+    expect(result).toMatchObject({
+      scannedMessageCount: 4,
+      deletedCount: 4,
+      failedCount: 0,
+      failedMessageIds: []
+    });
+  });
+});
+
 describe("stripLeakedContextHeader", () => {
   it("strips a single bracket tag prefix", () => {
     expect(stripLeakedContextHeader("[timestamp: 2026-05-16T12:00:00Z] Bored, huh?"))
@@ -343,6 +414,15 @@ describe("stripLeakedContextHeader", () => {
     ).toBe("Kevin: ok\nyeah");
   });
 });
+
+function quietLogger() {
+  return {
+    debug: () => undefined,
+    info: () => undefined,
+    warn: () => undefined,
+    error: () => undefined
+  };
+}
 
 describe("stripLeakedContextHeader — clip audit pins", () => {
   const opts = { senderDisplayName: "Aria", participantDisplayNames: ["Aria", "Riko"] };

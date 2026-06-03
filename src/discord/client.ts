@@ -56,6 +56,10 @@ export interface DiscordGatewayFacade {
     authorId?: string;
     authorIdByMessageId?: Record<string, string>;
   }): Promise<DiscordDeleteMessagesResult>;
+  deleteAllMessages?(input: {
+    guildId: string;
+    channelId: string;
+  }): Promise<DiscordDeleteChannelMessagesResult>;
 }
 
 export type DiscordMessageEvent = {
@@ -104,10 +108,17 @@ export type DiscordRunWaifuAutocompleteListener = (event: DiscordRunWaifuAutocom
 export type DiscordStopCommandListener = (event: DiscordStopCommandEvent) => void | Promise<void>;
 export type DiscordMemoriesCommandListener = (event: DiscordMemoriesCommandEvent) => void | Promise<void>;
 
-export type DiscordClearType = "waifus" | "all";
+export type DiscordClearType = "waifus" | "users" | "both" | "everything";
 
 export type DiscordDeleteMessagesResult = {
   deletedMessageIds: string[];
+  failedMessageIds: Array<{ messageId: string; message: string }>;
+};
+
+export type DiscordDeleteChannelMessagesResult = {
+  scannedMessageCount: number;
+  deletedCount: number;
+  failedCount: number;
   failedMessageIds: Array<{ messageId: string; message: string }>;
 };
 
@@ -115,6 +126,19 @@ type DiscordCache = {
   members?: GuildMemberCacheEntry[];
   emojis?: GuildEmojiCacheEntry[];
   roles?: GuildRoleCacheEntry[];
+};
+
+type DiscordFetchedMessageForDelete = {
+  id: string;
+  createdTimestamp?: number;
+};
+
+type DiscordMessageManageableChannel = {
+  messages: {
+    fetch(options: { limit?: number; before?: string }): Promise<{ values(): Iterable<DiscordFetchedMessageForDelete> }>;
+    delete(messageId: string): Promise<unknown>;
+  };
+  bulkDelete?(messages: string[], filterOld?: boolean): Promise<{ keys(): IterableIterator<string> }>;
 };
 
 export type DiscordJsGatewayOptions = {
@@ -498,6 +522,101 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
     return result;
   }
 
+  async deleteAllMessages(input: {
+    guildId: string;
+    channelId: string;
+  }): Promise<DiscordDeleteChannelMessagesResult> {
+    const result: DiscordDeleteChannelMessagesResult = {
+      scannedMessageCount: 0,
+      deletedCount: 0,
+      failedCount: 0,
+      failedMessageIds: []
+    };
+
+    const orchestrator = this.orchestratorClient();
+    const fetchedChannel = await orchestrator.channels.fetch(input.channelId);
+    if (!fetchedChannel || !("messages" in fetchedChannel)) {
+      throw new Error(`Discord channel ${input.channelId} is not message-manageable.`);
+    }
+    const channel = fetchedChannel as unknown as DiscordMessageManageableChannel;
+
+    let before: string | undefined;
+    while (true) {
+      const page = await channel.messages.fetch(before ? { limit: 100, before } : { limit: 100 });
+      const messages = [...page.values()];
+      if (messages.length === 0) break;
+      result.scannedMessageCount += messages.length;
+
+      await this.deleteFetchedMessages({
+        guildId: input.guildId,
+        channelId: input.channelId,
+        channel,
+        messages,
+        result
+      });
+
+      const nextBefore = oldestMessageId(messages);
+      if (!nextBefore || nextBefore === before) break;
+      before = nextBefore;
+    }
+
+    return result;
+  }
+
+  private async deleteFetchedMessages(input: {
+    guildId: string;
+    channelId: string;
+    channel: DiscordMessageManageableChannel;
+    messages: DiscordFetchedMessageForDelete[];
+    result: DiscordDeleteChannelMessagesResult;
+  }): Promise<void> {
+    const remaining = new Set(input.messages.map((message) => message.id));
+    const bulkIds = input.messages
+      .filter((message) => isBulkDeletableMessage(message))
+      .map((message) => message.id);
+
+    if (bulkIds.length >= 2 && input.channel.bulkDelete) {
+      for (const chunk of chunks(bulkIds, DISCORD_BULK_DELETE_MAX_MESSAGES)) {
+        if (chunk.length < 2) continue;
+        try {
+          const bulkDeleted = await input.channel.bulkDelete(chunk, true);
+          for (const id of bulkDeleted.keys()) {
+            if (remaining.delete(id)) {
+              input.result.deletedCount += 1;
+            }
+          }
+        } catch (error) {
+          this.options.logger?.warn("Discord bulk delete failed during full channel clear", {
+            guildId: input.guildId,
+            channelId: input.channelId,
+            messageCount: chunk.length,
+            message: error instanceof Error ? error.message : String(error)
+          });
+        }
+      }
+    }
+
+    for (const message of input.messages) {
+      if (!remaining.has(message.id)) continue;
+      try {
+        await input.channel.messages.delete(message.id);
+        remaining.delete(message.id);
+        input.result.deletedCount += 1;
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        remaining.delete(message.id);
+        input.result.failedCount += 1;
+        input.result.failedMessageIds.push({ messageId: message.id, message: errorMessage });
+        this.options.logger?.warn("Failed to delete Discord message during full channel clear", {
+          guildId: input.guildId,
+          channelId: input.channelId,
+          messageId: message.id,
+          message: errorMessage
+        });
+      }
+    }
+  }
+
   private async cacheForGuild(guildId: string): Promise<DiscordCache> {
     return this.options.cacheForGuild?.(guildId) ?? {
       members: this.options.members,
@@ -572,7 +691,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
       guildId: interaction.guildId,
       channelId: interaction.channelId,
       userId: interaction.user.id,
-      count: interaction.options.getInteger(CLEAR_COUNT_OPTION_NAME) ?? 1,
+      count: interaction.options.getInteger(CLEAR_COUNT_OPTION_NAME) ?? undefined,
       type: parseClearType(interaction.options.getString(CLEAR_TYPE_OPTION_NAME)),
       respond: async (content) => {
         await interaction.editReply(content);
@@ -845,6 +964,8 @@ const RUN_WAIFU_OPTION_NAME = "waifu";
 const RUN_SCENE_DIRECTION_OPTION_NAME = "scene_direction";
 const MAX_CLEAR_COUNT = 100;
 const MAX_AUTOCOMPLETE_CHOICES = 25;
+const DISCORD_BULK_DELETE_MAX_MESSAGES = 100;
+const DISCORD_BULK_DELETE_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 
 function sanitizeReplyTarget(value?: string): string | undefined {
   return value && SNOWFLAKE_PATTERN.test(value) ? value : undefined;
@@ -853,6 +974,32 @@ function sanitizeReplyTarget(value?: string): string | undefined {
 function sanitizeRunString(value: string | null): string | undefined {
   const trimmed = value?.trim();
   return trimmed || undefined;
+}
+
+function isBulkDeletableMessage(message: DiscordFetchedMessageForDelete): boolean {
+  return message.createdTimestamp === undefined || Date.now() - message.createdTimestamp < DISCORD_BULK_DELETE_MAX_AGE_MS;
+}
+
+function oldestMessageId(messages: DiscordFetchedMessageForDelete[]): string | undefined {
+  if (messages.length === 0) return undefined;
+  if (messages.some((message) => typeof message.createdTimestamp !== "number")) {
+    return messages[messages.length - 1]?.id;
+  }
+  let oldest = messages[0];
+  for (const message of messages.slice(1)) {
+    if ((message.createdTimestamp ?? 0) < (oldest.createdTimestamp ?? 0)) {
+      oldest = message;
+    }
+  }
+  return oldest.id;
+}
+
+function chunks<T>(values: T[], size: number): T[][] {
+  const result: T[][] = [];
+  for (let index = 0; index < values.length; index += size) {
+    result.push(values.slice(index, index + size));
+  }
+  return result;
 }
 
 async function registerOrchestratorCommands(client: Client, logger?: Logger): Promise<void> {
@@ -866,25 +1013,27 @@ async function registerOrchestratorCommands(client: Client, logger?: Logger): Pr
       },
       {
         name: CLEAR_COMMAND_NAME,
-        description: "Delete the latest waifu messages without running reviewer judgment.",
+        description: "Delete channel messages without running reviewer judgment.",
         options: [
-          {
-            type: ApplicationCommandOptionType.Integer as ApplicationCommandOptionType.Integer,
-            name: CLEAR_COUNT_OPTION_NAME,
-            description: "How many latest waifu messages to delete.",
-            required: false,
-            min_value: 1,
-            max_value: MAX_CLEAR_COUNT
-          },
           {
             type: ApplicationCommandOptionType.String as ApplicationCommandOptionType.String,
             name: CLEAR_TYPE_OPTION_NAME,
             description: "Which messages to clear.",
-            required: false,
+            required: true,
             choices: [
               { name: "waifus", value: "waifus" },
-              { name: "all", value: "all" }
+              { name: "users", value: "users" },
+              { name: "both", value: "both" },
+              { name: "everything", value: "everything" }
             ]
+          },
+          {
+            type: ApplicationCommandOptionType.Integer as ApplicationCommandOptionType.Integer,
+            name: CLEAR_COUNT_OPTION_NAME,
+            description: "How many latest messages to delete for waifus, users, or both.",
+            required: false,
+            min_value: 1,
+            max_value: MAX_CLEAR_COUNT
           }
         ]
       },
@@ -932,6 +1081,12 @@ async function registerOrchestratorCommands(client: Client, logger?: Logger): Pr
   }
 }
 
-function parseClearType(value: string | null): DiscordClearType {
-  return value === "all" ? "all" : "waifus";
+function parseClearType(value: string | null): DiscordClearType | undefined {
+  if (value === "waifus" || value === "users" || value === "both" || value === "everything") {
+    return value;
+  }
+  if (value === "all") {
+    return "both";
+  }
+  return undefined;
 }

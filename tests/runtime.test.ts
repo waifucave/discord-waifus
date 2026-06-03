@@ -64,6 +64,16 @@ class FakeDiscord implements DiscordGatewayFacade {
     authorId?: string;
     authorIdByMessageId?: Record<string, string>;
   }> = [];
+  deletedAll: Array<{
+    guildId: string;
+    channelId: string;
+  }> = [];
+  deleteAllResult = {
+    scannedMessageCount: 0,
+    deletedCount: 0,
+    failedCount: 0,
+    failedMessageIds: [] as Array<{ messageId: string; message: string }>
+  };
   reviewListeners = new Set<DiscordReviewCommandListener>();
   clearListeners = new Set<DiscordClearCommandListener>();
   runListeners = new Set<DiscordRunCommandListener>();
@@ -221,6 +231,14 @@ class FakeDiscord implements DiscordGatewayFacade {
       deletedMessageIds: input.messageIds,
       failedMessageIds: []
     };
+  }
+
+  async deleteAllMessages(input: {
+    guildId: string;
+    channelId: string;
+  }) {
+    this.deletedAll.push(input);
+    return this.deleteAllResult;
   }
 }
 
@@ -2169,6 +2187,8 @@ describe("RuntimeOrchestrator", () => {
       guildId: "guild-1",
       channelId: "channel-1",
       userId: "moderator-user",
+      count: 1,
+      type: "waifus",
       respond: async (content) => {
         responses.push(content);
         resolveClear();
@@ -2238,6 +2258,7 @@ describe("RuntimeOrchestrator", () => {
       channelId: "channel-1",
       userId: "moderator-user",
       count: 2,
+      type: "waifus",
       respond: async (content) => {
         responses.push(content);
         resolveClear();
@@ -2264,7 +2285,7 @@ describe("RuntimeOrchestrator", () => {
     expect(responses).toEqual(["Cleared 2 waifu messages (3 Discord chunks)."]);
   });
 
-  it("clears latest messages from any author when /clear type is all", async () => {
+  it("clears latest human and waifu messages when /clear type is both", async () => {
     const root = await makeTempRoot();
     roots.push(root);
     await ensureDataLayout(root);
@@ -2274,6 +2295,7 @@ describe("RuntimeOrchestrator", () => {
       [
         contextMessage("old-waifu", "waifu", "Yuki", "old reply"),
         contextMessage("user-1", "user", "Kevin", "first user message"),
+        contextMessage("other-bot", "user", "Helper", "bot message", undefined, { authorBot: true, authorId: "helper-bot" }),
         contextMessage("waifu-2", "waifu", "Yuki", "latest waifu reply", ["waifu-1", "waifu-2"]),
         contextMessage("user-2", "user", "Kevin", "latest user message")
       ]
@@ -2309,7 +2331,7 @@ describe("RuntimeOrchestrator", () => {
       channelId: "channel-1",
       userId: "moderator-user",
       count: 2,
-      type: "all",
+      type: "both",
       respond: async (content) => {
         responses.push(content);
         resolveClear();
@@ -2334,6 +2356,156 @@ describe("RuntimeOrchestrator", () => {
       }
     ]);
     expect(responses).toEqual(["Cleared 2 messages (3 Discord chunks)."]);
+  });
+
+  it("clears latest human user messages without deleting waifus or other bots", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.contexts = [
+      [
+        contextMessage("user-1", "user", "Kevin", "first user message", undefined, { authorBot: false }),
+        contextMessage("waifu-1", "waifu", "Yuki", "waifu reply"),
+        contextMessage("other-bot", "user", "Helper", "bot message", undefined, { authorBot: true, authorId: "helper-bot" }),
+        contextMessage("user-2", "user", "Kevin", "latest user message", undefined, { authorBot: false })
+      ]
+    ];
+
+    await seedRuntimeConfig(storage);
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      createPipeline: () => ({
+        async generateWaifu() {
+          return { content: "unused" };
+        }
+      }),
+      logger: quietLogger()
+    });
+    await runtime.start();
+
+    const responses: string[] = [];
+    let resolveClear: () => void = () => undefined;
+    const cleared = new Promise<void>((resolve) => {
+      resolveClear = resolve;
+    });
+    await discord.emitClearCommand({
+      guildId: "guild-1",
+      channelId: "channel-1",
+      userId: "moderator-user",
+      count: 2,
+      type: "users",
+      respond: async (content) => {
+        responses.push(content);
+        resolveClear();
+      }
+    });
+    await Promise.race([
+      cleared,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("clear command did not respond")), 1000))
+    ]);
+    await runtime.stop();
+
+    expect(discord.deleted).toEqual([
+      {
+        guildId: "guild-1",
+        channelId: "channel-1",
+        messageIds: ["user-2", "user-1"],
+        authorIdByMessageId: {
+          "user-2": "u1",
+          "user-1": "u1"
+        }
+      }
+    ]);
+    expect(responses).toEqual(["Cleared 2 user messages."]);
+  });
+
+  it.each(["waifus", "users", "both"] as const)("requires count for /clear type %s", async (type) => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+
+    await seedRuntimeConfig(storage);
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      createPipeline: () => ({
+        async generateWaifu() {
+          return { content: "unused" };
+        }
+      }),
+      logger: quietLogger()
+    });
+    await runtime.start();
+
+    const responses: string[] = [];
+    await discord.emitClearCommand({
+      guildId: "guild-1",
+      channelId: "channel-1",
+      userId: "moderator-user",
+      type,
+      respond: async (content) => {
+        responses.push(content);
+      }
+    });
+    await runtime.stop();
+
+    expect(discord.deleted).toEqual([]);
+    expect(discord.deletedAll).toEqual([]);
+    expect(responses).toEqual(["Count is required for this clear type."]);
+  });
+
+  it("clears every message in the channel without requiring count", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.deleteAllResult = {
+      scannedMessageCount: 3,
+      deletedCount: 3,
+      failedCount: 0,
+      failedMessageIds: []
+    };
+
+    await seedRuntimeConfig(storage);
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      createPipeline: () => ({
+        async generateWaifu() {
+          return { content: "unused" };
+        }
+      }),
+      logger: quietLogger()
+    });
+    await runtime.start();
+
+    const responses: string[] = [];
+    await discord.emitClearCommand({
+      guildId: "guild-1",
+      channelId: "channel-1",
+      userId: "moderator-user",
+      type: "everything",
+      respond: async (content) => {
+        responses.push(content);
+      }
+    });
+    await runtime.stop();
+
+    expect(discord.deleted).toEqual([]);
+    expect(discord.deletedAll).toEqual([{ guildId: "guild-1", channelId: "channel-1" }]);
+    expect(responses).toEqual(["Cleared 3 messages."]);
   });
 
   it("runs the orchestrator from /run when the channel is idle", async () => {
@@ -4142,14 +4314,16 @@ function contextMessage(
   authorKind: "user" | "waifu",
   displayName: string,
   content: string,
-  sourceMessageIds?: string[]
+  sourceMessageIds?: string[],
+  options: { authorBot?: boolean; authorId?: string } = {}
 ): ContextMessage {
   return {
     id,
     channelId: "channel-1",
     guildId: "guild-1",
     authorKind,
-    authorId: authorKind === "user" ? "u1" : "yuki-bot",
+    authorId: options.authorId ?? (authorKind === "user" ? "u1" : "yuki-bot"),
+    authorBot: options.authorBot,
     name: displayName,
     displayName,
     content,
