@@ -46,7 +46,7 @@ import { AppConfigSchema } from "../shared/schemas/config.js";
 import { createRevisionedBase, nowIso } from "../shared/schemas/common.js";
 import { StorageConflictError } from "../storage/errors.js";
 import { StorageService } from "../storage/storageService.js";
-import { recentQueries, subscribeQueries } from "../shared/queryLog.js";
+import { recentQueries, recentReplies, subscribeQueries, subscribeReplies } from "../shared/queryLog.js";
 import { ApiError, badRequest, conflict, notFound, preconditionRequired } from "./errors.js";
 import { mergeConfiguredBotsIntoMembers } from "../discord/memberCache.js";
 
@@ -1383,11 +1383,17 @@ function sendSseSnapshot(
   for (const entry of recentQueries()) {
     reply.raw.write(`event: query\ndata: ${JSON.stringify(entry)}\n\n`);
   }
+  for (const entry of recentReplies()) {
+    reply.raw.write(`event: reply\ndata: ${JSON.stringify(entry)}\n\n`);
+  }
   const unsubscribeLogs = logger.subscribe?.((entry) => {
     reply.raw.write(`event: log\ndata: ${JSON.stringify(entry)}\n\n`);
   });
   const unsubscribeQueries = subscribeQueries((entry) => {
     reply.raw.write(`event: query\ndata: ${JSON.stringify(entry)}\n\n`);
+  });
+  const unsubscribeReplies = subscribeReplies((entry) => {
+    reply.raw.write(`event: reply\ndata: ${JSON.stringify(entry)}\n\n`);
   });
   const heartbeat = setInterval(() => {
     reply.raw.write(`event: heartbeat\ndata: ${JSON.stringify({ time: new Date().toISOString() })}\n\n`);
@@ -1396,6 +1402,7 @@ function sendSseSnapshot(
     clearInterval(heartbeat);
     unsubscribeLogs?.();
     unsubscribeQueries();
+    unsubscribeReplies();
     reply.raw.end();
   });
 }

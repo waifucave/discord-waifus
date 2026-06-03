@@ -14,6 +14,7 @@ const VALID: ReadonlySet<ViewId> = new Set<ViewId>([
   "memories",
   "logs",
   "queries",
+  "replies",
   "settings"
 ]);
 

@@ -227,6 +227,8 @@ export const api = {
  * Subscribe to backend SSE runtime events. Returns an `EventSource` so callers
  * can attach handlers / close it. Events emitted by the backend:
  *  - "runtime": full runtime snapshot
+ *  - "query": provider request payload
+ *  - "reply": provider response payload
  *  - "heartbeat": keepalive
  */
 export function openEventStream(): EventSource {

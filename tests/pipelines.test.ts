@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ContextMessage } from "../src/orchestration/context.js";
 import { listModels } from "../src/providers/catalog.js";
 import { createModelPipeline } from "../src/providers/pipelines.js";
-import { recentQueries } from "../src/shared/queryLog.js";
+import { recentQueries, recentReplies } from "../src/shared/queryLog.js";
 
 const context: ContextMessage[] = [
   {
@@ -50,6 +50,54 @@ const contextWithWaifus: ContextMessage[] = [
 
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+describe("provider reply logging", () => {
+  it("captures successful provider response bodies with query correlation", async () => {
+    const providerResponse = { choices: [{ message: { content: "ok" } }] };
+    mockFetch(providerResponse);
+
+    const pipeline = createModelPipeline("grok-4.3", { apiKey: "xai-test" });
+    await pipeline.generateWaifu({
+      modelId: "grok-4.3",
+      messages: context,
+      systemPrompt: "stay in character"
+    });
+
+    const query = recentQueries().at(-1);
+    const reply = recentReplies().at(-1);
+    expect(reply).toMatchObject({
+      role: "waifu",
+      queryId: query?.id,
+      status: 200,
+      ok: true,
+      payload: providerResponse
+    });
+  });
+
+  it("captures provider error response bodies before throwing", async () => {
+    const providerResponse = { error: { message: "bad schema" } };
+    mockFetch(providerResponse, 400);
+
+    const pipeline = createModelPipeline("grok-4.3", { apiKey: "xai-test" });
+    await expect(
+      pipeline.generateWaifu({
+        modelId: "grok-4.3",
+        messages: context,
+        systemPrompt: "stay in character"
+      })
+    ).rejects.toThrow("Provider request failed with HTTP 400.");
+
+    const query = recentQueries().at(-1);
+    const reply = recentReplies().at(-1);
+    expect(reply).toMatchObject({
+      role: "waifu",
+      queryId: query?.id,
+      status: 400,
+      ok: false,
+      payload: providerResponse
+    });
+  });
 });
 
 describe("provider-native decision tools", () => {
@@ -2378,10 +2426,10 @@ describe("Google AI Studio (Gemini) pipeline", () => {
   });
 });
 
-function mockFetch(json: unknown): void {
+function mockFetch(json: unknown, status = 200): void {
   vi.stubGlobal(
     "fetch",
-    vi.fn(async () => new Response(JSON.stringify(json), { status: 200 }))
+    vi.fn(async () => new Response(JSON.stringify(json), { status }))
   );
 }
 

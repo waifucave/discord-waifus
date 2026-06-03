@@ -6,6 +6,7 @@ import {
   Compass,
   FileJson,
   Layers,
+  MessageSquareReply,
   PlayCircle,
   ScrollText,
   Server,
@@ -25,6 +26,7 @@ export type ViewId =
   | "memories"
   | "logs"
   | "queries"
+  | "replies"
   | "settings";
 
 export type NavEntry = {
@@ -46,6 +48,7 @@ export const NAV: NavEntry[] = [
   { id: "memories", label: "Memories", icon: Brain, group: "configure" },
   { id: "logs", label: "Logs", icon: ScrollText, group: "diagnostics" },
   { id: "queries", label: "Queries", icon: FileJson, group: "diagnostics" },
+  { id: "replies", label: "Replies", icon: MessageSquareReply, group: "diagnostics" },
   { id: "settings", label: "Settings", icon: Cog, group: "diagnostics" }
 ];
 

@@ -15,6 +15,7 @@ import { StageManagerView } from "./views/StageManagerView";
 import { MemoriesView } from "./views/MemoriesView";
 import { LogsView } from "./views/LogsView";
 import { QueriesView } from "./views/QueriesView";
+import { RepliesView } from "./views/RepliesView";
 import { SettingsView } from "./views/SettingsView";
 
 export function App() {
@@ -154,6 +155,8 @@ function ViewSwitch({ route, navigate }: { route: ViewId; navigate: (next: ViewI
       return <LogsView />;
     case "queries":
       return <QueriesView />;
+    case "replies":
+      return <RepliesView />;
     case "settings":
       return <SettingsView />;
     default:

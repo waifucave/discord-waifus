@@ -31,7 +31,7 @@ import {
   WaifuGenerationRequest,
   WaifuGenerationResult
 } from "./types.js";
-import { QueryRole, recordProviderQuery } from "../shared/queryLog.js";
+import { QueryRole, recordProviderQuery, recordProviderReply } from "../shared/queryLog.js";
 
 export class ProviderPipelineError extends Error {
   constructor(
@@ -675,7 +675,7 @@ async function postJsonAndExtractText<T = string>(options: JsonPostOptions & {
 }): Promise<T> {
   throwIfAborted(options.signal);
   const body = stripUndefined(options.body);
-  recordProviderQuery(options.queryRole, body);
+  const query = recordProviderQuery(options.queryRole, body);
   const requestSignal = providerRequestSignal(options.signal);
   try {
     const response = await fetch(options.url, {
@@ -689,11 +689,15 @@ async function postJsonAndExtractText<T = string>(options: JsonPostOptions & {
     });
     const text = await response.text();
     let json: unknown;
+    let replyPayload: unknown;
     try {
       json = text ? JSON.parse(text) : undefined;
+      replyPayload = json ?? null;
     } catch {
       json = { raw: text.slice(0, 1000) };
+      replyPayload = { raw: text };
     }
+    recordProviderReply(options.queryRole, query.id, response.status, response.ok, replyPayload);
     if (!response.ok) {
       throw new ProviderPipelineError(`Provider request failed with HTTP ${response.status}.`, json);
     }

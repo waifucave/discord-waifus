@@ -21,14 +21,28 @@ export type CapturedQuery = {
   };
 };
 
-type Listener = (entry: CapturedQuery) => void;
+export type CapturedReply = {
+  id: number;
+  time: string;
+  role: QueryRole;
+  queryId: number;
+  status: number;
+  ok: boolean;
+  payload: unknown;
+};
+
+type QueryListener = (entry: CapturedQuery) => void;
+type ReplyListener = (entry: CapturedReply) => void;
 
 const MAX_RECENT = 100;
-const recentEntries: CapturedQuery[] = [];
-const listeners = new Set<Listener>();
-let nextId = 1;
+const recentQueryEntries: CapturedQuery[] = [];
+const recentReplyEntries: CapturedReply[] = [];
+const queryListeners = new Set<QueryListener>();
+const replyListeners = new Set<ReplyListener>();
+let nextQueryId = 1;
+let nextReplyId = 1;
 
-export function recordProviderQuery(role: QueryRole, body: Record<string, unknown>): void {
+export function recordProviderQuery(role: QueryRole, body: Record<string, unknown>): CapturedQuery {
   const payload: CapturedQuery["payload"] = {};
   if (body.system !== undefined) payload.system = body.system;
   if (body.instructions !== undefined) payload.instructions = body.instructions;
@@ -44,21 +58,53 @@ export function recordProviderQuery(role: QueryRole, body: Record<string, unknow
   if (body.stop !== undefined) payload.stop = body.stop;
   if (body.stop_sequences !== undefined) payload.stop_sequences = body.stop_sequences;
   const entry: CapturedQuery = {
-    id: nextId++,
+    id: nextQueryId++,
     time: new Date().toISOString(),
     role,
     payload
   };
-  recentEntries.push(entry);
-  if (recentEntries.length > MAX_RECENT) recentEntries.shift();
-  for (const listener of listeners) listener(entry);
+  recentQueryEntries.push(entry);
+  if (recentQueryEntries.length > MAX_RECENT) recentQueryEntries.shift();
+  for (const listener of queryListeners) listener(entry);
+  return entry;
+}
+
+export function recordProviderReply(
+  role: QueryRole,
+  queryId: number,
+  status: number,
+  ok: boolean,
+  payload: unknown
+): CapturedReply {
+  const entry: CapturedReply = {
+    id: nextReplyId++,
+    time: new Date().toISOString(),
+    role,
+    queryId,
+    status,
+    ok,
+    payload
+  };
+  recentReplyEntries.push(entry);
+  if (recentReplyEntries.length > MAX_RECENT) recentReplyEntries.shift();
+  for (const listener of replyListeners) listener(entry);
+  return entry;
 }
 
 export function recentQueries(): CapturedQuery[] {
-  return [...recentEntries];
+  return [...recentQueryEntries];
 }
 
-export function subscribeQueries(listener: Listener): () => void {
-  listeners.add(listener);
-  return () => listeners.delete(listener);
+export function recentReplies(): CapturedReply[] {
+  return [...recentReplyEntries];
+}
+
+export function subscribeQueries(listener: QueryListener): () => void {
+  queryListeners.add(listener);
+  return () => queryListeners.delete(listener);
+}
+
+export function subscribeReplies(listener: ReplyListener): () => void {
+  replyListeners.add(listener);
+  return () => replyListeners.delete(listener);
 }
