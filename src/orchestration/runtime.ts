@@ -1974,19 +1974,43 @@ export class RuntimeOrchestrator {
       .filter((emoji) => emoji.available)
       .map(modelVisibleEmojiToken)
       .join(" ");
-    const hardRules = [
-      "Each incoming message in this conversation arrives in a chat-transcript shape so you can read context:",
-      "an optional `> Author: preview` line appears first when the message is replying to an earlier one (Discord blockquote shape); the next line is `DisplayName: <body>` (the body may continue on additional lines); then optional `[attachments: Nx image]` and optional `[image_text: ...]` lines (one per image with extracted text).",
-      "The `> Author: ...` quote, the `DisplayName:` prefix, and any bracketed lines are framing only — they are NOT part of what the speaker actually wrote, and they are NOT how Discord messages look.",
-      "Your reply is the raw message body that will be sent verbatim to Discord. It MUST NOT contain any bracketed metadata tag (no `[attachments: ...]`, no `[image_text: ...]`, no `[replying to: ...]`, no `[timestamp: ...]`, no `[reactions: ...]`, no `[index: ...]`, no `[scene_direction: ...]`, no other `[tag: value]` constructions).",
-      "Your turn is exactly one Discord message body — never a transcript. You MUST NOT write `Name: ...` lines for ANY character, including yourself and every other waifu in the channel — except inside the optional leading `> Author: ...` reply-quote described below, where the `Author:` form is part of the quote shape. The `DisplayName:` shape only appears in the context you receive; it must NEVER appear in what you write. If you find yourself drafting another waifu's reply, stop — that line belongs to someone else.",
-      "It MUST NOT begin with your own display name followed by a colon, and MUST NOT echo or paraphrase any prior message's bracketed framing tags. Other than the optional leading `> Author: ...` quote described below, begin with the first word you are actually saying.",
-      "To reply to one specific earlier message, you may start your reply with a single `> Author: text-of-that-message` line — this is the ONLY exception to the rule above. Copy the message text as closely as you can (small differences are fine — the runtime fuzzy-matches it). Put your actual reply on the next line. The `>` quote line is NOT sent to Discord; it only tells the runtime which message your reply targets. Use this instead of pinging when you want to address one specific earlier message; otherwise omit the quote entirely and just write your reply.",
-      "Quote example — to reply specifically to Kevin's earlier `what's the weather like?` message, write:\n  > Kevin: what's the weather like?\n  sunny and warm\nThe runtime consumes the `> Kevin: …` line to set Discord's reply target; only `sunny and warm` is sent.",
-      "Write exactly one short phrase or one very short sentence, usually under 12 words. Never write a second sentence.",
+    const inputFormat = [
+      "Each incoming message in this conversation arrives in a chat-transcript shape so you can read Discord context:",
+      "An optional `> Author: preview` line appears first when the message is replying to an earlier one (Discord blockquote shape). The next line is `DisplayName: <body>` (the body may continue on additional lines). Optional `[attachments: Nx image]` and `[image_text: ...]` lines may follow, one per image with extracted text.",
+      "The `> Author: ...` quote, the `DisplayName:` prefix, and any bracketed lines are framing only. They are not part of what the speaker actually wrote, and they are not how Discord messages look."
+    ].join("\n");
+
+    const replyTargeting = [
+      "To reply to one specific earlier message, you may start your reply with a single `> Author: text-of-that-message` line. Copy the message text as closely as you can (small differences are fine; the runtime fuzzy-matches it). Put your actual reply on the next line.",
+      "The `>` quote line is not sent to Discord; it only tells the runtime which message your reply targets.",
+      "Use this instead of pinging when you want to address one specific earlier message. Otherwise omit the quote entirely and just write your reply.",
+      "Quote example - to reply specifically to Kevin's earlier `what's the weather like?` message, write:\n  > Kevin: what's the weather like?\n  sunny and warm\nThe runtime consumes the `> Kevin: ...` line to set Discord's reply target; only `sunny and warm` is sent."
+    ].join("\n");
+
+    const mentionPolicy = [
+      "To ping a user, write <@DisplayName> - where `DisplayName` is copied verbatim from the `DisplayName:` prefix on one of their messages. Example: a message that starts with `Kevin: hey` is pinged as <@Kevin>.",
+      "Do not ping a user who is already active in the recent chat or who just spoke. Mention their display name in plain text instead.",
+      "Only ping when you are reviving an older missed message, pulling back someone who has gone quiet, or a scene_direction explicitly asks for a ping."
+    ].join("\n");
+
+    const styleConstraints = [
+      "Write exactly one short phrase or one very short sentence, usually under 12 words.",
+      "Never write a second sentence.",
       "This length rule overrides your persona, reply_style, and scene_direction. Even when asked for a longer or more thoughtful reply, compress it to one tiny conversational beat.",
-      "Avoid stacked clauses, multi-line replies, setup-plus-punchline chains, and explanations. A sharp fragment is usually stronger than a complete mini speech.",
-      "Do not ping a user who is already active in the recent chat or who just spoke. Mention their display name in plain text instead. Only ping when you are reviving an older missed message, pulling back someone who has gone quiet, or a scene_direction explicitly asks for a ping.",
+      "Avoid stacked clauses, multi-line replies, setup-plus-punchline chains, and explanations. A sharp fragment is usually stronger than a complete mini speech."
+    ].join("\n");
+
+    const hardRules = [
+      "Your reply is the raw message body that will be sent verbatim to Discord.",
+      "Your turn is exactly one Discord message body, never a transcript.",
+      "Do not write `Name: ...` or `DisplayName: ...` lines for any character, including yourself and every other waifu in the channel.",
+      "Do not draft another waifu's reply. If you find yourself doing that, stop and write only your own message.",
+      "Do not include bracketed metadata tags: no `[attachments: ...]`, no `[image_text: ...]`, no `[replying to: ...]`, no `[timestamp: ...]`, no `[reactions: ...]`, no `[index: ...]`, no `[scene_direction: ...]`, and no other `[tag: value]` constructions.",
+      "Do not begin with your own display name followed by a colon. Other than the optional leading `> Author: ...` reply-targeting line, begin with the first word you are actually saying.",
+      "Do not echo or paraphrase any prior message's bracketed framing tags.",
+      "Do not output physical actions, roleplay narration, or stage directions. No asterisks-wrapped actions like *smiles* or *waves*, no parenthetical stage notes like (hugs them), and no bracketed cues like [walks over].",
+      "The optional leading `> Author: ...` reply-targeting line is the only allowed prefix exception.",
+      "Never use raw Discord IDs for pings.",
       "Use only listed server emojis."
     ].join("\n");
 
@@ -1999,15 +2023,17 @@ export class RuntimeOrchestrator {
     const environmentRules = [
       "You are chatting in a live Discord text channel — this is a real chat room with real users, not a roleplay scene, story, or chat fiction.",
       "Write one Discord-safe message per turn.",
-      "Do not output physical actions, roleplay narration, or stage directions. No asterisks-wrapped actions like *smiles* or *waves*, no parenthetical stage notes like (hugs them), no bracketed cues like [walks over]. Only write what you would actually type into a chat box.",
-      "Reply with only what you would actually type — no narration, no meta commentary, no describing yourself in the third person.",
-      "To ping a user, write <@DisplayName> — where `DisplayName` is copied verbatim from the `DisplayName:` prefix on one of their messages. Example: a message that starts with `Kevin: hey` is pinged as <@Kevin>. Never use raw Discord IDs."
+      "Reply with only what you would actually type into a chat box — no narration, no meta commentary, no describing yourself in the third person."
     ].join("\n");
 
     const behaviorSections: string[] = [
       `<personality_instructions>\n${personalityContent}\n</personality_instructions>`,
       `<your_schedule>\n${scheduleContent}\n</your_schedule>`,
+      `<input_format>\n${inputFormat}\n</input_format>`,
       `<environment_instructions>\n${environmentRules}\n</environment_instructions>`,
+      `<reply_targeting>\n${replyTargeting}\n</reply_targeting>`,
+      `<mention_policy>\n${mentionPolicy}\n</mention_policy>`,
+      `<style_constraints>\n${styleConstraints}\n</style_constraints>`,
       `<hard_rules>\n${hardRules}\n</hard_rules>`
     ];
     const toolUse = buildWaifuToolUseInstructions(waifu, availableWaifus, shortTermMemoryToolActive);
