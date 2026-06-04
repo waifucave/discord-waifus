@@ -27,6 +27,7 @@ import { Empty } from "../components/Empty";
 import { Pill } from "../components/Pill";
 import { Notice } from "../components/Notice";
 import { Skeleton, SkeletonRows } from "../components/Skeleton";
+import { Toggle } from "../components/Toggle";
 import { timeAgo } from "../utils/format";
 import { buildInviteUrl, isLikelyApplicationId, type BotKind } from "../utils/discord";
 
@@ -174,6 +175,7 @@ function ServerDetail({
         name: server.name,
         enabled: true,
         contextWindows: server.contextWindows,
+        tools: server.tools,
         channels: server.channels
       });
       setServer(updated);
@@ -303,6 +305,47 @@ function ServerDetail({
         </div>
         <div className="row" style={{ marginTop: 12 }}>
           <span className="field-hint">Idle-trigger bounds: 100–28800 seconds.</span>
+          <span className="spacer" />
+          <button className="btn primary" onClick={save} disabled={saving}>
+            {saving ? "Saving…" : "Save server"}
+          </button>
+        </div>
+      </section>
+
+      <section className="section">
+        <div className="section-header">
+          <h3 className="section-title">Waifu tools</h3>
+          <span className="section-description">
+            Server-wide provider tools for every waifu in this guild.
+          </span>
+        </div>
+        <div className="grid grid-2">
+          <div className="field">
+            <Toggle
+              checked={server.tools.pickNextWaifu}
+              onChange={(pickNextWaifu) =>
+                set({ tools: { ...server.tools, pickNextWaifu } })
+              }
+              label="PickNextWaifu"
+            />
+            <span className="field-hint">
+              Allows waifus to hand off directly to another waifu. Disabled by default.
+            </span>
+          </div>
+          <div className="field">
+            <Toggle
+              checked={server.tools.shortTermMemory}
+              onChange={(shortTermMemory) =>
+                set({ tools: { ...server.tools, shortTermMemory } })
+              }
+              label="add_memory"
+            />
+            <span className="field-hint">
+              Allows waifus to write per-channel scratchpad notes that auto-expire after 24h.
+            </span>
+          </div>
+        </div>
+        <div className="row" style={{ marginTop: 12 }}>
           <span className="spacer" />
           <button className="btn primary" onClick={save} disabled={saving}>
             {saving ? "Saving…" : "Save server"}

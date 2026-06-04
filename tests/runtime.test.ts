@@ -666,6 +666,10 @@ describe("RuntimeOrchestrator", () => {
         ...createRevisionedBase(),
         guildId: "guild-1",
         enabled: true,
+        tools: {
+          pickNextWaifu: true,
+          shortTermMemory: true
+        },
         channels: {
           "channel-1": {
             channelId: "channel-1",
@@ -753,6 +757,164 @@ describe("RuntimeOrchestrator", () => {
       { content: "mika should take this", senderBotId: "yuki-bot" },
       { content: "got it", senderBotId: "mika-bot" }
     ]);
+  });
+
+  it("keeps PickNextWaifu disabled by default at server scope", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+
+    await seedRuntimeConfig(storage);
+    await seedWaifu(storage, "mika", "Mika", "mika-bot", "direct");
+    await enableWaifus(storage, ["yuki", "mika"]);
+
+    let checked = false;
+    const pipeline: ModelPipeline = {
+      async decideOrchestrator() {
+        return {
+          action: "reply",
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal" }],
+          reasoning: "Yuki starts."
+        };
+      },
+      async generateWaifu(request: WaifuGenerationRequest) {
+        checked = true;
+        expect(request.availableWaifuIds).toEqual(["mika"]);
+        expect(request.pickNextWaifuToolEnabled).toBe(false);
+        expect(request.systemPrompt).not.toContain("PickNextWaifu");
+        return { content: "plain reply" };
+      }
+    };
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 1,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    expect(checked).toBe(true);
+  });
+
+  it("treats the waifu tool-use toggle as prompt-only", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+
+    await seedRuntimeConfig(storage);
+    await seedWaifu(storage, "mika", "Mika", "mika-bot", "direct");
+    await enableWaifus(storage, ["yuki", "mika"]);
+    await setServerTools(storage, { pickNextWaifu: true, shortTermMemory: true });
+    await setWaifuToolUse(storage, "yuki", false);
+
+    let checked = false;
+    const pipeline: ModelPipeline = {
+      async decideOrchestrator() {
+        return {
+          action: "reply",
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal" }],
+          reasoning: "Yuki starts."
+        };
+      },
+      async generateWaifu(request: WaifuGenerationRequest) {
+        checked = true;
+        expect(request.pickNextWaifuToolEnabled).toBe(true);
+        expect(request.shortTermMemoryToolEnabled).toBe(true);
+        expect(request.systemPrompt).not.toContain("<tool_use>");
+        return { content: "plain reply" };
+      }
+    };
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 1,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    expect(checked).toBe(true);
+  });
+
+  it("honors per-waifu prompt-section toggles", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+
+    await seedRuntimeConfig(storage);
+    await setWaifuPromptSections(storage, "yuki", {
+      directorNotes: false,
+      hardRules: false,
+      mentionPolicy: false,
+      replyTargeting: false,
+      environmentInstructions: false,
+      inputFormat: false,
+      styleConstraints: false,
+      personality: false
+    });
+
+    let checked = false;
+    const pipeline: ModelPipeline = {
+      async decideOrchestrator() {
+        return {
+          action: "reply",
+          respondingWaifus: [
+            {
+              waifuId: "yuki",
+              delaySeconds: 0,
+              replyStyle: "normal",
+              sceneDirection: "answer Kevin"
+            }
+          ],
+          reasoning: "Yuki starts."
+        };
+      },
+      async generateWaifu(request: WaifuGenerationRequest) {
+        checked = true;
+        expect(request.systemPrompt).toContain("<personality_instructions>");
+        expect(request.systemPrompt).toContain("<your_schedule>");
+        expect(request.systemPrompt).not.toContain("<input_format>");
+        expect(request.systemPrompt).not.toContain("<environment_instructions>");
+        expect(request.systemPrompt).not.toContain("<reply_targeting>");
+        expect(request.systemPrompt).not.toContain("<mention_policy>");
+        expect(request.systemPrompt).not.toContain("<style_constraints>");
+        expect(request.systemPrompt).not.toContain("<hard_rules>");
+        expect(request.midSystemBlock).not.toContain("<director_notes>");
+        expect(request.midSystemBlock).toContain("<available_emojis>");
+        expect(request.trailingSystemBlock).not.toContain("<personality>");
+        expect(request.trailingSystemBlock).toContain("<scene_direction>answer Kevin</scene_direction>");
+        return { content: "plain reply" };
+      }
+    };
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 1,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    expect(checked).toBe(true);
   });
 
   it("logs invalid PickNextWaifu calls, sends the normal message, and returns to orchestration", async () => {
@@ -4216,6 +4378,58 @@ describe("RuntimeOrchestrator", () => {
     expect(secondMemoriesBlock).not.toMatch(/<long_term>/);
   });
 
+  it("does not expose or persist add_memory when the server toggle is disabled", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+
+    await seedRuntimeConfig(storage);
+    await enableWaifus(storage, ["yuki"]);
+    await setServerTools(storage, { shortTermMemory: false });
+
+    let checked = false;
+    const pipeline: ModelPipeline = {
+      async decideOrchestrator() {
+        return {
+          action: "reply",
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal" }],
+          reasoning: "talk"
+        };
+      },
+      async generateWaifu(request: WaifuGenerationRequest) {
+        checked = true;
+        expect(request.shortTermMemoryToolEnabled).toBe(false);
+        expect(request.systemPrompt).not.toContain("add_memory");
+        return {
+          content: "noted",
+          shortTermMemoryEntries: ["Kevin is heading out at 5pm."]
+        };
+      }
+    };
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 1,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    const stored = await storage.readJson(
+      "user/short-term-memories.json",
+      ShortTermMemoryStoreSchema,
+      ShortTermMemoryStoreSchema.parse(createEmptyRevisionedFile({ entries: [] }))
+    );
+    expect(checked).toBe(true);
+    expect(stored.entries).toEqual([]);
+  });
+
   it("scopes short-term memories per waifu — waifu B does not see waifu A's notes", async () => {
     const root = await makeTempRoot();
     roots.push(root);
@@ -4362,6 +4576,28 @@ describe("RuntimeOrchestrator", () => {
 });
 
 async function enableShortTermMemory(storage: StorageService, waifuId: string) {
+  void waifuId;
+  await setServerTools(storage, { shortTermMemory: true });
+}
+
+async function setServerTools(
+  storage: StorageService,
+  tools: Partial<{ pickNextWaifu: boolean; shortTermMemory: boolean }>
+) {
+  const path = "user/servers/guild-1/server.json";
+  const config = await storage.readJson(path, ServerConfigSchema);
+  await storage.writeJson(
+    "server:guild-1",
+    path,
+    ServerConfigSchema,
+    ServerConfigSchema.parse({
+      ...config,
+      tools: { ...config.tools, ...tools }
+    })
+  );
+}
+
+async function setWaifuToolUse(storage: StorageService, waifuId: string, toolUse: boolean) {
   const path = `user/waifus/${waifuId}/waifu.json`;
   const config = await storage.readJson(path, WaifuConfigSchema);
   await storage.writeJson(
@@ -4370,7 +4606,25 @@ async function enableShortTermMemory(storage: StorageService, waifuId: string) {
     WaifuConfigSchema,
     WaifuConfigSchema.parse({
       ...config,
-      tools: { ...config.tools, shortTermMemory: true }
+      tools: { ...config.tools, toolUse }
+    })
+  );
+}
+
+async function setWaifuPromptSections(
+  storage: StorageService,
+  waifuId: string,
+  promptSections: Partial<WaifuConfig["promptSections"]>
+) {
+  const path = `user/waifus/${waifuId}/waifu.json`;
+  const config = await storage.readJson(path, WaifuConfigSchema);
+  await storage.writeJson(
+    `waifu:${waifuId}`,
+    path,
+    WaifuConfigSchema,
+    WaifuConfigSchema.parse({
+      ...config,
+      promptSections: { ...config.promptSections, ...promptSections }
     })
   );
 }
@@ -4478,8 +4732,7 @@ async function seedRuntimeConfig(storage: StorageService, orchestratorConfig: Re
         ]
       },
       tools: {
-        toolUse: true,
-        pickNextWaifu: true
+        toolUse: true
       }
     })
   );
@@ -4523,8 +4776,7 @@ async function setPrimaryRuntimeModel(
         busy: []
       },
       tools: {
-        toolUse: true,
-        pickNextWaifu: true
+        toolUse: true
       }
     })
   );

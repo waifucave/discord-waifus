@@ -1243,11 +1243,11 @@ export const ORCHESTRATOR_TOOL_PARAMETERS = orchestratorToolParameters();
 
 const PICK_NEXT_WAIFU_TOOL_NAME = "PickNextWaifu";
 const PICK_NEXT_WAIFU_TOOL_DESCRIPTION =
-  "Optionally pick one configured waifu to reply immediately after this waifu message.";
+  "Pick one configured waifu to reply immediately after this waifu message when a direct handoff fits.";
 
 const SHORT_TERM_MEMORY_TOOL_NAME = "add_memory";
 const SHORT_TERM_MEMORY_TOOL_DESCRIPTION =
-  "Optionally write one short standalone sentence to remember until the next day. Call this multiple times in one reply to record multiple distinct notes. Skip trivial chitchat; entries expire after 24 hours.";
+  "Write one short standalone sentence to remember until the next day when the current conversation includes a useful short-lived fact. Call this multiple times in one reply to record multiple distinct notes. Skip trivial chitchat; entries expire after 24 hours.";
 
 function shortTermMemoryToolParameters(): object {
   return {

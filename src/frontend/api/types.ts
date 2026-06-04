@@ -205,6 +205,20 @@ export type WaifuAvailability = {
 
 export type WaifuToolSettings = {
   toolUse: boolean;
+};
+
+export type WaifuPromptSections = {
+  directorNotes: boolean;
+  hardRules: boolean;
+  mentionPolicy: boolean;
+  replyTargeting: boolean;
+  environmentInstructions: boolean;
+  inputFormat: boolean;
+  styleConstraints: boolean;
+  personality: boolean;
+};
+
+export type ServerToolSettings = {
   pickNextWaifu: boolean;
   shortTermMemory: boolean;
 };
@@ -277,6 +291,7 @@ export type WaifuConfig = Revisioned & {
   reasoning: ReasoningConfig;
   availability: WaifuAvailability;
   tools: WaifuToolSettings;
+  promptSections: WaifuPromptSections;
 };
 
 export type WaifusResponse = { waifus: WaifuConfig[] };
@@ -294,6 +309,7 @@ export type CreateWaifuBody = {
   generation?: WaifuConfig["generation"];
   availability?: WaifuAvailability;
   tools?: WaifuToolSettings;
+  promptSections?: WaifuPromptSections;
 };
 
 export type UpdateWaifuBody = Partial<Omit<WaifuConfig, "schemaVersion" | "updatedAt">> & {
@@ -316,6 +332,7 @@ export type ServerConfig = Revisioned & {
     waifu: number;
     stageManager: number;
   };
+  tools: ServerToolSettings;
   channels: Record<string, ChannelConfig>;
 };
 

@@ -921,7 +921,7 @@ export class RuntimeOrchestrator {
             responder.sceneDirection,
             input.sceneDirectionClippingEnabled
           );
-          const effectiveShortTermMemory = waifu.tools.shortTermMemory && !suppressMemoryToolThisDecision;
+          const effectiveShortTermMemory = input.server.tools.shortTermMemory && !suppressMemoryToolThisDecision;
           const { systemPrompt, midSystemBlock, trailingSystemBlock } = await this.buildWaifuPromptParts(
             input.guildId,
             waifu,
@@ -929,6 +929,7 @@ export class RuntimeOrchestrator {
             {
               channelId: input.channelId,
               sceneDirection: clippedSceneDirection,
+              pickNextWaifuToolOverride: input.server.tools.pickNextWaifu,
               shortTermMemoryToolOverride: effectiveShortTermMemory
             }
           );
@@ -955,7 +956,7 @@ export class RuntimeOrchestrator {
                   trailingSystemBlock,
                   replyStyle: responder.replyStyle,
                   availableWaifuIds: nextWaifuIds,
-                  pickNextWaifuToolEnabled: waifu.tools.pickNextWaifu,
+                  pickNextWaifuToolEnabled: input.server.tools.pickNextWaifu,
                   shortTermMemoryToolEnabled: effectiveShortTermMemory,
                   temperature: waifu.generation.temperature,
                   topP: waifu.generation.topP,
@@ -2018,10 +2019,16 @@ export class RuntimeOrchestrator {
     guildId: string,
     waifu: WaifuConfig,
     availableWaifus: WaifuConfig[],
-    options?: { channelId?: string; sceneDirection?: string; shortTermMemoryToolOverride?: boolean }
+    options?: {
+      channelId?: string;
+      sceneDirection?: string;
+      pickNextWaifuToolOverride?: boolean;
+      shortTermMemoryToolOverride?: boolean;
+    }
   ): Promise<{ systemPrompt: string; midSystemBlock: string; trailingSystemBlock: string }> {
+    const pickNextWaifuToolActive = options?.pickNextWaifuToolOverride ?? false;
     const shortTermMemoryToolActive =
-      options?.shortTermMemoryToolOverride ?? waifu.tools.shortTermMemory;
+      options?.shortTermMemoryToolOverride ?? true;
     const [store, emojis, shortTermStore] = await Promise.all([
       this.readMemoryStore(),
       this.options.storage.readJson(
@@ -2103,17 +2110,23 @@ export class RuntimeOrchestrator {
       "Reply with only what you would actually type into a chat box — no narration, no meta commentary, no describing yourself in the third person."
     ].join("\n");
 
-    const behaviorSections: string[] = [
+    const promptSections = waifu.promptSections;
+    const behaviorSections = [
       `<personality_instructions>\n${personalityContent}\n</personality_instructions>`,
       `<your_schedule>\n${scheduleContent}\n</your_schedule>`,
-      `<input_format>\n${inputFormat}\n</input_format>`,
-      `<environment_instructions>\n${environmentRules}\n</environment_instructions>`,
-      `<reply_targeting>\n${replyTargeting}\n</reply_targeting>`,
-      `<mention_policy>\n${mentionPolicy}\n</mention_policy>`,
-      `<style_constraints>\n${styleConstraints}\n</style_constraints>`,
-      `<hard_rules>\n${hardRules}\n</hard_rules>`
-    ];
-    const toolUse = buildWaifuToolUseInstructions(waifu, availableWaifus, shortTermMemoryToolActive);
+      promptSections.inputFormat ? `<input_format>\n${inputFormat}\n</input_format>` : null,
+      promptSections.environmentInstructions
+        ? `<environment_instructions>\n${environmentRules}\n</environment_instructions>`
+        : null,
+      promptSections.replyTargeting ? `<reply_targeting>\n${replyTargeting}\n</reply_targeting>` : null,
+      promptSections.mentionPolicy ? `<mention_policy>\n${mentionPolicy}\n</mention_policy>` : null,
+      promptSections.styleConstraints ? `<style_constraints>\n${styleConstraints}\n</style_constraints>` : null,
+      promptSections.hardRules ? `<hard_rules>\n${hardRules}\n</hard_rules>` : null
+    ].filter((section): section is string => Boolean(section));
+    const toolUse = buildWaifuToolUseInstructions(waifu, availableWaifus, {
+      pickNextWaifu: pickNextWaifuToolActive,
+      shortTermMemory: shortTermMemoryToolActive
+    });
     if (toolUse) {
       behaviorSections.push(`<tool_use>\n${toolUse}\n</tool_use>`);
     }
@@ -2124,13 +2137,15 @@ export class RuntimeOrchestrator {
       ? `<memories>\n${allMemoryLines.join("\n")}\n</memories>`
       : undefined;
 
-    const directorNotesBlock = buildDirectorNotesBlock();
+    const directorNotesBlock = promptSections.directorNotes ? buildDirectorNotesBlock() : undefined;
     const availableEmojisBlock = `<available_emojis>\n${emojiList || "(none cached)"}\n</available_emojis>`;
     const midSystemBlock = [directorNotesBlock, availableEmojisBlock, memoriesBlock]
       .filter((section): section is string => Boolean(section))
       .join("\n");
 
-    const personalityBlock = `<personality>\n${personalityContent}\n</personality>`;
+    const personalityBlock = promptSections.personality
+      ? `<personality>\n${personalityContent}\n</personality>`
+      : undefined;
     const currentlyDoing = currentlyDoingForWaifu(waifu, new Date());
     const currentlyDoingBlock = currentlyDoing
       ? `<currently_doing>${currentlyDoing}</currently_doing>`
@@ -2794,7 +2809,7 @@ function capByImportanceThenRecency(memories: WaifuMemory[], budget: number): Wa
 function buildWaifuToolUseInstructions(
   waifu: WaifuConfig,
   availableWaifus: WaifuConfig[],
-  shortTermMemoryActive: boolean
+  activeTools: { pickNextWaifu: boolean; shortTermMemory: boolean }
 ): string | undefined {
   if (!waifu.tools.toolUse) return undefined;
   const model = waifu.modelId ? getModel(waifu.modelId) : undefined;
@@ -2803,23 +2818,23 @@ function buildWaifuToolUseInstructions(
     .filter((candidate) => candidate.id !== waifu.id && candidate.botId && candidate.modelId)
     .map((candidate) => `${candidate.id} (${candidate.displayName || candidate.name})`);
   const sections: string[] = [];
-  if (waifu.tools.pickNextWaifu && candidates.length > 0) {
+  if (activeTools.pickNextWaifu && candidates.length > 0) {
     sections.push(
       [
-        "PickNextWaifu — handoff tool.",
-        "Use it only after writing your Discord reply when another waifu should immediately speak next and the orchestrator should be skipped for that handoff.",
-        "Do not call it if your message should be the end of this beat.",
+        "PickNextWaifu - handoff tool.",
+        "Use this after writing your Discord reply whenever another waifu has an immediate natural follow-up and should speak next without waiting for the orchestrator.",
+        "Skip it only when your message should clearly end the beat.",
         "Arguments: { \"waifuId\": string }.",
         "Available waifus:",
         ...candidates.map((candidate) => `- ${candidate}`)
       ].join("\n")
     );
   }
-  if (shortTermMemoryActive) {
+  if (activeTools.shortTermMemory) {
     sections.push(
       [
-        "add_memory — scratchpad to remember until the next day.",
-        "Call this with a single short standalone sentence when something in the conversation is worth remembering for the next ~24 hours: a stated time, a plan, a name to follow up on, a one-off detail you might need before tomorrow.",
+        "add_memory - scratchpad to remember until the next day.",
+        "Use this with a single short standalone sentence whenever something in the conversation is worth remembering for the next ~24 hours: a stated time, a plan, a name to follow up on, a one-off detail you might need before tomorrow.",
         "You may call it multiple times in one reply (up to 5) to record separate notes.",
         "Calling add_memory does NOT replace your Discord reply. Always also write your normal message body in the same turn — the tool call alone leaves the room silent.",
         "Do not use it for trivial chitchat, repeat lines you already wrote, or things that belong in long-term memory. Entries auto-expire after 24h.",
@@ -2829,7 +2844,10 @@ function buildWaifuToolUseInstructions(
     );
   }
   if (sections.length === 0) return undefined;
-  return ["You have the following optional tools.", ...sections].join("\n\n");
+  return [
+    "You have access to the following tools. Use the relevant tool whenever it fits the current turn; do not wait for a perfect moment.",
+    ...sections
+  ].join("\n\n");
 }
 
 function formatWaifuScheduleForPrompt(waifu: WaifuConfig): string {

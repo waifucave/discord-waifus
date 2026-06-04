@@ -113,16 +113,46 @@ export type WaifuAvailability = z.infer<typeof WaifuAvailabilitySchema>;
 
 export const WaifuToolSettingsSchema = z
   .object({
-    toolUse: z.boolean().default(true),
-    pickNextWaifu: z.boolean().default(true),
+    toolUse: z.boolean().default(true)
+  })
+  .default({
+    toolUse: true
+  });
+export type WaifuToolSettings = z.infer<typeof WaifuToolSettingsSchema>;
+
+export const WaifuPromptSectionsSchema = z
+  .object({
+    directorNotes: z.boolean().default(true),
+    hardRules: z.boolean().default(true),
+    mentionPolicy: z.boolean().default(true),
+    replyTargeting: z.boolean().default(true),
+    environmentInstructions: z.boolean().default(true),
+    inputFormat: z.boolean().default(true),
+    styleConstraints: z.boolean().default(true),
+    personality: z.boolean().default(true)
+  })
+  .default({
+    directorNotes: true,
+    hardRules: true,
+    mentionPolicy: true,
+    replyTargeting: true,
+    environmentInstructions: true,
+    inputFormat: true,
+    styleConstraints: true,
+    personality: true
+  });
+export type WaifuPromptSections = z.infer<typeof WaifuPromptSectionsSchema>;
+
+export const ServerToolSettingsSchema = z
+  .object({
+    pickNextWaifu: z.boolean().default(false),
     shortTermMemory: z.boolean().default(true)
   })
   .default({
-    toolUse: true,
-    pickNextWaifu: true,
+    pickNextWaifu: false,
     shortTermMemory: true
   });
-export type WaifuToolSettings = z.infer<typeof WaifuToolSettingsSchema>;
+export type ServerToolSettings = z.infer<typeof ServerToolSettingsSchema>;
 
 export const ProviderCredentialsSchema = z.object({
   providerId: ProviderIdSchema,
@@ -200,7 +230,8 @@ export const WaifuConfigSchema = RevisionedRecordSchema.extend({
     .default({}),
   reasoning: ReasoningConfigSchema,
   availability: WaifuAvailabilitySchema,
-  tools: WaifuToolSettingsSchema
+  tools: WaifuToolSettingsSchema,
+  promptSections: WaifuPromptSectionsSchema
 });
 export type WaifuConfig = z.infer<typeof WaifuConfigSchema>;
 
@@ -215,6 +246,7 @@ export const ServerConfigSchema = RevisionedRecordSchema.extend({
       stageManager: z.number().int().min(1).max(100).default(80)
     })
     .default({ orchestrator: 20, waifu: 50, stageManager: 80 }),
+  tools: ServerToolSettingsSchema,
   channels: z.record(
     z.string(),
     z.object({

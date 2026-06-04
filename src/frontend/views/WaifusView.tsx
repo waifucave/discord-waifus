@@ -10,6 +10,7 @@ import type {
   WaifuAvailability,
   WaifuBusyInterval,
   WaifuConfig,
+  WaifuPromptSections,
   WaifuToolSettings,
   WaifusResponse
 } from "../api/types";
@@ -157,6 +158,7 @@ function CreateWaifuModal({
   const [displayName, setDisplayName] = useState("");
   const [availability, setAvailability] = useState<WaifuAvailability>(() => defaultAvailability());
   const [tools, setTools] = useState<WaifuToolSettings>(() => defaultToolSettings());
+  const [promptSections, setPromptSections] = useState<WaifuPromptSections>(() => defaultPromptSections());
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | undefined>(undefined);
 
@@ -173,7 +175,8 @@ function CreateWaifuModal({
         displayName: displayName.trim(),
         id: slugify(name),
         availability,
-        tools
+        tools,
+        promptSections
       });
       onCreated(created);
     } catch (e) {
@@ -219,7 +222,12 @@ function CreateWaifuModal({
         />
       </div>
       <ScheduleEditor value={availability} onChange={setAvailability} />
-      <ToolSettingsEditor value={tools} onChange={setTools} />
+      <PromptSettingsEditor
+        tools={tools}
+        promptSections={promptSections}
+        onToolsChange={setTools}
+        onPromptSectionsChange={setPromptSections}
+      />
       {err && <Notice tone="err">{err}</Notice>}
     </Modal>
   );
@@ -331,7 +339,8 @@ function WaifuEditor({
       generation: draft.generation,
       reasoning: draft.reasoning,
       availability: draft.availability,
-      tools: draft.tools
+      tools: draft.tools,
+      promptSections: draft.promptSections
     };
     const updated = await api.updateWaifu(draft.id, body);
     setWaifu(updated);
@@ -623,9 +632,11 @@ function WaifuEditor({
             onChange={(availability) => set({ availability })}
           />
 
-          <ToolSettingsEditor
-            value={waifu.tools}
-            onChange={(tools) => set({ tools })}
+          <PromptSettingsEditor
+            tools={waifu.tools}
+            promptSections={waifu.promptSections}
+            onToolsChange={(tools) => set({ tools })}
+            onPromptSectionsChange={(promptSections) => set({ promptSections })}
           />
 
           {botState.error && <Notice tone="err">{botState.error.message}</Notice>}
@@ -882,44 +893,95 @@ function ScheduleEditor({
   );
 }
 
-function ToolSettingsEditor({
-  value,
-  onChange
+const WAIFU_PROMPT_SECTION_OPTIONS: Array<{
+  key: keyof WaifuPromptSections;
+  label: string;
+  hint: string;
+}> = [
+  {
+    key: "directorNotes",
+    label: "<director_notes>",
+    hint: "Includes the shared director notes in the mid-system block."
+  },
+  {
+    key: "hardRules",
+    label: "<hard_rules>",
+    hint: "Includes the invalid-output constraints in the behavior block."
+  },
+  {
+    key: "mentionPolicy",
+    label: "<mention_policy>",
+    hint: "Includes display-name ping rules and quiet-user ping guidance."
+  },
+  {
+    key: "replyTargeting",
+    label: "<reply_targeting>",
+    hint: "Includes the quote-line syntax for targeting a specific Discord reply."
+  },
+  {
+    key: "environmentInstructions",
+    label: "<environment_instructions>",
+    hint: "Includes live Discord channel and no-narration instructions."
+  },
+  {
+    key: "inputFormat",
+    label: "<input_format>",
+    hint: "Includes the incoming transcript framing explanation."
+  },
+  {
+    key: "styleConstraints",
+    label: "<style_constraints>",
+    hint: "Includes the short-reply and one-sentence constraints."
+  },
+  {
+    key: "personality",
+    label: "<personality>",
+    hint: "Includes the trailing personality reminder system block."
+  }
+];
+
+function PromptSettingsEditor({
+  tools,
+  promptSections,
+  onToolsChange,
+  onPromptSectionsChange
 }: {
-  value: WaifuToolSettings;
-  onChange: (next: WaifuToolSettings) => void;
+  tools: WaifuToolSettings;
+  promptSections: WaifuPromptSections;
+  onToolsChange: (next: WaifuToolSettings) => void;
+  onPromptSectionsChange: (next: WaifuPromptSections) => void;
 }) {
   return (
     <section className="section">
       <div className="section-header">
-        <h3 className="section-title">Waifu tools</h3>
-        <span className="section-description">Optional handoff controls for this waifu model.</span>
+        <h3 className="section-title">Waifu prompt sections</h3>
+        <span className="section-description">
+          Per-waifu visibility for model prompt sections. PickNextWaifu and add_memory availability are server settings.
+        </span>
       </div>
       <div className="grid grid-2">
         <div className="field">
           <Toggle
-            checked={value.toolUse}
-            onChange={(toolUse) => onChange({ ...value, toolUse })}
+            checked={tools.toolUse}
+            onChange={(toolUse) => onToolsChange({ ...tools, toolUse })}
             label="<tool_use> instructions"
           />
-          <span className="field-hint">Adds tool instructions at the bottom of the waifu behavior block.</span>
+          <span className="field-hint">
+            Adds tool instructions at the bottom of the waifu behavior block.
+          </span>
         </div>
-        <div className="field">
-          <Toggle
-            checked={value.pickNextWaifu}
-            onChange={(pickNextWaifu) => onChange({ ...value, pickNextWaifu })}
-            label="PickNextWaifu tool"
-          />
-          <span className="field-hint">Lets this waifu choose one next waifu before orchestration resumes.</span>
-        </div>
-        <div className="field">
-          <Toggle
-            checked={value.shortTermMemory}
-            onChange={(shortTermMemory) => onChange({ ...value, shortTermMemory })}
-            label="Short-term memory tool"
-          />
-          <span className="field-hint">Lets this waifu jot per-channel scratchpad notes that auto-expire after 24h. Only she sees them.</span>
-        </div>
+        {WAIFU_PROMPT_SECTION_OPTIONS.map((option) => (
+          <div className="field" key={option.key}>
+            <Toggle
+              checked={promptSections[option.key]}
+              onChange={(checked) =>
+                onPromptSectionsChange({ ...promptSections, [option.key]: checked })
+              }
+              label={option.label}
+            />
+            <span className="field-hint">{option.hint}</span>
+          </div>
+        ))}
       </div>
     </section>
   );
@@ -938,9 +1000,20 @@ function defaultAvailability(): WaifuAvailability {
 
 function defaultToolSettings(): WaifuToolSettings {
   return {
-    toolUse: true,
-    pickNextWaifu: true,
-    shortTermMemory: false
+    toolUse: true
+  };
+}
+
+function defaultPromptSections(): WaifuPromptSections {
+  return {
+    directorNotes: true,
+    hardRules: true,
+    mentionPolicy: true,
+    replyTargeting: true,
+    environmentInstructions: true,
+    inputFormat: true,
+    styleConstraints: true,
+    personality: true
   };
 }
 

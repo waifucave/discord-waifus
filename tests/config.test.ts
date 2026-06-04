@@ -6,7 +6,7 @@ import { PREBUILT_WAIFUS } from "../src/config/prebuiltWaifus.js";
 import { DATA_ROOT_ENV, getDataRoot } from "../src/config/paths.js";
 import { loadAppConfig } from "../src/config/appConfig.js";
 import { redactSecrets } from "../src/backend/redaction.js";
-import { WaifuConfigSchema } from "../src/shared/schemas/domain.js";
+import { ServerConfigSchema, WaifuConfigSchema } from "../src/shared/schemas/domain.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
 
 let roots: string[] = [];
@@ -119,7 +119,17 @@ describe("data root and config", () => {
     expect(seeded.displayName).toBe(first.displayName);
     expect(seeded.availability.sleep.enabled).toBe(true);
     expect(seeded.availability.busy.length).toBeGreaterThan(0);
-    expect(seeded.tools).toEqual({ toolUse: true, pickNextWaifu: true, shortTermMemory: true });
+    expect(seeded.tools).toEqual({ toolUse: true });
+    expect(seeded.promptSections).toMatchObject({
+      directorNotes: true,
+      hardRules: true,
+      mentionPolicy: true,
+      replyTargeting: true,
+      environmentInstructions: true,
+      inputFormat: true,
+      styleConstraints: true,
+      personality: true
+    });
     expect(seeded.modelId).toBeUndefined();
     expect(seeded.botId).toBeUndefined();
 
@@ -139,6 +149,34 @@ describe("data root and config", () => {
     expect(redacted.provider.apiKey).toBe("[REDACTED]");
     expect(redacted.provider.nested).toContain("[REDACTED]");
     expect(redacted.safe).toBe("visible");
+  });
+
+  it("defaults server-level waifu tools and ignores legacy per-waifu tool gates", () => {
+    const now = "2026-05-16T12:00:00.000Z";
+    const server = ServerConfigSchema.parse({
+      schemaVersion: 1,
+      revision: 0,
+      updatedAt: now,
+      guildId: "guild-1"
+    });
+    expect(server.tools).toEqual({ pickNextWaifu: false, shortTermMemory: true });
+
+    const waifu = WaifuConfigSchema.parse({
+      schemaVersion: 1,
+      revision: 0,
+      updatedAt: now,
+      id: "legacy-tools",
+      name: "Legacy Tools",
+      displayName: "Legacy Tools",
+      persona: "",
+      tools: {
+        toolUse: false,
+        pickNextWaifu: true,
+        shortTermMemory: false
+      }
+    });
+    expect(waifu.tools).toEqual({ toolUse: false });
+    expect(waifu.promptSections.personality).toBe(true);
   });
 
   it("rejects overlapping busy intervals in waifu availability", () => {
