@@ -1,4 +1,12 @@
-import { ApplicationCommandOptionType, Client, Events, GatewayIntentBits, MessageFlags, Partials } from "discord.js";
+import {
+  ApplicationCommandOptionType,
+  Client,
+  Events,
+  GatewayIntentBits,
+  MessageFlags,
+  Partials,
+  PermissionFlagsBits
+} from "discord.js";
 import type { AutocompleteInteraction, ChatInputCommandInteraction } from "discord.js";
 import { Logger } from "../backend/logger.js";
 import { ContextMessage } from "../orchestration/context.js";
@@ -34,6 +42,7 @@ export interface DiscordGatewayFacade {
   onRunWaifuAutocomplete?(listener: DiscordRunWaifuAutocompleteListener): () => void;
   onStopCommand?(listener: DiscordStopCommandListener): () => void;
   onMemoriesCommand?(listener: DiscordMemoriesCommandListener): () => void;
+  onDebugCommand?(listener: DiscordDebugCommandListener): () => void;
   listGuilds?(): Promise<Array<{ guildId: string; name: string }>>;
   fetchFreshContext(input: {
     guildId: string;
@@ -54,6 +63,15 @@ export interface DiscordGatewayFacade {
     channelId: string;
     senderBotId?: string;
   }): Promise<void>;
+  validateDebugChannel?(input: {
+    channelId: string;
+    requireMessages?: boolean;
+    requireSend?: boolean;
+  }): Promise<DiscordDebugChannelInfo>;
+  sendDebugMessage?(input: {
+    channelId: string;
+    content: string;
+  }): Promise<{ messageId: string }>;
   deleteMessages?(input: {
     guildId: string;
     channelId: string;
@@ -106,14 +124,20 @@ export type DiscordRunWaifuAutocompleteEvent = {
 };
 export type DiscordStopCommandEvent = DiscordSlashCommandEvent;
 export type DiscordMemoriesCommandEvent = DiscordSlashCommandEvent;
+export type DiscordDebugCommandEvent = DiscordSlashCommandEvent & {
+  type?: DiscordDebugCommandType;
+  sourceChannelId?: string;
+};
 export type DiscordReviewCommandListener = (event: DiscordReviewCommandEvent) => void | Promise<void>;
 export type DiscordClearCommandListener = (event: DiscordClearCommandEvent) => void | Promise<void>;
 export type DiscordRunCommandListener = (event: DiscordRunCommandEvent) => void | Promise<void>;
 export type DiscordRunWaifuAutocompleteListener = (event: DiscordRunWaifuAutocompleteEvent) => void | Promise<void>;
 export type DiscordStopCommandListener = (event: DiscordStopCommandEvent) => void | Promise<void>;
 export type DiscordMemoriesCommandListener = (event: DiscordMemoriesCommandEvent) => void | Promise<void>;
+export type DiscordDebugCommandListener = (event: DiscordDebugCommandEvent) => void | Promise<void>;
 
 export type DiscordClearType = "waifus" | "users" | "both" | "everything";
+export type DiscordDebugCommandType = "set" | "unset";
 
 export type DiscordDeleteMessagesResult = {
   deletedMessageIds: string[];
@@ -125,6 +149,12 @@ export type DiscordDeleteChannelMessagesResult = {
   deletedCount: number;
   failedCount: number;
   failedMessageIds: Array<{ messageId: string; message: string }>;
+};
+
+export type DiscordDebugChannelInfo = {
+  channelId: string;
+  guildId?: string;
+  name?: string;
 };
 
 type DiscordCache = {
@@ -166,6 +196,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   private readonly runWaifuAutocompleteListeners = new Set<DiscordRunWaifuAutocompleteListener>();
   private readonly stopListeners = new Set<DiscordStopCommandListener>();
   private readonly memoriesListeners = new Set<DiscordMemoriesCommandListener>();
+  private readonly debugListeners = new Set<DiscordDebugCommandListener>();
   private readonly recentMentionRefreshes = new Map<string, number>();
 
   constructor(private readonly options: DiscordJsGatewayOptions) {}
@@ -223,6 +254,8 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
               void this.handleStopInteraction(interaction);
             } else if (interaction.commandName === MEMORIES_COMMAND_NAME) {
               void this.handleMemoriesInteraction(interaction);
+            } else if (interaction.commandName === DEBUG_COMMAND_NAME) {
+              void this.handleDebugInteraction(interaction);
             }
           });
         }
@@ -287,6 +320,11 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   onMemoriesCommand(listener: DiscordMemoriesCommandListener): () => void {
     this.memoriesListeners.add(listener);
     return () => this.memoriesListeners.delete(listener);
+  }
+
+  onDebugCommand(listener: DiscordDebugCommandListener): () => void {
+    this.debugListeners.add(listener);
+    return () => this.debugListeners.delete(listener);
   }
 
   async listGuilds(): Promise<Array<{ guildId: string; name: string }>> {
@@ -439,6 +477,43 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
         message: error instanceof Error ? error.message : String(error)
       });
     }
+  }
+
+  async validateDebugChannel(input: {
+    channelId: string;
+    requireMessages?: boolean;
+    requireSend?: boolean;
+  }): Promise<DiscordDebugChannelInfo> {
+    const channel = await this.orchestratorClient().channels.fetch(input.channelId);
+    if (!channel) {
+      throw new Error(`Discord channel ${input.channelId} is not accessible to the orchestrator bot.`);
+    }
+    if (input.requireMessages && !("messages" in channel)) {
+      throw new Error(`Discord channel ${input.channelId} is not readable by the orchestrator bot.`);
+    }
+    if (input.requireSend && !("send" in channel)) {
+      throw new Error(`Discord channel ${input.channelId} is not sendable by the orchestrator bot.`);
+    }
+    return {
+      channelId: input.channelId,
+      guildId: "guildId" in channel && typeof channel.guildId === "string" ? channel.guildId : undefined,
+      name: "name" in channel && typeof channel.name === "string" ? channel.name : undefined
+    };
+  }
+
+  async sendDebugMessage(input: {
+    channelId: string;
+    content: string;
+  }): Promise<{ messageId: string }> {
+    const channel = await this.orchestratorClient().channels.fetch(input.channelId);
+    if (!channel || !("send" in channel)) {
+      throw new Error(`Discord channel ${input.channelId} is not sendable by the orchestrator bot.`);
+    }
+    const sent = await channel.send({
+      content: input.content,
+      allowedMentions: { parse: [], users: [], roles: [], repliedUser: false }
+    });
+    return { messageId: sent.id };
   }
 
   async deleteMessages(input: {
@@ -786,6 +861,27 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
       void listener(event);
     }
   }
+
+  private async handleDebugInteraction(interaction: ChatInputCommandInteraction): Promise<void> {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    if (!interaction.guildId || !interaction.channelId) {
+      await interaction.editReply("/debug can only be used in a server channel.");
+      return;
+    }
+    const event: DiscordDebugCommandEvent = {
+      guildId: interaction.guildId,
+      channelId: interaction.channelId,
+      userId: interaction.user.id,
+      type: parseDebugCommandType(interaction.options.getString(DEBUG_TYPE_OPTION_NAME)),
+      sourceChannelId: sanitizeRunString(interaction.options.getString(DEBUG_CHANNEL_ID_OPTION_NAME)),
+      respond: async (content) => {
+        await interaction.editReply(content);
+      }
+    };
+    for (const listener of this.debugListeners) {
+      void listener(event);
+    }
+  }
 }
 
 export class DiscordGatewayNotConfigured implements DiscordGatewayFacade {
@@ -963,14 +1059,18 @@ const CLEAR_COMMAND_NAME = "clear";
 const RUN_COMMAND_NAME = "run";
 const STOP_COMMAND_NAME = "stop";
 const MEMORIES_COMMAND_NAME = "memories";
+const DEBUG_COMMAND_NAME = "debug";
 const CLEAR_COUNT_OPTION_NAME = "count";
 const CLEAR_TYPE_OPTION_NAME = "type";
+const DEBUG_TYPE_OPTION_NAME = "type";
+const DEBUG_CHANNEL_ID_OPTION_NAME = "channel_id";
 const RUN_WAIFU_OPTION_NAME = "waifu";
 const RUN_SCENE_DIRECTION_OPTION_NAME = "scene_direction";
 const MAX_CLEAR_COUNT = 100;
 const MAX_AUTOCOMPLETE_CHOICES = 25;
 const DISCORD_BULK_DELETE_MAX_MESSAGES = 100;
 const DISCORD_BULK_DELETE_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
+const ADMIN_COMMAND_PERMISSIONS = PermissionFlagsBits.Administrator;
 
 function sanitizeReplyTarget(value?: string): string | undefined {
   return value && SNOWFLAKE_PATTERN.test(value) ? value : undefined;
@@ -979,6 +1079,10 @@ function sanitizeReplyTarget(value?: string): string | undefined {
 function sanitizeRunString(value: string | null): string | undefined {
   const trimmed = value?.trim();
   return trimmed || undefined;
+}
+
+function parseDebugCommandType(value: string | null): DiscordDebugCommandType | undefined {
+  return value === "set" || value === "unset" ? value : undefined;
 }
 
 function isBulkDeletableMessage(message: DiscordFetchedMessageForDelete): boolean {
@@ -1011,65 +1115,7 @@ async function registerOrchestratorCommands(client: Client, logger?: Logger): Pr
   try {
     const manager = client.application?.commands;
     if (!manager) return;
-    const payloads = [
-      {
-        name: REVIEW_COMMAND_NAME,
-        description: "Review and remove the latest waifu message if it leaked hallucinated internals."
-      },
-      {
-        name: CLEAR_COMMAND_NAME,
-        description: "Delete channel messages without running reviewer judgment.",
-        options: [
-          {
-            type: ApplicationCommandOptionType.String as ApplicationCommandOptionType.String,
-            name: CLEAR_TYPE_OPTION_NAME,
-            description: "Which messages to clear.",
-            required: true,
-            choices: [
-              { name: "waifus", value: "waifus" },
-              { name: "users", value: "users" },
-              { name: "both", value: "both" },
-              { name: "everything", value: "everything" }
-            ]
-          },
-          {
-            type: ApplicationCommandOptionType.Integer as ApplicationCommandOptionType.Integer,
-            name: CLEAR_COUNT_OPTION_NAME,
-            description: "How many latest messages to delete for waifus, users, or both.",
-            required: false,
-            min_value: 1,
-            max_value: MAX_CLEAR_COUNT
-          }
-        ]
-      },
-      {
-        name: RUN_COMMAND_NAME,
-        description: "Run the orchestrator in this channel immediately if the runtime is idle.",
-        options: [
-          {
-            type: ApplicationCommandOptionType.String as ApplicationCommandOptionType.String,
-            name: RUN_WAIFU_OPTION_NAME,
-            description: "Optional waifu id or display name to speak first.",
-            required: false,
-            autocomplete: true
-          },
-          {
-            type: ApplicationCommandOptionType.String as ApplicationCommandOptionType.String,
-            name: RUN_SCENE_DIRECTION_OPTION_NAME,
-            description: "Optional private scene direction for the selected waifu.",
-            required: false
-          }
-        ]
-      },
-      {
-        name: STOP_COMMAND_NAME,
-        description: "Stop the current orchestrator and waifu work in this channel."
-      },
-      {
-        name: MEMORIES_COMMAND_NAME,
-        description: "Run the stage manager for this channel and update guild memories."
-      }
-    ];
+    const payloads = buildOrchestratorCommandPayloads();
     const commands = await manager.fetch();
     for (const payload of payloads) {
       const existing = commands.find((command) => command.name === payload.name);
@@ -1084,6 +1130,95 @@ async function registerOrchestratorCommands(client: Client, logger?: Logger): Pr
       message: error instanceof Error ? error.message : String(error)
     });
   }
+}
+
+export function buildOrchestratorCommandPayloads() {
+  return [
+    {
+      name: REVIEW_COMMAND_NAME,
+      description: "Review and remove the latest waifu message if it leaked hallucinated internals.",
+      defaultMemberPermissions: ADMIN_COMMAND_PERMISSIONS
+    },
+    {
+      name: CLEAR_COMMAND_NAME,
+      description: "Delete channel messages without running reviewer judgment.",
+      defaultMemberPermissions: ADMIN_COMMAND_PERMISSIONS,
+      options: [
+        {
+          type: ApplicationCommandOptionType.String as ApplicationCommandOptionType.String,
+          name: CLEAR_TYPE_OPTION_NAME,
+          description: "Which messages to clear.",
+          required: true,
+          choices: [
+            { name: "waifus", value: "waifus" },
+            { name: "users", value: "users" },
+            { name: "both", value: "both" },
+            { name: "everything", value: "everything" }
+          ]
+        },
+        {
+          type: ApplicationCommandOptionType.Integer as ApplicationCommandOptionType.Integer,
+          name: CLEAR_COUNT_OPTION_NAME,
+          description: "How many latest messages to delete for waifus, users, or both.",
+          required: false,
+          min_value: 1,
+          max_value: MAX_CLEAR_COUNT
+        }
+      ]
+    },
+    {
+      name: RUN_COMMAND_NAME,
+      description: "Run the orchestrator in this channel immediately if the runtime is idle.",
+      options: [
+        {
+          type: ApplicationCommandOptionType.String as ApplicationCommandOptionType.String,
+          name: RUN_WAIFU_OPTION_NAME,
+          description: "Optional waifu id or display name to speak first.",
+          required: false,
+          autocomplete: true
+        },
+        {
+          type: ApplicationCommandOptionType.String as ApplicationCommandOptionType.String,
+          name: RUN_SCENE_DIRECTION_OPTION_NAME,
+          description: "Optional private scene direction for the selected waifu.",
+          required: false
+        }
+      ]
+    },
+    {
+      name: STOP_COMMAND_NAME,
+      description: "Stop the current orchestrator and waifu work in this channel.",
+      defaultMemberPermissions: ADMIN_COMMAND_PERMISSIONS
+    },
+    {
+      name: MEMORIES_COMMAND_NAME,
+      description: "Run the stage manager for this channel and update guild memories.",
+      defaultMemberPermissions: ADMIN_COMMAND_PERMISSIONS
+    },
+    {
+      name: DEBUG_COMMAND_NAME,
+      description: "Route orchestrator and stage-manager debug logs for a source channel.",
+      defaultMemberPermissions: ADMIN_COMMAND_PERMISSIONS,
+      options: [
+        {
+          type: ApplicationCommandOptionType.String as ApplicationCommandOptionType.String,
+          name: DEBUG_TYPE_OPTION_NAME,
+          description: "Whether to set or unset a debug log route.",
+          required: true,
+          choices: [
+            { name: "set", value: "set" },
+            { name: "unset", value: "unset" }
+          ]
+        },
+        {
+          type: ApplicationCommandOptionType.String as ApplicationCommandOptionType.String,
+          name: DEBUG_CHANNEL_ID_OPTION_NAME,
+          description: "Source channel ID whose orchestrator and stage-manager logs should be routed.",
+          required: true
+        }
+      ]
+    }
+  ];
 }
 
 function parseClearType(value: string | null): DiscordClearType | undefined {

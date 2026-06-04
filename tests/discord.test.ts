@@ -4,7 +4,7 @@ import {
   normalizeDiscordContentForModel,
   stripLeakedContextHeader
 } from "../src/discord/normalization.js";
-import { DiscordJsGateway } from "../src/discord/client.js";
+import { DiscordJsGateway, buildOrchestratorCommandPayloads } from "../src/discord/client.js";
 import { mergeConfiguredBotsIntoMembers, unresolvedMentionIds } from "../src/discord/memberCache.js";
 import { GuildEmojiCacheEntry, GuildMemberCacheEntry } from "../src/shared/schemas/domain.js";
 
@@ -174,6 +174,38 @@ describe("Discord member cache helpers", () => {
     });
     expect(merged.some((member) => member.userId === "100000000000000004" && member.guildDisplayName === "Aria"))
       .toBe(true);
+  });
+});
+
+describe("orchestrator slash command payloads", () => {
+  it("keeps /run open while requiring admin permissions for other orchestrator commands", () => {
+    const payloads = buildOrchestratorCommandPayloads();
+    const byName = new Map(payloads.map((payload) => [payload.name, payload]));
+    const run = byName.get("run");
+
+    expect(run).toBeDefined();
+    expect(run).not.toHaveProperty("defaultMemberPermissions");
+    for (const name of ["review", "clear", "stop", "memories", "debug"]) {
+      expect(byName.get(name)?.defaultMemberPermissions).toBe(8n);
+    }
+  });
+
+  it("registers /debug with required set/unset type and channel_id options", () => {
+    const debug = buildOrchestratorCommandPayloads().find((payload) => payload.name === "debug");
+    expect(debug?.options).toEqual([
+      expect.objectContaining({
+        name: "type",
+        required: true,
+        choices: [
+          { name: "set", value: "set" },
+          { name: "unset", value: "unset" }
+        ]
+      }),
+      expect.objectContaining({
+        name: "channel_id",
+        required: true
+      })
+    ]);
   });
 });
 

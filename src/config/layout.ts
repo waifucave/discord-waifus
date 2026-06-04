@@ -60,6 +60,13 @@ const DEFAULT_JSON_FILES: Array<{ relativePath: string; content: unknown }> = [
     }
   },
   {
+    relativePath: "user/orchestrator/debug.json",
+    content: {
+      ...createRevisionedBase(),
+      routes: {}
+    }
+  },
+  {
     relativePath: "user/stage-manager/config.json",
     content: {
       ...createRevisionedBase(),

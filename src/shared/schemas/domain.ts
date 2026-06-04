@@ -364,6 +364,22 @@ export const OrchestratorHistoryFileSchema = RevisionedRecordSchema.extend({
 });
 export type OrchestratorHistoryFile = z.infer<typeof OrchestratorHistoryFileSchema>;
 
+export const OrchestratorDebugRouteSchema = z.object({
+  sourceGuildId: z.string().min(1).optional(),
+  sourceChannelId: z.string().min(1),
+  destinationGuildId: z.string().min(1).optional(),
+  destinationChannelId: z.string().min(1),
+  createdByUserId: z.string().min(1),
+  createdAt: IsoDateStringSchema,
+  updatedAt: IsoDateStringSchema
+});
+export type OrchestratorDebugRoute = z.infer<typeof OrchestratorDebugRouteSchema>;
+
+export const OrchestratorDebugConfigFileSchema = RevisionedRecordSchema.extend({
+  routes: z.record(z.string(), OrchestratorDebugRouteSchema).default({})
+});
+export type OrchestratorDebugConfigFile = z.infer<typeof OrchestratorDebugConfigFileSchema>;
+
 export const StageManagerEditHistoryEntrySchema = z.object({
   id: z.string().min(1),
   guildId: z.string().optional(),

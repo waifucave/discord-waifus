@@ -6,6 +6,7 @@ import {
   DiscordClearCommandEvent,
   DiscordClearType,
   DiscordAutocompleteChoice,
+  DiscordDebugCommandEvent,
   DiscordGatewayFacade,
   DiscordMemoriesCommandEvent,
   DiscordMessageEvent,
@@ -27,6 +28,7 @@ import {
   GuildEmojisFileSchema,
   MemoryStore,
   MemoryStoreSchema,
+  OrchestratorDebugConfigFileSchema,
   OrchestratorDecisionHistoryEntry,
   OrchestratorDecisionStatus,
   OrchestratorHistoryFileSchema,
@@ -113,6 +115,11 @@ type StageManagerSchedule = {
   idleTimer?: NodeJS.Timeout;
 };
 
+type StageManagerDebugEntry = {
+  tool: "add_memory" | "update_memory" | "archive_memory" | "merge_memories" | "no_change";
+  summary: string;
+};
+
 export class RuntimeOrchestrator {
   private readonly activeRuns = new Map<string, ActiveChannelRun>();
   private readonly retriggerTimers = new Map<string, NodeJS.Timeout>();
@@ -163,6 +170,9 @@ export class RuntimeOrchestrator {
       }),
       this.options.discord.onMemoriesCommand?.((event) => {
         void this.handleMemoriesCommand(event);
+      }),
+      this.options.discord.onDebugCommand?.((event) => {
+        void this.handleDebugCommand(event);
       })
     ].filter((unsubscribe): unsubscribe is () => void => Boolean(unsubscribe));
     if (this.options.discord.listGuilds) {
@@ -490,6 +500,53 @@ export class RuntimeOrchestrator {
     }
   }
 
+  private async handleDebugCommand(event: DiscordDebugCommandEvent): Promise<void> {
+    try {
+      if (!event.type) {
+        await event.respond("Debug type is required. Choose set or unset.");
+        return;
+      }
+      const sourceChannelId = event.sourceChannelId?.trim();
+      if (!sourceChannelId) {
+        await event.respond("Source channel ID is required.");
+        return;
+      }
+      if (event.type === "unset") {
+        const removed = await this.unsetDebugRoute(sourceChannelId);
+        await event.respond(
+          removed
+            ? `Debug logs disabled for channel ${sourceChannelId}.`
+            : `No debug route is set for channel ${sourceChannelId}.`
+        );
+        return;
+      }
+      if (!this.options.discord.validateDebugChannel) {
+        throw new Error("Discord debug channel validation is not available.");
+      }
+      const [source, destination] = await Promise.all([
+        this.options.discord.validateDebugChannel({ channelId: sourceChannelId, requireMessages: true }),
+        this.options.discord.validateDebugChannel({ channelId: event.channelId, requireSend: true })
+      ]);
+      await this.setDebugRoute({
+        sourceGuildId: source.guildId,
+        sourceChannelId,
+        destinationGuildId: destination.guildId ?? event.guildId,
+        destinationChannelId: event.channelId,
+        userId: event.userId
+      });
+      await event.respond(`Debug logs for channel ${sourceChannelId} will be posted in this channel.`);
+    } catch (error) {
+      this.options.logger.error("Debug command failed", {
+        guildId: event.guildId,
+        channelId: event.channelId,
+        sourceChannelId: event.sourceChannelId,
+        type: event.type,
+        message: error instanceof Error ? error.message : String(error)
+      });
+      await event.respond(error instanceof Error ? error.message : "Debug command failed.");
+    }
+  }
+
   private runtimeBusyReason(guildId: string, channelId: string): string | undefined {
     const key = runKey(guildId);
     const activeRun = this.activeRuns.get(key);
@@ -682,6 +739,12 @@ export class RuntimeOrchestrator {
         decisionId,
         decision,
         status: initialDecisionStatus
+      });
+      void this.sendOrchestratorDebugLog({
+        guildId,
+        channelId,
+        decision,
+        availableWaifus
       });
 
       if (decision.action === "no_reply") {
@@ -1112,17 +1175,24 @@ export class RuntimeOrchestrator {
       });
 
       if (allowedObservations.length === 0) {
-        await this.appendStageManagerHistory({
+        const entry = {
           id: randomUUID(),
           guildId,
           channelId,
-          tool: "no_change",
-          affectedMemoryIds: [],
+          tool: "no_change" as const,
+          affectedMemoryIds: [] as string[],
           summary: observations.length === 0
             ? "No observations extracted"
             : `Dropped ${observations.length} observation(s) with unknown waifu ids`,
           observationCount: observations.length,
           createdAt: nowIso()
+        };
+        await this.appendStageManagerHistory(entry);
+        void this.sendStageManagerDebugLog({
+          guildId,
+          channelId,
+          entries: [entry],
+          observationCount: observations.length
         });
         return { status: "no_change" };
       }
@@ -1168,6 +1238,12 @@ export class RuntimeOrchestrator {
           observationCount: allowedObservations.length
         });
       }
+      void this.sendStageManagerDebugLog({
+        guildId,
+        channelId,
+        entries: result.historyEntries,
+        observationCount: allowedObservations.length
+      });
       return { status: result.changed ? "updated" : "no_change" };
     } catch (error) {
       this.options.logger.error("Stage manager failed", {
@@ -1479,6 +1555,7 @@ export class RuntimeOrchestrator {
               });
               continue;
             }
+            const updatedContent = call.patch.content ?? target.content;
             memories = memories.map((memory) => {
               if (memory.id !== memoryId || memory.guildId !== guildId) {
                 return memory;
@@ -1497,7 +1574,7 @@ export class RuntimeOrchestrator {
               id: randomUUID(),
               tool: call.tool,
               affectedMemoryIds: [memoryId],
-              summary: "Updated memory",
+              summary: `Updated memory: ${updatedContent}`,
               createdAt: now
             });
             changed = true;
@@ -1533,7 +1610,7 @@ export class RuntimeOrchestrator {
               id: randomUUID(),
               tool: call.tool,
               affectedMemoryIds: [memoryId],
-              summary: "Archived memory",
+              summary: `Archived memory: ${target.content}`,
               createdAt: now
             });
             changed = true;
@@ -1584,7 +1661,7 @@ export class RuntimeOrchestrator {
               id: randomUUID(),
               tool: call.tool,
               affectedMemoryIds: [id, ...source.map((memory) => memory.id)],
-              summary: call.mergedContent,
+              summary: `Merged memory: ${call.mergedContent}`,
               createdAt: now
             });
             changed = true;
@@ -2369,6 +2446,126 @@ export class RuntimeOrchestrator {
     });
   }
 
+  private async setDebugRoute(input: {
+    sourceGuildId?: string;
+    sourceChannelId: string;
+    destinationGuildId?: string;
+    destinationChannelId: string;
+    userId: string;
+  }): Promise<void> {
+    const now = nowIso();
+    await this.options.storage.updateRevisionedJson({
+      resourceKey: "orchestrator:debug",
+      relativePath: "user/orchestrator/debug.json",
+      schema: OrchestratorDebugConfigFileSchema,
+      fallback: OrchestratorDebugConfigFileSchema.parse(createEmptyRevisionedFile({ routes: {} })),
+      transform: (current) => {
+        const previous = current.routes[input.sourceChannelId];
+        return {
+          ...current,
+          routes: {
+            ...current.routes,
+            [input.sourceChannelId]: {
+              sourceGuildId: input.sourceGuildId,
+              sourceChannelId: input.sourceChannelId,
+              destinationGuildId: input.destinationGuildId,
+              destinationChannelId: input.destinationChannelId,
+              createdByUserId: previous?.createdByUserId ?? input.userId,
+              createdAt: previous?.createdAt ?? now,
+              updatedAt: now
+            }
+          }
+        };
+      }
+    });
+  }
+
+  private async unsetDebugRoute(sourceChannelId: string): Promise<boolean> {
+    let removed = false;
+    await this.options.storage.updateRevisionedJson({
+      resourceKey: "orchestrator:debug",
+      relativePath: "user/orchestrator/debug.json",
+      schema: OrchestratorDebugConfigFileSchema,
+      fallback: OrchestratorDebugConfigFileSchema.parse(createEmptyRevisionedFile({ routes: {} })),
+      transform: (current) => {
+        if (!current.routes[sourceChannelId]) {
+          return current;
+        }
+        const { [sourceChannelId]: _removed, ...routes } = current.routes;
+        removed = true;
+        return { ...current, routes };
+      }
+    });
+    return removed;
+  }
+
+  private async readDebugRoute(sourceChannelId: string) {
+    const config = await this.options.storage.readJson(
+      "user/orchestrator/debug.json",
+      OrchestratorDebugConfigFileSchema,
+      OrchestratorDebugConfigFileSchema.parse(createEmptyRevisionedFile({ routes: {} }))
+    );
+    return config.routes[sourceChannelId];
+  }
+
+  private async sendOrchestratorDebugLog(input: {
+    guildId: string;
+    channelId: string;
+    decision: OrchestratorDecision;
+    availableWaifus: WaifuConfig[];
+  }): Promise<void> {
+    await this.sendDebugLogForChannel(
+      input.guildId,
+      input.channelId,
+      formatOrchestratorDebugLog(input)
+    );
+  }
+
+  private async sendStageManagerDebugLog(input: {
+    guildId: string;
+    channelId: string;
+    entries: StageManagerDebugEntry[];
+    observationCount: number;
+  }): Promise<void> {
+    await this.sendDebugLogForChannel(
+      input.guildId,
+      input.channelId,
+      formatStageManagerDebugLog(input)
+    );
+  }
+
+  private async sendDebugLogForChannel(guildId: string, channelId: string, content: string): Promise<void> {
+    try {
+      if (!this.options.discord.sendDebugMessage) {
+        return;
+      }
+      const route = await this.readDebugRoute(channelId);
+      if (!route) {
+        return;
+      }
+      if (route.sourceGuildId && route.sourceGuildId !== guildId) {
+        this.options.logger.warn("Skipping debug log for route with mismatched source guild", {
+          sourceGuildId: guildId,
+          sourceChannelId: channelId,
+          routeSourceGuildId: route.sourceGuildId
+        });
+        return;
+      }
+      for (const chunk of splitDebugMessage(content)) {
+        await this.options.discord.sendDebugMessage({
+          channelId: route.destinationChannelId,
+          content: chunk
+        });
+      }
+    } catch (error) {
+      this.options.logger.warn("Failed to send Discord debug log", {
+        guildId,
+        channelId,
+        message: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+
   private async updateOrchestratorDecisionStatus(id: string, status: OrchestratorDecisionStatus): Promise<void> {
     await this.options.storage.updateRevisionedJson({
       resourceKey: "orchestrator:history",
@@ -2875,6 +3072,99 @@ function summarizeProviderPipelineDetails(details: unknown): string {
   }
 }
 
+function formatOrchestratorDebugLog(input: {
+  guildId: string;
+  channelId: string;
+  decision: OrchestratorDecision;
+  availableWaifus: WaifuConfig[];
+}): string {
+  const waifuNameById = new Map(input.availableWaifus.map((waifu) => [waifu.id, waifuDebugName(waifu)]));
+  const lines = [
+    `[orchestrator debug] guild=${input.guildId} channel=${input.channelId}`,
+    `Decision: ${input.decision.action}`
+  ];
+  if (input.decision.action === "reply") {
+    lines.push(
+      `Waifus: ${input.decision.respondingWaifus
+        .map((responder) => waifuNameById.get(responder.waifuId) ?? responder.waifuId)
+        .join(" -> ")}`
+    );
+    const sceneDirections = input.decision.respondingWaifus
+      .map((responder) => ({
+        name: waifuNameById.get(responder.waifuId) ?? responder.waifuId,
+        sceneDirection: responder.sceneDirection?.trim()
+      }))
+      .filter((entry): entry is { name: string; sceneDirection: string } => Boolean(entry.sceneDirection));
+    if (sceneDirections.length > 0) {
+      lines.push("Scene directions:");
+      for (const entry of sceneDirections) {
+        lines.push(`- ${entry.name}: ${clipDebugText(entry.sceneDirection)}`);
+      }
+    }
+  } else {
+    lines.push(`Idle trigger: ${input.decision.retriggerAfterSeconds ?? RETRIGGER_MIN_SECONDS}s`);
+  }
+  lines.push(`Reasoning: ${clipDebugText(input.decision.reasoning)}`);
+  return lines.join("\n");
+}
+
+function formatStageManagerDebugLog(input: {
+  guildId: string;
+  channelId: string;
+  entries: StageManagerDebugEntry[];
+  observationCount: number;
+}): string {
+  const lines = [
+    `[stage-manager debug] guild=${input.guildId} channel=${input.channelId}`,
+    `Observations: ${input.observationCount}`
+  ];
+  const entries = input.entries.length > 0 ? input.entries : [{ tool: "no_change" as const, summary: "No memory changes" }];
+  if (entries.every((entry) => entry.tool === "no_change")) {
+    lines.push("Memory changes: none");
+  } else {
+    lines.push("Memory changes:");
+  }
+  for (const entry of entries) {
+    lines.push(`- ${stageManagerToolLabel(entry.tool)}: ${clipDebugText(entry.summary || "No details")}`);
+  }
+  return lines.join("\n");
+}
+
+function waifuDebugName(waifu: WaifuConfig): string {
+  const display = waifu.displayName || waifu.name || waifu.id;
+  return display === waifu.id ? waifu.id : `${display} (${waifu.id})`;
+}
+
+function stageManagerToolLabel(tool: StageManagerDebugEntry["tool"]): string {
+  if (tool === "add_memory") return "added";
+  if (tool === "update_memory") return "updated";
+  if (tool === "archive_memory") return "deleted/archived";
+  if (tool === "merge_memories") return "merged";
+  return "no change";
+}
+
+function clipDebugText(value: string, maxLength = 700): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, maxLength - 1)}…`;
+}
+
+function splitDebugMessage(content: string): string[] {
+  if (content.length <= DISCORD_DEBUG_MESSAGE_LIMIT) return [content];
+  const chunks: string[] = [];
+  let remaining = content;
+  while (remaining.length > DISCORD_DEBUG_MESSAGE_LIMIT) {
+    const splitAt = remaining.lastIndexOf("\n", DISCORD_DEBUG_MESSAGE_LIMIT);
+    const index = splitAt > 0 ? splitAt : DISCORD_DEBUG_MESSAGE_LIMIT;
+    chunks.push(remaining.slice(0, index));
+    remaining = remaining.slice(index).trimStart();
+  }
+  if (remaining) {
+    chunks.push(remaining);
+  }
+  return chunks;
+}
+
 function normalizeClearCount(count: number): number {
   if (!Number.isFinite(count)) return 1;
   return Math.max(1, Math.min(MAX_CLEAR_COUNT, Math.trunc(count)));
@@ -3068,6 +3358,7 @@ function buildLegacyOrchestratorPrompt(server: ServerConfig, availableWaifus: Wa
 
 const TYPING_REFRESH_MS = 8000;
 const MAX_CLEAR_COUNT = 100;
+const DISCORD_DEBUG_MESSAGE_LIMIT = 1900;
 
 type TypingScope = { stop: () => void };
 

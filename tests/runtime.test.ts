@@ -6,6 +6,8 @@ import {
   DiscordGatewayFacade,
   DiscordClearCommandEvent,
   DiscordClearCommandListener,
+  DiscordDebugCommandEvent,
+  DiscordDebugCommandListener,
   DiscordMemoriesCommandEvent,
   DiscordMemoriesCommandListener,
   DiscordReviewCommandEvent,
@@ -32,6 +34,7 @@ import { StorageService } from "../src/storage/storageService.js";
 import {
   AgentConfigSchema,
   MemoryStoreSchema,
+  OrchestratorDebugConfigFileSchema,
   OrchestratorHistoryFileSchema,
   ProviderCredentialsFileSchema,
   ReviewerHistoryFileSchema,
@@ -74,12 +77,15 @@ class FakeDiscord implements DiscordGatewayFacade {
     failedCount: 0,
     failedMessageIds: [] as Array<{ messageId: string; message: string }>
   };
+  debugMessages: Array<{ channelId: string; content: string }> = [];
+  debugChannelInfo = new Map<string, { channelId: string; guildId?: string; name?: string }>();
   reviewListeners = new Set<DiscordReviewCommandListener>();
   clearListeners = new Set<DiscordClearCommandListener>();
   runListeners = new Set<DiscordRunCommandListener>();
   runWaifuAutocompleteListeners = new Set<DiscordRunWaifuAutocompleteListener>();
   stopListeners = new Set<DiscordStopCommandListener>();
   memoriesListeners = new Set<DiscordMemoriesCommandListener>();
+  debugListeners = new Set<DiscordDebugCommandListener>();
   contexts: ContextMessage[][] = [
     [contextMessage("m1", "user", "Kevin", "hello")],
     [contextMessage("m1", "user", "Kevin", "hello")],
@@ -120,6 +126,11 @@ class FakeDiscord implements DiscordGatewayFacade {
   onMemoriesCommand(listener: DiscordMemoriesCommandListener): () => void {
     this.memoriesListeners.add(listener);
     return () => this.memoriesListeners.delete(listener);
+  }
+
+  onDebugCommand(listener: DiscordDebugCommandListener): () => void {
+    this.debugListeners.add(listener);
+    return () => this.debugListeners.delete(listener);
   }
 
   async emitReviewCommand(
@@ -202,6 +213,19 @@ class FakeDiscord implements DiscordGatewayFacade {
     );
   }
 
+  async emitDebugCommand(
+    event: Omit<DiscordDebugCommandEvent, "respond"> & { respond?: DiscordDebugCommandEvent["respond"] }
+  ): Promise<void> {
+    await Promise.all(
+      [...this.debugListeners].map((listener) =>
+        listener({
+          ...event,
+          respond: event.respond ?? (async () => undefined)
+        })
+      )
+    );
+  }
+
   async fetchFreshContext(): Promise<ContextMessage[]> {
     return this.contexts.shift() ?? [contextMessage("m3", "waifu", "Yuki", "done")];
   }
@@ -217,6 +241,15 @@ class FakeDiscord implements DiscordGatewayFacade {
 
   async sendTyping(input: { channelId: string; senderBotId?: string }): Promise<void> {
     this.typingCalls.push({ channelId: input.channelId, senderBotId: input.senderBotId });
+  }
+
+  async validateDebugChannel(input: { channelId: string }) {
+    return this.debugChannelInfo.get(input.channelId) ?? { channelId: input.channelId };
+  }
+
+  async sendDebugMessage(input: { channelId: string; content: string }): Promise<{ messageId: string }> {
+    this.debugMessages.push(input);
+    return { messageId: `debug-${this.debugMessages.length}` };
   }
 
   async deleteMessages(input: {
@@ -2508,6 +2541,238 @@ describe("RuntimeOrchestrator", () => {
     expect(responses).toEqual(["Cleared 3 messages."]);
   });
 
+  it("sets and unsets a cross-guild debug log route from /debug", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.debugChannelInfo.set("source-channel", { channelId: "source-channel", guildId: "guild-a" });
+    discord.debugChannelInfo.set("debug-channel", { channelId: "debug-channel", guildId: "guild-b" });
+
+    await seedRuntimeConfig(storage);
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      createPipeline: () => ({
+        async generateWaifu() {
+          return { content: "unused" };
+        }
+      }),
+      logger: quietLogger()
+    });
+    await runtime.start();
+
+    const responses: string[] = [];
+    await discord.emitDebugCommand({
+      guildId: "guild-b",
+      channelId: "debug-channel",
+      userId: "admin-user",
+      type: "set",
+      sourceChannelId: "source-channel",
+      respond: async (content) => {
+        responses.push(content);
+      }
+    });
+    await waitFor(() => responses.length === 1, "debug set response");
+    const afterSet = await storage.readJson("user/orchestrator/debug.json", OrchestratorDebugConfigFileSchema);
+    await discord.emitDebugCommand({
+      guildId: "guild-b",
+      channelId: "debug-channel",
+      userId: "admin-user",
+      type: "unset",
+      sourceChannelId: "source-channel",
+      respond: async (content) => {
+        responses.push(content);
+      }
+    });
+    await waitFor(() => responses.length === 2, "debug unset response");
+    const afterUnset = await storage.readJson("user/orchestrator/debug.json", OrchestratorDebugConfigFileSchema);
+    await runtime.stop();
+
+    expect(afterSet.routes["source-channel"]).toMatchObject({
+      sourceGuildId: "guild-a",
+      sourceChannelId: "source-channel",
+      destinationGuildId: "guild-b",
+      destinationChannelId: "debug-channel",
+      createdByUserId: "admin-user"
+    });
+    expect(afterUnset.routes).toEqual({});
+    expect(responses).toEqual([
+      "Debug logs for channel source-channel will be posted in this channel.",
+      "Debug logs disabled for channel source-channel."
+    ]);
+  });
+
+  it("posts orchestrator reply decisions to the configured debug channel", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.contexts = [[contextMessage("m1", "user", "Kevin", "hello")]];
+
+    await seedRuntimeConfig(storage);
+    await seedWaifu(storage, "mika", "Mika", "mika-bot", "bold");
+    await enableWaifus(storage, ["yuki", "mika"]);
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 1,
+      createPipeline: () => ({
+        async decideOrchestrator() {
+          return {
+            action: "reply",
+            respondingWaifus: [
+              { waifuId: "yuki", delaySeconds: 0, replyStyle: "normal", sceneDirection: "ask Kevin about the trip" },
+              { waifuId: "mika", delaySeconds: 7, replyStyle: "short" }
+            ],
+            reasoning: "Yuki should answer first, then Mika can add a quick aside."
+          };
+        },
+        async generateWaifu() {
+          return { content: "ok" };
+        }
+      }),
+      logger: quietLogger()
+    });
+    await runtime.start();
+    const debugResponses: string[] = [];
+    await discord.emitDebugCommand({
+      guildId: "guild-b",
+      channelId: "debug-channel",
+      userId: "admin-user",
+      type: "set",
+      sourceChannelId: "channel-1",
+      respond: async (content) => {
+        debugResponses.push(content);
+      }
+    });
+    await waitFor(() => debugResponses.length === 1, "debug set response");
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await waitFor(() => discord.debugMessages.length === 1, "orchestrator debug message");
+    await runtime.stop();
+
+    expect(discord.debugMessages[0]).toMatchObject({ channelId: "debug-channel" });
+    expect(discord.debugMessages[0]?.content).toContain("Decision: reply");
+    expect(discord.debugMessages[0]?.content).toContain("Waifus: Yuki (yuki) -> Mika (mika)");
+    expect(discord.debugMessages[0]?.content).toContain("Scene directions:");
+    expect(discord.debugMessages[0]?.content).toContain("ask Kevin about the trip");
+    expect(discord.debugMessages[0]?.content).not.toContain("delaySeconds");
+  });
+
+  it("posts orchestrator no-reply decisions with idle trigger and reasoning", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.contexts = [[contextMessage("m1", "user", "Kevin", "hello")]];
+
+    await seedRuntimeConfig(storage);
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 1,
+      createPipeline: () => ({
+        async decideOrchestrator() {
+          return {
+            action: "no_reply",
+            respondingWaifus: [],
+            retriggerAfterSeconds: 240,
+            reasoning: "The room has gone quiet naturally."
+          };
+        },
+        async generateWaifu() {
+          return { content: "unused" };
+        }
+      }),
+      logger: quietLogger()
+    });
+    await runtime.start();
+    const debugResponses: string[] = [];
+    await discord.emitDebugCommand({
+      guildId: "guild-b",
+      channelId: "debug-channel",
+      userId: "admin-user",
+      type: "set",
+      sourceChannelId: "channel-1",
+      respond: async (content) => {
+        debugResponses.push(content);
+      }
+    });
+    await waitFor(() => debugResponses.length === 1, "debug set response");
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await waitFor(() => discord.debugMessages.length === 1, "no-reply debug message");
+    await runtime.stop();
+
+    expect(discord.debugMessages[0]?.content).toContain("Decision: no_reply");
+    expect(discord.debugMessages[0]?.content).toContain("Idle trigger: 240s");
+    expect(discord.debugMessages[0]?.content).toContain("The room has gone quiet naturally.");
+  });
+
+  it("posts stage-manager memory changes to the configured debug channel", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.contexts = [[contextMessage("m1", "user", "Kevin", "Yuki likes tea now")]];
+
+    await seedRuntimeConfig(storage);
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      createPipeline: () => ({
+        async decideStageManagerObservations() {
+          return [{ waifuId: "yuki", content: "Yuki likes green tea.", importance: 3, kind: "preference" }];
+        },
+        async decideStageManager() {
+          return [{
+            tool: "add_memory",
+            memory: { waifuId: "yuki", content: "Yuki likes green tea.", importance: 3 }
+          }];
+        },
+        async generateWaifu() {
+          return { content: "unused" };
+        }
+      }),
+      logger: quietLogger()
+    });
+    await runtime.start();
+    const debugResponses: string[] = [];
+    await discord.emitDebugCommand({
+      guildId: "guild-b",
+      channelId: "debug-channel",
+      userId: "admin-user",
+      type: "set",
+      sourceChannelId: "channel-1",
+      respond: async (content) => {
+        debugResponses.push(content);
+      }
+    });
+    await waitFor(() => debugResponses.length === 1, "debug set response");
+
+    await runtime.triggerStageManager("guild-1", "channel-1");
+    await waitFor(() => discord.debugMessages.length === 1, "stage-manager debug message");
+    await runtime.stop();
+
+    expect(discord.debugMessages[0]?.content).toContain("[stage-manager debug]");
+    expect(discord.debugMessages[0]?.content).toContain("Observations: 1");
+    expect(discord.debugMessages[0]?.content).toContain("added: Yuki likes green tea.");
+    expect(discord.debugMessages[0]?.content).not.toContain("affectedMemoryIds");
+  });
+
   it("runs the orchestrator from /run when the channel is idle", async () => {
     const root = await makeTempRoot();
     roots.push(root);
@@ -4340,6 +4605,14 @@ function imageContextMessage(): ContextMessage {
     ...contextMessage("m1", "user", "Kevin", "look at this"),
     images: [{ url: "https://cdn.example/screenshot.png", contentType: "image/png" }]
   };
+}
+
+async function waitFor(predicate: () => boolean, label: string): Promise<void> {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Timed out waiting for ${label}`);
 }
 
 function quietLogger() {
