@@ -16,7 +16,12 @@ export const RuntimeStateSchema = z.object({
       connected: z.boolean(),
       orchestratorConnected: z.boolean(),
       waifuBotCount: z.number().int().nonnegative(),
-      warnings: z.array(z.string())
+      warnings: z.array(z.string()),
+      retrying: z.boolean().optional(),
+      retryAttempt: z.number().int().positive().optional(),
+      nextRetryAt: IsoDateStringSchema.optional(),
+      lastError: z.string().optional(),
+      lastErrorAt: IsoDateStringSchema.optional()
     })
     .default({
       connected: false,

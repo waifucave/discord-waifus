@@ -17,6 +17,11 @@ export type DiscordRuntimeStatus = {
   orchestratorConnected: boolean;
   waifuBotCount: number;
   warnings: string[];
+  retrying?: boolean;
+  retryAttempt?: number;
+  nextRetryAt?: string;
+  lastError?: string;
+  lastErrorAt?: string;
 };
 
 export interface DiscordGatewayFacade {

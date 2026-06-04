@@ -1,6 +1,6 @@
 {
   "name": "@starlight-ai/discord-waifus-ocr-linux-x64-gnu",
-  "version": "1.5.129",
+  "version": "1.5.130",
   "description": "Bundled Tesseract OCR runtime for Discord Waifus on Linux x64 glibc.",
   "type": "module",
   "private": false,

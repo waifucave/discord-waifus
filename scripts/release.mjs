@@ -95,7 +95,8 @@ async function main() {
   }
   console.log(staged);
 
-  run("git", ["commit", "-m", `Release ${version}`]);
+  const commitMessage = args.message ?? `Release ${version}`;
+  run("git", ["commit", "-m", commitMessage]);
   const releaseSha = capture("git", ["rev-parse", "HEAD"]).trim();
   run("git", ["push", "origin", "main"]);
   const pushedSha = capture("git", ["ls-remote", "origin", "refs/heads/main"]).trim().split(/\s+/)[0] ?? "";
@@ -116,7 +117,7 @@ async function main() {
     "--title",
     tag,
     "--notes",
-    `Release ${version}.`,
+    args.message ? `${args.message}\n\nRelease ${version}.` : `Release ${version}.`,
   ]);
 
   const ocrRunId = waitForWorkflowRun("OCR Packages", {
@@ -163,15 +164,26 @@ function parseArgs(argv) {
   const parsed = {
     dryRun: false,
     help: false,
+    message: undefined,
     version: undefined,
     yes: false,
   };
 
-  for (const arg of argv) {
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
     if (arg === "--dry-run") {
       parsed.dryRun = true;
     } else if (arg === "--help" || arg === "-h") {
       parsed.help = true;
+    } else if (arg === "--message" || arg === "-m") {
+      const value = argv[index + 1];
+      if (!value) {
+        throw new Error(`${arg} requires a commit message.`);
+      }
+      parsed.message = normalizeCommitMessage(value);
+      index += 1;
+    } else if (arg.startsWith("--message=")) {
+      parsed.message = normalizeCommitMessage(arg.slice("--message=".length));
     } else if (arg === "--yes" || arg === "-y") {
       parsed.yes = true;
     } else if (!parsed.version) {
@@ -184,14 +196,25 @@ function parseArgs(argv) {
   return parsed;
 }
 
+function normalizeCommitMessage(value) {
+  const message = value.trim();
+  if (!message) {
+    throw new Error("Commit message cannot be empty.");
+  }
+  if (message.includes("\n") || message.includes("\r")) {
+    throw new Error("Commit message must be a single-line subject.");
+  }
+  return message;
+}
+
 function printUsage() {
   console.log(`Usage:
-  npm run release:beta -- <version> [--yes]
+  npm run release:beta -- <version> [--yes] [--message "commit subject"]
   npm run release:beta -- <version> --dry-run
 
 Examples:
   npm run release:beta -- 1.5.121
-  npm run release:beta -- 1.5.121 --yes
+  npm run release:beta -- 1.5.121 --yes --message "fix: improve waifu reply targeting"
 
 This beta script bumps versions, validates, packs, commits, pushes, creates the
 GitHub release, watches OCR/root npm workflows, verifies npm latest, verifies

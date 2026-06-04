@@ -131,6 +131,13 @@ export function DashboardView() {
   const isPaused = status?.paused ?? runtime.data?.paused ?? false;
   const connected = status?.discord.connected ?? false;
   const orchestratorConnected = status?.discord.orchestratorConnected ?? false;
+  const discordRetrying = status?.discord.retrying ?? false;
+  const discordRetryAttempt = status?.discord.retryAttempt ?? 0;
+  const discordNextRetryAt = status?.discord.nextRetryAt;
+  const discordRetryAttemptText = discordRetryAttempt > 0
+    ? ` after ${discordRetryAttempt} failed attempt${discordRetryAttempt === 1 ? "" : "s"}`
+    : "";
+  const discordNextRetryText = discordNextRetryAt ? `; next retry at ${shortTime(discordNextRetryAt)}` : "";
 
   return (
     <>
@@ -248,6 +255,13 @@ export function DashboardView() {
       {status?.discord.warnings && status.discord.warnings.length > 0 && (
         <div style={{ marginBottom: 16 }}>
           <Notice tone="warn" title="Discord runtime warnings">
+            {discordRetrying && (
+              <p style={{ marginTop: 0 }}>
+                Auto-retry is active
+                {discordRetryAttemptText}
+                {discordNextRetryText}.
+              </p>
+            )}
             <ul style={{ paddingLeft: 18, margin: 0 }}>
               {status.discord.warnings.map((warn, i) => (
                 <li key={i}>{warn}</li>
