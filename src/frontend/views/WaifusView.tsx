@@ -935,7 +935,7 @@ const WAIFU_PROMPT_SECTION_OPTIONS: Array<{
   },
   {
     key: "personality",
-    label: "<personality>",
+    label: "<waifuname_personality>",
     hint: "Includes the trailing personality reminder system block."
   }
 ];

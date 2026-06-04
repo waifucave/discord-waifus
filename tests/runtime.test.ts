@@ -32,6 +32,7 @@ import { ProviderPipelineError } from "../src/providers/pipelines.js";
 import { ensureDataLayout } from "../src/config/layout.js";
 import { StorageService } from "../src/storage/storageService.js";
 import {
+  ActiveChatParticipantsFileSchema,
   AgentConfigSchema,
   MemoryStoreSchema,
   OrchestratorDebugConfigFileSchema,
@@ -292,11 +293,12 @@ class FakePipeline implements ModelPipeline {
   async generateWaifu(request: WaifuGenerationRequest) {
     expect(request.systemPrompt).toContain("You are Yuki");
     expect(request.systemPrompt).toMatch(
-      /<behavior>\n<personality_instructions>[\s\S]*You are Yuki[\s\S]*kind[\s\S]*<\/personality_instructions>\n<your_schedule>[\s\S]*configured routine[\s\S]*changes only when your schedule is edited[\s\S]*Sleep: 23:00-07:00 daily[\s\S]*09:00-10:00: school focus block[\s\S]*<\/your_schedule>\n<input_format>[\s\S]*DisplayName: <body>[\s\S]*framing only[\s\S]*<\/input_format>\n<environment_instructions>[\s\S]*live Discord text channel[\s\S]*<\/environment_instructions>\n<reply_targeting>[\s\S]*runtime fuzzy-matches[\s\S]*<\/reply_targeting>\n<mention_policy>[\s\S]*Do not ping a user who is already active[\s\S]*<\/mention_policy>\n<style_constraints>[\s\S]*Write exactly one short phrase[\s\S]*Never write a second sentence[\s\S]*This length rule overrides your persona, reply_style, and scene_direction[\s\S]*<\/style_constraints>\n<hard_rules>[\s\S]*raw message body[\s\S]*Do not include bracketed metadata tags[\s\S]*Do not output physical actions[\s\S]*Use only listed server emojis[\s\S]*<\/hard_rules>/
+      /<yuki_behavior>\n<yuki_personality>[\s\S]*You are Yuki[\s\S]*kind[\s\S]*<\/yuki_personality>\n<yuki_shedule>[\s\S]*configured routine[\s\S]*changes only when your schedule is edited[\s\S]*Sleep: 23:00-07:00 daily[\s\S]*09:00-10:00: school focus block[\s\S]*<\/yuki_shedule>\n<input_format>[\s\S]*DisplayName: <body>[\s\S]*framing only[\s\S]*<\/input_format>\n<environment_instructions>[\s\S]*live Discord text channel[\s\S]*<\/environment_instructions>\n<reply_targeting>[\s\S]*runtime fuzzy-matches[\s\S]*<\/reply_targeting>\n<mention_policy>[\s\S]*Do not ping a user who is already active[\s\S]*<\/mention_policy>\n<style_constraints>[\s\S]*Write exactly one short phrase[\s\S]*Never write a second sentence[\s\S]*This length rule overrides your persona, reply_style, and scene_direction[\s\S]*<\/style_constraints>\n<hard_rules>[\s\S]*raw message body[\s\S]*Do not include bracketed metadata tags[\s\S]*Do not output physical actions[\s\S]*Use only listed server emojis[\s\S]*<\/hard_rules>/
     );
-    expect(request.systemPrompt).not.toContain("<yuki_behavior>");
-    expect(request.systemPrompt).not.toContain("</yuki_behavior>");
-    expect(request.systemPrompt).not.toMatch(/<your_schedule>[\s\S]*(Current local schedule time|currently busy|currently inside sleep time)[\s\S]*<\/your_schedule>/);
+    expect(request.systemPrompt).not.toContain("<behavior>");
+    expect(request.systemPrompt).not.toContain("<personality_instructions>");
+    expect(request.systemPrompt).not.toContain("<your_schedule>");
+    expect(request.systemPrompt).not.toMatch(/<yuki_shedule>[\s\S]*(Current local schedule time|currently busy|currently inside sleep time)[\s\S]*<\/yuki_shedule>/);
     expect(request.systemPrompt).not.toMatch(
       /<environment_instructions>[\s\S]*Write exactly one short phrase[\s\S]*<\/environment_instructions>/
     );
@@ -308,17 +310,16 @@ class FakePipeline implements ModelPipeline {
     expect(request.systemPrompt).not.toMatch(/<server_emojis>/);
     expect(request.systemPrompt).not.toMatch(/<available_emojis>/);
     expect(request.systemPrompt).not.toMatch(/<current_time>/);
-    expect(request.systemPrompt).toMatch(/<\/behavior>$/);
+    expect(request.systemPrompt).toMatch(/<\/yuki_behavior>$/);
     expect(request.midSystemBlock).toBeDefined();
-    expect(request.midSystemBlock).toMatch(/<director_notes>[\s\S]*Keep your reply short\.[\s\S]*<\/director_notes>/);
-    expect(request.midSystemBlock).toMatch(/<available_emojis>[\s\S]*<\/available_emojis>/);
-    if (request.midSystemBlock?.includes("<memories>")) {
-      expect(request.midSystemBlock).toMatch(
-        /<memories>\n- Yuki remembers Kevin likes tea\.\n<\/memories>/
-      );
-    }
+    expect(request.midSystemBlock).toMatch(
+      /<director_notes>[\s\S]*Keep your reply short\.[\s\S]*<\/director_notes>\n<active_chat_participants>[\s\S]*- Kevin[\s\S]*<\/active_chat_participants>\n<available_emojis>[\s\S]*<\/available_emojis>/
+    );
+    expect(request.midSystemBlock).not.toMatch(/<memories>|<relevant_memories>/);
     expect(request.trailingSystemBlock).toBeDefined();
-    expect(request.trailingSystemBlock).toMatch(/<personality>[\s\S]*You are Yuki[\s\S]*<\/personality>/);
+    expect(request.trailingSystemBlock).toMatch(
+      /<relevant_memories>\n- Yuki remembers Kevin likes tea\.\n<\/relevant_memories>\n<yuki_personality>[\s\S]*You are Yuki[\s\S]*<\/yuki_personality>/
+    );
     expect(request.trailingSystemBlock).toMatch(/<scene_direction>answer Kevin, then pull in Mira<\/scene_direction>/);
     return { content: "hello <@Kevin> <:cutecat:>" };
   }
@@ -886,8 +887,11 @@ describe("RuntimeOrchestrator", () => {
       },
       async generateWaifu(request: WaifuGenerationRequest) {
         checked = true;
-        expect(request.systemPrompt).toContain("<personality_instructions>");
-        expect(request.systemPrompt).toContain("<your_schedule>");
+        expect(request.systemPrompt).toContain("<yuki_personality>");
+        expect(request.systemPrompt).toContain("<yuki_shedule>");
+        expect(request.systemPrompt).toContain("<yuki_behavior>");
+        expect(request.systemPrompt).not.toContain("<personality_instructions>");
+        expect(request.systemPrompt).not.toContain("<your_schedule>");
         expect(request.systemPrompt).not.toContain("<input_format>");
         expect(request.systemPrompt).not.toContain("<environment_instructions>");
         expect(request.systemPrompt).not.toContain("<reply_targeting>");
@@ -895,10 +899,169 @@ describe("RuntimeOrchestrator", () => {
         expect(request.systemPrompt).not.toContain("<style_constraints>");
         expect(request.systemPrompt).not.toContain("<hard_rules>");
         expect(request.midSystemBlock).not.toContain("<director_notes>");
+        expect(request.midSystemBlock).toContain("<active_chat_participants>");
         expect(request.midSystemBlock).toContain("<available_emojis>");
-        expect(request.trailingSystemBlock).not.toContain("<personality>");
+        expect(request.trailingSystemBlock).not.toContain("<yuki_personality>");
         expect(request.trailingSystemBlock).toContain("<scene_direction>answer Kevin</scene_direction>");
         return { content: "plain reply" };
+      }
+    };
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 1,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    expect(checked).toBe(true);
+  });
+
+  it("tracks active chat participants from human messages and refreshes their expiry", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      isPaused: () => true,
+      createPipeline: () => {
+        throw new Error("pipeline should not be created while paused");
+      },
+      logger: quietLogger()
+    });
+
+    await runtime.handleDiscordMessage({
+      guildId: "guild-1",
+      channelId: "channel-1",
+      messageId: "human-1",
+      authorId: "u1",
+      authorDisplayName: "Kevin",
+      authorBot: false
+    });
+
+    const first = await waitForActiveParticipants(storage, (file) =>
+      file.participants.some((participant) => participant.displayName === "Kevin")
+    );
+    expect(first.participants).toHaveLength(1);
+    expect(first.participants[0]).toMatchObject({ userId: "u1", displayName: "Kevin" });
+    const firstLastSeen = Date.parse(first.participants[0].lastSeenAt);
+    const firstExpires = Date.parse(first.participants[0].expiresAt);
+    expect(firstExpires - firstLastSeen).toBe(7 * 24 * 60 * 60 * 1000);
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await runtime.handleDiscordMessage({
+      guildId: "guild-1",
+      channelId: "channel-1",
+      messageId: "human-2",
+      authorId: "u1",
+      authorDisplayName: "Kevin Prime",
+      authorBot: false
+    });
+
+    const refreshed = await waitForActiveParticipants(storage, (file) =>
+      file.participants.some((participant) => participant.displayName === "Kevin Prime")
+    );
+    expect(refreshed.participants).toHaveLength(1);
+    expect(refreshed.participants[0]).toMatchObject({ userId: "u1", displayName: "Kevin Prime" });
+    expect(Date.parse(refreshed.participants[0].expiresAt)).toBeGreaterThan(firstExpires);
+  });
+
+  it("does not add bot authors to active chat participants", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      isPaused: () => true,
+      createPipeline: () => {
+        throw new Error("pipeline should not be created while paused");
+      },
+      logger: quietLogger()
+    });
+
+    await runtime.handleDiscordMessage({
+      guildId: "guild-1",
+      channelId: "channel-1",
+      messageId: "bot-1",
+      authorId: "bot-1",
+      authorDisplayName: "Helper Bot",
+      authorBot: true
+    });
+
+    const participants = await storage.readJson(
+      "user/servers/guild-1/active-chat-participants.json",
+      ActiveChatParticipantsFileSchema,
+      ActiveChatParticipantsFileSchema.parse(
+        createEmptyRevisionedFile({ guildId: "guild-1", participants: [] })
+      )
+    );
+    expect(participants.participants).toEqual([]);
+  });
+
+  it("omits expired active chat participants from the waifu prompt", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+
+    await seedRuntimeConfig(storage);
+    await storage.writeJson(
+      "active-chat-participants:guild-1",
+      "user/servers/guild-1/active-chat-participants.json",
+      ActiveChatParticipantsFileSchema,
+      ActiveChatParticipantsFileSchema.parse(
+        createEmptyRevisionedFile({
+          guildId: "guild-1",
+          participants: [
+            {
+              userId: "old",
+              displayName: "Old User",
+              lastSeenAt: "2026-05-01T12:00:00.000Z",
+              expiresAt: "2026-05-08T12:00:00.000Z"
+            },
+            {
+              userId: "active",
+              displayName: "Mira",
+              lastSeenAt: new Date(Date.now()).toISOString(),
+              expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString()
+            }
+          ]
+        })
+      )
+    );
+
+    let checked = false;
+    const pipeline: ModelPipeline = {
+      async decideOrchestrator() {
+        return {
+          action: "reply",
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal" }],
+          reasoning: "talk"
+        };
+      },
+      async generateWaifu(request: WaifuGenerationRequest) {
+        checked = true;
+        expect(request.midSystemBlock).toMatch(
+          /<active_chat_participants>[\s\S]*- Kevin[\s\S]*- Mira[\s\S]*<\/active_chat_participants>/
+        );
+        expect(request.midSystemBlock).not.toContain("Old User");
+        return { content: "ok" };
       }
     };
 
@@ -1935,8 +2098,9 @@ describe("RuntimeOrchestrator", () => {
         };
       },
       async generateWaifu(request: WaifuGenerationRequest) {
-        expect(request.systemPrompt).toContain("Kevin likes tea.");
-        expect(request.systemPrompt).not.toContain("Kevin hates tea.");
+        expect(request.systemPrompt).not.toContain("Kevin likes tea.");
+        expect(request.trailingSystemBlock).toContain("Kevin likes tea.");
+        expect(request.trailingSystemBlock).not.toContain("Kevin hates tea.");
         return { content: "noted" };
       }
     };
@@ -2064,7 +2228,7 @@ describe("RuntimeOrchestrator", () => {
       sleep: async () => undefined,
       storage,
       discord,
-      stageManagerIdleDelayMs: 200,
+      stageManagerIdleDelayMs: 1000,
       createPipeline: () => pipeline,
       logger: {
         debug: () => undefined,
@@ -2081,7 +2245,7 @@ describe("RuntimeOrchestrator", () => {
       authorId: "u1",
       authorBot: false
     });
-    await new Promise((resolve) => setTimeout(resolve, 120));
+    await new Promise((resolve) => setTimeout(resolve, 400));
     await runtime.handleDiscordMessage({
       guildId: "guild-1",
       channelId: "channel-1",
@@ -2089,7 +2253,7 @@ describe("RuntimeOrchestrator", () => {
       authorId: "u1",
       authorBot: false
     });
-    await new Promise((resolve) => setTimeout(resolve, 120));
+    await new Promise((resolve) => setTimeout(resolve, 700));
     expect(stageCalls).toBe(0);
 
     await waitForStageCalls(1);
@@ -4308,7 +4472,7 @@ describe("RuntimeOrchestrator", () => {
 
     let waifuRun = 0;
     const capturedSystemPrompts: string[] = [];
-    const capturedMemoriesBlocks: Array<string | undefined> = [];
+    const capturedTrailingBlocks: Array<string | undefined> = [];
     const pipeline: ModelPipeline = {
       async decideOrchestrator() {
         return {
@@ -4319,7 +4483,7 @@ describe("RuntimeOrchestrator", () => {
       },
       async generateWaifu(request: WaifuGenerationRequest) {
         capturedSystemPrompts.push(request.systemPrompt);
-        capturedMemoriesBlocks.push(request.midSystemBlock);
+        capturedTrailingBlocks.push(request.trailingSystemBlock);
         waifuRun += 1;
         if (waifuRun === 1) {
           return {
@@ -4370,10 +4534,11 @@ describe("RuntimeOrchestrator", () => {
 
     const secondPrompt = capturedSystemPrompts[1];
     expect(secondPrompt).not.toMatch(/<short_term_memory>/);
-    expect(secondPrompt).not.toMatch(/<memories>/);
-    const secondMemoriesBlock = capturedMemoriesBlocks[1];
+    expect(secondPrompt).not.toContain("<memories>");
+    expect(secondPrompt).not.toContain("<relevant_memories>\n");
+    const secondMemoriesBlock = capturedTrailingBlocks[1];
     expect(secondMemoriesBlock).toBeDefined();
-    expect(secondMemoriesBlock).toMatch(/<memories>[\s\S]*Kevin is heading out at 5pm\.[\s\S]*Kevin prefers green tea today\.[\s\S]*<\/memories>/);
+    expect(secondMemoriesBlock).toMatch(/<relevant_memories>[\s\S]*Kevin is heading out at 5pm\.[\s\S]*Kevin prefers green tea today\.[\s\S]*<\/relevant_memories>/);
     expect(secondMemoriesBlock).not.toMatch(/<short_term>/);
     expect(secondMemoriesBlock).not.toMatch(/<long_term>/);
   });
@@ -4477,7 +4642,7 @@ describe("RuntimeOrchestrator", () => {
       },
       async generateWaifu(request: WaifuGenerationRequest) {
         const match = request.systemPrompt.match(/You are (\w+)\./);
-        if (match) memoriesByWaifu.set(match[1], request.midSystemBlock);
+        if (match) memoriesByWaifu.set(match[1], request.trailingSystemBlock);
         return { content: "ok" };
       }
     };
@@ -4496,7 +4661,7 @@ describe("RuntimeOrchestrator", () => {
 
     expect(memoriesByWaifu.has("Mika")).toBe(true);
     const mikaMemories = memoriesByWaifu.get("Mika");
-    // Mika has no notes of her own, so memoriesBlock should be undefined or not contain Yuki's note.
+    // Mika has no notes of her own, so the trailing memories block should be undefined or not contain Yuki's note.
     if (mikaMemories) {
       expect(mikaMemories).not.toContain("Kevin promised to ping Yuki tonight.");
     }
@@ -4537,7 +4702,7 @@ describe("RuntimeOrchestrator", () => {
     );
 
     let capturedSystemPrompt = "";
-    let capturedMemoriesBlock: string | undefined;
+    let capturedTrailingBlock: string | undefined;
     const pipeline: ModelPipeline = {
       async decideOrchestrator() {
         return {
@@ -4548,7 +4713,7 @@ describe("RuntimeOrchestrator", () => {
       },
       async generateWaifu(request: WaifuGenerationRequest) {
         capturedSystemPrompt = request.systemPrompt;
-        capturedMemoriesBlock = request.midSystemBlock;
+        capturedTrailingBlock = request.trailingSystemBlock;
         return {
           content: "fresh",
           shortTermMemoryEntries: ["Kevin is back from lunch."]
@@ -4569,7 +4734,7 @@ describe("RuntimeOrchestrator", () => {
     await runtime.stop();
 
     expect(capturedSystemPrompt).not.toContain("stale note from yesterday");
-    expect(capturedMemoriesBlock ?? "").not.toContain("stale note from yesterday");
+    expect(capturedTrailingBlock ?? "").not.toContain("stale note from yesterday");
     const after = await storage.readJson("user/short-term-memories.json", ShortTermMemoryStoreSchema);
     expect(after.entries.map((entry) => entry.content)).toEqual(["Kevin is back from lunch."]);
   });
@@ -4865,6 +5030,25 @@ async function waitFor(predicate: () => boolean, label: string): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   throw new Error(`Timed out waiting for ${label}`);
+}
+
+async function waitForActiveParticipants(
+  storage: StorageService,
+  predicate: (file: { participants: Array<{ displayName: string }> }) => boolean
+) {
+  const fallback = ActiveChatParticipantsFileSchema.parse(
+    createEmptyRevisionedFile({ guildId: "guild-1", participants: [] })
+  );
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const file = await storage.readJson(
+      "user/servers/guild-1/active-chat-participants.json",
+      ActiveChatParticipantsFileSchema,
+      fallback
+    );
+    if (predicate(file)) return file;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("Timed out waiting for active chat participants");
 }
 
 function quietLogger() {

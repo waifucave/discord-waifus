@@ -90,6 +90,7 @@ export type DiscordMessageEvent = {
   channelId: string;
   messageId: string;
   authorId: string;
+  authorDisplayName?: string;
   authorBot: boolean;
 };
 
@@ -224,6 +225,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
               channelId: message.channelId,
               messageId: message.id,
               authorId: message.author.id,
+              authorDisplayName: message.member?.displayName ?? message.author.globalName ?? message.author.username,
               authorBot: message.author.bot
             };
             this.options.logger?.info("Discord gateway received message", {

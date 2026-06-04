@@ -1356,8 +1356,8 @@ describe("image attachments", () => {
 });
 
 describe("trailing system message payloads", () => {
-  const trailingWithSceneDirection = "<personality>\nYou are Yuki\n</personality>\n<scene_direction>answer Kevin</scene_direction>";
-  const trailingWithoutSceneDirection = "<personality>\nYou are Yuki\n</personality>";
+  const trailingWithSceneDirection = "<yuki_personality>\nYou are Yuki\n</yuki_personality>\n<scene_direction>answer Kevin</scene_direction>";
+  const trailingWithoutSceneDirection = "<yuki_personality>\nYou are Yuki\n</yuki_personality>";
 
   it("OpenAI Chat: places trailingSystemBlock as the last system message", async () => {
     mockFetch({ choices: [{ message: { content: "ok" } }] });
@@ -1391,7 +1391,7 @@ describe("trailing system message payloads", () => {
     const query = recentQueries().at(-1);
     const messages = query?.payload.messages as Array<{ role: string; content: string }>;
     const lastSystemContent = messages.at(-1)?.content ?? "";
-    expect(lastSystemContent).not.toMatch(/<personality>|<director_notes>/);
+    expect(lastSystemContent).not.toMatch(/<yuki_personality>|<director_notes>/);
   });
 
   it("OpenAI Responses: places trailingSystemBlock as the last input message", async () => {
@@ -1434,8 +1434,8 @@ describe("trailing system message payloads", () => {
 });
 
 describe("mid-system block injection", () => {
-  const midPayload = "<director_notes>\nKeep it short.\n</director_notes>\n<memories>\n- example\n</memories>";
-  const trailingPayload = "<personality>\nYou are Yuki\n</personality>";
+  const midPayload = "<director_notes>\nKeep it short.\n</director_notes>\n<active_chat_participants>\n- Kevin\n</active_chat_participants>\n<available_emojis>\n(none cached)\n</available_emojis>";
+  const trailingPayload = "<relevant_memories>\n- example\n</relevant_memories>\n<yuki_personality>\nYou are Yuki\n</yuki_personality>";
 
   it("OpenAI Chat: inserts midSystemBlock at contextLen - 2, leaving 2 chat messages before trailing", async () => {
     mockFetch({ choices: [{ message: { content: "ok" } }] });

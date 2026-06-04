@@ -276,6 +276,20 @@ export const GuildMembersFileSchema = RevisionedRecordSchema.extend({
 });
 export type GuildMembersFile = z.infer<typeof GuildMembersFileSchema>;
 
+export const ActiveChatParticipantSchema = z.object({
+  userId: z.string().min(1),
+  displayName: z.string().min(1),
+  lastSeenAt: IsoDateStringSchema,
+  expiresAt: IsoDateStringSchema
+});
+export type ActiveChatParticipant = z.infer<typeof ActiveChatParticipantSchema>;
+
+export const ActiveChatParticipantsFileSchema = RevisionedRecordSchema.extend({
+  guildId: z.string().min(1),
+  participants: z.array(ActiveChatParticipantSchema)
+});
+export type ActiveChatParticipantsFile = z.infer<typeof ActiveChatParticipantsFileSchema>;
+
 export const GuildEmojiCacheEntrySchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),

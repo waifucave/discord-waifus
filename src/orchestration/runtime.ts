@@ -22,6 +22,9 @@ import { getModel } from "../providers/catalog.js";
 import { createModelPipeline, PipelineCredentials, ProviderPipelineError } from "../providers/pipelines.js";
 import { ModelPipeline, StageManagerMemory, WaifuGenerationResult } from "../providers/types.js";
 import {
+  ActiveChatParticipant,
+  ActiveChatParticipantsFile,
+  ActiveChatParticipantsFileSchema,
   AgentConfig,
   AgentConfigSchema,
   DiscordBotsFileSchema,
@@ -140,6 +143,7 @@ export class RuntimeOrchestrator {
   private readonly suppressMemoryToolOnce = new Set<string>();
   private static readonly SELF_SENT_TTL_MS = 60_000;
   private static readonly STAGE_MANAGER_IDLE_DELAY_MS = 60 * 60 * 1000;
+  private static readonly ACTIVE_CHAT_PARTICIPANT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
   private unsubscribes: Array<() => void> = [];
 
   constructor(private readonly options: RuntimeOrchestratorOptions) {
@@ -211,6 +215,18 @@ export class RuntimeOrchestrator {
     }
     if (event.authorBot && this.activeWaifuSendChannels.has(event.channelId)) {
       return;
+    }
+    if (!event.authorBot) {
+      void this.noteActiveChatParticipant(event.guildId, {
+        userId: event.authorId,
+        displayName: event.authorDisplayName ?? event.authorId
+      }).catch((error) => {
+        this.options.logger.warn("Failed to update active chat participants", {
+          guildId: event.guildId,
+          userId: event.authorId,
+          message: error instanceof Error ? error.message : String(error)
+        });
+      });
     }
     if (this.options.isPaused?.()) {
       this.options.logger.info("Discord message ignored because runtime is paused", {
@@ -689,6 +705,7 @@ export class RuntimeOrchestrator {
         limit: server.contextWindows.orchestrator ?? orchestrator.contextWindow,
         signal
       });
+      await this.noteActiveChatParticipantsFromContext(guildId, messages);
       messages = await this.messagesForModel(messages, orchestrator.modelId, signal);
       this.options.logger.info("Fetched Discord context for orchestrator", {
         guildId,
@@ -895,6 +912,7 @@ export class RuntimeOrchestrator {
           limit: waifu.contextWindow || input.server.contextWindows.waifu,
           signal: input.signal
         });
+        await this.noteActiveChatParticipantsFromContext(input.guildId, waifuMessages);
         waifuMessages = await this.messagesForModel(waifuMessages, waifuModelId, input.signal);
         const waifuPipeline = await this.pipelineFor(waifu.modelId);
         this.options.logger.info("Generating waifu reply", {
@@ -1965,6 +1983,82 @@ export class RuntimeOrchestrator {
     );
   }
 
+  private async noteActiveChatParticipant(
+    guildId: string,
+    participant: { userId: string; displayName: string }
+  ): Promise<void> {
+    await this.noteActiveChatParticipants(guildId, [participant]);
+  }
+
+  private async noteActiveChatParticipantsFromContext(
+    guildId: string,
+    messages: ContextMessage[]
+  ): Promise<void> {
+    const participants = messages
+      .filter((message) => message.authorKind === "user" && !message.authorBot)
+      .map((message) => ({
+        userId: message.authorId,
+        displayName: message.displayName
+      }));
+    await this.noteActiveChatParticipants(guildId, participants);
+  }
+
+  private async noteActiveChatParticipants(
+    guildId: string,
+    participants: Array<{ userId: string; displayName: string }>
+  ): Promise<void> {
+    const validParticipants = participants
+      .map((participant) => ({
+        userId: participant.userId.trim(),
+        displayName: participant.displayName.trim()
+      }))
+      .filter((participant) => participant.userId.length > 0 && participant.displayName.length > 0);
+    if (validParticipants.length === 0) return;
+
+    const now = Date.now();
+    const lastSeenAt = new Date(now).toISOString();
+    const expiresAt = new Date(now + RuntimeOrchestrator.ACTIVE_CHAT_PARTICIPANT_TTL_MS).toISOString();
+    await this.options.storage.updateRevisionedJson({
+      resourceKey: activeChatParticipantsResourceKey(guildId),
+      relativePath: activeChatParticipantsRelativePath(guildId),
+      schema: ActiveChatParticipantsFileSchema,
+      fallback: emptyActiveChatParticipantsFile(guildId),
+      transform: (current) => {
+        const byUserId = new Map<string, ActiveChatParticipant>();
+        for (const entry of current.participants) {
+          if (Date.parse(entry.expiresAt) > now) {
+            byUserId.set(entry.userId, entry);
+          }
+        }
+        for (const participant of validParticipants) {
+          byUserId.set(participant.userId, {
+            userId: participant.userId,
+            displayName: participant.displayName,
+            lastSeenAt,
+            expiresAt
+          });
+        }
+        return {
+          ...current,
+          guildId,
+          participants: sortActiveChatParticipants([...byUserId.values()])
+        };
+      }
+    });
+  }
+
+  private async readActiveChatParticipants(guildId: string): Promise<ActiveChatParticipant[]> {
+    const now = Date.now();
+    const current = await this.options.storage.readJson(
+      activeChatParticipantsRelativePath(guildId),
+      ActiveChatParticipantsFileSchema,
+      emptyActiveChatParticipantsFile(guildId)
+    );
+    return sortActiveChatParticipants(
+      current.participants.filter((participant) => Date.parse(participant.expiresAt) > now)
+    );
+  }
+
   private async recordShortTermMemoryEntries(input: {
     guildId: string;
     channelId: string;
@@ -2029,14 +2123,15 @@ export class RuntimeOrchestrator {
     const pickNextWaifuToolActive = options?.pickNextWaifuToolOverride ?? false;
     const shortTermMemoryToolActive =
       options?.shortTermMemoryToolOverride ?? true;
-    const [store, emojis, shortTermStore] = await Promise.all([
+    const [store, emojis, shortTermStore, activeChatParticipants] = await Promise.all([
       this.readMemoryStore(),
       this.options.storage.readJson(
         path.join("user", "servers", guildId, "emojis.json"),
         GuildEmojisFileSchema,
         GuildEmojisFileSchema.parse(createEmptyRevisionedFile({ guildId, emojis: [] }))
       ),
-      this.readShortTermMemoryStore()
+      this.readShortTermMemoryStore(),
+      this.readActiveChatParticipants(guildId)
     ]);
     const longTermLines = store.memories
       .filter((memory) => memory.guildId === guildId && memory.waifuId === waifu.id && memory.status === "active")
@@ -2103,6 +2198,7 @@ export class RuntimeOrchestrator {
       ? `You are ${waifu.displayName}. Stay in character.\n${personaText}`
       : `You are ${waifu.displayName}. Stay in character.`;
     const scheduleContent = formatWaifuScheduleForPrompt(waifu);
+    const waifuTag = promptTagName(waifu.name || waifu.id);
 
     const environmentRules = [
       "You are chatting in a live Discord text channel — this is a real chat room with real users, not a roleplay scene, story, or chat fiction.",
@@ -2112,8 +2208,8 @@ export class RuntimeOrchestrator {
 
     const promptSections = waifu.promptSections;
     const behaviorSections = [
-      `<personality_instructions>\n${personalityContent}\n</personality_instructions>`,
-      `<your_schedule>\n${scheduleContent}\n</your_schedule>`,
+      `<${waifuTag}_personality>\n${personalityContent}\n</${waifuTag}_personality>`,
+      `<${waifuTag}_shedule>\n${scheduleContent}\n</${waifuTag}_shedule>`,
       promptSections.inputFormat ? `<input_format>\n${inputFormat}\n</input_format>` : null,
       promptSections.environmentInstructions
         ? `<environment_instructions>\n${environmentRules}\n</environment_instructions>`
@@ -2130,21 +2226,26 @@ export class RuntimeOrchestrator {
     if (toolUse) {
       behaviorSections.push(`<tool_use>\n${toolUse}\n</tool_use>`);
     }
-    const behaviorBlock = `<behavior>\n${behaviorSections.join("\n")}\n</behavior>`;
+    const behaviorBlock = `<${waifuTag}_behavior>\n${behaviorSections.join("\n")}\n</${waifuTag}_behavior>`;
 
     const allMemoryLines = [...longTermLines, ...shortTermLines];
-    const memoriesBlock = allMemoryLines.length
-      ? `<memories>\n${allMemoryLines.join("\n")}\n</memories>`
+    const relevantMemoriesBlock = allMemoryLines.length
+      ? `<relevant_memories>\n${allMemoryLines.join("\n")}\n</relevant_memories>`
       : undefined;
 
     const directorNotesBlock = promptSections.directorNotes ? buildDirectorNotesBlock() : undefined;
+    const activeParticipantsBlock = `<active_chat_participants>\n${
+      activeChatParticipants.length
+        ? activeChatParticipants.map((participant) => `- ${participant.displayName}`).join("\n")
+        : "(none)"
+    }\n</active_chat_participants>`;
     const availableEmojisBlock = `<available_emojis>\n${emojiList || "(none cached)"}\n</available_emojis>`;
-    const midSystemBlock = [directorNotesBlock, availableEmojisBlock, memoriesBlock]
+    const midSystemBlock = [directorNotesBlock, activeParticipantsBlock, availableEmojisBlock]
       .filter((section): section is string => Boolean(section))
       .join("\n");
 
     const personalityBlock = promptSections.personality
-      ? `<personality>\n${personalityContent}\n</personality>`
+      ? `<${waifuTag}_personality>\n${personalityContent}\n</${waifuTag}_personality>`
       : undefined;
     const currentlyDoing = currentlyDoingForWaifu(waifu, new Date());
     const currentlyDoingBlock = currentlyDoing
@@ -2154,7 +2255,7 @@ export class RuntimeOrchestrator {
     const sceneDirectionBlock = sceneDirectionText
       ? `<scene_direction>${sceneDirectionText}</scene_direction>`
       : undefined;
-    const trailingSystemBlock = [personalityBlock, currentlyDoingBlock, sceneDirectionBlock]
+    const trailingSystemBlock = [relevantMemoriesBlock, personalityBlock, currentlyDoingBlock, sceneDirectionBlock]
       .filter((section): section is string => Boolean(section))
       .join("\n");
 
@@ -2838,7 +2939,7 @@ function buildWaifuToolUseInstructions(
         "You may call it multiple times in one reply (up to 5) to record separate notes.",
         "Calling add_memory does NOT replace your Discord reply. Always also write your normal message body in the same turn — the tool call alone leaves the room silent.",
         "Do not use it for trivial chitchat, repeat lines you already wrote, or things that belong in long-term memory. Entries auto-expire after 24h.",
-        "Before calling, scan the memories list above — if the fact is already listed (even paraphrased), do NOT call add_memory for it again.",
+        "Before calling, scan <relevant_memories> — if the fact is already listed (even paraphrased), do NOT call add_memory for it again.",
         "Arguments: { \"content\": string }."
       ].join("\n")
     );
@@ -2977,6 +3078,27 @@ function manualRunReplyRequiredInstruction(): string {
 
 function sessionRelativePath(guildId: string, channelId: string): string {
   return path.join("user", "servers", guildId, "sessions", `${channelId}.json`);
+}
+
+function activeChatParticipantsResourceKey(guildId: string): string {
+  return `active-chat-participants:${guildId}`;
+}
+
+function activeChatParticipantsRelativePath(guildId: string): string {
+  return path.join("user", "servers", guildId, "active-chat-participants.json");
+}
+
+function emptyActiveChatParticipantsFile(guildId: string): ActiveChatParticipantsFile {
+  return ActiveChatParticipantsFileSchema.parse(
+    createEmptyRevisionedFile({ guildId, participants: [] })
+  );
+}
+
+function sortActiveChatParticipants(participants: ActiveChatParticipant[]): ActiveChatParticipant[] {
+  return [...participants].sort((a, b) => {
+    const display = a.displayName.localeCompare(b.displayName, undefined, { sensitivity: "base" });
+    return display === 0 ? a.userId.localeCompare(b.userId) : display;
+  });
 }
 
 function replyTargetForFreshContext(
