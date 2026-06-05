@@ -44,7 +44,8 @@ import {
   StageManagerHistoryFileSchema,
   WaifuConfig,
   WaifuConfigSchema,
-  createEmptyRevisionedFile
+  createEmptyRevisionedFile,
+  defaultWaifuPromptLayout
 } from "../src/shared/schemas/domain.js";
 import { createRevisionedBase } from "../src/shared/schemas/common.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
@@ -4888,20 +4889,50 @@ async function setWaifuToolUse(storage: StorageService, waifuId: string, toolUse
   );
 }
 
+// Mirrors the legacy boolean->block mapping used by the migration so existing tests can keep
+// expressing intent as section toggles while the runtime consumes the new layout tree.
+const LEGACY_SECTION_TO_BLOCK: Record<string, string> = {
+  directorNotes: "directorNotes",
+  hardRules: "hardRules",
+  mentionPolicy: "mentionPolicy",
+  replyTargeting: "replyTargeting",
+  environmentInstructions: "environment",
+  inputFormat: "contextStructure",
+  styleConstraints: "styleConstraints",
+  personality: "personalityReminder"
+};
+
 async function setWaifuPromptSections(
   storage: StorageService,
   waifuId: string,
-  promptSections: Partial<WaifuConfig["promptSections"]>
+  promptSections: Record<string, boolean>
 ) {
   const path = `user/waifus/${waifuId}/waifu.json`;
   const config = await storage.readJson(path, WaifuConfigSchema);
+  const layout = defaultWaifuPromptLayout();
+  const setEnabled = (blockId: string, enabled: boolean) => {
+    for (const section of [layout.top, layout.mid, layout.trailing]) {
+      for (const node of section) {
+        if (node.kind === "block") {
+          if (node.blockId === blockId) node.enabled = enabled;
+        } else {
+          for (const child of node.children) {
+            if (child.blockId === blockId) child.enabled = enabled;
+          }
+        }
+      }
+    }
+  };
+  for (const [key, blockId] of Object.entries(LEGACY_SECTION_TO_BLOCK)) {
+    if (promptSections[key] === false) setEnabled(blockId, false);
+  }
   await storage.writeJson(
     `waifu:${waifuId}`,
     path,
     WaifuConfigSchema,
     WaifuConfigSchema.parse({
       ...config,
-      promptSections: { ...config.promptSections, ...promptSections }
+      promptLayout: layout
     })
   );
 }

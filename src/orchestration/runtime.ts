@@ -17,6 +17,12 @@ import {
 } from "../discord/client.js";
 import { modelVisibleEmojiToken, stripLeakedContextHeader } from "../discord/normalization.js";
 import { splitWaifuReply, typingDelayMs } from "./messageSplit.js";
+import {
+  PromptBlockContext,
+  assembleWaifuPrompt,
+  promptTagName,
+  reconcileWaifuPromptLayout
+} from "./promptBlocks.js";
 import { ReplyQuoteExtraction, extractReplyQuote } from "./replyQuote.js";
 import { getModel } from "../providers/catalog.js";
 import { createModelPipeline, PipelineCredentials, ProviderPipelineError } from "../providers/pipelines.js";
@@ -2203,116 +2209,33 @@ export class RuntimeOrchestrator {
       .filter((emoji) => emoji.available)
       .map(modelVisibleEmojiToken)
       .join(" ");
-    const inputFormat = [
-      "Each incoming message in this conversation arrives in a chat-transcript shape so you can read Discord context:",
-      "An optional `> Author: preview` line appears first when the message is replying to an earlier one (Discord blockquote shape). The next line is `DisplayName: <body>` (the body may continue on additional lines). Optional `[attachments: Nx image]` and `[image_text: ...]` lines may follow, one per image with extracted text.",
-      "The `> Author: ...` quote, the `DisplayName:` prefix, and any bracketed lines are framing only. They are not part of what the speaker actually wrote, and they are not how Discord messages look."
-    ].join("\n");
-
-    const replyTargeting = [
-      "To reply to one specific earlier message, you may start your reply with a single `> Author: text-of-that-message` line. Copy the message text as closely as you can (small differences are fine; the runtime fuzzy-matches it). Put your actual reply on the next line.",
-      "The `>` quote line is not sent to Discord; it only tells the runtime which message your reply targets.",
-      "Use this instead of pinging when you want to address one specific earlier message. Otherwise omit the quote entirely and just write your reply.",
-      "Quote example - to reply specifically to Kevin's earlier `what's the weather like?` message, write:\n  > Kevin: what's the weather like?\n  sunny and warm\nThe runtime consumes the `> Kevin: ...` line to set Discord's reply target; only `sunny and warm` is sent."
-    ].join("\n");
-
-    const mentionPolicy = [
-      "To ping a user, write <@DisplayName> - where `DisplayName` is copied verbatim from the `DisplayName:` prefix on one of their messages. Example: a message that starts with `Kevin: hey` is pinged as <@Kevin>.",
-      "Do not ping a user who is already active in the recent chat or who just spoke. Mention their display name in plain text instead.",
-      "Only ping when you are reviving an older missed message, pulling back someone who has gone quiet, or a scene_direction explicitly asks for a ping."
-    ].join("\n");
-
-    const styleConstraints = [
-      "Write exactly one short phrase or one very short sentence, usually under 12 words.",
-      "Never write a second sentence.",
-      "This length rule overrides your persona, reply_style, and scene_direction. Even when asked for a longer or more thoughtful reply, compress it to one tiny conversational beat.",
-      "Avoid stacked clauses, multi-line replies, setup-plus-punchline chains, and explanations. A sharp fragment is usually stronger than a complete mini speech."
-    ].join("\n");
-
-    const hardRules = [
-      "Your reply is the raw message body that will be sent verbatim to Discord.",
-      "Your turn is exactly one Discord message body, never a transcript.",
-      "Do not write `Name: ...` or `DisplayName: ...` lines for any character, including yourself and every other waifu in the channel.",
-      "Do not draft another waifu's reply. If you find yourself doing that, stop and write only your own message.",
-      "Do not include bracketed metadata tags: no `[attachments: ...]`, no `[image_text: ...]`, no `[replying to: ...]`, no `[timestamp: ...]`, no `[reactions: ...]`, no `[index: ...]`, no `[scene_direction: ...]`, and no other `[tag: value]` constructions.",
-      "Do not begin with your own display name followed by a colon. Other than the optional leading `> Author: ...` reply-targeting line, begin with the first word you are actually saying.",
-      "Do not echo or paraphrase any prior message's bracketed framing tags.",
-      "Do not output physical actions, roleplay narration, or stage directions. No asterisks-wrapped actions like *smiles* or *waves*, no parenthetical stage notes like (hugs them), and no bracketed cues like [walks over].",
-      "The optional leading `> Author: ...` reply-targeting line is the only allowed prefix exception.",
-      "Never use raw Discord IDs for pings.",
-      "Use only listed server emojis."
-    ].join("\n");
-
     const personaText = waifu.persona.trim();
     const personalityContent = personaText
       ? `You are ${waifu.displayName}. Stay in character.\n${personaText}`
       : `You are ${waifu.displayName}. Stay in character.`;
     const scheduleContent = formatWaifuScheduleForPrompt(waifu);
     const waifuTag = promptTagName(waifu.name || waifu.id);
-
-    const environmentRules = [
-      "You are chatting in a live Discord text channel — this is a real chat room with real users, not a roleplay scene, story, or chat fiction.",
-      "Write one Discord-safe message per turn.",
-      "Reply with only what you would actually type into a chat box — no narration, no meta commentary, no describing yourself in the third person."
-    ].join("\n");
-
-    const promptSections = waifu.promptSections;
-    const behaviorSections = [
-      `<${waifuTag}_personality>\n${personalityContent}\n</${waifuTag}_personality>`,
-      `<${waifuTag}_shedule>\n${scheduleContent}\n</${waifuTag}_shedule>`,
-      promptSections.inputFormat ? `<context_message_structure>\n${inputFormat}\n</context_message_structure>` : null,
-      promptSections.environmentInstructions
-        ? `<environment_instructions>\n${environmentRules}\n</environment_instructions>`
-        : null,
-      promptSections.replyTargeting ? `<replying_to_message>\n${replyTargeting}\n</replying_to_message>` : null,
-      promptSections.mentionPolicy ? `<mention_policy>\n${mentionPolicy}\n</mention_policy>` : null,
-      promptSections.styleConstraints ? `<style_constraints>\n${styleConstraints}\n</style_constraints>` : null,
-      promptSections.hardRules ? `<hard_rules>\n${hardRules}\n</hard_rules>` : null
-    ].filter((section): section is string => Boolean(section));
-    const toolUse = buildWaifuToolUseInstructions(waifu, availableWaifus, {
+    const toolUseInstructions = buildWaifuToolUseInstructions(waifu, availableWaifus, {
       pickNextWaifu: pickNextWaifuToolActive,
       shortTermMemory: shortTermMemoryToolActive
     });
-    if (toolUse) {
-      behaviorSections.push(`<tool_use>\n${toolUse}\n</tool_use>`);
-    }
-    const identityBlock = `<${waifuTag}_identity>\nYou are acting as ${waifu.displayName || waifu.name || waifu.id} in a discord server together with real people and other waifus\n</${waifuTag}_identity>`;
-    const behaviorBlock = `<${waifuTag}_behavior>\n${behaviorSections.join("\n")}\n</${waifuTag}_behavior>`;
 
-    const allMemoryLines = [...longTermLines, ...shortTermLines];
-    const relevantMemoriesBlock = allMemoryLines.length
-      ? `<${waifuTag}_relevant_memories>\n${allMemoryLines.join("\n")}\n</${waifuTag}_relevant_memories>`
-      : undefined;
+    const blockContext: PromptBlockContext = {
+      waifuTag,
+      displayName: waifu.displayName || waifu.name || waifu.id,
+      personalityContent,
+      scheduleContent,
+      toolUseInstructions,
+      activeParticipantDisplayNames: activeChatParticipants.map((participant) => participant.displayName),
+      emojiList,
+      memoryLines: [...longTermLines, ...shortTermLines],
+      currentlyDoing: currentlyDoingForWaifu(waifu, new Date()),
+      sceneDirection: options?.sceneDirection?.trim() || undefined
+    };
 
-    const directorNotesBlock = promptSections.directorNotes ? buildDirectorNotesBlock() : undefined;
-    const activeParticipantsBlock = `<active_chat_participants>\n${
-      activeChatParticipants.length
-        ? activeChatParticipants.map((participant) => `- ${participant.displayName}`).join("\n")
-        : "(none)"
-    }\n</active_chat_participants>`;
-    const availableEmojisBlock = `<server_emojis>\n${emojiList || "(none cached)"}\n</server_emojis>`;
-    const midSystemBlock = [directorNotesBlock, activeParticipantsBlock, availableEmojisBlock]
-      .filter((section): section is string => Boolean(section))
-      .join("\n");
-
-    const personalityBlock = promptSections.personality
-      ? `<${waifuTag}_personality>\n${personalityContent}\n</${waifuTag}_personality>`
-      : undefined;
-    const currentlyDoing = currentlyDoingForWaifu(waifu, new Date());
-    const currentlyDoingBlock = currentlyDoing
-      ? `<currently_doing>${currentlyDoing}</currently_doing>`
-      : undefined;
-    const sceneDirectionText = options?.sceneDirection?.trim();
-    const sceneDirectionBlock = sceneDirectionText
-      ? `<scene_direction>${sceneDirectionText}</scene_direction>`
-      : undefined;
-    const trailingSystemBlock = [relevantMemoriesBlock, personalityBlock, currentlyDoingBlock, sceneDirectionBlock]
-      .filter((section): section is string => Boolean(section))
-      .join("\n");
-
-    const systemPrompt = [identityBlock, behaviorBlock].join("\n");
-
-    return { systemPrompt, midSystemBlock, trailingSystemBlock };
+    // The slot→string mapping is fixed; the composition of each slot is driven by the waifu's
+    // editable prompt layout (see src/orchestration/promptBlocks.ts).
+    return assembleWaifuPrompt(reconcileWaifuPromptLayout(waifu.promptLayout), blockContext);
   }
 
   private buildOrchestratorSystemPrompt(
@@ -3054,16 +2977,6 @@ function localTimeOfDayMinutes(date: Date): number {
   return date.getHours() * 60 + date.getMinutes();
 }
 
-function buildDirectorNotesBlock(): string {
-  const notes = [
-    "Keep your reply short.",
-    "Do not repeat what the previous waifu just said.",
-    "Do not repeat a person's name when recent context already makes the target clear.",
-    "To pull a quiet person back in, use their <@Name> tag instead of repeating their name; do not tag them again if anyone already tagged them recently."
-  ];
-  return `<director_notes>\n${notes.join("\n")}\n</director_notes>`;
-}
-
 export function currentlyDoingForWaifu(waifu: WaifuConfig, now: Date): string | undefined {
   const currentMinutes = localTimeOfDayMinutes(now);
   for (const interval of waifu.availability.busy) {
@@ -3443,15 +3356,6 @@ function decrementActive(map: Map<string, number>, key: string): void {
   } else {
     map.delete(key);
   }
-}
-
-function promptTagName(value: string): string {
-  const normalized = value
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]+/g, "_")
-    .replace(/^_+|_+$/g, "");
-  return /^[a-z]/.test(normalized) ? normalized : `waifu_${normalized || "unknown"}`;
 }
 
 function defaultSleep(ms: number, signal?: AbortSignal): Promise<void> {

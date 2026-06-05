@@ -1,6 +1,6 @@
 {
   "name": "@starlight-ai/discord-waifus",
-  "version": "1.5.135",
+  "version": "1.5.136",
   "description": "Local Discord waifu orchestrator backend, web UI, and CLI.",
   "type": "module",
   "private": false,
@@ -56,6 +56,9 @@
   },
   "license": "MIT",
   "dependencies": {
+    "@dnd-kit/core": "^6.3.1",
+    "@dnd-kit/sortable": "^10.0.0",
+    "@dnd-kit/utilities": "^3.2.2",
     "discord.js": "^14.26.4",
     "fastify": "^5.8.5",
     "smol-toml": "^1.6.1",

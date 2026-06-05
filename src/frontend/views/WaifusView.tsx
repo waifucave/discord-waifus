@@ -10,7 +10,7 @@ import type {
   WaifuAvailability,
   WaifuBusyInterval,
   WaifuConfig,
-  WaifuPromptSections,
+  WaifuPromptLayout,
   WaifuToolSettings,
   WaifusResponse
 } from "../api/types";
@@ -22,6 +22,8 @@ import { Skeleton, SkeletonRows } from "../components/Skeleton";
 import { DiscordBotGuide } from "../components/DiscordBotGuide";
 import { ReasoningControls, hasReasoningControls } from "../components/ReasoningControls";
 import { Toggle } from "../components/Toggle";
+import { PromptLayoutEditor } from "../components/PromptLayoutEditor";
+import { defaultWaifuPromptLayout, reconcileLayout } from "../utils/promptLayout";
 import { slugify, timeAgo } from "../utils/format";
 
 export function WaifusView() {
@@ -158,7 +160,7 @@ function CreateWaifuModal({
   const [displayName, setDisplayName] = useState("");
   const [availability, setAvailability] = useState<WaifuAvailability>(() => defaultAvailability());
   const [tools, setTools] = useState<WaifuToolSettings>(() => defaultToolSettings());
-  const [promptSections, setPromptSections] = useState<WaifuPromptSections>(() => defaultPromptSections());
+  const [promptLayout, setPromptLayout] = useState<WaifuPromptLayout>(() => defaultWaifuPromptLayout());
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | undefined>(undefined);
 
@@ -176,7 +178,7 @@ function CreateWaifuModal({
         id: slugify(name),
         availability,
         tools,
-        promptSections
+        promptLayout
       });
       onCreated(created);
     } catch (e) {
@@ -222,11 +224,12 @@ function CreateWaifuModal({
         />
       </div>
       <ScheduleEditor value={availability} onChange={setAvailability} />
-      <PromptSettingsEditor
+      <PromptLayoutEditor
+        layout={promptLayout}
         tools={tools}
-        promptSections={promptSections}
+        onLayoutChange={setPromptLayout}
         onToolsChange={setTools}
-        onPromptSectionsChange={setPromptSections}
+        waifuName={displayName || name || "waifu"}
       />
       {err && <Notice tone="err">{err}</Notice>}
     </Modal>
@@ -340,7 +343,7 @@ function WaifuEditor({
       reasoning: draft.reasoning,
       availability: draft.availability,
       tools: draft.tools,
-      promptSections: draft.promptSections
+      promptLayout: draft.promptLayout
     };
     const updated = await api.updateWaifu(draft.id, body);
     setWaifu(updated);
@@ -632,11 +635,12 @@ function WaifuEditor({
             onChange={(availability) => set({ availability })}
           />
 
-          <PromptSettingsEditor
+          <PromptLayoutEditor
+            layout={reconcileLayout(waifu.promptLayout)}
             tools={waifu.tools}
-            promptSections={waifu.promptSections}
+            onLayoutChange={(promptLayout) => set({ promptLayout })}
             onToolsChange={(tools) => set({ tools })}
-            onPromptSectionsChange={(promptSections) => set({ promptSections })}
+            waifuName={waifu.displayName || waifu.name || waifu.id}
           />
 
           {botState.error && <Notice tone="err">{botState.error.message}</Notice>}
@@ -893,100 +897,6 @@ function ScheduleEditor({
   );
 }
 
-const WAIFU_PROMPT_SECTION_OPTIONS: Array<{
-  key: keyof WaifuPromptSections;
-  label: string;
-  hint: string;
-}> = [
-  {
-    key: "directorNotes",
-    label: "<director_notes>",
-    hint: "Includes the shared director notes in the mid-system block."
-  },
-  {
-    key: "hardRules",
-    label: "<hard_rules>",
-    hint: "Includes the invalid-output constraints in the behavior block."
-  },
-  {
-    key: "mentionPolicy",
-    label: "<mention_policy>",
-    hint: "Includes display-name ping rules and quiet-user ping guidance."
-  },
-  {
-    key: "replyTargeting",
-    label: "<replying_to_message>",
-    hint: "Includes the quote-line syntax for targeting a specific Discord reply."
-  },
-  {
-    key: "environmentInstructions",
-    label: "<environment_instructions>",
-    hint: "Includes live Discord channel and no-narration instructions."
-  },
-  {
-    key: "inputFormat",
-    label: "<context_message_structure>",
-    hint: "Includes the incoming transcript framing explanation."
-  },
-  {
-    key: "styleConstraints",
-    label: "<style_constraints>",
-    hint: "Includes the short-reply and one-sentence constraints."
-  },
-  {
-    key: "personality",
-    label: "<waifuname_personality>",
-    hint: "Includes the trailing personality reminder system block."
-  }
-];
-
-function PromptSettingsEditor({
-  tools,
-  promptSections,
-  onToolsChange,
-  onPromptSectionsChange
-}: {
-  tools: WaifuToolSettings;
-  promptSections: WaifuPromptSections;
-  onToolsChange: (next: WaifuToolSettings) => void;
-  onPromptSectionsChange: (next: WaifuPromptSections) => void;
-}) {
-  return (
-    <section className="section">
-      <div className="section-header">
-        <h3 className="section-title">Waifu prompt sections</h3>
-        <span className="section-description">
-          Per-waifu visibility for model prompt sections. PickNextWaifu and add_memory availability are server settings.
-        </span>
-      </div>
-      <div className="grid grid-2">
-        <div className="field">
-          <Toggle
-            checked={tools.toolUse}
-            onChange={(toolUse) => onToolsChange({ ...tools, toolUse })}
-            label="<tool_use> instructions"
-          />
-          <span className="field-hint">
-            Adds tool instructions at the bottom of the waifu behavior block.
-          </span>
-        </div>
-        {WAIFU_PROMPT_SECTION_OPTIONS.map((option) => (
-          <div className="field" key={option.key}>
-            <Toggle
-              checked={promptSections[option.key]}
-              onChange={(checked) =>
-                onPromptSectionsChange({ ...promptSections, [option.key]: checked })
-              }
-              label={option.label}
-            />
-            <span className="field-hint">{option.hint}</span>
-          </div>
-        ))}
-      </div>
-    </section>
-  );
-}
-
 function defaultAvailability(): WaifuAvailability {
   return {
     sleep: {
@@ -1001,19 +911,6 @@ function defaultAvailability(): WaifuAvailability {
 function defaultToolSettings(): WaifuToolSettings {
   return {
     toolUse: true
-  };
-}
-
-function defaultPromptSections(): WaifuPromptSections {
-  return {
-    directorNotes: true,
-    hardRules: true,
-    mentionPolicy: true,
-    replyTargeting: true,
-    environmentInstructions: true,
-    inputFormat: true,
-    styleConstraints: true,
-    personality: true
   };
 }
 

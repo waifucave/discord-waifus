@@ -2,6 +2,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { runMigrations } from "../src/backend/migrations.js";
+import type { PromptLayoutNode as LayoutNode } from "../src/shared/schemas/domain.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
 
 const roots: string[] = [];
@@ -120,6 +121,62 @@ describe("runMigrations", () => {
     expect(session.scheduledRetriggerAt).toBe("2026-05-16T12:30:00.000Z");
     expect(session).not.toHaveProperty("scheduledIdleTriggerAt");
     expect(session).not.toHaveProperty("cachedWaifuContinuation");
+  });
+
+  it("converts legacy waifu prompt-section booleans into a prompt layout", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+
+    await writeJson(root, "user/waifus/yuki/waifu.json", {
+      schemaVersion: 1,
+      revision: 0,
+      updatedAt: "2026-05-16T12:00:00.000Z",
+      id: "yuki",
+      name: "Yuki",
+      displayName: "Yuki",
+      persona: "kind",
+      promptSections: {
+        directorNotes: true,
+        hardRules: false,
+        mentionPolicy: true,
+        replyTargeting: true,
+        environmentInstructions: true,
+        inputFormat: false,
+        styleConstraints: true,
+        personality: false
+      }
+    });
+
+    const result = await runMigrations(root);
+    expect(result.applied).toContain("migrate-waifu-prompt-layout-1");
+
+    const config = await readJson<{
+      promptSections?: unknown;
+      promptLayout: { top: LayoutNode[]; mid: LayoutNode[]; trailing: LayoutNode[] };
+    }>(root, "user/waifus/yuki/waifu.json");
+    expect(config).not.toHaveProperty("promptSections");
+
+    const enabledById = new Map<string, boolean>();
+    const collect = (nodes: LayoutNode[]) => {
+      for (const node of nodes) {
+        if (node.kind === "block") enabledById.set(node.blockId, node.enabled);
+        else for (const child of node.children) enabledById.set(child.blockId, child.enabled);
+      }
+    };
+    collect(config.promptLayout.top);
+    collect(config.promptLayout.mid);
+    collect(config.promptLayout.trailing);
+
+    // Disabled legacy toggles map to disabled blocks.
+    expect(enabledById.get("hardRules")).toBe(false);
+    expect(enabledById.get("contextStructure")).toBe(false);
+    expect(enabledById.get("personalityReminder")).toBe(false);
+    // Everything else (toggled-on, always-on, conditional) stays enabled.
+    expect(enabledById.get("mentionPolicy")).toBe(true);
+    expect(enabledById.get("directorNotes")).toBe(true);
+    expect(enabledById.get("identity")).toBe(true);
+    expect(enabledById.get("personality")).toBe(true);
+    expect(enabledById.get("toolUse")).toBe(true);
   });
 
   it("assigns legacy memories to guilds from stage-manager history", async () => {

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -80,8 +80,13 @@ async function main() {
   }
   console.log(staged);
 
-  const commitMessage = args.message ?? `Release ${version}`;
-  run("git", ["commit", "-m", commitMessage]);
+  const commitSubject = args.message ?? `Release ${version}`;
+  const commitArgs = ["commit", "-m", commitSubject];
+  if (args.details) {
+    commitArgs.push("-m", args.details);
+  }
+  commitArgs.push("-m", `Release ${version}.`);
+  run("git", commitArgs);
   const releaseSha = capture("git", ["rev-parse", "HEAD"]).trim();
   run("git", ["push", "origin", "main"]);
   const pushedSha = capture("git", ["ls-remote", "origin", "refs/heads/main"]).trim().split(/\s+/)[0] ?? "";
@@ -102,7 +107,7 @@ async function main() {
     "--title",
     tag,
     "--notes",
-    args.message ? `${args.message}\n\nRelease ${version}.` : `Release ${version}.`,
+    buildReleaseNotes(version, args.message, args.details),
   ]);
 
   const rootWorkflowStartedAt = new Date();
@@ -142,6 +147,7 @@ async function main() {
 function parseArgs(argv) {
   const parsed = {
     dryRun: false,
+    details: undefined,
     help: false,
     message: undefined,
     version: undefined,
@@ -163,6 +169,32 @@ function parseArgs(argv) {
       index += 1;
     } else if (arg.startsWith("--message=")) {
       parsed.message = normalizeCommitMessage(arg.slice("--message=".length));
+    } else if (arg === "--details" || arg === "--body" || arg === "--notes") {
+      const value = argv[index + 1];
+      if (!value) {
+        throw new Error(`${arg} requires release details.`);
+      }
+      parsed.details = normalizeDetails(value);
+      index += 1;
+    } else if (arg.startsWith("--details=")) {
+      parsed.details = normalizeDetails(arg.slice("--details=".length));
+    } else if (arg.startsWith("--body=")) {
+      parsed.details = normalizeDetails(arg.slice("--body=".length));
+    } else if (arg.startsWith("--notes=")) {
+      parsed.details = normalizeDetails(arg.slice("--notes=".length));
+    } else if (arg === "--details-file" || arg === "--body-file" || arg === "--notes-file") {
+      const value = argv[index + 1];
+      if (!value) {
+        throw new Error(`${arg} requires a file path.`);
+      }
+      parsed.details = normalizeDetails(readFileSync(value, "utf8"));
+      index += 1;
+    } else if (arg.startsWith("--details-file=")) {
+      parsed.details = normalizeDetails(readFileSync(arg.slice("--details-file=".length), "utf8"));
+    } else if (arg.startsWith("--body-file=")) {
+      parsed.details = normalizeDetails(readFileSync(arg.slice("--body-file=".length), "utf8"));
+    } else if (arg.startsWith("--notes-file=")) {
+      parsed.details = normalizeDetails(readFileSync(arg.slice("--notes-file=".length), "utf8"));
     } else if (arg === "--yes" || arg === "-y") {
       parsed.yes = true;
     } else if (!parsed.version) {
@@ -186,14 +218,32 @@ function normalizeCommitMessage(value) {
   return message;
 }
 
+function normalizeDetails(value) {
+  const details = value.trim();
+  if (!details) {
+    throw new Error("Release details cannot be empty.");
+  }
+  return details;
+}
+
+function buildReleaseNotes(version, message, details) {
+  return [
+    message,
+    details,
+    `Release ${version}.`,
+  ].filter(Boolean).join("\n\n");
+}
+
 function printUsage() {
   console.log(`Usage:
-  npm run release:beta -- <version> [--yes] [--message "commit subject"]
+  npm run release:beta -- <version> [--yes] [--message "commit subject"] [--details "release notes"]
+  npm run release:beta -- <version> [--yes] [--message "commit subject"] [--details-file ./notes.md]
   npm run release:beta -- <version> --dry-run
 
 Examples:
   npm run release:beta -- 1.5.121
   npm run release:beta -- 1.5.121 --yes --message "fix: improve waifu reply targeting"
+  npm run release:beta -- 1.5.121 --yes --message "feat: add prompt layout editor" --details-file ./release-notes.md
 
 This beta script bumps versions, validates, packs, commits, pushes, creates the
 GitHub release, watches the root npm workflow, verifies npm latest, verifies

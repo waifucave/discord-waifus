@@ -1027,3 +1027,145 @@ table.data-table {
 .scroll-shadow {
   position: relative;
 }
+
+/* ============ Prompt layout editor ============ */
+.prompt-layout-lanes {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--sp-3);
+  align-items: start;
+}
+@media (max-width: 900px) {
+  .prompt-layout-lanes {
+    grid-template-columns: 1fr;
+  }
+}
+.prompt-lane {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: var(--sp-3);
+}
+.prompt-lane-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.prompt-lane-title {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.prompt-lane-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-height: 48px;
+}
+.prompt-lane-empty {
+  border: 1px dashed var(--border-default);
+  border-radius: var(--radius-md);
+  padding: var(--sp-3);
+  text-align: center;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+.prompt-card {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  padding: var(--sp-2);
+}
+.prompt-card.is-disabled {
+  opacity: 0.5;
+}
+.prompt-card.is-dragging {
+  box-shadow: var(--shadow-modal);
+  border-color: var(--border-focus);
+}
+.prompt-card-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+.prompt-card-label {
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.prompt-drag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: grab;
+  padding: 2px;
+  flex-shrink: 0;
+}
+.prompt-drag:active {
+  cursor: grabbing;
+}
+.prompt-drag .icon {
+  width: 14px;
+  height: 14px;
+}
+.prompt-group {
+  background: var(--bg-panel-hover);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  padding: var(--sp-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+.prompt-group.is-disabled {
+  opacity: 0.5;
+}
+.prompt-group-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.prompt-group-tag-prefix {
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+}
+.prompt-group-tag-input {
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  height: 26px;
+  flex: 1;
+  min-width: 0;
+}
+.prompt-group-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.icon-btn {
+  padding: 0;
+  width: 26px;
+  height: 26px;
+}
+.prompt-group-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-height: 40px;
+  padding-left: var(--sp-2);
+  border-left: 2px solid var(--border-default);
+}

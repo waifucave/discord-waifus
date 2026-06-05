@@ -207,15 +207,29 @@ export type WaifuToolSettings = {
   toolUse: boolean;
 };
 
-export type WaifuPromptSections = {
-  directorNotes: boolean;
-  hardRules: boolean;
-  mentionPolicy: boolean;
-  replyTargeting: boolean;
-  environmentInstructions: boolean;
-  inputFormat: boolean;
-  styleConstraints: boolean;
-  personality: boolean;
+// Mirror of WaifuPromptLayoutSchema in src/shared/schemas/domain.ts. Controls which prompt blocks
+// land in each of the three model-message slots, their order, and how they are grouped. Block
+// wording is fixed in code (see src/orchestration/promptBlocks.ts).
+export type PromptLayoutBlockNode = {
+  kind: "block";
+  blockId: string;
+  enabled: boolean;
+};
+
+export type PromptLayoutGroupNode = {
+  kind: "group";
+  id: string;
+  tag: string;
+  enabled: boolean;
+  children: PromptLayoutBlockNode[];
+};
+
+export type PromptLayoutNode = PromptLayoutBlockNode | PromptLayoutGroupNode;
+
+export type WaifuPromptLayout = {
+  top: PromptLayoutNode[];
+  mid: PromptLayoutNode[];
+  trailing: PromptLayoutNode[];
 };
 
 export type ServerToolSettings = {
@@ -291,7 +305,7 @@ export type WaifuConfig = Revisioned & {
   reasoning: ReasoningConfig;
   availability: WaifuAvailability;
   tools: WaifuToolSettings;
-  promptSections: WaifuPromptSections;
+  promptLayout: WaifuPromptLayout;
 };
 
 export type WaifusResponse = { waifus: WaifuConfig[] };
@@ -309,7 +323,7 @@ export type CreateWaifuBody = {
   generation?: WaifuConfig["generation"];
   availability?: WaifuAvailability;
   tools?: WaifuToolSettings;
-  promptSections?: WaifuPromptSections;
+  promptLayout?: WaifuPromptLayout;
 };
 
 export type UpdateWaifuBody = Partial<Omit<WaifuConfig, "schemaVersion" | "updatedAt">> & {

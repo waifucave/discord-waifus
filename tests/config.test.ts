@@ -6,7 +6,11 @@ import { PREBUILT_WAIFUS } from "../src/config/prebuiltWaifus.js";
 import { DATA_ROOT_ENV, getDataRoot } from "../src/config/paths.js";
 import { loadAppConfig } from "../src/config/appConfig.js";
 import { redactSecrets } from "../src/backend/redaction.js";
-import { ServerConfigSchema, WaifuConfigSchema } from "../src/shared/schemas/domain.js";
+import {
+  ServerConfigSchema,
+  WaifuConfigSchema,
+  defaultWaifuPromptLayout
+} from "../src/shared/schemas/domain.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
 
 let roots: string[] = [];
@@ -120,16 +124,7 @@ describe("data root and config", () => {
     expect(seeded.availability.sleep.enabled).toBe(true);
     expect(seeded.availability.busy.length).toBeGreaterThan(0);
     expect(seeded.tools).toEqual({ toolUse: true });
-    expect(seeded.promptSections).toMatchObject({
-      directorNotes: true,
-      hardRules: true,
-      mentionPolicy: true,
-      replyTargeting: true,
-      environmentInstructions: true,
-      inputFormat: true,
-      styleConstraints: true,
-      personality: true
-    });
+    expect(seeded.promptLayout).toEqual(defaultWaifuPromptLayout());
     expect(seeded.modelId).toBeUndefined();
     expect(seeded.botId).toBeUndefined();
 
@@ -176,7 +171,7 @@ describe("data root and config", () => {
       }
     });
     expect(waifu.tools).toEqual({ toolUse: false });
-    expect(waifu.promptSections.personality).toBe(true);
+    expect(waifu.promptLayout).toEqual(defaultWaifuPromptLayout());
   });
 
   it("rejects overlapping busy intervals in waifu availability", () => {

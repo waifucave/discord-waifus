@@ -120,28 +120,80 @@ export const WaifuToolSettingsSchema = z
   });
 export type WaifuToolSettings = z.infer<typeof WaifuToolSettingsSchema>;
 
-export const WaifuPromptSectionsSchema = z
+// Prompt layout: an ordered tree describing which prompt blocks live in each of the three
+// model-message slots (top system prompt / mid system block / trailing system block), in what
+// order, and how they are grouped inside named XML wrappers. Block *wording* is fixed in code
+// (see src/orchestration/promptBlocks.ts); this only controls placement, order, grouping and
+// enable/disable. Replaces the former flat boolean WaifuPromptSectionsSchema.
+export const PromptLayoutBlockNodeSchema = z.object({
+  kind: z.literal("block"),
+  blockId: z.string().min(1),
+  enabled: z.boolean().default(true)
+});
+export type PromptLayoutBlockNode = z.infer<typeof PromptLayoutBlockNodeSchema>;
+
+export const PromptLayoutGroupNodeSchema = z.object({
+  kind: z.literal("group"),
+  id: z.string().min(1),
+  // XML wrapper tag. May contain the `{name}` token, substituted with the waifu tag at render.
+  tag: z.string().min(1),
+  enabled: z.boolean().default(true),
+  children: z.array(PromptLayoutBlockNodeSchema).default([])
+});
+export type PromptLayoutGroupNode = z.infer<typeof PromptLayoutGroupNodeSchema>;
+
+export const PromptLayoutNodeSchema = z.discriminatedUnion("kind", [
+  PromptLayoutBlockNodeSchema,
+  PromptLayoutGroupNodeSchema
+]);
+export type PromptLayoutNode = z.infer<typeof PromptLayoutNodeSchema>;
+
+export const WaifuPromptLayoutSchema = z
   .object({
-    directorNotes: z.boolean().default(true),
-    hardRules: z.boolean().default(true),
-    mentionPolicy: z.boolean().default(true),
-    replyTargeting: z.boolean().default(true),
-    environmentInstructions: z.boolean().default(true),
-    inputFormat: z.boolean().default(true),
-    styleConstraints: z.boolean().default(true),
-    personality: z.boolean().default(true)
+    top: z.array(PromptLayoutNodeSchema),
+    mid: z.array(PromptLayoutNodeSchema),
+    trailing: z.array(PromptLayoutNodeSchema)
   })
-  .default({
-    directorNotes: true,
-    hardRules: true,
-    mentionPolicy: true,
-    replyTargeting: true,
-    environmentInstructions: true,
-    inputFormat: true,
-    styleConstraints: true,
-    personality: true
-  });
-export type WaifuPromptSections = z.infer<typeof WaifuPromptSectionsSchema>;
+  .default(() => defaultWaifuPromptLayout());
+export type WaifuPromptLayout = z.infer<typeof WaifuPromptLayoutSchema>;
+
+// The default arrangement reproduces the historical hardcoded prompt exactly: an identity block
+// followed by a `<{name}_behavior>` group in the top slot, the director-notes/participants/emojis
+// trio in the mid slot, and memories/personality-reminder/currently-doing/scene-direction in the
+// trailing slot. New waifus get this via the schema default; the migration derives enable flags
+// from the old booleans on top of it.
+export function defaultWaifuPromptLayout(): WaifuPromptLayout {
+  const block = (blockId: string): PromptLayoutBlockNode => ({ kind: "block", blockId, enabled: true });
+  return {
+    top: [
+      block("identity"),
+      {
+        kind: "group",
+        id: "behavior",
+        tag: "{name}_behavior",
+        enabled: true,
+        children: [
+          block("personality"),
+          block("schedule"),
+          block("contextStructure"),
+          block("environment"),
+          block("replyTargeting"),
+          block("mentionPolicy"),
+          block("styleConstraints"),
+          block("hardRules"),
+          block("toolUse")
+        ]
+      }
+    ],
+    mid: [block("directorNotes"), block("activeParticipants"), block("serverEmojis")],
+    trailing: [
+      block("relevantMemories"),
+      block("personalityReminder"),
+      block("currentlyDoing"),
+      block("sceneDirection")
+    ]
+  };
+}
 
 export const ServerToolSettingsSchema = z
   .object({
@@ -231,7 +283,7 @@ export const WaifuConfigSchema = RevisionedRecordSchema.extend({
   reasoning: ReasoningConfigSchema,
   availability: WaifuAvailabilitySchema,
   tools: WaifuToolSettingsSchema,
-  promptSections: WaifuPromptSectionsSchema
+  promptLayout: WaifuPromptLayoutSchema
 });
 export type WaifuConfig = z.infer<typeof WaifuConfigSchema>;
 

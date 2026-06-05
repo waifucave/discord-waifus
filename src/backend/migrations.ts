@@ -1,6 +1,11 @@
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { ensureDataLayout } from "../config/layout.js";
+import {
+  PromptLayoutNode,
+  WaifuPromptLayout,
+  defaultWaifuPromptLayout
+} from "../shared/schemas/domain.js";
 import { atomicWriteJson } from "../storage/atomic.js";
 
 export type MigrationResult = {
@@ -27,6 +32,10 @@ export async function runMigrations(dataRoot: string): Promise<MigrationResult> 
   }
   if (await archiveMemoriesWithUnknownWaifus(dataRoot)) {
     applied.push("archive-memories-with-unknown-waifus");
+  }
+  const layoutsMigrated = await migrateWaifuPromptSections(dataRoot);
+  if (layoutsMigrated > 0) {
+    applied.push(`migrate-waifu-prompt-layout-${layoutsMigrated}`);
   }
 
   return { applied };
@@ -283,6 +292,68 @@ async function migrateSessionFiles(dataRoot: string): Promise<number> {
         count += 1;
       }
     }
+  }
+  return count;
+}
+
+// Legacy waifus stored a flat boolean `promptSections` toggle set. Convert each into the new
+// ordered `promptLayout` tree, preserving the user's on/off choices by disabling the matching
+// blocks on top of the default arrangement. Always-on and conditional blocks stay enabled.
+const LEGACY_PROMPT_SECTION_TO_BLOCK: Record<string, string> = {
+  directorNotes: "directorNotes",
+  hardRules: "hardRules",
+  mentionPolicy: "mentionPolicy",
+  replyTargeting: "replyTargeting",
+  environmentInstructions: "environment",
+  inputFormat: "contextStructure",
+  styleConstraints: "styleConstraints",
+  personality: "personalityReminder"
+};
+
+function setBlockEnabled(layout: WaifuPromptLayout, blockId: string, enabled: boolean): void {
+  const visit = (nodes: PromptLayoutNode[]) => {
+    for (const node of nodes) {
+      if (node.kind === "block") {
+        if (node.blockId === blockId) node.enabled = enabled;
+      } else {
+        for (const child of node.children) {
+          if (child.blockId === blockId) child.enabled = enabled;
+        }
+      }
+    }
+  };
+  visit(layout.top);
+  visit(layout.mid);
+  visit(layout.trailing);
+}
+
+async function migrateWaifuPromptSections(dataRoot: string): Promise<number> {
+  const waifusRoot = path.join(dataRoot, "user", "waifus");
+  let entries: string[];
+  try {
+    entries = await readdir(waifusRoot);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0;
+    throw error;
+  }
+  let count = 0;
+  for (const entry of entries) {
+    const filePath = path.join(waifusRoot, entry, "waifu.json");
+    const data = await readJsonOrUndefined(filePath);
+    if (!isObject(data)) continue;
+    const legacy = data.promptSections;
+    if (!isObject(legacy)) continue; // already migrated or never had the legacy field
+
+    const layout = defaultWaifuPromptLayout();
+    for (const [legacyKey, blockId] of Object.entries(LEGACY_PROMPT_SECTION_TO_BLOCK)) {
+      if (legacy[legacyKey] === false) {
+        setBlockEnabled(layout, blockId, false);
+      }
+    }
+    data.promptLayout = layout;
+    delete data.promptSections;
+    await atomicWriteJson(filePath, data);
+    count += 1;
   }
   return count;
 }
