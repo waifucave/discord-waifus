@@ -32,6 +32,43 @@ describe("extractReplyQuote", () => {
     expect(result.cleanedContent).toBe("yeah hi");
   });
 
+  it("matches the preferred `replying to > Name: text` control line", () => {
+    const result = extractReplyQuote("replying to > Alice: hey there\nyeah hi", [
+      ctxMessage({ id: "m1", content: "earlier message" }),
+      ctxMessage({ id: "m2", content: "hey there", displayName: "Alice", name: "Alice" })
+    ]);
+    expect(result.replyToMessageId).toBe("m2");
+    expect(result.cleanedContent).toBe("yeah hi");
+  });
+
+  it("maps `replying to > Name` to that participant's most recent message", () => {
+    const result = extractReplyQuote("replying to > Alice\nanswering you", [
+      ctxMessage({ id: "m1", content: "first", displayName: "Alice", name: "Alice" }),
+      ctxMessage({ id: "m2", content: "middle", displayName: "Bob", name: "Bob" }),
+      ctxMessage({ id: "m3", content: "latest from alice", displayName: "Alice", name: "Alice" })
+    ]);
+    expect(result.replyToMessageId).toBe("m3");
+    expect(result.cleanedContent).toBe("answering you");
+  });
+
+  it("keeps legacy `> Name` targeting working", () => {
+    const result = extractReplyQuote("> Alice\nanswering you", [
+      ctxMessage({ id: "m1", content: "first", displayName: "Alice", name: "Alice" }),
+      ctxMessage({ id: "m2", content: "middle", displayName: "Bob", name: "Bob" })
+    ]);
+    expect(result.replyToMessageId).toBe("m1");
+    expect(result.cleanedContent).toBe("answering you");
+  });
+
+  it("matches preferred content-only targeting after `replying to >`", () => {
+    const result = extractReplyQuote("replying to > older question\nhere is the answer", [
+      ctxMessage({ id: "m1", content: "older question" }),
+      ctxMessage({ id: "m2", content: "newer follow-up" })
+    ]);
+    expect(result.replyToMessageId).toBe("m1");
+    expect(result.cleanedContent).toBe("here is the answer");
+  });
+
   it("matches with case and punctuation differences", () => {
     const result = extractReplyQuote("> Alice: Hey there!\nhi", [
       ctxMessage({ id: "m1", content: "hey there" })
@@ -139,6 +176,24 @@ describe("extractReplyQuote", () => {
     ]);
     expect(result.replyToMessageId).toBeUndefined();
     expect(result.cleanedContent).toBe("hello there\nmore");
+  });
+
+  it("salvages a bare content-only first line when it matches an older message", () => {
+    const result = extractReplyQuote("older question\nhere is the answer", [
+      ctxMessage({ id: "m1", content: "older question" }),
+      ctxMessage({ id: "m2", content: "newer follow-up" })
+    ]);
+    expect(result.replyToMessageId).toBe("m1");
+    expect(result.cleanedContent).toBe("here is the answer");
+  });
+
+  it("does not strip a bare content-only first line when it matches the latest message", () => {
+    const result = extractReplyQuote("newer follow-up\nhere is the answer", [
+      ctxMessage({ id: "m1", content: "older question" }),
+      ctxMessage({ id: "m2", content: "newer follow-up" })
+    ]);
+    expect(result.replyToMessageId).toBeUndefined();
+    expect(result.cleanedContent).toBe("newer follow-up\nhere is the answer");
   });
 
   it("resolves quotes against image-bearing context messages (attachments ignored)", () => {

@@ -4119,6 +4119,131 @@ describe("RuntimeOrchestrator", () => {
     expect(discord.sent[0].content).toBe("thats your victory lap");
   });
 
+  it("derives the reply target from the preferred `replying to >` quote in waifu output", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.contexts = [
+      [
+        contextMessage("m1", "user", "K", "older question", undefined, { authorId: "k-user" }),
+        contextMessage("m2", "user", "Aria", "newer follow-up", undefined, { authorId: "aria-user" })
+      ],
+      [
+        contextMessage("m1", "user", "K", "older question", undefined, { authorId: "k-user" }),
+        contextMessage("m2", "user", "Aria", "newer follow-up", undefined, { authorId: "aria-user" })
+      ],
+      [contextMessage("m3", "waifu", "Yuki", "done")]
+    ];
+
+    class PreferredQuotePipeline implements ModelPipeline {
+      decisions: OrchestratorDecision[] = [
+        {
+          action: "reply",
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal", sceneDirection: "answer" }],
+          reasoning: "Yuki replies with a preferred quote."
+        },
+        { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, reasoning: "done" }
+      ];
+      async generateWaifu() {
+        return { content: "replying to > K: older question\nthats your victory lap" };
+      }
+      async decideOrchestrator() {
+        const next = this.decisions.shift();
+        if (!next) throw new Error("no decision");
+        return next;
+      }
+    }
+
+    await seedRuntimeConfig(storage);
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 3,
+      createPipeline: () => new PreferredQuotePipeline(),
+      logger: {
+        debug: () => undefined,
+        info: () => undefined,
+        warn: () => undefined,
+        error: () => undefined
+      }
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    expect(discord.sent[0].replyToMessageId).toBe("m1");
+    expect(discord.sent[0].content).toBe("thats your victory lap");
+  });
+
+  it("strips recent human speaker impersonation lines and includes human names in stop sequences", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.contexts = [
+      [contextMessage("m1", "user", "K", "shall i mute you?", undefined, { authorId: "k-user" })],
+      [contextMessage("m1", "user", "K", "shall i mute you?", undefined, { authorId: "k-user" })],
+      [contextMessage("m2", "waifu", "Yuki", "done")]
+    ];
+
+    class HumanImpersonationPipeline implements ModelPipeline {
+      receivedStopSequences: string[] | undefined;
+      decisions: OrchestratorDecision[] = [
+        {
+          action: "reply",
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal", sceneDirection: "answer" }],
+          reasoning: "Yuki answers."
+        },
+        { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, reasoning: "done" }
+      ];
+      async generateWaifu(request: WaifuGenerationRequest) {
+        this.receivedStopSequences = request.stopSequences;
+        return {
+          content: [
+            "K: Its your choice not mine",
+            "There was a pause that lasted indefinite.",
+            "K: Shall i?"
+          ].join("\n")
+        };
+      }
+      async decideOrchestrator() {
+        const next = this.decisions.shift();
+        if (!next) throw new Error("no decision");
+        return next;
+      }
+    }
+
+    await seedRuntimeConfig(storage);
+
+    const pipeline = new HumanImpersonationPipeline();
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 3,
+      createPipeline: () => pipeline,
+      logger: {
+        debug: () => undefined,
+        info: () => undefined,
+        warn: () => undefined,
+        error: () => undefined
+      }
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    expect(discord.sent.map((message) => message.content)).toEqual([
+      "There was a pause that lasted indefinite."
+    ]);
+    expect(pipeline.receivedStopSequences).toEqual(expect.arrayContaining(["\nYuki:", "\nK:"]));
+  });
+
   it("strips a leading other-waifu name prefix and passes participant stop sequences", async () => {
     const root = await makeTempRoot();
     roots.push(root);

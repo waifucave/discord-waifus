@@ -124,13 +124,13 @@ function replyQuoteLine(message: ContextMessage): string | null {
   const authorName = message.replyTo.authorName?.trim();
   const preview = message.replyTo.contentPreview?.trim();
   if (authorName && preview) {
-    return `> ${authorName}: ${clipReplyPreview(preview)}`;
+    return `replying to > ${authorName}: ${clipReplyPreview(preview)}`;
   }
   if (authorName) {
-    return `> ${authorName}`;
+    return `replying to > ${authorName}`;
   }
   if (preview) {
-    return `> ${clipReplyPreview(preview)}`;
+    return `replying to > ${clipReplyPreview(preview)}`;
   }
   return null;
 }

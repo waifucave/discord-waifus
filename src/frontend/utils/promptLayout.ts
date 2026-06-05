@@ -39,7 +39,7 @@ export const PROMPT_BLOCK_META: PromptBlockMeta[] = [
   { id: "schedule", label: "<{name}_shedule>", hint: "The configured routine used for energy and timing.", defaultSection: "top" },
   { id: "contextStructure", label: "<context_message_structure>", hint: "Explains the incoming transcript framing.", defaultSection: "top" },
   { id: "environment", label: "<environment_instructions>", hint: "Live Discord channel, no-narration instructions.", defaultSection: "top" },
-  { id: "replyTargeting", label: "<replying_to_message>", hint: "Quote-line syntax for targeting a specific reply.", defaultSection: "top" },
+  { id: "replyTargeting", label: "<replying_to_message>", hint: "replying to > syntax for targeting a specific reply.", defaultSection: "top" },
   { id: "mentionPolicy", label: "<mention_policy>", hint: "Display-name ping rules and quiet-user guidance.", defaultSection: "top" },
   { id: "styleConstraints", label: "<style_constraints>", hint: "Short-reply and one-sentence constraints.", defaultSection: "top" },
   { id: "hardRules", label: "<hard_rules>", hint: "Invalid-output constraints.", defaultSection: "top" },

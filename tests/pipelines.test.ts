@@ -508,7 +508,7 @@ describe("provider-native decision tools", () => {
     expect(messages.some((message) => message.content.includes("[index:"))).toBe(false);
     expect(
       messages.some((message) =>
-        message.content === "> Aria: three\nKevin: that one"
+        message.content === "replying to > Aria: three\nKevin: that one"
       )
     ).toBe(true);
   });

@@ -32,15 +32,16 @@ export type WaifuPromptBlockDef = {
 
 const INPUT_FORMAT = [
   "Each incoming message in this conversation arrives in a chat-transcript shape so you can read Discord context:",
-  "An optional `> Author: preview` line appears first when the message is replying to an earlier one (Discord blockquote shape). The next line is `DisplayName: <body>` (the body may continue on additional lines). Optional `[attachments: Nx image]` and `[image_text: ...]` lines may follow, one per image with extracted text.",
-  "The `> Author: ...` quote, the `DisplayName:` prefix, and any bracketed lines are framing only. They are not part of what the speaker actually wrote, and they are not how Discord messages look."
+  "An optional `replying to > Author: preview` line appears first when the message is replying to an earlier one. The next line is `DisplayName: <body>` (the body may continue on additional lines). Optional `[attachments: Nx image]` and `[image_text: ...]` lines may follow, one per image with extracted text.",
+  "The `replying to > Author: ...` line, the `DisplayName:` prefix, and any bracketed lines are framing only. They are not part of what the speaker actually wrote, and they are not how Discord messages look."
 ].join("\n");
 
 const REPLY_TARGETING = [
-  "To reply to one specific earlier message, you may start your reply with a single `> Author: text-of-that-message` line. Copy the message text as closely as you can (small differences are fine; the runtime fuzzy-matches it). Put your actual reply on the next line.",
-  "The `>` quote line is not sent to Discord; it only tells the runtime which message your reply targets.",
+  "To reply to one specific earlier message, you may start your reply with a single `replying to > Author: text-of-that-message` line. Copy the message text as closely as you can (small differences are fine; the runtime fuzzy-matches it). Put your actual reply on the next line.",
+  "If you only know the speaker, write `replying to > Author`; the runtime targets that speaker's most recent message.",
+  "The `replying to >` line is not sent to Discord; it only tells the runtime which message your reply targets.",
   "Use this instead of pinging when you want to address one specific earlier message. Otherwise omit the quote entirely and just write your reply.",
-  "Quote example - to reply specifically to Kevin's earlier `what's the weather like?` message, write:\n  > Kevin: what's the weather like?\n  sunny and warm\nThe runtime consumes the `> Kevin: ...` line to set Discord's reply target; only `sunny and warm` is sent."
+  "Quote example - to reply specifically to Kevin's earlier `what's the weather like?` message, write:\n  replying to > Kevin: what's the weather like?\n  sunny and warm\nThe runtime consumes the `replying to > Kevin: ...` line to set Discord's reply target; only `sunny and warm` is sent."
 ].join("\n");
 
 const MENTION_POLICY = [
@@ -62,10 +63,10 @@ const HARD_RULES = [
   "Do not write `Name: ...` or `DisplayName: ...` lines for any character, including yourself and every other waifu in the channel.",
   "Do not draft another waifu's reply. If you find yourself doing that, stop and write only your own message.",
   "Do not include bracketed metadata tags: no `[attachments: ...]`, no `[image_text: ...]`, no `[replying to: ...]`, no `[timestamp: ...]`, no `[reactions: ...]`, no `[index: ...]`, no `[scene_direction: ...]`, and no other `[tag: value]` constructions.",
-  "Do not begin with your own display name followed by a colon. Other than the optional leading `> Author: ...` reply-targeting line, begin with the first word you are actually saying.",
+  "Do not begin with your own display name followed by a colon. Other than the optional leading `replying to > Author: ...` reply-targeting line, begin with the first word you are actually saying.",
   "Do not echo or paraphrase any prior message's bracketed framing tags.",
   "Do not output physical actions, roleplay narration, or stage directions. No asterisks-wrapped actions like *smiles* or *waves*, no parenthetical stage notes like (hugs them), and no bracketed cues like [walks over].",
-  "The optional leading `> Author: ...` reply-targeting line is the only allowed prefix exception.",
+  "The optional leading `replying to > Author: ...` reply-targeting line is the only allowed prefix exception.",
   "Never use raw Discord IDs for pings.",
   "Use only listed server emojis."
 ].join("\n");

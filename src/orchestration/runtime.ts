@@ -977,7 +977,7 @@ export class RuntimeOrchestrator {
             .filter((candidate) => candidate.id !== waifu.id && candidate.botId && candidate.modelId)
             .map((candidate) => candidate.id);
           const waifuQueryKey = runKey(input.guildId);
-          const participantDisplayNames = waifuParticipantDisplayNames(waifu, input.availableWaifus);
+          const participantDisplayNames = waifuParticipantDisplayNames(waifu, input.availableWaifus, waifuMessages);
           const waifuStopSequences = participantDisplayNames.map((name) => `\n${name}:`);
           const clippedSceneDirection = sceneDirectionForWaifu(
             responder.sceneDirection,
@@ -1031,11 +1031,20 @@ export class RuntimeOrchestrator {
                 decrementActive(this.activeWaifuQueries, waifuQueryKey);
               }
             })();
-            strippedContent = stripLeakedContextHeader(result.content, {
+            const metadataStrippedContent = stripLeakedContextHeader(result.content, {
+              senderDisplayName: waifu.displayName,
+              participantDisplayNames,
+              stripImpersonation: false
+            });
+            quoteExtraction = extractReplyQuote(metadataStrippedContent, waifuMessages);
+            strippedContent = stripLeakedContextHeader(quoteExtraction.cleanedContent, {
               senderDisplayName: waifu.displayName,
               participantDisplayNames
             });
-            if (strippedContent !== result.content) {
+            const strippedLeakedContent =
+              metadataStrippedContent !== result.content ||
+              strippedContent !== quoteExtraction.cleanedContent;
+            if (strippedLeakedContent) {
               this.options.logger.warn("Stripped leaked context header from waifu reply", {
                 guildId: input.guildId,
                 channelId: input.channelId,
@@ -1045,20 +1054,22 @@ export class RuntimeOrchestrator {
                 after: strippedContent.slice(0, 80)
               });
             }
-            quoteExtraction = extractReplyQuote(strippedContent, waifuMessages);
-            if (strippedContent !== quoteExtraction.cleanedContent) {
+            if (metadataStrippedContent !== quoteExtraction.cleanedContent) {
               this.options.logger.info("Extracted leading reply quote from waifu reply", {
                 guildId: input.guildId,
                 channelId: input.channelId,
                 waifuId: waifu.id,
                 attempt,
                 matchedMessageId: quoteExtraction.replyToMessageId ?? null,
-                quotePreview: strippedContent.slice(0, 120)
+                quotePreview: metadataStrippedContent.slice(0, 120)
               });
             }
-            chunks = splitWaifuReply(quoteExtraction.cleanedContent);
+            chunks = splitWaifuReply(strippedContent);
             const becameEmptyDueToStrip =
-              chunks.length === 0 && strippedContent.length === 0 && result.content.length > 0;
+              chunks.length === 0 &&
+              strippedContent.length === 0 &&
+              quoteExtraction.cleanedContent.length > 0 &&
+              result.content.length > 0;
             if (!becameEmptyDueToStrip || attempt === MAX_GENERATE_ATTEMPTS) break;
             this.options.logger.warn("Waifu reply was entirely impersonation; retrying once", {
               guildId: input.guildId,
@@ -2304,7 +2315,7 @@ export class RuntimeOrchestrator {
     ].join("\n");
 
     const messageStructure = [
-      "Each Discord message in the context is its own user-role turn. An optional `> Author: preview` blockquote may appear first when the message is replying to an earlier one; then `DisplayName: <body>` (the body may continue on following lines); optionally followed by `[attachments: Nx image]` when the message has images. No indices, timestamps, reactions, or raw IDs are shown. Set repleyToMessageIndex to null — references by index are not supported in this format.",
+      "Each Discord message in the context is its own user-role turn. An optional `replying to > Author: preview` line may appear first when the message is replying to an earlier one; then `DisplayName: <body>` (the body may continue on following lines); optionally followed by `[attachments: Nx image]` when the message has images. No indices, timestamps, reactions, or raw IDs are shown. Set repleyToMessageIndex to null — references by index are not supported in this format.",
       "Your own previous orchestrator_decision tool calls appear as past assistant moves interleaved with the chat in real order, so you can see the recent pattern of replies and no_reply pauses. They are not Discord messages — nobody else sees them. Use them to gauge how long the channel has actually been silent under your watch and to avoid stacking redundant no_reply choices."
     ].join("\n");
 
@@ -3074,16 +3085,27 @@ function replyTargetForFreshContext(
   return latestMessage?.id === replyToMessageId ? undefined : replyToMessageId;
 }
 
-function waifuParticipantDisplayNames(self: WaifuConfig, availableWaifus: WaifuConfig[]): string[] {
+function waifuParticipantDisplayNames(
+  self: WaifuConfig,
+  availableWaifus: WaifuConfig[],
+  messages: ContextMessage[] = []
+): string[] {
   const names: string[] = [];
   const seen = new Set<string>();
-  for (const candidate of [self, ...availableWaifus]) {
-    const name = candidate.displayName?.trim();
-    if (!name) continue;
-    const key = name.toLowerCase();
-    if (seen.has(key)) continue;
+  const addName = (name: string | undefined) => {
+    const trimmed = name?.trim();
+    if (!trimmed) return;
+    const key = trimmed.toLowerCase();
+    if (seen.has(key)) return;
     seen.add(key);
-    names.push(name);
+    names.push(trimmed);
+  };
+  for (const candidate of [self, ...availableWaifus]) {
+    addName(candidate.displayName);
+  }
+  for (const message of messages) {
+    addName(message.displayName);
+    addName(message.name);
   }
   return names;
 }

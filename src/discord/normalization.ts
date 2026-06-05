@@ -167,7 +167,11 @@ const DRAFT_MARKER_RE =
 
 export function stripLeakedContextHeader(
   content: string,
-  options: { senderDisplayName?: string; participantDisplayNames?: string[] } = {}
+  options: {
+    senderDisplayName?: string;
+    participantDisplayNames?: string[];
+    stripImpersonation?: boolean;
+  } = {}
 ): string {
   let text = content;
   const escapedSender = options.senderDisplayName
@@ -206,6 +210,7 @@ export function stripLeakedContextHeader(
   }
   text = stripInlineLeakedContextEntries(text);
   text = stripLeakedModelAnalysis(text);
+  if (options.stripImpersonation === false) return text;
   return stripImpersonationLines(text, options.senderDisplayName, options.participantDisplayNames);
 }
 
