@@ -123,6 +123,17 @@ type StageManagerDebugEntry = {
   summary: string;
 };
 
+type LastWaifuPromptDebug = {
+  guildId: string;
+  channelId: string;
+  waifuId: string;
+  waifuDisplayName: string;
+  capturedAt: string;
+  systemPrompt: string;
+  midSystemBlock: string;
+  trailingSystemBlock: string;
+};
+
 export class RuntimeOrchestrator {
   private readonly activeRuns = new Map<string, ActiveChannelRun>();
   private readonly retriggerTimers = new Map<string, NodeJS.Timeout>();
@@ -137,6 +148,7 @@ export class RuntimeOrchestrator {
   private readonly activeWaifuQueries = new Map<string, number>();
   private readonly activeReviewerRuns = new Map<string, number>();
   private readonly channelRunVersions = new Map<string, number>();
+  private lastWaifuPromptDebug?: LastWaifuPromptDebug;
   // One-shot: when a waifu in this channel just emitted a tool-only reply
   // (add_memory call with no Discord text), drop the memory tool from the
   // next decision so the chain doesn't loop on silent memory-tool turns.
@@ -519,12 +531,16 @@ export class RuntimeOrchestrator {
   private async handleDebugCommand(event: DiscordDebugCommandEvent): Promise<void> {
     try {
       if (!event.type) {
-        await event.respond("Debug type is required. Choose set or unset.");
+        await event.respond("Debug type is required. Choose set, unset, or print.");
+        return;
+      }
+      if (event.type === "print") {
+        await this.handleDebugPrintCommand(event);
         return;
       }
       const sourceChannelId = event.sourceChannelId?.trim();
       if (!sourceChannelId) {
-        await event.respond("Source channel ID is required.");
+        await event.respond("Source channel ID is required for set and unset.");
         return;
       }
       if (event.type === "unset") {
@@ -561,6 +577,26 @@ export class RuntimeOrchestrator {
       });
       await event.respond(error instanceof Error ? error.message : "Debug command failed.");
     }
+  }
+
+  private async handleDebugPrintCommand(event: DiscordDebugCommandEvent): Promise<void> {
+    const snapshot = this.lastWaifuPromptDebug;
+    if (!snapshot) {
+      await event.respond("No waifu prompt has been captured yet.");
+      return;
+    }
+    if (!this.options.discord.sendDebugMessage) {
+      throw new Error("Discord debug message sending is not available.");
+    }
+    for (const content of formatWaifuPromptDebugMessages(snapshot)) {
+      await this.options.discord.sendDebugMessage({
+        channelId: event.channelId,
+        content
+      });
+    }
+    await event.respond(
+      `Printed latest waifu prompt blocks for ${snapshot.waifuDisplayName} from channel ${snapshot.channelId}.`
+    );
   }
 
   private runtimeBusyReason(guildId: string, channelId: string): string | undefined {
@@ -1053,6 +1089,18 @@ export class RuntimeOrchestrator {
             orchestratorDecisionId: input.decisionId,
             signal: input.signal
           });
+          if (chunks.length > 0) {
+            this.lastWaifuPromptDebug = {
+              guildId: input.guildId,
+              channelId: input.channelId,
+              waifuId: waifu.id,
+              waifuDisplayName: waifu.displayName || waifu.name || waifu.id,
+              capturedAt: nowIso(),
+              systemPrompt,
+              midSystemBlock,
+              trailingSystemBlock
+            };
+          }
           if (result.shortTermMemoryEntries?.length && effectiveShortTermMemory) {
             await this.recordShortTermMemoryEntries({
               guildId: input.guildId,
@@ -2210,11 +2258,11 @@ export class RuntimeOrchestrator {
     const behaviorSections = [
       `<${waifuTag}_personality>\n${personalityContent}\n</${waifuTag}_personality>`,
       `<${waifuTag}_shedule>\n${scheduleContent}\n</${waifuTag}_shedule>`,
-      promptSections.inputFormat ? `<input_format>\n${inputFormat}\n</input_format>` : null,
+      promptSections.inputFormat ? `<context_message_structure>\n${inputFormat}\n</context_message_structure>` : null,
       promptSections.environmentInstructions
         ? `<environment_instructions>\n${environmentRules}\n</environment_instructions>`
         : null,
-      promptSections.replyTargeting ? `<reply_targeting>\n${replyTargeting}\n</reply_targeting>` : null,
+      promptSections.replyTargeting ? `<replying_to_message>\n${replyTargeting}\n</replying_to_message>` : null,
       promptSections.mentionPolicy ? `<mention_policy>\n${mentionPolicy}\n</mention_policy>` : null,
       promptSections.styleConstraints ? `<style_constraints>\n${styleConstraints}\n</style_constraints>` : null,
       promptSections.hardRules ? `<hard_rules>\n${hardRules}\n</hard_rules>` : null
@@ -2226,6 +2274,7 @@ export class RuntimeOrchestrator {
     if (toolUse) {
       behaviorSections.push(`<tool_use>\n${toolUse}\n</tool_use>`);
     }
+    const identityBlock = `<${waifuTag}_identity>\nYou are acting as ${waifu.displayName || waifu.name || waifu.id} in a discord server together with real people and other waifus\n</${waifuTag}_identity>`;
     const behaviorBlock = `<${waifuTag}_behavior>\n${behaviorSections.join("\n")}\n</${waifuTag}_behavior>`;
 
     const allMemoryLines = [...longTermLines, ...shortTermLines];
@@ -2239,7 +2288,7 @@ export class RuntimeOrchestrator {
         ? activeChatParticipants.map((participant) => `- ${participant.displayName}`).join("\n")
         : "(none)"
     }\n</active_chat_participants>`;
-    const availableEmojisBlock = `<available_emojis>\n${emojiList || "(none cached)"}\n</available_emojis>`;
+    const availableEmojisBlock = `<server_emojis>\n${emojiList || "(none cached)"}\n</server_emojis>`;
     const midSystemBlock = [directorNotesBlock, activeParticipantsBlock, availableEmojisBlock]
       .filter((section): section is string => Boolean(section))
       .join("\n");
@@ -2259,7 +2308,7 @@ export class RuntimeOrchestrator {
       .filter((section): section is string => Boolean(section))
       .join("\n");
 
-    const systemPrompt = behaviorBlock;
+    const systemPrompt = [identityBlock, behaviorBlock].join("\n");
 
     return { systemPrompt, midSystemBlock, trailingSystemBlock };
   }
@@ -2370,7 +2419,7 @@ export class RuntimeOrchestrator {
     const behavior = [
       sections.loopBreaking ? `<loop_breaking>\n${loopBreaking}\n</loop_breaking>` : null,
       sections.retriggerPacing && !replyRequired ? `<retrigger_pacing>\n${retriggerPacing}\n</retrigger_pacing>` : null,
-      sections.messageStructure ? `<message_structure>\n${messageStructure}\n</message_structure>` : null,
+      sections.messageStructure ? `<chat_message_structure>\n${messageStructure}\n</chat_message_structure>` : null,
       sections.toolUse ? `<tool_use>\n${toolUse}\n</tool_use>` : null,
       `<hard_rules>\n${hardRules}\n</hard_rules>`
     ]
@@ -2378,8 +2427,8 @@ export class RuntimeOrchestrator {
       .join("\n");
 
     return [
-      `<identity>\n${identity}\n</identity>`,
-      `<behavior>\n${behavior}\n</behavior>`,
+      `<orchestrator_identity>\n${identity}\n</orchestrator_identity>`,
+      `<orchestrator_behavior>\n${behavior}\n</orchestrator_behavior>`,
       `<discord_server_information>\n${server.name ?? server.guildId}\n</discord_server_information>`
     ].join("\n");
   }
@@ -3287,6 +3336,48 @@ function clipDebugText(value: string, maxLength = 700): string {
   const normalized = value.replace(/\s+/g, " ").trim();
   if (normalized.length <= maxLength) return normalized;
   return `${normalized.slice(0, maxLength - 1)}…`;
+}
+
+function formatWaifuPromptDebugMessages(input: LastWaifuPromptDebug): string[] {
+  return [
+    ...formatWaifuPromptDebugBlock(1, input.systemPrompt),
+    ...formatWaifuPromptDebugBlock(2, input.midSystemBlock),
+    ...formatWaifuPromptDebugBlock(3, input.trailingSystemBlock)
+  ];
+}
+
+function formatWaifuPromptDebugBlock(blockNumber: number, content: string): string[] {
+  const rawContent = content.length > 0 ? content : "(empty)";
+  const fence = promptDebugCodeFence(rawContent);
+  const messages: string[] = [];
+  let remaining = rawContent;
+  let part = 1;
+  while (remaining.length > 0) {
+    const header = part === 1 ? `## Block ${blockNumber}` : `## Block ${blockNumber} (continued ${part})`;
+    const prefix = `${header}\n${fence}xml\n`;
+    const suffix = `\n${fence}`;
+    const maxContentLength = Math.max(1, DISCORD_DEBUG_MESSAGE_LIMIT - prefix.length - suffix.length);
+    const chunk = takePromptDebugChunk(remaining, maxContentLength);
+    messages.push(`${prefix}${chunk}${suffix}`);
+    remaining = remaining.slice(chunk.length);
+    part += 1;
+  }
+  return messages;
+}
+
+function promptDebugCodeFence(content: string): string {
+  const runs = content.match(/`+/g) ?? [];
+  const longestRun = runs.reduce((longest, run) => Math.max(longest, run.length), 3);
+  return "`".repeat(longestRun + 1);
+}
+
+function takePromptDebugChunk(content: string, maxLength: number): string {
+  if (content.length <= maxLength) return content;
+  const splitAt = content.lastIndexOf("\n", maxLength);
+  if (splitAt > 0) {
+    return content.slice(0, splitAt + 1);
+  }
+  return content.slice(0, maxLength);
 }
 
 function splitDebugMessage(content: string): string[] {

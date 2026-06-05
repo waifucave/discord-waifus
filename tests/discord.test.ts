@@ -190,7 +190,7 @@ describe("orchestrator slash command payloads", () => {
     }
   });
 
-  it("registers /debug with required set/unset type and channel_id options", () => {
+  it("registers /debug with required set/unset/print type and optional channel_id", () => {
     const debug = buildOrchestratorCommandPayloads().find((payload) => payload.name === "debug");
     expect(debug?.options).toEqual([
       expect.objectContaining({
@@ -198,12 +198,13 @@ describe("orchestrator slash command payloads", () => {
         required: true,
         choices: [
           { name: "set", value: "set" },
-          { name: "unset", value: "unset" }
+          { name: "unset", value: "unset" },
+          { name: "print", value: "print" }
         ]
       }),
       expect.objectContaining({
         name: "channel_id",
-        required: true
+        required: false
       })
     ]);
   });

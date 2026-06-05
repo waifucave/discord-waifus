@@ -138,7 +138,7 @@ export type DiscordMemoriesCommandListener = (event: DiscordMemoriesCommandEvent
 export type DiscordDebugCommandListener = (event: DiscordDebugCommandEvent) => void | Promise<void>;
 
 export type DiscordClearType = "waifus" | "users" | "both" | "everything";
-export type DiscordDebugCommandType = "set" | "unset";
+export type DiscordDebugCommandType = "set" | "unset" | "print";
 
 export type DiscordDeleteMessagesResult = {
   deletedMessageIds: string[];
@@ -1084,7 +1084,7 @@ function sanitizeRunString(value: string | null): string | undefined {
 }
 
 function parseDebugCommandType(value: string | null): DiscordDebugCommandType | undefined {
-  return value === "set" || value === "unset" ? value : undefined;
+  return value === "set" || value === "unset" || value === "print" ? value : undefined;
 }
 
 function isBulkDeletableMessage(message: DiscordFetchedMessageForDelete): boolean {
@@ -1199,24 +1199,25 @@ export function buildOrchestratorCommandPayloads() {
     },
     {
       name: DEBUG_COMMAND_NAME,
-      description: "Route orchestrator and stage-manager debug logs for a source channel.",
+      description: "Route debug logs or print the latest waifu prompt blocks.",
       defaultMemberPermissions: ADMIN_COMMAND_PERMISSIONS,
       options: [
         {
           type: ApplicationCommandOptionType.String as ApplicationCommandOptionType.String,
           name: DEBUG_TYPE_OPTION_NAME,
-          description: "Whether to set or unset a debug log route.",
+          description: "Whether to set, unset, or print debug output.",
           required: true,
           choices: [
             { name: "set", value: "set" },
-            { name: "unset", value: "unset" }
+            { name: "unset", value: "unset" },
+            { name: "print", value: "print" }
           ]
         },
         {
           type: ApplicationCommandOptionType.String as ApplicationCommandOptionType.String,
           name: DEBUG_CHANNEL_ID_OPTION_NAME,
-          description: "Source channel ID whose orchestrator and stage-manager logs should be routed.",
-          required: true
+          description: "Source channel ID for set/unset. Not needed for print.",
+          required: false
         }
       ]
     }

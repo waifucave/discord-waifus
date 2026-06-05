@@ -915,7 +915,7 @@ const WAIFU_PROMPT_SECTION_OPTIONS: Array<{
   },
   {
     key: "replyTargeting",
-    label: "<reply_targeting>",
+    label: "<replying_to_message>",
     hint: "Includes the quote-line syntax for targeting a specific Discord reply."
   },
   {
@@ -925,7 +925,7 @@ const WAIFU_PROMPT_SECTION_OPTIONS: Array<{
   },
   {
     key: "inputFormat",
-    label: "<input_format>",
+    label: "<context_message_structure>",
     hint: "Includes the incoming transcript framing explanation."
   },
   {

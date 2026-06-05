@@ -907,7 +907,7 @@ function buildOpenAiChatOrchestratorMessages(
       });
     }
   }
-  messages.push({ role: "system", content: input.trailingPrompt });
+  messages.push({ role: "user", content: input.trailingPrompt });
   return messages;
 }
 

@@ -24,7 +24,7 @@ import type { ReasoningConfig } from "../api/types";
 const PROMPT_SECTION_OPTIONS: Array<{ key: keyof OrchestratorPromptSections; label: string }> = [
   { key: "loopBreaking", label: "<loop_breaking>" },
   { key: "retriggerPacing", label: "<retrigger_pacing>" },
-  { key: "messageStructure", label: "<message_structure>" },
+  { key: "messageStructure", label: "<chat_message_structure>" },
   { key: "toolUse", label: "<tool_use>" }
 ];
 

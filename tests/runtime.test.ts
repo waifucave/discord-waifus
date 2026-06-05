@@ -293,7 +293,7 @@ class FakePipeline implements ModelPipeline {
   async generateWaifu(request: WaifuGenerationRequest) {
     expect(request.systemPrompt).toContain("You are Yuki");
     expect(request.systemPrompt).toMatch(
-      /<yuki_behavior>\n<yuki_personality>[\s\S]*You are Yuki[\s\S]*kind[\s\S]*<\/yuki_personality>\n<yuki_shedule>[\s\S]*configured routine[\s\S]*changes only when your schedule is edited[\s\S]*Sleep: 23:00-07:00 daily[\s\S]*09:00-10:00: school focus block[\s\S]*<\/yuki_shedule>\n<input_format>[\s\S]*DisplayName: <body>[\s\S]*framing only[\s\S]*<\/input_format>\n<environment_instructions>[\s\S]*live Discord text channel[\s\S]*<\/environment_instructions>\n<reply_targeting>[\s\S]*runtime fuzzy-matches[\s\S]*<\/reply_targeting>\n<mention_policy>[\s\S]*Do not ping a user who is already active[\s\S]*<\/mention_policy>\n<style_constraints>[\s\S]*Write exactly one short phrase[\s\S]*Never write a second sentence[\s\S]*This length rule overrides your persona, reply_style, and scene_direction[\s\S]*<\/style_constraints>\n<hard_rules>[\s\S]*raw message body[\s\S]*Do not include bracketed metadata tags[\s\S]*Do not output physical actions[\s\S]*Use only listed server emojis[\s\S]*<\/hard_rules>/
+      /<yuki_identity>\nYou are acting as Yuki in a discord server together with real people and other waifus\n<\/yuki_identity>\n<yuki_behavior>\n<yuki_personality>[\s\S]*You are Yuki[\s\S]*kind[\s\S]*<\/yuki_personality>\n<yuki_shedule>[\s\S]*configured routine[\s\S]*changes only when your schedule is edited[\s\S]*Sleep: 23:00-07:00 daily[\s\S]*09:00-10:00: school focus block[\s\S]*<\/yuki_shedule>\n<context_message_structure>[\s\S]*DisplayName: <body>[\s\S]*framing only[\s\S]*<\/context_message_structure>\n<environment_instructions>[\s\S]*live Discord text channel[\s\S]*<\/environment_instructions>\n<replying_to_message>[\s\S]*runtime fuzzy-matches[\s\S]*<\/replying_to_message>\n<mention_policy>[\s\S]*Do not ping a user who is already active[\s\S]*<\/mention_policy>\n<style_constraints>[\s\S]*Write exactly one short phrase[\s\S]*Never write a second sentence[\s\S]*This length rule overrides your persona, reply_style, and scene_direction[\s\S]*<\/style_constraints>\n<hard_rules>[\s\S]*raw message body[\s\S]*Do not include bracketed metadata tags[\s\S]*Do not output physical actions[\s\S]*Use only listed server emojis[\s\S]*<\/hard_rules>/
     );
     expect(request.systemPrompt).not.toContain("<behavior>");
     expect(request.systemPrompt).not.toContain("<personality_instructions>");
@@ -307,13 +307,13 @@ class FakePipeline implements ModelPipeline {
     );
     expect(request.systemPrompt).not.toMatch(/<memories>/);
     expect(request.systemPrompt).not.toMatch(/<short_term_memory>/);
-    expect(request.systemPrompt).not.toMatch(/<server_emojis>/);
     expect(request.systemPrompt).not.toMatch(/<available_emojis>/);
+    expect(request.systemPrompt).not.toMatch(/<server_emojis>/);
     expect(request.systemPrompt).not.toMatch(/<current_time>/);
     expect(request.systemPrompt).toMatch(/<\/yuki_behavior>$/);
     expect(request.midSystemBlock).toBeDefined();
     expect(request.midSystemBlock).toMatch(
-      /<director_notes>[\s\S]*Keep your reply short\.[\s\S]*<\/director_notes>\n<active_chat_participants>[\s\S]*- Kevin[\s\S]*<\/active_chat_participants>\n<available_emojis>[\s\S]*<\/available_emojis>/
+      /<director_notes>[\s\S]*Keep your reply short\.[\s\S]*<\/director_notes>\n<active_chat_participants>[\s\S]*- Kevin[\s\S]*<\/active_chat_participants>\n<server_emojis>[\s\S]*<\/server_emojis>/
     );
     expect(request.midSystemBlock).not.toMatch(/<memories>|<relevant_memories>/);
     expect(request.trailingSystemBlock).toBeDefined();
@@ -329,6 +329,12 @@ class FakePipeline implements ModelPipeline {
     expect(request.systemPrompt).not.toMatch(/<active_waifus>\n[\s\S]*<\/active_waifus>/);
     expect(request.systemPrompt).not.toMatch(/<task_instructions>\n[\s\S]*<\/task_instructions>/);
     expect(request.systemPrompt).not.toMatch(/<current_time>\n[\s\S]*<\/current_time>/);
+    expect(request.systemPrompt).toContain("<orchestrator_identity>");
+    expect(request.systemPrompt).toContain("<orchestrator_behavior>");
+    expect(request.systemPrompt).toContain("<chat_message_structure>");
+    expect(request.systemPrompt).not.toContain("<identity>");
+    expect(request.systemPrompt).not.toContain("<behavior>");
+    expect(request.systemPrompt).not.toContain("<message_structure>");
     expect(request.systemPrompt).toContain("do not default to no_reply");
     expect(request.systemPrompt).toContain("Prefer a two-waifu chain");
     expect(request.systemPrompt).toContain("0 to 30");
@@ -892,15 +898,15 @@ describe("RuntimeOrchestrator", () => {
         expect(request.systemPrompt).toContain("<yuki_behavior>");
         expect(request.systemPrompt).not.toContain("<personality_instructions>");
         expect(request.systemPrompt).not.toContain("<your_schedule>");
-        expect(request.systemPrompt).not.toContain("<input_format>");
+        expect(request.systemPrompt).not.toContain("<context_message_structure>");
         expect(request.systemPrompt).not.toContain("<environment_instructions>");
-        expect(request.systemPrompt).not.toContain("<reply_targeting>");
+        expect(request.systemPrompt).not.toContain("<replying_to_message>");
         expect(request.systemPrompt).not.toContain("<mention_policy>");
         expect(request.systemPrompt).not.toContain("<style_constraints>");
         expect(request.systemPrompt).not.toContain("<hard_rules>");
         expect(request.midSystemBlock).not.toContain("<director_notes>");
         expect(request.midSystemBlock).toContain("<active_chat_participants>");
-        expect(request.midSystemBlock).toContain("<available_emojis>");
+        expect(request.midSystemBlock).toContain("<server_emojis>");
         expect(request.trailingSystemBlock).not.toContain("<yuki_personality>");
         expect(request.trailingSystemBlock).toContain("<scene_direction>answer Kevin</scene_direction>");
         return { content: "plain reply" };
@@ -2930,6 +2936,108 @@ describe("RuntimeOrchestrator", () => {
       "Debug logs for channel source-channel will be posted in this channel.",
       "Debug logs disabled for channel source-channel."
     ]);
+  });
+
+  it("reports when /debug print has no captured waifu prompt yet", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+
+    await seedRuntimeConfig(storage);
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      createPipeline: () => ({
+        async generateWaifu() {
+          return { content: "unused" };
+        }
+      }),
+      logger: quietLogger()
+    });
+    await runtime.start();
+
+    const responses: string[] = [];
+    await discord.emitDebugCommand({
+      guildId: "guild-b",
+      channelId: "print-channel",
+      userId: "admin-user",
+      type: "print",
+      respond: async (content) => {
+        responses.push(content);
+      }
+    });
+    await waitFor(() => responses.length === 1, "debug print empty response");
+    await runtime.stop();
+
+    expect(responses).toEqual(["No waifu prompt has been captured yet."]);
+    expect(discord.debugMessages).toEqual([]);
+  });
+
+  it("prints the latest waifu prompt blocks in the channel where /debug print is used", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.contexts = [[contextMessage("m1", "user", "Kevin", "hello")]];
+
+    await seedRuntimeConfig(storage);
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 1,
+      createPipeline: () => ({
+        async decideOrchestrator() {
+          return {
+            action: "reply",
+            respondingWaifus: [
+              { waifuId: "yuki", delaySeconds: 0, replyStyle: "normal", sceneDirection: "answer Kevin" }
+            ],
+            reasoning: "Yuki should answer Kevin."
+          };
+        },
+        async generateWaifu() {
+          return { content: "sure" };
+        }
+      }),
+      logger: quietLogger()
+    });
+    await runtime.start();
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await waitFor(() => discord.sent.length === 1, "waifu message sent");
+    expect(discord.debugMessages).toEqual([]);
+
+    const responses: string[] = [];
+    await discord.emitDebugCommand({
+      guildId: "guild-b",
+      channelId: "print-channel",
+      userId: "admin-user",
+      type: "print",
+      respond: async (content) => {
+        responses.push(content);
+      }
+    });
+    await waitFor(() => responses.length === 1, "debug print response");
+    await runtime.stop();
+
+    expect(responses).toEqual(["Printed latest waifu prompt blocks for Yuki from channel channel-1."]);
+    expect(discord.debugMessages.length).toBeGreaterThanOrEqual(3);
+    expect(discord.debugMessages.every((message) => message.channelId === "print-channel")).toBe(true);
+    const printed = discord.debugMessages.map((message) => message.content).join("\n");
+    expect(printed).toContain("## Block 1");
+    expect(printed).toContain("## Block 2");
+    expect(printed).toContain("## Block 3");
+    expect(printed).toContain("<yuki_identity>");
+    expect(printed).toContain("<active_chat_participants>");
+    expect(printed).toContain("<scene_direction>answer Kevin</scene_direction>");
+    expect(printed).not.toContain("\\n");
   });
 
   it("posts orchestrator reply decisions to the configured debug channel", async () => {

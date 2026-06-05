@@ -578,7 +578,7 @@ describe("provider-native decision tools", () => {
     const toolResultMessage = messages.find((m) => m.role === "tool");
     expect(toolResultMessage?.tool_call_id).toBe("decision-1");
     const trailing = messages[messages.length - 1];
-    expect(trailing.role).toBe("system");
+    expect(trailing.role).toBe("user");
     expect(trailing.content).toBe("trailing-block");
   });
 
@@ -1434,7 +1434,7 @@ describe("trailing system message payloads", () => {
 });
 
 describe("mid-system block injection", () => {
-  const midPayload = "<director_notes>\nKeep it short.\n</director_notes>\n<active_chat_participants>\n- Kevin\n</active_chat_participants>\n<available_emojis>\n(none cached)\n</available_emojis>";
+  const midPayload = "<director_notes>\nKeep it short.\n</director_notes>\n<active_chat_participants>\n- Kevin\n</active_chat_participants>\n<server_emojis>\n(none cached)\n</server_emojis>";
   const trailingPayload = "<relevant_memories>\n- example\n</relevant_memories>\n<yuki_personality>\nYou are Yuki\n</yuki_personality>";
 
   it("OpenAI Chat: inserts midSystemBlock at contextLen - 2, leaving 2 chat messages before trailing", async () => {
