@@ -315,10 +315,10 @@ class FakePipeline implements ModelPipeline {
     expect(request.midSystemBlock).toMatch(
       /<director_notes>[\s\S]*Keep your reply short\.[\s\S]*<\/director_notes>\n<active_chat_participants>[\s\S]*- Kevin[\s\S]*<\/active_chat_participants>\n<server_emojis>[\s\S]*<\/server_emojis>/
     );
-    expect(request.midSystemBlock).not.toMatch(/<memories>|<relevant_memories>/);
+    expect(request.midSystemBlock).not.toMatch(/<memories>|<relevant_memories>|<yuki_relevant_memories>/);
     expect(request.trailingSystemBlock).toBeDefined();
     expect(request.trailingSystemBlock).toMatch(
-      /<relevant_memories>\n- Yuki remembers Kevin likes tea\.\n<\/relevant_memories>\n<yuki_personality>[\s\S]*You are Yuki[\s\S]*<\/yuki_personality>/
+      /<yuki_relevant_memories>\n- Yuki remembers Kevin likes tea\.\n<\/yuki_relevant_memories>\n<yuki_personality>[\s\S]*You are Yuki[\s\S]*<\/yuki_personality>/
     );
     expect(request.trailingSystemBlock).toMatch(/<scene_direction>answer Kevin, then pull in Mira<\/scene_direction>/);
     return { content: "hello <@Kevin> <:cutecat:>" };
@@ -2873,7 +2873,7 @@ describe("RuntimeOrchestrator", () => {
     expect(responses).toEqual(["Cleared 3 messages."]);
   });
 
-  it("sets and unsets a cross-guild debug log route from /debug", async () => {
+  it("sets and unsets a cross-guild debug log route from /console", async () => {
     const root = await makeTempRoot();
     roots.push(root);
     await ensureDataLayout(root);
@@ -2938,7 +2938,7 @@ describe("RuntimeOrchestrator", () => {
     ]);
   });
 
-  it("reports when /debug print has no captured waifu prompt yet", async () => {
+  it("reports when /console print has no captured waifu prompt yet", async () => {
     const root = await makeTempRoot();
     roots.push(root);
     await ensureDataLayout(root);
@@ -2977,7 +2977,7 @@ describe("RuntimeOrchestrator", () => {
     expect(discord.debugMessages).toEqual([]);
   });
 
-  it("prints the latest waifu prompt blocks in the channel where /debug print is used", async () => {
+  it("prints the latest waifu prompt blocks in the channel where /console print is used", async () => {
     const root = await makeTempRoot();
     roots.push(root);
     await ensureDataLayout(root);
@@ -2986,6 +2986,7 @@ describe("RuntimeOrchestrator", () => {
     discord.contexts = [[contextMessage("m1", "user", "Kevin", "hello")]];
 
     await seedRuntimeConfig(storage);
+    await seedWaifu(storage, "yuki", "Yuki", "yuki-bot", `kind\n${"long detail line\n".repeat(260)}`);
 
     const runtime = new RuntimeOrchestrator({
       sleep: async () => undefined,
@@ -3028,12 +3029,14 @@ describe("RuntimeOrchestrator", () => {
     await runtime.stop();
 
     expect(responses).toEqual(["Printed latest waifu prompt blocks for Yuki from channel channel-1."]);
-    expect(discord.debugMessages.length).toBeGreaterThanOrEqual(3);
+    expect(discord.debugMessages.length).toBeGreaterThan(3);
     expect(discord.debugMessages.every((message) => message.channelId === "print-channel")).toBe(true);
     const printed = discord.debugMessages.map((message) => message.content).join("\n");
     expect(printed).toContain("## Block 1");
     expect(printed).toContain("## Block 2");
     expect(printed).toContain("## Block 3");
+    expect(printed).not.toContain("(continued");
+    expect(printed).not.toMatch(/`{3,}xml/);
     expect(printed).toContain("<yuki_identity>");
     expect(printed).toContain("<active_chat_participants>");
     expect(printed).toContain("<scene_direction>answer Kevin</scene_direction>");
@@ -4644,9 +4647,10 @@ describe("RuntimeOrchestrator", () => {
     expect(secondPrompt).not.toMatch(/<short_term_memory>/);
     expect(secondPrompt).not.toContain("<memories>");
     expect(secondPrompt).not.toContain("<relevant_memories>\n");
+    expect(secondPrompt).not.toContain("<yuki_relevant_memories>\n");
     const secondMemoriesBlock = capturedTrailingBlocks[1];
     expect(secondMemoriesBlock).toBeDefined();
-    expect(secondMemoriesBlock).toMatch(/<relevant_memories>[\s\S]*Kevin is heading out at 5pm\.[\s\S]*Kevin prefers green tea today\.[\s\S]*<\/relevant_memories>/);
+    expect(secondMemoriesBlock).toMatch(/<yuki_relevant_memories>[\s\S]*Kevin is heading out at 5pm\.[\s\S]*Kevin prefers green tea today\.[\s\S]*<\/yuki_relevant_memories>/);
     expect(secondMemoriesBlock).not.toMatch(/<short_term>/);
     expect(secondMemoriesBlock).not.toMatch(/<long_term>/);
   });

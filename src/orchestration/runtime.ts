@@ -76,6 +76,7 @@ export type RuntimeOrchestratorOptions = {
   createPipeline?: (modelId: string, credentials: PipelineCredentials) => ModelPipeline;
   ocr?: {
     enrichMessages(messages: ContextMessage[], options?: { signal?: AbortSignal }): Promise<ContextMessage[]>;
+    dispose?(): Promise<void>;
   };
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   stageManagerIdleDelayMs?: number;
@@ -203,6 +204,7 @@ export class RuntimeOrchestrator {
     }
     this.unsubscribes = [];
     await this.pause();
+    await this.options.ocr?.dispose?.();
   }
 
   async pause(): Promise<void> {
@@ -2279,7 +2281,7 @@ export class RuntimeOrchestrator {
 
     const allMemoryLines = [...longTermLines, ...shortTermLines];
     const relevantMemoriesBlock = allMemoryLines.length
-      ? `<relevant_memories>\n${allMemoryLines.join("\n")}\n</relevant_memories>`
+      ? `<${waifuTag}_relevant_memories>\n${allMemoryLines.join("\n")}\n</${waifuTag}_relevant_memories>`
       : undefined;
 
     const directorNotesBlock = promptSections.directorNotes ? buildDirectorNotesBlock() : undefined;
@@ -2988,7 +2990,7 @@ function buildWaifuToolUseInstructions(
         "You may call it multiple times in one reply (up to 5) to record separate notes.",
         "Calling add_memory does NOT replace your Discord reply. Always also write your normal message body in the same turn — the tool call alone leaves the room silent.",
         "Do not use it for trivial chitchat, repeat lines you already wrote, or things that belong in long-term memory. Entries auto-expire after 24h.",
-        "Before calling, scan <relevant_memories> — if the fact is already listed (even paraphrased), do NOT call add_memory for it again.",
+        `Before calling, scan <${promptTagName(waifu.name || waifu.id)}_relevant_memories> — if the fact is already listed (even paraphrased), do NOT call add_memory for it again.`,
         "Arguments: { \"content\": string }."
       ].join("\n")
     );
@@ -3353,8 +3355,7 @@ function formatWaifuPromptDebugBlock(blockNumber: number, content: string): stri
   let remaining = rawContent;
   let part = 1;
   while (remaining.length > 0) {
-    const header = part === 1 ? `## Block ${blockNumber}` : `## Block ${blockNumber} (continued ${part})`;
-    const prefix = `${header}\n${fence}xml\n`;
+    const prefix = part === 1 ? `## Block ${blockNumber}\n${fence}\n` : `${fence}\n`;
     const suffix = `\n${fence}`;
     const maxContentLength = Math.max(1, DISCORD_DEBUG_MESSAGE_LIMIT - prefix.length - suffix.length);
     const chunk = takePromptDebugChunk(remaining, maxContentLength);

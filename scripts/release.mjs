@@ -11,18 +11,6 @@ import { spawnSync } from "node:child_process";
 const repo = "HeavenllyDemon/Discord-Waifus";
 const rootPackage = "@starlight-ai/discord-waifus";
 const npmCache = "/tmp/codex-npm-cache";
-const ocrPackages = [
-  "@starlight-ai/discord-waifus-ocr-darwin-arm64",
-  "@starlight-ai/discord-waifus-ocr-darwin-x64",
-  "@starlight-ai/discord-waifus-ocr-linux-x64-gnu",
-  "@starlight-ai/discord-waifus-ocr-win32-x64",
-];
-const ocrPackageDirs = [
-  "packages/ocr-darwin-arm64",
-  "packages/ocr-darwin-x64",
-  "packages/ocr-linux-x64-gnu",
-  "packages/ocr-win32-x64",
-];
 
 const args = parseArgs(process.argv.slice(2));
 
@@ -71,9 +59,6 @@ async function main() {
   ensureNoRemoteTag(tag);
   ensureNoRelease(tag);
   ensurePackageVersionMissing(rootPackage, version);
-  for (const name of ocrPackages) {
-    ensurePackageVersionMissing(name, version);
-  }
 
   if (args.dryRun) {
     console.log(`Dry run passed. ${tag} can be released from ${head}.`);
@@ -119,12 +104,6 @@ async function main() {
     "--notes",
     args.message ? `${args.message}\n\nRelease ${version}.` : `Release ${version}.`,
   ]);
-
-  const ocrRunId = waitForWorkflowRun("OCR Packages", {
-    headBranch: tag,
-    event: "release",
-  });
-  run("gh", ["run", "watch", String(ocrRunId), "--repo", repo, "--exit-status"]);
 
   const rootWorkflowStartedAt = new Date();
   const workflowRun = run("gh", [
@@ -217,7 +196,7 @@ Examples:
   npm run release:beta -- 1.5.121 --yes --message "fix: improve waifu reply targeting"
 
 This beta script bumps versions, validates, packs, commits, pushes, creates the
-GitHub release, watches OCR/root npm workflows, verifies npm latest, verifies
+GitHub release, watches the root npm workflow, verifies npm latest, verifies
 release assets, and smoke-installs from npm.`);
 }
 
@@ -227,14 +206,6 @@ function isSemver(version) {
 
 function bumpVersions(version) {
   run("npm", ["version", version, "--no-git-tag-version"]);
-  run("npm", [
-    "pkg",
-    "set",
-    ...ocrPackages.map((name) => `optionalDependencies.${name}=${version}`),
-  ]);
-  for (const dir of ocrPackageDirs) {
-    run("npm", ["pkg", "set", `version=${version}`, "--prefix", dir]);
-  }
   run("npm", ["install", "--package-lock-only", "--ignore-scripts"]);
 }
 
@@ -257,12 +228,18 @@ function validateAndPack(version) {
 }
 
 function verifyRegistry(version) {
-  for (const name of [rootPackage, ...ocrPackages]) {
-    const info = JSON.parse(capture("npm", ["view", name, "version", "dist-tags", "license", "--json"], { npmCache: true }));
-    if (info.version !== version || info["dist-tags"]?.latest !== version) {
-      throw new Error(`${name} registry verification failed: ${JSON.stringify(info)}`);
+  const deadline = Date.now() + 120_000;
+  let lastInfo;
+  while (Date.now() < deadline) {
+    const info = JSON.parse(capture("npm", ["view", rootPackage, "version", "dist-tags", "license", "--json"], { npmCache: true }));
+    if (info.version === version && info["dist-tags"]?.latest === version) {
+      return;
     }
+    lastInfo = info;
+    console.log(`${rootPackage} registry still stale: ${JSON.stringify(info)}. Retrying...`);
+    sleep(5_000);
   }
+  throw new Error(`${rootPackage} registry verification failed: ${JSON.stringify(lastInfo)}`);
 }
 
 function verifyRelease(tag, version, expectedSha) {
@@ -281,10 +258,6 @@ function verifyRelease(tag, version, expectedSha) {
 
   const expectedAssets = new Set([
     `starlight-ai-discord-waifus-${version}.tgz`,
-    `starlight-ai-discord-waifus-ocr-darwin-arm64-${version}.tgz`,
-    `starlight-ai-discord-waifus-ocr-darwin-x64-${version}.tgz`,
-    `starlight-ai-discord-waifus-ocr-linux-x64-gnu-${version}.tgz`,
-    `starlight-ai-discord-waifus-ocr-win32-x64-${version}.tgz`,
   ]);
   const actualAssets = new Set(release.assets.map((asset) => asset.name));
   for (const asset of expectedAssets) {

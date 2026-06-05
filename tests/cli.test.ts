@@ -23,7 +23,7 @@ describe("CLI parser", () => {
 });
 
 describe("waifus update", () => {
-  it("updates npm packages globally with the matching OCR package by default", async () => {
+  it("updates the npm package globally", async () => {
     silenceCliOutput();
     const env = { PATH: "/usr/bin" };
     const { calls, runner } = createRunner();
@@ -31,8 +31,6 @@ describe("waifus update", () => {
     const code = await runCommand(parseCliArgs(["update"]), {
       env,
       platform: "linux",
-      arch: "x64",
-      libc: "glibc",
       processRunner: runner
     });
 
@@ -40,35 +38,7 @@ describe("waifus update", () => {
     expect(calls).toEqual([
       {
         command: "npm",
-        args: [
-          "install",
-          "-g",
-          "--include=optional",
-          "@starlight-ai/discord-waifus@latest",
-          "@starlight-ai/discord-waifus-ocr-linux-x64-gnu@latest"
-        ],
-        options: { env }
-      }
-    ]);
-  });
-
-  it("updates npm packages globally without OCR when no matching OCR package exists", async () => {
-    silenceCliOutput();
-    const env = { PATH: "/usr/bin" };
-    const { calls, runner } = createRunner();
-
-    const code = await runCommand(parseCliArgs(["update"]), {
-      env,
-      platform: "linux",
-      arch: "arm64",
-      processRunner: runner
-    });
-
-    expect(code).toBe(0);
-    expect(calls).toEqual([
-      {
-        command: "npm",
-        args: ["install", "-g", "--include=optional", "@starlight-ai/discord-waifus@latest"],
+        args: ["install", "-g", "@starlight-ai/discord-waifus@latest"],
         options: { env }
       }
     ]);
@@ -109,7 +79,7 @@ describe("waifus update", () => {
     ]);
   });
 
-  it("adds the matching OCR package when updating from GitHub releases", async () => {
+  it("installs only the root tarball from GitHub releases, ignoring legacy OCR assets", async () => {
     silenceCliOutput();
     const env = { PATH: "/usr/bin" };
     const { calls, runner } = createRunner();
@@ -132,7 +102,6 @@ describe("waifus update", () => {
         ]
       }),
       platform: "win32",
-      arch: "x64",
       processRunner: runner
     });
 
@@ -143,8 +112,7 @@ describe("waifus update", () => {
         args: [
           "install",
           "-g",
-          "https://github.com/HeavenllyDemon/Discord-Waifus/releases/download/v1.2.0/starlight-ai-discord-waifus-1.2.0.tgz",
-          "https://github.com/HeavenllyDemon/Discord-Waifus/releases/download/v1.2.0/starlight-ai-discord-waifus-ocr-win32-x64-1.2.0.tgz"
+          "https://github.com/HeavenllyDemon/Discord-Waifus/releases/download/v1.2.0/starlight-ai-discord-waifus-1.2.0.tgz"
         ],
         options: { env }
       }

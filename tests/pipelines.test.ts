@@ -1435,7 +1435,7 @@ describe("trailing system message payloads", () => {
 
 describe("mid-system block injection", () => {
   const midPayload = "<director_notes>\nKeep it short.\n</director_notes>\n<active_chat_participants>\n- Kevin\n</active_chat_participants>\n<server_emojis>\n(none cached)\n</server_emojis>";
-  const trailingPayload = "<relevant_memories>\n- example\n</relevant_memories>\n<yuki_personality>\nYou are Yuki\n</yuki_personality>";
+  const trailingPayload = "<yuki_relevant_memories>\n- example\n</yuki_relevant_memories>\n<yuki_personality>\nYou are Yuki\n</yuki_personality>";
 
   it("OpenAI Chat: inserts midSystemBlock at contextLen - 2, leaving 2 chat messages before trailing", async () => {
     mockFetch({ choices: [{ message: { content: "ok" } }] });

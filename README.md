@@ -13,9 +13,9 @@ npm install -g @starlight-ai/discord-waifus@latest
 waifus start
 ```
 
-The npm install also pulls the matching optional OCR runtime package for your
-platform when one is available, so image text fallback does not require a global
-Tesseract install.
+Image-text fallback (OCR) works out of the box on every platform: a bundled
+WebAssembly Tesseract (`tesseract.js`) ships with the package along with the
+English model, so no global Tesseract install is required.
 
 Open the web UI:
 
@@ -32,12 +32,8 @@ npm install -g ./starlight-ai-discord-waifus-1.0.0.tgz
 waifus start
 ```
 
-For zero-install OCR from a GitHub release, install the matching OCR asset in
-the same command, for example:
-
-```sh
-npm install -g ./starlight-ai-discord-waifus-1.0.0.tgz ./starlight-ai-discord-waifus-ocr-darwin-arm64-1.0.0.tgz
-```
+The release tarball already bundles the WebAssembly OCR runtime and English
+model, so there is nothing extra to install for OCR.
 
 GitHub release installs can update from the next release asset with:
 
@@ -45,11 +41,8 @@ GitHub release installs can update from the next release asset with:
 waifus update --github
 ```
 
-When the release includes platform OCR assets, `waifus update --github` installs
-the main package plus the OCR asset matching the current OS and CPU.
-
-`waifus doctor` reports whether the matching bundled OCR package is installed
-and whether its Tesseract binary and English traineddata are usable.
+`waifus doctor` reports whether bundled OCR is usable, including the resolved
+`tesseract.js` and model paths.
 
 ## Build From Source
 
@@ -147,9 +140,10 @@ Use `waifus clean` only when you intentionally want to delete saved user data.
 
 ## License
 
-Discord Waifus is licensed under the MIT License. Bundled OCR packages include
-third-party Tesseract, Leptonica, traineddata, and runtime library notices under
-their package `licenses/` folders and `THIRD_PARTY_NOTICES.md` files.
+Discord Waifus is licensed under the MIT License. The bundled OCR runtime
+(`tesseract.js` / `tesseract.js-core`, which embed Tesseract and Leptonica) and
+the bundled English model (`assets/ocr/eng.traineddata`) are third-party
+components under the Apache License 2.0; see `THIRD_PARTY_NOTICES.md`.
 
 ## Release Notes
 

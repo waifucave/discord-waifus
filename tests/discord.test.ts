@@ -185,14 +185,15 @@ describe("orchestrator slash command payloads", () => {
 
     expect(run).toBeDefined();
     expect(run).not.toHaveProperty("defaultMemberPermissions");
-    for (const name of ["review", "clear", "stop", "memories", "debug"]) {
+    for (const name of ["review", "clear", "stop", "memories", "console"]) {
       expect(byName.get(name)?.defaultMemberPermissions).toBe(8n);
     }
+    expect(byName.has("debug")).toBe(false);
   });
 
-  it("registers /debug with required set/unset/print type and optional channel_id", () => {
-    const debug = buildOrchestratorCommandPayloads().find((payload) => payload.name === "debug");
-    expect(debug?.options).toEqual([
+  it("registers /console with required set/unset/print type and optional channel_id", () => {
+    const consoleCommand = buildOrchestratorCommandPayloads().find((payload) => payload.name === "console");
+    expect(consoleCommand?.options).toEqual([
       expect.objectContaining({
         name: "type",
         required: true,

@@ -3,13 +3,22 @@ import { execFile } from "node:child_process";
 import { access, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
+import { createWorker, OEM, PSM } from "tesseract.js";
+import type { Worker as TesseractWorker } from "tesseract.js";
 import { Logger } from "../backend/logger.js";
 import { appDataPath } from "../config/paths.js";
 import { OcrConfig } from "../shared/schemas/config.js";
 import { AttachmentImage, ContextMessage } from "./context.js";
-import { buildBundledOcrEnv, resolveBundledOcrPackage } from "./ocrPackages.js";
+import { BUNDLED_OCR_LANGUAGE, bundledOcrLangPath } from "./ocrPackages.js";
 
 const execFileAsync = promisify(execFile);
+
+// WASM recognition is much slower than the old native binary, and cold worker
+// init can take several seconds. Worker init is awaited before the recognize
+// timer starts, so this floor only bounds the recognize pass itself — and it is
+// kept separate from `config.timeoutMs` (which also governs image downloads and
+// the Apple Vision / system-tesseract engines).
+const BUNDLED_OCR_RECOGNIZE_TIMEOUT_MS = 15_000;
 
 const CACHE_SCHEMA_VERSION = 1;
 const TEMP_FILE_TTL_MS = 60 * 60 * 1000;
@@ -65,9 +74,15 @@ type OcrEngine = "apple-vision" | "bundled-tesseract" | "system-tesseract";
 
 export class ImageOcrService {
   private helperPathPromise?: Promise<string>;
+  private tesseractWorkerPromise?: Promise<TesseractWorker>;
   private lastCleanupAt = 0;
 
   constructor(private readonly options: ImageOcrServiceOptions) {}
+
+  /** Terminate the reused tesseract.js worker (if any). Call on shutdown. */
+  async dispose(): Promise<void> {
+    await this.disposeTesseractWorker();
+  }
 
   async cleanupExpired(): Promise<void> {
     await Promise.all([
@@ -198,22 +213,51 @@ export class ImageOcrService {
   }
 
   private async runBundledTesseract(imagePath: string): Promise<string> {
-    const bundle = await resolveBundledOcrPackage();
-    const { stdout } = await execFileAsync(bundle.binaryPath, [
-      imagePath,
-      "stdout",
-      "-l",
-      "eng",
-      "--psm",
-      "11",
-      "--tessdata-dir",
-      bundle.tessdataPath
-    ], {
-      env: buildBundledOcrEnv(bundle),
-      timeout: this.options.config.timeoutMs,
-      maxBuffer: 512 * 1024
+    const worker = await this.ensureTesseractWorker();
+    const timeoutMs = Math.max(this.options.config.timeoutMs, BUNDLED_OCR_RECOGNIZE_TIMEOUT_MS);
+    const recognition = worker.recognize(imagePath);
+    // On timeout we discard this promise and terminate the worker; keep a no-op
+    // handler so a late rejection does not surface as an unhandledRejection.
+    void recognition.catch(() => undefined);
+    try {
+      const { data } = await withTimeout(recognition, timeoutMs, "Bundled OCR recognition timed out.");
+      return sanitizeOcrText(data.text ?? "", this.options.config.maxTextCharsPerImage);
+    } catch (error) {
+      // A worker stays busy on a job until it resolves; a timed-out or errored
+      // job would block every subsequent image. Drop the worker so the next call
+      // starts from a clean one.
+      await this.disposeTesseractWorker();
+      throw error;
+    }
+  }
+
+  private async ensureTesseractWorker(): Promise<TesseractWorker> {
+    this.tesseractWorkerPromise ??= this.createTesseractWorker();
+    try {
+      return await this.tesseractWorkerPromise;
+    } catch (error) {
+      this.tesseractWorkerPromise = undefined;
+      throw error;
+    }
+  }
+
+  private async createTesseractWorker(): Promise<TesseractWorker> {
+    const worker = await createWorker(BUNDLED_OCR_LANGUAGE, OEM.LSTM_ONLY, {
+      langPath: bundledOcrLangPath(),
+      gzip: false,
+      cacheMethod: "none"
     });
-    return sanitizeOcrText(stdout, this.options.config.maxTextCharsPerImage);
+    // PSM 11 (sparse text) matches the old native `--psm 11` and suits the
+    // scattered text typical of screenshots.
+    await worker.setParameters({ tessedit_pageseg_mode: PSM.SPARSE_TEXT });
+    return worker;
+  }
+
+  private async disposeTesseractWorker(): Promise<void> {
+    const pending = this.tesseractWorkerPromise;
+    this.tesseractWorkerPromise = undefined;
+    if (!pending) return;
+    await pending.then((worker) => worker.terminate()).catch(() => undefined);
   }
 
   private async runSystemTesseract(imagePath: string): Promise<string> {
@@ -478,6 +522,18 @@ async function safeReaddir(dir: string): Promise<string[]> {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
     throw error;
+  }
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 

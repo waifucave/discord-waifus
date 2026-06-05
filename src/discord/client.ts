@@ -867,7 +867,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   private async handleDebugInteraction(interaction: ChatInputCommandInteraction): Promise<void> {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     if (!interaction.guildId || !interaction.channelId) {
-      await interaction.editReply("/debug can only be used in a server channel.");
+      await interaction.editReply("/console can only be used in a server channel.");
       return;
     }
     const event: DiscordDebugCommandEvent = {
@@ -1061,7 +1061,8 @@ const CLEAR_COMMAND_NAME = "clear";
 const RUN_COMMAND_NAME = "run";
 const STOP_COMMAND_NAME = "stop";
 const MEMORIES_COMMAND_NAME = "memories";
-const DEBUG_COMMAND_NAME = "debug";
+const DEBUG_COMMAND_NAME = "console";
+const LEGACY_DEBUG_COMMAND_NAMES = ["debug"];
 const CLEAR_COUNT_OPTION_NAME = "count";
 const CLEAR_TYPE_OPTION_NAME = "type";
 const DEBUG_TYPE_OPTION_NAME = "type";
@@ -1125,6 +1126,14 @@ async function registerOrchestratorCommands(client: Client, logger?: Logger): Pr
         await manager.edit(existing.id, payload);
       } else {
         await manager.create(payload);
+      }
+    }
+    const payloadNames = new Set(payloads.map((payload) => payload.name));
+    for (const legacyName of LEGACY_DEBUG_COMMAND_NAMES) {
+      if (payloadNames.has(legacyName)) continue;
+      const existing = commands.find((command) => command.name === legacyName);
+      if (existing) {
+        await manager.delete(existing.id);
       }
     }
   } catch (error) {
