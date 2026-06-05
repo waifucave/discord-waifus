@@ -32,6 +32,16 @@ export type DiscordRuntimeStatus = {
   lastErrorAt?: string;
 };
 
+export type DiscordRuntimeIssue = {
+  source: "client-error" | "shard-error" | "shard-disconnect" | "invalidated" | "warn";
+  message: string;
+  botId?: string;
+  shardId?: number;
+  code?: string | number;
+  wasClean?: boolean;
+  error?: unknown;
+};
+
 export interface DiscordGatewayFacade {
   connect(): Promise<DiscordRuntimeStatus>;
   disconnect(): Promise<void>;
@@ -185,6 +195,7 @@ export type DiscordJsGatewayOptions = {
   cacheForGuild?: (guildId: string) => Promise<DiscordCache>;
   refreshMembersForGuild?: (guildId: string) => Promise<DiscordCache>;
   refreshRolesForGuild?: (guildId: string) => Promise<DiscordCache>;
+  onRuntimeIssue?: (issue: DiscordRuntimeIssue) => void | Promise<void>;
   logger?: Logger;
 };
 
@@ -217,6 +228,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
           ],
           partials: [Partials.Channel, Partials.Message, Partials.Reaction]
         });
+        this.attachClientRuntimeHandlers(client, bot.id);
         if (bot.id === this.options.orchestrator.id) {
           client.on("messageCreate", (message) => {
             if (!message.guildId) return;
@@ -235,29 +247,49 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
               authorBot: event.authorBot
             });
             for (const listener of this.listeners) {
-              void listener(event);
+              this.dispatchListener("Discord message listener failed", listener, event, {
+                guildId: event.guildId,
+                channelId: event.channelId,
+                messageId: event.messageId
+              });
             }
           });
           client.on(Events.InteractionCreate, (interaction) => {
             if (interaction.isAutocomplete()) {
               if (interaction.commandName === RUN_COMMAND_NAME) {
-                void this.handleRunAutocompleteInteraction(interaction);
+                this.runBackground("Discord run autocomplete interaction failed", {
+                  commandName: interaction.commandName,
+                  guildId: interaction.guildId,
+                  channelId: interaction.channelId
+                }, () => this.handleRunAutocompleteInteraction(interaction));
               }
               return;
             }
             if (!interaction.isChatInputCommand()) return;
             if (interaction.commandName === REVIEW_COMMAND_NAME) {
-              void this.handleReviewInteraction(interaction);
+              this.runBackground("Discord review interaction failed", interactionLogContext(interaction), () =>
+                this.handleReviewInteraction(interaction)
+              );
             } else if (interaction.commandName === CLEAR_COMMAND_NAME) {
-              void this.handleClearInteraction(interaction);
+              this.runBackground("Discord clear interaction failed", interactionLogContext(interaction), () =>
+                this.handleClearInteraction(interaction)
+              );
             } else if (interaction.commandName === RUN_COMMAND_NAME) {
-              void this.handleRunInteraction(interaction);
+              this.runBackground("Discord run interaction failed", interactionLogContext(interaction), () =>
+                this.handleRunInteraction(interaction)
+              );
             } else if (interaction.commandName === STOP_COMMAND_NAME) {
-              void this.handleStopInteraction(interaction);
+              this.runBackground("Discord stop interaction failed", interactionLogContext(interaction), () =>
+                this.handleStopInteraction(interaction)
+              );
             } else if (interaction.commandName === MEMORIES_COMMAND_NAME) {
-              void this.handleMemoriesInteraction(interaction);
+              this.runBackground("Discord memories interaction failed", interactionLogContext(interaction), () =>
+                this.handleMemoriesInteraction(interaction)
+              );
             } else if (interaction.commandName === DEBUG_COMMAND_NAME) {
-              void this.handleDebugInteraction(interaction);
+              this.runBackground("Discord debug interaction failed", interactionLogContext(interaction), () =>
+                this.handleDebugInteraction(interaction)
+              );
             }
           });
         }
@@ -744,6 +776,105 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
     return true;
   }
 
+  private attachClientRuntimeHandlers(client: Client, botId: string): void {
+    client.on(Events.Error, (error) => {
+      this.reportRuntimeIssue({
+        source: "client-error",
+        botId,
+        message: errorMessage(error),
+        error
+      });
+    });
+    client.on(Events.ShardError, (error, shardId) => {
+      this.reportRuntimeIssue({
+        source: "shard-error",
+        botId,
+        shardId,
+        message: errorMessage(error),
+        error
+      });
+    });
+    client.on(Events.ShardDisconnect, (event, shardId) => {
+      const code = closeEventCode(event);
+      const reason = closeEventReason(event);
+      this.reportRuntimeIssue({
+        source: "shard-disconnect",
+        botId,
+        shardId,
+        code,
+        wasClean: closeEventWasClean(event),
+        message: `Discord shard disconnected${code === undefined ? "" : ` with code ${code}`}${reason ? `: ${reason}` : "."}`
+      });
+    });
+    client.on(Events.Invalidated, () => {
+      this.reportRuntimeIssue({
+        source: "invalidated",
+        botId,
+        message: "Discord gateway session was invalidated."
+      });
+    });
+    client.on(Events.Warn, (message) => {
+      this.reportRuntimeIssue({
+        source: "warn",
+        botId,
+        message
+      });
+    });
+  }
+
+  private reportRuntimeIssue(issue: DiscordRuntimeIssue): void {
+    const context = runtimeIssueLogContext(issue);
+    if (issue.source === "warn") {
+      this.options.logger?.warn("Discord gateway warning", context);
+    } else {
+      this.options.logger?.error("Discord gateway runtime issue", context);
+    }
+    if (!this.options.onRuntimeIssue) return;
+    this.runBackground("Discord runtime issue callback failed", context, () =>
+      this.options.onRuntimeIssue?.(issue)
+    );
+  }
+
+  private async callListener<T>(
+    label: string,
+    listener: (event: T) => void | Promise<void>,
+    event: T,
+    context: Record<string, unknown>
+  ): Promise<void> {
+    try {
+      await listener(event);
+    } catch (error) {
+      this.options.logger?.error(label, {
+        ...context,
+        message: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+
+  private dispatchListener<T>(
+    label: string,
+    listener: (event: T) => void | Promise<void>,
+    event: T,
+    context: Record<string, unknown>
+  ): void {
+    void this.callListener(label, listener, event, context);
+  }
+
+  private runBackground(
+    label: string,
+    context: Record<string, unknown>,
+    task: () => void | Promise<void>
+  ): void {
+    void Promise.resolve()
+      .then(task)
+      .catch((error) => {
+        this.options.logger?.error(label, {
+          ...context,
+          message: error instanceof Error ? error.message : String(error)
+        });
+      });
+  }
+
   private async handleReviewInteraction(interaction: ChatInputCommandInteraction): Promise<void> {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     if (!interaction.guildId || !interaction.channelId) {
@@ -759,7 +890,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
       }
     };
     for (const listener of this.reviewListeners) {
-      void listener(event);
+      this.dispatchListener("Discord review command listener failed", listener, event, slashCommandLogContext(event));
     }
   }
 
@@ -780,7 +911,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
       }
     };
     for (const listener of this.clearListeners) {
-      void listener(event);
+      this.dispatchListener("Discord clear command listener failed", listener, event, slashCommandLogContext(event));
     }
   }
 
@@ -801,7 +932,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
       }
     };
     for (const listener of this.runListeners) {
-      void listener(event);
+      this.dispatchListener("Discord run command listener failed", listener, event, slashCommandLogContext(event));
     }
   }
 
@@ -823,7 +954,13 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
       await interaction.respond([]);
       return;
     }
-    await Promise.all([...this.runWaifuAutocompleteListeners].map((listener) => listener(event)));
+    await Promise.all([...this.runWaifuAutocompleteListeners].map((listener) =>
+      this.callListener("Discord run autocomplete listener failed", listener, event, {
+        guildId: event.guildId,
+        channelId: event.channelId,
+        focusedValue: event.focusedValue
+      })
+    ));
   }
 
   private async handleStopInteraction(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -841,7 +978,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
       }
     };
     for (const listener of this.stopListeners) {
-      void listener(event);
+      this.dispatchListener("Discord stop command listener failed", listener, event, slashCommandLogContext(event));
     }
   }
 
@@ -860,7 +997,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
       }
     };
     for (const listener of this.memoriesListeners) {
-      void listener(event);
+      this.dispatchListener("Discord memories command listener failed", listener, event, slashCommandLogContext(event));
     }
   }
 
@@ -881,7 +1018,11 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
       }
     };
     for (const listener of this.debugListeners) {
-      void listener(event);
+      this.dispatchListener("Discord debug command listener failed", listener, event, {
+        ...slashCommandLogContext(event),
+        type: event.type,
+        sourceChannelId: event.sourceChannelId
+      });
     }
   }
 }
@@ -1086,6 +1227,51 @@ function sanitizeRunString(value: string | null): string | undefined {
 
 function parseDebugCommandType(value: string | null): DiscordDebugCommandType | undefined {
   return value === "set" || value === "unset" || value === "print" ? value : undefined;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function closeEventCode(event: { code?: unknown }): string | number | undefined {
+  return typeof event.code === "string" || typeof event.code === "number" ? event.code : undefined;
+}
+
+function closeEventReason(event: { reason?: unknown }): string | undefined {
+  return typeof event.reason === "string" && event.reason.trim() ? event.reason.trim() : undefined;
+}
+
+function closeEventWasClean(event: { wasClean?: unknown }): boolean | undefined {
+  return typeof event.wasClean === "boolean" ? event.wasClean : undefined;
+}
+
+function runtimeIssueLogContext(issue: DiscordRuntimeIssue): Record<string, unknown> {
+  return {
+    source: issue.source,
+    botId: issue.botId,
+    shardId: issue.shardId,
+    code: issue.code,
+    wasClean: issue.wasClean,
+    message: issue.message
+  };
+}
+
+function interactionLogContext(interaction: ChatInputCommandInteraction): Record<string, unknown> {
+  return {
+    commandName: interaction.commandName,
+    guildId: interaction.guildId,
+    channelId: interaction.channelId,
+    userId: interaction.user.id
+  };
+}
+
+function slashCommandLogContext(event: DiscordSlashCommandEvent): Record<string, unknown> {
+  return {
+    guildId: event.guildId,
+    channelId: event.channelId,
+    userId: event.userId,
+    commandMessageId: event.commandMessageId
+  };
 }
 
 function isBulkDeletableMessage(message: DiscordFetchedMessageForDelete): boolean {

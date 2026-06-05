@@ -1,3 +1,4 @@
+import { Client, Events, GatewayIntentBits } from "discord.js";
 import { describe, expect, it } from "vitest";
 import {
   denormalizeModelContentForDiscord,
@@ -5,6 +6,7 @@ import {
   stripLeakedContextHeader
 } from "../src/discord/normalization.js";
 import { DiscordJsGateway, buildOrchestratorCommandPayloads } from "../src/discord/client.js";
+import type { DiscordRuntimeIssue } from "../src/discord/client.js";
 import { mergeConfiguredBotsIntoMembers, unresolvedMentionIds } from "../src/discord/memberCache.js";
 import { GuildEmojiCacheEntry, GuildMemberCacheEntry } from "../src/shared/schemas/domain.js";
 
@@ -278,6 +280,52 @@ describe("DiscordJsGateway message deletion", () => {
       failedCount: 0,
       failedMessageIds: []
     });
+  });
+});
+
+describe("DiscordJsGateway runtime issues", () => {
+  it("reports Discord client error events without leaving them unhandled", async () => {
+    const issues: DiscordRuntimeIssue[] = [];
+    const errorLogs: Array<Record<string, unknown> | undefined> = [];
+    const gateway = new DiscordJsGateway({
+      orchestrator: {
+        id: "orchestrator",
+        displayName: "Orchestrator",
+        token: "token"
+      },
+      logger: {
+        ...quietLogger(),
+        error: (_message: string, context?: Record<string, unknown>) => {
+          errorLogs.push(context);
+        }
+      },
+      onRuntimeIssue: (issue) => {
+        issues.push(issue);
+      }
+    });
+    const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+    const attach = (gateway as unknown as {
+      attachClientRuntimeHandlers(client: Client, botId: string): void;
+    }).attachClientRuntimeHandlers.bind(gateway);
+
+    attach(client, "orchestrator");
+    const error = Object.assign(new Error("getaddrinfo ENOTFOUND discord.com"), { code: "ENOTFOUND" });
+
+    expect(() => client.emit(Events.Error, error)).not.toThrow();
+    await Promise.resolve();
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({
+      source: "client-error",
+      botId: "orchestrator",
+      message: "getaddrinfo ENOTFOUND discord.com"
+    });
+    expect(errorLogs[0]).toMatchObject({
+      source: "client-error",
+      botId: "orchestrator",
+      message: "getaddrinfo ENOTFOUND discord.com"
+    });
+    client.destroy();
   });
 });
 

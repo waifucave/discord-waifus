@@ -9,6 +9,7 @@ import {
   DiscordGatewayFacade,
   DiscordJsGateway,
   DiscordJsGatewayOptions,
+  DiscordRuntimeIssue,
   DiscordRuntimeStatus
 } from "../discord/client.js";
 import { mergeConfiguredBotsIntoMembers } from "../discord/memberCache.js";
@@ -81,6 +82,8 @@ export async function startBackend(options: StartBackendOptions): Promise<Runnin
   let runtimeOrchestrator: RuntimeOrchestrator | undefined;
   let discordRetryTimer: NodeJS.Timeout | undefined;
   let discordRetryAttempt = 0;
+  let discordRecoveryInProgress = false;
+  let pendingLiveDiscordErrorMessage: string | undefined;
   let closing = false;
 
   const cleanupOcr = async (currentConfig = config) => {
@@ -124,8 +127,46 @@ export async function startBackend(options: StartBackendOptions): Promise<Runnin
     discordRetryDelaysMs[Math.min(attempt - 1, discordRetryDelaysMs.length - 1)] ??
     DEFAULT_DISCORD_RETRY_DELAYS_MS[0];
 
-  const scheduleDiscordRetry = async (message: string) => {
+  const scheduleDiscordRetry = async (
+    message: string,
+    retryOptions: {
+      preserveExistingTimer?: boolean;
+      failureLabel?: string;
+      logReason?: string;
+    } = {}
+  ) => {
     if (closing) return;
+    const failureLabel = retryOptions.failureLabel ?? "Discord auto-connect failed";
+    if (retryOptions.preserveExistingTimer && discordRetryTimer) {
+      const lastErrorAt = new Date().toISOString();
+      const attempt = Math.max(discordRetryAttempt, 1);
+      const nextRetryAt = runtime.discord.nextRetryAt ??
+        new Date(Date.now() + nextDiscordRetryDelayMs(attempt)).toISOString();
+      runtime.discord = {
+        ...runtime.discord,
+        connected: false,
+        orchestratorConnected: false,
+        waifuBotCount: 0,
+        retrying: true,
+        retryAttempt: attempt,
+        nextRetryAt,
+        lastError: message,
+        lastErrorAt,
+        warnings: [
+          `${failureLabel}: ${message}`,
+          `Discord auto-connect will retry automatically at ${nextRetryAt}.`
+        ]
+      };
+      runtime.updatedAt = new Date().toISOString();
+      await writeRuntimeFiles(options.dataRoot, runtime);
+      logger.warn("Discord auto-connect retry already pending; updated latest error", {
+        attempt: runtime.discord.retryAttempt,
+        nextRetryAt,
+        message,
+        reason: retryOptions.logReason
+      });
+      return;
+    }
     clearDiscordRetry();
     discordRetryAttempt += 1;
     const lastErrorAt = new Date().toISOString();
@@ -142,7 +183,7 @@ export async function startBackend(options: StartBackendOptions): Promise<Runnin
       lastError: message,
       lastErrorAt,
       warnings: [
-        `Discord auto-connect failed: ${message}`,
+        `${failureLabel}: ${message}`,
         `Discord auto-connect will retry automatically at ${nextRetryAt}.`
       ]
     };
@@ -152,7 +193,8 @@ export async function startBackend(options: StartBackendOptions): Promise<Runnin
       attempt: discordRetryAttempt,
       nextRetryAt,
       delayMs,
-      message
+      message,
+      reason: retryOptions.logReason
     });
     discordRetryTimer = setTimeout(() => {
       discordRetryTimer = undefined;
@@ -161,6 +203,46 @@ export async function startBackend(options: StartBackendOptions): Promise<Runnin
         logger.error("Discord auto-connect retry failed outside gateway connection", { message: retryMessage });
       });
     }, delayMs);
+  };
+
+  const handleDiscordRuntimeIssue = async (issue: DiscordRuntimeIssue) => {
+    if (closing) return;
+    const message = issue.message || "Discord runtime issue.";
+    if (!isRetryableDiscordRuntimeIssue(issue)) {
+      logger.warn("Discord runtime issue did not trigger reconnect", discordRuntimeIssueLogContext(issue));
+      return;
+    }
+
+    pendingLiveDiscordErrorMessage = message;
+    if (discordRetryTimer) {
+      await scheduleDiscordRetry(message, {
+        preserveExistingTimer: true,
+        failureLabel: "Discord connection lost",
+        logReason: issue.source
+      });
+      return;
+    }
+    if (discordRecoveryInProgress) {
+      return;
+    }
+
+    discordRecoveryInProgress = true;
+    try {
+      logger.warn("Discord runtime issue triggered reconnect", discordRuntimeIssueLogContext(issue));
+      await runtimeOrchestrator?.stop();
+      await gateway?.disconnect();
+      runtimeOrchestrator = undefined;
+      gateway = undefined;
+      runtime.queues.active = 0;
+      await scheduleDiscordRetry(pendingLiveDiscordErrorMessage ?? message, {
+        preserveExistingTimer: true,
+        failureLabel: "Discord connection lost",
+        logReason: issue.source
+      });
+    } finally {
+      discordRecoveryInProgress = false;
+      pendingLiveDiscordErrorMessage = undefined;
+    }
   };
 
   const reloadRuntime = async (reason: string, retryOptions: { scheduledRetry?: boolean } = {}) => {
@@ -182,7 +264,8 @@ export async function startBackend(options: StartBackendOptions): Promise<Runnin
       storage,
       currentConfig.runtime.autoConnectDiscord,
       logger,
-      createDiscordGateway
+      createDiscordGateway,
+      handleDiscordRuntimeIssue
     );
     runtime.discord = connected.status;
     gateway = connected.gateway;
@@ -270,7 +353,8 @@ async function maybeConnectDiscord(
   storage: StorageService,
   autoConnect: boolean,
   logger: Logger,
-  createDiscordGateway: (options: DiscordJsGatewayOptions) => DiscordGatewayFacade
+  createDiscordGateway: (options: DiscordJsGatewayOptions) => DiscordGatewayFacade,
+  onRuntimeIssue?: (issue: DiscordRuntimeIssue) => void | Promise<void>
 ): Promise<{
   status: DiscordRuntimeStatus;
   gateway?: DiscordGatewayFacade;
@@ -329,7 +413,8 @@ async function maybeConnectDiscord(
       return {
         roles: roles.roles
       };
-    }
+    },
+    onRuntimeIssue
   });
   try {
     const status = await gateway.connect();
@@ -359,7 +444,10 @@ const RETRYABLE_DISCORD_ERROR_CODES = new Set([
   "ECONNREFUSED",
   "ENETUNREACH",
   "EHOSTUNREACH",
-  "EPIPE"
+  "EPIPE",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_SOCKET"
 ]);
 
 const RETRYABLE_DISCORD_MESSAGE_PATTERNS = [
@@ -369,10 +457,13 @@ const RETRYABLE_DISCORD_MESSAGE_PATTERNS = [
   /\btimeout\b/i,
   /\btimed out\b/i,
   /\bsocket\b/i,
+  /\bfetch failed\b/i,
   /\bconnection reset\b/i,
   /\bconnection refused\b/i,
   /\bunreachable\b/i
 ];
+
+const RETRYABLE_DISCORD_CLOSE_CODES = new Set([1001, 1006, 1011, 1012, 1013, 4000]);
 
 function isRetryableDiscordAutoConnectError(error: unknown): boolean {
   const code = errorCode(error);
@@ -383,10 +474,36 @@ function isRetryableDiscordAutoConnectError(error: unknown): boolean {
   return RETRYABLE_DISCORD_MESSAGE_PATTERNS.some((pattern) => pattern.test(message));
 }
 
+function isRetryableDiscordRuntimeIssue(issue: DiscordRuntimeIssue): boolean {
+  if (isRetryableDiscordAutoConnectError(issue.error ?? issue) || isRetryableDiscordAutoConnectError(issue)) {
+    return true;
+  }
+  if (issue.source === "invalidated") {
+    return true;
+  }
+  if (issue.source === "shard-disconnect" && issue.wasClean === false && typeof issue.code === "number") {
+    return RETRYABLE_DISCORD_CLOSE_CODES.has(issue.code);
+  }
+  return false;
+}
+
+function discordRuntimeIssueLogContext(issue: DiscordRuntimeIssue): Record<string, unknown> {
+  return {
+    source: issue.source,
+    botId: issue.botId,
+    shardId: issue.shardId,
+    code: issue.code,
+    wasClean: issue.wasClean,
+    message: issue.message
+  };
+}
+
 function errorCode(error: unknown): string | undefined {
   if (!error || typeof error !== "object") return undefined;
   const code = (error as { code?: unknown }).code;
   if (typeof code === "string") return code;
+  const nestedError = errorCode((error as { error?: unknown }).error);
+  if (nestedError) return nestedError;
   return errorCode((error as { cause?: unknown }).cause);
 }
 

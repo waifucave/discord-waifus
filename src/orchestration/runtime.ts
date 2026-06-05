@@ -176,26 +176,51 @@ export class RuntimeOrchestrator {
   async start(): Promise<void> {
     this.unsubscribes = [
       this.options.discord.onMessage?.((event) => {
-        void this.handleDiscordMessage(event);
+        this.runBackground("Discord message handler failed", discordMessageLogContext(event), () =>
+          this.handleDiscordMessage(event)
+        );
       }),
       this.options.discord.onReviewCommand?.((event) => {
-        void this.handleReviewCommand(event);
+        this.runBackground("Discord review command handler failed", slashCommandLogContext(event), () =>
+          this.handleReviewCommand(event)
+        );
       }),
       this.options.discord.onClearCommand?.((event) => {
-        void this.handleClearCommand(event);
+        this.runBackground("Discord clear command handler failed", slashCommandLogContext(event), () =>
+          this.handleClearCommand(event)
+        );
       }),
       this.options.discord.onRunCommand?.((event) => {
-        void this.handleRunCommand(event);
+        this.runBackground("Discord run command handler failed", slashCommandLogContext(event), () =>
+          this.handleRunCommand(event)
+        );
       }),
-      this.options.discord.onRunWaifuAutocomplete?.((event) => this.handleRunWaifuAutocomplete(event)),
+      this.options.discord.onRunWaifuAutocomplete?.((event) =>
+        this.handleRunWaifuAutocomplete(event).catch((error) => {
+          this.options.logger.warn("Discord run autocomplete handler failed", {
+            guildId: event.guildId,
+            channelId: event.channelId,
+            focusedValue: event.focusedValue,
+            message: error instanceof Error ? error.message : String(error)
+          });
+        })
+      ),
       this.options.discord.onStopCommand?.((event) => {
-        void this.handleStopCommand(event);
+        this.runBackground("Discord stop command handler failed", slashCommandLogContext(event), () =>
+          this.handleStopCommand(event)
+        );
       }),
       this.options.discord.onMemoriesCommand?.((event) => {
-        void this.handleMemoriesCommand(event);
+        this.runBackground("Discord memories command handler failed", slashCommandLogContext(event), () =>
+          this.handleMemoriesCommand(event)
+        );
       }),
       this.options.discord.onDebugCommand?.((event) => {
-        void this.handleDebugCommand(event);
+        this.runBackground("Discord debug command handler failed", {
+          ...slashCommandLogContext(event),
+          type: event.type,
+          sourceChannelId: event.sourceChannelId
+        }, () => this.handleDebugCommand(event));
       })
     ].filter((unsubscribe): unsubscribe is () => void => Boolean(unsubscribe));
     if (this.options.discord.listGuilds) {
@@ -226,6 +251,38 @@ export class RuntimeOrchestrator {
     this.activeRuns.clear();
     await Promise.allSettled([...this.activeStageManagerRuns]);
     this.options.onActiveRunsChange?.(0);
+  }
+
+  private runBackground(
+    label: string,
+    context: Record<string, unknown>,
+    task: () => void | Promise<unknown>
+  ): void {
+    void Promise.resolve()
+      .then(task)
+      .catch((error) => {
+        this.options.logger.error(label, {
+          ...context,
+          message: error instanceof Error ? error.message : String(error)
+        });
+      });
+  }
+
+  private startChannelRunBackground(
+    guildId: string,
+    channelId: string,
+    reason: string,
+    options: ChannelRunOptions = {}
+  ): void {
+    this.runBackground("Background channel run failed", { guildId, channelId, reason }, () =>
+      this.startChannelRun(guildId, channelId, reason, options)
+    );
+  }
+
+  private markSessionIdleBackground(guildId: string, channelId: string, reason: string): void {
+    this.runBackground("Failed to mark session idle", { guildId, channelId, reason }, () =>
+      this.markSessionIdle(guildId, channelId)
+    );
   }
 
   async handleDiscordMessage(event: DiscordMessageEvent): Promise<void> {
@@ -317,7 +374,7 @@ export class RuntimeOrchestrator {
     if (activeRun && stoppedRun) {
       this.options.logger.info("Stopping active channel run", { guildId, channelId, reason });
       activeRun.controller.abort(new Error(reason));
-      void this.markSessionIdle(guildId, channelId);
+      this.markSessionIdleBackground(guildId, channelId, reason);
     }
 
     return { stoppedRun, clearedRetrigger, activeInAnotherChannel };
@@ -427,7 +484,7 @@ export class RuntimeOrchestrator {
           return;
         }
         await event.respond(`Started directed run for ${resolved.displayName}.`);
-        void this.startChannelRun(event.guildId, event.channelId, `slash-run:${event.userId}:${resolved.id}`, {
+        this.startChannelRunBackground(event.guildId, event.channelId, `slash-run:${event.userId}:${resolved.id}`, {
           initialResponders: [
             {
               waifuId: resolved.id,
@@ -441,7 +498,7 @@ export class RuntimeOrchestrator {
         return;
       }
       await event.respond(event.sceneDirection ? "Started orchestrator run with scene direction." : "Started orchestrator run.");
-      void this.startChannelRun(event.guildId, event.channelId, `slash-run:${event.userId}`, {
+      this.startChannelRunBackground(event.guildId, event.channelId, `slash-run:${event.userId}`, {
         firstOrchestratorMustReply: true,
         firstResponderSceneDirectionOverride: event.sceneDirection
       });
@@ -642,7 +699,7 @@ export class RuntimeOrchestrator {
         reason
       });
       existing.controller.abort(new Error(`restarted by ${reason}`));
-      void this.markSessionIdle(existing.guildId, existing.channelId);
+      this.markSessionIdleBackground(existing.guildId, existing.channelId, `restarted by ${reason}`);
     }
     this.clearRetriggerTimer(guildId, channelId);
 
@@ -661,7 +718,16 @@ export class RuntimeOrchestrator {
         if (this.activeRuns.get(key)?.controller === controller) {
           this.activeRuns.delete(key);
           this.options.onActiveRunsChange?.(this.activeRuns.size);
-          await this.markSessionIdle(guildId, channelId);
+          try {
+            await this.markSessionIdle(guildId, channelId);
+          } catch (error) {
+            this.options.logger.error("Failed to mark session idle", {
+              guildId,
+              channelId,
+              reason,
+              message: error instanceof Error ? error.message : String(error)
+            });
+          }
         }
       });
     this.activeRuns.set(key, { guildId, channelId, controller, promise });
@@ -1207,7 +1273,9 @@ export class RuntimeOrchestrator {
       if (!current) return;
       current.idleTimer = undefined;
       this.stageManagerSchedules.delete(key);
-      void this.startStageManagerRun(guildId, channelId);
+      this.runBackground("Scheduled stage manager run failed", { guildId, channelId }, () =>
+        this.startStageManagerRun(guildId, channelId)
+      );
     }, this.stageManagerIdleDelayMs);
   }
 
@@ -1353,9 +1421,17 @@ export class RuntimeOrchestrator {
   private startStageManagerRun(guildId: string, channelId: string): Promise<StageManagerRunResult> {
     const promise = this.runStageManager(guildId, channelId);
     this.activeStageManagerRuns.add(promise);
-    void promise.finally(() => {
-      this.activeStageManagerRuns.delete(promise);
-    });
+    void promise
+      .finally(() => {
+        this.activeStageManagerRuns.delete(promise);
+      })
+      .catch((error) => {
+        this.options.logger.error("Stage manager run failed outside handler", {
+          guildId,
+          channelId,
+          message: error instanceof Error ? error.message : String(error)
+        });
+      });
     return promise;
   }
 
@@ -1453,11 +1529,11 @@ export class RuntimeOrchestrator {
 
     const noNewChannelRun = (this.channelRunVersions.get(versionKey) ?? 0) === runVersionAtStart;
     if (noNewChannelRun && !this.activeRuns.has(runKey(input.guildId))) {
-      void this.startChannelRun(input.guildId, input.channelId, "reviewer-complete");
+      this.startChannelRunBackground(input.guildId, input.channelId, "reviewer-complete");
     } else if (noNewChannelRun && input.triggerAfterActiveRun) {
       setTimeout(() => {
         if ((this.channelRunVersions.get(versionKey) ?? 0) === runVersionAtStart && !this.activeRuns.has(runKey(input.guildId))) {
-          void this.startChannelRun(input.guildId, input.channelId, "reviewer-complete");
+          this.startChannelRunBackground(input.guildId, input.channelId, "reviewer-complete");
         }
       }, 0);
     }
@@ -1782,7 +1858,7 @@ export class RuntimeOrchestrator {
     }
     const timer = setTimeout(() => {
       this.retriggerTimers.delete(key);
-      void this.startChannelRun(guildId, channelId, "scheduled-retrigger");
+      this.startChannelRunBackground(guildId, channelId, "scheduled-retrigger");
     }, bounded * 1000);
     this.retriggerTimers.set(key, timer);
   }
@@ -3378,6 +3454,30 @@ function decrementActive(map: Map<string, number>, key: string): void {
   } else {
     map.delete(key);
   }
+}
+
+function discordMessageLogContext(event: DiscordMessageEvent): Record<string, unknown> {
+  return {
+    guildId: event.guildId,
+    channelId: event.channelId,
+    messageId: event.messageId,
+    authorId: event.authorId,
+    authorBot: event.authorBot
+  };
+}
+
+function slashCommandLogContext(event: {
+  guildId: string;
+  channelId: string;
+  userId: string;
+  commandMessageId?: string;
+}): Record<string, unknown> {
+  return {
+    guildId: event.guildId,
+    channelId: event.channelId,
+    userId: event.userId,
+    commandMessageId: event.commandMessageId
+  };
 }
 
 function defaultSleep(ms: number, signal?: AbortSignal): Promise<void> {
