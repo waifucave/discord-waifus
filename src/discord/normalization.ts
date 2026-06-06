@@ -3,7 +3,8 @@ import { GuildEmojiCacheEntry, GuildMemberCacheEntry } from "../shared/schemas/d
 const USER_MENTION_RE = /<@!?(\d+)>/g;
 const MODEL_USER_MENTION_RE = /<@([^>]+)>/g;
 const DISCORD_CUSTOM_EMOJI_RE = /<(a?):([A-Za-z0-9_]+):(\d+)>/g;
-const MODEL_CUSTOM_EMOJI_RE = /<(a?):([A-Za-z0-9_]+):>/g;
+const MODEL_CUSTOM_EMOJI_RE =
+  /<(a?):([A-Za-z0-9_]+):>|(?<![A-Za-z0-9_<]):([A-Za-z0-9_]{2,32}):(?![A-Za-z0-9_>])/g;
 const ROLE_MENTION_RE = /<@&(\d+)>/g;
 
 export type NormalizationResult = {
@@ -84,7 +85,7 @@ export function denormalizeModelContentForDiscord(
   const allowedUsers = new Set<string>();
   const activeIds = new Set(cache.activeAuthorIds ?? []);
   const membersByName = groupMembersByModelName(cache.members ?? []);
-  const emojisByToken = groupEmojisByModelToken(cache.emojis ?? []);
+  const emojis = cache.emojis ?? [];
   const modelMentionRe = modelUserMentionRe(cache.members ?? []);
 
   const resolveModelMention = (raw: string, displayName: string) => {
@@ -123,12 +124,15 @@ export function denormalizeModelContentForDiscord(
 
   denormalized = denormalized
     .replace(ROLE_MENTION_RE, "@role")
-    .replace(MODEL_CUSTOM_EMOJI_RE, (raw, animatedMarker: string, name: string) => {
-      const token = `<${animatedMarker}:${name}:>`.toLowerCase();
-      const emoji = emojisByToken.get(token);
+    .replace(MODEL_CUSTOM_EMOJI_RE, (raw, _animatedMarker: string, modelName: string, plainName: string) => {
+      const name = modelName ?? plainName;
+      const emoji = findClosestAvailableEmoji(name, emojis);
       if (!emoji) {
         warnings.push(`Model emoji ${raw} is not in the cached server emoji list.`);
         return `:${name}:`;
+      }
+      if (emoji.name.toLowerCase() !== name.toLowerCase()) {
+        warnings.push(`Model emoji ${raw} was corrected to :${emoji.name}:.`);
       }
       const marker = emoji.animated ? "a" : "";
       return `<${marker}:${emoji.name}:${emoji.id}>`;
@@ -321,14 +325,76 @@ function modelVisibleMemberNames(members: GuildMemberCacheEntry[]): string[] {
   return names.sort((a, b) => b.length - a.length);
 }
 
-function groupEmojisByModelToken(emojis: GuildEmojiCacheEntry[]): Map<string, GuildEmojiCacheEntry> {
-  const map = new Map<string, GuildEmojiCacheEntry>();
+function findClosestAvailableEmoji(
+  name: string,
+  emojis: GuildEmojiCacheEntry[]
+): GuildEmojiCacheEntry | undefined {
+  const normalizedName = name.toLowerCase();
+  const exactMatch = emojis.find(
+    (emoji) => emoji.available && emoji.name.toLowerCase() === normalizedName
+  );
+  if (exactMatch) return exactMatch;
+
+  let fuzzyMatch: GuildEmojiCacheEntry | undefined;
+
   for (const emoji of emojis) {
-    if (emoji.available) {
-      map.set(modelVisibleEmojiToken(emoji).toLowerCase(), emoji);
+    if (!emoji.available) continue;
+    const normalizedCandidate = emoji.name.toLowerCase();
+    if (
+      Math.min(normalizedName.length, normalizedCandidate.length) < 4 ||
+      !isSingleEmojiNameEdit(normalizedName, normalizedCandidate)
+    ) {
+      continue;
     }
+    if (fuzzyMatch && fuzzyMatch.name.toLowerCase() !== normalizedCandidate) {
+      return undefined;
+    }
+    fuzzyMatch = emoji;
   }
-  return map;
+
+  return fuzzyMatch;
+}
+
+function isSingleEmojiNameEdit(left: string, right: string): boolean {
+  const lengthDifference = Math.abs(left.length - right.length);
+  if (lengthDifference > 1) return false;
+
+  if (left.length === right.length) {
+    const mismatches: number[] = [];
+    for (let index = 0; index < left.length; index += 1) {
+      if (left[index] !== right[index]) {
+        mismatches.push(index);
+        if (mismatches.length > 2) return false;
+      }
+    }
+    if (mismatches.length === 1) return true;
+    if (mismatches.length !== 2) return false;
+    const [first, second] = mismatches;
+    return (
+      second === first + 1 &&
+      left[first] === right[second] &&
+      left[second] === right[first]
+    );
+  }
+
+  const shorter = left.length < right.length ? left : right;
+  const longer = left.length < right.length ? right : left;
+  let shorterIndex = 0;
+  let longerIndex = 0;
+  let skipped = false;
+
+  while (shorterIndex < shorter.length && longerIndex < longer.length) {
+    if (shorter[shorterIndex] === longer[longerIndex]) {
+      shorterIndex += 1;
+      longerIndex += 1;
+      continue;
+    }
+    if (skipped) return false;
+    skipped = true;
+    longerIndex += 1;
+  }
+
+  return true;
 }
 
 function sanitizeMassMentions(content: string): string {

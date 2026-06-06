@@ -55,6 +55,14 @@ const emojis: GuildEmojiCacheEntry[] = [
     available: true,
     roles: [],
     fetchedAt
+  },
+  {
+    id: "500",
+    name: "pandaangel",
+    animated: false,
+    available: true,
+    roles: [],
+    fetchedAt
   }
 ];
 
@@ -79,6 +87,36 @@ describe("Discord normalization", () => {
     expect(result.allowedMentions.users).toEqual(["200"]);
     expect(result.allowedMentions.parse).toBeUndefined();
     expect(result.allowedMentions.repliedUser).toBe(false);
+  });
+
+  it("corrects a close plain-text server emoji typo", () => {
+    const result = denormalizeModelContentForDiscord("Morning K!\n:pandangel:", {
+      members,
+      emojis
+    });
+    expect(result.content).toBe("Morning K!\n<:pandaangel:500>");
+    expect(result.warnings).toEqual([
+      "Model emoji :pandangel: was corrected to :pandaangel:."
+    ]);
+  });
+
+  it("corrects a close model-visible server emoji typo", () => {
+    const result = denormalizeModelContentForDiscord("<:pandaagnel:>", {
+      members,
+      emojis
+    });
+    expect(result.content).toBe("<:pandaangel:500>");
+  });
+
+  it("leaves ambiguous close server emoji names as plain text", () => {
+    const result = denormalizeModelContentForDiscord(":cots:", {
+      emojis: [
+        { ...emojis[0], id: "600", name: "cats" },
+        { ...emojis[0], id: "700", name: "cuts" }
+      ]
+    });
+    expect(result.content).toBe(":cots:");
+    expect(result.warnings).toHaveLength(1);
   });
 
   it("leaves ambiguous model mentions unpinged without guessing IDs", () => {
