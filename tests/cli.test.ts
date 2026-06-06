@@ -1,11 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { runCommand, type CliProcessOptions, type CliProcessRunner } from "../src/cli/commands.js";
 import { flagBoolean, flagNumber, flagString, parseCliArgs } from "../src/cli/parser.js";
+import { makeTempRoot, removeTempRoot } from "./testUtils.js";
 
 type RunnerCall = { command: string; args: string[]; options?: CliProcessOptions };
 
-afterEach(() => {
+let roots: string[] = [];
+
+afterEach(async () => {
   vi.restoreAllMocks();
+  await Promise.all(roots.splice(0).map(removeTempRoot));
 });
 
 describe("CLI parser", () => {
@@ -144,6 +148,39 @@ describe("waifus update", () => {
 
     expect(code).toBe(1);
     expect(calls).toEqual([]);
+  });
+});
+
+describe("waifus start", () => {
+  it("does not fail a detached start when the spawned backend is still alive", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    silenceCliOutput();
+    const spawned = { pid: 12345, unref: vi.fn() };
+    const spawnCalls: Array<{ command: string; args: string[] }> = [];
+
+    const code = await runCommand(parseCliArgs(["start", "--data-root", root]), {
+      argv: ["/usr/local/bin/node", "/usr/local/bin/waifus"],
+      cwd: "/tmp",
+      detachedBackendWaiter: async () => undefined,
+      detachedSpawner: (command, args) => {
+        spawnCalls.push({ command, args });
+        return spawned;
+      },
+      env: { PATH: "/usr/bin" },
+      execPath: "/usr/local/bin/node",
+      processAlive: () => true
+    });
+
+    expect(code).toBe(0);
+    expect(spawned.unref).toHaveBeenCalledTimes(1);
+    expect(spawnCalls).toEqual([
+      {
+        command: "/usr/local/bin/node",
+        args: ["/usr/local/bin/waifus", "start", "--foreground", "--data-root", root]
+      }
+    ]);
+    expect(console.log).toHaveBeenCalledWith("waifus backend is still starting after 30s; spawned pid 12345");
   });
 });
 

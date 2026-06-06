@@ -130,6 +130,7 @@ export function DashboardView() {
 
   const isPaused = status?.paused ?? runtime.data?.paused ?? false;
   const connected = status?.discord.connected ?? false;
+  const discordConnecting = status?.discord.connecting ?? false;
   const orchestratorConnected = status?.discord.orchestratorConnected ?? false;
   const discordRetrying = status?.discord.retrying ?? false;
   const discordRetryAttempt = status?.discord.retryAttempt ?? 0;
@@ -214,12 +215,12 @@ export function DashboardView() {
         <div className="stat">
           <span className="stat-label">Discord</span>
           <span className="stat-value" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <Pill tone={connected ? "ok" : "neutral"} dot>
-              {connected ? "Connected" : "Offline"}
+            <Pill tone={connected ? "ok" : discordConnecting ? "info" : "neutral"} dot>
+              {connected ? "Connected" : discordConnecting ? "Connecting" : "Offline"}
             </Pill>
           </span>
           <span className="stat-foot">
-            orchestrator {orchestratorConnected ? "online" : "offline"} ·
+            orchestrator {discordConnecting ? "connecting" : orchestratorConnected ? "online" : "offline"} ·
             {" "}
             {status?.discord.waifuBotCount ?? 0} waifu bots
           </span>
@@ -489,6 +490,14 @@ export function DashboardView() {
                     style={{ width: 14, height: 14, color: "var(--ok)", verticalAlign: "-2px" }}
                   />
                   {" connected"}
+                </>
+              ) : runtime.data.discord.connecting ? (
+                <>
+                  <RefreshCw
+                    className="icon"
+                    style={{ width: 14, height: 14, color: "var(--info)", verticalAlign: "-2px" }}
+                  />
+                  {" connecting"}
                 </>
               ) : (
                 <>

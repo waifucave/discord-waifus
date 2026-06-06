@@ -33,7 +33,7 @@ When Discord auto-connect is enabled and an orchestrator token is saved, the bac
 
 Normal configuration changes apply at runtime. `PUT /api/config`, `PUT /api/discord-bots`, and `POST /api/runtime/reload` rebuild Discord clients and the runtime orchestrator in-process without restarting HTTP. Only HTTP host/port changes require the next process start.
 
-If Discord auto-connect fails with a transient DNS or network error, the backend keeps Discord offline and retries automatically. `/api/status` and `/api/runtime` include optional Discord retry metadata: `retrying`, `retryAttempt`, `nextRetryAt`, `lastError`, and `lastErrorAt`.
+During startup, HTTP binds before Discord auto-connect completes. `/api/status` and `/api/runtime` set optional `discord.connecting` while Discord login is in progress. If Discord auto-connect fails with a transient DNS or network error, the backend keeps Discord offline and retries automatically. Retry metadata is optional: `retrying`, `retryAttempt`, `nextRetryAt`, `lastError`, and `lastErrorAt`.
 
 ## Config
 

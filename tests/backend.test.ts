@@ -26,17 +26,41 @@ afterEach(async () => {
 });
 
 describe("backend Discord auto-connect retry", () => {
-  it("retries transient Discord DNS failures and clears retry status after recovery", async () => {
+  it("serves HTTP before slow Discord auto-connect completes", async () => {
     vi.useFakeTimers();
+    const root = await initializedRootWithOrchestrator();
+    const gateway = new FakeDiscordGateway([connectedStatus()], { connectDelayMs: 20_000 });
+    const backend = await startTestBackend(root, gateway, [5_000]);
+
+    await waitForConnectCalls(gateway, 1);
+
+    const response = await fetch(`${backend.url}/api/status`);
+    expect(response.status).toBe(200);
+    const status = await response.json() as { running: boolean; discord: DiscordRuntimeStatus };
+    expect(status.running).toBe(true);
+    expect(status.discord).toMatchObject({
+      connected: false,
+      connecting: true
+    });
+    expect(backend.runtime.discord.connecting).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    await vi.waitFor(() => expect(backend.runtime.discord.connected).toBe(true));
+    expect(backend.runtime.discord.connecting).toBeUndefined();
+  });
+
+  it("retries transient Discord DNS failures and clears retry status after recovery", async () => {
     const root = await initializedRootWithOrchestrator();
     const outcomes: Array<DiscordRuntimeStatus | Error> = [
       Object.assign(new Error("getaddrinfo ENOTFOUND discord.com"), { code: "ENOTFOUND" }),
       connectedStatus()
     ];
     const gateway = new FakeDiscordGateway(outcomes);
-    const backend = await startTestBackend(root, gateway, [5_000]);
+    const backend = await startTestBackend(root, gateway, [250]);
 
-    expect(gateway.connectCalls).toBe(1);
+    await waitForConnectCalls(gateway, 1);
+    await vi.waitFor(() => expect(backend.runtime.discord.retrying).toBe(true));
     expect(backend.runtime.discord).toMatchObject({
       connected: false,
       retrying: true,
@@ -45,9 +69,7 @@ describe("backend Discord auto-connect retry", () => {
     });
     expect(backend.runtime.discord.nextRetryAt).toBeDefined();
 
-    await vi.advanceTimersByTimeAsync(5_000);
-
-    await vi.waitFor(() => expect(gateway.connectCalls).toBe(2));
+    await waitForConnectCalls(gateway, 2);
     expect(backend.runtime.discord).toMatchObject({
       connected: true,
       orchestratorConnected: true,
@@ -64,8 +86,10 @@ describe("backend Discord auto-connect retry", () => {
     const gateway = new FakeDiscordGateway([new Error("An invalid token was provided.")]);
     const backend = await startTestBackend(root, gateway, [5_000]);
 
-    expect(gateway.connectCalls).toBe(1);
-    expect(backend.runtime.discord.retrying).toBeUndefined();
+    await waitForConnectCalls(gateway, 1);
+    await vi.waitFor(() => expect(backend.runtime.discord.warnings).toEqual([
+      "Discord auto-connect failed: An invalid token was provided."
+    ]));
 
     await vi.advanceTimersByTimeAsync(5_000);
 
@@ -84,6 +108,9 @@ describe("backend Discord auto-connect retry", () => {
     ];
     const gateway = new FakeDiscordGateway(outcomes);
     const backend = await startTestBackend(root, gateway, [5_000]);
+
+    await waitForConnectCalls(gateway, 1);
+    await vi.waitFor(() => expect(backend.runtime.discord.retrying).toBe(true));
 
     const response = await fetch(`${backend.url}/api/runtime/reload`, { method: "POST" });
     expect(response.status).toBe(200);
@@ -107,6 +134,9 @@ describe("backend Discord auto-connect retry", () => {
     const gateway = new FakeDiscordGateway(outcomes);
     const backend = await startTestBackend(root, gateway, [5_000]);
 
+    await waitForConnectCalls(gateway, 1);
+    await vi.waitFor(() => expect(backend.runtime.discord.retrying).toBe(true));
+
     await backend.close();
     backends = backends.filter((running) => running !== backend);
     await vi.advanceTimersByTimeAsync(5_000);
@@ -120,8 +150,8 @@ describe("backend Discord auto-connect retry", () => {
     const gateway = new FakeDiscordGateway([connectedStatus(), connectedStatus()]);
     const backend = await startTestBackend(root, gateway, [5_000]);
 
-    expect(gateway.connectCalls).toBe(1);
-    expect(backend.runtime.discord.connected).toBe(true);
+    await waitForConnectCalls(gateway, 1);
+    await vi.waitFor(() => expect(backend.runtime.discord.connected).toBe(true));
 
     await gateway.emitRuntimeIssue(retryableDiscordIssue("getaddrinfo ENOTFOUND discord.com"));
 
@@ -136,9 +166,9 @@ describe("backend Discord auto-connect retry", () => {
       "Discord connection lost: getaddrinfo ENOTFOUND discord.com"
     );
 
-    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersToNextTimerAsync();
 
-    await vi.waitFor(() => expect(gateway.connectCalls).toBe(2));
+    await waitForConnectCalls(gateway, 2);
     expect(backend.runtime.discord).toMatchObject({
       connected: true,
       orchestratorConnected: true,
@@ -151,6 +181,9 @@ describe("backend Discord auto-connect retry", () => {
     const root = await initializedRootWithOrchestrator();
     const gateway = new FakeDiscordGateway([connectedStatus(), connectedStatus()]);
     const backend = await startTestBackend(root, gateway, [5_000]);
+
+    await waitForConnectCalls(gateway, 1);
+    await vi.waitFor(() => expect(backend.runtime.discord.connected).toBe(true));
 
     await gateway.emitRuntimeIssue(retryableDiscordIssue("getaddrinfo ENOTFOUND discord.com"));
     const nextRetryAt = backend.runtime.discord.nextRetryAt;
@@ -167,7 +200,7 @@ describe("backend Discord auto-connect retry", () => {
 
     await vi.advanceTimersByTimeAsync(4_000);
 
-    await vi.waitFor(() => expect(gateway.connectCalls).toBe(2));
+    await waitForConnectCalls(gateway, 2);
     expect(backend.runtime.discord.connected).toBe(true);
   });
 
@@ -176,6 +209,9 @@ describe("backend Discord auto-connect retry", () => {
     const root = await initializedRootWithOrchestrator();
     const gateway = new FakeDiscordGateway([connectedStatus()]);
     const backend = await startTestBackend(root, gateway, [5_000]);
+
+    await waitForConnectCalls(gateway, 1);
+    await vi.waitFor(() => expect(backend.runtime.discord.connected).toBe(true));
 
     await gateway.emitRuntimeIssue({
       source: "client-error",
@@ -197,11 +233,17 @@ class FakeDiscordGateway implements DiscordGatewayFacade {
   disconnectCalls = 0;
   onRuntimeIssue?: DiscordJsGatewayOptions["onRuntimeIssue"];
 
-  constructor(private readonly outcomes: Array<DiscordRuntimeStatus | Error>) {}
+  constructor(
+    private readonly outcomes: Array<DiscordRuntimeStatus | Error>,
+    private readonly options: { connectDelayMs?: number } = {}
+  ) {}
 
   async connect(): Promise<DiscordRuntimeStatus> {
     this.connectCalls += 1;
     const outcome = this.outcomes.shift() ?? connectedStatus();
+    if (this.options.connectDelayMs) {
+      await new Promise((resolve) => setTimeout(resolve, this.options.connectDelayMs));
+    }
     if (outcome instanceof Error) {
       throw outcome;
     }
@@ -270,6 +312,10 @@ async function startTestBackend(
   });
   backends.push(backend);
   return backend;
+}
+
+async function waitForConnectCalls(gateway: FakeDiscordGateway, count: number): Promise<void> {
+  await vi.waitFor(() => expect(gateway.connectCalls).toBe(count), { timeout: 5_000 });
 }
 
 function retryableDiscordIssue(message: string): DiscordRuntimeIssue {

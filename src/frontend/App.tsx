@@ -22,6 +22,7 @@ export function App() {
   const [route, navigate] = useRoute();
   const [menuOpen, setMenuOpen] = useState(false);
   const status = useRuntimeStatus();
+  const discordConnecting = status?.discord.connecting ?? false;
 
   const goto = (next: ViewId) => {
     navigate(next);
@@ -77,7 +78,11 @@ export function App() {
             )}
           </div>
           <div>
-            {status?.discord.connected ? "Discord connected" : "Discord offline"}
+            {status?.discord.connected
+              ? "Discord connected"
+              : discordConnecting
+                ? "Discord connecting"
+                : "Discord offline"}
           </div>
           <div>{status ? `${status.queues.active} active queues` : ""}</div>
         </div>
@@ -101,6 +106,10 @@ export function App() {
           {status?.discord.connected ? (
             <Pill tone="ok" dot>
               Discord
+            </Pill>
+          ) : discordConnecting ? (
+            <Pill tone="info" dot>
+              Discord connecting
             </Pill>
           ) : (
             <Pill tone="warn" dot>

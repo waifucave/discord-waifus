@@ -221,6 +221,8 @@ export function LogsView() {
             <span className="v">
               {runtime.data.discord.connected ? (
                 <Pill tone="ok" dot>connected</Pill>
+              ) : runtime.data.discord.connecting ? (
+                <Pill tone="info" dot>connecting</Pill>
               ) : (
                 <Pill tone="warn" dot>offline</Pill>
               )}

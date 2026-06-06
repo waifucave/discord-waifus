@@ -211,8 +211,16 @@ export function SetupView({ onNavigate }: { onNavigate: (view: string) => void }
             <span className="v">{runtime.data.port}</span>
             <span className="k">Discord</span>
             <span className="v">
-              {runtime.data.discord.connected ? "connected" : "offline"} · orchestrator{" "}
-              {runtime.data.discord.orchestratorConnected ? "online" : "offline"} ·{" "}
+              {runtime.data.discord.connected
+                ? "connected"
+                : runtime.data.discord.connecting
+                  ? "connecting"
+                  : "offline"} · orchestrator{" "}
+              {runtime.data.discord.connecting
+                ? "connecting"
+                : runtime.data.discord.orchestratorConnected
+                  ? "online"
+                  : "offline"} ·{" "}
               {runtime.data.discord.waifuBotCount} waifu bots
             </span>
             {runtime.data.discord.warnings.length > 0 && (

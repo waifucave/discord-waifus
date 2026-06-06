@@ -85,6 +85,7 @@ export async function startBackend(options: StartBackendOptions): Promise<Runnin
   let discordRecoveryInProgress = false;
   let pendingLiveDiscordErrorMessage: string | undefined;
   let closing = false;
+  let enqueueReloadRuntime: (reason: string, retryOptions?: { scheduledRetry?: boolean }) => Promise<void>;
 
   const cleanupOcr = async (currentConfig = config) => {
     const ocr = new ImageOcrService({
@@ -143,7 +144,7 @@ export async function startBackend(options: StartBackendOptions): Promise<Runnin
       const nextRetryAt = runtime.discord.nextRetryAt ??
         new Date(Date.now() + nextDiscordRetryDelayMs(attempt)).toISOString();
       runtime.discord = {
-        ...runtime.discord,
+        ...withoutDiscordConnecting(runtime.discord),
         connected: false,
         orchestratorConnected: false,
         waifuBotCount: 0,
@@ -173,7 +174,7 @@ export async function startBackend(options: StartBackendOptions): Promise<Runnin
     const delayMs = nextDiscordRetryDelayMs(discordRetryAttempt);
     const nextRetryAt = new Date(Date.now() + delayMs).toISOString();
     runtime.discord = {
-      ...runtime.discord,
+      ...withoutDiscordConnecting(runtime.discord),
       connected: false,
       orchestratorConnected: false,
       waifuBotCount: 0,
@@ -198,7 +199,7 @@ export async function startBackend(options: StartBackendOptions): Promise<Runnin
     });
     discordRetryTimer = setTimeout(() => {
       discordRetryTimer = undefined;
-      void reloadRuntime("discord-auto-retry", { scheduledRetry: true }).catch((error) => {
+      void enqueueReloadRuntime("discord-auto-retry", { scheduledRetry: true }).catch((error) => {
         const retryMessage = error instanceof Error ? error.message : String(error);
         logger.error("Discord auto-connect retry failed outside gateway connection", { message: retryMessage });
       });
@@ -246,6 +247,7 @@ export async function startBackend(options: StartBackendOptions): Promise<Runnin
   };
 
   const reloadRuntime = async (reason: string, retryOptions: { scheduledRetry?: boolean } = {}) => {
+    if (closing) return;
     if (!retryOptions.scheduledRetry) {
       clearDiscordRetry();
       discordRetryAttempt = 0;
@@ -259,7 +261,14 @@ export async function startBackend(options: StartBackendOptions): Promise<Runnin
 
     const currentConfig = await loadAppConfig(options.dataRoot);
     await cleanupOcr(currentConfig);
+    if (closing) return;
     runtime.paused = currentConfig.runtime.paused;
+    runtime.queues.configuredGuilds = await countConfiguredGuilds(storage);
+    if (currentConfig.runtime.autoConnectDiscord) {
+      runtime.discord = connectingDiscordStatus();
+      runtime.updatedAt = new Date().toISOString();
+      await writeRuntimeFiles(options.dataRoot, runtime);
+    }
     const connected = await maybeConnectDiscord(
       storage,
       currentConfig.runtime.autoConnectDiscord,
@@ -267,6 +276,10 @@ export async function startBackend(options: StartBackendOptions): Promise<Runnin
       createDiscordGateway,
       handleDiscordRuntimeIssue
     );
+    if (closing) {
+      await connected.gateway?.disconnect();
+      return;
+    }
     runtime.discord = connected.status;
     gateway = connected.gateway;
     if (gateway) {
@@ -277,12 +290,26 @@ export async function startBackend(options: StartBackendOptions): Promise<Runnin
     } else if (connected.retryableFailure) {
       await scheduleDiscordRetry(connected.retryableFailure.message);
     }
+    if (closing) {
+      await runtimeOrchestrator?.stop();
+      await gateway?.disconnect();
+      runtimeOrchestrator = undefined;
+      gateway = undefined;
+      return;
+    }
     runtime.queues.configuredGuilds = await countConfiguredGuilds(storage);
     runtime.updatedAt = new Date().toISOString();
     await writeRuntimeFiles(options.dataRoot, runtime);
   };
 
-  await reloadRuntime("startup");
+  let reloadQueue: Promise<void> = Promise.resolve();
+  enqueueReloadRuntime = (reason: string, retryOptions: { scheduledRetry?: boolean } = {}) => {
+    const run = () => reloadRuntime(reason, retryOptions);
+    const next = reloadQueue.then(run, run);
+    reloadQueue = next.catch(() => undefined);
+    return next;
+  };
+
   runtime.queues.configuredGuilds = await countConfiguredGuilds(storage);
   const app = await createApiServer({
     dataRoot: options.dataRoot,
@@ -301,7 +328,7 @@ export async function startBackend(options: StartBackendOptions): Promise<Runnin
         runtime.updatedAt = new Date().toISOString();
         await writeRuntimeFiles(options.dataRoot, runtime);
       },
-      reload: reloadRuntime
+      reload: enqueueReloadRuntime
     },
     logger
   });
@@ -309,6 +336,10 @@ export async function startBackend(options: StartBackendOptions): Promise<Runnin
   await app.listen({ host, port });
   await writeRuntimeFiles(options.dataRoot, runtime);
   logger.info("Backend started", { url: `http://${host}:${port}`, dataRoot: options.dataRoot });
+  void enqueueReloadRuntime("startup").catch((error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.error("Startup runtime reload failed", { message });
+  });
 
   return {
     url: `http://${host}:${port}`,
@@ -347,6 +378,22 @@ function offlineDiscordStatus(warnings: string[] = []): DiscordRuntimeStatus {
     waifuBotCount: 0,
     warnings
   };
+}
+
+function connectingDiscordStatus(): DiscordRuntimeStatus {
+  return {
+    connected: false,
+    orchestratorConnected: false,
+    waifuBotCount: 0,
+    warnings: [],
+    connecting: true
+  };
+}
+
+function withoutDiscordConnecting(status: DiscordRuntimeStatus): DiscordRuntimeStatus {
+  const next = { ...status };
+  delete next.connecting;
+  return next;
 }
 
 async function maybeConnectDiscord(

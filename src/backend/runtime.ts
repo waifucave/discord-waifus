@@ -17,6 +17,7 @@ export const RuntimeStateSchema = z.object({
       orchestratorConnected: z.boolean(),
       waifuBotCount: z.number().int().nonnegative(),
       warnings: z.array(z.string()),
+      connecting: z.boolean().optional(),
       retrying: z.boolean().optional(),
       retryAttempt: z.number().int().positive().optional(),
       nextRetryAt: IsoDateStringSchema.optional(),

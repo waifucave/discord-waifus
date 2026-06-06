@@ -25,6 +25,7 @@ export type DiscordRuntimeStatus = {
   orchestratorConnected: boolean;
   waifuBotCount: number;
   warnings: string[];
+  connecting?: boolean;
   retrying?: boolean;
   retryAttempt?: number;
   nextRetryAt?: string;

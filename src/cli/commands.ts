@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type SpawnOptions } from "node:child_process";
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { open, readFile, rm, stat } from "node:fs/promises";
@@ -7,6 +7,7 @@ import { appDataPath, DATA_ROOT_ENV, getDataRoot, resolveDataPath } from "../con
 import { loadAppConfig } from "../config/appConfig.js";
 import { startBackend } from "../backend/server.js";
 import { RuntimeStateSchema } from "../backend/runtime.js";
+import type { RuntimeState } from "../backend/runtime.js";
 import { diagnoseBundledOcr } from "../orchestration/ocrPackages.js";
 import { StorageService } from "../storage/storageService.js";
 import { DiscordBotsFileSchema, ProviderCredentialsFileSchema, createEmptyRevisionedFile } from "../shared/schemas/domain.js";
@@ -41,19 +42,33 @@ export type CliRuntimeOptions = {
   githubReleaseFetcher?: () => Promise<GitHubRelease>;
   env?: NodeJS.ProcessEnv;
   platform?: NodeJS.Platform;
+  argv?: string[];
+  execPath?: string;
+  cwd?: string;
+  detachedSpawner?: CliDetachedSpawner;
+  detachedBackendWaiter?: (dataRoot: string, pid: number, timeoutMs: number) => Promise<RuntimeState | undefined>;
+  processAlive?: (pid: number) => boolean;
 };
 
+export type CliDetachedSpawner = (
+  command: string,
+  args: string[],
+  options: SpawnOptions
+) => { pid?: number; unref(): void };
+
+const DETACHED_START_TIMEOUT_MS = 30_000;
+
 export async function runCommand(parsed: ParsedCli, options: CliRuntimeOptions = {}): Promise<number> {
-  const dataRoot = resolveCliDataRoot(parsed);
+  const dataRoot = resolveCliDataRoot(parsed, options.env ?? process.env);
 
   switch (parsed.command) {
     case "help":
       printHelp();
       return 0;
     case "start":
-      return startCommand(parsed, dataRoot, "start");
+      return startCommand(parsed, dataRoot, "start", options);
     case "dev":
-      return startCommand(parsed, dataRoot, "dev");
+      return startCommand(parsed, dataRoot, "dev", options);
     case "stop":
       return stopCommand(dataRoot);
     case "restart": {
@@ -61,7 +76,7 @@ export async function runCommand(parsed: ParsedCli, options: CliRuntimeOptions =
       if (stopCode !== 0) {
         return stopCode;
       }
-      return startCommand(parsed, dataRoot, "start");
+      return startCommand(parsed, dataRoot, "start", options);
     }
     case "status":
       return statusCommand(dataRoot);
@@ -74,9 +89,9 @@ export async function runCommand(parsed: ParsedCli, options: CliRuntimeOptions =
   }
 }
 
-function resolveCliDataRoot(parsed: ParsedCli): string {
+function resolveCliDataRoot(parsed: ParsedCli, env: NodeJS.ProcessEnv): string {
   const explicit = flagString(parsed.flags, "dataRoot");
-  return getDataRoot(explicit ? { ...process.env, [DATA_ROOT_ENV]: explicit } : process.env);
+  return getDataRoot(explicit ? { ...env, [DATA_ROOT_ENV]: explicit } : env);
 }
 
 function printHelp(): void {
@@ -101,18 +116,24 @@ Environment:
 async function startCommand(
   parsed: ParsedCli,
   dataRoot: string,
-  mode: "start" | "dev"
+  mode: "start" | "dev",
+  options: CliRuntimeOptions
 ): Promise<number> {
   await ensureDataLayout(dataRoot);
   if (mode === "start" && !flagBoolean(parsed.flags, "foreground")) {
-    return startDetachedCommand(parsed, dataRoot);
+    return startDetachedCommand(parsed, dataRoot, options);
   }
   return startForegroundCommand(parsed, dataRoot, mode);
 }
 
-async function startDetachedCommand(parsed: ParsedCli, dataRoot: string): Promise<number> {
+async function startDetachedCommand(
+  parsed: ParsedCli,
+  dataRoot: string,
+  options: CliRuntimeOptions
+): Promise<number> {
   const existing = await readRuntimeFile(dataRoot, "pid.json");
-  if (existing && isProcessAlive(existing.pid)) {
+  const processAlive = options.processAlive ?? isProcessAlive;
+  if (existing && processAlive(existing.pid)) {
     console.log(`waifus backend already running at http://127.0.0.1:${existing.port}`);
     console.log(`data root: ${dataRoot}`);
     return 0;
@@ -121,14 +142,16 @@ async function startDetachedCommand(parsed: ParsedCli, dataRoot: string): Promis
     await rm(appDataPath(dataRoot, "pid.json"), { force: true });
   }
 
-  const entrypoint = process.argv[1];
+  const argv = options.argv ?? process.argv;
+  const entrypoint = argv[1];
   if (!entrypoint) {
     throw new Error("Cannot locate waifus CLI entrypoint for detached start.");
   }
-  const child = spawn(process.execPath, [entrypoint, "start", "--foreground", ...backendStartArgs(parsed, dataRoot)], {
-    cwd: process.cwd(),
+  const detachedSpawner = options.detachedSpawner ?? spawn;
+  const child = detachedSpawner(options.execPath ?? process.execPath, [entrypoint, "start", "--foreground", ...backendStartArgs(parsed, dataRoot)], {
+    cwd: options.cwd ?? process.cwd(),
     detached: true,
-    env: process.env,
+    env: options.env ?? process.env,
     stdio: "ignore"
   });
   child.unref();
@@ -136,12 +159,26 @@ async function startDetachedCommand(parsed: ParsedCli, dataRoot: string): Promis
     throw new Error("Failed to spawn detached waifus backend.");
   }
 
-  const runtime = await waitForBackendStart(dataRoot, child.pid, 10_000);
+  const runtime = await (options.detachedBackendWaiter ?? waitForBackendStart)(
+    dataRoot,
+    child.pid,
+    DETACHED_START_TIMEOUT_MS
+  );
   if (!runtime) {
-    console.error(`waifus backend did not start within 10s; spawned pid ${child.pid}`);
+    if (processAlive(child.pid)) {
+      console.log(`waifus backend is still starting after 30s; spawned pid ${child.pid}`);
+      console.log(`data root: ${dataRoot}`);
+      console.log(`logs: ${appDataPath(dataRoot, "logs", "backend.log")}`);
+      return 0;
+    }
+    console.error(`waifus backend did not start within 30s; spawned pid ${child.pid} exited`);
+    console.error(`logs: ${appDataPath(dataRoot, "logs", "backend.log")}`);
     return 1;
   }
   console.log(`waifus backend running at http://127.0.0.1:${runtime.port}`);
+  if (runtime.discord.connecting) {
+    console.log("Discord auto-connect is still connecting; dashboard/status will update when ready.");
+  }
   console.log(`data root: ${dataRoot}`);
   return 0;
 }

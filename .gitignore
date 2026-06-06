@@ -10,6 +10,7 @@ coverage/
 .DS_Store
 docs/old_tool_schema.json
 latest_changes.md
+logs.md
 PLAN.md
 AGENT_PLAN.md
 codex-skills/
