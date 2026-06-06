@@ -5052,11 +5052,172 @@ describe("RuntimeOrchestrator", () => {
     ]);
     expect(warnings).toContainEqual(
       expect.objectContaining({
-        message: "Waifu reply was entirely impersonation; retrying once",
-        meta: expect.objectContaining({ waifuId: "yuki" })
+        message: "Waifu reply was entirely removed during cleaning; retrying once",
+        meta: expect.objectContaining({
+          waifuId: "yuki",
+          metadataStripped: false,
+          replyQuoteExtracted: false,
+          impersonationStripped: true
+        })
       })
     );
     expect(warnings.some((w) => w.message === "Waifu reply was empty after cleaning; nothing sent")).toBe(false);
+  });
+
+  it("retries once when reply-quote extraction removes the entire reply, and sends the recovered reply", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    const quotedContent = "back off riko nobody asked for your commentary fr";
+    discord.contexts = [
+      [contextMessage("m1", "waifu", "Aria", quotedContent)],
+      [contextMessage("m1", "waifu", "Aria", quotedContent)],
+      [contextMessage("m2", "waifu", "Stupid hoe", "I have my own reply")]
+    ];
+
+    await seedRuntimeConfig(storage);
+    await seedWaifu(storage, "stupid-hoe", "Stupid hoe", "stupid-hoe-bot", "blunt");
+    await enableWaifus(storage, ["stupid-hoe"]);
+
+    class QuoteOnlyRetryPipeline implements ModelPipeline {
+      waifuCalls = 0;
+      retryUserMessages: Array<string | undefined> = [];
+      decisions: OrchestratorDecision[] = [
+        {
+          action: "reply",
+          respondingWaifus: [
+            { waifuId: "stupid-hoe", delaySeconds: 0, replyStyle: "normal", sceneDirection: "answer" }
+          ],
+          reasoning: "Stupid hoe answers."
+        },
+        { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, reasoning: "done" }
+      ];
+      async generateWaifu(request: WaifuGenerationRequest) {
+        this.waifuCalls += 1;
+        this.retryUserMessages.push(request.retryUserMessage);
+        return this.waifuCalls === 1
+          ? { content: `Aria: ${quotedContent}` }
+          : { content: "I have my own reply" };
+      }
+      async decideOrchestrator() {
+        const next = this.decisions.shift();
+        if (!next) throw new Error("no decision");
+        return next;
+      }
+    }
+
+    const pipeline = new QuoteOnlyRetryPipeline();
+    const warnings: Array<{ message: string; meta?: Record<string, unknown> }> = [];
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 3,
+      createPipeline: () => pipeline,
+      logger: {
+        debug: () => undefined,
+        info: () => undefined,
+        warn: (message, meta) => warnings.push({ message, meta }),
+        error: () => undefined
+      }
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    expect(pipeline.waifuCalls).toBe(2);
+    expect(pipeline.retryUserMessages).toEqual([undefined, "Stupid hoe:"]);
+    expect(discord.sent.map((message) => message.content)).toEqual(["I have my own reply"]);
+    expect(warnings).toContainEqual(
+      expect.objectContaining({
+        message: "Waifu reply was entirely removed during cleaning; retrying once",
+        meta: expect.objectContaining({
+          waifuId: "stupid-hoe",
+          metadataStripped: false,
+          replyQuoteExtracted: true,
+          impersonationStripped: false
+        })
+      })
+    );
+    expect(warnings.some((warning) => warning.message === "Waifu reply was empty after cleaning; nothing sent"))
+      .toBe(false);
+  });
+
+  it("gives up after one retry when both replies contain only a matching reply quote", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    const quotedContent = "back off riko nobody asked for your commentary fr";
+    discord.contexts = [
+      [contextMessage("m1", "waifu", "Aria", quotedContent)],
+      [contextMessage("m1", "waifu", "Aria", quotedContent)],
+      [contextMessage("m1", "waifu", "Aria", quotedContent)]
+    ];
+
+    await seedRuntimeConfig(storage);
+    await seedWaifu(storage, "stupid-hoe", "Stupid hoe", "stupid-hoe-bot", "blunt");
+    await enableWaifus(storage, ["stupid-hoe"]);
+
+    class AlwaysQuotesPipeline implements ModelPipeline {
+      waifuCalls = 0;
+      retryUserMessages: Array<string | undefined> = [];
+      decisions: OrchestratorDecision[] = [
+        {
+          action: "reply",
+          respondingWaifus: [
+            { waifuId: "stupid-hoe", delaySeconds: 0, replyStyle: "normal", sceneDirection: "answer" }
+          ],
+          reasoning: "Stupid hoe answers."
+        },
+        { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, reasoning: "done" }
+      ];
+      async generateWaifu(request: WaifuGenerationRequest) {
+        this.waifuCalls += 1;
+        this.retryUserMessages.push(request.retryUserMessage);
+        return { content: `Aria: ${quotedContent}` };
+      }
+      async decideOrchestrator() {
+        const next = this.decisions.shift();
+        if (!next) throw new Error("no decision");
+        return next;
+      }
+    }
+
+    const pipeline = new AlwaysQuotesPipeline();
+    const warnings: Array<{ message: string; meta?: Record<string, unknown> }> = [];
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 3,
+      createPipeline: () => pipeline,
+      logger: {
+        debug: () => undefined,
+        info: () => undefined,
+        warn: (message, meta) => warnings.push({ message, meta }),
+        error: () => undefined
+      }
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    expect(pipeline.waifuCalls).toBe(2);
+    expect(pipeline.retryUserMessages).toEqual([undefined, "Stupid hoe:"]);
+    expect(discord.sent).toEqual([]);
+    expect(warnings).toContainEqual(
+      expect.objectContaining({
+        message: "Waifu reply was empty after cleaning; nothing sent",
+        meta: expect.objectContaining({
+          waifuId: "stupid-hoe",
+          attempts: 2
+        })
+      })
+    );
   });
 
   it("gives up after one retry when the second attempt is also full impersonation", async () => {

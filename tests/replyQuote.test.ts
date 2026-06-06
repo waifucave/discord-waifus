@@ -153,6 +153,19 @@ describe("extractReplyQuote", () => {
     expect(result.cleanedContent).toBe("yeah");
   });
 
+  it("returns an empty cleaned body when a matching implicit quote is the entire reply", () => {
+    const result = extractReplyQuote("Aria: back off riko nobody asked for your commentary fr", [
+      ctxMessage({
+        id: "m1",
+        content: "back off riko nobody asked for your commentary fr",
+        displayName: "Aria",
+        name: "Aria"
+      })
+    ]);
+    expect(result.replyToMessageId).toBe("m1");
+    expect(result.cleanedContent).toBe("");
+  });
+
   it("normalizes an implicit quote via substring containment", () => {
     const result = extractReplyQuote(
       "K: blind bitch u cant even see whats on this image\nThat's your victory lap?",

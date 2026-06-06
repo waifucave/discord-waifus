@@ -1310,14 +1310,15 @@ export class RuntimeOrchestrator {
               participantDisplayNames,
               stripImpersonation: false
             });
+            const metadataStripped = metadataStrippedContent !== result.content;
             quoteExtraction = extractReplyQuote(metadataStrippedContent, waifuMessages);
+            const replyQuoteExtracted = quoteExtraction.cleanedContent !== metadataStrippedContent;
             strippedContent = stripLeakedContextHeader(quoteExtraction.cleanedContent, {
               senderDisplayName: waifu.displayName,
               participantDisplayNames
             });
-            const strippedLeakedContent =
-              metadataStrippedContent !== result.content ||
-              strippedContent !== quoteExtraction.cleanedContent;
+            const impersonationStripped = strippedContent !== quoteExtraction.cleanedContent;
+            const strippedLeakedContent = metadataStripped || impersonationStripped;
             if (strippedLeakedContent) {
               this.options.logger.warn("Stripped leaked context header from waifu reply", {
                 guildId: input.guildId,
@@ -1328,7 +1329,7 @@ export class RuntimeOrchestrator {
                 after: strippedContent.slice(0, 80)
               });
             }
-            if (metadataStrippedContent !== quoteExtraction.cleanedContent) {
+            if (replyQuoteExtracted) {
               this.options.logger.info("Extracted leading reply quote from waifu reply", {
                 guildId: input.guildId,
                 channelId: input.channelId,
@@ -1339,16 +1340,18 @@ export class RuntimeOrchestrator {
               });
             }
             chunks = splitWaifuReply(strippedContent);
-            const becameEmptyDueToStrip =
+            const becameEmptyDueToCleaning =
               chunks.length === 0 &&
-              strippedContent.length === 0 &&
-              quoteExtraction.cleanedContent.length > 0 &&
-              result.content.length > 0;
-            if (!becameEmptyDueToStrip || attempt === MAX_GENERATE_ATTEMPTS) break;
-            this.options.logger.warn("Waifu reply was entirely impersonation; retrying once", {
+              result.content.trim().length > 0 &&
+              (metadataStripped || replyQuoteExtracted || impersonationStripped);
+            if (!becameEmptyDueToCleaning || attempt === MAX_GENERATE_ATTEMPTS) break;
+            this.options.logger.warn("Waifu reply was entirely removed during cleaning; retrying once", {
               guildId: input.guildId,
               channelId: input.channelId,
               waifuId: waifu.id,
+              metadataStripped,
+              replyQuoteExtracted,
+              impersonationStripped,
               originalPreview: result.content.slice(0, 120)
             });
           }
