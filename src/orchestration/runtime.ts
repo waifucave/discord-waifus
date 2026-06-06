@@ -10,6 +10,8 @@ import {
   DiscordGatewayFacade,
   DiscordMemoriesCommandEvent,
   DiscordMessageEvent,
+  DiscordPrintCommandEvent,
+  DiscordPrintWaifuAutocompleteEvent,
   DiscordRunCommandEvent,
   DiscordRunWaifuAutocompleteEvent,
   DiscordReviewCommandEvent,
@@ -130,12 +132,8 @@ type StageManagerDebugEntry = {
   summary: string;
 };
 
-type LastWaifuPromptDebug = {
-  guildId: string;
-  channelId: string;
-  waifuId: string;
+type WaifuPromptDebugParts = {
   waifuDisplayName: string;
-  capturedAt: string;
   systemPrompt: string;
   midSystemBlock: string;
   trailingSystemBlock: string;
@@ -155,7 +153,6 @@ export class RuntimeOrchestrator {
   private readonly activeWaifuQueries = new Map<string, number>();
   private readonly activeReviewerRuns = new Map<string, number>();
   private readonly channelRunVersions = new Map<string, number>();
-  private lastWaifuPromptDebug?: LastWaifuPromptDebug;
   // One-shot: when a waifu in this channel just emitted a tool-only reply
   // (add_memory call with no Discord text), drop the memory tool from the
   // next decision so the chain doesn't loop on silent memory-tool turns.
@@ -214,6 +211,23 @@ export class RuntimeOrchestrator {
         this.runBackground("Discord memories command handler failed", slashCommandLogContext(event), () =>
           this.handleMemoriesCommand(event)
         );
+      }),
+      this.options.discord.onPrintWaifuAutocomplete?.((event) =>
+        this.handlePrintWaifuAutocomplete(event).catch((error) => {
+          this.options.logger.warn("Discord print autocomplete handler failed", {
+            guildId: event.guildId,
+            channelId: event.channelId,
+            focusedValue: event.focusedValue,
+            message: error instanceof Error ? error.message : String(error)
+          });
+        })
+      ),
+      this.options.discord.onPrintCommand?.((event) => {
+        this.runBackground("Discord print command handler failed", {
+          ...slashCommandLogContext(event),
+          type: event.type,
+          waifuId: event.waifuId
+        }, () => this.handlePrintCommand(event));
       }),
       this.options.discord.onDebugCommand?.((event) => {
         this.runBackground("Discord debug command handler failed", {
@@ -569,6 +583,37 @@ export class RuntimeOrchestrator {
     }
   }
 
+  private async handlePrintWaifuAutocomplete(event: DiscordPrintWaifuAutocompleteEvent): Promise<void> {
+    try {
+      if (!event.guildId) {
+        await event.respond([]);
+        return;
+      }
+      const server = await this.ensureServer(event.guildId);
+      const query = normalizeRunWaifuName(event.focusedValue);
+      const choices = (await this.listAvailableWaifusForGuild(server))
+        .filter((waifu) => {
+          if (!query) return true;
+          return [waifu.id, waifu.name, waifu.displayName].some((value) =>
+            normalizeRunWaifuName(value).includes(query)
+          );
+        })
+        .map((waifu): DiscordAutocompleteChoice => ({
+          name: autocompleteWaifuName(waifu),
+          value: waifu.id
+        }))
+        .slice(0, 25);
+      await event.respond(choices);
+    } catch (error) {
+      this.options.logger.warn("Print waifu autocomplete failed", {
+        guildId: event.guildId,
+        channelId: event.channelId,
+        message: error instanceof Error ? error.message : String(error)
+      });
+      await event.respond([]);
+    }
+  }
+
   private async handleMemoriesCommand(event: DiscordMemoriesCommandEvent): Promise<void> {
     try {
       const result = await this.triggerStageManager(event.guildId, event.channelId);
@@ -593,14 +638,133 @@ export class RuntimeOrchestrator {
     }
   }
 
+  private async handlePrintCommand(event: DiscordPrintCommandEvent): Promise<void> {
+    try {
+      if (!event.type) {
+        await event.respond("Print type is required. Choose system prompt, memories, or personality.");
+        return;
+      }
+      const waifuId = event.waifuId?.trim();
+      if (!waifuId) {
+        await event.respond("Waifu is required.");
+        return;
+      }
+      const server = await this.ensureServer(event.guildId);
+      const availableWaifus = await this.listAvailableWaifusForGuild(server);
+      if (availableWaifus.length === 0) {
+        await event.respond("No waifus are enabled in this server.");
+        return;
+      }
+      const resolved = this.resolvePrintWaifu(availableWaifus, waifuId);
+      if (typeof resolved === "string") {
+        await event.respond(resolved);
+        return;
+      }
+      if (!this.options.discord.sendDebugMessage) {
+        throw new Error("Discord debug message sending is not available.");
+      }
+
+      const messages = await this.formatPrintCommandMessages({
+        guildId: event.guildId,
+        channelId: event.channelId,
+        server,
+        waifu: resolved,
+        availableWaifus,
+        type: event.type
+      });
+      for (const content of messages) {
+        await this.options.discord.sendDebugMessage({
+          channelId: event.channelId,
+          content
+        });
+      }
+      await event.respond(printCommandConfirmation(event.type, resolved.displayName));
+    } catch (error) {
+      this.options.logger.error("Print command failed", {
+        guildId: event.guildId,
+        channelId: event.channelId,
+        type: event.type,
+        waifuId: event.waifuId,
+        message: error instanceof Error ? error.message : String(error)
+      });
+      await event.respond(error instanceof Error ? error.message : "Print command failed.");
+    }
+  }
+
+  private async formatPrintCommandMessages(input: {
+    guildId: string;
+    channelId: string;
+    server: ServerConfig;
+    waifu: WaifuConfig;
+    availableWaifus: WaifuConfig[];
+    type: Exclude<DiscordPrintCommandEvent["type"], undefined>;
+  }): Promise<string[]> {
+    if (input.type === "system_prompt") {
+      const { systemPrompt, midSystemBlock, trailingSystemBlock } = await this.buildWaifuPromptParts(
+        input.guildId,
+        input.waifu,
+        input.availableWaifus,
+        {
+          channelId: input.channelId,
+          pickNextWaifuToolOverride: input.server.tools.pickNextWaifu,
+          shortTermMemoryToolOverride: input.server.tools.shortTermMemory
+        }
+      );
+      return formatWaifuPromptDebugMessages({
+        waifuDisplayName: input.waifu.displayName,
+        systemPrompt,
+        midSystemBlock,
+        trailingSystemBlock
+      });
+    }
+    if (input.type === "memories") {
+      const content = await this.modelVisibleMemoryBlockForPrint(input.guildId, input.channelId, input.waifu);
+      return formatPrintDebugBlock(`Memories (${input.waifu.displayName})`, content);
+    }
+    return formatPrintDebugBlock(
+      `Personality (${input.waifu.displayName})`,
+      input.waifu.persona.trim() || "(no personality configured)"
+    );
+  }
+
+  private async modelVisibleMemoryBlockForPrint(
+    guildId: string,
+    channelId: string,
+    waifu: WaifuConfig
+  ): Promise<string> {
+    const now = Date.now();
+    const [store, shortTermStore] = await Promise.all([
+      this.readMemoryStore(),
+      this.readShortTermMemoryStore()
+    ]);
+    const longTermLines = store.memories
+      .filter((memory) => memory.guildId === guildId && memory.waifuId === waifu.id && memory.status === "active")
+      .map((memory) => `- ${memory.content}`);
+    const shortTermLines = shortTermStore.entries
+      .filter((entry) =>
+        entry.guildId === guildId &&
+        entry.channelId === channelId &&
+        entry.waifuId === waifu.id &&
+        Date.parse(entry.expiresAt) > now
+      )
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+      .map((entry) => `- ${entry.content}`);
+    const lines = [...longTermLines, ...shortTermLines];
+    if (lines.length === 0) {
+      return "(none)";
+    }
+    const waifuTag = promptTagName(waifu.name || waifu.id);
+    return `<${waifuTag}_relevant_memories>\n${lines.join("\n")}\n</${waifuTag}_relevant_memories>`;
+  }
+
   private async handleDebugCommand(event: DiscordDebugCommandEvent): Promise<void> {
     try {
       if (!event.type) {
-        await event.respond("Debug type is required. Choose set, unset, or print.");
+        await event.respond("Debug type is required. Choose set or unset.");
         return;
       }
       if (event.type === "print") {
-        await this.handleDebugPrintCommand(event);
+        await event.respond("/console print is deprecated. Use /print instead.");
         return;
       }
       const sourceChannelId = event.sourceChannelId?.trim();
@@ -642,26 +806,6 @@ export class RuntimeOrchestrator {
       });
       await event.respond(error instanceof Error ? error.message : "Debug command failed.");
     }
-  }
-
-  private async handleDebugPrintCommand(event: DiscordDebugCommandEvent): Promise<void> {
-    const snapshot = this.lastWaifuPromptDebug;
-    if (!snapshot) {
-      await event.respond("No waifu prompt has been captured yet.");
-      return;
-    }
-    if (!this.options.discord.sendDebugMessage) {
-      throw new Error("Discord debug message sending is not available.");
-    }
-    for (const content of formatWaifuPromptDebugMessages(snapshot)) {
-      await this.options.discord.sendDebugMessage({
-        channelId: event.channelId,
-        content
-      });
-    }
-    await event.respond(
-      `Printed latest waifu prompt blocks for ${snapshot.waifuDisplayName} from channel ${snapshot.channelId}.`
-    );
   }
 
   private runtimeBusyReason(guildId: string, channelId: string): string | undefined {
@@ -1174,18 +1318,6 @@ export class RuntimeOrchestrator {
             orchestratorDecisionId: input.decisionId,
             signal: input.signal
           });
-          if (chunks.length > 0) {
-            this.lastWaifuPromptDebug = {
-              guildId: input.guildId,
-              channelId: input.channelId,
-              waifuId: waifu.id,
-              waifuDisplayName: waifu.displayName || waifu.name || waifu.id,
-              capturedAt: nowIso(),
-              systemPrompt,
-              midSystemBlock,
-              trailingSystemBlock
-            };
-          }
           if (result.shortTermMemoryEntries?.length && effectiveShortTermMemory) {
             await this.recordShortTermMemoryEntries({
               guildId: input.guildId,
@@ -2090,6 +2222,25 @@ export class RuntimeOrchestrator {
     return waifu;
   }
 
+  private resolvePrintWaifu(availableWaifus: WaifuConfig[], value: string): WaifuConfig | string {
+    const exactId = availableWaifus.find((waifu) => waifu.id === value);
+    if (exactId) {
+      return exactId;
+    }
+
+    const query = normalizeRunWaifuName(value);
+    const matches = availableWaifus.filter((waifu) =>
+      [waifu.name, waifu.displayName].some((candidate) => normalizeRunWaifuName(candidate) === query)
+    );
+    if (matches.length === 1) {
+      return matches[0];
+    }
+    if (matches.length > 1) {
+      return `Waifu "${value}" is ambiguous; use the exact waifu id.`;
+    }
+    return `Waifu "${value}" is not enabled in this server.`;
+  }
+
   private async listWaifus(): Promise<WaifuConfig[]> {
     let entries: string[];
     try {
@@ -2110,6 +2261,23 @@ export class RuntimeOrchestrator {
     const waifus = await this.listWaifus();
     const waifusById = new Map(waifus.filter((waifu) => waifu.modelId).map((waifu) => [waifu.id, waifu]));
     return (channel.enabledWaifuIds ?? [])
+      .map((waifuId) => waifusById.get(waifuId))
+      .filter((waifu): waifu is WaifuConfig => Boolean(waifu));
+  }
+
+  private async listAvailableWaifusForGuild(server: ServerConfig): Promise<WaifuConfig[]> {
+    const enabledWaifuIds = new Set<string>();
+    for (const channel of Object.values(server.channels)) {
+      for (const waifuId of channel.enabledWaifuIds ?? []) {
+        enabledWaifuIds.add(waifuId);
+      }
+    }
+    if (enabledWaifuIds.size === 0) {
+      return [];
+    }
+    const waifus = await this.listWaifus();
+    const waifusById = new Map(waifus.map((waifu) => [waifu.id, waifu]));
+    return [...enabledWaifuIds]
       .map((waifuId) => waifusById.get(waifuId))
       .filter((waifu): waifu is WaifuConfig => Boolean(waifu));
   }
@@ -3351,22 +3519,22 @@ function clipDebugText(value: string, maxLength = 700): string {
   return `${normalized.slice(0, maxLength - 1)}…`;
 }
 
-function formatWaifuPromptDebugMessages(input: LastWaifuPromptDebug): string[] {
+function formatWaifuPromptDebugMessages(input: WaifuPromptDebugParts): string[] {
   return [
-    ...formatWaifuPromptDebugBlock(1, input.systemPrompt),
-    ...formatWaifuPromptDebugBlock(2, input.midSystemBlock),
-    ...formatWaifuPromptDebugBlock(3, input.trailingSystemBlock)
+    ...formatPrintDebugBlock(`System prompt block 1 (${input.waifuDisplayName})`, input.systemPrompt),
+    ...formatPrintDebugBlock(`System prompt block 2 (${input.waifuDisplayName})`, input.midSystemBlock),
+    ...formatPrintDebugBlock(`System prompt block 3 (${input.waifuDisplayName})`, input.trailingSystemBlock)
   ];
 }
 
-function formatWaifuPromptDebugBlock(blockNumber: number, content: string): string[] {
+function formatPrintDebugBlock(title: string, content: string): string[] {
   const rawContent = content.length > 0 ? content : "(empty)";
   const fence = promptDebugCodeFence(rawContent);
   const messages: string[] = [];
   let remaining = rawContent;
   let part = 1;
   while (remaining.length > 0) {
-    const prefix = part === 1 ? `## Block ${blockNumber}\n${fence}\n` : `${fence}\n`;
+    const prefix = part === 1 ? `## ${title}\n${fence}\n` : `${fence}\n`;
     const suffix = `\n${fence}`;
     const maxContentLength = Math.max(1, DISCORD_DEBUG_MESSAGE_LIMIT - prefix.length - suffix.length);
     const chunk = takePromptDebugChunk(remaining, maxContentLength);
@@ -3375,6 +3543,12 @@ function formatWaifuPromptDebugBlock(blockNumber: number, content: string): stri
     part += 1;
   }
   return messages;
+}
+
+function printCommandConfirmation(type: Exclude<DiscordPrintCommandEvent["type"], undefined>, displayName: string): string {
+  if (type === "system_prompt") return `Printed system prompt for ${displayName}.`;
+  if (type === "memories") return `Printed memories for ${displayName}.`;
+  return `Printed personality for ${displayName}.`;
 }
 
 function promptDebugCodeFence(content: string): string {

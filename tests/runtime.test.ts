@@ -10,6 +10,10 @@ import {
   DiscordDebugCommandListener,
   DiscordMemoriesCommandEvent,
   DiscordMemoriesCommandListener,
+  DiscordPrintCommandEvent,
+  DiscordPrintCommandListener,
+  DiscordPrintWaifuAutocompleteEvent,
+  DiscordPrintWaifuAutocompleteListener,
   DiscordReviewCommandEvent,
   DiscordReviewCommandListener,
   DiscordRunCommandEvent,
@@ -87,6 +91,8 @@ class FakeDiscord implements DiscordGatewayFacade {
   runWaifuAutocompleteListeners = new Set<DiscordRunWaifuAutocompleteListener>();
   stopListeners = new Set<DiscordStopCommandListener>();
   memoriesListeners = new Set<DiscordMemoriesCommandListener>();
+  printListeners = new Set<DiscordPrintCommandListener>();
+  printWaifuAutocompleteListeners = new Set<DiscordPrintWaifuAutocompleteListener>();
   debugListeners = new Set<DiscordDebugCommandListener>();
   contexts: ContextMessage[][] = [
     [contextMessage("m1", "user", "Kevin", "hello")],
@@ -128,6 +134,16 @@ class FakeDiscord implements DiscordGatewayFacade {
   onMemoriesCommand(listener: DiscordMemoriesCommandListener): () => void {
     this.memoriesListeners.add(listener);
     return () => this.memoriesListeners.delete(listener);
+  }
+
+  onPrintCommand(listener: DiscordPrintCommandListener): () => void {
+    this.printListeners.add(listener);
+    return () => this.printListeners.delete(listener);
+  }
+
+  onPrintWaifuAutocomplete(listener: DiscordPrintWaifuAutocompleteListener): () => void {
+    this.printWaifuAutocompleteListeners.add(listener);
+    return () => this.printWaifuAutocompleteListeners.delete(listener);
   }
 
   onDebugCommand(listener: DiscordDebugCommandListener): () => void {
@@ -207,6 +223,34 @@ class FakeDiscord implements DiscordGatewayFacade {
   ): Promise<void> {
     await Promise.all(
       [...this.memoriesListeners].map((listener) =>
+        listener({
+          ...event,
+          respond: event.respond ?? (async () => undefined)
+        })
+      )
+    );
+  }
+
+  async emitPrintCommand(
+    event: Omit<DiscordPrintCommandEvent, "respond"> & { respond?: DiscordPrintCommandEvent["respond"] }
+  ): Promise<void> {
+    await Promise.all(
+      [...this.printListeners].map((listener) =>
+        listener({
+          ...event,
+          respond: event.respond ?? (async () => undefined)
+        })
+      )
+    );
+  }
+
+  async emitPrintWaifuAutocomplete(
+    event: Omit<DiscordPrintWaifuAutocompleteEvent, "respond"> & {
+      respond?: DiscordPrintWaifuAutocompleteEvent["respond"];
+    }
+  ): Promise<void> {
+    await Promise.all(
+      [...this.printWaifuAutocompleteListeners].map((listener) =>
         listener({
           ...event,
           respond: event.respond ?? (async () => undefined)
@@ -2939,7 +2983,7 @@ describe("RuntimeOrchestrator", () => {
     ]);
   });
 
-  it("reports when /console print has no captured waifu prompt yet", async () => {
+  it("reports that stale /console print is deprecated", async () => {
     const root = await makeTempRoot();
     roots.push(root);
     await ensureDataLayout(root);
@@ -2974,17 +3018,16 @@ describe("RuntimeOrchestrator", () => {
     await waitFor(() => responses.length === 1, "debug print empty response");
     await runtime.stop();
 
-    expect(responses).toEqual(["No waifu prompt has been captured yet."]);
+    expect(responses).toEqual(["/console print is deprecated. Use /print instead."]);
     expect(discord.debugMessages).toEqual([]);
   });
 
-  it("prints the latest waifu prompt blocks in the channel where /console print is used", async () => {
+  it("prints a fresh selected waifu system prompt for the current guild", async () => {
     const root = await makeTempRoot();
     roots.push(root);
     await ensureDataLayout(root);
     const storage = new StorageService(root);
     const discord = new FakeDiscord();
-    discord.contexts = [[contextMessage("m1", "user", "Kevin", "hello")]];
 
     await seedRuntimeConfig(storage);
     await seedWaifu(storage, "yuki", "Yuki", "yuki-bot", `kind\n${"long detail line\n".repeat(260)}`);
@@ -2993,55 +3036,278 @@ describe("RuntimeOrchestrator", () => {
       sleep: async () => undefined,
       storage,
       discord,
-      maxAutomaticTurns: 1,
       createPipeline: () => ({
-        async decideOrchestrator() {
-          return {
-            action: "reply",
-            respondingWaifus: [
-              { waifuId: "yuki", delaySeconds: 0, replyStyle: "normal", sceneDirection: "answer Kevin" }
-            ],
-            reasoning: "Yuki should answer Kevin."
-          };
-        },
         async generateWaifu() {
-          return { content: "sure" };
+          return { content: "unused" };
         }
       }),
       logger: quietLogger()
     });
     await runtime.start();
 
-    await runtime.triggerChannel("guild-1", "channel-1");
-    await waitFor(() => discord.sent.length === 1, "waifu message sent");
-    expect(discord.debugMessages).toEqual([]);
-
     const responses: string[] = [];
-    await discord.emitDebugCommand({
-      guildId: "guild-b",
-      channelId: "print-channel",
+    await discord.emitPrintCommand({
+      guildId: "guild-1",
+      channelId: "channel-1",
       userId: "admin-user",
-      type: "print",
+      type: "system_prompt",
+      waifuId: "yuki",
       respond: async (content) => {
         responses.push(content);
       }
     });
-    await waitFor(() => responses.length === 1, "debug print response");
+    await waitFor(() => responses.length === 1, "print system prompt response");
     await runtime.stop();
 
-    expect(responses).toEqual(["Printed latest waifu prompt blocks for Yuki from channel channel-1."]);
+    expect(responses).toEqual(["Printed system prompt for Yuki."]);
     expect(discord.debugMessages.length).toBeGreaterThan(3);
-    expect(discord.debugMessages.every((message) => message.channelId === "print-channel")).toBe(true);
+    expect(discord.debugMessages.every((message) => message.channelId === "channel-1")).toBe(true);
     const printed = discord.debugMessages.map((message) => message.content).join("\n");
-    expect(printed).toContain("## Block 1");
-    expect(printed).toContain("## Block 2");
-    expect(printed).toContain("## Block 3");
+    expect(printed).toContain("## System prompt block 1 (Yuki)");
+    expect(printed).toContain("## System prompt block 2 (Yuki)");
+    expect(printed).toContain("## System prompt block 3 (Yuki)");
     expect(printed).not.toContain("(continued");
     expect(printed).not.toMatch(/`{3,}xml/);
     expect(printed).toContain("<yuki_identity>");
     expect(printed).toContain("<active_chat_participants>");
-    expect(printed).toContain("<scene_direction>answer Kevin</scene_direction>");
+    expect(printed).not.toContain("<scene_direction>");
     expect(printed).not.toContain("\\n");
+  });
+
+  it("prints model-visible memories for the selected waifu in the current guild and channel", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    const now = Date.now();
+    const createdAt = new Date(now - 60_000).toISOString();
+
+    await seedRuntimeConfig(storage);
+    await seedWaifu(storage, "mika", "Mika", "mika-bot", "direct");
+    await enableWaifus(storage, ["yuki", "mika"]);
+    await storage.writeJson(
+      "memories:global",
+      "user/memories.json",
+      MemoryStoreSchema,
+      MemoryStoreSchema.parse(
+        createEmptyRevisionedFile({
+          memories: [
+            {
+              id: "current-active",
+              waifuId: "yuki",
+              scope: "guild",
+              guildId: "guild-1",
+              content: "Yuki knows Kevin likes green tea.",
+              importance: 3,
+              createdAt,
+              updatedAt: createdAt,
+              sourceMessageIds: [],
+              status: "active"
+            },
+            {
+              id: "archived-current",
+              waifuId: "yuki",
+              scope: "guild",
+              guildId: "guild-1",
+              content: "Archived current guild memory.",
+              importance: 2,
+              createdAt,
+              updatedAt: createdAt,
+              sourceMessageIds: [],
+              status: "archived"
+            },
+            {
+              id: "other-guild",
+              waifuId: "yuki",
+              scope: "guild",
+              guildId: "guild-2",
+              content: "Other guild memory.",
+              importance: 2,
+              createdAt,
+              updatedAt: createdAt,
+              sourceMessageIds: [],
+              status: "active"
+            },
+            {
+              id: "other-waifu",
+              waifuId: "mika",
+              scope: "guild",
+              guildId: "guild-1",
+              content: "Mika-only memory.",
+              importance: 2,
+              createdAt,
+              updatedAt: createdAt,
+              sourceMessageIds: [],
+              status: "active"
+            }
+          ]
+        })
+      )
+    );
+    await storage.writeJson(
+      "short-term-memories",
+      "user/short-term-memories.json",
+      ShortTermMemoryStoreSchema,
+      ShortTermMemoryStoreSchema.parse(
+        createEmptyRevisionedFile({
+          entries: [
+            {
+              id: "short-current",
+              guildId: "guild-1",
+              channelId: "channel-1",
+              waifuId: "yuki",
+              content: "Kevin is leaving at 5pm.",
+              createdAt,
+              expiresAt: new Date(now + 60_000).toISOString()
+            },
+            {
+              id: "short-expired",
+              guildId: "guild-1",
+              channelId: "channel-1",
+              waifuId: "yuki",
+              content: "Expired short-term memory.",
+              createdAt,
+              expiresAt: new Date(now - 60_000).toISOString()
+            },
+            {
+              id: "short-other-channel",
+              guildId: "guild-1",
+              channelId: "channel-2",
+              waifuId: "yuki",
+              content: "Other channel short-term memory.",
+              createdAt,
+              expiresAt: new Date(now + 60_000).toISOString()
+            }
+          ]
+        })
+      )
+    );
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      createPipeline: () => ({
+        async generateWaifu() {
+          return { content: "unused" };
+        }
+      }),
+      logger: quietLogger()
+    });
+    await runtime.start();
+
+    const responses: string[] = [];
+    await discord.emitPrintCommand({
+      guildId: "guild-1",
+      channelId: "channel-1",
+      userId: "admin-user",
+      type: "memories",
+      waifuId: "yuki",
+      respond: async (content) => {
+        responses.push(content);
+      }
+    });
+    await waitFor(() => responses.length === 1, "print memories response");
+    await runtime.stop();
+
+    expect(responses).toEqual(["Printed memories for Yuki."]);
+    const printed = discord.debugMessages.map((message) => message.content).join("\n");
+    expect(printed).toContain("## Memories (Yuki)");
+    expect(printed).toContain("<yuki_relevant_memories>");
+    expect(printed).toContain("- Yuki knows Kevin likes green tea.");
+    expect(printed).toContain("- Kevin is leaving at 5pm.");
+    expect(printed).not.toContain("Archived current guild memory.");
+    expect(printed).not.toContain("Other guild memory.");
+    expect(printed).not.toContain("Mika-only memory.");
+    expect(printed).not.toContain("Expired short-term memory.");
+    expect(printed).not.toContain("Other channel short-term memory.");
+  });
+
+  it("prints the selected waifu raw personality", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+
+    await seedRuntimeConfig(storage);
+    await seedWaifu(storage, "mika", "Mika", "mika-bot", "dry\nsharp");
+    await enableWaifus(storage, ["yuki", "mika"]);
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      createPipeline: () => ({
+        async generateWaifu() {
+          return { content: "unused" };
+        }
+      }),
+      logger: quietLogger()
+    });
+    await runtime.start();
+
+    const responses: string[] = [];
+    await discord.emitPrintCommand({
+      guildId: "guild-1",
+      channelId: "channel-1",
+      userId: "admin-user",
+      type: "personality",
+      waifuId: "mika",
+      respond: async (content) => {
+        responses.push(content);
+      }
+    });
+    await waitFor(() => responses.length === 1, "print personality response");
+    await runtime.stop();
+
+    expect(responses).toEqual(["Printed personality for Mika."]);
+    const printed = discord.debugMessages.map((message) => message.content).join("\n");
+    expect(printed).toContain("## Personality (Mika)");
+    expect(printed).toContain("dry\nsharp");
+    expect(printed).not.toContain("You are Mika");
+  });
+
+  it("rejects /print waifus outside the current guild", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+
+    await seedRuntimeConfig(storage);
+    await seedWaifu(storage, "mika", "Mika", "mika-bot", "direct");
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      createPipeline: () => ({
+        async generateWaifu() {
+          return { content: "unused" };
+        }
+      }),
+      logger: quietLogger()
+    });
+    await runtime.start();
+
+    const responses: string[] = [];
+    await discord.emitPrintCommand({
+      guildId: "guild-1",
+      channelId: "channel-1",
+      userId: "admin-user",
+      type: "personality",
+      waifuId: "mika",
+      respond: async (content) => {
+        responses.push(content);
+      }
+    });
+    await waitFor(() => responses.length === 1, "print invalid waifu response");
+    await runtime.stop();
+
+    expect(responses).toEqual(['Waifu "mika" is not enabled in this server.']);
+    expect(discord.debugMessages).toEqual([]);
   });
 
   it("posts orchestrator reply decisions to the configured debug channel", async () => {
@@ -3479,6 +3745,79 @@ describe("RuntimeOrchestrator", () => {
     await runtime.stop();
 
     expect(choices).toEqual([{ name: "Mika (mika)", value: "mika" }]);
+  });
+
+  it("suggests guild-enabled waifus for /print autocomplete", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+
+    await seedRuntimeConfig(storage);
+    await seedWaifu(storage, "mika", "Mika", "mika-bot", "bold");
+    await seedWaifu(storage, "aria", "Aria", "aria-bot", "dry");
+    await storage.writeJson(
+      "server:guild-1",
+      "user/servers/guild-1/server.json",
+      ServerConfigSchema,
+      ServerConfigSchema.parse({
+        ...createRevisionedBase(),
+        guildId: "guild-1",
+        enabled: true,
+        channels: {
+          "channel-1": {
+            channelId: "channel-1",
+            enabled: true,
+            enabledWaifuIds: ["yuki"]
+          },
+          "channel-2": {
+            channelId: "channel-2",
+            enabled: true,
+            enabledWaifuIds: ["mika", "yuki", "aria"]
+          }
+        }
+      })
+    );
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      createPipeline: () => new FakePipeline(),
+      logger: quietLogger()
+    });
+    await runtime.start();
+
+    expect(discord.printWaifuAutocompleteListeners.size).toBe(1);
+
+    let choices: Array<{ name: string; value: string }> = [];
+    await discord.emitPrintWaifuAutocomplete({
+      guildId: "guild-1",
+      channelId: "channel-1",
+      focusedValue: "",
+      respond: async (nextChoices) => {
+        choices = nextChoices;
+      }
+    });
+
+    expect(choices).toEqual([
+      { name: "Yuki (yuki)", value: "yuki" },
+      { name: "Mika (mika)", value: "mika" },
+      { name: "Aria (aria)", value: "aria" }
+    ]);
+
+    await discord.emitPrintWaifuAutocomplete({
+      guildId: "guild-1",
+      channelId: "channel-1",
+      focusedValue: "ar",
+      respond: async (nextChoices) => {
+        choices = nextChoices;
+      }
+    });
+    await runtime.stop();
+
+    expect(choices).toEqual([{ name: "Aria (aria)", value: "aria" }]);
   });
 
   it("applies /run scene direction to the first orchestrator-selected waifu", async () => {

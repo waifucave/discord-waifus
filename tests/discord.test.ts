@@ -187,13 +187,33 @@ describe("orchestrator slash command payloads", () => {
 
     expect(run).toBeDefined();
     expect(run).not.toHaveProperty("defaultMemberPermissions");
-    for (const name of ["review", "clear", "stop", "memories", "console"]) {
+    for (const name of ["review", "clear", "stop", "memories", "print", "console"]) {
       expect(byName.get(name)?.defaultMemberPermissions).toBe(8n);
     }
     expect(byName.has("debug")).toBe(false);
   });
 
-  it("registers /console with required set/unset/print type and optional channel_id", () => {
+  it("registers /print with required type and waifu options", () => {
+    const printCommand = buildOrchestratorCommandPayloads().find((payload) => payload.name === "print");
+    expect(printCommand?.options).toEqual([
+      expect.objectContaining({
+        name: "type",
+        required: true,
+        choices: [
+          { name: "system prompt", value: "system_prompt" },
+          { name: "memories", value: "memories" },
+          { name: "personality", value: "personality" }
+        ]
+      }),
+      expect.objectContaining({
+        name: "waifu",
+        required: true,
+        autocomplete: true
+      })
+    ]);
+  });
+
+  it("registers /console with required set/unset type and optional channel_id", () => {
     const consoleCommand = buildOrchestratorCommandPayloads().find((payload) => payload.name === "console");
     expect(consoleCommand?.options).toEqual([
       expect.objectContaining({
@@ -201,8 +221,7 @@ describe("orchestrator slash command payloads", () => {
         required: true,
         choices: [
           { name: "set", value: "set" },
-          { name: "unset", value: "unset" },
-          { name: "print", value: "print" }
+          { name: "unset", value: "unset" }
         ]
       }),
       expect.objectContaining({

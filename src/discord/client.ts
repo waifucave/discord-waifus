@@ -52,6 +52,8 @@ export interface DiscordGatewayFacade {
   onRunWaifuAutocomplete?(listener: DiscordRunWaifuAutocompleteListener): () => void;
   onStopCommand?(listener: DiscordStopCommandListener): () => void;
   onMemoriesCommand?(listener: DiscordMemoriesCommandListener): () => void;
+  onPrintCommand?(listener: DiscordPrintCommandListener): () => void;
+  onPrintWaifuAutocomplete?(listener: DiscordPrintWaifuAutocompleteListener): () => void;
   onDebugCommand?(listener: DiscordDebugCommandListener): () => void;
   listGuilds?(): Promise<Array<{ guildId: string; name: string }>>;
   fetchFreshContext(input: {
@@ -135,6 +137,16 @@ export type DiscordRunWaifuAutocompleteEvent = {
 };
 export type DiscordStopCommandEvent = DiscordSlashCommandEvent;
 export type DiscordMemoriesCommandEvent = DiscordSlashCommandEvent;
+export type DiscordPrintCommandEvent = DiscordSlashCommandEvent & {
+  type?: DiscordPrintCommandType;
+  waifuId?: string;
+};
+export type DiscordPrintWaifuAutocompleteEvent = {
+  guildId?: string;
+  channelId?: string;
+  focusedValue: string;
+  respond: (choices: DiscordAutocompleteChoice[]) => Promise<void>;
+};
 export type DiscordDebugCommandEvent = DiscordSlashCommandEvent & {
   type?: DiscordDebugCommandType;
   sourceChannelId?: string;
@@ -145,10 +157,15 @@ export type DiscordRunCommandListener = (event: DiscordRunCommandEvent) => void 
 export type DiscordRunWaifuAutocompleteListener = (event: DiscordRunWaifuAutocompleteEvent) => void | Promise<void>;
 export type DiscordStopCommandListener = (event: DiscordStopCommandEvent) => void | Promise<void>;
 export type DiscordMemoriesCommandListener = (event: DiscordMemoriesCommandEvent) => void | Promise<void>;
+export type DiscordPrintCommandListener = (event: DiscordPrintCommandEvent) => void | Promise<void>;
+export type DiscordPrintWaifuAutocompleteListener = (
+  event: DiscordPrintWaifuAutocompleteEvent
+) => void | Promise<void>;
 export type DiscordDebugCommandListener = (event: DiscordDebugCommandEvent) => void | Promise<void>;
 
 export type DiscordClearType = "waifus" | "users" | "both" | "everything";
 export type DiscordDebugCommandType = "set" | "unset" | "print";
+export type DiscordPrintCommandType = "system_prompt" | "memories" | "personality";
 
 export type DiscordDeleteMessagesResult = {
   deletedMessageIds: string[];
@@ -208,6 +225,8 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   private readonly runWaifuAutocompleteListeners = new Set<DiscordRunWaifuAutocompleteListener>();
   private readonly stopListeners = new Set<DiscordStopCommandListener>();
   private readonly memoriesListeners = new Set<DiscordMemoriesCommandListener>();
+  private readonly printListeners = new Set<DiscordPrintCommandListener>();
+  private readonly printWaifuAutocompleteListeners = new Set<DiscordPrintWaifuAutocompleteListener>();
   private readonly debugListeners = new Set<DiscordDebugCommandListener>();
   private readonly recentMentionRefreshes = new Map<string, number>();
 
@@ -262,6 +281,12 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
                   guildId: interaction.guildId,
                   channelId: interaction.channelId
                 }, () => this.handleRunAutocompleteInteraction(interaction));
+              } else if (interaction.commandName === PRINT_COMMAND_NAME) {
+                this.runBackground("Discord print autocomplete interaction failed", {
+                  commandName: interaction.commandName,
+                  guildId: interaction.guildId,
+                  channelId: interaction.channelId
+                }, () => this.handlePrintAutocompleteInteraction(interaction));
               }
               return;
             }
@@ -285,6 +310,10 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
             } else if (interaction.commandName === MEMORIES_COMMAND_NAME) {
               this.runBackground("Discord memories interaction failed", interactionLogContext(interaction), () =>
                 this.handleMemoriesInteraction(interaction)
+              );
+            } else if (interaction.commandName === PRINT_COMMAND_NAME) {
+              this.runBackground("Discord print interaction failed", interactionLogContext(interaction), () =>
+                this.handlePrintInteraction(interaction)
               );
             } else if (interaction.commandName === DEBUG_COMMAND_NAME) {
               this.runBackground("Discord debug interaction failed", interactionLogContext(interaction), () =>
@@ -354,6 +383,16 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   onMemoriesCommand(listener: DiscordMemoriesCommandListener): () => void {
     this.memoriesListeners.add(listener);
     return () => this.memoriesListeners.delete(listener);
+  }
+
+  onPrintCommand(listener: DiscordPrintCommandListener): () => void {
+    this.printListeners.add(listener);
+    return () => this.printListeners.delete(listener);
+  }
+
+  onPrintWaifuAutocomplete(listener: DiscordPrintWaifuAutocompleteListener): () => void {
+    this.printWaifuAutocompleteListeners.add(listener);
+    return () => this.printWaifuAutocompleteListeners.delete(listener);
   }
 
   onDebugCommand(listener: DiscordDebugCommandListener): () => void {
@@ -1001,6 +1040,58 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
     }
   }
 
+  private async handlePrintInteraction(interaction: ChatInputCommandInteraction): Promise<void> {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    if (!interaction.guildId || !interaction.channelId) {
+      await interaction.editReply("/print can only be used in a server channel.");
+      return;
+    }
+    const event: DiscordPrintCommandEvent = {
+      guildId: interaction.guildId,
+      channelId: interaction.channelId,
+      userId: interaction.user.id,
+      type: parsePrintCommandType(interaction.options.getString(PRINT_TYPE_OPTION_NAME)),
+      waifuId: sanitizeRunString(interaction.options.getString(PRINT_WAIFU_OPTION_NAME)),
+      respond: async (content) => {
+        await interaction.editReply(content);
+      }
+    };
+    for (const listener of this.printListeners) {
+      this.dispatchListener("Discord print command listener failed", listener, event, {
+        ...slashCommandLogContext(event),
+        type: event.type,
+        waifuId: event.waifuId
+      });
+    }
+  }
+
+  private async handlePrintAutocompleteInteraction(interaction: AutocompleteInteraction): Promise<void> {
+    const focused = interaction.options.getFocused(true);
+    if (focused.name !== PRINT_WAIFU_OPTION_NAME) {
+      await interaction.respond([]);
+      return;
+    }
+    const event: DiscordPrintWaifuAutocompleteEvent = {
+      guildId: interaction.guildId ?? undefined,
+      channelId: interaction.channelId ?? undefined,
+      focusedValue: typeof focused.value === "string" ? focused.value : String(focused.value ?? ""),
+      respond: async (choices) => {
+        await interaction.respond(choices.slice(0, MAX_AUTOCOMPLETE_CHOICES));
+      }
+    };
+    if (this.printWaifuAutocompleteListeners.size === 0) {
+      await interaction.respond([]);
+      return;
+    }
+    await Promise.all([...this.printWaifuAutocompleteListeners].map((listener) =>
+      this.callListener("Discord print autocomplete listener failed", listener, event, {
+        guildId: event.guildId,
+        channelId: event.channelId,
+        focusedValue: event.focusedValue
+      })
+    ));
+  }
+
   private async handleDebugInteraction(interaction: ChatInputCommandInteraction): Promise<void> {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     if (!interaction.guildId || !interaction.channelId) {
@@ -1202,10 +1293,13 @@ const CLEAR_COMMAND_NAME = "clear";
 const RUN_COMMAND_NAME = "run";
 const STOP_COMMAND_NAME = "stop";
 const MEMORIES_COMMAND_NAME = "memories";
+const PRINT_COMMAND_NAME = "print";
 const DEBUG_COMMAND_NAME = "console";
 const LEGACY_DEBUG_COMMAND_NAMES = ["debug"];
 const CLEAR_COUNT_OPTION_NAME = "count";
 const CLEAR_TYPE_OPTION_NAME = "type";
+const PRINT_TYPE_OPTION_NAME = "type";
+const PRINT_WAIFU_OPTION_NAME = "waifu";
 const DEBUG_TYPE_OPTION_NAME = "type";
 const DEBUG_CHANNEL_ID_OPTION_NAME = "channel_id";
 const RUN_WAIFU_OPTION_NAME = "waifu";
@@ -1227,6 +1321,10 @@ function sanitizeRunString(value: string | null): string | undefined {
 
 function parseDebugCommandType(value: string | null): DiscordDebugCommandType | undefined {
   return value === "set" || value === "unset" || value === "print" ? value : undefined;
+}
+
+function parsePrintCommandType(value: string | null): DiscordPrintCommandType | undefined {
+  return value === "system_prompt" || value === "memories" || value === "personality" ? value : undefined;
 }
 
 function errorMessage(error: unknown): string {
@@ -1393,25 +1491,49 @@ export function buildOrchestratorCommandPayloads() {
       defaultMemberPermissions: ADMIN_COMMAND_PERMISSIONS
     },
     {
+      name: PRINT_COMMAND_NAME,
+      description: "Print a configured waifu field for this server.",
+      defaultMemberPermissions: ADMIN_COMMAND_PERMISSIONS,
+      options: [
+        {
+          type: ApplicationCommandOptionType.String as ApplicationCommandOptionType.String,
+          name: PRINT_TYPE_OPTION_NAME,
+          description: "Which waifu field to print.",
+          required: true,
+          choices: [
+            { name: "system prompt", value: "system_prompt" },
+            { name: "memories", value: "memories" },
+            { name: "personality", value: "personality" }
+          ]
+        },
+        {
+          type: ApplicationCommandOptionType.String as ApplicationCommandOptionType.String,
+          name: PRINT_WAIFU_OPTION_NAME,
+          description: "Waifu to inspect from this server.",
+          required: true,
+          autocomplete: true
+        }
+      ]
+    },
+    {
       name: DEBUG_COMMAND_NAME,
-      description: "Route debug logs or print the latest waifu prompt blocks.",
+      description: "Route debug logs for a source channel.",
       defaultMemberPermissions: ADMIN_COMMAND_PERMISSIONS,
       options: [
         {
           type: ApplicationCommandOptionType.String as ApplicationCommandOptionType.String,
           name: DEBUG_TYPE_OPTION_NAME,
-          description: "Whether to set, unset, or print debug output.",
+          description: "Whether to set or unset debug output.",
           required: true,
           choices: [
             { name: "set", value: "set" },
-            { name: "unset", value: "unset" },
-            { name: "print", value: "print" }
+            { name: "unset", value: "unset" }
           ]
         },
         {
           type: ApplicationCommandOptionType.String as ApplicationCommandOptionType.String,
           name: DEBUG_CHANNEL_ID_OPTION_NAME,
-          description: "Source channel ID for set/unset. Not needed for print.",
+          description: "Source channel ID for set/unset.",
           required: false
         }
       ]
