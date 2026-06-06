@@ -42,6 +42,7 @@ import {
   OrchestratorDebugConfigFileSchema,
   OrchestratorDecisionHistoryEntry,
   OrchestratorDecisionStatus,
+  OrchestratorResponderOutcome,
   OrchestratorHistoryFileSchema,
   OrchestratorRespondingWaifu,
   ProviderCredentialsFile,
@@ -111,11 +112,17 @@ type ExecuteResponderDecisionInput = {
   channel: ServerConfig["channels"][string];
   decision: OrchestratorDecision;
   decisionId: string;
+  responderOutcomes: OrchestratorResponderOutcome[];
   decisionDelayBaseMs: number;
   useDecisionRelativeDelays: boolean;
   availableWaifus: WaifuConfig[];
   sceneDirectionClippingEnabled: boolean;
   signal: AbortSignal;
+};
+
+type ResponderQueueEntry = {
+  responder: OrchestratorRespondingWaifu;
+  outcomeId: string;
 };
 
 export type StageManagerRunResult = {
@@ -905,7 +912,7 @@ export class RuntimeOrchestrator {
         reasoning: options.initialReason ?? "Manual directed run."
       };
       const decisionId = randomUUID();
-      await this.recordOrchestratorDecision({
+      const responderOutcomes = await this.recordOrchestratorDecision({
         guildId,
         channelId,
         decisionId,
@@ -919,6 +926,7 @@ export class RuntimeOrchestrator {
         channel,
         decision,
         decisionId,
+        responderOutcomes,
         decisionDelayBaseMs: Date.now(),
         useDecisionRelativeDelays: true,
         availableWaifus,
@@ -1004,7 +1012,7 @@ export class RuntimeOrchestrator {
       const decisionId = randomUUID();
       const initialDecisionStatus: OrchestratorDecisionStatus =
         decision.action === "reply" ? "pending" : "completed";
-      await this.recordOrchestratorDecision({
+      const responderOutcomes = await this.recordOrchestratorDecision({
         guildId,
         channelId,
         decisionId,
@@ -1031,6 +1039,7 @@ export class RuntimeOrchestrator {
         channel,
         decision,
         decisionId,
+        responderOutcomes,
         decisionDelayBaseMs,
         useDecisionRelativeDelays,
         availableWaifus,
@@ -1061,7 +1070,16 @@ export class RuntimeOrchestrator {
     decisionId: string;
     decision: OrchestratorDecision;
     status: OrchestratorDecisionStatus;
-  }): Promise<void> {
+  }): Promise<OrchestratorResponderOutcome[]> {
+    const responderOutcomes = input.decision.respondingWaifus.map(
+      (responder): OrchestratorResponderOutcome => ({
+        id: randomUUID(),
+        waifuId: responder.waifuId,
+        source: "orchestrator",
+        status: "pending",
+        messageIds: []
+      })
+    );
     await this.appendOrchestratorHistory({
       id: input.decisionId,
       guildId: input.guildId,
@@ -1072,6 +1090,7 @@ export class RuntimeOrchestrator {
       reasoning: input.decision.reasoning,
       status: input.status,
       waifuMessageIds: [],
+      responderOutcomes,
       createdAt: nowIso()
     });
     this.options.logger.info("Orchestrator decision recorded", {
@@ -1082,15 +1101,23 @@ export class RuntimeOrchestrator {
       retriggerAfterSeconds: input.decision.retriggerAfterSeconds,
       reasoning: input.decision.reasoning
     });
+    return responderOutcomes;
   }
 
   private async executeResponderDecision(input: ExecuteResponderDecisionInput): Promise<number> {
     let executedCount = 0;
     let directHandoffCount = 0;
     const allowedWaifus = new Set(input.channel.enabledWaifuIds ?? []);
-    const responderQueue = [...input.decision.respondingWaifus];
+    const responderQueue: ResponderQueueEntry[] = input.decision.respondingWaifus.map(
+      (responder, index) => ({
+        responder,
+        outcomeId: input.responderOutcomes[index].id
+      })
+    );
     let responderIndex = 0;
     let decisionFinalized = false;
+    let currentOutcomeId: string | undefined;
+    let currentOutcomeFinalized = false;
     const channelKey = timerKey(input.guildId, input.channelId);
     const suppressMemoryToolThisDecision = this.suppressMemoryToolOnce.has(channelKey);
     this.suppressMemoryToolOnce.delete(channelKey);
@@ -1103,8 +1130,11 @@ export class RuntimeOrchestrator {
     try {
       while (responderQueue.length > 0) {
         throwIfAborted(input.signal);
-        const responder = responderQueue.shift();
-        if (!responder) continue;
+        const queueEntry = responderQueue.shift();
+        if (!queueEntry) continue;
+        const { responder, outcomeId } = queueEntry;
+        currentOutcomeId = outcomeId;
+        currentOutcomeFinalized = false;
         const currentResponderIndex = responderIndex;
         responderIndex += 1;
         if (!allowedWaifus.has(responder.waifuId)) {
@@ -1113,6 +1143,11 @@ export class RuntimeOrchestrator {
             channelId: input.channelId,
             selectedWaifuId: responder.waifuId
           });
+          await this.updateOrchestratorResponderOutcome(input.decisionId, outcomeId, {
+            status: "unavailable",
+            reason: "not_enabled_for_channel"
+          });
+          currentOutcomeFinalized = true;
           continue;
         }
         const waifu = await this.readWaifu(responder.waifuId).catch(() => undefined);
@@ -1122,6 +1157,24 @@ export class RuntimeOrchestrator {
             channelId: input.channelId,
             selectedWaifuId: responder.waifuId
           });
+          await this.updateOrchestratorResponderOutcome(input.decisionId, outcomeId, {
+            status: "unavailable",
+            reason: "unknown_waifu"
+          });
+          currentOutcomeFinalized = true;
+          continue;
+        }
+        if (!waifu.enabled) {
+          this.options.logger.warn("Orchestrator selected a disabled waifu", {
+            guildId: input.guildId,
+            channelId: input.channelId,
+            selectedWaifuId: responder.waifuId
+          });
+          await this.updateOrchestratorResponderOutcome(input.decisionId, outcomeId, {
+            status: "unavailable",
+            reason: "disabled"
+          });
+          currentOutcomeFinalized = true;
           continue;
         }
         if (!waifu.botId) {
@@ -1130,6 +1183,11 @@ export class RuntimeOrchestrator {
             channelId: input.channelId,
             selectedWaifuId: responder.waifuId
           });
+          await this.updateOrchestratorResponderOutcome(input.decisionId, outcomeId, {
+            status: "unavailable",
+            reason: "missing_discord_bot"
+          });
+          currentOutcomeFinalized = true;
           continue;
         }
         if (!waifu.modelId) {
@@ -1138,6 +1196,11 @@ export class RuntimeOrchestrator {
             channelId: input.channelId,
             selectedWaifuId: responder.waifuId
           });
+          await this.updateOrchestratorResponderOutcome(input.decisionId, outcomeId, {
+            status: "unavailable",
+            reason: "missing_model"
+          });
+          currentOutcomeFinalized = true;
           continue;
         }
         const waitMs = waitMsBeforeWaifuReply({
@@ -1288,7 +1351,10 @@ export class RuntimeOrchestrator {
               originalPreview: result.content.slice(0, 120)
             });
           }
-          if (chunks.length === 0) {
+          const usedToolWithoutVisibleMessage =
+            Boolean(result.shortTermMemoryEntries?.length && effectiveShortTermMemory) ||
+            Boolean(result.pickedNextWaifuId);
+          if (chunks.length === 0 && !usedToolWithoutVisibleMessage) {
             this.options.logger.warn("Waifu reply was empty after cleaning; nothing sent", {
               guildId: input.guildId,
               channelId: input.channelId,
@@ -1307,7 +1373,7 @@ export class RuntimeOrchestrator {
               replyToMessageId: chosenReplyTarget
             });
           }
-          await this.sendWaifuChunks({
+          const sentMessageIds = await this.sendWaifuChunks({
             guildId: input.guildId,
             channelId: input.channelId,
             waifuId: waifu.id,
@@ -1316,8 +1382,15 @@ export class RuntimeOrchestrator {
             replyToMessageId,
             allowedUserMentionIds: activeAuthorIds,
             orchestratorDecisionId: input.decisionId,
+            responderOutcomeId: outcomeId,
             signal: input.signal
           });
+          if (sentMessageIds.length > 0) {
+            await this.updateOrchestratorResponderOutcome(input.decisionId, outcomeId, {
+              status: "sent"
+            });
+            currentOutcomeFinalized = true;
+          }
           if (result.shortTermMemoryEntries?.length && effectiveShortTermMemory) {
             await this.recordShortTermMemoryEntries({
               guildId: input.guildId,
@@ -1333,6 +1406,13 @@ export class RuntimeOrchestrator {
                 waifuId: waifu.id
               });
             }
+          }
+          if (sentMessageIds.length === 0) {
+            await this.updateOrchestratorResponderOutcome(input.decisionId, outcomeId, {
+              status: usedToolWithoutVisibleMessage ? "tool_only" : "empty",
+              reason: usedToolWithoutVisibleMessage ? undefined : "empty_after_cleaning"
+            });
+            currentOutcomeFinalized = true;
           }
           if (result.rejectedPickNextWaifu) {
             this.options.logger.warn("Ignoring invalid PickNextWaifu call from waifu", {
@@ -1351,11 +1431,45 @@ export class RuntimeOrchestrator {
               waifuId: waifu.id,
               pickedNextWaifuId: result.pickedNextWaifuId
             });
-            responderQueue.splice(0, responderQueue.length, {
-              waifuId: result.pickedNextWaifuId,
-              delaySeconds: 0,
-              replyStyle: "normal"
-            });
+            const existingQueueIndex = responderQueue.findIndex(
+              (entry) => entry.responder.waifuId === result.pickedNextWaifuId
+            );
+            if (existingQueueIndex >= 0) {
+              const [existingQueueEntry] = responderQueue.splice(existingQueueIndex, 1);
+              existingQueueEntry.responder = {
+                ...existingQueueEntry.responder,
+                delaySeconds: 0
+              };
+              responderQueue.unshift(existingQueueEntry);
+              await this.moveOrchestratorResponderOutcomeAfter(
+                input.decisionId,
+                outcomeId,
+                existingQueueEntry.outcomeId,
+                waifu.id
+              );
+            } else {
+              const handoffOutcome: OrchestratorResponderOutcome = {
+                id: randomUUID(),
+                waifuId: result.pickedNextWaifuId,
+                source: "handoff",
+                handoffFromWaifuId: waifu.id,
+                status: "pending",
+                messageIds: []
+              };
+              await this.insertOrchestratorResponderOutcomeAfter(
+                input.decisionId,
+                outcomeId,
+                handoffOutcome
+              );
+              responderQueue.unshift({
+                responder: {
+                  waifuId: result.pickedNextWaifuId,
+                  delaySeconds: 0,
+                  replyStyle: "normal"
+                },
+                outcomeId: handoffOutcome.id
+              });
+            }
           } else if (result.pickedNextWaifuId) {
             this.options.logger.warn("Ignoring PickNextWaifu handoff because the automatic handoff limit was reached", {
               guildId: input.guildId,
@@ -1369,14 +1483,21 @@ export class RuntimeOrchestrator {
           waifuTyping.stop();
         }
         executedCount += 1;
+        currentOutcomeId = undefined;
+        currentOutcomeFinalized = false;
       }
       await this.updateOrchestratorDecisionStatus(input.decisionId, "completed");
       decisionFinalized = true;
     } catch (error) {
       if (!decisionFinalized) {
-        const status: OrchestratorDecisionStatus = input.signal.aborted ? "interrupted" : "completed";
+        const status: OrchestratorDecisionStatus = input.signal.aborted ? "interrupted" : "failed";
         try {
-          await this.updateOrchestratorDecisionStatus(input.decisionId, status);
+          await this.finalizeOrchestratorDecisionAfterError({
+            decisionId: input.decisionId,
+            status,
+            currentOutcomeId: currentOutcomeFinalized ? undefined : currentOutcomeId,
+            reason: error instanceof Error ? error.message : String(error)
+          });
         } catch (writeError) {
           this.options.logger.warn("Failed to finalize orchestrator decision status after error", {
             guildId: input.guildId,
@@ -2042,11 +2163,13 @@ export class RuntimeOrchestrator {
     replyToMessageId?: string;
     allowedUserMentionIds: string[];
     orchestratorDecisionId?: string;
+    responderOutcomeId?: string;
     signal?: AbortSignal;
-  }): Promise<void> {
+  }): Promise<string[]> {
     if (input.chunks.length === 0) {
-      return;
+      return [];
     }
+    const messageIds: string[] = [];
     this.activeWaifuSendChannels.add(input.channelId);
     try {
       for (let i = 0; i < input.chunks.length; i++) {
@@ -2066,8 +2189,13 @@ export class RuntimeOrchestrator {
           allowedUserMentionIds: input.allowedUserMentionIds
         });
         this.rememberSelfSent(sentResult.messageId);
+        messageIds.push(sentResult.messageId);
         if (input.orchestratorDecisionId) {
-          await this.recordOrchestratorDecisionWaifuMessage(input.orchestratorDecisionId, sentResult.messageId);
+          await this.recordOrchestratorDecisionWaifuMessage(
+            input.orchestratorDecisionId,
+            input.responderOutcomeId,
+            sentResult.messageId
+          );
         }
         this.options.logger.info("Waifu message chunk sent", {
           guildId: input.guildId,
@@ -2081,6 +2209,7 @@ export class RuntimeOrchestrator {
     } finally {
       this.activeWaifuSendChannels.delete(input.channelId);
     }
+    return messageIds;
   }
 
   private async setActivePipeline(guildId: string, channelId: string, kind: "orchestrator" | "waifu") {
@@ -2259,7 +2388,11 @@ export class RuntimeOrchestrator {
 
   private async listAvailableWaifusForChannel(channel: ServerConfig["channels"][string]): Promise<WaifuConfig[]> {
     const waifus = await this.listWaifus();
-    const waifusById = new Map(waifus.filter((waifu) => waifu.modelId).map((waifu) => [waifu.id, waifu]));
+    const waifusById = new Map(
+      waifus
+        .filter((waifu) => waifu.enabled && waifu.modelId && waifu.botId)
+        .map((waifu) => [waifu.id, waifu])
+    );
     return (channel.enabledWaifuIds ?? [])
       .map((waifuId) => waifusById.get(waifuId))
       .filter((waifu): waifu is WaifuConfig => Boolean(waifu));
@@ -2780,6 +2913,7 @@ export class RuntimeOrchestrator {
     reasoning: string;
     status: OrchestratorDecisionStatus;
     waifuMessageIds: string[];
+    responderOutcomes: OrchestratorResponderOutcome[];
     createdAt: string;
   }) {
     await this.options.storage.updateRevisionedJson({
@@ -2926,7 +3060,135 @@ export class RuntimeOrchestrator {
     });
   }
 
-  private async recordOrchestratorDecisionWaifuMessage(id: string, messageId: string): Promise<void> {
+  private async insertOrchestratorResponderOutcomeAfter(
+    decisionId: string,
+    afterOutcomeId: string,
+    outcome: OrchestratorResponderOutcome
+  ): Promise<void> {
+    await this.options.storage.updateRevisionedJson({
+      resourceKey: "orchestrator:history",
+      relativePath: "user/orchestrator/history.json",
+      schema: OrchestratorHistoryFileSchema,
+      fallback: OrchestratorHistoryFileSchema.parse(createEmptyRevisionedFile({ decisions: [] })),
+      transform: (current) => ({
+        ...current,
+        decisions: current.decisions.map((decision) => {
+          if (decision.id !== decisionId) return decision;
+          const responderOutcomes = [...decision.responderOutcomes];
+          const afterIndex = responderOutcomes.findIndex((entry) => entry.id === afterOutcomeId);
+          responderOutcomes.splice(afterIndex >= 0 ? afterIndex + 1 : responderOutcomes.length, 0, outcome);
+          return { ...decision, responderOutcomes };
+        })
+      })
+    });
+  }
+
+  private async moveOrchestratorResponderOutcomeAfter(
+    decisionId: string,
+    afterOutcomeId: string,
+    outcomeId: string,
+    handoffFromWaifuId: string
+  ): Promise<void> {
+    await this.options.storage.updateRevisionedJson({
+      resourceKey: "orchestrator:history",
+      relativePath: "user/orchestrator/history.json",
+      schema: OrchestratorHistoryFileSchema,
+      fallback: OrchestratorHistoryFileSchema.parse(createEmptyRevisionedFile({ decisions: [] })),
+      transform: (current) => ({
+        ...current,
+        decisions: current.decisions.map((decision) => {
+          if (decision.id !== decisionId) return decision;
+          const responderOutcomes = [...decision.responderOutcomes];
+          const existingIndex = responderOutcomes.findIndex((entry) => entry.id === outcomeId);
+          if (existingIndex < 0) return decision;
+          const [existing] = responderOutcomes.splice(existingIndex, 1);
+          const afterIndex = responderOutcomes.findIndex((entry) => entry.id === afterOutcomeId);
+          responderOutcomes.splice(afterIndex >= 0 ? afterIndex + 1 : responderOutcomes.length, 0, {
+            ...existing,
+            handoffFromWaifuId
+          });
+          return { ...decision, responderOutcomes };
+        })
+      })
+    });
+  }
+
+  private async updateOrchestratorResponderOutcome(
+    decisionId: string,
+    outcomeId: string,
+    patch: Partial<Pick<
+      OrchestratorResponderOutcome,
+      "handoffFromWaifuId" | "status" | "reason"
+    >>
+  ): Promise<void> {
+    await this.options.storage.updateRevisionedJson({
+      resourceKey: "orchestrator:history",
+      relativePath: "user/orchestrator/history.json",
+      schema: OrchestratorHistoryFileSchema,
+      fallback: OrchestratorHistoryFileSchema.parse(createEmptyRevisionedFile({ decisions: [] })),
+      transform: (current) => ({
+        ...current,
+        decisions: current.decisions.map((decision) =>
+          decision.id === decisionId
+            ? {
+                ...decision,
+                responderOutcomes: decision.responderOutcomes.map((outcome) =>
+                  outcome.id === outcomeId
+                    ? {
+                        ...outcome,
+                        ...patch,
+                        reason: patch.reason === undefined && "reason" in patch
+                          ? undefined
+                          : patch.reason ?? outcome.reason
+                      }
+                    : outcome
+                )
+              }
+            : decision
+        )
+      })
+    });
+  }
+
+  private async finalizeOrchestratorDecisionAfterError(input: {
+    decisionId: string;
+    status: Extract<OrchestratorDecisionStatus, "interrupted" | "failed">;
+    currentOutcomeId?: string;
+    reason: string;
+  }): Promise<void> {
+    await this.options.storage.updateRevisionedJson({
+      resourceKey: "orchestrator:history",
+      relativePath: "user/orchestrator/history.json",
+      schema: OrchestratorHistoryFileSchema,
+      fallback: OrchestratorHistoryFileSchema.parse(createEmptyRevisionedFile({ decisions: [] })),
+      transform: (current) => ({
+        ...current,
+        decisions: current.decisions.map((decision) => {
+          if (decision.id !== input.decisionId) return decision;
+          return {
+            ...decision,
+            status: input.status,
+            responderOutcomes: decision.responderOutcomes.map((outcome) => {
+              if (outcome.status !== "pending") return outcome;
+              if (input.status === "interrupted") {
+                return { ...outcome, status: "interrupted" as const, reason: input.reason };
+              }
+              if (outcome.id === input.currentOutcomeId) {
+                return { ...outcome, status: "failed" as const, reason: input.reason };
+              }
+              return { ...outcome, status: "not_run" as const, reason: "previous_responder_failed" };
+            })
+          };
+        })
+      })
+    });
+  }
+
+  private async recordOrchestratorDecisionWaifuMessage(
+    id: string,
+    outcomeId: string | undefined,
+    messageId: string
+  ): Promise<void> {
     await this.options.storage.updateRevisionedJson({
       resourceKey: "orchestrator:history",
       relativePath: "user/orchestrator/history.json",
@@ -2936,7 +3198,15 @@ export class RuntimeOrchestrator {
         ...current,
         decisions: current.decisions.map((decision) =>
           decision.id === id
-            ? { ...decision, waifuMessageIds: [...decision.waifuMessageIds, messageId] }
+            ? {
+                ...decision,
+                waifuMessageIds: [...decision.waifuMessageIds, messageId],
+                responderOutcomes: decision.responderOutcomes.map((outcome) =>
+                  outcome.id === outcomeId
+                    ? { ...outcome, messageIds: [...outcome.messageIds, messageId] }
+                    : outcome
+                )
+              }
             : decision
         )
       })
@@ -2952,7 +3222,21 @@ export class RuntimeOrchestrator {
       transform: (current) => ({
         ...current,
         decisions: current.decisions.map((decision) =>
-          decision.status === "pending" ? { ...decision, status: "interrupted" as const } : decision
+          decision.status === "pending"
+            ? {
+                ...decision,
+                status: "interrupted" as const,
+                responderOutcomes: decision.responderOutcomes.map((outcome) =>
+                  outcome.status === "pending"
+                    ? {
+                        ...outcome,
+                        status: "interrupted" as const,
+                        reason: "runtime_restarted"
+                      }
+                    : outcome
+                )
+              }
+            : decision
         )
       })
     });

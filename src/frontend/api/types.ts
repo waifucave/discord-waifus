@@ -172,6 +172,24 @@ export type OrchestratorRespondingWaifu = {
   sceneDirection?: string;
 };
 
+export type OrchestratorResponderOutcome = {
+  id: string;
+  waifuId: string;
+  source: "orchestrator" | "handoff";
+  handoffFromWaifuId?: string;
+  status:
+    | "pending"
+    | "sent"
+    | "tool_only"
+    | "empty"
+    | "unavailable"
+    | "interrupted"
+    | "failed"
+    | "not_run";
+  reason?: string;
+  messageIds: string[];
+};
+
 export type OrchestratorDecisionHistoryEntry = {
   id: string;
   guildId?: string;
@@ -180,6 +198,9 @@ export type OrchestratorDecisionHistoryEntry = {
   respondingWaifus: OrchestratorRespondingWaifu[];
   retriggerAfterSeconds?: number;
   reasoning: string;
+  status: "pending" | "completed" | "interrupted" | "failed";
+  waifuMessageIds: string[];
+  responderOutcomes: OrchestratorResponderOutcome[];
   createdAt: string;
 };
 

@@ -811,6 +811,194 @@ describe("RuntimeOrchestrator", () => {
     ]);
   });
 
+  it("inserts PickNextWaifu before remaining orchestrator responders without dropping them", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+
+    await seedRuntimeConfig(storage);
+    await seedWaifu(storage, "mika", "Mika", "mika-bot", "direct");
+    await seedWaifu(storage, "aria", "Aria", "aria-bot", "dry");
+    await enableWaifus(storage, ["yuki", "mika", "aria"]);
+    await setServerTools(storage, { pickNextWaifu: true });
+
+    const events: string[] = [];
+    const pipeline: ModelPipeline = {
+      async decideOrchestrator() {
+        return {
+          action: "reply",
+          respondingWaifus: [
+            { waifuId: "yuki", delaySeconds: 0, replyStyle: "normal" },
+            { waifuId: "mika", delaySeconds: 0, replyStyle: "short", sceneDirection: "finish the beat" }
+          ],
+          reasoning: "Yuki starts and Mika finishes."
+        };
+      },
+      async generateWaifu(request) {
+        if (request.systemPrompt.includes("You are Yuki")) {
+          events.push("yuki");
+          return { content: "Aria, jump in.", pickedNextWaifuId: "aria" };
+        }
+        if (request.systemPrompt.includes("You are Aria")) {
+          events.push("aria");
+          return { content: "I am here." };
+        }
+        events.push("mika");
+        expect(request.replyStyle).toBe("short");
+        expect(request.trailingSystemBlock).toContain("<scene_direction>finish the beat</scene_direction>");
+        return { content: "Finished." };
+      }
+    };
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 1,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    expect(events).toEqual(["yuki", "aria", "mika"]);
+    expect(discord.sent.map((message) => message.senderBotId)).toEqual([
+      "yuki-bot",
+      "aria-bot",
+      "mika-bot"
+    ]);
+    const history = await storage.readJson("user/orchestrator/history.json", OrchestratorHistoryFileSchema);
+    const decision = history.decisions.find((entry) => entry.action === "reply");
+    expect(decision?.respondingWaifus.map((responder) => responder.waifuId)).toEqual(["yuki", "mika"]);
+    expect(decision?.responderOutcomes.map((outcome) => ({
+      waifuId: outcome.waifuId,
+      source: outcome.source,
+      handoffFromWaifuId: outcome.handoffFromWaifuId,
+      status: outcome.status,
+      messageCount: outcome.messageIds.length
+    }))).toEqual([
+      {
+        waifuId: "yuki",
+        source: "orchestrator",
+        handoffFromWaifuId: undefined,
+        status: "sent",
+        messageCount: 1
+      },
+      {
+        waifuId: "aria",
+        source: "handoff",
+        handoffFromWaifuId: "yuki",
+        status: "sent",
+        messageCount: 1
+      },
+      {
+        waifuId: "mika",
+        source: "orchestrator",
+        handoffFromWaifuId: undefined,
+        status: "sent",
+        messageCount: 1
+      }
+    ]);
+  });
+
+  it("moves an already planned PickNextWaifu responder next without duplicating it", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    const sleepCalls: number[] = [];
+
+    await seedRuntimeConfig(storage);
+    await seedWaifu(storage, "mika", "Mika", "mika-bot", "direct");
+    await seedWaifu(storage, "aria", "Aria", "aria-bot", "dry");
+    await enableWaifus(storage, ["yuki", "mika", "aria"]);
+    await setServerTools(storage, { pickNextWaifu: true });
+
+    const events: string[] = [];
+    const pipeline: ModelPipeline = {
+      async decideOrchestrator() {
+        return {
+          action: "reply",
+          respondingWaifus: [
+            { waifuId: "yuki", delaySeconds: 0, replyStyle: "normal" },
+            { waifuId: "mika", delaySeconds: 0, replyStyle: "normal" },
+            {
+              waifuId: "aria",
+              delaySeconds: 20,
+              replyStyle: "sleepy",
+              sceneDirection: "keep the planned direction"
+            }
+          ],
+          reasoning: "Yuki then Mika."
+        };
+      },
+      async generateWaifu(request) {
+        if (request.systemPrompt.includes("You are Yuki")) {
+          events.push("yuki");
+          return { content: "Aria should answer now.", pickedNextWaifuId: "aria" };
+        }
+        if (request.systemPrompt.includes("You are Aria")) {
+          events.push("aria");
+          expect(request.replyStyle).toBe("sleepy");
+          expect(request.trailingSystemBlock).toContain(
+            "<scene_direction>keep the planned direction</scene_direction>"
+          );
+          return { content: "Right away." };
+        }
+        events.push("mika");
+        return { content: "Still here." };
+      }
+    };
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async (ms) => {
+        sleepCalls.push(ms);
+      },
+      storage,
+      discord,
+      maxAutomaticTurns: 1,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    expect(events).toEqual(["yuki", "aria", "mika"]);
+    expect(sleepCalls).toEqual([]);
+    const history = await storage.readJson("user/orchestrator/history.json", OrchestratorHistoryFileSchema);
+    const decision = history.decisions.find((entry) => entry.action === "reply");
+    expect(decision?.responderOutcomes.map((outcome) => ({
+      waifuId: outcome.waifuId,
+      source: outcome.source,
+      handoffFromWaifuId: outcome.handoffFromWaifuId,
+      status: outcome.status
+    }))).toEqual([
+      {
+        waifuId: "yuki",
+        source: "orchestrator",
+        handoffFromWaifuId: undefined,
+        status: "sent"
+      },
+      {
+        waifuId: "aria",
+        source: "orchestrator",
+        handoffFromWaifuId: "yuki",
+        status: "sent"
+      },
+      {
+        waifuId: "mika",
+        source: "orchestrator",
+        handoffFromWaifuId: undefined,
+        status: "sent"
+      }
+    ]);
+  });
+
   it("keeps PickNextWaifu disabled by default at server scope", async () => {
     const root = await makeTempRoot();
     roots.push(root);
@@ -853,6 +1041,71 @@ describe("RuntimeOrchestrator", () => {
     await runtime.stop();
 
     expect(checked).toBe(true);
+  });
+
+  it("does not offer waifus without a linked Discord bot to the orchestrator", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+
+    await seedRuntimeConfig(storage);
+    await seedWaifu(storage, "mika", "Mika", "mika-bot", "direct");
+    await enableWaifus(storage, ["yuki", "mika"]);
+    const mika = await storage.readJson("user/waifus/mika/waifu.json", WaifuConfigSchema);
+    await storage.writeJson(
+      "waifu:mika",
+      "user/waifus/mika/waifu.json",
+      WaifuConfigSchema,
+      WaifuConfigSchema.parse({ ...mika, botId: undefined })
+    );
+
+    let checked = false;
+    const pipeline: ModelPipeline = {
+      async decideOrchestrator(request) {
+        checked = true;
+        expect(request.availableWaifuIds).toEqual(["yuki"]);
+        expect(request.trailingPrompt).toContain("ID: yuki");
+        expect(request.trailingPrompt).not.toContain("ID: mika");
+        return {
+          action: "reply",
+          respondingWaifus: [
+            { waifuId: "mika", delaySeconds: 0, replyStyle: "normal" },
+            { waifuId: "yuki", delaySeconds: 0, replyStyle: "normal" }
+          ],
+          reasoning: "Simulate a provider returning an excluded waifu anyway."
+        };
+      },
+      async generateWaifu() {
+        return { content: "available" };
+      }
+    };
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 1,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    expect(checked).toBe(true);
+    expect(discord.sent.map((message) => message.senderBotId)).toEqual(["yuki-bot"]);
+    const history = await storage.readJson("user/orchestrator/history.json", OrchestratorHistoryFileSchema);
+    const decision = history.decisions.find((entry) => entry.action === "reply");
+    expect(decision?.responderOutcomes.map((outcome) => ({
+      waifuId: outcome.waifuId,
+      status: outcome.status,
+      reason: outcome.reason
+    }))).toEqual([
+      { waifuId: "mika", status: "unavailable", reason: "missing_discord_bot" },
+      { waifuId: "yuki", status: "sent", reason: undefined }
+    ]);
   });
 
   it("treats the waifu tool-use toggle as prompt-only", async () => {
@@ -1522,6 +1775,15 @@ describe("RuntimeOrchestrator", () => {
               reasoning: "leftover",
               status: "pending",
               waifuMessageIds: [],
+              responderOutcomes: [
+                {
+                  id: "leftover-yuki",
+                  waifuId: "yuki",
+                  source: "orchestrator",
+                  status: "pending",
+                  messageIds: []
+                }
+              ],
               createdAt: "2026-05-16T12:05:00.000Z"
             }
           ]
@@ -1549,7 +1811,15 @@ describe("RuntimeOrchestrator", () => {
       "user/orchestrator/history.json",
       OrchestratorHistoryFileSchema
     );
-    expect(history.decisions.find((entry) => entry.id === "leftover-pending")?.status).toBe("interrupted");
+    const healed = history.decisions.find((entry) => entry.id === "leftover-pending");
+    expect(healed?.status).toBe("interrupted");
+    expect(healed?.responderOutcomes).toMatchObject([
+      {
+        id: "leftover-yuki",
+        status: "interrupted",
+        reason: "runtime_restarted"
+      }
+    ]);
   });
 
   it("runs stage-manager tool calls in the background and updates memories", async () => {
@@ -4873,6 +5143,129 @@ describe("RuntimeOrchestrator", () => {
     );
   });
 
+  it("records an empty cleaned reply and continues to the next planned responder", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+
+    await seedRuntimeConfig(storage);
+    await seedWaifu(storage, "mika", "Mika", "mika-bot", "direct");
+    await enableWaifus(storage, ["yuki", "mika"]);
+
+    let yukiAttempts = 0;
+    const pipeline: ModelPipeline = {
+      async decideOrchestrator() {
+        return {
+          action: "reply",
+          respondingWaifus: [
+            { waifuId: "yuki", delaySeconds: 0, replyStyle: "normal" },
+            { waifuId: "mika", delaySeconds: 0, replyStyle: "normal" }
+          ],
+          reasoning: "Both should get a turn."
+        };
+      },
+      async generateWaifu(request) {
+        if (request.systemPrompt.includes("You are Yuki")) {
+          yukiAttempts += 1;
+          return { content: `Mika: impersonation attempt ${yukiAttempts}` };
+        }
+        return { content: "Mika still responds." };
+      }
+    };
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 1,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    expect(yukiAttempts).toBe(2);
+    expect(discord.sent.map((message) => message.content)).toEqual(["Mika still responds."]);
+    const history = await storage.readJson("user/orchestrator/history.json", OrchestratorHistoryFileSchema);
+    const decision = history.decisions.find((entry) => entry.action === "reply");
+    expect(decision?.status).toBe("completed");
+    expect(decision?.responderOutcomes.map((outcome) => ({
+      waifuId: outcome.waifuId,
+      status: outcome.status,
+      reason: outcome.reason,
+      messageCount: outcome.messageIds.length
+    }))).toEqual([
+      {
+        waifuId: "yuki",
+        status: "empty",
+        reason: "empty_after_cleaning",
+        messageCount: 0
+      },
+      {
+        waifuId: "mika",
+        status: "sent",
+        reason: undefined,
+        messageCount: 1
+      }
+    ]);
+  });
+
+  it("marks the active responder failed and later responders not run after a provider error", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+
+    await seedRuntimeConfig(storage);
+    await seedWaifu(storage, "mika", "Mika", "mika-bot", "direct");
+    await enableWaifus(storage, ["yuki", "mika"]);
+
+    const pipeline: ModelPipeline = {
+      async decideOrchestrator() {
+        return {
+          action: "reply",
+          respondingWaifus: [
+            { waifuId: "yuki", delaySeconds: 0, replyStyle: "normal" },
+            { waifuId: "mika", delaySeconds: 0, replyStyle: "normal" }
+          ],
+          reasoning: "Yuki then Mika."
+        };
+      },
+      async generateWaifu() {
+        throw new Error("waifu provider failed");
+      }
+    };
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 1,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    const history = await storage.readJson("user/orchestrator/history.json", OrchestratorHistoryFileSchema);
+    const decision = history.decisions.find((entry) => entry.action === "reply");
+    expect(decision?.status).toBe("failed");
+    expect(decision?.responderOutcomes.map((outcome) => ({
+      waifuId: outcome.waifuId,
+      status: outcome.status,
+      reason: outcome.reason
+    }))).toEqual([
+      { waifuId: "yuki", status: "failed", reason: "waifu provider failed" },
+      { waifuId: "mika", status: "not_run", reason: "previous_responder_failed" }
+    ]);
+    expect(discord.sent).toEqual([]);
+  });
+
   it("ignores gateway echoes of its own waifu messages so chunked replies finish", async () => {
     const root = await makeTempRoot();
     roots.push(root);
@@ -4952,7 +5345,17 @@ describe("RuntimeOrchestrator", () => {
     class StubPipeline implements ModelPipeline {
       decisions: OrchestratorDecision[] = [
         {
-          action: "reply", respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal", sceneDirection: "answer", replyToMessageId: "m1" }],
+          action: "reply",
+          respondingWaifus: [
+            {
+              waifuId: "yuki",
+              delaySeconds: 0,
+              replyStyle: "normal",
+              sceneDirection: "answer",
+              replyToMessageId: "m1"
+            },
+            { waifuId: "mika", delaySeconds: 5, replyStyle: "normal" }
+          ],
           reasoning: "respond"
         },
         { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, reasoning: "done" }
@@ -4968,6 +5371,8 @@ describe("RuntimeOrchestrator", () => {
     }
 
     await seedRuntimeConfig(storage);
+    await seedWaifu(storage, "mika", "Mika", "mika-bot", "direct");
+    await enableWaifus(storage, ["yuki", "mika"]);
 
     const pipeline = new StubPipeline();
     const runtime = new RuntimeOrchestrator({
@@ -5006,6 +5411,18 @@ describe("RuntimeOrchestrator", () => {
 
     expect(discord.sent.length).toBeLessThan(3);
     expect(discord.sent[0].content).toBe("Hi.");
+    const history = await storage.readJson("user/orchestrator/history.json", OrchestratorHistoryFileSchema);
+    const interruptedDecision = history.decisions.find(
+      (entry) => entry.action === "reply" && entry.status === "interrupted"
+    );
+    expect(interruptedDecision?.responderOutcomes.map((outcome) => ({
+      waifuId: outcome.waifuId,
+      status: outcome.status,
+      messageCount: outcome.messageIds.length
+    }))).toEqual([
+      { waifuId: "yuki", status: "interrupted", messageCount: 1 },
+      { waifuId: "mika", status: "interrupted", messageCount: 0 }
+    ]);
   });
 
   it("does not start channel work while paused", async () => {
@@ -5033,6 +5450,57 @@ describe("RuntimeOrchestrator", () => {
 
     await runtime.triggerChannel("guild-1", "channel-1");
     expect(discord.sent).toEqual([]);
+  });
+
+  it("records a successful memory-only waifu turn as tool_only", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+
+    await seedRuntimeConfig(storage);
+    await enableShortTermMemory(storage, "yuki");
+
+    const pipeline: ModelPipeline = {
+      async decideOrchestrator() {
+        return {
+          action: "reply",
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal" }],
+          reasoning: "Remember the plan."
+        };
+      },
+      async generateWaifu() {
+        return {
+          content: "",
+          shortTermMemoryEntries: ["Kevin is leaving at 5pm."]
+        };
+      }
+    };
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 1,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    expect(discord.sent).toEqual([]);
+    const history = await storage.readJson("user/orchestrator/history.json", OrchestratorHistoryFileSchema);
+    const decision = history.decisions.find((entry) => entry.action === "reply");
+    expect(decision?.responderOutcomes).toMatchObject([
+      {
+        waifuId: "yuki",
+        source: "orchestrator",
+        status: "tool_only",
+        messageIds: []
+      }
+    ]);
   });
 
   it("persists short-term entries returned by a waifu and shows them in her next system prompt", async () => {

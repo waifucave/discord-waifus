@@ -192,12 +192,21 @@ function migrateLegacyDecision(entry: Record<string, unknown>): boolean {
     changed = true;
   }
 
-  if (entry.status !== "pending" && entry.status !== "completed" && entry.status !== "interrupted") {
+  if (
+    entry.status !== "pending" &&
+    entry.status !== "completed" &&
+    entry.status !== "interrupted" &&
+    entry.status !== "failed"
+  ) {
     entry.status = "completed";
     changed = true;
   }
   if (!Array.isArray(entry.waifuMessageIds)) {
     entry.waifuMessageIds = [];
+    changed = true;
+  }
+  if (!Array.isArray(entry.responderOutcomes)) {
+    entry.responderOutcomes = [];
     changed = true;
   }
 

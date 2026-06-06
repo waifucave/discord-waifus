@@ -383,7 +383,8 @@ export function OrchestratorView() {
             <div className="tr head">
               <span>Time</span>
               <span>Action</span>
-              <span>Responders</span>
+              <span>Status</span>
+              <span>Execution</span>
               <span>Retrigger</span>
               <span>Reasoning</span>
             </div>
@@ -391,7 +392,8 @@ export function OrchestratorView() {
               <div className="tr" key={entry.id}>
                 <span>{new Date(entry.createdAt).toLocaleTimeString()}</span>
                 <span>{entry.action}</span>
-                <span>{entry.respondingWaifus.map((responder) => responder.waifuId).join(" → ") || "—"}</span>
+                <span>{entry.status}</span>
+                <span>{formatResponderExecution(entry)}</span>
                 <span>{entry.retriggerAfterSeconds ? `${entry.retriggerAfterSeconds}s` : "—"}</span>
                 <span>{entry.reasoning}</span>
               </div>
@@ -401,6 +403,25 @@ export function OrchestratorView() {
       </section>
     </>
   );
+}
+
+function formatResponderExecution(
+  entry: OrchestratorHistoryFile["decisions"][number]
+): string {
+  if (entry.responderOutcomes.length === 0) {
+    return entry.respondingWaifus.map((responder) => responder.waifuId).join(" → ") || "—";
+  }
+  return entry.responderOutcomes
+    .map((outcome) => {
+      const source = outcome.source === "handoff"
+        ? ` handoff from ${outcome.handoffFromWaifuId ?? "unknown"}`
+        : outcome.handoffFromWaifuId
+          ? ` moved next by ${outcome.handoffFromWaifuId}`
+          : "";
+      const reason = outcome.reason ? `: ${outcome.reason.replaceAll("_", " ")}` : "";
+      return `${outcome.waifuId} [${outcome.status.replaceAll("_", " ")}${source}${reason}]`;
+    })
+    .join(" → ");
 }
 
 function runtimeTargetOptions(servers: ServersResponse | undefined): Array<{

@@ -194,7 +194,10 @@ describe("Backend API", () => {
       expect(history.json().decisions[0]).toMatchObject({
         action: "no_reply",
         respondingWaifus: [],
-        retriggerAfterSeconds: 180
+        retriggerAfterSeconds: 180,
+        status: "completed",
+        waifuMessageIds: [],
+        responderOutcomes: []
       });
     } finally {
       await app.close();

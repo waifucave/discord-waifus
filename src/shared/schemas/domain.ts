@@ -440,8 +440,34 @@ export type OrchestratorRespondingWaifu = z.infer<typeof OrchestratorRespondingW
 
 export const OrchestratorActionLogSchema = z.enum(["reply", "no_reply"]);
 
-export const OrchestratorDecisionStatusSchema = z.enum(["pending", "completed", "interrupted"]);
+export const OrchestratorDecisionStatusSchema = z.enum(["pending", "completed", "interrupted", "failed"]);
 export type OrchestratorDecisionStatus = z.infer<typeof OrchestratorDecisionStatusSchema>;
+
+export const OrchestratorResponderOutcomeSourceSchema = z.enum(["orchestrator", "handoff"]);
+export type OrchestratorResponderOutcomeSource = z.infer<typeof OrchestratorResponderOutcomeSourceSchema>;
+
+export const OrchestratorResponderOutcomeStatusSchema = z.enum([
+  "pending",
+  "sent",
+  "tool_only",
+  "empty",
+  "unavailable",
+  "interrupted",
+  "failed",
+  "not_run"
+]);
+export type OrchestratorResponderOutcomeStatus = z.infer<typeof OrchestratorResponderOutcomeStatusSchema>;
+
+export const OrchestratorResponderOutcomeSchema = z.object({
+  id: z.string().min(1),
+  waifuId: z.string().min(1),
+  source: OrchestratorResponderOutcomeSourceSchema,
+  handoffFromWaifuId: z.string().min(1).optional(),
+  status: OrchestratorResponderOutcomeStatusSchema,
+  reason: z.string().min(1).optional(),
+  messageIds: z.array(z.string()).default([])
+});
+export type OrchestratorResponderOutcome = z.infer<typeof OrchestratorResponderOutcomeSchema>;
 
 export const OrchestratorDecisionHistoryEntrySchema = z.object({
   id: z.string().min(1),
@@ -453,6 +479,7 @@ export const OrchestratorDecisionHistoryEntrySchema = z.object({
   reasoning: z.string().default(""),
   status: OrchestratorDecisionStatusSchema.default("completed"),
   waifuMessageIds: z.array(z.string()).default([]),
+  responderOutcomes: z.array(OrchestratorResponderOutcomeSchema).default([]),
   createdAt: IsoDateStringSchema
 });
 export type OrchestratorDecisionHistoryEntry = z.infer<typeof OrchestratorDecisionHistoryEntrySchema>;
