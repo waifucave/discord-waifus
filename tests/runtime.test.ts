@@ -4953,7 +4953,8 @@ describe("RuntimeOrchestrator", () => {
     discord.contexts = [
       [contextMessage("m1", "user", "Kevin", "tell me a joke")],
       [contextMessage("m1", "user", "Kevin", "tell me a joke")],
-      [contextMessage("m2", "waifu", "Yuki", "oh wait that was me sorry")]
+      [contextMessage("m2", "waifu", "Yuki", "oh wait that was me sorry")],
+      [contextMessage("m3", "waifu", "Mika", "I can add something too")]
     ];
 
     await seedRuntimeConfig(storage);
@@ -4994,19 +4995,28 @@ describe("RuntimeOrchestrator", () => {
 
     class RetryRecoversPipeline implements ModelPipeline {
       waifuCalls = 0;
+      retryUserMessages: Array<string | undefined> = [];
       decisions: OrchestratorDecision[] = [
         {
           action: "reply",
-          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal", sceneDirection: "answer" }],
-          reasoning: "Yuki answers."
+          respondingWaifus: [
+            { waifuId: "yuki", delaySeconds: 0, replyStyle: "normal", sceneDirection: "answer" },
+            { waifuId: "mika", delaySeconds: 0, replyStyle: "normal", sceneDirection: "add something" }
+          ],
+          reasoning: "Yuki and Mika answer."
         },
         { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, reasoning: "done" }
       ];
-      async generateWaifu() {
+      async generateWaifu(request: WaifuGenerationRequest) {
         this.waifuCalls += 1;
-        return this.waifuCalls === 1
-          ? { content: "Mika: i meant to let Yuki go first" }
-          : { content: "oh wait that was me sorry" };
+        this.retryUserMessages.push(request.retryUserMessage);
+        if (this.waifuCalls === 1) {
+          return { content: "Mika: i meant to let Yuki go first" };
+        }
+        if (this.waifuCalls === 2) {
+          return { content: "oh wait that was me sorry" };
+        }
+        return { content: "I can add something too" };
       }
       async decideOrchestrator() {
         const next = this.decisions.shift();
@@ -5034,8 +5044,12 @@ describe("RuntimeOrchestrator", () => {
     await runtime.triggerChannel("guild-1", "channel-1");
     await runtime.stop();
 
-    expect(pipeline.waifuCalls).toBe(2);
-    expect(discord.sent.map((m) => m.content)).toEqual(["oh wait that was me sorry"]);
+    expect(pipeline.waifuCalls).toBe(3);
+    expect(pipeline.retryUserMessages).toEqual([undefined, "Yuki:", undefined]);
+    expect(discord.sent.map((m) => m.content)).toEqual([
+      "oh wait that was me sorry",
+      "I can add something too"
+    ]);
     expect(warnings).toContainEqual(
       expect.objectContaining({
         message: "Waifu reply was entirely impersonation; retrying once",

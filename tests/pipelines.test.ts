@@ -1394,6 +1394,29 @@ describe("trailing system message payloads", () => {
     expect(lastSystemContent).not.toMatch(/<yuki_personality>|<director_notes>/);
   });
 
+  it("OpenAI Chat: appends retryUserMessage as the final user message", async () => {
+    mockFetch({ choices: [{ message: { content: "ok" } }] });
+
+    const pipeline = createModelPipeline("grok-4.3", { apiKey: "xai-test" });
+    await pipeline.generateWaifu({
+      modelId: "grok-4.3",
+      messages: context,
+      systemPrompt: "stay in character",
+      trailingSystemBlock: trailingWithSceneDirection,
+      retryUserMessage: "Yuki:"
+    });
+
+    const messages = lastFetchJsonBody().messages as Array<{ role: string; content: string }>;
+    expect(messages.at(-2)).toEqual({
+      role: "system",
+      content: trailingWithSceneDirection
+    });
+    expect(messages.at(-1)).toEqual({
+      role: "user",
+      content: "Yuki:"
+    });
+  });
+
   it("OpenAI Responses: places trailingSystemBlock as the last input message", async () => {
     mockFetch({ output_text: "ok" });
 
@@ -1413,6 +1436,29 @@ describe("trailing system message payloads", () => {
     });
   });
 
+  it("OpenAI Responses: appends retryUserMessage as the final user input", async () => {
+    mockFetch({ output_text: "ok" });
+
+    const pipeline = createModelPipeline("gpt-4o-mini", { apiKey: "openai-test" });
+    await pipeline.generateWaifu({
+      modelId: "gpt-4o-mini",
+      messages: context,
+      systemPrompt: "stay in character",
+      trailingSystemBlock: trailingWithoutSceneDirection,
+      retryUserMessage: "Yuki:"
+    });
+
+    const input = lastFetchJsonBody().input as Array<{ role: string; content: string }>;
+    expect(input.at(-2)).toEqual({
+      role: "system",
+      content: trailingWithoutSceneDirection
+    });
+    expect(input.at(-1)).toEqual({
+      role: "user",
+      content: "Yuki:"
+    });
+  });
+
   it("Anthropic: sends trailingSystemBlock as the trailing user message", async () => {
     mockFetch({ content: [{ type: "text", text: "ok" }] });
 
@@ -1429,6 +1475,55 @@ describe("trailing system message payloads", () => {
     expect(messages.at(-1)).toEqual({
       role: "user",
       content: trailingWithSceneDirection
+    });
+  });
+
+  it("Anthropic: appends retryUserMessage after the trailing user message", async () => {
+    mockFetch({ content: [{ type: "text", text: "ok" }] });
+
+    const pipeline = createModelPipeline("claude-haiku-4-5-20251001", { apiKey: "anthropic-test" });
+    await pipeline.generateWaifu({
+      modelId: "claude-haiku-4-5-20251001",
+      messages: context,
+      systemPrompt: "stay in character",
+      trailingSystemBlock: trailingWithSceneDirection,
+      retryUserMessage: "Yuki:"
+    });
+
+    const messages = lastFetchJsonBody().messages as Array<{ role: string; content: string }>;
+    expect(messages.at(-2)).toEqual({
+      role: "user",
+      content: trailingWithSceneDirection
+    });
+    expect(messages.at(-1)).toEqual({
+      role: "user",
+      content: "Yuki:"
+    });
+  });
+
+  it("Google: appends retryUserMessage as the final user content", async () => {
+    mockFetch({ candidates: [{ content: { parts: [{ text: "ok" }] } }] });
+
+    const pipeline = createModelPipeline("gemini-2.5-flash-lite", { apiKey: "g-test" });
+    await pipeline.generateWaifu({
+      modelId: "gemini-2.5-flash-lite",
+      messages: context,
+      systemPrompt: "stay in character",
+      trailingSystemBlock: trailingWithoutSceneDirection,
+      retryUserMessage: "Yuki:"
+    });
+
+    const contents = lastFetchJsonBody().contents as Array<{
+      role: string;
+      parts: Array<{ text: string }>;
+    }>;
+    expect(contents.at(-2)).toEqual({
+      role: "user",
+      parts: [{ text: trailingWithoutSceneDirection }]
+    });
+    expect(contents.at(-1)).toEqual({
+      role: "user",
+      parts: [{ text: "Yuki:" }]
     });
   });
 });

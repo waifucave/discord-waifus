@@ -88,7 +88,8 @@ class OpenAiCompatibleChatPipeline implements ModelPipeline {
             request.midSystemBlock ? { role: "system", content: request.midSystemBlock } : undefined
           ),
           ...replyStyleMessagesForChat(request.replyStyle),
-          ...(request.trailingSystemBlock ? [{ role: "system", content: request.trailingSystemBlock }] : [])
+          ...(request.trailingSystemBlock ? [{ role: "system", content: request.trailingSystemBlock }] : []),
+          ...(request.retryUserMessage ? [{ role: "user", content: request.retryUserMessage }] : [])
         ]),
         temperature: openAiChatTemperature(this.model, request.temperature ?? this.model.defaultTemperature),
         top_p: openAiChatTopP(this.model, request.topP ?? this.model.defaultTopP),
@@ -245,7 +246,8 @@ class OpenAiResponsesPipeline implements ModelPipeline {
             request.midSystemBlock ? { role: "system", content: request.midSystemBlock } : undefined
           ),
           ...replyStyleMessagesForChat(request.replyStyle),
-          ...(request.trailingSystemBlock ? [{ role: "system", content: request.trailingSystemBlock }] : [])
+          ...(request.trailingSystemBlock ? [{ role: "system", content: request.trailingSystemBlock }] : []),
+          ...(request.retryUserMessage ? [{ role: "user", content: request.retryUserMessage }] : [])
         ],
         temperature: request.temperature ?? this.model.defaultTemperature,
         top_p: request.topP ?? this.model.defaultTopP,
@@ -389,7 +391,8 @@ class AnthropicMessagesPipeline implements ModelPipeline {
             request.midSystemBlock ? { role: "user" as const, content: request.midSystemBlock } : undefined
           ),
           ...replyStyleMessagesForAnthropic(request.replyStyle),
-          ...(request.trailingSystemBlock ? [{ role: "user" as const, content: request.trailingSystemBlock }] : [])
+          ...(request.trailingSystemBlock ? [{ role: "user" as const, content: request.trailingSystemBlock }] : []),
+          ...(request.retryUserMessage ? [{ role: "user" as const, content: request.retryUserMessage }] : [])
         ],
         ...anthropicSamplingPayload(
           this.model,
@@ -527,7 +530,8 @@ class GoogleGenerativeLanguagePipeline implements ModelPipeline {
         request.midSystemBlock ? googleUserTurn(request.midSystemBlock) : undefined
       ),
       ...(replyHint ? [googleUserTurn(replyHint)] : []),
-      ...(request.trailingSystemBlock ? [googleUserTurn(request.trailingSystemBlock)] : [])
+      ...(request.trailingSystemBlock ? [googleUserTurn(request.trailingSystemBlock)] : []),
+      ...(request.retryUserMessage ? [googleUserTurn(request.retryUserMessage)] : [])
     ];
     const result = await postJsonAndExtractText<WaifuGenerationResult>({
       url: googleAiStudioUrl(this.provider, this.model),

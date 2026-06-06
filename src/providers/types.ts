@@ -55,6 +55,7 @@ export type WaifuGenerationRequest = ProviderRequest & {
   systemPrompt: string;
   midSystemBlock?: string;
   trailingSystemBlock?: string;
+  retryUserMessage?: string;
   replyStyle?: ReplyStyle;
   pickNextWaifuToolEnabled?: boolean;
   shortTermMemoryToolEnabled?: boolean;

@@ -1289,6 +1289,7 @@ export class RuntimeOrchestrator {
                   systemPrompt,
                   midSystemBlock,
                   trailingSystemBlock,
+                  retryUserMessage: attempt === 2 ? `${waifu.displayName}:` : undefined,
                   replyStyle: responder.replyStyle,
                   availableWaifuIds: nextWaifuIds,
                   pickNextWaifuToolEnabled: input.server.tools.pickNextWaifu,
