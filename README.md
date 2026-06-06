@@ -1,29 +1,84 @@
-# Discord Waifus
+<div align="center">
 
-Local Discord waifu orchestrator with a backend, web UI, Discord gateway clients, provider-specific AI model pipelines, and a global `waifus` CLI.
+# 💬 Discord Waifus
 
-The app runs on your machine, stores its user data under `~/.dc-waifus`, and lets one orchestrator bot decide which configured waifu bot should answer in each Discord channel.
+### A cast of AI characters that *live* in your Discord server — each with their own personality, picking fights, cracking jokes, and replying on their own.
 
-## Install From npm
+[![npm version](https://img.shields.io/npm/v/@starlight-ai/discord-waifus?color=ff6ad5&label=npm&logo=npm)](https://www.npmjs.com/package/@starlight-ai/discord-waifus)
+[![downloads](https://img.shields.io/npm/dm/@starlight-ai/discord-waifus?color=8a2be2&logo=npm)](https://www.npmjs.com/package/@starlight-ai/discord-waifus)
+[![node](https://img.shields.io/node/v/@starlight-ai/discord-waifus?color=5865F2&logo=node.js)](https://nodejs.org)
+[![license](https://img.shields.io/github/license/HeavenllyDemon/Discord-Waifus?color=ff8fab)](LICENSE)
+[![stars](https://img.shields.io/github/stars/HeavenllyDemon/Discord-Waifus?style=social)](https://github.com/HeavenllyDemon/Discord-Waifus)
 
-Requires Node.js 20 or newer.
+**[Install](#-quick-start) · [Features](#-features) · [Setup](#-setup) · [Providers](#-supported-ai-providers) · [Dev](#-for-developers)**
+
+</div>
+
+---
+
+<div align="center">
+
+<img src="docs/images/cast-roast.png" alt="Multiple AI waifus roasting each other in a Discord channel" width="600">
+
+*Aria, Riko, Lumi & co. roasting each other in real time — no humans required.*
+
+<br>
+
+<img src="docs/images/cast-drama.png" alt="AI waifus reacting to an impersonator with replies and emoji reactions" width="600">
+
+*They reply to each other, react with emojis, and even call out impersonators.*
+
+</div>
+
+---
+
+## 🌸 What is this?
+
+**Discord Waifus** turns your server into a living group chat full of AI personalities.
+
+You set up a roster of **waifus** — each one with her own persona, avatar, AI model, and Discord bot. A separate **orchestrator** watches every channel and decides, message by message, *who* should jump in (or whether everyone should stay quiet). The result: characters that banter, roast, comfort, and gossip — with each other *and* with you.
+
+It runs **entirely on your own machine**, configured through a clean **web dashboard**. No cloud account, no server to rent — just your API keys and your imagination.
+
+---
+
+## ✨ Features
+
+- 🎭 **Multiple waifus** — each with a unique persona, avatar, Discord bot, and AI model.
+- 🧠 **Smart orchestrator** — decides who replies in each channel, or whether to stay silent.
+- 💬 **They talk to each other** — idle banter and group chaos when the channel goes quiet.
+- ⌨️ **Realistic typing** — replies are split into chunks and sent with natural typing delays.
+- 🖼️ **Reads images** — bundled WebAssembly OCR lets them react to memes and screenshots, with zero extra install.
+- 🧩 **Mix & match providers** — x.ai, OpenAI, Anthropic, DeepSeek, Z.AI, and Google AI Studio models, side by side.
+- 🎚️ **Per-channel control** — choose exactly which waifus are active in which channels.
+- 🧷 **Persistent memory** — they remember things across conversations.
+- 🕵️ **Reviewer pass** — an optional second look that can catch and delete off-character replies.
+- 🖥️ **Web dashboard** — set everything up in your browser. No hand-edited config files.
+- 🔒 **Local-first & private** — runs on your machine; all your data stays in `~/.dc-waifus`.
+
+---
+
+## 🚀 Quick Start
+
+> Requires **Node.js 20 or newer**.
 
 ```sh
 npm install -g @starlight-ai/discord-waifus@latest
 waifus start
 ```
 
-Image-text fallback (OCR) works out of the box on every platform: a bundled
-WebAssembly Tesseract (`tesseract.js`) ships with the package along with the
-English model, so no global Tesseract install is required.
-
-Open the web UI:
+Then open the dashboard:
 
 ```text
 http://127.0.0.1:3888
 ```
 
-## Install From a GitHub Release
+That's it. 🖼️ Image-text reading (OCR) works **out of the box on every platform** — a bundled WebAssembly Tesseract ships with the package along with the English model, so there's nothing extra to install.
+
+<details>
+<summary>📦 Prefer a GitHub release tarball?</summary>
+
+<br>
 
 Download the `.tgz` release asset, then install it globally:
 
@@ -32,19 +87,98 @@ npm install -g ./starlight-ai-discord-waifus-1.0.0.tgz
 waifus start
 ```
 
-The release tarball already bundles the WebAssembly OCR runtime and English
-model, so there is nothing extra to install for OCR.
-
-GitHub release installs can update from the next release asset with:
+GitHub-release installs can update straight from the next release asset:
 
 ```sh
 waifus update --github
 ```
 
-`waifus doctor` reports whether bundled OCR is usable, including the resolved
-`tesseract.js` and model paths.
+</details>
 
-## Build From Source
+---
+
+## 🎮 Setup
+
+You'll create **one Discord application for the orchestrator** and **one application for each waifu bot**. Then, in the web dashboard:
+
+1. 🤖 Add the orchestrator bot token and Application ID in **Orchestrator**.
+2. 🔑 Add your provider API keys in **Providers**.
+3. 🎭 Create each waifu — model, persona, and bot token — in **Waifus**.
+4. 📨 Invite the bots to your server from **Servers**.
+5. ✅ Pick at least one waifu for each channel where the cast should come alive.
+
+### Required gateway intents
+
+Enable these for each bot in the Discord Developer Portal:
+
+```text
+GUILDS
+GUILD_MESSAGES
+GUILD_MESSAGE_REACTIONS
+MESSAGE_CONTENT
+```
+
+> ⚠️ **`MESSAGE_CONTENT`** must be enabled in the Developer Portal so the waifus can read full channel context.
+
+---
+
+## 🧩 Supported AI providers
+
+Mix providers freely — give each waifu the brain that fits her personality.
+
+| Provider                  | Models                                  |
+| ------------------------- | --------------------------------------- |
+| ⚫ **x.ai**               | Grok 4.x                                |
+| 🟢 **OpenAI**            | GPT-5.x & GPT-4o                        |
+| 🟠 **Anthropic**         | Claude 4.x (Opus / Sonnet / Haiku)     |
+| 🔵 **DeepSeek**          | DeepSeek V4                             |
+| 🟡 **Z.AI**              | GLM 5 & GLM 4.x                         |
+| 🔴 **Google AI Studio**  | Gemini 3.x & 2.5                        |
+
+Each model has its own dedicated request pipeline, so provider-specific options (like reasoning/thinking controls) are exposed properly instead of being flattened into one generic shape.
+
+---
+
+## ⌨️ CLI
+
+Everything is also drivable from the terminal via the global `waifus` command:
+
+| Command            | What it does                                            |
+| ------------------ | ------------------------------------------------------- |
+| `waifus start`     | Boot the backend + dashboard.                           |
+| `waifus stop`      | Stop the running app.                                   |
+| `waifus restart`   | Restart it.                                             |
+| `waifus status`    | Show whether it's running and where.                    |
+| `waifus doctor`    | Health check (incl. whether bundled OCR is usable).     |
+| `waifus clean`     | Delete saved user data (use intentionally!).            |
+| `waifus update`    | Update the installed package.                           |
+
+Common flags: `--host 127.0.0.1`, `--port 3888`, `--data-root PATH`.
+
+`waifus update` updates the installed package (default `--npm`); use `waifus update --github` to pull the latest release `.tgz`. Set `DC_WAIFUS_HOME=PATH` to override the default `~/.dc-waifus` data root.
+
+---
+
+## ⭐ Star History
+
+If your server's waifus made you laugh, consider dropping a star — it genuinely helps. 💖
+
+<div align="center">
+  <a href="https://star-history.com/#HeavenllyDemon/Discord-Waifus&Date">
+    <img src="https://api.star-history.com/svg?repos=HeavenllyDemon/Discord-Waifus&type=Date" alt="Star History Chart" width="600">
+  </a>
+</div>
+
+---
+
+## 🧰 For developers
+
+<details>
+<summary>Build from source, run in dev mode, and where data lives</summary>
+
+<br>
+
+**Build & run from source:**
 
 ```sh
 git clone https://github.com/HeavenllyDemon/Discord-Waifus.git
@@ -54,75 +188,14 @@ npm run build
 npm run waifus -- start
 ```
 
-For local development:
+**Local development** (backend in dev + Vite dashboard on `:5173` proxying `/api` to `127.0.0.1:3888`):
 
 ```sh
 npm run waifus -- dev
 npm run dev:frontend
 ```
 
-## CLI
-
-```text
-waifus help
-waifus start [--host 127.0.0.1] [--port 3888] [--data-root PATH]
-waifus stop [--data-root PATH]
-waifus restart [--host 127.0.0.1] [--port 3888] [--data-root PATH]
-waifus status [--data-root PATH]
-waifus doctor [--data-root PATH]
-waifus clean [--force] [--include-logs] [--data-root PATH]
-waifus update [--npm | --github]
-```
-
-`DC_WAIFUS_HOME=PATH` overrides the default `~/.dc-waifus` data root.
-
-`waifus update` updates the installed package, not source checkouts. By default it runs
-`npm install -g @starlight-ai/discord-waifus@latest`. Use `waifus update --github`
-to install the latest `.tgz` asset from the GitHub releases page. If you built from
-source, run `git pull`, `npm install`, and `npm run build` yourself.
-
-## Discord Setup
-
-Create one Discord application for the orchestrator and one application for each waifu bot. In the web UI:
-
-1. Configure the orchestrator bot token and Application ID in **Orchestrator**.
-2. Configure provider API keys in **Providers**.
-3. Configure each waifu model, persona, and bot token in **Waifus**.
-4. Invite the bots to your Discord server from **Servers**.
-5. Select at least one waifu for each channel where the system should run.
-
-Required gateway intents:
-
-```text
-GUILDS
-GUILD_MESSAGES
-GUILD_MESSAGE_REACTIONS
-MESSAGE_CONTENT
-```
-
-`MESSAGE_CONTENT` must be enabled in the Discord Developer Portal for complete channel context.
-
-## AI Providers
-
-The app groups supported models under:
-
-- x.ai
-- DeepSeek
-- Anthropic
-- OpenAI
-- Z.AI
-
-Each model has its own backend pipeline so provider-specific options can be exposed without flattening everything into one generic request shape.
-
-## Data Layout
-
-By default, runtime and user configuration lives in:
-
-```text
-~/.dc-waifus
-```
-
-Important folders:
+**Data layout** — runtime and user config live under `~/.dc-waifus`:
 
 ```text
 ~/.dc-waifus/config.toml
@@ -136,15 +209,22 @@ Important folders:
 ~/.dc-waifus/app/tmp/ocr/
 ```
 
-Use `waifus clean` only when you intentionally want to delete saved user data.
+**Architecture & contributor notes:** see [`CLAUDE.md`](CLAUDE.md) and [`AGENTS.md`](AGENTS.md). In short — a single-process local app: a Fastify backend serves the prebuilt React dashboard, connects the Discord gateway clients, and runs a per-channel orchestration loop. User data is revisioned JSON under `~/.dc-waifus/user/`.
 
-## License
+</details>
 
-Discord Waifus is licensed under the MIT License. The bundled OCR runtime
-(`tesseract.js` / `tesseract.js-core`, which embed Tesseract and Leptonica) and
-the bundled English model (`assets/ocr/eng.traineddata`) are third-party
-components under the Apache License 2.0; see `THIRD_PARTY_NOTICES.md`.
+---
 
-## Release Notes
+## 📄 License
 
-Version `1.0.0` is the first stable release for the local backend, web UI, Discord runtime, npm CLI, and prebuilt waifu configuration flow.
+Discord Waifus is released under the **MIT License** — see [`LICENSE`](LICENSE).
+
+The bundled OCR runtime (`tesseract.js` / `tesseract.js-core`, which embed Tesseract and Leptonica) and the bundled English model (`assets/ocr/eng.traineddata`) are third-party components under the **Apache License 2.0**; see [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+
+<div align="center">
+
+<br>
+
+*Made for chaotic group chats. 🌙*
+
+</div>
