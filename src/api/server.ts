@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { access, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import fastify, { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { loadAppConfig, saveAppConfig } from "../config/appConfig.js";
@@ -1361,6 +1362,27 @@ async function diagnosticBundle(storage: StorageService, runtime: unknown) {
   };
 }
 
+async function resolveStaticDir(configured?: string): Promise<string | undefined> {
+  const candidates = configured
+    ? [path.resolve(configured)]
+    : [
+        // Default to the frontend bundled with the installed package, resolved
+        // relative to this module rather than process.cwd(), so `waifus start`
+        // serves the dashboard no matter which directory it was launched from.
+        // (dist/api/server.js and src/api/server.ts both sit two levels under the
+        // package root, where dist-frontend/ lives.)
+        path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "dist-frontend"),
+        // Backwards-compatible fallback for setups that relied on the working directory.
+        path.resolve(process.cwd(), "dist-frontend")
+      ];
+  for (const candidate of candidates) {
+    if (await exists(candidate)) {
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
 async function tryServeFrontend(
   request: FastifyRequest,
   reply: FastifyReply,
@@ -1368,10 +1390,8 @@ async function tryServeFrontend(
   overrideUrl?: string
 ): Promise<boolean> {
   const config = await loadAppConfig(dataRoot);
-  const staticDir = config.frontend.staticDir
-    ? path.resolve(config.frontend.staticDir)
-    : path.resolve(process.cwd(), "dist-frontend");
-  if (!(await exists(staticDir))) {
+  const staticDir = await resolveStaticDir(config.frontend.staticDir);
+  if (!staticDir) {
     return false;
   }
   const url = new URL(overrideUrl ?? request.url, "http://waifus.local");

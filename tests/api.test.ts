@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { createApiServer } from "../src/api/server.js";
 import { createRuntimeState } from "../src/backend/runtime.js";
@@ -62,6 +64,46 @@ describe("Backend API", () => {
       expect(models.json().models.map((model: { modelId: string }) => model.modelId)).toContain("grok-4.3");
     } finally {
       await app.close();
+    }
+  });
+
+  it("serves the SPA index.html even when started from a non-package working directory", async () => {
+    // Regression: the default frontend dir must resolve relative to the installed
+    // package, not process.cwd(). A globally/locally installed `waifus start` runs
+    // from an arbitrary directory, so a cwd-relative path leaves the dashboard 404ing
+    // while the API keeps working.
+    const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+    const distFrontend = path.join(repoRoot, "dist-frontend");
+    const indexHtml = path.join(distFrontend, "index.html");
+
+    // dist-frontend is a gitignored build artifact; on an unbuilt checkout, drop a
+    // placeholder so this test exercises the real default path either way, then remove it.
+    let createdIndex = false;
+    let createdDir = false;
+    if (!existsSync(indexHtml)) {
+      if (!existsSync(distFrontend)) {
+        mkdirSync(distFrontend, { recursive: true });
+        createdDir = true;
+      }
+      writeFileSync(indexHtml, "<!doctype html><title>placeholder</title>");
+      createdIndex = true;
+    }
+
+    const { app } = await makeApp();
+    const elsewhere = await makeTempRoot();
+    roots.push(elsewhere);
+    const originalCwd = process.cwd();
+    process.chdir(elsewhere);
+    try {
+      const res = await app.inject({ method: "GET", url: "/" });
+      expect(res.statusCode).toBe(200);
+      expect(res.headers["content-type"]).toContain("text/html");
+      expect(res.body.toLowerCase()).toContain("<!doctype html>");
+    } finally {
+      process.chdir(originalCwd);
+      await app.close();
+      if (createdIndex) rmSync(indexHtml, { force: true });
+      if (createdDir) rmSync(distFrontend, { recursive: true, force: true });
     }
   });
 
