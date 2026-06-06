@@ -2530,7 +2530,7 @@ function googleGenerationConfig(
     temperature: opts.temperature,
     topP: opts.topP,
     maxOutputTokens: opts.maxOutputTokens,
-    stopSequences: opts.stopSequences?.length ? opts.stopSequences : undefined,
+    stopSequences: opts.stopSequences?.length ? opts.stopSequences.slice(0, 5) : undefined,
     thinkingConfig: googleThinkingConfig(model, opts.reasoning)
   });
 }

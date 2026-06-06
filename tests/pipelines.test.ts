@@ -2072,6 +2072,51 @@ describe("Google AI Studio (Gemini) pipeline", () => {
     expect(generationConfig.stopSequences).toEqual(["\nAria:", "\nRiko:"]);
   });
 
+  it("omits stopSequences from Google generationConfig when none are supplied", async () => {
+    mockFetch({ candidates: [{ content: { parts: [{ text: "ok" }] } }] });
+
+    const pipeline = createModelPipeline("gemini-3.1-flash-lite", { apiKey: "g-test" });
+    await pipeline.generateWaifu({
+      modelId: "gemini-3.1-flash-lite",
+      messages: context,
+      systemPrompt: "stay in character"
+    });
+
+    const query = recentQueries().at(-1);
+    const generationConfig = query?.payload.generationConfig as { stopSequences?: string[] };
+    expect(generationConfig).not.toHaveProperty("stopSequences");
+  });
+
+  it("clamps Google stopSequences to the first five entries", async () => {
+    mockFetch({ candidates: [{ content: { parts: [{ text: "ok" }] } }] });
+
+    const pipeline = createModelPipeline("gemini-3.1-flash-lite", { apiKey: "g-test" });
+    await pipeline.generateWaifu({
+      modelId: "gemini-3.1-flash-lite",
+      messages: context,
+      systemPrompt: "stay in character",
+      stopSequences: [
+        "\nAria:",
+        "\nRiko:",
+        "\nLumi:",
+        "\nYuki:",
+        "\nMika:",
+        "\nKevin:",
+        "\nAlice:"
+      ]
+    });
+
+    const query = recentQueries().at(-1);
+    const generationConfig = query?.payload.generationConfig as { stopSequences?: string[] };
+    expect(generationConfig.stopSequences).toEqual([
+      "\nAria:",
+      "\nRiko:",
+      "\nLumi:",
+      "\nYuki:",
+      "\nMika:"
+    ]);
+  });
+
   it("attaches inlineData parts with base64 image bytes", async () => {
     const apiResponse = {
       candidates: [{ content: { parts: [{ text: "nice cat" }] } }]
