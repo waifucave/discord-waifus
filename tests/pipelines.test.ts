@@ -368,6 +368,57 @@ describe("provider-native decision tools", () => {
     expect(body).not.toHaveProperty("tool_choice");
   });
 
+  it("shields malformed hex escapes in DeepSeek message content", async () => {
+    mockFetch({ choices: [{ message: { content: "ok" } }] });
+
+    const pipeline = createModelPipeline("deepseek-v4-pro", { apiKey: "deepseek-test" });
+    await pipeline.generateWaifu({
+      modelId: "deepseek-v4-pro",
+      messages: [
+        {
+          ...context[0],
+          content: String.raw`broken \u003 \U0001F60 \xA path C:\users`
+        }
+      ],
+      systemPrompt: "stay in character"
+    });
+
+    const messages = lastFetchJsonBody().messages as Array<{ role: string; content: string }>;
+    expect(messages[1].content).toBe(String.raw`Kevin: broken \\u003 \\U0001F60 \\xA path C:\\users`);
+  });
+
+  it("preserves valid, already shielded, and non-DeepSeek hex escape text", async () => {
+    mockFetch({ choices: [{ message: { content: "ok" } }] });
+
+    const deepSeek = createModelPipeline("deepseek-v4-pro", { apiKey: "deepseek-test" });
+    await deepSeek.generateWaifu({
+      modelId: "deepseek-v4-pro",
+      messages: [
+        {
+          ...context[0],
+          content: String.raw`valid \u003c already \\u003 path C:\docs`
+        }
+      ],
+      systemPrompt: "stay in character"
+    });
+    let messages = lastFetchJsonBody().messages as Array<{ role: string; content: string }>;
+    expect(messages[1].content).toBe(String.raw`Kevin: valid \u003c already \\u003 path C:\docs`);
+
+    const xai = createModelPipeline("grok-4.3", { apiKey: "xai-test" });
+    await xai.generateWaifu({
+      modelId: "grok-4.3",
+      messages: [
+        {
+          ...context[0],
+          content: String.raw`broken \u003`
+        }
+      ],
+      systemPrompt: "stay in character"
+    });
+    messages = lastFetchJsonBody().messages as Array<{ role: string; content: string }>;
+    expect(messages[1].content).toBe(String.raw`Kevin: broken \u003`);
+  });
+
   it("uses Z.AI-compatible top_p clamping for chat completions", async () => {
     mockFetch({ choices: [{ message: { content: "ok" } }] });
 

@@ -2214,12 +2214,34 @@ function openAiChatMessagesForModel(
   model: ModelCapabilityMetadata,
   messages: Array<Record<string, unknown>>
 ): Array<Record<string, unknown>> {
-  if (model.providerId !== "zai" || messages.some((message) => message.role === "user")) {
-    return messages;
+  const providerSafeMessages = model.providerId === "deepseek"
+    ? messages.map((message) => {
+      if (typeof message.content !== "string") return message;
+      return {
+        ...message,
+        content: shieldMalformedHexEscapes(message.content)
+      };
+    })
+    : messages;
+  if (model.providerId !== "zai" || providerSafeMessages.some((message) => message.role === "user")) {
+    return providerSafeMessages;
   }
-  const lastIndex = messages.length - 1;
-  return messages.map((message, index) =>
+  const lastIndex = providerSafeMessages.length - 1;
+  return providerSafeMessages.map((message, index) =>
     index === lastIndex ? { ...message, role: "user" } : message
+  );
+}
+
+function shieldMalformedHexEscapes(content: string): string {
+  return content.replace(
+    /(\\+)([uUx])([0-9A-Fa-f]*)/g,
+    (match, slashes: string, marker: string, digits: string) => {
+      const expectedDigits = marker === "U" ? 8 : marker === "u" ? 4 : 2;
+      if (slashes.length % 2 === 0 || digits.length >= expectedDigits) {
+        return match;
+      }
+      return `\\${match}`;
+    }
   );
 }
 
