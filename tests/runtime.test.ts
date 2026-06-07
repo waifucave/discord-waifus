@@ -4788,6 +4788,70 @@ describe("RuntimeOrchestrator", () => {
     expect(discord.sent[0].content).toBe("thats your victory lap");
   });
 
+  it("strips an embedded hallucinated reply control without creating a Discord reply", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.contexts = [
+      [contextMessage("m1", "user", "K", "You guys talk a lot", undefined, { authorId: "k-user" })],
+      [contextMessage("m1", "user", "K", "You guys talk a lot", undefined, { authorId: "k-user" })],
+      [contextMessage("m2", "waifu", "Yuki", "done")]
+    ];
+
+    class HallucinatedEmbeddedQuotePipeline implements ModelPipeline {
+      decisions: OrchestratorDecision[] = [
+        {
+          action: "reply",
+          respondingWaifus: [
+            { waifuId: "yuki", delaySeconds: 0, replyStyle: "normal", sceneDirection: "answer" }
+          ],
+          reasoning: "Yuki answers without a real reply target."
+        },
+        { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, reasoning: "done" }
+      ];
+      async generateWaifu() {
+        const repeated = "fr babe i knew u were up to something 💀";
+        return {
+          content:
+            `${repeated}\n` +
+            "replying to > K: bro been getting caught up in too much po\n" +
+            repeated
+        };
+      }
+      async decideOrchestrator() {
+        const next = this.decisions.shift();
+        if (!next) throw new Error("no decision");
+        return next;
+      }
+    }
+
+    await seedRuntimeConfig(storage);
+
+    const pipeline = new HallucinatedEmbeddedQuotePipeline();
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 3,
+      createPipeline: () => pipeline,
+      logger: {
+        debug: () => undefined,
+        info: () => undefined,
+        warn: () => undefined,
+        error: () => undefined
+      }
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    expect(discord.sent).toHaveLength(1);
+    expect(discord.sent[0].content).toBe("fr babe i knew u were up to something 💀");
+    expect(discord.sent[0].replyToMessageId).toBeUndefined();
+  });
+
   it("strips recent human speaker impersonation lines and includes human names in stop sequences", async () => {
     const root = await makeTempRoot();
     roots.push(root);

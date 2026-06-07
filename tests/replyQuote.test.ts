@@ -41,6 +41,39 @@ describe("extractReplyQuote", () => {
     expect(result.cleanedContent).toBe("yeah hi");
   });
 
+  it("strips an embedded hallucinated reply control and collapses identical surrounding text", () => {
+    const repeated = "fr babe i knew u were up to something 💀";
+    const result = extractReplyQuote(
+      `${repeated}\nreplying to > K: bro been getting caught up in too much po\n${repeated}`,
+      [
+        ctxMessage({
+          id: "m1",
+          content: "You guys talk a lot",
+          displayName: "K",
+          name: "K"
+        })
+      ]
+    );
+    expect(result.replyToMessageId).toBeUndefined();
+    expect(result.cleanedContent).toBe(repeated);
+  });
+
+  it("strips an embedded reply control and targets a real matching message", () => {
+    const result = extractReplyQuote(
+      "first thought\nreplying to > K: older question\nactual answer",
+      [
+        ctxMessage({
+          id: "m1",
+          content: "older question",
+          displayName: "K",
+          name: "K"
+        })
+      ]
+    );
+    expect(result.replyToMessageId).toBe("m1");
+    expect(result.cleanedContent).toBe("first thought\nactual answer");
+  });
+
   it("maps `replying to > Name` to that participant's most recent message", () => {
     const result = extractReplyQuote("replying to > Alice\nanswering you", [
       ctxMessage({ id: "m1", content: "first", displayName: "Alice", name: "Alice" }),

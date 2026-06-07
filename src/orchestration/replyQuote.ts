@@ -29,6 +29,8 @@ export function extractReplyQuote(
     cursor += 1;
   }
   if (quoteBodies.length === 0) {
+    const embedded = tryEmbeddedReplyQuote(lines, candidates);
+    if (embedded) return embedded;
     const implicit = tryImplicitQuote(content, candidates);
     if (implicit) return implicit;
     return { replyToMessageId: undefined, cleanedContent: content };
@@ -36,6 +38,32 @@ export function extractReplyQuote(
   const cleanedContent = lines.slice(cursor).join("\n").replace(/^\s+/, "");
   const replyToMessageId = resolveQuoteTarget(quoteBodies.join("\n"), candidates);
   return { replyToMessageId: replyToMessageId?.id, cleanedContent };
+}
+
+function tryEmbeddedReplyQuote(
+  lines: string[],
+  candidates: ContextMessage[]
+): ReplyQuoteExtraction | null {
+  const quoteIndex = lines.findIndex((line, index) =>
+    index > 0 && REPLYING_TO_QUOTE_LINE_RE.test(line)
+  );
+  if (quoteIndex < 0) return null;
+
+  const match = lines[quoteIndex].match(REPLYING_TO_QUOTE_LINE_RE);
+  if (!match) return null;
+
+  const before = trimBlankLines(lines.slice(0, quoteIndex)).join("\n");
+  const after = trimBlankLines(lines.slice(quoteIndex + 1)).join("\n");
+  const cleanedContent =
+    before && after && before.trim() === after.trim()
+      ? before
+      : [before, after].filter(Boolean).join("\n");
+  const replyToMessageId = resolveQuoteTarget(match[1], candidates);
+
+  return {
+    replyToMessageId: replyToMessageId?.id,
+    cleanedContent
+  };
 }
 
 function tryImplicitQuote(
@@ -178,4 +206,12 @@ function candidateMatchesAuthor(candidate: ContextMessage, authorName: string): 
   return [candidate.displayName, candidate.name]
     .map(normalizeForMatch)
     .some((candidateName) => candidateName === target);
+}
+
+function trimBlankLines(lines: string[]): string[] {
+  let start = 0;
+  let end = lines.length;
+  while (start < end && lines[start].trim() === "") start += 1;
+  while (end > start && lines[end - 1].trim() === "") end -= 1;
+  return lines.slice(start, end);
 }
