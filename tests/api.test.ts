@@ -177,6 +177,84 @@ describe("Backend API", () => {
     }
   });
 
+  it("loads legacy memories as non-permanent and preserves user-managed permanence", async () => {
+    const { app, root } = await makeApp();
+    const now = new Date().toISOString();
+    await writeFile(
+      path.join(root, "user", "memories.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        revision: 0,
+        updatedAt: now,
+        memories: [
+          {
+            id: "legacy-memory",
+            waifuId: "yuki",
+            scope: "guild",
+            guildId: "guild-1",
+            content: "Legacy memory.",
+            importance: 3,
+            createdAt: now,
+            updatedAt: now,
+            sourceMessageIds: [],
+            status: "active"
+          }
+        ]
+      }),
+      "utf8"
+    );
+
+    try {
+      const legacy = await app.inject({ method: "GET", url: "/api/memories" });
+      expect(legacy.statusCode).toBe(200);
+      expect(legacy.json().memories[0]).toMatchObject({
+        id: "legacy-memory",
+        permanent: false
+      });
+
+      const makePermanent = await app.inject({
+        method: "PUT",
+        url: "/api/memories/legacy-memory",
+        payload: {
+          revision: 0,
+          permanent: true
+        }
+      });
+      expect(makePermanent.statusCode).toBe(200);
+      expect(makePermanent.json().memories[0].permanent).toBe(true);
+
+      const editWithoutRetentionChange = await app.inject({
+        method: "PUT",
+        url: "/api/memories/legacy-memory",
+        payload: {
+          revision: 1,
+          content: "Edited permanent memory."
+        }
+      });
+      expect(editWithoutRetentionChange.statusCode).toBe(200);
+      expect(editWithoutRetentionChange.json().memories[0]).toMatchObject({
+        content: "Edited permanent memory.",
+        permanent: true
+      });
+
+      const createOrdinary = await app.inject({
+        method: "POST",
+        url: "/api/memories",
+        payload: {
+          revision: 2,
+          waifuId: "yuki",
+          guildId: "guild-1",
+          content: "Ordinary memory.",
+          importance: 2
+        }
+      });
+      expect(createOrdinary.statusCode).toBe(201);
+      expect(createOrdinary.json().memories.at(-1).permanent).toBe(false);
+    } finally {
+      await app.close();
+    }
+  });
+
   it("deletes waifus using a revision in the JSON body", async () => {
     const { app } = await makeApp();
     try {

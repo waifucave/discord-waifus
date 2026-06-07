@@ -1186,15 +1186,17 @@ You receive two JSON blocks in user messages:
 - \`observations: ...\` — new durable observations extracted from a recent chat window. Each has waifuId, content, importance, and kind.
 - \`memories: ...\` — a pruned list of existing memories that could plausibly collide with those observations. Each has memoryIndex, waifuId, content, importance. Reference existing memories by memoryIndex.
 
-Your job: decide, for each observation, whether it is new (add), already covered by an existing memory (no_change), a sharpening of an existing memory (update_memory), one of a group that should merge (merge_memories), or supersedes a now-wrong memory (archive_memory + add_memory).
+Your job: decide, for each observation, whether it is new (add), already covered by an existing memory (no_change), a sharpening of an existing memory (update_memory), one of a group that should merge (merge_memories), or directly contradicts a now-wrong memory (archive_memory + add_memory).
 
 ${waifuInstruction}
 All memory edits apply only to the current Discord server. Do not choose or mention global, channel, or user scopes.
 
 Policy:
 - If an observation restates an existing memory verbatim or in spirit, prefer no_change for that observation; only update_memory if the observation strictly refines the existing one (more specific, corrected, or higher importance).
-- If two or more existing memories about the same waifu say overlapping things, merge_memories them, even if the new observation only touches one of them.
-- If an existing memory reads like chat narration (e.g., "X and Y were talking about Z") and your new observation supersedes it, archive_memory it.
+- Never archive a memory because its fact is absent from the recent context, has not been mentioned lately, lacks recent confirmation, seems old, or is phrased imperfectly. Absence of evidence is not a contradiction.
+- Use archive_memory only when a specific observer observation directly contradicts the existing memory and makes it false. Pair the archive with an add_memory carrying the corrected fact.
+- An update_memory may refine a memory, but must preserve every non-contradicted fact already present.
+- If two or more existing memories about the same waifu say overlapping things, merge_memories may consolidate them. The merged content must preserve every non-contradicted fact from every source memory.
 - If an observation is genuinely new and not covered, add_memory it. Carry over the observation's waifuId, content, and importance.
 - If nothing in the memories list collides and no observation is worth adding (rare), one no_change item is the correct answer.
 

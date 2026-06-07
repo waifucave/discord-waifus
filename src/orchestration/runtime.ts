@@ -315,12 +315,13 @@ export class RuntimeOrchestrator {
       return;
     }
     if (!event.authorBot) {
-      void this.noteActiveChatParticipant(event.guildId, {
+      void this.noteActiveChatParticipant(event.guildId, event.channelId, {
         userId: event.authorId,
         displayName: event.authorDisplayName ?? event.authorId
       }).catch((error) => {
         this.options.logger.warn("Failed to update active chat participants", {
           guildId: event.guildId,
+          channelId: event.channelId,
           userId: event.authorId,
           message: error instanceof Error ? error.message : String(error)
         });
@@ -967,7 +968,7 @@ export class RuntimeOrchestrator {
         limit: server.contextWindows.orchestrator ?? orchestrator.contextWindow,
         signal
       });
-      await this.noteActiveChatParticipantsFromContext(guildId, messages);
+      await this.noteActiveChatParticipantsFromContext(guildId, channelId, messages);
       messages = await this.messagesForModel(messages, orchestrator.modelId, signal);
       this.options.logger.info("Fetched Discord context for orchestrator", {
         guildId,
@@ -1229,7 +1230,7 @@ export class RuntimeOrchestrator {
           limit: waifu.contextWindow || input.server.contextWindows.waifu,
           signal: input.signal
         });
-        await this.noteActiveChatParticipantsFromContext(input.guildId, waifuMessages);
+        await this.noteActiveChatParticipantsFromContext(input.guildId, input.channelId, waifuMessages);
         waifuMessages = await this.messagesForModel(waifuMessages, waifuModelId, input.signal);
         const waifuPipeline = await this.pipelineFor(waifu.modelId);
         this.options.logger.info("Generating waifu reply", {
@@ -1928,6 +1929,7 @@ export class RuntimeOrchestrator {
               guildId,
               content: call.memory.content,
               importance: call.memory.importance,
+              permanent: false,
               sourceMessageIds: [],
               createdAt: now,
               updatedAt: now,
@@ -1970,6 +1972,16 @@ export class RuntimeOrchestrator {
                 tool: call.tool,
                 affectedMemoryIds: [],
                 summary: "Skipped memory outside current guild",
+                createdAt: now
+              });
+              continue;
+            }
+            if (target.permanent) {
+              historyEntries.push({
+                id: randomUUID(),
+                tool: call.tool,
+                affectedMemoryIds: [],
+                summary: "Skipped user-managed permanent memory",
                 createdAt: now
               });
               continue;
@@ -2020,6 +2032,16 @@ export class RuntimeOrchestrator {
               });
               continue;
             }
+            if (target.permanent) {
+              historyEntries.push({
+                id: randomUUID(),
+                tool: call.tool,
+                affectedMemoryIds: [],
+                summary: "Skipped user-managed permanent memory",
+                createdAt: now
+              });
+              continue;
+            }
             memories = memories.map((memory) =>
               memory.id === memoryId && memory.guildId === guildId
                 ? { ...memory, status: "archived" as const, updatedAt: now }
@@ -2043,6 +2065,16 @@ export class RuntimeOrchestrator {
                 tool: call.tool,
                 affectedMemoryIds: [],
                 summary: "Skipped merge with unknown or duplicate memory indices",
+                createdAt: now
+              });
+              continue;
+            }
+            if (source.some((memory) => memory.permanent)) {
+              historyEntries.push({
+                id: randomUUID(),
+                tool: call.tool,
+                affectedMemoryIds: [],
+                summary: "Skipped merge containing a user-managed permanent memory",
                 createdAt: now
               });
               continue;
@@ -2071,6 +2103,7 @@ export class RuntimeOrchestrator {
                 guildId,
                 content: call.mergedContent,
                 importance: 3,
+                permanent: false,
                 sourceMessageIds: [...new Set(source.flatMap((memory) => memory.sourceMessageIds))],
                 createdAt: now,
                 updatedAt: now,
@@ -2433,13 +2466,15 @@ export class RuntimeOrchestrator {
 
   private async noteActiveChatParticipant(
     guildId: string,
+    channelId: string,
     participant: { userId: string; displayName: string }
   ): Promise<void> {
-    await this.noteActiveChatParticipants(guildId, [participant]);
+    await this.noteActiveChatParticipants(guildId, channelId, [participant]);
   }
 
   private async noteActiveChatParticipantsFromContext(
     guildId: string,
+    channelId: string,
     messages: ContextMessage[]
   ): Promise<void> {
     const participants = messages
@@ -2448,11 +2483,12 @@ export class RuntimeOrchestrator {
         userId: message.authorId,
         displayName: message.displayName
       }));
-    await this.noteActiveChatParticipants(guildId, participants);
+    await this.noteActiveChatParticipants(guildId, channelId, participants);
   }
 
   private async noteActiveChatParticipants(
     guildId: string,
+    channelId: string,
     participants: Array<{ userId: string; displayName: string }>
   ): Promise<void> {
     const validParticipants = participants
@@ -2467,10 +2503,10 @@ export class RuntimeOrchestrator {
     const lastSeenAt = new Date(now).toISOString();
     const expiresAt = new Date(now + RuntimeOrchestrator.ACTIVE_CHAT_PARTICIPANT_TTL_MS).toISOString();
     await this.options.storage.updateRevisionedJson({
-      resourceKey: activeChatParticipantsResourceKey(guildId),
-      relativePath: activeChatParticipantsRelativePath(guildId),
+      resourceKey: activeChatParticipantsResourceKey(guildId, channelId),
+      relativePath: activeChatParticipantsRelativePath(guildId, channelId),
       schema: ActiveChatParticipantsFileSchema,
-      fallback: emptyActiveChatParticipantsFile(guildId),
+      fallback: emptyActiveChatParticipantsFile(guildId, channelId),
       transform: (current) => {
         const byUserId = new Map<string, ActiveChatParticipant>();
         for (const entry of current.participants) {
@@ -2489,18 +2525,19 @@ export class RuntimeOrchestrator {
         return {
           ...current,
           guildId,
+          channelId,
           participants: sortActiveChatParticipants([...byUserId.values()])
         };
       }
     });
   }
 
-  private async readActiveChatParticipants(guildId: string): Promise<ActiveChatParticipant[]> {
+  private async readActiveChatParticipants(guildId: string, channelId: string): Promise<ActiveChatParticipant[]> {
     const now = Date.now();
     const current = await this.options.storage.readJson(
-      activeChatParticipantsRelativePath(guildId),
+      activeChatParticipantsRelativePath(guildId, channelId),
       ActiveChatParticipantsFileSchema,
-      emptyActiveChatParticipantsFile(guildId)
+      emptyActiveChatParticipantsFile(guildId, channelId)
     );
     return sortActiveChatParticipants(
       current.participants.filter((participant) => Date.parse(participant.expiresAt) > now)
@@ -2561,16 +2598,16 @@ export class RuntimeOrchestrator {
     guildId: string,
     waifu: WaifuConfig,
     availableWaifus: WaifuConfig[],
-    options?: {
-      channelId?: string;
+    options: {
+      channelId: string;
       sceneDirection?: string;
       pickNextWaifuToolOverride?: boolean;
       shortTermMemoryToolOverride?: boolean;
     }
   ): Promise<{ systemPrompt: string; midSystemBlock: string; trailingSystemBlock: string }> {
-    const pickNextWaifuToolActive = options?.pickNextWaifuToolOverride ?? false;
+    const pickNextWaifuToolActive = options.pickNextWaifuToolOverride ?? false;
     const shortTermMemoryToolActive =
-      options?.shortTermMemoryToolOverride ?? true;
+      options.shortTermMemoryToolOverride ?? true;
     const [store, emojis, shortTermStore, activeChatParticipants] = await Promise.all([
       this.readMemoryStore(),
       this.options.storage.readJson(
@@ -2579,12 +2616,12 @@ export class RuntimeOrchestrator {
         GuildEmojisFileSchema.parse(createEmptyRevisionedFile({ guildId, emojis: [] }))
       ),
       this.readShortTermMemoryStore(),
-      this.readActiveChatParticipants(guildId)
+      this.readActiveChatParticipants(guildId, options.channelId)
     ]);
     const longTermLines = store.memories
       .filter((memory) => memory.guildId === guildId && memory.waifuId === waifu.id && memory.status === "active")
       .map((memory) => `- ${memory.content}`);
-    const channelId = options?.channelId;
+    const channelId = options.channelId;
     const now = Date.now();
     const shortTermLines = channelId
       ? shortTermStore.entries
@@ -2618,11 +2655,15 @@ export class RuntimeOrchestrator {
       personalityContent,
       scheduleContent,
       toolUseInstructions,
-      activeParticipantDisplayNames: activeChatParticipants.map((participant) => participant.displayName),
+      activeParticipantDisplayNames: channelParticipantDisplayNames(
+        activeChatParticipants,
+        waifu,
+        availableWaifus
+      ),
       emojiList,
       memoryLines: [...longTermLines, ...shortTermLines],
       currentlyDoing: currentlyDoingForWaifu(waifu, new Date()),
-      sceneDirection: options?.sceneDirection?.trim() || undefined
+      sceneDirection: options.sceneDirection?.trim() || undefined
     };
 
     // The slot→string mapping is fixed; the composition of each slot is driven by the waifu's
@@ -3344,7 +3385,10 @@ function stageManagerMemories(
 } {
   const allowedWaifus = new Set(allowedWaifuIds);
   const allActive = memories.filter((memory) =>
-    memory.guildId === guildId && memory.status === "active" && allowedWaifus.has(memory.waifuId)
+    memory.guildId === guildId &&
+    memory.status === "active" &&
+    !memory.permanent &&
+    allowedWaifus.has(memory.waifuId)
   );
   const activeMemories = pruneMemoriesForObservations(allActive, options?.observations, options?.budget ?? STAGE_MANAGER_MEMORY_BUDGET);
   const memoryIdByIndex = new Map<number, string>();
@@ -3587,17 +3631,17 @@ function sessionRelativePath(guildId: string, channelId: string): string {
   return path.join("user", "servers", guildId, "sessions", `${channelId}.json`);
 }
 
-function activeChatParticipantsResourceKey(guildId: string): string {
-  return `active-chat-participants:${guildId}`;
+function activeChatParticipantsResourceKey(guildId: string, channelId: string): string {
+  return `active-chat-participants:${guildId}:${channelId}`;
 }
 
-function activeChatParticipantsRelativePath(guildId: string): string {
-  return path.join("user", "servers", guildId, "active-chat-participants.json");
+function activeChatParticipantsRelativePath(guildId: string, channelId: string): string {
+  return path.join("user", "servers", guildId, "active-chat-participants", `${channelId}.json`);
 }
 
-function emptyActiveChatParticipantsFile(guildId: string): ActiveChatParticipantsFile {
+function emptyActiveChatParticipantsFile(guildId: string, channelId: string): ActiveChatParticipantsFile {
   return ActiveChatParticipantsFileSchema.parse(
-    createEmptyRevisionedFile({ guildId, participants: [] })
+    createEmptyRevisionedFile({ guildId, channelId, participants: [] })
   );
 }
 
@@ -3640,6 +3684,29 @@ function waifuParticipantDisplayNames(
     addName(message.name);
   }
   return names;
+}
+
+function channelParticipantDisplayNames(
+  activeParticipants: ActiveChatParticipant[],
+  self: WaifuConfig,
+  availableWaifus: WaifuConfig[]
+): string[] {
+  const names = new Map<string, string>();
+  for (const name of [
+    self.displayName,
+    ...availableWaifus.map((waifu) => waifu.displayName),
+    ...activeParticipants.map((participant) => participant.displayName)
+  ]) {
+    const trimmed = name?.trim();
+    if (!trimmed) continue;
+    const key = trimmed.toLowerCase();
+    if (!names.has(key)) {
+      names.set(key, trimmed);
+    }
+  }
+  return [...names.values()].sort((a, b) =>
+    a.localeCompare(b, undefined, { sensitivity: "base" })
+  );
 }
 
 const SCENE_DIRECTION_PUNCTUATION_RE = /[.!?,;:\n\r\u2026\u2013\u2014]/u;

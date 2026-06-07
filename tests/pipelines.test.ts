@@ -684,6 +684,10 @@ describe("provider-native decision tools", () => {
     });
     const query = recentQueries().at(-1);
     expect(query?.role).toBe("stage_manager_librarian");
+    const instructions = query?.payload.instructions as string;
+    expect(instructions).toContain("Absence of evidence is not a contradiction.");
+    expect(instructions).toContain("only when a specific observer observation directly contradicts");
+    expect(instructions).toContain("preserve every non-contradicted fact from every source memory");
     expect((query?.payload.tools as Array<{ name: string }>)[0].name).toBe("manage_memories");
     expect(query?.payload.tool_choice).toEqual({ type: "function", name: "manage_memories" });
     const toolParameters = (query?.payload.tools as Array<{

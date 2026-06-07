@@ -1,4 +1,4 @@
-import { readFile, readdir } from "node:fs/promises";
+import { readFile, readdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { ensureDataLayout } from "../config/layout.js";
 import {
@@ -27,6 +27,10 @@ export async function runMigrations(dataRoot: string): Promise<MigrationResult> 
   if (sessionsRenamed > 0) {
     applied.push(`migrate-scheduled-retrigger-at-${sessionsRenamed}`);
   }
+  const participantCachesRemoved = await removeGuildWideActiveParticipantCaches(dataRoot);
+  if (participantCachesRemoved > 0) {
+    applied.push(`remove-guild-wide-active-participants-${participantCachesRemoved}`);
+  }
   if (await migrateLegacyMemories(dataRoot)) {
     applied.push("migrate-memories-to-guild-scope");
   }
@@ -39,6 +43,29 @@ export async function runMigrations(dataRoot: string): Promise<MigrationResult> 
   }
 
   return { applied };
+}
+
+async function removeGuildWideActiveParticipantCaches(dataRoot: string): Promise<number> {
+  const serversRoot = path.join(dataRoot, "user", "servers");
+  let guilds: string[];
+  try {
+    guilds = await readdir(serversRoot);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0;
+    throw error;
+  }
+
+  let count = 0;
+  for (const guildId of guilds) {
+    const filePath = path.join(serversRoot, guildId, "active-chat-participants.json");
+    try {
+      await rm(filePath);
+      count += 1;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
+  return count;
 }
 
 async function readJsonOrUndefined(filePath: string): Promise<unknown | undefined> {

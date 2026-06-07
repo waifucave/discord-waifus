@@ -338,6 +338,7 @@ export type ActiveChatParticipant = z.infer<typeof ActiveChatParticipantSchema>;
 
 export const ActiveChatParticipantsFileSchema = RevisionedRecordSchema.extend({
   guildId: z.string().min(1),
+  channelId: z.string().min(1),
   participants: z.array(ActiveChatParticipantSchema)
 });
 export type ActiveChatParticipantsFile = z.infer<typeof ActiveChatParticipantsFileSchema>;
@@ -389,6 +390,7 @@ export const WaifuMemorySchema = z
       z.literal(4),
       z.literal(5)
     ]),
+    permanent: z.boolean().default(false),
     createdAt: IsoDateStringSchema,
     updatedAt: IsoDateStringSchema,
     sourceMessageIds: z.array(z.string()),

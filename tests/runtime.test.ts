@@ -1253,9 +1253,10 @@ describe("RuntimeOrchestrator", () => {
       authorBot: false
     });
 
-    const first = await waitForActiveParticipants(storage, (file) =>
+    const first = await waitForActiveParticipants(storage, "channel-1", (file) =>
       file.participants.some((participant) => participant.displayName === "Kevin")
     );
+    expect(first).toMatchObject({ guildId: "guild-1", channelId: "channel-1" });
     expect(first.participants).toHaveLength(1);
     expect(first.participants[0]).toMatchObject({ userId: "u1", displayName: "Kevin" });
     const firstLastSeen = Date.parse(first.participants[0].lastSeenAt);
@@ -1272,12 +1273,59 @@ describe("RuntimeOrchestrator", () => {
       authorBot: false
     });
 
-    const refreshed = await waitForActiveParticipants(storage, (file) =>
+    const refreshed = await waitForActiveParticipants(storage, "channel-1", (file) =>
       file.participants.some((participant) => participant.displayName === "Kevin Prime")
     );
     expect(refreshed.participants).toHaveLength(1);
     expect(refreshed.participants[0]).toMatchObject({ userId: "u1", displayName: "Kevin Prime" });
     expect(Date.parse(refreshed.participants[0].expiresAt)).toBeGreaterThan(firstExpires);
+  });
+
+  it("keeps active human participants isolated by channel", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      isPaused: () => true,
+      createPipeline: () => {
+        throw new Error("pipeline should not be created while paused");
+      },
+      logger: quietLogger()
+    });
+
+    await runtime.handleDiscordMessage({
+      guildId: "guild-1",
+      channelId: "channel-1",
+      messageId: "channel-1-human",
+      authorId: "u1",
+      authorDisplayName: "Kevin",
+      authorBot: false
+    });
+    await runtime.handleDiscordMessage({
+      guildId: "guild-1",
+      channelId: "channel-2",
+      messageId: "channel-2-human",
+      authorId: "u1",
+      authorDisplayName: "Kevin Lounge",
+      authorBot: false
+    });
+
+    const channelOne = await waitForActiveParticipants(storage, "channel-1", (file) =>
+      file.participants.some((participant) => participant.displayName === "Kevin")
+    );
+    const channelTwo = await waitForActiveParticipants(storage, "channel-2", (file) =>
+      file.participants.some((participant) => participant.displayName === "Kevin Lounge")
+    );
+
+    expect(channelOne.participants.map((participant) => participant.displayName)).toEqual(["Kevin"]);
+    expect(channelTwo.participants.map((participant) => participant.displayName)).toEqual(["Kevin Lounge"]);
+    expect(channelOne.participants[0].userId).toBe("u1");
+    expect(channelTwo.participants[0].userId).toBe("u1");
   });
 
   it("does not add bot authors to active chat participants", async () => {
@@ -1308,10 +1356,10 @@ describe("RuntimeOrchestrator", () => {
     });
 
     const participants = await storage.readJson(
-      "user/servers/guild-1/active-chat-participants.json",
+      "user/servers/guild-1/active-chat-participants/channel-1.json",
       ActiveChatParticipantsFileSchema,
       ActiveChatParticipantsFileSchema.parse(
-        createEmptyRevisionedFile({ guildId: "guild-1", participants: [] })
+        createEmptyRevisionedFile({ guildId: "guild-1", channelId: "channel-1", participants: [] })
       )
     );
     expect(participants.participants).toEqual([]);
@@ -1325,13 +1373,16 @@ describe("RuntimeOrchestrator", () => {
     const discord = new FakeDiscord();
 
     await seedRuntimeConfig(storage);
+    await seedWaifu(storage, "mika", "Mika", "mika-bot", "direct");
+    await enableWaifus(storage, ["yuki", "mika"]);
     await storage.writeJson(
-      "active-chat-participants:guild-1",
-      "user/servers/guild-1/active-chat-participants.json",
+      "active-chat-participants:guild-1:channel-1",
+      "user/servers/guild-1/active-chat-participants/channel-1.json",
       ActiveChatParticipantsFileSchema,
       ActiveChatParticipantsFileSchema.parse(
         createEmptyRevisionedFile({
           guildId: "guild-1",
+          channelId: "channel-1",
           participants: [
             {
               userId: "old",
@@ -1342,6 +1393,31 @@ describe("RuntimeOrchestrator", () => {
             {
               userId: "active",
               displayName: "Mira",
+              lastSeenAt: new Date(Date.now()).toISOString(),
+              expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString()
+            },
+            {
+              userId: "same-name-as-waifu",
+              displayName: "yuki",
+              lastSeenAt: new Date(Date.now()).toISOString(),
+              expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString()
+            }
+          ]
+        })
+      )
+    );
+    await storage.writeJson(
+      "active-chat-participants:guild-1:channel-2",
+      "user/servers/guild-1/active-chat-participants/channel-2.json",
+      ActiveChatParticipantsFileSchema,
+      ActiveChatParticipantsFileSchema.parse(
+        createEmptyRevisionedFile({
+          guildId: "guild-1",
+          channelId: "channel-2",
+          participants: [
+            {
+              userId: "other-channel",
+              displayName: "Other Channel User",
               lastSeenAt: new Date(Date.now()).toISOString(),
               expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString()
             }
@@ -1362,9 +1438,10 @@ describe("RuntimeOrchestrator", () => {
       async generateWaifu(request: WaifuGenerationRequest) {
         checked = true;
         expect(request.midSystemBlock).toMatch(
-          /<active_chat_participants>[\s\S]*- Kevin[\s\S]*- Mira[\s\S]*<\/active_chat_participants>/
+          /<active_chat_participants>\n- Kevin\n- Mika\n- Mira\n- Yuki\n<\/active_chat_participants>/
         );
         expect(request.midSystemBlock).not.toContain("Old User");
+        expect(request.midSystemBlock).not.toContain("Other Channel User");
         return { content: "ok" };
       }
     };
@@ -1880,6 +1957,7 @@ describe("RuntimeOrchestrator", () => {
     expect(memories.memories[0]).toMatchObject({
       scope: "guild",
       guildId: "guild-1",
+      permanent: false,
       sourceMessageIds: []
     });
     expect(discord.sent).toEqual([]);
@@ -2118,6 +2196,117 @@ describe("RuntimeOrchestrator", () => {
     });
   });
 
+  it("rejects stale stage-manager edits after memories become permanent", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    const now = new Date().toISOString();
+    const fallback = MemoryStoreSchema.parse(createEmptyRevisionedFile({ memories: [] }));
+
+    await seedRuntimeConfig(storage);
+    await storage.writeJson(
+      "memories:global",
+      "user/memories.json",
+      MemoryStoreSchema,
+      MemoryStoreSchema.parse(
+        createEmptyRevisionedFile({
+          memories: [
+            {
+              id: "first",
+              waifuId: "yuki",
+              scope: "guild",
+              guildId: "guild-1",
+              content: "Kevin likes tea.",
+              importance: 3,
+              createdAt: now,
+              updatedAt: now,
+              sourceMessageIds: [],
+              status: "active"
+            },
+            {
+              id: "second",
+              waifuId: "yuki",
+              scope: "guild",
+              guildId: "guild-1",
+              content: "Kevin likes green tea.",
+              importance: 4,
+              createdAt: now,
+              updatedAt: now,
+              sourceMessageIds: [],
+              status: "active"
+            }
+          ]
+        })
+      )
+    );
+
+    const pipeline: ModelPipeline = {
+      async generateWaifu() {
+        return { content: "unused" };
+      },
+      async decideStageManagerObservations() {
+        return [
+          { waifuId: "yuki", content: "Kevin likes tea.", importance: 3, kind: "preference" as const }
+        ];
+      },
+      async decideStageManager(request: StageManagerRequest) {
+        expect(request.memories).toHaveLength(2);
+        await storage.updateRevisionedJson({
+          resourceKey: "memories:global",
+          relativePath: "user/memories.json",
+          schema: MemoryStoreSchema,
+          fallback,
+          transform: (current) => ({
+            ...current,
+            memories: current.memories.map((memory) => ({
+              ...memory,
+              permanent: true
+            }))
+          })
+        });
+        return [
+          { tool: "update_memory", memoryIndex: 1, patch: { content: "Changed." } },
+          { tool: "archive_memory", memoryIndex: 2 },
+          {
+            tool: "merge_memories",
+            sourceMemoryIndices: [1, 2],
+            mergedContent: "Merged."
+          }
+        ];
+      }
+    };
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    const result = await runtime.triggerStageManager("guild-1", "channel-1");
+
+    expect(result.status).toBe("no_change");
+    const memories = await storage.readJson("user/memories.json", MemoryStoreSchema);
+    expect(memories.memories).toHaveLength(2);
+    expect(memories.memories).toEqual([
+      expect.objectContaining({
+        id: "first",
+        content: "Kevin likes tea.",
+        permanent: true,
+        status: "active"
+      }),
+      expect.objectContaining({
+        id: "second",
+        content: "Kevin likes green tea.",
+        permanent: true,
+        status: "active"
+      })
+    ]);
+  });
+
   it("merges stage-manager memories by memory index", async () => {
     const root = await makeTempRoot();
     roots.push(root);
@@ -2294,6 +2483,19 @@ describe("RuntimeOrchestrator", () => {
               guildId: "guild-1",
               content: "Kevin enjoys tea most mornings.",
               importance: 3,
+              createdAt: now,
+              updatedAt: now,
+              sourceMessageIds: [],
+              status: "active"
+            },
+            {
+              id: "yuki-permanent-tea",
+              waifuId: "yuki",
+              scope: "guild",
+              guildId: "guild-1",
+              content: "Kevin permanently prefers ceremonial green tea.",
+              importance: 5,
+              permanent: true,
               createdAt: now,
               updatedAt: now,
               sourceMessageIds: [],
@@ -3376,6 +3578,19 @@ describe("RuntimeOrchestrator", () => {
               status: "active"
             },
             {
+              id: "current-permanent",
+              waifuId: "yuki",
+              scope: "guild",
+              guildId: "guild-1",
+              content: "Yuki always remembers Kevin is allergic to peanuts.",
+              importance: 5,
+              permanent: true,
+              createdAt,
+              updatedAt: createdAt,
+              sourceMessageIds: [],
+              status: "active"
+            },
+            {
               id: "archived-current",
               waifuId: "yuki",
               scope: "guild",
@@ -3486,6 +3701,7 @@ describe("RuntimeOrchestrator", () => {
     expect(printed).toContain("## Memories (Yuki)");
     expect(printed).toContain("<yuki_relevant_memories>");
     expect(printed).toContain("- Yuki knows Kevin likes green tea.");
+    expect(printed).toContain("- Yuki always remembers Kevin is allergic to peanuts.");
     expect(printed).toContain("- Kevin is leaving at 5pm.");
     expect(printed).not.toContain("Archived current guild memory.");
     expect(printed).not.toContain("Other guild memory.");
@@ -6348,14 +6564,15 @@ async function waitFor(predicate: () => boolean, label: string): Promise<void> {
 
 async function waitForActiveParticipants(
   storage: StorageService,
+  channelId: string,
   predicate: (file: { participants: Array<{ displayName: string }> }) => boolean
 ) {
   const fallback = ActiveChatParticipantsFileSchema.parse(
-    createEmptyRevisionedFile({ guildId: "guild-1", participants: [] })
+    createEmptyRevisionedFile({ guildId: "guild-1", channelId, participants: [] })
   );
   for (let attempt = 0; attempt < 50; attempt += 1) {
     const file = await storage.readJson(
-      "user/servers/guild-1/active-chat-participants.json",
+      `user/servers/guild-1/active-chat-participants/${channelId}.json`,
       ActiveChatParticipantsFileSchema,
       fallback
     );

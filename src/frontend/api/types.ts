@@ -440,6 +440,7 @@ export type WaifuMemory = {
   guildId?: string;
   content: string;
   importance: MemoryImportance;
+  permanent: boolean;
   createdAt: string;
   updatedAt: string;
   sourceMessageIds: string[];
@@ -457,6 +458,7 @@ export type CreateMemoryBody = {
   scope?: MemoryScope;
   content: string;
   importance: MemoryImportance;
+  permanent?: boolean;
   sourceMessageIds?: string[];
 };
 

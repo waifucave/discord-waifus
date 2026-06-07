@@ -21,6 +21,7 @@ import { timeAgo } from "../utils/format";
 
 const STATUSES: MemoryStatus[] = ["active", "archived"];
 const IMPORTANCES: MemoryImportance[] = [1, 2, 3, 4, 5];
+const IMPORTANCES_DESC: MemoryImportance[] = [...IMPORTANCES].reverse();
 
 type TypeFilter = "" | "long-term" | "short-term";
 
@@ -68,7 +69,12 @@ export function MemoriesView() {
       if (row.kind === "long-term") {
         if (filterGuild && row.data.guildId !== filterGuild) return false;
         if (filterStatus && row.data.status !== filterStatus) return false;
-        if (filterImportance && String(row.data.importance) !== filterImportance) return false;
+        if (filterImportance === "permanent" && !row.data.permanent) return false;
+        if (
+          filterImportance &&
+          filterImportance !== "permanent" &&
+          (row.data.permanent || String(row.data.importance) !== filterImportance)
+        ) return false;
       } else {
         if (filterGuild && row.data.guildId !== filterGuild) return false;
         // Short-term entries are always live (expired ones already pruned by the backend);
@@ -86,7 +92,7 @@ export function MemoriesView() {
         <div>
           <h2 className="view-title">Memories</h2>
           <p className="view-subtitle">
-            Per-waifu guild memory store. Shared with the stage manager; writes use the same revision lock.
+            Per-waifu guild memory store. Permanent memories are user-managed and hidden from the stage manager.
           </p>
         </div>
         <div className="view-actions">
@@ -172,7 +178,8 @@ export function MemoriesView() {
         </select>
         <select className="select" value={filterImportance} onChange={(e) => setFilterImportance(e.target.value)} style={{ maxWidth: 140 }}>
           <option value="">Any importance</option>
-          {IMPORTANCES.map((i) => (
+          <option value="permanent">∞ Permanent</option>
+          {IMPORTANCES_DESC.map((i) => (
             <option key={i} value={String(i)}>
               ★ {i}
             </option>
@@ -314,7 +321,7 @@ function LongTermRow({
       <td>
         <Pill>{serverLabel(servers, memory.guildId)}</Pill>
       </td>
-      <td>★ {memory.importance}</td>
+      <td>{memory.permanent ? "∞ Permanent" : `★ ${memory.importance}`}</td>
       <td>
         {memory.status === "active" ? (
           <Pill tone="ok" dot>active</Pill>
@@ -460,6 +467,7 @@ function MemoryEditor({
   const [guildId, setGuildId] = useState(memory?.guildId ?? servers[0]?.guildId ?? "");
   const [content, setContent] = useState(memory?.content ?? "");
   const [importance, setImportance] = useState<MemoryImportance>(memory?.importance ?? 3);
+  const [permanent, setPermanent] = useState(memory?.permanent ?? false);
   const [status, setStatus] = useState<MemoryStatus>(memory?.status ?? "active");
   const [sources, setSources] = useState((memory?.sourceMessageIds ?? []).join("\n"));
   const [busy, setBusy] = useState(false);
@@ -484,6 +492,7 @@ function MemoryEditor({
           guildId,
           content: content.trim(),
           importance,
+          permanent,
           sourceMessageIds
         });
         onSaved(next, undefined);
@@ -494,6 +503,7 @@ function MemoryEditor({
           guildId,
           content: content.trim(),
           importance,
+          permanent,
           sourceMessageIds,
           status
         });
@@ -549,18 +559,32 @@ function MemoryEditor({
           </select>
         </div>
         <div className="field">
-          <label className="field-label">Importance</label>
+          <label className="field-label">Importance / retention</label>
           <select
             className="select"
-            value={String(importance)}
-            onChange={(e) => setImportance(Number(e.target.value) as MemoryImportance)}
+            value={permanent ? "permanent" : String(importance)}
+            onChange={(e) => {
+              if (e.target.value === "permanent") {
+                setPermanent(true);
+                if (!memory?.permanent) {
+                  setImportance(5);
+                }
+                return;
+              }
+              setPermanent(false);
+              setImportance(Number(e.target.value) as MemoryImportance);
+            }}
           >
-            {IMPORTANCES.map((i) => (
+            <option value="permanent">∞ Permanent</option>
+            {IMPORTANCES_DESC.map((i) => (
               <option key={i} value={String(i)}>
                 ★ {i}
               </option>
             ))}
           </select>
+          <span className="field-hint">
+            Active permanent memories stay in the waifu prompt and can only be managed from this dashboard.
+          </span>
         </div>
         {mode === "edit" && (
           <div className="field">

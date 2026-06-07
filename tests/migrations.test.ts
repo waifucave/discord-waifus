@@ -347,6 +347,33 @@ describe("runMigrations", () => {
     expect(store.memories.find((memory) => memory.id === "valid")).toMatchObject({ status: "active" });
     expect(store.memories.find((memory) => memory.id === "invalid-user")).toMatchObject({ status: "archived" });
   });
+
+  it("removes legacy guild-wide active participant caches", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    const legacyPath = "user/servers/guild-1/active-chat-participants.json";
+    await writeJson(root, legacyPath, {
+      schemaVersion: 1,
+      revision: 2,
+      updatedAt: "2026-06-07T12:00:00.000Z",
+      guildId: "guild-1",
+      participants: [
+        {
+          userId: "u1",
+          displayName: "Kevin",
+          lastSeenAt: "2026-06-07T12:00:00.000Z",
+          expiresAt: "2026-06-14T12:00:00.000Z"
+        }
+      ]
+    });
+
+    const first = await runMigrations(root);
+    expect(first.applied).toContain("remove-guild-wide-active-participants-1");
+    await expect(readFile(path.join(root, legacyPath), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+
+    const second = await runMigrations(root);
+    expect(second.applied).not.toContain("remove-guild-wide-active-participants-1");
+  });
 });
 
 async function writeJson(root: string, relativePath: string, value: unknown): Promise<void> {

@@ -110,11 +110,13 @@ const CreateMemoryBodySchema = z.object({
     z.literal(4),
     z.literal(5)
   ]),
+  permanent: z.boolean().default(false),
   sourceMessageIds: z.array(z.string()).default([])
 });
 
 const UpdateMemoryBodySchema = CreateMemoryBodySchema.partial().extend({
   revision: z.number().int().nonnegative().optional(),
+  permanent: z.boolean().optional(),
   status: z.enum(["active", "archived"]).optional()
 });
 
@@ -508,6 +510,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
             guildId: body.guildId,
             content: body.content,
             importance: body.importance,
+            permanent: body.permanent,
             createdAt: now,
             updatedAt: now,
             sourceMessageIds: body.sourceMessageIds,
