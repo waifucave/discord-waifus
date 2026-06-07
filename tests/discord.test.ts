@@ -340,6 +340,47 @@ describe("DiscordJsGateway message deletion", () => {
   });
 });
 
+describe("DiscordJsGateway channel metadata", () => {
+  it("fetches guild and channel names for a newly detected channel", async () => {
+    const guildFetches: string[] = [];
+    const channelFetches: string[] = [];
+    const gateway = new DiscordJsGateway({
+      orchestrator: {
+        id: "orchestrator",
+        displayName: "Orchestrator",
+        token: "token"
+      },
+      logger: quietLogger()
+    });
+    const clients = (gateway as unknown as { clients: Map<string, unknown> }).clients;
+    clients.set("orchestrator", {
+      guilds: {
+        async fetch(guildId: string) {
+          guildFetches.push(guildId);
+          return { id: guildId, name: "我的服务器" };
+        }
+      },
+      channels: {
+        async fetch(channelId: string) {
+          channelFetches.push(channelId);
+          return { id: channelId, guildId: "guild-1", name: "聊天频道" };
+        }
+      }
+    });
+
+    await expect(
+      gateway.fetchChannelMetadata({ guildId: "guild-1", channelId: "channel-1" })
+    ).resolves.toEqual({
+      guildId: "guild-1",
+      guildName: "我的服务器",
+      channelId: "channel-1",
+      channelName: "聊天频道"
+    });
+    expect(guildFetches).toEqual(["guild-1"]);
+    expect(channelFetches).toEqual(["channel-1"]);
+  });
+});
+
 describe("DiscordJsGateway runtime issues", () => {
   it("reports Discord client error events without leaving them unhandled", async () => {
     const issues: DiscordRuntimeIssue[] = [];

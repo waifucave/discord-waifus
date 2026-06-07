@@ -2838,22 +2838,50 @@ export class RuntimeOrchestrator {
     if (server.channels[channelId]) {
       return server;
     }
+    let metadata:
+      | {
+          guildName?: string;
+          channelName?: string;
+        }
+      | undefined;
+    try {
+      metadata = await this.options.discord.fetchChannelMetadata?.({
+        guildId: server.guildId,
+        channelId
+      });
+    } catch (error) {
+      this.options.logger.warn("Failed to fetch Discord names for newly detected channel", {
+        guildId: server.guildId,
+        channelId,
+        message: error instanceof Error ? error.message : String(error)
+      });
+    }
     return this.options.storage.updateRevisionedJson({
       resourceKey: `server:${server.guildId}`,
       relativePath: path.join("user", "servers", server.guildId, "server.json"),
       schema: ServerConfigSchema,
       fallback: server,
-      transform: (current) => ({
-        ...current,
-        channels: {
-          ...current.channels,
-          [channelId]: {
-            channelId,
-            enabled: false,
-            enabledWaifuIds: []
+      transform: (current) => {
+        const currentChannel = current.channels[channelId];
+        return {
+          ...current,
+          name: metadata?.guildName ?? current.name,
+          channels: {
+            ...current.channels,
+            [channelId]: currentChannel
+              ? {
+                  ...currentChannel,
+                  name: currentChannel.name ?? metadata?.channelName
+                }
+              : {
+                  channelId,
+                  name: metadata?.channelName,
+                  enabled: false,
+                  enabledWaifuIds: []
+                }
           }
-        }
-      })
+        };
+      }
     });
   }
 
@@ -3328,20 +3356,55 @@ export class RuntimeOrchestrator {
   private async syncGuilds(): Promise<void> {
     const guilds = await this.options.discord.listGuilds?.();
     for (const guild of guilds ?? []) {
+      const relativePath = path.join("user", "servers", guild.guildId, "server.json");
+      const fallback = ServerConfigSchema.parse({
+        ...createRevisionedBase(),
+        guildId: guild.guildId,
+        name: guild.name,
+        enabled: true
+      });
+      const existing = await this.options.storage.readJson(relativePath, ServerConfigSchema, fallback);
+      const channelNames = new Map<string, string>();
+      if (this.options.discord.fetchChannelMetadata) {
+        for (const channelId of Object.keys(existing.channels)) {
+          try {
+            const metadata = await this.options.discord.fetchChannelMetadata({
+              guildId: guild.guildId,
+              channelId
+            });
+            if (metadata.channelName) {
+              channelNames.set(channelId, metadata.channelName);
+            }
+          } catch (error) {
+            this.options.logger.warn("Failed to refresh Discord channel name during startup", {
+              guildId: guild.guildId,
+              channelId,
+              message: error instanceof Error ? error.message : String(error)
+            });
+          }
+        }
+      }
       await this.options.storage.updateRevisionedJson({
         resourceKey: `server:${guild.guildId}`,
-        relativePath: path.join("user", "servers", guild.guildId, "server.json"),
+        relativePath,
         schema: ServerConfigSchema,
-        fallback: ServerConfigSchema.parse({
-          ...createRevisionedBase(),
-          guildId: guild.guildId,
-          name: guild.name,
-          enabled: true
-        }),
-        transform: (current) => ({
-          ...current,
-          name: current.name ?? guild.name
-        })
+        fallback,
+        transform: (current) => {
+          const channels = Object.fromEntries(
+            Object.entries(current.channels).map(([channelId, channel]) => [
+              channelId,
+              {
+                ...channel,
+                name: channelNames.get(channelId) ?? channel.name
+              }
+            ])
+          );
+          return {
+            ...current,
+            name: guild.name,
+            channels
+          };
+        }
       });
     }
   }

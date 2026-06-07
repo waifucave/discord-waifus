@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -11,6 +11,7 @@ import { spawnSync } from "node:child_process";
 const repo = "HeavenllyDemon/Discord-Waifus";
 const rootPackage = "@starlight-ai/discord-waifus";
 const npmCache = "/tmp/codex-npm-cache";
+const releaseArtifactsDir = "release-artifacts";
 
 const args = parseArgs(process.argv.slice(2));
 
@@ -66,7 +67,7 @@ async function main() {
   }
 
   bumpVersions(version);
-  validateAndPack(version);
+  const tarball = validateAndPack(version);
 
   await confirmOrExit(
     `Validation passed. Push main, create ${tag}, and publish npm packages?`,
@@ -94,7 +95,6 @@ async function main() {
     throw new Error(`Push verification failed; origin/main is ${pushedSha}, expected ${releaseSha}.`);
   }
 
-  const tarball = `starlight-ai-discord-waifus-${version}.tgz`;
   run("gh", [
     "release",
     "create",
@@ -263,7 +263,13 @@ function validateAndPack(version) {
   run("npm", ["run", "typecheck"]);
   run("npm", ["test"]);
   run("npm", ["run", "build"]);
-  run("npm", ["pack"], { npmCache: true });
+  mkdirSync(releaseArtifactsDir, { recursive: true });
+  run("npm", ["pack", "--pack-destination", releaseArtifactsDir], { npmCache: true });
+
+  const tarball = resolve(
+    releaseArtifactsDir,
+    `starlight-ai-discord-waifus-${version}.tgz`
+  );
 
   const prefix = mkdtempSync(join(tmpdir(), `waifus-smoke-${version}.`));
   run("npm", [
@@ -272,9 +278,10 @@ function validateAndPack(version) {
     prefix,
     "--omit=optional",
     "-g",
-    resolve(`starlight-ai-discord-waifus-${version}.tgz`),
+    tarball,
   ], { npmCache: true });
   run(join(prefix, "bin/waifus"), ["help"]);
+  return tarball;
 }
 
 function verifyRegistry(version) {

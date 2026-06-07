@@ -85,6 +85,12 @@ class FakeDiscord implements DiscordGatewayFacade {
   };
   debugMessages: Array<{ channelId: string; content: string }> = [];
   debugChannelInfo = new Map<string, { channelId: string; guildId?: string; name?: string }>();
+  guilds: Array<{ guildId: string; name: string }> = [];
+  channelMetadata = new Map<
+    string,
+    { guildId: string; guildName?: string; channelId: string; channelName?: string }
+  >();
+  channelMetadataCalls: Array<{ guildId: string; channelId: string }> = [];
   reviewListeners = new Set<DiscordReviewCommandListener>();
   clearListeners = new Set<DiscordClearCommandListener>();
   runListeners = new Set<DiscordRunCommandListener>();
@@ -105,6 +111,10 @@ class FakeDiscord implements DiscordGatewayFacade {
   }
 
   async disconnect(): Promise<void> {}
+
+  async listGuilds() {
+    return this.guilds;
+  }
 
   onReviewCommand(listener: DiscordReviewCommandListener): () => void {
     this.reviewListeners.add(listener);
@@ -291,6 +301,16 @@ class FakeDiscord implements DiscordGatewayFacade {
 
   async validateDebugChannel(input: { channelId: string }) {
     return this.debugChannelInfo.get(input.channelId) ?? { channelId: input.channelId };
+  }
+
+  async fetchChannelMetadata(input: { guildId: string; channelId: string }) {
+    this.channelMetadataCalls.push(input);
+    return (
+      this.channelMetadata.get(`${input.guildId}:${input.channelId}`) ?? {
+        guildId: input.guildId,
+        channelId: input.channelId
+      }
+    );
   }
 
   async sendDebugMessage(input: { channelId: string; content: string }): Promise<{ messageId: string }> {
@@ -2844,6 +2864,130 @@ describe("RuntimeOrchestrator", () => {
     await runtime.pause();
     await new Promise((resolve) => setTimeout(resolve, 120));
     expect(stageCalls).toBe(0);
+  });
+
+  it("fetches and stores Discord names when a new channel is detected", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    await storage.writeJson(
+      "server:guild-1",
+      "user/servers/guild-1/server.json",
+      ServerConfigSchema,
+      ServerConfigSchema.parse({
+        ...createRevisionedBase(),
+        guildId: "guild-1",
+        name: "Stale server name",
+        enabled: true
+      })
+    );
+    discord.channelMetadata.set("guild-1:channel-1", {
+      guildId: "guild-1",
+      guildName: "我的服务器",
+      channelId: "channel-1",
+      channelName: "聊天频道"
+    });
+
+    const runtime = new RuntimeOrchestrator({
+      storage,
+      discord,
+      createPipeline: () => new FakePipeline(),
+      logger: quietLogger()
+    });
+
+    const event = {
+      guildId: "guild-1",
+      channelId: "channel-1",
+      messageId: "message-1",
+      authorId: "external-bot",
+      authorBot: true
+    };
+    await runtime.handleDiscordMessage(event);
+    await runtime.handleDiscordMessage({ ...event, messageId: "message-2" });
+
+    const server = await storage.readJson(
+      "user/servers/guild-1/server.json",
+      ServerConfigSchema
+    );
+    expect(discord.channelMetadataCalls).toEqual([
+      { guildId: "guild-1", channelId: "channel-1" }
+    ]);
+    expect(server.name).toBe("我的服务器");
+    expect(server.channels["channel-1"]).toMatchObject({
+      channelId: "channel-1",
+      name: "聊天频道",
+      enabled: false,
+      enabledWaifuIds: []
+    });
+  });
+
+  it("refreshes existing server and channel names from Discord during startup", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.guilds = [{ guildId: "guild-1", name: "我的服务器" }];
+    discord.channelMetadata.set("guild-1:channel-1", {
+      guildId: "guild-1",
+      guildName: "我的服务器",
+      channelId: "channel-1",
+      channelName: "聊天频道"
+    });
+    discord.channelMetadata.set("guild-1:channel-2", {
+      guildId: "guild-1",
+      guildName: "我的服务器",
+      channelId: "channel-2",
+      channelName: "公告"
+    });
+    await storage.writeJson(
+      "server:guild-1",
+      "user/servers/guild-1/server.json",
+      ServerConfigSchema,
+      ServerConfigSchema.parse({
+        ...createRevisionedBase(),
+        guildId: "guild-1",
+        name: "guild-1",
+        enabled: true,
+        channels: {
+          "channel-1": {
+            channelId: "channel-1",
+            enabled: false,
+            enabledWaifuIds: []
+          },
+          "channel-2": {
+            channelId: "channel-2",
+            name: "channel-2",
+            enabled: true,
+            enabledWaifuIds: ["yuki"]
+          }
+        }
+      })
+    );
+
+    const runtime = new RuntimeOrchestrator({
+      storage,
+      discord,
+      createPipeline: () => new FakePipeline(),
+      logger: quietLogger()
+    });
+    await runtime.start();
+    await runtime.stop();
+
+    const server = await storage.readJson(
+      "user/servers/guild-1/server.json",
+      ServerConfigSchema
+    );
+    expect(discord.channelMetadataCalls).toEqual([
+      { guildId: "guild-1", channelId: "channel-1" },
+      { guildId: "guild-1", channelId: "channel-2" }
+    ]);
+    expect(server.name).toBe("我的服务器");
+    expect(server.channels["channel-1"]?.name).toBe("聊天频道");
+    expect(server.channels["channel-2"]?.name).toBe("公告");
+    expect(server.channels["channel-2"]?.enabledWaifuIds).toEqual(["yuki"]);
   });
 
   it("responds to /memories ephemerally without sending a public channel message", async () => {

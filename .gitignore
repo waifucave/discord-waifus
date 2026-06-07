@@ -6,6 +6,7 @@ coverage/
 .claude/
 .playwright-cli/
 *.tgz
+release-artifacts/
 *.log
 .DS_Store
 docs/old_tool_schema.json

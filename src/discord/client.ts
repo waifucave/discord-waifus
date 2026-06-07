@@ -57,6 +57,10 @@ export interface DiscordGatewayFacade {
   onPrintWaifuAutocomplete?(listener: DiscordPrintWaifuAutocompleteListener): () => void;
   onDebugCommand?(listener: DiscordDebugCommandListener): () => void;
   listGuilds?(): Promise<Array<{ guildId: string; name: string }>>;
+  fetchChannelMetadata?(input: {
+    guildId: string;
+    channelId: string;
+  }): Promise<DiscordChannelMetadata>;
   fetchFreshContext(input: {
     guildId: string;
     channelId: string;
@@ -184,6 +188,13 @@ export type DiscordDebugChannelInfo = {
   channelId: string;
   guildId?: string;
   name?: string;
+};
+
+export type DiscordChannelMetadata = {
+  guildId: string;
+  guildName?: string;
+  channelId: string;
+  channelName?: string;
 };
 
 type DiscordCache = {
@@ -408,6 +419,31 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
       guildId: guild.id,
       name: guild.name
     }));
+  }
+
+  async fetchChannelMetadata(input: {
+    guildId: string;
+    channelId: string;
+  }): Promise<DiscordChannelMetadata> {
+    const client = this.orchestratorClient();
+    const [guild, channel] = await Promise.all([
+      client.guilds.fetch(input.guildId),
+      client.channels.fetch(input.channelId)
+    ]);
+    if (!channel) {
+      throw new Error(`Discord channel ${input.channelId} is not accessible to the orchestrator bot.`);
+    }
+    const channelGuildId =
+      "guildId" in channel && typeof channel.guildId === "string" ? channel.guildId : undefined;
+    if (channelGuildId && channelGuildId !== input.guildId) {
+      throw new Error(`Discord channel ${input.channelId} does not belong to guild ${input.guildId}.`);
+    }
+    return {
+      guildId: guild.id,
+      guildName: guild.name,
+      channelId: channel.id,
+      channelName: "name" in channel && typeof channel.name === "string" ? channel.name : undefined
+    };
   }
 
   async fetchFreshContext(input: {
