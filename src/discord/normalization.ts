@@ -242,12 +242,27 @@ function stripImpersonationLines(
   if (!senderRe && otherRes.length === 0) return content;
   const lines = content.split("\n");
   const kept: string[] = [];
+  let skippingIndentedOtherSpeakerBody = false;
   for (const line of lines) {
     if (senderRe && senderRe.test(line)) {
+      skippingIndentedOtherSpeakerBody = false;
       kept.push(line.replace(senderRe, ""));
       continue;
     }
-    if (otherRes.some((re) => re.test(line))) continue;
+    const otherMatch = otherRes.find((re) => re.test(line));
+    if (otherMatch) {
+      skippingIndentedOtherSpeakerBody = line.replace(otherMatch, "").trim().length === 0;
+      continue;
+    }
+    if (skippingIndentedOtherSpeakerBody) {
+      if (line.trim().length === 0) {
+        skippingIndentedOtherSpeakerBody = false;
+      } else if (/^\s/.test(line)) {
+        continue;
+      } else {
+        skippingIndentedOtherSpeakerBody = false;
+      }
+    }
     kept.push(line);
   }
   return kept.join("\n").replace(/\n{3,}/g, "\n\n").trim();

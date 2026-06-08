@@ -5277,6 +5277,231 @@ describe("RuntimeOrchestrator", () => {
     expect(pipeline.receivedStopSequences).toEqual(expect.arrayContaining(["\nYuki:", "\nK:"]));
   });
 
+  it("strips an indented human speaker block before sending to Discord", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.contexts = [
+      [contextMessage("m1", "user", "K", "shall i mute you?", undefined, { authorId: "k-user" })],
+      [contextMessage("m1", "user", "K", "shall i mute you?", undefined, { authorId: "k-user" })]
+    ];
+
+    const pipeline: ModelPipeline = {
+      async decideOrchestrator() {
+        return {
+          action: "reply",
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal" }],
+          reasoning: "Yuki answers."
+        };
+      },
+      async generateWaifu() {
+        return {
+          content: ["K:", "  leaked body from another participant", "", "actual reply"].join("\n")
+        };
+      }
+    };
+
+    await seedRuntimeConfig(storage);
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 1,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    expect(discord.sent.map((message) => message.content)).toEqual(["actual reply"]);
+    expect(discord.sent[0].replyToMessageId).toBeUndefined();
+  });
+
+  it("strips active participant impersonation even when the participant is absent from fetched context", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.contexts = [
+      [contextMessage("m1", "user", "Kevin", "anyone home?", undefined, { authorId: "kevin-user" })],
+      [contextMessage("m1", "user", "Kevin", "anyone home?", undefined, { authorId: "kevin-user" })]
+    ];
+
+    await seedRuntimeConfig(storage);
+    await seedActiveParticipants(storage, [{ userId: "mira-user", displayName: "Mira" }]);
+
+    let receivedStopSequences: string[] | undefined;
+    const pipeline: ModelPipeline = {
+      async decideOrchestrator() {
+        return {
+          action: "reply",
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal" }],
+          reasoning: "Yuki answers."
+        };
+      },
+      async generateWaifu(request) {
+        receivedStopSequences = request.stopSequences;
+        return {
+          content: ["Mira:", "  cached participant leak", "", "actual reply"].join("\n")
+        };
+      }
+    };
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 1,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    expect(discord.sent.map((message) => message.content)).toEqual(["actual reply"]);
+    expect(discord.sent[0].replyToMessageId).toBeUndefined();
+    expect(receivedStopSequences).toEqual(expect.arrayContaining(["\nMira:"]));
+  });
+
+  it("strips a nonexistent preferred reply directive and sends the remaining body normally", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.contexts = [
+      [contextMessage("m1", "user", "Kevin", "real message")],
+      [contextMessage("m1", "user", "Kevin", "real message")]
+    ];
+
+    const pipeline: ModelPipeline = {
+      async decideOrchestrator() {
+        return {
+          action: "reply",
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal" }],
+          reasoning: "Yuki answers."
+        };
+      },
+      async generateWaifu() {
+        return { content: "replying to > Ghost: message that never existed\nclean body" };
+      }
+    };
+
+    await seedRuntimeConfig(storage);
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 1,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    expect(discord.sent.map((message) => message.content)).toEqual(["clean body"]);
+    expect(discord.sent[0].replyToMessageId).toBeUndefined();
+  });
+
+  it("strips an unmatched blockquote reply directive and sends the remaining body normally", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.contexts = [
+      [contextMessage("m1", "user", "Kevin", "real message")],
+      [contextMessage("m1", "user", "Kevin", "real message")]
+    ];
+
+    const pipeline: ModelPipeline = {
+      async decideOrchestrator() {
+        return {
+          action: "reply",
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal" }],
+          reasoning: "Yuki answers."
+        };
+      },
+      async generateWaifu() {
+        return { content: "> fabricated message that never existed\nclean body" };
+      }
+    };
+
+    await seedRuntimeConfig(storage);
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 1,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    expect(discord.sent.map((message) => message.content)).toEqual(["clean body"]);
+    expect(discord.sent[0].replyToMessageId).toBeUndefined();
+  });
+
+  it("omits an orchestrator-provided reply target that is not in fetched context", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.contexts = [
+      [contextMessage("m1", "user", "Kevin", "real message")],
+      [contextMessage("m1", "user", "Kevin", "real message")]
+    ];
+
+    const pipeline: ModelPipeline = {
+      async decideOrchestrator() {
+        return {
+          action: "reply",
+          respondingWaifus: [
+            {
+              waifuId: "yuki",
+              delaySeconds: 0,
+              replyStyle: "normal",
+              replyToMessageId: "missing-message-id"
+            }
+          ],
+          reasoning: "Yuki answers."
+        };
+      },
+      async generateWaifu() {
+        return { content: "clean body" };
+      }
+    };
+
+    await seedRuntimeConfig(storage);
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 1,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    expect(discord.sent.map((message) => message.content)).toEqual(["clean body"]);
+    expect(discord.sent[0].replyToMessageId).toBeUndefined();
+  });
+
   it("strips a leading other-waifu name prefix and passes participant stop sequences", async () => {
     const root = await makeTempRoot();
     roots.push(root);
@@ -6638,6 +6863,29 @@ async function enableWaifus(storage: StorageService, waifuIds: string[]) {
         }
       }
     })
+  );
+}
+
+async function seedActiveParticipants(
+  storage: StorageService,
+  participants: Array<{ userId: string; displayName: string }>
+) {
+  const now = Date.now();
+  await storage.writeJson(
+    "active-chat-participants:guild-1:channel-1",
+    "user/servers/guild-1/active-chat-participants/channel-1.json",
+    ActiveChatParticipantsFileSchema,
+    ActiveChatParticipantsFileSchema.parse(
+      createEmptyRevisionedFile({
+        guildId: "guild-1",
+        channelId: "channel-1",
+        participants: participants.map((participant) => ({
+          ...participant,
+          lastSeenAt: new Date(now).toISOString(),
+          expiresAt: new Date(now + 60_000).toISOString()
+        }))
+      })
+    )
   );
 }
 

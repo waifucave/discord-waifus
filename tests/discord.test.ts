@@ -585,6 +585,31 @@ describe("stripLeakedContextHeader", () => {
     ).toBe("🔥\nHe finally graduated from his own tutorial.\nSlow clap.");
   });
 
+  it("drops an indented block after a foreign participant speaker label", () => {
+    const leaked = [
+      "Riko:",
+      "  this is a leaked line from someone else",
+      "  and this is another one",
+      "",
+      "actual reply"
+    ].join("\n");
+    expect(
+      stripLeakedContextHeader(leaked, {
+        senderDisplayName: "Aria",
+        participantDisplayNames: ["Aria", "Riko"]
+      })
+    ).toBe("actual reply");
+  });
+
+  it("normalizes an own-name speaker label block into the waifu's actual content", () => {
+    expect(
+      stripLeakedContextHeader("Aria:\n  actual reply", {
+        senderDisplayName: "Aria",
+        participantDisplayNames: ["Aria", "Riko"]
+      })
+    ).toBe("actual reply");
+  });
+
   it("keeps a line whose name prefix is not in the participants list", () => {
     expect(
       stripLeakedContextHeader("Kevin: ok\nyeah", {

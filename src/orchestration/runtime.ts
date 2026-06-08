@@ -1231,6 +1231,7 @@ export class RuntimeOrchestrator {
           signal: input.signal
         });
         await this.noteActiveChatParticipantsFromContext(input.guildId, input.channelId, waifuMessages);
+        const activeChatParticipants = await this.readActiveChatParticipants(input.guildId, input.channelId);
         waifuMessages = await this.messagesForModel(waifuMessages, waifuModelId, input.signal);
         const waifuPipeline = await this.pipelineFor(waifu.modelId);
         this.options.logger.info("Generating waifu reply", {
@@ -1251,7 +1252,12 @@ export class RuntimeOrchestrator {
             .filter((candidate) => candidate.id !== waifu.id && candidate.botId && candidate.modelId)
             .map((candidate) => candidate.id);
           const waifuQueryKey = runKey(input.guildId);
-          const participantDisplayNames = waifuParticipantDisplayNames(waifu, input.availableWaifus, waifuMessages);
+          const participantDisplayNames = waifuParticipantDisplayNames(
+            waifu,
+            input.availableWaifus,
+            waifuMessages,
+            activeChatParticipants
+          );
           const waifuStopSequences = participantDisplayNames.map((name) => `\n${name}:`);
           const clippedSceneDirection = sceneDirectionForWaifu(
             responder.sceneDirection,
@@ -1371,7 +1377,7 @@ export class RuntimeOrchestrator {
           const chosenReplyTarget = quoteExtraction.replyToMessageId ?? responder.replyToMessageId;
           const replyToMessageId = replyTargetForFreshContext(chosenReplyTarget, waifuMessages);
           if (chosenReplyTarget && !replyToMessageId) {
-            this.options.logger.info("Omitting reply target because it is the latest context message", {
+            this.options.logger.info("Omitting reply target because it is unavailable or the latest context message", {
               guildId: input.guildId,
               channelId: input.channelId,
               waifuId: waifu.id,
@@ -3717,17 +3723,22 @@ function sortActiveChatParticipants(participants: ActiveChatParticipant[]): Acti
 
 function replyTargetForFreshContext(
   replyToMessageId: string | undefined,
-  messages: Array<{ id: string }>
+  messages: Array<{ id: string; sourceMessageIds?: string[] }>
 ): string | undefined {
   if (!replyToMessageId) return undefined;
   const latestMessage = messages.at(-1);
-  return latestMessage?.id === replyToMessageId ? undefined : replyToMessageId;
+  const target = messages.find((message) =>
+    message.id === replyToMessageId || message.sourceMessageIds?.includes(replyToMessageId)
+  );
+  if (!target || target === latestMessage) return undefined;
+  return replyToMessageId;
 }
 
 function waifuParticipantDisplayNames(
   self: WaifuConfig,
   availableWaifus: WaifuConfig[],
-  messages: ContextMessage[] = []
+  messages: ContextMessage[] = [],
+  activeParticipants: ActiveChatParticipant[] = []
 ): string[] {
   const names: string[] = [];
   const seen = new Set<string>();
@@ -3745,6 +3756,9 @@ function waifuParticipantDisplayNames(
   for (const message of messages) {
     addName(message.displayName);
     addName(message.name);
+  }
+  for (const participant of activeParticipants) {
+    addName(participant.displayName);
   }
   return names;
 }
