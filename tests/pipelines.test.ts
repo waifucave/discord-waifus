@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ContextMessage } from "../src/orchestration/context.js";
+import { RETRIGGER_MAX_SECONDS, RETRIGGER_MIN_SECONDS } from "../src/orchestration/decisions.js";
 import { listModels } from "../src/providers/catalog.js";
 import { createModelPipeline } from "../src/providers/pipelines.js";
 import { recentQueries, recentReplies } from "../src/shared/queryLog.js";
@@ -1807,8 +1808,8 @@ describe("Google AI Studio (Gemini) pipeline", () => {
     });
     expect(parameters.properties.retriggerAfterSeconds).toMatchObject({
       type: "number",
-      minimum: 100,
-      maximum: 7200,
+      minimum: RETRIGGER_MIN_SECONDS,
+      maximum: RETRIGGER_MAX_SECONDS,
       nullable: true
     });
   });

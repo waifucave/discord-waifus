@@ -1,6 +1,7 @@
 import { readFile, readdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { ensureDataLayout } from "../config/layout.js";
+import { RETRIGGER_MAX_SECONDS, RETRIGGER_MIN_SECONDS } from "../orchestration/decisions.js";
 import {
   PromptLayoutNode,
   WaifuPromptLayout,
@@ -203,11 +204,11 @@ function migrateLegacyDecision(entry: Record<string, unknown>): boolean {
 
   // Place retriggerAfterSeconds appropriately for the action.
   if (entry.action === "no_reply") {
-    if (retrigger === undefined || retrigger < 100) {
-      retrigger = 100;
+    if (retrigger === undefined || retrigger < RETRIGGER_MIN_SECONDS) {
+      retrigger = RETRIGGER_MIN_SECONDS;
       changed = true;
-    } else if (retrigger > 7200) {
-      retrigger = 7200;
+    } else if (retrigger > RETRIGGER_MAX_SECONDS) {
+      retrigger = RETRIGGER_MAX_SECONDS;
       changed = true;
     }
     if (entry.retriggerAfterSeconds !== retrigger) {

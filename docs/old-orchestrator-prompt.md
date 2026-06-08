@@ -37,7 +37,7 @@ You must call the orchestrator_decision tool exactly once with your final decisi
 6. The same waifu may speak again, a different waifu may jump in, or multiple waifus may chain if it feels right.
 7. Avoid repetitive follow-ups that merely restate the same beat. Continue only when the next message adds something new.
 8. If a recent user message or direct ping went unnoticed while the room moved on, prefer steering someone to acknowledge it so the chat stays socially inclusive unless silence is clearly more natural.
-9. "no_reply" is valid. If you choose it, set retriggerAfterSeconds to a natural delay between 100 and 7200 seconds.
+9. "no_reply" is valid. If you choose it, set retriggerAfterSeconds to a natural delay between 100 and 28800 seconds.
 10. Use timestamps and pacing. Slow gaps matter.
 11. You may suggest emoji reactions sparingly.
 12. delaySeconds should reflect realistic reading and typing time.

@@ -2712,7 +2712,7 @@ export class RuntimeOrchestrator {
       "- Every respondingWaifus[].waifuId must be copied verbatim from one of the IDs listed in <active_waifus>.",
       replyRequired
         ? "- action must be \"reply\" for this manual /run. Choose at least one responding waifu and set retriggerAfterSeconds to null."
-        : "- action=\"reply\" requires a non-empty respondingWaifus array and a null retriggerAfterSeconds. action=\"no_reply\" requires respondingWaifus=[] and a retriggerAfterSeconds in [100, 7200].",
+        : `- action=\"reply\" requires a non-empty respondingWaifus array and a null retriggerAfterSeconds. action=\"no_reply\" requires respondingWaifus=[] and a retriggerAfterSeconds in [${RETRIGGER_MIN_SECONDS}, ${RETRIGGER_MAX_SECONDS}].`,
       `- delaySeconds is a realistic reading/typing delay before that waifu starts replying, in seconds, from 0 to ${MAX_WAIFU_DELAY_SECONDS}. Use 0 if she should start immediately.`,
       "- replyStyle is a soft hint for length/tone: \"normal\" by default; \"short\" for one terse line; \"long\" for a slightly fuller reply; \"sleepy\" for tired/low-energy voice.",
       "- Sleep and busy availability in <active_waifus> is soft context, not a hard rule. A sleeping or busy waifu can still answer if recent momentum suggests she is awake, if she just spoke, if she was directly pulled in, or if waking her improves the room.",
@@ -2730,14 +2730,14 @@ export class RuntimeOrchestrator {
     ].join("\n\n");
 
     const retriggerPacing = [
-      "retriggerAfterSeconds is only used with action=\"no_reply\". It is the number of seconds to wait before the orchestrator wakes up to re-evaluate the room, in the range [100, 7200].",
+      `retriggerAfterSeconds is only used with action=\"no_reply\". It is the number of seconds to wait before the orchestrator wakes up to re-evaluate the room, in the range [${RETRIGGER_MIN_SECONDS}, ${RETRIGGER_MAX_SECONDS}].`,
       "",
       "Human messages automatically wake the orchestrator, so retriggerAfterSeconds is not a generic monitoring tick — it is a deliberate, planned pause to give the room a chance to react. If a fresh chat message arrives before the timer fires, the timer is replaced by the new orchestrator pass.",
       "",
       "Rough intent ranges:",
       "- 100s–300s: moments that feel alive but do not have an obvious second waifu reaction. If there is an obvious second reaction, prefer respondingWaifus with two waifus and a short delay instead of no_reply.",
       "- 600s–1800s: cooling rooms where a waifu might revive the chat soon, but not immediately.",
-      "- 3600s–7200s: quiet rooms where you are mostly waiting for humans and the next bot-led beat is a long shot.",
+      `- 3600s–${RETRIGGER_MAX_SECONDS}s: quiet rooms where you are mostly waiting for humans and the next bot-led beat is a long shot.`,
       "",
       "If the timer fires and the room is still quiet, you can choose no_reply again with a longer delay. Don't grind on a dead channel."
     ].join("\n");
@@ -2762,7 +2762,7 @@ export class RuntimeOrchestrator {
       "    },",
       "    ...",
       "  ],",
-      replyRequired ? "  \"retriggerAfterSeconds\": null," : "  \"retriggerAfterSeconds\": number (100..7200) | null,",
+      replyRequired ? "  \"retriggerAfterSeconds\": null," : `  \"retriggerAfterSeconds\": number (${RETRIGGER_MIN_SECONDS}..${RETRIGGER_MAX_SECONDS}) | null,`,
       "  \"reasoning\": string",
       "}",
       "Rules:",
@@ -2771,7 +2771,7 @@ export class RuntimeOrchestrator {
         : "- action=\"reply\" => respondingWaifus is non-empty; retriggerAfterSeconds is null.",
       replyRequired
         ? null
-        : "- action=\"no_reply\" => respondingWaifus is empty; retriggerAfterSeconds is a number in [100, 7200].",
+        : `- action=\"no_reply\" => respondingWaifus is empty; retriggerAfterSeconds is a number in [${RETRIGGER_MIN_SECONDS}, ${RETRIGGER_MAX_SECONDS}].`,
       "- Order matters in respondingWaifus: the first waifu speaks first, then the next, and so on. When none of the latest four chat messages is from a human user, each waifu's delay starts only after the previous waifu has finished. When a human user is present in the latest four messages, the first waifu starts immediately and later delays are counted from this orchestrator decision. Any new chat message interrupts the rest of the chain.",
       "- When choosing two waifus, give each entry its own delaySeconds. Use 0 for the first when she should start immediately, then a small delay like 3-12 seconds for the second when it should feel like a natural follow-up.",
       "- All five fields on each respondingWaifus entry are required; set repleyToMessageIndex and sceneDirection to null when not needed."
@@ -4179,7 +4179,7 @@ function buildLegacyOrchestratorPrompt(server: ServerConfig, availableWaifus: Wa
     "8. After a single waifu message, do not default to no_reply. Consider whether another waifu should react, interrupt, disagree, tease, answer a missed user, or carry the beat one step further.",
     "9. Avoid repetitive follow-ups that merely restate the same beat. Continue when the next message adds something new.",
     "10. If a recent user message or direct ping went unnoticed while the room moved on, prefer steering someone to acknowledge it so the chat stays socially inclusive unless silence is clearly more natural.",
-    "11. \"no_reply\" is valid. If you choose it, set retriggerAfterSeconds to a natural delay between 100 and 7200 seconds. respondingWaifus must be empty.",
+    `11. \"no_reply\" is valid. If you choose it, set retriggerAfterSeconds to a natural delay between ${RETRIGGER_MIN_SECONDS} and ${RETRIGGER_MAX_SECONDS} seconds. respondingWaifus must be empty.`,
     "12. Use timestamps and pacing. Slow gaps matter.",
     `13. delaySeconds should reflect realistic reading and typing time from 0 to ${MAX_WAIFU_DELAY_SECONDS}. 0 means start immediately. When any of the latest four chat messages is from a human user, the first waifu starts immediately and later delays count from this decision time; otherwise delays count after the previous waifu finishes.`,
     "14. replyStyle is a soft hint: \"normal\" by default; \"short\" for one terse line; \"long\" for a slightly fuller reply; \"sleepy\" for a low-energy voice. Use \"normal\" when in doubt.",
@@ -4212,11 +4212,11 @@ function buildLegacyOrchestratorPrompt(server: ServerConfig, availableWaifus: Wa
     "  \"respondingWaifus\": [",
     `    { \"waifuId\": string, \"delaySeconds\": number (0..${MAX_WAIFU_DELAY_SECONDS}), \"replyStyle\": \"normal\"|\"short\"|\"long\"|\"sleepy\", \"repleyToMessageIndex\": number|null, \"sceneDirection\": string|null }`,
     "  ],",
-    "  \"retriggerAfterSeconds\": number (100..7200) | null,",
+    `  \"retriggerAfterSeconds\": number (${RETRIGGER_MIN_SECONDS}..${RETRIGGER_MAX_SECONDS}) | null,`,
     "  \"reasoning\": string",
     "}",
     "When action=\"reply\", respondingWaifus must be non-empty and retriggerAfterSeconds must be null.",
-    "When action=\"no_reply\", respondingWaifus must be empty and retriggerAfterSeconds must be a number between 100 and 7200."
+    `When action=\"no_reply\", respondingWaifus must be empty and retriggerAfterSeconds must be a number between ${RETRIGGER_MIN_SECONDS} and ${RETRIGGER_MAX_SECONDS}.`
   ].join("\n");
 }
 

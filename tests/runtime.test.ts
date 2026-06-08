@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RuntimeOrchestrator, clipSceneDirectionForWaifu, currentlyDoingForWaifu } from "../src/orchestration/runtime.js";
 import { ContextMessage } from "../src/orchestration/context.js";
-import { OrchestratorDecision } from "../src/orchestration/decisions.js";
+import { OrchestratorDecision, RETRIGGER_MAX_SECONDS } from "../src/orchestration/decisions.js";
 import {
   DiscordGatewayFacade,
   DiscordClearCommandEvent,
@@ -2689,7 +2689,7 @@ describe("RuntimeOrchestrator", () => {
         return { content: "unused" };
       },
       async decideOrchestrator() {
-        return { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 7200, reasoning: "wait" };
+        return { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: RETRIGGER_MAX_SECONDS, reasoning: "wait" };
       },
       async decideStageManagerObservations() {
         return [{ waifuId: "yuki", content: "Kevin pinged.", importance: 2, kind: "event" as const }];
@@ -2755,7 +2755,7 @@ describe("RuntimeOrchestrator", () => {
         return { content: "unused" };
       },
       async decideOrchestrator() {
-        return { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 7200, reasoning: "wait" };
+        return { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: RETRIGGER_MAX_SECONDS, reasoning: "wait" };
       },
       async decideStageManagerObservations() {
         return [{ waifuId: "yuki", content: "Kevin pinged.", importance: 2, kind: "event" as const }];

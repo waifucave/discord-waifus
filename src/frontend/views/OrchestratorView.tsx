@@ -361,12 +361,12 @@ export function OrchestratorView() {
     repleyToMessageIndex: number | null;
     sceneDirection: string | null;
   }>;
-  retriggerAfterSeconds: number | null;    // required when action="no_reply", 100..7200
+  retriggerAfterSeconds: number | null;    // required when action="no_reply", 100..28800
   reasoning: string;
 };
 
 // action="reply"   -> respondingWaifus non-empty, retriggerAfterSeconds null
-// action="no_reply" -> respondingWaifus empty,    retriggerAfterSeconds in [100, 7200]`}</pre>
+// action="no_reply" -> respondingWaifus empty,    retriggerAfterSeconds in [100, 28800]`}</pre>
       </section>
 
       <section className="section">
