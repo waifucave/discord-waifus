@@ -13,10 +13,11 @@ import { StorageService } from "../storage/storageService.js";
 import { DiscordBotsFileSchema, ProviderCredentialsFileSchema, createEmptyRevisionedFile } from "../shared/schemas/domain.js";
 import { ParsedCli, flagBoolean, flagNumber, flagString } from "./parser.js";
 
-const PACKAGE_NAME = "@starlight-ai/discord-waifus";
-const PACKAGE_SPEC = `${PACKAGE_NAME}@latest`;
-const GITHUB_RELEASES_API = "https://api.github.com/repos/HeavenllyDemon/Discord-Waifus/releases/latest";
-const GITHUB_RELEASE_TARBALL_PREFIX = "starlight-ai-discord-waifus-";
+const LEGACY_PACKAGE_NAME = "@starlight-ai/discord-waifus";
+const UPDATE_PACKAGE_NAME = "@waifucave/discord-waifus";
+const UPDATE_PACKAGE_SPEC = `${UPDATE_PACKAGE_NAME}@latest`;
+const GITHUB_RELEASES_API = "https://api.github.com/repos/waifucave/discord-waifus/releases/latest";
+const GITHUB_RELEASE_TARBALL_PACKAGES = [UPDATE_PACKAGE_NAME, LEGACY_PACKAGE_NAME];
 
 export type CliProcessOptions = {
   cwd?: string;
@@ -387,39 +388,41 @@ async function updateCommand(parsed: ParsedCli, options: CliRuntimeOptions): Pro
 async function updateGlobalNpmPackage(runner: CliProcessRunner, options: CliRuntimeOptions): Promise<number> {
   const npm = npmCommand(options.platform ?? process.platform);
 
-  console.log(`Updating ${PACKAGE_NAME} from npm...`);
-  const code = await runner.run(npm, ["install", "-g", PACKAGE_SPEC], {
+  console.log(`Updating ${UPDATE_PACKAGE_NAME} from npm...`);
+  const code = await runner.run(npm, ["install", "-g", UPDATE_PACKAGE_SPEC, "--force"], {
     env: options.env ?? process.env
   });
   if (code !== 0) {
-    console.error(`Failed to update ${PACKAGE_NAME}; npm exited with code ${code}.`);
+    console.error(`Failed to update ${UPDATE_PACKAGE_NAME}; npm exited with code ${code}.`);
     return code;
   }
-  console.log(`Updated ${PACKAGE_NAME} globally. Restart any running waifus backend to use the new version.`);
+  console.log(`Updated ${UPDATE_PACKAGE_NAME} globally. Restart any running waifus backend to use the new version.`);
   return 0;
 }
 
 async function updateGithubReleasePackage(runner: CliProcessRunner, options: CliRuntimeOptions): Promise<number> {
   const fetchRelease = options.githubReleaseFetcher ?? fetchLatestGithubRelease;
-  console.log(`Checking latest GitHub release for ${PACKAGE_NAME}...`);
+  console.log(`Checking latest GitHub release for ${UPDATE_PACKAGE_NAME}...`);
   const release = await fetchRelease();
   const asset = selectGithubReleaseTarball(release);
   if (!asset) {
-    console.error(`Latest GitHub release does not include a ${GITHUB_RELEASE_TARBALL_PREFIX}*.tgz asset.`);
+    console.error(
+      `Latest GitHub release does not include a ${GITHUB_RELEASE_TARBALL_PACKAGES.map(npmPackTarballPrefix).join("*.tgz or ")}*.tgz asset.`
+    );
     return 1;
   }
 
   const npm = npmCommand(options.platform ?? process.platform);
   const label = release.tag_name ? ` ${release.tag_name}` : "";
-  console.log(`Updating ${PACKAGE_NAME} from GitHub release${label}...`);
-  const code = await runner.run(npm, ["install", "-g", asset.browser_download_url], {
+  console.log(`Updating ${UPDATE_PACKAGE_NAME} from GitHub release${label}...`);
+  const code = await runner.run(npm, ["install", "-g", asset.browser_download_url, "--force"], {
     env: options.env ?? process.env
   });
   if (code !== 0) {
-    console.error(`Failed to update ${PACKAGE_NAME}; npm exited with code ${code}.`);
+    console.error(`Failed to update ${UPDATE_PACKAGE_NAME}; npm exited with code ${code}.`);
     return code;
   }
-  console.log(`Updated ${PACKAGE_NAME} from GitHub release. Restart any running waifus backend to use the new version.`);
+  console.log(`Updated ${UPDATE_PACKAGE_NAME} from GitHub release. Restart any running waifus backend to use the new version.`);
   return 0;
 }
 
@@ -470,7 +473,13 @@ async function fetchLatestGithubRelease(): Promise<GitHubRelease> {
 }
 
 function selectGithubReleaseTarball(release: GitHubRelease): GitHubReleaseAsset | undefined {
-  return selectPackageTarball(release, PACKAGE_NAME);
+  for (const packageName of GITHUB_RELEASE_TARBALL_PACKAGES) {
+    const asset = selectPackageTarball(release, packageName);
+    if (asset) {
+      return asset;
+    }
+  }
+  return undefined;
 }
 
 function npmPackTarballPrefix(packageName: string): string {

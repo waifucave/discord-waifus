@@ -31,6 +31,6 @@ if (existsSync(compiled)) {
   });
   process.exit(result.status ?? 1);
 } else {
-  console.error("waifus CLI entrypoint is missing. Reinstall @starlight-ai/discord-waifus.");
+  console.error("waifus CLI entrypoint is missing. Reinstall @waifucave/discord-waifus.");
   process.exit(1);
 }

@@ -8,10 +8,10 @@ import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { spawnSync } from "node:child_process";
 
-const repo = "HeavenllyDemon/Discord-Waifus";
-const rootPackage = "@starlight-ai/discord-waifus";
+const repo = "waifucave/discord-waifus";
 const npmCache = "/tmp/codex-npm-cache";
 const releaseArtifactsDir = "release-artifacts";
+let rootPackage = "";
 
 const args = parseArgs(process.argv.slice(2));
 
@@ -35,7 +35,8 @@ async function main() {
   const tag = `v${version}`;
   const root = process.cwd();
   const pkg = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
-  if (pkg.name !== rootPackage) {
+  rootPackage = pkg.name;
+  if (!["@starlight-ai/discord-waifus", "@waifucave/discord-waifus"].includes(rootPackage)) {
     throw new Error(`Run this from the Discord Waifus repo root; found package ${pkg.name}.`);
   }
 
@@ -46,8 +47,12 @@ async function main() {
 
   const status = capture("git", ["status", "--short"]).trim();
   if (status) {
-    console.log("Pending changes that will be included if validation passes:");
+    console.log("Pending changes detected:");
     console.log(status);
+    if (status.split("\n").some((line) => line.startsWith("?? "))) {
+      console.log("");
+      console.log("Untracked files are ignored by default. Commit them separately or add them before releasing if they belong in the release.");
+    }
     console.log("");
   }
 
@@ -74,7 +79,7 @@ async function main() {
     args.yes,
   );
 
-  run("git", ["add", "."]);
+  stageTrackedReleaseChanges();
   const staged = captureAllowFail("git", ["diff", "--cached", "--stat"]).stdout.trim();
   if (!staged) {
     throw new Error("Nothing staged after version bump and release preparation.");
@@ -136,7 +141,7 @@ async function main() {
   freshInstall(version);
 
   run("git", ["fetch", "origin", "main"]);
-  const finalStatus = capture("git", ["status", "--short"]).trim();
+  const finalStatus = capture("git", ["status", "--short", "--untracked-files=no"]).trim();
   if (finalStatus) {
     throw new Error(`Release succeeded, but worktree is not clean:\n${finalStatus}`);
   }
@@ -268,7 +273,7 @@ function validateAndPack(version) {
 
   const tarball = resolve(
     releaseArtifactsDir,
-    `starlight-ai-discord-waifus-${version}.tgz`
+    packageTarballName(rootPackage, version)
   );
 
   const prefix = mkdtempSync(join(tmpdir(), `waifus-smoke-${version}.`));
@@ -314,7 +319,7 @@ function verifyRelease(tag, version, expectedSha) {
   }
 
   const expectedAssets = new Set([
-    `starlight-ai-discord-waifus-${version}.tgz`,
+    packageTarballName(rootPackage, version),
   ]);
   const actualAssets = new Set(release.assets.map((asset) => asset.name));
   for (const asset of expectedAssets) {
@@ -375,6 +380,18 @@ function ensurePackageVersionMissing(name, version) {
       throw new Error(`Could not verify npm package absence for ${name}@${version}: ${output.trim()}`);
     }
   }
+}
+
+function packageTarballName(packageName, version) {
+  return `${npmPackTarballPrefix(packageName)}${version}.tgz`;
+}
+
+function npmPackTarballPrefix(packageName) {
+  return `${packageName.replace(/^@/u, "").replace(/\//gu, "-")}-`;
+}
+
+function stageTrackedReleaseChanges() {
+  run("git", ["add", "-u"]);
 }
 
 function waitForWorkflowRun(workflowName, filters) {

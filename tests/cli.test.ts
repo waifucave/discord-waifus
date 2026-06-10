@@ -42,13 +42,13 @@ describe("waifus update", () => {
     expect(calls).toEqual([
       {
         command: "npm",
-        args: ["install", "-g", "@starlight-ai/discord-waifus@latest"],
+        args: ["install", "-g", "@waifucave/discord-waifus@latest", "--force"],
         options: { env }
       }
     ]);
   });
 
-  it("updates GitHub release packages from the latest release tarball", async () => {
+  it("updates GitHub release packages from the latest migrated release tarball", async () => {
     silenceCliOutput();
     const env = { PATH: "/usr/bin" };
     const { calls, runner } = createRunner();
@@ -59,9 +59,9 @@ describe("waifus update", () => {
         tag_name: "v1.2.0",
         assets: [
           {
-            name: "starlight-ai-discord-waifus-1.2.0.tgz",
+            name: "waifucave-discord-waifus-1.2.0.tgz",
             browser_download_url:
-              "https://github.com/HeavenllyDemon/Discord-Waifus/releases/download/v1.2.0/starlight-ai-discord-waifus-1.2.0.tgz"
+              "https://github.com/waifucave/discord-waifus/releases/download/v1.2.0/waifucave-discord-waifus-1.2.0.tgz"
           }
         ]
       }),
@@ -76,14 +76,15 @@ describe("waifus update", () => {
         args: [
           "install",
           "-g",
-          "https://github.com/HeavenllyDemon/Discord-Waifus/releases/download/v1.2.0/starlight-ai-discord-waifus-1.2.0.tgz"
+          "https://github.com/waifucave/discord-waifus/releases/download/v1.2.0/waifucave-discord-waifus-1.2.0.tgz",
+          "--force"
         ],
         options: { env }
       }
     ]);
   });
 
-  it("installs only the root tarball from GitHub releases, ignoring legacy OCR assets", async () => {
+  it("falls back to the legacy root tarball during the package migration bridge", async () => {
     silenceCliOutput();
     const env = { PATH: "/usr/bin" };
     const { calls, runner } = createRunner();
@@ -96,12 +97,12 @@ describe("waifus update", () => {
           {
             name: "starlight-ai-discord-waifus-ocr-win32-x64-1.2.0.tgz",
             browser_download_url:
-              "https://github.com/HeavenllyDemon/Discord-Waifus/releases/download/v1.2.0/starlight-ai-discord-waifus-ocr-win32-x64-1.2.0.tgz"
+              "https://github.com/waifucave/discord-waifus/releases/download/v1.2.0/starlight-ai-discord-waifus-ocr-win32-x64-1.2.0.tgz"
           },
           {
             name: "starlight-ai-discord-waifus-1.2.0.tgz",
             browser_download_url:
-              "https://github.com/HeavenllyDemon/Discord-Waifus/releases/download/v1.2.0/starlight-ai-discord-waifus-1.2.0.tgz"
+              "https://github.com/waifucave/discord-waifus/releases/download/v1.2.0/starlight-ai-discord-waifus-1.2.0.tgz"
           }
         ]
       }),
@@ -116,7 +117,8 @@ describe("waifus update", () => {
         args: [
           "install",
           "-g",
-          "https://github.com/HeavenllyDemon/Discord-Waifus/releases/download/v1.2.0/starlight-ai-discord-waifus-1.2.0.tgz"
+          "https://github.com/waifucave/discord-waifus/releases/download/v1.2.0/starlight-ai-discord-waifus-1.2.0.tgz",
+          "--force"
         ],
         options: { env }
       }

@@ -1,17 +1,17 @@
 {
   "name": "@starlight-ai/discord-waifus",
-  "version": "1.5.152",
+  "version": "1.5.153",
   "description": "Local Discord waifu orchestrator backend, web UI, and CLI.",
   "type": "module",
   "private": false,
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/HeavenllyDemon/Discord-Waifus.git"
+    "url": "git+https://github.com/waifucave/discord-waifus.git"
   },
   "bugs": {
-    "url": "https://github.com/HeavenllyDemon/Discord-Waifus/issues"
+    "url": "https://github.com/waifucave/discord-waifus/issues"
   },
-  "homepage": "https://github.com/HeavenllyDemon/Discord-Waifus#readme",
+  "homepage": "https://github.com/waifucave/discord-waifus#readme",
   "keywords": [
     "discord",
     "discord-bot",

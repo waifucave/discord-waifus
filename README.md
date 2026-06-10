@@ -7,8 +7,8 @@
 [![npm version](https://img.shields.io/npm/v/@starlight-ai/discord-waifus?color=ff6ad5&label=npm&logo=npm)](https://www.npmjs.com/package/@starlight-ai/discord-waifus)
 [![downloads](https://img.shields.io/npm/dm/@starlight-ai/discord-waifus?color=8a2be2&logo=npm)](https://www.npmjs.com/package/@starlight-ai/discord-waifus)
 [![node](https://img.shields.io/node/v/@starlight-ai/discord-waifus?color=5865F2&logo=node.js)](https://nodejs.org)
-[![license](https://img.shields.io/github/license/HeavenllyDemon/Discord-Waifus?color=ff8fab)](LICENSE)
-[![stars](https://img.shields.io/github/stars/HeavenllyDemon/Discord-Waifus?style=social)](https://github.com/HeavenllyDemon/Discord-Waifus)
+[![license](https://img.shields.io/github/license/waifucave/discord-waifus?color=ff8fab)](LICENSE)
+[![stars](https://img.shields.io/github/stars/waifucave/discord-waifus?style=social)](https://github.com/waifucave/discord-waifus)
 
 **[Install](#-quick-start) · [Features](#-features) · [Setup](#-setup) · [Providers](#-supported-ai-providers) · [Dev](#-for-developers)**
 
@@ -164,8 +164,8 @@ Common flags: `--host 127.0.0.1`, `--port 3888`, `--data-root PATH`.
 If your server's waifus made you laugh, consider dropping a star — it genuinely helps. 💖
 
 <div align="center">
-  <a href="https://star-history.com/#HeavenllyDemon/Discord-Waifus&Date">
-    <img src="https://api.star-history.com/svg?repos=HeavenllyDemon/Discord-Waifus&type=Date" alt="Star History Chart" width="600">
+  <a href="https://star-history.com/#waifucave/discord-waifus&Date">
+    <img src="https://api.star-history.com/svg?repos=waifucave/discord-waifus&type=Date" alt="Star History Chart" width="600">
   </a>
 </div>
 
@@ -181,8 +181,8 @@ If your server's waifus made you laugh, consider dropping a star — it genuinel
 **Build & run from source:**
 
 ```sh
-git clone https://github.com/HeavenllyDemon/Discord-Waifus.git
-cd Discord-Waifus
+git clone https://github.com/waifucave/discord-waifus.git
+cd discord-waifus
 npm install
 npm run build
 npm run waifus -- start

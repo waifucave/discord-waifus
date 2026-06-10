@@ -46,10 +46,18 @@ jobs:
         run: |
           set +x
           version="${RELEASE_TAG#v}"
-          asset="starlight-ai-discord-waifus-${version}.tgz"
           mkdir -p artifacts
-          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$asset" --dir artifacts
-          test -f "artifacts/$asset"
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "*-discord-waifus-${version}.tgz" --dir artifacts
+          shopt -s nullglob
+          assets=(artifacts/*-discord-waifus-"${version}".tgz)
+          if [[ "${#assets[@]}" -ne 1 ]]; then
+            echo "::error::Expected exactly one root package asset, found ${#assets[@]}."
+            printf '%s\n' "${assets[@]}"
+            exit 1
+          fi
+          package_name="$(tar -xOf "${assets[0]}" package/package.json | node -e 'const fs = require("node:fs"); console.log(JSON.parse(fs.readFileSync(0, "utf8")).name);')"
+          echo "ROOT_PACKAGE_ASSET=${assets[0]}" >> "$GITHUB_ENV"
+          echo "ROOT_PACKAGE_NAME=$package_name" >> "$GITHUB_ENV"
 
       - name: Publish root package to npm
         env:
@@ -59,9 +67,8 @@ jobs:
         run: |
           set +x
           version="${RELEASE_TAG#v}"
-          name="@starlight-ai/discord-waifus"
-          if npm view "$name@$version" version --silent >/dev/null 2>&1; then
-            echo "$name@$version already published; skipping."
+          if npm view "$ROOT_PACKAGE_NAME@$version" version --silent >/dev/null 2>&1; then
+            echo "$ROOT_PACKAGE_NAME@$version already published; skipping."
           else
-            npm publish "./artifacts/starlight-ai-discord-waifus-${version}.tgz" --access public
+            npm publish "$ROOT_PACKAGE_ASSET" --access public
           fi
