@@ -44,6 +44,16 @@ describe("waifus update", () => {
         command: "npm",
         args: ["install", "-g", "@waifucave/discord-waifus@latest", "--force"],
         options: { env }
+      },
+      {
+        command: "npm",
+        args: ["uninstall", "-g", "@starlight-ai/discord-waifus"],
+        options: { env }
+      },
+      {
+        command: "npm",
+        args: ["install", "-g", "@waifucave/discord-waifus@latest", "--force"],
+        options: { env }
       }
     ]);
   });
@@ -71,6 +81,21 @@ describe("waifus update", () => {
 
     expect(code).toBe(0);
     expect(calls).toEqual([
+      {
+        command: "npm",
+        args: [
+          "install",
+          "-g",
+          "https://github.com/waifucave/discord-waifus/releases/download/v1.2.0/waifucave-discord-waifus-1.2.0.tgz",
+          "--force"
+        ],
+        options: { env }
+      },
+      {
+        command: "npm",
+        args: ["uninstall", "-g", "@starlight-ai/discord-waifus"],
+        options: { env }
+      },
       {
         command: "npm",
         args: [
@@ -112,6 +137,21 @@ describe("waifus update", () => {
 
     expect(code).toBe(0);
     expect(calls).toEqual([
+      {
+        command: "npm.cmd",
+        args: [
+          "install",
+          "-g",
+          "https://github.com/waifucave/discord-waifus/releases/download/v1.2.0/starlight-ai-discord-waifus-1.2.0.tgz",
+          "--force"
+        ],
+        options: { env }
+      },
+      {
+        command: "npm.cmd",
+        args: ["uninstall", "-g", "@starlight-ai/discord-waifus"],
+        options: { env }
+      },
       {
         command: "npm.cmd",
         args: [

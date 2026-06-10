@@ -387,11 +387,10 @@ async function updateCommand(parsed: ParsedCli, options: CliRuntimeOptions): Pro
 
 async function updateGlobalNpmPackage(runner: CliProcessRunner, options: CliRuntimeOptions): Promise<number> {
   const npm = npmCommand(options.platform ?? process.platform);
+  const installArgs = ["install", "-g", UPDATE_PACKAGE_SPEC, "--force"];
 
   console.log(`Updating ${UPDATE_PACKAGE_NAME} from npm...`);
-  const code = await runner.run(npm, ["install", "-g", UPDATE_PACKAGE_SPEC, "--force"], {
-    env: options.env ?? process.env
-  });
+  const code = await installAndRelinkAfterLegacyCleanup(npm, installArgs, runner, options);
   if (code !== 0) {
     console.error(`Failed to update ${UPDATE_PACKAGE_NAME}; npm exited with code ${code}.`);
     return code;
@@ -414,16 +413,37 @@ async function updateGithubReleasePackage(runner: CliProcessRunner, options: Cli
 
   const npm = npmCommand(options.platform ?? process.platform);
   const label = release.tag_name ? ` ${release.tag_name}` : "";
+  const installArgs = ["install", "-g", asset.browser_download_url, "--force"];
   console.log(`Updating ${UPDATE_PACKAGE_NAME} from GitHub release${label}...`);
-  const code = await runner.run(npm, ["install", "-g", asset.browser_download_url, "--force"], {
-    env: options.env ?? process.env
-  });
+  const code = await installAndRelinkAfterLegacyCleanup(npm, installArgs, runner, options);
   if (code !== 0) {
     console.error(`Failed to update ${UPDATE_PACKAGE_NAME}; npm exited with code ${code}.`);
     return code;
   }
   console.log(`Updated ${UPDATE_PACKAGE_NAME} from GitHub release. Restart any running waifus backend to use the new version.`);
   return 0;
+}
+
+async function installAndRelinkAfterLegacyCleanup(
+  npm: string,
+  installArgs: string[],
+  runner: CliProcessRunner,
+  options: CliRuntimeOptions
+): Promise<number> {
+  const env = options.env ?? process.env;
+  const installCode = await runner.run(npm, installArgs, { env });
+  if (installCode !== 0) {
+    return installCode;
+  }
+
+  console.log(`Cleaning up legacy ${LEGACY_PACKAGE_NAME} package if present...`);
+  const uninstallCode = await runner.run(npm, ["uninstall", "-g", LEGACY_PACKAGE_NAME], { env });
+  if (uninstallCode !== 0) {
+    return uninstallCode;
+  }
+
+  console.log("Relinking the waifus command to the WaifuCave package...");
+  return runner.run(npm, installArgs, { env });
 }
 
 const defaultProcessRunner: CliProcessRunner = {
