@@ -1,10 +1,10 @@
-# MIGRATION PLAN — Provider System → `@starlight-ai/gateway`
+# MIGRATION PLAN — Provider System → `@waifucave/gateway`
 
 Status: **draft for review** · Date: 2026-06-10
 
 Replace `src/providers/` (static `catalog.ts` + the 2,812-line `pipelines.ts` monolith)
-with **`@starlight-ai/gateway`**: a standalone, project-agnostic LLM normalization
-layer living in its own repo (`starlight-ai/gateway`, npm `@starlight-ai/gateway`).
+with **`@waifucave/gateway`**: a standalone, project-agnostic LLM normalization
+layer living in its own repo (`waifucave/gateway`, npm `@waifucave/gateway`).
 Think "local OpenRouter, but better": one unified request/response shape, a
 queryable per-model capability registry, declarative quirk handling, and an HTTP
 surface of its own. Discord Waifus becomes the gateway's first consumer.
@@ -43,7 +43,7 @@ surface of its own. Discord Waifus becomes the gateway's first consumer.
 |---|---|
 | Normalization model | **Declarative capability docs** (data-driven engine; approach A) |
 | Transport | **Direct HTTP** (`fetch` + shared SSE/retry); no provider SDKs |
-| Packaging | **Separate repo** `starlight-ai/gateway`, npm `@starlight-ai/gateway`; consumed as `file:../gateway` during migration, pinned npm version after publish |
+| Packaging | **Separate repo** `waifucave/gateway`, npm `@waifucave/gateway`; consumed as `file:../waifucave-gateway` during migration, pinned npm version after publish |
 | HTTP surface | **Mountable framework-agnostic router** + Fastify plugin + standalone `gateway serve` bin; mounted in this app at `/api/llm/*` |
 | Capability data | **Curated static registry** inside the package (filled via Codex research, Appendix A) + `gateway sync` drift check against OpenRouter `/models` and provider model lists |
 | Routing | **Explicit `(providerId, modelId)` per config**; UI defaults to direct route when a key exists, else OpenRouter |
@@ -55,7 +55,7 @@ surface of its own. Discord Waifus becomes the gateway's first consumer.
 ### 4.1 Repo layout
 
 ```
-starlight-ai/gateway
+waifucave/gateway
 ├── package.json            # zero runtime deps; dev deps: typescript, vitest, zod (build-time only, see 4.2)
 ├── src/
 │   ├── registry/           # data/*.json capability docs, loader, query API, family inheritance
@@ -428,12 +428,12 @@ content blocks back — the gateway makes this transparent.
 | Phase | Work | Exit criteria |
 |---|---|---|
 | **P0 — Research** ✅ done 2026-06-10 | Appendix A ran in Codex; output validated (55 docs, 0 schema problems), decisions applied (→54 docs), staged in `research/p0-capability-docs/` | Met: every Table C model has a sourced doc; uncertain cells marked `unverified`/`partial`/`conflicting` |
-| **P1 — Gateway core** | New repo: registry, validate, codecs, transport, client, server, sync, tests. Split into three plans: **P1a registry+validation ✅ done 2026-06-10** (repo live at `../starlight-gateway`, 32 tests; see `docs/superpowers/plans/2026-06-10-gateway-p1a-registry-validation.md` execution record); P1b codecs/transport/client; P1c server+sync | `npm test` green; `gateway serve` answers all 5 endpoints; golden fixtures cover every quirk in Table A rows 1–35 |
+| **P1 — Gateway core** | New repo: registry, validate, codecs, transport, client, server, sync, tests. Split into three plans: **P1a registry+validation ✅ done 2026-06-10** (repo live at `../waifucave-gateway`, 32 tests; see `docs/superpowers/plans/2026-06-10-gateway-p1a-registry-validation.md` execution record); P1b codecs/transport/client; P1c server+sync | `npm test` green; `gateway serve` answers all 5 endpoints; golden fixtures cover every quirk in Table A rows 1–35 |
 | **P2 — Side-by-side** | Add `file:../gateway` dep; mount `/api/llm/*`; `/api/models` proxies registry. `pipelines.ts` still serves traffic | Both old and new model lists visible; no behavior change in chat |
 | **P3 — Orchestration cutover** | Rewrite `ModelPipeline` on gateway client; move prompts/tools; delete `pipelines.ts` + `catalog.ts` | All orchestration tests pass against fake-transport gateway; live smoke test on a dev Discord server |
 | **P4 — Storage + domain** | Schema changes (7.2), migration (7.3), doctor warnings | Migration tests green; old configs load and run |
 | **P5 — Frontend** | `ModelParamsForm`, dynamic capability fetching, route picker | UI shows only supported params per model; invalid combos blocked client- and server-side |
-| **P6 — Harden** | Publish `@starlight-ai/gateway@0.1.0`, switch to pinned version; drift-check CI in gateway repo | App installs from npm; `gateway sync` clean |
+| **P6 — Harden** | Publish `@waifucave/gateway@0.1.0`, switch to pinned version; drift-check CI in gateway repo | App installs from npm; `gateway sync` clean |
 
 Rough dependency: P0 ∥ P1-scaffolding, then P1 → P2 → P3 → P4 → P5 → P6.
 
