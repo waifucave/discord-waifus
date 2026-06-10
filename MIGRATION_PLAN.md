@@ -428,7 +428,7 @@ content blocks back — the gateway makes this transparent.
 | Phase | Work | Exit criteria |
 |---|---|---|
 | **P0 — Research** ✅ done 2026-06-10 | Appendix A ran in Codex; output validated (55 docs, 0 schema problems), decisions applied (→54 docs), staged in `research/p0-capability-docs/` | Met: every Table C model has a sourced doc; uncertain cells marked `unverified`/`partial`/`conflicting` |
-| **P1 — Gateway core** | New repo: registry, validate, codecs, transport, client, server, sync, tests | `npm test` green; `gateway serve` answers all 5 endpoints; golden fixtures cover every quirk in Table A rows 1–35 |
+| **P1 — Gateway core** | New repo: registry, validate, codecs, transport, client, server, sync, tests. Split into three plans: **P1a registry+validation ✅ done 2026-06-10** (repo live at `../starlight-gateway`, 32 tests; see `docs/superpowers/plans/2026-06-10-gateway-p1a-registry-validation.md` execution record); P1b codecs/transport/client; P1c server+sync | `npm test` green; `gateway serve` answers all 5 endpoints; golden fixtures cover every quirk in Table A rows 1–35 |
 | **P2 — Side-by-side** | Add `file:../gateway` dep; mount `/api/llm/*`; `/api/models` proxies registry. `pipelines.ts` still serves traffic | Both old and new model lists visible; no behavior change in chat |
 | **P3 — Orchestration cutover** | Rewrite `ModelPipeline` on gateway client; move prompts/tools; delete `pipelines.ts` + `catalog.ts` | All orchestration tests pass against fake-transport gateway; live smoke test on a dev Discord server |
 | **P4 — Storage + domain** | Schema changes (7.2), migration (7.3), doctor warnings | Migration tests green; old configs load and run |
