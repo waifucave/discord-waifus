@@ -449,10 +449,14 @@ Rough dependency: P0 ∥ P1-scaffolding, then P1 → P2 → P3 → P4 → P5 →
   codec path — covered by dedicated contract fixtures.
 - **`file:` dep friction** during P2–P5 (rebuild on change). Acceptable for one
   consumer; publish early once stable.
-- **DeepSeek thinking × forced tool choice:** P0 research found **no** such
-  restriction documented for V4 Flash/Pro (full `tool_choice` enum; thinking only
-  drops sampling params) — the V3.x-era quirk appears lifted. Verify live during
-  the P3 smoke test; if it resurfaces it's a one-line registry constraint.
+- **DeepSeek thinking × forced tool choice — validated live 2026-06-10:** P0
+  research claimed the restriction was lifted in V4, but a live API test shows
+  both V4 Flash and V4 Pro return HTTP 400 ("Thinking mode does not support this
+  tool_choice") for `tool_choice: required` and named tool choice while thinking
+  is enabled (thinking+auto and no-thinking+required both succeed). The
+  `thinking-no-forced-tools` constraint is now in the registry data. Lesson:
+  research cells marked `verified` can still be wrong — quirk-critical cells get
+  live probes before the registry ships (folded into P1 testing).
 - **Open (post-P0):** exact Xiaomi API base URL (resolve in P1); Mistral Small 4
   native id conflict (`mistral-small-2603` vs `+1`); Gemini 3 Flash / 3.1 Pro and
   Qwen3.6 Max are preview-only ids — drift check watches for stable ids;
