@@ -70,5 +70,5 @@ jobs:
           if npm view "$ROOT_PACKAGE_NAME@$version" version --silent >/dev/null 2>&1; then
             echo "$ROOT_PACKAGE_NAME@$version already published; skipping."
           else
-            npm publish "$ROOT_PACKAGE_ASSET" --access public
+            npm publish "./$ROOT_PACKAGE_ASSET" --access public
           fi
