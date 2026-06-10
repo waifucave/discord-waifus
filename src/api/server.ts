@@ -196,7 +196,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
       return reply;
     }
     return {
-      name: "@starlight-ai/discord-waifus",
+      name: "@waifucave/discord-waifus",
       api: "/api/health"
     };
   });

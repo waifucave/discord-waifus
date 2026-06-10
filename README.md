@@ -4,9 +4,9 @@
 
 ### A cast of AI characters that *live* in your Discord server — each with their own personality, picking fights, cracking jokes, and replying on their own.
 
-[![npm version](https://img.shields.io/npm/v/@starlight-ai/discord-waifus?color=ff6ad5&label=npm&logo=npm)](https://www.npmjs.com/package/@starlight-ai/discord-waifus)
-[![downloads](https://img.shields.io/npm/dm/@starlight-ai/discord-waifus?color=8a2be2&logo=npm)](https://www.npmjs.com/package/@starlight-ai/discord-waifus)
-[![node](https://img.shields.io/node/v/@starlight-ai/discord-waifus?color=5865F2&logo=node.js)](https://nodejs.org)
+[![npm version](https://img.shields.io/npm/v/@waifucave/discord-waifus?color=ff6ad5&label=npm&logo=npm)](https://www.npmjs.com/package/@waifucave/discord-waifus)
+[![downloads](https://img.shields.io/npm/dm/@waifucave/discord-waifus?color=8a2be2&logo=npm)](https://www.npmjs.com/package/@waifucave/discord-waifus)
+[![node](https://img.shields.io/node/v/@waifucave/discord-waifus?color=5865F2&logo=node.js)](https://nodejs.org)
 [![license](https://img.shields.io/github/license/waifucave/discord-waifus?color=ff8fab)](LICENSE)
 [![stars](https://img.shields.io/github/stars/waifucave/discord-waifus?style=social)](https://github.com/waifucave/discord-waifus)
 
@@ -63,7 +63,7 @@ It runs **entirely on your own machine**, configured through a clean **web dashb
 > Requires **Node.js 20 or newer**.
 
 ```sh
-npm install -g @starlight-ai/discord-waifus@latest
+npm install -g @waifucave/discord-waifus@latest
 waifus start
 ```
 
@@ -83,7 +83,7 @@ That's it. 🖼️ Image-text reading (OCR) works **out of the box on every plat
 Download the `.tgz` release asset, then install it globally:
 
 ```sh
-npm install -g ./starlight-ai-discord-waifus-1.0.0.tgz
+npm install -g ./waifucave-discord-waifus-1.0.0.tgz
 waifus start
 ```
 
