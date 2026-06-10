@@ -285,7 +285,7 @@ they don't auto-mutate.
 | `mistral` | openai-chat | `https://api.mistral.ai/v1` | `MISTRAL_API_KEY` | Direct — confirmed (Mistral Small 4; Small 3.2 is OpenRouter-only) |
 | `nvidia` | openai-chat | `https://integrate.api.nvidia.com/v1` | `NVIDIA_API_KEY` | Direct — confirmed (NIM) |
 | `stepfun` | openai-chat | `https://api.stepfun.ai/v1` | `STEPFUN_API_KEY` | Direct — confirmed intl route (`api.stepfun.com` is the China route) |
-| `xiaomi` | openai-chat | TBD — platform.xiaomimimo.com exposes OpenAI- and Anthropic-compatible APIs; confirm exact base in P1 | `XIAOMI_API_KEY` | Direct — added after P0 research |
+| `xiaomi` | openai-chat | `https://api.xiaomimimo.com/v1` | `XIAOMI_API_KEY` | Direct — added after P0 research (an Anthropic-compatible endpoint also exists; unused in v1) |
 
 Resolved **OpenRouter-only** (P0, 2026-06-10): DeepSeek V3.2, Owl Alpha
 (`openrouter/owl-alpha`), GPT-OSS 20B/120B (confirmed not served by the OpenAI
@@ -457,7 +457,7 @@ Rough dependency: P0 ∥ P1-scaffolding, then P1 → P2 → P3 → P4 → P5 →
   `thinking-no-forced-tools` constraint is now in the registry data. Lesson:
   research cells marked `verified` can still be wrong — quirk-critical cells get
   live probes before the registry ships (folded into P1 testing).
-- **Open (post-P0):** exact Xiaomi API base URL (resolve in P1); Mistral Small 4
+- **Open (post-P0):** Mistral Small 4
   native id conflict (`mistral-small-2603` vs `+1`); Gemini 3 Flash / 3.1 Pro and
   Qwen3.6 Max are preview-only ids — drift check watches for stable ids;
   per-cell `unverified` items listed in `research/p0-capability-docs/findings.md`
