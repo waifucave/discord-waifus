@@ -130,7 +130,7 @@ One doc per **model family**, with per-route overlays — routes genuinely diffe
     "deprecated": false,
     "sources": ["https://..."],
     "verifiedAt": "2026-06-10",
-    "confidence": "verified"                 // verified | unverified | conflicting
+    "confidence": "verified"                 // verified | partial | unverified | conflicting
   }
 }
 ```
@@ -278,47 +278,59 @@ they don't auto-mutate.
 | `google-ai-studio` | google-generative-language | `https://generativelanguage.googleapis.com` | `GOOGLE_AI_STUDIO_API_KEY` | Direct (Gemini + Gemma) |
 | `deepseek` | openai-chat | `https://api.deepseek.com` | `DEEPSEEK_API_KEY` | Direct (V4 Flash/Pro only; V3.2 deprecated upstream → OpenRouter-only) |
 | `xai` | openai-chat | `https://api.x.ai/v1` | `XAI_API_KEY` | Direct |
-| `zai` | openai-chat | `https://api.z.ai/api/paas/v4` | `ZAI_API_KEY` | Direct — **verify path**: current code uses `/api/coding/paas/v4` (coding-plan endpoint); general endpoint differs |
+| `zai` | openai-chat | `https://api.z.ai/api/paas/v4` | `ZAI_API_KEY` | Direct — general path confirmed by P0 research; current code's `/api/coding/paas/v4` (coding-plan endpoint) must change |
 | `moonshot` | openai-chat | `https://api.moonshot.ai/v1` | `MOONSHOT_API_KEY` | Direct |
-| `qwen` | openai-chat | `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` | `DASHSCOPE_API_KEY` | Direct — verify international model availability |
-| `minimax` | openai-chat | `https://api.minimax.io/v1` | `MINIMAX_API_KEY` | Direct — verify endpoint + OpenAI-compat mode |
-| `mistral` | openai-chat | `https://api.mistral.ai/v1` | `MISTRAL_API_KEY` | **Candidate** — La Plateforme exists; add if research confirms |
-| `nvidia` | openai-chat | `https://integrate.api.nvidia.com/v1` | `NVIDIA_API_KEY` | **Candidate** — NIM endpoints; verify Nemotron 3 availability/limits |
-| `stepfun` | openai-chat | `https://api.stepfun.com/v1` | `STEPFUN_API_KEY` | **Candidate** — verify international signup viability |
-| `arcee` | openai-chat | TBD | TBD | **Candidate** — verify a first-party endpoint exists at all |
+| `qwen` | openai-chat | `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` | `DASHSCOPE_API_KEY` | Direct — 3.6 Flash/Plus + 235B confirmed; Max/3.7-series OpenRouter-only (Table C) |
+| `minimax` | openai-chat | `https://api.minimax.io/v1` | `MINIMAX_API_KEY` | Direct — confirmed (OpenAI-compatible text API) |
+| `mistral` | openai-chat | `https://api.mistral.ai/v1` | `MISTRAL_API_KEY` | Direct — confirmed (Mistral Small 4; Small 3.2 is OpenRouter-only) |
+| `nvidia` | openai-chat | `https://integrate.api.nvidia.com/v1` | `NVIDIA_API_KEY` | Direct — confirmed (NIM) |
+| `stepfun` | openai-chat | `https://api.stepfun.ai/v1` | `STEPFUN_API_KEY` | Direct — confirmed intl route (`api.stepfun.com` is the China route) |
+| `xiaomi` | openai-chat | TBD — platform.xiaomimimo.com exposes OpenAI- and Anthropic-compatible APIs; confirm exact base in P1 | `XIAOMI_API_KEY` | Direct — added after P0 research |
 
-Expected **OpenRouter-only**: DeepSeek V3.2, Owl Alpha, Xiaomi MiMo (all),
-GPT-OSS 20B/120B (open-weight — OpenAI does not serve them), plus any candidate
-above that fails verification.
+Resolved **OpenRouter-only** (P0, 2026-06-10): DeepSeek V3.2, Owl Alpha
+(`openrouter/owl-alpha`), GPT-OSS 20B/120B (confirmed not served by the OpenAI
+API), Arcee Trinity Large (first-party endpoint exists but the model id is
+conflicting upstream — revisit post-v1), Mistral Small 3.2 24B (deprecated
+upstream 2026-04-30), Qwen3.6 Max / Qwen3.7 Max / Qwen3.7 Plus (no confirmed
+native ids). **Native-only** (no OpenRouter route found): Gemini 2.0 Flash.
 
 ## 6. Model inventory — Table C
 
-All models from `new providers.md`, none pruned. `Native id` and `OpenRouter slug`
-columns are **filled by research** (Appendix A); treat names as display labels until verified.
+**P0 research complete (2026-06-10).** 54 capability docs with exact slugs and
+sources live in `research/p0-capability-docs/` (one JSON per company +
+`findings.md`); they move to the gateway's `registry/data/` in P1. Routes below
+are the researched reality, with user decisions of 2026-06-10 applied.
 
-| Company | Model | Expected routes |
+| Company | Model | Routes (verified) |
 |---|---|---|
-| Anthropic | Claude Haiku 4.5 · Sonnet 4.5 · Sonnet 4.6 · Opus 4.6 · Opus 4.7 · Fable 5 (alias “Mythos” — confirm official name/slug before public copy) | anthropic, openrouter |
-| Arcee AI | Trinity Large | openrouter (+arcee if confirmed) |
-| DeepSeek | V3.2 | **openrouter only** (deprecated upstream) |
+| Anthropic | Claude Haiku 4.5 · Sonnet 4.5 · Sonnet 4.6 · Opus 4.6 · Opus 4.7 · Fable 5 | anthropic, openrouter |
+| Anthropic | ~~Mythos~~ — research found Fable 5 and Mythos 5 are **separate models**, not aliases; user decided 2026-06-10: catalog keeps Fable 5 only (Mythos 5 is limited-availability; revisit when GA) | — |
+| Arcee AI | Trinity Large | **openrouter only** (native id conflicting upstream) |
+| DeepSeek | V3.2 | **openrouter only** (`deepseek/deepseek-v3.2`; no native id — confirmed) |
 | DeepSeek | V4 Flash · V4 Pro | deepseek, openrouter |
-| Google | Gemini 2.0 Flash · 2.5 Flash Lite · 2.5 Flash · 2.5 Pro · 3 Flash · 3.1 Flash Lite · 3.1 Pro | google-ai-studio, openrouter |
-| Google | Gemma 4 26B A4B IT · Gemma 4 31B | google-ai-studio (verify), openrouter |
-| MiniMax | M2.7 · M3 | minimax (verify), openrouter |
-| Mistral AI | Mistral Small 3.2 24B · Mistral Small 4 | mistral (candidate), openrouter |
+| Google | Gemini 2.0 Flash | **google-ai-studio only** (no OpenRouter route found) |
+| Google | Gemini 2.5 Flash Lite · 2.5 Flash · 2.5 Pro · 3.1 Flash Lite | google-ai-studio, openrouter |
+| Google | Gemini 3 Flash (`gemini-3-flash-preview`) · Gemini 3.1 Pro (`gemini-3.1-pro-preview`) — preview-only ids; registry tracks previews until stable ids publish | google-ai-studio, openrouter |
+| Google | Gemma 4 26B A4B IT · Gemma 4 31B IT (confirmed on Gemini API; several cells unverified) | google-ai-studio, openrouter |
+| MiniMax | M2.7 · M3 | minimax, openrouter |
+| Mistral AI | Mistral Small 3.2 24B | **openrouter only** (deprecated upstream 2026-04-30; decided 2026-06-10) |
+| Mistral AI | Mistral Small 4 (native id conflict: `mistral-small-2603` vs `+1` — flagged) | mistral, openrouter |
 | Moonshot AI | Kimi K2.5 · K2.6 | moonshot, openrouter |
-| NVIDIA | Nemotron 3 Super · Nemotron 3 Ultra | nvidia (candidate), openrouter |
+| NVIDIA | Nemotron 3 Super · Nemotron 3 Ultra | nvidia, openrouter |
 | OpenAI | GPT-5.2 · GPT-5.4 · GPT-5.4 Mini · GPT-5.4 Nano · GPT-5.5 · GPT-5 Mini · GPT-5 Nano | openai, openrouter |
-| OpenAI | GPT-OSS 20B · GPT-OSS 120B | **openrouter only** (open-weight) |
-| OpenRouter | Owl Alpha (owner/slug to confirm) | **openrouter only** |
-| Qwen | Qwen3.6 Flash · 3.6 Max · 3.6 Plus · 3.7 Max · 3.7 Plus · Qwen3 235B A22B 2507 | qwen (verify per model), openrouter |
-| StepFun | Step 3.5 Flash · Step 3.7 Flash | stepfun (candidate), openrouter |
-| xAI | Grok 4.20 · Grok 4.3 | xai, openrouter |
-| Xiaomi | MiMo V2 Flash · V2 Pro · V2.5 · V2.5 Pro | **openrouter only** (expected; verify) |
+| OpenAI | GPT-OSS 20B · GPT-OSS 120B | **openrouter only** (confirmed not on the OpenAI API) |
+| OpenRouter | Owl Alpha (`openrouter/owl-alpha`, ~1M ctx, currently free; alpha churn risk) | **openrouter only** |
+| Qwen | Qwen3.6 Flash · Qwen3.6 Plus | qwen, openrouter |
+| Qwen | Qwen3.6 Max (`qwen/qwen3.6-max-preview`) · Qwen3.7 Max · Qwen3.7 Plus | **openrouter only** (no confirmed native ids) |
+| Qwen | Qwen3 235B A22B 2507 (native splits into `-thinking-` / `-instruct-` ids; one OpenRouter slug) | qwen, openrouter |
+| StepFun | Step 3.5 Flash · Step 3.7 Flash | stepfun, openrouter |
+| xAI | Grok 4.20 (native reasoning/non-reasoning variant slugs) · Grok 4.3 | xai, openrouter |
+| Xiaomi | MiMo V2 Flash · MiMo V2.5 · MiMo V2.5 Pro | xiaomi, openrouter |
+| Xiaomi | ~~MiMo V2 Pro~~ — dropped 2026-06-10: native-only, auto-routes to V2.5 since 2026-06-01, deprecates 2026-06-30 | — |
 | Z.AI | GLM 4.5 Air · GLM 4.7 · GLM 5 · GLM 5.1 | zai, openrouter |
 
-Per `new providers.md`: do **not** add/remove models or write per-model public
-descriptions without consulting the user.
+Catalog count after decisions: **54 models**. Per `new providers.md`: do **not**
+add/remove models or write per-model public descriptions without consulting the user.
 
 ---
 
@@ -369,8 +381,8 @@ Model id remap (old `(providerId, modelId)` → new route). Unmappable ids get a
 | `zai/glm-{4.7,5,5.1}` | same | |
 | `zai/glm-5-turbo` | `zai/glm-5` | not in new catalog; doctor warning |
 | `google-ai-studio/gemini-2.5-flash{,-lite}` | same | |
-| `google-ai-studio/gemini-3-flash-preview` | `google-ai-studio/gemini-3-flash` | |
-| `google-ai-studio/gemini-3.5-flash` | `google-ai-studio/gemini-3-flash` | **ambiguous — confirm at review** |
+| `google-ai-studio/gemini-3-flash-preview` | same | stable id not yet published |
+| `google-ai-studio/gemini-3.5-flash` | `google-ai-studio/gemini-3-flash-preview` | not in new catalog; doctor warning |
 | `google-ai-studio/gemini-3.1-flash-lite` | same | |
 
 Migration tests follow house style: real temp data roots, no mocks.
@@ -415,7 +427,7 @@ content blocks back — the gateway makes this transparent.
 
 | Phase | Work | Exit criteria |
 |---|---|---|
-| **P0 — Research** | Run Appendix A prompt in Codex; review output; fill `registry/data/*.json` | Every Table C model has a doc; uncertain cells marked `unverified` |
+| **P0 — Research** ✅ done 2026-06-10 | Appendix A ran in Codex; output validated (55 docs, 0 schema problems), decisions applied (→54 docs), staged in `research/p0-capability-docs/` | Met: every Table C model has a sourced doc; uncertain cells marked `unverified`/`partial`/`conflicting` |
 | **P1 — Gateway core** | New repo: registry, validate, codecs, transport, client, server, sync, tests | `npm test` green; `gateway serve` answers all 5 endpoints; golden fixtures cover every quirk in Table A rows 1–35 |
 | **P2 — Side-by-side** | Add `file:../gateway` dep; mount `/api/llm/*`; `/api/models` proxies registry. `pipelines.ts` still serves traffic | Both old and new model lists visible; no behavior change in chat |
 | **P3 — Orchestration cutover** | Rewrite `ModelPipeline` on gateway client; move prompts/tools; delete `pipelines.ts` + `catalog.ts` | All orchestration tests pass against fake-transport gateway; live smoke test on a dev Discord server |
@@ -437,8 +449,15 @@ Rough dependency: P0 ∥ P1-scaffolding, then P1 → P2 → P3 → P4 → P5 →
   codec path — covered by dedicated contract fixtures.
 - **`file:` dep friction** during P2–P5 (rebuild on change). Acceptable for one
   consumer; publish early once stable.
-- **Open:** exact `gemini-3.5-flash` remap (7.3); Owl Alpha slug/owner; whether
-  qwen/minimax/mistral/nvidia/stepfun/arcee direct routes ship in v1 or post-research.
+- **DeepSeek thinking × forced tool choice:** P0 research found **no** such
+  restriction documented for V4 Flash/Pro (full `tool_choice` enum; thinking only
+  drops sampling params) — the V3.x-era quirk appears lifted. Verify live during
+  the P3 smoke test; if it resurfaces it's a one-line registry constraint.
+- **Open (post-P0):** exact Xiaomi API base URL (resolve in P1); Mistral Small 4
+  native id conflict (`mistral-small-2603` vs `+1`); Gemini 3 Flash / 3.1 Pro and
+  Qwen3.6 Max are preview-only ids — drift check watches for stable ids;
+  per-cell `unverified` items listed in `research/p0-capability-docs/findings.md`
+  (notably Moonshot/Z.AI tool-choice details and Gemma output caps).
 
 ---
 
