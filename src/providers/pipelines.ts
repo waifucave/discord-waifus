@@ -1386,7 +1386,7 @@ function orchestratorToolParameters(
         description: "Brief operational reason for this decision."
       }
     },
-    required: ["action", "respondingWaifus", "reasoning"]
+    required: ["action", "respondingWaifus", "wakePlan", "reasoning"]
   };
 }
 
