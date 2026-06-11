@@ -1,5 +1,5 @@
 import { OrchestratorDecisionHistoryEntry, ProviderId, ReasoningConfig } from "../shared/schemas/domain.js";
-import { ContextMessage, OrchestratorNoReplyMarker } from "../orchestration/context.js";
+import { ContextMessage, OrchestratorWakeMarker } from "../orchestration/context.js";
 import { OrchestratorDecision, ReplyStyle } from "../orchestration/decisions.js";
 import { StageManagerObservation, StageManagerToolCall } from "../orchestration/stageManager.js";
 import { ReviewerDecision } from "../orchestration/reviewer.js";
@@ -38,12 +38,13 @@ export type ProviderMetadata = {
 export type ProviderRequest = {
   modelId: string;
   messages: ContextMessage[];
-  decisionMarkers?: OrchestratorNoReplyMarker[];
+  decisionMarkers?: OrchestratorWakeMarker[];
   pastDecisions?: OrchestratorDecisionHistoryEntry[];
   trailingPrompt?: string;
   systemPrompt?: string;
   availableWaifuIds?: string[];
   replyRequired?: boolean;
+  directiveBudgetOpen?: boolean;
   temperature?: number;
   topP?: number;
   maxOutputTokens?: number;

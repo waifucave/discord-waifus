@@ -67,7 +67,7 @@ import {
   ChannelSessionStateSchema,
   createEmptyChannelSessionState
 } from "./session.js";
-import { ContextMessage, OrchestratorNoReplyMarker, formatTimestamp } from "./context.js";
+import { ContextMessage, formatTimestamp } from "./context.js";
 import {
   MAX_WAIFU_DELAY_SECONDS,
   OrchestratorDecision,
@@ -909,7 +909,7 @@ export class RuntimeOrchestrator {
       const orchestrator = await this.readAgentConfig("orchestrator", 20);
       const decision: OrchestratorDecision = {
         action: "reply",
-        respondingWaifus: options.initialResponders,
+        respondingWaifus: options.initialResponders as OrchestratorDecision["respondingWaifus"],
         reasoning: options.initialReason ?? "Manual directed run."
       };
       const decisionId = randomUUID();
@@ -2781,10 +2781,10 @@ export class RuntimeOrchestrator {
 
     const sections = orchestrator.promptSections;
     const behavior = [
-      sections.loopBreaking ? `<loop_breaking>\n${loopBreaking}\n</loop_breaking>` : null,
-      sections.retriggerPacing && !replyRequired ? `<retrigger_pacing>\n${retriggerPacing}\n</retrigger_pacing>` : null,
+      sections.pausePlanning ? `<loop_breaking>\n${loopBreaking}\n</loop_breaking>` : null,
+      sections.pausePlanning && !replyRequired ? `<retrigger_pacing>\n${retriggerPacing}\n</retrigger_pacing>` : null,
       sections.messageStructure ? `<chat_message_structure>\n${messageStructure}\n</chat_message_structure>` : null,
-      sections.toolUse ? `<tool_use>\n${toolUse}\n</tool_use>` : null,
+      sections.messageStructure ? `<tool_use>\n${toolUse}\n</tool_use>` : null,
       `<hard_rules>\n${hardRules}\n</hard_rules>`
     ]
       .filter((section): section is string => Boolean(section))
@@ -2947,39 +2947,6 @@ export class RuntimeOrchestrator {
         decision.channelId === channelId &&
         decision.status === "completed"
     );
-  }
-
-  private async readRecentNoReplyMarkers(
-    guildId: string,
-    channelId: string,
-    messages: ContextMessage[]
-  ): Promise<OrchestratorNoReplyMarker[]> {
-    if (!messages.length) return [];
-    const latest = messages.reduce(
-      (latestTimestamp, message) => message.timestamp > latestTimestamp ? message.timestamp : latestTimestamp,
-      messages[0].timestamp
-    );
-    const history = await this.options.storage.readJson(
-      "user/orchestrator/history.json",
-      OrchestratorHistoryFileSchema,
-      OrchestratorHistoryFileSchema.parse(createEmptyRevisionedFile({ decisions: [] }))
-    );
-    const markers: OrchestratorNoReplyMarker[] = [];
-    for (const decision of history.decisions) {
-      if (decision.guildId !== guildId) continue;
-      if (decision.channelId !== channelId) continue;
-      if (decision.action !== "no_reply") continue;
-      if (decision.retriggerAfterSeconds === undefined) continue;
-      const timestamp = formatTimestamp(new Date(decision.createdAt));
-      if (timestamp <= latest) continue;
-      markers.push({
-        kind: "no_reply",
-        timestamp,
-        retriggerAfterSeconds: decision.retriggerAfterSeconds,
-        reasoning: decision.reasoning
-      });
-    }
-    return markers;
   }
 
   private async appendOrchestratorHistory(entry: {

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { AttachmentImage, ContextMessage, OrchestratorNoReplyMarker, formatOrchestratorMessageBlock, formatTimestamp, formatWaifuContextBlock } from "../orchestration/context.js";
+import { AttachmentImage, ContextMessage, formatOrchestratorMessageBlock, formatTimestamp, formatWaifuContextBlock } from "../orchestration/context.js";
 import {
   OrchestratorActionSchema,
   OrchestratorDecision,
@@ -763,10 +763,7 @@ type ContextRendering = {
   indexToId: Map<number, string>;
 };
 
-function renderContext(
-  messages: ContextMessage[],
-  markers: OrchestratorNoReplyMarker[] = []
-): ContextRendering {
+function renderContext(messages: ContextMessage[]): ContextRendering {
   const idToIndex = new Map<string, number>();
   const indexToId = new Map<number, string>();
   messages.forEach((message, i) => {
@@ -774,33 +771,10 @@ function renderContext(
     idToIndex.set(message.id, index);
     indexToId.set(index, message.id);
   });
-  type Item =
-    | { kind: "message"; message: ContextMessage; index: number }
-    | { kind: "marker"; marker: OrchestratorNoReplyMarker };
-  const items: Item[] = [
-    ...messages.map((message, i): Item => ({ kind: "message", message, index: i + 1 })),
-    ...markers.map((marker): Item => ({ kind: "marker", marker }))
-  ];
-  items.sort((a, b) => {
-    const ta = a.kind === "message" ? a.message.timestamp : a.marker.timestamp;
-    const tb = b.kind === "message" ? b.message.timestamp : b.marker.timestamp;
-    if (ta === tb) {
-      if (a.kind === b.kind) return 0;
-      return a.kind === "message" ? -1 : 1;
-    }
-    return ta < tb ? -1 : 1;
-  });
-  const lines = items.map((item) =>
-    item.kind === "message"
-      ? formatContextMessage(item.message, item.index, idToIndex)
-      : formatNoReplyMarker(item.marker)
+  const lines = messages.map((message, i) =>
+    formatContextMessage(message, i + 1, idToIndex)
   );
   return { block: lines.join("\n"), idToIndex, indexToId };
-}
-
-function formatNoReplyMarker(marker: OrchestratorNoReplyMarker): string {
-  const reason = marker.reasoning.replace(/\s+/g, " ").trim();
-  return `[no_reply] [timestamp: ${marker.timestamp}] [reason: ${reason}] [retrigger: ${marker.retriggerAfterSeconds}s]`;
 }
 
 function currentTimeBlock(): string {
