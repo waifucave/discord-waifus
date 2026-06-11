@@ -24,7 +24,10 @@ absorbs it.
 | `sceneDirection` → typed `directive {intent, goal}` | `decisions.ts`, orchestrator tool schema in `pipelines.ts` | the orchestrator tool JSON schema is now the canonical one you planned to "define once" — take it verbatim from `orchestratorToolParameters()` at cutover time |
 | `repleyToMessageIndex` removed from the tool schema | `pipelines.ts` | don't resurrect it from the old schema dump (`docs/old_tool_schema.json`) |
 | Past-decision replay sanitized (intent-only directives, clipped reasoning) | `serializeOrchestratorDecisionArguments` | port as-is — it's a behavioral guardrail, not a wire detail |
-| `ProviderRequest.decisionMarkers` revived (wake markers) | `types.ts`, timeline builders ×4 protocols | becomes ONE timeline builder in your unified layer; markers are plain user-role text items |
+| `ProviderRequest.decisionMarkers` revived (wake markers) + time-gap markers (`[42m pass]`) | `types.ts`, timeline builders ×4 protocols | becomes ONE timeline builder in your unified layer; markers are plain user-role text items |
+| Replayed tool results carry compact outcomes ("sent"/"riko: empty"/"paused 1800s") instead of the constant "ok" | `ORCHESTRATOR_TOOL_RESULT_PLACEHOLDER` call sites ×4 | port as behavior — one formatting helper in the unified builder |
+| Observer gets a lean `formatObserverContext`; `renderContext`/`formatContextMessage`/`buildSuffix` deleted | `pipelines.ts` | the lean formatter belongs in `src/orchestration/` with the rest of the prompt code you're moving |
+| Tool guidance is schema-first: `add_memory`/`PickNextWaifu`/decision-field rules live in schema `description`s, not prompt prose | tool parameter builders | your "define tool schemas once" goal — the descriptions are part of the canonical schemas, keep them intact |
 | Observer tool gains `entities`; librarian call replaced by `decideDream` (new op set) | `types.ts`, `pipelines.ts`, `stageManager.ts` | `decideStageManager` request/response shapes are gone; see `03-memory.md` §5 |
 | Anthropic/Google mid+trailing blocks wrapped in `<system_note>` | `pipelines.ts` waifu builders | in gateway terms this is app-side message construction, not a codec concern — keep it in the app layer |
 | Corrective retry message carries a violation name | `pipelines.ts` retry plumbing | trivial; stays app-side |

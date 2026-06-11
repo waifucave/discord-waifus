@@ -94,17 +94,29 @@ The trailing `personalityReminder` (full persona, duplicated tokens every turn) 
 
 ```
 <{tag}_anchor>
-You are {displayName}. {personaDigest}
+You are {displayName}. Voice: {digest.voice} Drives: {digest.role}
 Reminders: one short chat message, only your own voice, no narration, no meta.
 </{tag}_anchor>
 ```
 
-`personaDigest`: new `WaifuConfig` field, 1–2 sentences capturing voice + core motivation.
+`personaDigest`: new structured `WaifuConfig` field with two consumers —
+
+```ts
+personaDigest: z.object({
+  voice: z.string(),  // how she talks — register, quirks, tone (1 sentence)
+  role: z.string()    // her drives and dynamics in the cast — what moments she fits (1 sentence)
+}).optional()
+```
+
 Generated on waifu save whenever the persona text changed: one cheap-model call (reuse the
-configured stage-manager model; prompt: "Summarize this character's voice and core drives in ≤2
-sentences, present tense, no name repetition"). Fallback when the call fails or is unconfigured:
-first 200 chars of persona. Stored, not recomputed per turn. Also reused by the orchestrator's
-`<active_waifus>` block (01 §3.4) — this is what shrinks the orchestrator prompt.
+configured stage-manager model; forced tool call returning `{voice, role}`; prompt: "Distill this
+character into how she talks and when she's the right speaker — 1 sentence each, present tense").
+Fallback when the call fails or is unconfigured: `voice` = first 200 chars of persona, `role` =
+empty. Stored, not recomputed per turn.
+
+Consumers: (a) the trailing anchor above; (b) the orchestrator's casting cards (01 §3.4) — which
+means the orchestrator **never sees raw persona text at all**, making persona size a non-issue for
+decision cost regardless of how large users write them.
 
 API note: digest generation happens in the waifu save path (`src/api/server.ts` waifu PUT), async
 best-effort — save never blocks on it; a missing digest just means fallback text until the next
@@ -123,11 +135,29 @@ The echo guard sentence is part of the block (today's `<scene_direction>` had no
 scripted directions, waifus echoed them nearly verbatim into chat). Leak validator (04) adds a
 deterministic echo check on top.
 
-## 6. Tool instructions
+## 6. Tool instructions — schema-first
 
-Rewritten alongside the memory redesign (03 §4): `add_memory` becomes the note tool with heavier
-expected usage; instructions compress to ~8 lines with one worked example. `PickNextWaifu`
-unchanged (currently disabled server-side; not part of this overhaul).
+Today the `toolUse` block spends ~200 words of system prompt re-explaining tools that the provider
+also describes natively in the tool JSON schema. Principle: **the schema carries the how, the
+prompt carries the when.** Models attend to schema `description` fields at call time more reliably
+than to prose paragraphs three blocks earlier, and every provider in the catalog delivers them.
+
+- The full note-taking semantics for `add_memory` (the draft in `03-memory.md` §2 — what to save,
+  the standalone-sentence rule with worked example, the 5-per-reply cap, expiry) move into the
+  tool's schema `description` + the `content` argument description.
+- The prompt's `tools` block shrinks to policy, ≤ 3 lines per tool:
+
+  ```
+  add_memory — save a note whenever the chat produces something you'd want to know tomorrow
+  (plans, promises, new facts about someone, the state of a running bit). Notes are what survives
+  when the chat history vanishes. Always also write your normal message in the same turn.
+  PickNextWaifu — only after your message, only when another waifu has an obvious immediate
+  follow-up.
+  ```
+
+- Same treatment for `PickNextWaifu` (argument guidance → schema; currently disabled server-side
+  anyway). The dedup reminder ("skip facts already in your memories block") stays in the prompt —
+  it references a prompt block the schema can't see.
 
 ## 7. Role-confusion hardening (multi-bot, weak models)
 

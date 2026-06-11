@@ -56,8 +56,9 @@ version number with the gateway migration's P4 bump — see `06-gateway-coordina
 | User (dashboard / future) | manual | `pinned` records; only the user can create or edit them |
 
 The waifu tool keeps its name (`add_memory`), single `content` argument, and the
-`suppressMemoryToolOnce` tool-only-reply guard. Instructions (harness §6) push toward the
-originally-intended heavy usage:
+`suppressMemoryToolOnce` tool-only-reply guard. The full usage text below lands in the **tool's
+JSON schema description** (schema-first, harness §6) — the prompt keeps only a 3-line policy. It
+pushes toward the originally-intended heavy usage:
 
 ```
 add_memory — your personal notepad. The chat history can vanish at any time (channel switch,
@@ -102,9 +103,9 @@ Cross-channel continuity (the original goal of short-term memories): notes are g
 channel *boost*, so moving the conversation to another channel carries the state over instead of
 losing it.
 
-## 4. Observer (unchanged role, two prompt fixes)
+## 4. Observer (unchanged role, two prompt fixes + lean input)
 
-The observer prompt (`observerSystemPrompt` in `pipelines.ts`) is already good. Two adjustments:
+The observer prompt (`observerSystemPrompt` in `pipelines.ts`) is already good. Adjustments:
 
 - **Entities**: each observation adds `entities: string[]` (display names referenced) — feeds §3
   scoring. Tool schema + zod updated (`stageManager.ts`).
@@ -112,6 +113,16 @@ The observer prompt (`observerSystemPrompt` in `pipelines.ts`) is already good. 
   absolute resolution time and what becomes true after it ('K plans to release the update on
   2026-06-12'), never bare 'tomorrow'/'tonight'." (Directly fixes the rotting-"tomorrow" memory
   observed live.)
+- **Lean context rendering** (new `formatObserverContext`, replacing the shared `renderContext`):
+  the observer extracts standalone facts — it never references messages by index and doesn't act on
+  chat mechanics. Drop `[index: #N]`, per-message `[timestamp: …]`, and `[reactions: …]`. Keep
+  `DisplayName: body`, the minimal `replying to > Author` prefix (speaker attribution), and
+  `[image_text: …]` (facts arrive in screenshots). Temporal grounding compresses to a single header
+  — `Window: 2026-06-11 18:04–22:31 UTC (today: 2026-06-11)` — plus a `[— next day: 2026-06-12 —]`
+  marker if the window crosses midnight; that header is exactly what the time-bound phrasing rule
+  needs to resolve "tomorrow" into dates. `observerInstruction`'s format paragraph updates to match.
+  With the observer off `renderContext`, that function and its helpers (`formatContextMessage`,
+  `buildSuffix`) have no remaining callers — delete them.
 
 ## 5. Dream pass (replaces the librarian; new `src/orchestration/dream.ts`)
 

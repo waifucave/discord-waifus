@@ -60,6 +60,19 @@ The tool JSON schema (`orchestratorToolParameters` in `pipelines.ts`) is updated
 the **single canonical definition** — this is the same schema the gateway migration P3 wants to own;
 see `06-gateway-coordination.md`.
 
+**Tool schema simplification** (weak-model ergonomics):
+
+- Per-responder `required` shrinks from all-five-fields to `["waifuId"]`. `delaySeconds` gets
+  `.default(0)` in zod and a schema default; `directive` defaults to null. Fewer required fields =
+  fewer malformed calls on flash-lite-class models.
+- The schema stays **flat** — no `oneOf` branches for the reply/no_reply split (provider support for
+  `oneOf` in tool schemas is uneven across DeepSeek/GLM/Gemini). The conditional rules live in the
+  field `description`s, tersely: `retriggerAfterSeconds`: "only with no_reply; null when replying";
+  `respondingWaifus`: "empty array when no_reply"; `wakePlan`: "required with no_reply: what you
+  intend at wake".
+- Field descriptions are the primary instruction channel for argument-level guidance (models read
+  them at call time); prompt text covers policy only. No rule is stated in both places.
+
 ## 2. Code guardrails (`src/orchestration/runtime.ts`)
 
 ### 2.1 Directive budget
@@ -86,10 +99,18 @@ Past decisions replayed into the timeline are serialized with:
 - `directive`: `{ intent }` only — **goal text omitted**. The model must not see 20 examples of
   goal-writing style; it especially must not see scripted-reply-shaped goals.
 - `reasoning`: clipped to 160 chars.
+- `delaySeconds` omitted (pure noise in hindsight; order is what matters).
 - no `replyStyle`, no `repleyToMessageIndex` (gone from schema).
 
 This kills the self-reinforcement loop observed live (identical scripted directions in consecutive
 decisions).
+
+**Outcome-bearing tool results.** The replayed tool-result side is today the constant `"ok"`
+(`ORCHESTRATOR_TOOL_RESULT_PLACEHOLDER`) — a wasted slot. It becomes a compact factual outcome
+built from the stored `responderOutcomes`: `"sent"` for the normal case, deviations named
+(`"riko: empty, nothing sent"`, `"aria: blocked (leak)"`, `"interrupted by new message"`), and
+`"paused 1800s"` for no_reply entries. Today the orchestrator cannot tell that a pick produced
+nothing; this closes that loop for free.
 
 ### 2.3 Loop detector (new `src/orchestration/loopDetector.ts`)
 
@@ -143,6 +164,13 @@ already archives the historical text.
 
 ### 3.1 Principles
 
+- **State once.** Today the delay/chain pacing mechanics are written three times (hard rules,
+  tool-use rules, task instructions) and several rules repeat between system and trailing prompts.
+  In the rewrite every mechanic has exactly one home: the system prompt carries the stable contract
+  (identity, structural rules), the tool schema carries argument-level guidance (§1), the trailing
+  prompt carries dynamic state (task focus, casting cards, time, runtime notices). Code cleanup in
+  passing: `buildOrchestratorSystemPrompt` computes `activeWaifusContent` and never uses it —
+  delete.
 - **Who/when, not what.** The orchestrator never writes reply content. Directives carry *goals*
   ("get the topic onto LTS's car"), never lines ("say that the car is…").
 - **Distribution over preference.** Replace "prefer a two-waifu chain" with explicit expected
@@ -215,12 +243,36 @@ Appended after `<active_waifus>` and `<current_time>` when applicable:
   "directives are currently rate-limited; null unless intent is break_loop with strong cause" —
   cheaper than re-rendering prompt text, and models reliably read tool descriptions.
 
-### 3.4 Active-waifus block
+### 3.5 Time-gap markers
 
-Today each waifu's **full persona** is embedded in the trailing prompt (up to 2.6k chars each × 5).
-Replace with the persona digest (`02-waifu-harness.md` §4): 1–2 lines per waifu + availability.
-Shrinks the orchestrator prompt by ~8–10k chars, which matters at a 20–40 message context and for
-decision latency.
+The new-format orchestrator context contains **no time information per message** (by design — but
+pacing is half the orchestrator's job, and `<current_time>` alone can't show conversation rhythm).
+Instead of re-adding per-message timestamps, the timeline builder inserts a marker line between
+context items when the gap exceeds 15 minutes: `[42m pass]`, `[5h pass]`. A handful of lines, and
+the model gets exactly the signal the pacing guidance asks it to use (also feeds better
+`retriggerAfterSeconds` choices).
+
+### 3.4 Active-waifus block — casting cards, not personas
+
+Today each waifu's **full persona** is embedded in the trailing prompt (up to 2.6k chars each × 5),
+and big personas would blow this up further. The orchestrator doesn't need personalities — it needs
+to know *who to cast*. Each entry becomes a casting card built from the structured persona digest
+(`02-waifu-harness.md` §4, regenerated on persona change), with availability compressed from the
+current multi-line block to one line with current state inline:
+
+```
+<aria>
+ID: aria · Aria
+Voice: clingy gen-z texting, sharp when crossed.
+Cast her when: K needs defending, or the room needs an instigator.
+Now: awake · busy 14:00–16:00 (work)
+</aria>
+```
+
+(Considered and rejected: sending only routines with no persona signal — casting among 5+ waifus
+would be effectively random. The digest keeps the signal at ~3 lines per waifu.) The raw persona
+text never reaches the orchestrator. Shrinks the trailing prompt by ~8–10k chars at the current
+roster, which matters at a 20–40 message context and for decision latency.
 
 ## 4. Config & defaults
 

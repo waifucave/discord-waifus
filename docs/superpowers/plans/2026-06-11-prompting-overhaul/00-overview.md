@@ -68,6 +68,25 @@ injected twice (top + trailing reminder) and overlapping/contradictory rule bloc
 6. **Eval harness**: yes — small, with deterministic parts always-on and model-in-the-loop parts
    env-gated.
 
+## Cross-cutting leanness principles
+
+Every model call carries only what that consumer acts on. Applied throughout W1–W3:
+
+1. **State once.** No mechanic explained in more than one prompt section (today the delay/chain
+   pacing rules appear three times in the orchestrator prompt). System prompt = stable contract;
+   trailing prompt = dynamic state.
+2. **Schema-first tool guidance.** Usage detail (argument meaning, format, worked examples) lives in
+   the tool JSON schema `description` fields, which providers deliver at call time and models follow
+   more reliably than distant prose. Prompt text keeps only usage *policy* (~3 lines per tool).
+3. **Per-consumer rendering.** Observer context loses indices/per-message timestamps/reactions
+   (keeps a single date-grounding header); orchestrator context loses raw personas (gains casting
+   cards + time-gap markers); decision replay loses goal text, delays, and full reasoning.
+4. **Outcome-bearing tool results.** Replayed decision results say what actually happened
+   ("sent" / "riko: empty" / "paused 1800s") instead of a constant "ok".
+5. **No dead surface.** Dead fields and code paths are removed when touched (unused
+   `activeWaifusContent` in the system-prompt builder, `renderContext` after the observer gets its
+   own formatter, the misspelled index field, legacy prompt branch).
+
 ## Implementation phases
 
 Each phase is independently shippable and leaves the app working. Suggested order = impact order.
