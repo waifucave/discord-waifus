@@ -265,6 +265,10 @@ function bumpVersions(version) {
 }
 
 function validateAndPack(version) {
+  // The workflow publishes this tarball with `npm publish <tarball>`, which runs
+  // no lifecycle scripts — prepublishOnly never fires on this path, so the
+  // file:-dependency guard must run here, before the tarball is created.
+  run("node", ["scripts/check-no-file-deps.mjs"]);
   run("npm", ["run", "typecheck"]);
   run("npm", ["test"]);
   run("npm", ["run", "build"]);

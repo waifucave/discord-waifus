@@ -36,3 +36,10 @@ Single-process local app. The CLI boots a Fastify backend that also serves the p
 - `dist/` and `dist-frontend/` are generated artifacts; never edit them. After backend changes, rerun `npm run build:backend` if you need the shipped CLI to use new code (otherwise `bin/waifus.mjs` falls back to `tsx` against `src/`).
 - Backend tsconfig excludes `tests/` and `src/frontend/`; frontend has its own `src/frontend/tsconfig.json`.
 - Tests prefer real on-disk behavior with temp roots over mocks (especially for storage/config concurrency).
+
+## Gateway dependency (migration window, P2–P5)
+
+- `@waifucave/gateway` is consumed as `file:../waifucave-gateway` (npm symlink). The sibling repo must be cloned **and built** — the package resolves from its `dist/`, so a missing/stale build breaks `src/api/server.ts` imports and every test that touches the API server.
+- After changing gateway source: run `npm run build` in `../waifucave-gateway`. Nothing to re-run here (symlink); restart `waifus`/vitest to pick it up.
+- The gateway HTTP API is mounted at `/api/llm/*` (`src/api/server.ts`); provider keys are read live per request from `user/providers.json` by `src/api/llmGatewayCredentials.ts` — the gateway never stores keys. `/api/models` and `/api/providers` carry the gateway registry as additive `gatewayModels`/`gatewayProviders` fields; the legacy fields still come from `src/providers/catalog.ts` and all chat traffic still goes through `src/providers/pipelines.ts` (until P3).
+- Publishing is blocked while the `file:` dep exists: `scripts/check-no-file-deps.mjs` runs at the top of `release:beta`'s validate-and-pack step (the real release path — the workflow publishes a pre-packed tarball, which skips `prepublishOnly`) and in `prepublishOnly` as a backstop for manual `npm publish`. P6 swaps to a pinned registry version.
