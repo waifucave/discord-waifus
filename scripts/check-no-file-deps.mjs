@@ -5,9 +5,11 @@
 import { readFileSync } from "node:fs";
 
 const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
-const offenders = Object.entries({ ...pkg.dependencies, ...pkg.optionalDependencies }).filter(
-  ([, spec]) => typeof spec === "string" && spec.startsWith("file:")
-);
+const offenders = Object.entries({
+  ...pkg.dependencies,
+  ...pkg.optionalDependencies,
+  ...pkg.peerDependencies
+}).filter(([, spec]) => typeof spec === "string" && spec.startsWith("file:"));
 if (offenders.length > 0) {
   console.error(
     `Refusing to publish with file: dependencies: ${offenders
