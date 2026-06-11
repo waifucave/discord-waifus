@@ -1014,13 +1014,16 @@ export class RuntimeOrchestrator {
       // the orchestrator promised last time) so it can pick up where it left off, plus escalate the
       // next backoff if it chooses no_reply again.
       let decisionMarkers: OrchestratorWakeMarker[] | undefined;
+      // pastDecisions is newest-first (history file prepends); find() returns the most recent no_reply.
       const lastNoReply = pastDecisions.find((entry) => entry.action === "no_reply");
-      if (turns === 1 && options.trigger === "retrigger" && lastNoReply?.retriggerAfterSeconds) {
+      const timerWakeSeconds =
+        turns === 1 && options.trigger === "retrigger" ? lastNoReply?.retriggerAfterSeconds : undefined;
+      if (timerWakeSeconds) {
         decisionMarkers = [{
           kind: "wake",
           timestamp: formatTimestamp(new Date()),
-          scheduledSeconds: lastNoReply.retriggerAfterSeconds,
-          wakePlan: lastNoReply.wakePlan
+          scheduledSeconds: timerWakeSeconds,
+          wakePlan: lastNoReply!.wakePlan
         }];
       }
 
@@ -1100,8 +1103,8 @@ export class RuntimeOrchestrator {
 
       if (decision.action === "no_reply") {
         let seconds = decision.retriggerAfterSeconds ?? RETRIGGER_MIN_SECONDS;
-        if (turns === 1 && options.trigger === "retrigger" && lastNoReply?.retriggerAfterSeconds) {
-          seconds = Math.max(seconds, Math.ceil(lastNoReply.retriggerAfterSeconds * 1.5));
+        if (timerWakeSeconds) {
+          seconds = Math.max(seconds, Math.ceil(timerWakeSeconds * 1.5));
         }
         await this.scheduleRetrigger(guildId, channelId, seconds);
         return;
@@ -1168,6 +1171,7 @@ export class RuntimeOrchestrator {
       honored = true;
       return responder;
     });
+    // Cap at a large sentinel purely to prevent unbounded growth on long-lived channels.
     this.directiveDecisionCounts.set(key, honored ? 0 : Math.min(current + 1, 1000));
     return { decision: { ...input.decision, respondingWaifus }, stripped };
   }

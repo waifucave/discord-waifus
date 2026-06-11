@@ -386,7 +386,7 @@ class FakePipeline implements ModelPipeline {
       /<yuki_relevant_memories>\n- Yuki remembers Kevin likes tea\.\n<\/yuki_relevant_memories>\n<yuki_personality>[\s\S]*You are Yuki[\s\S]*<\/yuki_personality>/
     );
     expect(request.trailingSystemBlock).toContain(
-      "<director_note>\nDirector's goal for this one message: (spotlight) answer Kevin, then pull in Mira\nPursue it in your own voice and words; never quote or restate this note.\n</director_note>"
+      expectedDirectorNote("(spotlight) answer Kevin, then pull in Mira")
     );
     return { content: "hello <@Kevin> <:cutecat:>" };
   }
@@ -862,7 +862,7 @@ describe("RuntimeOrchestrator", () => {
         events.push("mika");
         expect(request.replyStyle).toBe("short");
         expect(request.trailingSystemBlock).toContain(
-          "<director_note>\nDirector's goal for this one message: (spotlight) finish the beat\nPursue it in your own voice and words; never quote or restate this note.\n</director_note>"
+          expectedDirectorNote("(spotlight) finish the beat")
         );
         return { content: "Finished." };
       }
@@ -961,7 +961,7 @@ describe("RuntimeOrchestrator", () => {
           events.push("aria");
           expect(request.replyStyle).toBe("sleepy");
           expect(request.trailingSystemBlock).toContain(
-            "<director_note>\nDirector's goal for this one message: (spotlight) keep the planned direction\nPursue it in your own voice and words; never quote or restate this note.\n</director_note>"
+            expectedDirectorNote("(spotlight) keep the planned direction")
           );
           return { content: "Right away." };
         }
@@ -1223,7 +1223,7 @@ describe("RuntimeOrchestrator", () => {
         expect(request.midSystemBlock).toContain("<server_emojis>");
         expect(request.trailingSystemBlock).not.toContain("<yuki_personality>");
         expect(request.trailingSystemBlock).toContain(
-          "<director_note>\nDirector's goal for this one message: (spotlight) answer Kevin\nPursue it in your own voice and words; never quote or restate this note.\n</director_note>"
+          expectedDirectorNote("(spotlight) answer Kevin")
         );
         return { content: "plain reply" };
       }
@@ -4206,7 +4206,7 @@ describe("RuntimeOrchestrator", () => {
         if (request.systemPrompt.includes("You are Mika")) {
           waifuCalls.push("mika");
           expect(request.trailingSystemBlock).toContain(
-            "<director_note>\nDirector's goal for this one message: start topic\nPursue it in your own voice and words; never quote or restate this note.\n</director_note>"
+            expectedDirectorNote("start topic")
           );
           return { content: "mika first", pickedNextWaifuId: "yuki" };
         }
@@ -7238,6 +7238,10 @@ async function seedWaifu(
       contextWindow: 50
     })
   );
+}
+
+function expectedDirectorNote(text: string): string {
+  return `<director_note>\nDirector's goal for this one message: ${text}\nPursue it in your own voice and words; never quote or restate this note.\n</director_note>`;
 }
 
 function contextMessage(
