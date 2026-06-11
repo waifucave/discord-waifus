@@ -465,6 +465,20 @@ Rough dependency: P0 ∥ P1-scaffolding, then P1 → P2 → P3 → P4 → P5 →
 
 ---
 
+## 10. Concurrent work — prompting & orchestration overhaul (2026-06-11)
+
+A separate workstream is improving prompts, orchestrator decisions, memory, and leak prevention
+**against the current `src/providers/` code** while P1c (gateway-repo-only) is in flight. Full plan:
+`docs/superpowers/plans/2026-06-11-prompting-overhaul/` — read `06-gateway-coordination.md` there
+**before freezing the P2/P3 plan**; it maps every interface change (replyStyle removal, typed
+directives, wake markers, observer/dream tool shapes, schema-version sequencing with P4).
+
+Status log (one line per landed phase, appended by the implementing agent):
+
+- _none landed yet — plan committed 2026-06-11_
+
+---
+
 ## Appendix A — Codex research prompt
 
 Paste everything in the block below into Codex (GPT-5.5, xhigh). Output lands as
