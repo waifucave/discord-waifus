@@ -67,13 +67,16 @@ import {
   ChannelSessionStateSchema,
   createEmptyChannelSessionState
 } from "./session.js";
-import { ContextMessage, formatTimestamp } from "./context.js";
+import { ContextMessage, OrchestratorWakeMarker, formatTimestamp } from "./context.js";
 import {
+  DIRECTIVE_GOAL_MAX_CHARS,
+  DirectiveIntent,
   MAX_WAIFU_DELAY_SECONDS,
   OrchestratorDecision,
   RETRIGGER_MAX_SECONDS,
   RETRIGGER_MIN_SECONDS
 } from "./decisions.js";
+import { assessLoop } from "./loopDetector.js";
 
 export type RuntimeOrchestratorOptions = {
   storage: StorageService;
@@ -103,6 +106,7 @@ type ChannelRunOptions = {
   initialReason?: string;
   firstOrchestratorMustReply?: boolean;
   firstResponderSceneDirectionOverride?: string;
+  trigger?: "message" | "retrigger" | "manual";
 };
 
 type ExecuteResponderDecisionInput = {
@@ -116,7 +120,6 @@ type ExecuteResponderDecisionInput = {
   decisionDelayBaseMs: number;
   useDecisionRelativeDelays: boolean;
   availableWaifus: WaifuConfig[];
-  sceneDirectionClippingEnabled: boolean;
   signal: AbortSignal;
 };
 
@@ -164,6 +167,9 @@ export class RuntimeOrchestrator {
   // (add_memory call with no Discord text), drop the memory tool from the
   // next decision so the chain doesn't loop on silent memory-tool turns.
   private readonly suppressMemoryToolOnce = new Set<string>();
+  // Per-channel directive budget counter. Increments each decision a directive is not honored,
+  // resets to 0 when one is honored; the budget opens once it reaches directiveCooldown.
+  private readonly directiveDecisionCounts = new Map<string, number>();
   private static readonly SELF_SENT_TTL_MS = 60_000;
   private static readonly STAGE_MANAGER_IDLE_DELAY_MS = 60 * 60 * 1000;
   private static readonly ACTIVE_CHAT_PARTICIPANT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -364,15 +370,22 @@ export class RuntimeOrchestrator {
       authorBot: event.authorBot
     });
     this.noteStageManagerActivity(event.guildId, event.channelId);
-    await this.startChannelRun(event.guildId, event.channelId, `message:${event.messageId}`);
+    await this.startChannelRun(event.guildId, event.channelId, `message:${event.messageId}`, {
+      trigger: "message"
+    });
   }
 
-  async triggerChannel(guildId: string, channelId: string, reason = "manual"): Promise<void> {
+  async triggerChannel(
+    guildId: string,
+    channelId: string,
+    reason = "manual",
+    options: ChannelRunOptions = {}
+  ): Promise<void> {
     if (this.options.isPaused?.()) {
       this.options.logger.warn("Manual runtime trigger ignored because runtime is paused", { guildId, channelId });
       return;
     }
-    await this.startChannelRun(guildId, channelId, reason);
+    await this.startChannelRun(guildId, channelId, reason, options);
   }
 
   async stopChannel(guildId: string, channelId: string, reason = "manual-stop"): Promise<{
@@ -511,8 +524,9 @@ export class RuntimeOrchestrator {
             {
               waifuId: resolved.id,
               delaySeconds: 0,
-              replyStyle: "normal",
-              sceneDirection: event.sceneDirection
+              directive: event.sceneDirection
+                ? { intent: "manual" as const, goal: event.sceneDirection }
+                : undefined
             }
           ],
           initialReason: `Manual /run selected ${resolved.id}.`
@@ -906,13 +920,21 @@ export class RuntimeOrchestrator {
         return;
       }
       const availableWaifus = await this.listAvailableWaifusForChannel(channel);
-      const orchestrator = await this.readAgentConfig("orchestrator", 20);
       const decision: OrchestratorDecision = {
         action: "reply",
-        respondingWaifus: options.initialResponders as OrchestratorDecision["respondingWaifus"],
+        respondingWaifus: options.initialResponders.map((responder) => ({
+          waifuId: responder.waifuId,
+          delaySeconds: responder.delaySeconds ?? 0,
+          directive: responder.directive
+            ? { intent: responder.directive.intent as DirectiveIntent, goal: responder.directive.goal ?? "" }
+            : undefined,
+          replyToMessageId: responder.replyToMessageId
+        })),
         reasoning: options.initialReason ?? "Manual directed run."
       };
       const decisionId = randomUUID();
+      // Manual directed runs bypass the directive budget entirely (their directives are
+      // already "manual" intent and exempt); guardrails are not run here.
       const responderOutcomes = await this.recordOrchestratorDecision({
         guildId,
         channelId,
@@ -931,7 +953,6 @@ export class RuntimeOrchestrator {
         decisionDelayBaseMs: Date.now(),
         useDecisionRelativeDelays: true,
         availableWaifus,
-        sceneDirectionClippingEnabled: sceneDirectionClippingEnabled(orchestrator),
         signal
       });
       if (executedCount === 0) {
@@ -983,7 +1004,32 @@ export class RuntimeOrchestrator {
       const availableWaifus = await this.listAvailableWaifusForChannel(channel);
       const pastDecisions = await this.readCompletedOrchestratorDecisionsForChannel(guildId, channelId);
       const requireReply = Boolean(options.firstOrchestratorMustReply && turns === 1);
-      const trailingPrompt = this.buildOrchestratorTrailingPrompt(orchestrator, availableWaifus, requireReply);
+
+      const loop = assessLoop(messages);
+      const channelKey = timerKey(guildId, channelId);
+      const directiveCount = this.directiveDecisionCounts.get(channelKey) ?? orchestrator.directiveCooldown;
+      const directiveBudgetOpen = loop.suspected || directiveCount >= orchestrator.directiveCooldown;
+
+      // On the first turn of a timer-fired retrigger, surface the wake marker (with the wake plan
+      // the orchestrator promised last time) so it can pick up where it left off, plus escalate the
+      // next backoff if it chooses no_reply again.
+      let decisionMarkers: OrchestratorWakeMarker[] | undefined;
+      const lastNoReply = pastDecisions.find((entry) => entry.action === "no_reply");
+      if (turns === 1 && options.trigger === "retrigger" && lastNoReply?.retriggerAfterSeconds) {
+        decisionMarkers = [{
+          kind: "wake",
+          timestamp: formatTimestamp(new Date()),
+          scheduledSeconds: lastNoReply.retriggerAfterSeconds,
+          wakePlan: lastNoReply.wakePlan
+        }];
+      }
+
+      const trailingPrompt = this.buildOrchestratorTrailingPrompt(
+        orchestrator,
+        availableWaifus,
+        requireReply,
+        loop.notice
+      );
       const orchestratorTyping = startTypingScope(this.options.discord, { guildId, channelId });
       let decision: OrchestratorDecision;
       try {
@@ -991,6 +1037,8 @@ export class RuntimeOrchestrator {
           modelId: orchestrator.modelId,
           messages,
           pastDecisions,
+          decisionMarkers,
+          directiveBudgetOpen,
           trailingPrompt,
           systemPrompt: this.buildOrchestratorSystemPrompt(orchestrator, server, availableWaifus, requireReply),
           availableWaifuIds: availableWaifus.map((waifu) => waifu.id),
@@ -1003,7 +1051,7 @@ export class RuntimeOrchestrator {
       }
       decision = capDecisionDelays(decision);
       if (requireReply) {
-        decision = applyFirstResponderSceneDirectionOverride(
+        decision = applyFirstResponderDirectiveOverride(
           decision,
           options.firstResponderSceneDirectionOverride
         );
@@ -1013,6 +1061,15 @@ export class RuntimeOrchestrator {
       const decisionId = randomUUID();
       const initialDecisionStatus: OrchestratorDecisionStatus =
         decision.action === "reply" ? "pending" : "completed";
+      // Record history with the ORIGINAL decision (the dashboard shows what the model wanted), but
+      // execute the guarded decision (stripped directives over budget/cap).
+      const guarded = this.applyDirectiveGuardrails({
+        guildId,
+        channelId,
+        decision,
+        directiveCooldown: orchestrator.directiveCooldown,
+        loopSuspected: loop.suspected
+      });
       const responderOutcomes = await this.recordOrchestratorDecision({
         guildId,
         channelId,
@@ -1020,6 +1077,20 @@ export class RuntimeOrchestrator {
         decision,
         status: initialDecisionStatus
       });
+      for (const strippedEntry of guarded.stripped) {
+        const outcome = responderOutcomes[strippedEntry.index];
+        if (outcome) {
+          await this.updateOrchestratorResponderOutcome(decisionId, outcome.id, {
+            directiveStripped: strippedEntry.reason
+          });
+          this.options.logger.info("Stripped orchestrator directive", {
+            guildId,
+            channelId,
+            waifuId: outcome.waifuId,
+            reason: strippedEntry.reason
+          });
+        }
+      }
       void this.sendOrchestratorDebugLog({
         guildId,
         channelId,
@@ -1028,7 +1099,10 @@ export class RuntimeOrchestrator {
       });
 
       if (decision.action === "no_reply") {
-        const seconds = decision.retriggerAfterSeconds ?? RETRIGGER_MIN_SECONDS;
+        let seconds = decision.retriggerAfterSeconds ?? RETRIGGER_MIN_SECONDS;
+        if (turns === 1 && options.trigger === "retrigger" && lastNoReply?.retriggerAfterSeconds) {
+          seconds = Math.max(seconds, Math.ceil(lastNoReply.retriggerAfterSeconds * 1.5));
+        }
         await this.scheduleRetrigger(guildId, channelId, seconds);
         return;
       }
@@ -1038,13 +1112,12 @@ export class RuntimeOrchestrator {
         channelId,
         server,
         channel,
-        decision,
+        decision: guarded.decision,
         decisionId,
         responderOutcomes,
         decisionDelayBaseMs,
         useDecisionRelativeDelays,
         availableWaifus,
-        sceneDirectionClippingEnabled: sceneDirectionClippingEnabled(orchestrator),
         signal
       });
       if (executedCount === 0) {
@@ -1063,6 +1136,40 @@ export class RuntimeOrchestrator {
       maxAutomaticTurns: this.maxAutomaticTurns
     });
     await this.scheduleRetrigger(guildId, channelId, RETRIGGER_MIN_SECONDS);
+  }
+
+  private applyDirectiveGuardrails(input: {
+    guildId: string;
+    channelId: string;
+    decision: OrchestratorDecision;
+    directiveCooldown: number;
+    loopSuspected: boolean;
+  }): { decision: OrchestratorDecision; stripped: Array<{ index: number; reason: "cooldown" | "over_cap" }> } {
+    const key = timerKey(input.guildId, input.channelId);
+    const current = this.directiveDecisionCounts.get(key) ?? input.directiveCooldown;
+    const budgetOpen = input.loopSuspected || current >= input.directiveCooldown;
+    const stripped: Array<{ index: number; reason: "cooldown" | "over_cap" }> = [];
+    let honored = false;
+    const respondingWaifus = input.decision.respondingWaifus.map((responder, index) => {
+      const directive = responder.directive;
+      if (!directive) return responder;
+      if (directive.intent === "manual") {
+        honored = true;
+        return responder;
+      }
+      if (directive.goal.length > DIRECTIVE_GOAL_MAX_CHARS) {
+        stripped.push({ index, reason: "over_cap" });
+        return { ...responder, directive: undefined };
+      }
+      if (!budgetOpen) {
+        stripped.push({ index, reason: "cooldown" });
+        return { ...responder, directive: undefined };
+      }
+      honored = true;
+      return responder;
+    });
+    this.directiveDecisionCounts.set(key, honored ? 0 : Math.min(current + 1, 1000));
+    return { decision: { ...input.decision, respondingWaifus }, stripped };
   }
 
   private async recordOrchestratorDecision(input: {
@@ -1088,6 +1195,7 @@ export class RuntimeOrchestrator {
       action: input.decision.action,
       respondingWaifus: input.decision.respondingWaifus,
       retriggerAfterSeconds: input.decision.retriggerAfterSeconds,
+      wakePlan: input.decision.wakePlan,
       reasoning: input.decision.reasoning,
       status: input.status,
       waifuMessageIds: [],
@@ -1259,10 +1367,7 @@ export class RuntimeOrchestrator {
             activeChatParticipants
           );
           const waifuStopSequences = participantDisplayNames.map((name) => `\n${name}:`);
-          const clippedSceneDirection = sceneDirectionForWaifu(
-            responder.sceneDirection,
-            input.sceneDirectionClippingEnabled
-          );
+          const directiveText = directiveTextForWaifu(responder.directive);
           const effectiveShortTermMemory = input.server.tools.shortTermMemory && !suppressMemoryToolThisDecision;
           const { systemPrompt, midSystemBlock, trailingSystemBlock } = await this.buildWaifuPromptParts(
             input.guildId,
@@ -1270,7 +1375,7 @@ export class RuntimeOrchestrator {
             input.availableWaifus,
             {
               channelId: input.channelId,
-              sceneDirection: clippedSceneDirection,
+              sceneDirection: directiveText,
               pickNextWaifuToolOverride: input.server.tools.pickNextWaifu,
               shortTermMemoryToolOverride: effectiveShortTermMemory
             }
@@ -1475,8 +1580,7 @@ export class RuntimeOrchestrator {
               responderQueue.unshift({
                 responder: {
                   waifuId: result.pickedNextWaifuId,
-                  delaySeconds: 0,
-                  replyStyle: "normal"
+                  delaySeconds: 0
                 },
                 outcomeId: handoffOutcome.id
               });
@@ -2154,7 +2258,7 @@ export class RuntimeOrchestrator {
     }
     const timer = setTimeout(() => {
       this.retriggerTimers.delete(key);
-      this.startChannelRunBackground(guildId, channelId, "scheduled-retrigger");
+      this.startChannelRunBackground(guildId, channelId, "scheduled-retrigger", { trigger: "retrigger" });
     }, bounded * 1000);
     this.retriggerTimers.set(key, timer);
   }
@@ -2800,13 +2904,15 @@ export class RuntimeOrchestrator {
   private buildOrchestratorTrailingPrompt(
     orchestrator: AgentConfig,
     availableWaifus: WaifuConfig[],
-    replyRequired = false
+    replyRequired = false,
+    loopNotice?: string
   ): string {
+    const runtimeNotice = loopNotice ? `\n<runtime_notice>\n${loopNotice}\n</runtime_notice>` : "";
     if (orchestrator.useLegacyPrompt) {
       return [
         `<current_time>\n${formatPromptCurrentHour(new Date())}\n</current_time>`,
         replyRequired ? manualRunReplyRequiredInstruction() : null
-      ].filter(Boolean).join("\n");
+      ].filter(Boolean).join("\n") + runtimeNotice;
     }
 
     const scheduleNow = new Date();
@@ -2827,7 +2933,7 @@ export class RuntimeOrchestrator {
       `<task_instructions>\n${replyRequired ? `${DEFAULT_ORCHESTRATOR_PROMPT}\n\n${manualRunReplyRequiredInstruction()}` : DEFAULT_ORCHESTRATOR_PROMPT}\n</task_instructions>`,
       `<active_waifus>\n${activeWaifusContent}\n</active_waifus>`,
       currentTime
-    ].join("\n");
+    ].join("\n") + runtimeNotice;
   }
 
   private async ensureServer(guildId: string): Promise<ServerConfig> {
@@ -2956,6 +3062,7 @@ export class RuntimeOrchestrator {
     action: "reply" | "no_reply";
     respondingWaifus: OrchestratorRespondingWaifu[];
     retriggerAfterSeconds?: number;
+    wakePlan?: string;
     reasoning: string;
     status: OrchestratorDecisionStatus;
     waifuMessageIds: string[];
@@ -3164,7 +3271,7 @@ export class RuntimeOrchestrator {
     outcomeId: string,
     patch: Partial<Pick<
       OrchestratorResponderOutcome,
-      "handoffFromWaifuId" | "status" | "reason"
+      "handoffFromWaifuId" | "status" | "reason" | "directiveStripped"
     >>
   ): Promise<void> {
     await this.options.storage.updateRevisionedJson({
@@ -3753,32 +3860,17 @@ function channelParticipantDisplayNames(
   );
 }
 
-const SCENE_DIRECTION_PUNCTUATION_RE = /[.!?,;:\n\r\u2026\u2013\u2014]/u;
-const SCENE_DIRECTION_CONJUNCTION_RE = /\b(?:and|or)\b/iu;
-
-export function clipSceneDirectionForWaifu(sceneDirection: string | undefined): string | undefined {
-  const trimmed = sceneDirection?.trim();
-  if (!trimmed) return undefined;
-  const punctuationIndex = SCENE_DIRECTION_PUNCTUATION_RE.exec(trimmed)?.index;
-  const conjunctionIndex = SCENE_DIRECTION_CONJUNCTION_RE.exec(trimmed)?.index;
-  const cutIndex = [punctuationIndex, conjunctionIndex]
-    .filter((index): index is number => index !== undefined)
-    .sort((a, b) => a - b)[0];
-  const clipped = cutIndex === undefined ? trimmed : trimmed.slice(0, cutIndex).trim();
-  return clipped || undefined;
-}
-
-function sceneDirectionForWaifu(
-  sceneDirection: string | undefined,
-  clippingEnabled: boolean
+// Render a directive into the single-line note fed to the waifu prompt. Manual /run directions
+// pass through verbatim; model intents get a parenthetical label prefix for the waifu's benefit.
+// Accepts the loose stored shape (string intent, optional goal) so both the decision pipeline and
+// directed-run paths can feed it without casting.
+function directiveTextForWaifu(
+  directive: { intent: string; goal?: string } | undefined
 ): string | undefined {
-  const trimmed = sceneDirection?.trim();
-  if (!trimmed) return undefined;
-  return clippingEnabled ? clipSceneDirectionForWaifu(trimmed) : trimmed;
-}
-
-function sceneDirectionClippingEnabled(orchestrator: AgentConfig): boolean {
-  return orchestrator.clipSceneDirection;
+  if (!directive) return undefined;
+  const goal = directive.goal ?? "";
+  if (directive.intent === "manual") return goal || undefined;
+  return `(${directive.intent.replace(/_/g, " ")}) ${goal}`.trim();
 }
 
 function capDecisionDelays(decision: OrchestratorDecision): OrchestratorDecision {
@@ -3791,7 +3883,7 @@ function capDecisionDelays(decision: OrchestratorDecision): OrchestratorDecision
   };
 }
 
-function applyFirstResponderSceneDirectionOverride(
+function applyFirstResponderDirectiveOverride(
   decision: OrchestratorDecision,
   sceneDirection: string | undefined
 ): OrchestratorDecision {
@@ -3802,7 +3894,9 @@ function applyFirstResponderSceneDirectionOverride(
   return {
     ...decision,
     respondingWaifus: decision.respondingWaifus.map((responder, index) =>
-      index === 0 ? { ...responder, sceneDirection: trimmed } : responder
+      index === 0
+        ? { ...responder, directive: { intent: "manual" as const, goal: trimmed } }
+        : responder
     )
   };
 }
@@ -3858,20 +3952,26 @@ function formatOrchestratorDebugLog(input: {
         .map((responder) => waifuNameById.get(responder.waifuId) ?? responder.waifuId)
         .join(" -> ")}`
     );
-    const sceneDirections = input.decision.respondingWaifus
+    const directives = input.decision.respondingWaifus
       .map((responder) => ({
         name: waifuNameById.get(responder.waifuId) ?? responder.waifuId,
-        sceneDirection: responder.sceneDirection?.trim()
+        directive: responder.directive
       }))
-      .filter((entry): entry is { name: string; sceneDirection: string } => Boolean(entry.sceneDirection));
-    if (sceneDirections.length > 0) {
-      lines.push("Scene directions:");
-      for (const entry of sceneDirections) {
-        lines.push(`- ${entry.name}: ${clipDebugText(entry.sceneDirection)}`);
+      .filter(
+        (entry): entry is { name: string; directive: NonNullable<typeof entry.directive> } =>
+          Boolean(entry.directive)
+      );
+    if (directives.length > 0) {
+      lines.push("Directives:");
+      for (const entry of directives) {
+        lines.push(`- ${entry.name}: (${entry.directive.intent}) ${clipDebugText(entry.directive.goal)}`);
       }
     }
   } else {
     lines.push(`Idle trigger: ${input.decision.retriggerAfterSeconds ?? RETRIGGER_MIN_SECONDS}s`);
+    if (input.decision.wakePlan) {
+      lines.push(`Wake plan: ${clipDebugText(input.decision.wakePlan)}`);
+    }
   }
   lines.push(`Reasoning: ${clipDebugText(input.decision.reasoning)}`);
   return lines.join("\n");

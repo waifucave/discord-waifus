@@ -183,7 +183,10 @@ export const WAIFU_PROMPT_BLOCKS: WaifuPromptBlockDef[] = [
   {
     id: "sceneDirection",
     defaultSection: "trailing",
-    render: (ctx) => (ctx.sceneDirection ? `<scene_direction>${ctx.sceneDirection}</scene_direction>` : undefined)
+    render: (ctx) =>
+      ctx.sceneDirection
+        ? `<director_note>\nDirector's goal for this one message: ${ctx.sceneDirection}\nPursue it in your own voice and words; never quote or restate this note.\n</director_note>`
+        : undefined
   }
 ];
 
