@@ -6,10 +6,10 @@ export type LoopAssessment = {
 };
 
 const WINDOW = 8;                 // waifu messages considered
-const PAIRS_CHECKED = 4;          // adjacent pairs from the tail
+const TAIL_PAIRS = 4;             // adjacent-pair tail window examined for repetition
 const PAIR_THRESHOLD = 0.45;      // similarity that marks a pair repetitive
 const HARD_THRESHOLD = 0.8;       // any single pair this similar => loop
-const MIN_REPETITIVE_PAIRS = 2;
+const MIN_REPETITIVE_PAIRS = 2;   // soft-threshold pairs in the tail that constitute a loop
 
 const STOPWORDS = new Set([
   "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
@@ -20,6 +20,9 @@ const STOPWORDS = new Set([
   "not", "no", "yes", "so", "than", "then", "very", "just", "also", "too"
 ]);
 
+// Tokens shorter than 3 chars are excluded to avoid noise from short function words
+// not already in STOPWORDS. This means very short messages (e.g. "ok") produce an
+// empty set and score 0 against anything — they will not trigger loop detection.
 function tokenSet(text: string): Set<string> {
   return new Set(
     text
@@ -50,7 +53,7 @@ export function assessLoop(messages: ContextMessage[]): LoopAssessment {
   for (let i = 1; i < tokens.length; i += 1) {
     similarities.push(jaccard(tokens[i - 1], tokens[i]));
   }
-  const tail = similarities.slice(-PAIRS_CHECKED);
+  const tail = similarities.slice(-TAIL_PAIRS);
   const repetitivePairs = tail.filter((value) => value >= PAIR_THRESHOLD).length;
   const suspected = repetitivePairs >= MIN_REPETITIVE_PAIRS || tail.some((value) => value >= HARD_THRESHOLD);
   if (!suspected) return { suspected: false };
