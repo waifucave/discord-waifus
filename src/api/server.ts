@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import fastify, { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
-import { type GatewayHandlerOptions } from "@waifucave/gateway";
+import { createGatewayHandler, type GatewayHandlerOptions, type ModelSummary, type ProviderDef } from "@waifucave/gateway";
 import gatewayPlugin from "@waifucave/gateway/fastify";
 import { createProviderCredentialsLookup } from "./llmGatewayCredentials.js";
 import { loadAppConfig, saveAppConfig } from "../config/appConfig.js";
@@ -207,6 +207,19 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   };
   await app.register(gatewayPlugin, { prefix: "/api/llm", ...llmGatewayOptions });
 
+  // Registry proxies (§7.4): /api/models and /api/providers carry the gateway
+  // listings as additive sibling fields. A second handler instance (the plugin
+  // builds its own internally) serves the exact public /v1 shapes; both
+  // endpoints are static-registry GETs, so a non-200 is a gateway defect → 500.
+  const llmProxy = createGatewayHandler(llmGatewayOptions);
+  async function llmRegistryJson(endpoint: "/v1/models" | "/v1/providers"): Promise<unknown> {
+    const response = await llmProxy.handle(new Request(`http://gateway.internal${endpoint}`));
+    if (response.status !== 200) {
+      throw new Error(`gateway registry endpoint ${endpoint} returned ${response.status}`);
+    }
+    return response.json();
+  }
+
   app.get("/", async (request, reply) => {
     if (await tryServeFrontend(request, reply, options.dataRoot, "/")) {
       return reply;
@@ -291,7 +304,10 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   app.get("/api/reviewer/history", async () => readReviewerHistory(storage));
 
   app.get("/api/providers", async () => {
-    const credentials = await readProviderCredentials(storage);
+    const [credentials, gatewayList] = await Promise.all([
+      readProviderCredentials(storage),
+      llmRegistryJson("/v1/providers") as Promise<{ providers: GatewayProviderListing[] }>
+    ]);
     return {
       revision: credentials.revision,
       updatedAt: credentials.updatedAt,
@@ -310,7 +326,8 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
                 configured: false
               }
         };
-      })
+      }),
+      gatewayProviders: gatewayList.providers
     };
   });
 
@@ -341,7 +358,10 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     return providerCredentialsResponse(updated, providerId);
   });
 
-  app.get("/api/models", async () => ({ models: listModels() }));
+  app.get("/api/models", async () => {
+    const gatewayList = (await llmRegistryJson("/v1/models")) as { models: ModelSummary[] };
+    return { models: listModels(), gatewayModels: gatewayList.models };
+  });
 
   app.get("/api/waifus", async () => ({ waifus: await listWaifus(storage) }));
   app.post("/api/waifus", async (request, reply) => {
@@ -951,6 +971,8 @@ function serverRelativePath(guildId: string): string {
   assertSafeId(guildId);
   return path.join("user", "servers", guildId, "server.json");
 }
+
+type GatewayProviderListing = ProviderDef & { credentialConfigured: boolean };
 
 async function readMembers(storage: StorageService, guildId: string): Promise<GuildMembersFile> {
   assertSafeId(guildId);

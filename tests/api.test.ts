@@ -698,3 +698,60 @@ describe("LLM gateway mount (/api/llm)", () => {
     }
   });
 });
+
+describe("Gateway registry proxies (/api/models, /api/providers)", () => {
+  it("exposes both the legacy and gateway model lists on /api/models", async () => {
+    const { app } = await makeApp();
+    try {
+      const models = await app.inject({ method: "GET", url: "/api/models" });
+      expect(models.statusCode).toBe(200);
+      const body = models.json() as {
+        models: Array<{ modelId: string }>;
+        gatewayModels: Array<{ providerId: string; modelId: string }>;
+      };
+      // legacy list byte-untouched: still 23 catalog models, including old-only ids
+      expect(body.models).toHaveLength(23);
+      expect(body.models.map((m) => m.modelId)).toContain("grok-4.3");
+      expect(body.models.map((m) => m.modelId)).toContain("gpt-4o");
+      // new list rides alongside
+      expect(body.gatewayModels).toHaveLength(100);
+      expect(
+        body.gatewayModels.some(
+          (m) => m.providerId === "openrouter" && m.modelId === "moonshotai/kimi-k2.6"
+        )
+      ).toBe(true);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("exposes both provider listings on /api/providers", async () => {
+    const { app } = await makeApp();
+    try {
+      const providers = await app.inject({ method: "GET", url: "/api/providers" });
+      expect(providers.statusCode).toBe(200);
+      const body = providers.json() as {
+        providers: Array<{ id: string; credentials: { configured: boolean } }>;
+        gatewayProviders: Array<{ id: string; credentialConfigured: boolean }>;
+      };
+      expect(body.providers).toHaveLength(6);
+      expect(body.providers.every((p) => p.credentials.configured === false)).toBe(true);
+      expect(body.gatewayProviders).toHaveLength(14);
+      expect(body.gatewayProviders.map((p) => p.id)).toContain("openrouter");
+      expect(body.gatewayProviders.every((p) => p.credentialConfigured === false)).toBe(true);
+
+      // the proxy's gateway listing reflects stored credentials live, same as /api/llm/v1/providers
+      await app.inject({
+        method: "PUT",
+        url: "/api/providers/deepseek/credentials",
+        payload: { apiKey: "sk-live-key" }
+      });
+      const after = await app.inject({ method: "GET", url: "/api/providers" });
+      const afterBody = after.json() as typeof body;
+      expect(afterBody.gatewayProviders.find((p) => p.id === "deepseek")?.credentialConfigured).toBe(true);
+      expect(afterBody.gatewayProviders.find((p) => p.id === "anthropic")?.credentialConfigured).toBe(false);
+    } finally {
+      await app.close();
+    }
+  });
+});
