@@ -822,6 +822,7 @@ function gapNotes(messages: ContextMessage[]): OrchestratorTimelineItem[] {
   for (let i = 1; i < messages.length; i += 1) {
     const gapMs = Date.parse(messages[i].timestamp) - Date.parse(messages[i - 1].timestamp);
     if (gapMs >= GAP_NOTE_MIN_MS) {
+      // timestamp matches the following message; kindRank places the note before it
       notes.push({ kind: "note", text: formatGapLabel(gapMs), timestamp: messages[i].timestamp });
     }
   }
@@ -839,7 +840,7 @@ function formatWakeMarker(marker: OrchestratorWakeMarker): string {
 function buildOrchestratorTimeline(
   messages: ContextMessage[],
   decisions: OrchestratorDecisionHistoryEntry[],
-  markers: OrchestratorWakeMarker[] = []
+  markers: OrchestratorWakeMarker[]
 ): OrchestratorTimelineItem[] {
   const oldestMessageTimestamp = messages.length ? messages[0].timestamp : undefined;
   const kindRank = { note: 0, message: 1, decision: 2 } as const;
@@ -886,6 +887,7 @@ function formatDecisionOutcome(decision: OrchestratorDecisionHistoryEntry): stri
     return `paused ${decision.retriggerAfterSeconds ?? "?"}s`;
   }
   const deviations = decision.responderOutcomes
+    // "pending" means the chain was cut before this responder fired — the interrupted arm covers it
     .filter((outcome) => outcome.status !== "sent" && outcome.status !== "pending")
     .map((outcome) => `${outcome.waifuId}: ${outcome.status}`);
   if (decision.status === "interrupted") {

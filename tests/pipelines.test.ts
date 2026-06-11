@@ -2646,7 +2646,8 @@ describe("orchestrator wire format (W1)", () => {
   });
 
   it("replays past decisions with intent-only directives, clipped reasoning, and real outcomes", () => {
-    const model = listModels().find((m) => m.modelId === "grok-4.3")!;
+    const model = listModels().find((m) => m.modelId === "grok-4.3");
+    expect(model).toBeDefined();
     const longReasoning = "x".repeat(300);
     const entry = {
       id: "decision-replay-1",
@@ -2701,7 +2702,7 @@ describe("orchestrator wire format (W1)", () => {
       }
     ];
     const result = __testables.buildOpenAiChatOrchestratorMessages({
-      model,
+      model: model!,
       systemPrompt: "",
       messages,
       decisions: [entry],
@@ -2717,7 +2718,8 @@ describe("orchestrator wire format (W1)", () => {
   });
 
   it("inserts gap notes for >=15min silences and renders a wake marker last", () => {
-    const model = listModels().find((m) => m.modelId === "grok-4.3")!;
+    const model = listModels().find((m) => m.modelId === "grok-4.3");
+    expect(model).toBeDefined();
     const messages: ContextMessage[] = [
       {
         id: "gap-m1",
@@ -2753,7 +2755,7 @@ describe("orchestrator wire format (W1)", () => {
       }
     ];
     const result = __testables.buildOpenAiChatOrchestratorMessages({
-      model,
+      model: model!,
       systemPrompt: "",
       messages,
       decisions: [],
