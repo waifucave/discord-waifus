@@ -36,6 +36,22 @@ describe("RespondingWaifuSchema", () => {
   it("excludes manual from the model-facing intent list", () => {
     expect(MODEL_DIRECTIVE_INTENTS).not.toContain("manual");
   });
+
+  it("degrades an unknown intent to undefined instead of failing", () => {
+    const parsed = RespondingWaifuSchema.parse({
+      waifuId: "aria",
+      directive: { intent: "breek_loop", goal: "valid goal" }
+    });
+    expect(parsed.directive).toBeUndefined();
+  });
+
+  it("degrades a whitespace-only goal to undefined", () => {
+    const parsed = RespondingWaifuSchema.parse({
+      waifuId: "aria",
+      directive: { intent: "break_loop", goal: "   " }
+    });
+    expect(parsed.directive).toBeUndefined();
+  });
 });
 
 describe("OrchestratorDecisionSchema", () => {
@@ -58,5 +74,16 @@ describe("OrchestratorDecisionSchema", () => {
         reasoning: "broken"
       })
     ).toThrow();
+  });
+
+  it("maps a whitespace-only wakePlan to undefined", () => {
+    const parsed = OrchestratorDecisionSchema.parse({
+      action: "no_reply",
+      respondingWaifus: [],
+      retriggerAfterSeconds: 600,
+      wakePlan: "   ",
+      reasoning: "quiet room"
+    });
+    expect(parsed.wakePlan).toBeUndefined();
   });
 });

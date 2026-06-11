@@ -36,7 +36,7 @@ export const DirectiveSchema = z.object({
   intent: z.enum(DIRECTIVE_INTENTS),
   // The goal cap (DIRECTIVE_GOAL_MAX_CHARS) is enforced by the runtime guardrail so an
   // over-cap goal parses and is stripped gracefully instead of failing the whole decision.
-  goal: z.string().min(1)
+  goal: z.string().trim().min(1)
 });
 export type Directive = z.infer<typeof DirectiveSchema>;
 
