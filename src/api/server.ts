@@ -4,6 +4,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import fastify, { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
+import { type GatewayHandlerOptions } from "@waifucave/gateway";
+import gatewayPlugin from "@waifucave/gateway/fastify";
+import { createProviderCredentialsLookup } from "./llmGatewayCredentials.js";
 import { loadAppConfig, saveAppConfig } from "../config/appConfig.js";
 import { resolveDataPath, userDataPath } from "../config/paths.js";
 import { Logger, createLogger } from "../backend/logger.js";
@@ -66,6 +69,10 @@ export type ApiServerOptions = {
     reload: (reason: string) => Promise<void>;
   };
   logger?: Logger;
+  /** Test hook: overrides the fetch the mounted LLM gateway uses for provider calls. */
+  llmGateway?: {
+    fetchImpl?: typeof fetch;
+  };
 };
 
 const ProviderCredentialsBodySchema = z.object({
@@ -190,6 +197,15 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     logger.error("Unhandled API error", { message: unknownError.message, stack: unknownError.stack });
     void reply.status(500).send({ error: "InternalServerError" });
   });
+
+  // P2 (MIGRATION_PLAN §7.4/§8): the gateway HTTP API rides at /api/llm/* with
+  // keys read live from user/providers.json. The plugin is self-encapsulated —
+  // own JSON parsing, own error envelopes; pipelines.ts chat traffic is untouched.
+  const llmGatewayOptions: GatewayHandlerOptions = {
+    credentials: createProviderCredentialsLookup(options.dataRoot),
+    ...(options.llmGateway?.fetchImpl ? { fetchImpl: options.llmGateway.fetchImpl } : {})
+  };
+  await app.register(gatewayPlugin, { prefix: "/api/llm", ...llmGatewayOptions });
 
   app.get("/", async (request, reply) => {
     if (await tryServeFrontend(request, reply, options.dataRoot, "/")) {

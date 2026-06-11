@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -16,7 +16,7 @@ afterEach(async () => {
   roots = [];
 });
 
-async function makeApp() {
+async function makeApp(extra: { llmFetch?: typeof fetch } = {}) {
   const root = await makeTempRoot();
   roots.push(root);
   await ensureDataLayout(root);
@@ -42,7 +42,8 @@ async function makeApp() {
   const app = await createApiServer({
     dataRoot: root,
     runtime,
-    storage: new StorageService(root)
+    storage: new StorageService(root),
+    ...(extra.llmFetch ? { llmGateway: { fetchImpl: extra.llmFetch } } : {})
   });
   return { app, root };
 }
@@ -463,6 +464,235 @@ describe("Backend API", () => {
       expect(rootResponse.statusCode).toBe(200);
       expect(rootResponse.headers["content-type"]).toContain("text/html");
       expect(rootResponse.body).toContain("root");
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+const LLM_CHAT_OK_PAYLOAD = {
+  id: "cmpl_1",
+  choices: [{ message: { content: "hello" }, finish_reason: "stop" }],
+  usage: { prompt_tokens: 3, completion_tokens: 1 }
+};
+
+describe("LLM gateway mount (/api/llm)", () => {
+  it("serves the gateway model registry through the mount", async () => {
+    const { app } = await makeApp();
+    try {
+      const models = await app.inject({ method: "GET", url: "/api/llm/v1/models" });
+      expect(models.statusCode).toBe(200);
+      const body = models.json() as { models: Array<Record<string, unknown>> };
+      expect(body.models).toHaveLength(100);
+      expect(
+        body.models.find((m) => m.providerId === "deepseek" && m.modelId === "deepseek-v4-pro")
+      ).toEqual({
+        providerId: "deepseek",
+        modelId: "deepseek-v4-pro",
+        family: "deepseek-v4-pro",
+        displayName: "DeepSeek V4 Pro",
+        company: "DeepSeek",
+        wire: "openai-chat",
+        contextTokens: 1000000,
+        maxOutputTokens: 384000,
+        streaming: true,
+        tools: true,
+        reasoning: true,
+        jsonMode: true,
+        jsonSchema: false,
+        imageInput: false,
+        deprecated: false,
+        confidence: "verified"
+      });
+
+      const detail = await app.inject({
+        method: "GET",
+        url: "/api/llm/v1/models/openrouter/moonshotai/kimi-k2.6"
+      });
+      expect(detail.statusCode).toBe(200);
+      expect(detail.json()).toMatchObject({
+        providerId: "openrouter",
+        modelId: "moonshotai/kimi-k2.6",
+        family: "kimi-k2-6",
+        displayName: "Kimi K2.6",
+        baseUrl: "https://openrouter.ai/api/v1"
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("reflects StorageService credentials live in /v1/providers", async () => {
+    const { app } = await makeApp();
+    try {
+      const before = await app.inject({ method: "GET", url: "/api/llm/v1/providers" });
+      expect(before.statusCode).toBe(200);
+      const beforeBody = before.json() as {
+        providers: Array<{ id: string; credentialConfigured: boolean }>;
+      };
+      expect(beforeBody.providers).toHaveLength(14);
+      expect(beforeBody.providers.every((p) => p.credentialConfigured === false)).toBe(true);
+
+      const put = await app.inject({
+        method: "PUT",
+        url: "/api/providers/deepseek/credentials",
+        payload: { apiKey: "sk-live-key" }
+      });
+      expect(put.statusCode).toBe(200);
+
+      const after = await app.inject({ method: "GET", url: "/api/llm/v1/providers" });
+      const afterBody = after.json() as { providers: Array<Record<string, unknown>> };
+      expect(afterBody.providers.find((p) => p.id === "deepseek")).toEqual({
+        id: "deepseek",
+        displayName: "DeepSeek",
+        baseUrl: "https://api.deepseek.com",
+        credentialEnv: "DEEPSEEK_API_KEY",
+        wire: "openai-chat",
+        credentialConfigured: true
+      });
+      expect(afterBody.providers.find((p) => p.id === "anthropic")?.credentialConfigured).toBe(false);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("returns the gateway 401 envelope for chat without a stored credential", async () => {
+    const { app } = await makeApp();
+    try {
+      const chat = await app.inject({
+        method: "POST",
+        url: "/api/llm/v1/chat",
+        payload: {
+          provider: "deepseek",
+          model: "deepseek-v4-pro",
+          messages: [{ role: "user", content: "hi" }]
+        }
+      });
+      expect(chat.statusCode).toBe(401);
+      expect(chat.json()).toEqual({
+        error: {
+          kind: "auth",
+          message: "no credential configured for provider deepseek",
+          provider: "deepseek",
+          retryable: false
+        }
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("flows a stored key onto the provider wire for chat", async () => {
+    const llmFetch = vi.fn(
+      async () => new Response(JSON.stringify(LLM_CHAT_OK_PAYLOAD), { status: 200 })
+    );
+    const { app } = await makeApp({ llmFetch: llmFetch as unknown as typeof fetch });
+    try {
+      await app.inject({
+        method: "PUT",
+        url: "/api/providers/deepseek/credentials",
+        payload: { apiKey: "sk-live-key" }
+      });
+      const chat = await app.inject({
+        method: "POST",
+        url: "/api/llm/v1/chat",
+        payload: {
+          provider: "deepseek",
+          model: "deepseek-v4-pro",
+          messages: [{ role: "user", content: "hi" }],
+          params: { temperature: 0.7, "reasoning.enabled": true }
+        }
+      });
+      expect(chat.statusCode).toBe(200);
+
+      // P1b/P1c golden wire body, verbatim — proves the stored key reached the wire
+      const [url, init] = llmFetch.mock.calls[0]! as unknown as [string, RequestInit];
+      expect(url).toBe("https://api.deepseek.com/chat/completions");
+      expect((init.headers as Record<string, string>).authorization).toBe("Bearer sk-live-key");
+      expect(JSON.parse(init.body as string)).toEqual({
+        model: "deepseek-v4-pro",
+        thinking: { type: "enabled" },
+        reasoning_effort: "high",
+        messages: [{ role: "user", content: "hi" }]
+      });
+
+      const body = chat.json() as Record<string, unknown>;
+      expect(body).toMatchObject({
+        id: "cmpl_1",
+        provider: "deepseek",
+        model: "deepseek-v4-pro",
+        content: [{ type: "text", text: "hello" }],
+        finishReason: "stop",
+        usage: { inputTokens: 3, outputTokens: 1 }
+      });
+      expect(body.warnings).toEqual([
+        {
+          code: "param_dropped",
+          param: "temperature",
+          ruleId: "thinking-drops-sampling",
+          message: "temperature was dropped by constraint rule thinking-drops-sampling"
+        },
+        {
+          code: "param_dropped",
+          param: "topP",
+          ruleId: "thinking-drops-sampling",
+          message: "topP was dropped by constraint rule thinking-drops-sampling"
+        }
+      ]);
+      expect(body.raw).toBeUndefined();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("answers /v1/validate with the pinned validation result", async () => {
+    const { app } = await makeApp();
+    try {
+      const validate = await app.inject({
+        method: "POST",
+        url: "/api/llm/v1/validate",
+        payload: { provider: "deepseek", model: "deepseek-v4-pro", params: { temperature: 99 } }
+      });
+      expect(validate.statusCode).toBe(200);
+      expect(validate.json()).toEqual({
+        ok: false,
+        violations: [
+          { param: "temperature", code: "out_of_range", message: "temperature must be in [0, 2]" }
+        ],
+        warnings: [
+          { ruleId: "thinking-drops-sampling", param: "temperature", code: "dropped" },
+          { ruleId: "thinking-drops-sampling", param: "topP", code: "dropped" }
+        ],
+        effectiveParams: { "reasoning.enabled": true, "reasoning.effort": "high" }
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("keeps gateway and app error envelopes separate", async () => {
+    const { app } = await makeApp();
+    try {
+      const gateway404 = await app.inject({ method: "GET", url: "/api/llm/v1/nope" });
+      expect(gateway404.statusCode).toBe(404);
+      expect(gateway404.json()).toEqual({
+        error: { kind: "invalid_request", message: "not found", retryable: false }
+      });
+
+      const method405 = await app.inject({
+        method: "POST",
+        url: "/api/llm/v1/providers",
+        payload: {}
+      });
+      expect(method405.statusCode).toBe(405);
+      expect(method405.headers.allow).toBe("GET");
+
+      const app404 = await app.inject({ method: "GET", url: "/api/nope" });
+      expect(app404.statusCode).toBe(404);
+      expect(app404.json()).toEqual({
+        error: "NotFound",
+        message: "GET /api/nope was not found."
+      });
     } finally {
       await app.close();
     }
