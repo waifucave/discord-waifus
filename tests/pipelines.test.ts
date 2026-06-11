@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ContextMessage } from "../src/orchestration/context.js";
 import { RETRIGGER_MAX_SECONDS, RETRIGGER_MIN_SECONDS } from "../src/orchestration/decisions.js";
 import { listModels } from "../src/providers/catalog.js";
-import { createModelPipeline } from "../src/providers/pipelines.js";
+import { createModelPipeline, ORCHESTRATOR_TOOL_PARAMETERS, __testables } from "../src/providers/pipelines.js";
 import { recentQueries, recentReplies } from "../src/shared/queryLog.js";
 
 const context: ContextMessage[] = [
@@ -176,7 +176,8 @@ describe("provider-native decision tools", () => {
       };
     }>)[0].function.parameters.properties.respondingWaifus.items.properties;
     expect(waifuIdSchema.enum).toEqual(["yuki", "mika"]);
-    expect(responderProperties.repleyToMessageIndex).toBeDefined();
+    expect(responderProperties.repleyToMessageIndex).toBeUndefined();
+    expect(responderProperties.directive).toBeDefined();
     expect(responderProperties.replyToMessageId).toBeUndefined();
     expect(responderProperties.delaySeconds?.maximum).toBe(30);
     expect(query?.payload.tool_choice).toEqual({
@@ -621,7 +622,7 @@ describe("provider-native decision tools", () => {
     expect(toolCallMessage?.tool_calls?.[0].id).toBe("decision-1");
     expect(toolCallMessage?.tool_calls?.[0].function.name).toBe("orchestrator_decision");
     const args = JSON.parse(toolCallMessage?.tool_calls?.[0].function.arguments ?? "{}");
-    expect(args).toEqual({
+    expect(args).toMatchObject({
       action: "no_reply",
       respondingWaifus: [],
       retriggerAfterSeconds: 600,
@@ -820,11 +821,11 @@ describe("provider-native decision tools", () => {
       respondingWaifus: [
         {
           waifuId: "yuki",
-          delaySeconds: 1,
-          replyStyle: "normal"
+          delaySeconds: 1
         }
       ]
     });
+    expect(decision?.respondingWaifus?.[0].replyStyle).toBeUndefined();
     expect(decision?.respondingWaifus?.[0].replyToMessageId).toBeUndefined();
     const query = recentQueries().at(-1);
     expect(query?.role).toBe("orchestrator");
@@ -1780,12 +1781,12 @@ describe("Google AI Studio (Gemini) pipeline", () => {
               items: {
                 additionalProperties?: unknown;
                 properties: {
-                  repleyToMessageIndex: Record<string, unknown>;
-                  sceneDirection: Record<string, unknown>;
+                  directive: Record<string, unknown>;
                 };
               };
             };
             retriggerAfterSeconds: Record<string, unknown>;
+            wakePlan: Record<string, unknown>;
           };
         };
       }>;
@@ -1797,19 +1798,15 @@ describe("Google AI Studio (Gemini) pipeline", () => {
     expect(JSON.stringify(parameters)).not.toContain("\"anyOf\"");
     expect(parameters).not.toHaveProperty("additionalProperties");
     expect(respondingItem).not.toHaveProperty("additionalProperties");
-    expect(respondingItem.properties.repleyToMessageIndex).toMatchObject({
-      type: "integer",
-      minimum: 1,
-      nullable: true
-    });
-    expect(respondingItem.properties.sceneDirection).toMatchObject({
-      type: "string",
-      nullable: true
-    });
+    expect(respondingItem.properties.directive).toBeDefined();
     expect(parameters.properties.retriggerAfterSeconds).toMatchObject({
       type: "number",
       minimum: RETRIGGER_MIN_SECONDS,
       maximum: RETRIGGER_MAX_SECONDS,
+      nullable: true
+    });
+    expect(parameters.properties.wakePlan).toMatchObject({
+      type: "string",
       nullable: true
     });
   });
@@ -2619,6 +2616,159 @@ describe("Google AI Studio (Gemini) pipeline", () => {
     const query = recentQueries().at(-1);
     const toolConfig = query?.payload.toolConfig as { functionCallingConfig?: { allowedFunctionNames?: string[] } };
     expect(toolConfig?.functionCallingConfig?.allowedFunctionNames).toBeUndefined();
+  });
+});
+
+describe("orchestrator wire format (W1)", () => {
+  it("tool schema requires only waifuId per responder and has no replyStyle/index fields", () => {
+    const params = ORCHESTRATOR_TOOL_PARAMETERS as any;
+    const responder = params.properties.respondingWaifus.items;
+    expect(responder.required).toEqual(["waifuId"]);
+    expect(responder.properties.replyStyle).toBeUndefined();
+    expect(responder.properties.repleyToMessageIndex).toBeUndefined();
+    expect(responder.properties.directive).toBeDefined();
+    expect(params.properties.wakePlan).toBeDefined();
+  });
+
+  it("parseDecision normalizes directives, drops unknown intents, defaults delaySeconds", () => {
+    const decision = __testables.parseDecision(JSON.stringify({
+      action: "reply",
+      respondingWaifus: [
+        { waifuId: "aria", directive: { intent: "change_topic", goal: "bring up the snowstorm" } },
+        { waifuId: "riko", directive: { intent: "write_her_reply", goal: "say hi" } }
+      ],
+      retriggerAfterSeconds: null,
+      reasoning: "test"
+    }));
+    expect(decision.respondingWaifus[0].directive).toEqual({ intent: "change_topic", goal: "bring up the snowstorm" });
+    expect(decision.respondingWaifus[0].delaySeconds).toBe(0);
+    expect(decision.respondingWaifus[1].directive).toBeUndefined();
+  });
+
+  it("replays past decisions with intent-only directives, clipped reasoning, and real outcomes", () => {
+    const model = listModels().find((m) => m.modelId === "grok-4.3")!;
+    const longReasoning = "x".repeat(300);
+    const entry = {
+      id: "decision-replay-1",
+      guildId: "g1",
+      channelId: "c1",
+      action: "reply" as const,
+      respondingWaifus: [
+        {
+          waifuId: "aria",
+          delaySeconds: 0,
+          directive: { intent: "spotlight" as const, goal: "secret goal text" }
+        }
+      ],
+      reasoning: longReasoning,
+      status: "completed" as const,
+      waifuMessageIds: [],
+      responderOutcomes: [
+        {
+          id: "o1",
+          waifuId: "aria",
+          source: "orchestrator" as const,
+          status: "empty" as const,
+          messageIds: []
+        }
+      ],
+      createdAt: "2026-05-16T12:00:01Z"
+    };
+    const messages: ContextMessage[] = [
+      {
+        id: "m-before",
+        channelId: "c1",
+        guildId: "g1",
+        authorKind: "user",
+        authorId: "u1",
+        name: "Kevin",
+        displayName: "Kevin",
+        content: "hello",
+        timestamp: "2026-05-16T12:00:00Z",
+        reactions: []
+      },
+      {
+        id: "m-after",
+        channelId: "c1",
+        guildId: "g1",
+        authorKind: "user",
+        authorId: "u1",
+        name: "Kevin",
+        displayName: "Kevin",
+        content: "anyone there?",
+        timestamp: "2026-05-16T12:00:01Z",
+        reactions: []
+      }
+    ];
+    const result = __testables.buildOpenAiChatOrchestratorMessages({
+      model,
+      systemPrompt: "",
+      messages,
+      decisions: [entry],
+      trailingPrompt: "go"
+    });
+    const assistantMsg = result.find((m: any) => m.role === "assistant" && m.tool_calls);
+    const args = JSON.parse((assistantMsg as any)?.tool_calls[0].function.arguments ?? "{}");
+    expect(args.respondingWaifus[0].directive).toEqual({ intent: "spotlight" });
+    expect(JSON.stringify(args)).not.toContain("secret goal text");
+    expect(args.reasoning.length).toBeLessThanOrEqual(160);
+    const toolMsg = result.find((m: any) => m.role === "tool");
+    expect((toolMsg as any)?.content).toContain("aria: empty");
+  });
+
+  it("inserts gap notes for >=15min silences and renders a wake marker last", () => {
+    const model = listModels().find((m) => m.modelId === "grok-4.3")!;
+    const messages: ContextMessage[] = [
+      {
+        id: "gap-m1",
+        channelId: "c1",
+        guildId: "g1",
+        authorKind: "user",
+        authorId: "u1",
+        name: "Kevin",
+        displayName: "Kevin",
+        content: "hello",
+        timestamp: "2026-05-16T10:00:00Z",
+        reactions: []
+      },
+      {
+        id: "gap-m2",
+        channelId: "c1",
+        guildId: "g1",
+        authorKind: "user",
+        authorId: "u1",
+        name: "Kevin",
+        displayName: "Kevin",
+        content: "still here?",
+        timestamp: "2026-05-16T12:00:00Z",
+        reactions: []
+      }
+    ];
+    const markers = [
+      {
+        kind: "wake" as const,
+        timestamp: "2026-05-16T12:30:00Z",
+        scheduledSeconds: 1800,
+        wakePlan: "have Lumi answer"
+      }
+    ];
+    const result = __testables.buildOpenAiChatOrchestratorMessages({
+      model,
+      systemPrompt: "",
+      messages,
+      decisions: [],
+      markers,
+      trailingPrompt: "go"
+    });
+    const userContents = result
+      .filter((m: any) => m.role === "user")
+      .map((m: any) => m.content as string);
+    expect(userContents.some((c) => c === "[2h pass]")).toBe(true);
+    // The last user message before the trailing "go" should be the wake marker
+    const nonTrailingUser = userContents.slice(0, -1);
+    const lastContent = nonTrailingUser[nonTrailingUser.length - 1];
+    expect(lastContent).toContain("[wake:");
+    expect(lastContent).toContain("have Lumi answer");
   });
 });
 
