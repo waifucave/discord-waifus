@@ -3,7 +3,6 @@ import { ContextMessage, OrchestratorWakeMarker } from "../orchestration/context
 import { OrchestratorDecision } from "../orchestration/decisions.js";
 import { StageManagerObservation, StageManagerToolCall } from "../orchestration/stageManager.js";
 import { ReviewerDecision } from "../orchestration/reviewer.js";
-import { WaifuMemory } from "../shared/schemas/domain.js";
 
 export type ModelRole = "orchestrator" | "waifu" | "stage_manager" | "reviewer";
 
@@ -70,7 +69,9 @@ export type StageManagerMemory = {
   memoryIndex: number;
   waifuId: string;
   content: string;
-  importance: WaifuMemory["importance"];
+  // Librarian wire scale (1-5). The runtime maps the stored 0-5 strength onto this at the
+  // boundary; Task 4 replaces the librarian with the dream pass which speaks strength directly.
+  importance: number;
 };
 
 export type StageManagerRequest = ProviderRequest & {

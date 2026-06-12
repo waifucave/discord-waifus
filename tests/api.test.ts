@@ -219,7 +219,7 @@ describe("Backend API", () => {
     }
   });
 
-  it("loads legacy memories as non-permanent and preserves user-managed permanence", async () => {
+  it("creates user memories as pinned and preserves pinned state across edits", async () => {
     const { app, root } = await makeApp();
     const now = new Date().toISOString();
     await writeFile(
@@ -230,15 +230,17 @@ describe("Backend API", () => {
         updatedAt: now,
         memories: [
           {
-            id: "legacy-memory",
+            id: "seed-memory",
             waifuId: "yuki",
-            scope: "guild",
             guildId: "guild-1",
-            content: "Legacy memory.",
-            importance: 3,
+            content: "Seed memory.",
+            kind: "fact",
+            source: "stage_manager",
+            pinned: false,
+            strength: 3,
+            entities: [],
             createdAt: now,
             updatedAt: now,
-            sourceMessageIds: [],
             status: "active"
           }
         ]
@@ -247,51 +249,52 @@ describe("Backend API", () => {
     );
 
     try {
-      const legacy = await app.inject({ method: "GET", url: "/api/memories" });
-      expect(legacy.statusCode).toBe(200);
-      expect(legacy.json().memories[0]).toMatchObject({
-        id: "legacy-memory",
-        permanent: false
+      const seeded = await app.inject({ method: "GET", url: "/api/memories" });
+      expect(seeded.statusCode).toBe(200);
+      expect(seeded.json().memories[0]).toMatchObject({
+        id: "seed-memory",
+        pinned: false,
+        strength: 3
       });
 
-      const makePermanent = await app.inject({
-        method: "PUT",
-        url: "/api/memories/legacy-memory",
-        payload: {
-          revision: 0,
-          permanent: true
-        }
-      });
-      expect(makePermanent.statusCode).toBe(200);
-      expect(makePermanent.json().memories[0].permanent).toBe(true);
-
-      const editWithoutRetentionChange = await app.inject({
-        method: "PUT",
-        url: "/api/memories/legacy-memory",
-        payload: {
-          revision: 1,
-          content: "Edited permanent memory."
-        }
-      });
-      expect(editWithoutRetentionChange.statusCode).toBe(200);
-      expect(editWithoutRetentionChange.json().memories[0]).toMatchObject({
-        content: "Edited permanent memory.",
-        permanent: true
-      });
-
-      const createOrdinary = await app.inject({
+      // A user-created memory is pinned by default with strength 5 and source "user".
+      const created = await app.inject({
         method: "POST",
         url: "/api/memories",
         payload: {
-          revision: 2,
+          revision: 0,
           waifuId: "yuki",
           guildId: "guild-1",
-          content: "Ordinary memory.",
-          importance: 2
+          content: "Yuki knows Kevin is allergic to peanuts."
         }
       });
-      expect(createOrdinary.statusCode).toBe(201);
-      expect(createOrdinary.json().memories.at(-1).permanent).toBe(false);
+      expect(created.statusCode).toBe(201);
+      const createdMemory = created.json().memories.at(-1);
+      expect(createdMemory).toMatchObject({
+        content: "Yuki knows Kevin is allergic to peanuts.",
+        pinned: true,
+        source: "user",
+        strength: 5,
+        kind: "fact"
+      });
+      expect(createdMemory.entities).toContain("Kevin");
+
+      // Editing the content keeps the pinned state and re-derives entities.
+      const edited = await app.inject({
+        method: "PUT",
+        url: `/api/memories/${createdMemory.id}`,
+        payload: {
+          revision: 1,
+          content: "Riko owes Ali tacos since Thursday."
+        }
+      });
+      expect(edited.statusCode).toBe(200);
+      const editedMemory = edited.json().memories.find((memory: { id: string }) => memory.id === createdMemory.id);
+      expect(editedMemory).toMatchObject({
+        content: "Riko owes Ali tacos since Thursday.",
+        pinned: true
+      });
+      expect(editedMemory.entities).toEqual(expect.arrayContaining(["Ali", "Thursday"]));
     } finally {
       await app.close();
     }

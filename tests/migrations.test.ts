@@ -339,17 +339,25 @@ describe("runMigrations", () => {
     const result = await runMigrations(root);
 
     expect(result.applied).toContain("migrate-memories-to-guild-scope");
+    expect(result.applied).toContain("migrate-memory-store-v2");
     const store = await readJson<{ memories: Array<Record<string, unknown>> }>(root, "user/memories.json");
+    // The guild-resolvable memory survives into the new unified shape.
+    expect(store.memories).toHaveLength(1);
     expect(store.memories[0]).toMatchObject({
-      scope: "guild",
+      id: "memory-1",
       guildId: "guild-2",
+      waifuId: "yuki",
+      source: "stage_manager",
+      pinned: false,
+      strength: 3,
       status: "active"
     });
-    expect(store.memories[1]).toMatchObject({
-      scope: "guild",
-      status: "archived"
-    });
-    expect(store.memories[1]).not.toHaveProperty("guildId");
+    expect(store.memories[0]).not.toHaveProperty("scope");
+    expect(store.memories[0]).not.toHaveProperty("importance");
+    expect(store.memories[0]).not.toHaveProperty("permanent");
+    // memory-2 had no resolvable guild → legacy step archived it without a guildId, so the V2
+    // step drops it (the new schema requires a non-empty guildId).
+    expect(store.memories.find((memory) => memory.id === "memory-2")).toBeUndefined();
   });
 
   it("assigns legacy memories to the only configured guild when history cannot infer one", async () => {
@@ -386,10 +394,14 @@ describe("runMigrations", () => {
 
     const store = await readJson<{ memories: Array<Record<string, unknown>> }>(root, "user/memories.json");
     expect(store.memories[0]).toMatchObject({
-      scope: "guild",
       guildId: "guild-1",
+      waifuId: "yuki",
+      source: "stage_manager",
+      pinned: false,
+      strength: 3,
       status: "active"
     });
+    expect(store.memories[0]).not.toHaveProperty("scope");
   });
 
   it("archives active memories assigned to non-waifu ids", async () => {
@@ -435,6 +447,148 @@ describe("runMigrations", () => {
     const store = await readJson<{ memories: Array<Record<string, unknown>> }>(root, "user/memories.json");
     expect(store.memories.find((memory) => memory.id === "valid")).toMatchObject({ status: "active" });
     expect(store.memories.find((memory) => memory.id === "invalid-user")).toMatchObject({ status: "archived" });
+  });
+
+  it("migrates the two-store memory model into one unified MemoryRecord store (W3)", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+
+    await writeWaifuStub(root, "yuki");
+    await writeJson(root, "user/servers/guild-1/server.json", {
+      schemaVersion: 1,
+      revision: 0,
+      updatedAt: "2026-05-16T12:00:00.000Z",
+      guildId: "guild-1"
+    });
+    await writeJson(root, "user/memories.json", {
+      schemaVersion: 1,
+      revision: 4,
+      updatedAt: "2026-05-16T12:00:00.000Z",
+      memories: [
+        {
+          id: "perm-1",
+          waifuId: "yuki",
+          scope: "guild",
+          guildId: "guild-1",
+          content: "Yuki knows Kevin is allergic to peanuts.",
+          importance: 5,
+          permanent: true,
+          createdAt: "2026-05-16T12:00:00.000Z",
+          updatedAt: "2026-05-16T12:00:00.000Z",
+          sourceMessageIds: ["m1"],
+          status: "active"
+        },
+        {
+          id: "lib-1",
+          waifuId: "yuki",
+          scope: "guild",
+          guildId: "guild-1",
+          content: "Kevin enjoys green tea.",
+          importance: 3,
+          permanent: false,
+          createdAt: "2026-05-16T12:00:00.000Z",
+          updatedAt: "2026-05-16T12:00:00.000Z",
+          sourceMessageIds: [],
+          status: "active"
+        }
+      ]
+    });
+    await writeJson(root, "user/short-term-memories.json", {
+      schemaVersion: 1,
+      revision: 2,
+      updatedAt: "2026-05-16T12:00:00.000Z",
+      entries: [
+        {
+          id: "note-1",
+          guildId: "guild-1",
+          channelId: "channel-1",
+          waifuId: "yuki",
+          content: "Kevin said he is leaving at 5pm.",
+          createdAt: "2026-05-16T12:00:00.000Z",
+          expiresAt: "2026-05-17T12:00:00.000Z"
+        }
+      ]
+    });
+
+    const result = await runMigrations(root);
+    expect(result.applied).toContain("migrate-memory-store-v2");
+
+    const store = await readJson<{ memories: Array<Record<string, unknown>> }>(root, "user/memories.json");
+    expect(store.memories).toHaveLength(3);
+
+    const perm = store.memories.find((memory) => memory.id === "perm-1");
+    expect(perm).toMatchObject({
+      pinned: true,
+      strength: 5,
+      source: "user",
+      kind: "fact",
+      status: "active"
+    });
+    expect(perm).not.toHaveProperty("importance");
+    expect(perm).not.toHaveProperty("permanent");
+    expect(perm).not.toHaveProperty("scope");
+    expect(perm).not.toHaveProperty("sourceMessageIds");
+    expect(Array.isArray(perm?.entities)).toBe(true);
+    expect(perm?.entities).toContain("Kevin");
+
+    const lib = store.memories.find((memory) => memory.id === "lib-1");
+    expect(lib).toMatchObject({ pinned: false, strength: 3, source: "stage_manager" });
+
+    const note = store.memories.find((memory) => memory.id === "note-1");
+    expect(note).toMatchObject({
+      source: "waifu_tool",
+      kind: "context",
+      strength: 2,
+      pinned: false,
+      channelId: "channel-1",
+      expiresAt: "2026-05-17T12:00:00.000Z"
+    });
+
+    // Short-term file removed after merge.
+    await expect(readFile(path.join(root, "user/short-term-memories.json"), "utf8")).rejects.toMatchObject({
+      code: "ENOENT"
+    });
+
+    // Idempotent: a second run does not re-apply.
+    const second = await runMigrations(root);
+    expect(second.applied).not.toContain("migrate-memory-store-v2");
+    const after = await readJson<{ memories: Array<Record<string, unknown>> }>(root, "user/memories.json");
+    expect(after.memories).toHaveLength(3);
+  });
+
+  it("leaves an already-unified memory store untouched (W3 idempotency)", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+
+    await writeWaifuStub(root, "yuki");
+    await writeJson(root, "user/memories.json", {
+      schemaVersion: 1,
+      revision: 7,
+      updatedAt: "2026-06-12T12:00:00.000Z",
+      memories: [
+        {
+          id: "new-1",
+          guildId: "guild-1",
+          waifuId: "yuki",
+          content: "Kevin enjoys green tea.",
+          kind: "preference",
+          source: "stage_manager",
+          pinned: false,
+          strength: 3,
+          entities: ["Kevin"],
+          createdAt: "2026-06-12T12:00:00.000Z",
+          updatedAt: "2026-06-12T12:00:00.000Z",
+          status: "active"
+        }
+      ]
+    });
+
+    const before = await readFile(path.join(root, "user/memories.json"), "utf8");
+    const result = await runMigrations(root);
+    const afterRaw = await readFile(path.join(root, "user/memories.json"), "utf8");
+
+    expect(result.applied).not.toContain("migrate-memory-store-v2");
+    expect(afterRaw).toEqual(before);
   });
 
   it("removes legacy guild-wide active participant caches", async () => {

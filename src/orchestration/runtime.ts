@@ -49,17 +49,15 @@ import {
   ProviderCredentialsFile,
   ProviderCredentialsFileSchema,
   ReviewerHistoryFileSchema,
+  MemoryRecord,
   ServerConfig,
   ServerConfigSchema,
-  ShortTermMemory,
-  ShortTermMemoryStore,
-  ShortTermMemoryStoreSchema,
   StageManagerHistoryFileSchema,
   WaifuConfig,
   WaifuConfigSchema,
-  WaifuMemory,
   createEmptyRevisionedFile
 } from "../shared/schemas/domain.js";
+import { extractEntities } from "./memoryEntities.js";
 import { createRevisionedBase, nowIso } from "../shared/schemas/common.js";
 import { StorageService } from "../storage/storageService.js";
 import { StageManagerObservation, StageManagerToolCall } from "./stageManager.js";
@@ -752,27 +750,12 @@ export class RuntimeOrchestrator {
 
   private async modelVisibleMemoryBlockForPrint(
     guildId: string,
-    channelId: string,
+    _channelId: string,
     waifu: WaifuConfig
   ): Promise<string> {
     const now = Date.now();
-    const [store, shortTermStore] = await Promise.all([
-      this.readMemoryStore(),
-      this.readShortTermMemoryStore()
-    ]);
-    const longTermLines = store.memories
-      .filter((memory) => memory.guildId === guildId && memory.waifuId === waifu.id && memory.status === "active")
-      .map((memory) => `- ${memory.content}`);
-    const shortTermLines = shortTermStore.entries
-      .filter((entry) =>
-        entry.guildId === guildId &&
-        entry.channelId === channelId &&
-        entry.waifuId === waifu.id &&
-        Date.parse(entry.expiresAt) > now
-      )
-      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
-      .map((entry) => `- ${entry.content}`);
-    const lines = [...longTermLines, ...shortTermLines];
+    const store = await this.readMemoryStore();
+    const lines = injectAllMemoryLines(store.memories, guildId, waifu.id, now);
     if (lines.length === 0) {
       return "(none)";
     }
@@ -1523,7 +1506,7 @@ export class RuntimeOrchestrator {
             currentOutcomeFinalized = true;
           }
           if (result.shortTermMemoryEntries?.length && effectiveShortTermMemory) {
-            await this.recordShortTermMemoryEntries({
+            await this.recordWaifuNotes({
               guildId: input.guildId,
               channelId: input.channelId,
               waifuId: waifu.id,
@@ -2050,12 +2033,14 @@ export class RuntimeOrchestrator {
             memories.push({
               id,
               waifuId: call.memory.waifuId,
-              scope: "guild" as const,
               guildId,
               content: call.memory.content,
-              importance: call.memory.importance,
-              permanent: false,
-              sourceMessageIds: [],
+              kind: "fact" as const,
+              source: "stage_manager" as const,
+              pinned: false,
+              // The librarian still speaks the 1-5 importance scale; map it onto strength.
+              strength: call.memory.importance,
+              entities: extractEntities(call.memory.content),
               createdAt: now,
               updatedAt: now,
               status: "active"
@@ -2101,12 +2086,12 @@ export class RuntimeOrchestrator {
               });
               continue;
             }
-            if (target.permanent) {
+            if (target.pinned) {
               historyEntries.push({
                 id: randomUUID(),
                 tool: call.tool,
                 affectedMemoryIds: [],
-                summary: "Skipped user-managed permanent memory",
+                summary: "Skipped user-managed pinned memory",
                 createdAt: now
               });
               continue;
@@ -2118,11 +2103,10 @@ export class RuntimeOrchestrator {
               }
               return {
                 ...memory,
-                ...call.patch,
-                id: memory.id,
-                scope: "guild" as const,
-                guildId: memory.guildId,
-                createdAt: memory.createdAt,
+                ...(call.patch.waifuId ? { waifuId: call.patch.waifuId } : {}),
+                ...(call.patch.content ? { content: call.patch.content, entities: extractEntities(call.patch.content) } : {}),
+                // Librarian patch importance (1-5) maps onto stored strength.
+                ...(call.patch.importance !== undefined ? { strength: call.patch.importance } : {}),
                 updatedAt: now
               };
             });
@@ -2157,12 +2141,12 @@ export class RuntimeOrchestrator {
               });
               continue;
             }
-            if (target.permanent) {
+            if (target.pinned) {
               historyEntries.push({
                 id: randomUUID(),
                 tool: call.tool,
                 affectedMemoryIds: [],
-                summary: "Skipped user-managed permanent memory",
+                summary: "Skipped user-managed pinned memory",
                 createdAt: now
               });
               continue;
@@ -2194,12 +2178,12 @@ export class RuntimeOrchestrator {
               });
               continue;
             }
-            if (source.some((memory) => memory.permanent)) {
+            if (source.some((memory) => memory.pinned)) {
               historyEntries.push({
                 id: randomUUID(),
                 tool: call.tool,
                 affectedMemoryIds: [],
-                summary: "Skipped merge containing a user-managed permanent memory",
+                summary: "Skipped merge containing a user-managed pinned memory",
                 createdAt: now
               });
               continue;
@@ -2224,12 +2208,13 @@ export class RuntimeOrchestrator {
               .concat({
                 id,
                 waifuId: source[0].waifuId,
-                scope: "guild" as const,
                 guildId,
                 content: call.mergedContent,
-                importance: 3,
-                permanent: false,
-                sourceMessageIds: [...new Set(source.flatMap((memory) => memory.sourceMessageIds))],
+                kind: "fact" as const,
+                source: "stage_manager" as const,
+                pinned: false,
+                strength: Math.max(...source.map((memory) => memory.strength)),
+                entities: extractEntities(call.mergedContent),
                 createdAt: now,
                 updatedAt: now,
                 status: "active"
@@ -2581,14 +2566,6 @@ export class RuntimeOrchestrator {
     return this.options.storage.readJson("user/memories.json", MemoryStoreSchema, emptyMemoryStore());
   }
 
-  private async readShortTermMemoryStore(): Promise<ShortTermMemoryStore> {
-    return this.options.storage.readJson(
-      "user/short-term-memories.json",
-      ShortTermMemoryStoreSchema,
-      emptyShortTermMemoryStore()
-    );
-  }
-
   private async noteActiveChatParticipant(
     guildId: string,
     channelId: string,
@@ -2669,39 +2646,41 @@ export class RuntimeOrchestrator {
     );
   }
 
-  private async recordShortTermMemoryEntries(input: {
+  private async recordWaifuNotes(input: {
     guildId: string;
     channelId: string;
     waifuId: string;
     entries: string[];
   }): Promise<void> {
     if (input.entries.length === 0) return;
-    const capped = input.entries.slice(0, SHORT_TERM_MEMORY_MAX_PER_REPLY);
+    const capped = input.entries.slice(0, NOTE_MAX_PER_REPLY);
     const now = Date.now();
     const createdAt = new Date(now).toISOString();
-    const expiresAt = new Date(now + SHORT_TERM_MEMORY_LIFESPAN_MS).toISOString();
+    const expiresAt = new Date(now + NOTE_LIFESPAN_MS).toISOString();
     await this.options.storage.updateRevisionedJson({
-      resourceKey: "short-term-memories:global",
-      relativePath: "user/short-term-memories.json",
-      schema: ShortTermMemoryStoreSchema,
-      fallback: emptyShortTermMemoryStore(),
+      resourceKey: "memories:global",
+      relativePath: "user/memories.json",
+      schema: MemoryStoreSchema,
+      fallback: emptyMemoryStore(),
       transform: (current) => {
-        const surviving = current.entries.filter((entry) => Date.parse(entry.expiresAt) > now);
-        // Dedup against entries already stored for this waifu in this channel —
-        // model frequently re-records the same fact on a later turn.
+        // Dedup against notes already stored for this waifu in this channel —
+        // the model frequently re-records the same fact on a later turn.
         const existingForScope = new Set(
-          surviving
+          current.memories
             .filter(
-              (entry) =>
-                entry.guildId === input.guildId &&
-                entry.channelId === input.channelId &&
-                entry.waifuId === input.waifuId
+              (memory) =>
+                memory.source === "waifu_tool" &&
+                memory.status === "active" &&
+                memory.guildId === input.guildId &&
+                memory.channelId === input.channelId &&
+                memory.waifuId === input.waifuId &&
+                (!memory.expiresAt || Date.parse(memory.expiresAt) > now)
             )
-            .map((entry) => normalizeShortTermContent(entry.content))
+            .map((memory) => normalizeNoteContent(memory.content))
         );
-        const additions: ShortTermMemory[] = [];
+        const additions: MemoryRecord[] = [];
         for (const content of capped) {
-          const key = normalizeShortTermContent(content);
+          const key = normalizeNoteContent(content);
           if (!key || existingForScope.has(key)) continue;
           existingForScope.add(key);
           additions.push({
@@ -2710,11 +2689,18 @@ export class RuntimeOrchestrator {
             channelId: input.channelId,
             waifuId: input.waifuId,
             content,
+            kind: "context",
+            source: "waifu_tool",
+            pinned: false,
+            strength: NOTE_STRENGTH,
+            entities: extractEntities(content),
+            expiresAt,
             createdAt,
-            expiresAt
+            updatedAt: createdAt,
+            status: "active"
           });
         }
-        return { ...current, entries: [...surviving, ...additions] };
+        return { ...current, memories: [...current.memories, ...additions] };
       }
     });
   }
@@ -2733,14 +2719,13 @@ export class RuntimeOrchestrator {
     const pickNextWaifuToolActive = options.pickNextWaifuToolOverride ?? false;
     const shortTermMemoryToolActive =
       options.shortTermMemoryToolOverride ?? true;
-    const [store, emojis, shortTermStore, activeChatParticipants, members] = await Promise.all([
+    const [store, emojis, activeChatParticipants, members] = await Promise.all([
       this.readMemoryStore(),
       this.options.storage.readJson(
         path.join("user", "servers", guildId, "emojis.json"),
         GuildEmojisFileSchema,
         GuildEmojisFileSchema.parse(createEmptyRevisionedFile({ guildId, emojis: [] }))
       ),
-      this.readShortTermMemoryStore(),
       this.readActiveChatParticipants(guildId, options.channelId),
       this.options.storage.readJson(
         path.join("user", "servers", guildId, "members.json"),
@@ -2748,22 +2733,10 @@ export class RuntimeOrchestrator {
         GuildMembersFileSchema.parse(createEmptyRevisionedFile({ guildId, members: [] }))
       )
     ]);
-    const longTermLines = store.memories
-      .filter((memory) => memory.guildId === guildId && memory.waifuId === waifu.id && memory.status === "active")
-      .map((memory) => `- ${memory.content}`);
-    const channelId = options.channelId;
     const now = Date.now();
-    const shortTermLines = channelId
-      ? shortTermStore.entries
-          .filter((entry) =>
-            entry.guildId === guildId &&
-            entry.channelId === channelId &&
-            entry.waifuId === waifu.id &&
-            Date.parse(entry.expiresAt) > now
-          )
-          .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
-          .map((entry) => `- ${entry.content}`)
-      : [];
+    // Task 1 keeps inject-all behavior but reads from the unified store: active + unexpired +
+    // guild + waifu match, pinned first then the rest (Task 2 replaces this with retrieval).
+    const memoryLines = injectAllMemoryLines(store.memories, guildId, waifu.id, now);
     const emojiList = emojis.emojis
       .filter((emoji) => emoji.available)
       .map(modelVisibleEmojiToken)
@@ -2808,7 +2781,7 @@ export class RuntimeOrchestrator {
         availableWaifus
       ),
       emojiList,
-      memoryLines: [...longTermLines, ...shortTermLines],
+      memoryLines,
       currentlyDoing: currentlyDoingForWaifu(waifu, new Date()),
       directorNote: options.directorNote?.trim() || undefined,
       personaDigest: waifu.personaDigest
@@ -3453,21 +3426,42 @@ function emptyMemoryStore(): MemoryStore {
   return MemoryStoreSchema.parse(createEmptyRevisionedFile({ memories: [] }));
 }
 
-function emptyShortTermMemoryStore(): ShortTermMemoryStore {
-  return ShortTermMemoryStoreSchema.parse(createEmptyRevisionedFile({ entries: [] }));
+// Waifu notes (formerly the short-term store) survive a weekend so a Friday plan is still around
+// Monday; the dream pass promotes the keepers.
+const NOTE_LIFESPAN_MS = 72 * 60 * 60 * 1000;
+const NOTE_MAX_PER_REPLY = 5;
+const NOTE_STRENGTH = 2;
+
+function normalizeNoteContent(content: string): string {
+  return content.trim().toLowerCase().replace(/\s+/g, " ").replace(/[.!?]+$/, "");
 }
 
-const SHORT_TERM_MEMORY_LIFESPAN_MS = 24 * 60 * 60 * 1000;
-const SHORT_TERM_MEMORY_MAX_PER_REPLY = 5;
-
-function normalizeShortTermContent(content: string): string {
-  return content.trim().toLowerCase().replace(/\s+/g, " ").replace(/[.!?]+$/, "");
+// Task 1 inject-all selection over the unified store: active, unexpired, guild + waifu match.
+// Pinned (user-managed) records come first, then the rest oldest→newest. Task 2 replaces this
+// with scored retrieval.
+function injectAllMemoryLines(
+  memories: MemoryRecord[],
+  guildId: string,
+  waifuId: string,
+  now: number
+): string[] {
+  const matching = memories.filter(
+    (memory) =>
+      memory.guildId === guildId &&
+      memory.waifuId === waifuId &&
+      memory.status === "active" &&
+      (!memory.expiresAt || Date.parse(memory.expiresAt) > now)
+  );
+  const byCreatedAt = (a: MemoryRecord, b: MemoryRecord) => a.createdAt.localeCompare(b.createdAt);
+  const pinned = matching.filter((memory) => memory.pinned).sort(byCreatedAt);
+  const rest = matching.filter((memory) => !memory.pinned).sort(byCreatedAt);
+  return [...pinned, ...rest].map((memory) => `- ${memory.content}`);
 }
 
 const STAGE_MANAGER_MEMORY_BUDGET = 80;
 
 function stageManagerMemories(
-  memories: WaifuMemory[],
+  memories: MemoryRecord[],
   guildId: string,
   allowedWaifuIds: string[],
   options?: { observations?: StageManagerObservation[]; budget?: number }
@@ -3479,7 +3473,7 @@ function stageManagerMemories(
   const allActive = memories.filter((memory) =>
     memory.guildId === guildId &&
     memory.status === "active" &&
-    !memory.permanent &&
+    !memory.pinned &&
     allowedWaifus.has(memory.waifuId)
   );
   const activeMemories = pruneMemoriesForObservations(allActive, options?.observations, options?.budget ?? STAGE_MANAGER_MEMORY_BUDGET);
@@ -3492,11 +3486,18 @@ function stageManagerMemories(
         memoryIndex,
         waifuId: memory.waifuId,
         content: memory.content,
-        importance: memory.importance
+        // The librarian's wire shape stays on the 1-5 `importance` scale this task; map the
+        // stored strength onto it. Task 4 replaces the librarian with the dream pass.
+        importance: strengthToImportance(memory.strength)
       };
     }),
     memoryIdByIndex
   };
+}
+
+// The stored strength is a continuous 0-5; the librarian wire expects an integer 1-5.
+function strengthToImportance(strength: number): number {
+  return Math.max(1, Math.min(5, Math.round(strength)));
 }
 
 function memoryIdsForIndices(indices: number[], memoryIdByIndex: Map<number, string>): string[] {
@@ -3528,12 +3529,12 @@ function memoryTokenSet(text: string): Set<string> {
 }
 
 function pruneMemoriesForObservations(
-  memories: WaifuMemory[],
+  memories: MemoryRecord[],
   observations: StageManagerObservation[] | undefined,
   budget: number
-): WaifuMemory[] {
+): MemoryRecord[] {
   if (!observations || observations.length === 0) {
-    return capByImportanceThenRecency(memories, budget);
+    return capByStrengthThenRecency(memories, budget);
   }
   const observationWaifus = new Set(observations.map((o) => o.waifuId));
   const observationTokens = observations.flatMap((o) => Array.from(memoryTokenSet(o.content)));
@@ -3547,14 +3548,14 @@ function pruneMemoriesForObservations(
     }
     return false;
   });
-  return capByImportanceThenRecency(selected, budget);
+  return capByStrengthThenRecency(selected, budget);
 }
 
-function capByImportanceThenRecency(memories: WaifuMemory[], budget: number): WaifuMemory[] {
+function capByStrengthThenRecency(memories: MemoryRecord[], budget: number): MemoryRecord[] {
   if (memories.length <= budget) return memories;
   return [...memories]
     .sort((a, b) => {
-      if (b.importance !== a.importance) return b.importance - a.importance;
+      if (b.strength !== a.strength) return b.strength - a.strength;
       return (b.updatedAt ?? "").localeCompare(a.updatedAt ?? "");
     })
     .slice(0, budget);

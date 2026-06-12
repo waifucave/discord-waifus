@@ -45,7 +45,6 @@ import {
   ProviderCredentialsFileSchema,
   ReviewerHistoryFileSchema,
   ServerConfigSchema,
-  ShortTermMemoryStoreSchema,
   StageManagerHistoryFileSchema,
   WaifuConfig,
   WaifuConfigSchema,
@@ -507,13 +506,11 @@ describe("RuntimeOrchestrator", () => {
             {
               id: "memory-1",
               waifuId: "yuki",
-              scope: "guild",
               guildId: "guild-1",
               content: "Yuki remembers Kevin likes tea.",
-              importance: 3,
+              strength: 3,
               createdAt: now,
               updatedAt: now,
-              sourceMessageIds: ["m1"],
               status: "active"
             }
           ]
@@ -2119,10 +2116,11 @@ describe("RuntimeOrchestrator", () => {
     const memories = await storage.readJson("user/memories.json", MemoryStoreSchema);
     expect(memories.memories[0].content).toBe("Kevin likes tea.");
     expect(memories.memories[0]).toMatchObject({
-      scope: "guild",
       guildId: "guild-1",
-      permanent: false,
-      sourceMessageIds: []
+      pinned: false,
+      source: "stage_manager",
+      kind: "fact",
+      strength: 3
     });
     expect(discord.sent).toEqual([]);
 
@@ -2260,37 +2258,31 @@ describe("RuntimeOrchestrator", () => {
             {
               id: "same-guild",
               waifuId: "yuki",
-              scope: "guild",
               guildId: "guild-1",
               content: "Kevin likes tea.",
-              importance: 3,
+              strength: 3,
               createdAt: now,
               updatedAt: now,
-              sourceMessageIds: ["m1"],
               status: "active"
             },
             {
               id: "same-guild-archived",
               waifuId: "yuki",
-              scope: "guild",
               guildId: "guild-1",
               content: "Old archived note.",
-              importance: 3,
+              strength: 3,
               createdAt: now,
               updatedAt: now,
-              sourceMessageIds: ["m0"],
               status: "archived"
             },
             {
               id: "other-guild",
               waifuId: "yuki",
-              scope: "guild",
               guildId: "guild-2",
               content: "Other guild secret.",
-              importance: 3,
+              strength: 3,
               createdAt: now,
               updatedAt: now,
-              sourceMessageIds: ["m2"],
               status: "active"
             }
           ]
@@ -2356,7 +2348,6 @@ describe("RuntimeOrchestrator", () => {
     expect(memories.memories.find((memory) => memory.id === "same-guild")?.status).toBe("archived");
     expect(memories.memories.find((memory) => memory.content === "Guild one only.")).toMatchObject({
       guildId: "guild-1",
-      scope: "guild"
     });
   });
 
@@ -2380,25 +2371,21 @@ describe("RuntimeOrchestrator", () => {
             {
               id: "first",
               waifuId: "yuki",
-              scope: "guild",
               guildId: "guild-1",
               content: "Kevin likes tea.",
-              importance: 3,
+              strength: 3,
               createdAt: now,
               updatedAt: now,
-              sourceMessageIds: [],
               status: "active"
             },
             {
               id: "second",
               waifuId: "yuki",
-              scope: "guild",
               guildId: "guild-1",
               content: "Kevin likes green tea.",
-              importance: 4,
+              strength: 4,
               createdAt: now,
               updatedAt: now,
-              sourceMessageIds: [],
               status: "active"
             }
           ]
@@ -2426,7 +2413,7 @@ describe("RuntimeOrchestrator", () => {
             ...current,
             memories: current.memories.map((memory) => ({
               ...memory,
-              permanent: true
+              pinned: true
             }))
           })
         });
@@ -2459,13 +2446,13 @@ describe("RuntimeOrchestrator", () => {
       expect.objectContaining({
         id: "first",
         content: "Kevin likes tea.",
-        permanent: true,
+        pinned: true,
         status: "active"
       }),
       expect.objectContaining({
         id: "second",
         content: "Kevin likes green tea.",
-        permanent: true,
+        pinned: true,
         status: "active"
       })
     ]);
@@ -2490,25 +2477,21 @@ describe("RuntimeOrchestrator", () => {
             {
               id: "first",
               waifuId: "yuki",
-              scope: "guild",
               guildId: "guild-1",
               content: "Kevin likes tea.",
-              importance: 3,
+              strength: 3,
               createdAt: now,
               updatedAt: now,
-              sourceMessageIds: ["m1"],
               status: "active"
             },
             {
               id: "second",
               waifuId: "yuki",
-              scope: "guild",
               guildId: "guild-1",
               content: "Kevin likes green tea.",
-              importance: 4,
+              strength: 4,
               createdAt: now,
               updatedAt: now,
-              sourceMessageIds: ["m2"],
               status: "active"
             }
           ]
@@ -2571,7 +2554,8 @@ describe("RuntimeOrchestrator", () => {
     expect(memories.memories.find((memory) => memory.content === "Kevin likes tea, especially green tea.")).toMatchObject({
       waifuId: "yuki",
       guildId: "guild-1",
-      sourceMessageIds: ["m1", "m2"],
+      source: "stage_manager",
+      strength: 4,
       status: "active"
     });
   });
@@ -2643,50 +2627,42 @@ describe("RuntimeOrchestrator", () => {
             {
               id: "yuki-tea",
               waifuId: "yuki",
-              scope: "guild",
               guildId: "guild-1",
               content: "Kevin enjoys tea most mornings.",
-              importance: 3,
+              strength: 3,
               createdAt: now,
               updatedAt: now,
-              sourceMessageIds: [],
               status: "active"
             },
             {
               id: "yuki-permanent-tea",
               waifuId: "yuki",
-              scope: "guild",
               guildId: "guild-1",
               content: "Kevin permanently prefers ceremonial green tea.",
-              importance: 5,
-              permanent: true,
+              strength: 5,
+              pinned: true,
               createdAt: now,
               updatedAt: now,
-              sourceMessageIds: [],
               status: "active"
             },
             {
               id: "mika-tea",
               waifuId: "mika",
-              scope: "guild",
               guildId: "guild-1",
               content: "Kevin asks Mika about tea sometimes.",
-              importance: 2,
+              strength: 2,
               createdAt: now,
               updatedAt: now,
-              sourceMessageIds: [],
               status: "active"
             },
             {
               id: "mika-pizza",
               waifuId: "mika",
-              scope: "guild",
               guildId: "guild-1",
               content: "Mia ordered pepperoni pizza last weekend.",
-              importance: 1,
+              strength: 1,
               createdAt: now,
               updatedAt: now,
-              sourceMessageIds: [],
               status: "active"
             }
           ]
@@ -2750,25 +2726,21 @@ describe("RuntimeOrchestrator", () => {
             {
               id: "same",
               waifuId: "yuki",
-              scope: "guild",
               guildId: "guild-1",
               content: "Kevin likes tea.",
-              importance: 3,
+              strength: 3,
               createdAt: now,
               updatedAt: now,
-              sourceMessageIds: ["m1"],
               status: "active"
             },
             {
               id: "cross",
               waifuId: "yuki",
-              scope: "guild",
               guildId: "guild-2",
               content: "Kevin hates tea.",
-              importance: 3,
+              strength: 3,
               createdAt: now,
               updatedAt: now,
-              sourceMessageIds: ["m2"],
               status: "active"
             }
           ]
@@ -3856,101 +3828,98 @@ describe("RuntimeOrchestrator", () => {
             {
               id: "current-active",
               waifuId: "yuki",
-              scope: "guild",
               guildId: "guild-1",
               content: "Yuki knows Kevin likes green tea.",
-              importance: 3,
+              strength: 3,
               createdAt,
               updatedAt: createdAt,
-              sourceMessageIds: [],
               status: "active"
             },
             {
               id: "current-permanent",
               waifuId: "yuki",
-              scope: "guild",
               guildId: "guild-1",
               content: "Yuki always remembers Kevin is allergic to peanuts.",
-              importance: 5,
-              permanent: true,
+              strength: 5,
+              pinned: true,
               createdAt,
               updatedAt: createdAt,
-              sourceMessageIds: [],
               status: "active"
             },
             {
               id: "archived-current",
               waifuId: "yuki",
-              scope: "guild",
               guildId: "guild-1",
               content: "Archived current guild memory.",
-              importance: 2,
+              strength: 2,
               createdAt,
               updatedAt: createdAt,
-              sourceMessageIds: [],
               status: "archived"
             },
             {
               id: "other-guild",
               waifuId: "yuki",
-              scope: "guild",
               guildId: "guild-2",
               content: "Other guild memory.",
-              importance: 2,
+              strength: 2,
               createdAt,
               updatedAt: createdAt,
-              sourceMessageIds: [],
               status: "active"
             },
             {
               id: "other-waifu",
               waifuId: "mika",
-              scope: "guild",
               guildId: "guild-1",
               content: "Mika-only memory.",
-              importance: 2,
+              strength: 2,
               createdAt,
               updatedAt: createdAt,
-              sourceMessageIds: [],
               status: "active"
-            }
-          ]
-        })
-      )
-    );
-    await storage.writeJson(
-      "short-term-memories",
-      "user/short-term-memories.json",
-      ShortTermMemoryStoreSchema,
-      ShortTermMemoryStoreSchema.parse(
-        createEmptyRevisionedFile({
-          entries: [
+            },
+            // Waifu notes now live in the same unified store (source waifu_tool + expiresAt).
             {
-              id: "short-current",
+              id: "note-current",
+              waifuId: "yuki",
               guildId: "guild-1",
               channelId: "channel-1",
-              waifuId: "yuki",
               content: "Kevin is leaving at 5pm.",
+              source: "waifu_tool",
+              kind: "context",
+              strength: 2,
               createdAt,
-              expiresAt: new Date(now + 60_000).toISOString()
+              updatedAt: createdAt,
+              expiresAt: new Date(now + 60_000).toISOString(),
+              status: "active"
             },
             {
-              id: "short-expired",
+              id: "note-expired",
+              waifuId: "yuki",
               guildId: "guild-1",
               channelId: "channel-1",
-              waifuId: "yuki",
               content: "Expired short-term memory.",
+              source: "waifu_tool",
+              kind: "context",
+              strength: 2,
               createdAt,
-              expiresAt: new Date(now - 60_000).toISOString()
+              updatedAt: createdAt,
+              expiresAt: new Date(now - 60_000).toISOString(),
+              status: "active"
             },
             {
-              id: "short-other-channel",
+              // Notes are guild-visible (channel only boosts retrieval), so a note from another
+              // channel of the same guild is now carried over — cross-channel continuity.
+              id: "note-other-channel",
+              waifuId: "yuki",
               guildId: "guild-1",
               channelId: "channel-2",
-              waifuId: "yuki",
               content: "Other channel short-term memory.",
+              source: "waifu_tool",
+              kind: "context",
+              strength: 2,
               createdAt,
-              expiresAt: new Date(now + 60_000).toISOString()
+              updatedAt: createdAt,
+              expiresAt: new Date(now + 60_000).toISOString(),
+              status: "active"
             }
           ]
         })
@@ -3991,11 +3960,13 @@ describe("RuntimeOrchestrator", () => {
     expect(printed).toContain("- Yuki knows Kevin likes green tea.");
     expect(printed).toContain("- Yuki always remembers Kevin is allergic to peanuts.");
     expect(printed).toContain("- Kevin is leaving at 5pm.");
+    // Notes are guild-visible now (channel only boosts retrieval), so a same-guild note from
+    // another channel is carried over — the cross-channel continuity the design intends.
+    expect(printed).toContain("- Other channel short-term memory.");
     expect(printed).not.toContain("Archived current guild memory.");
     expect(printed).not.toContain("Other guild memory.");
     expect(printed).not.toContain("Mika-only memory.");
     expect(printed).not.toContain("Expired short-term memory.");
-    expect(printed).not.toContain("Other channel short-term memory.");
   });
 
   it("prints the selected waifu raw personality", async () => {
@@ -6481,19 +6452,23 @@ describe("RuntimeOrchestrator", () => {
 
     await runtime.triggerChannel("guild-1", "channel-1");
 
-    const stored = await storage.readJson("user/short-term-memories.json", ShortTermMemoryStoreSchema);
-    expect(stored.entries).toHaveLength(5);
-    expect(stored.entries.map((entry) => entry.content)).toEqual([
+    const stored = await storage.readJson("user/memories.json", MemoryStoreSchema);
+    const notes = stored.memories.filter((memory) => memory.source === "waifu_tool");
+    expect(notes).toHaveLength(5);
+    expect(notes.map((note) => note.content)).toEqual([
       "Kevin is heading out at 5pm.",
       "Kevin prefers green tea today.",
       "extra 3",
       "extra 4",
       "extra 5"
     ]);
-    expect(stored.entries[0]).toMatchObject({
+    expect(notes[0]).toMatchObject({
       guildId: "guild-1",
       channelId: "channel-1",
-      waifuId: "yuki"
+      waifuId: "yuki",
+      kind: "context",
+      source: "waifu_tool",
+      strength: 2
     });
 
     await runtime.triggerChannel("guild-1", "channel-1");
@@ -6555,12 +6530,12 @@ describe("RuntimeOrchestrator", () => {
     await runtime.stop();
 
     const stored = await storage.readJson(
-      "user/short-term-memories.json",
-      ShortTermMemoryStoreSchema,
-      ShortTermMemoryStoreSchema.parse(createEmptyRevisionedFile({ entries: [] }))
+      "user/memories.json",
+      MemoryStoreSchema,
+      MemoryStoreSchema.parse(createEmptyRevisionedFile({ memories: [] }))
     );
     expect(checked).toBe(true);
-    expect(stored.entries).toEqual([]);
+    expect(stored.memories.filter((memory) => memory.source === "waifu_tool")).toEqual([]);
   });
 
   it("scopes short-term memories per waifu — waifu B does not see waifu A's notes", async () => {
@@ -6579,20 +6554,25 @@ describe("RuntimeOrchestrator", () => {
     const now = new Date().toISOString();
     const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
     await storage.writeJson(
-      "short-term-memories:global",
-      "user/short-term-memories.json",
-      ShortTermMemoryStoreSchema,
-      ShortTermMemoryStoreSchema.parse(
+      "memories:global",
+      "user/memories.json",
+      MemoryStoreSchema,
+      MemoryStoreSchema.parse(
         createEmptyRevisionedFile({
-          entries: [
+          memories: [
             {
               id: "yuki-1",
               guildId: "guild-1",
               channelId: "channel-1",
               waifuId: "yuki",
               content: "Kevin promised to ping Yuki tonight.",
+              source: "waifu_tool",
+              kind: "context",
+              strength: 2,
               createdAt: now,
-              expiresAt
+              updatedAt: now,
+              expiresAt,
+              status: "active"
             }
           ]
         })
@@ -6636,7 +6616,7 @@ describe("RuntimeOrchestrator", () => {
     }
   });
 
-  it("drops expired short-term entries from the file on next write and omits them from the prompt", async () => {
+  it("omits expired notes from the prompt and persists fresh ones into the unified store", async () => {
     const root = await makeTempRoot();
     roots.push(root);
     await ensureDataLayout(root);
@@ -6650,20 +6630,25 @@ describe("RuntimeOrchestrator", () => {
     const longAgo = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
     const longAgoExpired = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
     await storage.writeJson(
-      "short-term-memories:global",
-      "user/short-term-memories.json",
-      ShortTermMemoryStoreSchema,
-      ShortTermMemoryStoreSchema.parse(
+      "memories:global",
+      "user/memories.json",
+      MemoryStoreSchema,
+      MemoryStoreSchema.parse(
         createEmptyRevisionedFile({
-          entries: [
+          memories: [
             {
               id: "expired",
               guildId: "guild-1",
               channelId: "channel-1",
               waifuId: "yuki",
               content: "stale note from yesterday",
+              source: "waifu_tool",
+              kind: "context",
+              strength: 2,
               createdAt: longAgo,
-              expiresAt: longAgoExpired
+              updatedAt: longAgo,
+              expiresAt: longAgoExpired,
+              status: "active"
             }
           ]
         })
@@ -6704,8 +6689,12 @@ describe("RuntimeOrchestrator", () => {
 
     expect(capturedSystemPrompt).not.toContain("stale note from yesterday");
     expect(capturedTrailingBlock ?? "").not.toContain("stale note from yesterday");
-    const after = await storage.readJson("user/short-term-memories.json", ShortTermMemoryStoreSchema);
-    expect(after.entries.map((entry) => entry.content)).toEqual(["Kevin is back from lunch."]);
+    // The expired note is no longer injected (filtered at read), and the fresh note is persisted.
+    // Hard pruning of expired records is now the dream pass's job (Task 4), so the stale record
+    // remains in the file but is never shown.
+    const after = await storage.readJson("user/memories.json", MemoryStoreSchema);
+    const notes = after.memories.filter((memory) => memory.source === "waifu_tool");
+    expect(notes.map((note) => note.content)).toContain("Kevin is back from lunch.");
   });
 
   it("honors the first directive and strips the next one inside the cooldown window", async () => {

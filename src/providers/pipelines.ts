@@ -1362,7 +1362,7 @@ const PICK_NEXT_WAIFU_TOOL_DESCRIPTION =
 
 const SHORT_TERM_MEMORY_TOOL_NAME = "add_memory";
 const SHORT_TERM_MEMORY_TOOL_DESCRIPTION =
-  "Your personal notepad. The chat history can vanish at any time (channel switch, cleanup); your notes are what survives. Save one short standalone sentence whenever the conversation produces something you'd want to still know tomorrow: a plan, a promise, a new fact about someone, the state of a running joke or argument. Spell names out ('Riko owes Ali tacos since Thursday', never 'she owes him'). Up to 5 calls per reply. Skip pure filler and anything already shown in your memories block. Entries expire after 24 hours. Calling this tool does NOT replace your message — always also write your normal reply in the same turn.";
+  "Your personal notepad. The chat history can vanish at any time (channel switch, cleanup); your notes are what survives. Save one short standalone sentence whenever the conversation produces something you'd want to still know tomorrow: a plan, a promise, a new fact about someone, the state of a running joke or argument. Spell names out ('Riko owes Ali tacos since Thursday', never 'she owes him'). Up to 5 calls per reply. Skip pure filler and anything already shown in your memories block. Notes expire after about three days unless the nightly process promotes them. Calling this tool does NOT replace your message — always also write your normal reply in the same turn.";
 
 function shortTermMemoryToolParameters(): object {
   return {
