@@ -266,3 +266,29 @@ describe("guildHash", () => {
     expect(guildHash("guild-1")).toBe(guildHash("guild-1"));
   });
 });
+
+describe("applyDreamOps waifu validation", () => {
+  it("skips an add whose waifuId is not a configured waifu", () => {
+    const { memories, applied, skipped, historyEntries } = applyDreamOps(
+      [],
+      [{ op: "add", memory: { waifuId: "kevin", content: "Kevin likes tea.", kind: "preference", strength: 3, entities: [] } }],
+      new Map(),
+      { guildId: "g1", now: new Date("2026-06-12T18:00:00Z"), allowedWaifuIds: ["aria", "riko"] }
+    );
+    expect(memories).toHaveLength(0);
+    expect(applied).toBe(0);
+    expect(skipped).toBe(1);
+    expect(historyEntries[0].summary).toContain("unknown waifu id kevin");
+  });
+
+  it("accepts an add for a configured waifu", () => {
+    const { memories, applied } = applyDreamOps(
+      [],
+      [{ op: "add", memory: { waifuId: "aria", content: "Aria hates mornings.", kind: "preference", strength: 3, entities: [] } }],
+      new Map(),
+      { guildId: "g1", now: new Date("2026-06-12T18:00:00Z"), allowedWaifuIds: ["aria", "riko"] }
+    );
+    expect(memories).toHaveLength(1);
+    expect(applied).toBe(1);
+  });
+});

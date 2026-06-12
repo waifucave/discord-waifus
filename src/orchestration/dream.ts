@@ -120,7 +120,7 @@ export function applyDreamOps(
   memories: MemoryRecord[],
   ops: DreamOp[],
   indexMap: Map<number, string>,
-  options: { guildId: string; now: Date; maxOps?: number }
+  options: { guildId: string; now: Date; maxOps?: number; allowedWaifuIds?: string[] }
 ): ApplyDreamOpsResult {
   const { guildId } = options;
   const maxOps = options.maxOps ?? 30;
@@ -175,6 +175,13 @@ export function applyDreamOps(
     }
 
     if (op.op === "add") {
+      // The tool schema constrains waifuId to the chunk's waifus, but the orphan-observation
+      // chunk carries no enum — re-validate so a hallucinated owner never lands in the store.
+      if (options.allowedWaifuIds && !options.allowedWaifuIds.includes(op.memory.waifuId)) {
+        skipped += 1;
+        pushHistory("add", [], `Skipped add with unknown waifu id ${op.memory.waifuId}`);
+        continue;
+      }
       const id = randomUUID();
       const entities = op.memory.entities.length > 0 ? op.memory.entities : extractEntities(op.memory.content);
       working.push({

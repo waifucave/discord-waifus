@@ -2158,6 +2158,9 @@ export class RuntimeOrchestrator {
       return { status: "disabled", applied: 0, skipped: 0, chunks: 0 };
     }
     const pipeline = await this.pipelineFor(config.modelId);
+    // Configured waifus guild-wide: dream "add" ops are re-validated against this set so a
+    // hallucinated owner (possible in the enum-less orphan-observation chunk) never lands.
+    const allowedWaifuIds = (await this.listWaifus()).map((waifu) => waifu.id);
 
     let totalApplied = 0;
     let totalSkipped = 0;
@@ -2196,7 +2199,7 @@ export class RuntimeOrchestrator {
           reasoning: config.reasoning
         });
         const now = new Date();
-        const result = applyDreamOps(store.memories, ops, chunk.indexMap, { guildId, now });
+        const result = applyDreamOps(store.memories, ops, chunk.indexMap, { guildId, now, allowedWaifuIds });
 
         await this.options.storage.updateRevisionedJson({
           resourceKey: "memories:global",
@@ -2206,7 +2209,7 @@ export class RuntimeOrchestrator {
           transform: (current) => {
             // Re-apply against the freshest store so concurrent writers (fast-track, CRUD) are not
             // clobbered: ops touch only this chunk's records, identified by id.
-            const applied = applyDreamOps(current.memories, ops, chunk.indexMap, { guildId, now });
+            const applied = applyDreamOps(current.memories, ops, chunk.indexMap, { guildId, now, allowedWaifuIds });
             return { ...current, memories: applied.memories };
           }
         });
