@@ -392,24 +392,29 @@ class FakePipeline implements ModelPipeline {
   }
 
   async decideOrchestrator(request: ProviderRequest): Promise<OrchestratorDecision> {
-    expect(request.systemPrompt).toContain("decide");
+    // System prompt: identity + rules + chat_message_structure + server info; no trailing-prompt content
+    expect(request.systemPrompt).toContain("director");
     expect(request.systemPrompt).not.toMatch(/<active_waifus>\n[\s\S]*<\/active_waifus>/);
     expect(request.systemPrompt).not.toMatch(/<task_instructions>\n[\s\S]*<\/task_instructions>/);
     expect(request.systemPrompt).not.toMatch(/<current_time>\n[\s\S]*<\/current_time>/);
     expect(request.systemPrompt).toContain("<orchestrator_identity>");
-    expect(request.systemPrompt).toContain("<orchestrator_behavior>");
+    expect(request.systemPrompt).toContain("<orchestrator_rules>");
+    expect(request.systemPrompt).not.toContain("<orchestrator_behavior>");
     expect(request.systemPrompt).toContain("<chat_message_structure>");
     expect(request.systemPrompt).not.toContain("<identity>");
     expect(request.systemPrompt).not.toContain("<behavior>");
     expect(request.systemPrompt).not.toContain("<message_structure>");
-    expect(request.systemPrompt).toContain("do not default to no_reply");
-    expect(request.systemPrompt).toContain("Prefer a two-waifu chain");
-    expect(request.systemPrompt).toContain("0 to 30");
+    // New rules text (not the old verbatim strings)
+    expect(request.systemPrompt).toContain("soft signals");
+    expect(request.systemPrompt).toContain("respondingWaifus non-empty");
+    // Trailing prompt: task_instructions + pause_planning + active_waifus (casting cards) + current_time
     expect(request.trailingPrompt).toBeTruthy();
     expect(request.trailingPrompt).toMatch(/<task_instructions>\n[\s\S]*<\/task_instructions>/);
+    expect(request.trailingPrompt).toMatch(/<pause_planning>\n[\s\S]*<\/pause_planning>/);
     expect(request.trailingPrompt).toMatch(
-      /<active_waifus>\n<yuki>\nID: yuki\nDisplay name: Yuki\nPersona:\nkind\nAvailability:\n[\s\S]*Sleep: 23:00-07:00 daily[\s\S]*Busy:[\s\S]*09:00-10:00: school focus block[\s\S]*<\/yuki>\n<\/active_waifus>/
+      /<active_waifus>\n<yuki>\nID: yuki · Yuki\nAbout: kind\nNow: [\s\S]*<\/yuki>\n<\/active_waifus>/
     );
+    expect(request.trailingPrompt).not.toMatch(/<active_waifus>[\s\S]*Persona:/);
     expect(request.trailingPrompt).toMatch(/<current_time>\n[\s\S]*<\/current_time>/);
     expect(request.availableWaifuIds).toEqual(["yuki"]);
     const decision = this.decisions.shift();
@@ -1242,6 +1247,77 @@ describe("RuntimeOrchestrator", () => {
     await runtime.stop();
 
     expect(checked).toBe(true);
+  });
+
+  it("truncates casting-card persona to 200 chars in trailing prompt and excludes raw persona from system prompt", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.contexts = [[{ id: "m1", channelId: "channel-1", guildId: "guild-1", authorKind: "user", authorId: "u1", authorBot: false, name: "Kevin", displayName: "Kevin", content: "hi", timestamp: "2026-05-16T12:00:00Z", reactions: [] }]];
+
+    const longPersona = "A".repeat(50) + " " + "B".repeat(50) + " " + "C".repeat(50) + " " + "D".repeat(50) + " " + "E".repeat(50);
+    // longPersona is 254 chars (4 spaces + 5*50 = 254); after .replace(/\s+/g, " ") it collapses to same length
+    // The slice(0, 200) should cut off before "D".repeat(50) fully
+
+    await seedRuntimeConfig(storage);
+    // Overwrite yuki with long persona
+    await storage.writeJson(
+      "waifu:yuki",
+      "user/waifus/yuki/waifu.json",
+      WaifuConfigSchema,
+      WaifuConfigSchema.parse({
+        ...createRevisionedBase(),
+        id: "yuki",
+        name: "Yuki",
+        displayName: "Yuki",
+        enabled: true,
+        providerId: "openai",
+        modelId: "gpt-5.4-mini",
+        botId: "yuki-bot",
+        persona: longPersona,
+        contextWindow: 50
+      })
+    );
+
+    let trailingPrompt: string | undefined;
+    let systemPrompt: string | undefined;
+    const pipeline: ModelPipeline = {
+      async decideOrchestrator(request: ProviderRequest) {
+        trailingPrompt = request.trailingPrompt;
+        systemPrompt = request.systemPrompt;
+        return { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, reasoning: "done" };
+      },
+      async generateWaifu() {
+        return { content: "hi" };
+      }
+    };
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 1,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    expect(trailingPrompt).toBeDefined();
+    // The About: line must be at most 200 chars of persona text
+    const aboutMatch = trailingPrompt!.match(/About: (.+)/);
+    expect(aboutMatch).not.toBeNull();
+    const aboutText = aboutMatch![1];
+    expect(aboutText.length).toBeLessThanOrEqual(200);
+    // The tail of the long persona (past 200 chars) must NOT appear in trailing prompt
+    const normalised = longPersona.trim().replace(/\s+/g, " ");
+    expect(trailingPrompt).not.toContain(normalised.slice(201));
+    // System prompt must not contain the raw persona at all
+    expect(systemPrompt).toBeDefined();
+    expect(systemPrompt).not.toContain(normalised.slice(0, 50));
   });
 
   it("tracks active chat participants from human messages and refreshes their expiry", async () => {

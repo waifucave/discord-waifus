@@ -297,13 +297,13 @@ describe("Backend API", () => {
           modelId: "gpt-5.4-mini",
           contextWindow: 20,
           prompt: "choose carefully",
-          clipSceneDirection: true
+          directiveCooldown: 5
         }
       });
       expect(config.statusCode).toBe(200);
       expect(config.json().revision).toBe(1);
       expect(config.json().prompt).toBe("choose carefully");
-      expect(config.json().clipSceneDirection).toBe(true);
+      expect(config.json().directiveCooldown).toBe(5);
 
       const trigger = await app.inject({ method: "POST", url: "/api/runtime/trigger/orchestrator" });
       expect(trigger.statusCode).toBe(200);

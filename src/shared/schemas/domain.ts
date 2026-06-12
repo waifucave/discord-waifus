@@ -252,8 +252,6 @@ export const AgentConfigSchema = RevisionedRecordSchema.extend({
   modelId: z.union([z.string(), z.null()]).optional().transform((value) => value ?? undefined),
   contextWindow: z.number().int().min(1).max(100).default(20),
   prompt: z.string().default(""),
-  useLegacyPrompt: z.boolean().default(false),
-  clipSceneDirection: z.boolean().default(false),
   directiveCooldown: z.number().int().min(0).max(20).default(3),
   reasoning: ReasoningConfigSchema,
   promptSections: OrchestratorPromptSectionsSchema
