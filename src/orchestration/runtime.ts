@@ -58,6 +58,7 @@ import {
   createEmptyRevisionedFile
 } from "../shared/schemas/domain.js";
 import { extractEntities, WAIFU_NOTE_STRENGTH } from "./memoryEntities.js";
+import { retrieveMemories } from "./memoryRetrieval.js";
 import { createRevisionedBase, nowIso } from "../shared/schemas/common.js";
 import { StorageService } from "../storage/storageService.js";
 import { StageManagerObservation, StageManagerToolCall } from "./stageManager.js";
@@ -728,7 +729,10 @@ export class RuntimeOrchestrator {
         {
           channelId: input.channelId,
           pickNextWaifuToolOverride: input.server.tools.pickNextWaifu,
-          shortTermMemoryToolOverride: input.server.tools.shortTermMemory
+          shortTermMemoryToolOverride: input.server.tools.shortTermMemory,
+          // /print system_prompt path: no live window; scores on recency+strength
+          contextMessages: undefined,
+          memoryInjectionLimit: input.server.memoryInjectionLimit
         }
       );
       return formatWaifuPromptDebugMessages({
@@ -739,7 +743,7 @@ export class RuntimeOrchestrator {
       });
     }
     if (input.type === "memories") {
-      const content = await this.modelVisibleMemoryBlockForPrint(input.guildId, input.channelId, input.waifu);
+      const content = await this.modelVisibleMemoryBlockForPrint(input.guildId, input.channelId, input.waifu, input.server.memoryInjectionLimit);
       return formatPrintDebugBlock(`Memories (${input.waifu.displayName})`, content);
     }
     return formatPrintDebugBlock(
@@ -750,12 +754,21 @@ export class RuntimeOrchestrator {
 
   private async modelVisibleMemoryBlockForPrint(
     guildId: string,
-    _channelId: string,
-    waifu: WaifuConfig
+    channelId: string,
+    waifu: WaifuConfig,
+    memoryInjectionLimit: number
   ): Promise<string> {
-    const now = Date.now();
+    const now = new Date();
     const store = await this.readMemoryStore();
-    const lines = injectAllMemoryLines(store.memories, guildId, waifu.id, now);
+    const { lines } = retrieveMemories({
+      records: store.memories,
+      window: [], // /print has no live window; scores on recency+strength
+      guildId,
+      waifuId: waifu.id,
+      channelId,
+      now,
+      limit: memoryInjectionLimit
+    });
     if (lines.length === 0) {
       return "(none)";
     }
@@ -1372,7 +1385,9 @@ export class RuntimeOrchestrator {
               channelId: input.channelId,
               directorNote: directiveText,
               pickNextWaifuToolOverride: input.server.tools.pickNextWaifu,
-              shortTermMemoryToolOverride: effectiveShortTermMemory
+              shortTermMemoryToolOverride: effectiveShortTermMemory,
+              contextMessages: waifuMessages,
+              memoryInjectionLimit: input.server.memoryInjectionLimit
             }
           );
           const allSelfDisplayNames = selfGuildNickname
@@ -2714,6 +2729,8 @@ export class RuntimeOrchestrator {
       directorNote?: string;
       pickNextWaifuToolOverride?: boolean;
       shortTermMemoryToolOverride?: boolean;
+      contextMessages?: ContextMessage[];
+      memoryInjectionLimit: number;
     }
   ): Promise<{ systemPrompt: string; midSystemBlock: string; trailingSystemBlock: string; selfGuildNickname: string | undefined }> {
     const pickNextWaifuToolActive = options.pickNextWaifuToolOverride ?? false;
@@ -2733,10 +2750,50 @@ export class RuntimeOrchestrator {
         GuildMembersFileSchema.parse(createEmptyRevisionedFile({ guildId, members: [] }))
       )
     ]);
-    const now = Date.now();
-    // Task 1 keeps inject-all behavior but reads from the unified store: active + unexpired +
-    // guild + waifu match, pinned first then the rest (Task 2 replaces this with retrieval).
-    const memoryLines = injectAllMemoryLines(store.memories, guildId, waifu.id, now);
+    const now = new Date();
+    const retrieval = retrieveMemories({
+      records: store.memories,
+      window: options.contextMessages ?? [],
+      guildId,
+      waifuId: waifu.id,
+      channelId: options.channelId,
+      now,
+      limit: options.memoryInjectionLimit
+    });
+    const memoryLines = retrieval.lines;
+    // Stamp lastRetrievedAt on selected non-pinned records, best-effort, fire-and-forget.
+    // Skip records stamped within the last hour to avoid noisy writes.
+    const ONE_HOUR_MS = 60 * 60 * 1000;
+    const nowMs = now.getTime();
+    const idsToStamp = retrieval.selected
+      .filter(
+        (r) =>
+          !r.lastRetrievedAt ||
+          nowMs - Date.parse(r.lastRetrievedAt) > ONE_HOUR_MS
+      )
+      .map((r) => r.id);
+    if (idsToStamp.length > 0) {
+      const stampNow = now.toISOString();
+      const stampSet = new Set(idsToStamp);
+      this.options.storage.updateRevisionedJson({
+        resourceKey: "memories:global",
+        relativePath: "user/memories.json",
+        schema: MemoryStoreSchema,
+        fallback: emptyMemoryStore(),
+        transform: (current) => ({
+          ...current,
+          memories: current.memories.map((r) =>
+            stampSet.has(r.id) ? { ...r, lastRetrievedAt: stampNow } : r
+          )
+        })
+      }).catch((err: unknown) => {
+        this.options.logger.warn("Failed to stamp lastRetrievedAt on retrieved memories", {
+          guildId,
+          waifuId: waifu.id,
+          message: err instanceof Error ? err.message : String(err)
+        });
+      });
+    }
     const emojiList = emojis.emojis
       .filter((emoji) => emoji.available)
       .map(modelVisibleEmojiToken)
@@ -3435,27 +3492,6 @@ function normalizeNoteContent(content: string): string {
   return content.trim().toLowerCase().replace(/\s+/g, " ").replace(/[.!?]+$/, "");
 }
 
-// Task 1 inject-all selection over the unified store: active, unexpired, guild + waifu match.
-// Pinned (user-managed) records come first, then the rest oldest→newest. Task 2 replaces this
-// with scored retrieval.
-function injectAllMemoryLines(
-  memories: MemoryRecord[],
-  guildId: string,
-  waifuId: string,
-  now: number
-): string[] {
-  const matching = memories.filter(
-    (memory) =>
-      memory.guildId === guildId &&
-      memory.waifuId === waifuId &&
-      memory.status === "active" &&
-      (!memory.expiresAt || Date.parse(memory.expiresAt) > now)
-  );
-  const byCreatedAt = (a: MemoryRecord, b: MemoryRecord) => a.createdAt.localeCompare(b.createdAt);
-  const pinned = matching.filter((memory) => memory.pinned).sort(byCreatedAt);
-  const rest = matching.filter((memory) => !memory.pinned).sort(byCreatedAt);
-  return [...pinned, ...rest].map((memory) => `- ${memory.content}`);
-}
 
 const STAGE_MANAGER_MEMORY_BUDGET = 80;
 

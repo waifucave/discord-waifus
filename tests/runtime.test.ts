@@ -397,7 +397,7 @@ class FakePipeline implements ModelPipeline {
     // trailing: memories, then anchor (not full persona duplicate)
     expect(request.trailingSystemBlock).toBeDefined();
     expect(request.trailingSystemBlock).toMatch(
-      /<yuki_relevant_memories>\n- Yuki remembers Kevin likes tea\.\n<\/yuki_relevant_memories>/
+      /<yuki_relevant_memories>\n- \(fact\) Yuki remembers Kevin likes tea\.\n<\/yuki_relevant_memories>/
     );
     expect(request.trailingSystemBlock).toContain("<yuki_anchor>");
     expect(request.trailingSystemBlock).not.toContain("<yuki_persona>");
@@ -3957,12 +3957,13 @@ describe("RuntimeOrchestrator", () => {
     const printed = discord.debugMessages.map((message) => message.content).join("\n");
     expect(printed).toContain("## Memories (Yuki)");
     expect(printed).toContain("<yuki_relevant_memories>");
-    expect(printed).toContain("- Yuki knows Kevin likes green tea.");
-    expect(printed).toContain("- Yuki always remembers Kevin is allergic to peanuts.");
-    expect(printed).toContain("- Kevin is leaving at 5pm.");
+    // Task 2: memories rendered with kind labels; notes with relative age
+    expect(printed).toContain("- (fact) Yuki knows Kevin likes green tea.");
+    expect(printed).toContain("- (fact) Yuki always remembers Kevin is allergic to peanuts.");
+    expect(printed).toMatch(/- \(note, \d+[mhd] ago\) Kevin is leaving at 5pm\./);
     // Notes are guild-visible now (channel only boosts retrieval), so a same-guild note from
     // another channel is carried over — the cross-channel continuity the design intends.
-    expect(printed).toContain("- Other channel short-term memory.");
+    expect(printed).toMatch(/- \(note, \d+[mhd] ago\) Other channel short-term memory\./);
     expect(printed).not.toContain("Archived current guild memory.");
     expect(printed).not.toContain("Other guild memory.");
     expect(printed).not.toContain("Mika-only memory.");
