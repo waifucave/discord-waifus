@@ -39,6 +39,7 @@ import {
   PERSONA_DIGEST_TOOL_PARAMETERS,
   REVIEWER_TOOL_PARAMETERS,
   googleAiStudioSchema,
+  dreamMessages,
 } from "../orchestration/tools.js";
 import { getModel, getProviderForModel } from "./catalog.js";
 import {
@@ -1086,15 +1087,6 @@ function roleForWaifuContext(message: ContextMessage, selfAuthorIds: string[]): 
     ? "assistant"
     : "user";
 }
-
-// The dream pass reads two JSON user blocks: the active memory chunk and the pending observations.
-function dreamMessages(request: DreamRequest): Array<{ role: "user"; content: string }> {
-  return [
-    { role: "user", content: `memories: ${JSON.stringify(request.memories)}` },
-    { role: "user", content: `observations: ${JSON.stringify(request.observations)}` }
-  ];
-}
-
 
 const REVIEWER_TOOL_DESCRIPTION = "Decide whether the latest logical waifu message is hallucinated or leaked internal content.";
 const ORCHESTRATOR_TOOL_DESCRIPTION = "Choose whether a waifu should reply next and which waifu(s) should respond.";

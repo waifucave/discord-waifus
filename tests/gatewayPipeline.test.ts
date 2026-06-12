@@ -160,3 +160,66 @@ describe("decideReviewer (gateway)", () => {
     expect(JSON.stringify(body.messages)).toContain("suspect text");
   });
 });
+
+describe("decideStageManagerObservations (gateway)", () => {
+  it("forces record_observations and parses entities", async () => {
+    const observations = [{ waifuId: "yuki", content: "Ann prefers tea", importance: 3, kind: "preference", entities: ["Ann"] }];
+    const fetchImpl = okFetch({
+      id: "r1",
+      choices: [{ message: { content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "record_observations", arguments: JSON.stringify({ observations }) } }] }, finish_reason: "tool_calls" }],
+      usage: {}
+    });
+    const out = await makePipeline(fetchImpl as unknown as typeof fetch).decideStageManagerObservations!({
+      modelId: "deepseek-v4-flash", messages: [msg({})], availableWaifuIds: ["yuki"]
+    });
+    expect(out).toEqual(observations);
+  });
+});
+
+describe("decideDream (gateway)", () => {
+  const dreamRequest = {
+    modelId: "deepseek-v4-flash",
+    messages: [],
+    memories: [{ memoryIndex: 1, waifuId: "yuki", content: "old note", kind: "note" as const, strength: 2, ageDays: 10, daysSinceRetrieved: 5 }],
+    observations: [],
+    availableWaifuIds: ["yuki"]
+  };
+
+  it("forces dream_memories and parses ops", async () => {
+    const ops = [{ op: "decay", memoryIndex: 1, strength: 1 }];
+    const fetchImpl = okFetch({
+      id: "r1",
+      choices: [{ message: { content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "dream_memories", arguments: JSON.stringify({ ops }) } }] }, finish_reason: "tool_calls" }],
+      usage: {}
+    });
+    const out = await makePipeline(fetchImpl as unknown as typeof fetch).decideDream!(dreamRequest);
+    expect(out).toEqual([{ op: "decay", memoryIndex: 1, strength: 1 }]);
+    const body = JSON.parse((fetchImpl.mock.calls[0]![1] as RequestInit).body as string);
+    expect(JSON.stringify(body.messages)).toContain("old note");
+  });
+});
+
+describe("generatePersonaDigest (gateway)", () => {
+  it("forces set_persona_digest and returns voice/role", async () => {
+    const fetchImpl = okFetch({
+      id: "r1",
+      choices: [{ message: { content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "set_persona_digest", arguments: JSON.stringify({ voice: "dry wit", role: "older sister" }) } }] }, finish_reason: "tool_calls" }],
+      usage: {}
+    });
+    const out = await makePipeline(fetchImpl as unknown as typeof fetch).generatePersonaDigest!({
+      modelId: "deepseek-v4-flash", messages: [], personaText: "PERSONA TEXT"
+    });
+    expect(out).toEqual({ voice: "dry wit", role: "older sister" });
+  });
+
+  it("throws on malformed digest", async () => {
+    const fetchImpl = okFetch({
+      id: "r1",
+      choices: [{ message: { content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "set_persona_digest", arguments: JSON.stringify({ voice: "" }) } }] }, finish_reason: "tool_calls" }],
+      usage: {}
+    });
+    await expect(makePipeline(fetchImpl as unknown as typeof fetch).generatePersonaDigest!({
+      modelId: "deepseek-v4-flash", messages: [], personaText: "X"
+    })).rejects.toThrow();
+  });
+});

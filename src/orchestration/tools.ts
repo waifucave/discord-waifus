@@ -7,6 +7,7 @@ import {
 } from "./decisions.js";
 import { OBSERVATION_KINDS } from "./stageManager.js";
 import { MEMORY_KINDS } from "../shared/schemas/domain.js";
+import type { DreamRequest } from "../providers/types.js";
 
 // ---------------------------------------------------------------------------
 // Tool name constants
@@ -487,6 +488,18 @@ export const PERSONA_DIGEST_TOOL_PARAMETERS = personaDigestToolParameters();
 export const DREAM_TOOL_PARAMETERS = dreamToolParameters();
 export const OBSERVER_TOOL_PARAMETERS = observerToolParameters();
 export const ORCHESTRATOR_TOOL_PARAMETERS = orchestratorToolParameters();
+
+// ---------------------------------------------------------------------------
+// Dream message builder (shared by pipelines.ts and gatewayPipeline.ts)
+// ---------------------------------------------------------------------------
+
+// The dream pass reads two JSON user blocks: the active memory chunk and the pending observations.
+export function dreamMessages(request: DreamRequest): Array<{ role: "user"; content: string }> {
+  return [
+    { role: "user", content: `memories: ${JSON.stringify(request.memories)}` },
+    { role: "user", content: `observations: ${JSON.stringify(request.observations)}` }
+  ];
+}
 
 // ---------------------------------------------------------------------------
 // Gemini schema sanitizer

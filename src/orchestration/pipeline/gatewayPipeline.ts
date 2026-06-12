@@ -1,13 +1,18 @@
 import { createGateway, Gateway, type ChatResponse, type ToolDef } from "@waifucave/gateway";
+import { z } from "zod";
 import { createProviderCredentialsLookup } from "../../api/llmGatewayCredentials.js";
 import { QueryRole, recordProviderQuery, recordProviderReply } from "../../shared/queryLog.js";
-import type { ModelPipeline, ProviderRequest, WaifuGenerationRequest, WaifuGenerationResult } from "../../providers/types.js";
-import { ORCHESTRATOR_TOOL_NAME, PICK_NEXT_WAIFU_TOOL_NAME, REVIEWER_TOOL_NAME, SHORT_TERM_MEMORY_TOOL_NAME, orchestratorToolParameters, pickNextWaifuToolParameters, reviewerSystemPrompt, reviewerToolParameters, shortTermMemoryToolParameters } from "../tools.js";
+import type { ModelPipeline, ProviderRequest, WaifuGenerationRequest, WaifuGenerationResult, StageManagerObserveRequest, DreamRequest, PersonaDigestRequest, PersonaDigest } from "../../providers/types.js";
+import { ORCHESTRATOR_TOOL_NAME, PICK_NEXT_WAIFU_TOOL_NAME, REVIEWER_TOOL_NAME, SHORT_TERM_MEMORY_TOOL_NAME, OBSERVER_TOOL_NAME, DREAM_TOOL_NAME, PERSONA_DIGEST_TOOL_NAME, DREAM_PROMPT, PERSONA_DIGEST_PROMPT, orchestratorToolParameters, pickNextWaifuToolParameters, reviewerSystemPrompt, reviewerToolParameters, shortTermMemoryToolParameters, observerSystemPrompt, observerToolParameters, dreamToolParameters, flatDreamToolParameters, personaDigestToolParameters, dreamMessages } from "../tools.js";
+import { formatObserverContext } from "../context.js";
 import { GatewayPipelineError, buildUnifiedParams, preconformRequest } from "./params.js";
 import { buildWaifuMessages } from "./messages.js";
 import { buildOrchestratorChatMessages } from "./timeline.js";
 import { OrchestratorDecision, OrchestratorDecisionSchema } from "../decisions.js";
 import { ReviewerDecision, ReviewerDecisionSchema } from "../reviewer.js";
+import { DreamOp, DreamOpSchema, StageManagerObservation, StageManagerObservationSchema } from "../stageManager.js";
+
+const PersonaDigestResultSchema = z.object({ voice: z.string().min(1), role: z.string().min(1) });
 
 const REQUEST_TIMEOUT_MS = 180_000;
 
@@ -202,6 +207,60 @@ export class GatewayModelPipeline implements ModelPipeline {
       }
     }
     return result;
+  }
+
+  async decideStageManagerObservations(request: StageManagerObserveRequest): Promise<StageManagerObservation[]> {
+    const response = await this.chat({
+      messages: [
+        { role: "system", content: observerSystemPrompt(request.systemPrompt, request.availableWaifuIds) },
+        { role: "user", content: formatObserverContext(request.messages, new Date()) }
+      ],
+      tools: [{ name: OBSERVER_TOOL_NAME, parameters: observerToolParameters(request.availableWaifuIds) as Record<string, unknown> }],
+      toolChoice: { name: OBSERVER_TOOL_NAME },
+      sampling: { temperature: request.temperature ?? 0.2, maxOutputTokens: request.maxOutputTokens, reasoning: request.reasoning },
+      signal: request.signal
+    });
+    return parseForcedCall(response, OBSERVER_TOOL_NAME, (raw) => {
+      const obj = raw as { observations?: unknown[] };
+      const arr = Array.isArray(obj) ? obj : (obj.observations ?? []);
+      return (arr as unknown[]).map((item) => StageManagerObservationSchema.parse(item));
+    }, "decideStageManagerObservations");
+  }
+
+  async decideDream(request: DreamRequest): Promise<DreamOp[]> {
+    const isFlat = this.model.wire === "google-generative-language";
+    const response = await this.chat({
+      messages: [
+        { role: "system", content: DREAM_PROMPT },
+        ...dreamMessages(request)
+      ],
+      tools: [{ name: DREAM_TOOL_NAME, parameters: (isFlat ? flatDreamToolParameters(request.availableWaifuIds) : dreamToolParameters(request.availableWaifuIds)) as Record<string, unknown> }],
+      toolChoice: { name: DREAM_TOOL_NAME },
+      sampling: { temperature: request.temperature ?? 0.2, maxOutputTokens: request.maxOutputTokens, reasoning: request.reasoning },
+      signal: request.signal
+    });
+    return parseForcedCall(response, DREAM_TOOL_NAME, (raw) => {
+      const obj = raw as { ops?: unknown[] };
+      const rawOps = Array.isArray(obj) ? obj : (obj.ops ?? []);
+      if (!Array.isArray(rawOps) || rawOps.length === 0) {
+        throw new Error("dream response did not contain an ops array.");
+      }
+      return (rawOps as unknown[]).map((op) => DreamOpSchema.parse(op));
+    }, "decideDream");
+  }
+
+  async generatePersonaDigest(request: PersonaDigestRequest): Promise<PersonaDigest> {
+    const response = await this.chat({
+      messages: [
+        { role: "system", content: PERSONA_DIGEST_PROMPT },
+        { role: "user", content: request.personaText }
+      ],
+      tools: [{ name: PERSONA_DIGEST_TOOL_NAME, parameters: personaDigestToolParameters() as Record<string, unknown> }],
+      toolChoice: { name: PERSONA_DIGEST_TOOL_NAME },
+      sampling: { temperature: request.temperature ?? 0.2, maxOutputTokens: request.maxOutputTokens, reasoning: request.reasoning },
+      signal: request.signal
+    });
+    return parseForcedCall(response, PERSONA_DIGEST_TOOL_NAME, (raw) => PersonaDigestResultSchema.parse(raw), "generatePersonaDigest");
   }
 }
 
