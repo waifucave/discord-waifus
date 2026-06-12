@@ -118,8 +118,11 @@ describe("runMigrations", () => {
       root,
       "user/orchestrator/config.json"
     );
-    expect(config.promptSections).toMatchObject({ retriggerPacing: false });
+    expect(config.promptSections).toMatchObject({ pausePlanning: false, messageStructure: true });
     expect(config.promptSections).not.toHaveProperty("idleTriggerPacing");
+    expect(config.promptSections).not.toHaveProperty("retriggerPacing");
+    expect(config.promptSections).not.toHaveProperty("loopBreaking");
+    expect(config.promptSections).not.toHaveProperty("toolUse");
 
     const session = await readJson<Record<string, unknown>>(root, "user/servers/guild-1/sessions/channel-1.json");
     expect(session.scheduledRetriggerAt).toBe("2026-05-16T12:30:00.000Z");

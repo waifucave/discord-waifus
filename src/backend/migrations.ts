@@ -261,16 +261,23 @@ async function migrateAgentConfigs(dataRoot: string): Promise<number> {
     const sections = data.promptSections;
     if (!isObject(sections)) continue;
     let mutated = false;
-    if ("idleTriggerPacing" in sections) {
-      if (!("retriggerPacing" in sections)) {
-        sections.retriggerPacing = sections.idleTriggerPacing;
+    // W1 renamed the prompt sections: the pacing toggle became pausePlanning; the
+    // loopBreaking/toolUse sections were removed. Carry a deliberate "false" forward
+    // instead of letting the new schema default it back to true on read.
+    for (const legacyPacingKey of ["idleTriggerPacing", "retriggerPacing"]) {
+      if (legacyPacingKey in sections) {
+        if (!("pausePlanning" in sections)) {
+          sections.pausePlanning = sections[legacyPacingKey];
+        }
+        delete sections[legacyPacingKey];
+        mutated = true;
       }
-      delete sections.idleTriggerPacing;
-      mutated = true;
     }
-    if ("retriggerPacing_old" in sections) {
-      delete sections.retriggerPacing_old;
-      mutated = true;
+    for (const removedKey of ["loopBreaking", "toolUse", "retriggerPacing_old"]) {
+      if (removedKey in sections) {
+        delete sections[removedKey];
+        mutated = true;
+      }
     }
     if (mutated) {
       await atomicWriteJson(filePath, data);
