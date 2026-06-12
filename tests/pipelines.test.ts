@@ -2394,7 +2394,7 @@ describe("Google AI Studio (Gemini) pipeline", () => {
     });
 
     expect(observations).toEqual([
-      { waifuId: "yuki", content: "Kevin likes tea.", importance: 3, kind: "preference" }
+      { waifuId: "yuki", content: "Kevin likes tea.", importance: 3, kind: "preference", entities: [] }
     ]);
     const query = recentQueries().at(-1);
     expect(query?.role).toBe("stage_manager_observer");
@@ -2531,6 +2531,102 @@ describe("Google AI Studio (Gemini) pipeline", () => {
       }>;
     }>)[0].functionDeclarations[0].parameters.properties.observations.items.properties;
     expect(toolParameters.importance).toMatchObject({ type: "integer", enum: ["1", "2", "3", "4", "5"] });
+  });
+
+  it("sends lean observer input: Window header with DisplayName lines, no index/timestamp/reactions", async () => {
+    mockFetch({
+      choices: [
+        {
+          message: {
+            tool_calls: [
+              {
+                function: {
+                  name: "record_observations",
+                  arguments: JSON.stringify({ observations: [] })
+                }
+              }
+            ]
+          }
+        }
+      ]
+    });
+
+    const pipeline = createModelPipeline("grok-4.3", { apiKey: "xai-test" });
+    await pipeline.decideStageManagerObservations?.({
+      modelId: "grok-4.3",
+      messages: context,
+      systemPrompt: "extract",
+      availableWaifuIds: ["yuki"]
+    });
+
+    const query = recentQueries().at(-1);
+    const messages = query?.payload.messages as Array<{ role: string; content: string }>;
+    // The user message (index 1) should be the lean context block
+    const userContent = messages.find((m) => m.role === "user" && typeof m.content === "string" && m.content.startsWith("Window:"))?.content ?? "";
+    expect(userContent).toMatch(/^Window: \d{4}-\d{2}-\d{2}T/);
+    expect(userContent).toContain("Kevin: remember I like tea");
+    expect(userContent).not.toContain("[index:");
+    expect(userContent).not.toContain("[timestamp:");
+    expect(userContent).not.toContain("[reactions:");
+  });
+
+  it("observer tool parameters include entities array field", async () => {
+    mockFetch({
+      output: [
+        {
+          type: "function_call",
+          name: "record_observations",
+          arguments: JSON.stringify({ observations: [] })
+        }
+      ]
+    });
+
+    const pipeline = createModelPipeline("gpt-4o-mini", { apiKey: "openai-test" });
+    await pipeline.decideStageManagerObservations?.({
+      modelId: "gpt-4o-mini",
+      messages: context,
+      availableWaifuIds: ["yuki"]
+    });
+
+    const query = recentQueries().at(-1);
+    const toolParameters = (query?.payload.tools as Array<{
+      parameters: { properties: { observations: { items: { properties: { entities: Record<string, unknown> } } } } };
+    }>)[0].parameters.properties.observations.items.properties;
+    expect(toolParameters.entities).toMatchObject({ type: "array", items: { type: "string" } });
+    expect(toolParameters.entities.description).toContain("person");
+  });
+
+  it("observer instruction describes the lean Window header format, not index/timestamp framing", async () => {
+    mockFetch({
+      choices: [
+        {
+          message: {
+            tool_calls: [
+              {
+                function: {
+                  name: "record_observations",
+                  arguments: JSON.stringify({ observations: [] })
+                }
+              }
+            ]
+          }
+        }
+      ]
+    });
+
+    const pipeline = createModelPipeline("grok-4.3", { apiKey: "xai-test" });
+    await pipeline.decideStageManagerObservations?.({
+      modelId: "grok-4.3",
+      messages: context,
+      availableWaifuIds: ["yuki"]
+    });
+
+    const query = recentQueries().at(-1);
+    const messages = query?.payload.messages as Array<{ role: string; content: string }>;
+    const systemContent = messages.find((m) => m.role === "system")?.content ?? "";
+    expect(systemContent).toContain("Window:");
+    expect(systemContent).toContain("DisplayName: body");
+    expect(systemContent).not.toContain("[index: #N] and [timestamp:");
   });
 
   it("OpenAI Chat: collects all add_memory calls alongside the optional PickNextWaifu", async () => {

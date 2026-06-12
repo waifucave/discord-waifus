@@ -73,6 +73,72 @@ export type MessageLikeForContext = {
 
 export const WAIFU_CHUNK_COALESCE_WINDOW_MS = 30_000;
 
+/**
+ * Formats the observer context window as a lean human-readable block.
+ * Header: Window: <first date+time>–<last time> UTC (today: YYYY-MM-DD)
+ * Per message: optional "replying to > Author" line, "DisplayName: body", "[image_text: ...]" lines.
+ * No [index:], no per-message timestamps, no [reactions:].
+ * Midnight-crossing messages get a [— next day: YYYY-MM-DD —] separator.
+ */
+export function formatObserverContext(messages: ContextMessage[], now: Date): string {
+  const todayStr = formatDateOnly(now);
+
+  if (messages.length === 0) {
+    return `Window: (today: ${todayStr})`;
+  }
+
+  const firstTs = messages[0].timestamp;
+  const lastTs = messages[messages.length - 1].timestamp;
+  const firstDate = firstTs.slice(0, 10);
+  const firstTime = firstTs.slice(11, 19);
+  const lastTime = lastTs.slice(11, 19);
+
+  const header =
+    firstDate === lastTs.slice(0, 10)
+      ? `Window: ${firstDate}T${firstTime}–${lastTime} UTC (today: ${todayStr})`
+      : `Window: ${firstDate}T${firstTime}–${lastTs.slice(0, 10)}T${lastTime} UTC (today: ${todayStr})`;
+
+  const lines: string[] = [header];
+  let prevDate = firstDate;
+
+  for (const message of messages) {
+    const msgDate = message.timestamp.slice(0, 10);
+    if (msgDate > prevDate) {
+      lines.push(`[— next day: ${msgDate} —]`);
+      prevDate = msgDate;
+    }
+
+    if (message.replyTo) {
+      const authorName = message.replyTo.authorName?.trim();
+      if (authorName) {
+        lines.push(`replying to > ${authorName}`);
+      } else {
+        lines.push(`replying to >`);
+      }
+    }
+
+    const body = message.content.length > 0 ? `${message.displayName}: ${message.content}` : `${message.displayName}:`;
+    lines.push(body);
+
+    for (const image of message.images ?? []) {
+      const ocr = image.ocrText?.replace(/\s+/g, " ").trim();
+      if (ocr) {
+        lines.push(`[image_text: ${ocr}]`);
+      }
+    }
+  }
+
+  return lines.join("\n");
+}
+
+function formatDateOnly(date: Date): string {
+  return [
+    String(date.getFullYear()).padStart(4, "0"),
+    String(date.getMonth() + 1).padStart(2, "0"),
+    String(date.getDate()).padStart(2, "0")
+  ].join("-");
+}
+
 export function buildContextMessages(
   messages: MessageLikeForContext[],
   options: {

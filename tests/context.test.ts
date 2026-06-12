@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   buildContextMessages,
+  formatObserverContext,
   formatWaifuContextBlock,
   formatTimestamp,
   WAIFU_CHUNK_COALESCE_WINDOW_MS,
-  MessageLikeForContext
+  MessageLikeForContext,
+  ContextMessage
 } from "../src/orchestration/context.js";
 
 function msg(overrides: Partial<MessageLikeForContext> & {
@@ -282,5 +284,125 @@ describe("buildContextMessages image attachments", () => {
       })
     ], { waifuAuthorIds: [] });
     expect(out[0].images?.[0].ocrText).toBe("menu text");
+  });
+});
+
+function ctxMsg(overrides: Partial<ContextMessage> & { id: string; timestamp: string; displayName: string; content: string }): ContextMessage {
+  return {
+    channelId: "c1",
+    guildId: "g1",
+    authorKind: "user",
+    authorId: "u1",
+    name: overrides.displayName,
+    reactions: [],
+    ...overrides
+  };
+}
+
+describe("formatObserverContext", () => {
+  const now = new Date("2026-06-12T15:00:00Z");
+
+  it("returns just today header for empty messages array", () => {
+    const result = formatObserverContext([], now);
+    expect(result).toBe("Window: (today: 2026-06-12)");
+  });
+
+  it("renders single-day header with first and last time", () => {
+    const messages = [
+      ctxMsg({ id: "m1", timestamp: "2026-06-12T10:00:00Z", displayName: "Kevin", content: "hey" }),
+      ctxMsg({ id: "m2", timestamp: "2026-06-12T10:05:30Z", displayName: "Aria", content: "hi" })
+    ];
+    const result = formatObserverContext(messages, now);
+    const lines = result.split("\n");
+    expect(lines[0]).toBe("Window: 2026-06-12T10:00:00–10:05:30 UTC (today: 2026-06-12)");
+  });
+
+  it("renders cross-day header when messages span midnight", () => {
+    const messages = [
+      ctxMsg({ id: "m1", timestamp: "2026-06-11T23:55:00Z", displayName: "Kevin", content: "night" }),
+      ctxMsg({ id: "m2", timestamp: "2026-06-12T00:05:00Z", displayName: "Aria", content: "morning" })
+    ];
+    const result = formatObserverContext(messages, now);
+    const lines = result.split("\n");
+    expect(lines[0]).toBe("Window: 2026-06-11T23:55:00–2026-06-12T00:05:00 UTC (today: 2026-06-12)");
+  });
+
+  it("renders DisplayName: body lines with no index/timestamp/reactions", () => {
+    const messages = [
+      ctxMsg({ id: "m1", timestamp: "2026-06-12T10:00:00Z", displayName: "Kevin", content: "I drink tea" }),
+      ctxMsg({ id: "m2", timestamp: "2026-06-12T10:01:00Z", displayName: "Aria", content: "nice", reactions: [{ emoji: "👍", count: 1 }] })
+    ];
+    const result = formatObserverContext(messages, now);
+    expect(result).toContain("Kevin: I drink tea");
+    expect(result).toContain("Aria: nice");
+    expect(result).not.toContain("[index:");
+    expect(result).not.toContain("[timestamp:");
+    expect(result).not.toContain("[reactions:");
+  });
+
+  it("renders replying to > Author line when replyTo is present", () => {
+    const messages = [
+      ctxMsg({
+        id: "m1",
+        timestamp: "2026-06-12T10:00:00Z",
+        displayName: "Kevin",
+        content: "sure",
+        replyTo: { messageId: "prev", authorName: "Aria", contentPreview: "wanna chat?" }
+      })
+    ];
+    const result = formatObserverContext(messages, now);
+    expect(result).toContain("replying to > Aria");
+    expect(result).toContain("Kevin: sure");
+  });
+
+  it("renders [image_text: ...] line for messages with OCR text", () => {
+    const messages = [
+      ctxMsg({
+        id: "m1",
+        timestamp: "2026-06-12T10:00:00Z",
+        displayName: "Kevin",
+        content: "check this",
+        images: [{ url: "https://cdn/a.png", ocrText: "menu item 1" }]
+      })
+    ];
+    const result = formatObserverContext(messages, now);
+    expect(result).toContain("[image_text: menu item 1]");
+  });
+
+  it("inserts next-day marker when messages cross midnight", () => {
+    const messages = [
+      ctxMsg({ id: "m1", timestamp: "2026-06-11T23:58:00Z", displayName: "Kevin", content: "late" }),
+      ctxMsg({ id: "m2", timestamp: "2026-06-12T00:02:00Z", displayName: "Aria", content: "early" })
+    ];
+    const result = formatObserverContext(messages, now);
+    expect(result).toContain("[— next day: 2026-06-12 —]");
+    const lines = result.split("\n");
+    const markerIdx = lines.findIndex((l) => l.includes("[— next day:"));
+    const ariaIdx = lines.findIndex((l) => l.startsWith("Aria:"));
+    expect(markerIdx).toBeGreaterThan(0);
+    expect(ariaIdx).toBeGreaterThan(markerIdx);
+  });
+
+  it("does not insert next-day marker for same-day messages", () => {
+    const messages = [
+      ctxMsg({ id: "m1", timestamp: "2026-06-12T09:00:00Z", displayName: "Kevin", content: "a" }),
+      ctxMsg({ id: "m2", timestamp: "2026-06-12T23:59:00Z", displayName: "Aria", content: "b" })
+    ];
+    const result = formatObserverContext(messages, now);
+    expect(result).not.toContain("[— next day:");
+  });
+
+  it("skips image_text when ocrText is absent", () => {
+    const messages = [
+      ctxMsg({
+        id: "m1",
+        timestamp: "2026-06-12T10:00:00Z",
+        displayName: "Kevin",
+        content: "pic",
+        images: [{ url: "https://cdn/a.png" }]
+      })
+    ];
+    const result = formatObserverContext(messages, now);
+    expect(result).not.toContain("[image_text:");
   });
 });

@@ -46,6 +46,7 @@ import {
   OrchestratorResponderOutcome,
   OrchestratorHistoryFileSchema,
   OrchestratorRespondingWaifu,
+  PendingObservationsFileSchema,
   ProviderCredentialsFile,
   ProviderCredentialsFileSchema,
   ReviewerHistoryFileSchema,
@@ -1732,25 +1733,110 @@ export class RuntimeOrchestrator {
         return { status: "no_change" };
       }
 
+      // Split observations: fast-track (importance >= 4) go directly to the memory store;
+      // the rest are queued for the dream pass. This prevents the librarian from double-adding
+      // fast-tracked observations, since the librarian only sees queuedObservations (<4).
+      const fastTrackedObservations = allowedObservations.filter((obs) => obs.importance >= 4);
+      const queuedObservations = allowedObservations.filter((obs) => obs.importance < 4);
+
+      const nowTs = nowIso();
+
+      // Append queued observations (importance < 4) to the pending queue
+      if (queuedObservations.length > 0) {
+        await this.options.storage.updateRevisionedJson({
+          resourceKey: "memory:pending",
+          relativePath: "user/memory/pending-observations.json",
+          schema: PendingObservationsFileSchema,
+          fallback: PendingObservationsFileSchema.parse(createEmptyRevisionedFile({ observations: [] })),
+          transform: (current) => {
+            const newPending = queuedObservations.map((obs) => ({
+              id: randomUUID(),
+              guildId,
+              channelId,
+              waifuId: obs.waifuId,
+              content: obs.content,
+              kind: obs.kind,
+              importance: obs.importance,
+              entities: (obs.entities?.length ?? 0) > 0 ? obs.entities : extractEntities(obs.content),
+              createdAt: nowTs
+            }));
+            return { ...current, observations: [...current.observations, ...newPending] };
+          }
+        });
+      }
+
+      // Fast-track: write importance >= 4 observations directly to the memory store
+      if (fastTrackedObservations.length > 0) {
+        await this.options.storage.updateRevisionedJson({
+          resourceKey: "memories:global",
+          relativePath: "user/memories.json",
+          schema: MemoryStoreSchema,
+          fallback: emptyMemoryStore(),
+          transform: (current) => {
+            const newMemories: MemoryRecord[] = fastTrackedObservations.map((obs) => ({
+              id: randomUUID(),
+              guildId,
+              channelId,
+              waifuId: obs.waifuId,
+              content: obs.content,
+              kind: obs.kind,
+              source: "stage_manager" as const,
+              pinned: false,
+              strength: obs.importance,
+              entities: (obs.entities?.length ?? 0) > 0 ? obs.entities : extractEntities(obs.content),
+              createdAt: nowTs,
+              updatedAt: nowTs,
+              status: "active" as const
+            }));
+            return { ...current, memories: [...current.memories, ...newMemories] };
+          }
+        });
+      }
+
       const store = await this.readMemoryStore();
       const memoryInput = stageManagerMemories(
         store.memories,
         guildId,
         allowedWaifuIds,
-        { observations: allowedObservations }
+        // Only pass non-fast-tracked observations to the librarian to avoid double-writes.
+        { observations: queuedObservations }
       );
+
+      if (queuedObservations.length === 0) {
+        // All observations were fast-tracked; no need to call the librarian
+        const fastTrackedSummary = `queued: 0, fastTracked: ${fastTrackedObservations.length}`;
+        const entry = {
+          id: randomUUID(),
+          guildId,
+          channelId,
+          tool: "no_change" as const,
+          affectedMemoryIds: [] as string[],
+          summary: fastTrackedSummary,
+          observationCount: allowedObservations.length,
+          createdAt: nowTs
+        };
+        await this.appendStageManagerHistory(entry);
+        void this.sendStageManagerDebugLog({
+          guildId,
+          channelId,
+          entries: [entry],
+          observationCount: allowedObservations.length
+        });
+        return { status: fastTrackedObservations.length > 0 ? "updated" : "no_change" };
+      }
+
       this.options.logger.info("Stage manager librarian started", {
         guildId,
         channelId,
         modelId: config.modelId,
-        observations: allowedObservations.length,
+        observations: queuedObservations.length,
         memories: memoryInput.memories.length
       });
       const calls = await pipeline.decideStageManager({
         modelId: config.modelId,
         messages: [],
         memories: memoryInput.memories,
-        observations: allowedObservations,
+        observations: queuedObservations,
         availableWaifuIds: allowedWaifuIds,
         reasoning: config.reasoning
       });
@@ -1765,12 +1851,14 @@ export class RuntimeOrchestrator {
         memoryInput.memoryIdByIndex,
         allowedWaifuIds
       );
+      const queueFastSuffix = `; queued: ${queuedObservations.length}, fastTracked: ${fastTrackedObservations.length}`;
       for (const entry of result.historyEntries) {
         await this.appendStageManagerHistory({
           ...entry,
           guildId,
           channelId,
-          observationCount: allowedObservations.length
+          observationCount: allowedObservations.length,
+          summary: entry.summary + queueFastSuffix
         });
       }
       void this.sendStageManagerDebugLog({
@@ -1779,7 +1867,7 @@ export class RuntimeOrchestrator {
         entries: result.historyEntries,
         observationCount: allowedObservations.length
       });
-      return { status: result.changed ? "updated" : "no_change" };
+      return { status: result.changed || fastTrackedObservations.length > 0 ? "updated" : "no_change" };
     } catch (error) {
       this.options.logger.error("Stage manager failed", {
         guildId,

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { AttachmentImage, ContextMessage, formatOrchestratorMessageBlock, formatSelfWaifuContent, formatTimestamp, formatWaifuContextBlock, OrchestratorWakeMarker } from "../orchestration/context.js";
+import { AttachmentImage, ContextMessage, formatObserverContext, formatOrchestratorMessageBlock, formatSelfWaifuContent, formatTimestamp, formatWaifuContextBlock, OrchestratorWakeMarker } from "../orchestration/context.js";
 import {
   OrchestratorActionSchema,
   OrchestratorDecision,
@@ -142,7 +142,6 @@ class OpenAiCompatibleChatPipeline implements ModelPipeline {
 
   async decideStageManagerObservations(request: StageManagerObserveRequest): Promise<StageManagerObservation[]> {
     validateMaxOutputTokens(this.model, request.maxOutputTokens);
-    const rendering = renderContext(request.messages);
     const reasoning = openAiChatReasoningForForcedTool(this.model, request.reasoning);
     const text = await postJsonAndExtractText({
       url: `${this.provider.baseUrl}${this.model.endpoint}`,
@@ -151,7 +150,7 @@ class OpenAiCompatibleChatPipeline implements ModelPipeline {
         model: request.modelId,
         messages: openAiChatMessagesForModel(this.model, [
           { role: "system", content: observerSystemPrompt(request.systemPrompt, request.availableWaifuIds) },
-          contextToUserMessage(rendering)
+          { role: "user", content: formatObserverContext(request.messages, new Date()) }
         ]),
         temperature: openAiChatTemperature(this.model, request.temperature ?? 0.2),
         top_p: openAiChatTopP(this.model, request.topP),
@@ -323,14 +322,13 @@ class OpenAiResponsesPipeline implements ModelPipeline {
 
   async decideStageManagerObservations(request: StageManagerObserveRequest): Promise<StageManagerObservation[]> {
     validateMaxOutputTokens(this.model, request.maxOutputTokens);
-    const rendering = renderContext(request.messages);
     const text = await postJsonAndExtractText({
       url: `${this.provider.baseUrl}${this.model.endpoint}`,
       headers: bearerHeaders(this.apiKey),
       body: {
         model: request.modelId,
         instructions: observerSystemPrompt(request.systemPrompt, request.availableWaifuIds),
-        input: [contextToUserMessage(rendering)],
+        input: [{ role: "user", content: formatObserverContext(request.messages, new Date()) }],
         temperature: request.temperature ?? 0.2,
         top_p: request.topP,
         max_output_tokens: request.maxOutputTokens,
@@ -494,7 +492,6 @@ class AnthropicMessagesPipeline implements ModelPipeline {
   }
 
   async decideStageManagerObservations(request: StageManagerObserveRequest): Promise<StageManagerObservation[]> {
-    const rendering = renderContext(request.messages);
     const maxTokens = request.maxOutputTokens ?? 1024;
     validateMaxOutputTokens(this.model, maxTokens);
     const text = await postJsonAndExtractText({
@@ -503,7 +500,7 @@ class AnthropicMessagesPipeline implements ModelPipeline {
       body: {
         model: request.modelId,
         system: observerSystemPrompt(request.systemPrompt, request.availableWaifuIds),
-        messages: [contextToUserMessage(rendering)],
+        messages: [{ role: "user", content: formatObserverContext(request.messages, new Date()) }],
         ...anthropicSamplingPayload(this.model, request.temperature ?? 0.2, request.topP, undefined),
         max_tokens: maxTokens,
         tools: [anthropicObserverTool(request.availableWaifuIds)],
@@ -663,13 +660,12 @@ class GoogleGenerativeLanguagePipeline implements ModelPipeline {
 
   async decideStageManagerObservations(request: StageManagerObserveRequest): Promise<StageManagerObservation[]> {
     validateMaxOutputTokens(this.model, request.maxOutputTokens);
-    const rendering = renderContext(request.messages);
     const text = await postJsonAndExtractText({
       url: googleAiStudioUrl(this.provider, this.model),
       headers: googleAiStudioHeaders(this.apiKey),
       body: stripUndefined({
         systemInstruction: { parts: [{ text: observerSystemPrompt(request.systemPrompt, request.availableWaifuIds) }] },
-        contents: [googleUserTurn(rendering.block)],
+        contents: [googleUserTurn(formatObserverContext(request.messages, new Date()))],
         generationConfig: googleGenerationConfig(this.model, {
           temperature: request.temperature ?? 0.2,
           topP: request.topP,
@@ -855,45 +851,6 @@ function providerRequestSignal(parent?: AbortSignal, timeoutMs = 180_000): {
       clearTimeout(timeout);
       parent?.removeEventListener("abort", abortFromParent);
     }
-  };
-}
-
-type ContextRendering = {
-  block: string;
-  idToIndex: Map<string, number>;
-  indexToId: Map<number, string>;
-};
-
-function renderContext(messages: ContextMessage[]): ContextRendering {
-  const idToIndex = new Map<string, number>();
-  const indexToId = new Map<number, string>();
-  messages.forEach((message, i) => {
-    const index = i + 1;
-    idToIndex.set(message.id, index);
-    indexToId.set(index, message.id);
-  });
-  const lines = messages.map((message, i) =>
-    formatContextMessage(message, i + 1, idToIndex)
-  );
-  return { block: lines.join("\n"), idToIndex, indexToId };
-}
-
-function currentTimeBlock(): string {
-  return `<current_time>\n${formatPromptCurrentHour(new Date())}\n</current_time>`;
-}
-
-function formatPromptCurrentHour(date: Date): string {
-  return [
-    String(date.getFullYear()).padStart(4, "0"),
-    String(date.getMonth() + 1).padStart(2, "0"),
-    String(date.getDate()).padStart(2, "0")
-  ].join("-") + `T${String(date.getHours()).padStart(2, "0")}`;
-}
-
-function contextToUserMessage(rendering: ContextRendering) {
-  return {
-    role: "user",
-    content: rendering.block
   };
 }
 
@@ -1204,50 +1161,6 @@ function roleForWaifuContext(message: ContextMessage, selfAuthorIds: string[]): 
     : "user";
 }
 
-function formatContextMessage(message: ContextMessage, index: number, idToIndex: Map<string, number>): string {
-  const prefix = `[index: #${index}] [timestamp: ${message.timestamp}] ${message.displayName}:`;
-  const suffix = buildSuffix(message, idToIndex);
-  const body = message.content.length > 0 ? ` ${message.content}` : "";
-  return `${prefix}${body}${suffix}`;
-}
-
-function buildSuffix(message: ContextMessage, idToIndex: Map<string, number> | undefined): string {
-  const parts: string[] = [];
-  if (message.images?.length) {
-    parts.push(`[images: ${message.images.length}]`);
-    message.images.forEach((image, index) => {
-      const text = formatOcrText(image.ocrText);
-      if (text) {
-        parts.push(`[image_text #${index + 1}: ${text}]`);
-      }
-    });
-  }
-  if (message.reactions.length) {
-    parts.push(
-      `[reactions: ${message.reactions.map((reaction) => `${reaction.emoji} x${reaction.count}`).join(", ")}]`
-    );
-  }
-  if (message.replyTo) {
-    const referencedIndex = idToIndex?.get(message.replyTo.messageId);
-    if (referencedIndex !== undefined) {
-      parts.push(`[replying to: #${referencedIndex}]`);
-    } else {
-      const author = message.replyTo.authorName ?? "unknown";
-      const preview = message.replyTo.contentPreview ?? "";
-      parts.push(`[replying to: ${author}: ${preview}]`.replace(/\s+\]$/, "]"));
-    }
-  }
-  return parts.length ? ` ${parts.join(" ")}` : "";
-}
-
-function formatOcrText(text: string | undefined): string | undefined {
-  const normalized = text
-    ?.replace(/\s+/g, " ")
-    .replace(/[\u0000-\u001F\u007F]/g, "")
-    .trim();
-  return normalized || undefined;
-}
-
 function observerSystemPrompt(customPrompt?: string, availableWaifuIds?: string[]): string {
   return [customPrompt?.trim(), observerInstruction(availableWaifuIds)].filter(Boolean).join("\n\n");
 }
@@ -1258,7 +1171,7 @@ function observerInstruction(availableWaifuIds?: string[]): string {
     : "No waifus are available in this channel; return an empty observations array.";
   return `You are extracting durable memories from a Discord chat window.
 
-Each message in the context is tagged with [index: #N] and [timestamp: ISO-8601 UTC], followed by \`DisplayName:\` and the body, optionally followed by [reactions: ...] and [replying to: ...].
+The context window begins with a header line: Window: <date+time range> UTC (today: YYYY-MM-DD). Each message that follows is formatted as "DisplayName: body", optionally preceded by a "replying to > Author" line, and optionally followed by "[image_text: ...]" lines for any attached images. A "[— next day: YYYY-MM-DD —]" marker appears between messages that cross midnight.
 
 Your only job: scan the window and produce a small list of atomic, durable observations worth remembering. Then call ${OBSERVER_TOOL_NAME} exactly once with an observations array. Do not write normal assistant text. An empty array is allowed and is the correct answer when nothing durable was disclosed.
 
@@ -1269,6 +1182,7 @@ Each observation must be:
 - Owned by one waifu via waifuId — the waifu who should carry this memory in her prompt going forward. ${waifuInstruction}
 - Classified by kind: "fact" (stable attribute), "preference" (likes/dislikes), "relationship" (between two named people), "event" (a dated thing that happened), or "commitment" (a promise or future plan).
 - Scored 1–5 for importance: 1 = trivial flavor, 3 = useful when the waifu next talks to this person, 5 = central to who this person is.
+- If a fact is time-bound, state the absolute resolution date and what becomes true after it ('K plans to release the update on 2026-06-12'), never bare 'tomorrow'/'tonight'.
 
 Do NOT emit narration. Reject strings shaped like:
 - "Kevin and Mia were talking about cooking." (recap, not a fact)
@@ -1553,7 +1467,12 @@ function observerToolParameters(availableWaifuIds?: string[]): object {
             waifuId: waifuIdSchema,
             content: { type: "string", description: "Atomic standalone fact, not a recap of chat events." },
             importance: { type: "integer", enum: [1, 2, 3, 4, 5] },
-            kind: { type: "string", enum: [...OBSERVATION_KINDS] }
+            kind: { type: "string", enum: [...OBSERVATION_KINDS] },
+            entities: {
+              type: "array",
+              items: { type: "string" },
+              description: "Display names of every person this observation is about."
+            }
           }
         }
       }

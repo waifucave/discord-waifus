@@ -42,6 +42,7 @@ import {
   MemoryStoreSchema,
   OrchestratorDebugConfigFileSchema,
   OrchestratorHistoryFileSchema,
+  PendingObservationsFileSchema,
   ProviderCredentialsFileSchema,
   ReviewerHistoryFileSchema,
   ServerConfigSchema,
@@ -2132,6 +2133,138 @@ describe("RuntimeOrchestrator", () => {
     expect(history.edits[0].observationCount).toBe(1);
   });
 
+  it("appends low-importance observations (< 4) to the pending queue file", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    const pipeline: ModelPipeline = {
+      async generateWaifu() {
+        return { content: "unused" };
+      },
+      async decideStageManagerObservations() {
+        return [
+          { waifuId: "yuki", content: "Kevin drinks tea.", importance: 2, kind: "preference" as const },
+          { waifuId: "yuki", content: "Kevin owns a cat.", importance: 3, kind: "fact" as const }
+        ];
+      },
+      async decideStageManager() {
+        return [{ tool: "no_change" as const }];
+      }
+    };
+
+    await seedRuntimeConfig(storage);
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      createPipeline: () => pipeline,
+      logger: { debug: () => undefined, info: () => undefined, warn: () => undefined, error: () => undefined }
+    });
+
+    await runtime.triggerStageManager("guild-1", "channel-1");
+
+    const pending = await storage.readJson("user/memory/pending-observations.json", PendingObservationsFileSchema);
+    expect(pending.observations).toHaveLength(2);
+    expect(pending.observations.every((obs) => obs.guildId === "guild-1")).toBe(true);
+    expect(pending.observations.every((obs) => obs.channelId === "channel-1")).toBe(true);
+    expect(pending.observations.map((obs) => obs.content).sort()).toEqual(
+      ["Kevin drinks tea.", "Kevin owns a cat."].sort()
+    );
+    // These low-importance observations should NOT be in the memory store
+    const memories = await storage.readJson("user/memories.json", MemoryStoreSchema, MemoryStoreSchema.parse(createEmptyRevisionedFile({ memories: [] })));
+    expect(memories.memories.filter((m) => m.source === "stage_manager")).toHaveLength(0);
+  });
+
+  it("fast-tracks observations with importance >= 4 directly to the memory store", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    const pipeline: ModelPipeline = {
+      async generateWaifu() {
+        return { content: "unused" };
+      },
+      async decideStageManagerObservations() {
+        return [
+          { waifuId: "yuki", content: "Kevin is allergic to peanuts.", importance: 4, kind: "fact" as const },
+          { waifuId: "yuki", content: "Kevin's family runs a bakery.", importance: 5, kind: "relationship" as const },
+          { waifuId: "yuki", content: "Kevin likes coffee.", importance: 2, kind: "preference" as const }
+        ];
+      },
+      async decideStageManager() {
+        return [{ tool: "no_change" as const }];
+      }
+    };
+
+    await seedRuntimeConfig(storage);
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      createPipeline: () => pipeline,
+      logger: { debug: () => undefined, info: () => undefined, warn: () => undefined, error: () => undefined }
+    });
+
+    await runtime.triggerStageManager("guild-1", "channel-1");
+
+    // Fast-tracked records (importance >= 4) should be in the memory store
+    const memories = await storage.readJson("user/memories.json", MemoryStoreSchema);
+    const fastTracked = memories.memories.filter((m) => m.source === "stage_manager");
+    expect(fastTracked).toHaveLength(2);
+    expect(fastTracked.map((m) => m.content).sort()).toEqual(
+      ["Kevin is allergic to peanuts.", "Kevin's family runs a bakery."].sort()
+    );
+    expect(fastTracked.every((m) => m.strength >= 4)).toBe(true);
+
+    // The low-importance one should NOT be fast-tracked but queued
+    const pending = await storage.readJson("user/memory/pending-observations.json", PendingObservationsFileSchema);
+    expect(pending.observations).toHaveLength(1);
+    expect(pending.observations[0].content).toBe("Kevin likes coffee.");
+  });
+
+  it("history entries include queued and fastTracked counts", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    const pipeline: ModelPipeline = {
+      async generateWaifu() {
+        return { content: "unused" };
+      },
+      async decideStageManagerObservations() {
+        return [
+          { waifuId: "yuki", content: "Kevin likes sushi.", importance: 3, kind: "preference" as const },
+          { waifuId: "yuki", content: "Kevin is a chef.", importance: 5, kind: "fact" as const }
+        ];
+      },
+      async decideStageManager() {
+        return [{ tool: "no_change" as const }];
+      }
+    };
+
+    await seedRuntimeConfig(storage);
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      createPipeline: () => pipeline,
+      logger: { debug: () => undefined, info: () => undefined, warn: () => undefined, error: () => undefined }
+    });
+
+    await runtime.triggerStageManager("guild-1", "channel-1");
+
+    const history = await storage.readJson("user/stage-manager/history.json", StageManagerHistoryFileSchema);
+    expect(history.edits[0].summary).toContain("queued: 1");
+    expect(history.edits[0].summary).toContain("fastTracked: 1");
+  });
+
   it("logs provider error details when stage-manager fails", async () => {
     const root = await makeTempRoot();
     roots.push(root);
@@ -2234,9 +2367,9 @@ describe("RuntimeOrchestrator", () => {
     const history = await storage.readJson("user/stage-manager/history.json", StageManagerHistoryFileSchema);
     expect(history.edits[0]).toMatchObject({
       tool: "add_memory",
-      affectedMemoryIds: [],
-      summary: "Skipped invalid waifu id K"
+      affectedMemoryIds: []
     });
+    expect(history.edits[0].summary).toContain("Skipped invalid waifu id K");
   });
 
   it("keeps stage-manager memory input and edits inside the current guild", async () => {

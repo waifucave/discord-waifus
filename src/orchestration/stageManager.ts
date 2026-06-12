@@ -14,7 +14,8 @@ export const StageManagerObservationSchema = z.object({
   waifuId: z.string().min(1),
   content: z.string().min(1),
   importance: ImportanceSchema,
-  kind: z.enum(OBSERVATION_KINDS)
+  kind: z.enum(OBSERVATION_KINDS),
+  entities: z.array(z.string()).default([])
 });
 
 export type StageManagerObservation = z.infer<typeof StageManagerObservationSchema>;
