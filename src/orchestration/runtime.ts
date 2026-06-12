@@ -2868,7 +2868,7 @@ export class RuntimeOrchestrator {
       : "No waifus are currently enabled for this channel.";
 
     const pausePlanning =
-      "When you choose no_reply, retriggerAfterSeconds is a planned pause before YOU re-check the room — any new human message wakes you regardless, so long pauses cost nothing. wakePlan is one sentence on what you intend at wake; the runtime shows it back to you when the timer fires. Use the whole range: 100–300s when you expect a beat to need a nudge soon; 600–1800s for a cooling room with a planned revival; 3600s+ when you are mostly waiting for humans. Repeated quiet checks must back off to longer pauses.";
+      "When you choose no_reply, retriggerAfterSeconds is a planned pause before YOU re-check the room — any new human message wakes you regardless, so long pauses cost nothing. wakePlan is one sentence on what you intend at wake; the runtime shows it back to you when the timer fires. A pivot plan should name the new topic, and when the wake comes you execute it with a change_topic directive — a plan without a directive usually dissolves into the old topic. Use the whole range: 100–300s when you expect a beat to need a nudge soon; 600–1800s for a cooling room with a planned revival; 3600s+ when you are mostly waiting for humans. Repeated quiet checks must back off to longer pauses.";
 
     const task = replyRequired
       ? `${DEFAULT_ORCHESTRATOR_PROMPT}\n\n${manualRunReplyRequiredInstruction()}`
@@ -4092,9 +4092,9 @@ const DEFAULT_ORCHESTRATOR_PROMPT = [
   "",
   "no_reply is a normal, frequent choice. Real group chats are mostly silence. If the beat has landed, or another bot message would add noise, choose no_reply.",
   "",
-  "The cast has its own life. When humans are active, weave them in; when they are not, the waifus pursue their own threads — do not keep steering them back to absent users.",
+  "The cast has its own life. When humans are active, weave them in; when no human has spoken in the last ten or so messages, treat the room as the cast's own — waifu-to-waifu threads about their own plans, bits, gripes, and memories. Do not keep routing the conversation back to absent humans, and do not let every thread orbit the same person.",
   "",
-  "directive is a short GOAL for one waifu's next message, never content or wording. Default is null; her persona handles normal flow. The runtime rate-limits directives — they are for steering moments: breaking a loop, landing a new named topic, pulling a named quiet person back in, closing a beat. When a runtime notice says a loop is forming, that is the moment to use one.",
+  "directive is a short GOAL for one waifu's next message, never content or wording. Default is null; her persona handles normal flow. But an unused directive budget helps nobody: when the chat keeps orbiting one person or one topic, spend it — change_topic with a NAMED topic is the strongest move you have. When a runtime notice says a loop is forming, that is the moment. When your own wakePlan said you would pivot, execute it with a change_topic directive rather than hoping a waifu pivots on her own.",
   "",
   `delaySeconds is a realistic reading/typing delay (0–${MAX_WAIFU_DELAY_SECONDS}); it defaults to 0.`,
   "",

@@ -48,7 +48,7 @@ const IO_FORMAT = [
 const OUTPUT_CONTRACT = [
   "How to write your message:",
   "1. You are typing into a real Discord chat box. Output exactly the message body — nothing else.",
-  "2. This is a fast, casual chat. The default is ONE short line. Stretch to two or three short sentences only when the moment genuinely calls for it (telling a story, answering something that needs substance). Never paragraphs, never lists, never essays.",
+  "2. This is a fast, casual group chat: most of your messages are a short fragment — a quip, a reaction, half a sentence. One full sentence is already on the long side. Two or three short sentences are for rare storytime moments; anything longer never happens.",
   "3. If your persona suggests long-winded or formal speech, express it through word choice and attitude, not message length. This rule outranks your persona.",
   "4. Speak only as yourself. Never write lines for any other character or user, never prefix your message with any name and colon, never produce more than one message.",
   "5. No roleplay narration: no *actions*, no (stage notes), no third-person self-description.",
@@ -132,7 +132,7 @@ export const WAIFU_PROMPT_BLOCKS: WaifuPromptBlockDef[] = [
       const voice = ctx.personaDigest?.voice ?? ctx.personalityContent.replace(/\s+/g, " ").slice(0, 200);
       const drives = ctx.personaDigest?.role ? ` Drives: ${ctx.personaDigest.role}` : "";
       const voiceLine = voice ? ` Voice: ${voice}${drives}` : "";
-      return `<${ctx.waifuTag}_anchor>\nYou are ${ctx.displayName}.${voiceLine}\nReminders: one short chat message, only your own voice, no narration, no meta.\n</${ctx.waifuTag}_anchor>`;
+      return `<${ctx.waifuTag}_anchor>\nYou are ${ctx.displayName}.${voiceLine}\nReminders: one short, fragment-y chat message, only your own voice, no narration, no meta.\n</${ctx.waifuTag}_anchor>`;
     }
   },
   {
