@@ -23,7 +23,6 @@ import { ensureDataLayout } from "../../src/config/layout.js";
 import { StorageService } from "../../src/storage/storageService.js";
 import {
   AgentConfigSchema,
-  MemoryStoreSchema,
   ProviderCredentialsFileSchema,
   ServerConfigSchema,
   WaifuConfigSchema,
