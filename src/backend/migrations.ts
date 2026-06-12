@@ -539,7 +539,8 @@ const LEGACY_WAIFU_BLOCK_IDS = new Set([
   "activeParticipants",
   "serverEmojis",
   "personalityReminder",
-  "sceneDirection"
+  "sceneDirection",
+  "toolUse"
 ]);
 
 function layoutContainsLegacyIds(layout: unknown): boolean {

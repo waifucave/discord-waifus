@@ -38,7 +38,7 @@ export const PROMPT_BLOCK_META: PromptBlockMeta[] = [
   { id: "persona", label: "<{name}_persona>", hint: "The persona / character definition (raw, verbatim).", defaultSection: "top" },
   { id: "schedule", label: "<{name}_schedule>", hint: "The configured routine used for energy and timing.", defaultSection: "top" },
   { id: "ioFormat", label: "<io_format>", hint: "Input transcript format, reply-targeting syntax, and ping rules.", defaultSection: "top" },
-  { id: "tools", label: "<tool_use>", hint: "Tool instructions; only rendered when tools are active.", defaultSection: "top" },
+  { id: "tools", label: "<tools>", hint: "Tool instructions; only rendered when tools are active.", defaultSection: "top" },
   { id: "outputContract", label: "<output_contract>", hint: "Consolidated output rules: length, format, no-meta, no-narration.", defaultSection: "top" },
   { id: "roomInfo", label: "<room_info>", hint: "Active participants and server emojis in one block.", defaultSection: "mid" },
   { id: "relevantMemories", label: "<{name}_relevant_memories>", hint: "Long/short-term memories, when present.", defaultSection: "trailing" },

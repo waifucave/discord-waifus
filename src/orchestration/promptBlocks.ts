@@ -131,7 +131,8 @@ export const WAIFU_PROMPT_BLOCKS: WaifuPromptBlockDef[] = [
     render: (ctx) => {
       const voice = ctx.personaDigest?.voice ?? ctx.personalityContent.replace(/\s+/g, " ").slice(0, 200);
       const drives = ctx.personaDigest?.role ? ` Drives: ${ctx.personaDigest.role}` : "";
-      return `<${ctx.waifuTag}_anchor>\nYou are ${ctx.displayName}. Voice: ${voice}${drives}\nReminders: one short chat message, only your own voice, no narration, no meta.\n</${ctx.waifuTag}_anchor>`;
+      const voiceLine = voice ? ` Voice: ${voice}${drives}` : "";
+      return `<${ctx.waifuTag}_anchor>\nYou are ${ctx.displayName}.${voiceLine}\nReminders: one short chat message, only your own voice, no narration, no meta.\n</${ctx.waifuTag}_anchor>`;
     }
   },
   {
