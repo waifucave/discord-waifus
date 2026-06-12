@@ -17,7 +17,7 @@ import {
   DiscordReviewCommandEvent,
   DiscordStopCommandEvent
 } from "../discord/client.js";
-import { modelVisibleEmojiToken, stripLeakedContextHeader } from "../discord/normalization.js";
+import { dedupeNames, modelVisibleEmojiToken, stripLeakedContextHeader } from "../discord/normalization.js";
 import { splitWaifuReply, typingDelayMs } from "./messageSplit.js";
 import {
   PromptBlockContext,
@@ -1371,7 +1371,7 @@ export class RuntimeOrchestrator {
           );
           const waifuStopSequences = participantDisplayNames.map((name) => `\n${name}:`);
           const selfAuthorIds = [waifu.botId];
-          const selfDisplayNames = dedupeSelfNames([
+          const selfDisplayNames = dedupeNames([
             waifu.displayName,
             waifu.name,
             ...waifuMessages
@@ -3697,19 +3697,6 @@ function replyTargetForFreshContext(
   return replyToMessageId;
 }
 
-function dedupeSelfNames(values: Array<string | undefined>): string[] {
-  const seen = new Set<string>();
-  const names: string[] = [];
-  for (const value of values) {
-    const trimmed = value?.trim();
-    if (!trimmed) continue;
-    const key = trimmed.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    names.push(trimmed);
-  }
-  return names;
-}
 
 function waifuParticipantDisplayNames(
   self: WaifuConfig,

@@ -223,7 +223,7 @@ export function stripLeakedContextHeader(
   return stripImpersonationLines(text, selfNames, options.participantDisplayNames);
 }
 
-function dedupeNames(values: string[]): string[] {
+export function dedupeNames(values: Array<string | undefined>): string[] {
   const seen = new Set<string>();
   const names: string[] = [];
   for (const value of values) {

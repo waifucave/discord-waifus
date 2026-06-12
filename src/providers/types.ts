@@ -60,7 +60,8 @@ export type WaifuGenerationRequest = ProviderRequest & {
   pickNextWaifuToolEnabled?: boolean;
   shortTermMemoryToolEnabled?: boolean;
   stopSequences?: string[];
-  // Discord author ids that are THIS waifu (bot user id + application id when known).
+  // Discord author ids that are THIS waifu. In practice the bot user id only —
+  // Discord's message.author.id is always the user id, never the application id.
   // Only these messages become assistant turns; everything else is a user turn.
   selfAuthorIds?: string[];
 };
