@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { RuntimeOrchestrator, currentlyDoingForWaifu } from "../src/orchestration/runtime.js";
+import { RuntimeOrchestrator, currentlyDoingForWaifu, DreamPassResult } from "../src/orchestration/runtime.js";
 import { ContextMessage } from "../src/orchestration/context.js";
 import { OrchestratorDecision, RETRIGGER_MAX_SECONDS } from "../src/orchestration/decisions.js";
 import {
@@ -2544,6 +2544,137 @@ describe("RuntimeOrchestrator", () => {
       observationCount: 0,
       summary: "No observations extracted"
     });
+  });
+
+  it("dream pass reentrancy: second call for the same guild while first is in-flight returns already_running and skips decideDream", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    const now = new Date().toISOString();
+
+    await seedRuntimeConfig(storage);
+    // Seed one memory so the dream pass has a chunk to work on.
+    await storage.writeJson(
+      "memories:global",
+      "user/memories.json",
+      MemoryStoreSchema,
+      MemoryStoreSchema.parse(
+        createEmptyRevisionedFile({
+          memories: [
+            { id: "mem-1", waifuId: "yuki", guildId: "guild-1", content: "Kevin likes tea.", strength: 3, createdAt: now, updatedAt: now, status: "active" }
+          ]
+        })
+      )
+    );
+
+    // Deferred promise holds the first dream run in-flight until we choose to release it.
+    let releaseDream!: () => void;
+    const dreamGate = new Promise<void>((resolve) => { releaseDream = resolve; });
+
+    let decideDreamCalls = 0;
+
+    const pipeline: ModelPipeline = {
+      async generateWaifu() {
+        return { content: "unused" };
+      },
+      async decideStageManagerObservations() {
+        return [];
+      },
+      async decideDream() {
+        decideDreamCalls += 1;
+        await dreamGate;
+        return [{ op: "none" as const }];
+      }
+    };
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    // Fire first run without awaiting. dreamingGuilds.add("guild-1") fires synchronously
+    // inside startDreamRun before any async work begins.
+    const firstRun = runtime.runDreamPassForTest("guild-1");
+
+    // Second call: the guard is already set synchronously, so this returns immediately
+    // with already_running without touching runDreamPass at all.
+    const secondResult = await runtime.runDreamPassForTest("guild-1");
+    expect(secondResult.status).toBe("already_running");
+
+    // Release the first run and let it complete.
+    releaseDream();
+    const firstResult = await firstRun;
+
+    // The first run completed normally (no_change since decideDream returns [{op:"none"}]).
+    expect(firstResult.status).toBe("no_change");
+    // decideDream was invoked exactly once — the second call was short-circuited.
+    expect(decideDreamCalls).toBe(1);
+  });
+
+  it("dream pass reentrancy: two DIFFERENT guilds can dream concurrently — decideDream called once per guild", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    const now = new Date().toISOString();
+
+    await seedRuntimeConfig(storage);
+    // Seed memories for two distinct guilds.
+    await storage.writeJson(
+      "memories:global",
+      "user/memories.json",
+      MemoryStoreSchema,
+      MemoryStoreSchema.parse(
+        createEmptyRevisionedFile({
+          memories: [
+            { id: "mem-g1", waifuId: "yuki", guildId: "guild-1", content: "Kevin likes tea.", strength: 3, createdAt: now, updatedAt: now, status: "active" },
+            { id: "mem-g2", waifuId: "yuki", guildId: "guild-2", content: "Alice likes coffee.", strength: 3, createdAt: now, updatedAt: now, status: "active" }
+          ]
+        })
+      )
+    );
+
+    let decideDreamCalls = 0;
+
+    const pipeline: ModelPipeline = {
+      async generateWaifu() {
+        return { content: "unused" };
+      },
+      async decideStageManagerObservations() {
+        return [];
+      },
+      async decideDream() {
+        decideDreamCalls += 1;
+        return [{ op: "none" as const }];
+      }
+    };
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    // Launch both guilds concurrently. Different guild IDs: guard allows both.
+    const [result1, result2] = await Promise.all([
+      runtime.runDreamPassForTest("guild-1"),
+      runtime.runDreamPassForTest("guild-2")
+    ]);
+
+    // Both runs completed (no_change: each guild had one memory and no pending ops).
+    expect(result1.status).toBe("no_change");
+    expect(result2.status).toBe("no_change");
+
+    // decideDream was called once per guild — two total, no deduplication across guilds.
+    expect(decideDreamCalls).toBe(2);
   });
 
   it("hides cross-guild memories from waifu prompts", async () => {

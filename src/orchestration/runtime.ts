@@ -141,7 +141,7 @@ export type StageManagerRunResult = {
 };
 
 export type DreamPassResult = {
-  status: "updated" | "no_change" | "disabled" | "failed";
+  status: "updated" | "no_change" | "already_running" | "disabled" | "failed";
   applied: number;
   skipped: number;
   chunks: number;
@@ -173,6 +173,9 @@ export class RuntimeOrchestrator {
   // pending defer timers for runs deferred because a channel run was active.
   private readonly dreamTimers = new Map<string, NodeJS.Timeout>();
   private readonly activeDreamRuns = new Set<Promise<DreamPassResult>>();
+  // Per-guild reentrancy guard for the dream pass. Prevents two concurrent runs for the same
+  // guild from double-draining the observation queue or producing duplicate merge records.
+  private readonly dreamingGuilds = new Set<string>();
   private readonly maxAutomaticTurns: number;
   private readonly createPipeline: (modelId: string, credentials: PipelineCredentials) => ModelPipeline;
   private readonly sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
@@ -467,8 +470,9 @@ export class RuntimeOrchestrator {
   }
 
   // Test/ops hook: run only the dream consolidation pass for a guild (no observer).
+  // Goes through startDreamRun so the per-guild reentrancy guard is exercised.
   async runDreamPassForTest(guildId: string): Promise<DreamPassResult> {
-    return this.runDreamPass(guildId);
+    return this.startDreamRun(guildId);
   }
 
   // Test hook: run only the observer (queue + fast-track), without the dream pass.
@@ -2141,7 +2145,14 @@ export class RuntimeOrchestrator {
   }
 
   private startDreamRun(guildId: string): Promise<DreamPassResult> {
-    const promise = this.runDreamPass(guildId);
+    if (this.dreamingGuilds.has(guildId)) {
+      this.options.logger.info("Dream pass already running for guild, skipping duplicate run", { guildId });
+      return Promise.resolve({ status: "already_running", applied: 0, skipped: 0, chunks: 0, message: "Dream pass already running for this guild." });
+    }
+    this.dreamingGuilds.add(guildId);
+    const promise = this.runDreamPass(guildId).finally(() => {
+      this.dreamingGuilds.delete(guildId);
+    });
     this.activeDreamRuns.add(promise);
     void promise
       .finally(() => {
@@ -3577,7 +3588,9 @@ function combineStageAndDream(observer: StageManagerRunResult, dream: DreamPassR
       : observer.message ?? observer.status;
   const dreamNote = dream.status === "failed"
     ? dream.message ?? "dream pass failed"
-    : `dream pass applied ${dream.applied}, skipped ${dream.skipped} across ${dream.chunks} chunk${dream.chunks === 1 ? "" : "s"}`;
+    : dream.status === "already_running"
+      ? dream.message ?? "dream pass already running"
+      : `dream pass applied ${dream.applied}, skipped ${dream.skipped} across ${dream.chunks} chunk${dream.chunks === 1 ? "" : "s"}`;
   const message = `Observer + dream pass: ${observerNote}; ${dreamNote}.`;
   if (failed) {
     return { status: "failed", message };
