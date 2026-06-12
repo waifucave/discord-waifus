@@ -511,6 +511,18 @@ Status log (one line per landed phase, appended by the implementing agent):
   in `pipelines.ts` are the add_memory TOOL plumbing (wire-correct, die with the file in P3).
   Task 0 tuning: fragment-first length register, cast-autonomy + change_topic seeding in the
   orchestrator prompt.
+- **W4 (leak validator + eval)** — landed 2026-06-12, merge commit `c82d7e6`. Deterministic
+  `src/orchestration/outputValidator.ts` (7 checks: harness-tag incl. layout group tags,
+  tool-fragment incl. JSON arrays, bracket-tag, transcript-shape, directive-echo, self-talk,
+  mass-ping→block) runs in the waifu send path after the strip pipeline: pass / one
+  violation-named retry / blocked outcome (`"blocked"` added to responder-outcome statuses) —
+  never truncates. Reviewer prompt gains a directive-restatement line; `setDebugRoute` refuses
+  waifu-enabled destination channels; the orchestrator's typing tell is gone. Eval harness:
+  `tests/eval/` tier 1 (leak corpus, always on) + tier 2 (12 scenario replays, gated by
+  `WAIFUS_EVAL_LIVE=1` + `WAIFUS_EVAL_MODEL`/`WAIFUS_EVAL_API_KEY`) + `scripts/eval-report.mjs`
+  for cross-model comparison. P3: the validator/eval are app-side (transport-agnostic) — only the
+  corrective `retryUserMessage` plumbing touches the pipeline layer. **All four W-phases of the
+  prompting overhaul are now complete.**
 
 ---
 
