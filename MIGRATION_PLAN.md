@@ -475,7 +475,16 @@ directives, wake markers, observer/dream tool shapes, schema-version sequencing 
 
 Status log (one line per landed phase, appended by the implementing agent):
 
-- _none landed yet — plan committed 2026-06-11_
+- **W1 (orchestrator)** — landed 2026-06-12, merge commit `573a933`. Typed directives
+  (`directive {intent, goal}` replaces `sceneDirection`) with runtime budget/cap guardrails;
+  `wakePlan` + wake markers + escalating retrigger backoff; deterministic loop detector
+  (`src/orchestration/loopDetector.ts`); sanitized few-shot replay with outcome-bearing tool
+  results and time-gap notes; orchestrator prompts rewritten (casting cards, pause planning);
+  `replyStyle`, `repleyToMessageIndex`, legacy prompt, and `clipSceneDirection`/`useLegacyPrompt`
+  config removed; `promptSections` → `{pausePlanning, messageStructure}` (legacy keys migrated);
+  orchestrator default context window 20→40. P3 interface deltas are mapped in
+  `docs/superpowers/plans/2026-06-11-prompting-overhaul/06-gateway-coordination.md` §2/§5 —
+  all listed "delete with confidence" items are now already gone.
 
 ---
 
