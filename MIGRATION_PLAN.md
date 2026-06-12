@@ -485,6 +485,18 @@ Status log (one line per landed phase, appended by the implementing agent):
   orchestrator default context window 20→40. P3 interface deltas are mapped in
   `docs/superpowers/plans/2026-06-11-prompting-overhaul/06-gateway-coordination.md` §2/§5 —
   all listed "delete with confidence" items are now already gone.
+- **W2 (waifu harness)** — landed 2026-06-12, merge commit `5ed1ea7`. Per-waifu context roles:
+  only the self waifu's messages are assistant turns, rendered as raw bodies
+  (`WaifuGenerationRequest.selfAuthorIds` is new; the four context builders take it). Self-alias
+  sets (configured names + context-derived + members.json guild nickname) drive the identity
+  nickname clause and the impersonation-strip — fixes the live dropped-replies bug. New block
+  registry (ioFormat, outputContract with length register, roomInfo, anchor, directorNote);
+  stored prompt layouts migrated to the new default. Persona digest (`generatePersonaDigest` is a
+  NEW ModelPipeline method, forced tool `set_persona_digest`) generated on waifu save via the
+  stage-manager model, consumed by the trailing anchor and orchestrator casting cards — raw
+  personas no longer reach the orchestrator. Anthropic/Google mid+trailing blocks wrap in
+  `<system_note>`. Schema-first tool descriptions (add_memory/PickNextWaifu). P3 must carry all
+  of these into the unified pipeline rewrite.
 
 ---
 
