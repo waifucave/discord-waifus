@@ -1,3 +1,4 @@
+import { z } from "zod";
 import {
   MAX_WAIFU_DELAY_SECONDS,
   DIRECTIVE_GOAL_MAX_CHARS,
@@ -5,8 +6,8 @@ import {
   RETRIGGER_MAX_SECONDS,
   RETRIGGER_MIN_SECONDS
 } from "./decisions.js";
-import { OBSERVATION_KINDS } from "./stageManager.js";
-import { MEMORY_KINDS } from "../shared/schemas/domain.js";
+import { OBSERVATION_KINDS, DreamOp, DreamOpSchema, StageManagerObservation, StageManagerObservationSchema } from "./stageManager.js";
+import { MEMORY_KINDS, MemoryKindSchema } from "../shared/schemas/domain.js";
 import type { DreamRequest } from "../providers/types.js";
 
 // ---------------------------------------------------------------------------
@@ -553,4 +554,132 @@ export function googleAiStudioSchema(schema: unknown): unknown {
     converted.nullable = true;
   }
   return converted;
+}
+
+// ---------------------------------------------------------------------------
+// Normalizers shared by pipelines.ts and gatewayPipeline.ts
+// ---------------------------------------------------------------------------
+
+// Coerces stringified importance values (e.g. "3") to the integer 3.
+const ImportanceSchema = z.union([
+  z.literal(1),
+  z.literal(2),
+  z.literal(3),
+  z.literal(4),
+  z.literal(5)
+]);
+export const RawImportanceSchema = z.preprocess((value) => {
+  if (typeof value === "string" && /^[1-5]$/.test(value)) {
+    return Number(value);
+  }
+  return value;
+}, ImportanceSchema);
+
+// Accepts lenient observation payloads; importance can arrive as a string digit.
+export const RawStageManagerObservationSchema = z.object({
+  waifuId: z.string().min(1),
+  content: z.string().min(1),
+  importance: RawImportanceSchema,
+  kind: z.enum(OBSERVATION_KINDS)
+});
+
+// The model may emit ops in either the nested shape (matching the OpenAI/Anthropic tool schema:
+// `memory`/`patch` sub-objects) or the flattened Google shape (`waifuId`/`content`/`strength`
+// hoisted to the op level). This lenient schema accepts both and normalizeDreamOp below folds the
+// flat form into the canonical DreamOp.
+export const RawDreamOpSchema = z.object({
+  op: z.enum(["add", "promote", "rewrite", "merge", "decay", "archive", "none"]),
+  memory: z
+    .object({
+      waifuId: z.string().min(1),
+      content: z.string().min(1),
+      kind: MemoryKindSchema,
+      strength: z.number().min(0).max(5),
+      entities: z.array(z.string()).default([])
+    })
+    .optional(),
+  patch: z
+    .object({
+      kind: MemoryKindSchema.optional(),
+      strength: z.number().min(0).max(5).optional(),
+      content: z.string().min(1).optional()
+    })
+    .optional(),
+  memoryIndex: z.number().int().min(1).optional(),
+  memoryIndices: z.array(z.number().int().min(1)).min(2).optional(),
+  content: z.string().min(1).optional(),
+  entities: z.array(z.string()).optional(),
+  kind: MemoryKindSchema.optional(),
+  strength: z.number().min(0).max(5).optional(),
+  reason: z.string().min(1).optional(),
+  waifuId: z.string().min(1).optional()
+});
+
+function stripUndefinedNormalizer(value: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined));
+}
+
+// Folds either the nested or flat dream op shape into a canonical DreamOp.
+export function normalizeDreamOp(op: unknown): DreamOp {
+  const raw = RawDreamOpSchema.parse(op);
+  switch (raw.op) {
+    case "add":
+      return DreamOpSchema.parse({
+        op: "add",
+        memory:
+          raw.memory ??
+          stripUndefinedNormalizer({
+            waifuId: raw.waifuId,
+            content: raw.content,
+            kind: raw.kind,
+            strength: raw.strength,
+            entities: raw.entities
+          })
+      });
+    case "promote":
+      return DreamOpSchema.parse({
+        op: "promote",
+        memoryIndex: raw.memoryIndex,
+        patch:
+          raw.patch ??
+          stripUndefinedNormalizer({
+            kind: raw.kind,
+            strength: raw.strength,
+            content: raw.content
+          })
+      });
+    case "rewrite":
+      return DreamOpSchema.parse({
+        op: "rewrite",
+        memoryIndex: raw.memoryIndex,
+        content: raw.content,
+        entities: raw.entities
+      });
+    case "merge":
+      return DreamOpSchema.parse({
+        op: "merge",
+        memoryIndices: raw.memoryIndices,
+        content: raw.content,
+        entities: raw.entities
+      });
+    case "decay":
+      return DreamOpSchema.parse({
+        op: "decay",
+        memoryIndex: raw.memoryIndex,
+        strength: raw.strength
+      });
+    case "archive":
+      return DreamOpSchema.parse({
+        op: "archive",
+        memoryIndex: raw.memoryIndex,
+        reason: raw.reason
+      });
+    case "none":
+      return DreamOpSchema.parse({ op: "none" });
+  }
+}
+
+// Parse an array of raw observation items using the coercing Raw schema.
+export function parseRawStageManagerObservations(items: unknown[]): StageManagerObservation[] {
+  return items.map((item) => StageManagerObservationSchema.parse(RawStageManagerObservationSchema.parse(item)));
 }

@@ -162,7 +162,9 @@ describe("decideReviewer (gateway)", () => {
 });
 
 describe("decideStageManagerObservations (gateway)", () => {
-  it("forces record_observations and parses entities", async () => {
+  it("forces record_observations and parses observations; entities absent in raw schema default to []", async () => {
+    // Legacy two-step parse (RawStageManagerObservationSchema → StageManagerObservationSchema)
+    // strips the entities field; StageManagerObservationSchema defaults it to [].
     const observations = [{ waifuId: "yuki", content: "Ann prefers tea", importance: 3, kind: "preference", entities: ["Ann"] }];
     const fetchImpl = okFetch({
       id: "r1",
@@ -172,7 +174,21 @@ describe("decideStageManagerObservations (gateway)", () => {
     const out = await makePipeline(fetchImpl as unknown as typeof fetch).decideStageManagerObservations!({
       modelId: "deepseek-v4-flash", messages: [msg({})], availableWaifuIds: ["yuki"]
     });
-    expect(out).toEqual(observations);
+    // entities is defaulted to [] by the final StageManagerObservationSchema (parity with legacy)
+    expect(out).toEqual([{ waifuId: "yuki", content: "Ann prefers tea", importance: 3, kind: "preference", entities: [] }]);
+  });
+
+  it("coerces stringified importance ('3') to integer 3 (I1 fix)", async () => {
+    const observations = [{ waifuId: "yuki", content: "Ann works remotely", importance: "3", kind: "fact" }];
+    const fetchImpl = okFetch({
+      id: "r1",
+      choices: [{ message: { content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "record_observations", arguments: JSON.stringify({ observations }) } }] }, finish_reason: "tool_calls" }],
+      usage: {}
+    });
+    const out = await makePipeline(fetchImpl as unknown as typeof fetch).decideStageManagerObservations!({
+      modelId: "deepseek-v4-flash", messages: [msg({})], availableWaifuIds: ["yuki"]
+    });
+    expect(out).toEqual([{ waifuId: "yuki", content: "Ann works remotely", importance: 3, kind: "fact", entities: [] }]);
   });
 });
 
@@ -196,6 +212,46 @@ describe("decideDream (gateway)", () => {
     expect(out).toEqual([{ op: "decay", memoryIndex: 1, strength: 1 }]);
     const body = JSON.parse((fetchImpl.mock.calls[0]![1] as RequestInit).body as string);
     expect(JSON.stringify(body.messages)).toContain("old note");
+  });
+
+  it("normalizes a flat google-wire 'add' op into nested memory shape (C1 fix)", async () => {
+    // Gemini returns flat ops (fields hoisted to op level, no nested memory object).
+    // normalizeDreamOp must fold them into the canonical DreamOp shape.
+    const flatOp = { op: "add", waifuId: "yuki", content: "new memory", kind: "preference", strength: 4 };
+    const fetchImpl = okFetch({
+      candidates: [{
+        content: { parts: [{ functionCall: { name: "dream_memories", args: { ops: [flatOp] } } }] },
+        finishReason: "STOP"
+      }],
+      usageMetadata: { promptTokenCount: 5, candidatesTokenCount: 2 }
+    });
+    const out = await makePipeline(fetchImpl as unknown as typeof fetch, "google-ai-studio", "gemini-2.5-flash-lite").decideDream!(dreamRequest);
+    // Canonical normalized shape: waifuId/content/kind/strength lifted into memory sub-object;
+    // entities defaults to [] by DreamOpSchema.
+    expect(out).toEqual([{
+      op: "add",
+      memory: { waifuId: "yuki", content: "new memory", kind: "preference", strength: 4, entities: [] }
+    }]);
+  });
+
+  it("normalizes a flat google-wire 'promote' op with patch fields (C1 fix)", async () => {
+    // Gemini flat promote: memoryIndex + kind/strength at top level (no nested patch object).
+    const flatOp = { op: "promote", memoryIndex: 1, kind: "preference", strength: 3 };
+    const fetchImpl = okFetch({
+      candidates: [{
+        content: { parts: [{ functionCall: { name: "dream_memories", args: { ops: [flatOp] } } }] },
+        finishReason: "STOP"
+      }],
+      usageMetadata: { promptTokenCount: 5, candidatesTokenCount: 2 }
+    });
+    const out = await makePipeline(fetchImpl as unknown as typeof fetch, "google-ai-studio", "gemini-2.5-flash-lite").decideDream!(dreamRequest);
+    // Canonical normalized shape: kind/strength lifted into patch sub-object;
+    // patch.content absent (undefined stripped), DreamOpSchema defaults patch to {}.
+    expect(out).toEqual([{
+      op: "promote",
+      memoryIndex: 1,
+      patch: { kind: "preference", strength: 3 }
+    }]);
   });
 });
 

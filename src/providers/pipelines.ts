@@ -17,7 +17,7 @@ import {
   StageManagerObservation,
   StageManagerObservationSchema
 } from "../orchestration/stageManager.js";
-import { MemoryKindSchema, OrchestratorDecisionHistoryEntry, ReasoningConfig } from "../shared/schemas/domain.js";
+import { OrchestratorDecisionHistoryEntry, ReasoningConfig } from "../shared/schemas/domain.js";
 import {
   ORCHESTRATOR_TOOL_NAME,
   SHORT_TERM_MEMORY_TOOL_NAME,
@@ -40,6 +40,10 @@ import {
   REVIEWER_TOOL_PARAMETERS,
   googleAiStudioSchema,
   dreamMessages,
+  RawImportanceSchema,
+  RawStageManagerObservationSchema,
+  RawDreamOpSchema,
+  normalizeDreamOp,
 } from "../orchestration/tools.js";
 import { getModel, getProviderForModel } from "./catalog.js";
 import {
@@ -1340,27 +1344,6 @@ function anthropicTool(name: string, description: string, inputSchema: object) {
   };
 }
 
-const ImportanceSchema = z.union([
-  z.literal(1),
-  z.literal(2),
-  z.literal(3),
-  z.literal(4),
-  z.literal(5)
-]);
-const RawImportanceSchema = z.preprocess((value) => {
-  if (typeof value === "string" && /^[1-5]$/.test(value)) {
-    return Number(value);
-  }
-  return value;
-}, ImportanceSchema);
-
-const RawStageManagerObservationSchema = z.object({
-  waifuId: z.string().min(1),
-  content: z.string().min(1),
-  importance: RawImportanceSchema,
-  kind: z.enum(OBSERVATION_KINDS)
-});
-
 const RawDirectiveSchema = z.object({
   intent: z.string().min(1),
   goal: z.string().min(1)
@@ -1384,38 +1367,6 @@ const RawOrchestratorDecisionSchema = z.object({
     .optional(),
   wakePlan: z.union([z.string(), z.null()]).optional(),
   reasoning: z.string().min(1)
-});
-
-// The model may emit ops in either the nested shape (matching the OpenAI/Anthropic tool schema:
-// `memory`/`patch` sub-objects) or the flattened Google shape (`waifuId`/`content`/`strength`
-// hoisted to the op level). This lenient schema accepts both and a normalizer below folds the flat
-// form into the canonical DreamOp.
-const RawDreamOpSchema = z.object({
-  op: z.enum(["add", "promote", "rewrite", "merge", "decay", "archive", "none"]),
-  memory: z
-    .object({
-      waifuId: z.string().min(1),
-      content: z.string().min(1),
-      kind: MemoryKindSchema,
-      strength: z.number().min(0).max(5),
-      entities: z.array(z.string()).default([])
-    })
-    .optional(),
-  patch: z
-    .object({
-      kind: MemoryKindSchema.optional(),
-      strength: z.number().min(0).max(5).optional(),
-      content: z.string().min(1).optional()
-    })
-    .optional(),
-  memoryIndex: z.number().int().min(1).optional(),
-  memoryIndices: z.array(z.number().int().min(1)).min(2).optional(),
-  content: z.string().min(1).optional(),
-  entities: z.array(z.string()).optional(),
-  kind: MemoryKindSchema.optional(),
-  strength: z.number().min(0).max(5).optional(),
-  reason: z.string().min(1).optional(),
-  waifuId: z.string().min(1).optional()
 });
 
 function normalizeRawDirective(
@@ -1484,65 +1435,6 @@ function parseDreamOps(text: string): DreamOp[] {
       text,
       error: error instanceof Error ? error.message : String(error)
     });
-  }
-}
-
-function normalizeDreamOp(op: unknown): DreamOp {
-  const raw = RawDreamOpSchema.parse(op);
-  switch (raw.op) {
-    case "add":
-      return DreamOpSchema.parse({
-        op: "add",
-        memory:
-          raw.memory ??
-          stripUndefined({
-            waifuId: raw.waifuId,
-            content: raw.content,
-            kind: raw.kind,
-            strength: raw.strength,
-            entities: raw.entities
-          })
-      });
-    case "promote":
-      return DreamOpSchema.parse({
-        op: "promote",
-        memoryIndex: raw.memoryIndex,
-        patch:
-          raw.patch ??
-          stripUndefined({
-            kind: raw.kind,
-            strength: raw.strength,
-            content: raw.content
-          })
-      });
-    case "rewrite":
-      return DreamOpSchema.parse({
-        op: "rewrite",
-        memoryIndex: raw.memoryIndex,
-        content: raw.content,
-        entities: raw.entities
-      });
-    case "merge":
-      return DreamOpSchema.parse({
-        op: "merge",
-        memoryIndices: raw.memoryIndices,
-        content: raw.content,
-        entities: raw.entities
-      });
-    case "decay":
-      return DreamOpSchema.parse({
-        op: "decay",
-        memoryIndex: raw.memoryIndex,
-        strength: raw.strength
-      });
-    case "archive":
-      return DreamOpSchema.parse({
-        op: "archive",
-        memoryIndex: raw.memoryIndex,
-        reason: raw.reason
-      });
-    case "none":
-      return DreamOpSchema.parse({ op: "none" });
   }
 }
 

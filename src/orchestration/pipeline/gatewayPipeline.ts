@@ -3,14 +3,14 @@ import { z } from "zod";
 import { createProviderCredentialsLookup } from "../../api/llmGatewayCredentials.js";
 import { QueryRole, recordProviderQuery, recordProviderReply } from "../../shared/queryLog.js";
 import type { ModelPipeline, ProviderRequest, WaifuGenerationRequest, WaifuGenerationResult, StageManagerObserveRequest, DreamRequest, PersonaDigestRequest, PersonaDigest } from "../../providers/types.js";
-import { ORCHESTRATOR_TOOL_NAME, PICK_NEXT_WAIFU_TOOL_NAME, REVIEWER_TOOL_NAME, SHORT_TERM_MEMORY_TOOL_NAME, OBSERVER_TOOL_NAME, DREAM_TOOL_NAME, PERSONA_DIGEST_TOOL_NAME, DREAM_PROMPT, PERSONA_DIGEST_PROMPT, orchestratorToolParameters, pickNextWaifuToolParameters, reviewerSystemPrompt, reviewerToolParameters, shortTermMemoryToolParameters, observerSystemPrompt, observerToolParameters, dreamToolParameters, flatDreamToolParameters, personaDigestToolParameters, dreamMessages } from "../tools.js";
+import { ORCHESTRATOR_TOOL_NAME, PICK_NEXT_WAIFU_TOOL_NAME, REVIEWER_TOOL_NAME, SHORT_TERM_MEMORY_TOOL_NAME, OBSERVER_TOOL_NAME, DREAM_TOOL_NAME, PERSONA_DIGEST_TOOL_NAME, DREAM_PROMPT, PERSONA_DIGEST_PROMPT, orchestratorToolParameters, pickNextWaifuToolParameters, reviewerSystemPrompt, reviewerToolParameters, shortTermMemoryToolParameters, observerSystemPrompt, observerToolParameters, dreamToolParameters, flatDreamToolParameters, personaDigestToolParameters, dreamMessages, normalizeDreamOp, parseRawStageManagerObservations } from "../tools.js";
 import { formatObserverContext } from "../context.js";
 import { GatewayPipelineError, buildUnifiedParams, preconformRequest } from "./params.js";
 import { buildWaifuMessages } from "./messages.js";
 import { buildOrchestratorChatMessages } from "./timeline.js";
 import { OrchestratorDecision, OrchestratorDecisionSchema } from "../decisions.js";
 import { ReviewerDecision, ReviewerDecisionSchema } from "../reviewer.js";
-import { DreamOp, DreamOpSchema, StageManagerObservation, StageManagerObservationSchema } from "../stageManager.js";
+import { DreamOp, StageManagerObservation } from "../stageManager.js";
 
 const PersonaDigestResultSchema = z.object({ voice: z.string().min(1), role: z.string().min(1) });
 
@@ -223,7 +223,7 @@ export class GatewayModelPipeline implements ModelPipeline {
     return parseForcedCall(response, OBSERVER_TOOL_NAME, (raw) => {
       const obj = raw as { observations?: unknown[] };
       const arr = Array.isArray(obj) ? obj : (obj.observations ?? []);
-      return (arr as unknown[]).map((item) => StageManagerObservationSchema.parse(item));
+      return parseRawStageManagerObservations(arr as unknown[]);
     }, "decideStageManagerObservations");
   }
 
@@ -245,7 +245,7 @@ export class GatewayModelPipeline implements ModelPipeline {
       if (!Array.isArray(rawOps) || rawOps.length === 0) {
         throw new Error("dream response did not contain an ops array.");
       }
-      return (rawOps as unknown[]).map((op) => DreamOpSchema.parse(op));
+      return (rawOps as unknown[]).map((op) => normalizeDreamOp(op));
     }, "decideDream");
   }
 
