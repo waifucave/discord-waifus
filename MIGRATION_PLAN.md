@@ -511,6 +511,25 @@ against this gateway. Recorded so P5/P6 planning considers them; none are commit
    only self-hosted OpenAI-compatible servers accept (Odysseus), if the gateway ever fronts
    vLLM/llama.cpp endpoints.
 
+Refinements from two blinded architecture-judge reviews (2026-06-12; both independently chose this
+gateway's methodology over the three alternatives):
+
+5. **Probe-as-verifier** (both judges independently): cheap automated live probes that validate
+   quirk-critical cells and auto-demote contradicted cells' confidence markers, folded into
+   `gateway sync` — churn detection as automation instead of vigilance. (Formalizes what the P2
+   smoke did by hand for the `max: 0` caps and the Gemini toolChoice cells.)
+6. **Design constraint for item 1**: every failover event must be LOUD (warning + telemetry),
+   never silent — silent failover masks registry rot by serving requests from another route while
+   quirk data quietly decays ("an availability feature wearing a quirk-handling costume").
+7. **Grammar-scope policy**: parameter/value quirks belong in constraint data; *behavioral* quirks
+   (stream-flag injection, reasoning round-trip mechanics) belong in codecs — already the de-facto
+   split; recorded so the constraint grammar is never stretched into "a worse programming
+   language". If a behavioral quirk won't fit a codec cleanly, prefer a contained per-provider
+   escape-hatch module over a grammar extension.
+8. **Sharper form of item 2**: a remotely-fetched team-controlled curated manifest with the bundled
+   registry as offline fallback — decouples registry updates from package releases without ceding
+   control to a third-party database.
+
 ---
 
 ## Appendix A — Codex research prompt
