@@ -2807,7 +2807,10 @@ export class RuntimeOrchestrator {
       emojiList,
       memoryLines: [...longTermLines, ...shortTermLines],
       currentlyDoing: currentlyDoingForWaifu(waifu, new Date()),
-      directorNote: options.directorNote?.trim() || undefined
+      directorNote: options.directorNote?.trim() || undefined,
+      personaDigest: waifu.personaDigest
+        ? { voice: waifu.personaDigest.voice, role: waifu.personaDigest.role }
+        : undefined
     };
 
     // The slot→string mapping is fixed; the composition of each slot is driven by the waifu's
@@ -4111,15 +4114,21 @@ const DEFAULT_ORCHESTRATOR_PROMPT = [
 function castingCard(waifu: WaifuConfig, now: Date): string {
   const tagName = promptTagName(waifu.name || waifu.id);
   const displayName = waifu.displayName || waifu.name;
-  // The trailing replace drops a lone high surrogate left when the cap splits an emoji pair.
-  const preview = waifu.persona.trim().replace(/\s+/g, " ").slice(0, 200).replace(/[\uD800-\uDBFF]$/, "");
-  return [
+  const lines: string[] = [
     `<${tagName}>`,
-    `ID: ${waifu.id} · ${displayName}`,
-    `About: ${preview || "(no persona configured)"}`,
-    `Now: ${castingAvailabilityLine(waifu, now)}`,
-    `</${tagName}>`
-  ].join("\n");
+    `ID: ${waifu.id} · ${displayName}`
+  ];
+  if (waifu.personaDigest) {
+    lines.push(`Voice: ${waifu.personaDigest.voice}`);
+    lines.push(`Cast her when: ${waifu.personaDigest.role}`);
+  } else {
+    // The trailing replace drops a lone high surrogate left when the cap splits an emoji pair.
+    const preview = waifu.persona.trim().replace(/\s+/g, " ").slice(0, 200).replace(/[\uD800-\uDBFF]$/, "");
+    lines.push(`About: ${preview || "(no persona configured)"}`);
+  }
+  lines.push(`Now: ${castingAvailabilityLine(waifu, now)}`);
+  lines.push(`</${tagName}>`);
+  return lines.join("\n");
 }
 
 function castingAvailabilityLine(waifu: WaifuConfig, now: Date): string {

@@ -24,6 +24,8 @@ import { getModel, getProviderForModel } from "./catalog.js";
 import {
   ModelCapabilityMetadata,
   ModelPipeline,
+  PersonaDigest,
+  PersonaDigestRequest,
   ProviderMetadata,
   ProviderRequest,
   StageManagerObserveRequest,
@@ -223,6 +225,34 @@ class OpenAiCompatibleChatPipeline implements ModelPipeline {
     });
     return parseReviewerDecision(text);
   }
+
+  async generatePersonaDigest(request: PersonaDigestRequest): Promise<PersonaDigest> {
+    validateMaxOutputTokens(this.model, request.maxOutputTokens);
+    const reasoning = openAiChatReasoningForForcedTool(this.model, request.reasoning);
+    const text = await postJsonAndExtractText({
+      url: `${this.provider.baseUrl}${this.model.endpoint}`,
+      headers: bearerHeaders(this.apiKey),
+      body: {
+        model: request.modelId,
+        messages: openAiChatMessagesForModel(this.model, [
+          { role: "system", content: PERSONA_DIGEST_PROMPT },
+          { role: "user", content: request.personaText }
+        ]),
+        temperature: openAiChatTemperature(this.model, request.temperature ?? 0.2),
+        top_p: openAiChatTopP(this.model, request.topP),
+        max_tokens: request.maxOutputTokens,
+        tools: [openAiChatTool(PERSONA_DIGEST_TOOL_NAME, PERSONA_DIGEST_TOOL_DESCRIPTION, PERSONA_DIGEST_TOOL_PARAMETERS)],
+        tool_choice: openAiChatForcedToolChoice(this.model, PERSONA_DIGEST_TOOL_NAME),
+        stream: false,
+        ...reasoningFieldsForOpenAiChat(this.model, reasoning),
+        ...openAiChatSamplingOverrides(this.model, reasoning)
+      },
+      signal: request.signal,
+      extract: (json) => extractOpenAiChatToolArguments(json, PERSONA_DIGEST_TOOL_NAME),
+      queryRole: "stage_manager_librarian"
+    });
+    return parsePersonaDigest(text);
+  }
 }
 
 class OpenAiResponsesPipeline implements ModelPipeline {
@@ -366,6 +396,30 @@ class OpenAiResponsesPipeline implements ModelPipeline {
     });
     return parseReviewerDecision(text);
   }
+
+  async generatePersonaDigest(request: PersonaDigestRequest): Promise<PersonaDigest> {
+    validateMaxOutputTokens(this.model, request.maxOutputTokens);
+    const text = await postJsonAndExtractText({
+      url: `${this.provider.baseUrl}${this.model.endpoint}`,
+      headers: bearerHeaders(this.apiKey),
+      body: {
+        model: request.modelId,
+        instructions: PERSONA_DIGEST_PROMPT,
+        input: [{ role: "user", content: request.personaText }],
+        temperature: request.temperature ?? 0.2,
+        top_p: request.topP,
+        max_output_tokens: request.maxOutputTokens,
+        tools: [openAiResponsesTool(PERSONA_DIGEST_TOOL_NAME, PERSONA_DIGEST_TOOL_DESCRIPTION, PERSONA_DIGEST_TOOL_PARAMETERS)],
+        tool_choice: { type: "function", name: PERSONA_DIGEST_TOOL_NAME },
+        ...reasoningFieldsForOpenAiResponses(this.model, request.reasoning),
+        ...openAiResponsesSamplingOverrides(this.model)
+      },
+      signal: request.signal,
+      extract: (json) => extractOpenAiResponsesToolArguments(json, PERSONA_DIGEST_TOOL_NAME),
+      queryRole: "stage_manager_librarian"
+    });
+    return parsePersonaDigest(text);
+  }
 }
 
 class AnthropicMessagesPipeline implements ModelPipeline {
@@ -507,6 +561,28 @@ class AnthropicMessagesPipeline implements ModelPipeline {
       queryRole: "reviewer"
     });
     return parseReviewerDecision(text);
+  }
+
+  async generatePersonaDigest(request: PersonaDigestRequest): Promise<PersonaDigest> {
+    const maxTokens = request.maxOutputTokens ?? 256;
+    validateMaxOutputTokens(this.model, maxTokens);
+    const text = await postJsonAndExtractText({
+      url: `${this.provider.baseUrl}${this.model.endpoint}`,
+      headers: anthropicHeaders(this.apiKey),
+      body: {
+        model: request.modelId,
+        system: PERSONA_DIGEST_PROMPT,
+        messages: [{ role: "user", content: request.personaText }],
+        ...anthropicSamplingPayload(this.model, request.temperature ?? 0.2, request.topP, undefined),
+        max_tokens: maxTokens,
+        tools: [anthropicTool(PERSONA_DIGEST_TOOL_NAME, PERSONA_DIGEST_TOOL_DESCRIPTION, PERSONA_DIGEST_TOOL_PARAMETERS)],
+        tool_choice: { type: "tool", name: PERSONA_DIGEST_TOOL_NAME }
+      },
+      signal: request.signal,
+      extract: (json) => extractAnthropicToolArguments(json, PERSONA_DIGEST_TOOL_NAME),
+      queryRole: "stage_manager_librarian"
+    });
+    return parsePersonaDigest(text);
   }
 }
 
@@ -662,6 +738,31 @@ class GoogleGenerativeLanguagePipeline implements ModelPipeline {
       queryRole: "reviewer"
     });
     return parseReviewerDecision(text);
+  }
+
+  async generatePersonaDigest(request: PersonaDigestRequest): Promise<PersonaDigest> {
+    validateMaxOutputTokens(this.model, request.maxOutputTokens);
+    const text = await postJsonAndExtractText({
+      url: googleAiStudioUrl(this.provider, this.model),
+      headers: googleAiStudioHeaders(this.apiKey),
+      body: stripUndefined({
+        systemInstruction: { parts: [{ text: PERSONA_DIGEST_PROMPT }] },
+        contents: [googleUserTurn(request.personaText)],
+        generationConfig: googleGenerationConfig(this.model, {
+          temperature: request.temperature ?? 0.2,
+          topP: request.topP,
+          maxOutputTokens: request.maxOutputTokens,
+          reasoning: request.reasoning
+        }),
+        safetySettings: googleSafetySettings,
+        tools: [googleAiStudioTool(PERSONA_DIGEST_TOOL_NAME, PERSONA_DIGEST_TOOL_DESCRIPTION, PERSONA_DIGEST_TOOL_PARAMETERS)],
+        toolConfig: googleForceToolConfig(PERSONA_DIGEST_TOOL_NAME)
+      }),
+      signal: request.signal,
+      extract: (json) => extractGoogleToolArguments(json, PERSONA_DIGEST_TOOL_NAME),
+      queryRole: "stage_manager_librarian"
+    });
+    return parsePersonaDigest(text);
   }
 }
 
@@ -1398,6 +1499,33 @@ export const STAGE_MANAGER_TOOL_PARAMETERS = stageManagerToolParameters();
 const OBSERVER_TOOL_NAME = "record_observations";
 const OBSERVER_TOOL_DESCRIPTION = "Return atomic, durable observations extracted from the chat window. An empty array means nothing durable was disclosed.";
 export const OBSERVER_TOOL_PARAMETERS = observerToolParameters();
+
+const PERSONA_DIGEST_TOOL_NAME = "set_persona_digest";
+const PERSONA_DIGEST_TOOL_DESCRIPTION = "Distill the character sheet into a casting digest.";
+const PERSONA_DIGEST_PROMPT =
+  "You compress a character sheet for a Discord persona into a two-line casting digest. Call set_persona_digest exactly once. No name repetition, no lists, one sentence per field.";
+const PERSONA_DIGEST_TOOL_PARAMETERS = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    voice: { type: "string", description: "How she talks — register, quirks, tone. One sentence, present tense." },
+    role: { type: "string", description: "Her drives and dynamics in the cast — what moments she fits. One sentence, present tense." }
+  },
+  required: ["voice", "role"]
+};
+const PersonaDigestResultSchema = z.object({ voice: z.string().min(1), role: z.string().min(1) });
+
+function parsePersonaDigest(text: string): PersonaDigest {
+  try {
+    const parsed = JSON.parse(stripCodeFence(text));
+    return PersonaDigestResultSchema.parse(parsed);
+  } catch (error) {
+    throw new ProviderPipelineError("Provider did not return a valid persona digest.", {
+      text,
+      error: error instanceof Error ? error.message : String(error)
+    });
+  }
+}
 
 function observerToolParameters(availableWaifuIds?: string[]): object {
   const waifuIds = [...new Set((availableWaifuIds ?? []).filter(Boolean))];

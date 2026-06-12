@@ -83,6 +83,9 @@ export type StageManagerObserveRequest = ProviderRequest & {
   availableWaifuIds?: string[];
 };
 
+export type PersonaDigest = { voice: string; role: string };
+export type PersonaDigestRequest = ProviderRequest & { personaText: string };
+
 export type WaifuGenerationResult = {
   content: string;
   pickedNextWaifuId?: string;
@@ -100,4 +103,5 @@ export interface ModelPipeline {
   decideStageManagerObservations?(request: StageManagerObserveRequest): Promise<StageManagerObservation[]>;
   decideStageManager?(request: StageManagerRequest): Promise<StageManagerToolCall[]>;
   decideReviewer?(request: ProviderRequest & { message: string }): Promise<ReviewerDecision>;
+  generatePersonaDigest?(request: PersonaDigestRequest): Promise<PersonaDigest>;
 }

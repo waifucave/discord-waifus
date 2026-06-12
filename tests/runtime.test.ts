@@ -1324,6 +1324,72 @@ describe("RuntimeOrchestrator", () => {
     expect(systemPrompt).not.toContain(normalised.slice(0, 50));
   });
 
+  it("uses Voice/Cast-her-when lines in casting card when personaDigest is set", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.contexts = [[{ id: "m1", channelId: "channel-1", guildId: "guild-1", authorKind: "user", authorId: "u1", authorBot: false, name: "Kevin", displayName: "Kevin", content: "hi", timestamp: "2026-05-16T12:00:00Z", reactions: [] }]];
+
+    await seedRuntimeConfig(storage);
+    // Overwrite yuki with a personaDigest
+    await storage.writeJson(
+      "waifu:yuki",
+      "user/waifus/yuki/waifu.json",
+      WaifuConfigSchema,
+      WaifuConfigSchema.parse({
+        ...createRevisionedBase(),
+        id: "yuki",
+        name: "Yuki",
+        displayName: "Yuki",
+        enabled: true,
+        providerId: "openai",
+        modelId: "gpt-5.4-mini",
+        botId: "yuki-bot",
+        persona: "kind and bubbly",
+        contextWindow: 50,
+        personaDigest: {
+          voice: "Speaks warmly and briefly.",
+          role: "Fits when the room needs gentle energy.",
+          personaHash: "abc123"
+        }
+      })
+    );
+
+    let trailingPrompt: string | undefined;
+    const pipeline: ModelPipeline = {
+      async decideOrchestrator(request: ProviderRequest) {
+        trailingPrompt = request.trailingPrompt;
+        return { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, reasoning: "done" };
+      },
+      async generateWaifu() {
+        return { content: "hi" };
+      }
+    };
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 1,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    expect(trailingPrompt).toBeDefined();
+    // Digest path: Voice and Cast-her-when lines
+    expect(trailingPrompt).toContain("Voice: Speaks warmly and briefly.");
+    expect(trailingPrompt).toContain("Cast her when: Fits when the room needs gentle energy.");
+    // About: line must NOT appear (digest path replaces it)
+    expect(trailingPrompt).not.toContain("About:");
+    // Raw persona text must not appear in casting card
+    expect(trailingPrompt).not.toContain("kind and bubbly");
+  });
+
   it("tracks active chat participants from human messages and refreshes their expiry", async () => {
     const root = await makeTempRoot();
     roots.push(root);

@@ -170,6 +170,8 @@ export const api = {
     request<WaifuConfig>("POST", "/api/waifus", { body }),
   updateWaifu: (id: string, body: UpdateWaifuBody) =>
     request<WaifuConfig>("PUT", `/api/waifus/${encodeURIComponent(id)}`, { body }),
+  regeneratePersonaDigest: (id: string) =>
+    request<WaifuConfig>("POST", `/api/waifus/${encodeURIComponent(id)}/digest`),
   deleteWaifu: (id: string, revision: number) =>
     request<void>("DELETE", `/api/waifus/${encodeURIComponent(id)}`, {
       body: { revision }

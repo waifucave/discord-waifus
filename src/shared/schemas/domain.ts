@@ -264,7 +264,14 @@ export const WaifuConfigSchema = RevisionedRecordSchema.extend({
   reasoning: ReasoningConfigSchema,
   availability: WaifuAvailabilitySchema,
   tools: WaifuToolSettingsSchema,
-  promptLayout: WaifuPromptLayoutSchema
+  promptLayout: WaifuPromptLayoutSchema,
+  personaDigest: z
+    .object({
+      voice: z.string(),
+      role: z.string(),
+      personaHash: z.string()
+    })
+    .optional()
 });
 export type WaifuConfig = z.infer<typeof WaifuConfigSchema>;
 

@@ -754,4 +754,50 @@ describe("Gateway registry proxies (/api/models, /api/providers)", () => {
       await app.close();
     }
   });
+
+  it("PUT waifu with persona change succeeds (graceful skip when stage-manager unconfigured)", async () => {
+    const { app } = await makeApp();
+    try {
+      // Create a waifu first
+      const create = await app.inject({
+        method: "POST",
+        url: "/api/waifus",
+        payload: { id: "digest-test", name: "DigestTest", displayName: "DigestTest" }
+      });
+      expect(create.statusCode).toBe(201);
+
+      // PUT with a new persona — stage-manager is unconfigured so digest generation is skipped
+      const update = await app.inject({
+        method: "PUT",
+        url: "/api/waifus/digest-test",
+        payload: { revision: 0, persona: "A helpful and funny character." }
+      });
+      expect(update.statusCode).toBe(200);
+      expect(update.json().persona).toBe("A helpful and funny character.");
+      // personaDigest should remain absent (no stage-manager model)
+      expect(update.json().personaDigest).toBeUndefined();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("POST /digest returns 409 when stage-manager has no model configured", async () => {
+    const { app } = await makeApp();
+    try {
+      const create = await app.inject({
+        method: "POST",
+        url: "/api/waifus",
+        payload: { id: "digest-409", name: "Digest409", displayName: "Digest409" }
+      });
+      expect(create.statusCode).toBe(201);
+
+      const digest = await app.inject({
+        method: "POST",
+        url: "/api/waifus/digest-409/digest"
+      });
+      expect(digest.statusCode).toBe(409);
+    } finally {
+      await app.close();
+    }
+  });
 });

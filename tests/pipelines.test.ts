@@ -2852,6 +2852,77 @@ describe("per-waifu context roles (W2)", () => {
   });
 });
 
+describe("generatePersonaDigest (OpenAI-chat, end-to-end)", () => {
+  it("sends forced set_persona_digest tool call and parses voice/role from response", async () => {
+    const toolResponse = {
+      choices: [
+        {
+          message: {
+            tool_calls: [
+              {
+                function: {
+                  name: "set_persona_digest",
+                  arguments: JSON.stringify({
+                    voice: "Speaks in short playful bursts, heavy emoji, casual contractions.",
+                    role: "Fits best when the room needs energy or a quick mood lift."
+                  })
+                }
+              }
+            ]
+          }
+        }
+      ]
+    };
+    mockFetch(toolResponse);
+
+    const pipeline = createModelPipeline("grok-4.3", { apiKey: "xai-test" });
+    const result = await pipeline.generatePersonaDigest!({
+      modelId: "grok-4.3",
+      messages: [],
+      personaText: "A bubbly, energetic character who loves memes."
+    });
+
+    expect(result.voice).toBe("Speaks in short playful bursts, heavy emoji, casual contractions.");
+    expect(result.role).toBe("Fits best when the room needs energy or a quick mood lift.");
+
+    const body = lastFetchJsonBody();
+    const tools = body.tools as Array<{ function: { name: string; parameters: unknown } }>;
+    expect(tools).toHaveLength(1);
+    expect(tools[0].function.name).toBe("set_persona_digest");
+    const messages = body.messages as Array<{ role: string; content: string }>;
+    const userMsg = messages.find((m) => m.role === "user");
+    expect(userMsg?.content).toBe("A bubbly, energetic character who loves memes.");
+  });
+
+  it("throws ProviderPipelineError on malformed digest response", async () => {
+    mockFetch({
+      choices: [
+        {
+          message: {
+            tool_calls: [
+              {
+                function: {
+                  name: "set_persona_digest",
+                  arguments: JSON.stringify({ voice: "", role: "valid role" })
+                }
+              }
+            ]
+          }
+        }
+      ]
+    });
+
+    const pipeline = createModelPipeline("grok-4.3", { apiKey: "xai-test" });
+    await expect(
+      pipeline.generatePersonaDigest!({
+        modelId: "grok-4.3",
+        messages: [],
+        personaText: "test persona"
+      })
+    ).rejects.toThrow("Provider did not return a valid persona digest.");
+  });
+});
+
 function mockFetch(json: unknown, status = 200): void {
   vi.stubGlobal(
     "fetch",
