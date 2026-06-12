@@ -1,11 +1,5 @@
 import { z } from "zod";
 
-// replyStyle is deprecated and removed in Task 6 of the W1 plan; optional here so the
-// runtime keeps compiling while the pipelines stop emitting it.
-export const REPLY_STYLE_VALUES = ["normal", "short", "long", "sleepy"] as const;
-export type ReplyStyle = (typeof REPLY_STYLE_VALUES)[number];
-export const ReplyStyleSchema = z.enum(REPLY_STYLE_VALUES);
-
 export const ORCHESTRATOR_ACTION_VALUES = ["reply", "no_reply"] as const;
 export type OrchestratorAction = (typeof ORCHESTRATOR_ACTION_VALUES)[number];
 export const OrchestratorActionSchema = z.enum(ORCHESTRATOR_ACTION_VALUES);
@@ -49,9 +43,7 @@ export const RespondingWaifuSchema = z.object({
   waifuId: z.string().min(1),
   delaySeconds: z.number().min(0).default(0),
   directive: LenientDirectiveSchema.optional(),
-  replyToMessageId: z.string().min(1).optional(),
-  sceneDirection: z.string().min(1).optional(),
-  replyStyle: ReplyStyleSchema.optional()
+  replyToMessageId: z.string().min(1).optional()
 });
 export type RespondingWaifu = z.infer<typeof RespondingWaifuSchema>;
 

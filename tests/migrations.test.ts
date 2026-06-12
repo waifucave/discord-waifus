@@ -91,7 +91,6 @@ describe("runMigrations", () => {
         {
           waifuId: "yuki",
           delaySeconds: 0,
-          replyStyle: "normal",
           sceneDirection: "answer Kevin",
           replyToMessageId: "message-1"
         }

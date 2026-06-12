@@ -423,9 +423,6 @@ export const ShortTermMemoryStoreSchema = RevisionedRecordSchema.extend({
 });
 export type ShortTermMemoryStore = z.infer<typeof ShortTermMemoryStoreSchema>;
 
-export const OrchestratorReplyStyleSchema = z.enum(["normal", "short", "long", "sleepy"]);
-export type OrchestratorReplyStyle = z.infer<typeof OrchestratorReplyStyleSchema>;
-
 export const OrchestratorDirectiveSchema = z.object({
   intent: z.string().min(1),
   // goal is stored in history for the dashboard; it is omitted from few-shot replay.
@@ -436,9 +433,7 @@ export type OrchestratorDirective = z.infer<typeof OrchestratorDirectiveSchema>;
 export const OrchestratorRespondingWaifuSchema = z.object({
   waifuId: z.string().min(1),
   delaySeconds: z.number().min(0).default(0),
-  replyStyle: OrchestratorReplyStyleSchema.optional(),
   replyToMessageId: z.string().min(1).optional(),
-  sceneDirection: z.string().min(1).optional(),
   directive: OrchestratorDirectiveSchema.optional()
 });
 export type OrchestratorRespondingWaifu = z.infer<typeof OrchestratorRespondingWaifuSchema>;

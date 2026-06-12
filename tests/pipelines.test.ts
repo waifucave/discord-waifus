@@ -201,7 +201,7 @@ describe("provider-native decision tools", () => {
                       {
                         waifuId: "yuki",
                         delaySeconds: 0,
-                        replyStyle: "normal",
+                        
                         repleyToMessageIndex: null,
                         sceneDirection: null
                       }
@@ -796,7 +796,7 @@ describe("provider-native decision tools", () => {
               {
                 waifuId: "yuki",
                 delaySeconds: 1,
-                replyStyle: "normal",
+                
                 repleyToMessageIndex: null,
                 sceneDirection: null
               }
@@ -825,7 +825,6 @@ describe("provider-native decision tools", () => {
         }
       ]
     });
-    expect(decision?.respondingWaifus?.[0].replyStyle).toBeUndefined();
     expect(decision?.respondingWaifus?.[0].replyToMessageId).toBeUndefined();
     const query = recentQueries().at(-1);
     expect(query?.role).toBe("orchestrator");
@@ -1210,37 +1209,6 @@ describe("provider-native decision tools", () => {
     expect(messages[2].content).toContain("Mika:");
   });
 
-  it("injects a reply_style hint when non-normal", async () => {
-    mockFetch({ choices: [{ message: { content: "ok" } }] });
-
-    const pipeline = createModelPipeline("grok-4.3", { apiKey: "xai-test" });
-    await pipeline.generateWaifu({
-      modelId: "grok-4.3",
-      messages: context,
-      systemPrompt: "stay in character",
-      replyStyle: "short"
-    });
-
-    const query = recentQueries().at(-1);
-    const messages = query?.payload.messages as Array<{ role: string; content: string }>;
-    expect(messages.some((message) => message.content === "<reply_style>short</reply_style>")).toBe(true);
-  });
-
-  it("does not inject a reply_style hint when normal", async () => {
-    mockFetch({ choices: [{ message: { content: "ok" } }] });
-
-    const pipeline = createModelPipeline("grok-4.3", { apiKey: "xai-test" });
-    await pipeline.generateWaifu({
-      modelId: "grok-4.3",
-      messages: context,
-      systemPrompt: "stay in character",
-      replyStyle: "normal"
-    });
-
-    const query = recentQueries().at(-1);
-    const messages = query?.payload.messages as Array<{ role: string; content: string }>;
-    expect(messages.some((message) => message.content.includes("<reply_style>"))).toBe(false);
-  });
 });
 
 describe("image attachments", () => {

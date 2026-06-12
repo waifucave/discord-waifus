@@ -1,6 +1,6 @@
 import { OrchestratorDecisionHistoryEntry, ProviderId, ReasoningConfig } from "../shared/schemas/domain.js";
 import { ContextMessage, OrchestratorWakeMarker } from "../orchestration/context.js";
-import { OrchestratorDecision, ReplyStyle } from "../orchestration/decisions.js";
+import { OrchestratorDecision } from "../orchestration/decisions.js";
 import { StageManagerObservation, StageManagerToolCall } from "../orchestration/stageManager.js";
 import { ReviewerDecision } from "../orchestration/reviewer.js";
 import { WaifuMemory } from "../shared/schemas/domain.js";
@@ -57,7 +57,6 @@ export type WaifuGenerationRequest = ProviderRequest & {
   midSystemBlock?: string;
   trailingSystemBlock?: string;
   retryUserMessage?: string;
-  replyStyle?: ReplyStyle;
   pickNextWaifuToolEnabled?: boolean;
   shortTermMemoryToolEnabled?: boolean;
   stopSequences?: string[];

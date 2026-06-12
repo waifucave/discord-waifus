@@ -8,9 +8,6 @@ import {
   DIRECTIVE_GOAL_MAX_CHARS,
   MODEL_DIRECTIVE_INTENTS,
   Directive,
-  REPLY_STYLE_VALUES,
-  ReplyStyle,
-  ReplyStyleSchema,
   RETRIGGER_MAX_SECONDS,
   RETRIGGER_MIN_SECONDS
 } from "../orchestration/decisions.js";
@@ -90,7 +87,6 @@ class OpenAiCompatibleChatPipeline implements ModelPipeline {
             contextToChatMessagesForWaifu(request.messages, this.model.supportsImageInput),
             request.midSystemBlock ? { role: "system", content: request.midSystemBlock } : undefined
           ),
-          ...replyStyleMessagesForChat(request.replyStyle),
           ...(request.trailingSystemBlock ? [{ role: "system", content: request.trailingSystemBlock }] : []),
           ...(request.retryUserMessage ? [{ role: "user", content: request.retryUserMessage }] : [])
         ]),
@@ -249,7 +245,6 @@ class OpenAiResponsesPipeline implements ModelPipeline {
             contextToResponsesInputForWaifu(request.messages, this.model.supportsImageInput),
             request.midSystemBlock ? { role: "system", content: request.midSystemBlock } : undefined
           ),
-          ...replyStyleMessagesForChat(request.replyStyle),
           ...(request.trailingSystemBlock ? [{ role: "system", content: request.trailingSystemBlock }] : []),
           ...(request.retryUserMessage ? [{ role: "user", content: request.retryUserMessage }] : [])
         ],
@@ -395,7 +390,6 @@ class AnthropicMessagesPipeline implements ModelPipeline {
             contextToAnthropicMessagesForWaifu(request.messages, this.model.supportsImageInput),
             request.midSystemBlock ? { role: "user" as const, content: request.midSystemBlock } : undefined
           ),
-          ...replyStyleMessagesForAnthropic(request.replyStyle),
           ...(request.trailingSystemBlock ? [{ role: "user" as const, content: request.trailingSystemBlock }] : []),
           ...(request.retryUserMessage ? [{ role: "user" as const, content: request.retryUserMessage }] : [])
         ],
@@ -529,13 +523,11 @@ class GoogleGenerativeLanguagePipeline implements ModelPipeline {
       request.messages,
       this.model.supportsImageInput
     );
-    const replyHint = replyStyleHint(request.replyStyle);
     const contents = [
       ...injectMemoriesIntoChatContext(
         contextContents,
         request.midSystemBlock ? googleUserTurn(request.midSystemBlock) : undefined
       ),
-      ...(replyHint ? [googleUserTurn(replyHint)] : []),
       ...(request.trailingSystemBlock ? [googleUserTurn(request.trailingSystemBlock)] : []),
       ...(request.retryUserMessage ? [googleUserTurn(request.retryUserMessage)] : [])
     ];
@@ -1036,21 +1028,6 @@ function buildGoogleOrchestratorContents(input: OrchestratorQueryInput): Array<R
   }
   contents.push(googleUserTurn(input.trailingPrompt));
   return contents;
-}
-
-function replyStyleHint(replyStyle: ReplyStyle | undefined): string | undefined {
-  if (!replyStyle || replyStyle === "normal") return undefined;
-  return `<reply_style>${replyStyle}</reply_style>`;
-}
-
-function replyStyleMessagesForChat(replyStyle: ReplyStyle | undefined): Array<{ role: "system"; content: string }> {
-  const hint = replyStyleHint(replyStyle);
-  return hint ? [{ role: "system", content: hint }] : [];
-}
-
-function replyStyleMessagesForAnthropic(replyStyle: ReplyStyle | undefined): Array<{ role: "user"; content: string }> {
-  const hint = replyStyleHint(replyStyle);
-  return hint ? [{ role: "user", content: hint }] : [];
 }
 
 function contextToChatMessagesForWaifu(messages: ContextMessage[], includeImages: boolean) {

@@ -83,8 +83,6 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-const REPLY_STYLES = new Set(["normal", "short", "long", "sleepy"]);
-
 function migrateLegacyDecision(entry: Record<string, unknown>): boolean {
   let changed = false;
 
@@ -115,8 +113,7 @@ function migrateLegacyDecision(entry: Record<string, unknown>): boolean {
       }
       const responder: Record<string, unknown> = {
         waifuId: kind,
-        delaySeconds: 0,
-        replyStyle: "normal"
+        delaySeconds: 0
       };
       if (typeof step.sceneDirection === "string" && step.sceneDirection.length > 0) {
         responder.sceneDirection = step.sceneDirection;
@@ -153,8 +150,7 @@ function migrateLegacyDecision(entry: Record<string, unknown>): boolean {
       if (typeof waifuId !== "string" || !waifuId) continue;
       const responder: Record<string, unknown> = {
         waifuId,
-        delaySeconds: 0,
-        replyStyle: "normal"
+        delaySeconds: 0
       };
       const sceneDirection = sceneDirections[i];
       if (typeof sceneDirection === "string" && sceneDirection.length > 0) {
@@ -180,10 +176,6 @@ function migrateLegacyDecision(entry: Record<string, unknown>): boolean {
       const next: Record<string, unknown> = { ...candidate };
       if (typeof next.delaySeconds !== "number" || !Number.isFinite(next.delaySeconds) || next.delaySeconds < 0) {
         next.delaySeconds = 0;
-        changed = true;
-      }
-      if (typeof next.replyStyle !== "string" || !REPLY_STYLES.has(next.replyStyle)) {
-        next.replyStyle = "normal";
         changed = true;
       }
       fixed.push(next);

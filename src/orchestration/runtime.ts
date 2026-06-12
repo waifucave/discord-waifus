@@ -1351,8 +1351,7 @@ export class RuntimeOrchestrator {
           channelId: input.channelId,
           waifuId: waifu.id,
           modelId: waifu.modelId,
-          messageCount: waifuMessages.length,
-          replyStyle: responder.replyStyle
+          messageCount: waifuMessages.length
         });
         const waifuTyping = startTypingScope(this.options.discord, {
           guildId: input.guildId,
@@ -1406,7 +1405,6 @@ export class RuntimeOrchestrator {
                   midSystemBlock,
                   trailingSystemBlock,
                   retryUserMessage: attempt === 2 ? `${waifu.displayName}:` : undefined,
-                  replyStyle: responder.replyStyle,
                   availableWaifuIds: nextWaifuIds,
                   pickNextWaifuToolEnabled: input.server.tools.pickNextWaifu,
                   shortTermMemoryToolEnabled: effectiveShortTermMemory,
