@@ -530,6 +530,33 @@ gateway's methodology over the three alternatives):
    registry as offline fallback — decouples registry updates from package releases without ceding
    control to a third-party database.
 
+9. **Violation-policy design (lenient mode)** — synthesized 2026-06-12 from a user proposal +
+   three blinded model judges (Fable 5, Opus 4.8, Sonnet 4.6; unanimous on the core). Pinned here
+   as the design sketch for whenever this is implemented (earliest: post-P3):
+   - **Strict stays the default at every layer.** Semantics-preserving coercions (`drop`/`force`/
+     `clamp`) keep firing automatically as today; semantics-changing violations (`forbid` class)
+     reject pre-flight with the named rule. Rationale (unanimous): a coerced request steals a
+     routing decision from the only layer with context; "a blocked request creates a support
+     ticket, a silently coerced request creates a mystery"; the agent loop (forced tool calls) must
+     never run lenient.
+   - **Knob:** `violationPolicy: "strict" | "lenient"` (enum, not boolean — reserve
+     `"strict_verified_only"`), settable at gateway construction AND per request; request wins.
+   - **Lenient mode applies per-rule, data-declared fallbacks ONLY.** Each `forbid` rule MAY carry
+     a `fallback` action in the capability doc (same citation/confidence treatment as the rule).
+     No declared fallback → reject even in lenient mode ("a mode that can do undeclared repairs is
+     coerce-first through a side door"). NO runtime global preservation ranking — rankings order
+     parameter classes, repairs are choices over joint states (DeepSeek thinking×forced-tools has
+     two defensible repairs picked by caller intent; sometimes none preserving both). A
+     preservation-priority list may exist as fallback-AUTHORING guidance only.
+   - **One structured actions contract everywhere:** `actions[]` of `{ruleId, param, action:
+     drop|force|clamp|fallback|forbid, from, to, reason, sourceUrl, confidence}` — byte-identical
+     shape in `POST /v1/validate` dry-runs (plus `wouldReject`), `/v1/chat` success envelopes, and
+     422 rejection bodies; in SSE streams the actions ride the FIRST event so callers can abort.
+     Plus a `skipped_validations[]` array naming unverified cells where enforcement was skipped.
+     Human-readable `warnings` remain derived, never load-bearing.
+   - Consumers that prefer pre-conforming requests themselves already have the means: the full
+     capability doc endpoint + `/v1/validate` dry-run (shipped in P1c).
+
 ---
 
 ## Appendix A — Codex research prompt
