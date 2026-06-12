@@ -7194,6 +7194,77 @@ describe("RuntimeOrchestrator", () => {
 
     expect(checked).toBe(true);
   });
+
+  it("guild nickname from members.json reaches the impersonation-strip alias set", async () => {
+    // Yuki has guildDisplayName "K的小娇妻" in members.json. The context contains NO prior
+    // message from Yuki (so "K的小娇妻" is NOT in selfDisplayNames derived from context messages).
+    // The model returns "K的小娇妻: first reply here". The runtime must strip the prefix via the
+    // guild-nickname alias path and send "first reply here".
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+
+    // Context: one user message only — no prior Yuki message.
+    discord.contexts = [
+      [contextMessage("m1", "user", "Kevin", "hey")],
+      [contextMessage("m1", "user", "Kevin", "hey")]
+    ];
+
+    await seedRuntimeConfig(storage);
+    await seedWaifu(storage, "yuki", "Yuki", "yuki-bot", "calm");
+    await enableWaifus(storage, ["yuki"]);
+
+    // Seed members.json with Yuki's botId having a guild nickname that differs from displayName.
+    await storage.writeJson(
+      "members:guild-1",
+      "user/servers/guild-1/members.json",
+      GuildMembersFileSchema,
+      GuildMembersFileSchema.parse(
+        createEmptyRevisionedFile({
+          guildId: "guild-1",
+          members: [
+            {
+              userId: "yuki-bot",
+              guildDisplayName: "K的小娇妻",
+              bot: true,
+              perChannelLastSeenAt: {}
+            }
+          ]
+        })
+      )
+    );
+
+    const pipeline: ModelPipeline = {
+      async decideOrchestrator() {
+        return {
+          action: "reply",
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }],
+          reasoning: "Yuki should reply."
+        };
+      },
+      async generateWaifu() {
+        // The nickname prefix must be stripped even though it never appeared in the context.
+        return { content: "K的小娇妻: first reply here" };
+      }
+    };
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 1,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    expect(discord.sent).toHaveLength(1);
+    expect(discord.sent[0].content).toBe("first reply here");
+  });
 });
 
 async function enableShortTermMemory(storage: StorageService, waifuId: string) {

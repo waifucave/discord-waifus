@@ -1381,7 +1381,7 @@ export class RuntimeOrchestrator {
           ]);
           const directiveText = directiveTextForWaifu(responder.directive);
           const effectiveShortTermMemory = input.server.tools.shortTermMemory && !suppressMemoryToolThisDecision;
-          const { systemPrompt, midSystemBlock, trailingSystemBlock } = await this.buildWaifuPromptParts(
+          const { systemPrompt, midSystemBlock, trailingSystemBlock, selfGuildNickname } = await this.buildWaifuPromptParts(
             input.guildId,
             waifu,
             input.availableWaifus,
@@ -1392,6 +1392,9 @@ export class RuntimeOrchestrator {
               shortTermMemoryToolOverride: effectiveShortTermMemory
             }
           );
+          const allSelfDisplayNames = selfGuildNickname
+            ? dedupeNames([...selfDisplayNames, selfGuildNickname])
+            : selfDisplayNames;
           const activeAuthorIds = waifuMessages.map((message) => message.authorId);
           const MAX_GENERATE_ATTEMPTS = 2;
           let result: WaifuGenerationResult = { content: "" };
@@ -1430,7 +1433,7 @@ export class RuntimeOrchestrator {
               }
             })();
             const metadataStrippedContent = stripLeakedContextHeader(result.content, {
-              selfDisplayNames,
+              selfDisplayNames: allSelfDisplayNames,
               participantDisplayNames,
               stripImpersonation: false
             });
@@ -1438,7 +1441,7 @@ export class RuntimeOrchestrator {
             quoteExtraction = extractReplyQuote(metadataStrippedContent, waifuMessages);
             const replyQuoteExtracted = quoteExtraction.cleanedContent !== metadataStrippedContent;
             strippedContent = stripLeakedContextHeader(quoteExtraction.cleanedContent, {
-              selfDisplayNames,
+              selfDisplayNames: allSelfDisplayNames,
               participantDisplayNames
             });
             const impersonationStripped = strippedContent !== quoteExtraction.cleanedContent;
@@ -2726,7 +2729,7 @@ export class RuntimeOrchestrator {
       pickNextWaifuToolOverride?: boolean;
       shortTermMemoryToolOverride?: boolean;
     }
-  ): Promise<{ systemPrompt: string; midSystemBlock: string; trailingSystemBlock: string }> {
+  ): Promise<{ systemPrompt: string; midSystemBlock: string; trailingSystemBlock: string; selfGuildNickname: string | undefined }> {
     const pickNextWaifuToolActive = options.pickNextWaifuToolOverride ?? false;
     const shortTermMemoryToolActive =
       options.shortTermMemoryToolOverride ?? true;
@@ -2815,7 +2818,10 @@ export class RuntimeOrchestrator {
 
     // The slot→string mapping is fixed; the composition of each slot is driven by the waifu's
     // editable prompt layout (see src/orchestration/promptBlocks.ts).
-    return assembleWaifuPrompt(reconcileWaifuPromptLayout(waifu.promptLayout), blockContext);
+    return {
+      ...assembleWaifuPrompt(reconcileWaifuPromptLayout(waifu.promptLayout), blockContext),
+      selfGuildNickname: serverNickname !== waifu.displayName ? serverNickname : undefined
+    };
   }
 
   private buildOrchestratorSystemPrompt(

@@ -139,4 +139,24 @@ describe("prompt layout editor helpers", () => {
     );
     expect(directorNote).toMatchObject({ enabled: false });
   });
+
+  it("tools block uses blockId 'tools' (not 'toolUse') — onToolsChange callback contract", () => {
+    // BlockCard routes blockId === "tools" through onToolsChange (waifu.tools.toolUse),
+    // while every other block flips its own node.enabled. Verify the block id in the default
+    // layout and after setBlockEnabled so the routing constant in the component stays in sync.
+    const layout = defaultWaifuPromptLayout();
+    const toolsBlock = layout.top.find((node) => node.kind === "block" && node.blockId === "tools");
+    // The tools block must exist under the id "tools", not "toolUse".
+    expect(toolsBlock).toBeDefined();
+    expect(toolsBlock).toMatchObject({ kind: "block", blockId: "tools" });
+    // setBlockEnabled on "tools" must not throw and must produce a layout that still has the block.
+    const next = setBlockEnabled(layout, "tools", false);
+    const afterToggle = next.top.find((node) => node.kind === "block" && node.blockId === "tools");
+    expect(afterToggle).toMatchObject({ kind: "block", blockId: "tools", enabled: false });
+    // Confirm no block with the old stale id "toolUse" exists anywhere in the layout.
+    const allBlocks = [...layout.top, ...layout.mid, ...layout.trailing].filter(
+      (node): node is Extract<PromptLayoutNode, { kind: "block" }> => node.kind === "block"
+    );
+    expect(allBlocks.some((node) => node.blockId === "toolUse")).toBe(false);
+  });
 });

@@ -237,7 +237,7 @@ function BlockCard({
 
   // The tool-use block's real on/off lives in waifu.tools.toolUse (it gates the instruction text);
   // its layout node is positional only. Every other block toggles its own node.enabled.
-  const isToolUse = node.blockId === "toolUse";
+  const isToolUse = node.blockId === "tools";
   const checked = isToolUse ? tools.toolUse : node.enabled;
   const onCheckedChange = (value: boolean) =>
     isToolUse ? onToolsChange({ ...tools, toolUse: value }) : onEnabled(node.blockId, value);

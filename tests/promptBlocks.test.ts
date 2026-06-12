@@ -178,9 +178,34 @@ describe("resolveGroupTag", () => {
 });
 
 describe("word budget", () => {
-  it("keeps the fixed instruction mass under 900 words", () => {
+  it("io format and output contract stay compact (under 500 words)", () => {
     const fixed = [__testables.IO_FORMAT, __testables.OUTPUT_CONTRACT].join(" ");
     const words = fixed.split(/\s+/).filter(Boolean).length;
+    expect(words).toBeLessThan(500);
+  });
+
+  it("assembled prompt mass with realistic inputs stays under 900 words", () => {
+    // Build a full context with empty persona (worst-case: identity + fixed blocks dominate),
+    // realistic small values for room info, tool instructions, etc.
+    const toolStandIn = Array(30).fill("use").join(" "); // 30-word stand-in
+    const fullCtx: PromptBlockContext = {
+      waifuTag: "yuki",
+      displayName: "Yuki",
+      personalityContent: "",
+      scheduleContent: "",
+      toolUseInstructions: toolStandIn,
+      rosterLine: "Mika, Riko",
+      activeParticipantDisplayNames: ["Kevin"],
+      emojiList: "<:a:>",
+      memoryLines: [],
+      currentlyDoing: undefined,
+      directorNote: undefined,
+      serverNickname: undefined,
+      personaDigest: undefined
+    };
+    const parts = assembleWaifuPrompt(defaultWaifuPromptLayout(), fullCtx);
+    const combined = [parts.systemPrompt, parts.midSystemBlock, parts.trailingSystemBlock].join(" ");
+    const words = combined.split(/\s+/).filter(Boolean).length;
     expect(words).toBeLessThan(900);
   });
 });
