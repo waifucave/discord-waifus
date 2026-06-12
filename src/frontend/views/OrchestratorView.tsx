@@ -21,11 +21,9 @@ import { Toggle } from "../components/Toggle";
 import { ReasoningControls, hasReasoningControls } from "../components/ReasoningControls";
 import type { ReasoningConfig } from "../api/types";
 
-const PROMPT_SECTION_OPTIONS: Array<{ key: keyof OrchestratorPromptSections; label: string }> = [
-  { key: "loopBreaking", label: "<loop_breaking>" },
-  { key: "retriggerPacing", label: "<retrigger_pacing>" },
-  { key: "messageStructure", label: "<chat_message_structure>" },
-  { key: "toolUse", label: "<tool_use>" }
+const SECTION_OPTIONS: Array<{ key: keyof OrchestratorPromptSections; label: string }> = [
+  { key: "pausePlanning", label: "<pause_planning>" },
+  { key: "messageStructure", label: "<chat_message_structure>" }
 ];
 
 export function OrchestratorView() {
@@ -39,13 +37,11 @@ export function OrchestratorView() {
   const [modelId, setModelId] = useState<string>("");
   const [reasoning, setReasoning] = useState<ReasoningConfig>({});
   const [promptSections, setPromptSections] = useState<OrchestratorPromptSections>({
-    loopBreaking: true,
-    retriggerPacing: true,
-    messageStructure: true,
-    toolUse: true
+    pausePlanning: true,
+    messageStructure: true
   });
-  const [useLegacyPrompt, setUseLegacyPrompt] = useState(false);
-  const [clipSceneDirection, setClipSceneDirection] = useState(false);
+  const [contextWindow, setContextWindow] = useState<number>(20);
+  const [directiveCooldown, setDirectiveCooldown] = useState<number>(3);
   const [botDisplayName, setBotDisplayName] = useState("Orchestrator");
   const [botApplicationId, setBotApplicationId] = useState("");
   const [botToken, setBotToken] = useState("");
@@ -60,8 +56,8 @@ export function OrchestratorView() {
     setModelId(remoteConfig.data.modelId ?? "");
     setReasoning(remoteConfig.data.reasoning ?? {});
     setPromptSections(remoteConfig.data.promptSections);
-    setUseLegacyPrompt(remoteConfig.data.useLegacyPrompt ?? false);
-    setClipSceneDirection(remoteConfig.data.clipSceneDirection ?? false);
+    setContextWindow(remoteConfig.data.contextWindow ?? 20);
+    setDirectiveCooldown(remoteConfig.data.directiveCooldown ?? 3);
   }, [remoteConfig.data]);
 
   useEffect(() => {
@@ -89,8 +85,8 @@ export function OrchestratorView() {
         enabled: true,
         reasoning,
         promptSections,
-        useLegacyPrompt,
-        clipSceneDirection
+        contextWindow,
+        directiveCooldown
       });
       remoteConfig.setData(saved);
       if (bots.data) {
@@ -298,33 +294,60 @@ export function OrchestratorView() {
 
       <section className="section">
         <div className="section-header">
-          <h3 className="section-title">Prompt</h3>
+          <h3 className="section-title">Context &amp; directives</h3>
           <span className="section-description">
-            Toggle optional sections of the orchestrator system prompt. Identity, hard rules, task instructions, server info, and active waifus are always included. Turning on the legacy prompt overrides everything and uses the recovered original prompt instead.
+            How many messages of history the orchestrator reads, and how often it may attach a directive to a responder.
           </span>
         </div>
-        <Toggle
-          label="Use legacy prompt (overrides all sections)"
-          checked={useLegacyPrompt}
-          onChange={setUseLegacyPrompt}
-        />
-        <Toggle
-          label="Clip scene direction before waifu call"
-          checked={clipSceneDirection}
-          onChange={setClipSceneDirection}
-        />
-        {!useLegacyPrompt && (
-          <div className="grid grid-2" style={{ marginTop: 12 }}>
-            {PROMPT_SECTION_OPTIONS.map((option) => (
-              <Toggle
-                key={option.key}
-                label={option.label}
-                checked={promptSections[option.key]}
-                onChange={(next) => setPromptSections((prev) => ({ ...prev, [option.key]: next }))}
-              />
-            ))}
+        <div className="grid grid-2">
+          <div className="field">
+            <label className="field-label">Context window (messages)</label>
+            <input
+              className="input"
+              type="number"
+              min={1}
+              max={100}
+              value={contextWindow}
+              onChange={(e) =>
+                setContextWindow(Math.max(1, Math.min(100, Number(e.target.value) || 20)))
+              }
+            />
+            <span className="field-hint">Default 20</span>
           </div>
-        )}
+          <div className="field">
+            <label className="field-label">Directive cooldown (decisions)</label>
+            <input
+              className="input"
+              type="number"
+              min={0}
+              max={20}
+              value={directiveCooldown}
+              onChange={(e) =>
+                setDirectiveCooldown(Math.max(0, Math.min(20, Number(e.target.value) || 0)))
+              }
+            />
+            <span className="field-hint">Default 3</span>
+          </div>
+        </div>
+      </section>
+
+      <section className="section">
+        <div className="section-header">
+          <h3 className="section-title">Prompt</h3>
+          <span className="section-description">
+            Toggle optional sections of the orchestrator system prompt. Identity, hard rules, task instructions, server info, and active waifus are always included.
+          </span>
+        </div>
+        <div className="grid grid-2" style={{ marginTop: 12 }}>
+          {SECTION_OPTIONS.map((option) => (
+            <Toggle
+              key={option.key}
+              label={option.label}
+              checked={promptSections[option.key]}
+              onChange={(next) => setPromptSections((prev) => ({ ...prev, [option.key]: next }))}
+            />
+          ))}
+        </div>
       </section>
 
       <section className="section">
@@ -350,23 +373,20 @@ export function OrchestratorView() {
       <section className="section">
         <div className="section-header">
           <h3 className="section-title">Decision tool schema (read-only)</h3>
-  <span className="section-description">Orchestrator must emit exactly one structured decision.</span>
+          <span className="section-description">Orchestrator must emit exactly one structured decision.</span>
         </div>
-        <pre className="code-block">{`type OrchestratorDecision = {
-  action: "reply" | "no_reply";
-  respondingWaifus: Array<{
-    waifuId: string;
-    delaySeconds: number;                  // >= 0
-    replyStyle: "normal" | "short" | "long" | "sleepy";
-    repleyToMessageIndex: number | null;
-    sceneDirection: string | null;
-  }>;
-  retriggerAfterSeconds: number | null;    // required when action="no_reply", 100..28800
-  reasoning: string;
-};
-
-// action="reply"   -> respondingWaifus non-empty, retriggerAfterSeconds null
-// action="no_reply" -> respondingWaifus empty,    retriggerAfterSeconds in [100, 28800]`}</pre>
+        <pre className="code-block">{`{
+  "action": "reply" | "no_reply",
+  "respondingWaifus": [
+    { "waifuId": string, "delaySeconds": number (0..30, default 0),
+      "directive": { "intent": "break_loop"|"change_topic"|"include_person"|"close_beat"|"interrupt"|"spotlight", "goal": string (<=100 chars) } | null }
+  ],
+  "retriggerAfterSeconds": number (100..28800) | null,
+  "wakePlan": string | null,
+  "reasoning": string
+}
+// action="reply"    -> respondingWaifus non-empty, retriggerAfterSeconds + wakePlan null
+// action="no_reply" -> respondingWaifus empty, retriggerAfterSeconds + wakePlan set`}</pre>
       </section>
 
       <section className="section">
@@ -394,7 +414,14 @@ export function OrchestratorView() {
                 <span>{entry.action}</span>
                 <span>{entry.status}</span>
                 <span>{formatResponderExecution(entry)}</span>
-                <span>{entry.retriggerAfterSeconds ? `${entry.retriggerAfterSeconds}s` : "—"}</span>
+                <span>
+                  {entry.retriggerAfterSeconds ? `${entry.retriggerAfterSeconds}s` : "—"}
+                  {entry.action === "no_reply" && entry.wakePlan && (
+                    <span className="field-hint" style={{ display: "block" }}>
+                      wake plan: {entry.wakePlan}
+                    </span>
+                  )}
+                </span>
                 <span>{entry.reasoning}</span>
               </div>
             ))}
@@ -409,7 +436,14 @@ function formatResponderExecution(
   entry: OrchestratorHistoryFile["decisions"][number]
 ): string {
   if (entry.responderOutcomes.length === 0) {
-    return entry.respondingWaifus.map((responder) => responder.waifuId).join(" → ") || "—";
+    return entry.respondingWaifus
+      .map((responder) => {
+        const dir = responder.directive
+          ? ` (${responder.directive.intent}${responder.directive.goal ? ") " + responder.directive.goal : ")"}`
+          : "";
+        return `${responder.waifuId}${dir}`;
+      })
+      .join(" → ") || "—";
   }
   return entry.responderOutcomes
     .map((outcome) => {
@@ -419,7 +453,10 @@ function formatResponderExecution(
           ? ` moved next by ${outcome.handoffFromWaifuId}`
           : "";
       const reason = outcome.reason ? `: ${outcome.reason.replaceAll("_", " ")}` : "";
-      return `${outcome.waifuId} [${outcome.status.replaceAll("_", " ")}${source}${reason}]`;
+      const stripped = outcome.directiveStripped
+        ? ` directive stripped (${outcome.directiveStripped.replaceAll("_", " ")})`
+        : "";
+      return `${outcome.waifuId} [${outcome.status.replaceAll("_", " ")}${source}${reason}${stripped}]`;
     })
     .join(" → ");
 }
