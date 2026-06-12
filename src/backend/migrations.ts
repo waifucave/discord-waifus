@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { ensureDataLayout } from "../config/layout.js";
 import { RETRIGGER_MAX_SECONDS, RETRIGGER_MIN_SECONDS } from "../orchestration/decisions.js";
-import { extractEntities } from "../orchestration/memoryEntities.js";
+import { extractEntities, WAIFU_NOTE_STRENGTH } from "../orchestration/memoryEntities.js";
 import { MEMORY_KINDS } from "../shared/schemas/domain.js";
 import {
   PromptLayoutNode,
@@ -478,9 +478,9 @@ async function archiveMemoriesWithUnknownWaifus(dataRoot: string): Promise<boole
   return true;
 }
 
-const NOTE_STRENGTH = 2;
 const VALID_MEMORY_KINDS = new Set<string>(MEMORY_KINDS);
 
+// Defaults to 3 — the domain midpoint — when the old importance field is absent or corrupt.
 function clampStrength(value: unknown): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return 3;
   return Math.max(0, Math.min(5, value));
@@ -578,7 +578,7 @@ async function migrateMemoryStoreV2(dataRoot: string): Promise<boolean> {
         kind: "context",
         source: "waifu_tool",
         pinned: false,
-        strength: NOTE_STRENGTH,
+        strength: WAIFU_NOTE_STRENGTH,
         entities: extractEntities(content),
         createdAt: typeof raw.createdAt === "string" ? raw.createdAt : new Date().toISOString(),
         updatedAt: typeof raw.createdAt === "string" ? raw.createdAt : new Date().toISOString(),

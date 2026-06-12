@@ -57,7 +57,7 @@ import {
   WaifuConfigSchema,
   createEmptyRevisionedFile
 } from "../shared/schemas/domain.js";
-import { extractEntities } from "./memoryEntities.js";
+import { extractEntities, WAIFU_NOTE_STRENGTH } from "./memoryEntities.js";
 import { createRevisionedBase, nowIso } from "../shared/schemas/common.js";
 import { StorageService } from "../storage/storageService.js";
 import { StageManagerObservation, StageManagerToolCall } from "./stageManager.js";
@@ -2692,7 +2692,7 @@ export class RuntimeOrchestrator {
             kind: "context",
             source: "waifu_tool",
             pinned: false,
-            strength: NOTE_STRENGTH,
+            strength: WAIFU_NOTE_STRENGTH,
             entities: extractEntities(content),
             expiresAt,
             createdAt,
@@ -3430,7 +3430,6 @@ function emptyMemoryStore(): MemoryStore {
 // Monday; the dream pass promotes the keepers.
 const NOTE_LIFESPAN_MS = 72 * 60 * 60 * 1000;
 const NOTE_MAX_PER_REPLY = 5;
-const NOTE_STRENGTH = 2;
 
 function normalizeNoteContent(content: string): string {
   return content.trim().toLowerCase().replace(/\s+/g, " ").replace(/[.!?]+$/, "");
