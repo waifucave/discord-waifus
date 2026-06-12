@@ -102,9 +102,11 @@ function checkToolFragment(text: string, ctx: ValidationContext): Violation | un
     const trimmed = line.trim();
     if (trimmed.startsWith("{") || trimmed.startsWith("[{")) {
       try {
-        const parsed: unknown = JSON.parse(trimmed.startsWith("[") ? trimmed : trimmed);
-        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-          const keys = Object.keys(parsed as Record<string, unknown>);
+        const parsed: unknown = JSON.parse(trimmed);
+        const candidates = Array.isArray(parsed) ? parsed : [parsed];
+        for (const candidate of candidates) {
+          if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) continue;
+          const keys = Object.keys(candidate as Record<string, unknown>);
           const sensitiveKeys = ["content", "waifuId", "intent", "goal", "ops"];
           if (keys.some((k) => sensitiveKeys.includes(k))) {
             return { check: "tool-fragment", detail: `found JSON with sensitive keys: ${keys.join(", ")}` };

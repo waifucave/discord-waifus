@@ -387,3 +387,29 @@ describe("verdict precedence", () => {
     expect(result.violations).toHaveLength(0);
   });
 });
+
+describe("hardening additions", () => {
+  const ctx = {
+    selfNames: ["Yuki"],
+    participantNames: ["Yuki", "Mika", "Kevin"],
+    blockTags: ["room_info", "active_chat_participants", "server_emojis", "yuki_lore"],
+    toolNames: ["add_memory"]
+  };
+
+  it("flags nested room_info child tags", () => {
+    const result = validateWaifuOutput("<active_chat_participants>\n- Kevin\n</active_chat_participants>", ctx);
+    expect(result.verdict).toBe("retry");
+    expect(result.violations.some((v) => v.check === "harness-tag")).toBe(true);
+  });
+
+  it("flags a custom group tag supplied via blockTags", () => {
+    const result = validateWaifuOutput("<yuki_lore>secret backstory</yuki_lore>", ctx);
+    expect(result.verdict).toBe("retry");
+  });
+
+  it("flags a JSON array of tool ops", () => {
+    const result = validateWaifuOutput('[{"content": "remember this"}]', ctx);
+    expect(result.verdict).toBe("retry");
+    expect(result.violations.some((v) => v.check === "tool-fragment")).toBe(true);
+  });
+});
