@@ -1314,7 +1314,7 @@ describe("RuntimeOrchestrator", () => {
     expect(aboutText.length).toBeLessThanOrEqual(200);
     // The tail of the long persona (past 200 chars) must NOT appear in trailing prompt
     const normalised = longPersona.trim().replace(/\s+/g, " ");
-    expect(trailingPrompt).not.toContain(normalised.slice(201));
+    expect(trailingPrompt).not.toContain(normalised.slice(200));
     // System prompt must not contain the raw persona at all
     expect(systemPrompt).toBeDefined();
     expect(systemPrompt).not.toContain(normalised.slice(0, 50));

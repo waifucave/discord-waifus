@@ -4080,7 +4080,8 @@ const DEFAULT_ORCHESTRATOR_PROMPT = [
 function castingCard(waifu: WaifuConfig, now: Date): string {
   const tagName = promptTagName(waifu.name || waifu.id);
   const displayName = waifu.displayName || waifu.name;
-  const preview = waifu.persona.trim().replace(/\s+/g, " ").slice(0, 200);
+  // The trailing replace drops a lone high surrogate left when the cap splits an emoji pair.
+  const preview = waifu.persona.trim().replace(/\s+/g, " ").slice(0, 200).replace(/[\uD800-\uDBFF]$/, "");
   return [
     `<${tagName}>`,
     `ID: ${waifu.id} · ${displayName}`,
