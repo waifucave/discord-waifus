@@ -52,6 +52,7 @@ describe("selectDreamInput", () => {
     const observations = [observation({ id: "o1" })];
     const chunks = selectDreamInput(records, observations, NOW);
     expect(chunks).toHaveLength(1);
+    expect(chunks[0].key).toBe("all");
     expect(chunks[0].inputs.map((input) => input.memoryIndex)).toEqual([1, 2]);
     expect(chunks[0].observations).toEqual(observations);
     expect(chunks[0].indexMap.get(1)).toBe("a");
@@ -107,9 +108,11 @@ describe("selectDreamInput", () => {
     ];
     const chunks = selectDreamInput(records, observations, NOW, 80);
     expect(chunks).toHaveLength(2);
-    // Deterministic order: mika sorts before yuki.
+    // Deterministic order: mika sorts before yuki; keys match the waifu id.
+    expect(chunks[0].key).toBe("mika");
     expect(chunks[0].inputs.every((input) => input.waifuId === "mika")).toBe(true);
     expect(chunks[0].observations.map((o) => o.id)).toEqual(["o-mika"]);
+    expect(chunks[1].key).toBe("yuki");
     expect(chunks[1].inputs.every((input) => input.waifuId === "yuki")).toBe(true);
     expect(chunks[1].observations.map((o) => o.id)).toEqual(["o-yuki"]);
     // Each chunk's memoryIndex restarts at 1.
@@ -124,6 +127,7 @@ describe("selectDreamInput", () => {
     const chunks = selectDreamInput(records, observations, NOW, 80);
     expect(chunks).toHaveLength(2);
     const orphan = chunks[chunks.length - 1];
+    expect(orphan.key).toBe("orphan");
     expect(orphan.inputs).toEqual([]);
     expect(orphan.observations.map((o) => o.id)).toEqual(["o-aria"]);
   });

@@ -10,7 +10,11 @@ const MS_PER_DAY = 24 * MS_PER_HOUR;
 // One unit of work for the dream pass: the active records for one waifu (or a budget-sized slice
 // of all active records) plus the pending observations that belong to them. memoryIndex is 1-based
 // WITHIN the chunk, and indexMap resolves it back to the stored record id at apply time.
+// key is a stable identifier used by the runtime loop to track which chunks have been processed:
+// the waifu id for per-waifu chunks, "all" for the single under-budget chunk, "orphan" for the
+// orphan-observation chunk.
 export type DreamChunk = {
+  key: string;
   inputs: DreamMemoryInput[];
   observations: PendingObservation[];
   indexMap: Map<number, string>;
@@ -50,14 +54,14 @@ export function selectDreamInput(
 ): DreamChunk[] {
   const active = records.filter((record) => record.status === "active" && !record.pinned);
 
-  const buildChunk = (chunkRecords: MemoryRecord[], chunkObservations: PendingObservation[]): DreamChunk => {
+  const buildChunk = (key: string, chunkRecords: MemoryRecord[], chunkObservations: PendingObservation[]): DreamChunk => {
     const indexMap = new Map<number, string>();
     const inputs = chunkRecords.map((record, index) => {
       const memoryIndex = index + 1;
       indexMap.set(memoryIndex, record.id);
       return toDreamInput(record, memoryIndex, now);
     });
-    return { inputs, observations: chunkObservations, indexMap };
+    return { key, inputs, observations: chunkObservations, indexMap };
   };
 
   // Under budget: a single chunk carries every record and every observation.
@@ -65,7 +69,7 @@ export function selectDreamInput(
     if (active.length === 0 && pendingObservations.length === 0) {
       return [];
     }
-    return [buildChunk(active, pendingObservations)];
+    return [buildChunk("all", active, pendingObservations)];
   }
 
   // Over budget: chunk by waifu. Deterministic order keeps the iteration loop stable.
@@ -76,12 +80,12 @@ export function selectDreamInput(
     const chunkRecords = active.filter((record) => record.waifuId === waifuId);
     const chunkObservations = pendingObservations.filter((observation) => observation.waifuId === waifuId);
     chunkObservations.forEach((observation) => observedWaifus.add(observation.waifuId));
-    chunks.push(buildChunk(chunkRecords, chunkObservations));
+    chunks.push(buildChunk(waifuId, chunkRecords, chunkObservations));
   }
   // Observations whose waifu has no active records still need a home: one extra add-only chunk.
   const orphanObservations = pendingObservations.filter((observation) => !observedWaifus.has(observation.waifuId));
   if (orphanObservations.length > 0) {
-    chunks.push(buildChunk([], orphanObservations));
+    chunks.push(buildChunk("orphan", [], orphanObservations));
   }
   return chunks;
 }

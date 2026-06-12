@@ -191,7 +191,7 @@ class OpenAiCompatibleChatPipeline implements ModelPipeline {
       },
       signal: request.signal,
       extract: (json) => extractOpenAiChatToolArguments(json, DREAM_TOOL_NAME),
-      queryRole: "stage_manager_librarian"
+      queryRole: "dream"
     });
     return parseDreamOps(text);
   }
@@ -362,7 +362,7 @@ class OpenAiResponsesPipeline implements ModelPipeline {
       },
       signal: request.signal,
       extract: (json) => extractOpenAiResponsesToolArguments(json, DREAM_TOOL_NAME),
-      queryRole: "stage_manager_librarian"
+      queryRole: "dream"
     });
     return parseDreamOps(text);
   }
@@ -526,7 +526,7 @@ class AnthropicMessagesPipeline implements ModelPipeline {
       },
       signal: request.signal,
       extract: (json) => extractAnthropicToolArguments(json, DREAM_TOOL_NAME),
-      queryRole: "stage_manager_librarian"
+      queryRole: "dream"
     });
     return parseDreamOps(text);
   }
@@ -699,7 +699,7 @@ class GoogleGenerativeLanguagePipeline implements ModelPipeline {
       }),
       signal: request.signal,
       extract: (json) => extractGoogleToolArguments(json, DREAM_TOOL_NAME),
-      queryRole: "stage_manager_librarian"
+      queryRole: "dream"
     });
     return parseDreamOps(text);
   }

@@ -3,6 +3,7 @@ export type QueryRole =
   | "waifu"
   | "stage_manager_observer"
   | "stage_manager_librarian"
+  | "dream"
   | "reviewer";
 
 export type CapturedQuery = {

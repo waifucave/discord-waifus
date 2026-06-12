@@ -81,6 +81,10 @@ import {
 } from "./decisions.js";
 import { assessLoop } from "./loopDetector.js";
 
+// Hour of the day (local time, 0-23) at which the nightly dream pass fires. Exported so
+// msUntilNextDreamRun can reference it without the class bracket-access backdoor.
+export const DREAM_HOUR_LOCAL = 5;
+
 export type RuntimeOrchestratorOptions = {
   storage: StorageService;
   discord: DiscordGatewayFacade;
@@ -187,9 +191,8 @@ export class RuntimeOrchestrator {
   private readonly directiveDecisionCounts = new Map<string, number>();
   private static readonly SELF_SENT_TTL_MS = 60_000;
   private static readonly STAGE_MANAGER_IDLE_DELAY_MS = 60 * 60 * 1000;
-  // Dream pass: per guild, once per day at 05:00 local (±15 min deterministic jitter). When a
+  // Dream pass: per guild, once per day at DREAM_HOUR_LOCAL (±15 min deterministic jitter). When a
   // channel run is active for the guild we defer 15 min, up to 8 times, then run anyway.
-  private static readonly DREAM_HOUR_LOCAL = 5;
   private static readonly DREAM_DEFER_DELAY_MS = 15 * 60 * 1000;
   private static readonly DREAM_MAX_DEFERS = 8;
   private static readonly ACTIVE_CHAT_PARTICIPANT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -366,6 +369,10 @@ export class RuntimeOrchestrator {
       return;
     }
     const server = await this.ensureServer(event.guildId);
+    // Arm a dream timer for guilds that joined after startup (cheap check — no-op for existing guilds).
+    if (!this.dreamTimers.has(event.guildId) && !this.options.isPaused?.()) {
+      this.armDreamTimer(event.guildId);
+    }
     const serverWithChannel = await this.ensureChannelConfig(server, event.channelId);
     const channel = serverWithChannel.channels[event.channelId];
     if (!this.channelHasWaifus(channel)) {
@@ -447,7 +454,7 @@ export class RuntimeOrchestrator {
     }
     let dream: DreamPassResult;
     try {
-      dream = await this.runDreamPass(guildId);
+      dream = await this.startDreamRun(guildId);
     } catch (error) {
       this.options.logger.error("Dream pass failed during manual trigger", {
         guildId,
@@ -2152,6 +2159,9 @@ export class RuntimeOrchestrator {
   // The nightly (or manually triggered) consolidation pass. Reads the store and pending queue,
   // chunks the active records, and runs decideDream → applyDreamOps per chunk SEQUENTIALLY,
   // re-reading the store between chunks so per-chunk indices stay valid (max 5 iterations).
+  // Each iteration re-selects chunks from the freshest store, then picks the first chunk whose
+  // stable key has not yet been processed — so mutations from prior iterations cannot shift the
+  // nth position into a chunk we already handled.
   private async runDreamPass(guildId: string): Promise<DreamPassResult> {
     const config = await this.readAgentConfig("stage-manager", 80);
     if (!config.enabled || !config.modelId) {
@@ -2166,6 +2176,7 @@ export class RuntimeOrchestrator {
     let totalSkipped = 0;
     let chunksProcessed = 0;
     const MAX_ITERATIONS = 5;
+    const processedKeys = new Set<string>();
 
     try {
       for (let iteration = 0; iteration < MAX_ITERATIONS; iteration += 1) {
@@ -2174,7 +2185,7 @@ export class RuntimeOrchestrator {
         const guildMemories = store.memories.filter((memory) => memory.guildId === guildId);
         const guildObservations = pending.observations.filter((observation) => observation.guildId === guildId);
         const chunks = selectDreamInput(guildMemories, guildObservations, new Date());
-        const chunk = chunks[iteration];
+        const chunk = chunks.find((c) => !processedKeys.has(c.key));
         if (!chunk) break;
 
         // Only require the dream capability once there is real work; an empty room needs no call.
@@ -2238,17 +2249,17 @@ export class RuntimeOrchestrator {
         }
         void this.sendDreamDebugLog({ guildId, entries: result.historyEntries });
 
+        processedKeys.add(chunk.key);
         totalApplied += result.applied;
         totalSkipped += result.skipped;
         chunksProcessed += 1;
         this.options.logger.info("Dream pass chunk finished", {
           guildId,
           iteration,
+          chunkKey: chunk.key,
           applied: result.applied,
           skipped: result.skipped
         });
-
-        if (chunks.length <= 1) break;
       }
     } catch (error) {
       this.options.logger.error("Dream pass failed", {
@@ -3541,11 +3552,11 @@ function normalizeNoteContent(content: string): string {
 }
 
 
-// Next 05:00-local fire time for a guild's dream pass, with deterministic ±15 min jitter.
+// Next DREAM_HOUR_LOCAL fire time for a guild's dream pass, with deterministic ±15 min jitter.
 function msUntilNextDreamRun(guildId: string, now: Date): number {
   const jitterMinutes = (guildHash(guildId) % 30) - 15;
   const next = new Date(now);
-  next.setHours(RuntimeOrchestrator["DREAM_HOUR_LOCAL"], 0, 0, 0);
+  next.setHours(DREAM_HOUR_LOCAL, 0, 0, 0);
   next.setMinutes(next.getMinutes() + jitterMinutes);
   if (next.getTime() <= now.getTime()) {
     next.setDate(next.getDate() + 1);
