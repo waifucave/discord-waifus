@@ -223,3 +223,227 @@ describe("generatePersonaDigest (gateway)", () => {
     })).rejects.toThrow();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Cross-wire golden matrix — Task 8 (P3a)
+// Each test drives the REAL gateway codecs with a fake fetch and pins the
+// wire shape end-to-end.  Adjust comments record every pin that had to be
+// corrected against the initial task spec.
+// ---------------------------------------------------------------------------
+describe("cross-wire goldens", () => {
+  // -------------------------------------------------------------------------
+  // 1. anthropic-messages wire — generateWaifu
+  //    haiku has multipleSystemMessages:false → mid/trailing blocks become
+  //    user turns wrapped in <system_note>...</system_note>.
+  //    The anthropic codec joins all top-level {role:"system"} turns into
+  //    body.system as a plain string.
+  // -------------------------------------------------------------------------
+  it("anthropic generateWaifu: correct URL, headers, system, system_note turns, max_tokens, content, usage", async () => {
+    const payload = {
+      id: "m1",
+      content: [{ type: "text", text: "hello!" }],
+      stop_reason: "end_turn",
+      usage: { input_tokens: 5, output_tokens: 2 }
+    };
+    const fetchImpl = okFetch(payload);
+
+    const result = await makePipeline(fetchImpl as unknown as typeof fetch, "anthropic", "claude-haiku-4-5-20251001").generateWaifu({
+      modelId: "claude-haiku-4-5-20251001",
+      systemPrompt: "SYS",
+      midSystemBlock: "MID",
+      trailingSystemBlock: "TRAIL",
+      messages: [
+        msg({}),
+        msg({ id: "m2", authorKind: "waifu" as const, authorId: "bot-1", content: "yo" })
+      ],
+      selfAuthorIds: ["bot-1"],
+      temperature: 0.7,
+      maxOutputTokens: 300,
+      reasoning: { enabled: false }
+    });
+
+    // URL and auth header
+    const [url, init] = fetchImpl.mock.calls[0]!;
+    expect(url).toBe("https://api.anthropic.com/v1/messages");
+    const headers = (init as RequestInit).headers as Record<string, string>;
+    expect(headers["x-api-key"]).toBe("sk-a");
+
+    // Wire body
+    const body = JSON.parse((init as RequestInit).body as string);
+
+    // Top-level system is the plain systemPrompt string (anthropic codec joins system turns)
+    expect(body.system).toBe("SYS");
+
+    // MID injected as a user turn (haiku: multipleSystemMessages:false → <system_note>)
+    // Note: JSON.stringify encodes newlines as \n (two chars), so we search the
+    // serialised form. Actual wire text is <system_note>\nMID\n</system_note>.
+    const messagesJson = JSON.stringify(body.messages);
+    expect(messagesJson).toContain("<system_note>\\nMID\\n</system_note>");
+    // TRAIL appended as a user turn
+    expect(messagesJson).toContain("<system_note>\\nTRAIL\\n</system_note>");
+
+    // Self-waifu message ("yo") → assistant turn
+    const assistantTurns: Array<{ role: string }> = body.messages.filter((m: { role: string }) => m.role === "assistant");
+    expect(assistantTurns.length).toBeGreaterThanOrEqual(1);
+
+    // max_tokens
+    expect(body.max_tokens).toBe(300);
+
+    // Result
+    expect(result.content).toBe("hello!");
+    expect(result.usage).toEqual({ inputTokens: 5, outputTokens: 2 });
+  });
+
+  // -------------------------------------------------------------------------
+  // 2. openai-responses wire — decideOrchestrator
+  //    gpt-5.4-nano is on the openai-responses codec.
+  //    tool_choice shape on this wire: {type:"function", name:"orchestrator_decision"}
+  //    (NOT the openai-chat shape {type:"function", function:{name:...}}).
+  //    tools shape: {type:"function", name:..., description:..., parameters:...}
+  //    body key is "input" (not "messages").
+  // -------------------------------------------------------------------------
+  it("openai-responses decideOrchestrator: URL, auth, tool_choice shape, tools shape, parsed decision", async () => {
+    const decision = { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 600, reasoning: "quiet" };
+    const payload = {
+      id: "resp1",
+      status: "completed",
+      output: [{
+        type: "function_call",
+        call_id: "c1",
+        name: "orchestrator_decision",
+        arguments: JSON.stringify(decision)
+      }],
+      usage: { input_tokens: 4, output_tokens: 3 }
+    };
+    const fetchImpl = okFetch(payload);
+
+    const orchRequest = {
+      modelId: "gpt-5.4-nano",
+      systemPrompt: "ORCH",
+      trailingPrompt: "Decide now.",
+      messages: [msg({})],
+      availableWaifuIds: ["yuki"],
+      replyRequired: false,
+      directiveBudgetOpen: true,
+      // No reasoning — gpt-5.4-nano is a responses-wire model; no reasoning.enabled param needed
+      reasoning: { enabled: false }
+    };
+
+    const parsed = await makePipeline(fetchImpl as unknown as typeof fetch, "openai", "gpt-5.4-nano").decideOrchestrator!(orchRequest);
+
+    const [url, init] = fetchImpl.mock.calls[0]!;
+    expect(url).toBe("https://api.openai.com/v1/responses");
+    const headers = (init as RequestInit).headers as Record<string, string>;
+    expect(headers["authorization"]).toBe("Bearer sk-o");
+
+    const body = JSON.parse((init as RequestInit).body as string);
+
+    // responses wire: forced-tool shape has no nested .function wrapper
+    expect(body.tool_choice).toEqual({ type: "function", name: "orchestrator_decision" });
+
+    // tools: top-level name (responses format, not openai-chat's function.name)
+    expect(body.tools[0]).toMatchObject({ type: "function", name: "orchestrator_decision" });
+
+    // Parsed decision
+    expect(parsed.action).toBe("no_reply");
+    expect(parsed.retriggerAfterSeconds).toBe(600);
+  });
+
+  // -------------------------------------------------------------------------
+  // 3. google-generative-language wire — decideDream
+  //    gemini-2.5-flash-lite supports named toolChoice.
+  //    toolConfig shape: {functionCallingConfig:{mode:"ANY", allowedFunctionNames:["dream_memories"]}}
+  //    gatewayPipeline uses flatDreamToolParameters (no additionalProperties).
+  //    URL includes /v1beta/models/gemini-2.5-flash-lite:generateContent.
+  //    Header: x-goog-api-key.
+  // -------------------------------------------------------------------------
+  it("google decideDream: URL, header, toolConfig ANY+allowedFunctionNames, no additionalProperties, parsed ops", async () => {
+    const payload = {
+      candidates: [{
+        content: {
+          parts: [{
+            functionCall: {
+              name: "dream_memories",
+              args: { ops: [{ op: "decay", memoryIndex: 1, strength: 1 }] }
+            }
+          }]
+        },
+        finishReason: "STOP"
+      }],
+      usageMetadata: { promptTokenCount: 7, candidatesTokenCount: 2 }
+    };
+    const fetchImpl = okFetch(payload);
+
+    const dreamRequest = {
+      modelId: "gemini-2.5-flash-lite",
+      messages: [],
+      memories: [{
+        memoryIndex: 1,
+        waifuId: "yuki",
+        content: "old note",
+        kind: "note" as const,
+        strength: 2,
+        ageDays: 10,
+        daysSinceRetrieved: 5
+      }],
+      observations: [],
+      availableWaifuIds: ["yuki"]
+    };
+
+    const ops = await makePipeline(fetchImpl as unknown as typeof fetch, "google-ai-studio", "gemini-2.5-flash-lite").decideDream!(dreamRequest);
+
+    const [url, init] = fetchImpl.mock.calls[0]!;
+    expect(url).toContain("/v1beta/models/gemini-2.5-flash-lite:generateContent");
+    const headers = (init as RequestInit).headers as Record<string, string>;
+    expect(headers["x-goog-api-key"]).toBe("sk-g");
+
+    const body = JSON.parse((init as RequestInit).body as string);
+
+    // Named toolChoice on google wire → mode:ANY + allowedFunctionNames
+    expect(body.toolConfig).toEqual({
+      functionCallingConfig: { mode: "ANY", allowedFunctionNames: ["dream_memories"] }
+    });
+
+    // Flat schema (no additionalProperties) — verify by stringifying
+    const schemaJson = JSON.stringify(body.tools[0].functionDeclarations[0].parameters);
+    expect(schemaJson).not.toContain("additionalProperties");
+
+    // Parsed ops
+    expect(ops).toEqual([{ op: "decay", memoryIndex: 1, strength: 1 }]);
+  });
+
+  // -------------------------------------------------------------------------
+  // 4. DeepSeek thinking-drop golden — generateWaifu
+  //    reasoning:{enabled:true} triggers the "thinking-drops-sampling"
+  //    constraint: temperature and topP are dropped from the wire body.
+  //    The wire body should carry thinking:{type:"enabled"} but NOT temperature.
+  //    stream must also be absent (not a streaming call).
+  // -------------------------------------------------------------------------
+  it("deepseek thinking-drop: thinking:{type:'enabled'} present, temperature absent, stream absent", async () => {
+    const fetchImpl = okFetch({
+      id: "r1",
+      choices: [{ message: { content: "ok" }, finish_reason: "stop" }],
+      usage: { prompt_tokens: 1, completion_tokens: 1 }
+    });
+
+    await makePipeline(fetchImpl as unknown as typeof fetch).generateWaifu({
+      modelId: "deepseek-v4-flash",
+      systemPrompt: "SYS",
+      messages: [msg({})],
+      selfAuthorIds: [],
+      temperature: 0.7,
+      reasoning: { enabled: true }
+    });
+
+    const body = JSON.parse((fetchImpl.mock.calls[0]![1] as RequestInit).body as string);
+
+    // thinking block must be present and enabled
+    expect(body.thinking).toEqual({ type: "enabled" });
+
+    // temperature must be absent (dropped by thinking-drops-sampling constraint)
+    expect(body).not.toHaveProperty("temperature");
+
+    // no stream flag on a non-streaming call
+    expect(body).not.toHaveProperty("stream");
+  });
+});
