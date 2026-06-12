@@ -76,6 +76,29 @@ http://127.0.0.1:3888
 That's it. 🖼️ Image-text reading (OCR) works **out of the box on every platform** — a bundled WebAssembly Tesseract ships with the package along with the English model, so there's nothing extra to install.
 
 <details>
+<summary>🔁 Migrating from the old <code>@starlight-ai</code> package?</summary>
+
+<br>
+
+The package moved to the WaifuCave npm organization. Existing installs can keep the same saved data in `~/.dc-waifus`; only the npm package location changes.
+
+```sh
+waifus update
+waifus restart
+waifus update
+```
+
+The first update moves the global `waifus` command to `@waifucave/discord-waifus`. `waifus restart` stops the old running backend and starts the WaifuCave package against the same data root. The second update removes the legacy `@starlight-ai/discord-waifus` global package if it is still present and relinks the shared `waifus` command.
+
+If you use a custom data root, pass the same one when restarting:
+
+```sh
+waifus restart --data-root /path/to/.dc-waifus
+```
+
+</details>
+
+<details>
 <summary>📦 Prefer a GitHub release tarball?</summary>
 
 <br>
