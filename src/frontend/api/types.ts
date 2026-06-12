@@ -443,7 +443,9 @@ export type GuildRolesFile = Revisioned & {
 
 export type MemoryStatus = "active" | "archived";
 export type MemoryKind = "fact" | "preference" | "relationship" | "event" | "commitment" | "context";
+export const MEMORY_KINDS: MemoryKind[] = ["fact", "preference", "relationship", "event", "commitment", "context"];
 export type MemorySource = "waifu_tool" | "stage_manager" | "dream" | "user";
+export const MEMORY_SOURCES: MemorySource[] = ["waifu_tool", "stage_manager", "dream", "user"];
 
 export type MemoryRecord = {
   id: string;

@@ -3,12 +3,15 @@ import { Archive, Brain, Pencil, Plus, Trash2 } from "lucide-react";
 import { api, ConflictError } from "../api/client";
 import { useApi } from "../api/useApi";
 import type {
+  MemoryKind,
   MemoryRecord,
+  MemorySource,
   MemoryStatus,
   MemoryStore,
   ServersResponse,
   WaifusResponse
 } from "../api/types";
+import { MEMORY_KINDS, MEMORY_SOURCES } from "../api/types";
 import { Empty } from "../components/Empty";
 import { Pill } from "../components/Pill";
 import { Modal } from "../components/Modal";
@@ -29,6 +32,8 @@ export function MemoriesView() {
   const [filterGuild, setFilterGuild] = useState<string>("");
   const [filterStatus, setFilterStatus] = useState<string>("active");
   const [filterStrength, setFilterStrength] = useState<string>("");
+  const [filterKind, setFilterKind] = useState<string>("");
+  const [filterSource, setFilterSource] = useState<string>("");
   const [filterText, setFilterText] = useState<string>("");
 
   const [editing, setEditing] = useState<MemoryRecord | undefined>(undefined);
@@ -50,6 +55,8 @@ export function MemoriesView() {
       if (filterText && !memory.content.toLowerCase().includes(filterText.toLowerCase())) return false;
       if (filterGuild && memory.guildId !== filterGuild) return false;
       if (filterStatus && memory.status !== filterStatus) return false;
+      if (filterKind && memory.kind !== filterKind) return false;
+      if (filterSource && memory.source !== filterSource) return false;
       if (filterStrength === "pinned" && !memory.pinned) return false;
       if (
         filterStrength &&
@@ -58,7 +65,7 @@ export function MemoriesView() {
       ) return false;
       return true;
     });
-  }, [rows, filterWaifu, filterGuild, filterStatus, filterStrength, filterText]);
+  }, [rows, filterWaifu, filterGuild, filterStatus, filterStrength, filterKind, filterSource, filterText]);
 
   return (
     <>
@@ -128,6 +135,18 @@ export function MemoriesView() {
             </option>
           ))}
         </select>
+        <select className="select" value={filterKind} onChange={(e) => setFilterKind(e.target.value)} style={{ maxWidth: 150 }}>
+          <option value="">Any kind</option>
+          {MEMORY_KINDS.map((k) => (
+            <option key={k} value={k}>{k}</option>
+          ))}
+        </select>
+        <select className="select" value={filterSource} onChange={(e) => setFilterSource(e.target.value)} style={{ maxWidth: 160 }}>
+          <option value="">Any source</option>
+          {MEMORY_SOURCES.map((s) => (
+            <option key={s} value={s}>{sourceLabel(s)}</option>
+          ))}
+        </select>
         <input
           className="input"
           placeholder="Search content…"
@@ -154,6 +173,8 @@ export function MemoriesView() {
                 <th>Waifu</th>
                 <th>Guild</th>
                 <th>Strength</th>
+                <th>Kind</th>
+                <th>Source</th>
                 <th>Status</th>
                 <th>Content</th>
                 <th>Expires</th>
@@ -237,6 +258,8 @@ function MemoryRow({
         <Pill>{serverLabel(servers, memory.guildId)}</Pill>
       </td>
       <td>{memory.pinned ? "📌 Pinned" : `★ ${Math.round(memory.strength)}`}</td>
+      <td><Pill tone="info">{memory.kind}</Pill></td>
+      <td><Pill tone={sourceTone(memory.source)}>{sourceLabel(memory.source)}</Pill></td>
       <td>
         {memory.status === "active" ? (
           <Pill tone="ok" dot>active</Pill>
@@ -324,6 +347,7 @@ function MemoryEditor({
   const [content, setContent] = useState(memory?.content ?? "");
   const [strength, setStrength] = useState<number>(memory ? Math.round(memory.strength) : 5);
   const [pinned, setPinned] = useState(memory?.pinned ?? true);
+  const [kind, setKind] = useState<MemoryKind>(memory?.kind ?? "fact");
   const [status, setStatus] = useState<MemoryStatus>(memory?.status ?? "active");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | undefined>(undefined);
@@ -343,7 +367,8 @@ function MemoryEditor({
           guildId,
           content: content.trim(),
           strength,
-          pinned
+          pinned,
+          kind
         });
         onSaved(next, undefined);
       } else if (memory) {
@@ -354,6 +379,7 @@ function MemoryEditor({
           content: content.trim(),
           strength,
           pinned,
+          kind,
           status
         });
         onSaved(next, undefined);
@@ -432,6 +458,14 @@ function MemoryEditor({
             Pinned memories stay in the waifu prompt, are never auto-edited, and can only be managed from this dashboard.
           </span>
         </div>
+        <div className="field">
+          <label className="field-label">Kind</label>
+          <select className="select" value={kind} onChange={(e) => setKind(e.target.value as MemoryKind)}>
+            {MEMORY_KINDS.map((k) => (
+              <option key={k} value={k}>{k}</option>
+            ))}
+          </select>
+        </div>
         {mode === "edit" && (
           <div className="field">
             <label className="field-label">Status</label>
@@ -466,6 +500,24 @@ function MemoryEditor({
 function serverLabel(servers: ServersResponse["servers"], guildId?: string): string {
   if (!guildId) return "unassigned";
   return servers.find((server) => server.guildId === guildId)?.name || guildId;
+}
+
+function sourceLabel(source: MemorySource): string {
+  switch (source) {
+    case "waifu_tool": return "waifu";
+    case "stage_manager": return "observer";
+    case "dream": return "dream";
+    case "user": return "user";
+  }
+}
+
+function sourceTone(source: MemorySource): import("../components/Pill").PillTone {
+  switch (source) {
+    case "waifu_tool": return "warn";
+    case "stage_manager": return "neutral";
+    case "dream": return "info";
+    case "user": return "ok";
+  }
 }
 
 function formatExpiresIn(expiresAt: string): string {

@@ -93,7 +93,8 @@ export function StageManagerView() {
         <div>
           <h2 className="view-title">Stage manager</h2>
           <p className="view-subtitle">
-            Background reviewer of long-window context that edits waifu memories without blocking
+            Background memory pipeline: an observer extracts facts from chat, then a nightly dream
+            pass consolidates them — promoting, rewriting, decaying, and archiving without blocking
             replies.
           </p>
         </div>
@@ -166,7 +167,7 @@ export function StageManagerView() {
                 label={enabled ? "Enabled" : "Disabled"}
               />
               <span className="field-hint">
-                Disabled stage-manager configs skip memory review.
+                Disabled configs skip the observer and dream pass.
               </span>
             </div>
             <ReasoningControls
@@ -187,7 +188,7 @@ export function StageManagerView() {
         <div className="section-header">
           <h3 className="section-title">Manual trigger target</h3>
           <span className="section-description">
-            Selecting a channel runs the background memory reviewer for that channel.
+            Selecting a channel runs the observer and the dream pass for that channel's guild.
           </span>
         </div>
         <div className="field">
@@ -207,15 +208,19 @@ export function StageManagerView() {
         <div className="section-header">
           <h3 className="section-title">Pipeline</h3>
         </div>
-        <pre className="code-block">{`Pass 1 — Observer: extract atomic durable observations from chat.
-  record_observations(observations[{ waifuId, content, importance, kind }])
+        <pre className="code-block">{`Pass 1 — Observer (per channel, triggered by activity):
+  record_observations(observations[{ waifuId, content, kind, importance, entities }])
+  importance >= 4 → fast-tracked directly to the memory store
+  importance < 4  → queued for the dream pass
 
-Pass 2 — Librarian: reconcile observations with existing memories.
-  add_memory(waifuId, content, importance)
-  update_memory(memoryIndex, fields)
-  archive_memory(memoryIndex)
-  merge_memories(sourceMemoryIndices[], mergedContent)
-  no_change(reason)`}</pre>
+Pass 2 — Dream pass (nightly, guild-scoped):
+  add      — new observation becomes a durable memory
+  promote  — a waifu note worth keeping gets a kind and strength
+  rewrite  — observation refines an existing memory in place
+  merge    — two redundant memories collapse into one
+  decay    — stale trivia fades toward 0 strength
+  archive  — obsolete or superseded memory is retired
+  none     — no action needed`}</pre>
       </section>
 
       <section className="section">
@@ -224,26 +229,35 @@ Pass 2 — Librarian: reconcile observations with existing memories.
         </div>
         {(history.data?.edits.length ?? 0) === 0 ? (
           <Empty title="No edits yet" icon={<Layers className="icon-lg" />}>
-            Trigger the stage manager or let the runtime pipeline run to record memory tool calls.
+            Trigger the dream pass or let the nightly schedule run to see memory operations here.
           </Empty>
         ) : (
           <div className="table">
             <div className="tr head">
               <span>Time</span>
-              <span>Tool</span>
+              <span>Op</span>
               <span>Obs</span>
               <span>Memory IDs</span>
               <span>Summary</span>
             </div>
-            {history.data?.edits.map((entry) => (
-              <div className="tr" key={entry.id}>
-                <span>{new Date(entry.createdAt).toLocaleTimeString()}</span>
-                <span>{entry.tool}</span>
-                <span>{entry.observationCount ?? "—"}</span>
-                <span>{entry.affectedMemoryIds.join(", ") || "—"}</span>
-                <span>{entry.summary}</span>
-              </div>
-            ))}
+            {history.data?.edits.map((entry) => {
+              const { opBadge, summaryText } = parseHistorySummary(entry.summary);
+              return (
+                <div className="tr" key={entry.id}>
+                  <span>{new Date(entry.createdAt).toLocaleTimeString()}</span>
+                  <span>
+                    {opBadge ? (
+                      <span className="pill info">{opBadge}</span>
+                    ) : (
+                      entry.tool
+                    )}
+                  </span>
+                  <span>{entry.observationCount ?? "—"}</span>
+                  <span>{entry.affectedMemoryIds.join(", ") || "—"}</span>
+                  <span>{summaryText}</span>
+                </div>
+              );
+            })}
           </div>
         )}
       </section>
@@ -290,4 +304,12 @@ function parseTarget(value: string): { guildId: string; channelId: string } | un
     guildId: value.slice(0, idx),
     channelId: value.slice(idx + 1)
   };
+}
+
+// Dream history entries carry a `[dream:op]` prefix in the summary field. Strip it into a badge
+// so the table stays readable.
+function parseHistorySummary(summary: string): { opBadge: string | undefined; summaryText: string } {
+  const match = summary.match(/^\[dream:([a-z]+)\]\s*/);
+  if (!match) return { opBadge: undefined, summaryText: summary };
+  return { opBadge: match[1], summaryText: summary.slice(match[0].length) };
 }
