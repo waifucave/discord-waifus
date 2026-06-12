@@ -309,7 +309,9 @@ export function OrchestratorView() {
               max={100}
               value={contextWindow}
               onChange={(e) =>
-                setContextWindow(Math.max(1, Math.min(100, Number(e.target.value) || 20)))
+                e.target.value.trim() === ""
+                  ? setContextWindow(contextWindow)
+                  : setContextWindow(Math.max(1, Math.min(100, Number(e.target.value) || 20)))
               }
             />
             <span className="field-hint">Default 20</span>
@@ -323,7 +325,9 @@ export function OrchestratorView() {
               max={20}
               value={directiveCooldown}
               onChange={(e) =>
-                setDirectiveCooldown(Math.max(0, Math.min(20, Number(e.target.value) || 0)))
+                e.target.value.trim() === ""
+                  ? setDirectiveCooldown(directiveCooldown)
+                  : setDirectiveCooldown(Math.max(0, Math.min(20, Number(e.target.value) || 0)))
               }
             />
             <span className="field-hint">Default 3</span>
@@ -439,7 +443,7 @@ function formatResponderExecution(
     return entry.respondingWaifus
       .map((responder) => {
         const dir = responder.directive
-          ? ` (${responder.directive.intent}${responder.directive.goal ? ") " + responder.directive.goal : ")"}`
+          ? ` (${responder.directive.intent}${responder.directive.goal ? ": " + responder.directive.goal : ""})`
           : "";
         return `${responder.waifuId}${dir}`;
       })
