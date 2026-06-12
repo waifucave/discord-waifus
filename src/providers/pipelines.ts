@@ -1358,11 +1358,11 @@ const ORCHESTRATOR_TOOL_DESCRIPTION = "Choose whether a waifu should reply next 
 
 const PICK_NEXT_WAIFU_TOOL_NAME = "PickNextWaifu";
 const PICK_NEXT_WAIFU_TOOL_DESCRIPTION =
-  "Pick one configured waifu to reply immediately after this waifu message when a direct handoff fits.";
+  "Hand the next turn directly to another waifu without waiting for the director. Call at most once, after writing your own reply, and only when she has an obvious immediate follow-up to what you just said.";
 
 const SHORT_TERM_MEMORY_TOOL_NAME = "add_memory";
 const SHORT_TERM_MEMORY_TOOL_DESCRIPTION =
-  "Write one short standalone sentence to remember until the next day when the current conversation includes a useful short-lived fact. Call this multiple times in one reply to record multiple distinct notes. Skip trivial chitchat; entries expire after 24 hours.";
+  "Your personal notepad. The chat history can vanish at any time (channel switch, cleanup); your notes are what survives. Save one short standalone sentence whenever the conversation produces something you'd want to still know tomorrow: a plan, a promise, a new fact about someone, the state of a running joke or argument. Spell names out ('Riko owes Ali tacos since Thursday', never 'she owes him'). Up to 5 calls per reply. Skip pure filler and anything already shown in your memories block. Entries expire after 24 hours. Calling this tool does NOT replace your message — always also write your normal reply in the same turn.";
 
 function shortTermMemoryToolParameters(): object {
   return {
@@ -1371,7 +1371,7 @@ function shortTermMemoryToolParameters(): object {
     properties: {
       content: {
         type: "string",
-        description: "One short standalone sentence about the current conversation state (a stated time, a plan, a name to follow up on)."
+        description: "One standalone sentence with names spelled out, understandable with zero chat context."
       }
     },
     required: ["content"]

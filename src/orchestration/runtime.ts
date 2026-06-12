@@ -3569,33 +3569,18 @@ function buildWaifuToolUseInstructions(
   if (activeTools.pickNextWaifu && candidates.length > 0) {
     sections.push(
       [
-        "PickNextWaifu - handoff tool.",
-        "Use this after writing your Discord reply whenever another waifu has an immediate natural follow-up and should speak next without waiting for the orchestrator.",
-        "Skip it only when your message should clearly end the beat.",
-        "Arguments: { \"waifuId\": string }.",
-        "Available waifus:",
+        "PickNextWaifu — only after your message, only when another waifu has an obvious immediate follow-up. Available:",
         ...candidates.map((candidate) => `- ${candidate}`)
       ].join("\n")
     );
   }
   if (activeTools.shortTermMemory) {
     sections.push(
-      [
-        "add_memory - scratchpad to remember until the next day.",
-        "Use this with a single short standalone sentence whenever something in the conversation is worth remembering for the next ~24 hours: a stated time, a plan, a name to follow up on, a one-off detail you might need before tomorrow.",
-        "You may call it multiple times in one reply (up to 5) to record separate notes.",
-        "Calling add_memory does NOT replace your Discord reply. Always also write your normal message body in the same turn — the tool call alone leaves the room silent.",
-        "Do not use it for trivial chitchat, repeat lines you already wrote, or things that belong in long-term memory. Entries auto-expire after 24h.",
-        `Before calling, scan <${promptTagName(waifu.name || waifu.id)}_relevant_memories> — if the fact is already listed (even paraphrased), do NOT call add_memory for it again.`,
-        "Arguments: { \"content\": string }."
-      ].join("\n")
+      `add_memory — save a note whenever the chat produces something you'd want to know tomorrow (plans, promises, new facts about someone, the state of a running bit). Notes are what survives when the chat history vanishes. Skip facts already shown in <${promptTagName(waifu.name || waifu.id)}_relevant_memories>. Always also write your normal message in the same turn.`
     );
   }
   if (sections.length === 0) return undefined;
-  return [
-    "You have access to the following tools. Use the relevant tool whenever it fits the current turn; do not wait for a perfect moment.",
-    ...sections
-  ].join("\n\n");
+  return sections.join("\n\n");
 }
 
 function formatWaifuScheduleForPrompt(waifu: WaifuConfig): string {

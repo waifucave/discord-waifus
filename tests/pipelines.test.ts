@@ -2663,6 +2663,24 @@ describe("Google AI Studio (Gemini) pipeline", () => {
     const toolConfig = query?.payload.toolConfig as { functionCallingConfig?: { allowedFunctionNames?: string[] } };
     expect(toolConfig?.functionCallingConfig?.allowedFunctionNames).toBeUndefined();
   });
+
+  it("add_memory tool description contains schema-first guidance (personal notepad, always also write)", async () => {
+    mockFetch({ choices: [{ message: { content: "hi" } }] });
+
+    const pipeline = createModelPipeline("grok-4.3", { apiKey: "xai-test" });
+    await pipeline.generateWaifu({
+      modelId: "grok-4.3",
+      messages: context,
+      systemPrompt: "stay in character",
+      shortTermMemoryToolEnabled: true
+    });
+
+    const query = recentQueries().at(-1);
+    const tools = query?.payload.tools as Array<{ function: { name: string; description: string } }>;
+    const memoryTool = tools?.find((t) => t.function.name === "add_memory");
+    expect(memoryTool?.function.description).toContain("personal notepad");
+    expect(memoryTool?.function.description).toContain("always also write");
+  });
 });
 
 describe("orchestrator wire format (W1)", () => {
