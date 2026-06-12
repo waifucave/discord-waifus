@@ -171,6 +171,43 @@ export function resolveGroupTag(tag: string, waifuTag: string): string {
   return promptTagName(tag.replace(/\{name\}/g, waifuTag));
 }
 
+// Every XML-ish tag the waifu prompt harness can emit for a given waifu. The output validator
+// uses this list to flag any of these tags leaking into a sent reply. Per-waifu tags carry the
+// `promptTagName(waifu.name || waifu.id)` prefix; the rest are fixed registry tags. Keep this in
+// sync with the WAIFU_PROMPT_BLOCKS registry above.
+export function waifuBlockTags(waifu: {
+  name?: string;
+  id: string;
+  promptLayout?: WaifuPromptLayout;
+}): string[] {
+  const tag = promptTagName(waifu.name || waifu.id);
+  const tags = [
+    `${tag}_identity`,
+    `${tag}_persona`,
+    `${tag}_schedule`,
+    "io_format",
+    "tools",
+    "output_contract",
+    "room_info",
+    "active_chat_participants",
+    "server_emojis",
+    `${tag}_relevant_memories`,
+    `${tag}_anchor`,
+    "currently_doing",
+    "director_note",
+    "system_note"
+  ];
+  // User-defined layout groups emit their own wrapper tags — cover them too.
+  for (const section of [waifu.promptLayout?.top, waifu.promptLayout?.mid, waifu.promptLayout?.trailing]) {
+    for (const node of section ?? []) {
+      if (node.kind === "group") {
+        tags.push(resolveGroupTag(node.tag, tag));
+      }
+    }
+  }
+  return tags;
+}
+
 // --- Assembly ----------------------------------------------------------------------------------
 
 function renderBlock(blockId: string, ctx: PromptBlockContext): string | undefined {

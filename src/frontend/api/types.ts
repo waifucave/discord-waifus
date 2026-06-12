@@ -207,6 +207,7 @@ export type OrchestratorResponderOutcome = {
     | "sent"
     | "tool_only"
     | "empty"
+    | "blocked"
     | "unavailable"
     | "interrupted"
     | "failed"

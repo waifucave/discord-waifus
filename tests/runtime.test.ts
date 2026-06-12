@@ -4884,7 +4884,9 @@ describe("RuntimeOrchestrator", () => {
     expect(discord.sent[1].replyToMessageId).toBeUndefined();
     expect(discord.sent[2].replyToMessageId).toBeUndefined();
     expect(discord.typingCalls.some((call) => call.senderBotId === "yuki-bot")).toBe(true);
-    expect(discord.typingCalls.some((call) => call.senderBotId === undefined)).toBe(true);
+    // The orchestrator no longer shows a typing indicator while it deliberates (W4 leak fix):
+    // only the waifu send path types, so there is never a typing call without a senderBotId.
+    expect(discord.typingCalls.some((call) => call.senderBotId === undefined)).toBe(false);
   });
 
   it("sends a multi-chunk reply in full as one waifu turn", async () => {
@@ -6080,6 +6082,270 @@ describe("RuntimeOrchestrator", () => {
         messageCount: 1
       }
     ]);
+  });
+
+  it("blocks a waifu reply that leaks a harness tag on both attempts and sends nothing", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+
+    await seedRuntimeConfig(storage);
+
+    let retryMessageOnAttempt2: string | undefined;
+    let attempts = 0;
+    const pipeline: ModelPipeline = {
+      async decideOrchestrator() {
+        return {
+          action: "reply",
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }],
+          reasoning: "Yuki speaks."
+        };
+      },
+      async generateWaifu(request: WaifuGenerationRequest) {
+        attempts += 1;
+        if (attempts === 2) {
+          retryMessageOnAttempt2 = request.retryUserMessage;
+        }
+        return { content: "<director_note>goal</director_note>" };
+      }
+    };
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 1,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    expect(attempts).toBe(2);
+    expect(discord.sent).toEqual([]);
+    expect(retryMessageOnAttempt2).toContain("rejected");
+
+    const history = await storage.readJson("user/orchestrator/history.json", OrchestratorHistoryFileSchema);
+    const decision = history.decisions.find((entry) => entry.action === "reply");
+    expect(decision?.status).toBe("completed");
+    expect(decision?.responderOutcomes.map((outcome) => ({
+      waifuId: outcome.waifuId,
+      status: outcome.status,
+      messageCount: outcome.messageIds.length
+    }))).toEqual([{ waifuId: "yuki", status: "blocked", messageCount: 0 }]);
+    expect(decision?.responderOutcomes[0]?.reason).toContain("harness-tag");
+  });
+
+  it("recovers when the validator rejects attempt 1 but attempt 2 is clean", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+
+    await seedRuntimeConfig(storage);
+
+    let attempts = 0;
+    const pipeline: ModelPipeline = {
+      async decideOrchestrator() {
+        return {
+          action: "reply",
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }],
+          reasoning: "Yuki speaks."
+        };
+      },
+      async generateWaifu() {
+        attempts += 1;
+        return attempts === 1
+          ? { content: "<director_note>goal</director_note>" }
+          : { content: "sure, sounds good" };
+      }
+    };
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 1,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    expect(attempts).toBe(2);
+    expect(discord.sent.map((message) => message.content)).toEqual(["sure, sounds good"]);
+
+    const history = await storage.readJson("user/orchestrator/history.json", OrchestratorHistoryFileSchema);
+    const decision = history.decisions.find((entry) => entry.action === "reply");
+    expect(decision?.responderOutcomes.map((outcome) => outcome.status)).toEqual(["sent"]);
+  });
+
+  it("blocks a mass-ping reply immediately without a retry", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+
+    await seedRuntimeConfig(storage);
+
+    let attempts = 0;
+    const pipeline: ModelPipeline = {
+      async decideOrchestrator() {
+        return {
+          action: "reply",
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }],
+          reasoning: "Yuki speaks."
+        };
+      },
+      async generateWaifu() {
+        attempts += 1;
+        return { content: "@everyone hi" };
+      }
+    };
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 1,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    expect(attempts).toBe(1);
+    expect(discord.sent).toEqual([]);
+
+    const history = await storage.readJson("user/orchestrator/history.json", OrchestratorHistoryFileSchema);
+    const decision = history.decisions.find((entry) => entry.action === "reply");
+    expect(decision?.responderOutcomes[0]?.status).toBe("blocked");
+    expect(decision?.responderOutcomes[0]?.reason).toContain("mass-ping");
+  });
+
+  it("refuses a debug route into a channel with active waifus and allows a clean one", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    // guild-1 / channel-1 has yuki enabled (seedRuntimeConfig). channel-clean has no waifus.
+    discord.debugChannelInfo.set("source-channel", { channelId: "source-channel", guildId: "guild-1" });
+    discord.debugChannelInfo.set("channel-1", { channelId: "channel-1", guildId: "guild-1" });
+    discord.debugChannelInfo.set("channel-clean", { channelId: "channel-clean", guildId: "guild-1" });
+
+    await seedRuntimeConfig(storage);
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      createPipeline: () => ({
+        async generateWaifu() {
+          return { content: "unused" };
+        }
+      }),
+      logger: quietLogger()
+    });
+    await runtime.start();
+
+    const responses: string[] = [];
+    await discord.emitDebugCommand({
+      guildId: "guild-1",
+      channelId: "channel-1",
+      userId: "admin-user",
+      type: "set",
+      sourceChannelId: "source-channel",
+      respond: async (content) => {
+        responses.push(content);
+      }
+    });
+    await waitFor(() => responses.length === 1, "debug set rejection response");
+
+    await discord.emitDebugCommand({
+      guildId: "guild-1",
+      channelId: "channel-clean",
+      userId: "admin-user",
+      type: "set",
+      sourceChannelId: "source-channel",
+      respond: async (content) => {
+        responses.push(content);
+      }
+    });
+    await waitFor(() => responses.length === 2, "debug set success response");
+    const routes = await storage.readJson("user/orchestrator/debug.json", OrchestratorDebugConfigFileSchema);
+    await runtime.stop();
+
+    expect(responses[0]).toBe(
+      "Refusing to route debug logs into a channel with active waifus — pick a private channel."
+    );
+    expect(responses[1]).toBe("Debug logs for channel source-channel will be posted in this channel.");
+    expect(routes.routes["source-channel"]).toMatchObject({
+      destinationChannelId: "channel-clean"
+    });
+  });
+
+  it("includes the directive-restatement line in the reviewer system prompt", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.contexts = [
+      [
+        contextMessage("m1", "user", "Kevin", "hello"),
+        contextMessage("chunk-1", "waifu", "Yuki", "hi", ["chunk-1"])
+      ]
+    ];
+
+    await seedRuntimeConfig(storage);
+    // Clear the seeded reviewer prompt so the runtime falls back to DEFAULT_REVIEWER_PROMPT.
+    await storage.writeJson(
+      "reviewer",
+      "user/reviewer/config.json",
+      AgentConfigSchema,
+      AgentConfigSchema.parse({
+        ...createRevisionedBase(),
+        enabled: true,
+        providerId: "openai",
+        modelId: "gpt-5.4-mini",
+        contextWindow: 20,
+        prompt: ""
+      })
+    );
+
+    let reviewerSystemPrompt = "";
+    const pipeline: ModelPipeline = {
+      async generateWaifu() {
+        return { content: "unused" };
+      },
+      async decideReviewer(request) {
+        reviewerSystemPrompt = request.systemPrompt;
+        return { hallucination: false };
+      }
+    };
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    await runtime.triggerReviewer("guild-1", "channel-1", "reviewer-user");
+    await runtime.stop();
+
+    expect(reviewerSystemPrompt).toContain(
+      "a message that primarily restates an instruction or goal it was given (reads as a directive, not as chat)"
+    );
   });
 
   it("marks the active responder failed and later responders not run after a provider error", async () => {

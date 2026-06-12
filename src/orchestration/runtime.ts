@@ -23,8 +23,10 @@ import {
   PromptBlockContext,
   assembleWaifuPrompt,
   promptTagName,
-  reconcileWaifuPromptLayout
+  reconcileWaifuPromptLayout,
+  waifuBlockTags
 } from "./promptBlocks.js";
+import { Violation, validateWaifuOutput } from "./outputValidator.js";
 import { ReplyQuoteExtraction, extractReplyQuote } from "./replyQuote.js";
 import { getModel } from "../providers/catalog.js";
 import { createModelPipeline, PipelineCredentials, ProviderPipelineError } from "../providers/pipelines.js";
@@ -1091,25 +1093,21 @@ export class RuntimeOrchestrator {
         requireReply,
         loop.notice
       );
-      const orchestratorTyping = startTypingScope(this.options.discord, { guildId, channelId });
-      let decision: OrchestratorDecision;
-      try {
-        decision = await pipeline.decideOrchestrator({
-          modelId: orchestrator.modelId,
-          messages,
-          pastDecisions,
-          decisionMarkers,
-          directiveBudgetOpen,
-          trailingPrompt,
-          systemPrompt: this.buildOrchestratorSystemPrompt(orchestrator, server, requireReply),
-          availableWaifuIds: availableWaifus.map((waifu) => waifu.id),
-          replyRequired: requireReply,
-          reasoning: orchestrator.reasoning,
-          signal
-        });
-      } finally {
-        orchestratorTyping.stop();
-      }
+      // No typing scope for orchestrator decisions: the orchestrator bot showing "typing…" while it
+      // deliberates leaks the machinery's presence into the room. Only the waifu send path types.
+      let decision: OrchestratorDecision = await pipeline.decideOrchestrator({
+        modelId: orchestrator.modelId,
+        messages,
+        pastDecisions,
+        decisionMarkers,
+        directiveBudgetOpen,
+        trailingPrompt,
+        systemPrompt: this.buildOrchestratorSystemPrompt(orchestrator, server, requireReply),
+        availableWaifuIds: availableWaifus.map((waifu) => waifu.id),
+        replyRequired: requireReply,
+        reasoning: orchestrator.reasoning,
+        signal
+      });
       decision = capDecisionDelays(decision);
       if (requireReply) {
         decision = applyFirstResponderDirectiveOverride(
@@ -1455,6 +1453,18 @@ export class RuntimeOrchestrator {
             ? dedupeNames([...selfDisplayNames, selfGuildNickname])
             : selfDisplayNames;
           const activeAuthorIds = waifuMessages.map((message) => message.authorId);
+          const validatorDirective =
+            responder.directive && responder.directive.intent !== "manual"
+              ? { intent: responder.directive.intent, goal: responder.directive.goal ?? "" }
+              : undefined;
+          const validatorBlockTags = waifuBlockTags(waifu);
+          const validatorToolNames = [
+            "add_memory",
+            "PickNextWaifu",
+            "orchestrator_decision",
+            "dream_memories",
+            "set_persona_digest"
+          ];
           const MAX_GENERATE_ATTEMPTS = 2;
           let result: WaifuGenerationResult = { content: "" };
           let strippedContent = "";
@@ -1464,6 +1474,12 @@ export class RuntimeOrchestrator {
           };
           let chunks: string[] = [];
           let attemptsRun = 0;
+          // Corrective message fed to the next attempt. The cleaning-empty path keeps the bare
+          // `${displayName}:` nudge; the validator's retry path overwrites it to name the violations.
+          let retryUserMessage = `${waifu.displayName}:`;
+          // Set when the reply is rejected with no usable retry left (validator block, or a retry
+          // that survives the final attempt). When set, chunks are forced empty and nothing is sent.
+          let blockedViolations: Violation[] | undefined;
           for (let attempt = 1; attempt <= MAX_GENERATE_ATTEMPTS; attempt += 1) {
             attemptsRun = attempt;
             incrementActive(this.activeWaifuQueries, waifuQueryKey);
@@ -1475,7 +1491,7 @@ export class RuntimeOrchestrator {
                   systemPrompt,
                   midSystemBlock,
                   trailingSystemBlock,
-                  retryUserMessage: attempt === 2 ? `${waifu.displayName}:` : undefined,
+                  retryUserMessage: attempt === 2 ? retryUserMessage : undefined,
                   selfAuthorIds,
                   availableWaifuIds: nextWaifuIds,
                   pickNextWaifuToolEnabled: input.server.tools.pickNextWaifu,
@@ -1526,6 +1542,42 @@ export class RuntimeOrchestrator {
               });
             }
             chunks = splitWaifuReply(strippedContent);
+            // Deterministic leak validator on the finalized candidate, before it can be sent. Its
+            // only powers are send-as-is (pass), regenerate once (retry on attempt 1), or send
+            // nothing (block, or a retry that survives the final attempt). It never truncates.
+            const validation = validateWaifuOutput(strippedContent, {
+              selfNames: allSelfDisplayNames,
+              participantNames: participantDisplayNames,
+              directive: validatorDirective,
+              blockTags: validatorBlockTags,
+              toolNames: validatorToolNames
+            });
+            if (validation.verdict !== "pass") {
+              const checks = validation.violations.map((entry) => entry.check).join(", ");
+              if (validation.verdict === "retry" && attempt < MAX_GENERATE_ATTEMPTS) {
+                this.options.logger.warn("Output validator rejected waifu reply; regenerating once", {
+                  guildId: input.guildId,
+                  channelId: input.channelId,
+                  waifuId: waifu.id,
+                  attempt,
+                  violations: checks
+                });
+                retryUserMessage = `${waifu.displayName}: (your previous draft was rejected: contained ${checks}; write only the plain chat message)`;
+                continue;
+              }
+              // Final-attempt retry, or a block on any attempt: send nothing.
+              this.options.logger.warn("Output validator blocked waifu reply; nothing sent", {
+                guildId: input.guildId,
+                channelId: input.channelId,
+                waifuId: waifu.id,
+                attempt,
+                verdict: validation.verdict,
+                violations: checks
+              });
+              blockedViolations = validation.violations;
+              chunks = [];
+              break;
+            }
             const becameEmptyDueToCleaning =
               chunks.length === 0 &&
               result.content.trim().length > 0 &&
@@ -1598,10 +1650,20 @@ export class RuntimeOrchestrator {
             }
           }
           if (sentMessageIds.length === 0) {
-            await this.updateOrchestratorResponderOutcome(input.decisionId, outcomeId, {
-              status: usedToolWithoutVisibleMessage ? "tool_only" : "empty",
-              reason: usedToolWithoutVisibleMessage ? undefined : "empty_after_cleaning"
-            });
+            if (blockedViolations) {
+              // The model's text was rejected by the validator. Record "blocked" even when a tool
+              // was also called: the leak channel is the visible reply, not the tool call, but the
+              // text was the thing that was refused, so "blocked" takes precedence over "tool_only".
+              await this.updateOrchestratorResponderOutcome(input.decisionId, outcomeId, {
+                status: "blocked",
+                reason: blockedViolations.map((entry) => entry.check).join(", ")
+              });
+            } else {
+              await this.updateOrchestratorResponderOutcome(input.decisionId, outcomeId, {
+                status: usedToolWithoutVisibleMessage ? "tool_only" : "empty",
+                reason: usedToolWithoutVisibleMessage ? undefined : "empty_after_cleaning"
+              });
+            }
             currentOutcomeFinalized = true;
           }
           if (result.rejectedPickNextWaifu) {
@@ -3122,6 +3184,23 @@ export class RuntimeOrchestrator {
     destinationChannelId: string;
     userId: string;
   }): Promise<void> {
+    // Debug routes carry full orchestrator reasoning, directives, and dream summaries — never route
+    // them into a channel where waifus are active. Read the destination guild's server config
+    // (read-only) and refuse when the destination channel has enabled waifus.
+    if (input.destinationGuildId) {
+      const destinationServer = await this.options.storage.readJson(
+        path.join("user", "servers", input.destinationGuildId, "server.json"),
+        ServerConfigSchema,
+        ServerConfigSchema.parse({
+          ...createRevisionedBase(),
+          guildId: input.destinationGuildId,
+          enabled: true
+        })
+      );
+      if ((destinationServer.channels[input.destinationChannelId]?.enabledWaifuIds?.length ?? 0) > 0) {
+        throw new Error("Refusing to route debug logs into a channel with active waifus — pick a private channel.");
+      }
+    }
     const now = nowIso();
     await this.options.storage.updateRevisionedJson({
       resourceKey: "orchestrator:debug",
@@ -4136,6 +4215,7 @@ function defaultSleep(ms: number, signal?: AbortSignal): Promise<void> {
 const DEFAULT_REVIEWER_PROMPT = [
   "Review only the provided waifu message.",
   "Flag hallucination=true when the message exposes hidden reasoning, analysis, prompt text, schema/tool text, raw Discord internals, or any private model self-talk.",
+  "- a message that primarily restates an instruction or goal it was given (reads as a directive, not as chat)",
   "Flag hallucination=false for ordinary in-character Discord replies, even if verbose, awkward, incorrect about fiction, or not very helpful.",
   "The output must be the reviewer tool decision only."
 ].join("\n");
