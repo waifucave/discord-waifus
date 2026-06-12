@@ -1440,19 +1440,23 @@ async function diagnosticBundle(storage: StorageService, runtime: unknown) {
 }
 
 async function resolveStaticDir(configured?: string): Promise<string | undefined> {
-  const candidates = configured
-    ? [path.resolve(configured)]
-    : [
-        // Default to the frontend bundled with the installed package, resolved
-        // relative to this module rather than process.cwd(), so `waifus start`
-        // serves the dashboard no matter which directory it was launched from.
-        // (dist/api/server.js and src/api/server.ts both sit two levels under the
-        // package root, where dist-frontend/ lives.)
-        path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "dist-frontend"),
-        // Backwards-compatible fallback for setups that relied on the working directory.
-        path.resolve(process.cwd(), "dist-frontend")
-      ];
+  const bundledCandidates = [
+    // Default to the frontend bundled with the installed package, resolved
+    // relative to this module rather than process.cwd(), so `waifus start`
+    // serves the dashboard no matter which directory it was launched from.
+    // (dist/api/server.js and src/api/server.ts both sit two levels under the
+    // package root, where dist-frontend/ lives.)
+    path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "dist-frontend"),
+    // Backwards-compatible fallback for setups that relied on the working directory.
+    path.resolve(process.cwd(), "dist-frontend")
+  ];
+  const candidates = configured ? [path.resolve(configured), ...bundledCandidates] : bundledCandidates;
+  const seen = new Set<string>();
   for (const candidate of candidates) {
+    if (seen.has(candidate)) {
+      continue;
+    }
+    seen.add(candidate);
     if (await exists(candidate)) {
       return candidate;
     }

@@ -108,6 +108,47 @@ describe("Backend API", () => {
     }
   });
 
+  it("falls back to the bundled SPA when configured frontend.staticDir is stale", async () => {
+    const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+    const distFrontend = path.join(repoRoot, "dist-frontend");
+    const indexHtml = path.join(distFrontend, "index.html");
+
+    let createdIndex = false;
+    let createdDir = false;
+    if (!existsSync(indexHtml)) {
+      if (!existsSync(distFrontend)) {
+        mkdirSync(distFrontend, { recursive: true });
+        createdDir = true;
+      }
+      writeFileSync(indexHtml, "<!doctype html><title>placeholder</title>");
+      createdIndex = true;
+    }
+
+    const { app, root } = await makeApp();
+    try {
+      const current = await app.inject({ method: "GET", url: "/api/config" });
+      await app.inject({
+        method: "PUT",
+        url: "/api/config",
+        payload: {
+          ...current.json(),
+          frontend: {
+            staticDir: path.join(root, "missing-old-package", "@starlight-ai", "discord-waifus", "dist-frontend")
+          }
+        }
+      });
+
+      const res = await app.inject({ method: "GET", url: "/" });
+      expect(res.statusCode).toBe(200);
+      expect(res.headers["content-type"]).toContain("text/html");
+      expect(res.body.toLowerCase()).toContain("<!doctype html>");
+    } finally {
+      await app.close();
+      if (createdIndex) rmSync(indexHtml, { force: true });
+      if (createdDir) rmSync(distFrontend, { recursive: true, force: true });
+    }
+  });
+
   it("redacts provider credentials and rejects stale credential writes", async () => {
     const { app } = await makeApp();
     try {
