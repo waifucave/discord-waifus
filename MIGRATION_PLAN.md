@@ -479,6 +479,31 @@ Status log (one line per landed phase, appended by the implementing agent):
 
 ---
 
+## 11. Post-v1 roadmap candidates (comparative research, 2026-06-12)
+
+Source: architecture reviews of OpenClaw (plugin-per-provider catalogs), NousResearch/hermes-agent
+(models.dev hybrid registry + transports), and PewDiePie's Odysseus (probe-and-cache discovery)
+against this gateway. Recorded so P5/P6 planning considers them; none are committed scope yet.
+
+1. **Runtime fallback/failover** — thrice-confirmed gap: all three projects ship it (OpenClaw: key
+   pools + exponential cooldowns 1m→1h; hermes-agent: HTTP-402/credit-aware provider chain;
+   Odysseus: per-role ordered fallback chains). A routing layer above `gateway.chat()` — alternate
+   route on `rate_limit`/`quota`/`auth`, per-key cooldowns, credential pools — fits P5 (route
+   picker defaults) or immediately post-P6.
+2. **Authority-ranked catalog overrides** — merge host config > static registry (> optional live
+   discovery), so a wrong cell or a local model doesn't require a gateway release (OpenClaw
+   `src/model-catalog/authority.ts`; hermes-agent's models.dev + curated-manifest hybrid).
+   Candidate for P6 hardening; complements `gateway sync`.
+3. **Opaque `provider_data`-style side-channel** on normalized blocks for protocol-specific bits
+   (the parked Gemini-3 `thoughtSignature` carryover, response-item ids) instead of growing named
+   fields per quirk (hermes-agent `agent/transports/types.py`). Revisit with P3 if live tool loops
+   hit the carryover.
+4. (Minor) **Transport-class quirks** — an `endpoint_kind` (local/api) gate for payload extras that
+   only self-hosted OpenAI-compatible servers accept (Odysseus), if the gateway ever fronts
+   vLLM/llama.cpp endpoints.
+
+---
+
 ## Appendix A — Codex research prompt
 
 Paste everything in the block below into Codex (GPT-5.5, xhigh). Output lands as
