@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { RuntimeOrchestrator, clipSceneDirectionForWaifu, currentlyDoingForWaifu } from "../src/orchestration/runtime.js";
+import { RuntimeOrchestrator, currentlyDoingForWaifu } from "../src/orchestration/runtime.js";
 import { ContextMessage } from "../src/orchestration/context.js";
 import { OrchestratorDecision, RETRIGGER_MAX_SECONDS } from "../src/orchestration/decisions.js";
 import {
@@ -344,7 +344,7 @@ class FakeDiscord implements DiscordGatewayFacade {
 class FakePipeline implements ModelPipeline {
   decisions: OrchestratorDecision[] = [
     {
-      action: "reply", respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal", sceneDirection: "answer Kevin, then pull in Mira", replyToMessageId: "m1" }],
+      action: "reply", respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, directive: { intent: "spotlight", goal: "answer Kevin, then pull in Mira" }, replyToMessageId: "m1" }],
       reasoning: "Kevin should get a reply."
     },
     {
@@ -385,29 +385,36 @@ class FakePipeline implements ModelPipeline {
     expect(request.trailingSystemBlock).toMatch(
       /<yuki_relevant_memories>\n- Yuki remembers Kevin likes tea\.\n<\/yuki_relevant_memories>\n<yuki_personality>[\s\S]*You are Yuki[\s\S]*<\/yuki_personality>/
     );
-    expect(request.trailingSystemBlock).toMatch(/<scene_direction>answer Kevin, then pull in Mira<\/scene_direction>/);
+    expect(request.trailingSystemBlock).toContain(
+      expectedDirectorNote("(spotlight) answer Kevin, then pull in Mira")
+    );
     return { content: "hello <@Kevin> <:cutecat:>" };
   }
 
   async decideOrchestrator(request: ProviderRequest): Promise<OrchestratorDecision> {
-    expect(request.systemPrompt).toContain("decide");
+    // System prompt: identity + rules + chat_message_structure + server info; no trailing-prompt content
+    expect(request.systemPrompt).toContain("director");
     expect(request.systemPrompt).not.toMatch(/<active_waifus>\n[\s\S]*<\/active_waifus>/);
     expect(request.systemPrompt).not.toMatch(/<task_instructions>\n[\s\S]*<\/task_instructions>/);
     expect(request.systemPrompt).not.toMatch(/<current_time>\n[\s\S]*<\/current_time>/);
     expect(request.systemPrompt).toContain("<orchestrator_identity>");
-    expect(request.systemPrompt).toContain("<orchestrator_behavior>");
+    expect(request.systemPrompt).toContain("<orchestrator_rules>");
+    expect(request.systemPrompt).not.toContain("<orchestrator_behavior>");
     expect(request.systemPrompt).toContain("<chat_message_structure>");
     expect(request.systemPrompt).not.toContain("<identity>");
     expect(request.systemPrompt).not.toContain("<behavior>");
     expect(request.systemPrompt).not.toContain("<message_structure>");
-    expect(request.systemPrompt).toContain("do not default to no_reply");
-    expect(request.systemPrompt).toContain("Prefer a two-waifu chain");
-    expect(request.systemPrompt).toContain("0 to 30");
+    // New rules text (not the old verbatim strings)
+    expect(request.systemPrompt).toContain("soft signals");
+    expect(request.systemPrompt).toContain("respondingWaifus non-empty");
+    // Trailing prompt: task_instructions + pause_planning + active_waifus (casting cards) + current_time
     expect(request.trailingPrompt).toBeTruthy();
     expect(request.trailingPrompt).toMatch(/<task_instructions>\n[\s\S]*<\/task_instructions>/);
+    expect(request.trailingPrompt).toMatch(/<pause_planning>\n[\s\S]*<\/pause_planning>/);
     expect(request.trailingPrompt).toMatch(
-      /<active_waifus>\n<yuki>\nID: yuki\nDisplay name: Yuki\nPersona:\nkind\nAvailability:\n[\s\S]*Sleep: 23:00-07:00 daily[\s\S]*Busy:[\s\S]*09:00-10:00: school focus block[\s\S]*<\/yuki>\n<\/active_waifus>/
+      /<active_waifus>\n<yuki>\nID: yuki · Yuki\nAbout: kind\nNow: [\s\S]*<\/yuki>\n<\/active_waifus>/
     );
+    expect(request.trailingPrompt).not.toMatch(/<active_waifus>[\s\S]*Persona:/);
     expect(request.trailingPrompt).toMatch(/<current_time>\n[\s\S]*<\/current_time>/);
     expect(request.availableWaifuIds).toEqual(["yuki"]);
     const decision = this.decisions.shift();
@@ -417,14 +424,6 @@ class FakePipeline implements ModelPipeline {
 }
 
 describe("RuntimeOrchestrator", () => {
-  it("clips sceneDirection before sending it to the waifu model", () => {
-    expect(clipSceneDirectionForWaifu("answer Kevin, then ask Mira")).toBe("answer Kevin");
-    expect(clipSceneDirectionForWaifu("answer Kevin and ask Mira")).toBe("answer Kevin");
-    expect(clipSceneDirectionForWaifu("answer Kevin or ask Mira")).toBe("answer Kevin");
-    expect(clipSceneDirectionForWaifu("answer candy or ask Mira")).toBe("answer candy");
-    expect(clipSceneDirectionForWaifu("or ask Mira")).toBeUndefined();
-  });
-
   describe("currentlyDoingForWaifu", () => {
     const baseWaifu = {
       availability: {
@@ -582,7 +581,7 @@ describe("RuntimeOrchestrator", () => {
         orchestratorMessages = request.messages;
         return {
           action: "reply",
-          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal" }],
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }],
           reasoning: "image text is useful"
         };
       },
@@ -628,7 +627,7 @@ describe("RuntimeOrchestrator", () => {
       async decideOrchestrator() {
         return {
           action: "reply",
-          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal" }],
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }],
           reasoning: "openai can see images"
         };
       },
@@ -671,7 +670,7 @@ describe("RuntimeOrchestrator", () => {
       async decideOrchestrator() {
         return {
           action: "reply",
-          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal" }],
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }],
           reasoning: "continue"
         };
       },
@@ -774,7 +773,7 @@ describe("RuntimeOrchestrator", () => {
       decisions: OrchestratorDecision[] = [
         {
           action: "reply",
-          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal" }],
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }],
           reasoning: "Yuki starts."
         },
         {
@@ -794,7 +793,6 @@ describe("RuntimeOrchestrator", () => {
           return { content: "mika should take this", pickedNextWaifuId: "mika" };
         }
         this.events.push("waifu:mika");
-        expect(request.replyStyle).toBe("normal");
         return { content: "got it" };
       }
 
@@ -850,8 +848,8 @@ describe("RuntimeOrchestrator", () => {
         return {
           action: "reply",
           respondingWaifus: [
-            { waifuId: "yuki", delaySeconds: 0, replyStyle: "normal" },
-            { waifuId: "mika", delaySeconds: 0, replyStyle: "short", sceneDirection: "finish the beat" }
+            { waifuId: "yuki", delaySeconds: 0 },
+            { waifuId: "mika", delaySeconds: 0, directive: { intent: "spotlight", goal: "finish the beat" } }
           ],
           reasoning: "Yuki starts and Mika finishes."
         };
@@ -866,8 +864,9 @@ describe("RuntimeOrchestrator", () => {
           return { content: "I am here." };
         }
         events.push("mika");
-        expect(request.replyStyle).toBe("short");
-        expect(request.trailingSystemBlock).toContain("<scene_direction>finish the beat</scene_direction>");
+        expect(request.trailingSystemBlock).toContain(
+          expectedDirectorNote("(spotlight) finish the beat")
+        );
         return { content: "Finished." };
       }
     };
@@ -944,13 +943,13 @@ describe("RuntimeOrchestrator", () => {
         return {
           action: "reply",
           respondingWaifus: [
-            { waifuId: "yuki", delaySeconds: 0, replyStyle: "normal" },
-            { waifuId: "mika", delaySeconds: 0, replyStyle: "normal" },
+            { waifuId: "yuki", delaySeconds: 0 },
+            { waifuId: "mika", delaySeconds: 0 },
             {
               waifuId: "aria",
               delaySeconds: 20,
-              replyStyle: "sleepy",
-              sceneDirection: "keep the planned direction"
+              
+              directive: { intent: "spotlight", goal: "keep the planned direction" }
             }
           ],
           reasoning: "Yuki then Mika."
@@ -963,9 +962,8 @@ describe("RuntimeOrchestrator", () => {
         }
         if (request.systemPrompt.includes("You are Aria")) {
           events.push("aria");
-          expect(request.replyStyle).toBe("sleepy");
           expect(request.trailingSystemBlock).toContain(
-            "<scene_direction>keep the planned direction</scene_direction>"
+            expectedDirectorNote("(spotlight) keep the planned direction")
           );
           return { content: "Right away." };
         }
@@ -1035,7 +1033,7 @@ describe("RuntimeOrchestrator", () => {
       async decideOrchestrator() {
         return {
           action: "reply",
-          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal" }],
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }],
           reasoning: "Yuki starts."
         };
       },
@@ -1091,8 +1089,8 @@ describe("RuntimeOrchestrator", () => {
         return {
           action: "reply",
           respondingWaifus: [
-            { waifuId: "mika", delaySeconds: 0, replyStyle: "normal" },
-            { waifuId: "yuki", delaySeconds: 0, replyStyle: "normal" }
+            { waifuId: "mika", delaySeconds: 0 },
+            { waifuId: "yuki", delaySeconds: 0 }
           ],
           reasoning: "Simulate a provider returning an excluded waifu anyway."
         };
@@ -1146,7 +1144,7 @@ describe("RuntimeOrchestrator", () => {
       async decideOrchestrator() {
         return {
           action: "reply",
-          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal" }],
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }],
           reasoning: "Yuki starts."
         };
       },
@@ -1202,8 +1200,8 @@ describe("RuntimeOrchestrator", () => {
             {
               waifuId: "yuki",
               delaySeconds: 0,
-              replyStyle: "normal",
-              sceneDirection: "answer Kevin"
+              
+              directive: { intent: "spotlight", goal: "answer Kevin" }
             }
           ],
           reasoning: "Yuki starts."
@@ -1226,7 +1224,9 @@ describe("RuntimeOrchestrator", () => {
         expect(request.midSystemBlock).toContain("<active_chat_participants>");
         expect(request.midSystemBlock).toContain("<server_emojis>");
         expect(request.trailingSystemBlock).not.toContain("<yuki_personality>");
-        expect(request.trailingSystemBlock).toContain("<scene_direction>answer Kevin</scene_direction>");
+        expect(request.trailingSystemBlock).toContain(
+          expectedDirectorNote("(spotlight) answer Kevin")
+        );
         return { content: "plain reply" };
       }
     };
@@ -1244,6 +1244,77 @@ describe("RuntimeOrchestrator", () => {
     await runtime.stop();
 
     expect(checked).toBe(true);
+  });
+
+  it("truncates casting-card persona to 200 chars in trailing prompt and excludes raw persona from system prompt", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.contexts = [[{ id: "m1", channelId: "channel-1", guildId: "guild-1", authorKind: "user", authorId: "u1", authorBot: false, name: "Kevin", displayName: "Kevin", content: "hi", timestamp: "2026-05-16T12:00:00Z", reactions: [] }]];
+
+    const longPersona = "A".repeat(50) + " " + "B".repeat(50) + " " + "C".repeat(50) + " " + "D".repeat(50) + " " + "E".repeat(50);
+    // longPersona is 254 chars (4 spaces + 5*50 = 254); after .replace(/\s+/g, " ") it collapses to same length
+    // The slice(0, 200) should cut off before "D".repeat(50) fully
+
+    await seedRuntimeConfig(storage);
+    // Overwrite yuki with long persona
+    await storage.writeJson(
+      "waifu:yuki",
+      "user/waifus/yuki/waifu.json",
+      WaifuConfigSchema,
+      WaifuConfigSchema.parse({
+        ...createRevisionedBase(),
+        id: "yuki",
+        name: "Yuki",
+        displayName: "Yuki",
+        enabled: true,
+        providerId: "openai",
+        modelId: "gpt-5.4-mini",
+        botId: "yuki-bot",
+        persona: longPersona,
+        contextWindow: 50
+      })
+    );
+
+    let trailingPrompt: string | undefined;
+    let systemPrompt: string | undefined;
+    const pipeline: ModelPipeline = {
+      async decideOrchestrator(request: ProviderRequest) {
+        trailingPrompt = request.trailingPrompt;
+        systemPrompt = request.systemPrompt;
+        return { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, reasoning: "done" };
+      },
+      async generateWaifu() {
+        return { content: "hi" };
+      }
+    };
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 1,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    expect(trailingPrompt).toBeDefined();
+    // The About: line must be at most 200 chars of persona text
+    const aboutMatch = trailingPrompt!.match(/About: (.+)/);
+    expect(aboutMatch).not.toBeNull();
+    const aboutText = aboutMatch![1];
+    expect(aboutText.length).toBeLessThanOrEqual(200);
+    // The tail of the long persona (past 200 chars) must NOT appear in trailing prompt
+    const normalised = longPersona.trim().replace(/\s+/g, " ");
+    expect(trailingPrompt).not.toContain(normalised.slice(200));
+    // System prompt must not contain the raw persona at all
+    expect(systemPrompt).toBeDefined();
+    expect(systemPrompt).not.toContain(normalised.slice(0, 50));
   });
 
   it("tracks active chat participants from human messages and refreshes their expiry", async () => {
@@ -1451,7 +1522,7 @@ describe("RuntimeOrchestrator", () => {
       async decideOrchestrator() {
         return {
           action: "reply",
-          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal" }],
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }],
           reasoning: "talk"
         };
       },
@@ -1496,7 +1567,7 @@ describe("RuntimeOrchestrator", () => {
       decisions: OrchestratorDecision[] = [
         {
           action: "reply",
-          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal" }],
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }],
           reasoning: "Yuki starts."
         },
         {
@@ -1572,7 +1643,7 @@ describe("RuntimeOrchestrator", () => {
       decisions: OrchestratorDecision[] = [
         {
           action: "reply",
-          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 45, replyStyle: "normal" }],
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 45 }],
           reasoning: "Delay too high."
         },
         {
@@ -1652,9 +1723,9 @@ describe("RuntimeOrchestrator", () => {
         return {
           action: "reply" as const,
           respondingWaifus: [
-            { waifuId: "yuki", delaySeconds: 12, replyStyle: "normal" as const },
-            { waifuId: "mika", delaySeconds: 5, replyStyle: "normal" as const },
-            { waifuId: "aria", delaySeconds: 9, replyStyle: "normal" as const }
+            { waifuId: "yuki", delaySeconds: 12 },
+            { waifuId: "mika", delaySeconds: 5 },
+            { waifuId: "aria", delaySeconds: 9 }
           ],
           reasoning: "Recent user activity should make the chain feel immediate."
         };
@@ -1726,8 +1797,8 @@ describe("RuntimeOrchestrator", () => {
         return {
           action: "reply" as const,
           respondingWaifus: [
-            { waifuId: "yuki", delaySeconds: 3, replyStyle: "normal" as const },
-            { waifuId: "mika", delaySeconds: 4, replyStyle: "normal" as const }
+            { waifuId: "yuki", delaySeconds: 3 },
+            { waifuId: "mika", delaySeconds: 4 }
           ],
           reasoning: "No recent user message, so use the normal chained pacing."
         };
@@ -1868,7 +1939,7 @@ describe("RuntimeOrchestrator", () => {
               guildId: "guild-1",
               channelId: "channel-1",
               action: "reply",
-              respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal" }],
+              respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }],
               reasoning: "leftover",
               status: "pending",
               waifuMessageIds: [],
@@ -2636,7 +2707,7 @@ describe("RuntimeOrchestrator", () => {
       async decideOrchestrator() {
         return {
           action: "reply",
-          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal" }],
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }],
           reasoning: "reply"
         };
       },
@@ -3962,8 +4033,8 @@ describe("RuntimeOrchestrator", () => {
           return {
             action: "reply",
             respondingWaifus: [
-              { waifuId: "yuki", delaySeconds: 0, replyStyle: "normal", sceneDirection: "ask Kevin about the trip" },
-              { waifuId: "mika", delaySeconds: 7, replyStyle: "short" }
+              { waifuId: "yuki", delaySeconds: 0, directive: { intent: "spotlight", goal: "ask Kevin about the trip" } },
+              { waifuId: "mika", delaySeconds: 7 }
             ],
             reasoning: "Yuki should answer first, then Mika can add a quick aside."
           };
@@ -3995,8 +4066,8 @@ describe("RuntimeOrchestrator", () => {
     expect(discord.debugMessages[0]).toMatchObject({ channelId: "debug-channel" });
     expect(discord.debugMessages[0]?.content).toContain("Decision: reply");
     expect(discord.debugMessages[0]?.content).toContain("Waifus: Yuki (yuki) -> Mika (mika)");
-    expect(discord.debugMessages[0]?.content).toContain("Scene directions:");
-    expect(discord.debugMessages[0]?.content).toContain("ask Kevin about the trip");
+    expect(discord.debugMessages[0]?.content).toContain("Directives:");
+    expect(discord.debugMessages[0]?.content).toContain("- Yuki (yuki): (spotlight) ask Kevin about the trip");
     expect(discord.debugMessages[0]?.content).not.toContain("delaySeconds");
   });
 
@@ -4131,7 +4202,7 @@ describe("RuntimeOrchestrator", () => {
           resolveOrchestrated();
           return {
             action: "reply",
-            respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal" }],
+            respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }],
             reasoning: "manual run reply"
           };
         }
@@ -4207,11 +4278,13 @@ describe("RuntimeOrchestrator", () => {
       async generateWaifu(request) {
         if (request.systemPrompt.includes("You are Mika")) {
           waifuCalls.push("mika");
-          expect(request.trailingSystemBlock).toContain("<scene_direction>start topic</scene_direction>");
+          expect(request.trailingSystemBlock).toContain(
+            expectedDirectorNote("start topic")
+          );
           return { content: "mika first", pickedNextWaifuId: "yuki" };
         }
         waifuCalls.push("yuki");
-        expect(request.trailingSystemBlock ?? "").not.toMatch(/<scene_direction>/);
+        expect(request.trailingSystemBlock ?? "").not.toMatch(/<director_note>/);
         return { content: "yuki next" };
       },
       async decideOrchestrator(request) {
@@ -4271,55 +4344,6 @@ describe("RuntimeOrchestrator", () => {
     expect(waifuCalls).toEqual(["mika", "yuki"]);
     expect(discord.sent.map((message) => message.content)).toEqual(["mika first", "yuki next"]);
     expect(discord.sent.map((message) => message.senderBotId)).toEqual(["mika-bot", "yuki-bot"]);
-  });
-
-  it("clips scene direction when orchestrator config enables it", async () => {
-    const root = await makeTempRoot();
-    roots.push(root);
-    await ensureDataLayout(root);
-    const storage = new StorageService(root);
-    const discord = new FakeDiscord();
-
-    let resolveGenerated: () => void = () => undefined;
-    const generated = new Promise<void>((resolve) => {
-      resolveGenerated = resolve;
-    });
-    const pipeline: ModelPipeline = {
-      async generateWaifu(request) {
-        expect(request.trailingSystemBlock).toContain("<scene_direction>answer Kevin</scene_direction>");
-        resolveGenerated();
-        return { content: "clipped" };
-      },
-      async decideOrchestrator() {
-        return { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, reasoning: "after directed run" };
-      }
-    };
-
-    await seedRuntimeConfig(storage, { clipSceneDirection: true });
-
-    const runtime = new RuntimeOrchestrator({
-      sleep: async () => undefined,
-      storage,
-      discord,
-      maxAutomaticTurns: 1,
-      createPipeline: () => pipeline,
-      logger: quietLogger()
-    });
-    await runtime.start();
-
-    await discord.emitRunCommand({
-      guildId: "guild-1",
-      channelId: "channel-1",
-      userId: "runner-user",
-      waifuId: "yuki",
-      sceneDirection: "answer Kevin, then ask Mira",
-      respond: async () => undefined
-    });
-    await Promise.race([
-      generated,
-      new Promise((_, reject) => setTimeout(() => reject(new Error("waifu did not generate")), 1000))
-    ]);
-    await runtime.stop();
   });
 
   it("suggests channel-enabled waifus for /run autocomplete", async () => {
@@ -4462,7 +4486,7 @@ describe("RuntimeOrchestrator", () => {
       [contextMessage("m2", "waifu", "Yuki", "yuki first")]
     ];
 
-    const waifuCalls: Array<{ waifuId: string; sceneDirection?: string }> = [];
+    const waifuCalls: Array<{ waifuId: string; directiveText?: string }> = [];
     let resolveGenerated: () => void = () => undefined;
     const generated = new Promise<void>((resolve) => {
       resolveGenerated = resolve;
@@ -4473,16 +4497,18 @@ describe("RuntimeOrchestrator", () => {
         return {
           action: "reply",
           respondingWaifus: [
-            { waifuId: "yuki", delaySeconds: 0, replyStyle: "normal", sceneDirection: "orchestrator first" },
-            { waifuId: "mika", delaySeconds: 0, replyStyle: "normal", sceneDirection: "orchestrator second" }
+            { waifuId: "yuki", delaySeconds: 0, directive: { intent: "spotlight", goal: "orchestrator first" } },
+            { waifuId: "mika", delaySeconds: 0, directive: { intent: "spotlight", goal: "orchestrator second" } }
           ],
           reasoning: "manual run reply"
         };
       },
       async generateWaifu(request) {
         const waifuId = request.systemPrompt.includes("You are Mika") ? "mika" : "yuki";
-        const sceneDirectionMatch = request.trailingSystemBlock?.match(/<scene_direction>([^<]+)<\/scene_direction>/);
-        waifuCalls.push({ waifuId, sceneDirection: sceneDirectionMatch?.[1] });
+        const directiveMatch = request.trailingSystemBlock?.match(
+          /<director_note>\nDirector's goal for this one message: ([^\n]+)\n/
+        );
+        waifuCalls.push({ waifuId, directiveText: directiveMatch?.[1] });
         if (waifuCalls.length === 2) {
           resolveGenerated();
         }
@@ -4540,15 +4566,15 @@ describe("RuntimeOrchestrator", () => {
 
     expect(responses).toEqual(["Started orchestrator run with scene direction."]);
     expect(waifuCalls).toEqual([
-      { waifuId: "yuki", sceneDirection: "start topic" },
-      { waifuId: "mika", sceneDirection: "orchestrator second" }
+      { waifuId: "yuki", directiveText: "start topic" },
+      { waifuId: "mika", directiveText: "(spotlight) orchestrator second" }
     ]);
     expect(history.decisions.at(-1)?.respondingWaifus.map((responder) => ({
       waifuId: responder.waifuId,
-      sceneDirection: responder.sceneDirection
+      directive: responder.directive
     }))).toEqual([
-      { waifuId: "yuki", sceneDirection: "start topic" },
-      { waifuId: "mika", sceneDirection: "orchestrator second" }
+      { waifuId: "yuki", directive: { intent: "manual", goal: "start topic" } },
+      { waifuId: "mika", directive: { intent: "spotlight", goal: "orchestrator second" } }
     ]);
   });
 
@@ -4647,7 +4673,7 @@ describe("RuntimeOrchestrator", () => {
       async decideOrchestrator() {
         return {
           action: "reply",
-          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal" }],
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }],
           reasoning: "Start waifu."
         };
       },
@@ -4795,7 +4821,7 @@ describe("RuntimeOrchestrator", () => {
     class MultiChunkPipeline implements ModelPipeline {
       decisions: OrchestratorDecision[] = [
         {
-          action: "reply", respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal", sceneDirection: "answer", replyToMessageId: "m1" }],
+          action: "reply", respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, directive: { intent: "spotlight", goal: "answer" }, replyToMessageId: "m1" }],
           reasoning: "Reply to Kevin."
         },
         { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, reasoning: "done" }
@@ -4859,8 +4885,8 @@ describe("RuntimeOrchestrator", () => {
             {
               waifuId: "yuki",
               delaySeconds: 0,
-              replyStyle: "normal",
-              sceneDirection: "answer",
+              
+              directive: { intent: "spotlight", goal: "answer" },
               replyToMessageId: "m1"
             }
           ],
@@ -4931,7 +4957,7 @@ describe("RuntimeOrchestrator", () => {
     class OlderReplyPipeline implements ModelPipeline {
       decisions: OrchestratorDecision[] = [
         {
-          action: "reply", respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal", sceneDirection: "answer older", replyToMessageId: "m1" }],
+          action: "reply", respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, directive: { intent: "spotlight", goal: "answer older" }, replyToMessageId: "m1" }],
           reasoning: "Reply to the older message."
         },
         { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, reasoning: "done" }
@@ -4990,7 +5016,7 @@ describe("RuntimeOrchestrator", () => {
       decisions: OrchestratorDecision[] = [
         {
           action: "reply",
-          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal", sceneDirection: "answer" }],
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, directive: { intent: "spotlight", goal: "answer" } }],
           reasoning: "Reply with a quote."
         },
         { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, reasoning: "done" }
@@ -5050,7 +5076,7 @@ describe("RuntimeOrchestrator", () => {
       decisions: OrchestratorDecision[] = [
         {
           action: "reply",
-          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal", sceneDirection: "answer" }],
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, directive: { intent: "spotlight", goal: "answer" } }],
           reasoning: "Yuki replies with an implicit quote."
         },
         { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, reasoning: "done" }
@@ -5110,7 +5136,7 @@ describe("RuntimeOrchestrator", () => {
       decisions: OrchestratorDecision[] = [
         {
           action: "reply",
-          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal", sceneDirection: "answer" }],
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, directive: { intent: "spotlight", goal: "answer" } }],
           reasoning: "Yuki replies with a preferred quote."
         },
         { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, reasoning: "done" }
@@ -5165,7 +5191,7 @@ describe("RuntimeOrchestrator", () => {
         {
           action: "reply",
           respondingWaifus: [
-            { waifuId: "yuki", delaySeconds: 0, replyStyle: "normal", sceneDirection: "answer" }
+            { waifuId: "yuki", delaySeconds: 0, directive: { intent: "spotlight", goal: "answer" } }
           ],
           reasoning: "Yuki answers without a real reply target."
         },
@@ -5229,7 +5255,7 @@ describe("RuntimeOrchestrator", () => {
       decisions: OrchestratorDecision[] = [
         {
           action: "reply",
-          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal", sceneDirection: "answer" }],
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, directive: { intent: "spotlight", goal: "answer" } }],
           reasoning: "Yuki answers."
         },
         { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, reasoning: "done" }
@@ -5292,7 +5318,7 @@ describe("RuntimeOrchestrator", () => {
       async decideOrchestrator() {
         return {
           action: "reply",
-          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal" }],
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }],
           reasoning: "Yuki answers."
         };
       },
@@ -5340,7 +5366,7 @@ describe("RuntimeOrchestrator", () => {
       async decideOrchestrator() {
         return {
           action: "reply",
-          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal" }],
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }],
           reasoning: "Yuki answers."
         };
       },
@@ -5384,7 +5410,7 @@ describe("RuntimeOrchestrator", () => {
       async decideOrchestrator() {
         return {
           action: "reply",
-          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal" }],
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }],
           reasoning: "Yuki answers."
         };
       },
@@ -5426,7 +5452,7 @@ describe("RuntimeOrchestrator", () => {
       async decideOrchestrator() {
         return {
           action: "reply",
-          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal" }],
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }],
           reasoning: "Yuki answers."
         };
       },
@@ -5472,7 +5498,7 @@ describe("RuntimeOrchestrator", () => {
             {
               waifuId: "yuki",
               delaySeconds: 0,
-              replyStyle: "normal",
+              
               replyToMessageId: "missing-message-id"
             }
           ],
@@ -5555,7 +5581,7 @@ describe("RuntimeOrchestrator", () => {
       decisions: OrchestratorDecision[] = [
         {
           action: "reply",
-          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal", sceneDirection: "answer" }],
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, directive: { intent: "spotlight", goal: "answer" } }],
           reasoning: "Yuki answers."
         },
         { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, reasoning: "done" }
@@ -5649,8 +5675,8 @@ describe("RuntimeOrchestrator", () => {
         {
           action: "reply",
           respondingWaifus: [
-            { waifuId: "yuki", delaySeconds: 0, replyStyle: "normal", sceneDirection: "answer" },
-            { waifuId: "mika", delaySeconds: 0, replyStyle: "normal", sceneDirection: "add something" }
+            { waifuId: "yuki", delaySeconds: 0, directive: { intent: "spotlight", goal: "answer" } },
+            { waifuId: "mika", delaySeconds: 0, directive: { intent: "spotlight", goal: "add something" } }
           ],
           reasoning: "Yuki and Mika answer."
         },
@@ -5737,7 +5763,7 @@ describe("RuntimeOrchestrator", () => {
         {
           action: "reply",
           respondingWaifus: [
-            { waifuId: "stupid-hoe", delaySeconds: 0, replyStyle: "normal", sceneDirection: "answer" }
+            { waifuId: "stupid-hoe", delaySeconds: 0, directive: { intent: "spotlight", goal: "answer" } }
           ],
           reasoning: "Stupid hoe answers."
         },
@@ -5818,7 +5844,7 @@ describe("RuntimeOrchestrator", () => {
         {
           action: "reply",
           respondingWaifus: [
-            { waifuId: "stupid-hoe", delaySeconds: 0, replyStyle: "normal", sceneDirection: "answer" }
+            { waifuId: "stupid-hoe", delaySeconds: 0, directive: { intent: "spotlight", goal: "answer" } }
           ],
           reasoning: "Stupid hoe answers."
         },
@@ -5922,7 +5948,7 @@ describe("RuntimeOrchestrator", () => {
       decisions: OrchestratorDecision[] = [
         {
           action: "reply",
-          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal", sceneDirection: "answer" }],
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, directive: { intent: "spotlight", goal: "answer" } }],
           reasoning: "Yuki answers."
         },
         { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, reasoning: "done" }
@@ -5984,8 +6010,8 @@ describe("RuntimeOrchestrator", () => {
         return {
           action: "reply",
           respondingWaifus: [
-            { waifuId: "yuki", delaySeconds: 0, replyStyle: "normal" },
-            { waifuId: "mika", delaySeconds: 0, replyStyle: "normal" }
+            { waifuId: "yuki", delaySeconds: 0 },
+            { waifuId: "mika", delaySeconds: 0 }
           ],
           reasoning: "Both should get a turn."
         };
@@ -6053,8 +6079,8 @@ describe("RuntimeOrchestrator", () => {
         return {
           action: "reply",
           respondingWaifus: [
-            { waifuId: "yuki", delaySeconds: 0, replyStyle: "normal" },
-            { waifuId: "mika", delaySeconds: 0, replyStyle: "normal" }
+            { waifuId: "yuki", delaySeconds: 0 },
+            { waifuId: "mika", delaySeconds: 0 }
           ],
           reasoning: "Yuki then Mika."
         };
@@ -6100,7 +6126,7 @@ describe("RuntimeOrchestrator", () => {
     class StubPipeline implements ModelPipeline {
       decisions: OrchestratorDecision[] = [
         {
-          action: "reply", respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal", sceneDirection: "answer", replyToMessageId: "m1" }],
+          action: "reply", respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, directive: { intent: "spotlight", goal: "answer" }, replyToMessageId: "m1" }],
           reasoning: "respond"
         },
         { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, reasoning: "done" }
@@ -6174,11 +6200,11 @@ describe("RuntimeOrchestrator", () => {
             {
               waifuId: "yuki",
               delaySeconds: 0,
-              replyStyle: "normal",
-              sceneDirection: "answer",
+              
+              directive: { intent: "spotlight", goal: "answer" },
               replyToMessageId: "m1"
             },
-            { waifuId: "mika", delaySeconds: 5, replyStyle: "normal" }
+            { waifuId: "mika", delaySeconds: 5 }
           ],
           reasoning: "respond"
         },
@@ -6290,7 +6316,7 @@ describe("RuntimeOrchestrator", () => {
       async decideOrchestrator() {
         return {
           action: "reply",
-          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal" }],
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }],
           reasoning: "Remember the plan."
         };
       },
@@ -6345,7 +6371,7 @@ describe("RuntimeOrchestrator", () => {
       async decideOrchestrator() {
         return {
           action: "reply",
-          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal" }],
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }],
           reasoning: "talk"
         };
       },
@@ -6428,7 +6454,7 @@ describe("RuntimeOrchestrator", () => {
       async decideOrchestrator() {
         return {
           action: "reply",
-          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal" }],
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }],
           reasoning: "talk"
         };
       },
@@ -6505,7 +6531,7 @@ describe("RuntimeOrchestrator", () => {
       async decideOrchestrator() {
         return {
           action: "reply",
-          respondingWaifus: [{ waifuId: "mika", delaySeconds: 0, replyStyle: "normal" }],
+          respondingWaifus: [{ waifuId: "mika", delaySeconds: 0 }],
           reasoning: "mika answers"
         };
       },
@@ -6576,7 +6602,7 @@ describe("RuntimeOrchestrator", () => {
       async decideOrchestrator() {
         return {
           action: "reply",
-          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, replyStyle: "normal" }],
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }],
           reasoning: "talk"
         };
       },
@@ -6606,6 +6632,366 @@ describe("RuntimeOrchestrator", () => {
     expect(capturedTrailingBlock ?? "").not.toContain("stale note from yesterday");
     const after = await storage.readJson("user/short-term-memories.json", ShortTermMemoryStoreSchema);
     expect(after.entries.map((entry) => entry.content)).toEqual(["Kevin is back from lunch."]);
+  });
+
+  it("honors the first directive and strips the next one inside the cooldown window", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.contexts = [
+      [contextMessage("m1", "user", "Kevin", "hello there")],
+      [contextMessage("w1", "waifu", "Yuki", "first reply")],
+      [contextMessage("m2", "user", "Kevin", "totally different topic")],
+      [contextMessage("w2", "waifu", "Yuki", "second reply")]
+    ];
+
+    await seedRuntimeConfig(storage);
+
+    const waifuTrailingBlocks: string[] = [];
+    const pipeline: ModelPipeline = {
+      decisions: [
+        {
+          action: "reply",
+          respondingWaifus: [
+            { waifuId: "yuki", delaySeconds: 0, directive: { intent: "change_topic", goal: "talk about food" } }
+          ],
+          reasoning: "open with a directive"
+        },
+        {
+          action: "reply",
+          respondingWaifus: [
+            { waifuId: "yuki", delaySeconds: 0, directive: { intent: "change_topic", goal: "talk about food" } }
+          ],
+          reasoning: "second directive inside cooldown"
+        },
+        { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, reasoning: "done" }
+      ] as OrchestratorDecision[],
+      async decideOrchestrator() {
+        const decision = (this as unknown as { decisions: OrchestratorDecision[] }).decisions.shift();
+        if (!decision) throw new Error("No fake decision left.");
+        return decision;
+      },
+      async generateWaifu(request) {
+        waifuTrailingBlocks.push(request.trailingSystemBlock ?? "");
+        return { content: "ok" };
+      }
+    } as ModelPipeline & { decisions: OrchestratorDecision[] };
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 3,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    expect(waifuTrailingBlocks).toHaveLength(2);
+    expect(waifuTrailingBlocks[0]).toContain("director_note");
+    expect(waifuTrailingBlocks[0]).toContain("(change topic) talk about food");
+    expect(waifuTrailingBlocks[1]).not.toContain("director_note");
+
+    const history = await storage.readJson("user/orchestrator/history.json", OrchestratorHistoryFileSchema);
+    const replyDecisions = history.decisions.filter((entry) => entry.action === "reply");
+    // Newest first: index 0 is the second (stripped) decision.
+    expect(replyDecisions[0]?.responderOutcomes[0]?.directiveStripped).toBe("cooldown");
+    expect(replyDecisions[1]?.responderOutcomes[0]?.directiveStripped).toBeUndefined();
+  });
+
+  it("strips an over-cap goal regardless of budget", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.contexts = [
+      [contextMessage("m1", "user", "Kevin", "hello there")],
+      [contextMessage("w1", "waifu", "Yuki", "reply")]
+    ];
+
+    await seedRuntimeConfig(storage);
+
+    const overCapGoal = "x".repeat(150);
+    let waifuTrailing = "";
+    const pipeline: ModelPipeline = {
+      async decideOrchestrator() {
+        return {
+          action: "reply",
+          respondingWaifus: [
+            { waifuId: "yuki", delaySeconds: 0, directive: { intent: "change_topic", goal: overCapGoal } }
+          ],
+          reasoning: "over-cap directive"
+        };
+      },
+      async generateWaifu(request) {
+        waifuTrailing = request.trailingSystemBlock ?? "";
+        return { content: "ok" };
+      }
+    };
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 1,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    expect(waifuTrailing).not.toContain("director_note");
+    const history = await storage.readJson("user/orchestrator/history.json", OrchestratorHistoryFileSchema);
+    const reply = history.decisions.find((entry) => entry.action === "reply");
+    expect(reply?.responderOutcomes[0]?.directiveStripped).toBe("over_cap");
+  });
+
+  it("manual /run scene direction bypasses budget and cap", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.contexts = [[contextMessage("m1", "user", "Kevin", "hello there")]];
+
+    await seedRuntimeConfig(storage);
+
+    const longDirection = "y".repeat(150);
+    let waifuTrailing = "";
+    let resolveGenerated: () => void = () => undefined;
+    const generated = new Promise<void>((resolve) => {
+      resolveGenerated = resolve;
+    });
+    const pipeline: ModelPipeline = {
+      async generateWaifu(request) {
+        waifuTrailing = request.trailingSystemBlock ?? "";
+        resolveGenerated();
+        return { content: "ok" };
+      },
+      async decideOrchestrator() {
+        return { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, reasoning: "after directed run" };
+      }
+    };
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 1,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+    await runtime.start();
+
+    await discord.emitRunCommand({
+      guildId: "guild-1",
+      channelId: "channel-1",
+      userId: "runner-user",
+      waifuId: "yuki",
+      sceneDirection: longDirection,
+      respond: async () => undefined
+    });
+    await Promise.race([
+      generated,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("waifu did not generate")), 1000))
+    ]);
+    await runtime.stop();
+
+    expect(waifuTrailing).toContain("director_note");
+    expect(waifuTrailing).toContain(longDirection);
+  });
+
+  it("passes a wake marker to the orchestrator on a scheduled retrigger", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.contexts = [[contextMessage("m1", "user", "Kevin", "hello there")]];
+
+    await seedRuntimeConfig(storage);
+    await seedOrchestratorHistory(storage, [
+      {
+        id: "past-no-reply",
+        guildId: "guild-1",
+        channelId: "channel-1",
+        action: "no_reply",
+        respondingWaifus: [],
+        retriggerAfterSeconds: 600,
+        wakePlan: "have yuki answer",
+        reasoning: "quiet for now",
+        status: "completed",
+        waifuMessageIds: [],
+        responderOutcomes: [],
+        createdAt: new Date().toISOString()
+      }
+    ]);
+
+    let capturedMarkers: ProviderRequest["decisionMarkers"];
+    const pipeline: ModelPipeline = {
+      async decideOrchestrator(request) {
+        capturedMarkers = request.decisionMarkers;
+        return { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 200, reasoning: "still quiet" };
+      },
+      async generateWaifu() {
+        return { content: "unused" };
+      }
+    };
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 1,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1", "scheduled-retrigger", { trigger: "retrigger" });
+    await runtime.stop();
+
+    expect(capturedMarkers?.[0]?.kind).toBe("wake");
+    expect(capturedMarkers?.[0]?.scheduledSeconds).toBe(600);
+    expect(capturedMarkers?.[0]?.wakePlan).toBe("have yuki answer");
+  });
+
+  it("enforces escalating backoff when a timer-fired pass chooses no_reply again", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.contexts = [[contextMessage("m1", "user", "Kevin", "hello there")]];
+
+    await seedRuntimeConfig(storage);
+    await seedOrchestratorHistory(storage, [
+      {
+        id: "past-no-reply",
+        guildId: "guild-1",
+        channelId: "channel-1",
+        action: "no_reply",
+        respondingWaifus: [],
+        retriggerAfterSeconds: 600,
+        wakePlan: "have yuki answer",
+        reasoning: "quiet for now",
+        status: "completed",
+        waifuMessageIds: [],
+        responderOutcomes: [],
+        createdAt: new Date().toISOString()
+      }
+    ]);
+
+    const pipeline: ModelPipeline = {
+      async decideOrchestrator() {
+        return { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 600, reasoning: "still quiet" };
+      },
+      async generateWaifu() {
+        return { content: "unused" };
+      }
+    };
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 1,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    const before = Date.now();
+    await runtime.triggerChannel("guild-1", "channel-1", "scheduled-retrigger", { trigger: "retrigger" });
+    await runtime.stop();
+
+    const session = await storage.readJson(
+      "user/servers/guild-1/sessions/channel-1.json",
+      (await import("../src/orchestration/session.js")).ChannelSessionStateSchema
+    );
+    expect(session.scheduledRetriggerAt).toBeDefined();
+    const scheduledInSeconds = (Date.parse(session.scheduledRetriggerAt!) - before) / 1000;
+    expect(scheduledInSeconds).toBeGreaterThanOrEqual(900);
+  });
+
+  it("loop notice reaches the trailing prompt and unlocks the budget", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    // First decision honors a directive (closing the budget). The second turn's context trips the
+    // loop detector, which should reopen the budget so the second directive is honored anyway.
+    const loopyContext = [
+      contextMessage("c1", "user", "Kevin", "what about the weekend trip plans"),
+      contextMessage("w1", "waifu", "Yuki", "the weekend trip plans sound fun and exciting"),
+      contextMessage("w2", "waifu", "Yuki", "the weekend trip plans sound fun and exciting"),
+      contextMessage("w3", "waifu", "Yuki", "the weekend trip plans sound fun and exciting"),
+      contextMessage("w4", "waifu", "Yuki", "the weekend trip plans sound fun and exciting")
+    ];
+    discord.contexts = [
+      [contextMessage("m1", "user", "Kevin", "hello there")],
+      [contextMessage("w0", "waifu", "Yuki", "first reply")],
+      loopyContext,
+      loopyContext
+    ];
+
+    await seedRuntimeConfig(storage);
+
+    const waifuTrailingBlocks: string[] = [];
+    const trailingPrompts: string[] = [];
+    const pipeline: ModelPipeline = {
+      decisions: [
+        {
+          action: "reply",
+          respondingWaifus: [
+            { waifuId: "yuki", delaySeconds: 0, directive: { intent: "change_topic", goal: "talk about food" } }
+          ],
+          reasoning: "open with a directive"
+        },
+        {
+          action: "reply",
+          respondingWaifus: [
+            { waifuId: "yuki", delaySeconds: 0, directive: { intent: "break_loop", goal: "switch gears entirely" } }
+          ],
+          reasoning: "break the loop with a directive"
+        },
+        { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, reasoning: "done" }
+      ] as OrchestratorDecision[],
+      async decideOrchestrator(request) {
+        trailingPrompts.push(request.trailingPrompt ?? "");
+        const decision = (this as unknown as { decisions: OrchestratorDecision[] }).decisions.shift();
+        if (!decision) throw new Error("No fake decision left.");
+        return decision;
+      },
+      async generateWaifu(request) {
+        waifuTrailingBlocks.push(request.trailingSystemBlock ?? "");
+        return { content: "ok" };
+      }
+    } as ModelPipeline & { decisions: OrchestratorDecision[] };
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 3,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    expect(waifuTrailingBlocks).toHaveLength(2);
+    // Budget was closed after the first honored directive, but the loop notice reopened it.
+    expect(waifuTrailingBlocks[1]).toContain("director_note");
+    expect(waifuTrailingBlocks[1]).toContain("(break loop) switch gears entirely");
+    // The second orchestrator turn saw the loop notice in its trailing prompt.
+    expect(trailingPrompts[1]).toContain("runtime_notice");
   });
 });
 
@@ -6802,6 +7188,18 @@ async function seedRuntimeConfig(storage: StorageService, orchestratorConfig: Re
   );
 }
 
+async function seedOrchestratorHistory(
+  storage: StorageService,
+  decisions: Array<Record<string, unknown>>
+) {
+  await storage.writeJson(
+    "orchestrator:history",
+    "user/orchestrator/history.json",
+    OrchestratorHistoryFileSchema,
+    OrchestratorHistoryFileSchema.parse(createEmptyRevisionedFile({ decisions }))
+  );
+}
+
 async function setPrimaryRuntimeModel(
   storage: StorageService,
   providerId: "openai" | "deepseek",
@@ -6913,6 +7311,10 @@ async function seedWaifu(
       contextWindow: 50
     })
   );
+}
+
+function expectedDirectorNote(text: string): string {
+  return `<director_note>\nDirector's goal for this one message: ${text}\nPursue it in your own voice and words; never quote or restate this note.\n</director_note>`;
 }
 
 function contextMessage(

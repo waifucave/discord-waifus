@@ -43,7 +43,9 @@ describe("assembleWaifuPrompt", () => {
       "<yuki_relevant_memories>\n- remembers tea\n</yuki_relevant_memories>"
     );
     expect(parts.trailingSystemBlock).toContain("<yuki_personality>");
-    expect(parts.trailingSystemBlock).toContain("<scene_direction>answer Kevin</scene_direction>");
+    expect(parts.trailingSystemBlock).toContain(
+      "<director_note>\nDirector's goal for this one message: answer Kevin\nPursue it in your own voice and words; never quote or restate this note.\n</director_note>"
+    );
     expect(parts.trailingSystemBlock).not.toContain("<currently_doing>");
   });
 

@@ -67,13 +67,16 @@ import {
   ChannelSessionStateSchema,
   createEmptyChannelSessionState
 } from "./session.js";
-import { ContextMessage, OrchestratorNoReplyMarker, formatTimestamp } from "./context.js";
+import { ContextMessage, OrchestratorWakeMarker, formatTimestamp } from "./context.js";
 import {
+  DIRECTIVE_GOAL_MAX_CHARS,
+  DirectiveIntent,
   MAX_WAIFU_DELAY_SECONDS,
   OrchestratorDecision,
   RETRIGGER_MAX_SECONDS,
   RETRIGGER_MIN_SECONDS
 } from "./decisions.js";
+import { assessLoop } from "./loopDetector.js";
 
 export type RuntimeOrchestratorOptions = {
   storage: StorageService;
@@ -103,6 +106,7 @@ type ChannelRunOptions = {
   initialReason?: string;
   firstOrchestratorMustReply?: boolean;
   firstResponderSceneDirectionOverride?: string;
+  trigger?: "message" | "retrigger" | "manual";
 };
 
 type ExecuteResponderDecisionInput = {
@@ -116,7 +120,6 @@ type ExecuteResponderDecisionInput = {
   decisionDelayBaseMs: number;
   useDecisionRelativeDelays: boolean;
   availableWaifus: WaifuConfig[];
-  sceneDirectionClippingEnabled: boolean;
   signal: AbortSignal;
 };
 
@@ -164,6 +167,9 @@ export class RuntimeOrchestrator {
   // (add_memory call with no Discord text), drop the memory tool from the
   // next decision so the chain doesn't loop on silent memory-tool turns.
   private readonly suppressMemoryToolOnce = new Set<string>();
+  // Per-channel directive budget counter. Increments each decision a directive is not honored,
+  // resets to 0 when one is honored; the budget opens once it reaches directiveCooldown.
+  private readonly directiveDecisionCounts = new Map<string, number>();
   private static readonly SELF_SENT_TTL_MS = 60_000;
   private static readonly STAGE_MANAGER_IDLE_DELAY_MS = 60 * 60 * 1000;
   private static readonly ACTIVE_CHAT_PARTICIPANT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -364,15 +370,22 @@ export class RuntimeOrchestrator {
       authorBot: event.authorBot
     });
     this.noteStageManagerActivity(event.guildId, event.channelId);
-    await this.startChannelRun(event.guildId, event.channelId, `message:${event.messageId}`);
+    await this.startChannelRun(event.guildId, event.channelId, `message:${event.messageId}`, {
+      trigger: "message"
+    });
   }
 
-  async triggerChannel(guildId: string, channelId: string, reason = "manual"): Promise<void> {
+  async triggerChannel(
+    guildId: string,
+    channelId: string,
+    reason = "manual",
+    options: ChannelRunOptions = {}
+  ): Promise<void> {
     if (this.options.isPaused?.()) {
       this.options.logger.warn("Manual runtime trigger ignored because runtime is paused", { guildId, channelId });
       return;
     }
-    await this.startChannelRun(guildId, channelId, reason);
+    await this.startChannelRun(guildId, channelId, reason, options);
   }
 
   async stopChannel(guildId: string, channelId: string, reason = "manual-stop"): Promise<{
@@ -511,8 +524,9 @@ export class RuntimeOrchestrator {
             {
               waifuId: resolved.id,
               delaySeconds: 0,
-              replyStyle: "normal",
-              sceneDirection: event.sceneDirection
+              directive: event.sceneDirection
+                ? { intent: "manual" as const, goal: event.sceneDirection }
+                : undefined
             }
           ],
           initialReason: `Manual /run selected ${resolved.id}.`
@@ -906,13 +920,21 @@ export class RuntimeOrchestrator {
         return;
       }
       const availableWaifus = await this.listAvailableWaifusForChannel(channel);
-      const orchestrator = await this.readAgentConfig("orchestrator", 20);
       const decision: OrchestratorDecision = {
         action: "reply",
-        respondingWaifus: options.initialResponders,
+        respondingWaifus: options.initialResponders.map((responder) => ({
+          waifuId: responder.waifuId,
+          delaySeconds: responder.delaySeconds ?? 0,
+          directive: responder.directive
+            ? { intent: responder.directive.intent as DirectiveIntent, goal: responder.directive.goal ?? "" }
+            : undefined,
+          replyToMessageId: responder.replyToMessageId
+        })),
         reasoning: options.initialReason ?? "Manual directed run."
       };
       const decisionId = randomUUID();
+      // Manual directed runs bypass the directive budget entirely (their directives are
+      // already "manual" intent and exempt); guardrails are not run here.
       const responderOutcomes = await this.recordOrchestratorDecision({
         guildId,
         channelId,
@@ -931,7 +953,6 @@ export class RuntimeOrchestrator {
         decisionDelayBaseMs: Date.now(),
         useDecisionRelativeDelays: true,
         availableWaifus,
-        sceneDirectionClippingEnabled: sceneDirectionClippingEnabled(orchestrator),
         signal
       });
       if (executedCount === 0) {
@@ -957,7 +978,7 @@ export class RuntimeOrchestrator {
         return;
       }
 
-      const orchestrator = await this.readAgentConfig("orchestrator", 20);
+      const orchestrator = await this.readAgentConfig("orchestrator", 40);
       if (!orchestrator.modelId) {
         this.options.logger.warn("Orchestrator model is not configured; channel loop stopped", { guildId, channelId });
         return;
@@ -983,7 +1004,35 @@ export class RuntimeOrchestrator {
       const availableWaifus = await this.listAvailableWaifusForChannel(channel);
       const pastDecisions = await this.readCompletedOrchestratorDecisionsForChannel(guildId, channelId);
       const requireReply = Boolean(options.firstOrchestratorMustReply && turns === 1);
-      const trailingPrompt = this.buildOrchestratorTrailingPrompt(orchestrator, availableWaifus, requireReply);
+
+      const loop = assessLoop(messages);
+      const channelKey = timerKey(guildId, channelId);
+      const directiveCount = this.directiveDecisionCounts.get(channelKey) ?? orchestrator.directiveCooldown;
+      const directiveBudgetOpen = loop.suspected || directiveCount >= orchestrator.directiveCooldown;
+
+      // On the first turn of a timer-fired retrigger, surface the wake marker (with the wake plan
+      // the orchestrator promised last time) so it can pick up where it left off, plus escalate the
+      // next backoff if it chooses no_reply again.
+      let decisionMarkers: OrchestratorWakeMarker[] | undefined;
+      // pastDecisions is newest-first (history file prepends); find() returns the most recent no_reply.
+      const lastNoReply = pastDecisions.find((entry) => entry.action === "no_reply");
+      const timerWakeSeconds =
+        turns === 1 && options.trigger === "retrigger" ? lastNoReply?.retriggerAfterSeconds : undefined;
+      if (timerWakeSeconds) {
+        decisionMarkers = [{
+          kind: "wake",
+          timestamp: formatTimestamp(new Date()),
+          scheduledSeconds: timerWakeSeconds,
+          wakePlan: lastNoReply!.wakePlan
+        }];
+      }
+
+      const trailingPrompt = this.buildOrchestratorTrailingPrompt(
+        orchestrator,
+        availableWaifus,
+        requireReply,
+        loop.notice
+      );
       const orchestratorTyping = startTypingScope(this.options.discord, { guildId, channelId });
       let decision: OrchestratorDecision;
       try {
@@ -991,8 +1040,10 @@ export class RuntimeOrchestrator {
           modelId: orchestrator.modelId,
           messages,
           pastDecisions,
+          decisionMarkers,
+          directiveBudgetOpen,
           trailingPrompt,
-          systemPrompt: this.buildOrchestratorSystemPrompt(orchestrator, server, availableWaifus, requireReply),
+          systemPrompt: this.buildOrchestratorSystemPrompt(orchestrator, server, requireReply),
           availableWaifuIds: availableWaifus.map((waifu) => waifu.id),
           replyRequired: requireReply,
           reasoning: orchestrator.reasoning,
@@ -1003,7 +1054,7 @@ export class RuntimeOrchestrator {
       }
       decision = capDecisionDelays(decision);
       if (requireReply) {
-        decision = applyFirstResponderSceneDirectionOverride(
+        decision = applyFirstResponderDirectiveOverride(
           decision,
           options.firstResponderSceneDirectionOverride
         );
@@ -1013,6 +1064,15 @@ export class RuntimeOrchestrator {
       const decisionId = randomUUID();
       const initialDecisionStatus: OrchestratorDecisionStatus =
         decision.action === "reply" ? "pending" : "completed";
+      // Record history with the ORIGINAL decision (the dashboard shows what the model wanted), but
+      // execute the guarded decision (stripped directives over budget/cap).
+      const guarded = this.applyDirectiveGuardrails({
+        guildId,
+        channelId,
+        decision,
+        directiveCooldown: orchestrator.directiveCooldown,
+        loopSuspected: loop.suspected
+      });
       const responderOutcomes = await this.recordOrchestratorDecision({
         guildId,
         channelId,
@@ -1020,6 +1080,20 @@ export class RuntimeOrchestrator {
         decision,
         status: initialDecisionStatus
       });
+      for (const strippedEntry of guarded.stripped) {
+        const outcome = responderOutcomes[strippedEntry.index];
+        if (outcome) {
+          await this.updateOrchestratorResponderOutcome(decisionId, outcome.id, {
+            directiveStripped: strippedEntry.reason
+          });
+          this.options.logger.info("Stripped orchestrator directive", {
+            guildId,
+            channelId,
+            waifuId: outcome.waifuId,
+            reason: strippedEntry.reason
+          });
+        }
+      }
       void this.sendOrchestratorDebugLog({
         guildId,
         channelId,
@@ -1028,7 +1102,10 @@ export class RuntimeOrchestrator {
       });
 
       if (decision.action === "no_reply") {
-        const seconds = decision.retriggerAfterSeconds ?? RETRIGGER_MIN_SECONDS;
+        let seconds = decision.retriggerAfterSeconds ?? RETRIGGER_MIN_SECONDS;
+        if (timerWakeSeconds) {
+          seconds = Math.max(seconds, Math.ceil(timerWakeSeconds * 1.5));
+        }
         await this.scheduleRetrigger(guildId, channelId, seconds);
         return;
       }
@@ -1038,13 +1115,12 @@ export class RuntimeOrchestrator {
         channelId,
         server,
         channel,
-        decision,
+        decision: guarded.decision,
         decisionId,
         responderOutcomes,
         decisionDelayBaseMs,
         useDecisionRelativeDelays,
         availableWaifus,
-        sceneDirectionClippingEnabled: sceneDirectionClippingEnabled(orchestrator),
         signal
       });
       if (executedCount === 0) {
@@ -1063,6 +1139,41 @@ export class RuntimeOrchestrator {
       maxAutomaticTurns: this.maxAutomaticTurns
     });
     await this.scheduleRetrigger(guildId, channelId, RETRIGGER_MIN_SECONDS);
+  }
+
+  private applyDirectiveGuardrails(input: {
+    guildId: string;
+    channelId: string;
+    decision: OrchestratorDecision;
+    directiveCooldown: number;
+    loopSuspected: boolean;
+  }): { decision: OrchestratorDecision; stripped: Array<{ index: number; reason: "cooldown" | "over_cap" }> } {
+    const key = timerKey(input.guildId, input.channelId);
+    const current = this.directiveDecisionCounts.get(key) ?? input.directiveCooldown;
+    const budgetOpen = input.loopSuspected || current >= input.directiveCooldown;
+    const stripped: Array<{ index: number; reason: "cooldown" | "over_cap" }> = [];
+    let honored = false;
+    const respondingWaifus = input.decision.respondingWaifus.map((responder, index) => {
+      const directive = responder.directive;
+      if (!directive) return responder;
+      if (directive.intent === "manual") {
+        honored = true;
+        return responder;
+      }
+      if (directive.goal.length > DIRECTIVE_GOAL_MAX_CHARS) {
+        stripped.push({ index, reason: "over_cap" });
+        return { ...responder, directive: undefined };
+      }
+      if (!budgetOpen) {
+        stripped.push({ index, reason: "cooldown" });
+        return { ...responder, directive: undefined };
+      }
+      honored = true;
+      return responder;
+    });
+    // Cap at a large sentinel purely to prevent unbounded growth on long-lived channels.
+    this.directiveDecisionCounts.set(key, honored ? 0 : Math.min(current + 1, 1000));
+    return { decision: { ...input.decision, respondingWaifus }, stripped };
   }
 
   private async recordOrchestratorDecision(input: {
@@ -1088,6 +1199,7 @@ export class RuntimeOrchestrator {
       action: input.decision.action,
       respondingWaifus: input.decision.respondingWaifus,
       retriggerAfterSeconds: input.decision.retriggerAfterSeconds,
+      wakePlan: input.decision.wakePlan,
       reasoning: input.decision.reasoning,
       status: input.status,
       waifuMessageIds: [],
@@ -1239,8 +1351,7 @@ export class RuntimeOrchestrator {
           channelId: input.channelId,
           waifuId: waifu.id,
           modelId: waifu.modelId,
-          messageCount: waifuMessages.length,
-          replyStyle: responder.replyStyle
+          messageCount: waifuMessages.length
         });
         const waifuTyping = startTypingScope(this.options.discord, {
           guildId: input.guildId,
@@ -1259,10 +1370,7 @@ export class RuntimeOrchestrator {
             activeChatParticipants
           );
           const waifuStopSequences = participantDisplayNames.map((name) => `\n${name}:`);
-          const clippedSceneDirection = sceneDirectionForWaifu(
-            responder.sceneDirection,
-            input.sceneDirectionClippingEnabled
-          );
+          const directiveText = directiveTextForWaifu(responder.directive);
           const effectiveShortTermMemory = input.server.tools.shortTermMemory && !suppressMemoryToolThisDecision;
           const { systemPrompt, midSystemBlock, trailingSystemBlock } = await this.buildWaifuPromptParts(
             input.guildId,
@@ -1270,7 +1378,7 @@ export class RuntimeOrchestrator {
             input.availableWaifus,
             {
               channelId: input.channelId,
-              sceneDirection: clippedSceneDirection,
+              sceneDirection: directiveText,
               pickNextWaifuToolOverride: input.server.tools.pickNextWaifu,
               shortTermMemoryToolOverride: effectiveShortTermMemory
             }
@@ -1297,7 +1405,6 @@ export class RuntimeOrchestrator {
                   midSystemBlock,
                   trailingSystemBlock,
                   retryUserMessage: attempt === 2 ? `${waifu.displayName}:` : undefined,
-                  replyStyle: responder.replyStyle,
                   availableWaifuIds: nextWaifuIds,
                   pickNextWaifuToolEnabled: input.server.tools.pickNextWaifu,
                   shortTermMemoryToolEnabled: effectiveShortTermMemory,
@@ -1475,8 +1582,7 @@ export class RuntimeOrchestrator {
               responderQueue.unshift({
                 responder: {
                   waifuId: result.pickedNextWaifuId,
-                  delaySeconds: 0,
-                  replyStyle: "normal"
+                  delaySeconds: 0
                 },
                 outcomeId: handoffOutcome.id
               });
@@ -2154,7 +2260,7 @@ export class RuntimeOrchestrator {
     }
     const timer = setTimeout(() => {
       this.retriggerTimers.delete(key);
-      this.startChannelRunBackground(guildId, channelId, "scheduled-retrigger");
+      this.startChannelRunBackground(guildId, channelId, "scheduled-retrigger", { trigger: "retrigger" });
     }, bounded * 1000);
     this.retriggerTimers.set(key, timer);
   }
@@ -2680,154 +2786,62 @@ export class RuntimeOrchestrator {
   private buildOrchestratorSystemPrompt(
     orchestrator: AgentConfig,
     server: ServerConfig,
-    availableWaifus: WaifuConfig[],
     replyRequired = false
   ): string {
-    if (orchestrator.useLegacyPrompt) {
-      return [
-        buildLegacyOrchestratorPrompt(server, availableWaifus),
-        replyRequired ? manualRunReplyRequiredInstruction() : null
-      ].filter(Boolean).join("\n\n");
-    }
-
-    const scheduleNow = new Date();
-    const activeWaifusContent = availableWaifus.length
-      ? availableWaifus
-          .map((waifu) => {
-            const tagName = promptTagName(waifu.name || waifu.id);
-            const displayName = waifu.displayName || waifu.name;
-            const persona = waifu.persona.trim();
-            const personaBlock = persona || "(no persona configured)";
-            const availability = formatWaifuAvailabilityForOrchestratorPrompt(waifu, scheduleNow);
-            return `<${tagName}>\nID: ${waifu.id}\nDisplay name: ${displayName}\nPersona:\n${personaBlock}\nAvailability:\n${availability}\n</${tagName}>`;
-          })
-          .join("\n\n")
-      : "No waifus are currently enabled for this channel.";
-
     const identity = replyRequired
-      ? "You are the orchestrator for a multi-character Discord bot. This manual /run requires you to choose at least one waifu to reply now."
-      : "You are the orchestrator for a multi-character Discord bot. On every incoming Discord message you decide whether any waifu should reply right now, which waifus speak in what order, and how long to wait before re-evaluating when nobody speaks.";
+      ? "You are the director of a multi-character Discord bot. This manual /run requires you to choose at least one waifu to reply now."
+      : "You are the director of a multi-character Discord bot. On each pass you decide who (if anyone) speaks next and how the room is paced.";
 
-    const hardRules = [
-      "- Every respondingWaifus[].waifuId must be copied verbatim from one of the IDs listed in <active_waifus>.",
+    const rules = [
+      "- Every respondingWaifus[].waifuId must be copied verbatim from the IDs in <active_waifus>.",
       replyRequired
-        ? "- action must be \"reply\" for this manual /run. Choose at least one responding waifu and set retriggerAfterSeconds to null."
-        : `- action=\"reply\" requires a non-empty respondingWaifus array and a null retriggerAfterSeconds. action=\"no_reply\" requires respondingWaifus=[] and a retriggerAfterSeconds in [${RETRIGGER_MIN_SECONDS}, ${RETRIGGER_MAX_SECONDS}].`,
-      `- delaySeconds is a realistic reading/typing delay before that waifu starts replying, in seconds, from 0 to ${MAX_WAIFU_DELAY_SECONDS}. Use 0 if she should start immediately.`,
-      "- replyStyle is a soft hint for length/tone: \"normal\" by default; \"short\" for one terse line; \"long\" for a slightly fuller reply; \"sleepy\" for tired/low-energy voice.",
-      "- Sleep and busy availability in <active_waifus> is soft context, not a hard rule. A sleeping or busy waifu can still answer if recent momentum suggests she is awake, if she just spoke, if she was directly pulled in, or if waking her improves the room.",
-      "- repleyToMessageIndex should usually be null. Set it only when a waifu is reviving or anchoring to a specific older message that is no longer the latest visible message; never to the immediately previous message.",
-      "- sceneDirection is the only private channel between you and that waifu. If you want her to do or say something specific, you MUST put it there. She does not see your reasoning. Use null when no special steering is needed.",
-      "- After a single waifu message, do not default to no_reply just because a waifu already spoke. Actively consider whether another waifu should react, interrupt, tease, disagree, answer a missed user, or carry the beat one step further.",
-      "- Prefer a two-waifu chain over a one-waifu reply when the second waifu has a distinct reaction that would make the room feel alive. Give the second waifu a small delaySeconds value so it feels like a timed follow-up, not simultaneous spam.",
-      "- Runtime pacing note: when any of the latest four chat messages is from a human user, the first waifu starts immediately regardless of delaySeconds, and later waifus treat delaySeconds as an offset from this decision time. If an earlier waifu is still replying when a later offset arrives, the later waifu starts after the earlier waifu finishes.",
-      "- Consecutive waifu replies in a single decision are allowed when they add a fresh beat: escalation, interruption, joke, reaction, disagreement, emotional shift, or a new topic. Avoid only empty echoing or repetitive back-and-forth."
+        ? "- action must be \"reply\" for this manual /run, with at least one responding waifu and retriggerAfterSeconds null."
+        : "- action \"reply\": respondingWaifus non-empty, retriggerAfterSeconds and wakePlan null. action \"no_reply\": respondingWaifus empty, retriggerAfterSeconds and wakePlan set.",
+      "- Runtime pacing: when a human spoke within the last four chat messages, the first waifu starts immediately and later delays count from this decision; otherwise each delay counts after the previous waifu finishes. Any new chat message cancels the remaining chain.",
+      "- Your own past orchestrator_decision tool calls appear in the conversation with their real outcomes; nobody else sees them. Lines like [12m pass] and [wake: ...] are runtime annotations, not chat messages.",
+      "- Availability lines in <active_waifus> are soft signals, not rules — a sleeping waifu can still answer when the moment justifies it."
     ].join("\n");
 
-    const loopBreaking = [
-      "The recent messages in context are your most important signal. If the waifus are circling the same topic, the same vibe, or the same back-and-forth, they will keep circling unless you actively redirect them — each waifu only sees her own persona and the chat, so only you can see the loop forming from the outside.",
-      "When you notice a loop forming (even a soft one — two or three messages already feeling similar is enough), pick the waifu whose personality most naturally fits a hard pivot and write a concrete sceneDirection that lands a brand-new topic, observation, memory, callback, or non-sequitur. Name the specific new topic in the sceneDirection — \"ask about Kevin's dog\", \"bring up the snowstorm last week\", \"complain about being hungry\" — rather than vague instructions like \"change the subject\". A jarring shift that still feels in-character is better than letting the conversation stagnate."
-    ].join("\n\n");
-
-    const retriggerPacing = [
-      `retriggerAfterSeconds is only used with action=\"no_reply\". It is the number of seconds to wait before the orchestrator wakes up to re-evaluate the room, in the range [${RETRIGGER_MIN_SECONDS}, ${RETRIGGER_MAX_SECONDS}].`,
-      "",
-      "Human messages automatically wake the orchestrator, so retriggerAfterSeconds is not a generic monitoring tick — it is a deliberate, planned pause to give the room a chance to react. If a fresh chat message arrives before the timer fires, the timer is replaced by the new orchestrator pass.",
-      "",
-      "Rough intent ranges:",
-      "- 100s–300s: moments that feel alive but do not have an obvious second waifu reaction. If there is an obvious second reaction, prefer respondingWaifus with two waifus and a short delay instead of no_reply.",
-      "- 600s–1800s: cooling rooms where a waifu might revive the chat soon, but not immediately.",
-      `- 3600s–${RETRIGGER_MAX_SECONDS}s: quiet rooms where you are mostly waiting for humans and the next bot-led beat is a long shot.`,
-      "",
-      "If the timer fires and the room is still quiet, you can choose no_reply again with a longer delay. Don't grind on a dead channel."
-    ].join("\n");
-
-    const messageStructure = [
-      "Each Discord message in the context is its own user-role turn. An optional `replying to > Author: preview` line may appear first when the message is replying to an earlier one; then `DisplayName: <body>` (the body may continue on following lines); optionally followed by `[attachments: Nx image]` when the message has images. No indices, timestamps, reactions, or raw IDs are shown. Set repleyToMessageIndex to null — references by index are not supported in this format.",
-      "Your own previous orchestrator_decision tool calls appear as past assistant moves interleaved with the chat in real order, so you can see the recent pattern of replies and no_reply pauses. They are not Discord messages — nobody else sees them. Use them to gauge how long the channel has actually been silent under your watch and to avoid stacking redundant no_reply choices."
-    ].join("\n");
-
-    const toolUse = [
-      "Inspect the context and call orchestrator_decision once with the tool arguments. Do not write normal assistant text.",
-      "Argument shape:",
-      "{",
-      replyRequired ? "  \"action\": \"reply\"," : "  \"action\": \"reply\" | \"no_reply\",",
-      "  \"respondingWaifus\": [",
-      "    {",
-      "      \"waifuId\": string,",
-      `      \"delaySeconds\": number (0..${MAX_WAIFU_DELAY_SECONDS}),`,
-      "      \"replyStyle\": \"normal\" | \"short\" | \"long\" | \"sleepy\",",
-      "      \"repleyToMessageIndex\": number | null,",
-      "      \"sceneDirection\": string | null",
-      "    },",
-      "    ...",
-      "  ],",
-      replyRequired ? "  \"retriggerAfterSeconds\": null," : `  \"retriggerAfterSeconds\": number (${RETRIGGER_MIN_SECONDS}..${RETRIGGER_MAX_SECONDS}) | null,`,
-      "  \"reasoning\": string",
-      "}",
-      "Rules:",
-      replyRequired
-        ? "- This manual /run must return action=\"reply\" with at least one respondingWaifus entry and retriggerAfterSeconds null."
-        : "- action=\"reply\" => respondingWaifus is non-empty; retriggerAfterSeconds is null.",
-      replyRequired
-        ? null
-        : `- action=\"no_reply\" => respondingWaifus is empty; retriggerAfterSeconds is a number in [${RETRIGGER_MIN_SECONDS}, ${RETRIGGER_MAX_SECONDS}].`,
-      "- Order matters in respondingWaifus: the first waifu speaks first, then the next, and so on. When none of the latest four chat messages is from a human user, each waifu's delay starts only after the previous waifu has finished. When a human user is present in the latest four messages, the first waifu starts immediately and later delays are counted from this orchestrator decision. Any new chat message interrupts the rest of the chain.",
-      "- When choosing two waifus, give each entry its own delaySeconds. Use 0 for the first when she should start immediately, then a small delay like 3-12 seconds for the second when it should feel like a natural follow-up.",
-      "- All five fields on each respondingWaifus entry are required; set repleyToMessageIndex and sceneDirection to null when not needed."
-    ]
-      .filter((line): line is string => Boolean(line))
-      .join("\n");
-
-    const sections = orchestrator.promptSections;
-    const behavior = [
-      sections.loopBreaking ? `<loop_breaking>\n${loopBreaking}\n</loop_breaking>` : null,
-      sections.retriggerPacing && !replyRequired ? `<retrigger_pacing>\n${retriggerPacing}\n</retrigger_pacing>` : null,
-      sections.messageStructure ? `<chat_message_structure>\n${messageStructure}\n</chat_message_structure>` : null,
-      sections.toolUse ? `<tool_use>\n${toolUse}\n</tool_use>` : null,
-      `<hard_rules>\n${hardRules}\n</hard_rules>`
-    ]
-      .filter((section): section is string => Boolean(section))
-      .join("\n");
+    const messageStructure =
+      "Each Discord message is its own user turn: an optional `replying to > Author: preview` line, then `DisplayName: <body>`, optionally followed by `[attachments: Nx image]` and `[image_text: ...]` lines.";
 
     return [
       `<orchestrator_identity>\n${identity}\n</orchestrator_identity>`,
-      `<orchestrator_behavior>\n${behavior}\n</orchestrator_behavior>`,
+      `<orchestrator_rules>\n${rules}\n</orchestrator_rules>`,
+      orchestrator.promptSections.messageStructure
+        ? `<chat_message_structure>\n${messageStructure}\n</chat_message_structure>`
+        : null,
       `<discord_server_information>\n${server.name ?? server.guildId}\n</discord_server_information>`
-    ].join("\n");
+    ].filter(Boolean).join("\n");
   }
 
   private buildOrchestratorTrailingPrompt(
     orchestrator: AgentConfig,
     availableWaifus: WaifuConfig[],
-    replyRequired = false
+    replyRequired = false,
+    loopNotice?: string
   ): string {
-    if (orchestrator.useLegacyPrompt) {
-      return [
-        `<current_time>\n${formatPromptCurrentHour(new Date())}\n</current_time>`,
-        replyRequired ? manualRunReplyRequiredInstruction() : null
-      ].filter(Boolean).join("\n");
-    }
-
-    const scheduleNow = new Date();
+    const now = new Date();
     const activeWaifusContent = availableWaifus.length
-      ? availableWaifus
-          .map((waifu) => {
-            const tagName = promptTagName(waifu.name || waifu.id);
-            const displayName = waifu.displayName || waifu.name;
-            const persona = waifu.persona.trim();
-            const personaBlock = persona || "(no persona configured)";
-            const availability = formatWaifuAvailabilityForOrchestratorPrompt(waifu, scheduleNow);
-            return `<${tagName}>\nID: ${waifu.id}\nDisplay name: ${displayName}\nPersona:\n${personaBlock}\nAvailability:\n${availability}\n</${tagName}>`;
-          })
-          .join("\n\n")
+      ? availableWaifus.map((waifu) => castingCard(waifu, now)).join("\n")
       : "No waifus are currently enabled for this channel.";
-    const currentTime = `<current_time>\n${formatPromptCurrentHour(new Date())}\n</current_time>`;
+
+    const pausePlanning =
+      "When you choose no_reply, retriggerAfterSeconds is a planned pause before YOU re-check the room — any new human message wakes you regardless, so long pauses cost nothing. wakePlan is one sentence on what you intend at wake; the runtime shows it back to you when the timer fires. Use the whole range: 100–300s when you expect a beat to need a nudge soon; 600–1800s for a cooling room with a planned revival; 3600s+ when you are mostly waiting for humans. Repeated quiet checks must back off to longer pauses.";
+
+    const task = replyRequired
+      ? `${DEFAULT_ORCHESTRATOR_PROMPT}\n\n${manualRunReplyRequiredInstruction()}`
+      : DEFAULT_ORCHESTRATOR_PROMPT;
+
     return [
-      `<task_instructions>\n${replyRequired ? `${DEFAULT_ORCHESTRATOR_PROMPT}\n\n${manualRunReplyRequiredInstruction()}` : DEFAULT_ORCHESTRATOR_PROMPT}\n</task_instructions>`,
+      `<task_instructions>\n${task}\n</task_instructions>`,
+      orchestrator.promptSections.pausePlanning && !replyRequired
+        ? `<pause_planning>\n${pausePlanning}\n</pause_planning>`
+        : null,
       `<active_waifus>\n${activeWaifusContent}\n</active_waifus>`,
-      currentTime
-    ].join("\n");
+      `<current_time>\n${formatPromptCurrentHour(new Date())}\n</current_time>`,
+      loopNotice ? `<runtime_notice>\n${loopNotice}\n</runtime_notice>` : null
+    ].filter(Boolean).join("\n");
   }
 
   private async ensureServer(guildId: string): Promise<ServerConfig> {
@@ -2949,39 +2963,6 @@ export class RuntimeOrchestrator {
     );
   }
 
-  private async readRecentNoReplyMarkers(
-    guildId: string,
-    channelId: string,
-    messages: ContextMessage[]
-  ): Promise<OrchestratorNoReplyMarker[]> {
-    if (!messages.length) return [];
-    const latest = messages.reduce(
-      (latestTimestamp, message) => message.timestamp > latestTimestamp ? message.timestamp : latestTimestamp,
-      messages[0].timestamp
-    );
-    const history = await this.options.storage.readJson(
-      "user/orchestrator/history.json",
-      OrchestratorHistoryFileSchema,
-      OrchestratorHistoryFileSchema.parse(createEmptyRevisionedFile({ decisions: [] }))
-    );
-    const markers: OrchestratorNoReplyMarker[] = [];
-    for (const decision of history.decisions) {
-      if (decision.guildId !== guildId) continue;
-      if (decision.channelId !== channelId) continue;
-      if (decision.action !== "no_reply") continue;
-      if (decision.retriggerAfterSeconds === undefined) continue;
-      const timestamp = formatTimestamp(new Date(decision.createdAt));
-      if (timestamp <= latest) continue;
-      markers.push({
-        kind: "no_reply",
-        timestamp,
-        retriggerAfterSeconds: decision.retriggerAfterSeconds,
-        reasoning: decision.reasoning
-      });
-    }
-    return markers;
-  }
-
   private async appendOrchestratorHistory(entry: {
     id: string;
     guildId: string;
@@ -2989,6 +2970,7 @@ export class RuntimeOrchestrator {
     action: "reply" | "no_reply";
     respondingWaifus: OrchestratorRespondingWaifu[];
     retriggerAfterSeconds?: number;
+    wakePlan?: string;
     reasoning: string;
     status: OrchestratorDecisionStatus;
     waifuMessageIds: string[];
@@ -3197,7 +3179,7 @@ export class RuntimeOrchestrator {
     outcomeId: string,
     patch: Partial<Pick<
       OrchestratorResponderOutcome,
-      "handoffFromWaifuId" | "status" | "reason"
+      "handoffFromWaifuId" | "status" | "reason" | "directiveStripped"
     >>
   ): Promise<void> {
     await this.options.storage.updateRevisionedJson({
@@ -3605,30 +3587,6 @@ function formatWaifuScheduleForPrompt(waifu: WaifuConfig): string {
   return lines.join("\n");
 }
 
-function formatWaifuAvailabilityForOrchestratorPrompt(waifu: WaifuConfig, now: Date): string {
-  const availability = waifu.availability;
-  const currentMinutes = localTimeOfDayMinutes(now);
-  const lines = [`- Current local schedule time: ${formatLocalTimeOfDay(now)}.`];
-  if (availability.sleep.enabled) {
-    const sleepingNow = dailyIntervalContains(currentMinutes, availability.sleep);
-    lines.push(
-      `- Sleep: ${availability.sleep.start}-${availability.sleep.end} daily (${sleepingNow ? "currently inside sleep time" : "not currently inside sleep time"}). Treat this as lower likelihood, not a rule; she may still be awake if she spoke recently, was directly pulled in, or waking her improves the room.`
-    );
-  } else {
-    lines.push("- Sleep: none configured.");
-  }
-  if (availability.busy.length > 0) {
-    lines.push("- Busy:");
-    for (const interval of availability.busy) {
-      const busyNow = dailyIntervalContains(currentMinutes, interval);
-      lines.push(`  - ${interval.start}-${interval.end}: ${interval.reason}${busyNow ? " (currently busy)" : ""}`);
-    }
-  } else {
-    lines.push("- Busy: none configured.");
-  }
-  return lines.join("\n");
-}
-
 function localTimeOfDayMinutes(date: Date): number {
   return date.getHours() * 60 + date.getMinutes();
 }
@@ -3662,10 +3620,6 @@ function dailyIntervalContains(currentMinutes: number, interval: { start: string
 function timeOfDayMinutes(value: string): number {
   const [hours = "0", minutes = "0"] = value.split(":");
   return Number(hours) * 60 + Number(minutes);
-}
-
-function indentLines(value: string, indent: string): string {
-  return value.split("\n").map((line) => `${indent}${line}`).join("\n");
 }
 
 function formatPromptCurrentHour(date: Date): string {
@@ -3786,32 +3740,17 @@ function channelParticipantDisplayNames(
   );
 }
 
-const SCENE_DIRECTION_PUNCTUATION_RE = /[.!?,;:\n\r\u2026\u2013\u2014]/u;
-const SCENE_DIRECTION_CONJUNCTION_RE = /\b(?:and|or)\b/iu;
-
-export function clipSceneDirectionForWaifu(sceneDirection: string | undefined): string | undefined {
-  const trimmed = sceneDirection?.trim();
-  if (!trimmed) return undefined;
-  const punctuationIndex = SCENE_DIRECTION_PUNCTUATION_RE.exec(trimmed)?.index;
-  const conjunctionIndex = SCENE_DIRECTION_CONJUNCTION_RE.exec(trimmed)?.index;
-  const cutIndex = [punctuationIndex, conjunctionIndex]
-    .filter((index): index is number => index !== undefined)
-    .sort((a, b) => a - b)[0];
-  const clipped = cutIndex === undefined ? trimmed : trimmed.slice(0, cutIndex).trim();
-  return clipped || undefined;
-}
-
-function sceneDirectionForWaifu(
-  sceneDirection: string | undefined,
-  clippingEnabled: boolean
+// Render a directive into the single-line note fed to the waifu prompt. Manual /run directions
+// pass through verbatim; model intents get a parenthetical label prefix for the waifu's benefit.
+// Accepts the loose stored shape (string intent, optional goal) so both the decision pipeline and
+// directed-run paths can feed it without casting.
+function directiveTextForWaifu(
+  directive: { intent: string; goal?: string } | undefined
 ): string | undefined {
-  const trimmed = sceneDirection?.trim();
-  if (!trimmed) return undefined;
-  return clippingEnabled ? clipSceneDirectionForWaifu(trimmed) : trimmed;
-}
-
-function sceneDirectionClippingEnabled(orchestrator: AgentConfig): boolean {
-  return orchestrator.clipSceneDirection;
+  if (!directive) return undefined;
+  const goal = directive.goal ?? "";
+  if (directive.intent === "manual") return goal || undefined;
+  return `(${directive.intent.replace(/_/g, " ")}) ${goal}`.trim();
 }
 
 function capDecisionDelays(decision: OrchestratorDecision): OrchestratorDecision {
@@ -3824,7 +3763,7 @@ function capDecisionDelays(decision: OrchestratorDecision): OrchestratorDecision
   };
 }
 
-function applyFirstResponderSceneDirectionOverride(
+function applyFirstResponderDirectiveOverride(
   decision: OrchestratorDecision,
   sceneDirection: string | undefined
 ): OrchestratorDecision {
@@ -3835,7 +3774,9 @@ function applyFirstResponderSceneDirectionOverride(
   return {
     ...decision,
     respondingWaifus: decision.respondingWaifus.map((responder, index) =>
-      index === 0 ? { ...responder, sceneDirection: trimmed } : responder
+      index === 0
+        ? { ...responder, directive: { intent: "manual" as const, goal: trimmed } }
+        : responder
     )
   };
 }
@@ -3891,20 +3832,26 @@ function formatOrchestratorDebugLog(input: {
         .map((responder) => waifuNameById.get(responder.waifuId) ?? responder.waifuId)
         .join(" -> ")}`
     );
-    const sceneDirections = input.decision.respondingWaifus
+    const directives = input.decision.respondingWaifus
       .map((responder) => ({
         name: waifuNameById.get(responder.waifuId) ?? responder.waifuId,
-        sceneDirection: responder.sceneDirection?.trim()
+        directive: responder.directive
       }))
-      .filter((entry): entry is { name: string; sceneDirection: string } => Boolean(entry.sceneDirection));
-    if (sceneDirections.length > 0) {
-      lines.push("Scene directions:");
-      for (const entry of sceneDirections) {
-        lines.push(`- ${entry.name}: ${clipDebugText(entry.sceneDirection)}`);
+      .filter(
+        (entry): entry is { name: string; directive: NonNullable<typeof entry.directive> } =>
+          Boolean(entry.directive)
+      );
+    if (directives.length > 0) {
+      lines.push("Directives:");
+      for (const entry of directives) {
+        lines.push(`- ${entry.name}: (${entry.directive.intent}) ${clipDebugText(entry.directive.goal)}`);
       }
     }
   } else {
     lines.push(`Idle trigger: ${input.decision.retriggerAfterSeconds ?? RETRIGGER_MIN_SECONDS}s`);
+    if (input.decision.wakePlan) {
+      lines.push(`Wake plan: ${clipDebugText(input.decision.wakePlan)}`);
+    }
   }
   lines.push(`Reasoning: ${clipDebugText(input.decision.reasoning)}`);
   return lines.join("\n");
@@ -4112,112 +4059,51 @@ const DEFAULT_REVIEWER_PROMPT = [
 ].join("\n");
 
 const DEFAULT_ORCHESTRATOR_PROMPT = [
-  "You watch one Discord channel and orchestrate a small cast of waifu personas. On each new message, decide from outside the scene whether any waifu should reply right now (action=\"reply\") or whether the room should stay quiet for a planned interval (action=\"no_reply\").",
+  "You watch one Discord channel and direct a small cast of waifu personas. Each pass, decide who (if anyone) speaks next. You choose speakers and timing; each waifu writes her own words — never write or paraphrase a reply for her.",
   "",
-  "Be natural. Real group chats do not require everyone to reply every time, and not every beat needs a response — treat the room like a living scene, not a turn-taking queue. Pacing, silence, interruption, overlap, comedy, and escalation are all valid moves. Pick the waifu whose personality fits the moment based on her voice and the current flow; the same waifu may speak again, a different one may jump in, or two may chain if it feels right.",
+  "Most of the time the right answer is one waifu, or nobody. Pick the persona whose voice fits the moment. Two waifus only when the second has a clearly distinct reaction of her own; three or more only for rare pile-on moments. You are consulted again after each reply lands, so plan one beat, not a scene.",
   "",
-  "When action=\"reply\", list the waifus in respondingWaifus in the order they should speak. Order matters: the next waifu only sees the chat after the previous one has finished. Any new chat message between two replies cancels the rest of the chain. Plan the chain you'd commit to if nobody interrupts.",
+  "no_reply is a normal, frequent choice. Real group chats are mostly silence. If the beat has landed, or another bot message would add noise, choose no_reply.",
   "",
-  "When the beat can support it, prefer a planned two-waifu chain over one waifu followed by no_reply. The second waifu should have a distinct angle — reaction, interruption, tease, disagreement, missed-user acknowledgment, or escalation — and a small delaySeconds value so it feels like a natural follow-up.",
+  "The cast has its own life. When humans are active, weave them in; when they are not, the waifus pursue their own threads — do not keep steering them back to absent users.",
   "",
-  "When action=\"no_reply\", set retriggerAfterSeconds to the number of seconds you want to wait before re-evaluating the room. The orchestrator also wakes up automatically on any new chat message, so retriggerAfterSeconds is a planned pause, not a polling tick. A chain of one no_reply means \"don't speak now; re-check after the pause.\"",
+  "directive is a short GOAL for one waifu's next message, never content or wording. Default is null; her persona handles normal flow. The runtime rate-limits directives — they are for steering moments: breaking a loop, landing a new named topic, pulling a named quiet person back in, closing a beat. When a runtime notice says a loop is forming, that is the moment to use one.",
   "",
-  "After a single waifu message, do not treat no_reply as the automatic cleanup move. Ask whether the room would feel more alive if another waifu reacts, cuts in, disagrees, lightly teases, answers a missed user, or follows the beat one step further. Choose no_reply when the beat has genuinely landed, the next bot message would feel repetitive, or silence creates better pacing.",
+  `delaySeconds is a realistic reading/typing delay (0–${MAX_WAIFU_DELAY_SECONDS}); it defaults to 0.`,
   "",
-  "If a recent chat participant message or direct ping was missed while the room moved on, prefer steering a waifu to acknowledge it so the chat stays socially inclusive — unless silence is clearly the more natural choice.",
-  "",
-  "Reach for sceneDirection when the next reply needs steering that personality alone won't provide: redirecting topic, closing a beat, creating an interruption, shifting momentum, or deliberately starting something new even when it cuts against the current flow. Prefer a natural bridge when pivoting, but a jarring shift is fine if the scene needs it. Keep sceneDirection short, concrete, and immediately actionable — one sentence is usually enough. When you refer to a specific person, use their actual display name from the chat history, never generic phrases like \"the user\". Name intended participants explicitly when more than one person is involved; avoid ambiguous group references like \"us\", \"them\", or \"everyone\". If multiple waifus respond in the same turn, each may receive a different sceneDirection.",
-  "",
-  `delaySeconds is a realistic reading/typing delay before that waifu starts replying, capped at ${MAX_WAIFU_DELAY_SECONDS} seconds. Use 0 to start immediately; small values feel natural for short replies; larger values fit longer or more thoughtful replies. Keep it grounded in the chat's pace. Runtime detail: when any of the latest four chat messages is from a human user, the first waifu starts immediately regardless of delaySeconds and later delaySeconds values are counted from this orchestrator decision; otherwise delays are counted after the previous waifu finishes.`,
-  "",
-  "replyStyle is a soft hint for that one reply: \"normal\" by default, \"short\" for a one-line beat, \"long\" for a slightly fuller reply, \"sleepy\" for a low-energy tone. The waifu's persona still does most of the work.",
-  "",
-  "When the last visible event was a waifu reply, do not treat the last waifu as the default speaker. Re-evaluate the room from outside the scene: the same waifu may continue, another waifu may cut in, multiple waifus may chain, or the room may go quiet.",
-  "",
-  "Pay special attention to the latest 10 messages and the recent speaker pattern. If the same waifu has been carrying the scene for multiple beats, strongly consider switching to another waifu, using no_reply, or using sceneDirection to create a fresh beat.",
-  "",
-  "Continue a waifu-to-waifu chain when the next message adds something new: escalation, interruption, joke, emotional shift, contradiction, surprise, a missed-user acknowledgment, or a new topic. Do not continue just to restate the same mood."
+  "Watch the recent speaker pattern. If the same waifu or the same pair has carried several beats, switch speakers, go quiet, or pivot with a directive — do not let two waifus volley restatements of the same mood."
 ].join("\n");
 
-function buildLegacyOrchestratorPrompt(server: ServerConfig, availableWaifus: WaifuConfig[]): string {
-  const scheduleNow = new Date();
-  const waifuBlock = availableWaifus.length
-    ? availableWaifus
-        .map((waifu) => {
-          const displayName = waifu.displayName || waifu.name || waifu.id;
-          const persona = waifu.persona.trim() || "(no persona configured)";
-          const availability = formatWaifuAvailabilityForOrchestratorPrompt(waifu, scheduleNow);
-          return `### ${displayName} (ID: ${waifu.id})\n- Personality: ${persona}\n- Availability:\n${indentLines(availability, "  ")}`;
-        })
-        .join("\n\n")
-    : "No waifus are currently enabled for this channel.";
-
-  const currentTime = formatPromptCurrentHour(new Date());
-
+// W2 replaces the raw-persona preview with the generated persona digest.
+function castingCard(waifu: WaifuConfig, now: Date): string {
+  const tagName = promptTagName(waifu.name || waifu.id);
+  const displayName = waifu.displayName || waifu.name;
+  // The trailing replace drops a lone high surrogate left when the cap splits an emoji pair.
+  const preview = waifu.persona.trim().replace(/\s+/g, " ").slice(0, 200).replace(/[\uD800-\uDBFF]$/, "");
   return [
-    "You are the Orchestrator for a Discord group chat inhabited by AI waifus (characters).",
-    "Your job is to direct the room: decide which waifu(s) should respond next, in what order, or whether nobody should respond right now.",
-    "You must call the orchestrator_decision tool exactly once with your final decision.",
-    "",
-    "## Active Waifus",
-    waifuBlock,
-    "",
-    "## Current Time",
-    currentTime,
-    "",
-    "## Discord Server",
-    server.name ?? server.guildId,
-    "",
-    "## Decision Rules",
-    "1. Be natural. Real group chats do not require everyone to reply every time.",
-    "2. You are allowed to shape pacing, tension, comedy, interruption, silence, and escalation. Treat the room like a living scene, not a turn-taking queue.",
-    "3. Mentions, quotes, relationships, reactions, timestamps, and recent momentum are all useful signals, but none of them are hard rules.",
-    "4. Always pay special attention to the latest 10 messages. They are the strongest signal for what the room is currently doing, who may have been overlooked, and whether a loop is starting to form.",
-    "5. Sleep time, busy time, and consecutive-message heuristics are soft preferences. Break them whenever doing so would clearly improve conversational flow, realism, or enjoyment.",
-    "6. The same waifu may speak again, a different waifu may jump in, or multiple waifus may chain if it feels right.",
-    "7. Prefer a planned two-waifu chain when the second waifu has a distinct reaction and can follow after a small delaySeconds value.",
-    "8. After a single waifu message, do not default to no_reply. Consider whether another waifu should react, interrupt, disagree, tease, answer a missed user, or carry the beat one step further.",
-    "9. Avoid repetitive follow-ups that merely restate the same beat. Continue when the next message adds something new.",
-    "10. If a recent user message or direct ping went unnoticed while the room moved on, prefer steering someone to acknowledge it so the chat stays socially inclusive unless silence is clearly more natural.",
-    `11. \"no_reply\" is valid. If you choose it, set retriggerAfterSeconds to a natural delay between ${RETRIGGER_MIN_SECONDS} and ${RETRIGGER_MAX_SECONDS} seconds. respondingWaifus must be empty.`,
-    "12. Use timestamps and pacing. Slow gaps matter.",
-    `13. delaySeconds should reflect realistic reading and typing time from 0 to ${MAX_WAIFU_DELAY_SECONDS}. 0 means start immediately. When any of the latest four chat messages is from a human user, the first waifu starts immediately and later delays count from this decision time; otherwise delays count after the previous waifu finishes.`,
-    "14. replyStyle is a soft hint: \"normal\" by default; \"short\" for one terse line; \"long\" for a slightly fuller reply; \"sleepy\" for a low-energy voice. Use \"normal\" when in doubt.",
-    "15. repleyToMessageIndex is optional. Leave it null by default.",
-    "16. Most waifu messages should be normal messages, not Discord replies.",
-    "17. Do not set repleyToMessageIndex to the immediately previous message. If a waifu is simply responding to the latest beat, send a normal message instead.",
-    "18. If you are reviving, acknowledging, or directly answering an older user message or direct ping that went overlooked, you should usually set repleyToMessageIndex to that message's #N context index so the response stays anchored to the right person and beat.",
-    "19. Use repleyToMessageIndex only when targeting a specific older message materially improves clarity, isolates a side thread, answers an earlier question, or creates a specific social effect. Copy the #N index from the chat history.",
-    "",
-    "## sceneDirection",
-    "sceneDirection is an invisible director note for that waifu's next message only.",
-    "Use it when the next reply needs stronger steering than replyStyle alone can provide.",
-    "The latest 10 messages are a good place to spot loops early; when you notice one forming, use sceneDirection to cut it before it hardens.",
-    "You may use it to break loops, force a new beat, close a scene, redirect to a new topic, create an interruption, or shift momentum by changing the next objective.",
-    "This is not a personality rewrite and not a long paragraph.",
-    "Keep it short, concrete, and immediately actionable. One short sentence is usually enough.",
-    "When referring to a specific user inside sceneDirection, use that user's actual name from chat history. Do not write generic phrases like \"the user\" when a specific person is meant.",
-    "Name the intended participants explicitly when the direction involves more than one person.",
-    "Do not use ambiguous group references like \"us\", \"them\", \"everyone\", or implied membership when specific names can be given.",
-    "If the beat is about including or excluding someone, state exactly who is already involved and who should be pulled in.",
-    "sceneDirection does not always need to follow the current mood or flow exactly. It may deliberately start something new when that will improve the scene.",
-    "Use natural bridges when pivoting when possible.",
-    "If multiple waifus respond, each one may receive a different sceneDirection.",
-    "If no special steering is needed, return null.",
-    "",
-    "## Tool",
-    "Call orchestrator_decision exactly once with the following arguments and no normal assistant text:",
-    "{",
-    "  \"action\": \"reply\" | \"no_reply\",",
-    "  \"respondingWaifus\": [",
-    `    { \"waifuId\": string, \"delaySeconds\": number (0..${MAX_WAIFU_DELAY_SECONDS}), \"replyStyle\": \"normal\"|\"short\"|\"long\"|\"sleepy\", \"repleyToMessageIndex\": number|null, \"sceneDirection\": string|null }`,
-    "  ],",
-    `  \"retriggerAfterSeconds\": number (${RETRIGGER_MIN_SECONDS}..${RETRIGGER_MAX_SECONDS}) | null,`,
-    "  \"reasoning\": string",
-    "}",
-    "When action=\"reply\", respondingWaifus must be non-empty and retriggerAfterSeconds must be null.",
-    `When action=\"no_reply\", respondingWaifus must be empty and retriggerAfterSeconds must be a number between ${RETRIGGER_MIN_SECONDS} and ${RETRIGGER_MAX_SECONDS}.`
+    `<${tagName}>`,
+    `ID: ${waifu.id} · ${displayName}`,
+    `About: ${preview || "(no persona configured)"}`,
+    `Now: ${castingAvailabilityLine(waifu, now)}`,
+    `</${tagName}>`
   ].join("\n");
+}
+
+function castingAvailabilityLine(waifu: WaifuConfig, now: Date): string {
+  const minutes = localTimeOfDayMinutes(now);
+  const parts: string[] = [];
+  const sleep = waifu.availability.sleep;
+  if (sleep.enabled && dailyIntervalContains(minutes, sleep)) {
+    parts.push(`likely asleep (sleep ${sleep.start}–${sleep.end})`);
+  } else {
+    parts.push("awake");
+  }
+  for (const interval of waifu.availability.busy) {
+    if (dailyIntervalContains(minutes, interval)) {
+      parts.push(`busy: ${interval.reason}`);
+    }
+  }
+  return parts.join(" · ");
 }
 
 const TYPING_REFRESH_MS = 8000;

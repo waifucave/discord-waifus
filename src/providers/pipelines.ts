@@ -1,13 +1,13 @@
 import { z } from "zod";
-import { AttachmentImage, ContextMessage, OrchestratorNoReplyMarker, formatOrchestratorMessageBlock, formatTimestamp, formatWaifuContextBlock } from "../orchestration/context.js";
+import { AttachmentImage, ContextMessage, formatOrchestratorMessageBlock, formatTimestamp, formatWaifuContextBlock, OrchestratorWakeMarker } from "../orchestration/context.js";
 import {
   OrchestratorActionSchema,
   OrchestratorDecision,
   OrchestratorDecisionSchema,
   MAX_WAIFU_DELAY_SECONDS,
-  REPLY_STYLE_VALUES,
-  ReplyStyle,
-  ReplyStyleSchema,
+  DIRECTIVE_GOAL_MAX_CHARS,
+  MODEL_DIRECTIVE_INTENTS,
+  Directive,
   RETRIGGER_MAX_SECONDS,
   RETRIGGER_MIN_SECONDS
 } from "../orchestration/decisions.js";
@@ -87,7 +87,6 @@ class OpenAiCompatibleChatPipeline implements ModelPipeline {
             contextToChatMessagesForWaifu(request.messages, this.model.supportsImageInput),
             request.midSystemBlock ? { role: "system", content: request.midSystemBlock } : undefined
           ),
-          ...replyStyleMessagesForChat(request.replyStyle),
           ...(request.trailingSystemBlock ? [{ role: "system", content: request.trailingSystemBlock }] : []),
           ...(request.retryUserMessage ? [{ role: "user", content: request.retryUserMessage }] : [])
         ]),
@@ -120,12 +119,13 @@ class OpenAiCompatibleChatPipeline implements ModelPipeline {
           systemPrompt: request.systemPrompt ?? "",
           messages: request.messages,
           decisions: request.pastDecisions ?? [],
+          markers: request.decisionMarkers,
           trailingPrompt: request.trailingPrompt ?? ""
         })),
         temperature: openAiChatTemperature(this.model, request.temperature ?? 0.2),
         top_p: openAiChatTopP(this.model, request.topP),
         max_tokens: request.maxOutputTokens,
-        tools: [openAiChatOrchestratorTool(request.availableWaifuIds, request.replyRequired)],
+        tools: [openAiChatOrchestratorTool(request.availableWaifuIds, request.replyRequired, request.directiveBudgetOpen ?? true)],
         tool_choice: openAiChatForcedToolChoice(this.model, ORCHESTRATOR_TOOL_NAME),
         stream: false,
         ...reasoningFieldsForOpenAiChat(this.model, reasoning),
@@ -135,7 +135,7 @@ class OpenAiCompatibleChatPipeline implements ModelPipeline {
       extract: (json) => extractOpenAiChatToolArguments(json, ORCHESTRATOR_TOOL_NAME),
       queryRole: "orchestrator"
     });
-    return parseDecision(text, new Map(), request.replyRequired);
+    return parseDecision(text, request.replyRequired);
   }
 
   async decideStageManagerObservations(request: StageManagerObserveRequest): Promise<StageManagerObservation[]> {
@@ -245,7 +245,6 @@ class OpenAiResponsesPipeline implements ModelPipeline {
             contextToResponsesInputForWaifu(request.messages, this.model.supportsImageInput),
             request.midSystemBlock ? { role: "system", content: request.midSystemBlock } : undefined
           ),
-          ...replyStyleMessagesForChat(request.replyStyle),
           ...(request.trailingSystemBlock ? [{ role: "system", content: request.trailingSystemBlock }] : []),
           ...(request.retryUserMessage ? [{ role: "user", content: request.retryUserMessage }] : [])
         ],
@@ -274,12 +273,13 @@ class OpenAiResponsesPipeline implements ModelPipeline {
         input: buildOpenAiResponsesOrchestratorInput({
           messages: request.messages,
           decisions: request.pastDecisions ?? [],
+          markers: request.decisionMarkers,
           trailingPrompt: request.trailingPrompt ?? ""
         }),
         temperature: request.temperature ?? 0.2,
         top_p: request.topP,
         max_output_tokens: request.maxOutputTokens,
-        tools: [openAiResponsesOrchestratorTool(request.availableWaifuIds, request.replyRequired)],
+        tools: [openAiResponsesOrchestratorTool(request.availableWaifuIds, request.replyRequired, request.directiveBudgetOpen ?? true)],
         tool_choice: { type: "function", name: ORCHESTRATOR_TOOL_NAME },
         ...reasoningFieldsForOpenAiResponses(this.model, request.reasoning),
         ...openAiResponsesSamplingOverrides(this.model)
@@ -288,7 +288,7 @@ class OpenAiResponsesPipeline implements ModelPipeline {
       extract: (json) => extractOpenAiResponsesToolArguments(json, ORCHESTRATOR_TOOL_NAME),
       queryRole: "orchestrator"
     });
-    return parseDecision(text, new Map(), request.replyRequired);
+    return parseDecision(text, request.replyRequired);
   }
 
   async decideStageManagerObservations(request: StageManagerObserveRequest): Promise<StageManagerObservation[]> {
@@ -390,7 +390,6 @@ class AnthropicMessagesPipeline implements ModelPipeline {
             contextToAnthropicMessagesForWaifu(request.messages, this.model.supportsImageInput),
             request.midSystemBlock ? { role: "user" as const, content: request.midSystemBlock } : undefined
           ),
-          ...replyStyleMessagesForAnthropic(request.replyStyle),
           ...(request.trailingSystemBlock ? [{ role: "user" as const, content: request.trailingSystemBlock }] : []),
           ...(request.retryUserMessage ? [{ role: "user" as const, content: request.retryUserMessage }] : [])
         ],
@@ -425,18 +424,19 @@ class AnthropicMessagesPipeline implements ModelPipeline {
         messages: buildAnthropicOrchestratorMessages({
           messages: request.messages,
           decisions: request.pastDecisions ?? [],
+          markers: request.decisionMarkers,
           trailingPrompt: request.trailingPrompt ?? ""
         }),
         ...anthropicSamplingPayload(this.model, request.temperature ?? 0.2, request.topP, undefined),
         max_tokens: maxTokens,
-        tools: [anthropicOrchestratorTool(request.availableWaifuIds, request.replyRequired)],
+        tools: [anthropicOrchestratorTool(request.availableWaifuIds, request.replyRequired, request.directiveBudgetOpen ?? true)],
         tool_choice: { type: "tool", name: ORCHESTRATOR_TOOL_NAME }
       },
       signal: request.signal,
       extract: (json) => extractAnthropicToolArguments(json, ORCHESTRATOR_TOOL_NAME),
       queryRole: "orchestrator"
     });
-    return parseDecision(text, new Map(), request.replyRequired);
+    return parseDecision(text, request.replyRequired);
   }
 
   async decideStageManagerObservations(request: StageManagerObserveRequest): Promise<StageManagerObservation[]> {
@@ -523,13 +523,11 @@ class GoogleGenerativeLanguagePipeline implements ModelPipeline {
       request.messages,
       this.model.supportsImageInput
     );
-    const replyHint = replyStyleHint(request.replyStyle);
     const contents = [
       ...injectMemoriesIntoChatContext(
         contextContents,
         request.midSystemBlock ? googleUserTurn(request.midSystemBlock) : undefined
       ),
-      ...(replyHint ? [googleUserTurn(replyHint)] : []),
       ...(request.trailingSystemBlock ? [googleUserTurn(request.trailingSystemBlock)] : []),
       ...(request.retryUserMessage ? [googleUserTurn(request.retryUserMessage)] : [])
     ];
@@ -566,6 +564,7 @@ class GoogleGenerativeLanguagePipeline implements ModelPipeline {
         contents: buildGoogleOrchestratorContents({
           messages: request.messages,
           decisions: request.pastDecisions ?? [],
+          markers: request.decisionMarkers,
           trailingPrompt: request.trailingPrompt ?? ""
         }),
         generationConfig: googleGenerationConfig(this.model, {
@@ -575,14 +574,14 @@ class GoogleGenerativeLanguagePipeline implements ModelPipeline {
           reasoning: request.reasoning
         }),
         safetySettings: googleSafetySettings,
-        tools: [googleAiStudioOrchestratorTool(request.availableWaifuIds, request.replyRequired)],
+        tools: [googleAiStudioOrchestratorTool(request.availableWaifuIds, request.replyRequired, request.directiveBudgetOpen ?? true)],
         toolConfig: googleForceToolConfig(ORCHESTRATOR_TOOL_NAME)
       }),
       signal: request.signal,
       extract: (json) => extractGoogleToolArguments(json, ORCHESTRATOR_TOOL_NAME),
       queryRole: "orchestrator"
     });
-    return parseDecision(text, new Map(), request.replyRequired);
+    return parseDecision(text, request.replyRequired);
   }
 
   async decideStageManagerObservations(request: StageManagerObserveRequest): Promise<StageManagerObservation[]> {
@@ -763,10 +762,7 @@ type ContextRendering = {
   indexToId: Map<number, string>;
 };
 
-function renderContext(
-  messages: ContextMessage[],
-  markers: OrchestratorNoReplyMarker[] = []
-): ContextRendering {
+function renderContext(messages: ContextMessage[]): ContextRendering {
   const idToIndex = new Map<string, number>();
   const indexToId = new Map<number, string>();
   messages.forEach((message, i) => {
@@ -774,33 +770,10 @@ function renderContext(
     idToIndex.set(message.id, index);
     indexToId.set(index, message.id);
   });
-  type Item =
-    | { kind: "message"; message: ContextMessage; index: number }
-    | { kind: "marker"; marker: OrchestratorNoReplyMarker };
-  const items: Item[] = [
-    ...messages.map((message, i): Item => ({ kind: "message", message, index: i + 1 })),
-    ...markers.map((marker): Item => ({ kind: "marker", marker }))
-  ];
-  items.sort((a, b) => {
-    const ta = a.kind === "message" ? a.message.timestamp : a.marker.timestamp;
-    const tb = b.kind === "message" ? b.message.timestamp : b.marker.timestamp;
-    if (ta === tb) {
-      if (a.kind === b.kind) return 0;
-      return a.kind === "message" ? -1 : 1;
-    }
-    return ta < tb ? -1 : 1;
-  });
-  const lines = items.map((item) =>
-    item.kind === "message"
-      ? formatContextMessage(item.message, item.index, idToIndex)
-      : formatNoReplyMarker(item.marker)
+  const lines = messages.map((message, i) =>
+    formatContextMessage(message, i + 1, idToIndex)
   );
   return { block: lines.join("\n"), idToIndex, indexToId };
-}
-
-function formatNoReplyMarker(marker: OrchestratorNoReplyMarker): string {
-  const reason = marker.reasoning.replace(/\s+/g, " ").trim();
-  return `[no_reply] [timestamp: ${marker.timestamp}] [reason: ${reason}] [retrigger: ${marker.retriggerAfterSeconds}s]`;
 }
 
 function currentTimeBlock(): string {
@@ -822,62 +795,103 @@ function contextToUserMessage(rendering: ContextRendering) {
   };
 }
 
-const ORCHESTRATOR_TOOL_RESULT_PLACEHOLDER = "ok";
-
 type OrchestratorTimelineItem =
   | { kind: "message"; message: ContextMessage; timestamp: string }
-  | { kind: "decision"; decision: OrchestratorDecisionHistoryEntry; timestamp: string };
+  | { kind: "decision"; decision: OrchestratorDecisionHistoryEntry; timestamp: string }
+  | { kind: "note"; text: string; timestamp: string };
+
+const GAP_NOTE_MIN_MS = 15 * 60 * 1000;
+
+function formatGapLabel(gapMs: number): string {
+  const minutes = Math.round(gapMs / 60_000);
+  if (minutes < 90) return `[${minutes}m pass]`;
+  const hours = Math.round(gapMs / 3_600_000);
+  return `[${hours}h pass]`;
+}
+
+function gapNotes(messages: ContextMessage[]): OrchestratorTimelineItem[] {
+  const notes: OrchestratorTimelineItem[] = [];
+  for (let i = 1; i < messages.length; i += 1) {
+    const gapMs = Date.parse(messages[i].timestamp) - Date.parse(messages[i - 1].timestamp);
+    if (gapMs >= GAP_NOTE_MIN_MS) {
+      // timestamp matches the following message; kindRank places the note before it
+      notes.push({ kind: "note", text: formatGapLabel(gapMs), timestamp: messages[i].timestamp });
+    }
+  }
+  return notes;
+}
+
+function formatWakeMarker(marker: OrchestratorWakeMarker): string {
+  const plan = marker.wakePlan ? ` Your plan was: "${marker.wakePlan}".` : "";
+  return (
+    `[wake: the ${marker.scheduledSeconds}s pause you scheduled has elapsed with no new messages.${plan}` +
+    " Execute the plan now, or if the room state changed, decide fresh. Do not schedule another identical pause — either act, or back off with a longer pause.]"
+  );
+}
 
 function buildOrchestratorTimeline(
   messages: ContextMessage[],
-  decisions: OrchestratorDecisionHistoryEntry[]
+  decisions: OrchestratorDecisionHistoryEntry[],
+  markers: OrchestratorWakeMarker[]
 ): OrchestratorTimelineItem[] {
   const oldestMessageTimestamp = messages.length ? messages[0].timestamp : undefined;
+  const kindRank = { note: 0, message: 1, decision: 2 } as const;
   const items: OrchestratorTimelineItem[] = [
-    ...messages.map((message): OrchestratorTimelineItem => ({
-      kind: "message",
-      message,
-      timestamp: message.timestamp
-    })),
+    ...messages.map((message): OrchestratorTimelineItem => ({ kind: "message", message, timestamp: message.timestamp })),
+    ...gapNotes(messages),
     ...decisions
       .filter((decision) =>
         oldestMessageTimestamp === undefined ? false : decision.createdAt >= oldestMessageTimestamp
       )
-      .map((decision): OrchestratorTimelineItem => ({
-        kind: "decision",
-        decision,
-        timestamp: decision.createdAt
-      }))
+      .map((decision): OrchestratorTimelineItem => ({ kind: "decision", decision, timestamp: decision.createdAt })),
+    ...markers.map((marker): OrchestratorTimelineItem => ({ kind: "note", text: formatWakeMarker(marker), timestamp: marker.timestamp }))
   ];
   items.sort((a, b) => {
-    if (a.timestamp === b.timestamp) {
-      if (a.kind === b.kind) return 0;
-      return a.kind === "message" ? -1 : 1;
-    }
+    if (a.timestamp === b.timestamp) return kindRank[a.kind] - kindRank[b.kind];
     return a.timestamp < b.timestamp ? -1 : 1;
   });
   return items;
 }
 
+function clipReplayText(value: string, maxLength: number): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  return normalized.length <= maxLength ? normalized : `${normalized.slice(0, maxLength - 1)}…`;
+}
+
+// Replay is deliberately lossy: goal text, delays, and full reasoning are omitted so past
+// decisions cannot teach the model a directive-writing or scripting habit.
 function serializeOrchestratorDecisionArguments(decision: OrchestratorDecisionHistoryEntry): Record<string, unknown> {
   return {
     action: decision.action,
     respondingWaifus: decision.respondingWaifus.map((responder) => ({
       waifuId: responder.waifuId,
-      delaySeconds: responder.delaySeconds,
-      replyStyle: responder.replyStyle,
-      repleyToMessageIndex: null,
-      sceneDirection: responder.sceneDirection ?? null
+      directive: responder.directive ? { intent: responder.directive.intent } : null
     })),
     retriggerAfterSeconds:
       decision.action === "no_reply" ? decision.retriggerAfterSeconds ?? null : null,
-    reasoning: decision.reasoning
+    wakePlan: decision.action === "no_reply" ? decision.wakePlan ?? null : null,
+    reasoning: clipReplayText(decision.reasoning, 160)
   };
+}
+
+function formatDecisionOutcome(decision: OrchestratorDecisionHistoryEntry): string {
+  if (decision.action === "no_reply") {
+    return `paused ${decision.retriggerAfterSeconds ?? "?"}s`;
+  }
+  const deviations = decision.responderOutcomes
+    // "pending" means the chain was cut before this responder fired — the interrupted arm covers it
+    .filter((outcome) => outcome.status !== "sent" && outcome.status !== "pending")
+    .map((outcome) => `${outcome.waifuId}: ${outcome.status}`);
+  if (decision.status === "interrupted") {
+    deviations.push("interrupted by new activity");
+  }
+  return deviations.length ? deviations.join("; ") : "sent";
 }
 
 type OrchestratorQueryInput = {
   messages: ContextMessage[];
   decisions: OrchestratorDecisionHistoryEntry[];
+  markers?: OrchestratorWakeMarker[];
   trailingPrompt: string;
 };
 
@@ -885,8 +899,10 @@ function buildOpenAiChatOrchestratorMessages(
   input: OrchestratorQueryInput & { model: ModelCapabilityMetadata; systemPrompt: string }
 ): Array<Record<string, unknown>> {
   const messages: Array<Record<string, unknown>> = [{ role: "system", content: input.systemPrompt }];
-  for (const item of buildOrchestratorTimeline(input.messages, input.decisions)) {
-    if (item.kind === "message") {
+  for (const item of buildOrchestratorTimeline(input.messages, input.decisions, input.markers ?? [])) {
+    if (item.kind === "note") {
+      messages.push({ role: "user", content: item.text });
+    } else if (item.kind === "message") {
       messages.push({ role: "user", content: formatOrchestratorMessageBlock(item.message) });
     } else {
       const args = serializeOrchestratorDecisionArguments(item.decision);
@@ -907,7 +923,7 @@ function buildOpenAiChatOrchestratorMessages(
       messages.push({
         role: "tool",
         tool_call_id: item.decision.id,
-        content: ORCHESTRATOR_TOOL_RESULT_PLACEHOLDER
+        content: formatDecisionOutcome(item.decision)
       });
     }
   }
@@ -917,8 +933,10 @@ function buildOpenAiChatOrchestratorMessages(
 
 function buildOpenAiResponsesOrchestratorInput(input: OrchestratorQueryInput): Array<Record<string, unknown>> {
   const items: Array<Record<string, unknown>> = [];
-  for (const item of buildOrchestratorTimeline(input.messages, input.decisions)) {
-    if (item.kind === "message") {
+  for (const item of buildOrchestratorTimeline(input.messages, input.decisions, input.markers ?? [])) {
+    if (item.kind === "note") {
+      items.push({ role: "user", content: [{ type: "input_text", text: item.text }] });
+    } else if (item.kind === "message") {
       items.push({ role: "user", content: formatOrchestratorMessageBlock(item.message) });
     } else {
       const args = serializeOrchestratorDecisionArguments(item.decision);
@@ -931,7 +949,7 @@ function buildOpenAiResponsesOrchestratorInput(input: OrchestratorQueryInput): A
       items.push({
         type: "function_call_output",
         call_id: item.decision.id,
-        output: ORCHESTRATOR_TOOL_RESULT_PLACEHOLDER
+        output: formatDecisionOutcome(item.decision)
       });
     }
   }
@@ -951,8 +969,10 @@ function buildAnthropicOrchestratorMessages(input: OrchestratorQueryInput): Arra
       userBlocks = [];
     }
   };
-  for (const item of buildOrchestratorTimeline(input.messages, input.decisions)) {
-    if (item.kind === "message") {
+  for (const item of buildOrchestratorTimeline(input.messages, input.decisions, input.markers ?? [])) {
+    if (item.kind === "note") {
+      userBlocks.push({ type: "text", text: item.text });
+    } else if (item.kind === "message") {
       userBlocks.push({ type: "text", text: formatOrchestratorMessageBlock(item.message) });
     } else {
       flushUser();
@@ -971,7 +991,7 @@ function buildAnthropicOrchestratorMessages(input: OrchestratorQueryInput): Arra
       userBlocks.push({
         type: "tool_result",
         tool_use_id: item.decision.id,
-        content: ORCHESTRATOR_TOOL_RESULT_PLACEHOLDER
+        content: formatDecisionOutcome(item.decision)
       });
     }
   }
@@ -982,8 +1002,10 @@ function buildAnthropicOrchestratorMessages(input: OrchestratorQueryInput): Arra
 
 function buildGoogleOrchestratorContents(input: OrchestratorQueryInput): Array<Record<string, unknown>> {
   const contents: Array<Record<string, unknown>> = [];
-  for (const item of buildOrchestratorTimeline(input.messages, input.decisions)) {
-    if (item.kind === "message") {
+  for (const item of buildOrchestratorTimeline(input.messages, input.decisions, input.markers ?? [])) {
+    if (item.kind === "note") {
+      contents.push(googleUserTurn(item.text));
+    } else if (item.kind === "message") {
       contents.push(googleUserTurn(formatOrchestratorMessageBlock(item.message)));
     } else {
       const args = serializeOrchestratorDecisionArguments(item.decision);
@@ -997,7 +1019,7 @@ function buildGoogleOrchestratorContents(input: OrchestratorQueryInput): Array<R
           {
             functionResponse: {
               name: ORCHESTRATOR_TOOL_NAME,
-              response: { output: ORCHESTRATOR_TOOL_RESULT_PLACEHOLDER }
+              response: { output: formatDecisionOutcome(item.decision) }
             }
           }
         ]
@@ -1006,21 +1028,6 @@ function buildGoogleOrchestratorContents(input: OrchestratorQueryInput): Array<R
   }
   contents.push(googleUserTurn(input.trailingPrompt));
   return contents;
-}
-
-function replyStyleHint(replyStyle: ReplyStyle | undefined): string | undefined {
-  if (!replyStyle || replyStyle === "normal") return undefined;
-  return `<reply_style>${replyStyle}</reply_style>`;
-}
-
-function replyStyleMessagesForChat(replyStyle: ReplyStyle | undefined): Array<{ role: "system"; content: string }> {
-  const hint = replyStyleHint(replyStyle);
-  return hint ? [{ role: "system", content: hint }] : [];
-}
-
-function replyStyleMessagesForAnthropic(replyStyle: ReplyStyle | undefined): Array<{ role: "user"; content: string }> {
-  const hint = replyStyleHint(replyStyle);
-  return hint ? [{ role: "user", content: hint }] : [];
 }
 
 function contextToChatMessagesForWaifu(messages: ContextMessage[], includeImages: boolean) {
@@ -1245,8 +1252,6 @@ const REVIEWER_TOOL_PARAMETERS = {
 const ORCHESTRATOR_TOOL_NAME = "orchestrator_decision";
 const ORCHESTRATOR_TOOL_DESCRIPTION = "Choose whether a waifu should reply next and which waifu(s) should respond.";
 
-export const ORCHESTRATOR_TOOL_PARAMETERS = orchestratorToolParameters();
-
 const PICK_NEXT_WAIFU_TOOL_NAME = "PickNextWaifu";
 const PICK_NEXT_WAIFU_TOOL_DESCRIPTION =
   "Pick one configured waifu to reply immediately after this waifu message when a direct handoff fits.";
@@ -1269,7 +1274,11 @@ function shortTermMemoryToolParameters(): object {
   };
 }
 
-function orchestratorToolParameters(availableWaifuIds?: string[], replyRequired = false): object {
+function orchestratorToolParameters(
+  availableWaifuIds?: string[],
+  replyRequired = false,
+  directiveBudgetOpen = true
+): object {
   const waifuIds = [...new Set((availableWaifuIds ?? []).filter(Boolean))];
   const waifuIdSchema: Record<string, unknown> = {
     type: "string",
@@ -1289,11 +1298,12 @@ function orchestratorToolParameters(availableWaifuIds?: string[], replyRequired 
         enum: replyRequired ? ["reply"] : ["reply", "no_reply"],
         description: replyRequired
           ? "\"reply\" is required for this manual run."
-          : "\"reply\" when at least one waifu should answer; \"no_reply\" when nobody should speak now."
+          : "\"reply\" when at least one waifu should answer; \"no_reply\" when nobody should speak now. no_reply is a normal, frequent choice."
       },
       respondingWaifus: {
         type: "array",
-        description: "Ordered list of waifus that will reply, in send order. Must be non-empty when action is \"reply\" and must be empty when action is \"no_reply\". Waifus speak one after the other; any incoming chat message cancels the rest of the chain.",
+        description:
+          "Waifus that will reply, in speaking order. Empty array when action is \"no_reply\". One responder is the normal case; two only when the second has a genuinely distinct reaction.",
         items: {
           type: "object",
           additionalProperties: false,
@@ -1303,23 +1313,37 @@ function orchestratorToolParameters(availableWaifuIds?: string[], replyRequired 
               type: "number",
               minimum: 0,
               maximum: MAX_WAIFU_DELAY_SECONDS,
-              description: `Realistic reading/typing delay before this waifu starts replying, in seconds. 0 means start immediately; maximum is ${MAX_WAIFU_DELAY_SECONDS}.`
+              description: `Realistic reading/typing delay in seconds before this waifu starts. Defaults to 0 (start immediately); maximum ${MAX_WAIFU_DELAY_SECONDS}.`
             },
-            replyStyle: {
-              type: "string",
-              enum: [...REPLY_STYLE_VALUES],
-              description: "Soft hint for this reply's length and tone: \"normal\" is the default, \"short\" is one terse line, \"long\" leans toward a slightly longer reply, \"sleepy\" sounds tired/low-energy."
-            },
-            repleyToMessageIndex: {
-              anyOf: [{ type: "integer", minimum: 1 }, { type: "null" }],
-              description: "Optional #N context index to reply to; only set when intentionally anchoring to a specific older message. Otherwise null."
-            },
-            sceneDirection: {
-              anyOf: [{ type: "string" }, { type: "null" }],
-              description: "Optional one-line invisible direction shaping this waifu's next message. Use when the persona alone won't carry the beat. Null when no special steering is needed."
+            directive: {
+              anyOf: [
+                {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    intent: {
+                      type: "string",
+                      enum: [...MODEL_DIRECTIVE_INTENTS],
+                      description:
+                        "Why this message needs steering: break_loop (recent messages are circling), change_topic (land a new named topic), include_person (pull a named quiet participant in), close_beat (wind the exchange down), interrupt (cut in from a new angle), spotlight (pick up a specific overlooked message)."
+                    },
+                    goal: {
+                      type: "string",
+                      maxLength: DIRECTIVE_GOAL_MAX_CHARS,
+                      description:
+                        "A short GOAL for this one message ('steer toward LTS's car project', 'pull Kevin back in') — never reply content, wording, or anything she would say."
+                    }
+                  },
+                  required: ["intent", "goal"]
+                },
+                { type: "null" }
+              ],
+              description: directiveBudgetOpen
+                ? "Usually null. Set only for a genuine steering moment; the waifu's persona handles normal flow."
+                : "Rate-limited right now: the runtime will reject directives this pass unless the intent is break_loop with strong cause. Prefer null."
             }
           },
-          required: ["waifuId", "delaySeconds", "replyStyle", "repleyToMessageIndex", "sceneDirection"]
+          required: ["waifuId"]
         }
       },
       retriggerAfterSeconds: {
@@ -1327,14 +1351,19 @@ function orchestratorToolParameters(availableWaifuIds?: string[], replyRequired 
           { type: "number", minimum: RETRIGGER_MIN_SECONDS, maximum: RETRIGGER_MAX_SECONDS },
           { type: "null" }
         ],
-        description: `Required when action is \"no_reply\": seconds to wait before the orchestrator re-evaluates the room (${RETRIGGER_MIN_SECONDS}..${RETRIGGER_MAX_SECONDS}). Must be null when action is \"reply\".`
+        description: `Only with action \"no_reply\": seconds before you re-check the room (${RETRIGGER_MIN_SECONDS}..${RETRIGGER_MAX_SECONDS}). New human messages wake you regardless, so long pauses cost nothing. Null when replying.`
+      },
+      wakePlan: {
+        anyOf: [{ type: "string" }, { type: "null" }],
+        description:
+          "Required with action \"no_reply\": one sentence on what you intend when the timer fires ('if nobody answered Riko, have Lumi answer it'; 'dead room, just re-check'). Null when replying."
       },
       reasoning: {
         type: "string",
         description: "Brief operational reason for this decision."
       }
     },
-    required: ["action", "respondingWaifus", "retriggerAfterSeconds", "reasoning"]
+    required: ["action", "respondingWaifus", "wakePlan", "reasoning"]
   };
 }
 
@@ -1540,16 +1569,16 @@ function flatStageManagerToolParameters(availableWaifuIds?: string[]): object {
   };
 }
 
-function openAiChatOrchestratorTool(availableWaifuIds?: string[], replyRequired = false) {
-  return openAiChatTool(ORCHESTRATOR_TOOL_NAME, ORCHESTRATOR_TOOL_DESCRIPTION, orchestratorToolParameters(availableWaifuIds, replyRequired));
+function openAiChatOrchestratorTool(availableWaifuIds?: string[], replyRequired = false, directiveBudgetOpen = true) {
+  return openAiChatTool(ORCHESTRATOR_TOOL_NAME, ORCHESTRATOR_TOOL_DESCRIPTION, orchestratorToolParameters(availableWaifuIds, replyRequired, directiveBudgetOpen));
 }
 
-function openAiResponsesOrchestratorTool(availableWaifuIds?: string[], replyRequired = false) {
-  return openAiResponsesTool(ORCHESTRATOR_TOOL_NAME, ORCHESTRATOR_TOOL_DESCRIPTION, orchestratorToolParameters(availableWaifuIds, replyRequired));
+function openAiResponsesOrchestratorTool(availableWaifuIds?: string[], replyRequired = false, directiveBudgetOpen = true) {
+  return openAiResponsesTool(ORCHESTRATOR_TOOL_NAME, ORCHESTRATOR_TOOL_DESCRIPTION, orchestratorToolParameters(availableWaifuIds, replyRequired, directiveBudgetOpen));
 }
 
-function anthropicOrchestratorTool(availableWaifuIds?: string[], replyRequired = false) {
-  return anthropicTool(ORCHESTRATOR_TOOL_NAME, ORCHESTRATOR_TOOL_DESCRIPTION, orchestratorToolParameters(availableWaifuIds, replyRequired));
+function anthropicOrchestratorTool(availableWaifuIds?: string[], replyRequired = false, directiveBudgetOpen = true) {
+  return anthropicTool(ORCHESTRATOR_TOOL_NAME, ORCHESTRATOR_TOOL_DESCRIPTION, orchestratorToolParameters(availableWaifuIds, replyRequired, directiveBudgetOpen));
 }
 
 function openAiChatPickNextWaifuTool(availableWaifuIds?: string[]) {
@@ -1781,12 +1810,15 @@ const RawStageManagerObservationSchema = z.object({
   kind: z.enum(OBSERVATION_KINDS)
 });
 
+const RawDirectiveSchema = z.object({
+  intent: z.string().min(1),
+  goal: z.string().min(1)
+});
+
 const RawRespondingWaifuSchema = z.object({
   waifuId: z.string().min(1),
-  delaySeconds: z.number().min(0),
-  replyStyle: ReplyStyleSchema,
-  repleyToMessageIndex: z.union([z.number().int().min(1), z.null()]).optional(),
-  sceneDirection: z.union([z.string().min(1), z.null()]).optional()
+  delaySeconds: z.number().min(0).nullish(),
+  directive: RawDirectiveSchema.nullish().catch(null)
 });
 
 const PickNextWaifuCallSchema = z.object({
@@ -1799,6 +1831,7 @@ const RawOrchestratorDecisionSchema = z.object({
   retriggerAfterSeconds: z
     .union([z.number().min(RETRIGGER_MIN_SECONDS).max(RETRIGGER_MAX_SECONDS), z.null()])
     .optional(),
+  wakePlan: z.union([z.string(), z.null()]).optional(),
   reasoning: z.string().min(1)
 });
 
@@ -1848,7 +1881,17 @@ const RawFlatStageManagerToolCallSchema = z.object({
   reason: z.string().optional()
 });
 
-function parseDecision(text: string, indexToId: Map<number, string>, replyRequired = false): OrchestratorDecision {
+function normalizeRawDirective(
+  directive: { intent: string; goal: string } | null | undefined
+): Directive | undefined {
+  if (!directive) return undefined;
+  if (!(MODEL_DIRECTIVE_INTENTS as readonly string[]).includes(directive.intent)) return undefined;
+  const goal = directive.goal.trim();
+  if (!goal) return undefined;
+  return { intent: directive.intent as Directive["intent"], goal };
+}
+
+function parseDecision(text: string, replyRequired = false): OrchestratorDecision {
   try {
     const parsed = JSON.parse(stripCodeFence(text));
     const raw = RawOrchestratorDecisionSchema.parse(parsed);
@@ -1859,13 +1902,12 @@ function parseDecision(text: string, indexToId: Map<number, string>, replyRequir
       action: raw.action,
       respondingWaifus: raw.respondingWaifus.map((entry) => ({
         waifuId: entry.waifuId,
-        delaySeconds: entry.delaySeconds,
-        replyStyle: entry.replyStyle,
-        replyToMessageId: replyToMessageIdForIndex(entry.repleyToMessageIndex, indexToId),
-        sceneDirection: entry.sceneDirection ?? undefined
+        delaySeconds: entry.delaySeconds ?? 0,
+        directive: normalizeRawDirective(entry.directive)
       })),
       retriggerAfterSeconds:
         raw.retriggerAfterSeconds === null ? undefined : raw.retriggerAfterSeconds,
+      wakePlan: raw.wakePlan ?? undefined,
       reasoning: raw.reasoning
     });
   } catch (error) {
@@ -1874,20 +1916,6 @@ function parseDecision(text: string, indexToId: Map<number, string>, replyRequir
       error: error instanceof Error ? error.message : String(error)
     });
   }
-}
-
-function replyToMessageIdForIndex(
-  repleyToMessageIndex: number | null | undefined,
-  indexToId: Map<number, string>
-): string | undefined {
-  if (repleyToMessageIndex === null || repleyToMessageIndex === undefined) {
-    return undefined;
-  }
-  const messageId = indexToId.get(repleyToMessageIndex);
-  if (!messageId) {
-    throw new Error(`repleyToMessageIndex #${repleyToMessageIndex} does not exist in the provided context.`);
-  }
-  return messageId;
 }
 
 function parseStageManagerCalls(text: string): StageManagerToolCall[] {
@@ -2644,8 +2672,8 @@ function googleForceToolConfig(name: string) {
   return { functionCallingConfig: { mode: "ANY", allowedFunctionNames: [name] } };
 }
 
-function googleAiStudioOrchestratorTool(availableWaifuIds?: string[], replyRequired = false) {
-  return googleAiStudioTool(ORCHESTRATOR_TOOL_NAME, ORCHESTRATOR_TOOL_DESCRIPTION, orchestratorToolParameters(availableWaifuIds, replyRequired));
+function googleAiStudioOrchestratorTool(availableWaifuIds?: string[], replyRequired = false, directiveBudgetOpen = true) {
+  return googleAiStudioTool(ORCHESTRATOR_TOOL_NAME, ORCHESTRATOR_TOOL_DESCRIPTION, orchestratorToolParameters(availableWaifuIds, replyRequired, directiveBudgetOpen));
 }
 
 function googleAiStudioStageManagerTool(availableWaifuIds?: string[]) {
@@ -2810,3 +2838,7 @@ function extractGoogleToolArguments(json: unknown, toolName: string): string {
   if (args && typeof args === "object") return JSON.stringify(args);
   return extractGoogleText(parsed);
 }
+
+export const ORCHESTRATOR_TOOL_PARAMETERS = orchestratorToolParameters();
+
+export const __testables = { parseDecision, buildOpenAiChatOrchestratorMessages, formatDecisionOutcome, buildOrchestratorTimeline, serializeOrchestratorDecisionArguments };

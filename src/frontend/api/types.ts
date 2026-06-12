@@ -96,10 +96,8 @@ export type DiscordBotsFile = Revisioned & {
 };
 
 export type OrchestratorPromptSections = {
-  loopBreaking: boolean;
-  retriggerPacing: boolean;
+  pausePlanning: boolean;
   messageStructure: boolean;
-  toolUse: boolean;
 };
 
 export type AgentConfig = Revisioned & {
@@ -108,8 +106,7 @@ export type AgentConfig = Revisioned & {
   modelId?: string;
   contextWindow: number;
   prompt: string;
-  useLegacyPrompt: boolean;
-  clipSceneDirection: boolean;
+  directiveCooldown: number;
   reasoning: ReasoningConfig;
   promptSections: OrchestratorPromptSections;
 };
@@ -193,14 +190,11 @@ export type ModelsResponse = {
   gatewayModels: GatewayModelSummary[];
 };
 
-export type OrchestratorReplyStyle = "normal" | "short" | "long" | "sleepy";
-
 export type OrchestratorRespondingWaifu = {
   waifuId: string;
   delaySeconds: number;
-  replyStyle: OrchestratorReplyStyle;
   replyToMessageId?: string;
-  sceneDirection?: string;
+  directive?: { intent: string; goal?: string };
 };
 
 export type OrchestratorResponderOutcome = {
@@ -218,6 +212,7 @@ export type OrchestratorResponderOutcome = {
     | "failed"
     | "not_run";
   reason?: string;
+  directiveStripped?: "cooldown" | "over_cap";
   messageIds: string[];
 };
 
@@ -228,6 +223,7 @@ export type OrchestratorDecisionHistoryEntry = {
   action: "reply" | "no_reply";
   respondingWaifus: OrchestratorRespondingWaifu[];
   retriggerAfterSeconds?: number;
+  wakePlan?: string;
   reasoning: string;
   status: "pending" | "completed" | "interrupted" | "failed";
   waifuMessageIds: string[];

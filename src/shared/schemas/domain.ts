@@ -237,16 +237,12 @@ export type DiscordBotsFile = z.infer<typeof DiscordBotsFileSchema>;
 
 export const OrchestratorPromptSectionsSchema = z
   .object({
-    loopBreaking: z.boolean().default(true),
-    retriggerPacing: z.boolean().default(true),
-    messageStructure: z.boolean().default(true),
-    toolUse: z.boolean().default(true)
+    pausePlanning: z.boolean().default(true),
+    messageStructure: z.boolean().default(true)
   })
   .default({
-    loopBreaking: true,
-    retriggerPacing: true,
-    messageStructure: true,
-    toolUse: true
+    pausePlanning: true,
+    messageStructure: true
   });
 export type OrchestratorPromptSections = z.infer<typeof OrchestratorPromptSectionsSchema>;
 
@@ -256,8 +252,7 @@ export const AgentConfigSchema = RevisionedRecordSchema.extend({
   modelId: z.union([z.string(), z.null()]).optional().transform((value) => value ?? undefined),
   contextWindow: z.number().int().min(1).max(100).default(20),
   prompt: z.string().default(""),
-  useLegacyPrompt: z.boolean().default(false),
-  clipSceneDirection: z.boolean().default(false),
+  directiveCooldown: z.number().int().min(0).max(20).default(3),
   reasoning: ReasoningConfigSchema,
   promptSections: OrchestratorPromptSectionsSchema
 });
@@ -428,15 +423,18 @@ export const ShortTermMemoryStoreSchema = RevisionedRecordSchema.extend({
 });
 export type ShortTermMemoryStore = z.infer<typeof ShortTermMemoryStoreSchema>;
 
-export const OrchestratorReplyStyleSchema = z.enum(["normal", "short", "long", "sleepy"]);
-export type OrchestratorReplyStyle = z.infer<typeof OrchestratorReplyStyleSchema>;
+export const OrchestratorDirectiveSchema = z.object({
+  intent: z.string().min(1),
+  // goal is stored in history for the dashboard; it is omitted from few-shot replay.
+  goal: z.string().optional()
+});
+export type OrchestratorDirective = z.infer<typeof OrchestratorDirectiveSchema>;
 
 export const OrchestratorRespondingWaifuSchema = z.object({
   waifuId: z.string().min(1),
-  delaySeconds: z.number().min(0),
-  replyStyle: OrchestratorReplyStyleSchema,
+  delaySeconds: z.number().min(0).default(0),
   replyToMessageId: z.string().min(1).optional(),
-  sceneDirection: z.string().min(1).optional()
+  directive: OrchestratorDirectiveSchema.optional()
 });
 export type OrchestratorRespondingWaifu = z.infer<typeof OrchestratorRespondingWaifuSchema>;
 
@@ -467,6 +465,7 @@ export const OrchestratorResponderOutcomeSchema = z.object({
   handoffFromWaifuId: z.string().min(1).optional(),
   status: OrchestratorResponderOutcomeStatusSchema,
   reason: z.string().min(1).optional(),
+  directiveStripped: z.enum(["cooldown", "over_cap"]).optional(),
   messageIds: z.array(z.string()).default([])
 });
 export type OrchestratorResponderOutcome = z.infer<typeof OrchestratorResponderOutcomeSchema>;
@@ -478,6 +477,7 @@ export const OrchestratorDecisionHistoryEntrySchema = z.object({
   action: OrchestratorActionLogSchema.default("reply"),
   respondingWaifus: z.array(OrchestratorRespondingWaifuSchema).default([]),
   retriggerAfterSeconds: z.number().min(0).optional(),
+  wakePlan: z.string().optional(),
   reasoning: z.string().default(""),
   status: OrchestratorDecisionStatusSchema.default("completed"),
   waifuMessageIds: z.array(z.string()).default([]),

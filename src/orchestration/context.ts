@@ -39,13 +39,13 @@ export const ContextMessageSchema = z.object({
 
 export type ContextMessage = z.infer<typeof ContextMessageSchema>;
 
-export const OrchestratorNoReplyMarkerSchema = z.object({
-  kind: z.literal("no_reply"),
+export const OrchestratorWakeMarkerSchema = z.object({
+  kind: z.literal("wake"),
   timestamp: z.string(),
-  retriggerAfterSeconds: z.number().int(),
-  reasoning: z.string()
+  scheduledSeconds: z.number().int(),
+  wakePlan: z.string().optional()
 });
-export type OrchestratorNoReplyMarker = z.infer<typeof OrchestratorNoReplyMarkerSchema>;
+export type OrchestratorWakeMarker = z.infer<typeof OrchestratorWakeMarkerSchema>;
 
 export type MessageLikeForContext = {
   id: string;
