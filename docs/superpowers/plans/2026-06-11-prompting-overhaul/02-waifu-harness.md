@@ -4,6 +4,16 @@ Goal: a harness that keeps **cheap models** in character, in format, and at chat
 regardless of how naive the user-written persona is — with roughly half the instruction mass of
 today, and with no runtime truncation of replies.
 
+## 0. Model floor (target set 2026-06-12)
+
+The harness must hold format (no impersonation, no `Name:` prefixes, no transcript writing) on
+**<200B-class MoE models and ~20B-class dense models** as the design target, with 8–12B RP tunes
+(Stheno-8B, Rocinante-12B class) as the stretch goal. Live evidence shows even DeepSeek V4 Pro
+(1.6T, max reasoning) self-prefixes today — because the *context demonstrates* the prefix habit
+(see §7). Operating principle for every W2 decision: **structure teaches; instructions only
+remind.** A formatting convention that small models must follow has to be demonstrated by the
+message structure itself, not described in prose. Rule text is a tiebreaker, never the mechanism.
+
 Current state: the assembled instructions run ~1,600–2,000 words for a one-line output. Four blocks
 overlap and partially contradict each other (`environment`, `styleConstraints`, `hardRules`,
 `directorNotes`); the full persona is injected twice (top + trailing reminder); all active memories
@@ -73,11 +83,13 @@ Notes:
   [image_text:…], no [replying to:…], no [timestamp:…]…") into one rule with the *reason* attached
   — weak models generalize better from "those are the system's reader notes" than from a blocklist.
 
-`identity` gains the roster line (anti-impersonation belongs with identity, stated once):
+`identity` gains the roster line (anti-impersonation belongs with identity, stated once), using
+guild display names with self-aliases acknowledged (§7):
 
 ```
-You are {displayName}, chatting in a Discord server with real people and these other characters:
-{other waifu display names}. Each of them writes her own messages — you write only yours.
+You are {displayName}{guild nickname differs ? ` — shown in this server as "{guildDisplayName}"` : ``},
+chatting in a Discord server with real people and these other characters: {other waifus' guild
+display names}. Each of them writes her own messages — you write only yours.
 ```
 
 ## 3. ioFormat block
@@ -161,18 +173,44 @@ than to prose paragraphs three blocks earlier, and every provider in the catalog
 
 ## 7. Role-confusion hardening (multi-bot, weak models)
 
-What stays (it already works and matches common practice for multi-character chat):
+**Root cause found live (2026-06-12, amended).** Two structural bugs teach the impersonation habit
+that no instruction text can override:
 
-- Other speakers (users *and* other waifus) as `user`-role turns with `DisplayName:` prefixes; own
-  messages as `assistant` turns (`roleForWaifuContext`).
-- Stop sequences `\n{Name}:` for every known participant.
-- The strip-retry pipeline (`stripLeakedContextHeader` → `extractReplyQuote` → impersonation strip
-  → one retry with `retryUserMessage: "{displayName}:"`).
+1. **All waifu-authored messages share the `assistant` role.** `roleForWaifuContext` returns
+   `assistant` for ANY `authorKind === "waifu"` message — so from Aria's seat, Riko's and Akari's
+   messages are also "her" assistant turns, each prefixed `Name: body`. The context demonstrates
+   dozens of times per request that assistant turns begin with a speaker name and may contain
+   *other* speakers' lines. Models imitate the demonstration: even DeepSeek V4 Pro self-prefixes;
+   small models would do it every turn.
+2. **Self-recognition uses the configured `displayName`, but Discord renders the guild nickname.**
+   Aria is configured as "Aria" but appears as "K的小娇妻" in one server — her own history reads as
+   a third party she's never been told is her, and the impersonation-stripper classifies her
+   self-prefixed replies (`K的小娇妻: ...`) as another speaker's lines and **drops the entire
+   reply** (9 dropped replies in 4.5h observed live).
 
-What changes:
+**The fix is structural (per §0, structure teaches):**
 
+- **Per-waifu role assignment.** Only messages authored by *this* waifu's bot
+  (`message.authorId === waifu.botId`) become `assistant` turns. All other speakers — users AND
+  other waifus — are `user`-role turns with the `Name: body` prefix. `roleForWaifuContext` gains
+  the self bot id; the four `contextTo*ForWaifu` builders thread it through.
+- **Raw self-content.** The waifu's own assistant turns carry the RAW message body — no
+  `Name:` prefix, no reply-quote line, no bracketed attachment tags (her own attachments are
+  irrelevant to her). The context then demonstrates exactly the output contract: "my turns are
+  plain message text." This is the single highest-leverage change for the small-model floor.
+- **Self-aliases.** The runtime resolves each waifu's per-guild display name from the member cache
+  (`waifu.botId` → member `guildDisplayName`) and builds a self-alias set: {configured
+  displayName, configured name, guild nickname}. Used three ways: (a) the `identity` block says
+  `You are Aria — shown in this server as "K的小娇妻"` when the nickname differs; (b) the
+  impersonation-strip treats every self-alias as SELF — strip the prefix, keep the content, never
+  drop the line; (c) participant stop sequences keep covering all names (already true). Rejected
+  alternatives: rewriting the nickname to "Aria" in model-visible context (desyncs what she sees
+  from what users see; breaks mention round-trips), or rewriting "Aria" to the nickname (same
+  problem mirrored).
 - Roster in `identity` (§2) — today a waifu only learns who else exists from the mid-block
   participant list, which doesn't say "these are characters like you, with their own writers".
+  The roster lists each cast member's *current guild display name* (what the context actually
+  shows), with the configured name in parentheses when they differ.
 - Trailing anchor immediately before generation (§4) — the strongest position for the weakest
   models, currently spent on a persona duplicate.
 - Anthropic note: `midSystemBlock`/`trailingSystemBlock` go in as `role: "user"` (API has no system
@@ -182,6 +220,12 @@ What changes:
 - Self-talk bait removal: today's hard-rules list *names* the failure modes ("Do not write
   `Name: ...` lines… Do not draft another waifu's reply…") seven different ways; repetition of
   negative examples measurably primes small models. The contract states each constraint once.
+
+What stays: stop sequences `\n{Name}:` for every known participant; the strip-retry pipeline
+(`stripLeakedContextHeader` → `extractReplyQuote` → impersonation strip → one retry) as the safety
+net behind the structural fix. Future lever (post-gateway): assistant **prefill** on routes whose
+capability doc declares `assistantPrefill` — forces the format outright on the smallest models;
+out of W2 scope because per-route capability gating arrives with the gateway integration (P3+).
 
 ## 8. Touched files
 
