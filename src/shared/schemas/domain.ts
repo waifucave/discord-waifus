@@ -157,40 +157,26 @@ export const WaifuPromptLayoutSchema = z
   .default(() => defaultWaifuPromptLayout());
 export type WaifuPromptLayout = z.infer<typeof WaifuPromptLayoutSchema>;
 
-// The default arrangement reproduces the historical hardcoded prompt exactly: an identity block
-// followed by a `<{name}_behavior>` group in the top slot, the director-notes/participants/emojis
-// trio in the mid slot, and memories/personality-reminder/currently-doing/scene-direction in the
-// trailing slot. New waifus get this via the schema default; the migration derives enable flags
-// from the old booleans on top of it.
+// The default arrangement for new waifus: identity, persona, schedule, ioFormat, tools, and
+// outputContract in the top slot; roomInfo in mid; relevantMemories, anchor, currentlyDoing,
+// and directorNote in trailing.
 export function defaultWaifuPromptLayout(): WaifuPromptLayout {
   const block = (blockId: string): PromptLayoutBlockNode => ({ kind: "block", blockId, enabled: true });
   return {
     top: [
       block("identity"),
-      {
-        kind: "group",
-        id: "behavior",
-        tag: "{name}_behavior",
-        enabled: true,
-        children: [
-          block("personality"),
-          block("schedule"),
-          block("contextStructure"),
-          block("environment"),
-          block("replyTargeting"),
-          block("mentionPolicy"),
-          block("styleConstraints"),
-          block("hardRules"),
-          block("toolUse")
-        ]
-      }
+      block("persona"),
+      block("schedule"),
+      block("ioFormat"),
+      block("tools"),
+      block("outputContract")
     ],
-    mid: [block("directorNotes"), block("activeParticipants"), block("serverEmojis")],
+    mid: [block("roomInfo")],
     trailing: [
       block("relevantMemories"),
-      block("personalityReminder"),
+      block("anchor"),
       block("currentlyDoing"),
-      block("sceneDirection")
+      block("directorNote")
     ]
   };
 }

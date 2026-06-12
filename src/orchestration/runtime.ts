@@ -1386,7 +1386,7 @@ export class RuntimeOrchestrator {
             input.availableWaifus,
             {
               channelId: input.channelId,
-              sceneDirection: directiveText,
+              directorNote: directiveText,
               pickNextWaifuToolOverride: input.server.tools.pickNextWaifu,
               shortTermMemoryToolOverride: effectiveShortTermMemory
             }
@@ -2721,7 +2721,7 @@ export class RuntimeOrchestrator {
     availableWaifus: WaifuConfig[],
     options: {
       channelId: string;
-      sceneDirection?: string;
+      directorNote?: string;
       pickNextWaifuToolOverride?: boolean;
       shortTermMemoryToolOverride?: boolean;
     }
@@ -2759,16 +2759,19 @@ export class RuntimeOrchestrator {
       .filter((emoji) => emoji.available)
       .map(modelVisibleEmojiToken)
       .join(" ");
-    const personaText = waifu.persona.trim();
-    const personalityContent = personaText
-      ? `You are ${waifu.displayName}. Stay in character.\n${personaText}`
-      : `You are ${waifu.displayName}. Stay in character.`;
+    // Raw persona text; the identity block adds the identity sentence separately.
+    const personalityContent = waifu.persona.trim();
     const scheduleContent = formatWaifuScheduleForPrompt(waifu);
     const waifuTag = promptTagName(waifu.name || waifu.id);
     const toolUseInstructions = buildWaifuToolUseInstructions(waifu, availableWaifus, {
       pickNextWaifu: pickNextWaifuToolActive,
       shortTermMemory: shortTermMemoryToolActive
     });
+    // Roster line: display names of other configured waifus with bot IDs (excluding self).
+    const rosterLine = availableWaifus
+      .filter((candidate) => candidate.id !== waifu.id && candidate.botId)
+      .map((candidate) => candidate.displayName || candidate.name)
+      .join(", ");
 
     const blockContext: PromptBlockContext = {
       waifuTag,
@@ -2776,6 +2779,7 @@ export class RuntimeOrchestrator {
       personalityContent,
       scheduleContent,
       toolUseInstructions,
+      rosterLine,
       activeParticipantDisplayNames: channelParticipantDisplayNames(
         activeChatParticipants,
         waifu,
@@ -2784,7 +2788,7 @@ export class RuntimeOrchestrator {
       emojiList,
       memoryLines: [...longTermLines, ...shortTermLines],
       currentlyDoing: currentlyDoingForWaifu(waifu, new Date()),
-      sceneDirection: options.sceneDirection?.trim() || undefined
+      directorNote: options.directorNote?.trim() || undefined
     };
 
     // The slot→string mapping is fixed; the composition of each slot is driven by the waifu's

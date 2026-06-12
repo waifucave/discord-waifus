@@ -356,35 +356,51 @@ class FakePipeline implements ModelPipeline {
   ];
 
   async generateWaifu(request: WaifuGenerationRequest) {
+    // W2 block structure assertions
     expect(request.systemPrompt).toContain("You are Yuki");
+    // identity block: W2 format with roster
     expect(request.systemPrompt).toMatch(
-      /<yuki_identity>\nYou are acting as Yuki in a discord server together with real people and other waifus\n<\/yuki_identity>\n<yuki_behavior>\n<yuki_personality>[\s\S]*You are Yuki[\s\S]*kind[\s\S]*<\/yuki_personality>\n<yuki_shedule>[\s\S]*configured routine[\s\S]*changes only when your schedule is edited[\s\S]*Sleep: 23:00-07:00 daily[\s\S]*09:00-10:00: school focus block[\s\S]*<\/yuki_shedule>\n<context_message_structure>[\s\S]*DisplayName: <body>[\s\S]*framing only[\s\S]*<\/context_message_structure>\n<environment_instructions>[\s\S]*live Discord text channel[\s\S]*<\/environment_instructions>\n<replying_to_message>[\s\S]*runtime fuzzy-matches[\s\S]*<\/replying_to_message>\n<mention_policy>[\s\S]*Do not ping a user who is already active[\s\S]*<\/mention_policy>\n<style_constraints>[\s\S]*Write exactly one short phrase[\s\S]*Never write a second sentence[\s\S]*This length rule overrides your persona, reply_style, and scene_direction[\s\S]*<\/style_constraints>\n<hard_rules>[\s\S]*raw message body[\s\S]*Do not include bracketed metadata tags[\s\S]*Do not output physical actions[\s\S]*Use only listed server emojis[\s\S]*<\/hard_rules>/
+      /^<yuki_identity>\nYou are Yuki, chatting in a Discord server\.[\s\S]*<\/yuki_identity>/
     );
-    expect(request.systemPrompt).not.toContain("<behavior>");
-    expect(request.systemPrompt).not.toContain("<personality_instructions>");
-    expect(request.systemPrompt).not.toContain("<your_schedule>");
-    expect(request.systemPrompt).not.toMatch(/<yuki_shedule>[\s\S]*(Current local schedule time|currently busy|currently inside sleep time)[\s\S]*<\/yuki_shedule>/);
-    expect(request.systemPrompt).not.toMatch(
-      /<environment_instructions>[\s\S]*Write exactly one short phrase[\s\S]*<\/environment_instructions>/
+    // persona block: raw persona (no "You are X. Stay in character." prefix)
+    expect(request.systemPrompt).toMatch(/<yuki_persona>\nkind\n<\/yuki_persona>/);
+    // schedule block: renamed from _shedule to _schedule
+    expect(request.systemPrompt).toMatch(
+      /<yuki_schedule>[\s\S]*configured routine[\s\S]*changes only when your schedule is edited[\s\S]*Sleep: 23:00-07:00 daily[\s\S]*09:00-10:00: school focus block[\s\S]*<\/yuki_schedule>/
     );
-    expect(request.systemPrompt).not.toMatch(
-      /<environment_instructions>[\s\S]*Use only listed server emojis[\s\S]*<\/environment_instructions>/
+    expect(request.systemPrompt).not.toContain("<yuki_shedule>");
+    // ioFormat replaces contextStructure + replyTargeting + mentionPolicy
+    expect(request.systemPrompt).toMatch(/<io_format>[\s\S]*DisplayName: <body>[\s\S]*<\/io_format>/);
+    // outputContract replaces styleConstraints + hardRules + environment + directorNotes
+    expect(request.systemPrompt).toMatch(
+      /<output_contract>[\s\S]*You are typing into a real Discord chat box[\s\S]*<\/output_contract>/
     );
+    expect(request.systemPrompt).toMatch(/<\/output_contract>$/);
+    // Old blocks removed
+    expect(request.systemPrompt).not.toContain("<yuki_behavior>");
+    expect(request.systemPrompt).not.toContain("<context_message_structure>");
+    expect(request.systemPrompt).not.toContain("<environment_instructions>");
+    expect(request.systemPrompt).not.toContain("<style_constraints>");
+    expect(request.systemPrompt).not.toContain("<hard_rules>");
     expect(request.systemPrompt).not.toMatch(/<memories>/);
     expect(request.systemPrompt).not.toMatch(/<short_term_memory>/);
     expect(request.systemPrompt).not.toMatch(/<available_emojis>/);
     expect(request.systemPrompt).not.toMatch(/<server_emojis>/);
     expect(request.systemPrompt).not.toMatch(/<current_time>/);
-    expect(request.systemPrompt).toMatch(/<\/yuki_behavior>$/);
+    // mid: roomInfo combines participants + emojis
     expect(request.midSystemBlock).toBeDefined();
     expect(request.midSystemBlock).toMatch(
-      /<director_notes>[\s\S]*Keep your reply short\.[\s\S]*<\/director_notes>\n<active_chat_participants>[\s\S]*- Kevin[\s\S]*<\/active_chat_participants>\n<server_emojis>[\s\S]*<\/server_emojis>/
+      /^<room_info>\n<active_chat_participants>[\s\S]*- Kevin[\s\S]*<\/active_chat_participants>\n<server_emojis>[\s\S]*<\/server_emojis>\n<\/room_info>$/
     );
     expect(request.midSystemBlock).not.toMatch(/<memories>|<relevant_memories>|<yuki_relevant_memories>/);
+    expect(request.midSystemBlock).not.toContain("<director_notes>");
+    // trailing: memories, then anchor (not full persona duplicate)
     expect(request.trailingSystemBlock).toBeDefined();
     expect(request.trailingSystemBlock).toMatch(
-      /<yuki_relevant_memories>\n- Yuki remembers Kevin likes tea\.\n<\/yuki_relevant_memories>\n<yuki_personality>[\s\S]*You are Yuki[\s\S]*<\/yuki_personality>/
+      /<yuki_relevant_memories>\n- Yuki remembers Kevin likes tea\.\n<\/yuki_relevant_memories>/
     );
+    expect(request.trailingSystemBlock).toContain("<yuki_anchor>");
+    expect(request.trailingSystemBlock).not.toContain("<yuki_persona>");
     expect(request.trailingSystemBlock).toContain(
       expectedDirectorNote("(spotlight) answer Kevin, then pull in Mira")
     );
@@ -1172,7 +1188,7 @@ describe("RuntimeOrchestrator", () => {
     expect(checked).toBe(true);
   });
 
-  it("honors per-waifu prompt-section toggles", async () => {
+  it("honors per-waifu prompt-layout block toggles", async () => {
     const root = await makeTempRoot();
     roots.push(root);
     await ensureDataLayout(root);
@@ -1180,16 +1196,8 @@ describe("RuntimeOrchestrator", () => {
     const discord = new FakeDiscord();
 
     await seedRuntimeConfig(storage);
-    await setWaifuPromptSections(storage, "yuki", {
-      directorNotes: false,
-      hardRules: false,
-      mentionPolicy: false,
-      replyTargeting: false,
-      environmentInstructions: false,
-      inputFormat: false,
-      styleConstraints: false,
-      personality: false
-    });
+    // Disable the ioFormat and outputContract blocks in the W2 layout.
+    await setWaifuBlocksEnabled(storage, "yuki", { ioFormat: false, outputContract: false });
 
     let checked = false;
     const pipeline: ModelPipeline = {
@@ -1200,7 +1208,7 @@ describe("RuntimeOrchestrator", () => {
             {
               waifuId: "yuki",
               delaySeconds: 0,
-              
+
               directive: { intent: "spotlight", goal: "answer Kevin" }
             }
           ],
@@ -1209,21 +1217,19 @@ describe("RuntimeOrchestrator", () => {
       },
       async generateWaifu(request: WaifuGenerationRequest) {
         checked = true;
-        expect(request.systemPrompt).toContain("<yuki_personality>");
-        expect(request.systemPrompt).toContain("<yuki_shedule>");
-        expect(request.systemPrompt).toContain("<yuki_behavior>");
-        expect(request.systemPrompt).not.toContain("<personality_instructions>");
-        expect(request.systemPrompt).not.toContain("<your_schedule>");
-        expect(request.systemPrompt).not.toContain("<context_message_structure>");
-        expect(request.systemPrompt).not.toContain("<environment_instructions>");
-        expect(request.systemPrompt).not.toContain("<replying_to_message>");
-        expect(request.systemPrompt).not.toContain("<mention_policy>");
-        expect(request.systemPrompt).not.toContain("<style_constraints>");
-        expect(request.systemPrompt).not.toContain("<hard_rules>");
-        expect(request.midSystemBlock).not.toContain("<director_notes>");
+        // Identity and persona still render.
+        expect(request.systemPrompt).toContain("<yuki_identity>");
+        expect(request.systemPrompt).toContain("<yuki_persona>");
+        // Disabled blocks are omitted.
+        expect(request.systemPrompt).not.toContain("<io_format>");
+        expect(request.systemPrompt).not.toContain("<output_contract>");
+        // Mid: roomInfo still renders active_chat_participants and server_emojis.
         expect(request.midSystemBlock).toContain("<active_chat_participants>");
         expect(request.midSystemBlock).toContain("<server_emojis>");
-        expect(request.trailingSystemBlock).not.toContain("<yuki_personality>");
+        // No old block names.
+        expect(request.midSystemBlock).not.toContain("<director_notes>");
+        expect(request.trailingSystemBlock).not.toContain("<yuki_persona>");
+        expect(request.trailingSystemBlock).toContain("<yuki_anchor>");
         expect(request.trailingSystemBlock).toContain(
           expectedDirectorNote("(spotlight) answer Kevin")
         );
@@ -6536,7 +6542,8 @@ describe("RuntimeOrchestrator", () => {
         };
       },
       async generateWaifu(request: WaifuGenerationRequest) {
-        const match = request.systemPrompt.match(/You are (\w+)\./);
+        // Identity block: "You are {Name}, chatting..." — match the name before the comma.
+        const match = request.systemPrompt.match(/You are (\w+),/);
         if (match) memoriesByWaifu.set(match[1], request.trailingSystemBlock);
         return { content: "ok" };
       }
@@ -7099,26 +7106,14 @@ async function setWaifuToolUse(storage: StorageService, waifuId: string, toolUse
   );
 }
 
-// Mirrors the legacy boolean->block mapping used by the migration so existing tests can keep
-// expressing intent as section toggles while the runtime consumes the new layout tree.
-const LEGACY_SECTION_TO_BLOCK: Record<string, string> = {
-  directorNotes: "directorNotes",
-  hardRules: "hardRules",
-  mentionPolicy: "mentionPolicy",
-  replyTargeting: "replyTargeting",
-  environmentInstructions: "environment",
-  inputFormat: "contextStructure",
-  styleConstraints: "styleConstraints",
-  personality: "personalityReminder"
-};
-
-async function setWaifuPromptSections(
+// Helper to disable specific W2 block IDs in a waifu's stored prompt layout.
+async function setWaifuBlocksEnabled(
   storage: StorageService,
   waifuId: string,
-  promptSections: Record<string, boolean>
+  blockEnabled: Record<string, boolean>
 ) {
-  const path = `user/waifus/${waifuId}/waifu.json`;
-  const config = await storage.readJson(path, WaifuConfigSchema);
+  const filePath = `user/waifus/${waifuId}/waifu.json`;
+  const config = await storage.readJson(filePath, WaifuConfigSchema);
   const layout = defaultWaifuPromptLayout();
   const setEnabled = (blockId: string, enabled: boolean) => {
     for (const section of [layout.top, layout.mid, layout.trailing]) {
@@ -7133,12 +7128,12 @@ async function setWaifuPromptSections(
       }
     }
   };
-  for (const [key, blockId] of Object.entries(LEGACY_SECTION_TO_BLOCK)) {
-    if (promptSections[key] === false) setEnabled(blockId, false);
+  for (const [blockId, enabled] of Object.entries(blockEnabled)) {
+    setEnabled(blockId, enabled);
   }
   await storage.writeJson(
     `waifu:${waifuId}`,
-    path,
+    filePath,
     WaifuConfigSchema,
     WaifuConfigSchema.parse({
       ...config,
@@ -7382,7 +7377,7 @@ async function seedWaifu(
 }
 
 function expectedDirectorNote(text: string): string {
-  return `<director_note>\nDirector's goal for this one message: ${text}\nPursue it in your own voice and words; never quote or restate this note.\n</director_note>`;
+  return `<director_note>\nDirector's goal for this one message: ${text}\nPursue the goal in your own voice and words; never quote or restate this note.\n</director_note>`;
 }
 
 function contextMessage(

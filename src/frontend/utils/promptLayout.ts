@@ -34,23 +34,17 @@ export type PromptBlockMeta = {
 // for tags that embed the waifu's name. `defaultSection` is used to place a block when it is
 // missing from a stored layout (reconcile) or restored to its home.
 export const PROMPT_BLOCK_META: PromptBlockMeta[] = [
-  { id: "identity", label: "<{name}_identity>", hint: "Who the waifu is and the Discord setting.", defaultSection: "top" },
-  { id: "personality", label: "<{name}_personality>", hint: "The persona / character definition.", defaultSection: "top" },
-  { id: "schedule", label: "<{name}_shedule>", hint: "The configured routine used for energy and timing.", defaultSection: "top" },
-  { id: "contextStructure", label: "<context_message_structure>", hint: "Explains the incoming transcript framing.", defaultSection: "top" },
-  { id: "environment", label: "<environment_instructions>", hint: "Live Discord channel, no-narration instructions.", defaultSection: "top" },
-  { id: "replyTargeting", label: "<replying_to_message>", hint: "replying to > syntax for targeting a specific reply.", defaultSection: "top" },
-  { id: "mentionPolicy", label: "<mention_policy>", hint: "Display-name ping rules and quiet-user guidance.", defaultSection: "top" },
-  { id: "styleConstraints", label: "<style_constraints>", hint: "Short-reply and one-sentence constraints.", defaultSection: "top" },
-  { id: "hardRules", label: "<hard_rules>", hint: "Invalid-output constraints.", defaultSection: "top" },
-  { id: "toolUse", label: "<tool_use>", hint: "Tool instructions; only render when tools are active.", defaultSection: "top" },
-  { id: "directorNotes", label: "<director_notes>", hint: "Shared director notes.", defaultSection: "mid" },
-  { id: "activeParticipants", label: "<active_chat_participants>", hint: "Who is currently active in chat.", defaultSection: "mid" },
-  { id: "serverEmojis", label: "<server_emojis>", hint: "Available server emoji list.", defaultSection: "mid" },
+  { id: "identity", label: "<{name}_identity>", hint: "Who the waifu is, the Discord setting, and the cast roster.", defaultSection: "top" },
+  { id: "persona", label: "<{name}_persona>", hint: "The persona / character definition (raw, verbatim).", defaultSection: "top" },
+  { id: "schedule", label: "<{name}_schedule>", hint: "The configured routine used for energy and timing.", defaultSection: "top" },
+  { id: "ioFormat", label: "<io_format>", hint: "Input transcript format, reply-targeting syntax, and ping rules.", defaultSection: "top" },
+  { id: "tools", label: "<tool_use>", hint: "Tool instructions; only rendered when tools are active.", defaultSection: "top" },
+  { id: "outputContract", label: "<output_contract>", hint: "Consolidated output rules: length, format, no-meta, no-narration.", defaultSection: "top" },
+  { id: "roomInfo", label: "<room_info>", hint: "Active participants and server emojis in one block.", defaultSection: "mid" },
   { id: "relevantMemories", label: "<{name}_relevant_memories>", hint: "Long/short-term memories, when present.", defaultSection: "trailing" },
-  { id: "personalityReminder", label: "<{name}_personality>", hint: "Trailing personality reminder.", defaultSection: "trailing" },
+  { id: "anchor", label: "<{name}_anchor>", hint: "Compact trailing identity anchor (name + mini-contract).", defaultSection: "trailing" },
   { id: "currentlyDoing", label: "<currently_doing>", hint: "Schedule-derived current activity, when active.", defaultSection: "trailing" },
-  { id: "sceneDirection", label: "<scene_direction>", hint: "Per-turn scene direction, when present.", defaultSection: "trailing" }
+  { id: "directorNote", label: "<director_note>", hint: "Per-turn director note from the orchestrator, when present.", defaultSection: "trailing" }
 ];
 
 const META_BY_ID = new Map(PROMPT_BLOCK_META.map((meta) => [meta.id, meta]));
@@ -69,30 +63,18 @@ export function defaultWaifuPromptLayout(): WaifuPromptLayout {
   return {
     top: [
       block("identity"),
-      {
-        kind: "group",
-        id: "behavior",
-        tag: "{name}_behavior",
-        enabled: true,
-        children: [
-          block("personality"),
-          block("schedule"),
-          block("contextStructure"),
-          block("environment"),
-          block("replyTargeting"),
-          block("mentionPolicy"),
-          block("styleConstraints"),
-          block("hardRules"),
-          block("toolUse")
-        ]
-      }
+      block("persona"),
+      block("schedule"),
+      block("ioFormat"),
+      block("tools"),
+      block("outputContract")
     ],
-    mid: [block("directorNotes"), block("activeParticipants"), block("serverEmojis")],
+    mid: [block("roomInfo")],
     trailing: [
       block("relevantMemories"),
-      block("personalityReminder"),
+      block("anchor"),
       block("currentlyDoing"),
-      block("sceneDirection")
+      block("directorNote")
     ]
   };
 }

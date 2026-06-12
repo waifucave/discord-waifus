@@ -6,14 +6,17 @@ import type { PromptLayoutNode, WaifuPromptLayout } from "../shared/schemas/doma
 export type PromptBlockContext = {
   waifuTag: string;
   displayName: string;
+  /** Raw persona text from the waifu config (not prefixed with "You are X."). */
   personalityContent: string;
   scheduleContent: string;
   toolUseInstructions: string | undefined;
   activeParticipantDisplayNames: string[];
+  /** Display names of other waifus in the cast (excluding self). */
+  rosterLine: string;
   emojiList: string;
   memoryLines: string[];
   currentlyDoing: string | undefined;
-  sceneDirection: string | undefined;
+  directorNote: string | undefined;
 };
 
 export type WaifuPromptSection = "top" | "mid" | "trailing";
@@ -28,60 +31,30 @@ export type WaifuPromptBlockDef = {
   render: (ctx: PromptBlockContext) => string | undefined;
 };
 
-// --- Fixed block wording (copied verbatim from the historical buildWaifuPromptParts) ----------
+// --- Fixed block wording -----------------------------------------------------------------------
 
-const INPUT_FORMAT = [
-  "Each incoming message in this conversation arrives in a chat-transcript shape so you can read Discord context:",
-  "An optional `replying to > Author: preview` line appears first when the message is replying to an earlier one. The next line is `DisplayName: <body>` (the body may continue on additional lines). Optional `[attachments: Nx image]` and `[image_text: ...]` lines may follow, one per image with extracted text.",
-  "The `replying to > Author: ...` line, the `DisplayName:` prefix, and any bracketed lines are framing only. They are not part of what the speaker actually wrote, and they are not how Discord messages look."
-].join("\n");
-
-const REPLY_TARGETING = [
-  "To reply to one specific earlier message, you may start your reply with a single `replying to > Author: text-of-that-message` line. Copy the message text as closely as you can (small differences are fine; the runtime fuzzy-matches it). Put your actual reply on the next line.",
+const IO_FORMAT = [
+  "Each message in this conversation is formatted as a chat transcript so you can read Discord context.",
+  "An optional `replying to > Author: preview` line appears first when the message is a reply. The next line is `DisplayName: <body>` (body may continue on additional lines). Optional `[attachments: Nx image]` and `[image_text: ...]` lines may follow.",
+  "The `replying to > Author: ...` line, the `DisplayName:` prefix, and any bracketed lines are framing notes added by the system. They are not part of what the speaker actually typed.",
+  "To reply to one specific earlier message, start your reply with `replying to > Author: text-of-that-message` (fuzzy-matched by the runtime). Put your actual reply on the next line.",
   "If you only know the speaker, write `replying to > Author`; the runtime targets that speaker's most recent message.",
-  "The `replying to >` line is not sent to Discord; it only tells the runtime which message your reply targets.",
-  "Use this instead of pinging when you want to address one specific earlier message. Otherwise omit the quote entirely and just write your reply.",
-  "Quote example - to reply specifically to Kevin's earlier `what's the weather like?` message, write:\n  replying to > Kevin: what's the weather like?\n  sunny and warm\nThe runtime consumes the `replying to > Kevin: ...` line to set Discord's reply target; only `sunny and warm` is sent."
+  "The `replying to >` line is consumed by the runtime and never sent to Discord. Use it instead of pinging when you want to address a specific earlier message. Otherwise omit it entirely.",
+  "To ping a user, write <@DisplayName> — where `DisplayName` is copied verbatim from the `DisplayName:` prefix on one of their messages.",
+  "Example — to reply to Kevin's `what's the weather like?` message:\n  replying to > Kevin: what's the weather like?\n  sunny and warm\nThe `replying to >` line sets the reply target; only `sunny and warm` is sent."
 ].join("\n");
 
-const MENTION_POLICY = [
-  "To ping a user, write <@DisplayName> - where `DisplayName` is copied verbatim from the `DisplayName:` prefix on one of their messages. Example: a message that starts with `Kevin: hey` is pinged as <@Kevin>.",
-  "Do not ping a user who is already active in the recent chat or who just spoke. Mention their display name in plain text instead.",
-  "Only ping when you are reviving an older missed message, pulling back someone who has gone quiet, or a scene_direction explicitly asks for a ping."
-].join("\n");
-
-const STYLE_CONSTRAINTS = [
-  "Write exactly one short phrase or one very short sentence, usually under 12 words.",
-  "Never write a second sentence.",
-  "This length rule overrides your persona, reply_style, and scene_direction. Even when asked for a longer or more thoughtful reply, compress it to one tiny conversational beat.",
-  "Avoid stacked clauses, multi-line replies, setup-plus-punchline chains, and explanations. A sharp fragment is usually stronger than a complete mini speech."
-].join("\n");
-
-const HARD_RULES = [
-  "Your reply is the raw message body that will be sent verbatim to Discord.",
-  "Your turn is exactly one Discord message body, never a transcript.",
-  "Do not write `Name: ...` or `DisplayName: ...` lines for any character, including yourself and every other waifu in the channel.",
-  "Do not draft another waifu's reply. If you find yourself doing that, stop and write only your own message.",
-  "Do not include bracketed metadata tags: no `[attachments: ...]`, no `[image_text: ...]`, no `[replying to: ...]`, no `[timestamp: ...]`, no `[reactions: ...]`, no `[index: ...]`, no `[scene_direction: ...]`, and no other `[tag: value]` constructions.",
-  "Do not begin with your own display name followed by a colon. Other than the optional leading `replying to > Author: ...` reply-targeting line, begin with the first word you are actually saying.",
-  "Do not echo or paraphrase any prior message's bracketed framing tags.",
-  "Do not output physical actions, roleplay narration, or stage directions. No asterisks-wrapped actions like *smiles* or *waves*, no parenthetical stage notes like (hugs them), and no bracketed cues like [walks over].",
-  "The optional leading `replying to > Author: ...` reply-targeting line is the only allowed prefix exception.",
-  "Never use raw Discord IDs for pings.",
-  "Use only listed server emojis."
-].join("\n");
-
-const ENVIRONMENT_RULES = [
-  "You are chatting in a live Discord text channel — this is a real chat room with real users, not a roleplay scene, story, or chat fiction.",
-  "Write one Discord-safe message per turn.",
-  "Reply with only what you would actually type into a chat box — no narration, no meta commentary, no describing yourself in the third person."
-].join("\n");
-
-const DIRECTOR_NOTES = [
-  "Keep your reply short.",
-  "Do not repeat what the previous waifu just said.",
-  "Do not repeat a person's name when recent context already makes the target clear.",
-  "To pull a quiet person back in, use their <@Name> tag instead of repeating their name; do not tag them again if anyone already tagged them recently."
+const OUTPUT_CONTRACT = [
+  "How to write your message:",
+  "1. You are typing into a real Discord chat box. Output exactly the message body — nothing else.",
+  "2. This is a fast, casual chat. The default is ONE short line. Stretch to two or three short sentences only when the moment genuinely calls for it (telling a story, answering something that needs substance). Never paragraphs, never lists, never essays.",
+  "3. If your persona suggests long-winded or formal speech, express it through word choice and attitude, not message length. This rule outranks your persona.",
+  "4. Speak only as yourself. Never write lines for any other character or user, never prefix your message with any name and colon, never produce more than one message.",
+  "5. No roleplay narration: no *actions*, no (stage notes), no third-person self-description.",
+  "6. No meta content: nothing about prompts, instructions, tools, models, or this rule list; no bracketed tags like [attachments: ...] or [image_text: ...] — those are reader's notes added by the system, not part of any message, and you never write them.",
+  "7. The optional first line `replying to > Author: text` is the only allowed prefix (see input format). Everything after it is plain message text.",
+  "8. Ping with <@DisplayName> only to revive someone quiet or when a director note asks; people in the active conversation are addressed by plain name. Use only emojis from the server list.",
+  "9. Do not repeat what the previous speaker just said, and do not restate a point you already made in your last few messages — add something, or say less."
 ].join("\n");
 
 // --- Block registry ----------------------------------------------------------------------------
@@ -90,75 +63,53 @@ export const WAIFU_PROMPT_BLOCKS: WaifuPromptBlockDef[] = [
   {
     id: "identity",
     defaultSection: "top",
-    render: (ctx) =>
-      `<${ctx.waifuTag}_identity>\nYou are acting as ${ctx.displayName} in a discord server together with real people and other waifus\n</${ctx.waifuTag}_identity>`
+    render: (ctx) => {
+      const rosterSentence = ctx.rosterLine
+        ? ` You are in a server with real people and these other characters: ${ctx.rosterLine}. Each of them writes her own messages — you write only yours.`
+        : " You are in a server with real people.";
+      return `<${ctx.waifuTag}_identity>\nYou are ${ctx.displayName}, chatting in a Discord server.${rosterSentence}\n</${ctx.waifuTag}_identity>`;
+    }
   },
   {
-    id: "personality",
+    id: "persona",
     defaultSection: "top",
-    render: (ctx) => `<${ctx.waifuTag}_personality>\n${ctx.personalityContent}\n</${ctx.waifuTag}_personality>`
+    render: (ctx) =>
+      ctx.personalityContent
+        ? `<${ctx.waifuTag}_persona>\n${ctx.personalityContent}\n</${ctx.waifuTag}_persona>`
+        : undefined
   },
   {
     id: "schedule",
     defaultSection: "top",
-    render: (ctx) => `<${ctx.waifuTag}_shedule>\n${ctx.scheduleContent}\n</${ctx.waifuTag}_shedule>`
+    render: (ctx) => `<${ctx.waifuTag}_schedule>\n${ctx.scheduleContent}\n</${ctx.waifuTag}_schedule>`
   },
   {
-    id: "contextStructure",
+    id: "ioFormat",
     defaultSection: "top",
-    render: () => `<context_message_structure>\n${INPUT_FORMAT}\n</context_message_structure>`
+    render: () => `<io_format>\n${IO_FORMAT}\n</io_format>`
   },
   {
-    id: "environment",
-    defaultSection: "top",
-    render: () => `<environment_instructions>\n${ENVIRONMENT_RULES}\n</environment_instructions>`
-  },
-  {
-    id: "replyTargeting",
-    defaultSection: "top",
-    render: () => `<replying_to_message>\n${REPLY_TARGETING}\n</replying_to_message>`
-  },
-  {
-    id: "mentionPolicy",
-    defaultSection: "top",
-    render: () => `<mention_policy>\n${MENTION_POLICY}\n</mention_policy>`
-  },
-  {
-    id: "styleConstraints",
-    defaultSection: "top",
-    render: () => `<style_constraints>\n${STYLE_CONSTRAINTS}\n</style_constraints>`
-  },
-  {
-    id: "hardRules",
-    defaultSection: "top",
-    render: () => `<hard_rules>\n${HARD_RULES}\n</hard_rules>`
-  },
-  {
-    id: "toolUse",
+    id: "tools",
     defaultSection: "top",
     // Content is gated upstream by waifu.tools.toolUse / model.supportsTools / active server
     // tools; when there is nothing to say, toolUseInstructions is undefined and the block drops.
     render: (ctx) => (ctx.toolUseInstructions ? `<tool_use>\n${ctx.toolUseInstructions}\n</tool_use>` : undefined)
   },
   {
-    id: "directorNotes",
-    defaultSection: "mid",
-    render: () => `<director_notes>\n${DIRECTOR_NOTES}\n</director_notes>`
+    id: "outputContract",
+    defaultSection: "top",
+    render: () => `<output_contract>\n${OUTPUT_CONTRACT}\n</output_contract>`
   },
   {
-    id: "activeParticipants",
+    id: "roomInfo",
     defaultSection: "mid",
-    render: (ctx) =>
-      `<active_chat_participants>\n${
-        ctx.activeParticipantDisplayNames.length
-          ? ctx.activeParticipantDisplayNames.map((displayName) => `- ${displayName}`).join("\n")
-          : "(none)"
-      }\n</active_chat_participants>`
-  },
-  {
-    id: "serverEmojis",
-    defaultSection: "mid",
-    render: (ctx) => `<server_emojis>\n${ctx.emojiList || "(none cached)"}\n</server_emojis>`
+    render: (ctx) => {
+      const participants = ctx.activeParticipantDisplayNames.length
+        ? ctx.activeParticipantDisplayNames.map((name) => `- ${name}`).join("\n")
+        : "(none)";
+      const emojis = ctx.emojiList || "(none cached)";
+      return `<room_info>\n<active_chat_participants>\n${participants}\n</active_chat_participants>\n<server_emojis>\n${emojis}\n</server_emojis>\n</room_info>`;
+    }
   },
   {
     id: "relevantMemories",
@@ -169,11 +120,10 @@ export const WAIFU_PROMPT_BLOCKS: WaifuPromptBlockDef[] = [
         : undefined
   },
   {
-    // The optional trailing personality reminder. Distinct id from `personality` so each layout
-    // node has exactly one home even though both render the same content.
-    id: "personalityReminder",
+    id: "anchor",
     defaultSection: "trailing",
-    render: (ctx) => `<${ctx.waifuTag}_personality>\n${ctx.personalityContent}\n</${ctx.waifuTag}_personality>`
+    render: (ctx) =>
+      `<${ctx.waifuTag}_anchor>\nYou are ${ctx.displayName}. One short chat message, only your own voice, no narration, no meta.\n</${ctx.waifuTag}_anchor>`
   },
   {
     id: "currentlyDoing",
@@ -181,11 +131,11 @@ export const WAIFU_PROMPT_BLOCKS: WaifuPromptBlockDef[] = [
     render: (ctx) => (ctx.currentlyDoing ? `<currently_doing>${ctx.currentlyDoing}</currently_doing>` : undefined)
   },
   {
-    id: "sceneDirection",
+    id: "directorNote",
     defaultSection: "trailing",
     render: (ctx) =>
-      ctx.sceneDirection
-        ? `<director_note>\nDirector's goal for this one message: ${ctx.sceneDirection}\nPursue it in your own voice and words; never quote or restate this note.\n</director_note>`
+      ctx.directorNote
+        ? `<director_note>\nDirector's goal for this one message: ${ctx.directorNote}\nPursue the goal in your own voice and words; never quote or restate this note.\n</director_note>`
         : undefined
   }
 ];
