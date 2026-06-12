@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   PromptBlockContext,
+  __testables,
   assembleWaifuPrompt,
   reconcileWaifuPromptLayout,
   resolveGroupTag
@@ -44,7 +45,7 @@ describe("assembleWaifuPrompt", () => {
     expect(parts.systemPrompt).toContain("<output_contract>");
     expect(parts.systemPrompt).toMatch(/<\/output_contract>$/);
     // toolUse is omitted when there are no instructions.
-    expect(parts.systemPrompt).not.toContain("<tool_use>");
+    expect(parts.systemPrompt).not.toContain("<tools>");
 
     // mid: roomInfo combines participants + emojis
     expect(parts.midSystemBlock).toMatch(
@@ -61,14 +62,14 @@ describe("assembleWaifuPrompt", () => {
     expect(parts.trailingSystemBlock).not.toContain("<yuki_persona>");
     // trailing: directorNote
     expect(parts.trailingSystemBlock).toContain(
-      "<director_note>\nDirector's goal for this one message: answer Kevin\nPursue the goal in your own voice and words; never quote or restate this note.\n</director_note>"
+      "<director_note>\nDirector's goal for this one message: answer Kevin\nPursue it in your own voice and words; never quote or restate this note.\n</director_note>"
     );
     expect(parts.trailingSystemBlock).not.toContain("<currently_doing>");
   });
 
-  it("includes <tool_use> only when instructions are present", () => {
+  it("includes <tools> only when instructions are present", () => {
     const parts = assembleWaifuPrompt(defaultWaifuPromptLayout(), ctx({ toolUseInstructions: "use tools" }));
-    expect(parts.systemPrompt).toContain("<tool_use>\nuse tools\n</tool_use>");
+    expect(parts.systemPrompt).toContain("<tools>\nuse tools\n</tools>");
   });
 
   it("omits persona block when personalityContent is empty", () => {
@@ -173,6 +174,14 @@ describe("resolveGroupTag", () => {
   it("substitutes {name} and sanitizes user-entered tags", () => {
     expect(resolveGroupTag("{name}_behavior", "yuki")).toBe("yuki_behavior");
     expect(resolveGroupTag("My Custom Group!", "yuki")).toBe("my_custom_group");
+  });
+});
+
+describe("word budget", () => {
+  it("keeps the fixed instruction mass under 900 words", () => {
+    const fixed = [__testables.IO_FORMAT, __testables.OUTPUT_CONTRACT].join(" ");
+    const words = fixed.split(/\s+/).filter(Boolean).length;
+    expect(words).toBeLessThan(900);
   });
 });
 

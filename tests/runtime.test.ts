@@ -806,7 +806,7 @@ describe("RuntimeOrchestrator", () => {
           this.events.push("waifu:yuki");
           expect(request.availableWaifuIds).toEqual(["mika"]);
           expect(request.pickNextWaifuToolEnabled).toBe(true);
-          expect(request.systemPrompt).toContain("<tool_use>");
+          expect(request.systemPrompt).toContain("<tools>");
           return { content: "mika should take this", pickedNextWaifuId: "mika" };
         }
         this.events.push("waifu:mika");
@@ -1169,7 +1169,7 @@ describe("RuntimeOrchestrator", () => {
         checked = true;
         expect(request.pickNextWaifuToolEnabled).toBe(true);
         expect(request.shortTermMemoryToolEnabled).toBe(true);
-        expect(request.systemPrompt).not.toContain("<tool_use>");
+        expect(request.systemPrompt).not.toContain("<tools>");
         return { content: "plain reply" };
       }
     };
@@ -7437,7 +7437,7 @@ async function seedWaifu(
 }
 
 function expectedDirectorNote(text: string): string {
-  return `<director_note>\nDirector's goal for this one message: ${text}\nPursue the goal in your own voice and words; never quote or restate this note.\n</director_note>`;
+  return `<director_note>\nDirector's goal for this one message: ${text}\nPursue it in your own voice and words; never quote or restate this note.\n</director_note>`;
 }
 
 function contextMessage(

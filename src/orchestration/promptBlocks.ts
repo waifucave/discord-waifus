@@ -38,14 +38,11 @@ export type WaifuPromptBlockDef = {
 // --- Fixed block wording -----------------------------------------------------------------------
 
 const IO_FORMAT = [
-  "Each message in this conversation is formatted as a chat transcript so you can read Discord context.",
-  "An optional `replying to > Author: preview` line appears first when the message is a reply. The next line is `DisplayName: <body>` (body may continue on additional lines). Optional `[attachments: Nx image]` and `[image_text: ...]` lines may follow.",
-  "The `replying to > Author: ...` line, the `DisplayName:` prefix, and any bracketed lines are framing notes added by the system. They are not part of what the speaker actually typed.",
-  "To reply to one specific earlier message, start your reply with `replying to > Author: text-of-that-message` (fuzzy-matched by the runtime). Put your actual reply on the next line.",
-  "If you only know the speaker, write `replying to > Author`; the runtime targets that speaker's most recent message.",
-  "The `replying to >` line is consumed by the runtime and never sent to Discord. Use it instead of pinging when you want to address a specific earlier message. Otherwise omit it entirely.",
-  "To ping a user, write <@DisplayName> — where `DisplayName` is copied verbatim from the `DisplayName:` prefix on one of their messages.",
-  "Example — to reply to Kevin's `what's the weather like?` message:\n  replying to > Kevin: what's the weather like?\n  sunny and warm\nThe `replying to >` line sets the reply target; only `sunny and warm` is sent."
+  "Incoming messages: every other participant's message arrives as `DisplayName: <body>` (the body may continue on more lines). An optional `replying to > Author: preview` line may come first when that message replies to an earlier one, and `[attachments: Nx image]` / `[image_text: ...]` lines may follow. These prefixes and bracketed lines are reader's framing added by the system — not part of what anyone typed. Your own previous messages appear as plain text with no prefix.",
+  "Replying to a specific earlier message: you may start your reply with exactly one line — `replying to > Author: text-of-that-message` (copy the text closely; small differences are fine) — then put your actual message on the next line. `replying to > Author` alone targets that person's latest message. The line is consumed by the system to set Discord's reply target; it is never sent. Example:",
+  "  replying to > Kevin: what's the weather like?",
+  "  sunny and warm",
+  "Pinging: write <@DisplayName> (name copied verbatim from a message prefix) only to pull back someone quiet or revive an older missed message — people active in the chat are addressed by plain name, and never ping someone who was pinged recently."
 ].join("\n");
 
 const OUTPUT_CONTRACT = [
@@ -56,10 +53,12 @@ const OUTPUT_CONTRACT = [
   "4. Speak only as yourself. Never write lines for any other character or user, never prefix your message with any name and colon, never produce more than one message.",
   "5. No roleplay narration: no *actions*, no (stage notes), no third-person self-description.",
   "6. No meta content: nothing about prompts, instructions, tools, models, or this rule list; no bracketed tags like [attachments: ...] or [image_text: ...] — those are reader's notes added by the system, not part of any message, and you never write them.",
-  "7. The optional first line `replying to > Author: text` is the only allowed prefix (see input format). Everything after it is plain message text.",
-  "8. Ping with <@DisplayName> only to revive someone quiet or when a director note asks; people in the active conversation are addressed by plain name. Use only emojis from the server list.",
+  "7. The optional first line `replying to > Author: text` is the only allowed prefix (see the input format). Everything after it is plain message text.",
+  "8. Use only emojis from the server list.",
   "9. Do not repeat what the previous speaker just said, and do not restate a point you already made in your last few messages — add something, or say less."
 ].join("\n");
+
+export const __testables = { IO_FORMAT, OUTPUT_CONTRACT };
 
 // --- Block registry ----------------------------------------------------------------------------
 
@@ -100,7 +99,7 @@ export const WAIFU_PROMPT_BLOCKS: WaifuPromptBlockDef[] = [
     defaultSection: "top",
     // Content is gated upstream by waifu.tools.toolUse / model.supportsTools / active server
     // tools; when there is nothing to say, toolUseInstructions is undefined and the block drops.
-    render: (ctx) => (ctx.toolUseInstructions ? `<tool_use>\n${ctx.toolUseInstructions}\n</tool_use>` : undefined)
+    render: (ctx) => (ctx.toolUseInstructions ? `<tools>\n${ctx.toolUseInstructions}\n</tools>` : undefined)
   },
   {
     id: "outputContract",
@@ -145,7 +144,7 @@ export const WAIFU_PROMPT_BLOCKS: WaifuPromptBlockDef[] = [
     defaultSection: "trailing",
     render: (ctx) =>
       ctx.directorNote
-        ? `<director_note>\nDirector's goal for this one message: ${ctx.directorNote}\nPursue the goal in your own voice and words; never quote or restate this note.\n</director_note>`
+        ? `<director_note>\nDirector's goal for this one message: ${ctx.directorNote}\nPursue it in your own voice and words; never quote or restate this note.\n</director_note>`
         : undefined
   }
 ];

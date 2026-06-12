@@ -3,6 +3,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { runMigrations } from "../src/backend/migrations.js";
 import type { PromptLayoutNode as LayoutNode } from "../src/shared/schemas/domain.js";
+import { defaultWaifuPromptLayout } from "../src/shared/schemas/domain.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
 
 const roots: string[] = [];
@@ -461,6 +462,32 @@ describe("runMigrations", () => {
 
     const second = await runMigrations(root);
     expect(second.applied).not.toContain("remove-guild-wide-active-participants-1");
+  });
+
+  it("leaves a waifu whose promptLayout is already the W2 default unchanged", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+
+    const layout = defaultWaifuPromptLayout();
+    await writeJson(root, "user/waifus/yuki/waifu.json", {
+      schemaVersion: 1,
+      revision: 0,
+      updatedAt: "2026-05-16T12:00:00.000Z",
+      id: "yuki",
+      name: "Yuki",
+      displayName: "Yuki",
+      persona: "kind",
+      promptLayout: layout
+    });
+
+    const before = await readJson<{ promptLayout: unknown }>(root, "user/waifus/yuki/waifu.json");
+    const result = await runMigrations(root);
+    const after = await readJson<{ promptLayout: unknown }>(root, "user/waifus/yuki/waifu.json");
+
+    // The W2 migration must not have fired (no legacy block IDs present).
+    expect(result.applied).not.toContain("migrate-waifu-prompt-layout-w2-1");
+    // The stored layout must be byte-for-byte identical (deep equal).
+    expect(after.promptLayout).toEqual(before.promptLayout);
   });
 });
 
