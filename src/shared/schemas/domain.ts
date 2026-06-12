@@ -447,6 +447,7 @@ export const OrchestratorResponderOutcomeStatusSchema = z.enum([
   "sent",
   "tool_only",
   "empty",
+  "blocked",
   "unavailable",
   "interrupted",
   "failed",
