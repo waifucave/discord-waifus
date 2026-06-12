@@ -37,6 +37,7 @@ import {
   AgentConfigSchema,
   DiscordBotsFileSchema,
   GuildEmojisFileSchema,
+  GuildMembersFileSchema,
   MemoryStore,
   MemoryStoreSchema,
   OrchestratorDebugConfigFileSchema,
@@ -2729,7 +2730,7 @@ export class RuntimeOrchestrator {
     const pickNextWaifuToolActive = options.pickNextWaifuToolOverride ?? false;
     const shortTermMemoryToolActive =
       options.shortTermMemoryToolOverride ?? true;
-    const [store, emojis, shortTermStore, activeChatParticipants] = await Promise.all([
+    const [store, emojis, shortTermStore, activeChatParticipants, members] = await Promise.all([
       this.readMemoryStore(),
       this.options.storage.readJson(
         path.join("user", "servers", guildId, "emojis.json"),
@@ -2737,7 +2738,12 @@ export class RuntimeOrchestrator {
         GuildEmojisFileSchema.parse(createEmptyRevisionedFile({ guildId, emojis: [] }))
       ),
       this.readShortTermMemoryStore(),
-      this.readActiveChatParticipants(guildId, options.channelId)
+      this.readActiveChatParticipants(guildId, options.channelId),
+      this.options.storage.readJson(
+        path.join("user", "servers", guildId, "members.json"),
+        GuildMembersFileSchema,
+        GuildMembersFileSchema.parse(createEmptyRevisionedFile({ guildId, members: [] }))
+      )
     ]);
     const longTermLines = store.memories
       .filter((memory) => memory.guildId === guildId && memory.waifuId === waifu.id && memory.status === "active")
@@ -2767,10 +2773,22 @@ export class RuntimeOrchestrator {
       pickNextWaifu: pickNextWaifuToolActive,
       shortTermMemory: shortTermMemoryToolActive
     });
-    // Roster line: display names of other configured waifus with bot IDs (excluding self).
+    const guildNameByUserId = new Map(
+      members.members
+        .filter((member) => member.guildDisplayName)
+        .map((member) => [member.userId, member.guildDisplayName as string])
+    );
+    const serverNickname = waifu.botId ? guildNameByUserId.get(waifu.botId) : undefined;
+
+    // Roster line: guild display names of other configured waifus with bot IDs (excluding self),
+    // with the configured displayName in parentheses when the guild name differs.
     const rosterLine = availableWaifus
       .filter((candidate) => candidate.id !== waifu.id && candidate.botId)
-      .map((candidate) => candidate.displayName || candidate.name)
+      .map((candidate) => {
+        const guildName = guildNameByUserId.get(candidate.botId as string);
+        const configured = candidate.displayName || candidate.name;
+        return guildName && guildName !== configured ? `${guildName} (${configured})` : configured;
+      })
       .join(", ");
 
     const blockContext: PromptBlockContext = {
@@ -2780,6 +2798,7 @@ export class RuntimeOrchestrator {
       scheduleContent,
       toolUseInstructions,
       rosterLine,
+      serverNickname: serverNickname !== waifu.displayName ? serverNickname : undefined,
       activeParticipantDisplayNames: channelParticipantDisplayNames(
         activeChatParticipants,
         waifu,

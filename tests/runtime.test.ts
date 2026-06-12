@@ -38,6 +38,7 @@ import { StorageService } from "../src/storage/storageService.js";
 import {
   ActiveChatParticipantsFileSchema,
   AgentConfigSchema,
+  GuildMembersFileSchema,
   MemoryStoreSchema,
   OrchestratorDebugConfigFileSchema,
   OrchestratorHistoryFileSchema,
@@ -360,7 +361,7 @@ class FakePipeline implements ModelPipeline {
     expect(request.systemPrompt).toContain("You are Yuki");
     // identity block: W2 format with roster
     expect(request.systemPrompt).toMatch(
-      /^<yuki_identity>\nYou are Yuki, chatting in a Discord server\.[\s\S]*<\/yuki_identity>/
+      /^<yuki_identity>\nYou are Yuki, chatting in a live Discord text channel[\s\S]*<\/yuki_identity>/
     );
     // persona block: raw persona (no "You are X. Stay in character." prefix)
     expect(request.systemPrompt).toMatch(/<yuki_persona>\nkind\n<\/yuki_persona>/);
@@ -7067,6 +7068,65 @@ describe("RuntimeOrchestrator", () => {
     expect(discord.sent[0].content).toBe("my actual reply");
     // selfAuthorIds must include Aria's botId
     expect(capturedRequest?.selfAuthorIds).toContain("aria-bot");
+  });
+
+  it("uses guild display name from members.json for serverNickname in identity block", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+
+    await seedRuntimeConfig(storage);
+    // Seed members.json with yuki's botId having a different guild display name.
+    await storage.writeJson(
+      "members:guild-1",
+      "user/servers/guild-1/members.json",
+      GuildMembersFileSchema,
+      GuildMembersFileSchema.parse(
+        createEmptyRevisionedFile({
+          guildId: "guild-1",
+          members: [
+            {
+              userId: "yuki-bot",
+              guildDisplayName: "K的小娇妻",
+              bot: true,
+              perChannelLastSeenAt: {}
+            }
+          ]
+        })
+      )
+    );
+
+    let checked = false;
+    const pipeline: ModelPipeline = {
+      async decideOrchestrator() {
+        return {
+          action: "reply",
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }],
+          reasoning: "Yuki should reply."
+        };
+      },
+      async generateWaifu(request: WaifuGenerationRequest) {
+        checked = true;
+        expect(request.systemPrompt).toContain(`shown in this server as "K的小娇妻"`);
+        return { content: "hi" };
+      }
+    };
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 1,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    expect(checked).toBe(true);
   });
 });
 

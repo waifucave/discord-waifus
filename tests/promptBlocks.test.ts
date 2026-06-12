@@ -30,7 +30,7 @@ describe("assembleWaifuPrompt", () => {
 
     // top: identity block
     expect(parts.systemPrompt).toMatch(
-      /^<yuki_identity>\nYou are Yuki, chatting in a Discord server\. You are in a server with real people and these other characters: Aria, Mika\. Each of them writes her own messages — you write only yours\.\n<\/yuki_identity>/
+      /^<yuki_identity>\nYou are Yuki, chatting in a live Discord text channel together with real people and these other characters: Aria, Mika\. Each of them writes her own messages — you write only yours\. This is a real chat room, not a roleplay scene or story\.\n<\/yuki_identity>/
     );
     // top: persona block
     expect(parts.systemPrompt).toContain("<yuki_persona>\nkind\n</yuki_persona>");
@@ -96,7 +96,7 @@ describe("assembleWaifuPrompt", () => {
     const parts = assembleWaifuPrompt(layout, ctx());
 
     expect(parts.systemPrompt).toBe(
-      "<yuki_identity>\nYou are Yuki, chatting in a Discord server. You are in a server with real people and these other characters: Aria, Mika. Each of them writes her own messages — you write only yours.\n</yuki_identity>"
+      "<yuki_identity>\nYou are Yuki, chatting in a live Discord text channel together with real people and these other characters: Aria, Mika. Each of them writes her own messages — you write only yours. This is a real chat room, not a roleplay scene or story.\n</yuki_identity>"
     );
     expect(parts.midSystemBlock).toBe("");
     // outputContract now lives inside the custom <house_rules> group in the trailing slot.
@@ -120,6 +120,52 @@ describe("assembleWaifuPrompt", () => {
       trailing: []
     };
     expect(assembleWaifuPrompt(layout, ctx()).systemPrompt).toBe("");
+  });
+});
+
+describe("identity block", () => {
+  it("includes server nickname clause when serverNickname differs from displayName", () => {
+    const parts = assembleWaifuPrompt(
+      defaultWaifuPromptLayout(),
+      ctx({ serverNickname: "K的小娇妻" })
+    );
+    expect(parts.systemPrompt).toContain(`— shown in this server as "K的小娇妻"`);
+  });
+
+  it("omits server nickname clause when serverNickname is absent", () => {
+    const parts = assembleWaifuPrompt(defaultWaifuPromptLayout(), ctx());
+    expect(parts.systemPrompt).not.toContain("shown in this server");
+  });
+
+  it("omits server nickname clause when serverNickname equals displayName", () => {
+    const parts = assembleWaifuPrompt(
+      defaultWaifuPromptLayout(),
+      ctx({ serverNickname: "Yuki" })
+    );
+    expect(parts.systemPrompt).not.toContain("shown in this server");
+  });
+});
+
+describe("anchor block", () => {
+  it("uses first 200 chars of personalityContent as Voice when personaDigest is absent", () => {
+    const longPersona = "A".repeat(250);
+    const parts = assembleWaifuPrompt(defaultWaifuPromptLayout(), ctx({ personalityContent: longPersona }));
+    expect(parts.trailingSystemBlock).toContain(`Voice: ${"A".repeat(200)}`);
+    expect(parts.trailingSystemBlock).not.toContain("A".repeat(201));
+  });
+
+  it("uses personaDigest.voice and renders Drives when personaDigest is provided", () => {
+    const parts = assembleWaifuPrompt(
+      defaultWaifuPromptLayout(),
+      ctx({ personaDigest: { voice: "clingy gen-z texting", role: "K's attack dog" } })
+    );
+    expect(parts.trailingSystemBlock).toContain("Voice: clingy gen-z texting");
+    expect(parts.trailingSystemBlock).toContain("Drives: K's attack dog");
+  });
+
+  it("omits Drives line when personaDigest has no role", () => {
+    const parts = assembleWaifuPrompt(defaultWaifuPromptLayout(), ctx());
+    expect(parts.trailingSystemBlock).not.toContain("Drives:");
   });
 });
 

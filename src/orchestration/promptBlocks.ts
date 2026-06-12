@@ -17,6 +17,10 @@ export type PromptBlockContext = {
   memoryLines: string[];
   currentlyDoing: string | undefined;
   directorNote: string | undefined;
+  /** Guild display name when it differs from displayName. */
+  serverNickname?: string;
+  /** Populated by Task 3; drives the anchor voice/role lines. */
+  personaDigest?: { voice: string; role: string };
 };
 
 export type WaifuPromptSection = "top" | "mid" | "trailing";
@@ -64,10 +68,13 @@ export const WAIFU_PROMPT_BLOCKS: WaifuPromptBlockDef[] = [
     id: "identity",
     defaultSection: "top",
     render: (ctx) => {
-      const rosterSentence = ctx.rosterLine
-        ? ` You are in a server with real people and these other characters: ${ctx.rosterLine}. Each of them writes her own messages — you write only yours.`
-        : " You are in a server with real people.";
-      return `<${ctx.waifuTag}_identity>\nYou are ${ctx.displayName}, chatting in a Discord server.${rosterSentence}\n</${ctx.waifuTag}_identity>`;
+      const nick = ctx.serverNickname && ctx.serverNickname !== ctx.displayName
+        ? ` — shown in this server as "${ctx.serverNickname}"`
+        : "";
+      const roster = ctx.rosterLine
+        ? ` together with real people and these other characters: ${ctx.rosterLine}. Each of them writes her own messages — you write only yours.`
+        : " together with real people.";
+      return `<${ctx.waifuTag}_identity>\nYou are ${ctx.displayName}${nick}, chatting in a live Discord text channel${roster} This is a real chat room, not a roleplay scene or story.\n</${ctx.waifuTag}_identity>`;
     }
   },
   {
@@ -122,8 +129,11 @@ export const WAIFU_PROMPT_BLOCKS: WaifuPromptBlockDef[] = [
   {
     id: "anchor",
     defaultSection: "trailing",
-    render: (ctx) =>
-      `<${ctx.waifuTag}_anchor>\nYou are ${ctx.displayName}. One short chat message, only your own voice, no narration, no meta.\n</${ctx.waifuTag}_anchor>`
+    render: (ctx) => {
+      const voice = ctx.personaDigest?.voice ?? ctx.personalityContent.replace(/\s+/g, " ").slice(0, 200);
+      const drives = ctx.personaDigest?.role ? ` Drives: ${ctx.personaDigest.role}` : "";
+      return `<${ctx.waifuTag}_anchor>\nYou are ${ctx.displayName}. Voice: ${voice}${drives}\nReminders: one short chat message, only your own voice, no narration, no meta.\n</${ctx.waifuTag}_anchor>`;
+    }
   },
   {
     id: "currentlyDoing",
