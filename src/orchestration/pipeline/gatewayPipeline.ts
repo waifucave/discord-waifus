@@ -1,10 +1,13 @@
 import { createGateway, Gateway, type ChatResponse, type ToolDef } from "@waifucave/gateway";
 import { createProviderCredentialsLookup } from "../../api/llmGatewayCredentials.js";
 import { QueryRole, recordProviderQuery, recordProviderReply } from "../../shared/queryLog.js";
-import type { ModelPipeline, WaifuGenerationRequest, WaifuGenerationResult } from "../../providers/types.js";
-import { PICK_NEXT_WAIFU_TOOL_NAME, SHORT_TERM_MEMORY_TOOL_NAME, pickNextWaifuToolParameters, shortTermMemoryToolParameters } from "../tools.js";
+import type { ModelPipeline, ProviderRequest, WaifuGenerationRequest, WaifuGenerationResult } from "../../providers/types.js";
+import { ORCHESTRATOR_TOOL_NAME, PICK_NEXT_WAIFU_TOOL_NAME, REVIEWER_TOOL_NAME, SHORT_TERM_MEMORY_TOOL_NAME, orchestratorToolParameters, pickNextWaifuToolParameters, reviewerSystemPrompt, reviewerToolParameters, shortTermMemoryToolParameters } from "../tools.js";
 import { GatewayPipelineError, buildUnifiedParams, preconformRequest } from "./params.js";
 import { buildWaifuMessages } from "./messages.js";
+import { buildOrchestratorChatMessages } from "./timeline.js";
+import { OrchestratorDecision, OrchestratorDecisionSchema } from "../decisions.js";
+import { ReviewerDecision, ReviewerDecisionSchema } from "../reviewer.js";
 
 const REQUEST_TIMEOUT_MS = 180_000;
 
@@ -74,6 +77,18 @@ function toolCalls(response: ChatResponse, name: string) {
   );
 }
 
+function parseForcedCall<T>(response: ChatResponse, toolName: string, parse: (raw: unknown) => T, label: string): T {
+  const call = toolCalls(response, toolName)[0];
+  if (!call) throw new GatewayPipelineError(`${label}: model did not call ${toolName}`);
+  let raw: unknown;
+  try { raw = JSON.parse(call.arguments); } catch { throw new GatewayPipelineError(`${label}: malformed ${toolName} arguments`); }
+  try {
+    return parse(raw);
+  } catch (error) {
+    throw new GatewayPipelineError(`${label}: invalid ${toolName} arguments — ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 export class GatewayModelPipeline implements ModelPipeline {
   constructor(private readonly options: GatewayPipelineOptions, private readonly gateway: Gateway) {}
 
@@ -104,6 +119,42 @@ export class GatewayModelPipeline implements ModelPipeline {
     const resolved = this.gateway.getCapabilities(this.options.providerId, this.options.modelId);
     if (!resolved) throw new GatewayPipelineError(`Unknown model ${this.options.providerId}:${this.options.modelId}`);
     return resolved;
+  }
+
+  async decideOrchestrator(request: ProviderRequest): Promise<OrchestratorDecision> {
+    const response = await this.chat({
+      messages: buildOrchestratorChatMessages({
+        systemPrompt: request.systemPrompt,
+        trailingPrompt: request.trailingPrompt,
+        messages: request.messages,
+        pastDecisions: request.pastDecisions,
+        decisionMarkers: request.decisionMarkers
+      }),
+      tools: [{ name: ORCHESTRATOR_TOOL_NAME, parameters: orchestratorToolParameters(request.availableWaifuIds, request.replyRequired, request.directiveBudgetOpen ?? true) as Record<string, unknown> }],
+      toolChoice: { name: ORCHESTRATOR_TOOL_NAME },
+      sampling: { temperature: request.temperature ?? 0.2, maxOutputTokens: request.maxOutputTokens, reasoning: request.reasoning },
+      signal: request.signal
+    });
+    const decision = parseForcedCall(response, ORCHESTRATOR_TOOL_NAME, (raw) => OrchestratorDecisionSchema.parse(raw), "decideOrchestrator");
+    // Parity with the legacy pipeline: a /run (replyRequired) must produce a reply.
+    if (request.replyRequired && decision.action !== "reply") {
+      throw new GatewayPipelineError("decideOrchestrator: replyRequired was set but the model returned no_reply");
+    }
+    return decision;
+  }
+
+  async decideReviewer(request: ProviderRequest & { message: string }): Promise<ReviewerDecision> {
+    const response = await this.chat({
+      messages: [
+        { role: "system", content: reviewerSystemPrompt(request.systemPrompt) },
+        { role: "user", content: request.message }
+      ],
+      tools: [{ name: REVIEWER_TOOL_NAME, parameters: reviewerToolParameters() as Record<string, unknown> }],
+      toolChoice: { name: REVIEWER_TOOL_NAME },
+      sampling: { temperature: request.temperature ?? 0, maxOutputTokens: request.maxOutputTokens ?? 64, reasoning: request.reasoning },
+      signal: request.signal
+    });
+    return parseForcedCall(response, REVIEWER_TOOL_NAME, (raw) => ReviewerDecisionSchema.parse(raw), "decideReviewer");
   }
 
   async generateWaifu(request: WaifuGenerationRequest): Promise<WaifuGenerationResult> {

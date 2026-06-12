@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { createGateway } from "@waifucave/gateway";
 import { createGatewayModelPipeline } from "../src/orchestration/pipeline/gatewayPipeline.js";
+import { GatewayPipelineError } from "../src/orchestration/pipeline/params.js";
 import { ContextMessage } from "../src/orchestration/context.js";
+import type { ProviderRequest } from "../src/providers/types.js";
 
 const msg = (over: Partial<ContextMessage>): ContextMessage => ({
   id: "m1", channelId: "c", authorKind: "user", authorId: "u1", name: "ann",
@@ -86,5 +88,75 @@ describe("generateWaifu (gateway)", () => {
     expect(body.tool_choice === undefined || body.tool_choice === "auto").toBe(true);
     expect(body.temperature).toBe(0.7);
     expect(body.thinking).toEqual({ type: "disabled" });
+  });
+});
+
+describe("decideOrchestrator (gateway)", () => {
+  const orchRequest: ProviderRequest = {
+    modelId: "deepseek-v4-flash",
+    systemPrompt: "ORCH SYSTEM",
+    trailingPrompt: "Decide now.",
+    messages: [msg({})],
+    availableWaifuIds: ["yuki"],
+    replyRequired: false,
+    directiveBudgetOpen: true,
+    reasoning: { enabled: true, effort: "high" as const }
+  };
+
+  it("forces the decision tool, disables thinking via pre-conform, parses the decision", async () => {
+    const decision = { action: "reply", respondingWaifus: [{ waifuId: "yuki", delaySeconds: 2, directive: { intent: "spotlight", goal: "greet Ann" } }], reasoning: "Ann said hi" };
+    const fetchImpl = okFetch({
+      id: "r1",
+      choices: [{ message: { content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "orchestrator_decision", arguments: JSON.stringify(decision) } }] }, finish_reason: "tool_calls" }],
+      usage: {}
+    });
+    const pipeline = makePipeline(fetchImpl as unknown as typeof fetch);
+    const parsed = await pipeline.decideOrchestrator!(orchRequest);
+    expect(parsed.action).toBe("reply");
+    expect(parsed.respondingWaifus[0]).toMatchObject({ waifuId: "yuki", directive: { intent: "spotlight", goal: "greet Ann" } });
+
+    const body = JSON.parse((fetchImpl.mock.calls[0]![1] as RequestInit).body as string);
+    expect(body.tool_choice).toEqual({ type: "function", function: { name: "orchestrator_decision" } });
+    // pre-conform disables thinking when forcing a tool; the gateway may still emit
+    // reasoning_effort on the wire as a separate parameter — what matters is thinking is off.
+    expect(body.thinking).toEqual({ type: "disabled" });
+  });
+
+  it("rejects a decision violating the zod refinements", async () => {
+    const bad = { action: "reply", respondingWaifus: [], reasoning: "contradiction" };
+    const fetchImpl = okFetch({
+      id: "r1",
+      choices: [{ message: { content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "orchestrator_decision", arguments: JSON.stringify(bad) } }] }, finish_reason: "tool_calls" }],
+      usage: {}
+    });
+    await expect(makePipeline(fetchImpl as unknown as typeof fetch).decideOrchestrator!(orchRequest)).rejects.toThrow(GatewayPipelineError);
+  });
+
+  it("enforces replyRequired: a no_reply decision under /run throws", async () => {
+    const noReply = { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 600, reasoning: "nothing to say" };
+    const fetchImpl = okFetch({
+      id: "r1",
+      choices: [{ message: { content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "orchestrator_decision", arguments: JSON.stringify(noReply) } }] }, finish_reason: "tool_calls" }],
+      usage: {}
+    });
+    await expect(
+      makePipeline(fetchImpl as unknown as typeof fetch).decideOrchestrator!({ ...orchRequest, replyRequired: true })
+    ).rejects.toThrow(/replyRequired/);
+  });
+});
+
+describe("decideReviewer (gateway)", () => {
+  it("forces review_message and parses the verdict", async () => {
+    const fetchImpl = okFetch({
+      id: "r1",
+      choices: [{ message: { content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "review_message", arguments: JSON.stringify({ hallucination: true }) } }] }, finish_reason: "tool_calls" }],
+      usage: {}
+    });
+    const pipeline = makePipeline(fetchImpl as unknown as typeof fetch);
+    const verdict = await pipeline.decideReviewer!({ modelId: "deepseek-v4-flash", messages: [msg({})], message: "suspect text" });
+    expect(verdict).toEqual({ hallucination: true });
+    const body = JSON.parse((fetchImpl.mock.calls[0]![1] as RequestInit).body as string);
+    expect(body.tool_choice).toEqual({ type: "function", function: { name: "review_message" } });
+    expect(JSON.stringify(body.messages)).toContain("suspect text");
   });
 });
