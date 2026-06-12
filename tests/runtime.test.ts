@@ -29,7 +29,6 @@ import {
   PipelineCredentials,
   ProviderRequest,
   StageManagerObserveRequest,
-  StageManagerRequest,
   WaifuGenerationRequest
 } from "../src/providers/types.js";
 import { ProviderPipelineError } from "../src/providers/pipelines.js";
@@ -2061,7 +2060,7 @@ describe("RuntimeOrchestrator", () => {
     ]);
   });
 
-  it("runs stage-manager tool calls in the background and updates memories", async () => {
+  it("runs observer + dream end-to-end: queues an observation and the dream adds it", async () => {
     const root = await makeTempRoot();
     roots.push(root);
     await ensureDataLayout(root);
@@ -2078,20 +2077,14 @@ describe("RuntimeOrchestrator", () => {
           { waifuId: "yuki", content: "Kevin likes tea.", importance: 3, kind: "preference" as const }
         ];
       },
-      async decideStageManager(request: StageManagerRequest) {
-        expect(request.memories).toEqual([]);
-        expect(request.observations).toEqual([
-          { waifuId: "yuki", content: "Kevin likes tea.", importance: 3, kind: "preference" }
-        ]);
-        expect(request.availableWaifuIds).toEqual(["yuki"]);
+      async decideDream(request) {
+        // The dream pass sees the queued observation (importance < 4 is not fast-tracked).
+        expect(request.observations.map((observation) => observation.content)).toEqual(["Kevin likes tea."]);
+        const observation = request.observations[0];
         return [
           {
-            tool: "add_memory",
-            memory: {
-              waifuId: "yuki",
-              content: "Kevin likes tea.",
-              importance: 3
-            }
+            op: "add",
+            memory: { waifuId: observation.waifuId, content: observation.content, kind: observation.kind, strength: observation.importance, entities: [] }
           }
         ];
       }
@@ -2119,18 +2112,23 @@ describe("RuntimeOrchestrator", () => {
     expect(memories.memories[0]).toMatchObject({
       guildId: "guild-1",
       pinned: false,
-      source: "stage_manager",
-      kind: "fact",
+      source: "dream",
+      kind: "preference",
       strength: 3
     });
     expect(discord.sent).toEqual([]);
+
+    // The queue is drained after the dream consumes the observation.
+    const pending = await storage.readJson("user/memory/pending-observations.json", PendingObservationsFileSchema);
+    expect(pending.observations).toHaveLength(0);
 
     const history = await storage.readJson(
       "user/stage-manager/history.json",
       StageManagerHistoryFileSchema
     );
+    // Most recent entry is the dream add (mapped onto add_memory); the observer's queue summary is older.
     expect(history.edits[0].tool).toBe("add_memory");
-    expect(history.edits[0].observationCount).toBe(1);
+    expect(history.edits[0].summary).toContain("[dream:add]");
   });
 
   it("appends low-importance observations (< 4) to the pending queue file", async () => {
@@ -2148,9 +2146,6 @@ describe("RuntimeOrchestrator", () => {
           { waifuId: "yuki", content: "Kevin drinks tea.", importance: 2, kind: "preference" as const },
           { waifuId: "yuki", content: "Kevin owns a cat.", importance: 3, kind: "fact" as const }
         ];
-      },
-      async decideStageManager() {
-        return [{ tool: "no_change" as const }];
       }
     };
 
@@ -2164,7 +2159,8 @@ describe("RuntimeOrchestrator", () => {
       logger: { debug: () => undefined, info: () => undefined, warn: () => undefined, error: () => undefined }
     });
 
-    await runtime.triggerStageManager("guild-1", "channel-1");
+    // Observer-only: the dream pass (which would drain the queue) is exercised separately.
+    await runtime.runObserverForTest("guild-1", "channel-1");
 
     const pending = await storage.readJson("user/memory/pending-observations.json", PendingObservationsFileSchema);
     expect(pending.observations).toHaveLength(2);
@@ -2194,9 +2190,6 @@ describe("RuntimeOrchestrator", () => {
           { waifuId: "yuki", content: "Kevin's family runs a bakery.", importance: 5, kind: "relationship" as const },
           { waifuId: "yuki", content: "Kevin likes coffee.", importance: 2, kind: "preference" as const }
         ];
-      },
-      async decideStageManager() {
-        return [{ tool: "no_change" as const }];
       }
     };
 
@@ -2210,7 +2203,7 @@ describe("RuntimeOrchestrator", () => {
       logger: { debug: () => undefined, info: () => undefined, warn: () => undefined, error: () => undefined }
     });
 
-    await runtime.triggerStageManager("guild-1", "channel-1");
+    await runtime.runObserverForTest("guild-1", "channel-1");
 
     // Fast-tracked records (importance >= 4) should be in the memory store
     const memories = await storage.readJson("user/memories.json", MemoryStoreSchema);
@@ -2242,9 +2235,6 @@ describe("RuntimeOrchestrator", () => {
           { waifuId: "yuki", content: "Kevin likes sushi.", importance: 3, kind: "preference" as const },
           { waifuId: "yuki", content: "Kevin is a chef.", importance: 5, kind: "fact" as const }
         ];
-      },
-      async decideStageManager() {
-        return [{ tool: "no_change" as const }];
       }
     };
 
@@ -2258,7 +2248,7 @@ describe("RuntimeOrchestrator", () => {
       logger: { debug: () => undefined, info: () => undefined, warn: () => undefined, error: () => undefined }
     });
 
-    await runtime.triggerStageManager("guild-1", "channel-1");
+    await runtime.runObserverForTest("guild-1", "channel-1");
 
     const history = await storage.readJson("user/stage-manager/history.json", StageManagerHistoryFileSchema);
     expect(history.edits[0].summary).toContain("queued: 1");
@@ -2282,9 +2272,6 @@ describe("RuntimeOrchestrator", () => {
             message: "ANY mode rejected deeply nested schema."
           }
         });
-      },
-      async decideStageManager() {
-        return [];
       }
     };
     const loggedErrors: Array<{ message: string; context?: unknown }> = [];
@@ -2315,33 +2302,27 @@ describe("RuntimeOrchestrator", () => {
     });
   });
 
-  it("skips stage-manager memory writes for user names in waifuId", async () => {
+  it("drops observer observations whose waifuId is a user name, never queueing or storing them", async () => {
     const root = await makeTempRoot();
     roots.push(root);
     await ensureDataLayout(root);
     const storage = new StorageService(root);
     const discord = new FakeDiscord();
+    let dreamCalls = 0;
     const pipeline: ModelPipeline = {
       async generateWaifu() {
         return { content: "unused" };
       },
-      async decideStageManagerObservations() {
-        return [
-          { waifuId: "yuki", content: "Kevin asked something.", importance: 2, kind: "fact" as const }
-        ];
-      },
-      async decideStageManager(request: StageManagerRequest) {
+      async decideStageManagerObservations(request: StageManagerObserveRequest) {
         expect(request.availableWaifuIds).toEqual(["yuki"]);
         return [
-          {
-            tool: "add_memory",
-            memory: {
-              waifuId: "K",
-              content: "K is a user, not a waifu.",
-              importance: 3
-            }
-          }
+          // "K" is a human user, not a configured waifu — the observer filter must drop it.
+          { waifuId: "K", content: "K is a user, not a waifu.", importance: 3, kind: "fact" as const }
         ];
+      },
+      async decideDream() {
+        dreamCalls += 1;
+        return [{ op: "none" as const }];
       }
     };
 
@@ -2362,17 +2343,18 @@ describe("RuntimeOrchestrator", () => {
 
     await runtime.triggerStageManager("guild-1", "channel-1");
 
-    const memories = await storage.readJson("user/memories.json", MemoryStoreSchema);
+    const memories = await storage.readJson("user/memories.json", MemoryStoreSchema, MemoryStoreSchema.parse(createEmptyRevisionedFile({ memories: [] })));
     expect(memories.memories).toEqual([]);
+    const pending = await storage.readJson("user/memory/pending-observations.json", PendingObservationsFileSchema, PendingObservationsFileSchema.parse(createEmptyRevisionedFile({ observations: [] })));
+    expect(pending.observations).toEqual([]);
+    // No observations survived, so the dream pass had nothing to do and was never called.
+    expect(dreamCalls).toBe(0);
     const history = await storage.readJson("user/stage-manager/history.json", StageManagerHistoryFileSchema);
-    expect(history.edits[0]).toMatchObject({
-      tool: "add_memory",
-      affectedMemoryIds: []
-    });
-    expect(history.edits[0].summary).toContain("Skipped invalid waifu id K");
+    expect(history.edits[0]).toMatchObject({ tool: "no_change" });
+    expect(history.edits[0].summary).toContain("Dropped 1 observation");
   });
 
-  it("keeps stage-manager memory input and edits inside the current guild", async () => {
+  it("dream pass on a seeded store: rewrites, archives, and adds within the current guild only", async () => {
     const root = await makeTempRoot();
     roots.push(root);
     await ensureDataLayout(root);
@@ -2388,36 +2370,21 @@ describe("RuntimeOrchestrator", () => {
       MemoryStoreSchema.parse(
         createEmptyRevisionedFile({
           memories: [
-            {
-              id: "same-guild",
-              waifuId: "yuki",
-              guildId: "guild-1",
-              content: "Kevin likes tea.",
-              strength: 3,
-              createdAt: now,
-              updatedAt: now,
-              status: "active"
-            },
-            {
-              id: "same-guild-archived",
-              waifuId: "yuki",
-              guildId: "guild-1",
-              content: "Old archived note.",
-              strength: 3,
-              createdAt: now,
-              updatedAt: now,
-              status: "archived"
-            },
-            {
-              id: "other-guild",
-              waifuId: "yuki",
-              guildId: "guild-2",
-              content: "Other guild secret.",
-              strength: 3,
-              createdAt: now,
-              updatedAt: now,
-              status: "active"
-            }
+            { id: "same-guild", waifuId: "yuki", guildId: "guild-1", content: "Kevin likes tea.", strength: 3, createdAt: now, updatedAt: now, status: "active" },
+            { id: "other-guild", waifuId: "yuki", guildId: "guild-2", content: "Other guild secret.", strength: 3, createdAt: now, updatedAt: now, status: "active" }
+          ]
+        })
+      )
+    );
+    // Seed a queued observation so the dream pass has work to do.
+    await storage.writeJson(
+      "memory:pending",
+      "user/memory/pending-observations.json",
+      PendingObservationsFileSchema,
+      PendingObservationsFileSchema.parse(
+        createEmptyRevisionedFile({
+          observations: [
+            { id: "obs-1", guildId: "guild-1", channelId: "channel-1", waifuId: "yuki", content: "Kevin enjoys tea regularly.", kind: "preference", importance: 3, entities: ["Kevin"], createdAt: now }
           ]
         })
       )
@@ -2428,136 +2395,17 @@ describe("RuntimeOrchestrator", () => {
         return { content: "unused" };
       },
       async decideStageManagerObservations() {
-        return [
-          { waifuId: "yuki", content: "Kevin enjoys tea regularly.", importance: 3, kind: "preference" as const }
-        ];
+        return [];
       },
-      async decideStageManager(request: StageManagerRequest) {
-        expect(request.availableWaifuIds).toEqual(["yuki"]);
+      async decideDream(request) {
+        // Only guild-1's single non-pinned record is in the chunk (other-guild is excluded).
         expect(request.memories).toEqual([
-          {
-            memoryIndex: 1,
-            waifuId: "yuki",
-            content: "Kevin likes tea.",
-            importance: 3
-          }
+          { memoryIndex: 1, waifuId: "yuki", content: "Kevin likes tea.", kind: "fact", strength: 3, ageDays: 0, daysSinceRetrieved: 0 }
         ]);
+        expect(request.observations.map((observation) => observation.content)).toEqual(["Kevin enjoys tea regularly."]);
         return [
-          { tool: "update_memory", memoryIndex: 2, patch: { content: "leaked update" } },
-          { tool: "archive_memory", memoryIndex: 1 },
-          {
-            tool: "add_memory",
-            memory: {
-              waifuId: "yuki",
-              content: "Guild one only.",
-              importance: 3
-            }
-          }
-        ];
-      }
-    };
-
-    const runtime = new RuntimeOrchestrator({
-      sleep: async () => undefined,
-      storage,
-      discord,
-      createPipeline: () => pipeline,
-      logger: {
-        debug: () => undefined,
-        info: () => undefined,
-        warn: () => undefined,
-        error: () => undefined
-      }
-    });
-
-    await runtime.triggerStageManager("guild-1", "channel-1");
-
-    const memories = await storage.readJson("user/memories.json", MemoryStoreSchema);
-    expect(memories.memories.find((memory) => memory.id === "other-guild")).toMatchObject({
-      guildId: "guild-2",
-      content: "Other guild secret.",
-      status: "active"
-    });
-    expect(memories.memories.find((memory) => memory.id === "same-guild")?.status).toBe("archived");
-    expect(memories.memories.find((memory) => memory.content === "Guild one only.")).toMatchObject({
-      guildId: "guild-1",
-    });
-  });
-
-  it("rejects stale stage-manager edits after memories become permanent", async () => {
-    const root = await makeTempRoot();
-    roots.push(root);
-    await ensureDataLayout(root);
-    const storage = new StorageService(root);
-    const discord = new FakeDiscord();
-    const now = new Date().toISOString();
-    const fallback = MemoryStoreSchema.parse(createEmptyRevisionedFile({ memories: [] }));
-
-    await seedRuntimeConfig(storage);
-    await storage.writeJson(
-      "memories:global",
-      "user/memories.json",
-      MemoryStoreSchema,
-      MemoryStoreSchema.parse(
-        createEmptyRevisionedFile({
-          memories: [
-            {
-              id: "first",
-              waifuId: "yuki",
-              guildId: "guild-1",
-              content: "Kevin likes tea.",
-              strength: 3,
-              createdAt: now,
-              updatedAt: now,
-              status: "active"
-            },
-            {
-              id: "second",
-              waifuId: "yuki",
-              guildId: "guild-1",
-              content: "Kevin likes green tea.",
-              strength: 4,
-              createdAt: now,
-              updatedAt: now,
-              status: "active"
-            }
-          ]
-        })
-      )
-    );
-
-    const pipeline: ModelPipeline = {
-      async generateWaifu() {
-        return { content: "unused" };
-      },
-      async decideStageManagerObservations() {
-        return [
-          { waifuId: "yuki", content: "Kevin likes tea.", importance: 3, kind: "preference" as const }
-        ];
-      },
-      async decideStageManager(request: StageManagerRequest) {
-        expect(request.memories).toHaveLength(2);
-        await storage.updateRevisionedJson({
-          resourceKey: "memories:global",
-          relativePath: "user/memories.json",
-          schema: MemoryStoreSchema,
-          fallback,
-          transform: (current) => ({
-            ...current,
-            memories: current.memories.map((memory) => ({
-              ...memory,
-              pinned: true
-            }))
-          })
-        });
-        return [
-          { tool: "update_memory", memoryIndex: 1, patch: { content: "Changed." } },
-          { tool: "archive_memory", memoryIndex: 2 },
-          {
-            tool: "merge_memories",
-            sourceMemoryIndices: [1, 2],
-            mergedContent: "Merged."
-          }
+          { op: "rewrite", memoryIndex: 1, content: "Kevin enjoys tea regularly, especially in the mornings.", entities: ["Kevin"] },
+          { op: "add", memory: { waifuId: "yuki", content: "Kevin enjoys tea regularly.", kind: "preference", strength: 3, entities: ["Kevin"] } }
         ];
       }
     };
@@ -2570,28 +2418,25 @@ describe("RuntimeOrchestrator", () => {
       logger: quietLogger()
     });
 
-    const result = await runtime.triggerStageManager("guild-1", "channel-1");
+    await runtime.runDreamPassForTest("guild-1");
 
-    expect(result.status).toBe("no_change");
     const memories = await storage.readJson("user/memories.json", MemoryStoreSchema);
-    expect(memories.memories).toHaveLength(2);
-    expect(memories.memories).toEqual([
-      expect.objectContaining({
-        id: "first",
-        content: "Kevin likes tea.",
-        pinned: true,
-        status: "active"
-      }),
-      expect.objectContaining({
-        id: "second",
-        content: "Kevin likes green tea.",
-        pinned: true,
-        status: "active"
-      })
-    ]);
+    // Other-guild record is untouched.
+    expect(memories.memories.find((memory) => memory.id === "other-guild")).toMatchObject({ content: "Other guild secret.", status: "active" });
+    // The rewrite landed on the same-guild record.
+    expect(memories.memories.find((memory) => memory.id === "same-guild")?.content).toContain("especially in the mornings");
+    // The add produced a new dream-sourced record.
+    expect(memories.memories.find((memory) => memory.source === "dream" && memory.content === "Kevin enjoys tea regularly.")).toBeDefined();
+    // The queue is drained.
+    const pending = await storage.readJson("user/memory/pending-observations.json", PendingObservationsFileSchema);
+    expect(pending.observations).toEqual([]);
+    // History records the dream ops.
+    const history = await storage.readJson("user/stage-manager/history.json", StageManagerHistoryFileSchema);
+    expect(history.edits.some((edit) => edit.summary.includes("[dream:rewrite]"))).toBe(true);
+    expect(history.edits.some((edit) => edit.summary.includes("[dream:add]"))).toBe(true);
   });
 
-  it("merges stage-manager memories by memory index", async () => {
+  it("dream pass leaves pinned records untouched", async () => {
     const root = await makeTempRoot();
     roots.push(root);
     await ensureDataLayout(root);
@@ -2607,26 +2452,19 @@ describe("RuntimeOrchestrator", () => {
       MemoryStoreSchema.parse(
         createEmptyRevisionedFile({
           memories: [
-            {
-              id: "first",
-              waifuId: "yuki",
-              guildId: "guild-1",
-              content: "Kevin likes tea.",
-              strength: 3,
-              createdAt: now,
-              updatedAt: now,
-              status: "active"
-            },
-            {
-              id: "second",
-              waifuId: "yuki",
-              guildId: "guild-1",
-              content: "Kevin likes green tea.",
-              strength: 4,
-              createdAt: now,
-              updatedAt: now,
-              status: "active"
-            }
+            { id: "pinned-1", waifuId: "yuki", guildId: "guild-1", content: "Kevin is allergic to peanuts.", strength: 5, pinned: true, createdAt: now, updatedAt: now, status: "active" }
+          ]
+        })
+      )
+    );
+    await storage.writeJson(
+      "memory:pending",
+      "user/memory/pending-observations.json",
+      PendingObservationsFileSchema,
+      PendingObservationsFileSchema.parse(
+        createEmptyRevisionedFile({
+          observations: [
+            { id: "obs-1", guildId: "guild-1", channelId: "channel-1", waifuId: "yuki", content: "Kevin mentioned peanuts again.", kind: "fact", importance: 2, entities: ["Kevin"], createdAt: now }
           ]
         })
       )
@@ -2637,32 +2475,13 @@ describe("RuntimeOrchestrator", () => {
         return { content: "unused" };
       },
       async decideStageManagerObservations() {
-        return [
-          { waifuId: "yuki", content: "Kevin keeps mentioning tea.", importance: 3, kind: "preference" as const }
-        ];
+        return [];
       },
-      async decideStageManager(request: StageManagerRequest) {
-        expect(request.memories).toEqual([
-          {
-            memoryIndex: 1,
-            waifuId: "yuki",
-            content: "Kevin likes tea.",
-            importance: 3
-          },
-          {
-            memoryIndex: 2,
-            waifuId: "yuki",
-            content: "Kevin likes green tea.",
-            importance: 4
-          }
-        ]);
-        return [
-          {
-            tool: "merge_memories",
-            sourceMemoryIndices: [1, 2],
-            mergedContent: "Kevin likes tea, especially green tea."
-          }
-        ];
+      async decideDream(request) {
+        // Pinned records are excluded from the chunk, so no memoryIndex targets them.
+        expect(request.memories).toEqual([]);
+        // The model nevertheless tries to archive index 1 (which is unknown for this chunk).
+        return [{ op: "archive", memoryIndex: 1, reason: "stale" }];
       }
     };
 
@@ -2671,26 +2490,13 @@ describe("RuntimeOrchestrator", () => {
       storage,
       discord,
       createPipeline: () => pipeline,
-      logger: {
-        debug: () => undefined,
-        info: () => undefined,
-        warn: () => undefined,
-        error: () => undefined
-      }
+      logger: quietLogger()
     });
 
-    await runtime.triggerStageManager("guild-1", "channel-1");
+    await runtime.runDreamPassForTest("guild-1");
 
     const memories = await storage.readJson("user/memories.json", MemoryStoreSchema);
-    expect(memories.memories.find((memory) => memory.id === "first")?.status).toBe("archived");
-    expect(memories.memories.find((memory) => memory.id === "second")?.status).toBe("archived");
-    expect(memories.memories.find((memory) => memory.content === "Kevin likes tea, especially green tea.")).toMatchObject({
-      waifuId: "yuki",
-      guildId: "guild-1",
-      source: "stage_manager",
-      strength: 4,
-      status: "active"
-    });
+    expect(memories.memories.find((memory) => memory.id === "pinned-1")).toMatchObject({ status: "active", pinned: true });
   });
 
   it("short-circuits when the observer extracts no observations", async () => {
@@ -2699,7 +2505,7 @@ describe("RuntimeOrchestrator", () => {
     await ensureDataLayout(root);
     const storage = new StorageService(root);
     const discord = new FakeDiscord();
-    let librarianCalls = 0;
+    let dreamCalls = 0;
 
     await seedRuntimeConfig(storage);
     const pipeline: ModelPipeline = {
@@ -2709,9 +2515,9 @@ describe("RuntimeOrchestrator", () => {
       async decideStageManagerObservations() {
         return [];
       },
-      async decideStageManager() {
-        librarianCalls += 1;
-        return [{ tool: "no_change", reason: "should not run" }];
+      async decideDream() {
+        dreamCalls += 1;
+        return [{ op: "none" as const }];
       }
     };
 
@@ -2730,114 +2536,14 @@ describe("RuntimeOrchestrator", () => {
 
     await runtime.triggerStageManager("guild-1", "channel-1");
 
-    expect(librarianCalls).toBe(0);
+    // Empty store and empty queue: the dream pass finds no chunk and never calls the model.
+    expect(dreamCalls).toBe(0);
     const history = await storage.readJson("user/stage-manager/history.json", StageManagerHistoryFileSchema);
     expect(history.edits[0]).toMatchObject({
       tool: "no_change",
       observationCount: 0,
       summary: "No observations extracted"
     });
-  });
-
-  it("prunes the memory list passed to the librarian by observation token overlap", async () => {
-    const root = await makeTempRoot();
-    roots.push(root);
-    await ensureDataLayout(root);
-    const storage = new StorageService(root);
-    const discord = new FakeDiscord();
-    const now = new Date().toISOString();
-
-    await seedRuntimeConfig(storage);
-    await seedWaifu(storage, "mika", "Mika", "mika-bot", "mika persona");
-    await enableWaifus(storage, ["yuki", "mika"]);
-    await storage.writeJson(
-      "memories:global",
-      "user/memories.json",
-      MemoryStoreSchema,
-      MemoryStoreSchema.parse(
-        createEmptyRevisionedFile({
-          memories: [
-            {
-              id: "yuki-tea",
-              waifuId: "yuki",
-              guildId: "guild-1",
-              content: "Kevin enjoys tea most mornings.",
-              strength: 3,
-              createdAt: now,
-              updatedAt: now,
-              status: "active"
-            },
-            {
-              id: "yuki-permanent-tea",
-              waifuId: "yuki",
-              guildId: "guild-1",
-              content: "Kevin permanently prefers ceremonial green tea.",
-              strength: 5,
-              pinned: true,
-              createdAt: now,
-              updatedAt: now,
-              status: "active"
-            },
-            {
-              id: "mika-tea",
-              waifuId: "mika",
-              guildId: "guild-1",
-              content: "Kevin asks Mika about tea sometimes.",
-              strength: 2,
-              createdAt: now,
-              updatedAt: now,
-              status: "active"
-            },
-            {
-              id: "mika-pizza",
-              waifuId: "mika",
-              guildId: "guild-1",
-              content: "Mia ordered pepperoni pizza last weekend.",
-              strength: 1,
-              createdAt: now,
-              updatedAt: now,
-              status: "active"
-            }
-          ]
-        })
-      )
-    );
-
-    let librarianMemories: unknown;
-    const pipeline: ModelPipeline = {
-      async generateWaifu() {
-        return { content: "unused" };
-      },
-      async decideStageManagerObservations() {
-        return [
-          { waifuId: "yuki", content: "Kevin asked for a tea recommendation.", importance: 3, kind: "event" as const }
-        ];
-      },
-      async decideStageManager(request: StageManagerRequest) {
-        librarianMemories = request.memories;
-        return [{ tool: "no_change", reason: "tested" }];
-      }
-    };
-
-    const runtime = new RuntimeOrchestrator({
-      sleep: async () => undefined,
-      storage,
-      discord,
-      createPipeline: () => pipeline,
-      logger: {
-        debug: () => undefined,
-        info: () => undefined,
-        warn: () => undefined,
-        error: () => undefined
-      }
-    });
-
-    await runtime.triggerStageManager("guild-1", "channel-1");
-
-    expect(librarianMemories).toEqual([
-      { memoryIndex: 1, waifuId: "yuki", content: "Kevin enjoys tea most mornings.", importance: 3 },
-      { memoryIndex: 2, waifuId: "mika", content: "Kevin asks Mika about tea sometimes.", importance: 2 }
-    ]);
   });
 
   it("hides cross-guild memories from waifu prompts", async () => {
@@ -2941,12 +2647,9 @@ describe("RuntimeOrchestrator", () => {
         return { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: RETRIGGER_MAX_SECONDS, reasoning: "wait" };
       },
       async decideStageManagerObservations() {
-        return [{ waifuId: "yuki", content: "Kevin pinged.", importance: 2, kind: "event" as const }];
-      },
-      async decideStageManager() {
         stageCalls += 1;
         for (const waiter of stageWaiters) waiter();
-        return [{ tool: "no_change", reason: "none" }];
+        return [{ waifuId: "yuki", content: "Kevin pinged.", importance: 2, kind: "event" as const }];
       }
     };
 
@@ -3007,12 +2710,9 @@ describe("RuntimeOrchestrator", () => {
         return { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: RETRIGGER_MAX_SECONDS, reasoning: "wait" };
       },
       async decideStageManagerObservations() {
-        return [{ waifuId: "yuki", content: "Kevin pinged.", importance: 2, kind: "event" as const }];
-      },
-      async decideStageManager() {
         stageCalls += 1;
         for (const waiter of stageWaiters) waiter();
-        return [{ tool: "no_change", reason: "none" }];
+        return [{ waifuId: "yuki", content: "Kevin pinged.", importance: 2, kind: "event" as const }];
       }
     };
 
@@ -3070,11 +2770,8 @@ describe("RuntimeOrchestrator", () => {
         return { content: "unused" };
       },
       async decideStageManagerObservations() {
-        return [{ waifuId: "yuki", content: "Kevin pinged.", importance: 2, kind: "event" as const }];
-      },
-      async decideStageManager() {
         stageCalls += 1;
-        return [{ tool: "no_change", reason: "none" }];
+        return [{ waifuId: "yuki", content: "Kevin pinged.", importance: 2, kind: "event" as const }];
       }
     };
 
@@ -3254,14 +2951,18 @@ describe("RuntimeOrchestrator", () => {
       async decideStageManagerObservations() {
         return [{ waifuId: "yuki", content: "Kevin likes tea.", importance: 3, kind: "preference" as const }];
       },
-      async decideStageManager() {
+      async decideDream(request) {
+        // The dream pass receives the queued observation and adds a memory for it.
+        const observation = request.observations[0];
         return [
           {
-            tool: "add_memory",
+            op: "add",
             memory: {
-              waifuId: "yuki",
-              content: "Kevin likes tea.",
-              importance: 3
+              waifuId: observation.waifuId,
+              content: observation.content,
+              kind: observation.kind,
+              strength: observation.importance,
+              entities: []
             }
           }
         ];
@@ -3302,7 +3003,12 @@ describe("RuntimeOrchestrator", () => {
     ]);
     await runtime.stop();
 
-    expect(responses).toEqual(["Stage manager updated memories."]);
+    expect(responses).toHaveLength(1);
+    expect(responses[0]).toContain("Observer + dream pass");
+    expect(responses[0]).toContain("dream pass applied 1");
+    // The dreamed memory landed in the store.
+    const memories = await storage.readJson("user/memories.json", MemoryStoreSchema);
+    expect(memories.memories.find((memory) => memory.content === "Kevin likes tea.")).toMatchObject({ source: "dream" });
     expect(discord.sent).toEqual([]);
   });
 
@@ -4320,10 +4026,11 @@ describe("RuntimeOrchestrator", () => {
         async decideStageManagerObservations() {
           return [{ waifuId: "yuki", content: "Yuki likes green tea.", importance: 3, kind: "preference" }];
         },
-        async decideStageManager() {
+        async decideDream(request) {
+          const observation = request.observations[0];
           return [{
-            tool: "add_memory",
-            memory: { waifuId: "yuki", content: "Yuki likes green tea.", importance: 3 }
+            op: "add",
+            memory: { waifuId: observation.waifuId, content: observation.content, kind: observation.kind, strength: observation.importance, entities: [] }
           }];
         },
         async generateWaifu() {
@@ -4347,13 +4054,16 @@ describe("RuntimeOrchestrator", () => {
     await waitFor(() => debugResponses.length === 1, "debug set response");
 
     await runtime.triggerStageManager("guild-1", "channel-1");
-    await waitFor(() => discord.debugMessages.length === 1, "stage-manager debug message");
+    // Observer posts its [stage-manager debug] queue summary; the dream posts a [dream debug] log.
+    await waitFor(() => discord.debugMessages.length === 2, "stage-manager + dream debug messages");
     await runtime.stop();
 
-    expect(discord.debugMessages[0]?.content).toContain("[stage-manager debug]");
-    expect(discord.debugMessages[0]?.content).toContain("Observations: 1");
-    expect(discord.debugMessages[0]?.content).toContain("added: Yuki likes green tea.");
-    expect(discord.debugMessages[0]?.content).not.toContain("affectedMemoryIds");
+    const combined = discord.debugMessages.map((message) => message.content).join("\n");
+    expect(combined).toContain("[stage-manager debug]");
+    expect(combined).toContain("queued: 1");
+    expect(combined).toContain("[dream debug]");
+    expect(combined).toContain("[dream:add] Yuki likes green tea.");
+    expect(combined).not.toContain("affectedMemoryIds");
   });
 
   it("runs the orchestrator from /run when the channel is idle", async () => {

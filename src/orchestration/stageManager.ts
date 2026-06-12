@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { MemoryKindSchema } from "../shared/schemas/domain.js";
 
 const ImportanceSchema = z.union([
   z.literal(1),
@@ -20,41 +21,52 @@ export const StageManagerObservationSchema = z.object({
 
 export type StageManagerObservation = z.infer<typeof StageManagerObservationSchema>;
 
-const StageManagerMemoryInputSchema = z.object({
-  waifuId: z.string().min(1),
-  content: z.string().min(1),
-  importance: ImportanceSchema
-});
-
-const StageManagerMemoryPatchSchema = z.object({
-  waifuId: z.string().min(1).optional(),
-  content: z.string().min(1).optional(),
-  importance: ImportanceSchema.optional()
-});
-
-export const StageManagerToolCallSchema = z.discriminatedUnion("tool", [
+// The nightly dream pass speaks the 0-5 `strength` scale directly (not the librarian's 1-5
+// importance). Each op references existing memories by their per-chunk `memoryIndex` (1-based).
+export const DreamOpSchema = z.discriminatedUnion("op", [
   z.object({
-    tool: z.literal("add_memory"),
-    memory: StageManagerMemoryInputSchema
+    op: z.literal("add"),
+    memory: z.object({
+      waifuId: z.string().min(1),
+      content: z.string().min(1),
+      kind: MemoryKindSchema,
+      strength: z.number().min(0).max(5),
+      entities: z.array(z.string()).default([])
+    })
   }),
   z.object({
-    tool: z.literal("update_memory"),
+    op: z.literal("promote"),
     memoryIndex: z.number().int().min(1),
-    patch: StageManagerMemoryPatchSchema
+    patch: z
+      .object({
+        kind: MemoryKindSchema.optional(),
+        strength: z.number().min(0).max(5).optional(),
+        content: z.string().min(1).optional()
+      })
+      .default({})
   }),
   z.object({
-    tool: z.literal("archive_memory"),
-    memoryIndex: z.number().int().min(1)
+    op: z.literal("rewrite"),
+    memoryIndex: z.number().int().min(1),
+    content: z.string().min(1),
+    entities: z.array(z.string()).default([])
   }),
   z.object({
-    tool: z.literal("merge_memories"),
-    sourceMemoryIndices: z.array(z.number().int().min(1)).min(2),
-    mergedContent: z.string().min(1)
+    op: z.literal("merge"),
+    memoryIndices: z.array(z.number().int().min(1)).min(2),
+    content: z.string().min(1),
+    entities: z.array(z.string()).default([])
   }),
   z.object({
-    tool: z.literal("no_change"),
-    reason: z.string().optional()
-  })
+    op: z.literal("decay"),
+    memoryIndex: z.number().int().min(1),
+    strength: z.number().min(0).max(5)
+  }),
+  z.object({
+    op: z.literal("archive"),
+    memoryIndex: z.number().int().min(1),
+    reason: z.string().min(1)
+  }),
+  z.object({ op: z.literal("none") })
 ]);
-
-export type StageManagerToolCall = z.infer<typeof StageManagerToolCallSchema>;
+export type DreamOp = z.infer<typeof DreamOpSchema>;
