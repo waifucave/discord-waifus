@@ -497,6 +497,20 @@ Status log (one line per landed phase, appended by the implementing agent):
   personas no longer reach the orchestrator. Anthropic/Google mid+trailing blocks wrap in
   `<system_note>`. Schema-first tool descriptions (add_memory/PickNextWaifu). P3 must carry all
   of these into the unified pipeline rewrite.
+- **W3 (memory v2 + tuning)** — landed 2026-06-12, merge commit `f8bf798`. One unified
+  `MemoryRecord` store (kind/source/strength/entities/expiresAt/pinned) with an in-place shape
+  migration — `CURRENT_SCHEMA_VERSION` deliberately NOT bumped (shape-detect pattern; P4 owns any
+  global bump). Per-turn scored retrieval (`src/orchestration/memoryRetrieval.ts`, top-K default 12
+  + pinned) replaces inject-all. Observer gains `entities` + a lean input format
+  (`formatObserverContext`; `renderContext` and friends deleted); observations queue at
+  `user/memory/pending-observations.json` with importance>=4 fast-tracked. **`decideDream` is a NEW
+  ModelPipeline method (forced tool `dream_memories`) and `decideStageManager`/the librarian are
+  DELETED** — the nightly dream pass (`src/orchestration/dream.ts`, per-guild 05:00 + jitter,
+  reentrancy-guarded) consolidates: add/promote/rewrite/merge/decay/archive. New `"dream"`
+  queryRole. P3 must carry decideDream + the observer changes; the `ShortTermMemory*` names still
+  in `pipelines.ts` are the add_memory TOOL plumbing (wire-correct, die with the file in P3).
+  Task 0 tuning: fragment-first length register, cast-autonomy + change_topic seeding in the
+  orchestrator prompt.
 
 ---
 
