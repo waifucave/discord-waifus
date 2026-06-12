@@ -355,6 +355,11 @@ export type WaifuConfig = Revisioned & {
   availability: WaifuAvailability;
   tools: WaifuToolSettings;
   promptLayout: WaifuPromptLayout;
+  personaDigest?: {
+    voice: string;
+    role: string;
+    personaHash: string;
+  };
 };
 
 export type WaifusResponse = { waifus: WaifuConfig[] };

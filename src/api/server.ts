@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import { access, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,7 +13,9 @@ import { Logger, createLogger } from "../backend/logger.js";
 import { RuntimeState } from "../backend/runtime.js";
 import { RuntimeOrchestrator } from "../orchestration/runtime.js";
 import { clearOcrArtifacts } from "../orchestration/ocr.js";
-import { listModels, listProviders } from "../providers/catalog.js";
+import { getModel, listModels, listProviders } from "../providers/catalog.js";
+import { createModelPipeline } from "../providers/pipelines.js";
+import type { ModelPipeline } from "../providers/types.js";
 import {
   AgentConfig,
   AgentConfigSchema,
@@ -89,7 +91,8 @@ const CreateWaifuBodySchema = WaifuConfigSchema.omit({
   .partial({ id: true, enabled: true, persona: true, contextWindow: true, generation: true })
   .required({ name: true, displayName: true });
 
-const UpdateWaifuBodySchema = WaifuConfigSchema.partial().extend({
+// personaDigest is server-managed; clients cannot set it via PUT.
+const UpdateWaifuBodySchema = WaifuConfigSchema.omit({ personaDigest: true }).partial().extend({
   revision: z.number().int().nonnegative().optional()
 });
 
@@ -390,7 +393,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     const { waifuId } = parseIdParam(request.params, "waifuId");
     const body = UpdateWaifuBodySchema.parse(request.body);
     requireRevision(request, body);
-    return storage.updateRevisionedJson({
+    const saved = await storage.updateRevisionedJson({
       resourceKey: `waifu:${waifuId}`,
       relativePath: waifuRelativePath(waifuId),
       schema: WaifuConfigSchema,
@@ -401,9 +404,42 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
         return {
           ...current,
           ...patch,
-          id: current.id
+          id: current.id,
+          // personaDigest is server-managed; always carry it forward from current.
+          personaDigest: current.personaDigest
         };
       }
+    });
+    // Fire-and-forget: regenerate persona digest when persona text changed.
+    void generatePersonaDigestIfStale(storage, saved, logger).catch(() => {
+      // Errors are handled inside generatePersonaDigestIfStale with logger.warn.
+    });
+    return saved;
+  });
+
+  app.post("/api/waifus/:waifuId/digest", async (request) => {
+    const { waifuId } = parseIdParam(request.params, "waifuId");
+    const waifu = await readWaifu(storage, waifuId);
+    const setup = await resolvePersonaDigestPipeline(storage);
+    if (!setup.ok) {
+      throw conflict(setup.reason);
+    }
+    const { pipeline, modelId } = setup;
+    const personaHash = createHash("sha256").update(waifu.persona).digest("hex");
+    const digest = await pipeline.generatePersonaDigest!({
+      modelId,
+      messages: [],
+      personaText: waifu.persona
+    });
+    return storage.updateRevisionedJson({
+      resourceKey: `waifu:${waifuId}`,
+      relativePath: waifuRelativePath(waifuId),
+      schema: WaifuConfigSchema,
+      fallback: waifu,
+      transform: (current) => ({
+        ...current,
+        personaDigest: { ...digest, personaHash }
+      })
     });
   });
 
@@ -1557,4 +1593,71 @@ function sendSseSnapshot(
     unsubscribeReplies();
     reply.raw.end();
   });
+}
+
+type DigestPipeline = ModelPipeline & { generatePersonaDigest: NonNullable<ModelPipeline["generatePersonaDigest"]> };
+type DigestSetup =
+  | { ok: true; pipeline: DigestPipeline; modelId: string }
+  | { ok: false; reason: string };
+
+async function resolvePersonaDigestPipeline(storage: StorageService): Promise<DigestSetup> {
+  const stageManagerConfig = await readAgentConfig(storage, "stage-manager");
+  const modelId = stageManagerConfig.modelId;
+  if (!modelId) {
+    return { ok: false, reason: "Stage-manager has no model configured." };
+  }
+  const credentials = await readProviderCredentials(storage);
+  const model = getModel(modelId);
+  if (!model) {
+    return { ok: false, reason: "Stage-manager model is not recognized." };
+  }
+  const providerCreds = credentials.providers[model.providerId];
+  if (!providerCreds?.apiKey) {
+    return { ok: false, reason: `Stage-manager provider "${model.providerId}" has no API key configured.` };
+  }
+  const pipeline = createModelPipeline(modelId, { apiKey: providerCreds.apiKey });
+  if (!pipeline.generatePersonaDigest) {
+    return { ok: false, reason: "Stage-manager model does not support persona digest generation." };
+  }
+  return { ok: true, pipeline: pipeline as DigestPipeline, modelId };
+}
+
+async function generatePersonaDigestIfStale(
+  storage: StorageService,
+  waifu: WaifuConfig,
+  logger: Logger
+): Promise<void> {
+  let resolvedModelId: string | undefined;
+  try {
+    const personaHash = createHash("sha256").update(waifu.persona).digest("hex");
+    if (waifu.personaDigest?.personaHash === personaHash) {
+      // Digest is up to date; nothing to do.
+      return;
+    }
+    const setup = await resolvePersonaDigestPipeline(storage);
+    if (!setup.ok) return;
+    const { pipeline, modelId } = setup;
+    resolvedModelId = modelId;
+    const digest = await pipeline.generatePersonaDigest({
+      modelId,
+      messages: [],
+      personaText: waifu.persona
+    });
+    await storage.updateRevisionedJson({
+      resourceKey: `waifu:${waifu.id}`,
+      relativePath: waifuRelativePath(waifu.id),
+      schema: WaifuConfigSchema,
+      fallback: waifu,
+      transform: (current) => ({
+        ...current,
+        personaDigest: { ...digest, personaHash }
+      })
+    });
+  } catch (error) {
+    logger.warn("Persona digest generation failed", {
+      waifuId: waifu.id,
+      modelId: resolvedModelId,
+      error: error instanceof Error ? error.message : String(error)
+    });
+  }
 }

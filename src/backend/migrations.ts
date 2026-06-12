@@ -42,6 +42,10 @@ export async function runMigrations(dataRoot: string): Promise<MigrationResult> 
   if (layoutsMigrated > 0) {
     applied.push(`migrate-waifu-prompt-layout-${layoutsMigrated}`);
   }
+  const w2LayoutsMigrated = await migrateWaifuPromptLayoutW2(dataRoot);
+  if (w2LayoutsMigrated > 0) {
+    applied.push(`migrate-waifu-prompt-layout-w2-${w2LayoutsMigrated}`);
+  }
 
   return { applied };
 }
@@ -518,4 +522,69 @@ async function listConfiguredWaifuIds(dataRoot: string): Promise<string[]> {
 function singleValue(values: Set<string> | undefined): string | undefined {
   if (!values || values.size !== 1) return undefined;
   return [...values][0];
+}
+
+// Block IDs that existed in the W1 (pre-W2) registry. Any waifu whose promptLayout contains one
+// of these IDs is using the old registry and must be reset wholesale to the new default so the
+// new blocks are enabled by default (reconcileWaifuPromptLayout would only append them disabled).
+const LEGACY_WAIFU_BLOCK_IDS = new Set([
+  "personality",
+  "contextStructure",
+  "environment",
+  "replyTargeting",
+  "mentionPolicy",
+  "styleConstraints",
+  "hardRules",
+  "directorNotes",
+  "activeParticipants",
+  "serverEmojis",
+  "personalityReminder",
+  "sceneDirection",
+  "toolUse"
+]);
+
+function layoutContainsLegacyIds(layout: unknown): boolean {
+  if (!isObject(layout)) return false;
+  const sections = ["top", "mid", "trailing"] as const;
+  for (const section of sections) {
+    const nodes = layout[section];
+    if (!Array.isArray(nodes)) continue;
+    for (const node of nodes) {
+      if (!isObject(node)) continue;
+      if (node.kind === "block" && typeof node.blockId === "string" && LEGACY_WAIFU_BLOCK_IDS.has(node.blockId)) {
+        return true;
+      }
+      if (node.kind === "group" && Array.isArray(node.children)) {
+        for (const child of node.children) {
+          if (isObject(child) && typeof child.blockId === "string" && LEGACY_WAIFU_BLOCK_IDS.has(child.blockId)) {
+            return true;
+          }
+        }
+      }
+    }
+  }
+  return false;
+}
+
+async function migrateWaifuPromptLayoutW2(dataRoot: string): Promise<number> {
+  const waifusRoot = path.join(dataRoot, "user", "waifus");
+  let entries: string[];
+  try {
+    entries = await readdir(waifusRoot);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0;
+    throw error;
+  }
+  let count = 0;
+  for (const entry of entries) {
+    const filePath = path.join(waifusRoot, entry, "waifu.json");
+    const data = await readJsonOrUndefined(filePath);
+    if (!isObject(data)) continue;
+    // Only migrate waifus that have a promptLayout with legacy block IDs.
+    if (!layoutContainsLegacyIds(data.promptLayout)) continue;
+    data.promptLayout = defaultWaifuPromptLayout();
+    await atomicWriteJson(filePath, data);
+    count += 1;
+  }
+  return count;
 }

@@ -17,7 +17,7 @@ import {
   DiscordReviewCommandEvent,
   DiscordStopCommandEvent
 } from "../discord/client.js";
-import { modelVisibleEmojiToken, stripLeakedContextHeader } from "../discord/normalization.js";
+import { dedupeNames, modelVisibleEmojiToken, stripLeakedContextHeader } from "../discord/normalization.js";
 import { splitWaifuReply, typingDelayMs } from "./messageSplit.js";
 import {
   PromptBlockContext,
@@ -37,6 +37,7 @@ import {
   AgentConfigSchema,
   DiscordBotsFileSchema,
   GuildEmojisFileSchema,
+  GuildMembersFileSchema,
   MemoryStore,
   MemoryStoreSchema,
   OrchestratorDebugConfigFileSchema,
@@ -1370,19 +1371,30 @@ export class RuntimeOrchestrator {
             activeChatParticipants
           );
           const waifuStopSequences = participantDisplayNames.map((name) => `\n${name}:`);
+          const selfAuthorIds = [waifu.botId];
+          const selfDisplayNames = dedupeNames([
+            waifu.displayName,
+            waifu.name,
+            ...waifuMessages
+              .filter((message) => message.authorId === waifu.botId)
+              .flatMap((message) => [message.displayName, message.name])
+          ]);
           const directiveText = directiveTextForWaifu(responder.directive);
           const effectiveShortTermMemory = input.server.tools.shortTermMemory && !suppressMemoryToolThisDecision;
-          const { systemPrompt, midSystemBlock, trailingSystemBlock } = await this.buildWaifuPromptParts(
+          const { systemPrompt, midSystemBlock, trailingSystemBlock, selfGuildNickname } = await this.buildWaifuPromptParts(
             input.guildId,
             waifu,
             input.availableWaifus,
             {
               channelId: input.channelId,
-              sceneDirection: directiveText,
+              directorNote: directiveText,
               pickNextWaifuToolOverride: input.server.tools.pickNextWaifu,
               shortTermMemoryToolOverride: effectiveShortTermMemory
             }
           );
+          const allSelfDisplayNames = selfGuildNickname
+            ? dedupeNames([...selfDisplayNames, selfGuildNickname])
+            : selfDisplayNames;
           const activeAuthorIds = waifuMessages.map((message) => message.authorId);
           const MAX_GENERATE_ATTEMPTS = 2;
           let result: WaifuGenerationResult = { content: "" };
@@ -1405,6 +1417,7 @@ export class RuntimeOrchestrator {
                   midSystemBlock,
                   trailingSystemBlock,
                   retryUserMessage: attempt === 2 ? `${waifu.displayName}:` : undefined,
+                  selfAuthorIds,
                   availableWaifuIds: nextWaifuIds,
                   pickNextWaifuToolEnabled: input.server.tools.pickNextWaifu,
                   shortTermMemoryToolEnabled: effectiveShortTermMemory,
@@ -1420,7 +1433,7 @@ export class RuntimeOrchestrator {
               }
             })();
             const metadataStrippedContent = stripLeakedContextHeader(result.content, {
-              senderDisplayName: waifu.displayName,
+              selfDisplayNames: allSelfDisplayNames,
               participantDisplayNames,
               stripImpersonation: false
             });
@@ -1428,7 +1441,7 @@ export class RuntimeOrchestrator {
             quoteExtraction = extractReplyQuote(metadataStrippedContent, waifuMessages);
             const replyQuoteExtracted = quoteExtraction.cleanedContent !== metadataStrippedContent;
             strippedContent = stripLeakedContextHeader(quoteExtraction.cleanedContent, {
-              senderDisplayName: waifu.displayName,
+              selfDisplayNames: allSelfDisplayNames,
               participantDisplayNames
             });
             const impersonationStripped = strippedContent !== quoteExtraction.cleanedContent;
@@ -2712,15 +2725,15 @@ export class RuntimeOrchestrator {
     availableWaifus: WaifuConfig[],
     options: {
       channelId: string;
-      sceneDirection?: string;
+      directorNote?: string;
       pickNextWaifuToolOverride?: boolean;
       shortTermMemoryToolOverride?: boolean;
     }
-  ): Promise<{ systemPrompt: string; midSystemBlock: string; trailingSystemBlock: string }> {
+  ): Promise<{ systemPrompt: string; midSystemBlock: string; trailingSystemBlock: string; selfGuildNickname: string | undefined }> {
     const pickNextWaifuToolActive = options.pickNextWaifuToolOverride ?? false;
     const shortTermMemoryToolActive =
       options.shortTermMemoryToolOverride ?? true;
-    const [store, emojis, shortTermStore, activeChatParticipants] = await Promise.all([
+    const [store, emojis, shortTermStore, activeChatParticipants, members] = await Promise.all([
       this.readMemoryStore(),
       this.options.storage.readJson(
         path.join("user", "servers", guildId, "emojis.json"),
@@ -2728,7 +2741,12 @@ export class RuntimeOrchestrator {
         GuildEmojisFileSchema.parse(createEmptyRevisionedFile({ guildId, emojis: [] }))
       ),
       this.readShortTermMemoryStore(),
-      this.readActiveChatParticipants(guildId, options.channelId)
+      this.readActiveChatParticipants(guildId, options.channelId),
+      this.options.storage.readJson(
+        path.join("user", "servers", guildId, "members.json"),
+        GuildMembersFileSchema,
+        GuildMembersFileSchema.parse(createEmptyRevisionedFile({ guildId, members: [] }))
+      )
     ]);
     const longTermLines = store.memories
       .filter((memory) => memory.guildId === guildId && memory.waifuId === waifu.id && memory.status === "active")
@@ -2750,16 +2768,31 @@ export class RuntimeOrchestrator {
       .filter((emoji) => emoji.available)
       .map(modelVisibleEmojiToken)
       .join(" ");
-    const personaText = waifu.persona.trim();
-    const personalityContent = personaText
-      ? `You are ${waifu.displayName}. Stay in character.\n${personaText}`
-      : `You are ${waifu.displayName}. Stay in character.`;
+    // Raw persona text; the identity block adds the identity sentence separately.
+    const personalityContent = waifu.persona.trim();
     const scheduleContent = formatWaifuScheduleForPrompt(waifu);
     const waifuTag = promptTagName(waifu.name || waifu.id);
     const toolUseInstructions = buildWaifuToolUseInstructions(waifu, availableWaifus, {
       pickNextWaifu: pickNextWaifuToolActive,
       shortTermMemory: shortTermMemoryToolActive
     });
+    const guildNameByUserId = new Map(
+      members.members
+        .filter((member) => member.guildDisplayName)
+        .map((member) => [member.userId, member.guildDisplayName as string])
+    );
+    const serverNickname = waifu.botId ? guildNameByUserId.get(waifu.botId) : undefined;
+
+    // Roster line: guild display names of other configured waifus with bot IDs (excluding self),
+    // with the configured displayName in parentheses when the guild name differs.
+    const rosterLine = availableWaifus
+      .filter((candidate) => candidate.id !== waifu.id && candidate.botId)
+      .map((candidate) => {
+        const guildName = guildNameByUserId.get(candidate.botId as string);
+        const configured = candidate.displayName || candidate.name;
+        return guildName && guildName !== configured ? `${guildName} (${configured})` : configured;
+      })
+      .join(", ");
 
     const blockContext: PromptBlockContext = {
       waifuTag,
@@ -2767,6 +2800,8 @@ export class RuntimeOrchestrator {
       personalityContent,
       scheduleContent,
       toolUseInstructions,
+      rosterLine,
+      serverNickname: serverNickname !== waifu.displayName ? serverNickname : undefined,
       activeParticipantDisplayNames: channelParticipantDisplayNames(
         activeChatParticipants,
         waifu,
@@ -2775,12 +2810,18 @@ export class RuntimeOrchestrator {
       emojiList,
       memoryLines: [...longTermLines, ...shortTermLines],
       currentlyDoing: currentlyDoingForWaifu(waifu, new Date()),
-      sceneDirection: options.sceneDirection?.trim() || undefined
+      directorNote: options.directorNote?.trim() || undefined,
+      personaDigest: waifu.personaDigest
+        ? { voice: waifu.personaDigest.voice, role: waifu.personaDigest.role }
+        : undefined
     };
 
     // The slot→string mapping is fixed; the composition of each slot is driven by the waifu's
     // editable prompt layout (see src/orchestration/promptBlocks.ts).
-    return assembleWaifuPrompt(reconcileWaifuPromptLayout(waifu.promptLayout), blockContext);
+    return {
+      ...assembleWaifuPrompt(reconcileWaifuPromptLayout(waifu.promptLayout), blockContext),
+      selfGuildNickname: serverNickname !== waifu.displayName ? serverNickname : undefined
+    };
   }
 
   private buildOrchestratorSystemPrompt(
@@ -3534,33 +3575,18 @@ function buildWaifuToolUseInstructions(
   if (activeTools.pickNextWaifu && candidates.length > 0) {
     sections.push(
       [
-        "PickNextWaifu - handoff tool.",
-        "Use this after writing your Discord reply whenever another waifu has an immediate natural follow-up and should speak next without waiting for the orchestrator.",
-        "Skip it only when your message should clearly end the beat.",
-        "Arguments: { \"waifuId\": string }.",
-        "Available waifus:",
+        "PickNextWaifu — only after your message, only when another waifu has an obvious immediate follow-up. Available:",
         ...candidates.map((candidate) => `- ${candidate}`)
       ].join("\n")
     );
   }
   if (activeTools.shortTermMemory) {
     sections.push(
-      [
-        "add_memory - scratchpad to remember until the next day.",
-        "Use this with a single short standalone sentence whenever something in the conversation is worth remembering for the next ~24 hours: a stated time, a plan, a name to follow up on, a one-off detail you might need before tomorrow.",
-        "You may call it multiple times in one reply (up to 5) to record separate notes.",
-        "Calling add_memory does NOT replace your Discord reply. Always also write your normal message body in the same turn — the tool call alone leaves the room silent.",
-        "Do not use it for trivial chitchat, repeat lines you already wrote, or things that belong in long-term memory. Entries auto-expire after 24h.",
-        `Before calling, scan <${promptTagName(waifu.name || waifu.id)}_relevant_memories> — if the fact is already listed (even paraphrased), do NOT call add_memory for it again.`,
-        "Arguments: { \"content\": string }."
-      ].join("\n")
+      `add_memory — save a note whenever the chat produces something you'd want to know tomorrow (plans, promises, new facts about someone, the state of a running bit). Notes are what survives when the chat history vanishes. Skip facts already shown in <${promptTagName(waifu.name || waifu.id)}_relevant_memories>. Always also write your normal message in the same turn.`
     );
   }
   if (sections.length === 0) return undefined;
-  return [
-    "You have access to the following tools. Use the relevant tool whenever it fits the current turn; do not wait for a perfect moment.",
-    ...sections
-  ].join("\n\n");
+  return sections.join("\n\n");
 }
 
 function formatWaifuScheduleForPrompt(waifu: WaifuConfig): string {
@@ -3687,6 +3713,7 @@ function replyTargetForFreshContext(
   if (!target || target === latestMessage) return undefined;
   return replyToMessageId;
 }
+
 
 function waifuParticipantDisplayNames(
   self: WaifuConfig,
@@ -4078,15 +4105,21 @@ const DEFAULT_ORCHESTRATOR_PROMPT = [
 function castingCard(waifu: WaifuConfig, now: Date): string {
   const tagName = promptTagName(waifu.name || waifu.id);
   const displayName = waifu.displayName || waifu.name;
-  // The trailing replace drops a lone high surrogate left when the cap splits an emoji pair.
-  const preview = waifu.persona.trim().replace(/\s+/g, " ").slice(0, 200).replace(/[\uD800-\uDBFF]$/, "");
-  return [
+  const lines: string[] = [
     `<${tagName}>`,
-    `ID: ${waifu.id} · ${displayName}`,
-    `About: ${preview || "(no persona configured)"}`,
-    `Now: ${castingAvailabilityLine(waifu, now)}`,
-    `</${tagName}>`
-  ].join("\n");
+    `ID: ${waifu.id} · ${displayName}`
+  ];
+  if (waifu.personaDigest) {
+    lines.push(`Voice: ${waifu.personaDigest.voice}`);
+    lines.push(`Cast her when: ${waifu.personaDigest.role}`);
+  } else {
+    // The trailing replace drops a lone high surrogate left when the cap splits an emoji pair.
+    const preview = waifu.persona.trim().replace(/\s+/g, " ").slice(0, 200).replace(/[\uD800-\uDBFF]$/, "");
+    lines.push(`About: ${preview || "(no persona configured)"}`);
+  }
+  lines.push(`Now: ${castingAvailabilityLine(waifu, now)}`);
+  lines.push(`</${tagName}>`);
+  return lines.join("\n");
 }
 
 function castingAvailabilityLine(waifu: WaifuConfig, now: Date): string {

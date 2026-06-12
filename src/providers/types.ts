@@ -60,6 +60,10 @@ export type WaifuGenerationRequest = ProviderRequest & {
   pickNextWaifuToolEnabled?: boolean;
   shortTermMemoryToolEnabled?: boolean;
   stopSequences?: string[];
+  // Discord author ids that are THIS waifu. In practice the bot user id only —
+  // Discord's message.author.id is always the user id, never the application id.
+  // Only these messages become assistant turns; everything else is a user turn.
+  selfAuthorIds?: string[];
 };
 
 export type StageManagerMemory = {
@@ -79,6 +83,9 @@ export type StageManagerObserveRequest = ProviderRequest & {
   availableWaifuIds?: string[];
 };
 
+export type PersonaDigest = { voice: string; role: string };
+export type PersonaDigestRequest = ProviderRequest & { personaText: string };
+
 export type WaifuGenerationResult = {
   content: string;
   pickedNextWaifuId?: string;
@@ -96,4 +103,5 @@ export interface ModelPipeline {
   decideStageManagerObservations?(request: StageManagerObserveRequest): Promise<StageManagerObservation[]>;
   decideStageManager?(request: StageManagerRequest): Promise<StageManagerToolCall[]>;
   decideReviewer?(request: ProviderRequest & { message: string }): Promise<ReviewerDecision>;
+  generatePersonaDigest?(request: PersonaDigestRequest): Promise<PersonaDigest>;
 }

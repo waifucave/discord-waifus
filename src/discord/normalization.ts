@@ -173,15 +173,20 @@ export function stripLeakedContextHeader(
   content: string,
   options: {
     senderDisplayName?: string;
+    selfDisplayNames?: string[];
     participantDisplayNames?: string[];
     stripImpersonation?: boolean;
   } = {}
 ): string {
   let text = content;
-  const escapedSender = options.senderDisplayName
-    ? options.senderDisplayName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-    : null;
-  const senderPrefixRe = escapedSender ? new RegExp(`^\\s*${escapedSender}\\s*:[ \\t]*`, "i") : null;
+  const selfNames = dedupeNames([
+    ...(options.selfDisplayNames ?? []),
+    ...(options.senderDisplayName ? [options.senderDisplayName] : [])
+  ]);
+
+  const selfPrefixRes = selfNames.map(
+    (name) => new RegExp(`^\\s*${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*:[ \\t]*`, "i")
+  );
 
   const leadingPatterns = [
     LEADING_WHITESPACE_RE,
@@ -190,7 +195,7 @@ export function stripLeakedContextHeader(
     LEGACY_LEADING_TIMESTAMP_RE,
     LEGACY_LEADING_REPLY_LINE_RE,
     LEGACY_LEADING_REACTIONS_LINE_RE,
-    ...(senderPrefixRe ? [senderPrefixRe] : [])
+    ...selfPrefixRes
   ];
 
   let changed = true;
@@ -215,19 +220,34 @@ export function stripLeakedContextHeader(
   text = stripInlineLeakedContextEntries(text);
   text = stripLeakedModelAnalysis(text);
   if (options.stripImpersonation === false) return text;
-  return stripImpersonationLines(text, options.senderDisplayName, options.participantDisplayNames);
+  return stripImpersonationLines(text, selfNames, options.participantDisplayNames);
+}
+
+export function dedupeNames(values: Array<string | undefined>): string[] {
+  const seen = new Set<string>();
+  const names: string[] = [];
+  for (const value of values) {
+    const trimmed = value?.trim();
+    if (!trimmed) continue;
+    const key = trimmed.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    names.push(trimmed);
+  }
+  return names;
 }
 
 function stripImpersonationLines(
   content: string,
-  senderDisplayName: string | undefined,
+  selfNames: string[],
   participantDisplayNames: string[] | undefined
 ): string {
-  if (!senderDisplayName && !participantDisplayNames?.length) return content;
+  if (!selfNames.length && !participantDisplayNames?.length) return content;
   const escape = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const senderRe = senderDisplayName
-    ? new RegExp(`^\\s*${escape(senderDisplayName)}\\s*:[ \\t]*`, "i")
-    : null;
+  const selfRes = selfNames.map(
+    (name) => new RegExp(`^\\s*${escape(name)}\\s*:[ \\t]*`, "i")
+  );
+  const selfKeySet = new Set(selfNames.map((name) => name.toLowerCase()));
   const otherRes: RegExp[] = [];
   const seen = new Set<string>();
   for (const name of participantDisplayNames ?? []) {
@@ -236,17 +256,18 @@ function stripImpersonationLines(
     const key = trimmed.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
-    if (senderDisplayName && key === senderDisplayName.toLowerCase()) continue;
+    if (selfKeySet.has(key)) continue;
     otherRes.push(new RegExp(`^\\s*${escape(trimmed)}\\s*:`, "i"));
   }
-  if (!senderRe && otherRes.length === 0) return content;
+  if (!selfRes.length && otherRes.length === 0) return content;
   const lines = content.split("\n");
   const kept: string[] = [];
   let skippingIndentedOtherSpeakerBody = false;
   for (const line of lines) {
-    if (senderRe && senderRe.test(line)) {
+    const selfMatch = selfRes.find((re) => re.test(line));
+    if (selfMatch) {
       skippingIndentedOtherSpeakerBody = false;
-      kept.push(line.replace(senderRe, ""));
+      kept.push(line.replace(selfMatch, ""));
       continue;
     }
     const otherMatch = otherRes.find((re) => re.test(line));

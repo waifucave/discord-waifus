@@ -286,6 +286,8 @@ function WaifuEditor({
   const [botApplicationId, setBotApplicationId] = useState("");
   const [botToken, setBotToken] = useState("");
   const botState = useApi<DiscordBotsFile>((signal) => api.discordBots(signal), [waifuId]);
+  const [digestBusy, setDigestBusy] = useState(false);
+  const [digestError, setDigestError] = useState<string | undefined>(undefined);
 
   const load = useCallback(async () => {
     setLoadError(undefined);
@@ -362,6 +364,20 @@ function WaifuEditor({
       handleWaifuSaveError(err);
     } finally {
       setSaving(false);
+    }
+  };
+
+  const regenerateDigest = async () => {
+    if (!waifu) return;
+    setDigestBusy(true);
+    setDigestError(undefined);
+    try {
+      const updated = await api.regeneratePersonaDigest(waifu.id);
+      setWaifu(updated);
+    } catch (err) {
+      setDigestError((err as Error).message);
+    } finally {
+      setDigestBusy(false);
     }
   };
 
@@ -725,6 +741,29 @@ function WaifuEditor({
               This becomes part of the waifu system prompt. Available server emojis and mention
               rules are appended automatically.
             </span>
+          </div>
+
+          <div className="field">
+            <label className="field-label">Persona digest</label>
+            <div className="field-hint" style={{ marginBottom: 4 }}>
+              {waifu.personaDigest ? (
+                <>
+                  <div><strong>Voice:</strong> {waifu.personaDigest.voice}</div>
+                  <div><strong>Drives:</strong> {waifu.personaDigest.role}</div>
+                </>
+              ) : (
+                <span style={{ opacity: 0.6 }}>(not generated yet)</span>
+              )}
+            </div>
+            {digestError && <Notice tone="err">{digestError}</Notice>}
+            <button
+              className="btn sm"
+              type="button"
+              onClick={regenerateDigest}
+              disabled={digestBusy || saving}
+            >
+              {digestBusy ? "Generating…" : "Regenerate digest"}
+            </button>
           </div>
 
           <div className="grid grid-2">
