@@ -581,7 +581,7 @@ describe("RuntimeOrchestrator", () => {
         orchestratorMessages = request.messages;
         return {
           action: "reply",
-          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, }],
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }],
           reasoning: "image text is useful"
         };
       },
@@ -627,7 +627,7 @@ describe("RuntimeOrchestrator", () => {
       async decideOrchestrator() {
         return {
           action: "reply",
-          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, }],
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }],
           reasoning: "openai can see images"
         };
       },
@@ -670,7 +670,7 @@ describe("RuntimeOrchestrator", () => {
       async decideOrchestrator() {
         return {
           action: "reply",
-          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, }],
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }],
           reasoning: "continue"
         };
       },
@@ -773,7 +773,7 @@ describe("RuntimeOrchestrator", () => {
       decisions: OrchestratorDecision[] = [
         {
           action: "reply",
-          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, }],
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }],
           reasoning: "Yuki starts."
         },
         {
@@ -848,7 +848,7 @@ describe("RuntimeOrchestrator", () => {
         return {
           action: "reply",
           respondingWaifus: [
-            { waifuId: "yuki", delaySeconds: 0, },
+            { waifuId: "yuki", delaySeconds: 0 },
             { waifuId: "mika", delaySeconds: 0, directive: { intent: "spotlight", goal: "finish the beat" } }
           ],
           reasoning: "Yuki starts and Mika finishes."
@@ -943,8 +943,8 @@ describe("RuntimeOrchestrator", () => {
         return {
           action: "reply",
           respondingWaifus: [
-            { waifuId: "yuki", delaySeconds: 0, },
-            { waifuId: "mika", delaySeconds: 0, },
+            { waifuId: "yuki", delaySeconds: 0 },
+            { waifuId: "mika", delaySeconds: 0 },
             {
               waifuId: "aria",
               delaySeconds: 20,
@@ -1033,7 +1033,7 @@ describe("RuntimeOrchestrator", () => {
       async decideOrchestrator() {
         return {
           action: "reply",
-          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, }],
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }],
           reasoning: "Yuki starts."
         };
       },
@@ -1089,8 +1089,8 @@ describe("RuntimeOrchestrator", () => {
         return {
           action: "reply",
           respondingWaifus: [
-            { waifuId: "mika", delaySeconds: 0, },
-            { waifuId: "yuki", delaySeconds: 0, }
+            { waifuId: "mika", delaySeconds: 0 },
+            { waifuId: "yuki", delaySeconds: 0 }
           ],
           reasoning: "Simulate a provider returning an excluded waifu anyway."
         };
@@ -1144,7 +1144,7 @@ describe("RuntimeOrchestrator", () => {
       async decideOrchestrator() {
         return {
           action: "reply",
-          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, }],
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }],
           reasoning: "Yuki starts."
         };
       },
@@ -1522,7 +1522,7 @@ describe("RuntimeOrchestrator", () => {
       async decideOrchestrator() {
         return {
           action: "reply",
-          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, }],
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }],
           reasoning: "talk"
         };
       },
@@ -1567,7 +1567,7 @@ describe("RuntimeOrchestrator", () => {
       decisions: OrchestratorDecision[] = [
         {
           action: "reply",
-          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, }],
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }],
           reasoning: "Yuki starts."
         },
         {
@@ -1643,7 +1643,7 @@ describe("RuntimeOrchestrator", () => {
       decisions: OrchestratorDecision[] = [
         {
           action: "reply",
-          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 45, }],
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 45 }],
           reasoning: "Delay too high."
         },
         {
@@ -1939,7 +1939,7 @@ describe("RuntimeOrchestrator", () => {
               guildId: "guild-1",
               channelId: "channel-1",
               action: "reply",
-              respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, }],
+              respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }],
               reasoning: "leftover",
               status: "pending",
               waifuMessageIds: [],
@@ -2707,7 +2707,7 @@ describe("RuntimeOrchestrator", () => {
       async decideOrchestrator() {
         return {
           action: "reply",
-          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, }],
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }],
           reasoning: "reply"
         };
       },
@@ -4034,7 +4034,7 @@ describe("RuntimeOrchestrator", () => {
             action: "reply",
             respondingWaifus: [
               { waifuId: "yuki", delaySeconds: 0, directive: { intent: "spotlight", goal: "ask Kevin about the trip" } },
-              { waifuId: "mika", delaySeconds: 7, }
+              { waifuId: "mika", delaySeconds: 7 }
             ],
             reasoning: "Yuki should answer first, then Mika can add a quick aside."
           };
@@ -4202,7 +4202,7 @@ describe("RuntimeOrchestrator", () => {
           resolveOrchestrated();
           return {
             action: "reply",
-            respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, }],
+            respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }],
             reasoning: "manual run reply"
           };
         }
@@ -4673,7 +4673,7 @@ describe("RuntimeOrchestrator", () => {
       async decideOrchestrator() {
         return {
           action: "reply",
-          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, }],
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }],
           reasoning: "Start waifu."
         };
       },
@@ -5318,7 +5318,7 @@ describe("RuntimeOrchestrator", () => {
       async decideOrchestrator() {
         return {
           action: "reply",
-          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, }],
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }],
           reasoning: "Yuki answers."
         };
       },
@@ -5366,7 +5366,7 @@ describe("RuntimeOrchestrator", () => {
       async decideOrchestrator() {
         return {
           action: "reply",
-          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, }],
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }],
           reasoning: "Yuki answers."
         };
       },
@@ -5410,7 +5410,7 @@ describe("RuntimeOrchestrator", () => {
       async decideOrchestrator() {
         return {
           action: "reply",
-          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, }],
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }],
           reasoning: "Yuki answers."
         };
       },
@@ -5452,7 +5452,7 @@ describe("RuntimeOrchestrator", () => {
       async decideOrchestrator() {
         return {
           action: "reply",
-          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, }],
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }],
           reasoning: "Yuki answers."
         };
       },
@@ -6010,8 +6010,8 @@ describe("RuntimeOrchestrator", () => {
         return {
           action: "reply",
           respondingWaifus: [
-            { waifuId: "yuki", delaySeconds: 0, },
-            { waifuId: "mika", delaySeconds: 0, }
+            { waifuId: "yuki", delaySeconds: 0 },
+            { waifuId: "mika", delaySeconds: 0 }
           ],
           reasoning: "Both should get a turn."
         };
@@ -6079,8 +6079,8 @@ describe("RuntimeOrchestrator", () => {
         return {
           action: "reply",
           respondingWaifus: [
-            { waifuId: "yuki", delaySeconds: 0, },
-            { waifuId: "mika", delaySeconds: 0, }
+            { waifuId: "yuki", delaySeconds: 0 },
+            { waifuId: "mika", delaySeconds: 0 }
           ],
           reasoning: "Yuki then Mika."
         };
@@ -6204,7 +6204,7 @@ describe("RuntimeOrchestrator", () => {
               directive: { intent: "spotlight", goal: "answer" },
               replyToMessageId: "m1"
             },
-            { waifuId: "mika", delaySeconds: 5, }
+            { waifuId: "mika", delaySeconds: 5 }
           ],
           reasoning: "respond"
         },
@@ -6316,7 +6316,7 @@ describe("RuntimeOrchestrator", () => {
       async decideOrchestrator() {
         return {
           action: "reply",
-          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, }],
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }],
           reasoning: "Remember the plan."
         };
       },
@@ -6371,7 +6371,7 @@ describe("RuntimeOrchestrator", () => {
       async decideOrchestrator() {
         return {
           action: "reply",
-          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, }],
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }],
           reasoning: "talk"
         };
       },
@@ -6454,7 +6454,7 @@ describe("RuntimeOrchestrator", () => {
       async decideOrchestrator() {
         return {
           action: "reply",
-          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, }],
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }],
           reasoning: "talk"
         };
       },
@@ -6531,7 +6531,7 @@ describe("RuntimeOrchestrator", () => {
       async decideOrchestrator() {
         return {
           action: "reply",
-          respondingWaifus: [{ waifuId: "mika", delaySeconds: 0, }],
+          respondingWaifus: [{ waifuId: "mika", delaySeconds: 0 }],
           reasoning: "mika answers"
         };
       },
@@ -6602,7 +6602,7 @@ describe("RuntimeOrchestrator", () => {
       async decideOrchestrator() {
         return {
           action: "reply",
-          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, }],
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }],
           reasoning: "talk"
         };
       },
