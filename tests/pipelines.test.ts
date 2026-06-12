@@ -689,100 +689,68 @@ describe("provider-native decision tools", () => {
     ).toBe(false);
   });
 
-  it("uses a single OpenAI Responses tool for stage-manager edits", async () => {
+  it("forces the OpenAI-chat dream tool with DREAM_PROMPT system and memories+observations user blocks", async () => {
     mockFetch({
-      output: [
+      choices: [
         {
-          type: "function_call",
-          name: "manage_memories",
-          arguments: JSON.stringify({
-            toolCalls: [
+          message: {
+            tool_calls: [
               {
-                tool: "add_memory",
-                memory: {
-                  waifuId: "yuki",
-                  content: "Kevin likes tea.",
-                  importance: 3
+                function: {
+                  name: "dream_memories",
+                  arguments: JSON.stringify({
+                    ops: [
+                      { op: "add", memory: { waifuId: "yuki", content: "Kevin likes tea.", kind: "preference", strength: 3 } },
+                      { op: "decay", memoryIndex: 1, strength: 1 }
+                    ]
+                  })
                 }
               }
             ]
-          })
+          }
         }
       ]
     });
 
-    const pipeline = createModelPipeline("gpt-4o-mini", { apiKey: "openai-test" });
-    const calls = await pipeline.decideStageManager?.({
-      modelId: "gpt-4o-mini",
+    const pipeline = createModelPipeline("grok-4.3", { apiKey: "xai-test" });
+    const ops = await pipeline.decideDream?.({
+      modelId: "grok-4.3",
       messages: context,
       availableWaifuIds: ["yuki", "mika"],
       memories: [
-        {
-          memoryIndex: 1,
-          waifuId: "yuki",
-          content: "Kevin likes tea.",
-          importance: 3
-        }
+        { memoryIndex: 1, waifuId: "yuki", content: "Kevin liked tea.", kind: "preference", strength: 2, ageDays: 40, daysSinceRetrieved: 40 }
       ],
-      systemPrompt: "memories"
+      observations: [
+        { id: "obs-1", guildId: "g", channelId: "c", waifuId: "yuki", content: "Kevin likes tea.", kind: "preference", importance: 3, entities: ["Kevin"], createdAt: new Date().toISOString() }
+      ]
     });
 
-    expect(calls?.[0]).toEqual({
-      tool: "add_memory",
-      memory: {
-        content: "Kevin likes tea.",
-        importance: 3,
-        waifuId: "yuki"
-      }
-    });
+    expect(ops).toEqual([
+      { op: "add", memory: { waifuId: "yuki", content: "Kevin likes tea.", kind: "preference", strength: 3, entities: [] } },
+      { op: "decay", memoryIndex: 1, strength: 1 }
+    ]);
+
     const query = recentQueries().at(-1);
-    expect(query?.role).toBe("stage_manager_librarian");
-    const instructions = query?.payload.instructions as string;
-    expect(instructions).toContain("Absence of evidence is not a contradiction.");
-    expect(instructions).toContain("only when a specific observer observation directly contradicts");
-    expect(instructions).toContain("preserve every non-contradicted fact from every source memory");
-    expect((query?.payload.tools as Array<{ name: string }>)[0].name).toBe("manage_memories");
-    expect(query?.payload.tool_choice).toEqual({ type: "function", name: "manage_memories" });
-    const toolParameters = (query?.payload.tools as Array<{
-      parameters: {
-        properties: {
-          toolCalls: {
-            items: {
-              properties: {
-                memory: { properties: Record<string, unknown> };
-                memoryIndex?: unknown;
-                patch: { properties: Record<string, unknown> };
-                sourceMemoryIndices?: unknown;
-                [key: string]: unknown;
-              };
-            };
-          };
-        };
-      };
-    }>)[0].parameters.properties.toolCalls.items.properties;
-    const memorySchema = toolParameters.memory.properties;
-    const patchSchema = toolParameters.patch.properties;
-    expect(toolParameters.memoryIndex).toBeDefined();
-    expect(toolParameters.sourceMemoryIndices).toBeDefined();
-    expect(toolParameters.memoryId).toBeUndefined();
-    expect(toolParameters.sourceMemoryIds).toBeUndefined();
-    expect(memorySchema.scope).toBeUndefined();
-    expect(memorySchema.waifuId).toMatchObject({ enum: ["yuki", "mika"] });
-    expect(memorySchema.sourceMessageIndices).toBeUndefined();
-    expect(patchSchema.waifuId).toMatchObject({ enum: ["yuki", "mika"] });
-    expect(patchSchema.scope).toBeUndefined();
-    expect(patchSchema.status).toBeUndefined();
-    expect(patchSchema.sourceMessageIds).toBeUndefined();
-    const memoryInput = (query?.payload.input as Array<{ content: string }>)[1].content;
-    expect(memoryInput).toContain("\"memoryIndex\":1");
-    expect(memoryInput).not.toContain("\"id\"");
-    expect(memoryInput).not.toContain("sourceMessageIds");
-    expect(memoryInput).not.toContain("createdAt");
-    expect(memoryInput).not.toContain("updatedAt");
-    expect(memoryInput).not.toContain("guildId");
-    expect(memoryInput).not.toContain("\"scope\"");
-    expect(memoryInput).not.toContain("\"status\"");
+    const messages = query?.payload.messages as Array<{ role: string; content: string }>;
+    expect(messages[0].role).toBe("system");
+    expect(messages[0].content).toContain("nightly memory-consolidation pass");
+    expect(messages[0].content).toContain("Call dream_memories exactly once");
+    expect(messages[1].content).toContain("memories: ");
+    expect(messages[1].content).toContain("\"memoryIndex\":1");
+    expect(messages[1].content).toContain("\"ageDays\":40");
+    expect(messages[2].content).toContain("observations: ");
+    expect(messages[2].content).toContain("Kevin likes tea.");
+    expect((query?.payload.tools as Array<{ function: { name: string } }>)[0].function.name).toBe("dream_memories");
+    expect(query?.payload.tool_choice).toEqual({ type: "function", function: { name: "dream_memories" } });
+    const itemProperties = (query?.payload.tools as Array<{
+      function: { parameters: { properties: { ops: { items: { properties: Record<string, unknown> } } } } };
+    }>)[0].function.parameters.properties.ops.items.properties;
+    expect(itemProperties.op).toMatchObject({ enum: ["add", "promote", "rewrite", "merge", "decay", "archive", "none"] });
+    expect((itemProperties.memory as { properties: { waifuId: { enum?: string[] } } }).properties.waifuId).toMatchObject({
+      enum: ["yuki", "mika"]
+    });
   });
+
 
   it("uses a single Anthropic tool for orchestrator decisions", async () => {
     mockFetch({
@@ -1888,7 +1856,7 @@ describe("Google AI Studio (Gemini) pipeline", () => {
     expect(responseTurn?.role).toBe("user");
   });
 
-  it("forces the stage-manager tool and sends a memories user-turn", async () => {
+  it("uses a shallow Google dream schema and parses flat ops, skipping malformed items", async () => {
     mockFetch({
       candidates: [
         {
@@ -1896,56 +1864,16 @@ describe("Google AI Studio (Gemini) pipeline", () => {
             parts: [
               {
                 functionCall: {
-                  name: "manage_memories",
+                  name: "dream_memories",
                   args: {
-                    toolCalls: [
-                      {
-                        tool: "add_memory",
-                        memory: { waifuId: "yuki", content: "Kevin likes tea.", importance: 3 }
-                      }
-                    ]
-                  }
-                }
-              }
-            ]
-          }
-        }
-      ]
-    });
-
-    const pipeline = createModelPipeline("gemini-2.5-flash-lite", { apiKey: "g-test" });
-    const calls = await pipeline.decideStageManager?.({
-      modelId: "gemini-2.5-flash-lite",
-      messages: context,
-      memories: [{ memoryIndex: 1, waifuId: "yuki", content: "Kevin likes tea.", importance: 3 }],
-      systemPrompt: "memories"
-    });
-
-    expect(calls?.[0]).toMatchObject({ tool: "add_memory" });
-    const query = recentQueries().at(-1);
-    const contents = query?.payload.contents as Array<{ role: string; parts: Array<{ text: string }> }>;
-    expect(contents.at(-1)?.parts[0].text).toContain("memories: ");
-    expect(query?.payload.toolConfig).toEqual({
-      functionCallingConfig: { mode: "ANY", allowedFunctionNames: ["manage_memories"] }
-    });
-  });
-
-  it("uses a shallow Google stage-manager schema and parses flat memory edits", async () => {
-    mockFetch({
-      candidates: [
-        {
-          content: {
-            parts: [
-              {
-                functionCall: {
-                  name: "manage_memories",
-                  args: {
-                    toolCalls: [
-                      { tool: "add_memory", waifuId: "yuki", content: "Kevin likes tea.", importance: "3" },
-                      { tool: "update_memory", memoryIndex: 1, content: "Kevin likes green tea.", importance: "4" },
-                      { tool: "merge_memories", sourceMemoryIndices: [1, 2], content: "Kevin likes green tea." },
-                      { tool: "archive_memory", memoryIndex: 3 },
-                      { tool: "no_change", reason: "done" }
+                    ops: [
+                      { op: "add", waifuId: "yuki", content: "Kevin likes tea.", kind: "preference", strength: 3 },
+                      { op: "rewrite", memoryIndex: 1, content: "Kevin likes green tea." },
+                      { op: "merge", memoryIndices: [1, 2], content: "Kevin likes green tea." },
+                      { op: "decay", memoryIndex: 3, strength: 1 },
+                      { op: "archive", memoryIndex: 4, reason: "superseded" },
+                      { op: "archive" },
+                      { op: "none" }
                     ]
                   }
                 }
@@ -1957,54 +1885,46 @@ describe("Google AI Studio (Gemini) pipeline", () => {
     });
 
     const pipeline = createModelPipeline("gemini-3.1-flash-lite", { apiKey: "g-test" });
-    const calls = await pipeline.decideStageManager?.({
+    const ops = await pipeline.decideDream?.({
       modelId: "gemini-3.1-flash-lite",
       messages: context,
-      memories: [{ memoryIndex: 1, waifuId: "yuki", content: "Kevin likes tea.", importance: 3 }],
-      observations: [{ waifuId: "yuki", content: "Kevin likes green tea.", importance: 4, kind: "preference" }],
+      memories: [
+        { memoryIndex: 1, waifuId: "yuki", content: "Kevin likes tea.", kind: "preference", strength: 3, ageDays: 1, daysSinceRetrieved: 1 }
+      ],
+      observations: [],
       availableWaifuIds: ["yuki"],
-      systemPrompt: "memories",
       reasoning: { effort: "high" }
     });
 
-    expect(calls).toEqual([
-      { tool: "add_memory", memory: { waifuId: "yuki", content: "Kevin likes tea.", importance: 3 } },
-      { tool: "update_memory", memoryIndex: 1, patch: { content: "Kevin likes green tea.", importance: 4 } },
-      { tool: "merge_memories", sourceMemoryIndices: [1, 2], mergedContent: "Kevin likes green tea." },
-      { tool: "archive_memory", memoryIndex: 3 },
-      { tool: "no_change", reason: "done" }
+    // The bare `archive` (missing memoryIndex+reason) is dropped; everything else parses.
+    expect(ops).toEqual([
+      { op: "add", memory: { waifuId: "yuki", content: "Kevin likes tea.", kind: "preference", strength: 3, entities: [] } },
+      { op: "rewrite", memoryIndex: 1, content: "Kevin likes green tea.", entities: [] },
+      { op: "merge", memoryIndices: [1, 2], content: "Kevin likes green tea.", entities: [] },
+      { op: "decay", memoryIndex: 3, strength: 1 },
+      { op: "archive", memoryIndex: 4, reason: "superseded" },
+      { op: "none" }
     ]);
 
     const query = recentQueries().at(-1);
-    const generationConfig = query?.payload.generationConfig as { thinkingConfig?: { thinkingLevel?: string } };
-    expect(generationConfig.thinkingConfig).toEqual({ thinkingLevel: "high" });
+    const contents = query?.payload.contents as Array<{ parts: Array<{ text: string }> }>;
+    expect(contents[0]?.parts[0].text).toContain("memories: ");
+    expect(contents[1]?.parts[0].text).toContain("observations: ");
     const tools = query?.payload.tools as Array<{
-      functionDeclarations: Array<{
-        parameters: {
-          properties: {
-            toolCalls: {
-              items: { properties: Record<string, unknown> };
-            };
-          };
-        };
-      }>;
+      functionDeclarations: Array<{ parameters: { properties: { ops: { items: { properties: Record<string, unknown> } } } } }>;
     }>;
-    const itemProperties = tools[0]!.functionDeclarations[0]!.parameters.properties.toolCalls.items.properties;
-    expect(itemProperties).toHaveProperty("waifuId");
-    expect(itemProperties).toHaveProperty("content");
-    expect(itemProperties).toHaveProperty("importance");
-    expect(itemProperties.importance).toMatchObject({ type: "integer", enum: ["1", "2", "3", "4", "5"] });
+    const itemProperties = tools[0]!.functionDeclarations[0]!.parameters.properties.ops.items.properties;
+    expect(itemProperties).toHaveProperty("op");
     expect(itemProperties).toHaveProperty("memoryIndex");
-    expect(itemProperties).toHaveProperty("sourceMemoryIndices");
+    expect(itemProperties).toHaveProperty("memoryIndices");
     expect(itemProperties).not.toHaveProperty("memory");
     expect(itemProperties).not.toHaveProperty("patch");
-    expect(itemProperties).not.toHaveProperty("mergedContent");
     expect(query?.payload.toolConfig).toEqual({
-      functionCallingConfig: { mode: "ANY", allowedFunctionNames: ["manage_memories"] }
+      functionCallingConfig: { mode: "ANY", allowedFunctionNames: ["dream_memories"] }
     });
   });
 
-  it("skips malformed stage-manager tool-call items when later items are valid", async () => {
+  it("still fails dream parsing when every returned op is malformed", async () => {
     mockFetch({
       candidates: [
         {
@@ -2012,63 +1932,8 @@ describe("Google AI Studio (Gemini) pipeline", () => {
             parts: [
               {
                 functionCall: {
-                  name: "manage_memories",
-                  args: {
-                    toolCalls: [
-                      { tool: "add_memory", waifuId: "lumi" },
-                      {
-                        tool: "add_memory",
-                        waifuId: "lumi",
-                        content: "Lumi used to play old-school RPGs.",
-                        importance: 2
-                      },
-                      {
-                        tool: "add_memory",
-                        waifuId: "aria",
-                        content: "Aria thinks the Trix Rabbit would fight dirty.",
-                        importance: 2
-                      }
-                    ]
-                  }
-                }
-              }
-            ]
-          }
-        }
-      ]
-    });
-
-    const pipeline = createModelPipeline("gemini-3.1-flash-lite", { apiKey: "g-test" });
-    const calls = await pipeline.decideStageManager?.({
-      modelId: "gemini-3.1-flash-lite",
-      messages: context,
-      memories: [],
-      observations: [{ waifuId: "lumi", content: "Lumi used to play old-school RPGs.", importance: 2, kind: "fact" }],
-      availableWaifuIds: ["lumi", "aria"],
-      systemPrompt: "memories"
-    });
-
-    expect(calls).toEqual([
-      { tool: "add_memory", memory: { waifuId: "lumi", content: "Lumi used to play old-school RPGs.", importance: 2 } },
-      { tool: "add_memory", memory: { waifuId: "aria", content: "Aria thinks the Trix Rabbit would fight dirty.", importance: 2 } }
-    ]);
-  });
-
-  it("still fails stage-manager parsing when every returned tool-call item is malformed", async () => {
-    mockFetch({
-      candidates: [
-        {
-          content: {
-            parts: [
-              {
-                functionCall: {
-                  name: "manage_memories",
-                  args: {
-                    toolCalls: [
-                      { tool: "add_memory", waifuId: "lumi" },
-                      { tool: "archive_memory" }
-                    ]
-                  }
+                  name: "dream_memories",
+                  args: { ops: [{ op: "archive" }, { op: "decay", memoryIndex: 1 }] }
                 }
               }
             ]
@@ -2079,15 +1944,14 @@ describe("Google AI Studio (Gemini) pipeline", () => {
 
     const pipeline = createModelPipeline("gemini-3.1-flash-lite", { apiKey: "g-test" });
     await expect(
-      pipeline.decideStageManager?.({
+      pipeline.decideDream?.({
         modelId: "gemini-3.1-flash-lite",
         messages: context,
         memories: [],
-        observations: [{ waifuId: "lumi", content: "Lumi used to play old-school RPGs.", importance: 2, kind: "fact" }],
-        availableWaifuIds: ["lumi"],
-        systemPrompt: "memories"
+        observations: [],
+        availableWaifuIds: ["lumi"]
       })
-    ).rejects.toThrow("Provider did not return valid stage-manager tool calls.");
+    ).rejects.toThrow("Provider did not return valid dream ops.");
   });
 
   it("forces the reviewer tool with a single user turn", async () => {
@@ -2394,7 +2258,7 @@ describe("Google AI Studio (Gemini) pipeline", () => {
     });
 
     expect(observations).toEqual([
-      { waifuId: "yuki", content: "Kevin likes tea.", importance: 3, kind: "preference" }
+      { waifuId: "yuki", content: "Kevin likes tea.", importance: 3, kind: "preference", entities: [] }
     ]);
     const query = recentQueries().at(-1);
     expect(query?.role).toBe("stage_manager_observer");
@@ -2531,6 +2395,102 @@ describe("Google AI Studio (Gemini) pipeline", () => {
       }>;
     }>)[0].functionDeclarations[0].parameters.properties.observations.items.properties;
     expect(toolParameters.importance).toMatchObject({ type: "integer", enum: ["1", "2", "3", "4", "5"] });
+  });
+
+  it("sends lean observer input: Window header with DisplayName lines, no index/timestamp/reactions", async () => {
+    mockFetch({
+      choices: [
+        {
+          message: {
+            tool_calls: [
+              {
+                function: {
+                  name: "record_observations",
+                  arguments: JSON.stringify({ observations: [] })
+                }
+              }
+            ]
+          }
+        }
+      ]
+    });
+
+    const pipeline = createModelPipeline("grok-4.3", { apiKey: "xai-test" });
+    await pipeline.decideStageManagerObservations?.({
+      modelId: "grok-4.3",
+      messages: context,
+      systemPrompt: "extract",
+      availableWaifuIds: ["yuki"]
+    });
+
+    const query = recentQueries().at(-1);
+    const messages = query?.payload.messages as Array<{ role: string; content: string }>;
+    // The user message (index 1) should be the lean context block
+    const userContent = messages.find((m) => m.role === "user" && typeof m.content === "string" && m.content.startsWith("Window:"))?.content ?? "";
+    expect(userContent).toMatch(/^Window: \d{4}-\d{2}-\d{2}T/);
+    expect(userContent).toContain("Kevin: remember I like tea");
+    expect(userContent).not.toContain("[index:");
+    expect(userContent).not.toContain("[timestamp:");
+    expect(userContent).not.toContain("[reactions:");
+  });
+
+  it("observer tool parameters include entities array field", async () => {
+    mockFetch({
+      output: [
+        {
+          type: "function_call",
+          name: "record_observations",
+          arguments: JSON.stringify({ observations: [] })
+        }
+      ]
+    });
+
+    const pipeline = createModelPipeline("gpt-4o-mini", { apiKey: "openai-test" });
+    await pipeline.decideStageManagerObservations?.({
+      modelId: "gpt-4o-mini",
+      messages: context,
+      availableWaifuIds: ["yuki"]
+    });
+
+    const query = recentQueries().at(-1);
+    const toolParameters = (query?.payload.tools as Array<{
+      parameters: { properties: { observations: { items: { properties: { entities: Record<string, unknown> } } } } };
+    }>)[0].parameters.properties.observations.items.properties;
+    expect(toolParameters.entities).toMatchObject({ type: "array", items: { type: "string" } });
+    expect(toolParameters.entities.description).toContain("person");
+  });
+
+  it("observer instruction describes the lean Window header format, not index/timestamp framing", async () => {
+    mockFetch({
+      choices: [
+        {
+          message: {
+            tool_calls: [
+              {
+                function: {
+                  name: "record_observations",
+                  arguments: JSON.stringify({ observations: [] })
+                }
+              }
+            ]
+          }
+        }
+      ]
+    });
+
+    const pipeline = createModelPipeline("grok-4.3", { apiKey: "xai-test" });
+    await pipeline.decideStageManagerObservations?.({
+      modelId: "grok-4.3",
+      messages: context,
+      availableWaifuIds: ["yuki"]
+    });
+
+    const query = recentQueries().at(-1);
+    const messages = query?.payload.messages as Array<{ role: string; content: string }>;
+    const systemContent = messages.find((m) => m.role === "system")?.content ?? "";
+    expect(systemContent).toContain("Window:");
+    expect(systemContent).toContain("DisplayName: body");
+    expect(systemContent).not.toContain("[index: #N] and [timestamp:");
   });
 
   it("OpenAI Chat: collects all add_memory calls alongside the optional PickNextWaifu", async () => {

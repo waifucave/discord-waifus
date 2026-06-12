@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { AttachmentImage, ContextMessage, formatOrchestratorMessageBlock, formatSelfWaifuContent, formatTimestamp, formatWaifuContextBlock, OrchestratorWakeMarker } from "../orchestration/context.js";
+import { AttachmentImage, ContextMessage, formatObserverContext, formatOrchestratorMessageBlock, formatSelfWaifuContent, formatTimestamp, formatWaifuContextBlock, OrchestratorWakeMarker } from "../orchestration/context.js";
 import {
   OrchestratorActionSchema,
   OrchestratorDecision,
@@ -13,13 +13,13 @@ import {
 } from "../orchestration/decisions.js";
 import { ReviewerDecision, ReviewerDecisionSchema } from "../orchestration/reviewer.js";
 import {
+  DreamOp,
+  DreamOpSchema,
   OBSERVATION_KINDS,
   StageManagerObservation,
-  StageManagerObservationSchema,
-  StageManagerToolCall,
-  StageManagerToolCallSchema
+  StageManagerObservationSchema
 } from "../orchestration/stageManager.js";
-import { OrchestratorDecisionHistoryEntry, ReasoningConfig } from "../shared/schemas/domain.js";
+import { MEMORY_KINDS, MemoryKindSchema, OrchestratorDecisionHistoryEntry, ReasoningConfig } from "../shared/schemas/domain.js";
 import { getModel, getProviderForModel } from "./catalog.js";
 import {
   ModelCapabilityMetadata,
@@ -28,8 +28,8 @@ import {
   PersonaDigestRequest,
   ProviderMetadata,
   ProviderRequest,
+  DreamRequest,
   StageManagerObserveRequest,
-  StageManagerRequest,
   WaifuGenerationRequest,
   WaifuGenerationResult
 } from "./types.js";
@@ -142,7 +142,6 @@ class OpenAiCompatibleChatPipeline implements ModelPipeline {
 
   async decideStageManagerObservations(request: StageManagerObserveRequest): Promise<StageManagerObservation[]> {
     validateMaxOutputTokens(this.model, request.maxOutputTokens);
-    const rendering = renderContext(request.messages);
     const reasoning = openAiChatReasoningForForcedTool(this.model, request.reasoning);
     const text = await postJsonAndExtractText({
       url: `${this.provider.baseUrl}${this.model.endpoint}`,
@@ -151,7 +150,7 @@ class OpenAiCompatibleChatPipeline implements ModelPipeline {
         model: request.modelId,
         messages: openAiChatMessagesForModel(this.model, [
           { role: "system", content: observerSystemPrompt(request.systemPrompt, request.availableWaifuIds) },
-          contextToUserMessage(rendering)
+          { role: "user", content: formatObserverContext(request.messages, new Date()) }
         ]),
         temperature: openAiChatTemperature(this.model, request.temperature ?? 0.2),
         top_p: openAiChatTopP(this.model, request.topP),
@@ -169,7 +168,7 @@ class OpenAiCompatibleChatPipeline implements ModelPipeline {
     return parseStageManagerObservations(text);
   }
 
-  async decideStageManager(request: StageManagerRequest): Promise<StageManagerToolCall[]> {
+  async decideDream(request: DreamRequest): Promise<DreamOp[]> {
     validateMaxOutputTokens(this.model, request.maxOutputTokens);
     const reasoning = openAiChatReasoningForForcedTool(this.model, request.reasoning);
     const text = await postJsonAndExtractText({
@@ -178,24 +177,23 @@ class OpenAiCompatibleChatPipeline implements ModelPipeline {
       body: {
         model: request.modelId,
         messages: openAiChatMessagesForModel(this.model, [
-          { role: "system", content: librarianSystemPrompt(request.availableWaifuIds) },
-          { role: "user", content: `observations: ${JSON.stringify(request.observations ?? [])}` },
-          { role: "user", content: `memories: ${JSON.stringify(request.memories)}` }
+          { role: "system", content: DREAM_PROMPT },
+          ...dreamMessages(request)
         ]),
         temperature: openAiChatTemperature(this.model, request.temperature ?? 0.2),
         top_p: openAiChatTopP(this.model, request.topP),
         max_tokens: request.maxOutputTokens,
-        tools: [openAiChatStageManagerTool(request.availableWaifuIds)],
-        tool_choice: openAiChatForcedToolChoice(this.model, STAGE_MANAGER_TOOL_NAME),
+        tools: [openAiChatDreamTool(request.availableWaifuIds)],
+        tool_choice: openAiChatForcedToolChoice(this.model, DREAM_TOOL_NAME),
         stream: false,
         ...reasoningFieldsForOpenAiChat(this.model, reasoning),
         ...openAiChatSamplingOverrides(this.model, reasoning)
       },
       signal: request.signal,
-      extract: (json) => extractOpenAiChatToolArguments(json, STAGE_MANAGER_TOOL_NAME),
-      queryRole: "stage_manager_librarian"
+      extract: (json) => extractOpenAiChatToolArguments(json, DREAM_TOOL_NAME),
+      queryRole: "dream"
     });
-    return parseStageManagerCalls(text);
+    return parseDreamOps(text);
   }
 
   async decideReviewer(request: ProviderRequest & { message: string }): Promise<ReviewerDecision> {
@@ -323,14 +321,13 @@ class OpenAiResponsesPipeline implements ModelPipeline {
 
   async decideStageManagerObservations(request: StageManagerObserveRequest): Promise<StageManagerObservation[]> {
     validateMaxOutputTokens(this.model, request.maxOutputTokens);
-    const rendering = renderContext(request.messages);
     const text = await postJsonAndExtractText({
       url: `${this.provider.baseUrl}${this.model.endpoint}`,
       headers: bearerHeaders(this.apiKey),
       body: {
         model: request.modelId,
         instructions: observerSystemPrompt(request.systemPrompt, request.availableWaifuIds),
-        input: [contextToUserMessage(rendering)],
+        input: [{ role: "user", content: formatObserverContext(request.messages, new Date()) }],
         temperature: request.temperature ?? 0.2,
         top_p: request.topP,
         max_output_tokens: request.maxOutputTokens,
@@ -346,31 +343,28 @@ class OpenAiResponsesPipeline implements ModelPipeline {
     return parseStageManagerObservations(text);
   }
 
-  async decideStageManager(request: StageManagerRequest): Promise<StageManagerToolCall[]> {
+  async decideDream(request: DreamRequest): Promise<DreamOp[]> {
     validateMaxOutputTokens(this.model, request.maxOutputTokens);
     const text = await postJsonAndExtractText({
       url: `${this.provider.baseUrl}${this.model.endpoint}`,
       headers: bearerHeaders(this.apiKey),
       body: {
         model: request.modelId,
-        instructions: librarianSystemPrompt(request.availableWaifuIds),
-        input: [
-          { role: "user", content: `observations: ${JSON.stringify(request.observations ?? [])}` },
-          { role: "user", content: `memories: ${JSON.stringify(request.memories)}` }
-        ],
+        instructions: DREAM_PROMPT,
+        input: dreamMessages(request),
         temperature: request.temperature ?? 0.2,
         top_p: request.topP,
         max_output_tokens: request.maxOutputTokens,
-        tools: [openAiResponsesStageManagerTool(request.availableWaifuIds)],
-        tool_choice: { type: "function", name: STAGE_MANAGER_TOOL_NAME },
+        tools: [openAiResponsesDreamTool(request.availableWaifuIds)],
+        tool_choice: { type: "function", name: DREAM_TOOL_NAME },
         ...reasoningFieldsForOpenAiResponses(this.model, request.reasoning),
         ...openAiResponsesSamplingOverrides(this.model)
       },
       signal: request.signal,
-      extract: (json) => extractOpenAiResponsesToolArguments(json, STAGE_MANAGER_TOOL_NAME),
-      queryRole: "stage_manager_librarian"
+      extract: (json) => extractOpenAiResponsesToolArguments(json, DREAM_TOOL_NAME),
+      queryRole: "dream"
     });
-    return parseStageManagerCalls(text);
+    return parseDreamOps(text);
   }
 
   async decideReviewer(request: ProviderRequest & { message: string }): Promise<ReviewerDecision> {
@@ -494,7 +488,6 @@ class AnthropicMessagesPipeline implements ModelPipeline {
   }
 
   async decideStageManagerObservations(request: StageManagerObserveRequest): Promise<StageManagerObservation[]> {
-    const rendering = renderContext(request.messages);
     const maxTokens = request.maxOutputTokens ?? 1024;
     validateMaxOutputTokens(this.model, maxTokens);
     const text = await postJsonAndExtractText({
@@ -503,7 +496,7 @@ class AnthropicMessagesPipeline implements ModelPipeline {
       body: {
         model: request.modelId,
         system: observerSystemPrompt(request.systemPrompt, request.availableWaifuIds),
-        messages: [contextToUserMessage(rendering)],
+        messages: [{ role: "user", content: formatObserverContext(request.messages, new Date()) }],
         ...anthropicSamplingPayload(this.model, request.temperature ?? 0.2, request.topP, undefined),
         max_tokens: maxTokens,
         tools: [anthropicObserverTool(request.availableWaifuIds)],
@@ -516,7 +509,7 @@ class AnthropicMessagesPipeline implements ModelPipeline {
     return parseStageManagerObservations(text);
   }
 
-  async decideStageManager(request: StageManagerRequest): Promise<StageManagerToolCall[]> {
+  async decideDream(request: DreamRequest): Promise<DreamOp[]> {
     const maxTokens = request.maxOutputTokens ?? 1024;
     validateMaxOutputTokens(this.model, maxTokens);
     const text = await postJsonAndExtractText({
@@ -524,21 +517,18 @@ class AnthropicMessagesPipeline implements ModelPipeline {
       headers: anthropicHeaders(this.apiKey),
       body: {
         model: request.modelId,
-        system: librarianSystemPrompt(request.availableWaifuIds),
-        messages: [
-          { role: "user", content: `observations: ${JSON.stringify(request.observations ?? [])}` },
-          { role: "user", content: `memories: ${JSON.stringify(request.memories)}` }
-        ],
+        system: DREAM_PROMPT,
+        messages: dreamMessages(request),
         ...anthropicSamplingPayload(this.model, request.temperature ?? 0.2, request.topP, undefined),
         max_tokens: maxTokens,
-        tools: [anthropicStageManagerTool(request.availableWaifuIds)],
-        tool_choice: { type: "tool", name: STAGE_MANAGER_TOOL_NAME }
+        tools: [anthropicDreamTool(request.availableWaifuIds)],
+        tool_choice: { type: "tool", name: DREAM_TOOL_NAME }
       },
       signal: request.signal,
-      extract: (json) => extractAnthropicToolArguments(json, STAGE_MANAGER_TOOL_NAME),
-      queryRole: "stage_manager_librarian"
+      extract: (json) => extractAnthropicToolArguments(json, DREAM_TOOL_NAME),
+      queryRole: "dream"
     });
-    return parseStageManagerCalls(text);
+    return parseDreamOps(text);
   }
 
   async decideReviewer(request: ProviderRequest & { message: string }): Promise<ReviewerDecision> {
@@ -663,13 +653,12 @@ class GoogleGenerativeLanguagePipeline implements ModelPipeline {
 
   async decideStageManagerObservations(request: StageManagerObserveRequest): Promise<StageManagerObservation[]> {
     validateMaxOutputTokens(this.model, request.maxOutputTokens);
-    const rendering = renderContext(request.messages);
     const text = await postJsonAndExtractText({
       url: googleAiStudioUrl(this.provider, this.model),
       headers: googleAiStudioHeaders(this.apiKey),
       body: stripUndefined({
         systemInstruction: { parts: [{ text: observerSystemPrompt(request.systemPrompt, request.availableWaifuIds) }] },
-        contents: [googleUserTurn(rendering.block)],
+        contents: [googleUserTurn(formatObserverContext(request.messages, new Date()))],
         generationConfig: googleGenerationConfig(this.model, {
           temperature: request.temperature ?? 0.2,
           topP: request.topP,
@@ -687,16 +676,16 @@ class GoogleGenerativeLanguagePipeline implements ModelPipeline {
     return parseStageManagerObservations(text);
   }
 
-  async decideStageManager(request: StageManagerRequest): Promise<StageManagerToolCall[]> {
+  async decideDream(request: DreamRequest): Promise<DreamOp[]> {
     validateMaxOutputTokens(this.model, request.maxOutputTokens);
     const text = await postJsonAndExtractText({
       url: googleAiStudioUrl(this.provider, this.model),
       headers: googleAiStudioHeaders(this.apiKey),
       body: stripUndefined({
-        systemInstruction: { parts: [{ text: librarianSystemPrompt(request.availableWaifuIds) }] },
+        systemInstruction: { parts: [{ text: DREAM_PROMPT }] },
         contents: [
-          googleUserTurn(`observations: ${JSON.stringify(request.observations ?? [])}`),
-          googleUserTurn(`memories: ${JSON.stringify(request.memories)}`)
+          googleUserTurn(`memories: ${JSON.stringify(request.memories)}`),
+          googleUserTurn(`observations: ${JSON.stringify(request.observations)}`)
         ],
         generationConfig: googleGenerationConfig(this.model, {
           temperature: request.temperature ?? 0.2,
@@ -705,14 +694,14 @@ class GoogleGenerativeLanguagePipeline implements ModelPipeline {
           reasoning: request.reasoning
         }),
         safetySettings: googleSafetySettings,
-        tools: [googleAiStudioStageManagerTool(request.availableWaifuIds)],
-        toolConfig: googleForceToolConfig(STAGE_MANAGER_TOOL_NAME)
+        tools: [googleAiStudioDreamTool(request.availableWaifuIds)],
+        toolConfig: googleForceToolConfig(DREAM_TOOL_NAME)
       }),
       signal: request.signal,
-      extract: (json) => extractGoogleToolArguments(json, STAGE_MANAGER_TOOL_NAME),
-      queryRole: "stage_manager_librarian"
+      extract: (json) => extractGoogleToolArguments(json, DREAM_TOOL_NAME),
+      queryRole: "dream"
     });
-    return parseStageManagerCalls(text);
+    return parseDreamOps(text);
   }
 
   async decideReviewer(request: ProviderRequest & { message: string }): Promise<ReviewerDecision> {
@@ -855,45 +844,6 @@ function providerRequestSignal(parent?: AbortSignal, timeoutMs = 180_000): {
       clearTimeout(timeout);
       parent?.removeEventListener("abort", abortFromParent);
     }
-  };
-}
-
-type ContextRendering = {
-  block: string;
-  idToIndex: Map<string, number>;
-  indexToId: Map<number, string>;
-};
-
-function renderContext(messages: ContextMessage[]): ContextRendering {
-  const idToIndex = new Map<string, number>();
-  const indexToId = new Map<number, string>();
-  messages.forEach((message, i) => {
-    const index = i + 1;
-    idToIndex.set(message.id, index);
-    indexToId.set(index, message.id);
-  });
-  const lines = messages.map((message, i) =>
-    formatContextMessage(message, i + 1, idToIndex)
-  );
-  return { block: lines.join("\n"), idToIndex, indexToId };
-}
-
-function currentTimeBlock(): string {
-  return `<current_time>\n${formatPromptCurrentHour(new Date())}\n</current_time>`;
-}
-
-function formatPromptCurrentHour(date: Date): string {
-  return [
-    String(date.getFullYear()).padStart(4, "0"),
-    String(date.getMonth() + 1).padStart(2, "0"),
-    String(date.getDate()).padStart(2, "0")
-  ].join("-") + `T${String(date.getHours()).padStart(2, "0")}`;
-}
-
-function contextToUserMessage(rendering: ContextRendering) {
-  return {
-    role: "user",
-    content: rendering.block
   };
 }
 
@@ -1204,50 +1154,6 @@ function roleForWaifuContext(message: ContextMessage, selfAuthorIds: string[]): 
     : "user";
 }
 
-function formatContextMessage(message: ContextMessage, index: number, idToIndex: Map<string, number>): string {
-  const prefix = `[index: #${index}] [timestamp: ${message.timestamp}] ${message.displayName}:`;
-  const suffix = buildSuffix(message, idToIndex);
-  const body = message.content.length > 0 ? ` ${message.content}` : "";
-  return `${prefix}${body}${suffix}`;
-}
-
-function buildSuffix(message: ContextMessage, idToIndex: Map<string, number> | undefined): string {
-  const parts: string[] = [];
-  if (message.images?.length) {
-    parts.push(`[images: ${message.images.length}]`);
-    message.images.forEach((image, index) => {
-      const text = formatOcrText(image.ocrText);
-      if (text) {
-        parts.push(`[image_text #${index + 1}: ${text}]`);
-      }
-    });
-  }
-  if (message.reactions.length) {
-    parts.push(
-      `[reactions: ${message.reactions.map((reaction) => `${reaction.emoji} x${reaction.count}`).join(", ")}]`
-    );
-  }
-  if (message.replyTo) {
-    const referencedIndex = idToIndex?.get(message.replyTo.messageId);
-    if (referencedIndex !== undefined) {
-      parts.push(`[replying to: #${referencedIndex}]`);
-    } else {
-      const author = message.replyTo.authorName ?? "unknown";
-      const preview = message.replyTo.contentPreview ?? "";
-      parts.push(`[replying to: ${author}: ${preview}]`.replace(/\s+\]$/, "]"));
-    }
-  }
-  return parts.length ? ` ${parts.join(" ")}` : "";
-}
-
-function formatOcrText(text: string | undefined): string | undefined {
-  const normalized = text
-    ?.replace(/\s+/g, " ")
-    .replace(/[\u0000-\u001F\u007F]/g, "")
-    .trim();
-  return normalized || undefined;
-}
-
 function observerSystemPrompt(customPrompt?: string, availableWaifuIds?: string[]): string {
   return [customPrompt?.trim(), observerInstruction(availableWaifuIds)].filter(Boolean).join("\n\n");
 }
@@ -1258,7 +1164,7 @@ function observerInstruction(availableWaifuIds?: string[]): string {
     : "No waifus are available in this channel; return an empty observations array.";
   return `You are extracting durable memories from a Discord chat window.
 
-Each message in the context is tagged with [index: #N] and [timestamp: ISO-8601 UTC], followed by \`DisplayName:\` and the body, optionally followed by [reactions: ...] and [replying to: ...].
+The context window begins with a header line: Window: <date+time range> UTC (today: YYYY-MM-DD). Each message that follows is formatted as "DisplayName: body", optionally preceded by a "replying to > Author" line, and optionally followed by "[image_text: ...]" lines for any attached images. A "[— next day: YYYY-MM-DD —]" marker appears between messages that cross midnight.
 
 Your only job: scan the window and produce a small list of atomic, durable observations worth remembering. Then call ${OBSERVER_TOOL_NAME} exactly once with an observations array. Do not write normal assistant text. An empty array is allowed and is the correct answer when nothing durable was disclosed.
 
@@ -1269,6 +1175,7 @@ Each observation must be:
 - Owned by one waifu via waifuId — the waifu who should carry this memory in her prompt going forward. ${waifuInstruction}
 - Classified by kind: "fact" (stable attribute), "preference" (likes/dislikes), "relationship" (between two named people), "event" (a dated thing that happened), or "commitment" (a promise or future plan).
 - Scored 1–5 for importance: 1 = trivial flavor, 3 = useful when the waifu next talks to this person, 5 = central to who this person is.
+- If a fact is time-bound, state the absolute resolution date and what becomes true after it ('K plans to release the update on 2026-06-12'), never bare 'tomorrow'/'tonight'.
 
 Do NOT emit narration. Reject strings shaped like:
 - "Kevin and Mia were talking about cooking." (recap, not a fact)
@@ -1287,37 +1194,28 @@ Importance heuristic: a one-off mention is a 2; a stated preference is a 3; an a
 If the entire window is small talk, banter, or roleplay with no durable facts, return an empty array. That is normal.`;
 }
 
-function librarianSystemPrompt(availableWaifuIds?: string[]): string {
-  const waifuInstruction = availableWaifuIds?.length
-    ? `Allowed memory waifuId values: ${availableWaifuIds.join(", ")}. waifuId is the waifu that receives this memory in her prompt; it is never a human user name.`
-    : "No waifus are available for memory ownership in this channel; use no_change.";
-  return `You are the memory librarian for a Discord waifu bot.
+const DREAM_PROMPT = `You are the nightly memory-consolidation pass for a cast of Discord personas. You receive JSON in user messages:
+- memories: active records — memoryIndex, waifuId, content, kind, strength (0-5), ageDays, daysSinceRetrieved, expiresInHours (notes only).
+- observations: new durable observations from recent chat — waifuId, content, kind, importance, entities.
 
-You receive two JSON blocks in user messages:
-- \`observations: ...\` — new durable observations extracted from a recent chat window. Each has waifuId, content, importance, and kind.
-- \`memories: ...\` — a pruned list of existing memories that could plausibly collide with those observations. Each has memoryIndex, waifuId, content, importance. Reference existing memories by memoryIndex.
-
-Your job: decide, for each observation, whether it is new (add), already covered by an existing memory (no_change), a sharpening of an existing memory (update_memory), one of a group that should merge (merge_memories), or directly contradicts a now-wrong memory (archive_memory + add_memory).
-
-${waifuInstruction}
-All memory edits apply only to the current Discord server. Do not choose or mention global, channel, or user scopes.
+Call dream_memories exactly once with an ops array. No assistant text.
 
 Policy:
-- If an observation restates an existing memory verbatim or in spirit, prefer no_change for that observation; only update_memory if the observation strictly refines the existing one (more specific, corrected, or higher importance).
-- Never archive a memory because its fact is absent from the recent context, has not been mentioned lately, lacks recent confirmation, seems old, or is phrased imperfectly. Absence of evidence is not a contradiction.
-- Use archive_memory only when a specific observer observation directly contradicts the existing memory and makes it false. Pair the archive with an add_memory carrying the corrected fact.
-- An update_memory may refine a memory, but must preserve every non-contradicted fact already present.
-- If two or more existing memories about the same waifu say overlapping things, merge_memories may consolidate them. The merged content must preserve every non-contradicted fact from every source memory.
-- If an observation is genuinely new and not covered, add_memory it. Carry over the observation's waifuId, content, and importance.
-- If nothing in the memories list collides and no observation is worth adding (rare), one no_change item is the correct answer.
+- add: an observation that is genuinely new. Carry its waifuId, content, kind; strength = its importance.
+- If an observation restates an existing memory, do nothing for it; if it strictly refines one, rewrite that memory.
+- rewrite and merge produce ONE clean sentence or two — the result must read as a single well-written memory, never a concatenation. Preserve every DISTINCT fact; drop redundant phrasings.
+- promote: a note (expiring record) whose fact will still matter in a month gets promoted — give it a proper kind and strength; promotion clears its expiry.
+- decay: trivia (strength <= 2) untouched and unretrieved for 30+ days drops toward 0. A resolved commitment or past event gets rewritten to its outcome or archived.
+- archive: only when a memory is now false or fully superseded; the reason field is required.
+- Balance the cast's memory: if one person dominates the store, prefer decaying their stale trivia over adding more.
+- Never invent facts. An empty room is fine: one none op is a valid answer.`;
 
-Tool usage: call ${STAGE_MANAGER_TOOL_NAME} exactly once with a toolCalls array. Do not write normal assistant text.
-Each toolCalls item must match one of:
-{ "tool": "add_memory", "memory": { "waifuId": string, "content": string, "importance": 1|2|3|4|5 } }
-{ "tool": "update_memory", "memoryIndex": number, "patch": { "waifuId"?: string, "content"?: string, "importance"?: 1|2|3|4|5 } }
-{ "tool": "archive_memory", "memoryIndex": number }
-{ "tool": "merge_memories", "sourceMemoryIndices": number[], "mergedContent": string }
-{ "tool": "no_change", "reason"?: string }.`;
+// The dream pass reads two JSON user blocks: the active memory chunk and the pending observations.
+function dreamMessages(request: DreamRequest): Array<{ role: "user"; content: string }> {
+  return [
+    { role: "user", content: `memories: ${JSON.stringify(request.memories)}` },
+    { role: "user", content: `observations: ${JSON.stringify(request.observations)}` }
+  ];
 }
 
 function reviewerSystemPrompt(customPrompt?: string): string {
@@ -1362,7 +1260,7 @@ const PICK_NEXT_WAIFU_TOOL_DESCRIPTION =
 
 const SHORT_TERM_MEMORY_TOOL_NAME = "add_memory";
 const SHORT_TERM_MEMORY_TOOL_DESCRIPTION =
-  "Your personal notepad. The chat history can vanish at any time (channel switch, cleanup); your notes are what survives. Save one short standalone sentence whenever the conversation produces something you'd want to still know tomorrow: a plan, a promise, a new fact about someone, the state of a running joke or argument. Spell names out ('Riko owes Ali tacos since Thursday', never 'she owes him'). Up to 5 calls per reply. Skip pure filler and anything already shown in your memories block. Entries expire after 24 hours. Calling this tool does NOT replace your message — always also write your normal reply in the same turn.";
+  "Your personal notepad. The chat history can vanish at any time (channel switch, cleanup); your notes are what survives. Save one short standalone sentence whenever the conversation produces something you'd want to still know tomorrow: a plan, a promise, a new fact about someone, the state of a running joke or argument. Spell names out ('Riko owes Ali tacos since Thursday', never 'she owes him'). Up to 5 calls per reply. Skip pure filler and anything already shown in your memories block. Notes expire after about three days unless the nightly process promotes them. Calling this tool does NOT replace your message — always also write your normal reply in the same turn.";
 
 function shortTermMemoryToolParameters(): object {
   return {
@@ -1492,9 +1390,9 @@ function pickNextWaifuToolParameters(availableWaifuIds?: string[]): object {
   };
 }
 
-const STAGE_MANAGER_TOOL_NAME = "manage_memories";
-const STAGE_MANAGER_TOOL_DESCRIPTION = "Return the complete set of memory edits needed for the current Discord context.";
-export const STAGE_MANAGER_TOOL_PARAMETERS = stageManagerToolParameters();
+const DREAM_TOOL_NAME = "dream_memories";
+const DREAM_TOOL_DESCRIPTION = "Return the full set of consolidation operations for the nightly memory pass.";
+export const DREAM_TOOL_PARAMETERS = dreamToolParameters();
 
 const OBSERVER_TOOL_NAME = "record_observations";
 const OBSERVER_TOOL_DESCRIPTION = "Return atomic, durable observations extracted from the chat window. An empty array means nothing durable was disclosed.";
@@ -1553,7 +1451,12 @@ function observerToolParameters(availableWaifuIds?: string[]): object {
             waifuId: waifuIdSchema,
             content: { type: "string", description: "Atomic standalone fact, not a recap of chat events." },
             importance: { type: "integer", enum: [1, 2, 3, 4, 5] },
-            kind: { type: "string", enum: [...OBSERVATION_KINDS] }
+            kind: { type: "string", enum: [...OBSERVATION_KINDS] },
+            entities: {
+              type: "array",
+              items: { type: "string" },
+              description: "Display names of every person this observation is about."
+            }
           }
         }
       }
@@ -1562,7 +1465,11 @@ function observerToolParameters(availableWaifuIds?: string[]): object {
   };
 }
 
-function stageManagerToolParameters(availableWaifuIds?: string[]): object {
+// The dream op grammar is a discriminated union (by `op`), but `additionalProperties: false` per
+// branch is not expressible in one flat item schema. So — exactly as the old manage_memories
+// schema did — we present a single object with all-optional fields plus a required `op` enum, and
+// spell out the per-op requirements in the field descriptions.
+function dreamToolParameters(availableWaifuIds?: string[]): object {
   const waifuIds = [...new Set((availableWaifuIds ?? []).filter(Boolean))];
   const waifuIdSchema: Record<string, unknown> = {
     type: "string",
@@ -1577,68 +1484,85 @@ function stageManagerToolParameters(availableWaifuIds?: string[]): object {
     type: "object",
     additionalProperties: false,
     properties: {
-      toolCalls: {
+      ops: {
         type: "array",
-        description: "Memory edit operations to apply. Use one no_change item when no edit is needed.",
+        description: "Memory consolidation operations to apply. Use one `none` op when nothing should change.",
         minItems: 1,
         items: {
           type: "object",
           additionalProperties: false,
           properties: {
-            tool: {
+            op: {
               type: "string",
-              enum: ["add_memory", "update_memory", "archive_memory", "merge_memories", "no_change"]
+              enum: ["add", "promote", "rewrite", "merge", "decay", "archive", "none"],
+              description:
+                "add: new memory from an observation. promote: turn an expiring note durable. rewrite: repair/condense one memory. merge: consolidate two or more. decay: lower strength. archive: retire a now-false memory (reason required). none: no change."
             },
             memory: {
               type: "object",
-              description: "Required when tool is add_memory.",
+              description: "Required when op is add: the new memory.",
               additionalProperties: false,
               properties: {
                 waifuId: waifuIdSchema,
                 content: { type: "string" },
-                importance: { type: "integer", enum: [1, 2, 3, 4, 5] }
+                kind: { type: "string", enum: [...MEMORY_KINDS] },
+                strength: { type: "number", minimum: 0, maximum: 5 },
+                entities: { type: "array", items: { type: "string" } }
               },
-              required: ["waifuId", "content", "importance"]
+              required: ["waifuId", "content", "kind", "strength"]
             },
             memoryIndex: {
               type: "integer",
               minimum: 1,
-              description: "Required for update_memory or archive_memory."
+              description: "Target record (1-based). Required for promote, rewrite, decay, and archive."
             },
-            patch: {
-              type: "object",
-              description: "Required when tool is update_memory.",
-              additionalProperties: false,
-              properties: {
-                waifuId: waifuIdSchema,
-                content: { type: "string" },
-                importance: { type: "integer", enum: [1, 2, 3, 4, 5] }
-              }
-            },
-            sourceMemoryIndices: {
+            memoryIndices: {
               type: "array",
-              description: "Required when tool is merge_memories.",
+              description: "Source records to merge (1-based). Required for merge; at least two.",
               minItems: 2,
               items: { type: "integer", minimum: 1 }
             },
-            mergedContent: {
+            patch: {
+              type: "object",
+              description: "Optional changes applied on promote.",
+              additionalProperties: false,
+              properties: {
+                kind: { type: "string", enum: [...MEMORY_KINDS] },
+                strength: { type: "number", minimum: 0, maximum: 5 },
+                content: { type: "string" }
+              }
+            },
+            content: {
               type: "string",
-              description: "Required when tool is merge_memories."
+              description: "The single clean memory sentence produced by rewrite or merge."
+            },
+            entities: {
+              type: "array",
+              items: { type: "string" },
+              description: "Display names for the rewritten or merged memory."
+            },
+            strength: {
+              type: "number",
+              minimum: 0,
+              maximum: 5,
+              description: "New strength (0-5). Required for decay."
             },
             reason: {
               type: "string",
-              description: "Optional explanation for no_change."
+              description: "Why the memory is now false or superseded. Required for archive."
             }
           },
-          required: ["tool"]
+          required: ["op"]
         }
       }
     },
-    required: ["toolCalls"]
+    required: ["ops"]
   };
 }
 
-function flatStageManagerToolParameters(availableWaifuIds?: string[]): object {
+// Gemini's function-calling schema validator rejects nested objects under ANY-mode tool forcing,
+// so the dream op grammar is flattened: `memory`/`patch` fields are hoisted to the item level.
+function flatDreamToolParameters(availableWaifuIds?: string[]): object {
   const waifuIds = [...new Set((availableWaifuIds ?? []).filter(Boolean))];
   const waifuIdSchema: Record<string, unknown> = {
     type: "string",
@@ -1652,51 +1576,64 @@ function flatStageManagerToolParameters(availableWaifuIds?: string[]): object {
   return {
     type: "object",
     properties: {
-      toolCalls: {
+      ops: {
         type: "array",
-        description: "Memory edit operations to apply. Use one no_change item when no edit is needed.",
+        description: "Memory consolidation operations to apply. Use one `none` op when nothing should change.",
         minItems: 1,
         items: {
           type: "object",
           properties: {
-            tool: {
+            op: {
               type: "string",
-              enum: ["add_memory", "update_memory", "archive_memory", "merge_memories", "no_change"]
+              enum: ["add", "promote", "rewrite", "merge", "decay", "archive", "none"],
+              description:
+                "add: new memory. promote: note→durable. rewrite: repair one memory. merge: consolidate. decay: lower strength. archive: retire (reason required). none: no change."
             },
             waifuId: {
               ...waifuIdSchema,
-              description: "Required for add_memory. Optional for update_memory."
+              description: "Required for add. The memory owner."
             },
             content: {
               type: "string",
-              description: "Memory content for add_memory/update_memory, or the merged content for merge_memories."
+              description: "Memory content for add, or the clean result of rewrite/merge."
             },
-            importance: {
-              type: "integer",
-              enum: [1, 2, 3, 4, 5],
-              description: "Required for add_memory. Optional for update_memory."
+            kind: {
+              type: "string",
+              enum: [...MEMORY_KINDS],
+              description: "Required for add. Optional refinement for promote."
+            },
+            strength: {
+              type: "number",
+              minimum: 0,
+              maximum: 5,
+              description: "Required for add and decay (0-5). Optional refinement for promote."
+            },
+            entities: {
+              type: "array",
+              items: { type: "string" },
+              description: "Display names for add/rewrite/merge."
             },
             memoryIndex: {
               type: "integer",
               minimum: 1,
-              description: "Required for update_memory or archive_memory."
+              description: "Target record (1-based). Required for promote, rewrite, decay, archive."
             },
-            sourceMemoryIndices: {
+            memoryIndices: {
               type: "array",
-              description: "Required for merge_memories.",
+              description: "Source records to merge (1-based). Required for merge; at least two.",
               minItems: 2,
               items: { type: "integer", minimum: 1 }
             },
             reason: {
               type: "string",
-              description: "Optional explanation for no_change."
+              description: "Required for archive: why the memory is now false or superseded."
             }
           },
-          required: ["tool"]
+          required: ["op"]
         }
       }
     },
-    required: ["toolCalls"]
+    required: ["ops"]
   };
 }
 
@@ -1736,16 +1673,16 @@ function anthropicShortTermMemoryTool() {
   return anthropicTool(SHORT_TERM_MEMORY_TOOL_NAME, SHORT_TERM_MEMORY_TOOL_DESCRIPTION, shortTermMemoryToolParameters());
 }
 
-function openAiChatStageManagerTool(availableWaifuIds?: string[]) {
-  return openAiChatTool(STAGE_MANAGER_TOOL_NAME, STAGE_MANAGER_TOOL_DESCRIPTION, stageManagerToolParameters(availableWaifuIds));
+function openAiChatDreamTool(availableWaifuIds?: string[]) {
+  return openAiChatTool(DREAM_TOOL_NAME, DREAM_TOOL_DESCRIPTION, dreamToolParameters(availableWaifuIds));
 }
 
-function openAiResponsesStageManagerTool(availableWaifuIds?: string[]) {
-  return openAiResponsesTool(STAGE_MANAGER_TOOL_NAME, STAGE_MANAGER_TOOL_DESCRIPTION, stageManagerToolParameters(availableWaifuIds));
+function openAiResponsesDreamTool(availableWaifuIds?: string[]) {
+  return openAiResponsesTool(DREAM_TOOL_NAME, DREAM_TOOL_DESCRIPTION, dreamToolParameters(availableWaifuIds));
 }
 
-function anthropicStageManagerTool(availableWaifuIds?: string[]) {
-  return anthropicTool(STAGE_MANAGER_TOOL_NAME, STAGE_MANAGER_TOOL_DESCRIPTION, stageManagerToolParameters(availableWaifuIds));
+function anthropicDreamTool(availableWaifuIds?: string[]) {
+  return anthropicTool(DREAM_TOOL_NAME, DREAM_TOOL_DESCRIPTION, dreamToolParameters(availableWaifuIds));
 }
 
 function openAiChatObserverTool(availableWaifuIds?: string[]) {
@@ -1966,50 +1903,36 @@ const RawOrchestratorDecisionSchema = z.object({
   reasoning: z.string().min(1)
 });
 
-const RawStageManagerPatchSchema = z.object({
-  waifuId: z.string().min(1).optional(),
-  content: z.string().min(1).optional(),
-  importance: RawImportanceSchema.optional()
-});
-
-const RawStageManagerToolCallSchema = z.discriminatedUnion("tool", [
-  z.object({
-    tool: z.literal("add_memory"),
-    memory: z.object({
+// The model may emit ops in either the nested shape (matching the OpenAI/Anthropic tool schema:
+// `memory`/`patch` sub-objects) or the flattened Google shape (`waifuId`/`content`/`strength`
+// hoisted to the op level). This lenient schema accepts both and a normalizer below folds the flat
+// form into the canonical DreamOp.
+const RawDreamOpSchema = z.object({
+  op: z.enum(["add", "promote", "rewrite", "merge", "decay", "archive", "none"]),
+  memory: z
+    .object({
       waifuId: z.string().min(1),
       content: z.string().min(1),
-      importance: RawImportanceSchema
+      kind: MemoryKindSchema,
+      strength: z.number().min(0).max(5),
+      entities: z.array(z.string()).default([])
     })
-  }),
-  z.object({
-    tool: z.literal("update_memory"),
-    memoryIndex: z.number().int().min(1),
-    patch: RawStageManagerPatchSchema
-  }),
-  z.object({
-    tool: z.literal("archive_memory"),
-    memoryIndex: z.number().int().min(1)
-  }),
-  z.object({
-    tool: z.literal("merge_memories"),
-    sourceMemoryIndices: z.array(z.number().int().min(1)).min(2),
-    mergedContent: z.string().min(1)
-  }),
-  z.object({
-    tool: z.literal("no_change"),
-    reason: z.string().optional()
-  })
-]);
-
-const RawFlatStageManagerToolCallSchema = z.object({
-  tool: z.enum(["add_memory", "update_memory", "archive_memory", "merge_memories", "no_change"]),
-  waifuId: z.string().min(1).optional(),
-  content: z.string().min(1).optional(),
-  importance: RawImportanceSchema.optional(),
+    .optional(),
+  patch: z
+    .object({
+      kind: MemoryKindSchema.optional(),
+      strength: z.number().min(0).max(5).optional(),
+      content: z.string().min(1).optional()
+    })
+    .optional(),
   memoryIndex: z.number().int().min(1).optional(),
-  sourceMemoryIndices: z.array(z.number().int().min(1)).min(2).optional(),
-  mergedContent: z.string().min(1).optional(),
-  reason: z.string().optional()
+  memoryIndices: z.array(z.number().int().min(1)).min(2).optional(),
+  content: z.string().min(1).optional(),
+  entities: z.array(z.string()).optional(),
+  kind: MemoryKindSchema.optional(),
+  strength: z.number().min(0).max(5).optional(),
+  reason: z.string().min(1).optional(),
+  waifuId: z.string().min(1).optional()
 });
 
 function normalizeRawDirective(
@@ -2049,81 +1972,94 @@ function parseDecision(text: string, replyRequired = false): OrchestratorDecisio
   }
 }
 
-function parseStageManagerCalls(text: string): StageManagerToolCall[] {
+function parseDreamOps(text: string): DreamOp[] {
   try {
     const parsed = JSON.parse(stripCodeFence(text));
-    const calls = Array.isArray(parsed) ? parsed : (parsed.toolCalls ?? parsed.calls ?? []);
-    if (!Array.isArray(calls)) {
-      throw new Error("stage-manager response did not contain a toolCalls array.");
+    const rawOps = Array.isArray(parsed) ? parsed : (parsed.ops ?? parsed.toolCalls ?? []);
+    if (!Array.isArray(rawOps)) {
+      throw new Error("dream response did not contain an ops array.");
     }
-    const validCalls: StageManagerToolCall[] = [];
-    const invalidCalls: string[] = [];
-    calls.forEach((call: unknown, index: number) => {
+    const validOps: DreamOp[] = [];
+    const invalidOps: string[] = [];
+    rawOps.forEach((op: unknown, index: number) => {
       try {
-        validCalls.push(normalizeStageManagerToolCall(call));
+        validOps.push(normalizeDreamOp(op));
       } catch (error) {
-        invalidCalls.push(`#${index + 1}: ${error instanceof Error ? error.message : String(error)}`);
+        invalidOps.push(`#${index + 1}: ${error instanceof Error ? error.message : String(error)}`);
       }
     });
-    if (validCalls.length > 0) {
-      return validCalls;
+    if (validOps.length > 0) {
+      return validOps;
     }
     throw new Error(
-      invalidCalls.length
-        ? `No valid stage-manager tool calls. Invalid calls: ${invalidCalls.join("; ")}`
-        : "Provider returned no stage-manager tool calls."
+      invalidOps.length
+        ? `No valid dream ops. Invalid ops: ${invalidOps.join("; ")}`
+        : "Provider returned no dream ops."
     );
   } catch (error) {
-    throw new ProviderPipelineError("Provider did not return valid stage-manager tool calls.", {
+    throw new ProviderPipelineError("Provider did not return valid dream ops.", {
       text,
       error: error instanceof Error ? error.message : String(error)
     });
   }
 }
 
-function normalizeStageManagerToolCall(call: unknown): StageManagerToolCall {
-  const nested = RawStageManagerToolCallSchema.safeParse(call);
-  if (nested.success) {
-    return StageManagerToolCallSchema.parse(nested.data);
-  }
-
-  const raw = RawFlatStageManagerToolCallSchema.parse(call);
-  switch (raw.tool) {
-    case "add_memory":
-      return StageManagerToolCallSchema.parse({
-        tool: raw.tool,
-        memory: {
-          waifuId: raw.waifuId,
-          content: raw.content,
-          importance: raw.importance
-        }
+function normalizeDreamOp(op: unknown): DreamOp {
+  const raw = RawDreamOpSchema.parse(op);
+  switch (raw.op) {
+    case "add":
+      return DreamOpSchema.parse({
+        op: "add",
+        memory:
+          raw.memory ??
+          stripUndefined({
+            waifuId: raw.waifuId,
+            content: raw.content,
+            kind: raw.kind,
+            strength: raw.strength,
+            entities: raw.entities
+          })
       });
-    case "update_memory":
-      return StageManagerToolCallSchema.parse({
-        tool: raw.tool,
+    case "promote":
+      return DreamOpSchema.parse({
+        op: "promote",
         memoryIndex: raw.memoryIndex,
-        patch: stripUndefined({
-          waifuId: raw.waifuId,
-          content: raw.content,
-          importance: raw.importance
-        })
+        patch:
+          raw.patch ??
+          stripUndefined({
+            kind: raw.kind,
+            strength: raw.strength,
+            content: raw.content
+          })
       });
-    case "archive_memory":
-      return StageManagerToolCallSchema.parse({
-        tool: raw.tool,
-        memoryIndex: raw.memoryIndex
+    case "rewrite":
+      return DreamOpSchema.parse({
+        op: "rewrite",
+        memoryIndex: raw.memoryIndex,
+        content: raw.content,
+        entities: raw.entities
       });
-    case "merge_memories":
-      return StageManagerToolCallSchema.parse({
-        tool: raw.tool,
-        sourceMemoryIndices: raw.sourceMemoryIndices,
-        mergedContent: raw.mergedContent ?? raw.content
+    case "merge":
+      return DreamOpSchema.parse({
+        op: "merge",
+        memoryIndices: raw.memoryIndices,
+        content: raw.content,
+        entities: raw.entities
       });
-    case "no_change":
-      return StageManagerToolCallSchema.parse({
-        tool: raw.tool,
+    case "decay":
+      return DreamOpSchema.parse({
+        op: "decay",
+        memoryIndex: raw.memoryIndex,
+        strength: raw.strength
+      });
+    case "archive":
+      return DreamOpSchema.parse({
+        op: "archive",
+        memoryIndex: raw.memoryIndex,
         reason: raw.reason
       });
+    case "none":
+      return DreamOpSchema.parse({ op: "none" });
   }
 }
 
@@ -2807,8 +2743,8 @@ function googleAiStudioOrchestratorTool(availableWaifuIds?: string[], replyRequi
   return googleAiStudioTool(ORCHESTRATOR_TOOL_NAME, ORCHESTRATOR_TOOL_DESCRIPTION, orchestratorToolParameters(availableWaifuIds, replyRequired, directiveBudgetOpen));
 }
 
-function googleAiStudioStageManagerTool(availableWaifuIds?: string[]) {
-  return googleAiStudioTool(STAGE_MANAGER_TOOL_NAME, STAGE_MANAGER_TOOL_DESCRIPTION, flatStageManagerToolParameters(availableWaifuIds));
+function googleAiStudioDreamTool(availableWaifuIds?: string[]) {
+  return googleAiStudioTool(DREAM_TOOL_NAME, DREAM_TOOL_DESCRIPTION, flatDreamToolParameters(availableWaifuIds));
 }
 
 function googleAiStudioObserverTool(availableWaifuIds?: string[]) {

@@ -286,26 +286,6 @@ export type ServerToolSettings = {
   shortTermMemory: boolean;
 };
 
-export type ShortTermMemory = {
-  id: string;
-  guildId: string;
-  channelId: string;
-  waifuId: string;
-  content: string;
-  createdAt: string;
-  expiresAt: string;
-};
-
-export type ShortTermMemoryStore = Revisioned & {
-  entries: ShortTermMemory[];
-};
-
-export type UpdateShortTermMemoryBody = {
-  revision: number;
-  content?: string;
-  waifuId?: string;
-};
-
 export type StageManagerEditHistoryEntry = {
   id: string;
   guildId?: string;
@@ -461,37 +441,42 @@ export type GuildRolesFile = Revisioned & {
   roles: GuildRoleCacheEntry[];
 };
 
-export type MemoryScope = "guild";
 export type MemoryStatus = "active" | "archived";
-export type MemoryImportance = 1 | 2 | 3 | 4 | 5;
+export type MemoryKind = "fact" | "preference" | "relationship" | "event" | "commitment" | "context";
+export const MEMORY_KINDS: MemoryKind[] = ["fact", "preference", "relationship", "event", "commitment", "context"];
+export type MemorySource = "waifu_tool" | "stage_manager" | "dream" | "user";
+export const MEMORY_SOURCES: MemorySource[] = ["waifu_tool", "stage_manager", "dream", "user"];
 
-export type WaifuMemory = {
+export type MemoryRecord = {
   id: string;
+  guildId: string;
+  channelId?: string;
   waifuId: string;
-  scope: MemoryScope;
-  guildId?: string;
   content: string;
-  importance: MemoryImportance;
-  permanent: boolean;
+  kind: MemoryKind;
+  source: MemorySource;
+  pinned: boolean;
+  strength: number;
+  entities: string[];
+  expiresAt?: string;
   createdAt: string;
   updatedAt: string;
-  sourceMessageIds: string[];
+  lastRetrievedAt?: string;
   status: MemoryStatus;
 };
 
 export type MemoryStore = Revisioned & {
-  memories: WaifuMemory[];
+  memories: MemoryRecord[];
 };
 
 export type CreateMemoryBody = {
   revision?: number;
   waifuId: string;
   guildId: string;
-  scope?: MemoryScope;
   content: string;
-  importance: MemoryImportance;
-  permanent?: boolean;
-  sourceMessageIds?: string[];
+  strength?: number;
+  pinned?: boolean;
+  kind?: MemoryKind;
 };
 
 export type UpdateMemoryBody = Partial<CreateMemoryBody> & {

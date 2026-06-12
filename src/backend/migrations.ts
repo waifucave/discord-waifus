@@ -1,13 +1,18 @@
 import { readFile, readdir, rm } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { ensureDataLayout } from "../config/layout.js";
 import { RETRIGGER_MAX_SECONDS, RETRIGGER_MIN_SECONDS } from "../orchestration/decisions.js";
+import { extractEntities, WAIFU_NOTE_STRENGTH } from "../orchestration/memoryEntities.js";
+import { MEMORY_KINDS } from "../shared/schemas/domain.js";
 import {
   PromptLayoutNode,
   WaifuPromptLayout,
   defaultWaifuPromptLayout
 } from "../shared/schemas/domain.js";
 import { atomicWriteJson } from "../storage/atomic.js";
+
+export { extractEntities } from "../orchestration/memoryEntities.js";
 
 export type MigrationResult = {
   applied: string[];
@@ -45,6 +50,13 @@ export async function runMigrations(dataRoot: string): Promise<MigrationResult> 
   const w2LayoutsMigrated = await migrateWaifuPromptLayoutW2(dataRoot);
   if (w2LayoutsMigrated > 0) {
     applied.push(`migrate-waifu-prompt-layout-w2-${w2LayoutsMigrated}`);
+  }
+  // W3: collapse the two-store memory model into one unified MemoryRecord store. This MUST run
+  // after the legacy memory steps above (they mutate the old shape) and before any read, because
+  // the new schema strips importance/permanent and would silently default strength/pinned — losing
+  // user-managed permanent memories — if an old-shape file were parsed without migrating first.
+  if (await migrateMemoryStoreV2(dataRoot)) {
+    applied.push("migrate-memory-store-v2");
   }
 
   return { applied };
@@ -412,6 +424,9 @@ async function migrateLegacyMemories(dataRoot: string): Promise<boolean> {
   let changed = false;
   for (const memory of data.memories) {
     if (!isObject(memory)) continue;
+    // Leave already-unified (W3) records alone — adding `scope` back would make the V2 shape
+    // detector treat a clean store as legacy and re-run on every boot.
+    if (isNewShapeMemory(memory)) continue;
     if (memory.scope !== "guild") {
       memory.scope = "guild";
       changed = true;
@@ -460,6 +475,135 @@ async function archiveMemoriesWithUnknownWaifus(dataRoot: string): Promise<boole
 
   if (!changed) return false;
   await atomicWriteJson(filePath, data);
+  return true;
+}
+
+const VALID_MEMORY_KINDS = new Set<string>(MEMORY_KINDS);
+
+// Defaults to 3 — the domain midpoint — when the old importance field is absent or corrupt.
+function clampStrength(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return 3;
+  return Math.max(0, Math.min(5, value));
+}
+
+function memoryRecordHasOldShape(memory: Record<string, unknown>): boolean {
+  return "importance" in memory || "permanent" in memory || "scope" in memory || "sourceMessageIds" in memory;
+}
+
+// A unified (W3) record carries `source`/`strength` and none of the legacy keys.
+function isNewShapeMemory(memory: Record<string, unknown>): boolean {
+  return ("source" in memory || "strength" in memory) && !memoryRecordHasOldShape(memory);
+}
+
+// W3 shape migration. Transforms the legacy long-term records and folds the separate short-term
+// store into the unified MemoryRecord store, then removes the short-term file. Idempotent: once a
+// record carries none of the old keys (importance/permanent/scope/sourceMessageIds) and the
+// short-term file is gone, there is nothing to do.
+async function migrateMemoryStoreV2(dataRoot: string): Promise<boolean> {
+  const memoriesPath = path.join(dataRoot, "user", "memories.json");
+  const shortTermPath = path.join(dataRoot, "user", "short-term-memories.json");
+
+  const memoriesData = await readJsonOrUndefined(memoriesPath);
+  const shortTermData = await readJsonOrUndefined(shortTermPath);
+
+  const memoriesIsObject = isObject(memoriesData) && Array.isArray(memoriesData.memories);
+  const existingRecords: unknown[] = memoriesIsObject ? (memoriesData.memories as unknown[]) : [];
+  const hasOldLongTerm = existingRecords.some(
+    (memory) => isObject(memory) && memoryRecordHasOldShape(memory)
+  );
+  const shortTermExists = shortTermData !== undefined;
+
+  if (!hasOldLongTerm && !shortTermExists) return false;
+
+  // Establish the base store. If memories.json is absent or malformed but a short-term file exists,
+  // start from an empty store so the short-term entries still survive the merge.
+  const baseStore: Record<string, unknown> = memoriesIsObject
+    ? { ...memoriesData }
+    : { schemaVersion: 1, revision: 0, updatedAt: new Date().toISOString(), memories: [] };
+
+  const migrated: Array<Record<string, unknown>> = [];
+  for (const raw of existingRecords) {
+    if (!isObject(raw)) continue;
+    if (!memoryRecordHasOldShape(raw)) {
+      // Already new-shape (e.g. mixed store on a partial prior run) — carry through untouched.
+      migrated.push(raw);
+      continue;
+    }
+    const permanent = raw.permanent === true;
+    const importance = clampStrength(raw.importance);
+    const content = typeof raw.content === "string" ? raw.content : "";
+    const guildId = typeof raw.guildId === "string" ? raw.guildId : "";
+    const waifuId = typeof raw.waifuId === "string" ? raw.waifuId : "";
+    const kind = typeof raw.kind === "string" && VALID_MEMORY_KINDS.has(raw.kind) ? raw.kind : "fact";
+    // The new schema requires non-empty guildId/waifuId/content for every record (the old schema
+    // tolerated guildId-less archived memories). Drop orphans rather than emit a record that would
+    // fail MemoryStoreSchema parse on the next read.
+    if (!guildId || !waifuId || !content) continue;
+    const next: Record<string, unknown> = {
+      id: typeof raw.id === "string" && raw.id.length > 0 ? raw.id : randomUUID(),
+      guildId,
+      waifuId,
+      content,
+      kind,
+      source: permanent ? "user" : "stage_manager",
+      pinned: permanent,
+      strength: importance,
+      entities: extractEntities(content),
+      createdAt: typeof raw.createdAt === "string" ? raw.createdAt : new Date().toISOString(),
+      updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : new Date().toISOString(),
+      status: raw.status === "archived" ? "archived" : "active"
+    };
+    if (typeof raw.channelId === "string" && raw.channelId.length > 0) {
+      next.channelId = raw.channelId;
+    }
+    if (typeof raw.expiresAt === "string" && raw.expiresAt.length > 0) {
+      next.expiresAt = raw.expiresAt;
+    }
+    migrated.push(next);
+  }
+
+  // Fold short-term entries into the unified store as waifu_tool/context notes, keeping expiresAt.
+  if (isObject(shortTermData) && Array.isArray(shortTermData.entries)) {
+    for (const raw of shortTermData.entries) {
+      if (!isObject(raw)) continue;
+      const content = typeof raw.content === "string" ? raw.content : "";
+      const guildId = typeof raw.guildId === "string" ? raw.guildId : "";
+      const waifuId = typeof raw.waifuId === "string" ? raw.waifuId : "";
+      if (!content || !guildId || !waifuId) continue;
+      const note: Record<string, unknown> = {
+        id: typeof raw.id === "string" && raw.id.length > 0 ? raw.id : randomUUID(),
+        guildId,
+        waifuId,
+        content,
+        kind: "context",
+        source: "waifu_tool",
+        pinned: false,
+        strength: WAIFU_NOTE_STRENGTH,
+        entities: extractEntities(content),
+        createdAt: typeof raw.createdAt === "string" ? raw.createdAt : new Date().toISOString(),
+        updatedAt: typeof raw.createdAt === "string" ? raw.createdAt : new Date().toISOString(),
+        status: "active"
+      };
+      if (typeof raw.channelId === "string" && raw.channelId.length > 0) {
+        note.channelId = raw.channelId;
+      }
+      if (typeof raw.expiresAt === "string" && raw.expiresAt.length > 0) {
+        note.expiresAt = raw.expiresAt;
+      }
+      migrated.push(note);
+    }
+  }
+
+  baseStore.memories = migrated;
+  await atomicWriteJson(memoriesPath, baseStore);
+
+  // Remove the now-merged short-term store; tolerate a missing file.
+  try {
+    await rm(shortTermPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+
   return true;
 }
 

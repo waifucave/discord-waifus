@@ -28,7 +28,7 @@ import {
 import { ReplyQuoteExtraction, extractReplyQuote } from "./replyQuote.js";
 import { getModel } from "../providers/catalog.js";
 import { createModelPipeline, PipelineCredentials, ProviderPipelineError } from "../providers/pipelines.js";
-import { ModelPipeline, StageManagerMemory, WaifuGenerationResult } from "../providers/types.js";
+import { ModelPipeline, WaifuGenerationResult } from "../providers/types.js";
 import {
   ActiveChatParticipant,
   ActiveChatParticipantsFile,
@@ -46,23 +46,25 @@ import {
   OrchestratorResponderOutcome,
   OrchestratorHistoryFileSchema,
   OrchestratorRespondingWaifu,
+  PendingObservation,
+  PendingObservationsFileSchema,
   ProviderCredentialsFile,
   ProviderCredentialsFileSchema,
   ReviewerHistoryFileSchema,
+  MemoryRecord,
   ServerConfig,
   ServerConfigSchema,
-  ShortTermMemory,
-  ShortTermMemoryStore,
-  ShortTermMemoryStoreSchema,
   StageManagerHistoryFileSchema,
   WaifuConfig,
   WaifuConfigSchema,
-  WaifuMemory,
   createEmptyRevisionedFile
 } from "../shared/schemas/domain.js";
+import { extractEntities, WAIFU_NOTE_STRENGTH } from "./memoryEntities.js";
+import { applyDreamOps, guildHash, selectDreamInput } from "./dream.js";
+import { retrieveMemories } from "./memoryRetrieval.js";
 import { createRevisionedBase, nowIso } from "../shared/schemas/common.js";
 import { StorageService } from "../storage/storageService.js";
-import { StageManagerObservation, StageManagerToolCall } from "./stageManager.js";
+import { DreamOp, StageManagerObservation } from "./stageManager.js";
 import {
   ChannelSessionState,
   ChannelSessionStateSchema,
@@ -78,6 +80,10 @@ import {
   RETRIGGER_MIN_SECONDS
 } from "./decisions.js";
 import { assessLoop } from "./loopDetector.js";
+
+// Hour of the day (local time, 0-23) at which the nightly dream pass fires. Exported so
+// msUntilNextDreamRun can reference it without the class bracket-access backdoor.
+export const DREAM_HOUR_LOCAL = 5;
 
 export type RuntimeOrchestratorOptions = {
   storage: StorageService;
@@ -134,6 +140,14 @@ export type StageManagerRunResult = {
   message?: string;
 };
 
+export type DreamPassResult = {
+  status: "updated" | "no_change" | "already_running" | "disabled" | "failed";
+  applied: number;
+  skipped: number;
+  chunks: number;
+  message?: string;
+};
+
 type StageManagerSchedule = {
   idleTimer?: NodeJS.Timeout;
 };
@@ -155,6 +169,13 @@ export class RuntimeOrchestrator {
   private readonly retriggerTimers = new Map<string, NodeJS.Timeout>();
   private readonly stageManagerSchedules = new Map<string, StageManagerSchedule>();
   private readonly activeStageManagerRuns = new Set<Promise<StageManagerRunResult>>();
+  // Per-guild daily dream-pass timers (next-run setTimeout, re-armed after each run) and any
+  // pending defer timers for runs deferred because a channel run was active.
+  private readonly dreamTimers = new Map<string, NodeJS.Timeout>();
+  private readonly activeDreamRuns = new Set<Promise<DreamPassResult>>();
+  // Per-guild reentrancy guard for the dream pass. Prevents two concurrent runs for the same
+  // guild from double-draining the observation queue or producing duplicate merge records.
+  private readonly dreamingGuilds = new Set<string>();
   private readonly maxAutomaticTurns: number;
   private readonly createPipeline: (modelId: string, credentials: PipelineCredentials) => ModelPipeline;
   private readonly sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
@@ -173,6 +194,10 @@ export class RuntimeOrchestrator {
   private readonly directiveDecisionCounts = new Map<string, number>();
   private static readonly SELF_SENT_TTL_MS = 60_000;
   private static readonly STAGE_MANAGER_IDLE_DELAY_MS = 60 * 60 * 1000;
+  // Dream pass: per guild, once per day at DREAM_HOUR_LOCAL (±15 min deterministic jitter). When a
+  // channel run is active for the guild we defer 15 min, up to 8 times, then run anyway.
+  private static readonly DREAM_DEFER_DELAY_MS = 15 * 60 * 1000;
+  private static readonly DREAM_MAX_DEFERS = 8;
   private static readonly ACTIVE_CHAT_PARTICIPANT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
   private unsubscribes: Array<() => void> = [];
 
@@ -255,6 +280,7 @@ export class RuntimeOrchestrator {
       await this.syncGuilds();
     }
     await this.healPendingOrchestratorDecisions();
+    await this.scheduleDreamRuns();
   }
 
   async stop(): Promise<void> {
@@ -272,12 +298,14 @@ export class RuntimeOrchestrator {
     }
     this.retriggerTimers.clear();
     this.clearAllStageManagerTimers();
+    this.clearAllDreamTimers();
     for (const run of this.activeRuns.values()) {
       run.controller.abort(new Error("runtime paused"));
     }
     await Promise.allSettled([...this.activeRuns.values()].map((run) => run.promise));
     this.activeRuns.clear();
     await Promise.allSettled([...this.activeStageManagerRuns]);
+    await Promise.allSettled([...this.activeDreamRuns]);
     this.options.onActiveRunsChange?.(0);
   }
 
@@ -344,6 +372,10 @@ export class RuntimeOrchestrator {
       return;
     }
     const server = await this.ensureServer(event.guildId);
+    // Arm a dream timer for guilds that joined after startup (cheap check — no-op for existing guilds).
+    if (!this.dreamTimers.has(event.guildId) && !this.options.isPaused?.()) {
+      this.armDreamTimer(event.guildId);
+    }
     const serverWithChannel = await this.ensureChannelConfig(server, event.channelId);
     const channel = serverWithChannel.channels[event.channelId];
     if (!this.channelHasWaifus(channel)) {
@@ -417,6 +449,34 @@ export class RuntimeOrchestrator {
   }
 
   async triggerStageManager(guildId: string, channelId: string): Promise<StageManagerRunResult> {
+    // Manual trigger (/memories or the dashboard): run the observer (queue + fast-track) and then
+    // the dream pass, folding both into a single status the caller reports.
+    const observer = await this.startStageManagerRun(guildId, channelId);
+    if (observer.status === "already_running" || observer.status === "disabled") {
+      return observer;
+    }
+    let dream: DreamPassResult;
+    try {
+      dream = await this.startDreamRun(guildId);
+    } catch (error) {
+      this.options.logger.error("Dream pass failed during manual trigger", {
+        guildId,
+        channelId,
+        message: error instanceof Error ? error.message : String(error)
+      });
+      dream = { status: "failed", applied: 0, skipped: 0, chunks: 0, message: error instanceof Error ? error.message : "Dream pass failed." };
+    }
+    return combineStageAndDream(observer, dream);
+  }
+
+  // Test/ops hook: run only the dream consolidation pass for a guild (no observer).
+  // Goes through startDreamRun so the per-guild reentrancy guard is exercised.
+  async runDreamPassForTest(guildId: string): Promise<DreamPassResult> {
+    return this.startDreamRun(guildId);
+  }
+
+  // Test hook: run only the observer (queue + fast-track), without the dream pass.
+  async runObserverForTest(guildId: string, channelId: string): Promise<StageManagerRunResult> {
     return this.startStageManagerRun(guildId, channelId);
   }
 
@@ -641,15 +701,15 @@ export class RuntimeOrchestrator {
     try {
       const result = await this.triggerStageManager(event.guildId, event.channelId);
       if (result.status === "updated") {
-        await event.respond("Stage manager updated memories.");
+        await event.respond(result.message ?? "Observer and dream pass updated memories.");
       } else if (result.status === "no_change") {
-        await event.respond("Stage manager found no memory changes.");
+        await event.respond(result.message ?? "Observer and dream pass found no memory changes.");
       } else if (result.status === "already_running") {
-        await event.respond("Stage manager is already running in this channel.");
+        await event.respond("Memory work is already running in this channel.");
       } else if (result.status === "disabled") {
-        await event.respond("Stage manager is disabled or missing a model.");
+        await event.respond("Memory work is disabled or missing a model.");
       } else {
-        await event.respond(result.message ?? "Stage manager failed. Check logs.");
+        await event.respond(result.message ?? "Memory work failed. Check logs.");
       }
     } catch (error) {
       this.options.logger.error("Memories command failed", {
@@ -730,7 +790,10 @@ export class RuntimeOrchestrator {
         {
           channelId: input.channelId,
           pickNextWaifuToolOverride: input.server.tools.pickNextWaifu,
-          shortTermMemoryToolOverride: input.server.tools.shortTermMemory
+          shortTermMemoryToolOverride: input.server.tools.shortTermMemory,
+          // /print system_prompt path: no live window; scores on recency+strength
+          contextMessages: undefined,
+          memoryInjectionLimit: input.server.memoryInjectionLimit
         }
       );
       return formatWaifuPromptDebugMessages({
@@ -741,7 +804,7 @@ export class RuntimeOrchestrator {
       });
     }
     if (input.type === "memories") {
-      const content = await this.modelVisibleMemoryBlockForPrint(input.guildId, input.channelId, input.waifu);
+      const content = await this.modelVisibleMemoryBlockForPrint(input.guildId, input.channelId, input.waifu, input.server.memoryInjectionLimit);
       return formatPrintDebugBlock(`Memories (${input.waifu.displayName})`, content);
     }
     return formatPrintDebugBlock(
@@ -753,26 +816,20 @@ export class RuntimeOrchestrator {
   private async modelVisibleMemoryBlockForPrint(
     guildId: string,
     channelId: string,
-    waifu: WaifuConfig
+    waifu: WaifuConfig,
+    memoryInjectionLimit: number
   ): Promise<string> {
-    const now = Date.now();
-    const [store, shortTermStore] = await Promise.all([
-      this.readMemoryStore(),
-      this.readShortTermMemoryStore()
-    ]);
-    const longTermLines = store.memories
-      .filter((memory) => memory.guildId === guildId && memory.waifuId === waifu.id && memory.status === "active")
-      .map((memory) => `- ${memory.content}`);
-    const shortTermLines = shortTermStore.entries
-      .filter((entry) =>
-        entry.guildId === guildId &&
-        entry.channelId === channelId &&
-        entry.waifuId === waifu.id &&
-        Date.parse(entry.expiresAt) > now
-      )
-      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
-      .map((entry) => `- ${entry.content}`);
-    const lines = [...longTermLines, ...shortTermLines];
+    const now = new Date();
+    const store = await this.readMemoryStore();
+    const { lines } = retrieveMemories({
+      records: store.memories,
+      window: [], // /print has no live window; scores on recency+strength
+      guildId,
+      waifuId: waifu.id,
+      channelId,
+      now,
+      limit: memoryInjectionLimit
+    });
     if (lines.length === 0) {
       return "(none)";
     }
@@ -1389,7 +1446,9 @@ export class RuntimeOrchestrator {
               channelId: input.channelId,
               directorNote: directiveText,
               pickNextWaifuToolOverride: input.server.tools.pickNextWaifu,
-              shortTermMemoryToolOverride: effectiveShortTermMemory
+              shortTermMemoryToolOverride: effectiveShortTermMemory,
+              contextMessages: waifuMessages,
+              memoryInjectionLimit: input.server.memoryInjectionLimit
             }
           );
           const allSelfDisplayNames = selfGuildNickname
@@ -1523,7 +1582,7 @@ export class RuntimeOrchestrator {
             currentOutcomeFinalized = true;
           }
           if (result.shortTermMemoryEntries?.length && effectiveShortTermMemory) {
-            await this.recordShortTermMemoryEntries({
+            await this.recordWaifuNotes({
               guildId: input.guildId,
               channelId: input.channelId,
               waifuId: waifu.id,
@@ -1678,8 +1737,8 @@ export class RuntimeOrchestrator {
         return { status: "disabled" };
       }
       const pipeline = await this.pipelineFor(config.modelId);
-      if (!pipeline.decideStageManagerObservations || !pipeline.decideStageManager) {
-        throw new Error(`Model ${config.modelId} does not implement stage-manager decisions.`);
+      if (!pipeline.decideStageManagerObservations) {
+        throw new Error(`Model ${config.modelId} does not implement observer decisions.`);
       }
       const channel = server.channels[channelId];
       const availableWaifus = channel ? await this.listAvailableWaifusForChannel(channel) : [];
@@ -1734,54 +1793,87 @@ export class RuntimeOrchestrator {
         return { status: "no_change" };
       }
 
-      const store = await this.readMemoryStore();
-      const memoryInput = stageManagerMemories(
-        store.memories,
-        guildId,
-        allowedWaifuIds,
-        { observations: allowedObservations }
-      );
-      this.options.logger.info("Stage manager librarian started", {
-        guildId,
-        channelId,
-        modelId: config.modelId,
-        observations: allowedObservations.length,
-        memories: memoryInput.memories.length
-      });
-      const calls = await pipeline.decideStageManager({
-        modelId: config.modelId,
-        messages: [],
-        memories: memoryInput.memories,
-        observations: allowedObservations,
-        availableWaifuIds: allowedWaifuIds,
-        reasoning: config.reasoning
-      });
-      this.options.logger.info("Stage manager librarian finished", {
-        guildId,
-        channelId,
-        calls: calls.length
-      });
-      const result = await this.applyStageManagerCalls(
-        guildId,
-        calls,
-        memoryInput.memoryIdByIndex,
-        allowedWaifuIds
-      );
-      for (const entry of result.historyEntries) {
-        await this.appendStageManagerHistory({
-          ...entry,
-          guildId,
-          channelId,
-          observationCount: allowedObservations.length
+      // Split observations: fast-track (importance >= 4) go directly to the memory store so
+      // critical facts don't wait for the next dream; the rest are queued for the dream pass to
+      // consolidate. Only queued (<4) observations reach the dream, so no fact is added twice.
+      const fastTrackedObservations = allowedObservations.filter((obs) => obs.importance >= 4);
+      const queuedObservations = allowedObservations.filter((obs) => obs.importance < 4);
+
+      const nowTs = nowIso();
+
+      // Append queued observations (importance < 4) to the pending queue
+      if (queuedObservations.length > 0) {
+        await this.options.storage.updateRevisionedJson({
+          resourceKey: "memory:pending",
+          relativePath: "user/memory/pending-observations.json",
+          schema: PendingObservationsFileSchema,
+          fallback: PendingObservationsFileSchema.parse(createEmptyRevisionedFile({ observations: [] })),
+          transform: (current) => {
+            const newPending = queuedObservations.map((obs) => ({
+              id: randomUUID(),
+              guildId,
+              channelId,
+              waifuId: obs.waifuId,
+              content: obs.content,
+              kind: obs.kind,
+              importance: obs.importance,
+              entities: (obs.entities?.length ?? 0) > 0 ? obs.entities : extractEntities(obs.content),
+              createdAt: nowTs
+            }));
+            return { ...current, observations: [...current.observations, ...newPending] };
+          }
         });
       }
+
+      // Fast-track: write importance >= 4 observations directly to the memory store
+      if (fastTrackedObservations.length > 0) {
+        await this.options.storage.updateRevisionedJson({
+          resourceKey: "memories:global",
+          relativePath: "user/memories.json",
+          schema: MemoryStoreSchema,
+          fallback: emptyMemoryStore(),
+          transform: (current) => {
+            const newMemories: MemoryRecord[] = fastTrackedObservations.map((obs) => ({
+              id: randomUUID(),
+              guildId,
+              channelId,
+              waifuId: obs.waifuId,
+              content: obs.content,
+              kind: obs.kind,
+              source: "stage_manager" as const,
+              pinned: false,
+              strength: obs.importance,
+              entities: (obs.entities?.length ?? 0) > 0 ? obs.entities : extractEntities(obs.content),
+              createdAt: nowTs,
+              updatedAt: nowTs,
+              status: "active" as const
+            }));
+            return { ...current, memories: [...current.memories, ...newMemories] };
+          }
+        });
+      }
+
+      // The observer's job ends at the queue and fast-track; the dream pass (its own schedule, or
+      // the manual /memories trigger) drains the queue and consolidates the store.
+      const summary = `queued: ${queuedObservations.length}, fastTracked: ${fastTrackedObservations.length}`;
+      const entry = {
+        id: randomUUID(),
+        guildId,
+        channelId,
+        tool: "no_change" as const,
+        affectedMemoryIds: [] as string[],
+        summary,
+        observationCount: allowedObservations.length,
+        createdAt: nowTs
+      };
+      await this.appendStageManagerHistory(entry);
       void this.sendStageManagerDebugLog({
         guildId,
         channelId,
-        entries: result.historyEntries,
+        entries: [entry],
         observationCount: allowedObservations.length
       });
-      return { status: result.changed ? "updated" : "no_change" };
+      return { status: fastTrackedObservations.length > 0 ? "updated" : "no_change" };
     } catch (error) {
       this.options.logger.error("Stage manager failed", {
         guildId,
@@ -1985,277 +2077,243 @@ export class RuntimeOrchestrator {
     };
   }
 
-  private async applyStageManagerCalls(
-    guildId: string,
-    calls: StageManagerToolCall[],
-    memoryIdByIndex: Map<number, string>,
-    allowedWaifuIds: string[]
-  ): Promise<{
-    changed: boolean;
-    historyEntries: Array<{
-      id: string;
-      tool: "add_memory" | "update_memory" | "archive_memory" | "merge_memories" | "no_change";
-      affectedMemoryIds: string[];
-      summary: string;
-      createdAt: string;
-    }>;
-  }> {
-    const now = nowIso();
-    const historyEntries: Array<{
-      id: string;
-      tool: "add_memory" | "update_memory" | "archive_memory" | "merge_memories" | "no_change";
-      affectedMemoryIds: string[];
-      summary: string;
-      createdAt: string;
-    }> = [];
-    const allowedWaifus = new Set(allowedWaifuIds);
+  // Arm a daily dream timer per known guild. Guild ids come from the on-disk server directory.
+  private async scheduleDreamRuns(): Promise<void> {
+    let guildIds: string[];
+    try {
+      guildIds = await this.listKnownGuildIds();
+    } catch (error) {
+      this.options.logger.warn("Failed to enumerate guilds for dream scheduling", {
+        message: error instanceof Error ? error.message : String(error)
+      });
+      return;
+    }
+    for (const guildId of guildIds) {
+      this.armDreamTimer(guildId);
+    }
+  }
 
-    const requestedChange = calls.some((call) => call.tool !== "no_change");
-    if (!requestedChange) {
-      for (const call of calls) {
-        if (call.tool === "no_change") {
-          historyEntries.push({
-            id: randomUUID(),
-            tool: call.tool,
-            affectedMemoryIds: [],
-            summary: call.reason ?? "No memory changes",
-            createdAt: now
+  private async listKnownGuildIds(): Promise<string[]> {
+    try {
+      const entries = await readdir(path.join(this.options.storage.dataRoot, "user", "servers"), {
+        withFileTypes: true
+      });
+      return entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
+    }
+  }
+
+  // Compute the next 05:00-local fire time (with deterministic per-guild jitter) and re-arm after
+  // each run. If a channel run is active for the guild when the timer fires, defer 15 min up to 8
+  // times, then run anyway. The defer chain reuses the same dreamTimers slot so stop()/pause()
+  // clears it.
+  private armDreamTimer(guildId: string, deferCount = 0): void {
+    const delay = deferCount > 0 ? RuntimeOrchestrator.DREAM_DEFER_DELAY_MS : msUntilNextDreamRun(guildId, new Date());
+    const existing = this.dreamTimers.get(guildId);
+    if (existing) {
+      clearTimeout(existing);
+    }
+    const timer = setTimeout(() => {
+      this.dreamTimers.delete(guildId);
+      const active = this.activeRuns.has(runKey(guildId)) || [...this.activeRuns.values()].some((run) => run.guildId === guildId);
+      if (active && deferCount < RuntimeOrchestrator.DREAM_MAX_DEFERS) {
+        this.armDreamTimer(guildId, deferCount + 1);
+        return;
+      }
+      this.runBackground("Scheduled dream pass failed", { guildId }, async () => {
+        try {
+          await this.startDreamRun(guildId);
+        } finally {
+          // Re-arm for the next day regardless of outcome.
+          this.armDreamTimer(guildId);
+        }
+      });
+    }, delay);
+    if (typeof timer.unref === "function") {
+      timer.unref();
+    }
+    this.dreamTimers.set(guildId, timer);
+  }
+
+  private clearAllDreamTimers(): void {
+    for (const timer of this.dreamTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.dreamTimers.clear();
+  }
+
+  private startDreamRun(guildId: string): Promise<DreamPassResult> {
+    if (this.dreamingGuilds.has(guildId)) {
+      this.options.logger.info("Dream pass already running for guild, skipping duplicate run", { guildId });
+      return Promise.resolve({ status: "already_running", applied: 0, skipped: 0, chunks: 0, message: "Dream pass already running for this guild." });
+    }
+    this.dreamingGuilds.add(guildId);
+    const promise = this.runDreamPass(guildId).finally(() => {
+      this.dreamingGuilds.delete(guildId);
+    });
+    this.activeDreamRuns.add(promise);
+    void promise
+      .finally(() => {
+        this.activeDreamRuns.delete(promise);
+      })
+      .catch((error) => {
+        this.options.logger.error("Dream pass run failed outside handler", {
+          guildId,
+          message: error instanceof Error ? error.message : String(error)
+        });
+      });
+    return promise;
+  }
+
+  // The nightly (or manually triggered) consolidation pass. Reads the store and pending queue,
+  // chunks the active records, and runs decideDream → applyDreamOps per chunk SEQUENTIALLY,
+  // re-reading the store between chunks so per-chunk indices stay valid (max 5 iterations).
+  // Each iteration re-selects chunks from the freshest store, then picks the first chunk whose
+  // stable key has not yet been processed — so mutations from prior iterations cannot shift the
+  // nth position into a chunk we already handled.
+  private async runDreamPass(guildId: string): Promise<DreamPassResult> {
+    const config = await this.readAgentConfig("stage-manager", 80);
+    if (!config.enabled || !config.modelId) {
+      return { status: "disabled", applied: 0, skipped: 0, chunks: 0 };
+    }
+    const pipeline = await this.pipelineFor(config.modelId);
+    // Configured waifus guild-wide: dream "add" ops are re-validated against this set so a
+    // hallucinated owner (possible in the enum-less orphan-observation chunk) never lands.
+    const allowedWaifuIds = (await this.listWaifus()).map((waifu) => waifu.id);
+
+    let totalApplied = 0;
+    let totalSkipped = 0;
+    let chunksProcessed = 0;
+    const MAX_ITERATIONS = 5;
+    const processedKeys = new Set<string>();
+
+    try {
+      for (let iteration = 0; iteration < MAX_ITERATIONS; iteration += 1) {
+        const store = await this.readMemoryStore();
+        const pending = await this.readPendingObservations();
+        const guildMemories = store.memories.filter((memory) => memory.guildId === guildId);
+        const guildObservations = pending.observations.filter((observation) => observation.guildId === guildId);
+        const chunks = selectDreamInput(guildMemories, guildObservations, new Date());
+        const chunk = chunks.find((c) => !processedKeys.has(c.key));
+        if (!chunk) break;
+
+        // Only require the dream capability once there is real work; an empty room needs no call.
+        if (!pipeline.decideDream) {
+          throw new Error(`Model ${config.modelId} does not implement dream decisions.`);
+        }
+        const decideDream = pipeline.decideDream.bind(pipeline);
+
+        this.options.logger.info("Dream pass chunk started", {
+          guildId,
+          modelId: config.modelId,
+          iteration,
+          memories: chunk.inputs.length,
+          observations: chunk.observations.length
+        });
+        const ops = await decideDream({
+          modelId: config.modelId,
+          messages: [],
+          memories: chunk.inputs,
+          observations: chunk.observations,
+          availableWaifuIds: [...new Set(chunk.inputs.map((input) => input.waifuId))],
+          reasoning: config.reasoning
+        });
+        const now = new Date();
+        const result = applyDreamOps(store.memories, ops, chunk.indexMap, { guildId, now, allowedWaifuIds });
+
+        await this.options.storage.updateRevisionedJson({
+          resourceKey: "memories:global",
+          relativePath: "user/memories.json",
+          schema: MemoryStoreSchema,
+          fallback: emptyMemoryStore(),
+          transform: (current) => {
+            // Re-apply against the freshest store so concurrent writers (fast-track, CRUD) are not
+            // clobbered: ops touch only this chunk's records, identified by id.
+            const applied = applyDreamOps(current.memories, ops, chunk.indexMap, { guildId, now, allowedWaifuIds });
+            return { ...current, memories: applied.memories };
+          }
+        });
+
+        // Clear exactly this chunk's consumed observations from the queue.
+        const consumedIds = new Set(chunk.observations.map((observation) => observation.id));
+        if (consumedIds.size > 0) {
+          await this.options.storage.updateRevisionedJson({
+            resourceKey: "memory:pending",
+            relativePath: "user/memory/pending-observations.json",
+            schema: PendingObservationsFileSchema,
+            fallback: PendingObservationsFileSchema.parse(createEmptyRevisionedFile({ observations: [] })),
+            transform: (current) => ({
+              ...current,
+              observations: current.observations.filter((observation) => !consumedIds.has(observation.id))
+            })
           });
         }
+
+        for (const entry of result.historyEntries) {
+          await this.appendStageManagerHistory({
+            ...entry,
+            guildId,
+            observationCount: chunk.observations.length
+          });
+        }
+        void this.sendDreamDebugLog({ guildId, entries: result.historyEntries });
+
+        processedKeys.add(chunk.key);
+        totalApplied += result.applied;
+        totalSkipped += result.skipped;
+        chunksProcessed += 1;
+        this.options.logger.info("Dream pass chunk finished", {
+          guildId,
+          iteration,
+          chunkKey: chunk.key,
+          applied: result.applied,
+          skipped: result.skipped
+        });
       }
-      return { changed: false, historyEntries };
+    } catch (error) {
+      this.options.logger.error("Dream pass failed", {
+        guildId,
+        message: error instanceof Error ? error.message : String(error),
+        details: error instanceof ProviderPipelineError ? summarizeProviderPipelineDetails(error.details) : undefined
+      });
+      return {
+        status: "failed",
+        applied: totalApplied,
+        skipped: totalSkipped,
+        chunks: chunksProcessed,
+        message: error instanceof Error ? error.message : "Dream pass failed."
+      };
     }
 
-    let changed = false;
-    await this.options.storage.updateRevisionedJson({
-      resourceKey: "memories:global",
-      relativePath: "user/memories.json",
-      schema: MemoryStoreSchema,
-      fallback: emptyMemoryStore(),
-      transform: (current) => {
-        let memories = [...current.memories];
-        for (const call of calls) {
-          if (call.tool === "add_memory") {
-            if (!allowedWaifus.has(call.memory.waifuId)) {
-              historyEntries.push({
-                id: randomUUID(),
-                tool: call.tool,
-                affectedMemoryIds: [],
-                summary: `Skipped invalid waifu id ${call.memory.waifuId}`,
-                createdAt: now
-              });
-              continue;
-            }
-            const id = randomUUID();
-            memories.push({
-              id,
-              waifuId: call.memory.waifuId,
-              scope: "guild" as const,
-              guildId,
-              content: call.memory.content,
-              importance: call.memory.importance,
-              permanent: false,
-              sourceMessageIds: [],
-              createdAt: now,
-              updatedAt: now,
-              status: "active"
-            });
-            historyEntries.push({
-              id: randomUUID(),
-              tool: call.tool,
-              affectedMemoryIds: [id],
-              summary: call.memory.content,
-              createdAt: now
-            });
-            changed = true;
-          } else if (call.tool === "update_memory") {
-            if (call.patch.waifuId && !allowedWaifus.has(call.patch.waifuId)) {
-              historyEntries.push({
-                id: randomUUID(),
-                tool: call.tool,
-                affectedMemoryIds: [],
-                summary: `Skipped invalid waifu id ${call.patch.waifuId}`,
-                createdAt: now
-              });
-              continue;
-            }
-            const memoryId = memoryIdByIndex.get(call.memoryIndex);
-            if (!memoryId) {
-              historyEntries.push({
-                id: randomUUID(),
-                tool: call.tool,
-                affectedMemoryIds: [],
-                summary: `Skipped unknown memory index #${call.memoryIndex}`,
-                createdAt: now
-              });
-              continue;
-            }
-            const target = memories.find((memory) => memory.id === memoryId && memory.guildId === guildId);
-            if (!target) {
-              historyEntries.push({
-                id: randomUUID(),
-                tool: call.tool,
-                affectedMemoryIds: [],
-                summary: "Skipped memory outside current guild",
-                createdAt: now
-              });
-              continue;
-            }
-            if (target.permanent) {
-              historyEntries.push({
-                id: randomUUID(),
-                tool: call.tool,
-                affectedMemoryIds: [],
-                summary: "Skipped user-managed permanent memory",
-                createdAt: now
-              });
-              continue;
-            }
-            const updatedContent = call.patch.content ?? target.content;
-            memories = memories.map((memory) => {
-              if (memory.id !== memoryId || memory.guildId !== guildId) {
-                return memory;
-              }
-              return {
-                ...memory,
-                ...call.patch,
-                id: memory.id,
-                scope: "guild" as const,
-                guildId: memory.guildId,
-                createdAt: memory.createdAt,
-                updatedAt: now
-              };
-            });
-            historyEntries.push({
-              id: randomUUID(),
-              tool: call.tool,
-              affectedMemoryIds: [memoryId],
-              summary: `Updated memory: ${updatedContent}`,
-              createdAt: now
-            });
-            changed = true;
-          } else if (call.tool === "archive_memory") {
-            const memoryId = memoryIdByIndex.get(call.memoryIndex);
-            if (!memoryId) {
-              historyEntries.push({
-                id: randomUUID(),
-                tool: call.tool,
-                affectedMemoryIds: [],
-                summary: `Skipped unknown memory index #${call.memoryIndex}`,
-                createdAt: now
-              });
-              continue;
-            }
-            const target = memories.find((memory) => memory.id === memoryId && memory.guildId === guildId);
-            if (!target) {
-              historyEntries.push({
-                id: randomUUID(),
-                tool: call.tool,
-                affectedMemoryIds: [],
-                summary: "Skipped memory outside current guild",
-                createdAt: now
-              });
-              continue;
-            }
-            if (target.permanent) {
-              historyEntries.push({
-                id: randomUUID(),
-                tool: call.tool,
-                affectedMemoryIds: [],
-                summary: "Skipped user-managed permanent memory",
-                createdAt: now
-              });
-              continue;
-            }
-            memories = memories.map((memory) =>
-              memory.id === memoryId && memory.guildId === guildId
-                ? { ...memory, status: "archived" as const, updatedAt: now }
-                : memory
-            );
-            historyEntries.push({
-              id: randomUUID(),
-              tool: call.tool,
-              affectedMemoryIds: [memoryId],
-              summary: `Archived memory: ${target.content}`,
-              createdAt: now
-            });
-            changed = true;
-          } else if (call.tool === "merge_memories") {
-            const id = randomUUID();
-            const sourceMemoryIds = memoryIdsForIndices(call.sourceMemoryIndices, memoryIdByIndex);
-            const source = memories.filter((memory) => memory.guildId === guildId && sourceMemoryIds.includes(memory.id));
-            if (source.length < 2) {
-              historyEntries.push({
-                id: randomUUID(),
-                tool: call.tool,
-                affectedMemoryIds: [],
-                summary: "Skipped merge with unknown or duplicate memory indices",
-                createdAt: now
-              });
-              continue;
-            }
-            if (source.some((memory) => memory.permanent)) {
-              historyEntries.push({
-                id: randomUUID(),
-                tool: call.tool,
-                affectedMemoryIds: [],
-                summary: "Skipped merge containing a user-managed permanent memory",
-                createdAt: now
-              });
-              continue;
-            }
-            if (!allowedWaifus.has(source[0].waifuId)) {
-              historyEntries.push({
-                id: randomUUID(),
-                tool: call.tool,
-                affectedMemoryIds: [],
-                summary: `Skipped invalid waifu id ${source[0].waifuId}`,
-                createdAt: now
-              });
-              continue;
-            }
-            const sourceIds = new Set(source.map((memory) => memory.id));
-            memories = memories
-              .map((memory) =>
-                memory.guildId === guildId && sourceIds.has(memory.id)
-                  ? { ...memory, status: "archived" as const, updatedAt: now }
-                  : memory
-              )
-              .concat({
-                id,
-                waifuId: source[0].waifuId,
-                scope: "guild" as const,
-                guildId,
-                content: call.mergedContent,
-                importance: 3,
-                permanent: false,
-                sourceMessageIds: [...new Set(source.flatMap((memory) => memory.sourceMessageIds))],
-                createdAt: now,
-                updatedAt: now,
-                status: "active"
-              });
-            historyEntries.push({
-              id: randomUUID(),
-              tool: call.tool,
-              affectedMemoryIds: [id, ...source.map((memory) => memory.id)],
-              summary: `Merged memory: ${call.mergedContent}`,
-              createdAt: now
-            });
-            changed = true;
-          } else {
-            historyEntries.push({
-              id: randomUUID(),
-              tool: call.tool,
-              affectedMemoryIds: [],
-              summary: call.reason ?? "No memory changes",
-              createdAt: now
-            });
-          }
-        }
-        return { ...current, memories };
-      }
-    });
-    return { changed, historyEntries };
+    return {
+      status: totalApplied > 0 ? "updated" : "no_change",
+      applied: totalApplied,
+      skipped: totalSkipped,
+      chunks: chunksProcessed
+    };
+  }
+
+  private async readPendingObservations(): Promise<{ observations: PendingObservation[] }> {
+    return this.options.storage.readJson(
+      "user/memory/pending-observations.json",
+      PendingObservationsFileSchema,
+      PendingObservationsFileSchema.parse(createEmptyRevisionedFile({ observations: [] }))
+    );
+  }
+
+  private async sendDreamDebugLog(input: {
+    guildId: string;
+    entries: Array<{ tool: StageManagerDebugEntry["tool"]; summary: string }>;
+  }): Promise<void> {
+    const route = await this.readDebugRouteForGuild(input.guildId);
+    if (!route) return;
+    await this.sendDebugLogForChannel(
+      input.guildId,
+      route.sourceChannelId,
+      formatDreamDebugLog(input)
+    );
   }
 
   private async scheduleRetrigger(guildId: string, channelId: string, seconds: number): Promise<void> {
@@ -2581,14 +2639,6 @@ export class RuntimeOrchestrator {
     return this.options.storage.readJson("user/memories.json", MemoryStoreSchema, emptyMemoryStore());
   }
 
-  private async readShortTermMemoryStore(): Promise<ShortTermMemoryStore> {
-    return this.options.storage.readJson(
-      "user/short-term-memories.json",
-      ShortTermMemoryStoreSchema,
-      emptyShortTermMemoryStore()
-    );
-  }
-
   private async noteActiveChatParticipant(
     guildId: string,
     channelId: string,
@@ -2669,39 +2719,41 @@ export class RuntimeOrchestrator {
     );
   }
 
-  private async recordShortTermMemoryEntries(input: {
+  private async recordWaifuNotes(input: {
     guildId: string;
     channelId: string;
     waifuId: string;
     entries: string[];
   }): Promise<void> {
     if (input.entries.length === 0) return;
-    const capped = input.entries.slice(0, SHORT_TERM_MEMORY_MAX_PER_REPLY);
+    const capped = input.entries.slice(0, NOTE_MAX_PER_REPLY);
     const now = Date.now();
     const createdAt = new Date(now).toISOString();
-    const expiresAt = new Date(now + SHORT_TERM_MEMORY_LIFESPAN_MS).toISOString();
+    const expiresAt = new Date(now + NOTE_LIFESPAN_MS).toISOString();
     await this.options.storage.updateRevisionedJson({
-      resourceKey: "short-term-memories:global",
-      relativePath: "user/short-term-memories.json",
-      schema: ShortTermMemoryStoreSchema,
-      fallback: emptyShortTermMemoryStore(),
+      resourceKey: "memories:global",
+      relativePath: "user/memories.json",
+      schema: MemoryStoreSchema,
+      fallback: emptyMemoryStore(),
       transform: (current) => {
-        const surviving = current.entries.filter((entry) => Date.parse(entry.expiresAt) > now);
-        // Dedup against entries already stored for this waifu in this channel —
-        // model frequently re-records the same fact on a later turn.
+        // Dedup against notes already stored for this waifu in this channel —
+        // the model frequently re-records the same fact on a later turn.
         const existingForScope = new Set(
-          surviving
+          current.memories
             .filter(
-              (entry) =>
-                entry.guildId === input.guildId &&
-                entry.channelId === input.channelId &&
-                entry.waifuId === input.waifuId
+              (memory) =>
+                memory.source === "waifu_tool" &&
+                memory.status === "active" &&
+                memory.guildId === input.guildId &&
+                memory.channelId === input.channelId &&
+                memory.waifuId === input.waifuId &&
+                (!memory.expiresAt || Date.parse(memory.expiresAt) > now)
             )
-            .map((entry) => normalizeShortTermContent(entry.content))
+            .map((memory) => normalizeNoteContent(memory.content))
         );
-        const additions: ShortTermMemory[] = [];
+        const additions: MemoryRecord[] = [];
         for (const content of capped) {
-          const key = normalizeShortTermContent(content);
+          const key = normalizeNoteContent(content);
           if (!key || existingForScope.has(key)) continue;
           existingForScope.add(key);
           additions.push({
@@ -2710,11 +2762,18 @@ export class RuntimeOrchestrator {
             channelId: input.channelId,
             waifuId: input.waifuId,
             content,
+            kind: "context",
+            source: "waifu_tool",
+            pinned: false,
+            strength: WAIFU_NOTE_STRENGTH,
+            entities: extractEntities(content),
+            expiresAt,
             createdAt,
-            expiresAt
+            updatedAt: createdAt,
+            status: "active"
           });
         }
-        return { ...current, entries: [...surviving, ...additions] };
+        return { ...current, memories: [...current.memories, ...additions] };
       }
     });
   }
@@ -2728,19 +2787,20 @@ export class RuntimeOrchestrator {
       directorNote?: string;
       pickNextWaifuToolOverride?: boolean;
       shortTermMemoryToolOverride?: boolean;
+      contextMessages?: ContextMessage[];
+      memoryInjectionLimit: number;
     }
   ): Promise<{ systemPrompt: string; midSystemBlock: string; trailingSystemBlock: string; selfGuildNickname: string | undefined }> {
     const pickNextWaifuToolActive = options.pickNextWaifuToolOverride ?? false;
     const shortTermMemoryToolActive =
       options.shortTermMemoryToolOverride ?? true;
-    const [store, emojis, shortTermStore, activeChatParticipants, members] = await Promise.all([
+    const [store, emojis, activeChatParticipants, members] = await Promise.all([
       this.readMemoryStore(),
       this.options.storage.readJson(
         path.join("user", "servers", guildId, "emojis.json"),
         GuildEmojisFileSchema,
         GuildEmojisFileSchema.parse(createEmptyRevisionedFile({ guildId, emojis: [] }))
       ),
-      this.readShortTermMemoryStore(),
       this.readActiveChatParticipants(guildId, options.channelId),
       this.options.storage.readJson(
         path.join("user", "servers", guildId, "members.json"),
@@ -2748,22 +2808,50 @@ export class RuntimeOrchestrator {
         GuildMembersFileSchema.parse(createEmptyRevisionedFile({ guildId, members: [] }))
       )
     ]);
-    const longTermLines = store.memories
-      .filter((memory) => memory.guildId === guildId && memory.waifuId === waifu.id && memory.status === "active")
-      .map((memory) => `- ${memory.content}`);
-    const channelId = options.channelId;
-    const now = Date.now();
-    const shortTermLines = channelId
-      ? shortTermStore.entries
-          .filter((entry) =>
-            entry.guildId === guildId &&
-            entry.channelId === channelId &&
-            entry.waifuId === waifu.id &&
-            Date.parse(entry.expiresAt) > now
+    const now = new Date();
+    const retrieval = retrieveMemories({
+      records: store.memories,
+      window: options.contextMessages ?? [],
+      guildId,
+      waifuId: waifu.id,
+      channelId: options.channelId,
+      now,
+      limit: options.memoryInjectionLimit
+    });
+    const memoryLines = retrieval.lines;
+    // Stamp lastRetrievedAt on selected non-pinned records, best-effort, fire-and-forget.
+    // Skip records stamped within the last hour to avoid noisy writes.
+    const ONE_HOUR_MS = 60 * 60 * 1000;
+    const nowMs = now.getTime();
+    const idsToStamp = retrieval.selected
+      .filter(
+        (r) =>
+          !r.lastRetrievedAt ||
+          nowMs - Date.parse(r.lastRetrievedAt) > ONE_HOUR_MS
+      )
+      .map((r) => r.id);
+    if (idsToStamp.length > 0) {
+      const stampNow = now.toISOString();
+      const stampSet = new Set(idsToStamp);
+      this.options.storage.updateRevisionedJson({
+        resourceKey: "memories:global",
+        relativePath: "user/memories.json",
+        schema: MemoryStoreSchema,
+        fallback: emptyMemoryStore(),
+        transform: (current) => ({
+          ...current,
+          memories: current.memories.map((r) =>
+            stampSet.has(r.id) ? { ...r, lastRetrievedAt: stampNow } : r
           )
-          .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
-          .map((entry) => `- ${entry.content}`)
-      : [];
+        })
+      }).catch((err: unknown) => {
+        this.options.logger.warn("Failed to stamp lastRetrievedAt on retrieved memories", {
+          guildId,
+          waifuId: waifu.id,
+          message: err instanceof Error ? err.message : String(err)
+        });
+      });
+    }
     const emojiList = emojis.emojis
       .filter((emoji) => emoji.available)
       .map(modelVisibleEmojiToken)
@@ -2808,7 +2896,7 @@ export class RuntimeOrchestrator {
         availableWaifus
       ),
       emojiList,
-      memoryLines: [...longTermLines, ...shortTermLines],
+      memoryLines,
       currentlyDoing: currentlyDoingForWaifu(waifu, new Date()),
       directorNote: options.directorNote?.trim() || undefined,
       personaDigest: waifu.personaDigest
@@ -2868,7 +2956,7 @@ export class RuntimeOrchestrator {
       : "No waifus are currently enabled for this channel.";
 
     const pausePlanning =
-      "When you choose no_reply, retriggerAfterSeconds is a planned pause before YOU re-check the room — any new human message wakes you regardless, so long pauses cost nothing. wakePlan is one sentence on what you intend at wake; the runtime shows it back to you when the timer fires. Use the whole range: 100–300s when you expect a beat to need a nudge soon; 600–1800s for a cooling room with a planned revival; 3600s+ when you are mostly waiting for humans. Repeated quiet checks must back off to longer pauses.";
+      "When you choose no_reply, retriggerAfterSeconds is a planned pause before YOU re-check the room — any new human message wakes you regardless, so long pauses cost nothing. wakePlan is one sentence on what you intend at wake; the runtime shows it back to you when the timer fires. A pivot plan should name the new topic, and when the wake comes you execute it with a change_topic directive — a plan without a directive usually dissolves into the old topic. Use the whole range: 100–300s when you expect a beat to need a nudge soon; 600–1800s for a cooling room with a planned revival; 3600s+ when you are mostly waiting for humans. Repeated quiet checks must back off to longer pauses.";
 
     const task = replyRequired
       ? `${DEFAULT_ORCHESTRATOR_PROMPT}\n\n${manualRunReplyRequiredInstruction()}`
@@ -3087,6 +3175,18 @@ export class RuntimeOrchestrator {
       OrchestratorDebugConfigFileSchema.parse(createEmptyRevisionedFile({ routes: {} }))
     );
     return config.routes[sourceChannelId];
+  }
+
+  // The dream pass is guild-scoped (no originating channel), so its debug log goes to any route
+  // configured for the guild: prefer one whose sourceGuildId matches, else the first route.
+  private async readDebugRouteForGuild(guildId: string) {
+    const config = await this.options.storage.readJson(
+      "user/orchestrator/debug.json",
+      OrchestratorDebugConfigFileSchema,
+      OrchestratorDebugConfigFileSchema.parse(createEmptyRevisionedFile({ routes: {} }))
+    );
+    const routes = Object.values(config.routes);
+    return routes.find((route) => route.sourceGuildId === guildId) ?? routes[0];
   }
 
   private async sendOrchestratorDebugLog(input: {
@@ -3453,111 +3553,49 @@ function emptyMemoryStore(): MemoryStore {
   return MemoryStoreSchema.parse(createEmptyRevisionedFile({ memories: [] }));
 }
 
-function emptyShortTermMemoryStore(): ShortTermMemoryStore {
-  return ShortTermMemoryStoreSchema.parse(createEmptyRevisionedFile({ entries: [] }));
-}
+// Waifu notes (formerly the short-term store) survive a weekend so a Friday plan is still around
+// Monday; the dream pass promotes the keepers.
+const NOTE_LIFESPAN_MS = 72 * 60 * 60 * 1000;
+const NOTE_MAX_PER_REPLY = 5;
 
-const SHORT_TERM_MEMORY_LIFESPAN_MS = 24 * 60 * 60 * 1000;
-const SHORT_TERM_MEMORY_MAX_PER_REPLY = 5;
-
-function normalizeShortTermContent(content: string): string {
+function normalizeNoteContent(content: string): string {
   return content.trim().toLowerCase().replace(/\s+/g, " ").replace(/[.!?]+$/, "");
 }
 
-const STAGE_MANAGER_MEMORY_BUDGET = 80;
 
-function stageManagerMemories(
-  memories: WaifuMemory[],
-  guildId: string,
-  allowedWaifuIds: string[],
-  options?: { observations?: StageManagerObservation[]; budget?: number }
-): {
-  memories: StageManagerMemory[];
-  memoryIdByIndex: Map<number, string>;
-} {
-  const allowedWaifus = new Set(allowedWaifuIds);
-  const allActive = memories.filter((memory) =>
-    memory.guildId === guildId &&
-    memory.status === "active" &&
-    !memory.permanent &&
-    allowedWaifus.has(memory.waifuId)
-  );
-  const activeMemories = pruneMemoriesForObservations(allActive, options?.observations, options?.budget ?? STAGE_MANAGER_MEMORY_BUDGET);
-  const memoryIdByIndex = new Map<number, string>();
-  return {
-    memories: activeMemories.map((memory, index) => {
-      const memoryIndex = index + 1;
-      memoryIdByIndex.set(memoryIndex, memory.id);
-      return {
-        memoryIndex,
-        waifuId: memory.waifuId,
-        content: memory.content,
-        importance: memory.importance
-      };
-    }),
-    memoryIdByIndex
-  };
-}
-
-function memoryIdsForIndices(indices: number[], memoryIdByIndex: Map<number, string>): string[] {
-  const memoryIds: string[] = [];
-  for (const index of new Set(indices)) {
-    const memoryId = memoryIdByIndex.get(index);
-    if (!memoryId) return [];
-    memoryIds.push(memoryId);
+// Next DREAM_HOUR_LOCAL fire time for a guild's dream pass, with deterministic ±15 min jitter.
+function msUntilNextDreamRun(guildId: string, now: Date): number {
+  const jitterMinutes = (guildHash(guildId) % 30) - 15;
+  const next = new Date(now);
+  next.setHours(DREAM_HOUR_LOCAL, 0, 0, 0);
+  next.setMinutes(next.getMinutes() + jitterMinutes);
+  if (next.getTime() <= now.getTime()) {
+    next.setDate(next.getDate() + 1);
   }
-  return memoryIds;
+  return Math.max(0, next.getTime() - now.getTime());
 }
 
-const STAGE_MANAGER_STOPWORDS = new Set([
-  "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
-  "and", "or", "but", "if", "of", "to", "in", "on", "for", "with", "at", "by", "from",
-  "that", "this", "these", "those", "it", "its", "as", "into", "about",
-  "i", "you", "he", "she", "they", "we", "them", "his", "her", "their",
-  "do", "does", "did", "have", "has", "had", "will", "would", "should", "could", "can",
-  "not", "no", "yes", "so", "than", "then", "very", "just", "also", "too"
-]);
-
-function memoryTokenSet(text: string): Set<string> {
-  const tokens = text
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, " ")
-    .split(/\s+/)
-    .filter((token) => token.length >= 3 && !STAGE_MANAGER_STOPWORDS.has(token));
-  return new Set(tokens);
-}
-
-function pruneMemoriesForObservations(
-  memories: WaifuMemory[],
-  observations: StageManagerObservation[] | undefined,
-  budget: number
-): WaifuMemory[] {
-  if (!observations || observations.length === 0) {
-    return capByImportanceThenRecency(memories, budget);
+// Fold the observer (stage-manager) run and the dream pass into a single result for the manual
+// /memories trigger. Status reflects whether either step changed the store.
+function combineStageAndDream(observer: StageManagerRunResult, dream: DreamPassResult): StageManagerRunResult {
+  const observerChanged = observer.status === "updated";
+  const dreamChanged = dream.status === "updated";
+  const failed = observer.status === "failed" || dream.status === "failed";
+  const observerNote = observer.status === "updated"
+    ? "observer fast-tracked and queued observations"
+    : observer.status === "no_change"
+      ? "observer found nothing new"
+      : observer.message ?? observer.status;
+  const dreamNote = dream.status === "failed"
+    ? dream.message ?? "dream pass failed"
+    : dream.status === "already_running"
+      ? dream.message ?? "dream pass already running"
+      : `dream pass applied ${dream.applied}, skipped ${dream.skipped} across ${dream.chunks} chunk${dream.chunks === 1 ? "" : "s"}`;
+  const message = `Observer + dream pass: ${observerNote}; ${dreamNote}.`;
+  if (failed) {
+    return { status: "failed", message };
   }
-  const observationWaifus = new Set(observations.map((o) => o.waifuId));
-  const observationTokens = observations.flatMap((o) => Array.from(memoryTokenSet(o.content)));
-  const tokenSet = new Set(observationTokens);
-  const selected = memories.filter((memory) => {
-    if (observationWaifus.has(memory.waifuId)) return true;
-    if (tokenSet.size === 0) return false;
-    const memoryTokens = memoryTokenSet(memory.content);
-    for (const token of memoryTokens) {
-      if (tokenSet.has(token)) return true;
-    }
-    return false;
-  });
-  return capByImportanceThenRecency(selected, budget);
-}
-
-function capByImportanceThenRecency(memories: WaifuMemory[], budget: number): WaifuMemory[] {
-  if (memories.length <= budget) return memories;
-  return [...memories]
-    .sort((a, b) => {
-      if (b.importance !== a.importance) return b.importance - a.importance;
-      return (b.updatedAt ?? "").localeCompare(a.updatedAt ?? "");
-    })
-    .slice(0, budget);
+  return { status: observerChanged || dreamChanged ? "updated" : "no_change", message };
 }
 
 function buildWaifuToolUseInstructions(
@@ -3906,6 +3944,23 @@ function formatStageManagerDebugLog(input: {
   return lines.join("\n");
 }
 
+function formatDreamDebugLog(input: {
+  guildId: string;
+  entries: Array<{ tool: StageManagerDebugEntry["tool"]; summary: string }>;
+}): string {
+  const lines = [`[dream debug] guild=${input.guildId}`];
+  if (input.entries.length === 0 || input.entries.every((entry) => entry.tool === "no_change")) {
+    lines.push("Memory changes: none");
+  } else {
+    lines.push("Memory changes:");
+  }
+  const entries = input.entries.length > 0 ? input.entries : [{ tool: "no_change" as const, summary: "No memory changes" }];
+  for (const entry of entries) {
+    lines.push(`- ${stageManagerToolLabel(entry.tool)}: ${clipDebugText(entry.summary || "No details")}`);
+  }
+  return lines.join("\n");
+}
+
 function waifuDebugName(waifu: WaifuConfig): string {
   const display = waifu.displayName || waifu.name || waifu.id;
   return display === waifu.id ? waifu.id : `${display} (${waifu.id})`;
@@ -4092,9 +4147,9 @@ const DEFAULT_ORCHESTRATOR_PROMPT = [
   "",
   "no_reply is a normal, frequent choice. Real group chats are mostly silence. If the beat has landed, or another bot message would add noise, choose no_reply.",
   "",
-  "The cast has its own life. When humans are active, weave them in; when they are not, the waifus pursue their own threads — do not keep steering them back to absent users.",
+  "The cast has its own life. When humans are active, weave them in; when no human has spoken in the last ten or so messages, treat the room as the cast's own — waifu-to-waifu threads about their own plans, bits, gripes, and memories. Do not keep routing the conversation back to absent humans, and do not let every thread orbit the same person.",
   "",
-  "directive is a short GOAL for one waifu's next message, never content or wording. Default is null; her persona handles normal flow. The runtime rate-limits directives — they are for steering moments: breaking a loop, landing a new named topic, pulling a named quiet person back in, closing a beat. When a runtime notice says a loop is forming, that is the moment to use one.",
+  "directive is a short GOAL for one waifu's next message, never content or wording. Default is null; her persona handles normal flow. But an unused directive budget helps nobody: when the chat keeps orbiting one person or one topic, spend it — change_topic with a NAMED topic is the strongest move you have. When a runtime notice says a loop is forming, that is the moment. When your own wakePlan said you would pivot, execute it with a change_topic directive rather than hoping a waifu pivots on her own.",
   "",
   `delaySeconds is a realistic reading/typing delay (0–${MAX_WAIFU_DELAY_SECONDS}); it defaults to 0.`,
   "",

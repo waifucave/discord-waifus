@@ -13,6 +13,7 @@ import { Logger, createLogger } from "../backend/logger.js";
 import { RuntimeState } from "../backend/runtime.js";
 import { RuntimeOrchestrator } from "../orchestration/runtime.js";
 import { clearOcrArtifacts } from "../orchestration/ocr.js";
+import { extractEntities } from "../orchestration/memoryEntities.js";
 import { getModel, listModels, listProviders } from "../providers/catalog.js";
 import { createModelPipeline } from "../providers/pipelines.js";
 import type { ModelPipeline } from "../providers/types.js";
@@ -30,11 +31,10 @@ import {
   GuildRoleCacheEntry,
   GuildRolesFile,
   GuildRolesFileSchema,
+  MemoryRecord,
   MemoryStore,
   MemoryStoreSchema,
-  ShortTermMemory,
-  ShortTermMemoryStore,
-  ShortTermMemoryStoreSchema,
+  MemoryKindSchema,
   OrchestratorHistoryFile,
   OrchestratorHistoryFileSchema,
   ProviderCredentialsFile,
@@ -48,7 +48,6 @@ import {
   StageManagerHistoryFileSchema,
   WaifuConfig,
   WaifuConfigSchema,
-  WaifuMemory,
   createEmptyRevisionedFile
 } from "../shared/schemas/domain.js";
 import { AppConfigSchema } from "../shared/schemas/config.js";
@@ -111,29 +110,16 @@ const CreateMemoryBodySchema = z.object({
   revision: z.number().int().nonnegative().optional(),
   waifuId: z.string().min(1),
   guildId: z.string().min(1),
-  scope: z.literal("guild").optional(),
   content: z.string().min(1),
-  importance: z.union([
-    z.literal(1),
-    z.literal(2),
-    z.literal(3),
-    z.literal(4),
-    z.literal(5)
-  ]),
-  permanent: z.boolean().default(false),
-  sourceMessageIds: z.array(z.string()).default([])
+  // User-created memories are pinned by default (per design), but the dashboard can override.
+  strength: z.number().min(0).max(5).optional(),
+  pinned: z.boolean().optional(),
+  kind: MemoryKindSchema.optional()
 });
 
 const UpdateMemoryBodySchema = CreateMemoryBodySchema.partial().extend({
   revision: z.number().int().nonnegative().optional(),
-  permanent: z.boolean().optional(),
   status: z.enum(["active", "archived"]).optional()
-});
-
-const UpdateShortTermMemoryBodySchema = z.object({
-  revision: z.number().int().nonnegative().optional(),
-  content: z.string().min(1).optional(),
-  waifuId: z.string().min(1).optional()
 });
 
 const AgentConfigBodySchema = AgentConfigSchema.partial().extend({
@@ -578,14 +564,16 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
           {
             id: randomUUID(),
             waifuId: body.waifuId,
-            scope: "guild" as const,
             guildId: body.guildId,
             content: body.content,
-            importance: body.importance,
-            permanent: body.permanent,
+            kind: body.kind ?? "fact",
+            source: "user" as const,
+            // User-created memories are pinned by default (only the user manages them).
+            pinned: body.pinned ?? true,
+            strength: body.strength ?? 5,
+            entities: extractEntities(body.content),
             createdAt: now,
             updatedAt: now,
-            sourceMessageIds: body.sourceMessageIds,
             status: "active" as const
           }
         ]
@@ -624,49 +612,6 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
       transform: (current) => ({
         ...current,
         memories: current.memories.filter((memory) => memory.id !== memoryId)
-      })
-    });
-  });
-
-  app.get("/api/short-term-memories", async () => {
-    const store = await readShortTermMemoryStore(storage);
-    const now = Date.now();
-    return {
-      ...store,
-      entries: store.entries.filter((entry) => Date.parse(entry.expiresAt) > now)
-    };
-  });
-
-  app.put("/api/short-term-memories/:entryId", async (request) => {
-    const { entryId } = parseIdParam(request.params, "entryId");
-    const body = UpdateShortTermMemoryBodySchema.parse(request.body);
-    requireRevision(request, body);
-    return storage.updateRevisionedJson({
-      resourceKey: "short-term-memories:global",
-      relativePath: "user/short-term-memories.json",
-      schema: ShortTermMemoryStoreSchema,
-      fallback: emptyShortTermMemoryStore(),
-      expectedRevision: expectedRevision(request, body),
-      transform: (current) => updateShortTermMemoryOrThrow(current, entryId, body)
-    });
-  });
-
-  app.delete("/api/short-term-memories/:entryId", async (request) => {
-    const { entryId } = parseIdParam(request.params, "entryId");
-    const body = z.object({ revision: z.number().int().nonnegative().optional() }).optional().parse(request.body);
-    const revision = expectedRevision(request, body);
-    if (revision === undefined) {
-      throw preconditionRequired("DELETE /api/short-term-memories/:entryId requires revision or If-Match.");
-    }
-    return storage.updateRevisionedJson({
-      resourceKey: "short-term-memories:global",
-      relativePath: "user/short-term-memories.json",
-      schema: ShortTermMemoryStoreSchema,
-      fallback: emptyShortTermMemoryStore(),
-      expectedRevision: revision,
-      transform: (current) => ({
-        ...current,
-        entries: current.entries.filter((entry) => entry.id !== entryId)
       })
     });
   });
@@ -1052,44 +997,6 @@ function emptyMemoryStore(): MemoryStore {
   return MemoryStoreSchema.parse(createEmptyRevisionedFile({ memories: [] }));
 }
 
-async function readShortTermMemoryStore(storage: StorageService): Promise<ShortTermMemoryStore> {
-  return storage.readJson(
-    "user/short-term-memories.json",
-    ShortTermMemoryStoreSchema,
-    emptyShortTermMemoryStore()
-  );
-}
-
-function emptyShortTermMemoryStore(): ShortTermMemoryStore {
-  return ShortTermMemoryStoreSchema.parse(createEmptyRevisionedFile({ entries: [] }));
-}
-
-function updateShortTermMemoryOrThrow(
-  current: ShortTermMemoryStore,
-  entryId: string,
-  patch: z.infer<typeof UpdateShortTermMemoryBodySchema>
-): ShortTermMemoryStore {
-  let found = false;
-  const entries = current.entries.map((entry): ShortTermMemory => {
-    if (entry.id !== entryId) {
-      return entry;
-    }
-    found = true;
-    const { revision: _revision, ...editable } = patch;
-    return {
-      ...entry,
-      ...editable
-    };
-  });
-  if (!found) {
-    throw notFound(`Short-term memory ${entryId} was not found.`);
-  }
-  return {
-    ...current,
-    entries
-  };
-}
-
 function updateMemoryOrThrow(
   current: MemoryStore,
   memoryId: string,
@@ -1097,18 +1004,21 @@ function updateMemoryOrThrow(
 ): MemoryStore {
   let found = false;
   const now = nowIso();
-  const memories = current.memories.map((memory): WaifuMemory => {
+  const memories = current.memories.map((memory): MemoryRecord => {
     if (memory.id !== memoryId) {
       return memory;
     }
     found = true;
-    const { revision: _revision, scope: _scope, ...editable } = patch;
-    return {
+    const { revision: _revision, ...editable } = patch;
+    const next: MemoryRecord = {
       ...memory,
       ...editable,
-      scope: "guild",
       updatedAt: now
     };
+    if (editable.content !== undefined) {
+      next.entities = extractEntities(editable.content);
+    }
+    return next;
   });
   if (!found) {
     throw notFound(`Memory ${memoryId} was not found.`);

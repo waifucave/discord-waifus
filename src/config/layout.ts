@@ -20,6 +20,7 @@ export const DATA_LAYOUT_DIRS = [
   "app/tmp/ocr",
   "app/tmp/swift-module-cache",
   "user",
+  "user/memory",
   "user/waifus",
   "user/orchestrator",
   "user/stage-manager",

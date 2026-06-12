@@ -10,6 +10,7 @@ type QueryRole =
   | "waifu"
   | "stage_manager_observer"
   | "stage_manager_librarian"
+  | "dream"
   | "reviewer";
 
 type CapturedQuery = {
@@ -36,6 +37,7 @@ const ROLE_LABEL: Record<QueryRole, string> = {
   waifu: "waifu",
   stage_manager_observer: "stage mgr · observer",
   stage_manager_librarian: "stage mgr · librarian",
+  dream: "dream",
   reviewer: "reviewer"
 };
 
@@ -44,6 +46,7 @@ const ROLE_TONE: Record<QueryRole, "ok" | "info" | "warn"> = {
   waifu: "ok",
   stage_manager_observer: "info",
   stage_manager_librarian: "warn",
+  dream: "info",
   reviewer: "warn"
 };
 
@@ -140,6 +143,7 @@ export function QueriesView() {
           <option value="waifu">Waifu</option>
           <option value="stage_manager_observer">Stage mgr · observer</option>
           <option value="stage_manager_librarian">Stage mgr · librarian</option>
+          <option value="dream">Dream</option>
           <option value="reviewer">Reviewer</option>
         </select>
         <Pill tone={paused ? "warn" : "ok"} dot>

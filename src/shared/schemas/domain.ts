@@ -286,6 +286,7 @@ export const ServerConfigSchema = RevisionedRecordSchema.extend({
       stageManager: z.number().int().min(1).max(100).default(80)
     })
     .default({ orchestrator: 20, waifu: 50, stageManager: 80 }),
+  memoryInjectionLimit: z.number().int().min(1).max(50).default(12),
   tools: ServerToolSettingsSchema,
   channels: z.record(
     z.string(),
@@ -364,57 +365,59 @@ export const GuildRolesFileSchema = RevisionedRecordSchema.extend({
 });
 export type GuildRolesFile = z.infer<typeof GuildRolesFileSchema>;
 
-export const WaifuMemorySchema = z
-  .object({
-    id: z.string().min(1),
-    waifuId: z.string().min(1),
-    scope: z.literal("guild"),
-    guildId: z.string().min(1).optional(),
-    content: z.string().min(1),
-    importance: z.union([
-      z.literal(1),
-      z.literal(2),
-      z.literal(3),
-      z.literal(4),
-      z.literal(5)
-    ]),
-    permanent: z.boolean().default(false),
-    createdAt: IsoDateStringSchema,
-    updatedAt: IsoDateStringSchema,
-    sourceMessageIds: z.array(z.string()),
-    status: z.enum(["active", "archived"])
-  })
-  .superRefine((memory, ctx) => {
-    if (memory.status === "active" && !memory.guildId) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["guildId"],
-        message: "Active memories must be assigned to a guild."
-      });
-    }
-  });
-export type WaifuMemory = z.infer<typeof WaifuMemorySchema>;
+// W3 unified memory record. Replaces the former WaifuMemory/ShortTermMemory split: a
+// "short-term memory" is now just a record with source "waifu_tool", kind "context", and an
+// expiresAt. Old persisted records (importance/permanent/scope/sourceMessageIds) are migrated by
+// shape detection in runMigrations BEFORE any read can default these fields — see migrateMemoryStoreV2.
+export const MEMORY_KINDS = ["fact", "preference", "relationship", "event", "commitment", "context"] as const;
+export const MemoryKindSchema = z.enum(MEMORY_KINDS);
+export type MemoryKind = z.infer<typeof MemoryKindSchema>;
+
+export const MEMORY_SOURCES = ["waifu_tool", "stage_manager", "dream", "user"] as const;
+export const MemorySourceSchema = z.enum(MEMORY_SOURCES);
+export type MemorySource = z.infer<typeof MemorySourceSchema>;
+
+export const MemoryRecordSchema = z.object({
+  id: z.string().min(1),
+  guildId: z.string().min(1),
+  channelId: z.string().optional(), // origin channel; retrieval boost, NOT a visibility filter
+  waifuId: z.string().min(1),
+  content: z.string().min(1),
+  kind: MemoryKindSchema.default("fact"),
+  source: MemorySourceSchema.default("stage_manager"),
+  pinned: z.boolean().default(false), // user-managed; never auto-edited, always injected
+  strength: z.number().min(0).max(5).default(3),
+  entities: z.array(z.string()).default([]),
+  expiresAt: IsoDateStringSchema.optional(), // hard TTL (waifu notes); absent = durable
+  createdAt: IsoDateStringSchema,
+  updatedAt: IsoDateStringSchema,
+  lastRetrievedAt: IsoDateStringSchema.optional(),
+  status: z.enum(["active", "archived"]).default("active")
+});
+export type MemoryRecord = z.infer<typeof MemoryRecordSchema>;
 
 export const MemoryStoreSchema = RevisionedRecordSchema.extend({
-  memories: z.array(WaifuMemorySchema)
+  memories: z.array(MemoryRecordSchema)
 });
 export type MemoryStore = z.infer<typeof MemoryStoreSchema>;
 
-export const ShortTermMemorySchema = z.object({
+export const PendingObservationSchema = z.object({
   id: z.string().min(1),
   guildId: z.string().min(1),
   channelId: z.string().min(1),
   waifuId: z.string().min(1),
   content: z.string().min(1),
-  createdAt: IsoDateStringSchema,
-  expiresAt: IsoDateStringSchema
+  kind: MemoryKindSchema,
+  importance: z.number().int().min(1).max(5),
+  entities: z.array(z.string()).default([]),
+  createdAt: IsoDateStringSchema
 });
-export type ShortTermMemory = z.infer<typeof ShortTermMemorySchema>;
+export type PendingObservation = z.infer<typeof PendingObservationSchema>;
 
-export const ShortTermMemoryStoreSchema = RevisionedRecordSchema.extend({
-  entries: z.array(ShortTermMemorySchema)
+export const PendingObservationsFileSchema = RevisionedRecordSchema.extend({
+  observations: z.array(PendingObservationSchema)
 });
-export type ShortTermMemoryStore = z.infer<typeof ShortTermMemoryStoreSchema>;
+export type PendingObservationsFile = z.infer<typeof PendingObservationsFileSchema>;
 
 export const OrchestratorDirectiveSchema = z.object({
   intent: z.string().min(1),

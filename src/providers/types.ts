@@ -1,9 +1,8 @@
-import { OrchestratorDecisionHistoryEntry, ProviderId, ReasoningConfig } from "../shared/schemas/domain.js";
+import { MemoryKind, OrchestratorDecisionHistoryEntry, PendingObservation, ProviderId, ReasoningConfig } from "../shared/schemas/domain.js";
 import { ContextMessage, OrchestratorWakeMarker } from "../orchestration/context.js";
 import { OrchestratorDecision } from "../orchestration/decisions.js";
-import { StageManagerObservation, StageManagerToolCall } from "../orchestration/stageManager.js";
+import { DreamOp, StageManagerObservation } from "../orchestration/stageManager.js";
 import { ReviewerDecision } from "../orchestration/reviewer.js";
-import { WaifuMemory } from "../shared/schemas/domain.js";
 
 export type ModelRole = "orchestrator" | "waifu" | "stage_manager" | "reviewer";
 
@@ -66,17 +65,23 @@ export type WaifuGenerationRequest = ProviderRequest & {
   selfAuthorIds?: string[];
 };
 
-export type StageManagerMemory = {
+// One memory record presented to the dream pass. memoryIndex is 1-based WITHIN the current
+// chunk; the runtime maps it back to the stored record id when applying ops.
+export type DreamMemoryInput = {
   memoryIndex: number;
   waifuId: string;
   content: string;
-  importance: WaifuMemory["importance"];
+  kind: MemoryKind;
+  strength: number;
+  ageDays: number;
+  daysSinceRetrieved: number;
+  expiresInHours?: number; // notes only
 };
 
-export type StageManagerRequest = ProviderRequest & {
-  memories: StageManagerMemory[];
+export type DreamRequest = ProviderRequest & {
+  memories: DreamMemoryInput[];
+  observations: PendingObservation[];
   availableWaifuIds?: string[];
-  observations?: StageManagerObservation[];
 };
 
 export type StageManagerObserveRequest = ProviderRequest & {
@@ -101,7 +106,7 @@ export interface ModelPipeline {
   generateWaifu(request: WaifuGenerationRequest): Promise<WaifuGenerationResult>;
   decideOrchestrator?(request: ProviderRequest): Promise<OrchestratorDecision>;
   decideStageManagerObservations?(request: StageManagerObserveRequest): Promise<StageManagerObservation[]>;
-  decideStageManager?(request: StageManagerRequest): Promise<StageManagerToolCall[]>;
+  decideDream?(request: DreamRequest): Promise<DreamOp[]>;
   decideReviewer?(request: ProviderRequest & { message: string }): Promise<ReviewerDecision>;
   generatePersonaDigest?(request: PersonaDigestRequest): Promise<PersonaDigest>;
 }
