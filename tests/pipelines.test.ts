@@ -2889,6 +2889,8 @@ describe("generatePersonaDigest (OpenAI-chat, end-to-end)", () => {
     const tools = body.tools as Array<{ function: { name: string; parameters: unknown } }>;
     expect(tools).toHaveLength(1);
     expect(tools[0].function.name).toBe("set_persona_digest");
+    expect(body.tool_choice).toEqual({ type: "function", function: { name: "set_persona_digest" } });
+    expect(body.stream).toBe(false);
     const messages = body.messages as Array<{ role: string; content: string }>;
     const userMsg = messages.find((m) => m.role === "user");
     expect(userMsg?.content).toBe("A bubbly, energetic character who loves memes.");

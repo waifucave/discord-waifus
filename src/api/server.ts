@@ -15,6 +15,7 @@ import { RuntimeOrchestrator } from "../orchestration/runtime.js";
 import { clearOcrArtifacts } from "../orchestration/ocr.js";
 import { getModel, listModels, listProviders } from "../providers/catalog.js";
 import { createModelPipeline } from "../providers/pipelines.js";
+import type { ModelPipeline } from "../providers/types.js";
 import {
   AgentConfig,
   AgentConfigSchema,
@@ -419,26 +420,13 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   app.post("/api/waifus/:waifuId/digest", async (request) => {
     const { waifuId } = parseIdParam(request.params, "waifuId");
     const waifu = await readWaifu(storage, waifuId);
-    const stageManagerConfig = await readAgentConfig(storage, "stage-manager");
-    const modelId = stageManagerConfig.modelId;
-    if (!modelId) {
-      throw conflict("Stage-manager has no model configured.");
+    const setup = await resolvePersonaDigestPipeline(storage);
+    if (!setup.ok) {
+      throw conflict(setup.reason);
     }
-    const credentials = await readProviderCredentials(storage);
-    const model = getModel(modelId);
-    if (!model) {
-      throw conflict("Stage-manager model is not recognized.");
-    }
-    const providerCreds = credentials.providers[model.providerId];
-    if (!providerCreds?.apiKey) {
-      throw conflict(`Stage-manager provider "${model.providerId}" has no API key configured.`);
-    }
-    const pipeline = createModelPipeline(modelId, { apiKey: providerCreds.apiKey });
-    if (!pipeline.generatePersonaDigest) {
-      throw conflict("Stage-manager model does not support persona digest generation.");
-    }
+    const { pipeline, modelId } = setup;
     const personaHash = createHash("sha256").update(waifu.persona).digest("hex");
-    const digest = await pipeline.generatePersonaDigest({
+    const digest = await pipeline.generatePersonaDigest!({
       modelId,
       messages: [],
       personaText: waifu.persona
@@ -1607,27 +1595,49 @@ function sendSseSnapshot(
   });
 }
 
+type DigestPipeline = ModelPipeline & { generatePersonaDigest: NonNullable<ModelPipeline["generatePersonaDigest"]> };
+type DigestSetup =
+  | { ok: true; pipeline: DigestPipeline; modelId: string }
+  | { ok: false; reason: string };
+
+async function resolvePersonaDigestPipeline(storage: StorageService): Promise<DigestSetup> {
+  const stageManagerConfig = await readAgentConfig(storage, "stage-manager");
+  const modelId = stageManagerConfig.modelId;
+  if (!modelId) {
+    return { ok: false, reason: "Stage-manager has no model configured." };
+  }
+  const credentials = await readProviderCredentials(storage);
+  const model = getModel(modelId);
+  if (!model) {
+    return { ok: false, reason: "Stage-manager model is not recognized." };
+  }
+  const providerCreds = credentials.providers[model.providerId];
+  if (!providerCreds?.apiKey) {
+    return { ok: false, reason: `Stage-manager provider "${model.providerId}" has no API key configured.` };
+  }
+  const pipeline = createModelPipeline(modelId, { apiKey: providerCreds.apiKey });
+  if (!pipeline.generatePersonaDigest) {
+    return { ok: false, reason: "Stage-manager model does not support persona digest generation." };
+  }
+  return { ok: true, pipeline: pipeline as DigestPipeline, modelId };
+}
+
 async function generatePersonaDigestIfStale(
   storage: StorageService,
   waifu: WaifuConfig,
   logger: Logger
 ): Promise<void> {
+  let resolvedModelId: string | undefined;
   try {
     const personaHash = createHash("sha256").update(waifu.persona).digest("hex");
     if (waifu.personaDigest?.personaHash === personaHash) {
       // Digest is up to date; nothing to do.
       return;
     }
-    const stageManagerConfig = await readAgentConfig(storage, "stage-manager");
-    const modelId = stageManagerConfig.modelId;
-    if (!modelId) return;
-    const credentials = await readProviderCredentials(storage);
-    const model = getModel(modelId);
-    if (!model) return;
-    const providerCreds = credentials.providers[model.providerId];
-    if (!providerCreds?.apiKey) return;
-    const pipeline = createModelPipeline(modelId, { apiKey: providerCreds.apiKey });
-    if (!pipeline.generatePersonaDigest) return;
+    const setup = await resolvePersonaDigestPipeline(storage);
+    if (!setup.ok) return;
+    const { pipeline, modelId } = setup;
+    resolvedModelId = modelId;
     const digest = await pipeline.generatePersonaDigest({
       modelId,
       messages: [],
@@ -1646,6 +1656,7 @@ async function generatePersonaDigestIfStale(
   } catch (error) {
     logger.warn("Persona digest generation failed", {
       waifuId: waifu.id,
+      modelId: resolvedModelId,
       error: error instanceof Error ? error.message : String(error)
     });
   }

@@ -796,6 +796,7 @@ describe("Gateway registry proxies (/api/models, /api/providers)", () => {
         url: "/api/waifus/digest-409/digest"
       });
       expect(digest.statusCode).toBe(409);
+      expect(digest.json().message).toBe("Stage-manager has no model configured.");
     } finally {
       await app.close();
     }
