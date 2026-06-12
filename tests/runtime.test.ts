@@ -6993,6 +6993,74 @@ describe("RuntimeOrchestrator", () => {
     // The second orchestrator turn saw the loop notice in its trailing prompt.
     expect(trailingPrompts[1]).toContain("runtime_notice");
   });
+
+  it("W2: strips a guild-nickname self-prefix from the reply and sends the cleaned content", async () => {
+    // Aria is configured as displayName "Aria" but her prior message in context has
+    // displayName "K的小娇妻" (her guild nickname). The pipeline returns a prefixed reply
+    // mimicking that nickname. The runtime must strip it rather than drop the whole message,
+    // and must pass selfAuthorIds containing her botId on the generateWaifu request.
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+
+    // Context: one user message, then Aria's own prior message under her guild nickname
+    discord.contexts = [
+      [
+        contextMessage("m1", "user", "Kevin", "hey"),
+        {
+          ...contextMessage("m2", "waifu", "Aria", "hi Kevin", undefined, { authorId: "aria-bot" }),
+          displayName: "K的小娇妻"
+        }
+      ],
+      [
+        contextMessage("m1", "user", "Kevin", "hey"),
+        {
+          ...contextMessage("m2", "waifu", "Aria", "hi Kevin", undefined, { authorId: "aria-bot" }),
+          displayName: "K的小娇妻"
+        }
+      ]
+    ];
+
+    await seedRuntimeConfig(storage);
+    await seedWaifu(storage, "aria", "Aria", "aria-bot", "playful");
+    await enableWaifus(storage, ["aria"]);
+
+    let capturedRequest: WaifuGenerationRequest | undefined;
+    const pipeline: ModelPipeline = {
+      async decideOrchestrator() {
+        return {
+          action: "reply",
+          respondingWaifus: [{ waifuId: "aria", delaySeconds: 0 }],
+          reasoning: "Aria should reply."
+        };
+      },
+      async generateWaifu(request) {
+        capturedRequest = request;
+        // Model emits with guild-nickname prefix — the bug scenario
+        return { content: "K的小娇妻: my actual reply" };
+      }
+    };
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 1,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    // The prefix must be stripped — not dropped entirely
+    expect(discord.sent).toHaveLength(1);
+    expect(discord.sent[0].content).toBe("my actual reply");
+    // selfAuthorIds must include Aria's botId
+    expect(capturedRequest?.selfAuthorIds).toContain("aria-bot");
+  });
 });
 
 async function enableShortTermMemory(storage: StorageService, waifuId: string) {

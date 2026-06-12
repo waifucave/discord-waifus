@@ -956,7 +956,27 @@ describe("provider-native decision tools", () => {
     expect(body).not.toHaveProperty("stop");
   });
 
-  it("sends every waifu context message as assistant to OpenAI-compatible chat", async () => {
+  it("sends only the self waifu's messages as assistant to OpenAI-compatible chat", async () => {
+    mockFetch({ choices: [{ message: { content: "ok" } }] });
+
+    const pipeline = createModelPipeline("grok-4.3", { apiKey: "xai-test" });
+    await pipeline.generateWaifu({
+      modelId: "grok-4.3",
+      messages: contextWithWaifus,
+      systemPrompt: "stay in character",
+      selfAuthorIds: ["yuki-bot"]
+    });
+
+    const query = recentQueries().at(-1);
+    const messages = query?.payload.messages as Array<{ role: string; content: string }>;
+    // Kevin=user, Yuki=assistant(self), Mika=user
+    expect(messages.slice(1).map((message) => message.role)).toEqual(["user", "assistant", "user"]);
+    // Yuki's turn is raw content (no prefix), Mika's turn has name prefix
+    expect(messages[2].content).toBe("tea is serious business");
+    expect(messages[3].content).toContain("Mika:");
+  });
+
+  it("sends every waifu context message as user when no selfAuthorIds given (OpenAI chat)", async () => {
     mockFetch({ choices: [{ message: { content: "ok" } }] });
 
     const pipeline = createModelPipeline("grok-4.3", { apiKey: "xai-test" });
@@ -968,12 +988,31 @@ describe("provider-native decision tools", () => {
 
     const query = recentQueries().at(-1);
     const messages = query?.payload.messages as Array<{ role: string; content: string }>;
-    expect(messages.slice(1).map((message) => message.role)).toEqual(["user", "assistant", "assistant"]);
+    expect(messages.slice(1).map((message) => message.role)).toEqual(["user", "user", "user"]);
     expect(messages[2].content).toContain("Yuki:");
     expect(messages[3].content).toContain("Mika:");
   });
 
-  it("sends every waifu context message as assistant to OpenAI Responses", async () => {
+  it("sends only the self waifu's messages as assistant to OpenAI Responses", async () => {
+    mockFetch({ output_text: "ok" });
+
+    const pipeline = createModelPipeline("gpt-4o-mini", { apiKey: "openai-test" });
+    await pipeline.generateWaifu({
+      modelId: "gpt-4o-mini",
+      messages: contextWithWaifus,
+      systemPrompt: "stay in character",
+      selfAuthorIds: ["yuki-bot"]
+    });
+
+    const query = recentQueries().at(-1);
+    const input = query?.payload.input as Array<{ role: string; content: string }>;
+    // Kevin=user, Yuki=assistant(self), Mika=user
+    expect(input.map((message) => message.role)).toEqual(["user", "assistant", "user"]);
+    expect(input[1].content).toBe("tea is serious business");
+    expect(input[2].content).toContain("Mika:");
+  });
+
+  it("sends every waifu context message as user when no selfAuthorIds given (OpenAI Responses)", async () => {
     mockFetch({ output_text: "ok" });
 
     const pipeline = createModelPipeline("gpt-4o-mini", { apiKey: "openai-test" });
@@ -985,7 +1024,7 @@ describe("provider-native decision tools", () => {
 
     const query = recentQueries().at(-1);
     const input = query?.payload.input as Array<{ role: string; content: string }>;
-    expect(input.map((message) => message.role)).toEqual(["user", "assistant", "assistant"]);
+    expect(input.map((message) => message.role)).toEqual(["user", "user", "user"]);
     expect(input[1].content).toContain("Yuki:");
     expect(input[2].content).toContain("Mika:");
   });
@@ -1192,7 +1231,26 @@ describe("provider-native decision tools", () => {
     expect(query?.payload.stop_sequences).toEqual(["\nAria:", "\nRiko:"]);
   });
 
-  it("sends every waifu context message as assistant to Anthropic Messages", async () => {
+  it("sends only the self waifu's messages as assistant to Anthropic Messages", async () => {
+    mockFetch({ content: [{ type: "text", text: "ok" }] });
+
+    const pipeline = createModelPipeline("claude-haiku-4-5-20251001", { apiKey: "anthropic-test" });
+    await pipeline.generateWaifu({
+      modelId: "claude-haiku-4-5-20251001",
+      messages: contextWithWaifus,
+      systemPrompt: "stay in character",
+      selfAuthorIds: ["yuki-bot"]
+    });
+
+    const query = recentQueries().at(-1);
+    const messages = query?.payload.messages as Array<{ role: string; content: string }>;
+    // Kevin=user, Yuki=assistant(self), Mika=user
+    expect(messages.map((message) => message.role)).toEqual(["user", "assistant", "user"]);
+    expect(messages[1].content).toBe("tea is serious business");
+    expect(messages[2].content).toContain("Mika:");
+  });
+
+  it("sends every waifu context message as user when no selfAuthorIds given (Anthropic)", async () => {
     mockFetch({ content: [{ type: "text", text: "ok" }] });
 
     const pipeline = createModelPipeline("claude-haiku-4-5-20251001", { apiKey: "anthropic-test" });
@@ -1204,7 +1262,7 @@ describe("provider-native decision tools", () => {
 
     const query = recentQueries().at(-1);
     const messages = query?.payload.messages as Array<{ role: string; content: string }>;
-    expect(messages.map((message) => message.role)).toEqual(["user", "assistant", "assistant"]);
+    expect(messages.map((message) => message.role)).toEqual(["user", "user", "user"]);
     expect(messages[1].content).toContain("Yuki:");
     expect(messages[2].content).toContain("Mika:");
   });
@@ -1484,7 +1542,7 @@ describe("trailing system message payloads", () => {
     });
   });
 
-  it("Anthropic: sends trailingSystemBlock as the trailing user message", async () => {
+  it("Anthropic: sends trailingSystemBlock wrapped in system_note as the trailing user message", async () => {
     mockFetch({ content: [{ type: "text", text: "ok" }] });
 
     const pipeline = createModelPipeline("claude-haiku-4-5-20251001", { apiKey: "anthropic-test" });
@@ -1499,11 +1557,11 @@ describe("trailing system message payloads", () => {
     const messages = query?.payload.messages as Array<{ role: string; content: string }>;
     expect(messages.at(-1)).toEqual({
       role: "user",
-      content: trailingWithSceneDirection
+      content: `<system_note>\n${trailingWithSceneDirection}\n</system_note>`
     });
   });
 
-  it("Anthropic: appends retryUserMessage after the trailing user message", async () => {
+  it("Anthropic: appends retryUserMessage after the trailing user message (retryUserMessage is not wrapped)", async () => {
     mockFetch({ content: [{ type: "text", text: "ok" }] });
 
     const pipeline = createModelPipeline("claude-haiku-4-5-20251001", { apiKey: "anthropic-test" });
@@ -1518,7 +1576,7 @@ describe("trailing system message payloads", () => {
     const messages = lastFetchJsonBody().messages as Array<{ role: string; content: string }>;
     expect(messages.at(-2)).toEqual({
       role: "user",
-      content: trailingWithSceneDirection
+      content: `<system_note>\n${trailingWithSceneDirection}\n</system_note>`
     });
     expect(messages.at(-1)).toEqual({
       role: "user",
@@ -1526,7 +1584,7 @@ describe("trailing system message payloads", () => {
     });
   });
 
-  it("Google: appends retryUserMessage as the final user content", async () => {
+  it("Google: appends retryUserMessage as the final user content (retryUserMessage is not wrapped)", async () => {
     mockFetch({ candidates: [{ content: { parts: [{ text: "ok" }] } }] });
 
     const pipeline = createModelPipeline("gemini-2.5-flash-lite", { apiKey: "g-test" });
@@ -1544,7 +1602,7 @@ describe("trailing system message payloads", () => {
     }>;
     expect(contents.at(-2)).toEqual({
       role: "user",
-      parts: [{ text: trailingWithoutSceneDirection }]
+      parts: [{ text: `<system_note>\n${trailingWithoutSceneDirection}\n</system_note>` }]
     });
     expect(contents.at(-1)).toEqual({
       role: "user",
@@ -1615,7 +1673,7 @@ describe("mid-system block injection", () => {
     expect(input.at(-1)).toEqual({ role: "system", content: trailingPayload });
   });
 
-  it("Anthropic: inserts midSystemBlock as a mid-conversation user message at contextLen - 2", async () => {
+  it("Anthropic: inserts midSystemBlock wrapped in system_note as a mid-conversation user message at contextLen - 2", async () => {
     mockFetch({ content: [{ type: "text", text: "ok" }] });
 
     const pipeline = createModelPipeline("claude-haiku-4-5-20251001", { apiKey: "anthropic-test" });
@@ -1631,11 +1689,11 @@ describe("mid-system block injection", () => {
     const messages = query?.payload.messages as Array<{ role: string; content: unknown }>;
     // [chat[0], mid, chat[1], chat[2], trailing] — system field holds leading, length 5
     expect(messages).toHaveLength(5);
-    expect(messages.at(-4)).toEqual({ role: "user", content: midPayload });
-    expect(messages.at(-1)).toEqual({ role: "user", content: trailingPayload });
+    expect(messages.at(-4)).toEqual({ role: "user", content: `<system_note>\n${midPayload}\n</system_note>` });
+    expect(messages.at(-1)).toEqual({ role: "user", content: `<system_note>\n${trailingPayload}\n</system_note>` });
   });
 
-  it("Google: inserts midSystemBlock as a googleUserTurn at contextLen - 2", async () => {
+  it("Google: inserts midSystemBlock wrapped in system_note as a googleUserTurn at contextLen - 2", async () => {
     mockFetch({ candidates: [{ content: { parts: [{ text: "ok" }] } }] });
 
     const pipeline = createModelPipeline("gemini-2.5-flash-lite", { apiKey: "g-test" });
@@ -1651,8 +1709,8 @@ describe("mid-system block injection", () => {
     const contents = query?.payload.contents as Array<{ role: string; parts: Array<{ text: string }> }>;
     // [chat[0], mid, chat[1], chat[2], trailing] — systemInstruction holds leading, length 5
     expect(contents).toHaveLength(5);
-    expect(contents.at(-4)).toEqual({ role: "user", parts: [{ text: midPayload }] });
-    expect(contents.at(-1)).toEqual({ role: "user", parts: [{ text: trailingPayload }] });
+    expect(contents.at(-4)).toEqual({ role: "user", parts: [{ text: `<system_note>\n${midPayload}\n</system_note>` }] });
+    expect(contents.at(-1)).toEqual({ role: "user", parts: [{ text: `<system_note>\n${trailingPayload}\n</system_note>` }] });
   });
 });
 
@@ -2060,7 +2118,28 @@ describe("Google AI Studio (Gemini) pipeline", () => {
     });
   });
 
-  it("maps waifu turns to role 'model' and puts the system prompt under systemInstruction", async () => {
+  it("maps only the self waifu's turns to role 'model' and puts the system prompt under systemInstruction", async () => {
+    mockFetch({ candidates: [{ content: { parts: [{ text: "ok" }] } }] });
+
+    const pipeline = createModelPipeline("gemini-2.5-flash", { apiKey: "g-test" });
+    await pipeline.generateWaifu({
+      modelId: "gemini-2.5-flash",
+      messages: contextWithWaifus,
+      systemPrompt: "stay in character",
+      selfAuthorIds: ["yuki-bot"]
+    });
+
+    const query = recentQueries().at(-1);
+    expect(query?.payload.systemInstruction).toEqual({ parts: [{ text: "stay in character" }] });
+    const contents = query?.payload.contents as Array<{ role: string; parts: Array<{ text: string }> }>;
+    // Kevin=user, Yuki=model(self), Mika=user
+    expect(contents.map((turn) => turn.role)).toEqual(["user", "model", "user"]);
+    // Yuki's turn is raw content, Mika has name prefix
+    expect(contents[1]?.parts[0].text).toBe("tea is serious business");
+    expect(contents.at(-1)?.parts[0].text).toContain("Mika:");
+  });
+
+  it("maps every waifu turn to role 'user' when no selfAuthorIds given (Google)", async () => {
     mockFetch({ candidates: [{ content: { parts: [{ text: "ok" }] } }] });
 
     const pipeline = createModelPipeline("gemini-2.5-flash", { apiKey: "g-test" });
@@ -2071,9 +2150,8 @@ describe("Google AI Studio (Gemini) pipeline", () => {
     });
 
     const query = recentQueries().at(-1);
-    expect(query?.payload.systemInstruction).toEqual({ parts: [{ text: "stay in character" }] });
     const contents = query?.payload.contents as Array<{ role: string; parts: Array<{ text: string }> }>;
-    expect(contents.map((turn) => turn.role)).toEqual(["user", "model", "model"]);
+    expect(contents.map((turn) => turn.role)).toEqual(["user", "user", "user"]);
     expect(contents.at(-1)?.parts[0].text).toContain("Mika:");
   });
 
@@ -2739,6 +2817,38 @@ describe("orchestrator wire format (W1)", () => {
     const lastContent = nonTrailingUser[nonTrailingUser.length - 1];
     expect(lastContent).toContain("[wake:");
     expect(lastContent).toContain("have Lumi answer");
+  });
+});
+
+describe("per-waifu context roles (W2)", () => {
+  const messages: ContextMessage[] = [
+    { id: "m1", channelId: "c1", authorKind: "user", authorId: "u1", name: "Kevin", displayName: "Kevin", content: "hey everyone", timestamp: "2026-06-12T10:00:00Z", reactions: [] },
+    { id: "m2", channelId: "c1", authorKind: "waifu", authorId: "bot-aria", name: "aria", displayName: "K的小娇妻", content: "hi Kevin", timestamp: "2026-06-12T10:00:05Z", reactions: [], replyTo: { messageId: "m1", authorName: "Kevin", contentPreview: "hey everyone" } },
+    { id: "m3", channelId: "c1", authorKind: "waifu", authorId: "bot-riko", name: "riko", displayName: "Riko", content: "yo", timestamp: "2026-06-12T10:00:10Z", reactions: [] }
+  ];
+
+  it("marks only the self waifu's messages as assistant", () => {
+    const result = __testables.contextToChatMessagesForWaifu(messages, false, ["bot-aria"]);
+    expect(result.map((m: any) => m.role)).toEqual(["user", "assistant", "user"]);
+  });
+
+  it("renders self messages as raw content without prefix, quote, or tags", () => {
+    const result = __testables.contextToChatMessagesForWaifu(messages, false, ["bot-aria"]);
+    expect(result[1].content).toBe("hi Kevin");
+    expect(result[2].content).toBe("Riko: yo");
+  });
+
+  it("treats other waifus as user turns with name framing", () => {
+    const result = __testables.contextToChatMessagesForWaifu(messages, false, ["bot-riko"]);
+    expect(result.map((m: any) => m.role)).toEqual(["user", "user", "assistant"]);
+    expect(result[1].content).toContain("K的小娇妻: hi Kevin");
+    expect(result[1].content).toContain("replying to > Kevin");
+    expect(result[2].content).toBe("yo");
+  });
+
+  it("falls back to user role for waifu messages when no selfAuthorIds given", () => {
+    const result = __testables.contextToChatMessagesForWaifu(messages, false, []);
+    expect(result.map((m: any) => m.role)).toEqual(["user", "user", "user"]);
   });
 });
 

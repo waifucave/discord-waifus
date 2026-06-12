@@ -60,6 +60,9 @@ export type WaifuGenerationRequest = ProviderRequest & {
   pickNextWaifuToolEnabled?: boolean;
   shortTermMemoryToolEnabled?: boolean;
   stopSequences?: string[];
+  // Discord author ids that are THIS waifu (bot user id + application id when known).
+  // Only these messages become assistant turns; everything else is a user turn.
+  selfAuthorIds?: string[];
 };
 
 export type StageManagerMemory = {

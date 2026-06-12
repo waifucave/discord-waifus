@@ -1370,6 +1370,14 @@ export class RuntimeOrchestrator {
             activeChatParticipants
           );
           const waifuStopSequences = participantDisplayNames.map((name) => `\n${name}:`);
+          const selfAuthorIds = [waifu.botId];
+          const selfDisplayNames = dedupeSelfNames([
+            waifu.displayName,
+            waifu.name,
+            ...waifuMessages
+              .filter((message) => message.authorId === waifu.botId)
+              .flatMap((message) => [message.displayName, message.name])
+          ]);
           const directiveText = directiveTextForWaifu(responder.directive);
           const effectiveShortTermMemory = input.server.tools.shortTermMemory && !suppressMemoryToolThisDecision;
           const { systemPrompt, midSystemBlock, trailingSystemBlock } = await this.buildWaifuPromptParts(
@@ -1405,6 +1413,7 @@ export class RuntimeOrchestrator {
                   midSystemBlock,
                   trailingSystemBlock,
                   retryUserMessage: attempt === 2 ? `${waifu.displayName}:` : undefined,
+                  selfAuthorIds,
                   availableWaifuIds: nextWaifuIds,
                   pickNextWaifuToolEnabled: input.server.tools.pickNextWaifu,
                   shortTermMemoryToolEnabled: effectiveShortTermMemory,
@@ -1420,7 +1429,7 @@ export class RuntimeOrchestrator {
               }
             })();
             const metadataStrippedContent = stripLeakedContextHeader(result.content, {
-              senderDisplayName: waifu.displayName,
+              selfDisplayNames,
               participantDisplayNames,
               stripImpersonation: false
             });
@@ -1428,7 +1437,7 @@ export class RuntimeOrchestrator {
             quoteExtraction = extractReplyQuote(metadataStrippedContent, waifuMessages);
             const replyQuoteExtracted = quoteExtraction.cleanedContent !== metadataStrippedContent;
             strippedContent = stripLeakedContextHeader(quoteExtraction.cleanedContent, {
-              senderDisplayName: waifu.displayName,
+              selfDisplayNames,
               participantDisplayNames
             });
             const impersonationStripped = strippedContent !== quoteExtraction.cleanedContent;
@@ -3686,6 +3695,20 @@ function replyTargetForFreshContext(
   );
   if (!target || target === latestMessage) return undefined;
   return replyToMessageId;
+}
+
+function dedupeSelfNames(values: Array<string | undefined>): string[] {
+  const seen = new Set<string>();
+  const names: string[] = [];
+  for (const value of values) {
+    const trimmed = value?.trim();
+    if (!trimmed) continue;
+    const key = trimmed.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    names.push(trimmed);
+  }
+  return names;
 }
 
 function waifuParticipantDisplayNames(

@@ -715,3 +715,29 @@ describe("stripLeakedContextHeader — clip audit pins", () => {
     );
   });
 });
+
+describe("self-alias stripping (W2)", () => {
+  it("strips a self-nickname prefix and keeps the content", () => {
+    const result = stripLeakedContextHeader("K的小娇妻: bro really pulled up with a whole gif 💀", {
+      selfDisplayNames: ["Aria", "K的小娇妻"],
+      participantDisplayNames: ["Aria", "K的小娇妻", "Riko", "Kevin"]
+    });
+    expect(result).toBe("bro really pulled up with a whole gif 💀");
+  });
+
+  it("still drops a genuine other-speaker line", () => {
+    const result = stripLeakedContextHeader("Riko: not my line\nactual reply", {
+      selfDisplayNames: ["Aria", "K的小娇妻"],
+      participantDisplayNames: ["Aria", "K的小娇妻", "Riko", "Kevin"]
+    });
+    expect(result).toBe("actual reply");
+  });
+
+  it("keeps senderDisplayName working as a single-alias equivalent", () => {
+    const result = stripLeakedContextHeader("Aria: hey", {
+      senderDisplayName: "Aria",
+      participantDisplayNames: ["Aria", "Riko"]
+    });
+    expect(result).toBe("hey");
+  });
+});

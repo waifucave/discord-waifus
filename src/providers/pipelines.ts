@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { AttachmentImage, ContextMessage, formatOrchestratorMessageBlock, formatTimestamp, formatWaifuContextBlock, OrchestratorWakeMarker } from "../orchestration/context.js";
+import { AttachmentImage, ContextMessage, formatOrchestratorMessageBlock, formatSelfWaifuContent, formatTimestamp, formatWaifuContextBlock, OrchestratorWakeMarker } from "../orchestration/context.js";
 import {
   OrchestratorActionSchema,
   OrchestratorDecision,
@@ -84,7 +84,7 @@ class OpenAiCompatibleChatPipeline implements ModelPipeline {
         messages: openAiChatMessagesForModel(this.model, [
           { role: "system", content: request.systemPrompt },
           ...injectMemoriesIntoChatContext(
-            contextToChatMessagesForWaifu(request.messages, this.model.supportsImageInput),
+            contextToChatMessagesForWaifu(request.messages, this.model.supportsImageInput, request.selfAuthorIds ?? []),
             request.midSystemBlock ? { role: "system", content: request.midSystemBlock } : undefined
           ),
           ...(request.trailingSystemBlock ? [{ role: "system", content: request.trailingSystemBlock }] : []),
@@ -242,7 +242,7 @@ class OpenAiResponsesPipeline implements ModelPipeline {
         instructions: request.systemPrompt,
         input: [
           ...injectMemoriesIntoChatContext(
-            contextToResponsesInputForWaifu(request.messages, this.model.supportsImageInput),
+            contextToResponsesInputForWaifu(request.messages, this.model.supportsImageInput, request.selfAuthorIds ?? []),
             request.midSystemBlock ? { role: "system", content: request.midSystemBlock } : undefined
           ),
           ...(request.trailingSystemBlock ? [{ role: "system", content: request.trailingSystemBlock }] : []),
@@ -387,10 +387,10 @@ class AnthropicMessagesPipeline implements ModelPipeline {
         system: request.systemPrompt,
         messages: [
           ...injectMemoriesIntoChatContext(
-            contextToAnthropicMessagesForWaifu(request.messages, this.model.supportsImageInput),
-            request.midSystemBlock ? { role: "user" as const, content: request.midSystemBlock } : undefined
+            contextToAnthropicMessagesForWaifu(request.messages, this.model.supportsImageInput, request.selfAuthorIds ?? []),
+            request.midSystemBlock ? { role: "user" as const, content: systemNoteTurn(request.midSystemBlock) } : undefined
           ),
-          ...(request.trailingSystemBlock ? [{ role: "user" as const, content: request.trailingSystemBlock }] : []),
+          ...(request.trailingSystemBlock ? [{ role: "user" as const, content: systemNoteTurn(request.trailingSystemBlock) }] : []),
           ...(request.retryUserMessage ? [{ role: "user" as const, content: request.retryUserMessage }] : [])
         ],
         ...anthropicSamplingPayload(
@@ -521,14 +521,15 @@ class GoogleGenerativeLanguagePipeline implements ModelPipeline {
     validateMaxOutputTokens(this.model, request.maxOutputTokens);
     const contextContents = await contextToGoogleMessagesForWaifu(
       request.messages,
-      this.model.supportsImageInput
+      this.model.supportsImageInput,
+      request.selfAuthorIds ?? []
     );
     const contents = [
       ...injectMemoriesIntoChatContext(
         contextContents,
-        request.midSystemBlock ? googleUserTurn(request.midSystemBlock) : undefined
+        request.midSystemBlock ? googleUserTurn(systemNoteTurn(request.midSystemBlock)) : undefined
       ),
-      ...(request.trailingSystemBlock ? [googleUserTurn(request.trailingSystemBlock)] : []),
+      ...(request.trailingSystemBlock ? [googleUserTurn(systemNoteTurn(request.trailingSystemBlock))] : []),
       ...(request.retryUserMessage ? [googleUserTurn(request.retryUserMessage)] : [])
     ];
     const result = await postJsonAndExtractText<WaifuGenerationResult>({
@@ -1030,10 +1031,10 @@ function buildGoogleOrchestratorContents(input: OrchestratorQueryInput): Array<R
   return contents;
 }
 
-function contextToChatMessagesForWaifu(messages: ContextMessage[], includeImages: boolean) {
+function contextToChatMessagesForWaifu(messages: ContextMessage[], includeImages: boolean, selfAuthorIds: string[] = []) {
   return messages.map((message) => {
-    const role = roleForWaifuContext(message);
-    const text = formatWaifuContextBlock(message);
+    const role = roleForWaifuContext(message, selfAuthorIds);
+    const text = role === "assistant" ? formatSelfWaifuContent(message) : formatWaifuContextBlock(message);
     const imageBlocks = includeImages && role === "user" ? chatImageBlocks(message) : [];
     return {
       role,
@@ -1058,10 +1059,10 @@ function chatImageBlocks(message: ContextMessage) {
   }));
 }
 
-function contextToResponsesInputForWaifu(messages: ContextMessage[], includeImages: boolean) {
+function contextToResponsesInputForWaifu(messages: ContextMessage[], includeImages: boolean, selfAuthorIds: string[] = []) {
   return messages.map((message) => {
-    const role = roleForWaifuContext(message);
-    const text = formatWaifuContextBlock(message);
+    const role = roleForWaifuContext(message, selfAuthorIds);
+    const text = role === "assistant" ? formatSelfWaifuContent(message) : formatWaifuContextBlock(message);
     const imageBlocks = includeImages && role === "user" ? responsesImageBlocks(message) : [];
     return {
       role,
@@ -1077,10 +1078,10 @@ function responsesImageBlocks(message: ContextMessage) {
   }));
 }
 
-function contextToAnthropicMessagesForWaifu(messages: ContextMessage[], includeImages: boolean) {
+function contextToAnthropicMessagesForWaifu(messages: ContextMessage[], includeImages: boolean, selfAuthorIds: string[] = []) {
   return messages.map((message) => {
-    const role = roleForWaifuContext(message);
-    const text = formatWaifuContextBlock(message);
+    const role = roleForWaifuContext(message, selfAuthorIds);
+    const text = role === "assistant" ? formatSelfWaifuContent(message) : formatWaifuContextBlock(message);
     const imageBlocks = includeImages && role === "user" ? anthropicImageBlocks(message) : [];
     return {
       role,
@@ -1096,8 +1097,10 @@ function anthropicImageBlocks(message: ContextMessage) {
   }));
 }
 
-function roleForWaifuContext(message: ContextMessage): "assistant" | "user" {
-  return message.authorKind === "waifu" ? "assistant" : "user";
+function roleForWaifuContext(message: ContextMessage, selfAuthorIds: string[]): "assistant" | "user" {
+  return message.authorKind === "waifu" && selfAuthorIds.includes(message.authorId)
+    ? "assistant"
+    : "user";
 }
 
 function formatContextMessage(message: ContextMessage, index: number, idToIndex: Map<string, number>): string {
@@ -2732,12 +2735,13 @@ function googleAiStudioWaifuToolsPayload(
 
 async function contextToGoogleMessagesForWaifu(
   messages: ContextMessage[],
-  includeImages: boolean
+  includeImages: boolean,
+  selfAuthorIds: string[] = []
 ): Promise<Array<{ role: "user" | "model"; parts: Array<Record<string, unknown>> }>> {
   return Promise.all(
     messages.map(async (message) => {
-      const role: "user" | "model" = roleForWaifuContext(message) === "assistant" ? "model" : "user";
-      const text = formatWaifuContextBlock(message);
+      const role: "user" | "model" = roleForWaifuContext(message, selfAuthorIds) === "assistant" ? "model" : "user";
+      const text = role === "model" ? formatSelfWaifuContent(message) : formatWaifuContextBlock(message);
       const imageParts = includeImages && role === "user" ? await googleImageParts(message) : [];
       return {
         role,
@@ -2839,6 +2843,10 @@ function extractGoogleToolArguments(json: unknown, toolName: string): string {
   return extractGoogleText(parsed);
 }
 
+function systemNoteTurn(content: string): string {
+  return `<system_note>\n${content}\n</system_note>`;
+}
+
 export const ORCHESTRATOR_TOOL_PARAMETERS = orchestratorToolParameters();
 
-export const __testables = { parseDecision, buildOpenAiChatOrchestratorMessages, formatDecisionOutcome, buildOrchestratorTimeline, serializeOrchestratorDecisionArguments };
+export const __testables = { parseDecision, buildOpenAiChatOrchestratorMessages, formatDecisionOutcome, buildOrchestratorTimeline, serializeOrchestratorDecisionArguments, contextToChatMessagesForWaifu };
