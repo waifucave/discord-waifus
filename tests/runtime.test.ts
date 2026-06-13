@@ -26,7 +26,6 @@ import {
 } from "../src/discord/client.js";
 import {
   ModelPipeline,
-  PipelineCredentials,
   ProviderRequest,
   StageManagerObserveRequest,
   WaifuGenerationRequest
@@ -523,7 +522,7 @@ describe("RuntimeOrchestrator", () => {
       storage,
       discord,
       maxAutomaticTurns: 3,
-      createPipeline: (_modelId: string, _credentials: PipelineCredentials) => pipeline,
+      createPipeline: () => pipeline,
       logger: {
         debug: () => undefined,
         info: () => undefined,

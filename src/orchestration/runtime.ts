@@ -28,9 +28,11 @@ import {
 } from "./promptBlocks.js";
 import { Violation, validateWaifuOutput } from "./outputValidator.js";
 import { ReplyQuoteExtraction, extractReplyQuote } from "./replyQuote.js";
-import { getModel } from "../providers/catalog.js";
-import { createModelPipeline, PipelineCredentials, ProviderPipelineError } from "../providers/pipelines.js";
+import { ProviderPipelineError } from "../providers/pipelines.js";
 import { ModelPipeline, WaifuGenerationResult } from "../providers/types.js";
+import { createGatewayModelPipeline } from "./pipeline/gatewayPipeline.js";
+import { resolveModelTarget, sharedRegistry } from "./pipeline/resolveTarget.js";
+import { QueryRole } from "../shared/queryLog.js";
 import {
   ActiveChatParticipant,
   ActiveChatParticipantsFile,
@@ -50,8 +52,6 @@ import {
   OrchestratorRespondingWaifu,
   PendingObservation,
   PendingObservationsFileSchema,
-  ProviderCredentialsFile,
-  ProviderCredentialsFileSchema,
   ReviewerHistoryFileSchema,
   MemoryRecord,
   ServerConfig,
@@ -94,7 +94,7 @@ export type RuntimeOrchestratorOptions = {
   maxAutomaticTurns?: number;
   isPaused?: () => boolean;
   onActiveRunsChange?: (activeRuns: number) => void;
-  createPipeline?: (modelId: string, credentials: PipelineCredentials) => ModelPipeline;
+  createPipeline?: (target: { providerId: string; modelId: string; queryRole: QueryRole }) => ModelPipeline;
   ocr?: {
     enrichMessages(messages: ContextMessage[], options?: { signal?: AbortSignal }): Promise<ContextMessage[]>;
     dispose?(): Promise<void>;
@@ -179,7 +179,7 @@ export class RuntimeOrchestrator {
   // guild from double-draining the observation queue or producing duplicate merge records.
   private readonly dreamingGuilds = new Set<string>();
   private readonly maxAutomaticTurns: number;
-  private readonly createPipeline: (modelId: string, credentials: PipelineCredentials) => ModelPipeline;
+  private readonly createPipeline: (target: { providerId: string; modelId: string; queryRole: QueryRole }) => ModelPipeline;
   private readonly sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
   private readonly stageManagerIdleDelayMs: number;
   private readonly recentSelfSentIds = new Map<string, number>();
@@ -205,7 +205,9 @@ export class RuntimeOrchestrator {
 
   constructor(private readonly options: RuntimeOrchestratorOptions) {
     this.maxAutomaticTurns = options.maxAutomaticTurns ?? 8;
-    this.createPipeline = options.createPipeline ?? createModelPipeline;
+    this.createPipeline =
+      options.createPipeline ??
+      ((target) => createGatewayModelPipeline({ ...target, dataRoot: options.storage.dataRoot }));
     this.sleep = options.sleep ?? defaultSleep;
     this.stageManagerIdleDelayMs =
       options.stageManagerIdleDelayMs ?? RuntimeOrchestrator.STAGE_MANAGER_IDLE_DELAY_MS;
@@ -1050,14 +1052,21 @@ export class RuntimeOrchestrator {
         signal
       });
       await this.noteActiveChatParticipantsFromContext(guildId, channelId, messages);
-      messages = await this.messagesForModel(messages, orchestrator.modelId, signal);
+      messages = await this.messagesForModel(
+        messages,
+        { providerId: orchestrator.providerId, modelId: orchestrator.modelId },
+        signal
+      );
       this.options.logger.info("Fetched Discord context for orchestrator", {
         guildId,
         channelId,
         messageCount: messages.length,
         modelId: orchestrator.modelId
       });
-      const pipeline = await this.pipelineFor(orchestrator.modelId);
+      const pipeline = this.pipelineFor(
+        { providerId: orchestrator.providerId, modelId: orchestrator.modelId },
+        "orchestrator"
+      );
       if (!pipeline.decideOrchestrator) {
         throw new Error(`Model ${orchestrator.modelId} does not implement orchestrator decisions.`);
       }
@@ -1400,8 +1409,15 @@ export class RuntimeOrchestrator {
         });
         await this.noteActiveChatParticipantsFromContext(input.guildId, input.channelId, waifuMessages);
         const activeChatParticipants = await this.readActiveChatParticipants(input.guildId, input.channelId);
-        waifuMessages = await this.messagesForModel(waifuMessages, waifuModelId, input.signal);
-        const waifuPipeline = await this.pipelineFor(waifu.modelId);
+        waifuMessages = await this.messagesForModel(
+          waifuMessages,
+          { providerId: waifu.providerId, modelId: waifuModelId },
+          input.signal
+        );
+        const waifuPipeline = this.pipelineFor(
+          { providerId: waifu.providerId, modelId: waifuModelId },
+          "waifu"
+        );
         this.options.logger.info("Generating waifu reply", {
           guildId: input.guildId,
           channelId: input.channelId,
@@ -1798,7 +1814,10 @@ export class RuntimeOrchestrator {
       if (!config.enabled || !config.modelId) {
         return { status: "disabled" };
       }
-      const pipeline = await this.pipelineFor(config.modelId);
+      const pipeline = this.pipelineFor(
+        { providerId: config.providerId, modelId: config.modelId },
+        "stage_manager_observer"
+      );
       if (!pipeline.decideStageManagerObservations) {
         throw new Error(`Model ${config.modelId} does not implement observer decisions.`);
       }
@@ -1810,7 +1829,7 @@ export class RuntimeOrchestrator {
         channelId,
         limit: server.contextWindows.stageManager ?? config.contextWindow
       });
-      messages = await this.messagesForModel(messages, config.modelId);
+      messages = await this.messagesForModel(messages, { providerId: config.providerId, modelId: config.modelId });
 
       this.options.logger.info("Stage manager observer started", {
         guildId,
@@ -2022,7 +2041,10 @@ export class RuntimeOrchestrator {
       });
       return { hallucination: false, deleted: false, messageIds: [] };
     }
-    const pipeline = await this.pipelineFor(config.modelId);
+    const pipeline = this.pipelineFor(
+      { providerId: config.providerId, modelId: config.modelId },
+      "reviewer"
+    );
     if (!pipeline.decideReviewer) {
       throw new Error(`Model ${config.modelId} does not implement reviewer decisions.`);
     }
@@ -2240,7 +2262,10 @@ export class RuntimeOrchestrator {
     if (!config.enabled || !config.modelId) {
       return { status: "disabled", applied: 0, skipped: 0, chunks: 0 };
     }
-    const pipeline = await this.pipelineFor(config.modelId);
+    const pipeline = this.pipelineFor(
+      { providerId: config.providerId, modelId: config.modelId },
+      "dream"
+    );
     // Configured waifus guild-wide: dream "add" ops are re-validated against this set so a
     // hallucinated owner (possible in the enum-less orphan-observation chunk) never lands.
     const allowedWaifuIds = (await this.listWaifus()).map((waifu) => waifu.id);
@@ -2528,43 +2553,44 @@ export class RuntimeOrchestrator {
     }));
   }
 
-  private async pipelineFor(modelId: string): Promise<ModelPipeline> {
-    const model = getModel(modelId);
-    if (!model) throw new Error(`Unknown model ${modelId}.`);
-    const credentials = await this.readProviderCredentials();
-    const saved = credentials.providers[model.providerId];
-    if (!saved?.apiKey) {
-      throw new Error(`Provider ${model.providerId} is missing API credentials.`);
+  private pipelineFor(
+    config: { providerId?: string; modelId: string },
+    queryRole: QueryRole
+  ): ModelPipeline {
+    const target = resolveModelTarget(config);
+    if (target.remapped) {
+      this.options.logger.warn("Legacy model id remapped", {
+        from: config.modelId,
+        to: target.modelId
+      });
     }
-    return this.createPipeline(modelId, { apiKey: saved.apiKey });
+    return this.createPipeline({
+      providerId: target.providerId,
+      modelId: target.modelId,
+      queryRole
+    });
   }
 
   private async messagesForModel(
     messages: ContextMessage[],
-    modelId: string,
+    config: { providerId?: string; modelId: string },
     signal?: AbortSignal
   ): Promise<ContextMessage[]> {
-    const model = getModel(modelId);
-    if (!model || model.supportsImageInput || !this.options.ocr) {
+    const target = resolveModelTarget(config);
+    const supportsImageInput =
+      sharedRegistry().resolve(target.providerId, target.modelId)?.modalities.input.includes("image") ?? false;
+    if (supportsImageInput || !this.options.ocr) {
       return messages;
     }
     try {
       return await this.options.ocr.enrichMessages(messages, { signal });
     } catch (error) {
       this.options.logger.warn("OCR enrichment failed; continuing without OCR text", {
-        modelId,
+        modelId: config.modelId,
         message: error instanceof Error ? error.message : String(error)
       });
       return messages;
     }
-  }
-
-  private async readProviderCredentials(): Promise<ProviderCredentialsFile> {
-    return this.options.storage.readJson(
-      "user/providers.json",
-      ProviderCredentialsFileSchema,
-      ProviderCredentialsFileSchema.parse(createEmptyRevisionedFile({ providers: {} }))
-    );
   }
 
   private async readAgentConfig(agent: "orchestrator" | "stage-manager" | "reviewer", defaultWindow: number): Promise<AgentConfig> {
@@ -3677,14 +3703,23 @@ function combineStageAndDream(observer: StageManagerRunResult, dream: DreamPassR
   return { status: observerChanged || dreamChanged ? "updated" : "no_change", message };
 }
 
+function modelSupportsTools(waifu: WaifuConfig): boolean {
+  if (!waifu.modelId) return false;
+  try {
+    const target = resolveModelTarget({ providerId: waifu.providerId, modelId: waifu.modelId });
+    return sharedRegistry().resolve(target.providerId, target.modelId)?.features.tools.supported ?? false;
+  } catch {
+    return false;
+  }
+}
+
 function buildWaifuToolUseInstructions(
   waifu: WaifuConfig,
   availableWaifus: WaifuConfig[],
   activeTools: { pickNextWaifu: boolean; shortTermMemory: boolean }
 ): string | undefined {
   if (!waifu.tools.toolUse) return undefined;
-  const model = waifu.modelId ? getModel(waifu.modelId) : undefined;
-  if (!model?.supportsTools) return undefined;
+  if (!modelSupportsTools(waifu)) return undefined;
   const candidates = availableWaifus
     .filter((candidate) => candidate.id !== waifu.id && candidate.botId && candidate.modelId)
     .map((candidate) => `${candidate.id} (${candidate.displayName || candidate.name})`);
