@@ -576,11 +576,15 @@ export const RawImportanceSchema = z.preprocess((value) => {
 }, ImportanceSchema);
 
 // Accepts lenient observation payloads; importance can arrive as a string digit.
+// entities is the model's own list of referenced display names — critical for names the
+// app-side capitalized-token fallback can never extract (e.g. CJK nicknames); malformed
+// values degrade to [] instead of failing the observation.
 export const RawStageManagerObservationSchema = z.object({
   waifuId: z.string().min(1),
   content: z.string().min(1),
   importance: RawImportanceSchema,
-  kind: z.enum(OBSERVATION_KINDS)
+  kind: z.enum(OBSERVATION_KINDS),
+  entities: z.array(z.string()).catch([]).default([])
 });
 
 // The model may emit ops in either the nested shape (matching the OpenAI/Anthropic tool schema:

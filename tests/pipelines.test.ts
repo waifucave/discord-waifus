@@ -2238,7 +2238,12 @@ describe("Google AI Studio (Gemini) pipeline", () => {
                   name: "record_observations",
                   arguments: JSON.stringify({
                     observations: [
-                      { waifuId: "yuki", content: "Kevin likes tea.", importance: "3", kind: "preference" }
+                      { waifuId: "yuki", content: "Kevin likes tea.", importance: "3", kind: "preference" },
+                      // Model-provided entities must survive parsing — the app-side fallback can
+                      // never extract caseless names like CJK nicknames.
+                      { waifuId: "yuki", content: "K的小娇妻 renamed the group chat.", importance: 2, kind: "event", entities: ["K的小娇妻", "Kevin"] },
+                      // Malformed entities degrade to [] instead of failing the observation.
+                      { waifuId: "yuki", content: "Mika hates mornings.", importance: 2, kind: "preference", entities: "Mika" }
                     ]
                   })
                 }
@@ -2258,7 +2263,9 @@ describe("Google AI Studio (Gemini) pipeline", () => {
     });
 
     expect(observations).toEqual([
-      { waifuId: "yuki", content: "Kevin likes tea.", importance: 3, kind: "preference", entities: [] }
+      { waifuId: "yuki", content: "Kevin likes tea.", importance: 3, kind: "preference", entities: [] },
+      { waifuId: "yuki", content: "K的小娇妻 renamed the group chat.", importance: 2, kind: "event", entities: ["K的小娇妻", "Kevin"] },
+      { waifuId: "yuki", content: "Mika hates mornings.", importance: 2, kind: "preference", entities: [] }
     ]);
     const query = recentQueries().at(-1);
     expect(query?.role).toBe("stage_manager_observer");

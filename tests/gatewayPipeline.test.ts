@@ -162,9 +162,9 @@ describe("decideReviewer (gateway)", () => {
 });
 
 describe("decideStageManagerObservations (gateway)", () => {
-  it("forces record_observations and parses observations; entities absent in raw schema default to []", async () => {
-    // Legacy two-step parse (RawStageManagerObservationSchema → StageManagerObservationSchema)
-    // strips the entities field; StageManagerObservationSchema defaults it to [].
+  it("forces record_observations and parses observations; model-provided entities survive", async () => {
+    // RawStageManagerObservationSchema now carries entities through (the model's own list is the
+    // only source for caseless names the app-side fallback can't extract); shared with legacy.
     const observations = [{ waifuId: "yuki", content: "Ann prefers tea", importance: 3, kind: "preference", entities: ["Ann"] }];
     const fetchImpl = okFetch({
       id: "r1",
@@ -174,8 +174,7 @@ describe("decideStageManagerObservations (gateway)", () => {
     const out = await makePipeline(fetchImpl as unknown as typeof fetch).decideStageManagerObservations!({
       modelId: "deepseek-v4-flash", messages: [msg({})], availableWaifuIds: ["yuki"]
     });
-    // entities is defaulted to [] by the final StageManagerObservationSchema (parity with legacy)
-    expect(out).toEqual([{ waifuId: "yuki", content: "Ann prefers tea", importance: 3, kind: "preference", entities: [] }]);
+    expect(out).toEqual([{ waifuId: "yuki", content: "Ann prefers tea", importance: 3, kind: "preference", entities: ["Ann"] }]);
   });
 
   it("coerces stringified importance ('3') to integer 3 (I1 fix)", async () => {
