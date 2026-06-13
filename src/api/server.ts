@@ -14,7 +14,7 @@ import { RuntimeState } from "../backend/runtime.js";
 import { RuntimeOrchestrator } from "../orchestration/runtime.js";
 import { clearOcrArtifacts } from "../orchestration/ocr.js";
 import { extractEntities } from "../orchestration/memoryEntities.js";
-import { listModels, listProviders } from "../providers/catalog.js";
+import { legacyModels, legacyProviders } from "./legacyCatalog.js";
 import type { ModelPipeline } from "../providers/types.js";
 import { createGatewayModelPipeline } from "../orchestration/pipeline/gatewayPipeline.js";
 import { resolveModelTarget } from "../orchestration/pipeline/resolveTarget.js";
@@ -301,7 +301,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     return {
       revision: credentials.revision,
       updatedAt: credentials.updatedAt,
-      providers: listProviders().map((provider) => {
+      providers: legacyProviders().map((provider) => {
         const saved = credentials.providers[provider.id];
         return {
           ...provider,
@@ -350,7 +350,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
 
   app.get("/api/models", async () => {
     const gatewayList = (await llmRegistryJson("/v1/models")) as { models: ModelSummary[] };
-    return { models: listModels(), gatewayModels: gatewayList.models };
+    return { models: legacyModels(), gatewayModels: gatewayList.models };
   });
 
   app.get("/api/waifus", async () => ({ waifus: await listWaifus(storage) }));

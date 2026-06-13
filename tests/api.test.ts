@@ -753,10 +753,31 @@ describe("Gateway registry proxies (/api/models, /api/providers)", () => {
         models: Array<{ modelId: string }>;
         gatewayModels: Array<{ providerId: string; modelId: string }>;
       };
-      // legacy list byte-untouched: still 23 catalog models, including old-only ids
-      expect(body.models).toHaveLength(23);
+      // legacy list now synthesised from gateway registry: 30 non-deprecated native-provider models
+      expect(body.models).toHaveLength(30);
       expect(body.models.map((m) => m.modelId)).toContain("grok-4.3");
-      expect(body.models.map((m) => m.modelId)).toContain("gpt-4o");
+      // gpt-4o was deprecated/removed; deepseek-v4-flash is present
+      expect(body.models.map((m) => m.modelId)).not.toContain("gpt-4o");
+      expect(body.models.map((m) => m.modelId)).toContain("deepseek-v4-flash");
+      // deepseek-v4-flash golden (synthesised from registry)
+      expect(body.models.find((m) => m.modelId === "deepseek-v4-flash")).toEqual({
+        providerId: "deepseek",
+        modelId: "deepseek-v4-flash",
+        displayName: "DeepSeek V4 Flash",
+        endpoint: "/chat/completions",
+        client: "openai-compatible-chat",
+        supportedRoles: ["system", "user", "assistant", "tool"],
+        supportsTools: true,
+        supportsStructuredOutput: true,
+        supportsStreaming: true,
+        supportsImageInput: false,
+        reasoningControls: ["reasoning.enabled", "reasoning.effort"],
+        maxContextTokens: 1000000,
+        maxOutputTokens: 384000,
+        defaultTemperature: 1,
+        defaultTopP: 1,
+        safeDefaultRoles: ["orchestrator", "waifu", "stage_manager"]
+      });
       // new list rides alongside
       expect(body.gatewayModels).toHaveLength(100);
       expect(
