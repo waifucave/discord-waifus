@@ -14,9 +14,10 @@ import { RuntimeState } from "../backend/runtime.js";
 import { RuntimeOrchestrator } from "../orchestration/runtime.js";
 import { clearOcrArtifacts } from "../orchestration/ocr.js";
 import { extractEntities } from "../orchestration/memoryEntities.js";
-import { getModel, listModels, listProviders } from "../providers/catalog.js";
-import { createModelPipeline } from "../providers/pipelines.js";
+import { listModels, listProviders } from "../providers/catalog.js";
 import type { ModelPipeline } from "../providers/types.js";
+import { createGatewayModelPipeline } from "../orchestration/pipeline/gatewayPipeline.js";
+import { resolveModelTarget } from "../orchestration/pipeline/resolveTarget.js";
 import {
   AgentConfig,
   AgentConfigSchema,
@@ -397,7 +398,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
       }
     });
     // Fire-and-forget: regenerate persona digest when persona text changed.
-    void generatePersonaDigestIfStale(storage, saved, logger).catch(() => {
+    void generatePersonaDigestIfStale(storage, saved, logger, options).catch(() => {
       // Errors are handled inside generatePersonaDigestIfStale with logger.warn.
     });
     return saved;
@@ -406,7 +407,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   app.post("/api/waifus/:waifuId/digest", async (request) => {
     const { waifuId } = parseIdParam(request.params, "waifuId");
     const waifu = await readWaifu(storage, waifuId);
-    const setup = await resolvePersonaDigestPipeline(storage);
+    const setup = await resolvePersonaDigestPipeline(storage, options);
     if (!setup.ok) {
       throw conflict(setup.reason);
     }
@@ -1514,32 +1515,35 @@ type DigestSetup =
   | { ok: true; pipeline: DigestPipeline; modelId: string }
   | { ok: false; reason: string };
 
-async function resolvePersonaDigestPipeline(storage: StorageService): Promise<DigestSetup> {
+async function resolvePersonaDigestPipeline(storage: StorageService, options: ApiServerOptions): Promise<DigestSetup> {
   const stageManagerConfig = await readAgentConfig(storage, "stage-manager");
   const modelId = stageManagerConfig.modelId;
   if (!modelId) {
     return { ok: false, reason: "Stage-manager has no model configured." };
   }
-  const credentials = await readProviderCredentials(storage);
-  const model = getModel(modelId);
-  if (!model) {
+  let target: ReturnType<typeof resolveModelTarget>;
+  try {
+    target = resolveModelTarget({ providerId: stageManagerConfig.providerId, modelId });
+  } catch {
     return { ok: false, reason: "Stage-manager model is not recognized." };
   }
-  const providerCreds = credentials.providers[model.providerId];
-  if (!providerCreds?.apiKey) {
-    return { ok: false, reason: `Stage-manager provider "${model.providerId}" has no API key configured.` };
-  }
-  const pipeline = createModelPipeline(modelId, { apiKey: providerCreds.apiKey });
+  const pipeline = createGatewayModelPipeline({
+    providerId: target.providerId,
+    modelId: target.modelId,
+    queryRole: "stage_manager_librarian",
+    dataRoot: options.dataRoot
+  });
   if (!pipeline.generatePersonaDigest) {
     return { ok: false, reason: "Stage-manager model does not support persona digest generation." };
   }
-  return { ok: true, pipeline: pipeline as DigestPipeline, modelId };
+  return { ok: true, pipeline: pipeline as DigestPipeline, modelId: target.modelId };
 }
 
 async function generatePersonaDigestIfStale(
   storage: StorageService,
   waifu: WaifuConfig,
-  logger: Logger
+  logger: Logger,
+  options: ApiServerOptions
 ): Promise<void> {
   let resolvedModelId: string | undefined;
   try {
@@ -1548,7 +1552,7 @@ async function generatePersonaDigestIfStale(
       // Digest is up to date; nothing to do.
       return;
     }
-    const setup = await resolvePersonaDigestPipeline(storage);
+    const setup = await resolvePersonaDigestPipeline(storage, options);
     if (!setup.ok) return;
     const { pipeline, modelId } = setup;
     resolvedModelId = modelId;
