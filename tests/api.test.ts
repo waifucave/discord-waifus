@@ -845,6 +845,47 @@ describe("Provider id widening + write validation (Gateway P4 Task 4)", () => {
     }
   });
 
+  it("rejects a waifu param write that violates a named constraint rule (violations[].rule is populated)", async () => {
+    const { app } = await makeApp();
+    try {
+      const create = await app.inject({
+        method: "POST",
+        url: "/api/waifus",
+        payload: { id: "param-violation-rule", name: "ParamViolationRule", displayName: "ParamViolationRule" }
+      });
+      expect(create.statusCode).toBe(201);
+
+      // grok-4.3 defaults reasoning.effort to "low", which activates the
+      // reasoning-no-penalties-or-stop constraint and forbids stopSequences. Unlike the
+      // out-of-range descriptor check above, this is a constraint-rule violation, so the
+      // gateway's violation carries a ruleId -> assertParamsValid's `rule` field is populated.
+      const update = await app.inject({
+        method: "PUT",
+        url: "/api/waifus/param-violation-rule",
+        payload: {
+          revision: 0,
+          providerId: "xai",
+          modelId: "grok-4.3",
+          params: { stopSequences: ["x"] }
+        }
+      });
+      expect(update.statusCode).toBe(400);
+      const body = update.json();
+      expect(body.details.error).toBe("unsupported_parameter");
+      expect(body.details.violations).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            param: "stopSequences",
+            code: "forbidden_param",
+            rule: "reasoning-no-penalties-or-stop"
+          })
+        ])
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
   it("accepts a waifu param write within the target model's registry descriptor", async () => {
     const { app } = await makeApp();
     try {
