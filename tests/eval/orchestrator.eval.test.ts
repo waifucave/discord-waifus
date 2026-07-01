@@ -202,11 +202,11 @@ describeLive("orchestrator eval — tier 2 (WAIFUS_EVAL_LIVE=1)", () => {
 
   // Derive providerId from modelId
   function inferProviderId(id: string): string {
-    if (id.startsWith("gemini")) return "google";
+    if (id.startsWith("gemini")) return "google-ai-studio";
     if (id.startsWith("claude")) return "anthropic";
     if (id.startsWith("gpt") || id.startsWith("o1") || id.startsWith("o3")) return "openai";
     if (id.startsWith("deepseek")) return "deepseek";
-    return "google"; // safe default for eval
+    return "google-ai-studio"; // safe default for eval
   }
 
   const providerId = inferProviderId(modelId);

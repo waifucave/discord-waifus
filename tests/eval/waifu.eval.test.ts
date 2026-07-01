@@ -55,11 +55,11 @@ const quietLogger = () => ({
 });
 
 function inferProviderId(modelId: string): string {
-  if (modelId.startsWith("gemini")) return "google";
+  if (modelId.startsWith("gemini")) return "google-ai-studio";
   if (modelId.startsWith("claude")) return "anthropic";
   if (modelId.startsWith("gpt") || modelId.startsWith("o1") || modelId.startsWith("o3")) return "openai";
   if (modelId.startsWith("deepseek")) return "deepseek";
-  return "google";
+  return "google-ai-studio";
 }
 
 async function setupStorage(

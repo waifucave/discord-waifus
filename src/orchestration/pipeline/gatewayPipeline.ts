@@ -3,7 +3,7 @@ import { z } from "zod";
 import { createProviderCredentialsLookup } from "../../api/llmGatewayCredentials.js";
 import { QueryRole, recordProviderQuery, recordProviderReply } from "../../shared/queryLog.js";
 import type { ModelPipeline, ProviderRequest, WaifuGenerationRequest, WaifuGenerationResult, StageManagerObserveRequest, DreamRequest, PersonaDigestRequest, PersonaDigest } from "../../providers/types.js";
-import { ORCHESTRATOR_TOOL_NAME, PICK_NEXT_WAIFU_TOOL_NAME, REVIEWER_TOOL_NAME, SHORT_TERM_MEMORY_TOOL_NAME, OBSERVER_TOOL_NAME, DREAM_TOOL_NAME, PERSONA_DIGEST_TOOL_NAME, DREAM_PROMPT, PERSONA_DIGEST_PROMPT, orchestratorToolParameters, pickNextWaifuToolParameters, reviewerSystemPrompt, reviewerToolParameters, shortTermMemoryToolParameters, observerSystemPrompt, observerToolParameters, dreamToolParameters, flatDreamToolParameters, personaDigestToolParameters, dreamMessages, normalizeDreamOp, normalizeOrchestratorDecision, parseRawStageManagerObservations } from "../tools.js";
+import { ORCHESTRATOR_TOOL_NAME, PICK_NEXT_WAIFU_TOOL_NAME, REVIEWER_TOOL_NAME, SHORT_TERM_MEMORY_TOOL_NAME, OBSERVER_TOOL_NAME, DREAM_TOOL_NAME, PERSONA_DIGEST_TOOL_NAME, DREAM_PROMPT, PERSONA_DIGEST_PROMPT, orchestratorToolParameters, pickNextWaifuToolParameters, reviewerSystemPrompt, reviewerToolParameters, shortTermMemoryToolParameters, observerSystemPrompt, observerToolParameters, dreamToolParameters, flatDreamToolParameters, personaDigestToolParameters, dreamMessages, normalizeDreamOps, normalizeOrchestratorDecision, parseRawStageManagerObservations } from "../tools.js";
 import { formatObserverContext } from "../context.js";
 import { GatewayPipelineError, buildUnifiedParams, preconformRequest } from "./params.js";
 import { buildWaifuMessages } from "./messages.js";
@@ -184,8 +184,12 @@ export class GatewayModelPipeline implements ModelPipeline {
       signal: request.signal
     });
 
+    // Legacy parity (postJsonAndExtractText, legacy pipelines.ts:837-840): a record extract
+    // with a `content` field is returned as-is even when trimmed content is "" — tool calls
+    // (add_memory / PickNextWaifu) still need to be surfaced for a tool-only reply. Do not
+    // throw here; runtime.ts's usedToolWithoutVisibleMessage / tool-only note-recording path
+    // depends on receiving `content: ""` alongside extracted tool results.
     const content = textContent(response);
-    if (!content) throw new GatewayPipelineError("empty waifu response");
 
     const result: WaifuGenerationResult = { content };
     const usage = flatUsage(response);
@@ -248,7 +252,9 @@ export class GatewayModelPipeline implements ModelPipeline {
       if (!Array.isArray(rawOps) || rawOps.length === 0) {
         throw new Error("dream response did not contain an ops array.");
       }
-      return (rawOps as unknown[]).map((op) => normalizeDreamOp(op));
+      // Per-op tolerance (parity with legacy parseDreamOps, legacy pipelines.ts:1416-1432):
+      // skip individually invalid ops instead of failing the whole chunk on the first bad one.
+      return normalizeDreamOps(rawOps as unknown[]);
     }, "decideDream");
   }
 

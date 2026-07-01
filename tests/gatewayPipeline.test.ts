@@ -36,9 +36,36 @@ describe("generateWaifu (gateway)", () => {
     expect(result.usage).toEqual({ inputTokens: 9, outputTokens: 3 });
   });
 
-  it("throws on empty content", async () => {
+  // Legacy parity pin (postJsonAndExtractText, legacy pipelines.ts:837-840): a record extract
+  // with a `content` field is returned as-is even when trimmed content is "" — never throws,
+  // tool calls or not. This replaces a prior "throws on empty content" test that did not match
+  // legacy behavior.
+  it("resolves with empty content and no tools when the model returns whitespace only (legacy parity, no throw)", async () => {
     const fetchImpl = okFetch({ id: "r1", choices: [{ message: { content: "   " }, finish_reason: "stop" }], usage: {} });
-    await expect(makePipeline(fetchImpl as unknown as typeof fetch).generateWaifu(baseRequest)).rejects.toThrow();
+    const result = await makePipeline(fetchImpl as unknown as typeof fetch).generateWaifu(baseRequest);
+    expect(result.content).toBe("");
+    expect(result.shortTermMemoryEntries).toBeUndefined();
+  });
+
+  it("resolves with empty content but surfaces add_memory on a tool-only reply (legacy parity, no throw)", async () => {
+    const fetchImpl = okFetch({
+      id: "r1",
+      choices: [{
+        message: {
+          content: "   ",
+          tool_calls: [
+            { id: "c1", type: "function", function: { name: "add_memory", arguments: JSON.stringify({ content: "Ann likes tea" }) } }
+          ]
+        },
+        finish_reason: "tool_calls"
+      }],
+      usage: {}
+    });
+    const result = await makePipeline(fetchImpl as unknown as typeof fetch).generateWaifu({
+      ...baseRequest, shortTermMemoryToolEnabled: true
+    });
+    expect(result.content).toBe("");
+    expect(result.shortTermMemoryEntries).toEqual(["Ann likes tea"]);
   });
 
   it("collects add_memory entries and a valid PickNextWaifu handoff", async () => {
@@ -310,6 +337,33 @@ describe("decideDream (gateway)", () => {
       memoryIndex: 1,
       patch: { kind: "preference", strength: 3 }
     }]);
+  });
+
+  // Per-op tolerance parity (legacy parseDreamOps, legacy pipelines.ts:1416-1432): one bad op
+  // must not fail the whole chunk — only the invalid op is dropped.
+  it("skips an invalid op and returns only the valid ones (per-op tolerance, legacy parity)", async () => {
+    const ops = [{ op: "decay", memoryIndex: 1, strength: 1 }, { op: "bogus" }];
+    const fetchImpl = okFetch({
+      id: "r1",
+      choices: [{ message: { content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "dream_memories", arguments: JSON.stringify({ ops }) } }] }, finish_reason: "tool_calls" }],
+      usage: {}
+    });
+    const out = await makePipeline(fetchImpl as unknown as typeof fetch).decideDream!(dreamRequest);
+    expect(out).toEqual([{ op: "decay", memoryIndex: 1, strength: 1 }]);
+  });
+
+  // Message parity (legacy parseDreamOps throw when validOps.length === 0): "No valid dream
+  // ops. Invalid ops: ..." — wrapped as a GatewayPipelineError by parseForcedCall.
+  it("throws when every op in the chunk is invalid", async () => {
+    const ops = [{ op: "bogus" }, { op: "add" }];
+    const fetchImpl = okFetch({
+      id: "r1",
+      choices: [{ message: { content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "dream_memories", arguments: JSON.stringify({ ops }) } }] }, finish_reason: "tool_calls" }],
+      usage: {}
+    });
+    const promise = makePipeline(fetchImpl as unknown as typeof fetch).decideDream!(dreamRequest);
+    await expect(promise).rejects.toBeInstanceOf(GatewayPipelineError);
+    await expect(promise).rejects.toThrow(/No valid dream ops\. Invalid ops:/);
   });
 });
 

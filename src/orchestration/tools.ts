@@ -687,6 +687,30 @@ export function normalizeDreamOp(op: unknown): DreamOp {
   }
 }
 
+// Per-op tolerant normalization over a raw ops array (parity with legacy parseDreamOps,
+// legacy pipelines.ts:1416-1432): a single malformed op should not fail the whole dream
+// chunk. Invalid ops are skipped and their errors collected; the chunk only fails when
+// every op in it was invalid, and the thrown message matches legacy exactly.
+export function normalizeDreamOps(raw: unknown[]): DreamOp[] {
+  const validOps: DreamOp[] = [];
+  const invalidOps: string[] = [];
+  raw.forEach((op: unknown, index: number) => {
+    try {
+      validOps.push(normalizeDreamOp(op));
+    } catch (error) {
+      invalidOps.push(`#${index + 1}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  });
+  if (validOps.length > 0) {
+    return validOps;
+  }
+  throw new Error(
+    invalidOps.length
+      ? `No valid dream ops. Invalid ops: ${invalidOps.join("; ")}`
+      : "Provider returned no dream ops."
+  );
+}
+
 // Parse an array of raw observation items using the coercing Raw schema.
 export function parseRawStageManagerObservations(items: unknown[]): StageManagerObservation[] {
   return items.map((item) => StageManagerObservationSchema.parse(RawStageManagerObservationSchema.parse(item)));
