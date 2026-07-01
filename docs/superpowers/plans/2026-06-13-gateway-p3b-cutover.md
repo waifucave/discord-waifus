@@ -188,3 +188,24 @@ Full-implementation reviewer over `7751e4b..HEAD`; §8 P3 row → done; executio
 
 ## Subagent notes
 Full task text per prompt; two-stage review (combined acceptable for small tasks); verify reports independently; fix-first. Counts indicative; concurrent landings possible.
+
+---
+
+## Execution record (2026-07-01)
+
+**Status: complete.** Commits `8ac40d2`→`7879f13` on main, app repo only (gateway untouched this phase beyond the earlier DeepSeek data fix `4740540`, already pushed).
+
+- **T1** `8ac40d2` — `resolveModelTarget` + `LEGACY_MODEL_MAP` (§7.3), memoized `sharedRegistry()`.
+- **T2** `1b8094e` — runtime cutover: `createPipeline` seam → `createGatewayModelPipeline`, `readProviderCredentials` deleted, OCR gating via registry modalities, `modelSupportsTools` helper.
+- **T3** `96ae9f9` — persona digest on the gateway (`stage_manager_librarian`).
+- **T4** `1c3c7de` — `/api/models`/`/api/providers` legacy fields synthesized from the registry: 30 models / 6 providers, deprecated + openrouter excluded, `budgetTokens→budget_tokens` rename. Reviewer verified live-executed counts, ruled `reasoning.exclude` in `reasoningControls` inert (frontend consumers are allowlists), deepseek golden field-exact.
+- **T5** `3492dd5` — eval harness constructs the gateway pipeline (env-key credential closure).
+- **T6** `240c280` — `feat!:` deleted `pipelines.ts`, `catalog.ts`, `tests/pipelines.test.ts` (−5,425 lines); `ProviderPipelineError` moved verbatim to `pipeline/params.ts`; straggler imports re-pointed at `tools.ts`.
+- **Fix** `7efa71d` — live smoke caught Haiku emitting `retriggerAfterSeconds: null` → recovered legacy Raw orchestrator-decision normalization (`RawOrchestratorDecisionSchema`, `normalizeRawDirective`) verbatim into `tools.ts`; `normalizeOrchestratorDecision` owns the replyRequired gate.
+- **Fix** `7879f13` — final review's family audit found two more dropped leniency layers: tool-only waifu replies (empty content no longer throws; `add_memory`/`PickNextWaifu` extracted regardless — the runtime's `usedToolWithoutVisibleMessage` path works again) and per-op dream-op tolerance (`normalizeDreamOps`: skip invalid, throw only when zero valid). Plus pre-existing eval bug: `inferProviderId` `"google"`→`"google-ai-studio"`.
+
+**T7 live smoke (2026-07-01):** `/api/models` 30 synthesized + 100 gateway, `gpt-4o` absent; deepseek wire body shows one real system turn + zero `system_note` + forced `orchestrator_decision` (post `multipleSystemMessages` data fix); anthropic haiku live decideOrchestrator (the previously-failing null-retrigger case), generateWaifu (mid-block memory reflected in reply), decideDream (live archive + add op, nested memory); openai `gpt-5.4-nano` persona digest both direct and through `POST /api/waifus/:id/digest` in the running app; SSE `/api/events` emitted paired `query`/`reply` events for `stage_manager_librarian` (dashboard tabs populate). Stage-manager config swapped to openai for the smoke and restored to `deepseek/deepseek-v4-pro` after. Account-side blockers, not code: deepseek 402 (balance), google 401 `ACCESS_TOKEN_TYPE_UNSUPPORTED` (key stopped working ~2026-06-30), xai still credit-blocked — gemini flat-dream-op live rerun deferred until a working Google key (covered by unit goldens + earlier live probes).
+
+**Final integration review** over `7751e4b..HEAD`: FIX-FIRST → both Important findings fixed (`7879f13`); minors deferred to P4/P5 (listed in §8 P3 row). Final suite: **541 passed | 15 skipped**; typecheck + full build clean.
+
+**Pattern worth remembering:** all three post-cutover bugs were the same family — legacy `parseX` functions carried lenient Raw-schema normalization layers that thin `schema.parse(raw)` calls in the gateway pipeline silently dropped. Dream ops, observations, orchestrator decisions, tool-only replies: four instances total across P3a+P3b. Every forced-tool parse now shares the recovered normalizers in `tools.ts`.
