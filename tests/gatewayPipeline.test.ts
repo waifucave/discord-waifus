@@ -390,6 +390,44 @@ describe("generatePersonaDigest (gateway)", () => {
       modelId: "deepseek-v4-flash", messages: [], personaText: "X"
     })).rejects.toThrow();
   });
+
+  it("surfaces the raw tool-call arguments in error details when digest args fail validation", async () => {
+    const rawArguments = JSON.stringify({ voice: "" });
+    const fetchImpl = okFetch({
+      id: "r1",
+      choices: [{ message: { content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "set_persona_digest", arguments: rawArguments } }] }, finish_reason: "tool_calls" }],
+      usage: {}
+    });
+    const pipeline = makePipeline(fetchImpl as unknown as typeof fetch);
+    let caught: unknown;
+    try {
+      await pipeline.generatePersonaDigest!({ modelId: "deepseek-v4-flash", messages: [], personaText: "X" });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(GatewayPipelineError);
+    expect((caught as GatewayPipelineError).details).toMatchObject({ text: rawArguments });
+    expect((caught as GatewayPipelineError & { details: { error?: string } }).details?.error).toEqual(expect.any(String));
+  });
+
+  it("surfaces the raw tool-call arguments in error details on malformed JSON", async () => {
+    const rawArguments = "{not json";
+    const fetchImpl = okFetch({
+      id: "r1",
+      choices: [{ message: { content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "set_persona_digest", arguments: rawArguments } }] }, finish_reason: "tool_calls" }],
+      usage: {}
+    });
+    const pipeline = makePipeline(fetchImpl as unknown as typeof fetch);
+    let caught: unknown;
+    try {
+      await pipeline.generatePersonaDigest!({ modelId: "deepseek-v4-flash", messages: [], personaText: "X" });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(GatewayPipelineError);
+    expect((caught as GatewayPipelineError).details).toMatchObject({ text: rawArguments });
+    expect((caught as GatewayPipelineError & { details: { error?: string } }).details?.error).toEqual(expect.any(String));
+  });
 });
 
 // ---------------------------------------------------------------------------

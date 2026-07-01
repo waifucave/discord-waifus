@@ -30,7 +30,7 @@ import {
   StageManagerObserveRequest,
   WaifuGenerationRequest
 } from "../src/providers/types.js";
-import { ProviderPipelineError } from "../src/orchestration/pipeline/params.js";
+import { GatewayPipelineError } from "../src/orchestration/pipeline/params.js";
 import { ensureDataLayout } from "../src/config/layout.js";
 import { StorageService } from "../src/storage/storageService.js";
 import {
@@ -2265,7 +2265,7 @@ describe("RuntimeOrchestrator", () => {
         return { content: "unused" };
       },
       async decideStageManagerObservations() {
-        throw new ProviderPipelineError("Provider request failed with HTTP 400.", {
+        throw new GatewayPipelineError("Provider request failed with HTTP 400.", {
           error: {
             status: "INVALID_ARGUMENT",
             message: "ANY mode rejected deeply nested schema."

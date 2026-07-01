@@ -1324,4 +1324,37 @@ describe("Gateway registry proxies (/api/models, /api/providers)", () => {
       await app.close();
     }
   });
+
+  it("POST /digest returns 409 when stage-manager provider has no API key configured", async () => {
+    const { app } = await makeApp();
+    try {
+      const create = await app.inject({
+        method: "POST",
+        url: "/api/waifus",
+        payload: { id: "digest-no-key", name: "DigestNoKey", displayName: "DigestNoKey" }
+      });
+      expect(create.statusCode).toBe(201);
+
+      const config = await app.inject({
+        method: "PUT",
+        url: "/api/stage-manager/config",
+        payload: {
+          revision: 0,
+          enabled: true,
+          providerId: "openai",
+          modelId: "gpt-5.4-mini"
+        }
+      });
+      expect(config.statusCode).toBe(200);
+
+      const digest = await app.inject({
+        method: "POST",
+        url: "/api/waifus/digest-no-key/digest"
+      });
+      expect(digest.statusCode).toBe(409);
+      expect(digest.json().message).toBe("Provider openai has no API key configured.");
+    } finally {
+      await app.close();
+    }
+  });
 });

@@ -1,14 +1,12 @@
 import type { Gateway, ToolChoice } from "@waifucave/gateway";
 
-export class GatewayPipelineError extends Error {}
-
-export class ProviderPipelineError extends Error {
+export class GatewayPipelineError extends Error {
   constructor(
     message: string,
     readonly details?: unknown
   ) {
     super(message);
-    this.name = "ProviderPipelineError";
+    this.name = "GatewayPipelineError";
   }
 }
 

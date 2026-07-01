@@ -30,7 +30,7 @@ import { Violation, validateWaifuOutput } from "./outputValidator.js";
 import { ReplyQuoteExtraction, extractReplyQuote } from "./replyQuote.js";
 import { ModelPipeline, WaifuGenerationResult } from "../providers/types.js";
 import { createGatewayModelPipeline } from "./pipeline/gatewayPipeline.js";
-import { ProviderPipelineError } from "./pipeline/params.js";
+import { GatewayPipelineError } from "./pipeline/params.js";
 import { resolveModelTarget, sharedRegistry } from "./pipeline/resolveTarget.js";
 import { QueryRole } from "../shared/queryLog.js";
 import {
@@ -939,7 +939,7 @@ export class RuntimeOrchestrator {
           guildId,
           channelId,
           message: error instanceof Error ? error.message : String(error),
-          details: error instanceof ProviderPipelineError ? summarizeProviderPipelineDetails(error.details) : undefined
+          details: error instanceof GatewayPipelineError ? summarizeProviderPipelineDetails(error.details) : undefined
         });
       })
       .finally(async () => {
@@ -1957,7 +1957,7 @@ export class RuntimeOrchestrator {
         guildId,
         channelId,
         message: error instanceof Error ? error.message : String(error),
-        details: error instanceof ProviderPipelineError ? summarizeProviderPipelineDetails(error.details) : undefined
+        details: error instanceof GatewayPipelineError ? summarizeProviderPipelineDetails(error.details) : undefined
       });
       return {
         status: "failed",
@@ -2360,7 +2360,7 @@ export class RuntimeOrchestrator {
       this.options.logger.error("Dream pass failed", {
         guildId,
         message: error instanceof Error ? error.message : String(error),
-        details: error instanceof ProviderPipelineError ? summarizeProviderPipelineDetails(error.details) : undefined
+        details: error instanceof GatewayPipelineError ? summarizeProviderPipelineDetails(error.details) : undefined
       });
       return {
         status: "failed",

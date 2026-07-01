@@ -1624,6 +1624,9 @@ async function resolvePersonaDigestPipeline(storage: StorageService, options: Ap
   } catch {
     return { ok: false, reason: "Stage-manager model is not recognized." };
   }
+  if (!createProviderCredentialsLookup(options.dataRoot)(target.providerId)) {
+    return { ok: false, reason: `Provider ${target.providerId} has no API key configured.` };
+  }
   const pipeline = createGatewayModelPipeline({
     providerId: target.providerId,
     modelId: target.modelId,

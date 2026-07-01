@@ -83,14 +83,25 @@ function toolCalls(response: ChatResponse, name: string) {
 }
 
 function parseForcedCall<T>(response: ChatResponse, toolName: string, parse: (raw: unknown) => T, label: string): T {
-  const call = toolCalls(response, toolName)[0];
-  if (!call) throw new GatewayPipelineError(`${label}: model did not call ${toolName}`);
+  const calls = toolCalls(response, toolName);
+  const call = calls[0];
+  if (!call) throw new GatewayPipelineError(`${label}: model did not call ${toolName}`, { text: calls[0]?.arguments });
   let raw: unknown;
-  try { raw = JSON.parse(call.arguments); } catch { throw new GatewayPipelineError(`${label}: malformed ${toolName} arguments`); }
+  try {
+    raw = JSON.parse(call.arguments);
+  } catch (error) {
+    throw new GatewayPipelineError(`${label}: malformed ${toolName} arguments`, {
+      text: call.arguments,
+      error: error instanceof Error ? error.message : String(error)
+    });
+  }
   try {
     return parse(raw);
   } catch (error) {
-    throw new GatewayPipelineError(`${label}: invalid ${toolName} arguments — ${error instanceof Error ? error.message : String(error)}`);
+    throw new GatewayPipelineError(`${label}: invalid ${toolName} arguments — ${error instanceof Error ? error.message : String(error)}`, {
+      text: call.arguments,
+      error: error instanceof Error ? error.message : String(error)
+    });
   }
 }
 
