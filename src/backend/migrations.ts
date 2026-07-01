@@ -1,16 +1,20 @@
 import { readFile, readdir, rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
+import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 import { ensureDataLayout } from "../config/layout.js";
 import { RETRIGGER_MAX_SECONDS, RETRIGGER_MIN_SECONDS } from "../orchestration/decisions.js";
 import { extractEntities, WAIFU_NOTE_STRENGTH } from "../orchestration/memoryEntities.js";
+import { resolveModelTarget } from "../orchestration/pipeline/resolveTarget.js";
 import { MEMORY_KINDS } from "../shared/schemas/domain.js";
 import {
   PromptLayoutNode,
   WaifuPromptLayout,
   defaultWaifuPromptLayout
 } from "../shared/schemas/domain.js";
-import { atomicWriteJson } from "../storage/atomic.js";
+import { CURRENT_SCHEMA_VERSION } from "../shared/schemas/common.js";
+import { legacyToParams, LegacyGeneration, LegacyReasoning } from "../shared/paramsCompat.js";
+import { atomicWriteJson, atomicWriteText } from "../storage/atomic.js";
 
 export { extractEntities } from "../orchestration/memoryEntities.js";
 
@@ -57,6 +61,20 @@ export async function runMigrations(dataRoot: string): Promise<MigrationResult> 
   // user-managed permanent memories — if an old-shape file were parsed without migrating first.
   if (await migrateMemoryStoreV2(dataRoot)) {
     applied.push("migrate-memory-store-v2");
+  }
+
+  // §7.3: convert stored reasoning/generation into unified gateway params and remap retired
+  // model ids. Must run after the shape migrations above (which may still be touching agent
+  // config.json / waifu.json) and before the version stamp below.
+  if (await migrateConfigsToGatewayParams(dataRoot)) {
+    applied.push("migrate-configs-to-gateway-params");
+  }
+
+  // Runs LAST: every step above may still leave a file's schemaVersion at 1 even once its shape
+  // is current. Stamping here — after all shape conversions — is what lets the next boot's schema
+  // parses (z.literal(CURRENT_SCHEMA_VERSION)) succeed instead of throwing.
+  if (await stampSchemaVersion2(dataRoot)) {
+    applied.push("stamp-schema-version-2");
   }
 
   return { applied };
@@ -731,4 +749,157 @@ async function migrateWaifuPromptLayoutW2(dataRoot: string): Promise<number> {
     count += 1;
   }
   return count;
+}
+
+// §7.3: fold legacy reasoning/generation config shapes into the unified gateway `params` record,
+// and remap any retired (providerId, modelId) pair per LEGACY_MODEL_MAP / the live registry. Runs
+// over the three agent config.json files and every waifu.json.
+async function migrateConfigsToGatewayParams(dataRoot: string): Promise<boolean> {
+  let changed = false;
+
+  const agentDirs = ["orchestrator", "stage-manager", "reviewer"];
+  for (const agent of agentDirs) {
+    const filePath = path.join(dataRoot, "user", agent, "config.json");
+    if (await migrateConfigDocToGatewayParams(filePath)) changed = true;
+  }
+
+  const waifusRoot = path.join(dataRoot, "user", "waifus");
+  let waifuEntries: string[];
+  try {
+    waifuEntries = await readdir(waifusRoot);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") waifuEntries = [];
+    else throw error;
+  }
+  for (const entry of waifuEntries) {
+    const filePath = path.join(waifusRoot, entry, "waifu.json");
+    if (await migrateConfigDocToGatewayParams(filePath)) changed = true;
+  }
+
+  return changed;
+}
+
+// Mutates a single agent config.json / waifu.json in place. Returns whether it was written.
+async function migrateConfigDocToGatewayParams(filePath: string): Promise<boolean> {
+  const data = await readJsonOrUndefined(filePath);
+  if (!isObject(data)) return false;
+  let mutated = false;
+
+  if ("reasoning" in data || "generation" in data) {
+    const converted = legacyToParams({
+      reasoning: data.reasoning as LegacyReasoning | undefined,
+      generation: data.generation as LegacyGeneration | undefined
+    });
+    const existingParams = isObject(data.params) ? data.params : {};
+    data.params = { ...converted, ...existingParams };
+    delete data.reasoning;
+    delete data.generation;
+    mutated = true;
+  }
+
+  if (typeof data.modelId === "string" && data.modelId.length > 0) {
+    try {
+      const target = resolveModelTarget({
+        providerId: typeof data.providerId === "string" ? data.providerId : undefined,
+        modelId: data.modelId
+      });
+      if (target.remapped) {
+        data.providerId = target.providerId;
+        data.modelId = target.modelId;
+        mutated = true;
+      }
+    } catch {
+      // Unknown model id — leave it in place rather than silently substituting one.
+      // waifus doctor (T5) surfaces this as a warning.
+    }
+  }
+
+  if (!mutated) return false;
+  await atomicWriteJson(filePath, data);
+  return true;
+}
+
+// Final boot-migration step: sets `schemaVersion: CURRENT_SCHEMA_VERSION` on every persisted
+// config file still carrying an older value, so the strict `z.literal(CURRENT_SCHEMA_VERSION)`
+// parses used throughout the app don't throw on the very next read. Covers the root TOML app
+// config, the ephemeral runtime/pid files under app/, and every JSON file under user/ (recursive —
+// providers, discord bots, the three agent dirs, every waifu, every server, and memory). The OCR
+// results cache under app/cache/ocr lives on its own CACHE_SCHEMA_VERSION (see
+// src/orchestration/ocr.ts) and is intentionally never walked here.
+async function stampSchemaVersion2(dataRoot: string): Promise<boolean> {
+  let changed = false;
+
+  if (await stampTomlConfigSchemaVersion(path.join(dataRoot, "config.toml"))) {
+    changed = true;
+  }
+
+  for (const name of ["runtime.json", "pid.json"]) {
+    if (await stampJsonSchemaVersion(path.join(dataRoot, "app", name))) {
+      changed = true;
+    }
+  }
+
+  const userJsonFiles = await collectJsonFilesRecursive(path.join(dataRoot, "user"));
+  for (const filePath of userJsonFiles) {
+    if (await stampJsonSchemaVersion(filePath)) changed = true;
+  }
+
+  return changed;
+}
+
+async function collectJsonFilesRecursive(dir: string): Promise<string[]> {
+  let entries: Array<{ name: string; isDirectory(): boolean; isFile(): boolean }>;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+  const files: string[] = [];
+  for (const entry of entries) {
+    const entryPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...(await collectJsonFilesRecursive(entryPath)));
+    } else if (entry.isFile() && entry.name.endsWith(".json")) {
+      files.push(entryPath);
+    }
+  }
+  return files;
+}
+
+// Only stamps files that already declare a schemaVersion field (i.e. are actually versioned
+// records) — leaves unrelated JSON untouched.
+async function stampJsonSchemaVersion(filePath: string): Promise<boolean> {
+  const data = await readJsonOrUndefined(filePath);
+  if (!isObject(data)) return false;
+  if (!("schemaVersion" in data) || data.schemaVersion === CURRENT_SCHEMA_VERSION) return false;
+  data.schemaVersion = CURRENT_SCHEMA_VERSION;
+  await atomicWriteJson(filePath, data);
+  return true;
+}
+
+async function stampTomlConfigSchemaVersion(filePath: string): Promise<boolean> {
+  let raw: string;
+  try {
+    raw = await readFile(filePath, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = parseToml(raw);
+  } catch {
+    // Malformed TOML — nothing this migration can safely fix; leave it for loadAppConfig to
+    // report.
+    return false;
+  }
+  if (!isObject(parsed) || !("schemaVersion" in parsed) || parsed.schemaVersion === CURRENT_SCHEMA_VERSION) {
+    return false;
+  }
+
+  parsed.schemaVersion = CURRENT_SCHEMA_VERSION;
+  await atomicWriteText(filePath, stringifyToml(parsed as Record<string, unknown>) + "\n", { mode: 0o600 });
+  return true;
 }

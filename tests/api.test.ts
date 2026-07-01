@@ -6,6 +6,7 @@ import path from "node:path";
 import { createApiServer } from "../src/api/server.js";
 import { createRuntimeState } from "../src/backend/runtime.js";
 import { ensureDataLayout } from "../src/config/layout.js";
+import { CURRENT_SCHEMA_VERSION } from "../src/shared/schemas/common.js";
 import { StorageService } from "../src/storage/storageService.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
 
@@ -468,7 +469,7 @@ describe("Backend API", () => {
     await writeFile(
       path.join(root, "user", "memories.json"),
       JSON.stringify({
-        schemaVersion: 1,
+        schemaVersion: CURRENT_SCHEMA_VERSION,
         revision: 0,
         updatedAt: now,
         memories: [

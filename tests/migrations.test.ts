@@ -2,8 +2,19 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { runMigrations } from "../src/backend/migrations.js";
+import { loadAppConfig } from "../src/config/appConfig.js";
+import { RuntimeStateSchema } from "../src/backend/runtime.js";
+import { CURRENT_SCHEMA_VERSION } from "../src/shared/schemas/common.js";
 import type { PromptLayoutNode as LayoutNode } from "../src/shared/schemas/domain.js";
-import { defaultWaifuPromptLayout } from "../src/shared/schemas/domain.js";
+import {
+  AgentConfigSchema,
+  DiscordBotsFileSchema,
+  MemoryStoreSchema,
+  ProviderCredentialsFileSchema,
+  ServerConfigSchema,
+  WaifuConfigSchema,
+  defaultWaifuPromptLayout
+} from "../src/shared/schemas/domain.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
 
 const roots: string[] = [];
@@ -79,7 +90,8 @@ describe("runMigrations", () => {
     expect(result.applied).toEqual([
       "migrate-orchestrator-history-to-responding-waifus",
       "migrate-retrigger-pacing-1",
-      "migrate-scheduled-retrigger-at-1"
+      "migrate-scheduled-retrigger-at-1",
+      "stamp-schema-version-2"
     ]);
     const history = await readJson<{ decisions: Array<Record<string, unknown>> }>(
       root,
@@ -561,8 +573,10 @@ describe("runMigrations", () => {
     roots.push(root);
 
     await writeWaifuStub(root, "yuki");
+    // Already at the current schema version — the byte-equality assertion below only holds if
+    // nothing (including the schemaVersion stamp step) has a reason to touch this file.
     await writeJson(root, "user/memories.json", {
-      schemaVersion: 1,
+      schemaVersion: CURRENT_SCHEMA_VERSION,
       revision: 7,
       updatedAt: "2026-06-12T12:00:00.000Z",
       memories: [
@@ -642,6 +656,228 @@ describe("runMigrations", () => {
     expect(result.applied).not.toContain("migrate-waifu-prompt-layout-w2-1");
     // The stored layout must be byte-for-byte identical (deep equal).
     expect(after.promptLayout).toEqual(before.promptLayout);
+  });
+});
+
+describe("schema v2 migration (§7.3)", () => {
+  it("converts legacy reasoning/generation to gateway params, remaps retired model ids, leaves unknown ids in place, and stamps every file to schemaVersion 2", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    const now = "2026-05-16T12:00:00.000Z";
+
+    // Suppress prebuilt-waifu seeding so the only waifus in this fleet are the ones below.
+    await writeJson(root, "user/waifus/.prebuilt-seed.json", {
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      seededAt: now,
+      waifuIds: []
+    });
+
+    await writeJson(root, "user/orchestrator/config.json", {
+      schemaVersion: 1,
+      revision: 0,
+      updatedAt: now,
+      enabled: true,
+      contextWindow: 20,
+      prompt: "",
+      reasoning: { effort: "medium" }
+    });
+
+    await writeJson(root, "user/waifus/haru/waifu.json", {
+      schemaVersion: 1,
+      revision: 0,
+      updatedAt: now,
+      id: "haru",
+      name: "Haru",
+      displayName: "Haru",
+      persona: "kind",
+      generation: { temperature: 1.2 },
+      reasoning: { enabled: false }
+    });
+
+    await writeJson(root, "user/waifus/sable/waifu.json", {
+      schemaVersion: 1,
+      revision: 0,
+      updatedAt: now,
+      id: "sable",
+      name: "Sable",
+      displayName: "Sable",
+      persona: "cool",
+      providerId: "openai",
+      modelId: "gpt-4o"
+    });
+
+    await writeJson(root, "user/waifus/quill/waifu.json", {
+      schemaVersion: 1,
+      revision: 0,
+      updatedAt: now,
+      id: "quill",
+      name: "Quill",
+      displayName: "Quill",
+      persona: "quiet",
+      providerId: "openai",
+      modelId: "bogus-model"
+    });
+
+    await writeJson(root, "user/providers.json", {
+      schemaVersion: 1,
+      revision: 0,
+      updatedAt: now,
+      providers: {}
+    });
+
+    await writeJson(root, "user/discord-bots.json", {
+      schemaVersion: 1,
+      revision: 0,
+      updatedAt: now,
+      orchestrator: null,
+      waifus: []
+    });
+
+    await writeJson(root, "user/servers/guild-1/server.json", {
+      schemaVersion: 1,
+      revision: 0,
+      updatedAt: now,
+      guildId: "guild-1"
+    });
+
+    await writeJson(root, "user/memories.json", {
+      schemaVersion: 1,
+      revision: 0,
+      updatedAt: now,
+      memories: [
+        {
+          id: "mem-1",
+          guildId: "guild-1",
+          waifuId: "haru",
+          content: "Haru likes tea.",
+          kind: "fact",
+          source: "stage_manager",
+          pinned: false,
+          strength: 3,
+          entities: [],
+          createdAt: now,
+          updatedAt: now,
+          status: "active"
+        }
+      ]
+    });
+
+    const result = await runMigrations(root);
+    expect(result.applied).toEqual(["migrate-configs-to-gateway-params", "stamp-schema-version-2"]);
+
+    const orchestratorConfig = await readJson<Record<string, unknown>>(root, "user/orchestrator/config.json");
+    expect(orchestratorConfig.params).toEqual({ "reasoning.effort": "medium" });
+    expect(orchestratorConfig).not.toHaveProperty("reasoning");
+    expect(orchestratorConfig).not.toHaveProperty("generation");
+    expect(orchestratorConfig.schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
+    expect(() => AgentConfigSchema.parse(orchestratorConfig)).not.toThrow();
+
+    const haru = await readJson<Record<string, unknown>>(root, "user/waifus/haru/waifu.json");
+    expect(haru.params).toEqual({ temperature: 1.2, "reasoning.enabled": false });
+    expect(haru).not.toHaveProperty("reasoning");
+    expect(haru).not.toHaveProperty("generation");
+    expect(haru.schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
+    expect(() => WaifuConfigSchema.parse(haru)).not.toThrow();
+
+    const sable = await readJson<Record<string, unknown>>(root, "user/waifus/sable/waifu.json");
+    expect(sable.providerId).toBe("openai");
+    expect(sable.modelId).toBe("gpt-5-mini");
+    expect(sable.schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
+    expect(() => WaifuConfigSchema.parse(sable)).not.toThrow();
+
+    // Unknown model id: resolveModelTarget throws, so the migration must leave it untouched
+    // rather than silently substituting something (waifus doctor warns about this in T5).
+    const quill = await readJson<Record<string, unknown>>(root, "user/waifus/quill/waifu.json");
+    expect(quill.providerId).toBe("openai");
+    expect(quill.modelId).toBe("bogus-model");
+    expect(quill.schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
+    expect(() => WaifuConfigSchema.parse(quill)).not.toThrow();
+
+    const providers = await readJson<Record<string, unknown>>(root, "user/providers.json");
+    expect(providers.schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
+    expect(() => ProviderCredentialsFileSchema.parse(providers)).not.toThrow();
+
+    const discordBots = await readJson<Record<string, unknown>>(root, "user/discord-bots.json");
+    expect(discordBots.schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
+    expect(() => DiscordBotsFileSchema.parse(discordBots)).not.toThrow();
+
+    const server = await readJson<Record<string, unknown>>(root, "user/servers/guild-1/server.json");
+    expect(server.schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
+    expect(() => ServerConfigSchema.parse(server)).not.toThrow();
+
+    const memories = await readJson<Record<string, unknown>>(root, "user/memories.json");
+    expect(memories.schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
+    expect(() => MemoryStoreSchema.parse(memories)).not.toThrow();
+
+    const second = await runMigrations(root);
+    expect(second.applied).toEqual([]);
+  });
+
+  it("migrates the root TOML app config's schemaVersion so loadAppConfig does not throw on the next boot", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await writeFile(
+      path.join(root, "config.toml"),
+      'schemaVersion = 1\n\n[http]\nhost = "127.0.0.1"\nport = 3888\n',
+      "utf8"
+    );
+
+    const result = await runMigrations(root);
+    expect(result.applied).toContain("stamp-schema-version-2");
+
+    const raw = await readFile(path.join(root, "config.toml"), "utf8");
+    expect(raw).toMatch(/schemaVersion\s*=\s*2/);
+
+    const config = await loadAppConfig(root);
+    expect(config.schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
+    expect(config.http.port).toBe(3888);
+
+    const second = await runMigrations(root);
+    expect(second.applied).not.toContain("stamp-schema-version-2");
+  });
+
+  it("migrates a stale app/runtime.json left over from a prior boot", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await writeJson(root, "app/runtime.json", {
+      schemaVersion: 1,
+      pid: 12345,
+      startedAt: "2026-05-16T12:00:00.000Z",
+      updatedAt: "2026-05-16T12:00:00.000Z",
+      packageVersion: "1.0.0",
+      port: 3888,
+      dataRoot: root,
+      mode: "start"
+    });
+
+    const result = await runMigrations(root);
+    expect(result.applied).toContain("stamp-schema-version-2");
+
+    const runtime = await readJson<Record<string, unknown>>(root, "app/runtime.json");
+    expect(runtime.schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
+    expect(() => RuntimeStateSchema.parse(runtime)).not.toThrow();
+  });
+
+  it("does not crash on boot when the prebuilt-waifu seed marker predates the schema bump, and does not reseed over existing waifus", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await writeWaifuStub(root, "yuki");
+    await writeJson(root, "user/waifus/.prebuilt-seed.json", {
+      schemaVersion: 1,
+      seededAt: "2026-05-16T12:00:00.000Z",
+      waifuIds: ["lumi", "nox", "mira", "riko"]
+    });
+
+    await expect(runMigrations(root)).resolves.toMatchObject({ applied: expect.any(Array) });
+
+    // The stale marker must still be honored as "already seeded" — prebuilt waifus must not be
+    // (re)written over whatever the user already has configured.
+    await expect(readFile(path.join(root, "user/waifus/lumi/waifu.json"), "utf8")).rejects.toMatchObject({
+      code: "ENOENT"
+    });
+
+    const marker = await readJson<Record<string, unknown>>(root, "user/waifus/.prebuilt-seed.json");
+    expect(marker.schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
   });
 });
 

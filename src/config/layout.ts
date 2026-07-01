@@ -101,8 +101,12 @@ const DEFAULT_JSON_FILES: Array<{ relativePath: string; content: unknown }> = [
   }
 ];
 
+// Not a version-literal: this marker only gates "have we already seeded the prebuilt waifus?" —
+// an older schemaVersion here must not make ensureDataLayout throw on every boot for existing
+// installs (it runs before runMigrations gets a chance to fix anything). runMigrations' boot
+// migration stamps this file's schemaVersion forward separately.
 const PrebuiltWaifuSeedMarkerSchema = z.object({
-  schemaVersion: z.literal(CURRENT_SCHEMA_VERSION),
+  schemaVersion: z.number().int().nonnegative(),
   seededAt: z.string().datetime({ offset: true }),
   waifuIds: z.array(z.string())
 });

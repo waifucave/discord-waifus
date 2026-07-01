@@ -6,6 +6,7 @@ import { PREBUILT_WAIFUS } from "../src/config/prebuiltWaifus.js";
 import { DATA_ROOT_ENV, getDataRoot } from "../src/config/paths.js";
 import { loadAppConfig } from "../src/config/appConfig.js";
 import { redactSecrets } from "../src/backend/redaction.js";
+import { CURRENT_SCHEMA_VERSION } from "../src/shared/schemas/common.js";
 import {
   ServerConfigSchema,
   WaifuConfigSchema,
@@ -58,7 +59,7 @@ describe("data root and config", () => {
     await writeFile(
       path.join(root, "config.toml"),
       [
-        "schemaVersion = 1",
+        `schemaVersion = ${CURRENT_SCHEMA_VERSION}`,
         "",
         "[http]",
         "host = \"127.0.0.1\"",
@@ -85,7 +86,7 @@ describe("data root and config", () => {
     await writeFile(
       path.join(root, "config.toml"),
       [
-        "schemaVersion = 1",
+        `schemaVersion = ${CURRENT_SCHEMA_VERSION}`,
         "",
         "[http]",
         "host = \"127.0.0.1\"",
@@ -149,7 +150,7 @@ describe("data root and config", () => {
   it("defaults server-level waifu tools and ignores legacy per-waifu tool gates", () => {
     const now = "2026-05-16T12:00:00.000Z";
     const server = ServerConfigSchema.parse({
-      schemaVersion: 1,
+      schemaVersion: CURRENT_SCHEMA_VERSION,
       revision: 0,
       updatedAt: now,
       guildId: "guild-1"
@@ -157,7 +158,7 @@ describe("data root and config", () => {
     expect(server.tools).toEqual({ pickNextWaifu: false, shortTermMemory: true });
 
     const waifu = WaifuConfigSchema.parse({
-      schemaVersion: 1,
+      schemaVersion: CURRENT_SCHEMA_VERSION,
       revision: 0,
       updatedAt: now,
       id: "legacy-tools",
@@ -177,7 +178,7 @@ describe("data root and config", () => {
   it("rejects overlapping busy intervals in waifu availability", () => {
     expect(() =>
       WaifuConfigSchema.parse({
-        schemaVersion: 1,
+        schemaVersion: CURRENT_SCHEMA_VERSION,
         revision: 0,
         updatedAt: "2026-05-16T12:00:00.000Z",
         id: "overlap",
