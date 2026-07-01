@@ -6,9 +6,8 @@ import {
   dreamToolParameters, flatDreamToolParameters, observerToolParameters,
   orchestratorToolParameters, personaDigestToolParameters,
   pickNextWaifuToolParameters, reviewerToolParameters, shortTermMemoryToolParameters,
-  googleAiStudioSchema
+  googleAiStudioSchema, ORCHESTRATOR_TOOL_PARAMETERS
 } from "../src/orchestration/tools.js";
-import { ORCHESTRATOR_TOOL_PARAMETERS } from "../src/providers/pipelines.js";
 
 describe("orchestration/tools", () => {
   it("exports the canonical tool names", () => {
@@ -21,7 +20,7 @@ describe("orchestration/tools", () => {
     expect(REVIEWER_TOOL_NAME).toBe("review_message");
   });
 
-  it("pipelines.ts re-exports the SAME orchestrator schema object (single source)", () => {
+  it("the pre-built orchestrator schema const matches a fresh build (single source)", () => {
     expect(ORCHESTRATOR_TOOL_PARAMETERS).toEqual(orchestratorToolParameters(undefined, false, true));
   });
 

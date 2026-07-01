@@ -30,7 +30,7 @@ import {
   StageManagerObserveRequest,
   WaifuGenerationRequest
 } from "../src/providers/types.js";
-import { ProviderPipelineError } from "../src/providers/pipelines.js";
+import { ProviderPipelineError } from "../src/orchestration/pipeline/params.js";
 import { ensureDataLayout } from "../src/config/layout.js";
 import { StorageService } from "../src/storage/storageService.js";
 import {

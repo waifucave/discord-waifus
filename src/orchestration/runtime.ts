@@ -28,9 +28,9 @@ import {
 } from "./promptBlocks.js";
 import { Violation, validateWaifuOutput } from "./outputValidator.js";
 import { ReplyQuoteExtraction, extractReplyQuote } from "./replyQuote.js";
-import { ProviderPipelineError } from "../providers/pipelines.js";
 import { ModelPipeline, WaifuGenerationResult } from "../providers/types.js";
 import { createGatewayModelPipeline } from "./pipeline/gatewayPipeline.js";
+import { ProviderPipelineError } from "./pipeline/params.js";
 import { resolveModelTarget, sharedRegistry } from "./pipeline/resolveTarget.js";
 import { QueryRole } from "../shared/queryLog.js";
 import {

@@ -3,6 +3,16 @@ import type { ReasoningConfig } from "../../shared/schemas/domain.js";
 
 export class GatewayPipelineError extends Error {}
 
+export class ProviderPipelineError extends Error {
+  constructor(
+    message: string,
+    readonly details?: unknown
+  ) {
+    super(message);
+    this.name = "ProviderPipelineError";
+  }
+}
+
 export type SamplingInputs = {
   temperature?: number;
   topP?: number;
