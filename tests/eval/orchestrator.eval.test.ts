@@ -6,19 +6,21 @@
 //
 // Prompt building reuses the exact path used in tests/runtime.test.ts:
 //   RuntimeOrchestrator with a custom createPipeline wrapper that calls the REAL
-//   pipeline but intercepts the ProviderRequest for assertion.
+//   gateway pipeline (createGatewayModelPipeline) but intercepts the ProviderRequest
+//   for assertion.
 
 import { afterEach, describe, expect, it } from "vitest";
+import { createGateway } from "@waifucave/gateway";
 import { RuntimeOrchestrator } from "../../src/orchestration/runtime.js";
 import type { OrchestratorDecision } from "../../src/orchestration/decisions.js";
 import type {
   ModelPipeline,
-  PipelineCredentials,
   ProviderRequest,
   WaifuGenerationRequest,
   WaifuGenerationResult
 } from "../../src/providers/types.js";
-import { createModelPipeline } from "../../src/providers/pipelines.js";
+import { resolveModelTarget } from "../../src/orchestration/pipeline/resolveTarget.js";
+import { createGatewayModelPipeline } from "../../src/orchestration/pipeline/gatewayPipeline.js";
 import { ensureDataLayout } from "../../src/config/layout.js";
 import { StorageService } from "../../src/storage/storageService.js";
 import {
@@ -208,7 +210,8 @@ describeLive("orchestrator eval — tier 2 (WAIFUS_EVAL_LIVE=1)", () => {
   }
 
   const providerId = inferProviderId(modelId);
-  const credentials: PipelineCredentials = { apiKey };
+  const target = resolveModelTarget({ providerId, modelId });
+  const gateway = createGateway({ credentials: () => apiKey });
 
   for (const scenario of EVAL_SCENARIOS) {
     it(
@@ -261,8 +264,8 @@ describeLive("orchestrator eval — tier 2 (WAIFUS_EVAL_LIVE=1)", () => {
             }
           };
 
-          // Pipeline wrapper: calls real createModelPipeline but captures the decision
-          const realPipeline = createModelPipeline(modelId, credentials);
+          // Pipeline wrapper: calls the real gateway pipeline but captures the decision
+          const realPipeline = createGatewayModelPipeline({ ...target, queryRole: "orchestrator", gateway });
           const wrappedPipeline: ModelPipeline = {
             async decideOrchestrator(request: ProviderRequest) {
               const decision = await realPipeline.decideOrchestrator!(request);

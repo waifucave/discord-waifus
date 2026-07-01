@@ -6,20 +6,21 @@
 //   2. clean-reply scenario: a simple casual message gets a validator-passing reply.
 //
 // Prompt building reuses the RuntimeOrchestrator path (same as runtime.test.ts):
-//   the real createModelPipeline is passed as createPipeline, so buildWaifuPromptParts
-//   assembles the W2 harness blocks through the normal code path.
+//   the real gateway pipeline (createGatewayModelPipeline) is passed as createPipeline,
+//   so buildWaifuPromptParts assembles the W2 harness blocks through the normal code path.
 
 import { afterEach, describe, expect, it } from "vitest";
+import { createGateway } from "@waifucave/gateway";
 import { RuntimeOrchestrator } from "../../src/orchestration/runtime.js";
 import type {
   ModelPipeline,
-  PipelineCredentials,
   ProviderRequest,
   WaifuGenerationRequest,
   WaifuGenerationResult
 } from "../../src/providers/types.js";
 import type { OrchestratorDecision } from "../../src/orchestration/decisions.js";
-import { createModelPipeline } from "../../src/providers/pipelines.js";
+import { resolveModelTarget } from "../../src/orchestration/pipeline/resolveTarget.js";
+import { createGatewayModelPipeline } from "../../src/orchestration/pipeline/gatewayPipeline.js";
 import { validateWaifuOutput } from "../../src/orchestration/outputValidator.js";
 import { ensureDataLayout } from "../../src/config/layout.js";
 import { StorageService } from "../../src/storage/storageService.js";
@@ -189,7 +190,8 @@ describeLive("waifu eval — tier 2 (WAIFUS_EVAL_LIVE=1)", () => {
   }
 
   const providerId = inferProviderId(modelId);
-  const credentials: PipelineCredentials = { apiKey };
+  const target = resolveModelTarget({ providerId, modelId });
+  const gateway = createGateway({ credentials: () => apiKey });
   const roots: string[] = [];
 
   afterEach(async () => {
@@ -207,7 +209,7 @@ describeLive("waifu eval — tier 2 (WAIFUS_EVAL_LIVE=1)", () => {
   ): Promise<string | undefined> {
     let capturedReply: string | undefined;
 
-    const realPipeline = createModelPipeline(modelId, credentials);
+    const realPipeline = createGatewayModelPipeline({ ...target, queryRole: "waifu", gateway });
     const wrappedPipeline: ModelPipeline = {
       async decideOrchestrator(request: ProviderRequest): Promise<OrchestratorDecision> {
         // Force the orchestrator to always reply with the target waifu
