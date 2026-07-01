@@ -14,6 +14,7 @@ type DoctorResult = {
   schema: { unstamped: string[] };
   models: { unresolved: Array<{ scope: string; providerId: string | null; modelId: string }> };
   providersConfigured: string[];
+  discord: { orchestratorConfigured: boolean; waifuBotCount: number };
 };
 
 const roots: string[] = [];
@@ -119,6 +120,57 @@ describe("waifus doctor: CLI resilience on unmigrated v1 installs", () => {
   });
 });
 
+describe("waifus doctor: v1 providers.json / discord-bots.json report real data, not empties", () => {
+  it("surfaces real provider ids and discord bot config from an unmigrated v1 root instead of hiding them", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    await writeV1ProvidersFile(root, {
+      openai: {
+        providerId: "openai",
+        apiKey: "sk-test-dummy-key",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      }
+    });
+    await writeV1DiscordBotsFile(root, {
+      orchestrator: {
+        id: "orchestrator-bot",
+        displayName: "Orchestrator",
+        token: "dummy-orchestrator-token",
+        enabled: true
+      },
+      waifus: [
+        { id: "waifu-bot-1", displayName: "Waifu One", token: "dummy-waifu-token", enabled: true }
+      ]
+    });
+
+    const { code, result } = await runDoctor(root);
+    expect(code).toBe(0);
+    expect(result.warnings).toContain("unmigrated data root — run `waifus start` to migrate");
+    expect(result.providersConfigured).toEqual(["openai"]);
+    expect(result.discord.orchestratorConfigured).toBe(true);
+    expect(result.discord.waifuBotCount).toBe(1);
+  });
+
+  it("still throws when a v1 providers.json record is genuinely invalid beyond just an old schemaVersion", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    await writeV1ProvidersFile(root, {
+      openai: {
+        providerId: "openai",
+        // apiKey intentionally omitted — a genuinely malformed credential record, not just a
+        // stale schemaVersion.
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      }
+    });
+
+    await expect(runDoctor(root)).rejects.toThrow();
+  });
+});
+
 describe("waifus status/stop: tolerate unmigrated runtime files", () => {
   it("status reads a stale schemaVersion runtime.json/pid.json without crashing", async () => {
     const root = await makeTempRoot();
@@ -168,6 +220,28 @@ async function writeJson(root: string, relativePath: string, value: unknown): Pr
   const filePath = path.join(root, relativePath);
   await mkdir(path.dirname(filePath), { recursive: true });
   await writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
+
+async function writeV1ProvidersFile(root: string, providers: Record<string, unknown>): Promise<void> {
+  await writeJson(root, "user/providers.json", {
+    schemaVersion: 1,
+    revision: 0,
+    updatedAt: new Date().toISOString(),
+    providers
+  });
+}
+
+async function writeV1DiscordBotsFile(
+  root: string,
+  bots: { orchestrator: unknown; waifus: unknown[] }
+): Promise<void> {
+  await writeJson(root, "user/discord-bots.json", {
+    schemaVersion: 1,
+    revision: 0,
+    updatedAt: new Date().toISOString(),
+    orchestrator: bots.orchestrator,
+    waifus: bots.waifus
+  });
 }
 
 async function downgradeConfigSchemaVersion(root: string, schemaVersion: number): Promise<void> {

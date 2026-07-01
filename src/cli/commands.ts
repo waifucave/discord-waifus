@@ -7,7 +7,12 @@ import { ensureDataLayout } from "../config/layout.js";
 import { appDataPath, DATA_ROOT_ENV, getDataRoot, resolveDataPath } from "../config/paths.js";
 import { loadAppConfig } from "../config/appConfig.js";
 import { startBackend } from "../backend/server.js";
-import { findUnresolvedModels, findUnstampedFiles } from "../backend/migrations.js";
+import {
+  findUnresolvedModels,
+  findUnstampedFiles,
+  readDiscordBotsLeniently,
+  readProviderIdsLeniently
+} from "../backend/migrations.js";
 import { RuntimeStateSchema } from "../backend/runtime.js";
 import type { RuntimeState } from "../backend/runtime.js";
 import { diagnoseBundledOcr } from "../orchestration/ocrPackages.js";
@@ -303,32 +308,44 @@ async function doctorCommand(dataRoot: string): Promise<number> {
 
   // doctor is read-only: it never calls runMigrations. An unmigrated (schemaVersion 1) data root
   // would otherwise crash every strict Zod parse below (`z.literal(CURRENT_SCHEMA_VERSION)`)
-  // before doctor gets a chance to report anything useful. Degrade those three reads to their
-  // empty fallback + a warning instead — but only when the parse failure is specifically a
-  // schemaVersion mismatch; any other validation failure (genuinely malformed data) still throws,
-  // so it surfaces as a real error instead of a silent pass.
+  // before doctor gets a chance to report anything useful. Degrade those three reads instead of
+  // letting the error propagate — but only when the parse failure is specifically a schemaVersion
+  // mismatch; any other validation failure (genuinely malformed data) still throws, so it surfaces
+  // as a real error instead of a silent pass. The fallback is a thunk (not a plain value) so the
+  // providers/discord-bots cases below can extract the real on-disk data leniently instead of
+  // reporting a synthetic empty file — an unmigrated root with real stored credentials/bots must
+  // still surface them, not hide them.
   let unmigrated = false;
-  const degradeOnVersionMismatch = async <T>(load: () => Promise<T>, fallback: T): Promise<T> => {
+  const degradeOnVersionMismatch = async <T>(load: () => Promise<T>, fallback: () => Promise<T> | T): Promise<T> => {
     try {
       return await load();
     } catch (error) {
       if (!isSchemaVersionMismatch(error)) throw error;
       unmigrated = true;
-      return fallback;
+      return await fallback();
     }
   };
 
-  const config = await degradeOnVersionMismatch(() => loadAppConfig(dataRoot), DEFAULT_APP_CONFIG);
+  const config = await degradeOnVersionMismatch(() => loadAppConfig(dataRoot), () => DEFAULT_APP_CONFIG);
   const storage = new StorageService(dataRoot);
   const providerFallback = ProviderCredentialsFileSchema.parse(createEmptyRevisionedFile({ providers: {} }));
-  const providerFile = await degradeOnVersionMismatch(
-    () => storage.readJson("user/providers.json", ProviderCredentialsFileSchema, providerFallback),
-    providerFallback
+  const providersConfigured = await degradeOnVersionMismatch(
+    async () =>
+      Object.keys(
+        (await storage.readJson("user/providers.json", ProviderCredentialsFileSchema, providerFallback)).providers
+      ),
+    () => readProviderIdsLeniently(dataRoot)
   );
   const discordFallback = DiscordBotsFileSchema.parse(createEmptyRevisionedFile({ orchestrator: null, waifus: [] }));
-  const discordFile = await degradeOnVersionMismatch(
-    () => storage.readJson("user/discord-bots.json", DiscordBotsFileSchema, discordFallback),
-    discordFallback
+  const discordSummary = await degradeOnVersionMismatch(
+    async () => {
+      const discordFile = await storage.readJson("user/discord-bots.json", DiscordBotsFileSchema, discordFallback);
+      return {
+        orchestratorConfigured: discordFile.orchestrator?.token !== undefined,
+        waifuBotCount: discordFile.waifus.length
+      };
+    },
+    () => readDiscordBotsLeniently(dataRoot)
   );
 
   const warnings: string[] = [];
@@ -362,10 +379,10 @@ async function doctorCommand(dataRoot: string): Promise<number> {
       arch: process.arch,
       bundled: bundledOcr
     },
-    providersConfigured: Object.keys(providerFile.providers),
+    providersConfigured,
     discord: {
-      orchestratorConfigured: discordFile.orchestrator?.token !== undefined,
-      waifuBotCount: discordFile.waifus.length,
+      orchestratorConfigured: discordSummary.orchestratorConfigured,
+      waifuBotCount: discordSummary.waifuBotCount,
       warnings: [
         "MESSAGE_CONTENT intent must be enabled for complete Discord channel context.",
         "GUILD_MEMBERS intent is optional unless full member refreshes are required."

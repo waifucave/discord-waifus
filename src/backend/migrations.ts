@@ -879,18 +879,31 @@ function toPosixRelative(dataRoot: string, filePath: string): string {
   return path.relative(dataRoot, filePath).split(path.sep).join("/");
 }
 
-async function isJsonSchemaVersionUnstamped(filePath: string): Promise<boolean> {
+type SchemaVersionState = { data: Record<string, unknown>; stale: boolean };
+
+// Shared read step for the JSON schemaVersion check/stamp pair below: parses the file leniently
+// and reports whether it's a versioned record (has a `schemaVersion` field) and whether that
+// version is stale. `isJsonSchemaVersionUnstamped` only needs `stale`; `stampJsonSchemaVersion`
+// reuses `data` so it can mutate and rewrite the same parsed object instead of re-reading.
+async function readJsonSchemaVersionState(filePath: string): Promise<SchemaVersionState | undefined> {
   const data = await readJsonOrUndefined(filePath);
-  if (!isObject(data)) return false;
-  return "schemaVersion" in data && data.schemaVersion !== CURRENT_SCHEMA_VERSION;
+  if (!isObject(data) || !("schemaVersion" in data)) return undefined;
+  return { data, stale: data.schemaVersion !== CURRENT_SCHEMA_VERSION };
 }
 
-async function isTomlConfigUnstamped(filePath: string): Promise<boolean> {
+async function isJsonSchemaVersionUnstamped(filePath: string): Promise<boolean> {
+  const state = await readJsonSchemaVersionState(filePath);
+  return state?.stale ?? false;
+}
+
+// Shared read step for the TOML schemaVersion check/stamp pair below — same contract as
+// `readJsonSchemaVersionState`, but for the root TOML app config.
+async function readTomlSchemaVersionState(filePath: string): Promise<SchemaVersionState | undefined> {
   let raw: string;
   try {
     raw = await readFile(filePath, "utf8");
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw error;
   }
 
@@ -899,9 +912,44 @@ async function isTomlConfigUnstamped(filePath: string): Promise<boolean> {
     parsed = parseToml(raw);
   } catch {
     // Malformed TOML — not this walk's concern; loadAppConfig reports it as a real error.
-    return false;
+    return undefined;
   }
-  return isObject(parsed) && "schemaVersion" in parsed && parsed.schemaVersion !== CURRENT_SCHEMA_VERSION;
+  if (!isObject(parsed) || !("schemaVersion" in parsed)) return undefined;
+  return { data: parsed, stale: parsed.schemaVersion !== CURRENT_SCHEMA_VERSION };
+}
+
+async function isTomlConfigUnstamped(filePath: string): Promise<boolean> {
+  const state = await readTomlSchemaVersionState(filePath);
+  return state?.stale ?? false;
+}
+
+// Lenient companion to the strict `user/providers.json` read, for `waifus doctor` (T5 fix). When
+// the strict ProviderCredentialsFileSchema parse fails only because of a stale schemaVersion,
+// doctor should still report the real configured provider ids instead of an empty list — same
+// lenient readJsonOrUndefined + isObject pattern as findUnresolvedModels below, rather than the
+// strict domain schema.
+export async function readProviderIdsLeniently(dataRoot: string): Promise<string[]> {
+  const data = await readJsonOrUndefined(path.join(dataRoot, "user", "providers.json"));
+  if (!isObject(data) || !isObject(data.providers)) return [];
+  return Object.keys(data.providers);
+}
+
+export type LenientDiscordBotsSummary = {
+  orchestratorConfigured: boolean;
+  waifuBotCount: number;
+};
+
+// Lenient companion to the strict `user/discord-bots.json` read, for `waifus doctor` (T5 fix).
+// Mirrors exactly the two fields the strict path reports (orchestrator token presence, waifu bot
+// count) by reading the raw structure instead of requiring the full DiscordBotsFileSchema parse.
+export async function readDiscordBotsLeniently(dataRoot: string): Promise<LenientDiscordBotsSummary> {
+  const data = await readJsonOrUndefined(path.join(dataRoot, "user", "discord-bots.json"));
+  if (!isObject(data)) return { orchestratorConfigured: false, waifuBotCount: 0 };
+  const orchestrator = data.orchestrator;
+  return {
+    orchestratorConfigured: isObject(orchestrator) && orchestrator.token !== undefined,
+    waifuBotCount: Array.isArray(data.waifus) ? data.waifus.length : 0
+  };
 }
 
 export type UnresolvedModelRef = { scope: string; providerId: string | null; modelId: string };
@@ -977,36 +1025,17 @@ async function collectJsonFilesRecursive(dir: string): Promise<string[]> {
 // Only stamps files that already declare a schemaVersion field (i.e. are actually versioned
 // records) — leaves unrelated JSON untouched.
 async function stampJsonSchemaVersion(filePath: string): Promise<boolean> {
-  const data = await readJsonOrUndefined(filePath);
-  if (!isObject(data)) return false;
-  if (!("schemaVersion" in data) || data.schemaVersion === CURRENT_SCHEMA_VERSION) return false;
-  data.schemaVersion = CURRENT_SCHEMA_VERSION;
-  await atomicWriteJson(filePath, data);
+  const state = await readJsonSchemaVersionState(filePath);
+  if (!state || !state.stale) return false;
+  state.data.schemaVersion = CURRENT_SCHEMA_VERSION;
+  await atomicWriteJson(filePath, state.data);
   return true;
 }
 
 async function stampTomlConfigSchemaVersion(filePath: string): Promise<boolean> {
-  let raw: string;
-  try {
-    raw = await readFile(filePath, "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
-    throw error;
-  }
-
-  let parsed: unknown;
-  try {
-    parsed = parseToml(raw);
-  } catch {
-    // Malformed TOML — nothing this migration can safely fix; leave it for loadAppConfig to
-    // report.
-    return false;
-  }
-  if (!isObject(parsed) || !("schemaVersion" in parsed) || parsed.schemaVersion === CURRENT_SCHEMA_VERSION) {
-    return false;
-  }
-
-  parsed.schemaVersion = CURRENT_SCHEMA_VERSION;
-  await atomicWriteText(filePath, stringifyToml(parsed as Record<string, unknown>) + "\n", { mode: 0o600 });
+  const state = await readTomlSchemaVersionState(filePath);
+  if (!state || !state.stale) return false;
+  state.data.schemaVersion = CURRENT_SCHEMA_VERSION;
+  await atomicWriteText(filePath, stringifyToml(state.data) + "\n", { mode: 0o600 });
   return true;
 }
