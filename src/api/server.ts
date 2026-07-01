@@ -65,6 +65,7 @@ import {
   type LegacyGeneration,
   type LegacyReasoning
 } from "../shared/paramsCompat.js";
+import { assertKnownProvider, assertModelWriteValid } from "./writeValidation.js";
 
 export type ApiServerOptions = {
   dataRoot: string;
@@ -362,6 +363,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
 
   app.put("/api/providers/:providerId/credentials", async (request) => {
     const { providerId } = z.object({ providerId: ProviderIdSchema }).parse(request.params);
+    assertKnownProvider(providerId);
     const body = ProviderCredentialsBodySchema.parse(request.body);
     const now = nowIso();
     const updated = await storage.updateRevisionedJson({
@@ -408,6 +410,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
       params: params ?? legacyToParams({ reasoning, generation }),
       id
     });
+    assertModelWriteValid(waifu.providerId, waifu.modelId, waifu.params);
     const saved = await storage.writeJson(`waifu:${id}`, relativePath, WaifuConfigSchema, waifu);
     return reply.status(201).send(withLegacyViews(saved));
   });
@@ -433,7 +436,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
           revision: _revision, schemaVersion: _schemaVersion, updatedAt: _updatedAt, id: _id,
           reasoning: _reasoning, generation: _generation, params: _params, ...patch
         } = body;
-        return {
+        const next = {
           ...current,
           ...patch,
           ...(paramsPatch !== undefined ? { params: paramsPatch } : {}),
@@ -441,6 +444,8 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
           // personaDigest is server-managed; always carry it forward from current.
           personaDigest: current.personaDigest
         };
+        assertModelWriteValid(next.providerId, next.modelId, next.params);
+        return next;
       }
     });
     // Fire-and-forget: regenerate persona digest when persona text changed.
@@ -882,11 +887,13 @@ async function updateAgentConfig(
         revision: _revision, schemaVersion: _schemaVersion, updatedAt: _updatedAt,
         reasoning: _reasoning, generation: _generation, params: _params, ...patch
       } = body;
-      return {
+      const next = {
         ...current,
         ...patch,
         ...(paramsPatch !== undefined ? { params: paramsPatch } : {})
       };
+      assertModelWriteValid(next.providerId, next.modelId, next.params);
+      return next;
     }
   });
 }

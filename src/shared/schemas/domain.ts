@@ -1,7 +1,10 @@
 import { z } from "zod";
 import { CURRENT_SCHEMA_VERSION, IsoDateStringSchema, RevisionedRecordSchema } from "./common.js";
 
-export const ProviderIdSchema = z.enum(["xai", "deepseek", "anthropic", "openai", "zai", "google-ai-studio"]);
+// Gateway P4 Task 4: widened from the legacy 6-value enum to any id the gateway registry
+// knows (14+ providers). Unknown ids still get rejected at API write time — see
+// src/api/writeValidation.ts's assertKnownProvider, which checks the live registry.
+export const ProviderIdSchema = z.string().min(1);
 export type ProviderId = z.infer<typeof ProviderIdSchema>;
 
 export const TimeOfDaySchema = z

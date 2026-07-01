@@ -758,6 +758,179 @@ describe("Backend API", () => {
   });
 });
 
+// Gateway P4 Task 4: provider ids widen from the legacy 6-value enum to any id the gateway
+// registry knows, and writes that carry a modelId are validated against the registry
+// (unknown provider/model -> 400; params the model's descriptor forbids -> 400
+// unsupported_parameter) instead of failing later at chat time.
+describe("Provider id widening + write validation (Gateway P4 Task 4)", () => {
+  it("stores credentials for a provider id outside the legacy 6-id enum and enforces optimistic concurrency for it", async () => {
+    const { app } = await makeApp();
+    try {
+      const first = await app.inject({
+        method: "PUT",
+        url: "/api/providers/openrouter/credentials",
+        payload: {
+          revision: 0,
+          apiKey: "or-test_12345678901234567890"
+        }
+      });
+      expect(first.statusCode).toBe(200);
+      expect(first.json().providerId).toBe("openrouter");
+      expect(first.json().credentials.configured).toBe(true);
+      expect(JSON.stringify(first.json())).not.toContain("or-test_12345678901234567890");
+
+      // A second write with the now-stale revision proves the first write actually persisted.
+      const stale = await app.inject({
+        method: "PUT",
+        url: "/api/providers/openrouter/credentials",
+        payload: {
+          revision: 0,
+          apiKey: "or-test_09876543210987654321"
+        }
+      });
+      expect(stale.statusCode).toBe(409);
+      expect(stale.json().latest.revision).toBe(1);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("rejects a credential write for a provider id the gateway registry doesn't know", async () => {
+    const { app } = await makeApp();
+    try {
+      const res = await app.inject({
+        method: "PUT",
+        url: "/api/providers/notaprovider/credentials",
+        payload: {
+          revision: 0,
+          apiKey: "np-test_12345678901234567890"
+        }
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json().details).toEqual({ error: "unknown_provider", providerId: "notaprovider" });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("rejects a waifu param write that violates the target model's registry descriptor", async () => {
+    const { app } = await makeApp();
+    try {
+      const create = await app.inject({
+        method: "POST",
+        url: "/api/waifus",
+        payload: { id: "param-violation", name: "ParamViolation", displayName: "ParamViolation" }
+      });
+      expect(create.statusCode).toBe(201);
+
+      // deepseek-v4-flash's registry descriptor (verified confidence) caps temperature at 2.
+      const update = await app.inject({
+        method: "PUT",
+        url: "/api/waifus/param-violation",
+        payload: {
+          revision: 0,
+          providerId: "deepseek",
+          modelId: "deepseek-v4-flash",
+          params: { temperature: 3 }
+        }
+      });
+      expect(update.statusCode).toBe(400);
+      const body = update.json();
+      expect(body.details.error).toBe("unsupported_parameter");
+      expect(body.details.violations).toEqual(
+        expect.arrayContaining([expect.objectContaining({ param: "temperature", code: "out_of_range" })])
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("accepts a waifu param write within the target model's registry descriptor", async () => {
+    const { app } = await makeApp();
+    try {
+      const create = await app.inject({
+        method: "POST",
+        url: "/api/waifus",
+        payload: { id: "param-ok", name: "ParamOk", displayName: "ParamOk" }
+      });
+      expect(create.statusCode).toBe(201);
+
+      const update = await app.inject({
+        method: "PUT",
+        url: "/api/waifus/param-ok",
+        payload: {
+          revision: 0,
+          providerId: "deepseek",
+          modelId: "deepseek-v4-flash",
+          params: { temperature: 1.5 }
+        }
+      });
+      expect(update.statusCode).toBe(200);
+      expect(update.json().modelId).toBe("deepseek-v4-flash");
+      expect(update.json().params).toEqual({ temperature: 1.5 });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("rejects a waifu model assignment the gateway registry doesn't know", async () => {
+    const { app } = await makeApp();
+    try {
+      const create = await app.inject({
+        method: "POST",
+        url: "/api/waifus",
+        payload: { id: "model-unknown", name: "ModelUnknown", displayName: "ModelUnknown" }
+      });
+      expect(create.statusCode).toBe(201);
+
+      const update = await app.inject({
+        method: "PUT",
+        url: "/api/waifus/model-unknown",
+        payload: {
+          revision: 0,
+          providerId: "deepseek",
+          modelId: "not-a-real-model"
+        }
+      });
+      expect(update.statusCode).toBe(400);
+      expect(update.json().details).toEqual({
+        error: "unknown_model",
+        providerId: "deepseek",
+        modelId: "not-a-real-model"
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("leaves params unvalidated when no modelId is set (validated at model-assignment time instead)", async () => {
+    const { app } = await makeApp();
+    try {
+      const create = await app.inject({
+        method: "POST",
+        url: "/api/waifus",
+        payload: { id: "no-model-yet", name: "NoModelYet", displayName: "NoModelYet" }
+      });
+      expect(create.statusCode).toBe(201);
+
+      // temperature: 999 would violate every registry descriptor, but with no modelId assigned
+      // there is nothing to validate against yet.
+      const update = await app.inject({
+        method: "PUT",
+        url: "/api/waifus/no-model-yet",
+        payload: {
+          revision: 0,
+          params: { temperature: 999 }
+        }
+      });
+      expect(update.statusCode).toBe(200);
+      expect(update.json().params).toEqual({ temperature: 999 });
+    } finally {
+      await app.close();
+    }
+  });
+});
+
 const LLM_CHAT_OK_PAYLOAD = {
   id: "cmpl_1",
   choices: [{ message: { content: "hello" }, finish_reason: "stop" }],
