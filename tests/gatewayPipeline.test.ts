@@ -26,7 +26,7 @@ describe("generateWaifu (gateway)", () => {
     messages: [msg({}), msg({ id: "m2", authorKind: "waifu" as const, authorId: "bot-1", content: "yo" })],
     selfAuthorIds: ["bot-1"],
     temperature: 0.7,
-    reasoning: { enabled: false }
+    params: { "reasoning.enabled": false }
   };
 
   it("returns trimmed text content and flat usage", async () => {
@@ -127,7 +127,7 @@ describe("decideOrchestrator (gateway)", () => {
     availableWaifuIds: ["yuki"],
     replyRequired: false,
     directiveBudgetOpen: true,
-    reasoning: { enabled: true, effort: "high" as const }
+    params: { "reasoning.enabled": true, "reasoning.effort": "high" }
   };
 
   it("forces the decision tool, disables thinking via pre-conform, parses the decision", async () => {
@@ -427,7 +427,7 @@ describe("cross-wire goldens", () => {
       selfAuthorIds: ["bot-1"],
       temperature: 0.7,
       maxOutputTokens: 300,
-      reasoning: { enabled: false }
+      params: { "reasoning.enabled": false }
     });
 
     // URL and auth header
@@ -494,7 +494,7 @@ describe("cross-wire goldens", () => {
       replyRequired: false,
       directiveBudgetOpen: true,
       // No reasoning — gpt-5.4-nano is a responses-wire model; no reasoning.enabled param needed
-      reasoning: { enabled: false }
+      params: { "reasoning.enabled": false }
     };
 
     const parsed = await makePipeline(fetchImpl as unknown as typeof fetch, "openai", "gpt-5.4-nano").decideOrchestrator!(orchRequest);
@@ -600,7 +600,7 @@ describe("cross-wire goldens", () => {
       messages: [msg({})],
       selfAuthorIds: [],
       temperature: 0.7,
-      reasoning: { enabled: true }
+      params: { "reasoning.enabled": true }
     });
 
     const body = JSON.parse((fetchImpl.mock.calls[0]![1] as RequestInit).body as string);

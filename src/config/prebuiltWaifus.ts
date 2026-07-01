@@ -8,7 +8,7 @@ export type PrebuiltWaifu = Pick<
   | "enabled"
   | "persona"
   | "contextWindow"
-  | "generation"
+  | "params"
   | "availability"
   | "tools"
 >;
@@ -20,7 +20,7 @@ export const PREBUILT_WAIFUS: PrebuiltWaifu[] = [
     displayName: "Lumi",
     enabled: true,
     contextWindow: 50,
-    generation: {
+    params: {
       temperature: 0.8,
       topP: 0.95
     },
@@ -46,7 +46,7 @@ export const PREBUILT_WAIFUS: PrebuiltWaifu[] = [
     displayName: "Nox",
     enabled: true,
     contextWindow: 50,
-    generation: {
+    params: {
       temperature: 0.9,
       topP: 0.9
     },
@@ -71,7 +71,7 @@ export const PREBUILT_WAIFUS: PrebuiltWaifu[] = [
     displayName: "Mira",
     enabled: true,
     contextWindow: 50,
-    generation: {
+    params: {
       temperature: 0.75,
       topP: 0.9
     },
@@ -97,7 +97,7 @@ export const PREBUILT_WAIFUS: PrebuiltWaifu[] = [
     displayName: "Riko",
     enabled: true,
     contextWindow: 50,
-    generation: {
+    params: {
       temperature: 1,
       topP: 0.95
     },

@@ -1,4 +1,4 @@
-import { MemoryKind, OrchestratorDecisionHistoryEntry, PendingObservation, ProviderId, ReasoningConfig } from "../shared/schemas/domain.js";
+import { MemoryKind, OrchestratorDecisionHistoryEntry, PendingObservation, ProviderId } from "../shared/schemas/domain.js";
 import { ContextMessage, OrchestratorWakeMarker } from "../orchestration/context.js";
 import { OrchestratorDecision } from "../orchestration/decisions.js";
 import { DreamOp, StageManagerObservation } from "../orchestration/stageManager.js";
@@ -47,7 +47,7 @@ export type ProviderRequest = {
   temperature?: number;
   topP?: number;
   maxOutputTokens?: number;
-  reasoning?: ReasoningConfig;
+  params?: Record<string, unknown>;
   signal?: AbortSignal;
 };
 

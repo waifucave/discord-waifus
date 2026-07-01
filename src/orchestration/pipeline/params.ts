@@ -1,5 +1,4 @@
 import type { Gateway, ToolChoice } from "@waifucave/gateway";
-import type { ReasoningConfig } from "../../shared/schemas/domain.js";
 
 export class GatewayPipelineError extends Error {}
 
@@ -17,26 +16,23 @@ export type SamplingInputs = {
   temperature?: number;
   topP?: number;
   maxOutputTokens?: number;
-  reasoning?: ReasoningConfig;
+  params?: Record<string, unknown>;
   stopSequences?: string[];
 };
 
-/** Old config shapes → unified dotted gateway params. Unset stays absent. */
+/**
+ * Per-call role defaults (temperature/topP/maxOutputTokens/stopSequences) → unified dotted
+ * gateway params, with config-sourced `inputs.params` (waifu/agent `params` record) merged in
+ * LAST so it wins over the role defaults. `effort:"none"` normalization now lives ONLY in
+ * legacyToParams (src/shared/paramsCompat.ts) — dotted params here never contain "none".
+ */
 export function buildUnifiedParams(inputs: SamplingInputs): Record<string, unknown> {
   const params: Record<string, unknown> = {};
   if (inputs.temperature !== undefined) params.temperature = inputs.temperature;
   if (inputs.topP !== undefined) params.topP = inputs.topP;
   if (inputs.maxOutputTokens !== undefined) params.maxOutputTokens = inputs.maxOutputTokens;
   if (inputs.stopSequences !== undefined && inputs.stopSequences.length > 0) params.stopSequences = inputs.stopSequences;
-  const reasoning = inputs.reasoning ?? {};
-  if (reasoning.effort === "none") {
-    params["reasoning.enabled"] = false;
-  } else {
-    if (reasoning.enabled !== undefined) params["reasoning.enabled"] = reasoning.enabled;
-    if (reasoning.effort !== undefined) params["reasoning.effort"] = reasoning.effort;
-    if (reasoning.budgetTokens !== undefined) params["reasoning.budgetTokens"] = reasoning.budgetTokens;
-  }
-  return params;
+  return { ...params, ...(inputs.params ?? {}) };
 }
 
 export type PreconformResult = {

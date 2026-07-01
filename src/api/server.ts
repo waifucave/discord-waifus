@@ -58,6 +58,7 @@ import { StorageService } from "../storage/storageService.js";
 import { recentQueries, recentReplies, subscribeQueries, subscribeReplies } from "../shared/queryLog.js";
 import { ApiError, badRequest, conflict, notFound, preconditionRequired } from "./errors.js";
 import { mergeConfiguredBotsIntoMembers } from "../discord/memberCache.js";
+import { legacyToParams, paramsToLegacy, type LegacyGeneration, type LegacyReasoning } from "../shared/paramsCompat.js";
 
 export type ApiServerOptions = {
   dataRoot: string;
@@ -83,17 +84,46 @@ const ProviderCredentialsBodySchema = z.object({
   revision: z.number().int().nonnegative().optional()
 });
 
+// Gateway P4 Task 2 compat layer: WaifuConfigSchema/AgentConfigSchema now carry a single
+// gateway-native dotted `params` record instead of separate `generation`/`reasoning` objects.
+// The (untouched) SPA still sends/reads the legacy shapes, so request bodies accept them loosely
+// alongside `params` — see resolveParamsPatch/withLegacyViews below.
+const LegacyReasoningBodySchema = z.object({
+  enabled: z.boolean().optional(),
+  effort: z.string().optional(),
+  budgetTokens: z.number().optional()
+});
+const LegacyGenerationBodySchema = z.object({
+  temperature: z.number().optional(),
+  topP: z.number().optional(),
+  maxOutputTokens: z.number().optional()
+});
+// `params` on the domain schemas carries `.default({})`, which `.partial()` still applies when
+// the field is absent from the request body (zod fills in the default even though "absent"
+// should mean "leave params alone" for a PATCH-style update). Re-declaring it here as a plain
+// optional (no default) in every body schema's `.extend()` makes "absent" stay `undefined`, so
+// resolveParamsPatch below can tell "not provided" apart from an explicit empty object.
+const LegacyParamsBodySchema = { params: z.record(z.string(), z.unknown()).optional() };
+
 const CreateWaifuBodySchema = WaifuConfigSchema.omit({
   schemaVersion: true,
   revision: true,
   updatedAt: true
 })
-  .partial({ id: true, enabled: true, persona: true, contextWindow: true, generation: true })
-  .required({ name: true, displayName: true });
+  .partial({ id: true, enabled: true, persona: true, contextWindow: true })
+  .required({ name: true, displayName: true })
+  .extend({
+    ...LegacyParamsBodySchema,
+    reasoning: LegacyReasoningBodySchema.optional(),
+    generation: LegacyGenerationBodySchema.optional()
+  });
 
 // personaDigest is server-managed; clients cannot set it via PUT.
 const UpdateWaifuBodySchema = WaifuConfigSchema.omit({ personaDigest: true }).partial().extend({
-  revision: z.number().int().nonnegative().optional()
+  revision: z.number().int().nonnegative().optional(),
+  ...LegacyParamsBodySchema,
+  reasoning: LegacyReasoningBodySchema.optional(),
+  generation: LegacyGenerationBodySchema.optional()
 });
 
 const ServerConfigBodySchema = ServerConfigSchema.partial().extend({
@@ -124,7 +154,10 @@ const UpdateMemoryBodySchema = CreateMemoryBodySchema.partial().extend({
 });
 
 const AgentConfigBodySchema = AgentConfigSchema.partial().extend({
-  revision: z.number().int().nonnegative().optional()
+  revision: z.number().int().nonnegative().optional(),
+  ...LegacyParamsBodySchema,
+  reasoning: LegacyReasoningBodySchema.optional(),
+  generation: LegacyGenerationBodySchema.optional()
 });
 
 const DiscordBotsBodySchema = DiscordBotsFileSchema.partial().extend({
@@ -272,24 +305,24 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     return sanitizeDiscordBots(saved);
   });
 
-  app.get("/api/orchestrator/config", async () => readAgentConfig(storage, "orchestrator"));
+  app.get("/api/orchestrator/config", async () => withLegacyViews(await readAgentConfig(storage, "orchestrator")));
   app.put("/api/orchestrator/config", async (request) => {
     const body = AgentConfigBodySchema.parse(request.body);
-    return updateAgentConfig(storage, request, "orchestrator", body, 20);
+    return withLegacyViews(await updateAgentConfig(storage, request, "orchestrator", body, 20));
   });
   app.get("/api/orchestrator/history", async () => readOrchestratorHistory(storage));
 
-  app.get("/api/stage-manager/config", async () => readAgentConfig(storage, "stage-manager"));
+  app.get("/api/stage-manager/config", async () => withLegacyViews(await readAgentConfig(storage, "stage-manager")));
   app.put("/api/stage-manager/config", async (request) => {
     const body = AgentConfigBodySchema.parse(request.body);
-    return updateAgentConfig(storage, request, "stage-manager", body, 80);
+    return withLegacyViews(await updateAgentConfig(storage, request, "stage-manager", body, 80));
   });
   app.get("/api/stage-manager/history", async () => readStageManagerHistory(storage));
 
-  app.get("/api/reviewer/config", async () => readAgentConfig(storage, "reviewer"));
+  app.get("/api/reviewer/config", async () => withLegacyViews(await readAgentConfig(storage, "reviewer")));
   app.put("/api/reviewer/config", async (request) => {
     const body = AgentConfigBodySchema.parse(request.body);
-    return updateAgentConfig(storage, request, "reviewer", body, 20);
+    return withLegacyViews(await updateAgentConfig(storage, request, "reviewer", body, 20));
   });
   app.get("/api/reviewer/history", async () => readReviewerHistory(storage));
 
@@ -353,7 +386,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     return { models: legacyModels(), gatewayModels: gatewayList.models };
   });
 
-  app.get("/api/waifus", async () => ({ waifus: await listWaifus(storage) }));
+  app.get("/api/waifus", async () => ({ waifus: (await listWaifus(storage)).map(withLegacyViews) }));
   app.post("/api/waifus", async (request, reply) => {
     const body = CreateWaifuBodySchema.parse(request.body);
     const id = body.id ?? slugId(body.name);
@@ -362,24 +395,27 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     if (await exists(resolveDataPath(options.dataRoot, relativePath))) {
       throw conflict(`Waifu ${id} already exists.`);
     }
+    const { reasoning, generation, params, ...rest } = body;
     const waifu = WaifuConfigSchema.parse({
       ...createRevisionedBase(),
-      ...body,
+      ...rest,
+      params: params ?? legacyToParams({ reasoning, generation }),
       id
     });
     const saved = await storage.writeJson(`waifu:${id}`, relativePath, WaifuConfigSchema, waifu);
-    return reply.status(201).send(saved);
+    return reply.status(201).send(withLegacyViews(saved));
   });
 
   app.get("/api/waifus/:waifuId", async (request) => {
     const { waifuId } = parseIdParam(request.params, "waifuId");
-    return readWaifu(storage, waifuId);
+    return withLegacyViews(await readWaifu(storage, waifuId));
   });
 
   app.put("/api/waifus/:waifuId", async (request) => {
     const { waifuId } = parseIdParam(request.params, "waifuId");
     const body = UpdateWaifuBodySchema.parse(request.body);
     requireRevision(request, body);
+    const paramsPatch = resolveParamsPatch(body);
     const saved = await storage.updateRevisionedJson({
       resourceKey: `waifu:${waifuId}`,
       relativePath: waifuRelativePath(waifuId),
@@ -387,10 +423,14 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
       fallback: await readWaifu(storage, waifuId),
       expectedRevision: expectedRevision(request, body),
       transform: (current) => {
-        const { revision: _revision, schemaVersion: _schemaVersion, updatedAt: _updatedAt, id: _id, ...patch } = body;
+        const {
+          revision: _revision, schemaVersion: _schemaVersion, updatedAt: _updatedAt, id: _id,
+          reasoning: _reasoning, generation: _generation, params: _params, ...patch
+        } = body;
         return {
           ...current,
           ...patch,
+          ...(paramsPatch !== undefined ? { params: paramsPatch } : {}),
           id: current.id,
           // personaDigest is server-managed; always carry it forward from current.
           personaDigest: current.personaDigest
@@ -401,7 +441,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     void generatePersonaDigestIfStale(storage, saved, logger, options).catch(() => {
       // Errors are handled inside generatePersonaDigestIfStale with logger.warn.
     });
-    return saved;
+    return withLegacyViews(saved);
   });
 
   app.post("/api/waifus/:waifuId/digest", async (request) => {
@@ -418,7 +458,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
       messages: [],
       personaText: waifu.persona
     });
-    return storage.updateRevisionedJson({
+    const saved = await storage.updateRevisionedJson({
       resourceKey: `waifu:${waifuId}`,
       relativePath: waifuRelativePath(waifuId),
       schema: WaifuConfigSchema,
@@ -428,6 +468,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
         personaDigest: { ...digest, personaHash }
       })
     });
+    return withLegacyViews(saved);
   });
 
   app.delete("/api/waifus/:waifuId", async (request, reply) => {
@@ -754,6 +795,31 @@ function sanitizeDiscordBot(bot: DiscordBotsFile["waifus"][number]) {
   };
 }
 
+// Gateway P4 Task 2 compat layer helpers ------------------------------------------------------
+//
+// withLegacyViews: adds synthesized `reasoning`/`generation` fields (derived from `params`)
+// alongside `params` on GET/PUT/POST responses, so the (untouched) SPA — which still reads
+// waifu.reasoning/waifu.generation and agent.reasoning — keeps working.
+function withLegacyViews<T extends { params?: Record<string, unknown> }>(config: T) {
+  return { ...config, ...paramsToLegacy(config.params ?? {}) };
+}
+
+// resolveParamsPatch: computes the `params` value a PUT should store, honoring precedence
+// (native `params` wins over legacy `reasoning`/`generation`) while leaving `params` untouched
+// when the request body touches none of the three — a partial PATCH-style update (e.g. renaming
+// a waifu) must not silently wipe previously-configured sampling/reasoning params.
+function resolveParamsPatch(body: {
+  params?: Record<string, unknown>;
+  reasoning?: LegacyReasoning;
+  generation?: LegacyGeneration;
+}): Record<string, unknown> | undefined {
+  if (body.params !== undefined) return body.params;
+  if (body.reasoning !== undefined || body.generation !== undefined) {
+    return legacyToParams({ reasoning: body.reasoning, generation: body.generation });
+  }
+  return undefined;
+}
+
 async function readAgentConfig(
   storage: StorageService,
   agent: "orchestrator" | "stage-manager" | "reviewer"
@@ -792,10 +858,15 @@ async function updateAgentConfig(
     ),
     expectedRevision: expectedRevision(request, body),
     transform: (current) => {
-      const { revision: _revision, schemaVersion: _schemaVersion, updatedAt: _updatedAt, ...patch } = body;
+      const paramsPatch = resolveParamsPatch(body);
+      const {
+        revision: _revision, schemaVersion: _schemaVersion, updatedAt: _updatedAt,
+        reasoning: _reasoning, generation: _generation, params: _params, ...patch
+      } = body;
       return {
         ...current,
-        ...patch
+        ...patch,
+        ...(paramsPatch !== undefined ? { params: paramsPatch } : {})
       };
     }
   });

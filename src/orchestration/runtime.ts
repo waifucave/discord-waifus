@@ -1114,7 +1114,7 @@ export class RuntimeOrchestrator {
         systemPrompt: this.buildOrchestratorSystemPrompt(orchestrator, server, requireReply),
         availableWaifuIds: availableWaifus.map((waifu) => waifu.id),
         replyRequired: requireReply,
-        reasoning: orchestrator.reasoning,
+        params: orchestrator.params,
         signal
       });
       decision = capDecisionDelays(decision);
@@ -1512,10 +1512,7 @@ export class RuntimeOrchestrator {
                   availableWaifuIds: nextWaifuIds,
                   pickNextWaifuToolEnabled: input.server.tools.pickNextWaifu,
                   shortTermMemoryToolEnabled: effectiveShortTermMemory,
-                  temperature: waifu.generation.temperature,
-                  topP: waifu.generation.topP,
-                  maxOutputTokens: waifu.generation.maxOutputTokens,
-                  reasoning: waifu.reasoning,
+                  params: waifu.params,
                   stopSequences: waifuStopSequences,
                   signal: input.signal
                 });
@@ -1841,7 +1838,7 @@ export class RuntimeOrchestrator {
         modelId: config.modelId,
         messages,
         availableWaifuIds: allowedWaifuIds,
-        reasoning: config.reasoning
+        params: config.params
       });
       const allowedObservations = observations.filter((observation) => allowedWaifuIds.includes(observation.waifuId));
       this.options.logger.info("Stage manager observer finished", {
@@ -2053,7 +2050,7 @@ export class RuntimeOrchestrator {
       messages: [],
       message: target.content,
       systemPrompt: config.prompt || DEFAULT_REVIEWER_PROMPT,
-      reasoning: config.reasoning,
+      params: config.params,
       signal: undefined
     });
 
@@ -2305,7 +2302,7 @@ export class RuntimeOrchestrator {
           memories: chunk.inputs,
           observations: chunk.observations,
           availableWaifuIds: [...new Set(chunk.inputs.map((input) => input.waifuId))],
-          reasoning: config.reasoning
+          params: config.params
         });
         const now = new Date();
         const result = applyDreamOps(store.memories, ops, chunk.indexMap, { guildId, now, allowedWaifuIds });

@@ -137,7 +137,7 @@ export class GatewayModelPipeline implements ModelPipeline {
       }),
       tools: [{ name: ORCHESTRATOR_TOOL_NAME, parameters: orchestratorToolParameters(request.availableWaifuIds, request.replyRequired, request.directiveBudgetOpen ?? true) as Record<string, unknown> }],
       toolChoice: { name: ORCHESTRATOR_TOOL_NAME },
-      sampling: { temperature: request.temperature ?? 0.2, maxOutputTokens: request.maxOutputTokens, reasoning: request.reasoning },
+      sampling: { temperature: request.temperature ?? 0.2, maxOutputTokens: request.maxOutputTokens, params: request.params },
       signal: request.signal
     });
     // normalizeOrchestratorDecision owns the replyRequired gate (parity with legacy
@@ -159,7 +159,7 @@ export class GatewayModelPipeline implements ModelPipeline {
       ],
       tools: [{ name: REVIEWER_TOOL_NAME, parameters: reviewerToolParameters() as Record<string, unknown> }],
       toolChoice: { name: REVIEWER_TOOL_NAME },
-      sampling: { temperature: request.temperature ?? 0, maxOutputTokens: request.maxOutputTokens ?? 64, reasoning: request.reasoning },
+      sampling: { temperature: request.temperature ?? 0, maxOutputTokens: request.maxOutputTokens ?? 64, params: request.params },
       signal: request.signal
     });
     return parseForcedCall(response, REVIEWER_TOOL_NAME, (raw) => ReviewerDecisionSchema.parse(raw), "decideReviewer");
@@ -179,7 +179,7 @@ export class GatewayModelPipeline implements ModelPipeline {
       toolChoice: tools.length ? "auto" : undefined,
       sampling: {
         temperature: request.temperature, topP: request.topP, maxOutputTokens: request.maxOutputTokens,
-        reasoning: request.reasoning, stopSequences: request.stopSequences
+        params: request.params, stopSequences: request.stopSequences
       },
       signal: request.signal
     });
@@ -224,7 +224,7 @@ export class GatewayModelPipeline implements ModelPipeline {
       ],
       tools: [{ name: OBSERVER_TOOL_NAME, parameters: observerToolParameters(request.availableWaifuIds) as Record<string, unknown> }],
       toolChoice: { name: OBSERVER_TOOL_NAME },
-      sampling: { temperature: request.temperature ?? 0.2, maxOutputTokens: request.maxOutputTokens, reasoning: request.reasoning },
+      sampling: { temperature: request.temperature ?? 0.2, maxOutputTokens: request.maxOutputTokens, params: request.params },
       signal: request.signal
     });
     return parseForcedCall(response, OBSERVER_TOOL_NAME, (raw) => {
@@ -243,7 +243,7 @@ export class GatewayModelPipeline implements ModelPipeline {
       ],
       tools: [{ name: DREAM_TOOL_NAME, parameters: (isFlat ? flatDreamToolParameters(request.availableWaifuIds) : dreamToolParameters(request.availableWaifuIds)) as Record<string, unknown> }],
       toolChoice: { name: DREAM_TOOL_NAME },
-      sampling: { temperature: request.temperature ?? 0.2, maxOutputTokens: request.maxOutputTokens, reasoning: request.reasoning },
+      sampling: { temperature: request.temperature ?? 0.2, maxOutputTokens: request.maxOutputTokens, params: request.params },
       signal: request.signal
     });
     return parseForcedCall(response, DREAM_TOOL_NAME, (raw) => {
@@ -266,7 +266,7 @@ export class GatewayModelPipeline implements ModelPipeline {
       ],
       tools: [{ name: PERSONA_DIGEST_TOOL_NAME, parameters: personaDigestToolParameters() as Record<string, unknown> }],
       toolChoice: { name: PERSONA_DIGEST_TOOL_NAME },
-      sampling: { temperature: request.temperature ?? 0.2, maxOutputTokens: request.maxOutputTokens, reasoning: request.reasoning },
+      sampling: { temperature: request.temperature ?? 0.2, maxOutputTokens: request.maxOutputTokens, params: request.params },
       signal: request.signal
     });
     return parseForcedCall(response, PERSONA_DIGEST_TOOL_NAME, (raw) => PersonaDigestResultSchema.parse(raw), "generatePersonaDigest");

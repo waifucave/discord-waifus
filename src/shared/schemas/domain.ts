@@ -4,18 +4,6 @@ import { CURRENT_SCHEMA_VERSION, IsoDateStringSchema, RevisionedRecordSchema } f
 export const ProviderIdSchema = z.enum(["xai", "deepseek", "anthropic", "openai", "zai", "google-ai-studio"]);
 export type ProviderId = z.infer<typeof ProviderIdSchema>;
 
-export const ReasoningEffortSchema = z.enum(["none", "minimal", "low", "medium", "high", "max", "xhigh"]);
-export type ReasoningEffort = z.infer<typeof ReasoningEffortSchema>;
-
-export const ReasoningConfigSchema = z
-  .object({
-    enabled: z.boolean().optional(),
-    effort: ReasoningEffortSchema.optional(),
-    budgetTokens: z.number().int().positive().optional()
-  })
-  .default({});
-export type ReasoningConfig = z.infer<typeof ReasoningConfigSchema>;
-
 export const TimeOfDaySchema = z
   .string()
   .regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Use 24-hour HH:mm time.");
@@ -239,7 +227,7 @@ export const AgentConfigSchema = RevisionedRecordSchema.extend({
   contextWindow: z.number().int().min(1).max(100).default(20),
   prompt: z.string().default(""),
   directiveCooldown: z.number().int().min(0).max(20).default(3),
-  reasoning: ReasoningConfigSchema,
+  params: z.record(z.string(), z.unknown()).default({}),
   promptSections: OrchestratorPromptSectionsSchema
 });
 export type AgentConfig = z.infer<typeof AgentConfigSchema>;
@@ -254,14 +242,7 @@ export const WaifuConfigSchema = RevisionedRecordSchema.extend({
   modelId: z.string().optional(),
   botId: z.string().optional(),
   contextWindow: z.number().int().min(1).max(100).default(50),
-  generation: z
-    .object({
-      temperature: z.number().min(0).max(2).optional(),
-      topP: z.number().min(0).max(1).optional(),
-      maxOutputTokens: z.number().int().positive().optional()
-    })
-    .default({}),
-  reasoning: ReasoningConfigSchema,
+  params: z.record(z.string(), z.unknown()).default({}),
   availability: WaifuAvailabilitySchema,
   tools: WaifuToolSettingsSchema,
   promptLayout: WaifuPromptLayoutSchema,

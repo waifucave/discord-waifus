@@ -6,23 +6,34 @@ import { buildUnifiedParams, preconformRequest } from "../src/orchestration/pipe
 const gateway = createGateway({});
 
 describe("buildUnifiedParams", () => {
-  it("maps generation + reasoning config to dotted gateway params", () => {
+  it("maps explicit per-call fields to dotted gateway params", () => {
     expect(
       buildUnifiedParams({
         temperature: 0.7, topP: 0.9, maxOutputTokens: 2048,
-        reasoning: { enabled: true, effort: "high", budgetTokens: 2000 },
         stopSequences: ["\nA:", "\nB:"]
       })
     ).toEqual({
       temperature: 0.7, topP: 0.9, maxOutputTokens: 2048,
-      "reasoning.enabled": true, "reasoning.effort": "high", "reasoning.budgetTokens": 2000,
       stopSequences: ["\nA:", "\nB:"]
     });
   });
 
-  it("omits unset fields and maps effort 'none' to enabled:false", () => {
-    expect(buildUnifiedParams({ reasoning: { effort: "none" } })).toEqual({ "reasoning.enabled": false });
+  it("omits unset fields", () => {
     expect(buildUnifiedParams({})).toEqual({});
+  });
+
+  // Pinned precedence: config-sourced inputs.params WINS over the explicit per-call
+  // role-default fields (temperature here is both a role default AND a config override).
+  it("config params (inputs.params) override per-call role defaults", () => {
+    expect(
+      buildUnifiedParams({ temperature: 0.2, params: { temperature: 0.9, "reasoning.enabled": false } })
+    ).toEqual({ temperature: 0.9, "reasoning.enabled": false });
+  });
+
+  it("merges config params alongside untouched per-call fields", () => {
+    expect(
+      buildUnifiedParams({ temperature: 0.2, maxOutputTokens: 512, params: { "reasoning.effort": "high" } })
+    ).toEqual({ temperature: 0.2, maxOutputTokens: 512, "reasoning.effort": "high" });
   });
 });
 

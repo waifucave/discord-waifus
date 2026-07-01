@@ -219,6 +219,152 @@ describe("Backend API", () => {
     }
   });
 
+  // Gateway P4 Task 2: reasoning/generation config objects were unified into a single
+  // gateway-native dotted `params` record. The API keeps legacy `reasoning`/`generation`
+  // request/response fields working for the untouched SPA via a compat layer.
+  describe("waifu/agent params legacy compat layer", () => {
+    it("PUT waifu with legacy reasoning/generation body stores dotted params; GET synthesizes both views", async () => {
+      const { app } = await makeApp();
+      try {
+        const create = await app.inject({
+          method: "POST",
+          url: "/api/waifus",
+          payload: { id: "params-test", name: "ParamsTest", displayName: "ParamsTest" }
+        });
+        expect(create.statusCode).toBe(201);
+
+        const update = await app.inject({
+          method: "PUT",
+          url: "/api/waifus/params-test",
+          payload: {
+            revision: 0,
+            generation: { temperature: 0.5 },
+            reasoning: { effort: "high" }
+          }
+        });
+        expect(update.statusCode).toBe(200);
+        expect(update.json().params).toEqual({ temperature: 0.5, "reasoning.effort": "high" });
+        expect(update.json().generation).toEqual({ temperature: 0.5 });
+        expect(update.json().reasoning).toEqual({ effort: "high" });
+
+        const get = await app.inject({ method: "GET", url: "/api/waifus/params-test" });
+        expect(get.statusCode).toBe(200);
+        expect(get.json().params).toEqual({ temperature: 0.5, "reasoning.effort": "high" });
+        expect(get.json().generation).toEqual({ temperature: 0.5 });
+        expect(get.json().reasoning).toEqual({ effort: "high" });
+
+        const list = await app.inject({ method: "GET", url: "/api/waifus" });
+        const listed = list.json().waifus.find((w: { id: string }) => w.id === "params-test");
+        expect(listed.params).toEqual({ temperature: 0.5, "reasoning.effort": "high" });
+        expect(listed.reasoning).toEqual({ effort: "high" });
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("PUT waifu with a native params body wins over legacy reasoning/generation fields", async () => {
+      const { app } = await makeApp();
+      try {
+        await app.inject({
+          method: "POST",
+          url: "/api/waifus",
+          payload: { id: "params-wins", name: "ParamsWins", displayName: "ParamsWins" }
+        });
+
+        const update = await app.inject({
+          method: "PUT",
+          url: "/api/waifus/params-wins",
+          payload: {
+            revision: 0,
+            params: { temperature: 0.42, "reasoning.enabled": true },
+            generation: { temperature: 0.99 },
+            reasoning: { effort: "low" }
+          }
+        });
+        expect(update.statusCode).toBe(200);
+        expect(update.json().params).toEqual({ temperature: 0.42, "reasoning.enabled": true });
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("PUT waifu without params/reasoning/generation leaves previously-stored params untouched", async () => {
+      const { app } = await makeApp();
+      try {
+        await app.inject({
+          method: "POST",
+          url: "/api/waifus",
+          payload: { id: "params-keep", name: "ParamsKeep", displayName: "ParamsKeep" }
+        });
+        const seeded = await app.inject({
+          method: "PUT",
+          url: "/api/waifus/params-keep",
+          payload: { revision: 0, generation: { temperature: 0.6 } }
+        });
+        expect(seeded.json().params).toEqual({ temperature: 0.6 });
+
+        const renamed = await app.inject({
+          method: "PUT",
+          url: "/api/waifus/params-keep",
+          payload: { revision: 1, persona: "renamed persona" }
+        });
+        expect(renamed.statusCode).toBe(200);
+        expect(renamed.json().persona).toBe("renamed persona");
+        expect(renamed.json().params).toEqual({ temperature: 0.6 });
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("POST /api/waifus accepts legacy reasoning/generation on create and synthesizes both views back", async () => {
+      const { app } = await makeApp();
+      try {
+        const create = await app.inject({
+          method: "POST",
+          url: "/api/waifus",
+          payload: {
+            id: "params-create",
+            name: "ParamsCreate",
+            displayName: "ParamsCreate",
+            generation: { temperature: 0.3, topP: 0.8 },
+            reasoning: { enabled: true }
+          }
+        });
+        expect(create.statusCode).toBe(201);
+        expect(create.json().params).toEqual({ temperature: 0.3, topP: 0.8, "reasoning.enabled": true });
+        expect(create.json().generation).toEqual({ temperature: 0.3, topP: 0.8 });
+        expect(create.json().reasoning).toEqual({ enabled: true });
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("PUT orchestrator config with legacy reasoning body stores dotted params; GET synthesizes it back", async () => {
+      const { app } = await makeApp();
+      try {
+        const update = await app.inject({
+          method: "PUT",
+          url: "/api/orchestrator/config",
+          payload: {
+            revision: 0,
+            enabled: true,
+            reasoning: { enabled: true, effort: "high" }
+          }
+        });
+        expect(update.statusCode).toBe(200);
+        expect(update.json().params).toEqual({ "reasoning.enabled": true, "reasoning.effort": "high" });
+        expect(update.json().reasoning).toEqual({ enabled: true, effort: "high" });
+
+        const get = await app.inject({ method: "GET", url: "/api/orchestrator/config" });
+        expect(get.statusCode).toBe(200);
+        expect(get.json().params).toEqual({ "reasoning.enabled": true, "reasoning.effort": "high" });
+        expect(get.json().reasoning).toEqual({ enabled: true, effort: "high" });
+      } finally {
+        await app.close();
+      }
+    });
+  });
+
   it("creates user memories as pinned and preserves pinned state across edits", async () => {
     const { app, root } = await makeApp();
     const now = new Date().toISOString();
