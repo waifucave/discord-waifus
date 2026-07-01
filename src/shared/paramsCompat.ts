@@ -13,6 +13,18 @@
 export type LegacyReasoning = { enabled?: boolean; effort?: string; budgetTokens?: number };
 export type LegacyGeneration = { temperature?: number; topP?: number; maxOutputTokens?: number };
 
+/** Dotted param keys that a legacy `reasoning`/`generation` body can express. When both a
+ * native `params` body and a legacy body are present, these keys are legacy-authoritative —
+ * see resolveParamsPatch in src/api/server.ts. */
+export const LEGACY_REPRESENTABLE_PARAM_KEYS = [
+  "temperature",
+  "topP",
+  "maxOutputTokens",
+  "reasoning.enabled",
+  "reasoning.effort",
+  "reasoning.budgetTokens"
+] as const;
+
 /** Legacy config shapes → unified dotted gateway params. Unset stays absent. */
 export function legacyToParams(input: { reasoning?: LegacyReasoning; generation?: LegacyGeneration }): Record<string, unknown> {
   const params: Record<string, unknown> = {};

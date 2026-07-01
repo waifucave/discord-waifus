@@ -58,7 +58,13 @@ import { StorageService } from "../storage/storageService.js";
 import { recentQueries, recentReplies, subscribeQueries, subscribeReplies } from "../shared/queryLog.js";
 import { ApiError, badRequest, conflict, notFound, preconditionRequired } from "./errors.js";
 import { mergeConfiguredBotsIntoMembers } from "../discord/memberCache.js";
-import { legacyToParams, paramsToLegacy, type LegacyGeneration, type LegacyReasoning } from "../shared/paramsCompat.js";
+import {
+  legacyToParams,
+  paramsToLegacy,
+  LEGACY_REPRESENTABLE_PARAM_KEYS,
+  type LegacyGeneration,
+  type LegacyReasoning
+} from "../shared/paramsCompat.js";
 
 export type ApiServerOptions = {
   dataRoot: string;
@@ -804,17 +810,30 @@ function withLegacyViews<T extends { params?: Record<string, unknown> }>(config:
   return { ...config, ...paramsToLegacy(config.params ?? {}) };
 }
 
-// resolveParamsPatch: computes the `params` value a PUT should store, honoring precedence
-// (native `params` wins over legacy `reasoning`/`generation`) while leaving `params` untouched
-// when the request body touches none of the three — a partial PATCH-style update (e.g. renaming
-// a waifu) must not silently wipe previously-configured sampling/reasoning params.
+// resolveParamsPatch: computes the `params` value a PUT should store. When the body carries
+// legacy `reasoning`/`generation` fields, those are authoritative for the params keys they can
+// express — see LEGACY_REPRESENTABLE_PARAM_KEYS. This matters because the (untouched) SPA agent
+// views build PUT bodies by spreading the full GET response (which now includes `params`) and
+// then overriding `reasoning`: `{ ...remoteConfig.data, reasoning: <edited> }`. Without this,
+// the stale `params` echo would outvote the freshly edited legacy field and silently discard the
+// user's edit. Non-legacy-representable keys in `params` (e.g. topK) survive untouched. When
+// only one of `params`/legacy is present, that one is used as-is. When neither is present,
+// `params` is left untouched — a partial PATCH-style update (e.g. renaming a waifu) must not
+// silently wipe previously-configured sampling/reasoning params.
 function resolveParamsPatch(body: {
   params?: Record<string, unknown>;
   reasoning?: LegacyReasoning;
   generation?: LegacyGeneration;
 }): Record<string, unknown> | undefined {
+  const hasLegacy = body.reasoning !== undefined || body.generation !== undefined;
+  if (body.params !== undefined && hasLegacy) {
+    const merged: Record<string, unknown> = { ...body.params };
+    for (const key of LEGACY_REPRESENTABLE_PARAM_KEYS) delete merged[key];
+    Object.assign(merged, legacyToParams({ reasoning: body.reasoning, generation: body.generation }));
+    return merged;
+  }
   if (body.params !== undefined) return body.params;
-  if (body.reasoning !== undefined || body.generation !== undefined) {
+  if (hasLegacy) {
     return legacyToParams({ reasoning: body.reasoning, generation: body.generation });
   }
   return undefined;
