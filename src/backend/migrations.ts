@@ -847,6 +847,113 @@ async function stampSchemaVersion2(dataRoot: string): Promise<boolean> {
   return changed;
 }
 
+// Read-only counterpart to stampSchemaVersion2, for `waifus doctor` (T5). Same enumeration (root
+// TOML config, the two app/ runtime files, everything under user/), but reports files whose
+// schemaVersion is stale instead of mutating them — doctor never runs migrations. Paths are
+// returned relative to dataRoot with forward slashes, for stable, portable JSON output.
+export async function findUnstampedFiles(dataRoot: string): Promise<string[]> {
+  const unstamped: string[] = [];
+
+  if (await isTomlConfigUnstamped(path.join(dataRoot, "config.toml"))) {
+    unstamped.push("config.toml");
+  }
+
+  for (const name of ["runtime.json", "pid.json"]) {
+    const filePath = path.join(dataRoot, "app", name);
+    if (await isJsonSchemaVersionUnstamped(filePath)) {
+      unstamped.push(toPosixRelative(dataRoot, filePath));
+    }
+  }
+
+  const userJsonFiles = await collectJsonFilesRecursive(path.join(dataRoot, "user"));
+  for (const filePath of userJsonFiles) {
+    if (await isJsonSchemaVersionUnstamped(filePath)) {
+      unstamped.push(toPosixRelative(dataRoot, filePath));
+    }
+  }
+
+  return unstamped;
+}
+
+function toPosixRelative(dataRoot: string, filePath: string): string {
+  return path.relative(dataRoot, filePath).split(path.sep).join("/");
+}
+
+async function isJsonSchemaVersionUnstamped(filePath: string): Promise<boolean> {
+  const data = await readJsonOrUndefined(filePath);
+  if (!isObject(data)) return false;
+  return "schemaVersion" in data && data.schemaVersion !== CURRENT_SCHEMA_VERSION;
+}
+
+async function isTomlConfigUnstamped(filePath: string): Promise<boolean> {
+  let raw: string;
+  try {
+    raw = await readFile(filePath, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = parseToml(raw);
+  } catch {
+    // Malformed TOML — not this walk's concern; loadAppConfig reports it as a real error.
+    return false;
+  }
+  return isObject(parsed) && "schemaVersion" in parsed && parsed.schemaVersion !== CURRENT_SCHEMA_VERSION;
+}
+
+export type UnresolvedModelRef = { scope: string; providerId: string | null; modelId: string };
+
+// Read-only companion to migrateConfigsToGatewayParams' model-remap step, for `waifus doctor`
+// (T5). Same file set (three agent config.json docs + every waifu.json), but reports ids
+// resolveModelTarget can't route instead of silently leaving them in place. Uses lenient raw JSON
+// reads rather than the domain Zod schemas so an unmigrated (schemaVersion 1) file still surfaces
+// its unresolved model instead of being dropped by a strict schema parse failure.
+export async function findUnresolvedModels(dataRoot: string): Promise<UnresolvedModelRef[]> {
+  const unresolved: UnresolvedModelRef[] = [];
+
+  const agentDirs = ["orchestrator", "stage-manager", "reviewer"];
+  for (const agent of agentDirs) {
+    const filePath = path.join(dataRoot, "user", agent, "config.json");
+    const data = await readJsonOrUndefined(filePath);
+    if (!isObject(data)) continue;
+    const ref = unresolvedModelRef(data, agent);
+    if (ref) unresolved.push(ref);
+  }
+
+  const waifusRoot = path.join(dataRoot, "user", "waifus");
+  let waifuEntries: string[];
+  try {
+    waifuEntries = await readdir(waifusRoot);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") waifuEntries = [];
+    else throw error;
+  }
+  for (const entry of waifuEntries) {
+    const filePath = path.join(waifusRoot, entry, "waifu.json");
+    const data = await readJsonOrUndefined(filePath);
+    if (!isObject(data)) continue;
+    const scope = typeof data.id === "string" && data.id.length > 0 ? `waifu:${data.id}` : `waifu:${entry}`;
+    const ref = unresolvedModelRef(data, scope);
+    if (ref) unresolved.push(ref);
+  }
+
+  return unresolved;
+}
+
+function unresolvedModelRef(data: Record<string, unknown>, scope: string): UnresolvedModelRef | undefined {
+  if (typeof data.modelId !== "string" || data.modelId.length === 0) return undefined;
+  const providerId = typeof data.providerId === "string" ? data.providerId : undefined;
+  try {
+    resolveModelTarget({ providerId, modelId: data.modelId });
+    return undefined;
+  } catch {
+    return { scope, providerId: providerId ?? null, modelId: data.modelId };
+  }
+}
+
 async function collectJsonFilesRecursive(dir: string): Promise<string[]> {
   let entries: Array<{ name: string; isDirectory(): boolean; isFile(): boolean }>;
   try {

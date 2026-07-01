@@ -2,14 +2,17 @@ import { spawn, type SpawnOptions } from "node:child_process";
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { open, readFile, rm, stat } from "node:fs/promises";
+import { z } from "zod";
 import { ensureDataLayout } from "../config/layout.js";
 import { appDataPath, DATA_ROOT_ENV, getDataRoot, resolveDataPath } from "../config/paths.js";
 import { loadAppConfig } from "../config/appConfig.js";
 import { startBackend } from "../backend/server.js";
+import { findUnresolvedModels, findUnstampedFiles } from "../backend/migrations.js";
 import { RuntimeStateSchema } from "../backend/runtime.js";
 import type { RuntimeState } from "../backend/runtime.js";
 import { diagnoseBundledOcr } from "../orchestration/ocrPackages.js";
 import { StorageService } from "../storage/storageService.js";
+import { DEFAULT_APP_CONFIG } from "../shared/schemas/config.js";
 import { DiscordBotsFileSchema, ProviderCredentialsFileSchema, createEmptyRevisionedFile } from "../shared/schemas/domain.js";
 import { ParsedCli, flagBoolean, flagNumber, flagString } from "./parser.js";
 
@@ -297,20 +300,48 @@ async function statusCommand(dataRoot: string): Promise<number> {
 
 async function doctorCommand(dataRoot: string): Promise<number> {
   await ensureDataLayout(dataRoot);
-  const config = await loadAppConfig(dataRoot);
+
+  // doctor is read-only: it never calls runMigrations. An unmigrated (schemaVersion 1) data root
+  // would otherwise crash every strict Zod parse below (`z.literal(CURRENT_SCHEMA_VERSION)`)
+  // before doctor gets a chance to report anything useful. Degrade those three reads to their
+  // empty fallback + a warning instead — but only when the parse failure is specifically a
+  // schemaVersion mismatch; any other validation failure (genuinely malformed data) still throws,
+  // so it surfaces as a real error instead of a silent pass.
+  let unmigrated = false;
+  const degradeOnVersionMismatch = async <T>(load: () => Promise<T>, fallback: T): Promise<T> => {
+    try {
+      return await load();
+    } catch (error) {
+      if (!isSchemaVersionMismatch(error)) throw error;
+      unmigrated = true;
+      return fallback;
+    }
+  };
+
+  const config = await degradeOnVersionMismatch(() => loadAppConfig(dataRoot), DEFAULT_APP_CONFIG);
   const storage = new StorageService(dataRoot);
-  const providerFile = await storage.readJson(
-    "user/providers.json",
-    ProviderCredentialsFileSchema,
-    ProviderCredentialsFileSchema.parse(createEmptyRevisionedFile({ providers: {} }))
+  const providerFallback = ProviderCredentialsFileSchema.parse(createEmptyRevisionedFile({ providers: {} }));
+  const providerFile = await degradeOnVersionMismatch(
+    () => storage.readJson("user/providers.json", ProviderCredentialsFileSchema, providerFallback),
+    providerFallback
   );
-  const discordFile = await storage.readJson(
-    "user/discord-bots.json",
-    DiscordBotsFileSchema,
-    DiscordBotsFileSchema.parse(createEmptyRevisionedFile({ orchestrator: null, waifus: [] }))
+  const discordFallback = DiscordBotsFileSchema.parse(createEmptyRevisionedFile({ orchestrator: null, waifus: [] }));
+  const discordFile = await degradeOnVersionMismatch(
+    () => storage.readJson("user/discord-bots.json", DiscordBotsFileSchema, discordFallback),
+    discordFallback
   );
+
+  const warnings: string[] = [];
+  if (unmigrated) {
+    warnings.push("unmigrated data root — run `waifus start` to migrate");
+  }
+
   const nodeMajor = Number.parseInt(process.versions.node.split(".")[0] ?? "0", 10);
-  const bundledOcr = await diagnoseBundledOcr();
+  const [bundledOcr, unstamped, unresolvedModels] = await Promise.all([
+    diagnoseBundledOcr(),
+    findUnstampedFiles(dataRoot),
+    findUnresolvedModels(dataRoot)
+  ]);
   const result = {
     node: {
       version: process.versions.node,
@@ -318,6 +349,13 @@ async function doctorCommand(dataRoot: string): Promise<number> {
     },
     dataRoot,
     config,
+    warnings,
+    schema: {
+      unstamped
+    },
+    models: {
+      unresolved: unresolvedModels
+    },
     ocr: {
       config: config.ocr,
       platform: process.platform,
@@ -335,7 +373,27 @@ async function doctorCommand(dataRoot: string): Promise<number> {
     }
   };
   console.log(JSON.stringify(result, null, 2));
+  // models.unresolved is informational only (§7.3 doctor-warning intent) — it never flips the
+  // exit code.
   return result.node.ok ? 0 : 1;
+}
+
+// True only when every issue in the Zod failure is the schemaVersion literal mismatch — i.e. the
+// *only* thing wrong is that the file predates the current migration. Any other validation issue
+// (missing fields, wrong types, genuinely malformed content) returns false so the caller rethrows
+// instead of masking a real error behind the "unmigrated" degrade path.
+function isSchemaVersionMismatch(error: unknown): boolean {
+  const zodError = error instanceof z.ZodError ? error : unwrapZodErrorCause(error);
+  return (
+    zodError !== undefined &&
+    zodError.issues.length > 0 &&
+    zodError.issues.every((issue) => issue.path.length === 1 && issue.path[0] === "schemaVersion")
+  );
+}
+
+function unwrapZodErrorCause(error: unknown): z.ZodError | undefined {
+  const cause = (error as { cause?: unknown } | undefined)?.cause;
+  return cause instanceof z.ZodError ? cause : undefined;
 }
 
 async function cleanCommand(parsed: ParsedCli, dataRoot: string): Promise<number> {
@@ -522,10 +580,19 @@ function npmCommand(platform: NodeJS.Platform): string {
   return platform === "win32" ? "npm.cmd" : "npm";
 }
 
-async function readRuntimeFile(dataRoot: string, name: "pid.json" | "runtime.json") {
+// status/stop only need the pid (plus, for status, a couple of display fields) out of
+// runtime.json/pid.json — they never migrate anything. Loosen just the schemaVersion check
+// (any non-negative integer, not literally CURRENT_SCHEMA_VERSION) so a stale runtime/pid file
+// left on disk by a pre-upgrade process doesn't crash `waifus status`/`waifus stop`. The strict
+// literal in RuntimeStateSchema itself is untouched — it still governs every write.
+const RuntimeStateReadSchema = RuntimeStateSchema.extend({
+  schemaVersion: z.number().int().nonnegative()
+});
+
+async function readRuntimeFile(dataRoot: string, name: "pid.json" | "runtime.json"): Promise<RuntimeState | undefined> {
   try {
     const raw = await readFile(appDataPath(dataRoot, name), "utf8");
-    return RuntimeStateSchema.parse(JSON.parse(raw));
+    return RuntimeStateReadSchema.parse(JSON.parse(raw)) as RuntimeState;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       return undefined;
