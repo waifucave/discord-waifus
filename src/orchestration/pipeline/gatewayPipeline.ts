@@ -3,12 +3,12 @@ import { z } from "zod";
 import { createProviderCredentialsLookup } from "../../api/llmGatewayCredentials.js";
 import { QueryRole, recordProviderQuery, recordProviderReply } from "../../shared/queryLog.js";
 import type { ModelPipeline, ProviderRequest, WaifuGenerationRequest, WaifuGenerationResult, StageManagerObserveRequest, DreamRequest, PersonaDigestRequest, PersonaDigest } from "../../providers/types.js";
-import { ORCHESTRATOR_TOOL_NAME, PICK_NEXT_WAIFU_TOOL_NAME, REVIEWER_TOOL_NAME, SHORT_TERM_MEMORY_TOOL_NAME, OBSERVER_TOOL_NAME, DREAM_TOOL_NAME, PERSONA_DIGEST_TOOL_NAME, DREAM_PROMPT, PERSONA_DIGEST_PROMPT, orchestratorToolParameters, pickNextWaifuToolParameters, reviewerSystemPrompt, reviewerToolParameters, shortTermMemoryToolParameters, observerSystemPrompt, observerToolParameters, dreamToolParameters, flatDreamToolParameters, personaDigestToolParameters, dreamMessages, normalizeDreamOp, parseRawStageManagerObservations } from "../tools.js";
+import { ORCHESTRATOR_TOOL_NAME, PICK_NEXT_WAIFU_TOOL_NAME, REVIEWER_TOOL_NAME, SHORT_TERM_MEMORY_TOOL_NAME, OBSERVER_TOOL_NAME, DREAM_TOOL_NAME, PERSONA_DIGEST_TOOL_NAME, DREAM_PROMPT, PERSONA_DIGEST_PROMPT, orchestratorToolParameters, pickNextWaifuToolParameters, reviewerSystemPrompt, reviewerToolParameters, shortTermMemoryToolParameters, observerSystemPrompt, observerToolParameters, dreamToolParameters, flatDreamToolParameters, personaDigestToolParameters, dreamMessages, normalizeDreamOp, normalizeOrchestratorDecision, parseRawStageManagerObservations } from "../tools.js";
 import { formatObserverContext } from "../context.js";
 import { GatewayPipelineError, buildUnifiedParams, preconformRequest } from "./params.js";
 import { buildWaifuMessages } from "./messages.js";
 import { buildOrchestratorChatMessages } from "./timeline.js";
-import { OrchestratorDecision, OrchestratorDecisionSchema } from "../decisions.js";
+import { OrchestratorDecision } from "../decisions.js";
 import { ReviewerDecision, ReviewerDecisionSchema } from "../reviewer.js";
 import { DreamOp, StageManagerObservation } from "../stageManager.js";
 
@@ -140,11 +140,14 @@ export class GatewayModelPipeline implements ModelPipeline {
       sampling: { temperature: request.temperature ?? 0.2, maxOutputTokens: request.maxOutputTokens, reasoning: request.reasoning },
       signal: request.signal
     });
-    const decision = parseForcedCall(response, ORCHESTRATOR_TOOL_NAME, (raw) => OrchestratorDecisionSchema.parse(raw), "decideOrchestrator");
-    // Parity with the legacy pipeline: a /run (replyRequired) must produce a reply.
-    if (request.replyRequired && decision.action !== "reply") {
-      throw new GatewayPipelineError("decideOrchestrator: replyRequired was set but the model returned no_reply");
-    }
+    // normalizeOrchestratorDecision owns the replyRequired gate (parity with legacy
+    // parseDecision): lenient Raw parse -> replyRequired check -> strict schema mapping.
+    const decision = parseForcedCall(
+      response,
+      ORCHESTRATOR_TOOL_NAME,
+      (raw) => normalizeOrchestratorDecision(raw, request.replyRequired),
+      "decideOrchestrator"
+    );
     return decision;
   }
 

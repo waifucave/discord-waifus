@@ -4,7 +4,11 @@ import {
   DIRECTIVE_GOAL_MAX_CHARS,
   MODEL_DIRECTIVE_INTENTS,
   RETRIGGER_MAX_SECONDS,
-  RETRIGGER_MIN_SECONDS
+  RETRIGGER_MIN_SECONDS,
+  OrchestratorActionSchema,
+  OrchestratorDecision,
+  OrchestratorDecisionSchema,
+  Directive
 } from "./decisions.js";
 import { OBSERVATION_KINDS, DreamOp, DreamOpSchema, StageManagerObservation, StageManagerObservationSchema } from "./stageManager.js";
 import { MEMORY_KINDS, MemoryKindSchema } from "../shared/schemas/domain.js";
@@ -686,4 +690,69 @@ export function normalizeDreamOp(op: unknown): DreamOp {
 // Parse an array of raw observation items using the coercing Raw schema.
 export function parseRawStageManagerObservations(items: unknown[]): StageManagerObservation[] {
   return items.map((item) => StageManagerObservationSchema.parse(RawStageManagerObservationSchema.parse(item)));
+}
+
+// ---------------------------------------------------------------------------
+// Orchestrator decision — lenient Raw layer
+//
+// Models forced into the orchestrator_decision tool call sometimes emit values
+// the strict OrchestratorDecisionSchema doesn't accept directly — e.g. an explicit
+// `retriggerAfterSeconds: null` on a reply decision (the tool schema's own
+// description tells the model "Null when replying"), or a `directive` shaped
+// entry that fails validation. RawOrchestratorDecisionSchema accepts the wider
+// shape actually emitted on the wire; normalizeOrchestratorDecision then maps it
+// onto the strict OrchestratorDecisionSchema the rest of the runtime expects.
+// ---------------------------------------------------------------------------
+
+export const RawDirectiveSchema = z.object({
+  intent: z.string().min(1),
+  goal: z.string().min(1)
+});
+
+export const RawRespondingWaifuSchema = z.object({
+  waifuId: z.string().min(1),
+  delaySeconds: z.number().min(0).nullish(),
+  directive: RawDirectiveSchema.nullish().catch(null)
+});
+
+export const RawOrchestratorDecisionSchema = z.object({
+  action: OrchestratorActionSchema,
+  respondingWaifus: z.array(RawRespondingWaifuSchema).default([]),
+  retriggerAfterSeconds: z
+    .union([z.number().min(RETRIGGER_MIN_SECONDS).max(RETRIGGER_MAX_SECONDS), z.null()])
+    .optional(),
+  wakePlan: z.union([z.string(), z.null()]).optional(),
+  reasoning: z.string().min(1)
+});
+
+export function normalizeRawDirective(
+  directive: { intent: string; goal: string } | null | undefined
+): Directive | undefined {
+  if (!directive) return undefined;
+  if (!(MODEL_DIRECTIVE_INTENTS as readonly string[]).includes(directive.intent)) return undefined;
+  const goal = directive.goal.trim();
+  if (!goal) return undefined;
+  return { intent: directive.intent as Directive["intent"], goal };
+}
+
+// Legacy parseDecision's post-JSON-parse sequence: lenient Raw parse, the
+// replyRequired gate, then the strict OrchestratorDecisionSchema mapping.
+// Callers that already have the raw tool-call arguments as `unknown` (the
+// gateway pipeline) call this directly instead of re-parsing JSON text.
+export function normalizeOrchestratorDecision(raw: unknown, replyRequired = false): OrchestratorDecision {
+  const parsedRaw = RawOrchestratorDecisionSchema.parse(raw);
+  if (replyRequired && parsedRaw.action !== "reply") {
+    throw new Error("Manual /run requires action=reply.");
+  }
+  return OrchestratorDecisionSchema.parse({
+    action: parsedRaw.action,
+    respondingWaifus: parsedRaw.respondingWaifus.map((entry) => ({
+      waifuId: entry.waifuId,
+      delaySeconds: entry.delaySeconds ?? 0,
+      directive: normalizeRawDirective(entry.directive)
+    })),
+    retriggerAfterSeconds: parsedRaw.retriggerAfterSeconds === null ? undefined : parsedRaw.retriggerAfterSeconds,
+    wakePlan: parsedRaw.wakePlan ?? undefined,
+    reasoning: parsedRaw.reasoning
+  });
 }

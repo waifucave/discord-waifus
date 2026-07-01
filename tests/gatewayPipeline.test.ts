@@ -141,7 +141,66 @@ describe("decideOrchestrator (gateway)", () => {
     });
     await expect(
       makePipeline(fetchImpl as unknown as typeof fetch).decideOrchestrator!({ ...orchRequest, replyRequired: true })
-    ).rejects.toThrow(/replyRequired/);
+    ).rejects.toThrow(/requires action=reply/);
+  });
+
+  it("accepts retriggerAfterSeconds: null on a reply decision (live Haiku parity)", async () => {
+    // Live Haiku returns an explicit null (not an omitted key) for retriggerAfterSeconds
+    // on reply decisions — the RawOrchestratorDecisionSchema accepts it and
+    // normalizeOrchestratorDecision maps null -> undefined before the strict schema,
+    // which rejects retriggerAfterSeconds being present at all on a reply.
+    const decision = {
+      action: "reply",
+      respondingWaifus: [{ waifuId: "yuki", delaySeconds: 1, directive: null }],
+      retriggerAfterSeconds: null,
+      reasoning: "Ann said hi"
+    };
+    const fetchImpl = okFetch({
+      id: "r1",
+      choices: [{ message: { content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "orchestrator_decision", arguments: JSON.stringify(decision) } }] }, finish_reason: "tool_calls" }],
+      usage: {}
+    });
+    const parsed = await makePipeline(fetchImpl as unknown as typeof fetch).decideOrchestrator!(orchRequest);
+    expect(parsed.action).toBe("reply");
+    expect(parsed.retriggerAfterSeconds).toBeUndefined();
+  });
+
+  it("defaults a respondingWaifus entry missing delaySeconds to 0", async () => {
+    const decision = {
+      action: "reply",
+      respondingWaifus: [{ waifuId: "yuki" }],
+      reasoning: "Ann said hi"
+    };
+    const fetchImpl = okFetch({
+      id: "r1",
+      choices: [{ message: { content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "orchestrator_decision", arguments: JSON.stringify(decision) } }] }, finish_reason: "tool_calls" }],
+      usage: {}
+    });
+    const parsed = await makePipeline(fetchImpl as unknown as typeof fetch).decideOrchestrator!(orchRequest);
+    expect(parsed.respondingWaifus[0]).toMatchObject({ waifuId: "yuki", delaySeconds: 0 });
+  });
+
+  it("degrades a malformed directive to undefined instead of failing the decision", async () => {
+    // normalizeRawDirective drops the directive (returns undefined, never throws) when:
+    // (1) intent isn't one of MODEL_DIRECTIVE_INTENTS ("bogus" here), or
+    // (2) goal is present but blank after trim (whitespace-only).
+    const decision = {
+      action: "reply",
+      respondingWaifus: [
+        { waifuId: "yuki", delaySeconds: 0, directive: { intent: "bogus", goal: "a real goal" } },
+        { waifuId: "yuki", delaySeconds: 0, directive: { intent: "spotlight", goal: "   " } }
+      ],
+      reasoning: "Ann said hi"
+    };
+    const fetchImpl = okFetch({
+      id: "r1",
+      choices: [{ message: { content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "orchestrator_decision", arguments: JSON.stringify(decision) } }] }, finish_reason: "tool_calls" }],
+      usage: {}
+    });
+    const parsed = await makePipeline(fetchImpl as unknown as typeof fetch).decideOrchestrator!(orchRequest);
+    expect(parsed.action).toBe("reply");
+    expect(parsed.respondingWaifus[0].directive).toBeUndefined();
+    expect(parsed.respondingWaifus[1].directive).toBeUndefined();
   });
 });
 
