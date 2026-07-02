@@ -147,3 +147,21 @@ Behavior (exact):
 
 ### Final review
 Whole-range review (base = T1's parent commit) on the most capable model; include the ledger's deferred-minor list for triage; fix-first.
+
+---
+
+## Execution record (2026-07-02)
+
+**Status: complete, pushed.** Commits `436808e`→`3302cac` + docs. Suite 588 → **644 passed | 15 skipped**; typecheck + full build green; final whole-branch review **SHIP** (no Critical/Important).
+
+- **T1** `436808e` + fix `465b086` — llm client + pure logic. Review caught a **committed NUL byte** (git classified llm.ts as binary — unreviewable diffs; the implementer had seen the grep symptom and misdiagnosed it) and fail-forever memo poisoning on fetch rejection. Both fixed with regression tests; type-only gateway imports and per-segment URL encoding verified against gateway route-matching source.
+- **T2** `71ccfa0` + fix `30c6967` — ModelParamsForm/RangeField/TagListField. Review's absence-reachability audit found booleans were the only control type that couldn't return to "absent"; fixed with a reset affordance; 404 vs transient doc-load split; stale-violation clear on model switch. The `responseFormat` by-key exclusion (T1 reviewer's forward-flag: moonshot's descriptor is enum-typed) pinned against the real registry.
+- **T3** `4e5fb9d` + fix `2972eb5` — WaifusView cutover. One-line miss: `paramsBlocked` absent from "Save bot & link" gating.
+- **T4** `7296e5c` + fixes `5dc56f5`/`82c2fb4` — agent views with explicit bodies. Review reproduced a **Critical**: zod v4 `.partial()` MANUFACTURES field defaults — omitted fields arrived defaulted and clobbered stored state in the `{...current, ...patch}` merge (stage-manager contextWindow 80→20 every save). Root-cause fix: every defaulted field re-declared truly-optional across `AgentConfigBodySchema`/`UpdateWaifuBodySchema` (`5dc56f5`) and `ServerConfigBodySchema` (`82c2fb4`, live `memoryInjectionLimit` reset). `DiscordBotsBodySchema` ruled latent-only.
+- **T5** `e8270e0` — ProvidersView on the registry (14 providers; `credentialConfigured` from the gateway list is the truth source — legacy endpoint never lists non-native providers).
+- **T6** `3302cac` — `feat!:` compat retirement + type-mirror purge. Reviewer empirically confirmed plain-`.optional()` fields stay absent post-parse, so the PATCH contract survives without `resolveParamsPatch`; stray legacy body fields stripped; `paramsCompat.ts` retained (migration-owned).
+- **T7** headless smoke on a live-root copy (Chrome extension unavailable — **visual pass deferred to the user**): SPA served; 14 providers/100 models/ResolvedModel docs; live validate returning ruleId-bearing violations; native GET/PUT shapes with zero synthesized fields; 400 violation rendering data; lumi doc-404 + unknown_model; agent PATCH preservation.
+
+**Incident + repair (disclosure):** T7 exposed that the live root's stage-manager config had been silently damaged on 2026-07-01 during the **P3b** controller smoke — the restore PUT sent only provider/model, and the pre-P4 server manufactured schema defaults into the merge (the exact bug class T4's review later found and fixed): contextWindow 80→20, custom prompt wiped, reasoning config dropped. Restored 2026-07-02 from in-session pre-damage values directly on the (unmigrated) real root: enabled true, contextWindow 80, original prompt, `params: {"reasoning.enabled": true}` (`reasoning.effort: "medium"` was never registry-valid for deepseek-v4-pro — the old pipeline silently dropped it; write validation now rejects it). Migration merge semantics verified to carry the repair through the v2 conversion on next boot. **Lesson: mutating smokes on real roots are banned — copies only (P4/P5 practice); and "restore" must restore ALL fields, not the ones you remember changing.**
+
+**Final review sign-off items:** §7.6 "applies constraint rules live" satisfied reactively (endpoint validation + warnings + gating) rather than preventively (no preemptive control disabling; `effectiveParams` unused) — sanctioned plan mechanism choice. Unset-model picker option: `undefined` keys drop at JSON.stringify so the server preserves stored ids (pre-existing semantics, self-correcting UI snap-back) — explicit-`null` unset contract filed as a P6 work item.
