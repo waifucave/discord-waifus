@@ -19,3 +19,4 @@ codex-skills/
 tests/eval/fixtures/live/*
 !tests/eval/fixtures/live/.gitkeep
 tests/eval/reports/
+PUBLISHING.md
