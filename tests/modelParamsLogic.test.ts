@@ -3,12 +3,15 @@ import { createGatewayHandler, type ParamDescriptor, type ResolvedModel } from "
 import type { LlmModelSummary, LlmValidationViolation } from "../src/frontend/api/llm";
 import {
   addTag,
+  buildModelGroupOptions,
   buildParamControls,
+  buildRouteOptions,
   clampToDescriptor,
   defaultRoute,
   findRoute,
   groupModelRoutes,
   paramLabel,
+  UNAVAILABLE_MODEL_VALUE,
   violationsByParam,
   type RouteGroup
 } from "../src/frontend/components/modelParams/logic.js";
@@ -288,6 +291,67 @@ describe("findRoute", () => {
 
   it("returns undefined for a stored pair that is now deprecated (excluded from groups)", () => {
     expect(findRoute(models, "openai", "gpt-5-legacy")).toBeUndefined();
+  });
+});
+
+describe("buildModelGroupOptions", () => {
+  const groups: RouteGroup[] = [
+    { key: "Anthropic|Claude Haiku 4.5", company: "Anthropic", displayName: "Claude Haiku 4.5", routes: [] },
+    { key: "OpenAI|GPT-5.2", company: "OpenAI", displayName: "GPT-5.2", routes: [] }
+  ];
+
+  it("starts with an unset option, then one option per group labeled '${company} — ${displayName}'", () => {
+    expect(buildModelGroupOptions(groups)).toEqual([
+      { value: "", label: "— unset —" },
+      { value: "Anthropic|Claude Haiku 4.5", label: "Anthropic — Claude Haiku 4.5" },
+      { value: "OpenAI|GPT-5.2", label: "OpenAI — GPT-5.2" }
+    ]);
+  });
+
+  it("does not append a fallback option when unresolvedStored is omitted", () => {
+    expect(buildModelGroupOptions(groups).some((o) => o.value === UNAVAILABLE_MODEL_VALUE)).toBe(false);
+  });
+
+  it("appends a trailing fallback option for an unresolved stored pair, never dropping it", () => {
+    const options = buildModelGroupOptions(groups, { providerId: "moonshot", modelId: "kimi-old" });
+    expect(options.at(-1)).toEqual({
+      value: UNAVAILABLE_MODEL_VALUE,
+      label: "moonshot/kimi-old (unavailable)"
+    });
+    expect(options).toHaveLength(4);
+  });
+});
+
+describe("buildRouteOptions", () => {
+  const group: RouteGroup = {
+    key: "Anthropic|Claude Haiku 4.5",
+    company: "Anthropic",
+    displayName: "Claude Haiku 4.5",
+    routes: [
+      summary({ providerId: "anthropic", modelId: "claude-haiku-4-5-20251001" }),
+      summary({ providerId: "openrouter", modelId: "anthropic/claude-haiku-4.5" })
+    ]
+  };
+
+  it("labels every configured route with just the bare providerId, in route order", () => {
+    expect(buildRouteOptions(group, new Set(["anthropic", "openrouter"]))).toEqual([
+      { value: "anthropic", label: "anthropic" },
+      { value: "openrouter", label: "openrouter" }
+    ]);
+  });
+
+  it("suffixes an unconfigured route's label with ' (no key)'", () => {
+    expect(buildRouteOptions(group, new Set(["anthropic"]))).toEqual([
+      { value: "anthropic", label: "anthropic" },
+      { value: "openrouter", label: "openrouter (no key)" }
+    ]);
+  });
+
+  it("suffixes every route when nothing is configured", () => {
+    expect(buildRouteOptions(group, new Set()).map((o) => o.label)).toEqual([
+      "anthropic (no key)",
+      "openrouter (no key)"
+    ]);
   });
 });
 

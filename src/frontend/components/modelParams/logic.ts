@@ -171,3 +171,43 @@ export function findRoute(
   }
   return undefined;
 }
+
+/** Sentinel value for the model-group select's fallback "unavailable" option (see `buildModelGroupOptions`). */
+export const UNAVAILABLE_MODEL_VALUE = "__unavailable__";
+
+export type ModelSelectOption = { value: string; label: string };
+
+/**
+ * Select #1 (model) option list: an "— unset —" option first, then one option per group
+ * (`${company} — ${displayName}`, value = group key), then — only when `unresolvedStored` is
+ * given (the stored (providerId, modelId) pair couldn't be resolved into any group via
+ * `findRoute`) — a trailing fallback option so an unknown/stale stored model is never silently
+ * dropped from the list.
+ */
+export function buildModelGroupOptions(
+  groups: RouteGroup[],
+  unresolvedStored?: { providerId: string; modelId: string }
+): ModelSelectOption[] {
+  const options: ModelSelectOption[] = [{ value: "", label: "— unset —" }];
+  for (const group of groups) {
+    options.push({ value: group.key, label: `${group.company} — ${group.displayName}` });
+  }
+  if (unresolvedStored) {
+    options.push({
+      value: UNAVAILABLE_MODEL_VALUE,
+      label: `${unresolvedStored.providerId}/${unresolvedStored.modelId} (unavailable)`
+    });
+  }
+  return options;
+}
+
+/**
+ * Select #2 (route) option list for one group: value = route's providerId, label = the bare
+ * providerId, suffixed " (no key)" when that provider has no configured credential.
+ */
+export function buildRouteOptions(group: RouteGroup, configuredProviderIds: Set<string>): ModelSelectOption[] {
+  return group.routes.map((route) => ({
+    value: route.providerId,
+    label: configuredProviderIds.has(route.providerId) ? route.providerId : `${route.providerId} (no key)`
+  }));
+}

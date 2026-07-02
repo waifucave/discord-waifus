@@ -327,12 +327,7 @@ export type WaifuConfig = Revisioned & {
   modelId?: string;
   botId?: string;
   contextWindow: number;
-  generation: {
-    temperature?: number;
-    topP?: number;
-    maxOutputTokens?: number;
-  };
-  reasoning: ReasoningConfig;
+  params: Record<string, unknown>;
   availability: WaifuAvailability;
   tools: WaifuToolSettings;
   promptLayout: WaifuPromptLayout;
@@ -355,7 +350,7 @@ export type CreateWaifuBody = {
   modelId?: string;
   botId?: string;
   contextWindow?: number;
-  generation?: WaifuConfig["generation"];
+  params?: Record<string, unknown>;
   availability?: WaifuAvailability;
   tools?: WaifuToolSettings;
   promptLayout?: WaifuPromptLayout;

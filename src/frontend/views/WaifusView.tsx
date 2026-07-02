@@ -1,11 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ArrowLeft, Clock, Image as ImageIcon, MessageSquare, Plus, Save, Sparkles, Trash2 } from "lucide-react";
-import { api, ConflictError } from "../api/client";
+import { api, ApiError, ConflictError } from "../api/client";
 import { useApi } from "../api/useApi";
+import { llmModels, llmProviders, type LlmModelSummary } from "../api/llm";
 import type {
   DiscordBotsFile,
-  ModelsResponse,
-  ProvidersResponse,
   UpdateWaifuBody,
   WaifuAvailability,
   WaifuBusyInterval,
@@ -20,16 +19,26 @@ import { Modal } from "../components/Modal";
 import { Notice } from "../components/Notice";
 import { Skeleton, SkeletonRows } from "../components/Skeleton";
 import { DiscordBotGuide } from "../components/DiscordBotGuide";
-import { ReasoningControls, hasReasoningControls } from "../components/ReasoningControls";
+import { ModelParamsForm } from "../components/modelParams/ModelParamsForm";
+import {
+  buildModelGroupOptions,
+  buildRouteOptions,
+  defaultRoute,
+  findRoute,
+  groupModelRoutes,
+  UNAVAILABLE_MODEL_VALUE
+} from "../components/modelParams/logic";
 import { Toggle } from "../components/Toggle";
 import { PromptLayoutEditor } from "../components/PromptLayoutEditor";
 import { defaultWaifuPromptLayout, reconcileLayout } from "../utils/promptLayout";
 import { slugify, timeAgo } from "../utils/format";
 
+type LlmProviderSummary = Awaited<ReturnType<typeof llmProviders>>[number];
+
 export function WaifusView() {
   const waifus = useApi<WaifusResponse>((signal) => api.waifus(signal), []);
-  const models = useApi<ModelsResponse>((signal) => api.models(signal), []);
-  const providers = useApi<ProvidersResponse>((signal) => api.providers(signal), []);
+  const llmModelsState = useApi<LlmModelSummary[]>(() => llmModels(), []);
+  const llmProvidersState = useApi<LlmProviderSummary[]>(() => llmProviders(), []);
   const bots = useApi<DiscordBotsFile>((signal) => api.discordBots(signal), []);
   const [editingId, setEditingId] = useState<string | undefined>(undefined);
   const [creating, setCreating] = useState(false);
@@ -121,8 +130,8 @@ export function WaifusView() {
       {editingId && (
         <WaifuEditor
           waifuId={editingId}
-          models={models.data}
-          providers={providers.data}
+          llmModels={llmModelsState.data}
+          llmProviders={llmProvidersState.data}
           bots={bots.data}
           onClose={() => setEditingId(undefined)}
           onSaved={() => {
@@ -256,18 +265,33 @@ function WaifuSetupPill({
   return <Pill tone="ok" dot>ready</Pill>;
 }
 
+type SaveErrorViolation = { param: string; code: string; rule?: string };
+
+/**
+ * Pulls write-validation violations (`{param, code, rule?}`) out of a caught save error, when
+ * present. `ApiError.body.details` is `unknown` on the wire — populated for `unsupported_parameter`
+ * (`{error, violations}`), absent for `unknown_model` (just `{error, providerId, modelId}`) and for
+ * `ConflictError` (`{error, message, latest}`, no `details` at all) — so this returns `undefined`
+ * for anything that isn't a violations-bearing `ApiError`.
+ */
+function violationsFromApiError(err: unknown): SaveErrorViolation[] | undefined {
+  if (!(err instanceof ApiError)) return undefined;
+  const details = err.body.details as { violations?: SaveErrorViolation[] } | undefined;
+  return details?.violations;
+}
+
 function WaifuEditor({
   waifuId,
-  models,
-  providers,
+  llmModels: llmModelList,
+  llmProviders: llmProviderList,
   bots,
   onClose,
   onSaved,
   onDeleted
 }: {
   waifuId: string;
-  models: ModelsResponse | undefined;
-  providers: ProvidersResponse | undefined;
+  llmModels: LlmModelSummary[] | undefined;
+  llmProviders: LlmProviderSummary[] | undefined;
   bots: DiscordBotsFile | undefined;
   onClose: () => void;
   onSaved: () => void;
@@ -279,7 +303,9 @@ function WaifuEditor({
   const [deleting, setDeleting] = useState(false);
   const [savingBot, setSavingBot] = useState(false);
   const [error, setError] = useState<string | undefined>(undefined);
+  const [errorViolations, setErrorViolations] = useState<SaveErrorViolation[] | undefined>(undefined);
   const [conflict, setConflict] = useState<WaifuConfig | undefined>(undefined);
+  const [paramsValid, setParamsValid] = useState(true);
   const [pfpUploadMsg, setPfpUploadMsg] = useState<string | undefined>(undefined);
   const [botMessage, setBotMessage] = useState<string | undefined>(undefined);
   const [botDisplayName, setBotDisplayName] = useState("");
@@ -291,6 +317,7 @@ function WaifuEditor({
 
   const load = useCallback(async () => {
     setLoadError(undefined);
+    setParamsValid(true);
     try {
       const data = await api.waifu(waifuId);
       setWaifu(data);
@@ -316,19 +343,55 @@ function WaifuEditor({
   const set = (patch: Partial<WaifuConfig>) => {
     setWaifu((w) => (w ? { ...w, ...patch } : w));
   };
-  const setGen = (patch: Partial<WaifuConfig["generation"]>) => {
-    setWaifu((w) => (w ? { ...w, generation: { ...w.generation, ...patch } } : w));
+
+  const routeGroups = useMemo(() => groupModelRoutes(llmModelList ?? []), [llmModelList]);
+  const configuredProviderIds = useMemo(
+    () => new Set((llmProviderList ?? []).filter((p) => p.credentialConfigured).map((p) => p.id)),
+    [llmProviderList]
+  );
+  const resolvedRoute = useMemo(() => {
+    if (!waifu?.providerId || !waifu?.modelId) return undefined;
+    return findRoute(llmModelList ?? [], waifu.providerId, waifu.modelId);
+  }, [llmModelList, waifu?.providerId, waifu?.modelId]);
+  const modelGroupOptions = useMemo(
+    () =>
+      buildModelGroupOptions(
+        routeGroups,
+        waifu?.providerId && waifu?.modelId && !resolvedRoute
+          ? { providerId: waifu.providerId, modelId: waifu.modelId }
+          : undefined
+      ),
+    [routeGroups, waifu?.providerId, waifu?.modelId, resolvedRoute]
+  );
+  const modelGroupValue = !waifu?.providerId || !waifu?.modelId
+    ? ""
+    : resolvedRoute
+      ? resolvedRoute.group.key
+      : UNAVAILABLE_MODEL_VALUE;
+  const routeOptions = resolvedRoute ? buildRouteOptions(resolvedRoute.group, configuredProviderIds) : [];
+
+  const selectModelGroup = (value: string) => {
+    if (value === "") {
+      set({ providerId: undefined, modelId: undefined });
+      return;
+    }
+    if (value === UNAVAILABLE_MODEL_VALUE) {
+      return;
+    }
+    const group = routeGroups.find((g) => g.key === value);
+    const route = group && defaultRoute(group, configuredProviderIds);
+    if (!route) return;
+    set({ providerId: route.providerId as WaifuConfig["providerId"], modelId: route.modelId });
   };
 
-  const filteredModels = useMemo(() => {
-    if (!models) return [];
-    if (!waifu?.providerId) return models.models;
-    return models.models.filter((m) => m.providerId === waifu.providerId);
-  }, [models, waifu?.providerId]);
+  const selectRoute = (providerId: string) => {
+    const route = resolvedRoute?.group.routes.find((r) => r.providerId === providerId);
+    if (!route) return;
+    set({ providerId: route.providerId as WaifuConfig["providerId"], modelId: route.modelId });
+  };
 
-  const selectedModel = useMemo(() => {
-    return models?.models.find((m) => m.modelId === waifu?.modelId && m.providerId === waifu?.providerId);
-  }, [models, waifu?.modelId, waifu?.providerId]);
+  const modelSelected = Boolean(waifu?.providerId && waifu?.modelId);
+  const paramsBlocked = modelSelected && !paramsValid;
 
   const persistWaifu = async (draft: WaifuConfig): Promise<WaifuConfig> => {
     const body: UpdateWaifuBody = {
@@ -341,8 +404,7 @@ function WaifuEditor({
       modelId: draft.modelId,
       botId: draft.botId,
       contextWindow: draft.contextWindow,
-      generation: draft.generation,
-      reasoning: draft.reasoning,
+      params: draft.params,
       availability: draft.availability,
       tools: draft.tools,
       promptLayout: draft.promptLayout
@@ -358,6 +420,7 @@ function WaifuEditor({
     if (!waifu) return;
     setSaving(true);
     setError(undefined);
+    setErrorViolations(undefined);
     try {
       await persistWaifu(waifu);
     } catch (err) {
@@ -386,6 +449,7 @@ function WaifuEditor({
     const displayName = botDisplayName.trim() || waifu.displayName;
     setSavingBot(true);
     setError(undefined);
+    setErrorViolations(undefined);
     setBotMessage(undefined);
     try {
       const currentBots = botFile ?? await api.discordBots();
@@ -424,6 +488,7 @@ function WaifuEditor({
       } else {
         setError((err as Error).message);
       }
+      setErrorViolations(violationsFromApiError(err));
     } finally {
       setSavingBot(false);
     }
@@ -436,6 +501,7 @@ function WaifuEditor({
     } else {
       setError((err as Error).message);
     }
+    setErrorViolations(violationsFromApiError(err));
   };
 
   const remove = async () => {
@@ -443,6 +509,7 @@ function WaifuEditor({
     if (!window.confirm(`Delete waifu "${waifu.displayName}"? This removes its folder.`)) return;
     setDeleting(true);
     setError(undefined);
+    setErrorViolations(undefined);
     try {
       await api.deleteWaifu(waifu.id, waifu.revision);
       onDeleted();
@@ -470,7 +537,7 @@ function WaifuEditor({
           </button>
           <span style={{ flex: 1 }} />
           <button className="btn" onClick={onClose} disabled={saving || deleting}>Cancel</button>
-          <button className="btn primary" onClick={save} disabled={!waifu || saving}>
+          <button className="btn primary" onClick={save} disabled={!waifu || saving || paramsBlocked}>
             <Save className="icon" />
             {saving ? "Saving…" : "Save"}
           </button>
@@ -489,6 +556,7 @@ function WaifuEditor({
               setWaifu(conflict);
               setConflict(undefined);
               setError(undefined);
+              setErrorViolations(undefined);
             }}
           >
             <ArrowLeft className="icon" /> Reload server copy
@@ -496,7 +564,21 @@ function WaifuEditor({
         </Notice>
       )}
 
-      {error && !conflict && <Notice tone="err">{error}</Notice>}
+      {error && !conflict && (
+        <Notice tone="err">
+          <div>{error}</div>
+          {errorViolations && errorViolations.length > 0 && (
+            <ul className="model-params-warnings">
+              {errorViolations.map((v, i) => (
+                <li key={i}>
+                  {v.param}: {v.code}
+                  {v.rule ? ` (rule ${v.rule})` : ""}
+                </li>
+              ))}
+            </ul>
+          )}
+        </Notice>
+      )}
 
       {waifu && (
         <>
@@ -553,98 +635,44 @@ function WaifuEditor({
               <span className="field-hint">Default 50. Range 1–100.</span>
             </div>
             <div className="field">
-              <label className="field-label">Provider</label>
-              <select
-                className="select"
-                value={waifu.providerId ?? ""}
-                onChange={(e) => {
-                  const next = e.target.value || undefined;
-                  set({ providerId: next as WaifuConfig["providerId"], modelId: undefined });
-                }}
-              >
-                <option value="">— Select provider —</option>
-                {(providers?.providers ?? []).map((p) => (
-                  <option key={p.id} value={p.id} disabled={!p.credentials.configured}>
-                    {p.displayName} {p.credentials.configured ? "" : "(no key)"}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="field">
               <label className="field-label">Model</label>
               <select
                 className="select"
-                value={waifu.modelId ?? ""}
-                onChange={(e) => set({ modelId: e.target.value || undefined })}
-                disabled={!waifu.providerId}
+                value={modelGroupValue}
+                onChange={(e) => selectModelGroup(e.target.value)}
               >
-                <option value="">— Select model —</option>
-                {filteredModels.map((m) => (
-                  <option key={m.modelId} value={m.modelId}>
-                    {m.displayName} ({m.modelId})
+                {modelGroupOptions.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
                   </option>
                 ))}
               </select>
             </div>
-            <div className="field">
-              <label className="field-label">Temperature</label>
-              <input
-                className="input"
-                type="number"
-                step={0.05}
-                min={0}
-                max={2}
-                value={waifu.generation.temperature ?? ""}
-                onChange={(e) =>
-                  setGen({
-                    temperature: e.target.value === "" ? undefined : Number(e.target.value)
-                  })
-                }
-                placeholder={selectedModel?.defaultTemperature?.toString() ?? "default"}
-              />
-            </div>
-            <div className="field">
-              <label className="field-label">Top P</label>
-              <input
-                className="input"
-                type="number"
-                step={0.05}
-                min={0}
-                max={1}
-                value={waifu.generation.topP ?? ""}
-                onChange={(e) =>
-                  setGen({ topP: e.target.value === "" ? undefined : Number(e.target.value) })
-                }
-                placeholder={selectedModel?.defaultTopP?.toString() ?? "default"}
-              />
-            </div>
-            <div className="field">
-              <label className="field-label">Max output tokens</label>
-              <input
-                className="input"
-                type="number"
-                min={1}
-                value={waifu.generation.maxOutputTokens ?? ""}
-                onChange={(e) =>
-                  setGen({
-                    maxOutputTokens:
-                      e.target.value === "" ? undefined : Math.max(1, Number(e.target.value))
-                  })
-                }
-                placeholder={selectedModel?.maxOutputTokens?.toString() ?? "model default"}
-              />
-            </div>
-            <ReasoningControls
-              model={selectedModel}
-              value={waifu.reasoning ?? {}}
-              onChange={(next) => set({ reasoning: next })}
-            />
+            {resolvedRoute && resolvedRoute.group.routes.length > 1 && (
+              <div className="field">
+                <label className="field-label">Route</label>
+                <select
+                  className="select"
+                  value={resolvedRoute.route.providerId}
+                  onChange={(e) => selectRoute(e.target.value)}
+                >
+                  {routeOptions.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
           </div>
-          {selectedModel && !hasReasoningControls(selectedModel) && (
-            <span className="field-hint">
-              Selected model does not expose reasoning controls.
-            </span>
-          )}
+
+          <ModelParamsForm
+            providerId={waifu.providerId ?? null}
+            modelId={waifu.modelId ?? null}
+            value={waifu.params ?? {}}
+            onChange={(params) => set({ params })}
+            onValidity={setParamsValid}
+          />
 
           <ScheduleEditor
             value={waifu.availability}
