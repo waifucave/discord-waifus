@@ -425,7 +425,7 @@ describe("length-register soft check", () => {
   };
 
   it("passes messages at or under the soft limit", () => {
-    const result = validateWaifuOutput("a".repeat(180), ctx);
+    const result = validateWaifuOutput("a".repeat(120), ctx);
     expect(result.verdict).toBe("pass");
   });
 
@@ -445,7 +445,7 @@ describe("correctiveRetryMessage", () => {
   it("uses the concrete length hint for length-register", () => {
     const msg = correctiveRetryMessage("Yuki", [{ check: "length-register", detail: "300 chars" }]);
     expect(msg).toContain("Yuki: (");
-    expect(msg).toContain("under 25 words");
+    expect(msg).toContain("under 15 words");
     expect(msg).not.toContain("contained");
   });
 
@@ -454,7 +454,7 @@ describe("correctiveRetryMessage", () => {
       { check: "harness-tag", detail: "t" },
       { check: "length-register", detail: "l" }
     ]);
-    expect(msg).toContain("under 25 words");
+    expect(msg).toContain("under 15 words");
     expect(msg).toContain("contained harness-tag");
   });
 });
