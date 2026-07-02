@@ -24,8 +24,8 @@
     "waifus": "./bin/waifus.mjs"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && npm run build:frontend",
-    "build:backend": "tsc -p tsconfig.json",
+    "build": "npm run build:backend && npm run build:frontend",
+    "build:backend": "rm -rf dist && tsc -p tsconfig.json",
     "build:frontend": "vite build --config src/frontend/vite.config.ts",
     "dev": "node ./bin/waifus.mjs dev",
     "dev:frontend": "vite --config src/frontend/vite.config.ts",
