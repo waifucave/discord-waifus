@@ -7,6 +7,7 @@ import { createApiServer } from "../src/api/server.js";
 import { createRuntimeState } from "../src/backend/runtime.js";
 import { ensureDataLayout } from "../src/config/layout.js";
 import { CURRENT_SCHEMA_VERSION } from "../src/shared/schemas/common.js";
+import { defaultWaifuPromptLayout } from "../src/shared/schemas/domain.js";
 import { StorageService } from "../src/storage/storageService.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
 
@@ -457,6 +458,158 @@ describe("Backend API", () => {
         expect(get.statusCode).toBe(200);
         expect(get.json().params).toEqual({ "reasoning.enabled": true, "reasoning.effort": "high" });
         expect(get.json().reasoning).toEqual({ enabled: true, effort: "high" });
+      } finally {
+        await app.close();
+      }
+    });
+  });
+
+  // P5 Task 4 review fix: zod v4 `.partial()` does NOT keep fields-with-`.default()` absent —
+  // parsing a body that omits such a field fills in its default, which then flows into the
+  // `{...current, ...patch}` merge as if the client had sent it, silently overwriting stored
+  // data. AgentConfigBodySchema/UpdateWaifuBodySchema must re-declare every defaulted field as
+  // truly optional-without-default so "absent from the PUT body" means "leave it alone."
+  describe("PATCH-true body schemas: PUT must not manufacture schema defaults into the merge", () => {
+    it("PUT stage-manager config omitting contextWindow/prompt/directiveCooldown/promptSections leaves them untouched (reviewer repro)", async () => {
+      const { app } = await makeApp();
+      try {
+        const seeded = await app.inject({
+          method: "PUT",
+          url: "/api/stage-manager/config",
+          payload: {
+            revision: 0,
+            enabled: true,
+            providerId: "openai",
+            modelId: "gpt-5.4-mini",
+            contextWindow: 80,
+            prompt: "Direct the scene with care and continuity.",
+            directiveCooldown: 5,
+            promptSections: { pausePlanning: false, messageStructure: false }
+          }
+        });
+        expect(seeded.statusCode).toBe(200);
+        expect(seeded.json().contextWindow).toBe(80);
+        expect(seeded.json().revision).toBe(1);
+
+        // The real agent-view PUT body: only the fields the view actually edits.
+        const patched = await app.inject({
+          method: "PUT",
+          url: "/api/stage-manager/config",
+          payload: {
+            revision: 1,
+            providerId: "openai",
+            modelId: "gpt-5.4-mini",
+            enabled: true,
+            params: {}
+          }
+        });
+        expect(patched.statusCode).toBe(200);
+        expect(patched.json().contextWindow).toBe(80);
+        expect(patched.json().prompt).toBe("Direct the scene with care and continuity.");
+        expect(patched.json().directiveCooldown).toBe(5);
+        expect(patched.json().promptSections).toEqual({ pausePlanning: false, messageStructure: false });
+
+        const get = await app.inject({ method: "GET", url: "/api/stage-manager/config" });
+        expect(get.statusCode).toBe(200);
+        expect(get.json().contextWindow).toBe(80);
+        expect(get.json().prompt).toBe("Direct the scene with care and continuity.");
+        expect(get.json().directiveCooldown).toBe(5);
+        expect(get.json().promptSections).toEqual({ pausePlanning: false, messageStructure: false });
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("PUT waifu with only {revision, displayName} leaves contextWindow/tools/promptLayout untouched", async () => {
+      const { app } = await makeApp();
+      try {
+        await app.inject({
+          method: "POST",
+          url: "/api/waifus",
+          payload: { id: "patch-true", name: "PatchTrue", displayName: "PatchTrue" }
+        });
+
+        const customLayout = {
+          top: [{ kind: "block", blockId: "identity", enabled: false }],
+          mid: [],
+          trailing: []
+        };
+        const seeded = await app.inject({
+          method: "PUT",
+          url: "/api/waifus/patch-true",
+          payload: {
+            revision: 0,
+            contextWindow: 77,
+            tools: { toolUse: false },
+            promptLayout: customLayout
+          }
+        });
+        expect(seeded.statusCode).toBe(200);
+        expect(seeded.json().contextWindow).toBe(77);
+        expect(seeded.json().tools).toEqual({ toolUse: false });
+        expect(seeded.json().promptLayout).toEqual(customLayout);
+
+        const renamed = await app.inject({
+          method: "PUT",
+          url: "/api/waifus/patch-true",
+          payload: { revision: 1, displayName: "New Display Name" }
+        });
+        expect(renamed.statusCode).toBe(200);
+        expect(renamed.json().displayName).toBe("New Display Name");
+        expect(renamed.json().contextWindow).toBe(77);
+        expect(renamed.json().tools).toEqual({ toolUse: false });
+        expect(renamed.json().promptLayout).toEqual(customLayout);
+
+        const get = await app.inject({ method: "GET", url: "/api/waifus/patch-true" });
+        expect(get.statusCode).toBe(200);
+        expect(get.json().contextWindow).toBe(77);
+        expect(get.json().tools).toEqual({ toolUse: false });
+        expect(get.json().promptLayout).toEqual(customLayout);
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("PUT waifu with an explicit contextWindow still stores the new value", async () => {
+      const { app } = await makeApp();
+      try {
+        await app.inject({
+          method: "POST",
+          url: "/api/waifus",
+          payload: { id: "explicit-write", name: "ExplicitWrite", displayName: "ExplicitWrite" }
+        });
+
+        const update = await app.inject({
+          method: "PUT",
+          url: "/api/waifus/explicit-write",
+          payload: { revision: 0, contextWindow: 40 }
+        });
+        expect(update.statusCode).toBe(200);
+        expect(update.json().contextWindow).toBe(40);
+
+        const get = await app.inject({ method: "GET", url: "/api/waifus/explicit-write" });
+        expect(get.statusCode).toBe(200);
+        expect(get.json().contextWindow).toBe(40);
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("POST /api/waifus with a minimal body still applies schema defaults (create semantics unaffected)", async () => {
+      const { app } = await makeApp();
+      try {
+        const create = await app.inject({
+          method: "POST",
+          url: "/api/waifus",
+          payload: { name: "Minimal", displayName: "Minimal" }
+        });
+        expect(create.statusCode).toBe(201);
+        const created = create.json();
+        expect(created.enabled).toBe(true);
+        expect(created.persona).toBe("");
+        expect(created.contextWindow).toBe(50);
+        expect(created.tools).toEqual({ toolUse: true });
+        expect(created.promptLayout).toEqual(defaultWaifuPromptLayout());
       } finally {
         await app.close();
       }

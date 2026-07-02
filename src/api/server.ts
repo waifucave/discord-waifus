@@ -38,6 +38,7 @@ import {
   MemoryKindSchema,
   OrchestratorHistoryFile,
   OrchestratorHistoryFileSchema,
+  OrchestratorPromptSectionsSchema,
   ProviderCredentialsFile,
   ProviderCredentialsFileSchema,
   ReviewerHistoryFile,
@@ -47,8 +48,11 @@ import {
   ServerConfigSchema,
   StageManagerHistoryFile,
   StageManagerHistoryFileSchema,
+  WaifuAvailabilitySchema,
   WaifuConfig,
   WaifuConfigSchema,
+  WaifuPromptLayoutSchema,
+  WaifuToolSettingsSchema,
   createEmptyRevisionedFile
 } from "../shared/schemas/domain.js";
 import { AppConfigSchema } from "../shared/schemas/config.js";
@@ -126,11 +130,25 @@ const CreateWaifuBodySchema = WaifuConfigSchema.omit({
   });
 
 // personaDigest is server-managed; clients cannot set it via PUT.
+//
+// P5 Task 4 review fix: every WaifuConfigSchema field below carries a `.default(...)` (either
+// directly, like contextWindow, or baked into a shared sub-schema, like availability/tools/
+// promptLayout). `.partial()` does not suppress those defaults — see the LegacyParamsBodySchema
+// comment above for the same gotcha, previously fixed for `params` alone. Re-declared here
+// without a default (same validation, via `.unwrap()` on the sub-schemas that bundle their
+// `.default()` internally) so an omitted field parses to `undefined` and the PUT transform's
+// `{...current, ...patch}` merge leaves the stored value alone instead of resetting it.
 const UpdateWaifuBodySchema = WaifuConfigSchema.omit({ personaDigest: true }).partial().extend({
   revision: z.number().int().nonnegative().optional(),
   ...LegacyParamsBodySchema,
   reasoning: LegacyReasoningBodySchema.optional(),
-  generation: LegacyGenerationBodySchema.optional()
+  generation: LegacyGenerationBodySchema.optional(),
+  enabled: z.boolean().optional(),
+  persona: z.string().optional(),
+  contextWindow: z.number().int().min(1).max(100).optional(),
+  availability: WaifuAvailabilitySchema.unwrap().optional(),
+  tools: WaifuToolSettingsSchema.unwrap().optional(),
+  promptLayout: WaifuPromptLayoutSchema.unwrap().optional()
 });
 
 const ServerConfigBodySchema = ServerConfigSchema.partial().extend({
@@ -160,11 +178,21 @@ const UpdateMemoryBodySchema = CreateMemoryBodySchema.partial().extend({
   status: z.enum(["active", "archived"]).optional()
 });
 
+// P5 Task 4 review fix: same `.partial()`-does-not-suppress-`.default()` gotcha as
+// UpdateWaifuBodySchema above, applied to AgentConfigSchema's defaulted fields (enabled,
+// contextWindow, prompt, directiveCooldown, promptSections). Without this, an agent-view PUT
+// that omits e.g. `contextWindow` would silently reset it to AgentConfigSchema's default (20)
+// instead of leaving the stored value (e.g. the stage manager's 80) untouched.
 const AgentConfigBodySchema = AgentConfigSchema.partial().extend({
   revision: z.number().int().nonnegative().optional(),
   ...LegacyParamsBodySchema,
   reasoning: LegacyReasoningBodySchema.optional(),
-  generation: LegacyGenerationBodySchema.optional()
+  generation: LegacyGenerationBodySchema.optional(),
+  enabled: z.boolean().optional(),
+  contextWindow: z.number().int().min(1).max(100).optional(),
+  prompt: z.string().optional(),
+  directiveCooldown: z.number().int().min(0).max(20).optional(),
+  promptSections: OrchestratorPromptSectionsSchema.unwrap().optional()
 });
 
 const DiscordBotsBodySchema = DiscordBotsFileSchema.partial().extend({
