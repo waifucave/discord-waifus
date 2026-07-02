@@ -1,15 +1,10 @@
 // Types mirror docs/api.md and src/shared/schemas/*.ts.
 // They are hand-aligned, not generated. Keep narrow and tolerant.
 
-export type ProviderId = "xai" | "deepseek" | "anthropic" | "openai" | "zai" | "google-ai-studio";
-
-export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "max" | "xhigh";
-
-export type ReasoningConfig = {
-  enabled?: boolean;
-  effort?: ReasoningEffort;
-  budgetTokens?: number;
-};
+// P5 T6: the gateway registry (api/llm.ts) is the source of truth for provider ids now — the
+// SPA writes native `params` everywhere, so this stays a plain string rather than a hard-coded
+// union of the six legacy-catalog providers.
+export type ProviderId = string;
 
 export type Revisioned = {
   schemaVersion: number;
@@ -115,23 +110,15 @@ export type UpdateAgentConfigBody = Partial<Omit<AgentConfig, "schemaVersion" | 
   revision: number;
 };
 
-export type ModelCapability = {
+// Legacy model-catalog entry (synthesized server-side from the gateway registry — see
+// src/api/legacyCatalog.ts). The SPA no longer reads model capability fields off this shape
+// (ModelParamsForm drives entirely off the gateway registry via api/llm.ts); this minimal type
+// only exists so ProviderMetadata.models/ModelsResponse.models type-check for their one
+// remaining reader (DashboardView's array length).
+export type LegacyModelSummary = {
   providerId: ProviderId;
   modelId: string;
   displayName: string;
-  endpoint: string;
-  client: "openai-compatible-chat" | "openai-responses" | "anthropic-messages" | "google-generative-language";
-  supportedRoles: string[];
-  supportsTools: boolean;
-  supportsStructuredOutput: boolean;
-  supportsStreaming: boolean;
-  supportsImageInput: boolean;
-  reasoningControls: string[];
-  maxContextTokens?: number;
-  maxOutputTokens?: number;
-  defaultTemperature?: number;
-  defaultTopP?: number;
-  safeDefaultRoles: ("orchestrator" | "waifu" | "stage_manager" | "reviewer")[];
 };
 
 export type ProviderCredentialStatus =
@@ -149,7 +136,7 @@ export type ProviderMetadata = {
   credentialName: string;
   baseUrl: string;
   docsUrl: string;
-  models: ModelCapability[];
+  models: LegacyModelSummary[];
   credentials: ProviderCredentialStatus;
 };
 
@@ -160,7 +147,7 @@ export type ProvidersResponse = {
 };
 
 export type ModelsResponse = {
-  models: ModelCapability[];
+  models: LegacyModelSummary[];
 };
 
 export type OrchestratorRespondingWaifu = {

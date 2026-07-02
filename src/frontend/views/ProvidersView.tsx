@@ -3,7 +3,7 @@ import { Cpu, ExternalLink, KeyRound, ShieldCheck } from "lucide-react";
 import { api } from "../api/client";
 import { useApi } from "../api/useApi";
 import { llmModels, llmProviders, type LlmModelSummary } from "../api/llm";
-import type { ProviderId, ProviderMetadata, ProvidersResponse } from "../api/types";
+import type { ProviderMetadata, ProvidersResponse } from "../api/types";
 import { Pill } from "../components/Pill";
 import { Modal } from "../components/Modal";
 import { Notice } from "../components/Notice";
@@ -259,10 +259,7 @@ function CredentialsModal({
     setSaving(true);
     setError(undefined);
     try {
-      // Registry provider ids beyond the legacy 6 (openrouter, moonshot, …) are not in the
-      // legacy ProviderId union yet — P4 made all of them storable server-side (see T6's planned
-      // `ProviderId = string` widening). Same string-cast idiom used elsewhere pending that.
-      await api.putProviderCredentials(provider.id as ProviderId, {
+      await api.putProviderCredentials(provider.id, {
         apiKey: apiKey.trim(),
         label: label.trim() || undefined
       });

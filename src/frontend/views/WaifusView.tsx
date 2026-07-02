@@ -367,13 +367,13 @@ function WaifuEditor({
     const group = routeGroups.find((g) => g.key === value);
     const route = group && defaultRoute(group, configuredProviderIds);
     if (!route) return;
-    set({ providerId: route.providerId as WaifuConfig["providerId"], modelId: route.modelId });
+    set({ providerId: route.providerId, modelId: route.modelId });
   };
 
   const selectRoute = (providerId: string) => {
     const route = resolvedRoute?.group.routes.find((r) => r.providerId === providerId);
     if (!route) return;
-    set({ providerId: route.providerId as WaifuConfig["providerId"], modelId: route.modelId });
+    set({ providerId: route.providerId, modelId: route.modelId });
   };
 
   const modelSelected = Boolean(waifu?.providerId && waifu?.modelId);

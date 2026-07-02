@@ -105,7 +105,7 @@ export function ReviewerView() {
     try {
       const saved = await api.putReviewerConfig({
         revision: remoteConfig.data.revision,
-        providerId: providerId ? (providerId as AgentConfig["providerId"]) : undefined,
+        providerId: providerId || undefined,
         modelId: modelId || undefined,
         enabled,
         prompt,

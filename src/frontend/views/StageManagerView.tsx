@@ -114,7 +114,7 @@ export function StageManagerView() {
     try {
       const saved = await api.putStageManagerConfig({
         revision: remoteConfig.data.revision,
-        providerId: providerId ? (providerId as AgentConfig["providerId"]) : undefined,
+        providerId: providerId || undefined,
         modelId: modelId || undefined,
         enabled,
         params

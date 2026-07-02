@@ -13,9 +13,10 @@
 export type LegacyReasoning = { enabled?: boolean; effort?: string; budgetTokens?: number };
 export type LegacyGeneration = { temperature?: number; topP?: number; maxOutputTokens?: number };
 
-/** Dotted param keys that a legacy `reasoning`/`generation` body can express. When both a
- * native `params` body and a legacy body are present, these keys are legacy-authoritative —
- * see resolveParamsPatch in src/api/server.ts. */
+/** Dotted param keys that a legacy `reasoning`/`generation` body can express. Formerly consumed
+ * by resolveParamsPatch in src/api/server.ts (removed in P5 T6 — the API no longer accepts
+ * legacy reasoning/generation bodies). Left in place: this module is migration-owned, and a
+ * future legacy-shape conversion may want this list again. */
 export const LEGACY_REPRESENTABLE_PARAM_KEYS = [
   "temperature",
   "topP",

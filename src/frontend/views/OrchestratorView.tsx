@@ -143,7 +143,7 @@ export function OrchestratorView() {
       const saved = await api.putOrchestratorConfig({
         revision: remoteConfig.data.revision,
         enabled: true,
-        providerId: providerId ? (providerId as AgentConfig["providerId"]) : undefined,
+        providerId: providerId || undefined,
         modelId: modelId || undefined,
         contextWindow,
         directiveCooldown,

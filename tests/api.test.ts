@@ -224,8 +224,14 @@ describe("Backend API", () => {
   // Gateway P4 Task 2: reasoning/generation config objects were unified into a single
   // gateway-native dotted `params` record. The API keeps legacy `reasoning`/`generation`
   // request/response fields working for the untouched SPA via a compat layer.
-  describe("waifu/agent params legacy compat layer", () => {
-    it("PUT waifu with legacy reasoning/generation body stores dotted params; GET synthesizes both views", async () => {
+  // P5 T6: the SPA writes gateway-native `params` everywhere now (the legacy `reasoning`/
+  // `generation` compat layer — withLegacyViews/resolveParamsPatch — is gone). These pins cover
+  // native `params` semantics end to end: PUT stores it exactly, GET/list never carry synthesized
+  // `reasoning`/`generation`, absent `params` on a PUT preserves what's stored, and a stray legacy
+  // field in a request body is silently stripped by zod (unknown keys, not a validation error)
+  // rather than resurrecting the old merge behavior.
+  describe("waifu/agent gateway params (native)", () => {
+    it("PUT waifu params stores them exactly; GET and list return params with no synthesized reasoning/generation", async () => {
       const { app } = await makeApp();
       try {
         const create = await app.inject({
@@ -234,160 +240,67 @@ describe("Backend API", () => {
           payload: { id: "params-test", name: "ParamsTest", displayName: "ParamsTest" }
         });
         expect(create.statusCode).toBe(201);
+        expect(create.json()).not.toHaveProperty("reasoning");
+        expect(create.json()).not.toHaveProperty("generation");
 
         const update = await app.inject({
           method: "PUT",
           url: "/api/waifus/params-test",
           payload: {
             revision: 0,
-            generation: { temperature: 0.5 },
-            reasoning: { effort: "high" }
+            params: { temperature: 0.5, "reasoning.effort": "high" }
           }
         });
         expect(update.statusCode).toBe(200);
         expect(update.json().params).toEqual({ temperature: 0.5, "reasoning.effort": "high" });
-        expect(update.json().generation).toEqual({ temperature: 0.5 });
-        expect(update.json().reasoning).toEqual({ effort: "high" });
+        expect(update.json()).not.toHaveProperty("reasoning");
+        expect(update.json()).not.toHaveProperty("generation");
 
         const get = await app.inject({ method: "GET", url: "/api/waifus/params-test" });
         expect(get.statusCode).toBe(200);
         expect(get.json().params).toEqual({ temperature: 0.5, "reasoning.effort": "high" });
-        expect(get.json().generation).toEqual({ temperature: 0.5 });
-        expect(get.json().reasoning).toEqual({ effort: "high" });
+        expect(get.json()).not.toHaveProperty("reasoning");
+        expect(get.json()).not.toHaveProperty("generation");
 
         const list = await app.inject({ method: "GET", url: "/api/waifus" });
         const listed = list.json().waifus.find((w: { id: string }) => w.id === "params-test");
         expect(listed.params).toEqual({ temperature: 0.5, "reasoning.effort": "high" });
-        expect(listed.reasoning).toEqual({ effort: "high" });
+        expect(listed).not.toHaveProperty("reasoning");
+        expect(listed).not.toHaveProperty("generation");
       } finally {
         await app.close();
       }
     });
 
-    it("PUT waifu with both params and legacy fields: legacy wins on legacy-representable keys, non-legacy params keys survive", async () => {
+    it("PUT waifu params replaces the stored value wholesale, not merged with the previous value", async () => {
       const { app } = await makeApp();
       try {
         await app.inject({
           method: "POST",
           url: "/api/waifus",
-          payload: { id: "params-wins", name: "ParamsWins", displayName: "ParamsWins" }
+          payload: { id: "params-replace", name: "ParamsReplace", displayName: "ParamsReplace" }
         });
-
-        // Simulates the SPA agent-view echo: a stale `params` snapshot from a prior GET
-        // (including a non-legacy key, topK, that has no legacy representation) plus a
-        // freshly edited legacy `reasoning` field. The edit must win on the keys it can
-        // express; unrelated params keys must survive untouched.
-        const update = await app.inject({
-          method: "PUT",
-          url: "/api/waifus/params-wins",
-          payload: {
-            revision: 0,
-            params: { "reasoning.effort": "medium", topK: 40 },
-            reasoning: { effort: "high" }
-          }
-        });
-        expect(update.statusCode).toBe(200);
-        expect(update.json().params).toEqual({ "reasoning.effort": "high", topK: 40 });
-      } finally {
-        await app.close();
-      }
-    });
-
-    it("PUT waifu with only a native params body stores it unchanged", async () => {
-      const { app } = await makeApp();
-      try {
-        await app.inject({
-          method: "POST",
-          url: "/api/waifus",
-          payload: { id: "params-only", name: "ParamsOnly", displayName: "ParamsOnly" }
-        });
-
-        const update = await app.inject({
-          method: "PUT",
-          url: "/api/waifus/params-only",
-          payload: {
-            revision: 0,
-            params: { temperature: 0.42, "reasoning.enabled": true }
-          }
-        });
-        expect(update.statusCode).toBe(200);
-        expect(update.json().params).toEqual({ temperature: 0.42, "reasoning.enabled": true });
-      } finally {
-        await app.close();
-      }
-    });
-
-    it("PUT waifu with only legacy reasoning/generation fields stores legacyToParams(body) unchanged", async () => {
-      const { app } = await makeApp();
-      try {
-        await app.inject({
-          method: "POST",
-          url: "/api/waifus",
-          payload: { id: "legacy-only", name: "LegacyOnly", displayName: "LegacyOnly" }
-        });
-
-        const update = await app.inject({
-          method: "PUT",
-          url: "/api/waifus/legacy-only",
-          payload: {
-            revision: 0,
-            generation: { temperature: 0.99 },
-            reasoning: { effort: "low" }
-          }
-        });
-        expect(update.statusCode).toBe(200);
-        expect(update.json().params).toEqual({ temperature: 0.99, "reasoning.effort": "low" });
-      } finally {
-        await app.close();
-      }
-    });
-
-    it("regression: orchestrator view echoing GET's full body with an edited reasoning field persists the edit (not silently reverted by stale params)", async () => {
-      const { app } = await makeApp();
-      try {
-        // Seed params (as if a prior native-params write, or a prior legacy write, had happened).
         const seeded = await app.inject({
           method: "PUT",
-          url: "/api/orchestrator/config",
-          payload: {
-            revision: 0,
-            enabled: true,
-            reasoning: { enabled: true, effort: "medium" }
-          }
+          url: "/api/waifus/params-replace",
+          payload: { revision: 0, params: { temperature: 0.5, topK: 40 } }
         });
-        expect(seeded.statusCode).toBe(200);
+        expect(seeded.json().params).toEqual({ temperature: 0.5, topK: 40 });
 
-        // The SPA agent view (e.g. OrchestratorView.tsx) fetches the current config...
-        const get = await app.inject({ method: "GET", url: "/api/orchestrator/config" });
-        expect(get.statusCode).toBe(200);
-        const remoteConfig = get.json();
-        expect(remoteConfig.params).toEqual({ "reasoning.enabled": true, "reasoning.effort": "medium" });
-
-        // ...then builds its PUT body by spreading the full GET response (which now includes
-        // the stale `params` snapshot) and overriding just the edited `reasoning` field.
-        const put = await app.inject({
+        const replaced = await app.inject({
           method: "PUT",
-          url: "/api/orchestrator/config",
-          payload: {
-            ...remoteConfig,
-            reasoning: { enabled: true, effort: "high" }
-          }
+          url: "/api/waifus/params-replace",
+          payload: { revision: 1, params: { "reasoning.effort": "high" } }
         });
-        expect(put.statusCode).toBe(200);
-        expect(put.json().reasoning).toEqual({ enabled: true, effort: "high" });
-        expect(put.json().params).toEqual({ "reasoning.enabled": true, "reasoning.effort": "high" });
-
-        // The edit must actually stick, not just be reflected in the PUT response.
-        const getAfter = await app.inject({ method: "GET", url: "/api/orchestrator/config" });
-        expect(getAfter.statusCode).toBe(200);
-        expect(getAfter.json().reasoning).toEqual({ enabled: true, effort: "high" });
-        expect(getAfter.json().params).toEqual({ "reasoning.enabled": true, "reasoning.effort": "high" });
+        expect(replaced.statusCode).toBe(200);
+        // topK/temperature from the previous write are gone — params is a full replace, not a merge.
+        expect(replaced.json().params).toEqual({ "reasoning.effort": "high" });
       } finally {
         await app.close();
       }
     });
 
-    it("PUT waifu without params/reasoning/generation leaves previously-stored params untouched", async () => {
+    it("PUT waifu without params leaves previously-stored params untouched", async () => {
       const { app } = await makeApp();
       try {
         await app.inject({
@@ -398,7 +311,7 @@ describe("Backend API", () => {
         const seeded = await app.inject({
           method: "PUT",
           url: "/api/waifus/params-keep",
-          payload: { revision: 0, generation: { temperature: 0.6 } }
+          payload: { revision: 0, params: { temperature: 0.6 } }
         });
         expect(seeded.json().params).toEqual({ temperature: 0.6 });
 
@@ -410,12 +323,52 @@ describe("Backend API", () => {
         expect(renamed.statusCode).toBe(200);
         expect(renamed.json().persona).toBe("renamed persona");
         expect(renamed.json().params).toEqual({ temperature: 0.6 });
+
+        const get = await app.inject({ method: "GET", url: "/api/waifus/params-keep" });
+        expect(get.json().params).toEqual({ temperature: 0.6 });
       } finally {
         await app.close();
       }
     });
 
-    it("POST /api/waifus accepts legacy reasoning/generation on create and synthesizes both views back", async () => {
+    it("PUT waifu with a stray legacy reasoning/generation body is silently stripped; stored params are unaffected", async () => {
+      const { app } = await makeApp();
+      try {
+        await app.inject({
+          method: "POST",
+          url: "/api/waifus",
+          payload: { id: "stray-legacy", name: "StrayLegacy", displayName: "StrayLegacy" }
+        });
+        const seeded = await app.inject({
+          method: "PUT",
+          url: "/api/waifus/stray-legacy",
+          payload: { revision: 0, params: { temperature: 0.7 } }
+        });
+        expect(seeded.json().params).toEqual({ temperature: 0.7 });
+
+        // The compat layer that used to read these fields is gone — they're just unrecognized
+        // body keys now, dropped by zod's default (non-strict) object parsing. No 400, no effect.
+        const update = await app.inject({
+          method: "PUT",
+          url: "/api/waifus/stray-legacy",
+          payload: {
+            revision: 1,
+            persona: "still updates",
+            reasoning: { enabled: true, effort: "high" },
+            generation: { temperature: 0.1 }
+          }
+        });
+        expect(update.statusCode).toBe(200);
+        expect(update.json().persona).toBe("still updates");
+        expect(update.json().params).toEqual({ temperature: 0.7 });
+        expect(update.json()).not.toHaveProperty("reasoning");
+        expect(update.json()).not.toHaveProperty("generation");
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("POST /api/waifus with params on create stores them; a stray legacy body on create is stripped", async () => {
       const { app } = await makeApp();
       try {
         const create = await app.inject({
@@ -425,20 +378,21 @@ describe("Backend API", () => {
             id: "params-create",
             name: "ParamsCreate",
             displayName: "ParamsCreate",
-            generation: { temperature: 0.3, topP: 0.8 },
-            reasoning: { enabled: true }
+            params: { temperature: 0.3, topP: 0.8, "reasoning.enabled": true },
+            generation: { temperature: 0.99 },
+            reasoning: { effort: "low" }
           }
         });
         expect(create.statusCode).toBe(201);
         expect(create.json().params).toEqual({ temperature: 0.3, topP: 0.8, "reasoning.enabled": true });
-        expect(create.json().generation).toEqual({ temperature: 0.3, topP: 0.8 });
-        expect(create.json().reasoning).toEqual({ enabled: true });
+        expect(create.json()).not.toHaveProperty("reasoning");
+        expect(create.json()).not.toHaveProperty("generation");
       } finally {
         await app.close();
       }
     });
 
-    it("PUT orchestrator config with legacy reasoning body stores dotted params; GET synthesizes it back", async () => {
+    it("PUT orchestrator config params stores them exactly; GET returns params with no synthesized reasoning", async () => {
       const { app } = await makeApp();
       try {
         const update = await app.inject({
@@ -447,17 +401,49 @@ describe("Backend API", () => {
           payload: {
             revision: 0,
             enabled: true,
-            reasoning: { enabled: true, effort: "high" }
+            params: { "reasoning.enabled": true, "reasoning.effort": "high" }
           }
         });
         expect(update.statusCode).toBe(200);
         expect(update.json().params).toEqual({ "reasoning.enabled": true, "reasoning.effort": "high" });
-        expect(update.json().reasoning).toEqual({ enabled: true, effort: "high" });
+        expect(update.json()).not.toHaveProperty("reasoning");
+        expect(update.json()).not.toHaveProperty("generation");
 
         const get = await app.inject({ method: "GET", url: "/api/orchestrator/config" });
         expect(get.statusCode).toBe(200);
         expect(get.json().params).toEqual({ "reasoning.enabled": true, "reasoning.effort": "high" });
-        expect(get.json().reasoning).toEqual({ enabled: true, effort: "high" });
+        expect(get.json()).not.toHaveProperty("reasoning");
+        expect(get.json()).not.toHaveProperty("generation");
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("PUT orchestrator config with a stray legacy reasoning body is silently stripped; stored params are unaffected", async () => {
+      const { app } = await makeApp();
+      try {
+        const seeded = await app.inject({
+          method: "PUT",
+          url: "/api/orchestrator/config",
+          payload: { revision: 0, enabled: true, params: { "reasoning.effort": "medium" } }
+        });
+        expect(seeded.json().params).toEqual({ "reasoning.effort": "medium" });
+
+        const update = await app.inject({
+          method: "PUT",
+          url: "/api/orchestrator/config",
+          payload: {
+            revision: 1,
+            enabled: true,
+            reasoning: { enabled: true, effort: "high" }
+          }
+        });
+        expect(update.statusCode).toBe(200);
+        expect(update.json().params).toEqual({ "reasoning.effort": "medium" });
+        expect(update.json()).not.toHaveProperty("reasoning");
+
+        const get = await app.inject({ method: "GET", url: "/api/orchestrator/config" });
+        expect(get.json().params).toEqual({ "reasoning.effort": "medium" });
       } finally {
         await app.close();
       }
