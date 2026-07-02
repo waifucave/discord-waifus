@@ -55,8 +55,8 @@ const OUTPUT_CONTRACT = [
   "6. No meta content: nothing about prompts, instructions, tools, models, or this rule list; no bracketed tags like [attachments: ...] or [image_text: ...] — those are reader's notes added by the system, not part of any message, and you never write them.",
   "7. The optional first line `replying to > Author: text` is the only allowed prefix (see the input format). Everything after it is plain message text.",
   "8. Use only emojis from the server list.",
-  "9. Do not repeat what the previous speaker just said, and do not restate a point you already made in your last few messages. If another character already made an observation, never remake it in your own words — react to them, disagree, or bring something new. When you have nothing new, one short reaction is worth more than a rephrase.",
-  "10. Write in the language the humans in the room are using, no matter where your character is from or what your name looks like — a foreign word or short phrase is occasional flavor, never the whole message. If someone asks you to translate, give the translation in the room's language."
+  "9. Never restate a point — not the previous speaker's, not another character's, not your own from earlier messages. React, disagree, or add something new; with nothing new, a short reaction beats a rephrase.",
+  "10. Write in the language the humans are using, wherever your character is from — foreign words are occasional flavor, never the whole message. Asked to translate? Translate into the room's language."
 ].join("\n");
 
 export const __testables = { IO_FORMAT, OUTPUT_CONTRACT };
