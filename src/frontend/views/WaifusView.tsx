@@ -746,7 +746,7 @@ function WaifuEditor({
                   <button
                     className="btn primary"
                     onClick={saveAndLinkBot}
-                    disabled={saving || savingBot || !waifu}
+                    disabled={saving || savingBot || !waifu || paramsBlocked}
                   >
                     <Save className="icon" />
                     {savingBot ? "Saving…" : "Save bot & link"}
