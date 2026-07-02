@@ -59,7 +59,7 @@
     "@dnd-kit/core": "^6.3.1",
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
-    "@waifucave/gateway": "0.1.0",
+    "@waifucave/gateway": "0.1.1",
     "discord.js": "^14.26.4",
     "fastify": "^5.8.5",
     "smol-toml": "^1.6.1",
