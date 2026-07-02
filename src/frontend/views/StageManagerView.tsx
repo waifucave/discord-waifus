@@ -114,8 +114,10 @@ export function StageManagerView() {
     try {
       const saved = await api.putStageManagerConfig({
         revision: remoteConfig.data.revision,
-        providerId: providerId || undefined,
-        modelId: modelId || undefined,
+        // Gateway P6 Task 4: explicit `null` carries "unset" over the wire; `undefined` is
+        // dropped by JSON.stringify and would be indistinguishable from "field left untouched".
+        providerId: providerId || null,
+        modelId: modelId || null,
         enabled,
         params
       });

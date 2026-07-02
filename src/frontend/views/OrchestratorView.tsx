@@ -143,8 +143,10 @@ export function OrchestratorView() {
       const saved = await api.putOrchestratorConfig({
         revision: remoteConfig.data.revision,
         enabled: true,
-        providerId: providerId || undefined,
-        modelId: modelId || undefined,
+        // Gateway P6 Task 4: explicit `null` carries "unset" over the wire; `undefined` is
+        // dropped by JSON.stringify and would be indistinguishable from "field left untouched".
+        providerId: providerId || null,
+        modelId: modelId || null,
         contextWindow,
         directiveCooldown,
         promptSections,

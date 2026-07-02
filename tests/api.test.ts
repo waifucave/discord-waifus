@@ -1189,6 +1189,223 @@ describe("Provider id widening + write validation (Gateway P4 Task 4)", () => {
   });
 });
 
+// Gateway P6 Task 4: write-contract hardening bundle.
+//   1. explicit-null unset: sending `providerId`/`modelId: null` on a waifu or agent PUT clears
+//      the stored model assignment (deletes the key so stored JSON never carries nulls);
+//      an absent key still preserves whatever is currently stored (PATCH-true semantics).
+//   2. normalize legacy/derived ids on write: assertModelWriteValid's resolved (providerId,
+//      modelId) pair is what gets persisted, not the literal input pair — this supersedes the
+//      P4 store-literal deviation.
+//   3. personaDigest is server-managed: a personaDigest sent on POST /api/waifus is stripped
+//      as an unknown key, never stored.
+//   4. DiscordBots write path requires `enabled` explicitly per bot object (no silent default).
+describe("Write-contract hardening (Gateway P6 Task 4)", () => {
+  it("PUT waifu with explicit null providerId/modelId clears the stored model assignment", async () => {
+    const { app } = await makeApp();
+    try {
+      const create = await app.inject({
+        method: "POST",
+        url: "/api/waifus",
+        payload: { id: "unset-model", name: "UnsetModel", displayName: "UnsetModel" }
+      });
+      expect(create.statusCode).toBe(201);
+
+      const seeded = await app.inject({
+        method: "PUT",
+        url: "/api/waifus/unset-model",
+        payload: { revision: 0, providerId: "openai", modelId: "gpt-5.4-mini" }
+      });
+      expect(seeded.statusCode).toBe(200);
+      expect(seeded.json().providerId).toBe("openai");
+      expect(seeded.json().modelId).toBe("gpt-5.4-mini");
+
+      const unset = await app.inject({
+        method: "PUT",
+        url: "/api/waifus/unset-model",
+        payload: { revision: 1, providerId: null, modelId: null }
+      });
+      expect(unset.statusCode).toBe(200);
+      const unsetBody = unset.json();
+      expect("providerId" in unsetBody).toBe(false);
+      expect("modelId" in unsetBody).toBe(false);
+
+      const get = await app.inject({ method: "GET", url: "/api/waifus/unset-model" });
+      const getBody = get.json();
+      expect("providerId" in getBody).toBe(false);
+      expect("modelId" in getBody).toBe(false);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("PUT waifu omitting providerId/modelId preserves the stored model assignment (absent vs explicit null)", async () => {
+    const { app } = await makeApp();
+    try {
+      await app.inject({
+        method: "POST",
+        url: "/api/waifus",
+        payload: { id: "preserve-model", name: "PreserveModel", displayName: "PreserveModel" }
+      });
+      const seeded = await app.inject({
+        method: "PUT",
+        url: "/api/waifus/preserve-model",
+        payload: { revision: 0, providerId: "openai", modelId: "gpt-5.4-mini" }
+      });
+      expect(seeded.statusCode).toBe(200);
+
+      const patched = await app.inject({
+        method: "PUT",
+        url: "/api/waifus/preserve-model",
+        payload: { revision: 1, displayName: "Renamed" }
+      });
+      expect(patched.statusCode).toBe(200);
+      expect(patched.json().providerId).toBe("openai");
+      expect(patched.json().modelId).toBe("gpt-5.4-mini");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("PUT orchestrator config with explicit null providerId/modelId clears the stored assignment", async () => {
+    const { app } = await makeApp();
+    try {
+      const seeded = await app.inject({
+        method: "PUT",
+        url: "/api/orchestrator/config",
+        payload: { revision: 0, enabled: true, providerId: "openai", modelId: "gpt-5.4-mini" }
+      });
+      expect(seeded.statusCode).toBe(200);
+      expect(seeded.json().providerId).toBe("openai");
+
+      const unset = await app.inject({
+        method: "PUT",
+        url: "/api/orchestrator/config",
+        payload: { revision: 1, providerId: null, modelId: null }
+      });
+      expect(unset.statusCode).toBe(200);
+      const body = unset.json();
+      expect("providerId" in body).toBe(false);
+      expect("modelId" in body).toBe(false);
+
+      const get = await app.inject({ method: "GET", url: "/api/orchestrator/config" });
+      const getBody = get.json();
+      expect("providerId" in getBody).toBe(false);
+      expect("modelId" in getBody).toBe(false);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("PUT waifu with modelId 'gpt-4o' (legacy id) stores the normalized openai/gpt-5-mini pair", async () => {
+    const { app } = await makeApp();
+    try {
+      await app.inject({
+        method: "POST",
+        url: "/api/waifus",
+        payload: { id: "legacy-model", name: "LegacyModel", displayName: "LegacyModel" }
+      });
+      const update = await app.inject({
+        method: "PUT",
+        url: "/api/waifus/legacy-model",
+        payload: { revision: 0, modelId: "gpt-4o" }
+      });
+      expect(update.statusCode).toBe(200);
+      expect(update.json().providerId).toBe("openai");
+      expect(update.json().modelId).toBe("gpt-5-mini");
+
+      const get = await app.inject({ method: "GET", url: "/api/waifus/legacy-model" });
+      expect(get.json().providerId).toBe("openai");
+      expect(get.json().modelId).toBe("gpt-5-mini");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("POST /api/waifus with modelId 'gpt-4o' (legacy id) stores the normalized openai/gpt-5-mini pair", async () => {
+    const { app } = await makeApp();
+    try {
+      const create = await app.inject({
+        method: "POST",
+        url: "/api/waifus",
+        payload: { id: "legacy-model-create", name: "LegacyModelCreate", displayName: "LegacyModelCreate", modelId: "gpt-4o" }
+      });
+      expect(create.statusCode).toBe(201);
+      expect(create.json().providerId).toBe("openai");
+      expect(create.json().modelId).toBe("gpt-5-mini");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("POST /api/waifus with a personaDigest in the body strips it rather than storing it", async () => {
+    const { app } = await makeApp();
+    try {
+      const create = await app.inject({
+        method: "POST",
+        url: "/api/waifus",
+        payload: {
+          id: "digest-strip",
+          name: "DigestStrip",
+          displayName: "DigestStrip",
+          personaDigest: { voice: "sneaky", role: "attacker", personaHash: "deadbeef" }
+        }
+      });
+      expect(create.statusCode).toBe(201);
+      expect(create.json().personaDigest).toBeUndefined();
+
+      const get = await app.inject({ method: "GET", url: "/api/waifus/digest-strip" });
+      expect(get.json().personaDigest).toBeUndefined();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("PUT /api/discord-bots with a bot body missing 'enabled' is rejected (400)", async () => {
+    const { app } = await makeApp();
+    try {
+      const res = await app.inject({
+        method: "PUT",
+        url: "/api/discord-bots",
+        payload: {
+          revision: 0,
+          orchestrator: {
+            id: "orchestrator",
+            displayName: "Orchestrator",
+            applicationId: "123",
+            token: "bot-token"
+          }
+        }
+      });
+      expect(res.statusCode).toBe(400);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("PUT /api/discord-bots with the existing client shape (enabled present) succeeds (200)", async () => {
+    const { app } = await makeApp();
+    try {
+      const res = await app.inject({
+        method: "PUT",
+        url: "/api/discord-bots",
+        payload: {
+          revision: 0,
+          orchestrator: {
+            id: "orchestrator",
+            displayName: "Orchestrator",
+            applicationId: "123",
+            token: "bot-token",
+            enabled: true
+          }
+        }
+      });
+      expect(res.statusCode).toBe(200);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
 const LLM_CHAT_OK_PAYLOAD = {
   id: "cmpl_1",
   choices: [{ message: { content: "hello" }, finish_reason: "stop" }],

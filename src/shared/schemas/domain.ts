@@ -241,8 +241,12 @@ export const WaifuConfigSchema = RevisionedRecordSchema.extend({
   displayName: z.string().min(1),
   enabled: z.boolean().default(true),
   persona: z.string().default(""),
-  providerId: ProviderIdSchema.optional(),
-  modelId: z.string().optional(),
+  // Gateway P6 Task 4: explicit `null` on write means "unset" (mirrors AgentConfigSchema below) —
+  // the PUT transforms in server.ts delete the key from the merged object rather than storing
+  // undefined/null. Plain `.optional()` alone can't distinguish "send null to unset" from
+  // "field omitted, leave untouched" since a bare string schema rejects null outright.
+  providerId: z.union([ProviderIdSchema, z.null()]).optional().transform((value) => value ?? undefined),
+  modelId: z.union([z.string(), z.null()]).optional().transform((value) => value ?? undefined),
   botId: z.string().optional(),
   contextWindow: z.number().int().min(1).max(100).default(50),
   params: z.record(z.string(), z.unknown()).default({}),

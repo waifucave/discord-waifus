@@ -106,8 +106,15 @@ export type AgentConfig = Revisioned & {
   promptSections: OrchestratorPromptSections;
 };
 
-export type UpdateAgentConfigBody = Partial<Omit<AgentConfig, "schemaVersion" | "updatedAt">> & {
+// Gateway P6 Task 4: providerId/modelId accept explicit `null` on write to mean "unset" — the
+// wire needs to carry that intent (a bare `undefined` field is dropped by JSON.stringify before
+// it ever reaches the server and is indistinguishable from "field omitted, leave untouched").
+export type UpdateAgentConfigBody = Partial<
+  Omit<AgentConfig, "schemaVersion" | "updatedAt" | "providerId" | "modelId">
+> & {
   revision: number;
+  providerId?: ProviderId | null;
+  modelId?: string | null;
 };
 
 export type ProviderCredentialStatus =
@@ -301,8 +308,14 @@ export type CreateWaifuBody = {
   promptLayout?: WaifuPromptLayout;
 };
 
-export type UpdateWaifuBody = Partial<Omit<WaifuConfig, "schemaVersion" | "updatedAt">> & {
+// Gateway P6 Task 4: providerId/modelId accept explicit `null` on write to mean "unset" (see
+// UpdateAgentConfigBody above for why `undefined` alone can't carry that intent over the wire).
+export type UpdateWaifuBody = Partial<
+  Omit<WaifuConfig, "schemaVersion" | "updatedAt" | "providerId" | "modelId">
+> & {
   revision: number;
+  providerId?: ProviderId | null;
+  modelId?: string | null;
 };
 
 export type ChannelConfig = {

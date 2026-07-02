@@ -386,8 +386,10 @@ function WaifuEditor({
       displayName: draft.displayName,
       enabled: true,
       persona: draft.persona,
-      providerId: draft.providerId,
-      modelId: draft.modelId,
+      // Gateway P6 Task 4: send explicit `null` (not `undefined`) when no model is selected, so
+      // an unset carries over the wire instead of silently vanishing under JSON.stringify.
+      providerId: draft.providerId ?? null,
+      modelId: draft.modelId ?? null,
       botId: draft.botId,
       contextWindow: draft.contextWindow,
       params: draft.params,

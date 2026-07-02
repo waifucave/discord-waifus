@@ -48,13 +48,19 @@ export function assertParamsValid(
   }
 }
 
-/** Runs the full write-time check when a (possibly updated) config carries a modelId. */
+/**
+ * Runs the full write-time check when a (possibly updated) config carries a modelId, and
+ * returns the resolved (providerId, modelId) target so callers can persist the normalized pair
+ * instead of the literal input (Gateway P6 Task 4: supersedes P4's store-literal deviation —
+ * legacy ids like "gpt-4o" and bare-modelId provider derivation both get written back resolved).
+ */
 export function assertModelWriteValid(
   providerId: string | undefined,
   modelId: string | undefined,
   params: Record<string, unknown>
-): void {
-  if (!modelId) return;
+): ModelTarget | undefined {
+  if (!modelId) return undefined;
   const target = assertKnownModel(providerId, modelId);
   assertParamsValid(target.providerId, target.modelId, params);
+  return target;
 }

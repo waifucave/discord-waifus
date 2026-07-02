@@ -21,6 +21,7 @@ import { resolveModelTarget } from "../orchestration/pipeline/resolveTarget.js";
 import {
   AgentConfig,
   AgentConfigSchema,
+  DiscordBotConfigSchema,
   DiscordBotsFile,
   DiscordBotsFileSchema,
   GuildEmojisFile,
@@ -89,10 +90,14 @@ const ProviderCredentialsBodySchema = z.object({
   revision: z.number().int().nonnegative().optional()
 });
 
+// personaDigest is server-managed; omitted here (not just left optional) so a client-supplied
+// value on create is an unknown key — zod's default "strip" mode drops it silently rather than
+// storing it (Gateway P6 Task 4).
 const CreateWaifuBodySchema = WaifuConfigSchema.omit({
   schemaVersion: true,
   revision: true,
-  updatedAt: true
+  updatedAt: true,
+  personaDigest: true
 })
   .partial({ id: true, enabled: true, persona: true, contextWindow: true })
   .required({ name: true, displayName: true });
@@ -175,8 +180,16 @@ const AgentConfigBodySchema = AgentConfigSchema.partial().extend({
   promptSections: OrchestratorPromptSectionsSchema.unwrap().optional()
 });
 
+// Gateway P6 Task 4: `enabled` is required (not defaulted) in write bodies — every real client
+// (WaifusView, OrchestratorView) sends it explicitly, so a missing `enabled` is a malformed
+// request, not an implicit "disabled". DiscordBotConfigSchema itself keeps its `.default(false)`
+// for reads/migrations; only the write path tightens this.
+const DiscordBotBodySchema = DiscordBotConfigSchema.extend({ enabled: z.boolean() });
+
 const DiscordBotsBodySchema = DiscordBotsFileSchema.partial().extend({
-  revision: z.number().int().nonnegative().optional()
+  revision: z.number().int().nonnegative().optional(),
+  orchestrator: DiscordBotBodySchema.nullable().optional(),
+  waifus: z.array(DiscordBotBodySchema).optional()
 });
 
 const DiscordApiErrorSchema = z.object({
@@ -195,6 +208,24 @@ const ASSET_EXT_BY_MIME: Record<string, string> = {
   "image/webp": "webp",
   "image/gif": "gif"
 };
+
+/**
+ * Gateway P6 Task 4: after a `{...current, ...patch}` merge, an explicitly-unset field (the
+ * patch carries the key with value `undefined` — see WaifuConfigSchema/AgentConfigSchema's
+ * null-to-undefined transform) leaves an own key with value `undefined` on the merged object.
+ * JSON.stringify already drops undefined-valued keys (both atomicWriteJson and Fastify's default
+ * response serialization), so behavior is correct either way — this makes the "stored JSON never
+ * carries nulls/undefined" guarantee explicit on the in-memory object too, rather than relying on
+ * incidental serialization behavior.
+ */
+function pruneUndefined<T extends Record<string, unknown>>(value: T): T {
+  for (const key of Object.keys(value)) {
+    if (value[key as keyof T] === undefined) {
+      delete value[key as keyof T];
+    }
+  }
+  return value;
+}
 
 export async function createApiServer(options: ApiServerOptions): Promise<FastifyInstance> {
   const storage = options.storage ?? new StorageService(options.dataRoot);
@@ -396,7 +427,13 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
       ...body,
       id
     });
-    assertModelWriteValid(waifu.providerId, waifu.modelId, waifu.params);
+    const target = assertModelWriteValid(waifu.providerId, waifu.modelId, waifu.params);
+    if (target) {
+      // Gateway P6 Task 4: persist the resolved (providerId, modelId) pair, not the literal
+      // input — covers legacy-id remaps (LEGACY_MODEL_MAP) and bare-modelId provider derivation.
+      waifu.providerId = target.providerId;
+      waifu.modelId = target.modelId;
+    }
     const saved = await storage.writeJson(`waifu:${id}`, relativePath, WaifuConfigSchema, waifu);
     return reply.status(201).send(saved);
   });
@@ -418,14 +455,20 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
       expectedRevision: expectedRevision(request, body),
       transform: (current) => {
         const { revision: _revision, schemaVersion: _schemaVersion, updatedAt: _updatedAt, id: _id, ...patch } = body;
-        const next = {
+        const next = pruneUndefined({
           ...current,
           ...patch,
           id: current.id,
           // personaDigest is server-managed; always carry it forward from current.
           personaDigest: current.personaDigest
-        };
-        assertModelWriteValid(next.providerId, next.modelId, next.params);
+        });
+        const target = assertModelWriteValid(next.providerId, next.modelId, next.params);
+        if (target) {
+          // Gateway P6 Task 4: persist the resolved pair (supersedes P4's store-literal
+          // deviation) — remap only fires for LEGACY_MODEL_MAP ids and bare-modelId derivation.
+          next.providerId = target.providerId;
+          next.modelId = target.modelId;
+        }
         return next;
       }
     });
@@ -826,8 +869,14 @@ async function updateAgentConfig(
     expectedRevision: expectedRevision(request, body),
     transform: (current) => {
       const { revision: _revision, schemaVersion: _schemaVersion, updatedAt: _updatedAt, ...patch } = body;
-      const next = { ...current, ...patch };
-      assertModelWriteValid(next.providerId, next.modelId, next.params);
+      const next = pruneUndefined({ ...current, ...patch });
+      const target = assertModelWriteValid(next.providerId, next.modelId, next.params);
+      if (target) {
+        // Gateway P6 Task 4: persist the resolved pair (supersedes P4's store-literal
+        // deviation) — remap only fires for LEGACY_MODEL_MAP ids and bare-modelId derivation.
+        next.providerId = target.providerId;
+        next.modelId = target.modelId;
+      }
       return next;
     }
   });
