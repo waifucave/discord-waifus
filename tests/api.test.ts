@@ -1419,7 +1419,8 @@ describe("LLM gateway mount (/api/llm)", () => {
       const models = await app.inject({ method: "GET", url: "/api/llm/v1/models" });
       expect(models.statusCode).toBe(200);
       const body = models.json() as { models: Array<Record<string, unknown>> };
-      expect(body.models).toHaveLength(100);
+      // 98 since gateway 0.1.1 dropped two stale openrouter routes (owl-alpha, mimo-v2-flash).
+      expect(body.models).toHaveLength(98);
       expect(
         body.models.find((m) => m.providerId === "deepseek" && m.modelId === "deepseek-v4-pro")
       ).toEqual({
