@@ -614,6 +614,85 @@ describe("Backend API", () => {
         await app.close();
       }
     });
+
+    it("PUT server config omitting memoryInjectionLimit (real ServersView save body) leaves it untouched (reviewer repro)", async () => {
+      const { app } = await makeApp();
+      try {
+        const guildId = "guild-patch-true";
+        const seeded = await app.inject({
+          method: "PUT",
+          url: `/api/servers/${guildId}`,
+          payload: {
+            revision: 0,
+            name: "Test Guild",
+            enabled: true,
+            contextWindows: { orchestrator: 20, waifu: 50, stageManager: 80 },
+            memoryInjectionLimit: 30,
+            tools: { pickNextWaifu: false, shortTermMemory: true },
+            channels: {}
+          }
+        });
+        expect(seeded.statusCode).toBe(200);
+        expect(seeded.json().memoryInjectionLimit).toBe(30);
+        expect(seeded.json().revision).toBe(1);
+
+        // The real ServersView save body (src/frontend/views/ServersView.tsx): no UI exists for
+        // memoryInjectionLimit, so it is never sent.
+        const patched = await app.inject({
+          method: "PUT",
+          url: `/api/servers/${guildId}`,
+          payload: {
+            revision: 1,
+            name: "Test Guild",
+            enabled: true,
+            contextWindows: { orchestrator: 20, waifu: 50, stageManager: 80 },
+            tools: { pickNextWaifu: false, shortTermMemory: true },
+            channels: {}
+          }
+        });
+        expect(patched.statusCode).toBe(200);
+        expect(patched.json().memoryInjectionLimit).toBe(30);
+
+        const list = await app.inject({ method: "GET", url: "/api/servers" });
+        expect(list.statusCode).toBe(200);
+        const server = (list.json().servers as Array<{ guildId: string; memoryInjectionLimit: number }>).find(
+          (entry) => entry.guildId === guildId
+        );
+        expect(server?.memoryInjectionLimit).toBe(30);
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("PUT server config with an explicit memoryInjectionLimit still stores the new value", async () => {
+      const { app } = await makeApp();
+      try {
+        const guildId = "guild-explicit-write";
+        const seeded = await app.inject({
+          method: "PUT",
+          url: `/api/servers/${guildId}`,
+          payload: { revision: 0, memoryInjectionLimit: 30 }
+        });
+        expect(seeded.statusCode).toBe(200);
+        expect(seeded.json().memoryInjectionLimit).toBe(30);
+
+        const updated = await app.inject({
+          method: "PUT",
+          url: `/api/servers/${guildId}`,
+          payload: { revision: 1, memoryInjectionLimit: 45 }
+        });
+        expect(updated.statusCode).toBe(200);
+        expect(updated.json().memoryInjectionLimit).toBe(45);
+
+        const list = await app.inject({ method: "GET", url: "/api/servers" });
+        const server = (list.json().servers as Array<{ guildId: string; memoryInjectionLimit: number }>).find(
+          (entry) => entry.guildId === guildId
+        );
+        expect(server?.memoryInjectionLimit).toBe(45);
+      } finally {
+        await app.close();
+      }
+    });
   });
 
   it("creates user memories as pinned and preserves pinned state across edits", async () => {

@@ -46,6 +46,7 @@ import {
   ProviderIdSchema,
   ServerConfig,
   ServerConfigSchema,
+  ServerToolSettingsSchema,
   StageManagerHistoryFile,
   StageManagerHistoryFileSchema,
   WaifuAvailabilitySchema,
@@ -151,8 +152,21 @@ const UpdateWaifuBodySchema = WaifuConfigSchema.omit({ personaDigest: true }).pa
   promptLayout: WaifuPromptLayoutSchema.unwrap().optional()
 });
 
+// P5 Task 4 review fix (3rd instance): same `.partial()`-does-not-suppress-`.default()` gotcha as
+// UpdateWaifuBodySchema/AgentConfigBodySchema above, applied to ServerConfigSchema's defaulted
+// fields (enabled, contextWindows, memoryInjectionLimit, tools, channels). LIVE bug: ServersView's
+// save body has no UI for memoryInjectionLimit, so every server save was silently resetting a
+// hand-configured value back to the schema default (12) — runtime.ts reads memoryInjectionLimit
+// for memory injection. contextWindows/channels have no separately-exported sub-schema, so their
+// `.unwrap()` is pulled straight off `ServerConfigSchema.shape` to avoid duplicating (and risking
+// drift on) their inline definitions.
 const ServerConfigBodySchema = ServerConfigSchema.partial().extend({
-  revision: z.number().int().nonnegative().optional()
+  revision: z.number().int().nonnegative().optional(),
+  enabled: z.boolean().optional(),
+  contextWindows: ServerConfigSchema.shape.contextWindows.unwrap().optional(),
+  memoryInjectionLimit: z.number().int().min(1).max(50).optional(),
+  tools: ServerToolSettingsSchema.unwrap().optional(),
+  channels: ServerConfigSchema.shape.channels.unwrap().optional()
 });
 
 const ChannelConfigBodySchema = z.object({
