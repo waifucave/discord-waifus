@@ -3084,7 +3084,7 @@ export class RuntimeOrchestrator {
   ): string {
     const now = new Date();
     const activeWaifusContent = availableWaifus.length
-      ? availableWaifus.map((waifu) => castingCard(waifu, now)).join("\n")
+      ? availableWaifus.map((waifu) => castingCard(waifu, now, waifuSeesImages(waifu))).join("\n")
       : "No waifus are currently enabled for this channel.";
 
     const pausePlanning =
@@ -4352,16 +4352,27 @@ const DEFAULT_ORCHESTRATOR_PROMPT = [
   "",
   `delaySeconds is a realistic reading/typing delay (0–${MAX_WAIFU_DELAY_SECONDS}); it defaults to 0.`,
   "",
-  "Watch the recent speaker pattern. If the same waifu or the same pair has carried several beats, switch speakers, go quiet, or pivot with a directive — do not let two waifus volley restatements of the same mood."
+  "Watch the recent speaker pattern. If the same waifu or the same pair has carried several beats, switch speakers, go quiet, or pivot with a directive — do not let two waifus volley restatements of the same mood.",
+  "",
+  "When the latest messages include an image, lean toward a waifu marked 'sees images natively' — she can actually look at it, the others only get extracted text. A soft preference, not a rule: if the moment clearly belongs to someone else, cast her instead."
 ].join("\n");
 
 // W2 replaces the raw-persona preview with the generated persona digest.
-function castingCard(waifu: WaifuConfig, now: Date): string {
+// A waifu on a vision model can look at posted images directly; the rest get OCR text only.
+// Surfaced on the casting card so the orchestrator can prefer (not must pick) a native viewer
+// when images land.
+function waifuSeesImages(waifu: WaifuConfig): boolean {
+  if (!waifu.modelId) return false;
+  const target = resolveModelTarget({ providerId: waifu.providerId, modelId: waifu.modelId });
+  return sharedRegistry().resolve(target.providerId, target.modelId)?.modalities.input.includes("image") ?? false;
+}
+
+function castingCard(waifu: WaifuConfig, now: Date, seesImages = false): string {
   const tagName = promptTagName(waifu.name || waifu.id);
   const displayName = waifu.displayName || waifu.name;
   const lines: string[] = [
     `<${tagName}>`,
-    `ID: ${waifu.id} · ${displayName}`
+    `ID: ${waifu.id} · ${displayName}${seesImages ? " · sees images natively" : ""}`
   ];
   if (waifu.personaDigest) {
     lines.push(`Voice: ${waifu.personaDigest.voice}`);

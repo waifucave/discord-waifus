@@ -1386,6 +1386,74 @@ describe("RuntimeOrchestrator", () => {
     expect(trailingPrompt).not.toContain("kind and bubbly");
   });
 
+  it("marks vision-capable waifus on casting cards and leaves text-only ones unmarked", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.contexts = [[contextMessage("m1", "user", "Kevin", "look at this")]];
+
+    // Seeded yuki runs openai gpt-5.4-mini (image input per registry); mika runs deepseek (text-only).
+    await seedRuntimeConfig(storage);
+    await storage.writeJson(
+      "waifu:mika",
+      "user/waifus/mika/waifu.json",
+      WaifuConfigSchema,
+      WaifuConfigSchema.parse({
+        ...createRevisionedBase(),
+        id: "mika",
+        name: "Mika",
+        displayName: "Mika",
+        providerId: "deepseek",
+        modelId: "deepseek-v4-pro",
+        botId: "mika-bot",
+        persona: "dry and sharp",
+        contextWindow: 50
+      })
+    );
+    await storage.writeJson(
+      "server:guild-1",
+      "user/servers/guild-1/server.json",
+      ServerConfigSchema,
+      ServerConfigSchema.parse({
+        ...createRevisionedBase(),
+        guildId: "guild-1",
+        channels: {
+          "channel-1": { channelId: "channel-1", enabled: true, enabledWaifuIds: ["yuki", "mika"] }
+        }
+      })
+    );
+
+    let trailingPrompt: string | undefined;
+    const pipeline: ModelPipeline = {
+      async decideOrchestrator(request: ProviderRequest) {
+        trailingPrompt = request.trailingPrompt;
+        return { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, reasoning: "done" };
+      },
+      async generateWaifu() {
+        return { content: "hi" };
+      }
+    };
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 1,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    expect(trailingPrompt).toBeDefined();
+    expect(trailingPrompt).toContain("Yuki · sees images natively");
+    expect(trailingPrompt).toContain("ID: mika · Mika\n");
+    expect(trailingPrompt).not.toContain("Mika · sees images natively");
+  });
+
   it("tracks active chat participants from human messages and refreshes their expiry", async () => {
     const root = await makeTempRoot();
     roots.push(root);
