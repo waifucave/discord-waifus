@@ -107,8 +107,12 @@ export type AgentConfig = Revisioned & {
   contextWindow: number;
   prompt: string;
   directiveCooldown: number;
-  reasoning: ReasoningConfig;
+  params: Record<string, unknown>;
   promptSections: OrchestratorPromptSections;
+};
+
+export type UpdateAgentConfigBody = Partial<Omit<AgentConfig, "schemaVersion" | "updatedAt">> & {
+  revision: number;
 };
 
 export type ModelCapability = {

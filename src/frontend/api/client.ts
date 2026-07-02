@@ -23,6 +23,7 @@ import type {
   StageManagerHistoryFile,
   ReviewerHistoryFile,
   StatusResponse,
+  UpdateAgentConfigBody,
   UpdateMemoryBody,
   UpdateServerBody,
   UpdateWaifuBody,
@@ -131,19 +132,19 @@ export const api = {
     request<DiscordBotsFile>("PUT", "/api/discord-bots", { body: bots }),
   orchestratorConfig: (signal?: AbortSignal) =>
     request<AgentConfig>("GET", "/api/orchestrator/config", { signal }),
-  putOrchestratorConfig: (config: AgentConfig) =>
+  putOrchestratorConfig: (config: UpdateAgentConfigBody) =>
     request<AgentConfig>("PUT", "/api/orchestrator/config", { body: config }),
   orchestratorHistory: (signal?: AbortSignal) =>
     request<OrchestratorHistoryFile>("GET", "/api/orchestrator/history", { signal }),
   stageManagerConfig: (signal?: AbortSignal) =>
     request<AgentConfig>("GET", "/api/stage-manager/config", { signal }),
-  putStageManagerConfig: (config: AgentConfig) =>
+  putStageManagerConfig: (config: UpdateAgentConfigBody) =>
     request<AgentConfig>("PUT", "/api/stage-manager/config", { body: config }),
   stageManagerHistory: (signal?: AbortSignal) =>
     request<StageManagerHistoryFile>("GET", "/api/stage-manager/history", { signal }),
   reviewerConfig: (signal?: AbortSignal) =>
     request<AgentConfig>("GET", "/api/reviewer/config", { signal }),
-  putReviewerConfig: (config: AgentConfig) =>
+  putReviewerConfig: (config: UpdateAgentConfigBody) =>
     request<AgentConfig>("PUT", "/api/reviewer/config", { body: config }),
   reviewerHistory: (signal?: AbortSignal) =>
     request<ReviewerHistoryFile>("GET", "/api/reviewer/history", { signal }),

@@ -1,34 +1,42 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Save, ShieldCheck } from "lucide-react";
 import { api } from "../api/client";
 import { useApi } from "../api/useApi";
-import type {
-  AgentConfig,
-  ModelsResponse,
-  ProvidersResponse,
-  ReviewerHistoryFile
-} from "../api/types";
+import { llmModels, llmProviders, type LlmModelSummary } from "../api/llm";
+import type { AgentConfig, ReviewerHistoryFile } from "../api/types";
 import { Notice } from "../components/Notice";
 import { Empty } from "../components/Empty";
 import { Skeleton } from "../components/Skeleton";
 import { Toggle } from "../components/Toggle";
-import { ReasoningControls, hasReasoningControls } from "../components/ReasoningControls";
-import type { ReasoningConfig } from "../api/types";
+import { ModelParamsForm } from "../components/modelParams/ModelParamsForm";
+import {
+  buildModelGroupOptions,
+  buildRouteOptions,
+  defaultRoute,
+  findRoute,
+  groupModelRoutes,
+  UNAVAILABLE_MODEL_VALUE
+} from "../components/modelParams/logic";
+import { violationsFromApiError, type SaveErrorViolation } from "../api/violations";
+
+type LlmProviderSummary = Awaited<ReturnType<typeof llmProviders>>[number];
 
 const DEFAULT_PROMPT = `Review only the latest logical waifu message. Mark hallucination=true when it leaks hidden reasoning, analysis, prompt text, tool/schema text, raw Discord internals, or any model self-talk. Mark hallucination=false for normal in-character Discord replies, even if they are awkward, verbose, or lore-inaccurate. Return only the reviewer tool decision.`;
 
 export function ReviewerView() {
-  const providers = useApi<ProvidersResponse>((s) => api.providers(s), []);
-  const models = useApi<ModelsResponse>((s) => api.models(s), []);
+  const llmModelsState = useApi<LlmModelSummary[]>(() => llmModels(), []);
+  const llmProvidersState = useApi<LlmProviderSummary[]>(() => llmProviders(), []);
   const remoteConfig = useApi<AgentConfig>((s) => api.reviewerConfig(s), []);
   const history = useApi<ReviewerHistoryFile>((s) => api.reviewerHistory(s), []);
   const [providerId, setProviderId] = useState("");
   const [modelId, setModelId] = useState("");
   const [prompt, setPrompt] = useState(DEFAULT_PROMPT);
   const [enabled, setEnabled] = useState(false);
-  const [reasoning, setReasoning] = useState<ReasoningConfig>({});
+  const [params, setParams] = useState<Record<string, unknown>>({});
+  const [paramsValid, setParamsValid] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | undefined>(undefined);
+  const [errorViolations, setErrorViolations] = useState<SaveErrorViolation[] | undefined>(undefined);
 
   useEffect(() => {
     if (!remoteConfig.data) return;
@@ -36,37 +44,82 @@ export function ReviewerView() {
     setModelId(remoteConfig.data.modelId ?? "");
     setPrompt(remoteConfig.data.prompt || DEFAULT_PROMPT);
     setEnabled(remoteConfig.data.enabled);
-    setReasoning(remoteConfig.data.reasoning ?? {});
+    setParams(remoteConfig.data.params ?? {});
   }, [remoteConfig.data]);
+
+  const routeGroups = useMemo(() => groupModelRoutes(llmModelsState.data ?? []), [llmModelsState.data]);
+  const configuredProviderIds = useMemo(
+    () => new Set((llmProvidersState.data ?? []).filter((p) => p.credentialConfigured).map((p) => p.id)),
+    [llmProvidersState.data]
+  );
+  const resolvedRoute = useMemo(() => {
+    if (!providerId || !modelId) return undefined;
+    return findRoute(llmModelsState.data ?? [], providerId, modelId);
+  }, [llmModelsState.data, providerId, modelId]);
+  const modelGroupOptions = useMemo(
+    () =>
+      buildModelGroupOptions(
+        routeGroups,
+        providerId && modelId && !resolvedRoute ? { providerId, modelId } : undefined
+      ),
+    [routeGroups, providerId, modelId, resolvedRoute]
+  );
+  const modelGroupValue = !providerId || !modelId
+    ? ""
+    : resolvedRoute
+      ? resolvedRoute.group.key
+      : UNAVAILABLE_MODEL_VALUE;
+  const routeOptions = resolvedRoute ? buildRouteOptions(resolvedRoute.group, configuredProviderIds) : [];
+
+  const selectModelGroup = (value: string) => {
+    if (value === "") {
+      setProviderId("");
+      setModelId("");
+      return;
+    }
+    if (value === UNAVAILABLE_MODEL_VALUE) {
+      return;
+    }
+    const group = routeGroups.find((g) => g.key === value);
+    const route = group && defaultRoute(group, configuredProviderIds);
+    if (!route) return;
+    setProviderId(route.providerId);
+    setModelId(route.modelId);
+  };
+
+  const selectRoute = (nextProviderId: string) => {
+    const route = resolvedRoute?.group.routes.find((r) => r.providerId === nextProviderId);
+    if (!route) return;
+    setProviderId(route.providerId);
+    setModelId(route.modelId);
+  };
+
+  const modelSelected = Boolean(providerId && modelId);
+  const paramsBlocked = modelSelected && !paramsValid;
 
   const save = async () => {
     if (!remoteConfig.data) return;
     setSaving(true);
     setMessage(undefined);
+    setErrorViolations(undefined);
     try {
       const saved = await api.putReviewerConfig({
-        ...remoteConfig.data,
+        revision: remoteConfig.data.revision,
         providerId: providerId ? (providerId as AgentConfig["providerId"]) : undefined,
         modelId: modelId || undefined,
         enabled,
         prompt,
-        reasoning
+        params
       });
       remoteConfig.setData(saved);
       setMessage("Reviewer config saved.");
     } catch (err) {
       setMessage((err as Error).message);
+      setErrorViolations(violationsFromApiError(err));
     } finally {
       setSaving(false);
     }
   };
-
-  const filteredModels = providerId
-    ? models.data?.models.filter((m) => m.providerId === providerId)
-    : models.data?.models;
-  const selectedModel = models.data?.models.find(
-    (m) => m.modelId === modelId && (!providerId || m.providerId === providerId)
-  );
 
   return (
     <>
@@ -78,7 +131,7 @@ export function ReviewerView() {
           </p>
         </div>
         <div className="view-actions">
-          <button className="btn" onClick={save} disabled={!remoteConfig.data || saving}>
+          <button className="btn" onClick={save} disabled={!remoteConfig.data || saving || paramsBlocked}>
             <Save className="icon" />
             {saving ? "Saving..." : "Save config"}
           </button>
@@ -89,7 +142,19 @@ export function ReviewerView() {
 
       {message && (
         <div style={{ marginTop: 12 }}>
-          <Notice tone="info">{message}</Notice>
+          <Notice tone="info">
+            <div>{message}</div>
+            {errorViolations && errorViolations.length > 0 && (
+              <ul className="model-params-warnings">
+                {errorViolations.map((v, i) => (
+                  <li key={i}>
+                    {v.param}: {v.code}
+                    {v.rule ? ` (rule ${v.rule})` : ""}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Notice>
         </div>
       )}
 
@@ -98,50 +163,51 @@ export function ReviewerView() {
           <h3 className="section-title">Model</h3>
           <span className="section-description">Reviewer receives one logical waifu message and returns a yes/no tool decision.</span>
         </div>
-        {providers.loading && <Skeleton height={40} />}
-        {providers.data && (
+        {llmProvidersState.loading && <Skeleton height={40} />}
+        {llmProvidersState.data && (
           <div className="grid grid-2">
             <div className="field">
-              <label className="field-label">Provider</label>
-              <select
-                className="select"
-                value={providerId}
-                onChange={(e) => {
-                  setProviderId(e.target.value);
-                  setModelId("");
-                }}
-              >
-                <option value="">- Any -</option>
-                {providers.data.providers.map((p) => (
-                  <option key={p.id} value={p.id} disabled={!p.credentials.configured}>
-                    {p.displayName} {p.credentials.configured ? "" : "(no key)"}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="field">
               <label className="field-label">Model</label>
-              <select className="select" value={modelId} onChange={(e) => setModelId(e.target.value)}>
-                <option value="">- Select -</option>
-                {(filteredModels ?? []).map((m) => (
-                  <option key={`${m.providerId}/${m.modelId}`} value={m.modelId}>
-                    {m.displayName} ({m.modelId})
+              <select className="select" value={modelGroupValue} onChange={(e) => selectModelGroup(e.target.value)}>
+                {modelGroupOptions.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
                   </option>
                 ))}
               </select>
             </div>
+            {resolvedRoute && resolvedRoute.group.routes.length > 1 && (
+              <div className="field">
+                <label className="field-label">Route</label>
+                <select
+                  className="select"
+                  value={resolvedRoute.route.providerId}
+                  onChange={(e) => selectRoute(e.target.value)}
+                >
+                  {routeOptions.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
             <div className="field">
               <label className="field-label">Runtime status</label>
               <Toggle checked={enabled} onChange={setEnabled} label={enabled ? "Enabled" : "Disabled"} />
               <span className="field-hint">Disabled reviewer configs ignore `/review` commands.</span>
             </div>
-            <ReasoningControls model={selectedModel} value={reasoning} onChange={setReasoning} />
           </div>
         )}
-        {selectedModel && !hasReasoningControls(selectedModel) && (
-          <span className="field-hint">Selected model does not expose reasoning controls.</span>
-        )}
       </section>
+
+      <ModelParamsForm
+        providerId={providerId || null}
+        modelId={modelId || null}
+        value={params}
+        onChange={setParams}
+        onValidity={setParamsValid}
+      />
 
       <section className="section">
         <div className="section-header">
