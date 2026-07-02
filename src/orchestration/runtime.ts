@@ -4363,8 +4363,13 @@ const DEFAULT_ORCHESTRATOR_PROMPT = [
 // when images land.
 function waifuSeesImages(waifu: WaifuConfig): boolean {
   if (!waifu.modelId) return false;
-  const target = resolveModelTarget({ providerId: waifu.providerId, modelId: waifu.modelId });
-  return sharedRegistry().resolve(target.providerId, target.modelId)?.modalities.input.includes("image") ?? false;
+  try {
+    const target = resolveModelTarget({ providerId: waifu.providerId, modelId: waifu.modelId });
+    return sharedRegistry().resolve(target.providerId, target.modelId)?.modalities.input.includes("image") ?? false;
+  } catch {
+    // A card marker must never kill the decision pass — unresolvable model just means no marker.
+    return false;
+  }
 }
 
 function castingCard(waifu: WaifuConfig, now: Date, seesImages = false): string {

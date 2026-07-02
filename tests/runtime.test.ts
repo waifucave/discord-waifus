@@ -427,7 +427,7 @@ class FakePipeline implements ModelPipeline {
     expect(request.trailingPrompt).toMatch(/<task_instructions>\n[\s\S]*<\/task_instructions>/);
     expect(request.trailingPrompt).toMatch(/<pause_planning>\n[\s\S]*<\/pause_planning>/);
     expect(request.trailingPrompt).toMatch(
-      /<active_waifus>\n<yuki>\nID: yuki · Yuki\nAbout: kind\nNow: [\s\S]*<\/yuki>\n<\/active_waifus>/
+      /<active_waifus>\n<yuki>\nID: yuki · Yuki · sees images natively\nAbout: kind\nNow: [\s\S]*<\/yuki>\n<\/active_waifus>/
     );
     expect(request.trailingPrompt).not.toMatch(/<active_waifus>[\s\S]*Persona:/);
     expect(request.trailingPrompt).toMatch(/<current_time>\n[\s\S]*<\/current_time>/);
