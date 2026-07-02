@@ -98,22 +98,33 @@ export class ImageOcrService {
     }
     await this.cleanupIfDue();
 
+    // Spend the OCR budget newest-first: the images under discussion are almost always the
+    // most recent ones, not the oldest still inside the context window. Messages arrive
+    // oldest-first, so budget by object identity from the tail before mapping in order.
     let remaining = this.options.config.maxImagesPerModelCall;
+    const budgeted = new Set<AttachmentImage>();
+    for (let i = messages.length - 1; i >= 0 && remaining > 0; i -= 1) {
+      for (const image of messages[i].images ?? []) {
+        if (remaining <= 0) break;
+        budgeted.add(image);
+        remaining -= 1;
+      }
+    }
+
     let changed = false;
     const nextMessages: ContextMessage[] = [];
     for (const message of messages) {
-      if (!message.images?.length || remaining <= 0) {
+      if (!message.images?.some((image) => budgeted.has(image))) {
         nextMessages.push(message);
         continue;
       }
 
       const nextImages: AttachmentImage[] = [];
       for (const image of message.images) {
-        if (remaining <= 0) {
+        if (!budgeted.has(image)) {
           nextImages.push(image);
           continue;
         }
-        remaining -= 1;
         const text = await this.extractImageText(image, options);
         if (text) {
           changed = true;
