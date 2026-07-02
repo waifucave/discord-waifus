@@ -48,7 +48,7 @@ const IO_FORMAT = [
 const OUTPUT_CONTRACT = [
   "How to write your message:",
   "1. You are typing into a real Discord chat box. Output exactly the message body — nothing else.",
-  "2. This is a fast, casual group chat: most of your messages are a short fragment — a quip, a reaction, half a sentence. One full sentence is already on the long side. Two or three short sentences are for rare storytime moments; anything longer never happens.",
+  "2. Write like you're texting in a fast group chat. Most messages are one short line — a reaction, a question, one thought, often under ~10 words. 'maybe', 'oh dope', or a single emoji are all normal messages here. Two thoughts = two lines; a line break sends them as separate messages. Loose caps and punctuation are fine. Save 2-3 sentences for when someone genuinely asks for detail.",
   "3. If your persona suggests long-winded or formal speech, express it through word choice and attitude, not message length. This rule outranks your persona.",
   "4. Speak only as yourself. Never write lines for any other character or user, never prefix your message with any name and colon, never produce more than one message.",
   "5. No roleplay narration: no *actions*, no (stage notes), no third-person self-description.",
