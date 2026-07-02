@@ -971,6 +971,9 @@ export class RuntimeOrchestrator {
     options: ChannelRunOptions = {}
   ): Promise<void> {
     let turns = 0;
+    // Tracks the newest human message seen across loop iterations so the post-limit
+    // cooldown can distinguish an active room from cast-only self-chatter.
+    let lastHumanMessageTs: string | undefined;
     if (options.initialResponders?.length) {
       const server = await this.ensureServer(guildId);
       const channel = server.channels[channelId];
@@ -1126,6 +1129,13 @@ export class RuntimeOrchestrator {
       }
       const decisionDelayBaseMs = Date.now();
       const useDecisionRelativeDelays = hasRecentUserMessage(messages, 4);
+      for (const message of messages) {
+        if (message.authorKind === "user" && message.authorBot !== true) {
+          if (!lastHumanMessageTs || message.timestamp > lastHumanMessageTs) {
+            lastHumanMessageTs = message.timestamp;
+          }
+        }
+      }
       const decisionId = randomUUID();
       const initialDecisionStatus: OrchestratorDecisionStatus =
         decision.action === "reply" ? "pending" : "completed";
@@ -1198,12 +1208,20 @@ export class RuntimeOrchestrator {
       await this.setActivePipeline(guildId, channelId, "orchestrator");
     }
 
+    // Cast-only pacing: when no human has spoken recently, the room can idle far longer
+    // between automatic bursts — this is also the API-credit throttle for self-chatter.
+    const humanRecent =
+      lastHumanMessageTs !== undefined &&
+      Date.now() - Date.parse(lastHumanMessageTs) < HUMAN_RECENT_WINDOW_MS;
+    const cooldownSeconds = humanRecent ? RETRIGGER_MIN_SECONDS : CAST_ONLY_COOLDOWN_SECONDS;
     this.options.logger.warn("Automatic turn limit reached; scheduling cooldown", {
       guildId,
       channelId,
-      maxAutomaticTurns: this.maxAutomaticTurns
+      maxAutomaticTurns: this.maxAutomaticTurns,
+      humanRecent,
+      cooldownSeconds
     });
-    await this.scheduleRetrigger(guildId, channelId, RETRIGGER_MIN_SECONDS);
+    await this.scheduleRetrigger(guildId, channelId, cooldownSeconds);
   }
 
   private applyDirectiveGuardrails(input: {
@@ -3956,6 +3974,9 @@ function applyFirstResponderDirectiveOverride(
     )
   };
 }
+
+const HUMAN_RECENT_WINDOW_MS = 15 * 60 * 1000;
+const CAST_ONLY_COOLDOWN_SECONDS = 900;
 
 function hasRecentUserMessage(messages: ContextMessage[], count: number): boolean {
   return messages.slice(-count).some((message) => message.authorKind === "user");

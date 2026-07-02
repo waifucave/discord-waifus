@@ -1,27 +1,58 @@
 const PARAGRAPH_SPLIT_RE = /\n+/;
 const SENTENCE_SPLIT_RE = /(?<=[.?!])\s+/;
-const MAX_CHUNK_CHARS = 100;
+// Replies at or below this length ship as ONE Discord message. Live data (2026-07) showed the
+// old 100-char cap shredding register-compliant replies (median 152ch) into 2-3 message bursts,
+// which both walls the channel and teaches the model multi-part replies via its own history.
+const HARD_CHUNK_CHARS = 280;
 const COMMA_FINDER_RE = /,/g;
 const EMOJI_FINDER_RE =
   /<a?:[A-Za-z0-9_]+:\d+>|[0-9#*]\uFE0F?\u20E3|(?:\p{Extended_Pictographic}|\p{Regional_Indicator})(?:[\uFE0E\uFE0F]|\p{Emoji_Modifier})?(?:\u200D(?:\p{Extended_Pictographic}|\p{Regional_Indicator})(?:[\uFE0E\uFE0F]|\p{Emoji_Modifier})?)*/gu;
 
 export function splitWaifuReply(content: string): string[] {
   const trimmed = content.trim();
-  if (!trimmed) return [];
-  const sentenceChunks: string[] = [];
+  if (trimmed.length === 0) return [];
+  const chunks: string[] = [];
+  // Newlines are the author's own message breaks — always honored. Within a paragraph,
+  // sentences are PACKED up to the hard limit instead of one-sentence-per-message.
   for (const paragraph of trimmed.split(PARAGRAPH_SPLIT_RE)) {
-    for (const part of paragraph.split(SENTENCE_SPLIT_RE)) {
-      const piece = part.trim();
-      if (piece.length > 0) sentenceChunks.push(piece);
+    const piece = paragraph.trim();
+    if (piece.length === 0) continue;
+    if (characterCount(piece) <= HARD_CHUNK_CHARS) {
+      chunks.push(piece);
+      continue;
+    }
+    for (const packed of packSentences(piece)) {
+      splitLongChunk(packed, chunks);
     }
   }
-  const result: string[] = [];
-  for (const chunk of sentenceChunks) splitLongChunk(chunk, result);
-  return result;
+  return dedupeNearDuplicateChunks(chunks);
+}
+
+// Greedily pack sentences into chunks of at most HARD_CHUNK_CHARS. A single over-long
+// sentence passes through untouched here; splitLongChunk handles it at commas/emoji.
+function packSentences(paragraph: string): string[] {
+  const packed: string[] = [];
+  let current = "";
+  for (const part of paragraph.split(SENTENCE_SPLIT_RE)) {
+    const sentence = part.trim();
+    if (sentence.length === 0) continue;
+    if (current.length === 0) {
+      current = sentence;
+      continue;
+    }
+    if (characterCount(current) + 1 + characterCount(sentence) <= HARD_CHUNK_CHARS) {
+      current = `${current} ${sentence}`;
+    } else {
+      packed.push(current);
+      current = sentence;
+    }
+  }
+  if (current.length > 0) packed.push(current);
+  return packed;
 }
 
 function splitLongChunk(chunk: string, out: string[]): void {
-  if (characterCount(chunk) <= MAX_CHUNK_CHARS) {
+  if (characterCount(chunk) <= HARD_CHUNK_CHARS) {
     out.push(chunk);
     return;
   }
@@ -77,6 +108,47 @@ function bestEmojiSplit(chunk: string, mid: number): [string, string] | null {
   const right = chunk.slice(bestEnd).trimStart();
   if (!left || !right) return null;
   return [left, right];
+}
+
+// Reasoning-heavy models occasionally emit several near-identical drafts of the same beat in one
+// output; each used to ship as its own Discord message. Chunks that heavily overlap an earlier
+// chunk of the SAME reply are dropped — this removes the model's duplicated variants, never
+// distinct content.
+const DUPLICATE_JACCARD_THRESHOLD = 0.7;
+const DUPLICATE_MIN_TOKENS = 3;
+
+function dedupeNearDuplicateChunks(chunks: string[]): string[] {
+  const kept: string[] = [];
+  const keptTokens: Array<Set<string>> = [];
+  for (const chunk of chunks) {
+    const tokens = dedupeTokenSet(chunk);
+    const isDuplicate =
+      tokens.size >= DUPLICATE_MIN_TOKENS &&
+      keptTokens.some((prior) => jaccard(prior, tokens) >= DUPLICATE_JACCARD_THRESHOLD);
+    if (isDuplicate) continue;
+    kept.push(chunk);
+    keptTokens.push(tokens);
+  }
+  return kept;
+}
+
+function dedupeTokenSet(text: string): Set<string> {
+  return new Set(
+    text
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}\s]/gu, " ")
+      .split(/\s+/)
+      .filter((token) => token.length >= 2)
+  );
+}
+
+function jaccard(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 || b.size === 0) return 0;
+  let intersection = 0;
+  for (const token of a) {
+    if (b.has(token)) intersection += 1;
+  }
+  return intersection / (a.size + b.size - intersection);
 }
 
 const IMMEDIATE_CHUNK_LIMIT = 2;

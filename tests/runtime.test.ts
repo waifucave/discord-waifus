@@ -4845,7 +4845,7 @@ describe("RuntimeOrchestrator", () => {
         { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, reasoning: "done" }
       ];
       async generateWaifu() {
-        return { content: "Hi there. How are you today? Want to play?" };
+        return { content: "Hi there\nHow are you today?\nWant to play?" };
       }
       async decideOrchestrator() {
         const next = this.decisions.shift();
@@ -4875,7 +4875,7 @@ describe("RuntimeOrchestrator", () => {
     await runtime.stop();
 
     expect(discord.sent.map((entry) => entry.content)).toEqual([
-      "Hi there.",
+      "Hi there",
       "How are you today?",
       "Want to play?"
     ]);
@@ -4916,7 +4916,7 @@ describe("RuntimeOrchestrator", () => {
       ];
       async generateWaifu() {
         this.generateCalls += 1;
-        return { content: "One. Two. This third chunk is too long. Four." };
+        return { content: "One\nTwo\nThis third chunk is too long\nFour" };
       }
       async decideOrchestrator() {
         this.decisionCalls += 1;
@@ -4947,10 +4947,10 @@ describe("RuntimeOrchestrator", () => {
     await runtime.stop();
 
     expect(discord.sent.map((entry) => entry.content)).toEqual([
-      "One.",
-      "Two.",
-      "This third chunk is too long.",
-      "Four."
+      "One",
+      "Two",
+      "This third chunk is too long",
+      "Four"
     ]);
     expect(pipeline.generateCalls).toBe(1);
     expect(pipeline.decisionCalls).toBe(2);
@@ -6416,7 +6416,7 @@ describe("RuntimeOrchestrator", () => {
         { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, reasoning: "done" }
       ];
       async generateWaifu() {
-        return { content: "Hi. How are you? Want to play?" };
+        return { content: "Hi\nHow are you?\nWant to play?" };
       }
       async decideOrchestrator() {
         const next = this.decisions.shift();
@@ -6463,7 +6463,7 @@ describe("RuntimeOrchestrator", () => {
     await runtime.stop();
 
     expect(discord.sent.map((entry) => entry.content)).toEqual([
-      "Hi.",
+      "Hi",
       "How are you?",
       "Want to play?"
     ]);
@@ -6495,7 +6495,7 @@ describe("RuntimeOrchestrator", () => {
         { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, reasoning: "done" }
       ];
       async generateWaifu() {
-        return { content: "Hi. How are you? Want to play?" };
+        return { content: "Hi\nHow are you?\nWant to play?" };
       }
       async decideOrchestrator() {
         const next = this.decisions.shift();
@@ -6544,7 +6544,7 @@ describe("RuntimeOrchestrator", () => {
     await runtime.stop();
 
     expect(discord.sent.length).toBeLessThan(3);
-    expect(discord.sent[0].content).toBe("Hi.");
+    expect(discord.sent[0].content).toBe("Hi");
     const history = await storage.readJson("user/orchestrator/history.json", OrchestratorHistoryFileSchema);
     const interruptedDecision = history.decisions.find(
       (entry) => entry.action === "reply" && entry.status === "interrupted"
@@ -7162,6 +7162,99 @@ describe("RuntimeOrchestrator", () => {
     expect(capturedMarkers?.[0]?.kind).toBe("wake");
     expect(capturedMarkers?.[0]?.scheduledSeconds).toBe(600);
     expect(capturedMarkers?.[0]?.wakePlan).toBe("have yuki answer");
+  });
+
+  it("uses the long cast-only cooldown at the turn limit when no human is recent", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    // Waifu-only room: the helper's fixed 2026-05-16 timestamp keeps any history stale.
+    discord.contexts = [[contextMessage("m1", "waifu", "Yuki", "talking to myself again")]];
+
+    await seedRuntimeConfig(storage);
+
+    const pipeline: ModelPipeline = {
+      async decideOrchestrator() {
+        return {
+          action: "reply",
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }],
+          reasoning: "keep the room alive"
+        };
+      },
+      async generateWaifu() {
+        return { content: "still here" };
+      }
+    };
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 1,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    const before = Date.now();
+    await runtime.triggerChannel("guild-1", "channel-1", "manual");
+    await runtime.stop();
+
+    const session = await storage.readJson(
+      "user/servers/guild-1/sessions/channel-1.json",
+      (await import("../src/orchestration/session.js")).ChannelSessionStateSchema
+    );
+    expect(session.scheduledRetriggerAt).toBeDefined();
+    const scheduledInSeconds = (Date.parse(session.scheduledRetriggerAt!) - before) / 1000;
+    expect(scheduledInSeconds).toBeGreaterThanOrEqual(890);
+  });
+
+  it("keeps the short cooldown at the turn limit while a human is recent", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.contexts = [[
+      { ...contextMessage("m1", "user", "Kevin", "hey yuki"), timestamp: new Date().toISOString() }
+    ]];
+
+    await seedRuntimeConfig(storage);
+
+    const pipeline: ModelPipeline = {
+      async decideOrchestrator() {
+        return {
+          action: "reply",
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }],
+          reasoning: "answer Kevin"
+        };
+      },
+      async generateWaifu() {
+        return { content: "hey!" };
+      }
+    };
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 1,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    const before = Date.now();
+    await runtime.triggerChannel("guild-1", "channel-1", "manual");
+    await runtime.stop();
+
+    const session = await storage.readJson(
+      "user/servers/guild-1/sessions/channel-1.json",
+      (await import("../src/orchestration/session.js")).ChannelSessionStateSchema
+    );
+    expect(session.scheduledRetriggerAt).toBeDefined();
+    const scheduledInSeconds = (Date.parse(session.scheduledRetriggerAt!) - before) / 1000;
+    expect(scheduledInSeconds).toBeLessThan(300);
   });
 
   it("enforces escalating backoff when a timer-fired pass chooses no_reply again", async () => {
