@@ -31,6 +31,14 @@ describe("splitWaifuReply", () => {
     expect(chunks[1]).toBe("something completely different happens here instead");
   });
 
+  it("drops a reworded duplicate observed live (0.68 overlap)", () => {
+    const input = [
+      "and the tart's still in my hand from when you shoved it at me before your parking meter meltdown.",
+      "and the tart's still in my hand from when you handed it to me before your curb meltdown."
+    ].join("\n");
+    expect(splitWaifuReply(input)).toHaveLength(1);
+  });
+
   it("keeps distinct short chunks even when they share a few words", () => {
     const input = "K is late again\nK better bring snacks";
     expect(splitWaifuReply(input)).toEqual(["K is late again", "K better bring snacks"]);

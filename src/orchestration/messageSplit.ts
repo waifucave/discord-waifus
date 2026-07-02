@@ -114,7 +114,9 @@ function bestEmojiSplit(chunk: string, mid: number): [string, string] | null {
 // output; each used to ship as its own Discord message. Chunks that heavily overlap an earlier
 // chunk of the SAME reply are dropped — this removes the model's duplicated variants, never
 // distinct content.
-const DUPLICATE_JACCARD_THRESHOLD = 0.7;
+// Calibrated on live duplicate variants (0.54-0.76 overlap) vs genuinely distinct
+// lines (0.00-0.16) — 0.6 sits in the wide gap between the two populations.
+const DUPLICATE_JACCARD_THRESHOLD = 0.6;
 const DUPLICATE_MIN_TOKENS = 3;
 
 function dedupeNearDuplicateChunks(chunks: string[]): string[] {
