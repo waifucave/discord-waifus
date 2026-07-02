@@ -57,7 +57,7 @@ The atomic swap. Everything that compiles against `ReasoningConfig`/`generation`
 - `runtime.ts`: the five call sites pass `params: config.params` / `params: waifu.params`; the waifu site (1515-1518) drops the `waifu.generation.*` reads entirely.
 - `server.ts` compat layer (keeps the SPA alive):
   - Response mapping for waifu GET/list and the three agent GETs: `const withLegacyViews = (c) => ({ ...c, ...paramsToLegacy(c.params ?? {}) });` — adds synthesized `reasoning`/`generation` beside `params`.
-  - Body schemas accept `params: z.record(z.string(), z.unknown()).optional()` PLUS loose optional `reasoning`/`generation` records; handlers resolve `const params = body.params ?? legacyToParams(body);`, strip `reasoning`/`generation` before storing, store `params`. PUT responses go through `withLegacyViews` too.
+  - Body schemas accept `params: z.record(z.string(), z.unknown()).optional()` (plain optional — no `.default({})`, which `.partial()` would still apply and wipe stored params on unrelated PUTs) PLUS loose optional `reasoning`/`generation` records. Precedence (AMENDED after the T2 review reproduced the SPA agent-echo bug): only-`params` → use it; only-legacy → `legacyToParams(body)`; BOTH present → copy `body.params`, delete the six legacy-representable keys (`LEGACY_REPRESENTABLE_PARAM_KEYS` in paramsCompat), overlay `legacyToParams(body)` — legacy fields are authoritative for their keys because the SPA agent views echo the full GET body (stale `params`) beside the edited `reasoning`; neither present → leave stored params untouched. Strip `reasoning`/`generation` before storing. PUT responses go through `withLegacyViews` too.
 - `prebuiltWaifus.ts`: `generation: {temperature: X, topP: Y}` literals → `params: {temperature: X, topP: Y}`; fix the `PrebuiltWaifu` `Pick<>` type.
 
 - [ ] **Step 1: failing tests first** — api.test.ts: PUT waifu with legacy `{generation:{temperature:0.5}, reasoning:{effort:"high"}}` body stores `params: {temperature:0.5, "reasoning.effort":"high"}` and the GET response carries BOTH `params` and synthesized `reasoning`/`generation`; PUT with native `params` body wins over legacy fields; gatewayParams.test.ts: `buildUnifiedParams({temperature: 0.2, params: {temperature: 0.9, "reasoning.enabled": false}})` → config wins.
@@ -107,7 +107,7 @@ The atomic swap. Everything that compiles against `ReasoningConfig`/`generation`
 - Modify: `src/cli/commands.ts` (doctorCommand 298-339)
 - Test: whichever file covers doctor today (grep `doctorCommand` in tests/; add coverage if none)
 
-**Design:** two new result sections, derived read-only (doctor does NOT run migrations):
+**Design (AMENDED after T3 review):** first, CLI resilience on unmigrated v1 installs — `doctorCommand` calls `ensureDataLayout`/`loadAppConfig` directly and CRASHES on a v1 `config.toml` if run before any `start` (T3 review, Important); `status`/`stop` similarly parse `app/runtime.json` strictly. Fix: doctor wraps `loadAppConfig` in try/catch and, on schema-version parse failure, reports a `schema` warning ("unmigrated data root — run `waifus start` to migrate") instead of crashing; `readRuntimeFile` for status/stop tolerates any numeric `schemaVersion` (it only needs the pid). Then the two new result sections, derived read-only (doctor does NOT run migrations):
 - `schema: { unstamped: string[] }` — walk the data root's known persisted JSONs (reuse T3's enumeration; exclude OCR cache) listing files with `schemaVersion !== 2`.
 - `models: { unresolved: Array<{scope: string; providerId: string | null; modelId: string}> }` — for the three agents + every waifu with a modelId: `resolveModelTarget` try/catch; failures listed. Surface both in the printed JSON; non-empty `models.unresolved` does NOT flip the exit code (informational, per §7.3 doctor-warning intent).
 
@@ -141,3 +141,23 @@ Controller (not a subagent) runs this — it touches a copy of real user data.
 
 ### Final review
 Full-range integration review (start commit = T1's parent) with the §7.3 substitute-deviation called out; fix-first; push after user-visible report.
+
+---
+
+## Execution record (2026-07-02)
+
+**Status: complete, pushed.** Commits `056d783`→`3ed9bfa` on main + docs. Suite 541 → **588 passed | 15 skipped**; typecheck + full build green throughout.
+
+- **T1** `056d783` — paramsCompat (13 tests). Review clean.
+- **T2** `cc79831` + fix `829637a` — the atomic swap + API compat. Review caught a CRITICAL my plan text caused: "params wins when both present" let the SPA agent views' full-body echo (stale `params` + edited `reasoning`) silently discard user edits — reviewer reproduced it end-to-end. Fixed: legacy fields authoritative for the six `LEGACY_REPRESENTABLE_PARAM_KEYS`; plan amended. Implementer also caught zod `.partial()` still applying `.default({})` (would wipe params on unrelated PUTs) and wrapped the digest POST response (SPA whole-state replace).
+- **T3** `b79693f` — schema v2 + two migration steps. Implementer caught two boot-crash landmines beyond the brief (`.prebuilt-seed.json` parsed pre-migration in `ensureDataLayout`; `config.toml` carries its own schemaVersion needing TOML-aware stamping). Review verified enumeration completeness against layout.ts and ruled no-derived-provider-writeback correct.
+- **T4** `cc6df52` + fix `5b9f77d` — provider widening + validated writes. Review found the §7.2 "names the violated rule" requirement unproven (descriptor violations carry no ruleId) and supplied the fix candidate: xai/grok-4.3 `stopSequences` → `reasoning-no-penalties-or-stop`, now pinned end-to-end.
+- **T5** `df5b0e0` + fix `2c07c88` — doctor warnings + CLI v1-resilience (amended scope from T3 review). Review found doctor hid REAL v1 data (`providersConfigured: []` on roots with stored credentials); fixed with lenient raw-JSON readers; re-review hash-verified the read-only guarantee.
+- **T6** `3ed9bfa` — digest credential-preflight 409; `GatewayPipelineError.details`; `ProviderPipelineError` deleted. Review clean.
+- **T7** controller smoke on a COPY of the live `~/.dc-waifus`: migration exact on real shapes (orchestrator `{"reasoning.effort":"medium"}`, aria `{temperature:1.2,"reasoning.enabled":false}`, all files v2); GET carries params + synthesized views; legacy PUT stores dotted params; out-of-range param → 400 `unsupported_parameter`; `PUT /api/providers/openrouter/credentials` → 200 + persisted; unknown provider → 400; doctor: 0 unstamped, and a REAL catch — `waifu:lumi` holds unresolvable `xai/grok-4-1-fast-non-reasoning` (user decision pending: repoint in UI or add remap).
+
+**Final whole-branch review: SHIP.** Deviation confirmed contained (one catch block + doctor counterpart); §7.3 remap table otherwise fully honored (grok-4.20 variant row verified a no-op — both variants are native registry routes); round-trip integrity executed for all six keys (one convergent one-way edge: natively-stored `effort:"none"` normalizes to `reasoning.enabled:false` on SPA echo — defer); migration safety recheck clean (no partial-write windows; ENOTDIR-safe; embedded shapes untouched). All ledger Minors triaged defer/resolved (table in review output).
+
+**Recurring lesson (now 2 phases running):** the two worst P4 bugs were both "the compat/lenient layer the strict path forgot" — same family as P3b's Raw-normalization bugs. When swapping a schema, audit every ECHO path (clients that resend what they GET) and every pre-migration read (CLI paths that parse before `runMigrations`).
+
+**User's real data root migrates on their next `waifus start`.** SPA keeps working unchanged through P5.
