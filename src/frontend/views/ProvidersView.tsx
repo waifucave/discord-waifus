@@ -2,22 +2,87 @@ import { useMemo, useState } from "react";
 import { Cpu, ExternalLink, KeyRound, ShieldCheck } from "lucide-react";
 import { api } from "../api/client";
 import { useApi } from "../api/useApi";
-import type {
-  ModelCapability,
-  ProviderId,
-  ProviderMetadata,
-  ProvidersResponse
-} from "../api/types";
+import { llmModels, llmProviders, type LlmModelSummary } from "../api/llm";
+import type { ProviderId, ProviderMetadata, ProvidersResponse } from "../api/types";
 import { Pill } from "../components/Pill";
 import { Modal } from "../components/Modal";
 import { Notice } from "../components/Notice";
 import { SkeletonRows } from "../components/Skeleton";
 import { timeAgo } from "../utils/format";
 
+type LlmProviderSummary = Awaited<ReturnType<typeof llmProviders>>[number];
+
+/** Registry provider row merged with legacy display-only metadata (docsUrl, key hint, label). */
+type MergedProvider = {
+  id: string;
+  displayName: string;
+  baseUrl: string;
+  wire: string;
+  credentialConfigured: boolean;
+  credentialName: string;
+  docsUrl?: string;
+  keyHint?: string;
+  updatedAt?: string;
+};
+
+/**
+ * Gateway registry is the row source (all 14 providers). Legacy `api.providers()` only supplies
+ * display-only extras (docsUrl, credentialName label, keyHint/updatedAt) for the 6 native
+ * providers it knows about — openrouter/moonshot/qwen/minimax/mistral/nvidia/stepfun/xiaomi have
+ * no legacy entry and render with a generic key label and no Docs link.
+ */
+function mergeProviders(gateway: LlmProviderSummary[], legacy: ProviderMetadata[]): MergedProvider[] {
+  const legacyById = new Map<string, ProviderMetadata>(legacy.map((p) => [p.id, p]));
+  return gateway.map((gp) => {
+    const match = legacyById.get(gp.id);
+    const credentials = match?.credentials;
+    return {
+      id: gp.id,
+      displayName: gp.displayName,
+      baseUrl: gp.baseUrl,
+      wire: gp.wire,
+      credentialConfigured: gp.credentialConfigured,
+      credentialName: match?.credentialName ?? gp.displayName,
+      docsUrl: match?.docsUrl,
+      keyHint: credentials?.configured ? credentials.keyHint : undefined,
+      updatedAt: credentials?.configured ? credentials.updatedAt : undefined
+    };
+  });
+}
+
 export function ProvidersView() {
-  const providers = useApi<ProvidersResponse>((signal) => api.providers(signal), []);
-  const [editing, setEditing] = useState<ProviderMetadata | undefined>(undefined);
-  const [expanded, setExpanded] = useState<ProviderId | undefined>(undefined);
+  const legacyProviders = useApi<ProvidersResponse>((signal) => api.providers(signal), []);
+  const gatewayProviders = useApi<LlmProviderSummary[]>(() => llmProviders(), []);
+  const gatewayModels = useApi<LlmModelSummary[]>(() => llmModels(), []);
+  const [editing, setEditing] = useState<MergedProvider | undefined>(undefined);
+  const [expanded, setExpanded] = useState<string | undefined>(undefined);
+
+  const providers = useMemo(
+    () =>
+      gatewayProviders.data
+        ? mergeProviders(gatewayProviders.data, legacyProviders.data?.providers ?? [])
+        : undefined,
+    [gatewayProviders.data, legacyProviders.data]
+  );
+
+  const modelsByProvider = useMemo(() => {
+    const map = new Map<string, LlmModelSummary[]>();
+    for (const model of gatewayModels.data ?? []) {
+      const list = map.get(model.providerId);
+      if (list) list.push(model);
+      else map.set(model.providerId, [model]);
+    }
+    return map;
+  }, [gatewayModels.data]);
+
+  const loading = legacyProviders.loading || gatewayProviders.loading || gatewayModels.loading;
+  const error = gatewayProviders.error ?? legacyProviders.error ?? gatewayModels.error;
+
+  const refresh = () => {
+    legacyProviders.reload();
+    gatewayProviders.reload();
+    gatewayModels.reload();
+  };
 
   return (
     <>
@@ -25,11 +90,11 @@ export function ProvidersView() {
         <div>
           <h2 className="view-title">Providers</h2>
           <p className="view-subtitle">
-            API keys, model catalog, and per-provider capability flags.
+            API keys and the full gateway model registry, per provider.
           </p>
         </div>
         <div className="view-actions">
-          <button className="btn" onClick={providers.reload}>Refresh</button>
+          <button className="btn" onClick={refresh}>Refresh</button>
         </div>
       </div>
 
@@ -38,21 +103,20 @@ export function ProvidersView() {
         <code> ****abcd</code>.
       </Notice>
 
-      {providers.loading && (
+      {loading && (
         <div style={{ marginTop: 16 }}>
           <SkeletonRows rows={5} height={36} />
         </div>
       )}
-      {providers.error && (
-        <Notice tone="err">Failed to load providers: {providers.error.message}</Notice>
-      )}
+      {error && <Notice tone="err">Failed to load providers: {error.message}</Notice>}
 
-      {providers.data && (
+      {providers && (
         <div className="table-wrap" style={{ marginTop: 16 }}>
-          {providers.data.providers.map((p) => (
+          {providers.map((p) => (
             <ProviderRow
               key={p.id}
               provider={p}
+              models={modelsByProvider.get(p.id) ?? []}
               expanded={expanded === p.id}
               onToggle={() => setExpanded(expanded === p.id ? undefined : p.id)}
               onEdit={() => setEditing(p)}
@@ -66,7 +130,8 @@ export function ProvidersView() {
         onClose={() => setEditing(undefined)}
         onSaved={() => {
           setEditing(undefined);
-          providers.reload();
+          legacyProviders.reload();
+          gatewayProviders.reload();
         }}
       />
     </>
@@ -75,18 +140,20 @@ export function ProvidersView() {
 
 function ProviderRow({
   provider,
+  models,
   expanded,
   onToggle,
   onEdit
 }: {
-  provider: ProviderMetadata;
+  provider: MergedProvider;
+  models: LlmModelSummary[];
   expanded: boolean;
   onToggle: () => void;
   onEdit: () => void;
 }) {
-  const credentialPill = provider.credentials.configured ? (
+  const credentialPill = provider.credentialConfigured ? (
     <Pill tone="ok" dot>
-      Configured · {provider.credentials.keyHint}
+      Configured{provider.keyHint ? ` · ${provider.keyHint}` : ""}
     </Pill>
   ) : (
     <Pill tone="warn" dot>
@@ -104,43 +171,48 @@ function ProviderRow({
             <span className="tag">{provider.id}</span>
           </div>
           <div className="sub">
-            {provider.models.length} model{provider.models.length === 1 ? "" : "s"} · {provider.baseUrl}
-            {provider.credentials.configured && (
+            {models.length} model{models.length === 1 ? "" : "s"} · {provider.baseUrl}
+            {provider.updatedAt && (
               <>
-                {" · updated "} {timeAgo(provider.credentials.updatedAt)}
+                {" · updated "} {timeAgo(provider.updatedAt)}
               </>
             )}
           </div>
         </div>
         <div className="actions">
-          <a className="btn ghost sm" href={provider.docsUrl} target="_blank" rel="noreferrer">
-            Docs <ExternalLink className="icon" />
-          </a>
+          {provider.docsUrl && (
+            <a className="btn ghost sm" href={provider.docsUrl} target="_blank" rel="noreferrer">
+              Docs <ExternalLink className="icon" />
+            </a>
+          )}
           <button className="btn sm" onClick={onToggle}>
             <Cpu className="icon" />
             {expanded ? "Hide models" : "Models"}
           </button>
           <button className="btn primary sm" onClick={onEdit}>
             <KeyRound className="icon" />
-            {provider.credentials.configured ? "Update key" : "Add key"}
+            {provider.credentialConfigured ? "Update key" : "Add key"}
           </button>
         </div>
       </div>
       {expanded && (
         <div style={{ padding: "var(--sp-3) var(--sp-4)", borderBottom: "1px solid var(--border-subtle)" }}>
-          <div className="model-grid">
-            {provider.models.map((m) => (
-              <ModelCard key={m.modelId} model={m} />
-            ))}
-          </div>
+          {models.length === 0 ? (
+            <Notice tone="info">No models registered for this provider.</Notice>
+          ) : (
+            <div className="model-grid">
+              {models.map((m) => (
+                <ModelCard key={m.modelId} model={m} />
+              ))}
+            </div>
+          )}
         </div>
       )}
     </>
   );
 }
 
-function ModelCard({ model }: { model: ModelCapability }) {
-  const reasoning = ReasoningControlSummary(model);
+function ModelCard({ model }: { model: LlmModelSummary }) {
   return (
     <div className="model-card">
       <div className="row1">
@@ -148,30 +220,20 @@ function ModelCard({ model }: { model: ModelCapability }) {
         <span className="id">{model.modelId}</span>
       </div>
       <div className="sub" style={{ color: "var(--text-muted)", fontSize: "var(--fs-xs)" }}>
-        {model.client} · endpoint {model.endpoint}
+        {model.wire}
+        {model.contextTokens !== undefined && ` · ${model.contextTokens.toLocaleString()} ctx`}
       </div>
       <div className="caps">
-        {model.supportsTools && <Pill tone="info">tools</Pill>}
-        {model.supportsStructuredOutput && <Pill tone="info">structured</Pill>}
-        {model.supportsStreaming && <Pill tone="info">stream</Pill>}
-        {model.supportsImageInput && <Pill tone="info">vision</Pill>}
-        {reasoning && <Pill tone="warn">{reasoning}</Pill>}
-      </div>
-      <div className="sub" style={{ fontSize: "var(--fs-xs)", color: "var(--text-muted)" }}>
-        Safe defaults: {model.safeDefaultRoles.join(", ")}
+        {model.tools && <Pill tone="info">tools</Pill>}
+        {model.jsonSchema && <Pill tone="info">json schema</Pill>}
+        {model.streaming && <Pill tone="info">stream</Pill>}
+        {model.imageInput && <Pill tone="info">vision</Pill>}
+        {model.reasoning && <Pill tone="warn">reasoning</Pill>}
+        {model.deprecated && <Pill tone="err">deprecated</Pill>}
+        {model.confidence !== "verified" && <Pill tone="warn">{model.confidence}</Pill>}
       </div>
     </div>
   );
-}
-
-function ReasoningControlSummary(model: ModelCapability): string | undefined {
-  if (model.reasoningControls.length === 0) return undefined;
-  if (model.modelId.includes("multi-agent")) return "agent count";
-  const parts: string[] = [];
-  if (model.reasoningControls.includes("reasoning.enabled")) parts.push("thinking");
-  if (model.reasoningControls.includes("reasoning.effort")) parts.push("effort");
-  if (model.reasoningControls.includes("reasoning.budget_tokens")) parts.push("budget");
-  return parts.length ? parts.join(" + ") : model.reasoningControls.join(", ");
 }
 
 function CredentialsModal({
@@ -179,7 +241,7 @@ function CredentialsModal({
   onClose,
   onSaved
 }: {
-  provider: ProviderMetadata | undefined;
+  provider: MergedProvider | undefined;
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -197,7 +259,10 @@ function CredentialsModal({
     setSaving(true);
     setError(undefined);
     try {
-      await api.putProviderCredentials(provider.id, {
+      // Registry provider ids beyond the legacy 6 (openrouter, moonshot, …) are not in the
+      // legacy ProviderId union yet — P4 made all of them storable server-side (see T6's planned
+      // `ProviderId = string` widening). Same string-cast idiom used elsewhere pending that.
+      await api.putProviderCredentials(provider.id as ProviderId, {
         apiKey: apiKey.trim(),
         label: label.trim() || undefined
       });
@@ -252,7 +317,7 @@ function CredentialsModal({
               autoFocus
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
-              placeholder={provider.credentials.configured ? `Existing: ${provider.credentials.keyHint}` : "sk-..."}
+              placeholder={provider.keyHint ? `Existing: ${provider.keyHint}` : "sk-..."}
             />
             <span className="field-hint">
               Stored under <code>~/.dc-waifus/user/providers.json</code>. Never sent to other providers.

@@ -153,45 +153,14 @@ export type ProviderMetadata = {
   credentials: ProviderCredentialStatus;
 };
 
-export type GatewayProviderSummary = {
-  id: string;
-  displayName: string;
-  baseUrl: string;
-  credentialEnv: string;
-  wire: string;
-  credentialConfigured: boolean;
-};
-
-export type GatewayModelSummary = {
-  providerId: string;
-  modelId: string;
-  family: string;
-  displayName: string;
-  company: string;
-  wire: string;
-  contextTokens: number;
-  maxOutputTokens: number;
-  streaming: boolean;
-  tools: boolean;
-  reasoning: boolean;
-  jsonMode: boolean;
-  jsonSchema: boolean;
-  imageInput: boolean;
-  deprecated: boolean;
-  confidence: string;
-  routeStatus?: string;
-};
-
 export type ProvidersResponse = {
   revision: number;
   updatedAt: string;
   providers: ProviderMetadata[];
-  gatewayProviders: GatewayProviderSummary[];
 };
 
 export type ModelsResponse = {
   models: ModelCapability[];
-  gatewayModels: GatewayModelSummary[];
 };
 
 export type OrchestratorRespondingWaifu = {
