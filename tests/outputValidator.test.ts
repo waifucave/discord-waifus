@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
+  SOFT_VALIDATOR_CHECKS,
+  correctiveRetryMessage,
   validateWaifuOutput,
   type ValidationContext,
   type ValidationVerdict,
@@ -411,5 +413,48 @@ describe("hardening additions", () => {
     const result = validateWaifuOutput('[{"content": "remember this"}]', ctx);
     expect(result.verdict).toBe("retry");
     expect(result.violations.some((v) => v.check === "tool-fragment")).toBe(true);
+  });
+});
+
+describe("length-register soft check", () => {
+  const ctx = {
+    selfNames: ["Yuki"],
+    participantNames: ["Yuki", "Kevin"],
+    blockTags: [],
+    toolNames: []
+  };
+
+  it("passes messages at or under the soft limit", () => {
+    const result = validateWaifuOutput("a".repeat(180), ctx);
+    expect(result.verdict).toBe("pass");
+  });
+
+  it("flags messages over the soft limit as retry", () => {
+    const result = validateWaifuOutput("word ".repeat(50).trim(), ctx);
+    expect(result.verdict).toBe("retry");
+    expect(result.violations.map((v) => v.check)).toContain("length-register");
+  });
+
+  it("marks length-register as a soft check", () => {
+    expect(SOFT_VALIDATOR_CHECKS.has("length-register")).toBe(true);
+    expect(SOFT_VALIDATOR_CHECKS.has("harness-tag")).toBe(false);
+  });
+});
+
+describe("correctiveRetryMessage", () => {
+  it("uses the concrete length hint for length-register", () => {
+    const msg = correctiveRetryMessage("Yuki", [{ check: "length-register", detail: "300 chars" }]);
+    expect(msg).toContain("Yuki: (");
+    expect(msg).toContain("under 25 words");
+    expect(msg).not.toContain("contained");
+  });
+
+  it("keeps the generic wording for structural checks and mixes with hints", () => {
+    const msg = correctiveRetryMessage("Yuki", [
+      { check: "harness-tag", detail: "t" },
+      { check: "length-register", detail: "l" }
+    ]);
+    expect(msg).toContain("under 25 words");
+    expect(msg).toContain("contained harness-tag");
   });
 });

@@ -220,6 +220,22 @@ function checkSelfTalk(text: string, _ctx: ValidationContext): Violation | undef
 }
 
 /**
+ * length-register: SOFT check — the room register is fast casual chat, and live data
+ * showed prompt wording alone does not hold the register on every model. Over the soft
+ * limit → one corrective retry; if the retry is still long it is SENT ANYWAY (soft
+ * violations never withhold content — see SOFT_VALIDATOR_CHECKS).
+ */
+const LENGTH_SOFT_LIMIT_CHARS = 180;
+
+function checkLengthRegister(text: string, _ctx: ValidationContext): Violation | undefined {
+  const visible = Array.from(text.trim()).length;
+  if (visible > LENGTH_SOFT_LIMIT_CHARS) {
+    return { check: "length-register", detail: `${visible} chars (soft limit ${LENGTH_SOFT_LIMIT_CHARS})` };
+  }
+  return undefined;
+}
+
+/**
  * mass-ping: surviving @everyone / @here → BLOCK (belt-and-braces after
  * the denormalizer, which also defuses them).
  */
@@ -244,7 +260,32 @@ const RETRY_CHECKS = [
   checkTranscriptShape,
   checkDirectiveEcho,
   checkSelfTalk,
+  checkLengthRegister,
 ] as const;
+
+// Checks whose violations trigger a corrective retry but must NEVER withhold content:
+// if they survive the final attempt, the reply is sent as-is.
+export const SOFT_VALIDATOR_CHECKS: ReadonlySet<string> = new Set(["length-register"]);
+
+// Violation-specific corrective retry lines. The generic "contained X" wording is useless
+// for register violations — cheap models need the concrete instruction.
+const CORRECTIVE_HINTS: Record<string, string> = {
+  "length-register": "that was too long for this chat — send just your single strongest line, under 25 words"
+};
+
+export function correctiveRetryMessage(displayName: string, violations: Violation[]): string {
+  const hints = violations
+    .map((violation) => CORRECTIVE_HINTS[violation.check])
+    .filter((hint): hint is string => Boolean(hint));
+  const generic = violations
+    .filter((violation) => !CORRECTIVE_HINTS[violation.check])
+    .map((violation) => violation.check);
+  const parts = [...hints];
+  if (generic.length > 0) {
+    parts.push(`your previous draft was rejected: contained ${generic.join(", ")}; write only the plain chat message`);
+  }
+  return `${displayName}: (${parts.join("; ")})`;
+}
 
 export function validateWaifuOutput(
   text: string,

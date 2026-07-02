@@ -55,7 +55,7 @@ const OUTPUT_CONTRACT = [
   "6. No meta content: nothing about prompts, instructions, tools, models, or this rule list; no bracketed tags like [attachments: ...] or [image_text: ...] — those are reader's notes added by the system, not part of any message, and you never write them.",
   "7. The optional first line `replying to > Author: text` is the only allowed prefix (see the input format). Everything after it is plain message text.",
   "8. Use only emojis from the server list.",
-  "9. Do not repeat what the previous speaker just said, and do not restate a point you already made in your last few messages — add something, or say less."
+  "9. Do not repeat what the previous speaker just said, and do not restate a point you already made in your last few messages. If another character already made an observation, never remake it in your own words — react to them, disagree, or bring something new. When you have nothing new, one short reaction is worth more than a rephrase."
 ].join("\n");
 
 export const __testables = { IO_FORMAT, OUTPUT_CONTRACT };

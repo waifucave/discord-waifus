@@ -7164,6 +7164,98 @@ describe("RuntimeOrchestrator", () => {
     expect(capturedMarkers?.[0]?.wakePlan).toBe("have yuki answer");
   });
 
+  it("suppresses a timer wake when the cast already stacked unanswered messages", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    // Four trailing bot messages, freshest 5 minutes old, no human in sight.
+    const recent = (minsAgo: number) => new Date(Date.now() - minsAgo * 60000).toISOString();
+    discord.contexts = [[
+      { ...contextMessage("m1", "waifu", "Yuki", "the man vanished for three days"), timestamp: recent(20) },
+      { ...contextMessage("m2", "waifu", "Mika", "he really vanished huh"), timestamp: recent(15) },
+      { ...contextMessage("m3", "waifu", "Yuki", "and came back with uwu"), timestamp: recent(10) },
+      { ...contextMessage("m4", "waifu", "Mika", "the audacity of this man"), timestamp: recent(5) }
+    ]];
+
+    await seedRuntimeConfig(storage);
+
+    let decisionCalls = 0;
+    const pipeline: ModelPipeline = {
+      async decideOrchestrator() {
+        decisionCalls += 1;
+        return { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 300, reasoning: "quiet" };
+      },
+      async generateWaifu() {
+        return { content: "unused" };
+      }
+    };
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    const before = Date.now();
+    await runtime.triggerChannel("guild-1", "channel-1", "scheduled-retrigger", { trigger: "retrigger" });
+    await runtime.stop();
+
+    expect(decisionCalls).toBe(0);
+    const session = await storage.readJson(
+      "user/servers/guild-1/sessions/channel-1.json",
+      (await import("../src/orchestration/session.js")).ChannelSessionStateSchema
+    );
+    expect(session.scheduledRetriggerAt).toBeDefined();
+    const scheduledInSeconds = (Date.parse(session.scheduledRetriggerAt!) - before) / 1000;
+    expect(scheduledInSeconds).toBeGreaterThanOrEqual(1790);
+  });
+
+  it("lets a timer wake through after a long-quiet lull even with trailing bot messages", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    // Same trailing-bot shape, but the newest message is 3 hours old: fresh beat allowed.
+    const hoursAgo = (h: number) => new Date(Date.now() - h * 3600000).toISOString();
+    discord.contexts = [[
+      { ...contextMessage("m1", "waifu", "Yuki", "old chatter one"), timestamp: hoursAgo(5) },
+      { ...contextMessage("m2", "waifu", "Mika", "old chatter two"), timestamp: hoursAgo(4.5) },
+      { ...contextMessage("m3", "waifu", "Yuki", "old chatter three"), timestamp: hoursAgo(4) },
+      { ...contextMessage("m4", "waifu", "Mika", "old chatter four"), timestamp: hoursAgo(3) }
+    ]];
+
+    await seedRuntimeConfig(storage);
+
+    let decisionCalls = 0;
+    const pipeline: ModelPipeline = {
+      async decideOrchestrator() {
+        decisionCalls += 1;
+        return { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 600, reasoning: "fresh look" };
+      },
+      async generateWaifu() {
+        return { content: "unused" };
+      }
+    };
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1", "scheduled-retrigger", { trigger: "retrigger" });
+    await runtime.stop();
+
+    expect(decisionCalls).toBe(1);
+  });
+
   it("uses the long cast-only cooldown at the turn limit when no human is recent", async () => {
     const root = await makeTempRoot();
     roots.push(root);

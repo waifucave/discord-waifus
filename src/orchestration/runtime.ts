@@ -26,7 +26,7 @@ import {
   reconcileWaifuPromptLayout,
   waifuBlockTags
 } from "./promptBlocks.js";
-import { Violation, validateWaifuOutput } from "./outputValidator.js";
+import { SOFT_VALIDATOR_CHECKS, Violation, correctiveRetryMessage, validateWaifuOutput } from "./outputValidator.js";
 import { ReplyQuoteExtraction, extractReplyQuote } from "./replyQuote.js";
 import { ModelPipeline, WaifuGenerationResult } from "../providers/types.js";
 import { createGatewayModelPipeline } from "./pipeline/gatewayPipeline.js";
@@ -1066,6 +1066,22 @@ export class RuntimeOrchestrator {
         messageCount: messages.length,
         modelId: orchestrator.modelId
       });
+      // Cast-only beat budget: a timer wake must not milk a beat the cast already covered.
+      // When the humans are silent and several unanswered waifu messages already trail the
+      // context, skip the model pass and check back later — unless the room has been quiet
+      // long enough that a genuinely fresh beat is welcome.
+      if (turns === 1 && options.trigger === "retrigger") {
+        const suppressed = shouldSuppressCastWake(messages, Date.now());
+        if (suppressed) {
+          this.options.logger.info("Cast-only wake suppressed; beat budget exhausted", {
+            guildId,
+            channelId,
+            trailingBotMessages: suppressed.trailingBotMessages
+          });
+          await this.scheduleRetrigger(guildId, channelId, CAST_WAKE_SUPPRESS_SECONDS);
+          return;
+        }
+      }
       const pipeline = this.pipelineFor(
         { providerId: orchestrator.providerId, modelId: orchestrator.modelId },
         "orchestrator"
@@ -1593,21 +1609,34 @@ export class RuntimeOrchestrator {
                   attempt,
                   violations: checks
                 });
-                retryUserMessage = `${waifu.displayName}: (your previous draft was rejected: contained ${checks}; write only the plain chat message)`;
+                retryUserMessage = correctiveRetryMessage(waifu.displayName, validation.violations);
                 continue;
               }
-              // Final-attempt retry, or a block on any attempt: send nothing.
-              this.options.logger.warn("Output validator blocked waifu reply; nothing sent", {
-                guildId: input.guildId,
-                channelId: input.channelId,
-                waifuId: waifu.id,
-                attempt,
-                verdict: validation.verdict,
-                violations: checks
-              });
-              blockedViolations = validation.violations;
-              chunks = [];
-              break;
+              const softOnly =
+                validation.verdict === "retry" &&
+                validation.violations.every((entry) => SOFT_VALIDATOR_CHECKS.has(entry.check));
+              if (softOnly) {
+                // Soft checks never withhold content: the retry already had its shot, send as-is.
+                this.options.logger.info("Soft validator violations survived retry; sending anyway", {
+                  guildId: input.guildId,
+                  channelId: input.channelId,
+                  waifuId: waifu.id,
+                  violations: checks
+                });
+              } else {
+                // Final-attempt retry, or a block on any attempt: send nothing.
+                this.options.logger.warn("Output validator blocked waifu reply; nothing sent", {
+                  guildId: input.guildId,
+                  channelId: input.channelId,
+                  waifuId: waifu.id,
+                  attempt,
+                  verdict: validation.verdict,
+                  violations: checks
+                });
+                blockedViolations = validation.violations;
+                chunks = [];
+                break;
+              }
             }
             const becameEmptyDueToCleaning =
               chunks.length === 0 &&
@@ -3978,6 +4007,41 @@ function applyFirstResponderDirectiveOverride(
 const HUMAN_RECENT_WINDOW_MS = 15 * 60 * 1000;
 const CAST_ONLY_COOLDOWN_SECONDS = 900;
 
+const CAST_WAKE_MAX_TRAILING_BOT_MESSAGES = 4;
+const CAST_WAKE_HUMAN_RECENT_MS = 30 * 60 * 1000;
+const CAST_WAKE_FRESH_BEAT_MS = 2 * 60 * 60 * 1000;
+const CAST_WAKE_SUPPRESS_SECONDS = 1800;
+
+// A wake pass is suppressed when the cast has already stacked unanswered messages on a
+// beat (>= CAST_WAKE_MAX_TRAILING_BOT_MESSAGES trailing bot messages, no human inside
+// CAST_WAKE_HUMAN_RECENT_MS). A room quiet for CAST_WAKE_FRESH_BEAT_MS or longer is
+// exempt: after a long lull a fresh cast beat is welcome again.
+function shouldSuppressCastWake(
+  messages: ContextMessage[],
+  now: number
+): { trailingBotMessages: number } | undefined {
+  let lastHumanTs: number | undefined;
+  let newestTs: number | undefined;
+  for (const message of messages) {
+    const ts = Date.parse(message.timestamp);
+    if (Number.isNaN(ts)) continue;
+    if (newestTs === undefined || ts > newestTs) newestTs = ts;
+    if (message.authorKind === "user" && message.authorBot !== true) {
+      if (lastHumanTs === undefined || ts > lastHumanTs) lastHumanTs = ts;
+    }
+  }
+  let trailingBotMessages = 0;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (message.authorKind === "user" && message.authorBot !== true) break;
+    trailingBotMessages += 1;
+  }
+  if (trailingBotMessages < CAST_WAKE_MAX_TRAILING_BOT_MESSAGES) return undefined;
+  if (lastHumanTs !== undefined && now - lastHumanTs < CAST_WAKE_HUMAN_RECENT_MS) return undefined;
+  if (newestTs !== undefined && now - newestTs >= CAST_WAKE_FRESH_BEAT_MS) return undefined;
+  return { trailingBotMessages };
+}
+
 function hasRecentUserMessage(messages: ContextMessage[], count: number): boolean {
   return messages.slice(-count).some((message) => message.authorKind === "user");
 }
@@ -4281,6 +4345,8 @@ const DEFAULT_ORCHESTRATOR_PROMPT = [
   "no_reply is a normal, frequent choice. Real group chats are mostly silence. If the beat has landed, or another bot message would add noise, choose no_reply.",
   "",
   "The cast has its own life. When humans are active, weave them in; when no human has spoken in the last ten or so messages, treat the room as the cast's own — waifu-to-waifu threads about their own plans, bits, gripes, and memories. Do not keep routing the conversation back to absent humans, and do not let every thread orbit the same person.",
+  "",
+  "A beat is spent after ONE follow-up. If nobody human has written since the last waifu message, never commission another take on the same subject — a second waifu paraphrasing the same observation reads as spam. Either open something genuinely new (a change_topic goal must name a subject that does not appear in the recent messages — 'comment on it again' is not a topic change) or choose no_reply. Your wakePlan must never promise a follow-up to a beat the cast has already followed up once.",
   "",
   "directive is a short GOAL for one waifu's next message, never content or wording. Default is null; her persona handles normal flow. But an unused directive budget helps nobody: when the chat keeps orbiting one person or one topic, spend it — change_topic with a NAMED topic is the strongest move you have. When a runtime notice says a loop is forming, that is the moment. When your own wakePlan said you would pivot, execute it with a change_topic directive rather than hoping a waifu pivots on her own.",
   "",
