@@ -75,9 +75,10 @@ OCR is used only as a fallback for models that are not marked as vision-capable.
 
 - `GET /api/providers`
 - `PUT /api/providers/:providerId/credentials`
-- `GET /api/models`
 
-Provider IDs are `xai`, `deepseek`, `anthropic`, `openai`, and `zai`.
+`GET /api/providers` returns `{ revision, updatedAt, providers, gatewayProviders }`. `providers` covers every provider id the `@waifucave/gateway` registry knows (14, e.g. `xai`, `deepseek`, `anthropic`, `openai`, `google-ai-studio`, `zai`, `openrouter`, ...) as `{ id, displayName, docsUrl?, credentials }`; `gatewayProviders` is the raw gateway `/v1/providers` listing (adds `baseUrl`, `wire`, `credentialConfigured`).
+
+Model listings live entirely under the gateway mount: `GET /api/llm/v1/models`, `GET /api/llm/v1/models/:provider/:model`, `POST /api/llm/v1/validate` (see `src/frontend/api/llm.ts`). There is no `/api/models` route.
 
 Credential writes accept:
 

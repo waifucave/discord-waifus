@@ -12,29 +12,28 @@ import { timeAgo } from "../utils/format";
 
 type LlmProviderSummary = Awaited<ReturnType<typeof llmProviders>>[number];
 
-/** Registry provider row merged with legacy display-only metadata (docsUrl, key hint, label). */
+/** Registry provider row merged with credentials-status display extras (docsUrl, key hint). */
 type MergedProvider = {
   id: string;
   displayName: string;
   baseUrl: string;
   wire: string;
   credentialConfigured: boolean;
-  credentialName: string;
   docsUrl?: string;
   keyHint?: string;
   updatedAt?: string;
 };
 
 /**
- * Gateway registry is the row source (all 14 providers). Legacy `api.providers()` only supplies
- * display-only extras (docsUrl, credentialName label, keyHint/updatedAt) for the 6 native
- * providers it knows about — openrouter/moonshot/qwen/minimax/mistral/nvidia/stepfun/xiaomi have
- * no legacy entry and render with a generic key label and no Docs link.
+ * Gateway registry is the row source (all 14 providers). `/api/providers` now carries credential
+ * status for the same full registry (Gateway P6 Task 3), so this merge is a plain by-id join —
+ * only `docsUrl` is a partial map (the 6 native providers only; the other 8 render without a Docs
+ * link).
  */
-function mergeProviders(gateway: LlmProviderSummary[], legacy: ProviderMetadata[]): MergedProvider[] {
-  const legacyById = new Map<string, ProviderMetadata>(legacy.map((p) => [p.id, p]));
+function mergeProviders(gateway: LlmProviderSummary[], statuses: ProviderMetadata[]): MergedProvider[] {
+  const statusById = new Map<string, ProviderMetadata>(statuses.map((p) => [p.id, p]));
   return gateway.map((gp) => {
-    const match = legacyById.get(gp.id);
+    const match = statusById.get(gp.id);
     const credentials = match?.credentials;
     return {
       id: gp.id,
@@ -42,7 +41,6 @@ function mergeProviders(gateway: LlmProviderSummary[], legacy: ProviderMetadata[
       baseUrl: gp.baseUrl,
       wire: gp.wire,
       credentialConfigured: gp.credentialConfigured,
-      credentialName: match?.credentialName ?? gp.displayName,
       docsUrl: match?.docsUrl,
       keyHint: credentials?.configured ? credentials.keyHint : undefined,
       updatedAt: credentials?.configured ? credentials.updatedAt : undefined
@@ -51,7 +49,7 @@ function mergeProviders(gateway: LlmProviderSummary[], legacy: ProviderMetadata[
 }
 
 export function ProvidersView() {
-  const legacyProviders = useApi<ProvidersResponse>((signal) => api.providers(signal), []);
+  const providerCredentials = useApi<ProvidersResponse>((signal) => api.providers(signal), []);
   const gatewayProviders = useApi<LlmProviderSummary[]>(() => llmProviders(), []);
   const gatewayModels = useApi<LlmModelSummary[]>(() => llmModels(), []);
   const [editing, setEditing] = useState<MergedProvider | undefined>(undefined);
@@ -60,9 +58,9 @@ export function ProvidersView() {
   const providers = useMemo(
     () =>
       gatewayProviders.data
-        ? mergeProviders(gatewayProviders.data, legacyProviders.data?.providers ?? [])
+        ? mergeProviders(gatewayProviders.data, providerCredentials.data?.providers ?? [])
         : undefined,
-    [gatewayProviders.data, legacyProviders.data]
+    [gatewayProviders.data, providerCredentials.data]
   );
 
   const modelsByProvider = useMemo(() => {
@@ -75,11 +73,11 @@ export function ProvidersView() {
     return map;
   }, [gatewayModels.data]);
 
-  const loading = legacyProviders.loading || gatewayProviders.loading || gatewayModels.loading;
-  const error = gatewayProviders.error ?? legacyProviders.error ?? gatewayModels.error;
+  const loading = providerCredentials.loading || gatewayProviders.loading || gatewayModels.loading;
+  const error = gatewayProviders.error ?? providerCredentials.error ?? gatewayModels.error;
 
   const refresh = () => {
-    legacyProviders.reload();
+    providerCredentials.reload();
     gatewayProviders.reload();
     gatewayModels.reload();
   };
@@ -130,7 +128,7 @@ export function ProvidersView() {
         onClose={() => setEditing(undefined)}
         onSaved={() => {
           setEditing(undefined);
-          legacyProviders.reload();
+          providerCredentials.reload();
           gatewayProviders.reload();
         }}
       />
@@ -304,7 +302,7 @@ function CredentialsModal({
         <>
           <div className="field">
             <label className="field-label" htmlFor="api-key">
-              API key for {provider.credentialName}
+              API key for {provider.displayName}
             </label>
             <input
               id="api-key"

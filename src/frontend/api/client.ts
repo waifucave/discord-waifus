@@ -12,7 +12,6 @@ import type {
   GuildRolesFile,
   HealthResponse,
   MemoryStore,
-  ModelsResponse,
   OrchestratorHistoryFile,
   ProviderCredentialsBody,
   ProviderId,
@@ -149,7 +148,7 @@ export const api = {
   reviewerHistory: (signal?: AbortSignal) =>
     request<ReviewerHistoryFile>("GET", "/api/reviewer/history", { signal }),
 
-  // Providers + models
+  // Providers
   providers: (signal?: AbortSignal) =>
     request<ProvidersResponse>("GET", "/api/providers", { signal }),
   putProviderCredentials: (providerId: ProviderId, body: ProviderCredentialsBody) =>
@@ -159,7 +158,6 @@ export const api = {
       providerId: ProviderId;
       credentials: ProvidersResponse["providers"][number]["credentials"];
     }>("PUT", `/api/providers/${providerId}/credentials`, { body }),
-  models: (signal?: AbortSignal) => request<ModelsResponse>("GET", "/api/models", { signal }),
 
   // Waifus
   waifus: (signal?: AbortSignal) => request<WaifusResponse>("GET", "/api/waifus", { signal }),

@@ -1,38 +1,10 @@
-import { MemoryKind, OrchestratorDecisionHistoryEntry, PendingObservation, ProviderId } from "../shared/schemas/domain.js";
+import { MemoryKind, OrchestratorDecisionHistoryEntry, PendingObservation } from "../shared/schemas/domain.js";
 import { ContextMessage, OrchestratorWakeMarker } from "../orchestration/context.js";
 import { OrchestratorDecision } from "../orchestration/decisions.js";
 import { DreamOp, StageManagerObservation } from "../orchestration/stageManager.js";
 import { ReviewerDecision } from "../orchestration/reviewer.js";
 
 export type ModelRole = "orchestrator" | "waifu" | "stage_manager" | "reviewer";
-
-export type ModelCapabilityMetadata = {
-  providerId: ProviderId;
-  modelId: string;
-  displayName: string;
-  endpoint: string;
-  client: "openai-compatible-chat" | "openai-responses" | "anthropic-messages" | "google-generative-language";
-  supportedRoles: Array<"system" | "developer" | "user" | "assistant" | "tool" | "model">;
-  supportsTools: boolean;
-  supportsStructuredOutput: boolean;
-  supportsStreaming: boolean;
-  supportsImageInput: boolean;
-  reasoningControls: string[];
-  maxContextTokens?: number;
-  maxOutputTokens?: number;
-  defaultTemperature?: number;
-  defaultTopP?: number;
-  safeDefaultRoles: ModelRole[];
-};
-
-export type ProviderMetadata = {
-  id: ProviderId;
-  displayName: string;
-  credentialName: string;
-  baseUrl: string;
-  docsUrl: string;
-  models: ModelCapabilityMetadata[];
-};
 
 export type ProviderRequest = {
   modelId: string;

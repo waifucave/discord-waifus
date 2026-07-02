@@ -292,7 +292,6 @@ export function DashboardView() {
                     <th>Provider</th>
                     <th>Status</th>
                     <th>Key hint</th>
-                    <th>Models</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -322,7 +321,6 @@ export function DashboardView() {
                           "—"
                         )}
                       </td>
-                      <td>{p.models.length}</td>
                     </tr>
                   ))}
                 </tbody>

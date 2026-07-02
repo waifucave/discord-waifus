@@ -51,7 +51,7 @@ async function makeApp(extra: { llmFetch?: typeof fetch } = {}) {
 }
 
 describe("Backend API", () => {
-  it("serves health, status, providers, and model catalog endpoints", async () => {
+  it("serves health, status, and provider credential-status endpoints; /api/models is gone (Gateway P6 Task 3)", async () => {
     const { app } = await makeApp();
     try {
       const health = await app.inject({ method: "GET", url: "/api/health" });
@@ -63,8 +63,7 @@ describe("Backend API", () => {
       expect(providers.json().providers.map((provider: { id: string }) => provider.id)).toContain("openai");
 
       const models = await app.inject({ method: "GET", url: "/api/models" });
-      expect(models.statusCode).toBe(200);
-      expect(models.json().models.map((model: { modelId: string }) => model.modelId)).toContain("grok-4.3");
+      expect(models.statusCode).toBe(404);
     } finally {
       await app.close();
     }
@@ -1419,64 +1418,37 @@ describe("LLM gateway mount (/api/llm)", () => {
   });
 });
 
-describe("Gateway registry proxies (/api/models, /api/providers)", () => {
-  it("exposes both the legacy and gateway model lists on /api/models", async () => {
+describe("Gateway registry proxy (/api/providers); /api/models deleted (Gateway P6 Task 3)", () => {
+  it("GET /api/models is gone", async () => {
     const { app } = await makeApp();
     try {
       const models = await app.inject({ method: "GET", url: "/api/models" });
-      expect(models.statusCode).toBe(200);
-      const body = models.json() as {
-        models: Array<{ modelId: string }>;
-        gatewayModels: Array<{ providerId: string; modelId: string }>;
-      };
-      // legacy list now synthesised from gateway registry: 30 non-deprecated native-provider models
-      expect(body.models).toHaveLength(30);
-      expect(body.models.map((m) => m.modelId)).toContain("grok-4.3");
-      // gpt-4o was deprecated/removed; deepseek-v4-flash is present
-      expect(body.models.map((m) => m.modelId)).not.toContain("gpt-4o");
-      expect(body.models.map((m) => m.modelId)).toContain("deepseek-v4-flash");
-      // deepseek-v4-flash golden (synthesised from registry)
-      expect(body.models.find((m) => m.modelId === "deepseek-v4-flash")).toEqual({
-        providerId: "deepseek",
-        modelId: "deepseek-v4-flash",
-        displayName: "DeepSeek V4 Flash",
-        endpoint: "/chat/completions",
-        client: "openai-compatible-chat",
-        supportedRoles: ["system", "user", "assistant", "tool"],
-        supportsTools: true,
-        supportsStructuredOutput: true,
-        supportsStreaming: true,
-        supportsImageInput: false,
-        reasoningControls: ["reasoning.enabled", "reasoning.effort"],
-        maxContextTokens: 1000000,
-        maxOutputTokens: 384000,
-        defaultTemperature: 1,
-        defaultTopP: 1,
-        safeDefaultRoles: ["orchestrator", "waifu", "stage_manager"]
-      });
-      // new list rides alongside
-      expect(body.gatewayModels).toHaveLength(100);
-      expect(
-        body.gatewayModels.some(
-          (m) => m.providerId === "openrouter" && m.modelId === "moonshotai/kimi-k2.6"
-        )
-      ).toBe(true);
+      expect(models.statusCode).toBe(404);
     } finally {
       await app.close();
     }
   });
 
-  it("exposes both provider listings on /api/providers", async () => {
+  it("exposes credential status for the full 14-provider gateway registry on /api/providers, plus gatewayProviders", async () => {
     const { app } = await makeApp();
     try {
       const providers = await app.inject({ method: "GET", url: "/api/providers" });
       expect(providers.statusCode).toBe(200);
       const body = providers.json() as {
-        providers: Array<{ id: string; credentials: { configured: boolean } }>;
+        revision: number;
+        updatedAt: string;
+        providers: Array<{ id: string; displayName: string; docsUrl?: string; credentials: { configured: boolean } }>;
         gatewayProviders: Array<{ id: string; credentialConfigured: boolean }>;
       };
-      expect(body.providers).toHaveLength(6);
+      // providers now covers the full registry (14), not just the legacy 6-id enum.
+      expect(body.providers).toHaveLength(14);
+      expect(body.providers.map((p) => p.id)).toContain("openrouter");
       expect(body.providers.every((p) => p.credentials.configured === false)).toBe(true);
+      // native provider carries a docsUrl from the static map.
+      expect(body.providers.find((p) => p.id === "openai")?.docsUrl).toBe(
+        "https://developers.openai.com/api/docs/models"
+      );
+
       expect(body.gatewayProviders).toHaveLength(14);
       expect(body.gatewayProviders.map((p) => p.id)).toContain("openrouter");
       expect(body.gatewayProviders.every((p) => p.credentialConfigured === false)).toBe(true);
@@ -1491,6 +1463,32 @@ describe("Gateway registry proxies (/api/models, /api/providers)", () => {
       const afterBody = after.json() as typeof body;
       expect(afterBody.gatewayProviders.find((p) => p.id === "deepseek")?.credentialConfigured).toBe(true);
       expect(afterBody.gatewayProviders.find((p) => p.id === "anthropic")?.credentialConfigured).toBe(false);
+      // and the plain providers[] credential status updates too, for the newly-covered provider.
+      expect(afterBody.providers.find((p) => p.id === "deepseek")?.credentials.configured).toBe(true);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("shows configured + keyHint for an openrouter credential on /api/providers (previously unlisted under the legacy 6-id enum)", async () => {
+    const { app } = await makeApp();
+    try {
+      const put = await app.inject({
+        method: "PUT",
+        url: "/api/providers/openrouter/credentials",
+        payload: { revision: 0, apiKey: "or-test_dummy1234567890" }
+      });
+      expect(put.statusCode).toBe(200);
+
+      const providers = await app.inject({ method: "GET", url: "/api/providers" });
+      const entry = (
+        providers.json().providers as Array<{
+          id: string;
+          credentials: { configured: boolean; keyHint?: string };
+        }>
+      ).find((p) => p.id === "openrouter");
+      expect(entry?.credentials.configured).toBe(true);
+      expect(entry?.credentials.keyHint).toBe("****7890");
     } finally {
       await app.close();
     }

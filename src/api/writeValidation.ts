@@ -1,7 +1,8 @@
-// Gateway P4 Task 4: provider ids widen from the legacy 6-value enum (src/api/legacyCatalog.ts
-// stays scoped to those six BY DESIGN — see the comment at its top) to any id the gateway
-// registry knows. Storage writes that name a provider/model now get validated against the live
-// registry instead of failing later at chat time:
+// Gateway P4 Task 4: provider ids widen from the legacy 6-value enum to any id the gateway
+// registry knows (as of Gateway P6 Task 3, src/api/providerStatus.ts's /api/providers response
+// covers the same full registry — see the comment at its top). Storage writes that name a
+// provider/model now get validated against the live registry instead of failing later at chat
+// time:
 //   - unknown provider id (credentials PUT)                      -> 400 unknown_provider
 //   - unknown (providerId, modelId) pair (waifu/agent config)    -> 400 unknown_model
 //   - params the model's registry descriptor forbids             -> 400 unsupported_parameter

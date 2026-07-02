@@ -110,17 +110,6 @@ export type UpdateAgentConfigBody = Partial<Omit<AgentConfig, "schemaVersion" | 
   revision: number;
 };
 
-// Legacy model-catalog entry (synthesized server-side from the gateway registry — see
-// src/api/legacyCatalog.ts). The SPA no longer reads model capability fields off this shape
-// (ModelParamsForm drives entirely off the gateway registry via api/llm.ts); this minimal type
-// only exists so ProviderMetadata.models/ModelsResponse.models type-check for their one
-// remaining reader (DashboardView's array length).
-export type LegacyModelSummary = {
-  providerId: ProviderId;
-  modelId: string;
-  displayName: string;
-};
-
 export type ProviderCredentialStatus =
   | { configured: false }
   | {
@@ -130,13 +119,13 @@ export type ProviderCredentialStatus =
       keyHint: string;
     };
 
+// Gateway P6 Task 3: /api/providers is now credentials-status over the full gateway registry
+// (all 14 provider ids) — no per-provider model list. The gateway registry itself (models
+// included) lives at /api/llm/v1/* (see api/llm.ts).
 export type ProviderMetadata = {
   id: ProviderId;
   displayName: string;
-  credentialName: string;
-  baseUrl: string;
-  docsUrl: string;
-  models: LegacyModelSummary[];
+  docsUrl?: string;
   credentials: ProviderCredentialStatus;
 };
 
@@ -144,10 +133,6 @@ export type ProvidersResponse = {
   revision: number;
   updatedAt: string;
   providers: ProviderMetadata[];
-};
-
-export type ModelsResponse = {
-  models: LegacyModelSummary[];
 };
 
 export type OrchestratorRespondingWaifu = {

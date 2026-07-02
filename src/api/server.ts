@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import fastify, { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
-import { createGatewayHandler, type GatewayHandlerOptions, type ModelSummary, type ProviderDef } from "@waifucave/gateway";
+import { createGatewayHandler, type GatewayHandlerOptions, type ProviderDef } from "@waifucave/gateway";
 import gatewayPlugin from "@waifucave/gateway/fastify";
 import { createProviderCredentialsLookup } from "./llmGatewayCredentials.js";
 import { loadAppConfig, saveAppConfig } from "../config/appConfig.js";
@@ -14,7 +14,7 @@ import { RuntimeState } from "../backend/runtime.js";
 import { RuntimeOrchestrator } from "../orchestration/runtime.js";
 import { clearOcrArtifacts } from "../orchestration/ocr.js";
 import { extractEntities } from "../orchestration/memoryEntities.js";
-import { legacyModels, legacyProviders } from "./legacyCatalog.js";
+import { providerStatuses, keyHint } from "./providerStatus.js";
 import type { ModelPipeline } from "../providers/types.js";
 import { createGatewayModelPipeline } from "../orchestration/pipeline/gatewayPipeline.js";
 import { resolveModelTarget } from "../orchestration/pipeline/resolveTarget.js";
@@ -245,12 +245,12 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   };
   await app.register(gatewayPlugin, { prefix: "/api/llm", ...llmGatewayOptions });
 
-  // Registry proxies (§7.4): /api/models and /api/providers carry the gateway
-  // listings as additive sibling fields. A second handler instance (the plugin
-  // builds its own internally) serves the exact public /v1 shapes; both
-  // endpoints are static-registry GETs, so a non-200 is a gateway defect → 500.
+  // Registry proxy (§7.4): /api/providers carries the gateway provider listing as an additive
+  // sibling field (gatewayProviders). A second handler instance (the plugin builds its own
+  // internally) serves the exact public /v1 shape; it's a static-registry GET, so a non-200 is a
+  // gateway defect → 500.
   const llmProxy = createGatewayHandler(llmGatewayOptions);
-  async function llmRegistryJson(endpoint: "/v1/models" | "/v1/providers"): Promise<unknown> {
+  async function llmRegistryJson(endpoint: "/v1/providers"): Promise<unknown> {
     const response = await llmProxy.handle(new Request(`http://gateway.internal${endpoint}`));
     if (response.status !== 200) {
       throw new Error(`gateway registry endpoint ${endpoint} returned ${response.status}`);
@@ -349,22 +349,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     return {
       revision: credentials.revision,
       updatedAt: credentials.updatedAt,
-      providers: legacyProviders().map((provider) => {
-        const saved = credentials.providers[provider.id];
-        return {
-          ...provider,
-          credentials: saved
-            ? {
-                configured: true,
-                label: saved.label,
-                updatedAt: saved.updatedAt,
-                keyHint: keyHint(saved.apiKey)
-              }
-            : {
-                configured: false
-              }
-        };
-      }),
+      providers: providerStatuses(credentials),
       gatewayProviders: gatewayList.providers
     };
   });
@@ -395,11 +380,6 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
       })
     });
     return providerCredentialsResponse(updated, providerId);
-  });
-
-  app.get("/api/models", async () => {
-    const gatewayList = (await llmRegistryJson("/v1/models")) as { models: ModelSummary[] };
-    return { models: legacyModels(), gatewayModels: gatewayList.models };
   });
 
   app.get("/api/waifus", async () => ({ waifus: await listWaifus(storage) }));
@@ -932,10 +912,6 @@ function providerCredentialsResponse(file: ProviderCredentialsFile, providerId: 
         }
       : { configured: false }
   };
-}
-
-function keyHint(value: string): string {
-  return value.length <= 4 ? "****" : `****${value.slice(-4)}`;
 }
 
 async function listWaifus(storage: StorageService): Promise<WaifuConfig[]> {
