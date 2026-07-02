@@ -836,6 +836,11 @@ table.data-table {
   background: white;
   transform: translateX(12px);
 }
+.toggle-field {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
 
 /* ============ Range field (slider + synced number input) ============ */
 .range-field {

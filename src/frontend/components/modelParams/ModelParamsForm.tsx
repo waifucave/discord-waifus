@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { ReactElement } from "react";
+import { ApiError } from "../../api/client";
 import type { ParamDescriptor, ResolvedModel } from "../../api/llm";
 import { llmModel, llmValidate } from "../../api/llm";
 import { Notice } from "../Notice";
@@ -10,7 +11,11 @@ import { buildParamControls, clampToDescriptor, paramLabel, violationsByParam, t
 import { RangeField } from "./RangeField";
 import { TagListField } from "./TagListField";
 
-type DocState = { status: "loading" } | { status: "error" } | { status: "ready"; doc: ResolvedModel };
+type DocState =
+  | { status: "loading" }
+  | { status: "not-found" }
+  | { status: "error" }
+  | { status: "ready"; doc: ResolvedModel };
 
 type ValidateWarning = { code: string; param?: string; message?: string };
 
@@ -43,11 +48,18 @@ export function ModelParamsForm({
   onValidity?: (ok: boolean) => void;
 }): ReactElement | null {
   const [docState, setDocState] = useState<DocState>({ status: "loading" });
+  const [violations, setViolations] = useState<Record<string, string>>({});
+  const [warnings, setWarnings] = useState<ValidateWarning[]>([]);
 
   // Doc fetch: llmModel() is already Map-memoized (see api/llm.ts), so this is a plain
   // useEffect+state load with a stale-closure guard rather than a real AbortController — a
-  // superseded (providerId, modelId) pair just has its late resolution ignored.
+  // superseded (providerId, modelId) pair just has its late resolution ignored. Also clears any
+  // violations/warnings carried over from the previous (providerId, modelId) pair so a stale
+  // error/warning for a field that doesn't exist on the new model can't flash before the
+  // debounced re-validate below lands.
   useEffect(() => {
+    setViolations({});
+    setWarnings([]);
     if (!providerId || !modelId) return;
     let stale = false;
     setDocState({ status: "loading" });
@@ -55,18 +67,23 @@ export function ModelParamsForm({
       .then((doc) => {
         if (!stale) setDocState({ status: "ready", doc });
       })
-      .catch(() => {
-        // Covers both a genuine 404 (unknown/stale stored model id) and any other fetch
-        // failure — either way the form must degrade to a Notice, never crash.
-        if (!stale) setDocState({ status: "error" });
+      .catch((err: unknown) => {
+        if (stale) return;
+        // A 404 means the stored (providerId, modelId) pair is genuinely unknown to the gateway
+        // registry (e.g. a stale/removed model id) — the existing "capability doc unavailable"
+        // state. Anything else (network blip, 5xx, etc.) is transient, so it gets a distinct
+        // message pointing at retrying rather than implying the model itself is invalid.
+        if (err instanceof ApiError && err.status === 404) {
+          setDocState({ status: "not-found" });
+        } else {
+          setDocState({ status: "error" });
+        }
       });
     return () => {
       stale = true;
     };
   }, [providerId, modelId]);
 
-  const [violations, setViolations] = useState<Record<string, string>>({});
-  const [warnings, setWarnings] = useState<ValidateWarning[]>([]);
   // Bumped on every debounced validate kickoff; a resolving/rejecting call only applies its
   // result if it's still the most recent one, guarding against an out-of-order response from an
   // earlier, slower request landing after a newer one.
@@ -102,12 +119,15 @@ export function ModelParamsForm({
   if (docState.status === "loading") {
     return <Skeleton height={160} />;
   }
-  if (docState.status === "error") {
+  if (docState.status === "not-found") {
     return (
       <Notice tone="err">
         capability doc unavailable for {providerId}/{modelId}
       </Notice>
     );
+  }
+  if (docState.status === "error") {
+    return <Notice tone="err">could not load capability doc — retry by reselecting the model</Notice>;
   }
 
   // "map" descriptors have no UI (brief: "map -> skip"); filtered here rather than in
@@ -200,10 +220,17 @@ function ParamControlInput({
   switch (descriptor.type) {
     case "boolean":
       return (
-        <Toggle
-          checked={typeof value === "boolean" ? value : Boolean(descriptor.default)}
-          onChange={(next) => onChange(next)}
-        />
+        <div className="toggle-field">
+          <Toggle
+            checked={typeof value === "boolean" ? value : Boolean(descriptor.default)}
+            onChange={(next) => onChange(next)}
+          />
+          {typeof value === "boolean" && (
+            <button type="button" className="btn ghost sm" onClick={() => onChange(undefined)}>
+              reset
+            </button>
+          )}
+        </div>
       );
     case "enum":
       return (
