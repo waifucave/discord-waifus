@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { createGatewayHandler, type ResolvedModel } from "@waifucave/gateway";
+import { createGatewayHandler, type ParamDescriptor, type ResolvedModel } from "@waifucave/gateway";
 import type { LlmModelSummary, LlmValidationViolation } from "../src/frontend/api/llm";
 import {
+  addTag,
   buildParamControls,
+  clampToDescriptor,
   defaultRoute,
   findRoute,
   groupModelRoutes,
+  paramLabel,
   violationsByParam,
   type RouteGroup
 } from "../src/frontend/components/modelParams/logic.js";
@@ -96,6 +99,32 @@ describe("buildParamControls", () => {
     ]);
     expect(controls.find((c) => c.key === "google.safetySettings")?.group).toBe("other");
     expect(controls.find((c) => c.key === "minimax.reasoningSplit")?.group).toBe("other");
+  });
+
+  it("excludes responseFormat by key, even though its descriptor.type is 'enum' (moonshot shape) not 'map'", () => {
+    // AMENDED Global Constraint: no responseFormat/structured-output control anywhere (anthropic
+    // codec gap, out of P5 scope). Type-based skipping alone wouldn't catch this — moonshot's
+    // responseFormat descriptor is type:"enum", identical in shape to a legitimately-renderable
+    // enum param — so the exclusion must be keyed on the param name specifically.
+    const docWithResponseFormat: Pick<ResolvedModel, "params"> = {
+      params: {
+        temperature: { type: "number", min: 0, max: 2 },
+        responseFormat: { type: "enum", values: ["text", "json_object", "json_schema"], default: "text" }
+      }
+    };
+    const controls = buildParamControls(docWithResponseFormat);
+    expect(controls.map((c) => c.key)).toEqual(["temperature"]);
+    expect(controls.some((c) => c.key === "responseFormat")).toBe(false);
+  });
+
+  it("excludes responseFormat from a real moonshot registry doc", () => {
+    const handler = createGatewayHandler({});
+    const doc = handler.gateway.getCapabilities("moonshot", "kimi-k2.5");
+    expect(doc).toBeDefined();
+    // Confirms the real descriptor shape this exclusion has to defeat (pins the AMENDED rationale).
+    expect(doc!.params.responseFormat?.type).toBe("enum");
+    const controls = buildParamControls(doc!);
+    expect(controls.some((c) => c.key === "responseFormat")).toBe(false);
   });
 });
 
@@ -297,5 +326,101 @@ describe("real registry fixture (pins the actual descriptor shape)", () => {
     expect(doc).toBeDefined();
     const controls = buildParamControls(doc!);
     expect(controls.length).toBeGreaterThan(0);
+  });
+});
+
+describe("clampToDescriptor", () => {
+  const numberDescriptor: Pick<ParamDescriptor, "type" | "min" | "max"> = { type: "number", min: 0, max: 2 };
+  const intDescriptor: Pick<ParamDescriptor, "type" | "min" | "max"> = { type: "int", min: 0, max: 100 };
+
+  it("parses a numeric string within bounds unchanged", () => {
+    expect(clampToDescriptor(numberDescriptor, "1.5")).toBe(1.5);
+  });
+
+  it("accepts a raw number directly", () => {
+    expect(clampToDescriptor(numberDescriptor, 1.5)).toBe(1.5);
+  });
+
+  it("clamps below min up to min", () => {
+    expect(clampToDescriptor(numberDescriptor, "-3")).toBe(0);
+  });
+
+  it("clamps above max down to max", () => {
+    expect(clampToDescriptor(numberDescriptor, "9")).toBe(2);
+  });
+
+  it("rounds to the nearest integer for type 'int'", () => {
+    expect(clampToDescriptor(intDescriptor, "42.6")).toBe(43);
+    expect(clampToDescriptor(intDescriptor, "42.4")).toBe(42);
+  });
+
+  it("clamps an out-of-range int after rounding", () => {
+    expect(clampToDescriptor(intDescriptor, "150")).toBe(100);
+    expect(clampToDescriptor(intDescriptor, "-1")).toBe(0);
+  });
+
+  it("returns undefined for an empty string (caller clears the key)", () => {
+    expect(clampToDescriptor(numberDescriptor, "")).toBeUndefined();
+    expect(clampToDescriptor(numberDescriptor, "   ")).toBeUndefined();
+  });
+
+  it("returns undefined for a non-numeric string", () => {
+    expect(clampToDescriptor(numberDescriptor, "not-a-number")).toBeUndefined();
+  });
+
+  it("only clamps the bound that is actually present on the descriptor", () => {
+    expect(clampToDescriptor({ type: "number", min: 0 }, "-5")).toBe(0);
+    expect(clampToDescriptor({ type: "number", min: 0 }, "999")).toBe(999);
+    expect(clampToDescriptor({ type: "number", max: 10 }, "999")).toBe(10);
+  });
+});
+
+describe("addTag", () => {
+  it("appends a trimmed, non-empty tag", () => {
+    expect(addTag(["a"], "  b  ")).toEqual(["a", "b"]);
+  });
+
+  it("returns the same list reference when raw is blank or whitespace-only", () => {
+    const list = ["a"];
+    expect(addTag(list, "")).toBe(list);
+    expect(addTag(list, "   ")).toBe(list);
+  });
+
+  it("returns the same list reference when the tag already exists (no duplicates)", () => {
+    const list = ["a", "b"];
+    expect(addTag(list, "a")).toBe(list);
+  });
+
+  it("refuses to add once maxItems is reached, returning the same list reference", () => {
+    const list = ["a", "b"];
+    expect(addTag(list, "c", 2)).toBe(list);
+  });
+
+  it("adds up to and including maxItems", () => {
+    expect(addTag(["a"], "b", 2)).toEqual(["a", "b"]);
+  });
+
+  it("is unlimited when maxItems is not given", () => {
+    const list = ["a", "b", "c", "d", "e"];
+    expect(addTag(list, "f")).toEqual([...list, "f"]);
+  });
+});
+
+describe("paramLabel", () => {
+  it("title-cases a simple key", () => {
+    expect(paramLabel("temperature")).toBe("Temperature");
+  });
+
+  it("splits camelCase into spaced Title Case", () => {
+    expect(paramLabel("maxOutputTokens")).toBe("Max Output Tokens");
+  });
+
+  it("drops the dotted namespace prefix, since the section header already names it", () => {
+    expect(paramLabel("reasoning.enabled")).toBe("Enabled");
+    expect(paramLabel("reasoning.budgetTokens")).toBe("Budget Tokens");
+  });
+
+  it("uses the leaf segment for vendor-namespaced 'other' params too", () => {
+    expect(paramLabel("google.safetySettings")).toBe("Safety Settings");
   });
 });

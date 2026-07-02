@@ -34,11 +34,18 @@ function compareWithPriority(a: string, b: string, priority: readonly string[]):
   return a.localeCompare(b);
 }
 
+// Global Constraint (P5 plan): no responseFormat/structured-output control anywhere — an
+// anthropic codec gap, out of scope for this migration. Keyed on the param name rather than
+// descriptor.type because moonshot's responseFormat descriptor is type:"enum" — indistinguishable
+// by shape from a legitimately-renderable enum param.
+const EXCLUDED_PARAM_KEYS: ReadonlySet<string> = new Set(["responseFormat"]);
+
 export function buildParamControls(doc: Pick<ResolvedModel, "params">): ParamControl[] {
   const sampling: ParamControl[] = [];
   const reasoning: ParamControl[] = [];
   const other: ParamControl[] = [];
   for (const [key, descriptor] of Object.entries(doc.params)) {
+    if (EXCLUDED_PARAM_KEYS.has(key)) continue;
     const group = classifyGroup(key);
     const control: ParamControl = { key, descriptor, group, unverified: descriptor.confidence === "unverified" };
     if (group === "sampling") sampling.push(control);
@@ -49,6 +56,50 @@ export function buildParamControls(doc: Pick<ResolvedModel, "params">): ParamCon
   reasoning.sort((a, b) => compareWithPriority(a.key, b.key, REASONING_PRIORITY));
   other.sort((a, b) => a.key.localeCompare(b.key));
   return [...sampling, ...reasoning, ...other];
+}
+
+/**
+ * Clamps a raw form value (string from an <input>, or a number) to the descriptor's [min,max]
+ * bounds, rounding to the nearest integer first for `type:"int"` descriptors. Only the bounds
+ * actually present on the descriptor are applied — a missing min/max is not enforced. Returns
+ * `undefined` for an empty/whitespace-only/unparseable raw value; callers treat `undefined` as
+ * "clear the key" (an untouched/cleared control stores no key, never `NaN` or `""`).
+ */
+export function clampToDescriptor(
+  descriptor: Pick<ParamDescriptor, "type" | "min" | "max">,
+  raw: string | number
+): number | undefined {
+  if (typeof raw === "string" && raw.trim() === "") return undefined;
+  const num = typeof raw === "number" ? raw : Number(raw);
+  if (!Number.isFinite(num)) return undefined;
+  let value = descriptor.type === "int" ? Math.round(num) : num;
+  if (descriptor.min !== undefined) value = Math.max(descriptor.min, value);
+  if (descriptor.max !== undefined) value = Math.min(descriptor.max, value);
+  return value;
+}
+
+/**
+ * Appends a trimmed tag to `list`, refusing blank input, duplicates, and anything past
+ * `maxItems` (when given). Returns the SAME `list` reference (not a copy) on every no-op path,
+ * so callers can skip an `onChange`/re-render by comparing references.
+ */
+export function addTag(list: string[], raw: string, maxItems?: number): string[] {
+  const tag = raw.trim();
+  if (!tag) return list;
+  if (list.includes(tag)) return list;
+  if (maxItems !== undefined && list.length >= maxItems) return list;
+  return [...list, tag];
+}
+
+/**
+ * Human label for a param key: drops any dotted namespace prefix (the group's section header —
+ * "Reasoning", "Advanced" — already names it, e.g. "reasoning.enabled" -> "Enabled"), then
+ * spaces camelCase into Title Case ("maxOutputTokens" -> "Max Output Tokens").
+ */
+export function paramLabel(key: string): string {
+  const leaf = key.includes(".") ? key.slice(key.lastIndexOf(".") + 1) : key;
+  const spaced = leaf.replace(/([a-z0-9])([A-Z])/g, "$1 $2");
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
 }
 
 /** param -> human message: prefer violation.message; else `${code}${ruleId ? ` (rule ${ruleId})` : ""}`. */
