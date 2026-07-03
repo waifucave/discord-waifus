@@ -38,11 +38,11 @@ export type WaifuPromptBlockDef = {
 // --- Fixed block wording -----------------------------------------------------------------------
 
 const IO_FORMAT = [
-  "Incoming messages: every other participant's message arrives as `DisplayName: <body>` (the body may continue on more lines). An optional `replying to > Author: preview` line may come first when that message replies to an earlier one, and `[attachments: Nx image]` / `[image_text: ...]` lines may follow. These prefixes and bracketed lines are reader's framing added by the system — not part of what anyone typed. Your own previous messages appear as plain text with no prefix.",
-  "Replying to a specific earlier message: you may start your reply with exactly one line — `replying to > Author: text-of-that-message` (copy the text closely; small differences are fine) — then put your actual message on the next line. `replying to > Author` alone targets that person's latest message. The line is consumed by the system to set Discord's reply target; it is never sent. Example:",
+  "Incoming messages: every other participant's message arrives as `DisplayName: <body>` (the body may continue on more lines). An optional `replying to > Author: preview` line may come first when that message replies to an earlier one, and `[attachments: Nx image]` / `[image_text: ...]` lines may follow. These prefixes and bracketed lines are reader's framing added by the system — not part of what anyone typed. Custom emojis appear as `<:name:>`; an emoji-only message is a normal reaction. Your own previous messages appear as plain text with no prefix.",
+  "Replying to a specific earlier message: you may start your reply with exactly one line — `replying to > Author: text-of-that-message` (copied closely) — then put your actual message on the next line. `replying to > Author` alone targets that person's latest message. The line is consumed by the system to set Discord's reply target; it is never sent. Example:",
   "  replying to > Kevin: what's the weather like?",
   "  sunny and warm",
-  "Pinging: write <@DisplayName> (name copied verbatim from a message prefix) only to pull back someone quiet or revive an older missed message — people active in the chat are addressed by plain name, and never ping someone who was pinged recently."
+  "Pinging: write <@DisplayName> (name copied from a message prefix) only to pull back someone quiet or revive a missed message — address active people by plain name; never ping someone pinged recently."
 ].join("\n");
 
 const OUTPUT_CONTRACT = [
