@@ -1597,7 +1597,11 @@ export class RuntimeOrchestrator {
               participantNames: participantDisplayNames,
               directive: validatorDirective,
               blockTags: validatorBlockTags,
-              toolNames: validatorToolNames
+              toolNames: validatorToolNames,
+              recentSelfMessages: waifuMessages
+                .filter((message) => message.authorKind === "waifu" && selfAuthorIds.includes(message.authorId))
+                .slice(-5)
+                .map((message) => message.content)
             });
             if (validation.verdict !== "pass") {
               const checks = validation.violations.map((entry) => entry.check).join(", ");

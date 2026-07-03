@@ -458,3 +458,41 @@ describe("correctiveRetryMessage", () => {
     expect(msg).toContain("contained harness-tag");
   });
 });
+
+describe("self-repeat check", () => {
+  const ctx = {
+    selfNames: ["Aria"],
+    participantNames: ["Aria", "Kevin"],
+    blockTags: [],
+    toolNames: [],
+    recentSelfMessages: [
+      "ok random but who here actually knows how to fold a fitted sheet",
+      "nah I run on vibes, way more efficient"
+    ]
+  };
+
+  it("flags an identical resend of a recent own message", () => {
+    const result = validateWaifuOutput("ok random but who here actually knows how to fold a fitted sheet", ctx);
+    expect(result.verdict).toBe("retry");
+    expect(result.violations.map((v) => v.check)).toContain("self-repeat");
+  });
+
+  it("flags a near-identical rewording", () => {
+    const result = validateWaifuOutput("ok random but who here actually knows how to fold a fitted sheet??", ctx);
+    expect(result.violations.map((v) => v.check)).toContain("self-repeat");
+  });
+
+  it("passes genuinely new messages that share the topic", () => {
+    const result = validateWaifuOutput("fitted sheets are a scam honestly", ctx);
+    expect(result.verdict).toBe("pass");
+  });
+
+  it("passes short reactions even when repeated", () => {
+    const shortCtx = { ...ctx, recentSelfMessages: ["lmao"] };
+    expect(validateWaifuOutput("lmaooo", shortCtx).verdict).toBe("pass");
+  });
+
+  it("is not soft — survives to block, unlike length-register", () => {
+    expect(SOFT_VALIDATOR_CHECKS.has("self-repeat")).toBe(false);
+  });
+});

@@ -17,6 +17,7 @@ export type ValidationContext = {
   directive?: { intent: string; goal: string };
   blockTags: string[];          // every XML-ish tag the harness can emit for this waifu
   toolNames: string[];
+  recentSelfMessages?: string[]; // this waifu's own last few sent messages (raw content)
 };
 
 // ---------------------------------------------------------------------------
@@ -220,6 +221,42 @@ function checkSelfTalk(text: string, _ctx: ValidationContext): Violation | undef
 }
 
 /**
+ * self-repeat: the candidate is (near-)identical to one of the waifu's OWN recent
+ * messages. Seen live: the same conversation-starter line sent twice, five minutes
+ * apart, with another character's answer in between. Retry, then block — silence
+ * beats saying the same thing twice.
+ */
+const SELF_REPEAT_JACCARD = 0.85;
+
+function checkSelfRepeat(text: string, ctx: ValidationContext): Violation | undefined {
+  if (!ctx.recentSelfMessages?.length) return undefined;
+  const candidateNorm = normalizeForRepeat(text);
+  if (candidateNorm.length === 0) return undefined;
+  const candidateTokens = tokenSet(text);
+  for (const prior of ctx.recentSelfMessages) {
+    if (normalizeForRepeat(prior) === candidateNorm) {
+      return { check: "self-repeat", detail: "identical to a recent own message" };
+    }
+    const priorTokens = tokenSet(prior);
+    if (candidateTokens.size >= 4 && priorTokens.size >= 4) {
+      let intersection = 0;
+      for (const token of candidateTokens) {
+        if (priorTokens.has(token)) intersection += 1;
+      }
+      const union = candidateTokens.size + priorTokens.size - intersection;
+      if (union > 0 && intersection / union >= SELF_REPEAT_JACCARD) {
+        return { check: "self-repeat", detail: "near-duplicate of a recent own message" };
+      }
+    }
+  }
+  return undefined;
+}
+
+function normalizeForRepeat(text: string): string {
+  return text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+}
+
+/**
  * length-register: SOFT check — the room register is fast casual chat, and live data
  * showed prompt wording alone does not hold the register on every model. Over the soft
  * limit → one corrective retry; if the retry is still long it is SENT ANYWAY (soft
@@ -261,6 +298,7 @@ const RETRY_CHECKS = [
   checkDirectiveEcho,
   checkSelfTalk,
   checkLengthRegister,
+  checkSelfRepeat,
 ] as const;
 
 // Checks whose violations trigger a corrective retry but must NEVER withhold content:
@@ -270,7 +308,8 @@ export const SOFT_VALIDATOR_CHECKS: ReadonlySet<string> = new Set(["length-regis
 // Violation-specific corrective retry lines. The generic "contained X" wording is useless
 // for register violations — cheap models need the concrete instruction.
 const CORRECTIVE_HINTS: Record<string, string> = {
-  "length-register": "that was too long for this chat — send one short line, under 12 words"
+  "length-register": "that was too long for this chat — send one short line, under 12 words",
+  "self-repeat": "you already sent that — say something new, or just react in a couple words"
 };
 
 export function correctiveRetryMessage(displayName: string, violations: Violation[]): string {
