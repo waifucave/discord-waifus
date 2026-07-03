@@ -3993,18 +3993,22 @@ describe("RuntimeOrchestrator", () => {
     expect(responses).toEqual(["Printed memories for Yuki."]);
     const printed = discord.debugMessages.map((message) => message.content).join("\n");
     expect(printed).toContain("## Memories (Yuki)");
-    expect(printed).toContain("<yuki_relevant_memories>");
-    // Task 2: memories rendered with kind labels; notes with relative age
-    expect(printed).toContain("- (fact) Yuki knows Kevin likes green tea.");
-    expect(printed).toContain("- (fact) Yuki always remembers Kevin is allergic to peanuts.");
-    expect(printed).toMatch(/- \(note, \d+[mhd] ago\) Kevin is leaving at 5pm\./);
-    // Notes are guild-visible now (channel only boosts retrieval), so a same-guild note from
-    // another channel is carried over — the cross-channel continuity the design intends.
-    expect(printed).toMatch(/- \(note, \d+[mhd] ago\) Other channel short-term memory\./);
-    expect(printed).not.toContain("Archived current guild memory.");
+    // Full listing with status/kind flags — active AND archived, same guild only.
+    expect(printed).toContain("- [fact|active|s3]");
+    expect(printed).toContain("Yuki knows Kevin likes green tea.");
+    expect(printed).toContain("Yuki always remembers Kevin is allergic to peanuts.");
+    expect(printed).toContain("pinned");
+    expect(printed).toContain("Kevin is leaving at 5pm.");
+    expect(printed).toContain("Other channel short-term memory.");
+    // Archived records in the SAME guild now appear, flagged as archived.
+    expect(printed).toContain("Archived current guild memory.");
+    expect(printed).toContain("[fact|archived|s2]");
+    // Expired notes appear too, flagged — this is the everything view.
+    expect(printed).toContain("Expired short-term memory.");
+    expect(printed).toMatch(/\[context\|active\|expired[^\]]*\]/);
+    // Other guilds stay invisible.
     expect(printed).not.toContain("Other guild memory.");
     expect(printed).not.toContain("Mika-only memory.");
-    expect(printed).not.toContain("Expired short-term memory.");
   });
 
   it("prints the selected waifu raw personality", async () => {
@@ -4047,9 +4051,173 @@ describe("RuntimeOrchestrator", () => {
 
     expect(responses).toEqual(["Printed personality for Mika."]);
     const printed = discord.debugMessages.map((message) => message.content).join("\n");
-    expect(printed).toContain("## Personality (Mika)");
+    expect(printed).toContain("## Personality block 1 — raw persona (Mika)");
     expect(printed).toContain("dry\nsharp");
     expect(printed).not.toContain("You are Mika");
+  });
+
+  it("prints personality as raw persona plus trailing-anchor summary blocks", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+
+    await seedRuntimeConfig(storage);
+    await storage.writeJson(
+      "waifu:yuki",
+      "user/waifus/yuki/waifu.json",
+      WaifuConfigSchema,
+      WaifuConfigSchema.parse({
+        ...createRevisionedBase(),
+        id: "yuki",
+        name: "Yuki",
+        displayName: "Yuki",
+        providerId: "openai",
+        modelId: "gpt-5.4-mini",
+        botId: "yuki-bot",
+        persona: "kind and bubbly",
+        contextWindow: 50,
+        personaDigest: { voice: "Speaks warmly and briefly.", role: "Gentle energy.", personaHash: "abc" }
+      })
+    );
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      createPipeline: () => ({ async generateWaifu() { return { content: "unused" }; } }),
+      logger: quietLogger()
+    });
+    await runtime.start();
+
+    const responses: string[] = [];
+    await discord.emitPrintCommand({
+      guildId: "guild-1",
+      channelId: "channel-1",
+      userId: "admin-user",
+      type: "personality",
+      waifuId: "yuki",
+      respond: async (content) => { responses.push(content); }
+    });
+    await waitFor(() => responses.length === 1, "personality print response");
+    await runtime.stop();
+
+    const joined = discord.debugMessages.map((m) => m.content).join("\n");
+    expect(joined).toContain("Personality block 1 — raw persona (Yuki)");
+    expect(joined).toContain("kind and bubbly");
+    expect(joined).toContain("Personality block 2 — trailing-anchor summary (Yuki)");
+    expect(joined).toContain("Voice: Speaks warmly and briefly.");
+    expect(joined).toContain("Drives: Gentle energy.");
+  });
+
+  it("prints ALL memories including archived ones with status flags", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+
+    await seedRuntimeConfig(storage);
+    const now = new Date().toISOString();
+    await storage.writeJson(
+      "memories:global",
+      "user/memories.json",
+      MemoryStoreSchema,
+      MemoryStoreSchema.parse(
+        createEmptyRevisionedFile({
+          memories: [
+            { id: "m-active", waifuId: "yuki", guildId: "guild-1", content: "Kevin likes tea.", strength: 3, createdAt: now, updatedAt: now, status: "active" },
+            { id: "m-archived", waifuId: "yuki", guildId: "guild-1", content: "Old trivia about socks.", strength: 1, createdAt: now, updatedAt: now, status: "archived" }
+          ]
+        })
+      )
+    );
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      createPipeline: () => ({ async generateWaifu() { return { content: "unused" }; } }),
+      logger: quietLogger()
+    });
+    await runtime.start();
+
+    const responses: string[] = [];
+    await discord.emitPrintCommand({
+      guildId: "guild-1",
+      channelId: "channel-1",
+      userId: "admin-user",
+      type: "memories",
+      waifuId: "yuki",
+      respond: async (content) => { responses.push(content); }
+    });
+    await waitFor(() => responses.length === 1, "memories print response");
+    await runtime.stop();
+
+    const joined = discord.debugMessages.map((m) => m.content).join("\n");
+    expect(joined).toContain("2 total (1 active, 1 archived)");
+    expect(joined).toContain("Kevin likes tea.");
+    expect(joined).toContain("Old trivia about socks.");
+    expect(joined).toContain("archived");
+  });
+
+  it("prints the exact system prompt captured from the waifu's last reply", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.contexts = [[contextMessage("m1", "user", "Kevin", "hi yuki")]];
+
+    await seedRuntimeConfig(storage);
+
+    const pipeline: ModelPipeline = {
+      async decideOrchestrator() {
+        return { action: "reply", respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }], reasoning: "greet" };
+      },
+      async generateWaifu() {
+        return { content: "hey!" };
+      }
+    };
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 1,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+    await runtime.start();
+
+    // Before any reply: fallback note.
+    const early: string[] = [];
+    await discord.emitPrintCommand({
+      guildId: "guild-1", channelId: "channel-1", userId: "admin-user",
+      type: "system_prompt", waifuId: "yuki",
+      respond: async (content) => { early.push(content); }
+    });
+    await waitFor(() => early.length === 1, "early system prompt print");
+    const earlyJoined = discord.debugMessages.map((m) => m.content).join("\n");
+    expect(earlyJoined).toContain("has not replied since the backend started");
+
+    discord.debugMessages.length = 0;
+    await runtime.triggerChannel("guild-1", "channel-1", "manual");
+
+    const late: string[] = [];
+    await discord.emitPrintCommand({
+      guildId: "guild-1", channelId: "channel-1", userId: "admin-user",
+      type: "system_prompt", waifuId: "yuki",
+      respond: async (content) => { late.push(content); }
+    });
+    await waitFor(() => late.length === 1, "captured system prompt print");
+    await runtime.stop();
+
+    const lateJoined = discord.debugMessages.map((m) => m.content).join("\n");
+    expect(lateJoined).toContain("Captured from Yuki's last reply at");
+    expect(lateJoined).toContain("System prompt block 1 (Yuki)");
+    expect(lateJoined).toContain("You are Yuki");
   });
 
   it("rejects /print waifus outside the current guild", async () => {

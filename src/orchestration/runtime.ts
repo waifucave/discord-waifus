@@ -63,7 +63,7 @@ import {
 } from "../shared/schemas/domain.js";
 import { extractEntities, WAIFU_NOTE_STRENGTH } from "./memoryEntities.js";
 import { applyDreamOps, guildHash, selectDreamInput } from "./dream.js";
-import { retrieveMemories } from "./memoryRetrieval.js";
+import { relativeAge, retrieveMemories } from "./memoryRetrieval.js";
 import { createRevisionedBase, nowIso } from "../shared/schemas/common.js";
 import { StorageService } from "../storage/storageService.js";
 import { DreamOp, StageManagerObservation } from "./stageManager.js";
@@ -168,6 +168,11 @@ type WaifuPromptDebugParts = {
 
 export class RuntimeOrchestrator {
   private readonly activeRuns = new Map<string, ActiveChannelRun>();
+  // Exact prompt parts sent with each waifu's most recent generation, for /print system_prompt.
+  private readonly lastSentWaifuPrompts = new Map<
+    string,
+    { systemPrompt: string; midSystemBlock: string; trailingSystemBlock: string; at: string; channelId: string }
+  >();
   private readonly retriggerTimers = new Map<string, NodeJS.Timeout>();
   private readonly stageManagerSchedules = new Map<string, StageManagerSchedule>();
   private readonly activeStageManagerRuns = new Set<Promise<StageManagerRunResult>>();
@@ -787,6 +792,18 @@ export class RuntimeOrchestrator {
     type: Exclude<DiscordPrintCommandEvent["type"], undefined>;
   }): Promise<string[]> {
     if (input.type === "system_prompt") {
+      const captured = this.lastSentWaifuPrompts.get(`${input.guildId}:${input.waifu.id}`);
+      if (captured) {
+        return [
+          `Captured from ${input.waifu.displayName}'s last reply at ${captured.at} in <#${captured.channelId}> — exactly what the model received.`,
+          ...formatWaifuPromptDebugMessages({
+            waifuDisplayName: input.waifu.displayName,
+            systemPrompt: captured.systemPrompt,
+            midSystemBlock: captured.midSystemBlock,
+            trailingSystemBlock: captured.trailingSystemBlock
+          })
+        ];
+      }
       const { systemPrompt, midSystemBlock, trailingSystemBlock } = await this.buildWaifuPromptParts(
         input.guildId,
         input.waifu,
@@ -795,51 +812,60 @@ export class RuntimeOrchestrator {
           channelId: input.channelId,
           pickNextWaifuToolOverride: input.server.tools.pickNextWaifu,
           shortTermMemoryToolOverride: input.server.tools.shortTermMemory,
-          // /print system_prompt path: no live window; scores on recency+strength
+          // No generation since backend start: fresh render; no live window, scores on recency+strength.
           contextMessages: undefined,
           memoryInjectionLimit: input.server.memoryInjectionLimit
         }
       );
-      return formatWaifuPromptDebugMessages({
-        waifuDisplayName: input.waifu.displayName,
-        systemPrompt,
-        midSystemBlock,
-        trailingSystemBlock
-      });
+      return [
+        `${input.waifu.displayName} has not replied since the backend started — showing a freshly rendered prompt, not one from a live turn.`,
+        ...formatWaifuPromptDebugMessages({
+          waifuDisplayName: input.waifu.displayName,
+          systemPrompt,
+          midSystemBlock,
+          trailingSystemBlock
+        })
+      ];
     }
     if (input.type === "memories") {
-      const content = await this.modelVisibleMemoryBlockForPrint(input.guildId, input.channelId, input.waifu, input.server.memoryInjectionLimit);
+      const content = await this.allMemoriesBlockForPrint(input.guildId, input.waifu);
       return formatPrintDebugBlock(`Memories (${input.waifu.displayName})`, content);
     }
-    return formatPrintDebugBlock(
-      `Personality (${input.waifu.displayName})`,
-      input.waifu.persona.trim() || "(no personality configured)"
-    );
+    const digest = input.waifu.personaDigest;
+    const digestText = digest
+      ? `Voice: ${digest.voice}\nDrives: ${digest.role}`
+      : "(no digest generated yet — the trailing anchor falls back to a 200-char persona slice)";
+    return [
+      ...formatPrintDebugBlock(
+        `Personality block 1 — raw persona (${input.waifu.displayName})`,
+        input.waifu.persona.trim() || "(no personality configured)"
+      ),
+      ...formatPrintDebugBlock(
+        `Personality block 2 — trailing-anchor summary (${input.waifu.displayName})`,
+        digestText
+      )
+    ];
   }
 
-  private async modelVisibleMemoryBlockForPrint(
-    guildId: string,
-    channelId: string,
-    waifu: WaifuConfig,
-    memoryInjectionLimit: number
-  ): Promise<string> {
+  /** Every memory for this waifu+guild — active AND archived — newest first, with flags. */
+  private async allMemoriesBlockForPrint(guildId: string, waifu: WaifuConfig): Promise<string> {
     const now = new Date();
     const store = await this.readMemoryStore();
-    const { lines } = retrieveMemories({
-      records: store.memories,
-      window: [], // /print has no live window; scores on recency+strength
-      guildId,
-      waifuId: waifu.id,
-      channelId,
-      now,
-      limit: memoryInjectionLimit
+    const records = store.memories
+      .filter((record) => record.guildId === guildId && record.waifuId === waifu.id)
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    if (records.length === 0) return "(none)";
+    const active = records.filter((record) => record.status === "active").length;
+    const lines = records.map((record) => {
+      const expired = record.expiresAt !== undefined && Date.parse(record.expiresAt) <= now.getTime();
+      const flags = [record.kind, record.status, expired ? "expired" : undefined, record.pinned ? "pinned" : undefined, `s${record.strength}`]
+        .filter(Boolean)
+        .join("|");
+      return `- [${flags}] (${relativeAge(record.createdAt, now)}) ${record.content}`;
     });
-    if (lines.length === 0) {
-      return "(none)";
-    }
-    const waifuTag = promptTagName(waifu.name || waifu.id);
-    return `<${waifuTag}_relevant_memories>\n${lines.join("\n")}\n</${waifuTag}_relevant_memories>`;
+    return `${records.length} total (${active} active, ${records.length - active} archived)\n${lines.join("\n")}`;
   }
+
 
   private async handleDebugCommand(event: DiscordDebugCommandEvent): Promise<void> {
     try {
@@ -1499,6 +1525,13 @@ export class RuntimeOrchestrator {
               memoryInjectionLimit: input.server.memoryInjectionLimit
             }
           );
+          this.lastSentWaifuPrompts.set(`${input.guildId}:${waifu.id}`, {
+            systemPrompt,
+            midSystemBlock,
+            trailingSystemBlock,
+            at: new Date().toISOString(),
+            channelId: input.channelId
+          });
           const allSelfDisplayNames = selfGuildNickname
             ? dedupeNames([...selfDisplayNames, selfGuildNickname])
             : selfDisplayNames;
