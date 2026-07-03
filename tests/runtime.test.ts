@@ -36,6 +36,8 @@ import { StorageService } from "../src/storage/storageService.js";
 import {
   ActiveChatParticipantsFileSchema,
   AgentConfigSchema,
+  DiscordBotConfig,
+  DiscordBotsFileSchema,
   GuildMembersFileSchema,
   MemoryStoreSchema,
   OrchestratorDebugConfigFileSchema,
@@ -7786,6 +7788,182 @@ describe("RuntimeOrchestrator", () => {
     expect(capturedRequest?.selfAuthorIds).toContain("aria-bot");
   });
 
+  it("resolves selfAuthorIds through the discord-bots entry so snowflake authorIds match", async () => {
+    // Production shape: waifu.botId holds the discord-bots ENTRY id ("aria"), while Discord
+    // message authorIds carry the bot user snowflake (=== the entry's applicationId). Both ids
+    // must land in selfAuthorIds or the waifu never recognizes her own prior messages.
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+
+    const context = [
+      contextMessage("m1", "user", "Kevin", "hey"),
+      contextMessage("m2", "waifu", "Aria", "hi Kevin", undefined, {
+        authorId: "111222333444555666",
+        authorBot: true
+      })
+    ];
+    discord.contexts = [context, context];
+
+    await seedRuntimeConfig(storage);
+    await seedDiscordBots(storage, [
+      { id: "aria", displayName: "Aria", applicationId: "111222333444555666", enabled: true }
+    ]);
+    await seedWaifu(storage, "aria", "Aria", "aria", "playful");
+    await enableWaifus(storage, ["aria"]);
+
+    let capturedRequest: WaifuGenerationRequest | undefined;
+    const pipeline: ModelPipeline = {
+      async decideOrchestrator() {
+        return {
+          action: "reply",
+          respondingWaifus: [{ waifuId: "aria", delaySeconds: 0 }],
+          reasoning: "Aria should reply."
+        };
+      },
+      async generateWaifu(request) {
+        capturedRequest = request;
+        return { content: "hey hey" };
+      }
+    };
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 1,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    expect(capturedRequest?.selfAuthorIds).toContain("111222333444555666");
+    expect(capturedRequest?.selfAuthorIds).toContain("aria");
+  });
+
+  it("self-repeat guard catches a repeat when own prior messages carry snowflake authorIds", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+
+    const repeated = "my smoke alarm went off making toast again, i'm cursed";
+    const context = [
+      contextMessage("m1", "user", "Kevin", "hey"),
+      contextMessage("m2", "waifu", "Aria", repeated, undefined, {
+        authorId: "111222333444555666",
+        authorBot: true
+      }),
+      contextMessage("m3", "user", "Kevin", "lol")
+    ];
+    discord.contexts = [context, context];
+
+    await seedRuntimeConfig(storage);
+    await seedDiscordBots(storage, [
+      { id: "aria", displayName: "Aria", applicationId: "111222333444555666", enabled: true }
+    ]);
+    await seedWaifu(storage, "aria", "Aria", "aria", "playful");
+    await enableWaifus(storage, ["aria"]);
+
+    let generateCalls = 0;
+    const pipeline: ModelPipeline = {
+      async decideOrchestrator() {
+        return {
+          action: "reply",
+          respondingWaifus: [{ waifuId: "aria", delaySeconds: 0 }],
+          reasoning: "Aria should reply."
+        };
+      },
+      async generateWaifu() {
+        generateCalls += 1;
+        return { content: repeated };
+      }
+    };
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 1,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    // Identical to her own prior message: one corrective retry, then block — nothing sent.
+    expect(generateCalls).toBe(2);
+    expect(discord.sent).toHaveLength(0);
+  });
+
+  it("resolves serverNickname and roster names via the bots entry applicationId", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+
+    await seedRuntimeConfig(storage);
+    await seedDiscordBots(storage, [
+      { id: "aria", displayName: "Aria", applicationId: "111222333444555666", enabled: true },
+      { id: "yuki", displayName: "Yuki", applicationId: "999888777666555444", enabled: true }
+    ]);
+    // members.json is keyed by the bot USER snowflake, never the entry id.
+    await storage.writeJson(
+      "members:guild-1",
+      "user/servers/guild-1/members.json",
+      GuildMembersFileSchema,
+      GuildMembersFileSchema.parse(
+        createEmptyRevisionedFile({
+          guildId: "guild-1",
+          members: [
+            { userId: "111222333444555666", guildDisplayName: "K的小娇妻", bot: true, perChannelLastSeenAt: {} },
+            { userId: "999888777666555444", guildDisplayName: "Yuki-chan", bot: true, perChannelLastSeenAt: {} }
+          ]
+        })
+      )
+    );
+    await seedWaifu(storage, "aria", "Aria", "aria", "playful");
+    await seedWaifu(storage, "yuki", "Yuki", "yuki", "kind");
+    await enableWaifus(storage, ["aria", "yuki"]);
+
+    let capturedRequest: WaifuGenerationRequest | undefined;
+    const pipeline: ModelPipeline = {
+      async decideOrchestrator() {
+        return {
+          action: "reply",
+          respondingWaifus: [{ waifuId: "aria", delaySeconds: 0 }],
+          reasoning: "Aria should reply."
+        };
+      },
+      async generateWaifu(request) {
+        capturedRequest = request;
+        return { content: "hi" };
+      }
+    };
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 1,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    expect(capturedRequest?.systemPrompt).toContain(`shown in this server as "K的小娇妻"`);
+    expect(capturedRequest?.systemPrompt).toContain("Yuki-chan (Yuki)");
+  });
+
   it("uses guild display name from members.json for serverNickname in identity block", async () => {
     const root = await makeTempRoot();
     roots.push(root);
@@ -8192,6 +8370,20 @@ async function seedActiveParticipants(
           lastSeenAt: new Date(now).toISOString(),
           expiresAt: new Date(now + 60_000).toISOString()
         }))
+      })
+    )
+  );
+}
+
+async function seedDiscordBots(storage: StorageService, waifus: Array<Partial<DiscordBotConfig> & { id: string; displayName: string }>) {
+  await storage.writeJson(
+    "discord-bots",
+    "user/discord-bots.json",
+    DiscordBotsFileSchema,
+    DiscordBotsFileSchema.parse(
+      createEmptyRevisionedFile({
+        orchestrator: null,
+        waifus
       })
     )
   );

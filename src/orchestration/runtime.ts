@@ -39,6 +39,7 @@ import {
   ActiveChatParticipantsFileSchema,
   AgentConfig,
   AgentConfigSchema,
+  DiscordBotsFile,
   DiscordBotsFileSchema,
   GuildEmojisFileSchema,
   GuildMembersFileSchema,
@@ -61,6 +62,7 @@ import {
   WaifuConfigSchema,
   createEmptyRevisionedFile
 } from "../shared/schemas/domain.js";
+import { resolveBotAuthorIds } from "../shared/botIdentity.js";
 import { extractEntities, WAIFU_NOTE_STRENGTH } from "./memoryEntities.js";
 import { applyDreamOps, guildHash, selectDreamInput } from "./dream.js";
 import { relativeAge, retrieveMemories } from "./memoryRetrieval.js";
@@ -1502,12 +1504,14 @@ export class RuntimeOrchestrator {
             activeChatParticipants
           );
           const waifuStopSequences = participantDisplayNames.map((name) => `\n${name}:`);
-          const selfAuthorIds = [waifu.botId];
+          // waifu.botId is the discord-bots ENTRY id; context authorIds carry the bot user
+          // snowflake. Resolve both, or the waifu never recognizes her own prior messages.
+          const selfAuthorIds = resolveBotAuthorIds(waifu.botId, await this.readDiscordBotsFile());
           const selfDisplayNames = dedupeNames([
             waifu.displayName,
             waifu.name,
             ...waifuMessages
-              .filter((message) => message.authorId === waifu.botId)
+              .filter((message) => selfAuthorIds.includes(message.authorId))
               .flatMap((message) => [message.displayName, message.name])
           ]);
           const directiveText = directiveTextForWaifu(responder.directive);
@@ -2963,7 +2967,7 @@ export class RuntimeOrchestrator {
     const pickNextWaifuToolActive = options.pickNextWaifuToolOverride ?? false;
     const shortTermMemoryToolActive =
       options.shortTermMemoryToolOverride ?? true;
-    const [store, emojis, activeChatParticipants, members] = await Promise.all([
+    const [store, emojis, activeChatParticipants, members, bots] = await Promise.all([
       this.readMemoryStore(),
       this.options.storage.readJson(
         path.join("user", "servers", guildId, "emojis.json"),
@@ -2975,7 +2979,8 @@ export class RuntimeOrchestrator {
         path.join("user", "servers", guildId, "members.json"),
         GuildMembersFileSchema,
         GuildMembersFileSchema.parse(createEmptyRevisionedFile({ guildId, members: [] }))
-      )
+      ),
+      this.readDiscordBotsFile()
     ]);
     const now = new Date();
     const retrieval = retrieveMemories({
@@ -3038,14 +3043,19 @@ export class RuntimeOrchestrator {
         .filter((member) => member.guildDisplayName)
         .map((member) => [member.userId, member.guildDisplayName as string])
     );
-    const serverNickname = waifu.botId ? guildNameByUserId.get(waifu.botId) : undefined;
+    // members.json is keyed by the bot USER snowflake; waifu.botId is the bots-entry id.
+    const guildNameForBotRef = (botIdRef: string | undefined) =>
+      resolveBotAuthorIds(botIdRef, bots)
+        .map((id) => guildNameByUserId.get(id))
+        .find(Boolean);
+    const serverNickname = guildNameForBotRef(waifu.botId);
 
     // Roster line: guild display names of other configured waifus with bot IDs (excluding self),
     // with the configured displayName in parentheses when the guild name differs.
     const rosterLine = availableWaifus
       .filter((candidate) => candidate.id !== waifu.id && candidate.botId)
       .map((candidate) => {
-        const guildName = guildNameByUserId.get(candidate.botId as string);
+        const guildName = guildNameForBotRef(candidate.botId);
         const configured = candidate.displayName || candidate.name;
         return guildName && guildName !== configured ? `${guildName} (${configured})` : configured;
       })
@@ -3724,12 +3734,16 @@ export class RuntimeOrchestrator {
     }
   }
 
-  private async isKnownWaifuAuthor(authorId: string): Promise<boolean> {
-    const bots = await this.options.storage.readJson(
+  private async readDiscordBotsFile(): Promise<DiscordBotsFile> {
+    return this.options.storage.readJson(
       "user/discord-bots.json",
       DiscordBotsFileSchema,
       DiscordBotsFileSchema.parse(createEmptyRevisionedFile({ orchestrator: null, waifus: [] }))
     );
+  }
+
+  private async isKnownWaifuAuthor(authorId: string): Promise<boolean> {
+    const bots = await this.readDiscordBotsFile();
     return bots.waifus.some((bot) => bot.id === authorId || bot.applicationId === authorId);
   }
 
