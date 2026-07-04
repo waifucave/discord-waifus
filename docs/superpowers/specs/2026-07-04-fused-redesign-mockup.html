@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Discord Waifus — Redesign Mockup v2</title>
+<style>
+  :root {
+    --ink: #141414;
+    --paper: #ffffff;
+    --mute: #9a9a9a;
+    --line: 1px;
+
+    /* the pastel family — different colors for different kinds of things */
+    --mint:     #5ef2c1;  /* cast / replies / confirm */
+    --sky:      #8fd8f8;  /* rooms / discord / focus */
+    --lavender: #cabfff;  /* direction / decisions */
+    --butter:   #ffe97a;  /* memory / warnings */
+    --peach:    #ffc9a3;  /* activity / logs */
+    --pink:     #ffb8dc;  /* assistant */
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    font-family: "Helvetica Neue", -apple-system, Arial, sans-serif;
+    font-weight: 400;
+    background: var(--ink);
+    color: var(--ink);
+    overflow: hidden;
+  }
+  .mono { font-family: "SF Mono", Menlo, monospace; }
+
+  /* ===== fused grid: white cells, 1px ink seams, nothing else ===== */
+  .frame { height: 100vh; display: flex; flex-direction: column; gap: var(--line); background: var(--ink); padding: var(--line); }
+  .cell { background: var(--paper); }
+
+  button.cell, .clickable {
+    border: none; cursor: pointer; font-family: inherit; color: var(--ink);
+    text-align: left;
+  }
+  /* hover SNAPS — no animation */
+  [data-hue]:hover { background: var(--hover-hue, var(--mint)); }
+
+  /* ===== typography: hierarchy by SIZE, not weight ===== */
+  .t-hero  { font-size: 64px; font-weight: 400; letter-spacing: -0.03em; line-height: 0.95; }
+  .t-big   { font-size: 34px; font-weight: 400; letter-spacing: -0.02em; }
+  .t-title { font-size: 21px; font-weight: 400; letter-spacing: -0.01em; }
+  .t-body  { font-size: 14px; font-weight: 400; }
+  .t-micro { font-family: "SF Mono", Menlo, monospace; font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--mute); font-weight: 400; }
+
+  /* ================= HOME (launcher) ================= */
+  #home { flex: 1; display: grid; gap: var(--line);
+    grid-template-columns: 1.6fr 1fr 1fr 1.2fr;
+    grid-template-rows: 96px 1fr 1fr 1fr 44px;
+  }
+  .brandcell { grid-column: 1; display: flex; align-items: center; gap: 14px; padding: 0 26px; }
+  .brandcell .mark { width: 34px; height: 34px; background: var(--ink); color: #fff; display: inline-flex; align-items: center; justify-content: center; font-size: 15px; }
+  .brandcell .t-title { letter-spacing: 0.02em; }
+
+  .statuscell { grid-column: 2 / 4; display: flex; align-items: baseline; gap: 18px; padding: 0 26px; align-items: center; }
+  .statuscell .t-hero { font-size: 44px; }
+  .statuscell .sub { color: var(--mute); font-size: 13px; }
+
+  .assistantcell { grid-column: 4; grid-row: 1 / 3; --hover-hue: var(--pink);
+    display: flex; flex-direction: column; justify-content: space-between; padding: 24px 26px; }
+  .assistantcell .hint { color: var(--mute); font-size: 12.5px; max-width: 220px; line-height: 1.5; }
+
+  .tile { display: flex; flex-direction: column; justify-content: space-between; padding: 22px 26px; }
+  .tile .idx { font-family: "SF Mono", Menlo, monospace; font-size: 10px; color: var(--mute); }
+  .tile .nm { font-size: 30px; letter-spacing: -0.02em; }
+  .tile .meta { color: var(--mute); font-size: 12px; }
+
+  .cast-tile   { grid-column: 1; grid-row: 2 / 4; --hover-hue: var(--mint); }
+  .cast-tile .nm { font-size: 46px; }
+  .rooms-tile  { grid-column: 2; grid-row: 2; --hover-hue: var(--sky); }
+  .dir-tile    { grid-column: 3; grid-row: 2; --hover-hue: var(--lavender); }
+  .memory-tile { grid-column: 2; grid-row: 3; --hover-hue: var(--butter); }
+  .act-tile    { grid-column: 3; grid-row: 3; --hover-hue: var(--peach); }
+  .settings-tile { grid-column: 1; grid-row: 4; }
+  .settings-tile:hover { background: var(--ink); color: #fff; }
+  .settings-tile:hover .idx, .settings-tile:hover .meta { color: #cfcfcf; }
+
+  /* live feed lives inside the launcher, right side, varied row heights */
+  .feed { grid-column: 4; grid-row: 3 / 5; display: flex; flex-direction: column; gap: var(--line); background: var(--ink); }
+  .feed .label { padding: 12px 20px 10px; }
+  .feed .item { padding: 12px 20px; flex: none; }
+  .feed .item .t-micro { margin-bottom: 3px; }
+  .feed .item.grow { flex: 1; }
+  .feed .kind { display: inline-block; padding: 2px 8px; font-family: "SF Mono", Menlo, monospace; font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase; margin-left: 8px; }
+  .kind.reply { background: var(--mint); }
+  .kind.decision { background: var(--lavender); }
+  .kind.memory { background: var(--butter); }
+
+  .quiet { grid-column: 2 / 4; grid-row: 4; display: flex; align-items: flex-end; padding: 20px 26px; color: var(--mute); font-size: 12.5px; line-height: 1.5; }
+
+  .footrow { grid-column: 1 / -1; grid-row: 5; height: 44px; display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: var(--line); background: var(--ink); }
+  .footrow .cell { display: flex; align-items: center; padding: 0 20px; }
+
+  /* ================= TAB SCREEN (Cast) ================= */
+  #cast { flex: 1; display: none; flex-direction: column; gap: var(--line); }
+  #cast .casthead { display: grid; grid-template-columns: 96px 1fr 320px; gap: var(--line); background: var(--ink); height: 96px; flex: none; }
+  #cast .castgrid { flex: 1; display: grid; gap: var(--line); background: var(--ink);
+    grid-template-columns: repeat(4, 1fr); grid-template-rows: 1.4fr 1fr; }
+  .backcell { display: flex; align-items: center; justify-content: center; font-size: 26px; --hover-hue: var(--sky); }
+  .tabtitle { display: flex; align-items: center; padding: 0 26px; gap: 16px; }
+  .tabtitle .sub { color: var(--mute); font-size: 13px; }
+  .newchar { --hover-hue: var(--mint); display: flex; align-items: center; padding: 0 26px; font-size: 17px; }
+
+  .wcell { display: flex; flex-direction: column; justify-content: space-between; padding: 22px 26px; }
+  .wcell .nm { font-size: 34px; letter-spacing: -0.02em; }
+  .wcell .md { font-family: "SF Mono", Menlo, monospace; font-size: 10.5px; color: var(--mute); margin-top: 8px; }
+  .wcell .foot { display: flex; justify-content: space-between; align-items: baseline; }
+  .wcell .st { font-family: "SF Mono", Menlo, monospace; font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; }
+  /* every character owns a color */
+  .w-riko  { grid-column: 1 / 3; grid-row: 1; --hover-hue: var(--mint); }
+  .w-riko .nm { font-size: 52px; }
+  .w-aria  { grid-column: 3; grid-row: 1; --hover-hue: var(--pink); }
+  .w-lumi  { grid-column: 4; grid-row: 1; --hover-hue: var(--butter); }
+  .w-akari { grid-column: 1; grid-row: 2; --hover-hue: var(--sky); }
+  .w-hoe   { grid-column: 2; grid-row: 2; --hover-hue: var(--peach); }
+  .w-nox   { grid-column: 3; grid-row: 2; --hover-hue: var(--lavender); }
+  .w-nox .warnb { display: inline-block; background: var(--butter); padding: 2px 8px; font-family: "SF Mono", Menlo, monospace; font-size: 9px; letter-spacing: 0.1em; }
+  .w-add   { grid-column: 4; grid-row: 2; --hover-hue: var(--mint); display: flex; align-items: center; justify-content: center; font-size: 44px; color: var(--mute); }
+
+  /* ================= EDITOR SHEET ================= */
+  .veil { position: fixed; inset: 0; background: rgba(20,20,20,0.35); display: none; align-items: center; justify-content: center; z-index: 40; }
+  .veil.open { display: flex; }
+  .sheet { width: 760px; max-width: 94vw; background: var(--ink); display: grid; gap: var(--line); padding: var(--line); }
+  .sheet .head { background: var(--paper); padding: 22px 26px; display: flex; justify-content: space-between; align-items: baseline; }
+  .sheet .head .t-big { font-size: 30px; }
+  .sheet .body { background: var(--paper); padding: 26px; }
+  .sheet .frow { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; margin-bottom: 22px; }
+  .sheet label { display: block; margin-bottom: 8px; }
+  .sheet input, .sheet textarea {
+    width: 100%; border: var(--line) solid var(--ink); background: var(--paper);
+    font-family: inherit; font-size: 15px; font-weight: 400; padding: 13px 15px; outline: none;
+  }
+  .sheet input:focus, .sheet textarea:focus { background: var(--sky); }
+  .sheet .foot { display: grid; grid-template-columns: 1fr 190px 190px; gap: var(--line); background: var(--ink); }
+  .sheet .foot .bcell { height: 68px; display: flex; align-items: center; justify-content: center; font-size: 16px; letter-spacing: 0.06em; text-transform: uppercase; font-weight: 400; }
+  .sheet .foot .model { --hover-hue: var(--lavender); }
+  .sheet .foot .confirm { background: var(--mint); }
+  .sheet .foot .confirm:hover { background: var(--mint); }
+
+  /* ================= ASSISTANT ================= */
+  .chat { position: fixed; top: 0; right: 0; bottom: 0; width: 380px; background: var(--ink); display: none; grid-template-rows: 96px 1fr 68px; gap: var(--line); padding: var(--line); z-index: 30; }
+  .chat.open { display: grid; }
+  .chat .chead { display: grid; grid-template-columns: 1fr 68px 68px; gap: var(--line); background: var(--ink); }
+  .chat .chead .hbtn { display: flex; align-items: center; justify-content: center; text-align: center; }
+  .chat .chead .ttl { background: var(--paper); display: flex; flex-direction: column; justify-content: center; padding: 0 20px; gap: 4px; }
+  .chat .cbody { background: var(--paper); overflow-y: auto; padding: 20px; font-size: 13.5px; line-height: 1.55; }
+  .chat .m-user { margin: 0 0 16px 44px; text-align: right; }
+  .chat .m-label { font-family: "SF Mono", Menlo, monospace; font-size: 9.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--mute); margin-bottom: 3px; }
+  .chat .m-tool { font-family: "SF Mono", Menlo, monospace; font-size: 10.5px; color: var(--mute); margin: 0 0 12px; }
+  .chat .m-tool .chip { background: var(--pink); color: var(--ink); padding: 2px 7px; margin-right: 7px; }
+  .chat .m-asst { margin: 0 0 16px; }
+  .chat .cinput { display: grid; grid-template-columns: 1fr 100px; gap: var(--line); background: var(--ink); }
+  .chat .cinput textarea { background: var(--paper); border: none; resize: none; padding: 0 16px; line-height: 68px; height: 68px; white-space: nowrap; overflow: hidden; font-family: inherit; font-size: 13.5px; outline: none; }
+  .chat .cinput textarea:focus { background: var(--sky); }
+  .chat .send { background: var(--paper); display: flex; align-items: center; justify-content: center; font-size: 14px; text-transform: uppercase; letter-spacing: 0.06em; }
+  .chat .send:hover { background: var(--pink); }
+</style>
+</head>
+<body>
+<div class="frame">
+
+  <!-- ================= HOME ================= -->
+  <div id="home">
+    <div class="cell brandcell"><span class="mark">W</span><span class="t-title">Discord Waifus</span></div>
+    <div class="cell statuscell">
+      <span class="t-hero">Live</span>
+      <span class="sub">6/6 bots · 3 servers · 312 messages today · dreams at 05:00</span>
+    </div>
+    <button class="cell clickable assistantcell" data-hue onclick="document.querySelector('.chat').classList.toggle('open')">
+      <span class="t-micro">Ask · change · fix</span>
+      <span class="t-big">Assistant</span>
+      <span class="hint">"give nox a model", "why is lumi quiet?", "pause everything"</span>
+    </button>
+
+    <button class="cell clickable tile cast-tile" data-hue onclick="go('cast')">
+      <span class="idx">02</span>
+      <span class="nm">Cast</span>
+      <span class="meta">5 characters talking in 3 rooms — Riko, Aria, Lumi, Akari, Stupid hoe</span>
+    </button>
+    <button class="cell clickable tile rooms-tile" data-hue>
+      <span class="idx">03</span><span class="nm">Rooms</span><span class="meta">3 servers · 4 channels live</span>
+    </button>
+    <button class="cell clickable tile dir-tile" data-hue>
+      <span class="idx">04</span><span class="nm">Direction</span><span class="meta">director · stage manager · reviewer</span>
+    </button>
+    <button class="cell clickable tile memory-tile" data-hue>
+      <span class="idx">05</span><span class="nm">Memory</span><span class="meta">489 records · dreamed 4h ago</span>
+    </button>
+    <button class="cell clickable tile act-tile" data-hue>
+      <span class="idx">06</span><span class="nm">Activity</span><span class="meta">logs · prompts · replies</span>
+    </button>
+    <button class="cell clickable tile settings-tile" data-hue>
+      <span class="idx">07</span><span class="nm">Settings</span><span class="meta">providers · discord · app</span>
+    </button>
+
+    <div class="feed">
+      <div class="cell label"><span class="t-micro">Just now · waifu-cave #general</span></div>
+      <div class="cell item">
+        <div class="t-micro">12:48 · Riko<span class="kind reply">reply</span></div>
+        <div class="t-body">Yes I ate it</div>
+      </div>
+      <div class="cell item">
+        <div class="t-micro">12:48 · Director<span class="kind decision">decision</span></div>
+        <div class="t-body">K reopened the toast thread — Riko answers</div>
+      </div>
+      <div class="cell item">
+        <div class="t-micro">12:41 · Stage manager<span class="kind memory">memory</span></div>
+        <div class="t-body">7 observations recorded</div>
+      </div>
+      <div class="cell item grow">
+        <div class="t-micro">12:36 · Stupid hoe<span class="kind reply">reply</span></div>
+        <div class="t-body">what if toast was never meant to be eaten</div>
+      </div>
+    </div>
+
+    <div class="cell quiet">Everything runs on this machine. The director decides who speaks; characters remember your server and dream at night.</div>
+
+    <div class="footrow">
+      <div class="cell t-micro">Running · 1.5.180</div>
+      <div class="cell t-micro">deepseek ok · google ok</div>
+      <div class="cell t-micro">discord connected</div>
+      <div class="cell t-micro">0 queues</div>
+    </div>
+  </div>
+
+  <!-- ================= CAST ================= -->
+  <div id="cast">
+    <div class="casthead">
+      <button class="cell clickable backcell" data-hue onclick="go('home')">←</button>
+      <div class="cell tabtitle"><span class="t-big">Cast</span><span class="sub">5 talking · 1 unconfigured</span></div>
+      <button class="cell clickable newchar" data-hue>+ New character</button>
+    </div>
+    <div class="castgrid">
+    <button class="cell clickable wcell w-riko" data-hue onclick="document.querySelector('.veil').classList.add('open')">
+      <div><span class="nm">Riko</span><div class="md">deepseek-v4-pro · 142 memories · bot linked</div></div>
+      <div class="foot"><span class="st">talking</span><span class="t-micro">sharpest tongue in the room</span></div>
+    </button>
+    <button class="cell clickable wcell w-aria" data-hue>
+      <div><span class="nm">Aria</span><div class="md">deepseek-v4-pro · 129 memories</div></div>
+      <div class="foot"><span class="st">talking</span></div>
+    </button>
+    <button class="cell clickable wcell w-lumi" data-hue>
+      <div><span class="nm">Lumi</span><div class="md">gemini-3.1-flash-lite · 96 memories · sees images</div></div>
+      <div class="foot"><span class="st">sleeping</span></div>
+    </button>
+    <button class="cell clickable wcell w-akari" data-hue>
+      <div><span class="nm">Akari</span><div class="md">deepseek-v4-pro · 118 memories</div></div>
+      <div class="foot"><span class="st">idle</span></div>
+    </button>
+    <button class="cell clickable wcell w-hoe" data-hue>
+      <div><span class="nm">Stupid hoe</span><div class="md">deepseek-v4-pro · 87 memories</div></div>
+      <div class="foot"><span class="st">idle</span></div>
+    </button>
+    <button class="cell clickable wcell w-nox" data-hue>
+      <div><span class="nm">Nox</span><div class="md">no model · no bot</div></div>
+      <div class="foot"><span class="warnb">needs setup</span></div>
+    </button>
+    <button class="cell clickable w-add" data-hue>+</button>
+    </div>
+
+    <div class="footrow" style="height: 44px; flex: none;">
+      <div class="cell t-micro">Running · 1.5.180</div>
+      <div class="cell t-micro">deepseek ok · google ok</div>
+      <div class="cell t-micro">discord connected</div>
+      <div class="cell t-micro">0 queues</div>
+    </div>
+  </div>
+</div>
+
+<!-- ================= EDITOR ================= -->
+<div class="veil" onclick="if(event.target===this)this.classList.remove('open')">
+  <div class="sheet">
+    <div class="head"><span class="t-big">Riko</span><span class="t-micro">character 01 · mint</span></div>
+    <div class="body">
+      <div class="frow">
+        <div><label class="t-micro">Display name</label><input value="Riko" /></div>
+        <div><label class="t-micro">Context window</label><input value="50" /></div>
+      </div>
+      <div><label class="t-micro">Persona</label>
+      <textarea rows="5">Riko is 20, and she's the sharpest tongue in any room she walks into. Zero tolerance for nonsense — fake people, bad excuses, someone talking in circles to avoid a point…</textarea></div>
+    </div>
+    <div class="foot">
+      <div class="cell"></div>
+      <button class="cell clickable bcell model" data-hue>Model</button>
+      <button class="cell clickable bcell confirm" onclick="document.querySelector('.veil').classList.remove('open')">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<!-- ================= ASSISTANT ================= -->
+<aside class="chat">
+  <div class="chead">
+    <div class="ttl"><span class="t-title">Norma</span><span class="t-micro">assistant · gemini-3.1-flash-lite</span></div>
+    <button class="cell clickable hbtn" data-hue style="--hover-hue: var(--sky); font-size: 20px;">+</button>
+    <button class="cell clickable hbtn" data-hue style="--hover-hue: var(--peach); font-size: 16px;" onclick="document.querySelector('.chat').classList.remove('open')">✕</button>
+  </div>
+  <div class="cell cbody">
+    <div class="m-user"><div class="m-label">You</div>how many waifus do i have and which models?</div>
+    <div class="m-tool"><span class="chip">list_waifus</span>done</div>
+    <div class="m-asst">You have 5 active characters: Riko, Aria, Akari and Stupid hoe on deepseek-v4-pro, Lumi on gemini-3.1-flash-lite. Nox exists but has no model set — want me to give her one?</div>
+    <div class="m-user"><div class="m-label">You</div>yes, same as riko</div>
+    <div class="m-tool"><span class="chip">update_waifu</span>done</div>
+    <div class="m-asst">Done — Nox now runs deepseek-v4-pro. She still has no Discord bot linked, so she can't speak yet.</div>
+  </div>
+  <div class="cinput">
+    <textarea placeholder="Message the assistant…"></textarea>
+    <button class="cell clickable send">Send</button>
+  </div>
+</aside>
+
+<script>
+  const q = new URLSearchParams(location.search);
+  if (q.get("chat") === "open") document.querySelector(".chat")?.classList.add("open");
+  if (q.get("screen")) setTimeout(() => go(q.get("screen")), 0);
+  function go(id) {
+    document.getElementById("home").style.display = id === "home" ? "grid" : "none";
+    document.getElementById("cast").style.display = id === "cast" ? "flex" : "none";
+  }
+</script>
+</body>
+</html>
