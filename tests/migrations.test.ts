@@ -285,6 +285,81 @@ describe("runMigrations", () => {
     expect(enabledById.get("directorNotes")).toBeUndefined();
   });
 
+  it("moves a stored relevantMemories block from trailing to mid", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await writeJson(root, "user/waifus/yuki/waifu.json", {
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      revision: 3,
+      updatedAt: "2026-07-01T12:00:00.000Z",
+      id: "yuki",
+      name: "Yuki",
+      displayName: "Yuki",
+      enabled: true,
+      persona: "kind",
+      promptLayout: {
+        top: [{ kind: "block", blockId: "identity", enabled: true }],
+        mid: [{ kind: "block", blockId: "roomInfo", enabled: true }],
+        trailing: [
+          { kind: "block", blockId: "relevantMemories", enabled: false },
+          { kind: "block", blockId: "anchor", enabled: true }
+        ]
+      }
+    });
+
+    const first = await runMigrations(root);
+    expect(first.applied).toContain("migrate-waifu-memories-to-mid-1");
+
+    const raw = await readJson<{
+      promptLayout: { mid: LayoutNode[]; trailing: LayoutNode[] };
+    }>(root, "user/waifus/yuki/waifu.json");
+    expect(raw.promptLayout.mid).toEqual([
+      { kind: "block", blockId: "roomInfo", enabled: true },
+      { kind: "block", blockId: "relevantMemories", enabled: false }
+    ]);
+    expect(raw.promptLayout.trailing).toEqual([{ kind: "block", blockId: "anchor", enabled: true }]);
+
+    // Idempotent: a second run finds nothing to move.
+    const second = await runMigrations(root);
+    expect(second.applied.filter((tag) => tag.startsWith("migrate-waifu-memories-to-mid"))).toEqual([]);
+  });
+
+  it("leaves relevantMemories alone when the user moved it into a custom group", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    const layout = {
+      top: [{ kind: "block", blockId: "identity", enabled: true }],
+      mid: [{ kind: "block", blockId: "roomInfo", enabled: true }],
+      trailing: [
+        {
+          kind: "group",
+          id: "g1",
+          tag: "{name}_extras",
+          enabled: true,
+          children: [{ kind: "block", blockId: "relevantMemories", enabled: true }]
+        }
+      ]
+    };
+    await writeJson(root, "user/waifus/yuki/waifu.json", {
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      revision: 3,
+      updatedAt: "2026-07-01T12:00:00.000Z",
+      id: "yuki",
+      name: "Yuki",
+      displayName: "Yuki",
+      enabled: true,
+      persona: "kind",
+      promptLayout: layout
+    });
+
+    const result = await runMigrations(root);
+    expect(result.applied.filter((tag) => tag.startsWith("migrate-waifu-memories-to-mid"))).toEqual([]);
+    const raw = await readJson<{
+      promptLayout: { trailing: LayoutNode[] };
+    }>(root, "user/waifus/yuki/waifu.json");
+    expect(raw.promptLayout.trailing).toEqual(layout.trailing);
+  });
+
   it("assigns legacy memories to guilds from stage-manager history", async () => {
     const root = await makeTempRoot();
     roots.push(root);

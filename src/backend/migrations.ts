@@ -55,6 +55,10 @@ export async function runMigrations(dataRoot: string): Promise<MigrationResult> 
   if (w2LayoutsMigrated > 0) {
     applied.push(`migrate-waifu-prompt-layout-w2-${w2LayoutsMigrated}`);
   }
+  const memoriesMoved = await migrateWaifuPromptMemoriesToMid(dataRoot);
+  if (memoriesMoved > 0) {
+    applied.push(`migrate-waifu-memories-to-mid-${memoriesMoved}`);
+  }
   // W3: collapse the two-store memory model into one unified MemoryRecord store. This MUST run
   // after the legacy memory steps above (they mutate the old shape) and before any read, because
   // the new schema strips importance/permanent and would silently default strength/pinned — losing
@@ -745,6 +749,38 @@ async function migrateWaifuPromptLayoutW2(dataRoot: string): Promise<number> {
     // Only migrate waifus that have a promptLayout with legacy block IDs.
     if (!layoutContainsLegacyIds(data.promptLayout)) continue;
     data.promptLayout = defaultWaifuPromptLayout();
+    await atomicWriteJson(filePath, data);
+    count += 1;
+  }
+  return count;
+}
+
+// Fix-2 (recency layout): relevantMemories moved from the trailing slot to the mid slot so the
+// newest messages keep the final prompt positions. Moves the top-level trailing node (keeping
+// its enabled flag) to the end of mid. A node the user placed inside a custom group stays put —
+// that arrangement was deliberate.
+async function migrateWaifuPromptMemoriesToMid(dataRoot: string): Promise<number> {
+  const waifusRoot = path.join(dataRoot, "user", "waifus");
+  let entries: string[];
+  try {
+    entries = await readdir(waifusRoot);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0;
+    throw error;
+  }
+  let count = 0;
+  for (const entry of entries) {
+    const filePath = path.join(waifusRoot, entry, "waifu.json");
+    const data = await readJsonOrUndefined(filePath);
+    if (!isObject(data) || !isObject(data.promptLayout)) continue;
+    const layout = data.promptLayout as { mid?: unknown; trailing?: unknown };
+    if (!Array.isArray(layout.mid) || !Array.isArray(layout.trailing)) continue;
+    const index = layout.trailing.findIndex(
+      (node) => isObject(node) && node.kind === "block" && node.blockId === "relevantMemories"
+    );
+    if (index < 0) continue;
+    const [node] = layout.trailing.splice(index, 1);
+    layout.mid.push(node);
     await atomicWriteJson(filePath, data);
     count += 1;
   }
