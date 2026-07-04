@@ -154,6 +154,16 @@ export function SettingsView() {
                 <Trash2 className="icon" />
                 {clearingOcr ? "Clearing..." : "Clear OCR cache"}
               </button>
+              <button
+                className="btn"
+                onClick={() => {
+                  localStorage.removeItem("onboarding-dismissed");
+                  localStorage.setItem("onboarding-force", "1");
+                  window.location.reload();
+                }}
+              >
+                Run setup wizard
+              </button>
             </div>
             <div className="grid grid-2">
               <div className="field">

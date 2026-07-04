@@ -12,11 +12,23 @@ import { MemoriesView } from "./views/MemoriesView";
 import { ActivityView } from "./views/ActivityView";
 import { SettingsSectionView } from "./views/SettingsSectionView";
 import { AssistantLauncher, AssistantPanel } from "./components/assistant/AssistantPanel";
+import { OnboardingWizard } from "./components/onboarding/OnboardingWizard";
+import { useApi } from "./api/useApi";
+import { api } from "./api/client";
+import type { ProvidersResponse } from "./api/types";
 
 export function App() {
   const [route, navigate] = useRoute();
   const [menuOpen, setMenuOpen] = useState(false);
   const [assistantOpen, setAssistantOpen] = useState(false);
+  const [onboardingDone, setOnboardingDone] = useState(() => localStorage.getItem("onboarding-dismissed") === "1");
+  const [onboardingForced, setOnboardingForced] = useState(() => localStorage.getItem("onboarding-force") === "1");
+  const providersState = useApi<ProvidersResponse>((s) => api.providers(s), [onboardingDone]);
+  const needsOnboarding =
+    onboardingForced ||
+    (!onboardingDone &&
+      providersState.data !== undefined &&
+      !providersState.data.providers.some((p) => p.credentials.configured));
   const status = useRuntimeStatus();
   const discordConnecting = status?.discord.connecting ?? false;
 
@@ -129,8 +141,21 @@ export function App() {
         <ViewSwitch route={route} navigate={goto} />
       </main>
 
-      <AssistantLauncher open={assistantOpen} onToggle={() => setAssistantOpen((v) => !v)} />
-      <AssistantPanel open={assistantOpen} onClose={() => setAssistantOpen(false)} onNavigate={goto} />
+      {!needsOnboarding && (
+        <>
+          <AssistantLauncher open={assistantOpen} onToggle={() => setAssistantOpen((v) => !v)} />
+          <AssistantPanel open={assistantOpen} onClose={() => setAssistantOpen(false)} onNavigate={goto} />
+        </>
+      )}
+      {needsOnboarding && (
+        <OnboardingWizard
+          onDone={() => {
+            localStorage.removeItem("onboarding-force");
+            setOnboardingForced(false);
+            setOnboardingDone(true);
+          }}
+        />
+      )}
     </div>
   );
 }
