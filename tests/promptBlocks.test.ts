@@ -47,16 +47,13 @@ describe("assembleWaifuPrompt", () => {
     // toolUse is omitted when there are no instructions.
     expect(parts.systemPrompt).not.toContain("<tools>");
 
-    // mid: roomInfo combines participants + emojis
+    // mid: roomInfo, then memories
     expect(parts.midSystemBlock).toMatch(
-      /^<room_info>\n<active_chat_participants>\n- Kevin\n<\/active_chat_participants>\n<server_emojis>\n:cat:\n<\/server_emojis>\n<\/room_info>$/
+      /^<room_info>\n<active_chat_participants>\n- Kevin\n<\/active_chat_participants>\n<server_emojis>\n:cat:\n<\/server_emojis>\n<\/room_info>\n<yuki_relevant_memories>\n- remembers tea\n<\/yuki_relevant_memories>$/
     );
 
-    // trailing: memories
-    expect(parts.trailingSystemBlock).toContain(
-      "<yuki_relevant_memories>\n- remembers tea\n</yuki_relevant_memories>"
-    );
-    // trailing: anchor (not full persona duplicate)
+    // trailing: anchor (not full persona duplicate), no memories
+    expect(parts.trailingSystemBlock).not.toContain("<yuki_relevant_memories>");
     expect(parts.trailingSystemBlock).toContain("<yuki_anchor>");
     expect(parts.trailingSystemBlock).toContain("You are Yuki.");
     expect(parts.trailingSystemBlock).not.toContain("<yuki_persona>");
@@ -65,6 +62,14 @@ describe("assembleWaifuPrompt", () => {
       "<director_note>\nDirector's goal for this one message: answer Kevin\nPursue it in your own voice and words; never quote or restate this note.\n</director_note>"
     );
     expect(parts.trailingSystemBlock).not.toContain("<currently_doing>");
+  });
+
+  it("renders relevantMemories in the mid block by default (recency fix)", () => {
+    const parts = assembleWaifuPrompt(defaultWaifuPromptLayout(), ctx());
+    expect(parts.midSystemBlock).toContain("<yuki_relevant_memories>");
+    expect(parts.trailingSystemBlock).not.toContain("<yuki_relevant_memories>");
+    // trailing now leads with the anchor
+    expect(parts.trailingSystemBlock).toMatch(/^<yuki_anchor>/);
   });
 
   it("includes <tools> only when instructions are present", () => {

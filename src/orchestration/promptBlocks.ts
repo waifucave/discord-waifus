@@ -121,7 +121,7 @@ export const WAIFU_PROMPT_BLOCKS: WaifuPromptBlockDef[] = [
   },
   {
     id: "relevantMemories",
-    defaultSection: "trailing",
+    defaultSection: "mid",
     render: (ctx) =>
       ctx.memoryLines.length
         ? `<${ctx.waifuTag}_relevant_memories>\n${ctx.memoryLines.join("\n")}\n</${ctx.waifuTag}_relevant_memories>`

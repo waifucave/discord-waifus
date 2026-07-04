@@ -149,8 +149,8 @@ export const WaifuPromptLayoutSchema = z
 export type WaifuPromptLayout = z.infer<typeof WaifuPromptLayoutSchema>;
 
 // The default arrangement for new waifus: identity, persona, schedule, ioFormat, tools, and
-// outputContract in the top slot; roomInfo in mid; relevantMemories, anchor, currentlyDoing,
-// and directorNote in trailing.
+// outputContract in the top slot; roomInfo and relevantMemories in mid (10 messages deep);
+// anchor, currentlyDoing, and directorNote in trailing.
 export function defaultWaifuPromptLayout(): WaifuPromptLayout {
   const block = (blockId: string): PromptLayoutBlockNode => ({ kind: "block", blockId, enabled: true });
   return {
@@ -162,9 +162,8 @@ export function defaultWaifuPromptLayout(): WaifuPromptLayout {
       block("tools"),
       block("outputContract")
     ],
-    mid: [block("roomInfo")],
+    mid: [block("roomInfo"), block("relevantMemories")],
     trailing: [
-      block("relevantMemories"),
       block("anchor"),
       block("currentlyDoing"),
       block("directorNote")

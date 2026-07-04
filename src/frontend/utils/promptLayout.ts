@@ -41,7 +41,7 @@ export const PROMPT_BLOCK_META: PromptBlockMeta[] = [
   { id: "tools", label: "<tools>", hint: "Tool instructions; only rendered when tools are active.", defaultSection: "top" },
   { id: "outputContract", label: "<output_contract>", hint: "Consolidated output rules: length, format, no-meta, no-narration.", defaultSection: "top" },
   { id: "roomInfo", label: "<room_info>", hint: "Active participants and server emojis in one block.", defaultSection: "mid" },
-  { id: "relevantMemories", label: "<{name}_relevant_memories>", hint: "Long/short-term memories, when present.", defaultSection: "trailing" },
+  { id: "relevantMemories", label: "<{name}_relevant_memories>", hint: "Long/short-term memories, when present.", defaultSection: "mid" },
   { id: "anchor", label: "<{name}_anchor>", hint: "Compact trailing identity anchor (name + mini-contract).", defaultSection: "trailing" },
   { id: "currentlyDoing", label: "<currently_doing>", hint: "Schedule-derived current activity, when active.", defaultSection: "trailing" },
   { id: "directorNote", label: "<director_note>", hint: "Per-turn director note from the orchestrator, when present.", defaultSection: "trailing" }
@@ -69,9 +69,8 @@ export function defaultWaifuPromptLayout(): WaifuPromptLayout {
       block("tools"),
       block("outputContract")
     ],
-    mid: [block("roomInfo")],
+    mid: [block("roomInfo"), block("relevantMemories")],
     trailing: [
-      block("relevantMemories"),
       block("anchor"),
       block("currentlyDoing"),
       block("directorNote")

@@ -391,15 +391,15 @@ class FakePipeline implements ModelPipeline {
     // mid: roomInfo combines participants + emojis
     expect(request.midSystemBlock).toBeDefined();
     expect(request.midSystemBlock).toMatch(
-      /^<room_info>\n<active_chat_participants>[\s\S]*- Kevin[\s\S]*<\/active_chat_participants>\n<server_emojis>[\s\S]*<\/server_emojis>\n<\/room_info>$/
+      /^<room_info>\n<active_chat_participants>[\s\S]*- Kevin[\s\S]*<\/active_chat_participants>\n<server_emojis>[\s\S]*<\/server_emojis>\n<\/room_info>/
     );
-    expect(request.midSystemBlock).not.toMatch(/<memories>|<relevant_memories>|<yuki_relevant_memories>/);
-    expect(request.midSystemBlock).not.toContain("<director_notes>");
-    // trailing: memories, then anchor (not full persona duplicate)
-    expect(request.trailingSystemBlock).toBeDefined();
-    expect(request.trailingSystemBlock).toMatch(
+    expect(request.midSystemBlock).toMatch(
       /<yuki_relevant_memories>\n- \(fact\) Yuki remembers Kevin likes tea\.\n<\/yuki_relevant_memories>/
     );
+    expect(request.midSystemBlock).not.toContain("<director_notes>");
+    // trailing: anchor (not full persona duplicate); memories now live in mid
+    expect(request.trailingSystemBlock).toBeDefined();
+    expect(request.trailingSystemBlock).not.toMatch(/<yuki_relevant_memories>/);
     expect(request.trailingSystemBlock).toContain("<yuki_anchor>");
     expect(request.trailingSystemBlock).not.toContain("<yuki_persona>");
     expect(request.trailingSystemBlock).toContain(
@@ -6888,6 +6888,7 @@ describe("RuntimeOrchestrator", () => {
 
     let waifuRun = 0;
     const capturedSystemPrompts: string[] = [];
+    const capturedMidBlocks: Array<string | undefined> = [];
     const capturedTrailingBlocks: Array<string | undefined> = [];
     const pipeline: ModelPipeline = {
       async decideOrchestrator() {
@@ -6899,6 +6900,7 @@ describe("RuntimeOrchestrator", () => {
       },
       async generateWaifu(request: WaifuGenerationRequest) {
         capturedSystemPrompts.push(request.systemPrompt);
+        capturedMidBlocks.push(request.midSystemBlock);
         capturedTrailingBlocks.push(request.trailingSystemBlock);
         waifuRun += 1;
         if (waifuRun === 1) {
@@ -6957,11 +6959,12 @@ describe("RuntimeOrchestrator", () => {
     expect(secondPrompt).not.toContain("<memories>");
     expect(secondPrompt).not.toContain("<relevant_memories>\n");
     expect(secondPrompt).not.toContain("<yuki_relevant_memories>\n");
-    const secondMemoriesBlock = capturedTrailingBlocks[1];
+    const secondMemoriesBlock = capturedMidBlocks[1];
     expect(secondMemoriesBlock).toBeDefined();
     expect(secondMemoriesBlock).toMatch(/<yuki_relevant_memories>[\s\S]*Kevin is heading out at 5pm\.[\s\S]*Kevin prefers green tea today\.[\s\S]*<\/yuki_relevant_memories>/);
     expect(secondMemoriesBlock).not.toMatch(/<short_term>/);
     expect(secondMemoriesBlock).not.toMatch(/<long_term>/);
+    expect(capturedTrailingBlocks[1]).not.toMatch(/<yuki_relevant_memories>/);
   });
 
   it("does not expose or persist add_memory when the server toggle is disabled", async () => {
