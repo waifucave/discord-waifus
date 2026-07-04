@@ -473,6 +473,30 @@ describe("Backend API", () => {
         await app.close();
       }
     });
+
+    it("serves recent logs and the assistant docs KB", async () => {
+      const { app } = await makeApp();
+      try {
+        const logs = await app.inject({ method: "GET", url: "/api/logs?limit=5" });
+        expect(logs.statusCode).toBe(200);
+        expect(Array.isArray(logs.json().entries)).toBe(true);
+
+        const index = await app.inject({ method: "GET", url: "/api/docs" });
+        expect(index.statusCode).toBe(200);
+        const slugs = index.json().docs.map((d: { slug: string }) => d.slug);
+        expect(slugs).toContain("getting-started");
+        expect(slugs).toContain("api");
+
+        const doc = await app.inject({ method: "GET", url: "/api/docs/waifus" });
+        expect(doc.statusCode).toBe(200);
+        expect(doc.json().content).toContain("persona");
+
+        const missing = await app.inject({ method: "GET", url: "/api/docs/nope" });
+        expect(missing.statusCode).toBe(404);
+      } finally {
+        await app.close();
+      }
+    });
   });
 
   // P5 Task 4 review fix: zod v4 `.partial()` does NOT keep fields-with-`.default()` absent —

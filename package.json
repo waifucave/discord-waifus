@@ -41,6 +41,7 @@
     "dist/",
     "dist-frontend/",
     "assets/ocr/",
+    "docs/assistant-kb/",
     "docs/api.md",
     "docs/old-orchestrator-prompt.md",
     "LICENSE",

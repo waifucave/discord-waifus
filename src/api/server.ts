@@ -62,6 +62,7 @@ import { createRevisionedBase, nowIso } from "../shared/schemas/common.js";
 import { StorageConflictError } from "../storage/errors.js";
 import { StorageService } from "../storage/storageService.js";
 import { recentQueries, recentReplies, subscribeQueries, subscribeReplies } from "../shared/queryLog.js";
+import { listDocs, readDoc } from "./docsKb.js";
 import { ApiError, badRequest, conflict, notFound, preconditionRequired } from "./errors.js";
 import { mergeConfiguredBotsIntoMembers } from "../discord/memberCache.js";
 import { assertKnownProvider, assertModelWriteValid } from "./writeValidation.js";
@@ -369,6 +370,20 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   app.put("/api/reviewer/config", async (request) => {
     const body = AgentConfigBodySchema.parse(request.body);
     return updateAgentConfig(storage, request, "reviewer", body, 20);
+  });
+
+  app.get("/api/logs", async (request) => {
+    const limit = Math.min(Number((request.query as Record<string, string>).limit ?? 100) || 100, 500);
+    const entries = options.logger?.recent?.() ?? [];
+    return { entries: entries.slice(-limit) };
+  });
+
+  app.get("/api/docs", async () => ({ docs: await listDocs() }));
+  app.get("/api/docs/:slug", async (request, reply) => {
+    const { slug } = request.params as { slug: string };
+    const doc = await readDoc(slug);
+    if (!doc) return reply.code(404).send({ error: "unknown doc" });
+    return doc;
   });
 
   app.get("/api/assistant/config", async () => readAgentConfig(storage, "assistant"));
