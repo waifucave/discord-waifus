@@ -193,6 +193,8 @@ export const api = {
 
   // Servers
   servers: (signal?: AbortSignal) => request<ServersResponse>("GET", "/api/servers", { signal }),
+  server: (guildId: string, signal?: AbortSignal) =>
+    request<ServerConfig>("GET", `/api/servers/${encodeURIComponent(guildId)}`, { signal }),
   updateServer: (guildId: string, body: UpdateServerBody) =>
     request<ServerConfig>("PUT", `/api/servers/${encodeURIComponent(guildId)}`, { body }),
   members: (guildId: string, signal?: AbortSignal) =>
