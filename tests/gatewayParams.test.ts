@@ -38,6 +38,20 @@ describe("buildUnifiedParams", () => {
 });
 
 describe("preconformRequest", () => {
+  it("resolves forced-tool×thinking conflicts by disabling reasoning (anthropic, live 400 on Beta 2026-07-03)", () => {
+    // The stage-manager shape: haiku with reasoning.enabled stored, observer call forces its tool.
+    const out = preconformRequest(gateway, "anthropic", "claude-haiku-4-5-20251001", {
+      params: { "reasoning.enabled": true, "reasoning.budgetTokens": 10240 },
+      toolChoice: { name: "record_observations" }
+    });
+    expect(out.params["reasoning.enabled"]).toBe(false);
+    expect(out.params["reasoning.budgetTokens"]).toBeUndefined();
+    expect(out.toolChoice).toEqual({ name: "record_observations" });
+    expect(
+      gateway.validate("anthropic", "claude-haiku-4-5-20251001", { params: out.params, toolChoice: "named" }).ok
+    ).toBe(true);
+  });
+
   it("resolves forced-tool×thinking conflicts by disabling reasoning (deepseek, thinking default ON)", () => {
     const out = preconformRequest(gateway, "deepseek", "deepseek-v4-pro", {
       params: {}, toolChoice: { name: "orchestrator_decision" }
