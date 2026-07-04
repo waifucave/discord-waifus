@@ -591,23 +591,27 @@ table.data-table {
 }
 .notice.ok {
   background: var(--ok-bg);
-  border-color: rgba(47, 187, 112, 0.35);
-  color: #b5e8c8;
+  border-color: var(--ok);
+  border-left-width: 3px;
+  color: var(--text-primary);
 }
 .notice.warn {
   background: var(--warn-bg);
-  border-color: rgba(243, 168, 58, 0.35);
-  color: #f6dcad;
+  border-color: var(--warn);
+  border-left-width: 3px;
+  color: var(--text-primary);
 }
 .notice.err {
   background: var(--err-bg);
-  border-color: rgba(239, 91, 91, 0.35);
-  color: #f6c2c2;
+  border-color: var(--err);
+  border-left-width: 3px;
+  color: var(--text-primary);
 }
 .notice.info {
   background: var(--info-bg);
-  border-color: rgba(88, 168, 223, 0.35);
-  color: #c5e0f3;
+  border-color: var(--info);
+  border-left-width: 3px;
+  color: var(--text-primary);
 }
 .notice .icon {
   width: 16px;
