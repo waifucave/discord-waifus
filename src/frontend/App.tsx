@@ -1,22 +1,16 @@
 import { useState } from "react";
 import { Menu, X } from "lucide-react";
-import { NAV, NAV_GROUPS, type ViewId } from "./nav";
-import { useRoute } from "./state/router";
+import { NAV, type ViewId } from "./nav";
+import { useRoute, type Route } from "./state/router";
 import { useRuntimeStatus } from "./state/runtimeStore";
 import { Pill } from "./components/Pill";
-import { DashboardView } from "./views/DashboardView";
-import { SetupView } from "./views/SetupView";
-import { ProvidersView } from "./views/ProvidersView";
+import { HomeView } from "./views/HomeView";
 import { WaifusView } from "./views/WaifusView";
 import { ServersView } from "./views/ServersView";
-import { OrchestratorView } from "./views/OrchestratorView";
-import { ReviewerView } from "./views/ReviewerView";
-import { StageManagerView } from "./views/StageManagerView";
+import { DirectionView } from "./views/DirectionView";
 import { MemoriesView } from "./views/MemoriesView";
-import { LogsView } from "./views/LogsView";
-import { QueriesView } from "./views/QueriesView";
-import { RepliesView } from "./views/RepliesView";
-import { SettingsView } from "./views/SettingsView";
+import { ActivityView } from "./views/ActivityView";
+import { SettingsSectionView } from "./views/SettingsSectionView";
 
 export function App() {
   const [route, navigate] = useRoute();
@@ -24,8 +18,8 @@ export function App() {
   const status = useRuntimeStatus();
   const discordConnecting = status?.discord.connecting ?? false;
 
-  const goto = (next: ViewId) => {
-    navigate(next);
+  const goto = (next: ViewId, tab?: string) => {
+    navigate(next, tab);
     setMenuOpen(false);
   };
 
@@ -46,24 +40,20 @@ export function App() {
           </button>
         </div>
         <nav className="nav">
-          {NAV_GROUPS.map((group) => (
-            <div key={group.id}>
-              <div className="nav-section-label">{group.label}</div>
-              {NAV.filter((e) => e.group === group.id).map((entry) => {
-                const Icon = entry.icon;
-                return (
-                  <button
-                    key={entry.id}
-                    className={"nav-item" + (route === entry.id ? " active" : "")}
-                    onClick={() => goto(entry.id)}
-                  >
-                    <Icon className="icon" />
-                    <span>{entry.label}</span>
-                  </button>
-                );
-              })}
-            </div>
-          ))}
+          <div className="nav-section-label">Control</div>
+          {NAV.map((entry) => {
+            const Icon = entry.icon;
+            return (
+              <button
+                key={entry.id}
+                className={"nav-item" + (route.view === entry.id ? " active" : "")}
+                onClick={() => goto(entry.id)}
+              >
+                <Icon className="icon" />
+                <span>{entry.label}</span>
+              </button>
+            );
+          })}
         </nav>
         <div className="sidebar-footer">
           <div>
@@ -100,7 +90,7 @@ export function App() {
         >
           <Menu className="icon" />
         </button>
-        <h1>{NAV.find((n) => n.id === route)?.label ?? "Dashboard"}</h1>
+        <h1>{NAV.find((n) => n.id === route.view)?.label ?? "Home"}</h1>
         <div className="topbar-spacer" />
         <div className="topbar-status">
           {status?.discord.connected ? (
@@ -140,35 +130,24 @@ export function App() {
   );
 }
 
-function ViewSwitch({ route, navigate }: { route: ViewId; navigate: (next: ViewId) => void }) {
-  switch (route) {
-    case "dashboard":
-      return <DashboardView />;
-    case "setup":
-      return <SetupView onNavigate={(v) => navigate(v as ViewId)} />;
-    case "providers":
-      return <ProvidersView />;
-    case "waifus":
+function ViewSwitch({ route, navigate }: { route: Route; navigate: (next: ViewId, tab?: string) => void }) {
+  const onTab = (tab: string) => navigate(route.view, tab);
+  switch (route.view) {
+    case "home":
+      return <HomeView onNavigate={navigate} />;
+    case "cast":
       return <WaifusView />;
-    case "servers":
+    case "rooms":
       return <ServersView />;
-    case "orchestrator":
-      return <OrchestratorView />;
-    case "reviewer":
-      return <ReviewerView />;
-    case "stage-manager":
-      return <StageManagerView />;
-    case "memories":
+    case "direction":
+      return <DirectionView tab={route.tab} onTab={onTab} />;
+    case "memory":
       return <MemoriesView />;
-    case "logs":
-      return <LogsView />;
-    case "queries":
-      return <QueriesView />;
-    case "replies":
-      return <RepliesView />;
-    case "settings":
-      return <SettingsView />;
+    case "activity":
+      return <ActivityView tab={route.tab} onTab={onTab} />;
+    case "app-settings":
+      return <SettingsSectionView tab={route.tab} onTab={onTab} />;
     default:
-      return <DashboardView />;
+      return <HomeView onNavigate={navigate} />;
   }
 }

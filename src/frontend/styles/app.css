@@ -1270,3 +1270,91 @@ table.data-table {
   padding-left: var(--sp-2);
   border-left: 2px solid var(--border-default);
 }
+
+/* ============ Section tabs (redesign) ============ */
+.tabs {
+  display: flex;
+  gap: var(--sp-6);
+  border-bottom: 1px solid var(--border-default);
+  margin-bottom: var(--sp-5);
+}
+.tab {
+  appearance: none;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  padding: 0 0 var(--sp-2);
+  font-family: var(--font-sans);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color 0.12s, border-color 0.12s;
+}
+.tab:hover {
+  color: var(--text-primary);
+}
+.tab.active {
+  color: var(--text-primary);
+  border-bottom-color: var(--border-strong);
+}
+.tab:focus-visible {
+  outline: 2px solid var(--border-strong);
+  outline-offset: 2px;
+}
+
+/* ============ Home setup card (redesign) ============ */
+.setup-card {
+  margin-bottom: var(--sp-5);
+  border-color: var(--border-strong);
+}
+.setup-steps {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  border-top: 1px solid var(--border-subtle);
+}
+.setup-step {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+  background: transparent;
+  border: none;
+  border-right: 1px solid var(--border-subtle);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--text-primary);
+  cursor: pointer;
+  text-align: left;
+  transition: background-color 0.12s;
+}
+.setup-step:last-child {
+  border-right: none;
+}
+.setup-step:hover {
+  background: var(--bg-panel-hover);
+}
+.setup-step .icon {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+.setup-step .icon.done {
+  color: var(--ok);
+}
+.setup-step span.done {
+  color: var(--text-muted);
+  text-decoration: line-through;
+}
+.setup-step .icon.go {
+  margin-left: auto;
+  opacity: 0;
+}
+.setup-step:hover .icon.go {
+  opacity: 1;
+}

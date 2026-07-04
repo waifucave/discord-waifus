@@ -1,59 +1,38 @@
-import {
-  Activity,
-  Boxes,
-  Brain,
-  Cog,
-  Compass,
-  FileJson,
-  Layers,
-  MessageSquareReply,
-  PlayCircle,
-  ScrollText,
-  Server,
-  ShieldCheck,
-  Sparkles
-} from "lucide-react";
+import { Activity, Brain, Cog, Compass, ScrollText, Server, Sparkles } from "lucide-react";
 
-export type ViewId =
-  | "dashboard"
-  | "setup"
-  | "providers"
-  | "waifus"
-  | "servers"
-  | "orchestrator"
-  | "reviewer"
-  | "stage-manager"
-  | "memories"
-  | "logs"
-  | "queries"
-  | "replies"
-  | "settings";
+export type ViewId = "home" | "cast" | "rooms" | "direction" | "memory" | "activity" | "app-settings";
 
 export type NavEntry = {
   id: ViewId;
   label: string;
   icon: typeof Activity;
-  group: "operate" | "configure" | "diagnostics";
 };
 
 export const NAV: NavEntry[] = [
-  { id: "dashboard", label: "Dashboard", icon: Activity, group: "operate" },
-  { id: "setup", label: "Setup", icon: PlayCircle, group: "operate" },
-  { id: "providers", label: "Providers", icon: Boxes, group: "configure" },
-  { id: "waifus", label: "Waifus", icon: Sparkles, group: "configure" },
-  { id: "servers", label: "Servers", icon: Server, group: "configure" },
-  { id: "orchestrator", label: "Orchestrator", icon: Compass, group: "configure" },
-  { id: "reviewer", label: "Reviewer", icon: ShieldCheck, group: "configure" },
-  { id: "stage-manager", label: "Stage Manager", icon: Layers, group: "configure" },
-  { id: "memories", label: "Memories", icon: Brain, group: "configure" },
-  { id: "logs", label: "Logs", icon: ScrollText, group: "diagnostics" },
-  { id: "queries", label: "Queries", icon: FileJson, group: "diagnostics" },
-  { id: "replies", label: "Replies", icon: MessageSquareReply, group: "diagnostics" },
-  { id: "settings", label: "Settings", icon: Cog, group: "diagnostics" }
+  { id: "home", label: "Home", icon: Activity },
+  { id: "cast", label: "Cast", icon: Sparkles },
+  { id: "rooms", label: "Rooms", icon: Server },
+  { id: "direction", label: "Direction", icon: Compass },
+  { id: "memory", label: "Memory", icon: Brain },
+  { id: "activity", label: "Activity", icon: ScrollText },
+  { id: "app-settings", label: "Settings", icon: Cog }
 ];
 
-export const NAV_GROUPS: Array<{ id: NavEntry["group"]; label: string }> = [
-  { id: "operate", label: "Operate" },
-  { id: "configure", label: "Configure" },
-  { id: "diagnostics", label: "Diagnostics" }
-];
+/** Tab sets per section; the first entry is the default tab. */
+export const SECTION_TABS: Partial<Record<ViewId, Array<{ id: string; label: string }>>> = {
+  direction: [
+    { id: "orchestrator", label: "Orchestrator" },
+    { id: "stage-manager", label: "Stage manager" },
+    { id: "reviewer", label: "Reviewer" },
+    { id: "assistant", label: "Assistant" }
+  ],
+  activity: [
+    { id: "logs", label: "Logs" },
+    { id: "queries", label: "Queries" },
+    { id: "replies", label: "Replies" }
+  ],
+  "app-settings": [
+    { id: "providers", label: "Providers" },
+    { id: "app", label: "App" }
+  ]
+};

@@ -147,6 +147,10 @@ export const api = {
     request<AgentConfig>("PUT", "/api/reviewer/config", { body: config }),
   reviewerHistory: (signal?: AbortSignal) =>
     request<ReviewerHistoryFile>("GET", "/api/reviewer/history", { signal }),
+  assistantConfig: (signal?: AbortSignal) =>
+    request<AgentConfig>("GET", "/api/assistant/config", { signal }),
+  putAssistantConfig: (config: UpdateAgentConfigBody) =>
+    request<AgentConfig>("PUT", "/api/assistant/config", { body: config }),
 
   // Providers
   providers: (signal?: AbortSignal) =>
