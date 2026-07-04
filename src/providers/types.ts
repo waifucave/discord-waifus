@@ -74,6 +74,30 @@ export type WaifuGenerationResult = {
   usage?: Record<string, number>;
 };
 
+export type AssistantTurnEvent =
+  | { type: "tool_call"; name: string; arguments: string }
+  | { type: "tool_result"; name: string; result: string };
+
+export type AssistantTurnRequest = {
+  modelId: string;
+  /** Full model-facing transcript incl. system prompt and the new user turn. */
+  messages: import("@waifucave/gateway").ChatMessage[];
+  tools: import("@waifucave/gateway").ToolDef[];
+  executeTool: (name: string, argsJson: string) => Promise<string>;
+  onEvent?: (event: AssistantTurnEvent) => void;
+  params?: Record<string, unknown>;
+  /** Hard cap on executed tool calls per turn (default 12). */
+  maxToolCalls?: number;
+  signal?: AbortSignal;
+};
+
+export type AssistantTurnResult = {
+  /** Final text reply. */
+  content: string;
+  /** Transcript with the assistant/tool turns of this turn appended. */
+  messages: import("@waifucave/gateway").ChatMessage[];
+};
+
 export interface ModelPipeline {
   generateWaifu(request: WaifuGenerationRequest): Promise<WaifuGenerationResult>;
   decideOrchestrator?(request: ProviderRequest): Promise<OrchestratorDecision>;
@@ -81,4 +105,5 @@ export interface ModelPipeline {
   decideDream?(request: DreamRequest): Promise<DreamOp[]>;
   decideReviewer?(request: ProviderRequest & { message: string }): Promise<ReviewerDecision>;
   generatePersonaDigest?(request: PersonaDigestRequest): Promise<PersonaDigest>;
+  generateAssistantTurn?(request: AssistantTurnRequest): Promise<AssistantTurnResult>;
 }

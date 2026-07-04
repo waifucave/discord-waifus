@@ -1,8 +1,8 @@
-import { createGateway, Gateway, type ChatResponse, type ToolDef } from "@waifucave/gateway";
+import { createGateway, Gateway, type ChatResponse, type TextBlock, type ToolCallBlock, type ToolDef } from "@waifucave/gateway";
 import { z } from "zod";
 import { createProviderCredentialsLookup } from "../../api/llmGatewayCredentials.js";
 import { QueryRole, recordProviderQuery, recordProviderReply } from "../../shared/queryLog.js";
-import type { ModelPipeline, ProviderRequest, WaifuGenerationRequest, WaifuGenerationResult, StageManagerObserveRequest, DreamRequest, PersonaDigestRequest, PersonaDigest } from "../../providers/types.js";
+import type { AssistantTurnRequest, AssistantTurnResult, ModelPipeline, ProviderRequest, WaifuGenerationRequest, WaifuGenerationResult, StageManagerObserveRequest, DreamRequest, PersonaDigestRequest, PersonaDigest } from "../../providers/types.js";
 import { ORCHESTRATOR_TOOL_NAME, PICK_NEXT_WAIFU_TOOL_NAME, REVIEWER_TOOL_NAME, SHORT_TERM_MEMORY_TOOL_NAME, OBSERVER_TOOL_NAME, DREAM_TOOL_NAME, PERSONA_DIGEST_TOOL_NAME, DREAM_PROMPT, PERSONA_DIGEST_PROMPT, orchestratorToolParameters, pickNextWaifuToolParameters, reviewerSystemPrompt, reviewerToolParameters, shortTermMemoryToolParameters, observerSystemPrompt, observerToolParameters, dreamToolParameters, flatDreamToolParameters, personaDigestToolParameters, dreamMessages, normalizeDreamOps, normalizeOrchestratorDecision, parseRawStageManagerObservations } from "../tools.js";
 import { formatObserverContext } from "../context.js";
 import { GatewayPipelineError, buildUnifiedParams, preconformRequest } from "./params.js";
@@ -174,6 +174,54 @@ export class GatewayModelPipeline implements ModelPipeline {
       signal: request.signal
     });
     return parseForcedCall(response, REVIEWER_TOOL_NAME, (raw) => ReviewerDecisionSchema.parse(raw), "decideReviewer");
+  }
+
+  async generateAssistantTurn(request: AssistantTurnRequest): Promise<AssistantTurnResult> {
+    const transcript = [...request.messages];
+    const limit = request.maxToolCalls ?? 12;
+    let executedCalls = 0;
+    for (let round = 0; round < limit + 1; round++) {
+      const response = await this.chat({
+        messages: transcript,
+        tools: request.tools,
+        sampling: { params: request.params },
+        signal: request.signal
+      });
+      const toolCalls = response.content.filter((block): block is ToolCallBlock => block.type === "toolCall");
+      const text = response.content
+        .filter((block): block is TextBlock => block.type === "text")
+        .map((block) => block.text)
+        .join("");
+      if (toolCalls.length === 0) {
+        transcript.push({ role: "assistant", content: text });
+        return { content: text, messages: transcript };
+      }
+      transcript.push({ role: "assistant", content: response.content.filter((block) => block.type !== "reasoning") });
+      for (const call of toolCalls) {
+        if (executedCalls >= limit) {
+          transcript.push({ role: "tool", toolCallId: call.id, content: "Tool call limit reached for this turn." });
+          continue;
+        }
+        executedCalls += 1;
+        request.onEvent?.({ type: "tool_call", name: call.name, arguments: call.arguments });
+        let result: string;
+        try {
+          result = await request.executeTool(call.name, call.arguments);
+        } catch (error) {
+          result = `Tool failed: ${error instanceof Error ? error.message : String(error)}`;
+        }
+        if (result.length > 6000) result = `${result.slice(0, 6000)}\n[truncated]`;
+        request.onEvent?.({ type: "tool_result", name: call.name, result });
+        transcript.push({ role: "tool", toolCallId: call.id, content: result });
+      }
+      if (executedCalls >= limit) {
+        const summary = "I hit the tool call limit for this turn — here's where I got to.";
+        transcript.push({ role: "assistant", content: summary });
+        return { content: summary, messages: transcript };
+      }
+    }
+    const fallback = "I hit the tool call limit for this turn.";
+    return { content: fallback, messages: [...transcript, { role: "assistant", content: fallback }] };
   }
 
   async generateWaifu(request: WaifuGenerationRequest): Promise<WaifuGenerationResult> {
