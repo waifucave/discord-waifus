@@ -9,10 +9,10 @@ const VALID: ReadonlySet<ViewId> = new Set<ViewId>([
   "direction",
   "memory",
   "activity",
-  "app-settings"
+  "settings"
 ]);
 
-/** Pre-redesign routes keep working: old hash → new section (+ tab). */
+/** Every pre-rebuild route keeps working. */
 const LEGACY: Record<string, { view: ViewId; tab?: string }> = {
   dashboard: { view: "home" },
   setup: { view: "home" },
@@ -25,11 +25,11 @@ const LEGACY: Record<string, { view: ViewId; tab?: string }> = {
   logs: { view: "activity", tab: "logs" },
   queries: { view: "activity", tab: "queries" },
   replies: { view: "activity", tab: "replies" },
-  providers: { view: "app-settings", tab: "providers" },
-  settings: { view: "app-settings", tab: "app" }
+  providers: { view: "settings", tab: "providers" },
+  "app-settings": { view: "settings" }
 };
 
-export type Route = { view: ViewId; tab?: string };
+export type Route = { view: ViewId; tab?: string; id?: string };
 
 function defaultTab(view: ViewId): string | undefined {
   return SECTION_TABS[view]?.[0]?.id;
@@ -38,34 +38,40 @@ function defaultTab(view: ViewId): string | undefined {
 function readHash(): Route {
   const raw = window.location.hash.replace(/^#\/?/, "");
   const [pathPart, queryPart] = raw.split("?");
-  const tabParam = new URLSearchParams(queryPart ?? "").get("tab") ?? undefined;
+  const params = new URLSearchParams(queryPart ?? "");
+  const tabParam = params.get("tab") ?? undefined;
+  const idParam = params.get("id") ?? undefined;
   const path = pathPart ?? "";
   if (VALID.has(path as ViewId)) {
     const view = path as ViewId;
     const tabs = SECTION_TABS[view];
     const tab = tabs?.some((t) => t.id === tabParam) ? tabParam : defaultTab(view);
-    return { view, tab };
+    return { view, tab, id: idParam };
   }
   const legacy = LEGACY[path];
   if (legacy) return { view: legacy.view, tab: legacy.tab ?? defaultTab(legacy.view) };
-  return { view: DEFAULT, tab: defaultTab(DEFAULT) };
+  return { view: DEFAULT };
 }
 
-function hashFor(view: ViewId, tab?: string): string {
+function hashFor(view: ViewId, tab?: string, id?: string): string {
   const tabs = SECTION_TABS[view];
-  const effective = tabs?.some((t) => t.id === tab) ? tab : undefined;
-  return effective && effective !== tabs?.[0]?.id ? `#/${view}?tab=${effective}` : `#/${view}`;
+  const effectiveTab = tabs?.some((t) => t.id === tab) && tab !== tabs?.[0]?.id ? tab : undefined;
+  const query = new URLSearchParams();
+  if (effectiveTab) query.set("tab", effectiveTab);
+  if (id) query.set("id", id);
+  const qs = query.toString();
+  return qs ? `#/${view}?${qs}` : `#/${view}`;
 }
 
-export function useRoute(): [Route, (view: ViewId, tab?: string) => void] {
+export function useRoute(): [Route, (view: ViewId, tab?: string, id?: string) => void] {
   const [route, setRoute] = useState<Route>(readHash);
   useEffect(() => {
     const handler = () => setRoute(readHash());
     window.addEventListener("hashchange", handler);
     return () => window.removeEventListener("hashchange", handler);
   }, []);
-  const navigate = (view: ViewId, tab?: string) => {
-    const next = hashFor(view, tab);
+  const navigate = (view: ViewId, tab?: string, id?: string) => {
+    const next = hashFor(view, tab, id);
     if (window.location.hash !== next) {
       window.location.hash = next;
     } else {

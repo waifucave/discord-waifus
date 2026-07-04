@@ -1,24 +1,25 @@
-import { Activity, Brain, Cog, Compass, ScrollText, Server, Sparkles } from "lucide-react";
+/** Section registry for the home-launcher navigation. Hue names map to system.css vars. */
+export type ViewId = "home" | "cast" | "rooms" | "direction" | "memory" | "activity" | "settings";
 
-export type ViewId = "home" | "cast" | "rooms" | "direction" | "memory" | "activity" | "app-settings";
-
-export type NavEntry = {
-  id: ViewId;
+export type SectionDef = {
+  id: Exclude<ViewId, "home">;
+  index: string;
   label: string;
-  icon: typeof Activity;
+  hue: "mint" | "sky" | "lavender" | "butter" | "peach" | "pink";
+  /** Settings inverts to ink on hover instead of a hue. */
+  inverts?: boolean;
 };
 
-export const NAV: NavEntry[] = [
-  { id: "home", label: "Home", icon: Activity },
-  { id: "cast", label: "Cast", icon: Sparkles },
-  { id: "rooms", label: "Rooms", icon: Server },
-  { id: "direction", label: "Direction", icon: Compass },
-  { id: "memory", label: "Memory", icon: Brain },
-  { id: "activity", label: "Activity", icon: ScrollText },
-  { id: "app-settings", label: "Settings", icon: Cog }
+export const SECTIONS: SectionDef[] = [
+  { id: "cast", index: "02", label: "Cast", hue: "mint" },
+  { id: "rooms", index: "03", label: "Rooms", hue: "sky" },
+  { id: "direction", index: "04", label: "Direction", hue: "lavender" },
+  { id: "memory", index: "05", label: "Memory", hue: "butter" },
+  { id: "activity", index: "06", label: "Activity", hue: "peach" },
+  { id: "settings", index: "07", label: "Settings", hue: "mint", inverts: true }
 ];
 
-/** Tab sets per section; the first entry is the default tab. */
+/** Tab sets per section; first entry is the default. */
 export const SECTION_TABS: Partial<Record<ViewId, Array<{ id: string; label: string }>>> = {
   direction: [
     { id: "orchestrator", label: "Orchestrator" },
@@ -31,8 +32,14 @@ export const SECTION_TABS: Partial<Record<ViewId, Array<{ id: string; label: str
     { id: "queries", label: "Queries" },
     { id: "replies", label: "Replies" }
   ],
-  "app-settings": [
+  settings: [
     { id: "providers", label: "Providers" },
     { id: "app", label: "App" }
   ]
 };
+
+/** Character hue assignment: stable, cyclic, by cast order. */
+export const CHARACTER_HUES = ["mint", "pink", "butter", "sky", "peach", "lavender"] as const;
+export function characterHue(index: number): (typeof CHARACTER_HUES)[number] {
+  return CHARACTER_HUES[index % CHARACTER_HUES.length];
+}
