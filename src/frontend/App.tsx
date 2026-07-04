@@ -11,10 +11,12 @@ import { DirectionView } from "./views/DirectionView";
 import { MemoriesView } from "./views/MemoriesView";
 import { ActivityView } from "./views/ActivityView";
 import { SettingsSectionView } from "./views/SettingsSectionView";
+import { AssistantLauncher, AssistantPanel } from "./components/assistant/AssistantPanel";
 
 export function App() {
   const [route, navigate] = useRoute();
   const [menuOpen, setMenuOpen] = useState(false);
+  const [assistantOpen, setAssistantOpen] = useState(false);
   const status = useRuntimeStatus();
   const discordConnecting = status?.discord.connecting ?? false;
 
@@ -126,6 +128,9 @@ export function App() {
       <main className="main">
         <ViewSwitch route={route} navigate={goto} />
       </main>
+
+      <AssistantLauncher open={assistantOpen} onToggle={() => setAssistantOpen((v) => !v)} />
+      <AssistantPanel open={assistantOpen} onClose={() => setAssistantOpen(false)} onNavigate={goto} />
     </div>
   );
 }

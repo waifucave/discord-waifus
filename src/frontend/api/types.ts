@@ -482,3 +482,16 @@ export type ApiErrorBody = {
   latest?: unknown;
   issues?: unknown;
 };
+
+// --- Assistant chat (mirrors src/api/assistant/conversations.ts) ---
+export type AssistantEvent =
+  | { type: "turn_started" }
+  | { type: "text"; content: string }
+  | { type: "tool_call"; name: string; arguments: string }
+  | { type: "tool_result"; name: string; result: string }
+  | { type: "turn_completed" }
+  | { type: "error"; message: string };
+
+export type AssistantStoredMessage =
+  | { role: "user" | "assistant"; content: string; at: string }
+  | { role: "event"; event: AssistantEvent; at: string };

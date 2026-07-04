@@ -1,4 +1,5 @@
 import type {
+  AssistantStoredMessage,
   AppConfig,
   ApiErrorBody,
   AgentConfig,
@@ -151,6 +152,18 @@ export const api = {
     request<AgentConfig>("GET", "/api/assistant/config", { signal }),
   putAssistantConfig: (config: UpdateAgentConfigBody) =>
     request<AgentConfig>("PUT", "/api/assistant/config", { body: config }),
+  createAssistantConversation: () =>
+    request<{ conversationId: string }>("POST", "/api/assistant/conversations"),
+  assistantConversation: (id: string, signal?: AbortSignal) =>
+    request<{ id: string; busy: boolean; messages: AssistantStoredMessage[] }>(
+      "GET",
+      `/api/assistant/conversations/${encodeURIComponent(id)}`,
+      { signal }
+    ),
+  sendAssistantMessage: (id: string, content: string) =>
+    request<{ reply: string }>("POST", `/api/assistant/conversations/${encodeURIComponent(id)}/messages`, {
+      body: { content }
+    }),
 
   // Providers
   providers: (signal?: AbortSignal) =>
