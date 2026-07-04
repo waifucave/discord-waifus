@@ -1,49 +1,49 @@
 :root {
-  color-scheme: dark;
+  color-scheme: light;
 
-  /* Surfaces */
-  --bg-app: #0c0e12;
-  --bg-sidebar: #0f1217;
-  --bg-panel: #12161d;
-  --bg-panel-hover: #161b24;
-  --bg-input: #0d1116;
-  --bg-elevated: #181d27;
+  /* Surfaces — paper white, flat. The whole UI is a printed control sheet. */
+  --bg-app: #ffffff;
+  --bg-sidebar: #fafafa;
+  --bg-panel: #ffffff;
+  --bg-panel-hover: #f5f5f4;
+  --bg-input: #ffffff;
+  --bg-elevated: #fafafa;
 
-  /* Borders */
-  --border-subtle: #1c222d;
-  --border-default: #232b39;
-  --border-strong: #2c3647;
-  --border-focus: #3d6cf2;
+  /* Borders — crisp hairlines; strong = ink. */
+  --border-subtle: #ececeb;
+  --border-default: #dcdcda;
+  --border-strong: #111111;
+  --border-focus: #111111;
 
-  /* Text */
-  --text-primary: #e7ecf3;
-  --text-secondary: #a4adbd;
-  --text-muted: #6b7587;
-  --text-disabled: #4a5161;
+  /* Text — near-black hierarchy on white. */
+  --text-primary: #141414;
+  --text-secondary: #565656;
+  --text-muted: #8b8b8b;
+  --text-disabled: #c0c0c0;
 
-  /* Accents — operational, not marketing */
-  --accent: #5b8def;
-  --accent-strong: #4a78dd;
+  /* Accent — one signal blue; primary actions are solid ink. */
+  --accent: #2f56e0;
+  --accent-strong: #2445c0;
   --accent-text: #ffffff;
 
-  /* Status */
-  --ok: #2fbb70;
-  --ok-bg: rgba(47, 187, 112, 0.12);
-  --warn: #f3a83a;
-  --warn-bg: rgba(243, 168, 58, 0.14);
-  --err: #ef5b5b;
-  --err-bg: rgba(239, 91, 91, 0.14);
-  --info: #58a8df;
-  --info-bg: rgba(88, 168, 223, 0.12);
-  --neutral: #6b7587;
-  --neutral-bg: rgba(107, 117, 135, 0.16);
+  /* Status — print-muted, with pale flat fills. */
+  --ok: #1a7f4b;
+  --ok-bg: #e9f6ef;
+  --warn: #96660a;
+  --warn-bg: #fdf3d8;
+  --err: #c22f2f;
+  --err-bg: #fdecec;
+  --info: #2f56e0;
+  --info-bg: #edf1fd;
+  --neutral: #6b6b6b;
+  --neutral-bg: #f1f1f0;
 
-  /* Sizing */
-  --sidebar-w: 224px;
-  --topbar-h: 48px;
-  --radius-sm: 4px;
-  --radius-md: 6px;
-  --radius-lg: 8px;
+  /* Sizing — SHARP by design: zero radius everywhere, no exceptions. */
+  --sidebar-w: 232px;
+  --topbar-h: 52px;
+  --radius-sm: 0;
+  --radius-md: 0;
+  --radius-lg: 0;
 
   /* Spacing scale */
   --sp-1: 4px;
@@ -53,20 +53,22 @@
   --sp-5: 20px;
   --sp-6: 24px;
   --sp-8: 32px;
+  --sp-10: 40px;
 
-  /* Typography */
-  --font-sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto,
-    "Helvetica Neue", Arial, sans-serif;
+  /* Typography — Swiss: tight display headings, mono micro-labels. */
+  --font-sans: "Helvetica Neue", -apple-system, BlinkMacSystemFont, "Segoe UI",
+    Arial, sans-serif;
   --font-mono: "SF Mono", "JetBrains Mono", Menlo, Monaco, Consolas,
     "Liberation Mono", monospace;
 
   --fs-xs: 11px;
-  --fs-sm: 12px;
-  --fs-md: 13px;
-  --fs-lg: 15px;
-  --fs-xl: 18px;
-  --fs-2xl: 22px;
+  --fs-sm: 12.5px;
+  --fs-md: 14px;
+  --fs-lg: 16px;
+  --fs-xl: 20px;
+  --fs-2xl: 28px;
 
-  --shadow-1: 0 1px 0 rgba(0, 0, 0, 0.4);
-  --shadow-modal: 0 16px 48px rgba(0, 0, 0, 0.5);
+  /* Flat depth: hairline offsets only — never soft blur. */
+  --shadow-1: 0 1px 0 rgba(0, 0, 0, 0.08);
+  --shadow-modal: 8px 8px 0 rgba(17, 17, 17, 0.12);
 }
