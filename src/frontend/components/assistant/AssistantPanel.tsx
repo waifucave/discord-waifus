@@ -5,6 +5,90 @@ import type { AgentConfig } from "../../api/types";
 import { useAssistantChat, type ChatItem } from "../../state/assistantChat";
 import type { ViewId } from "../../nav";
 
+type SecretArgs = { purpose: "provider_key" | "bot_token"; providerId?: string; botId?: string };
+
+function parseSecretArgs(raw: string | undefined): SecretArgs | undefined {
+  if (!raw) return undefined;
+  try {
+    const parsed = JSON.parse(raw) as SecretArgs;
+    if (parsed.purpose !== "provider_key" && parsed.purpose !== "bot_token") return undefined;
+    return parsed;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Secure secret entry: the value goes browser → storage endpoint directly.
+ * It never enters the conversation, so Norma's model never sees it.
+ */
+function SecretForm({ args, onDone }: { args: SecretArgs; onDone: (outcome: string) => void }) {
+  const [value, setValue] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | undefined>(undefined);
+  const target = args.purpose === "provider_key" ? args.providerId : args.botId;
+
+  const submit = async () => {
+    if (!value.trim()) return;
+    setSaving(true);
+    setError(undefined);
+    try {
+      if (args.purpose === "provider_key") {
+        await api.putProviderCredentials(String(args.providerId), { apiKey: value.trim() });
+      } else {
+        const bots = await api.discordBots();
+        const isOrchestrator = !args.botId || args.botId === "orchestrator";
+        const entry = isOrchestrator ? bots.orchestrator : bots.waifus.find((bot) => bot.id === args.botId);
+        const patched = {
+          id: entry?.id ?? (isOrchestrator ? "orchestrator" : String(args.botId)),
+          displayName: entry?.displayName ?? String(args.botId ?? "orchestrator"),
+          enabled: true,
+          ...(entry ?? {}),
+          token: value.trim()
+        };
+        await api.putDiscordBots(
+          isOrchestrator
+            ? { ...bots, orchestrator: patched }
+            : { ...bots, waifus: [...bots.waifus.filter((bot) => bot.id !== patched.id), patched] }
+        );
+        await api.reload();
+      }
+      setValue("");
+      onDone(`(the ${args.purpose === "provider_key" ? `API key for ${target}` : `bot token for ${target}`} was submitted through the secure form and saved — it never entered this chat)`);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div style={{ border: "1px solid var(--ink)", padding: 14, margin: "0 0 16px" }}>
+      <div className="m-label" style={{ marginBottom: 8 }}>
+        Secure input · {args.purpose === "provider_key" ? `${target} API key` : `${target} bot token`} · bypasses the chat
+      </div>
+      <input
+        className="input"
+        type="password"
+        autoFocus
+        placeholder="paste the secret…"
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onKeyDown={(e) => e.key === "Enter" && submit()}
+      />
+      {error && <div className="m-err" style={{ marginTop: 8 }}>{error}</div>}
+      <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+        <button className="btn sm primary" onClick={submit} disabled={saving || !value.trim()}>
+          {saving ? "Saving…" : "Save secret"}
+        </button>
+        <button className="btn sm ghost" onClick={() => onDone("(the user dismissed the secure secret form without saving)")}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function ToolRow({ item }: { item: Extract<ChatItem, { kind: "tool" }> }) {
   const [expanded, setExpanded] = useState(false);
   return (
@@ -54,6 +138,7 @@ export function AssistantPanel({
 }) {
   const chat = useAssistantChat(open);
   const [draft, setDraft] = useState("");
+  const [handledSecrets, setHandledSecrets] = useState<Set<number>>(new Set());
   const scrollRef = useRef<HTMLDivElement>(null);
   const assistantConfig = useApi<AgentConfig | undefined>(async (s) => (open ? api.assistantConfig(s) : undefined), [open]);
   const orchestratorConfig = useApi<AgentConfig | undefined>(async (s) => (open ? api.orchestratorConfig(s) : undefined), [open]);
@@ -104,7 +189,24 @@ export function AssistantPanel({
               </div>
             );
           if (item.kind === "assistant") return <div key={index} className="m-asst">{item.content}</div>;
-          if (item.kind === "tool") return <ToolRow key={index} item={item} />;
+          if (item.kind === "tool") {
+            const secretArgs = item.name === "request_secret" ? parseSecretArgs(item.args) : undefined;
+            if (secretArgs && !handledSecrets.has(index)) {
+              return (
+                <div key={index}>
+                  <ToolRow item={item} />
+                  <SecretForm
+                    args={secretArgs}
+                    onDone={(outcome) => {
+                      setHandledSecrets((prev) => new Set(prev).add(index));
+                      void chat.send(outcome);
+                    }}
+                  />
+                </div>
+              );
+            }
+            return <ToolRow key={index} item={item} />;
+          }
           return <div key={index} className="m-err">{item.message}</div>;
         })}
         {chat.busy && <div className="m-busy">working…</div>}

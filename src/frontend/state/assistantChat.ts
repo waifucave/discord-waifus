@@ -7,7 +7,7 @@ const STORAGE_KEY = "assistant-conversation";
 export type ChatItem =
   | { kind: "user"; content: string }
   | { kind: "assistant"; content: string }
-  | { kind: "tool"; name: string; result?: string }
+  | { kind: "tool"; name: string; args?: string; result?: string }
   | { kind: "error"; message: string };
 
 /**
@@ -24,7 +24,7 @@ export function useAssistantChat(open: boolean) {
 
   const foldEvent = useCallback((event: AssistantEvent) => {
     if (event.type === "tool_call") {
-      setItems((prev) => [...prev, { kind: "tool", name: event.name }]);
+      setItems((prev) => [...prev, { kind: "tool", name: event.name, args: event.arguments }]);
     } else if (event.type === "tool_result") {
       setItems((prev) => {
         const next = [...prev];

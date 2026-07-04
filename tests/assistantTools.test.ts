@@ -146,6 +146,30 @@ describe("assistant tools", () => {
     }
   });
 
+  it("request_secret shows a secure form marker without touching storage", async () => {
+    const { app } = await makeApp();
+    try {
+      const result = await executeAssistantTool(
+        { app },
+        "request_secret",
+        JSON.stringify({ purpose: "provider_key", providerId: "deepseek" })
+      );
+      const parsed = JSON.parse(result) as { status: string; note: string; target: string };
+      expect(parsed.status).toBe("secure_form_shown");
+      expect(parsed.target).toBe("deepseek");
+      expect(parsed.note).toMatch(/without entering/i);
+      // no key was written — the browser posts the secret, not this tool
+      const providers = await app.inject({ method: "GET", url: "/api/providers" });
+      expect(providers.body).not.toContain('"configured":true');
+      // purpose is constrained so the panel can always render a form
+      const def = toolDefs().find((tool) => tool.name === "request_secret");
+      const purposeSchema = (def?.parameters as { properties: Record<string, { enum?: string[] }> }).properties.purpose;
+      expect(purposeSchema.enum).toEqual(["provider_key", "bot_token"]);
+    } finally {
+      await app.close();
+    }
+  });
+
   it("searches and reads the docs KB", async () => {
     const { app } = await makeApp();
     try {

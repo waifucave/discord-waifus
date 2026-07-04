@@ -84,7 +84,9 @@ export const ASSISTANT_TOOLS: AssistantTool[] = [
   },
   {
     name: "set_provider_key",
-    description: "Set (or replace) the API key for a provider. The key is stored write-only.",
+    description:
+      "Set (or replace) the API key for a provider. The key is stored write-only. Only use this when the " +
+      "user already pasted the key into chat themselves — otherwise call request_secret.",
     parameters: {
       type: "object",
       properties: { providerId: { type: "string" }, apiKey: { type: "string" } },
@@ -115,6 +117,41 @@ export const ASSISTANT_TOOLS: AssistantTool[] = [
         url: `/api/providers/${encodeURIComponent(String(args.providerId))}/credentials`
       });
       return result.status < 300 ? `Provider ${args.providerId} key removed.` : result.body;
+    }
+  },
+  {
+    name: "request_secret",
+    description:
+      "Ask the user for a secret (provider API key or Discord bot token) via a secure input form in the dashboard. " +
+      "The secret is posted by the browser directly to storage and NEVER enters this conversation. " +
+      "ALWAYS use this instead of asking the user to paste a key or token into chat. " +
+      "For provider_key set providerId; for bot_token set botId (a discord-bots entry id, or 'orchestrator'). " +
+      "After calling it, tell the user to paste the secret into the form and END your reply — you will receive a " +
+      "confirmation message once it is saved. Application IDs are not secret and go through update_discord_bots.",
+    parameters: {
+      type: "object",
+      properties: {
+        purpose: { type: "string", enum: ["provider_key", "bot_token"] },
+        providerId: { type: "string", description: "Required when purpose is provider_key." },
+        botId: { type: "string", description: "Required when purpose is bot_token." }
+      },
+      required: ["purpose"],
+      additionalProperties: false
+    },
+    execute: async (_ctx, args) => {
+      const purpose = String(args.purpose);
+      const target = purpose === "provider_key" ? String(args.providerId ?? "") : String(args.botId ?? "");
+      if (!target) {
+        return JSON.stringify({ status: "error", note: `Missing ${purpose === "provider_key" ? "providerId" : "botId"}.` });
+      }
+      return JSON.stringify({
+        status: "secure_form_shown",
+        purpose,
+        target,
+        note:
+          "A secure input form is now shown to the user. The secret is stored directly without entering this conversation. " +
+          "Tell the user to paste it there and end your reply; a confirmation message follows once it is saved."
+      });
     }
   },
   {

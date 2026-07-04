@@ -37,3 +37,10 @@ Configs store gateway-native dotted params, e.g. `temperature`, `topP`,
 the registry: an unsupported parameter or value returns HTTP 400 naming the violated rule.
 The chat path is lenient: stored params that conflict with a specific call shape (like thinking
 with a forced tool) are auto-corrected per call rather than failing.
+
+## Secrets without exposure
+
+The `request_secret` tool shows the user a secure input form in the dashboard panel. The
+secret (provider API key or bot token) is posted by the browser directly to storage and
+never enters the assistant conversation. Always prefer it over asking for secrets in chat;
+application IDs are not secret and can be set via `update_discord_bots`.
