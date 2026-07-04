@@ -215,7 +215,7 @@ button.cell, button.clickable, .clickable {
 /* prompt-layout editor lanes */
 .prompt-layout-lanes { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--line); background: var(--ink); border: var(--line) solid var(--ink); }
 .prompt-lane { background: var(--paper); display: flex; flex-direction: column; }
-.prompt-lane-head { padding: 10px 14px; border-bottom: var(--line) solid var(--ink); }
+.prompt-lane-head { padding: 10px 14px; border-bottom: var(--line) solid var(--ink); display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--mute); }
 .prompt-lane-title { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--mute); }
 .prompt-lane-body { padding: 10px; display: flex; flex-direction: column; gap: 8px; min-height: 80px; }
 .prompt-lane-empty { color: var(--mute); font-size: 11.5px; padding: 8px; }

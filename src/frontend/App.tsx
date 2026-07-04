@@ -3,6 +3,7 @@ import { useRoute } from "./state/router";
 import type { ViewId } from "./nav";
 import { HomeScreen } from "./screens/HomeScreen";
 import { ComingScreen } from "./screens/ComingScreen";
+import { CastScreen } from "./screens/CastScreen";
 import { AssistantLauncher, AssistantPanel } from "./components/assistant/AssistantPanel";
 import { OnboardingWizard } from "./components/onboarding/OnboardingWizard";
 import { useApi } from "./api/useApi";
@@ -62,7 +63,7 @@ function Screen({
     case "home":
       return <HomeScreen onNavigate={goto} onAssistant={onAssistant} />;
     case "cast":
-      return <ComingScreen title="Cast" onBack={home} />;
+      return <CastScreen characterId={route.id} onNavigate={goto} />;
     case "rooms":
       return <ComingScreen title="Rooms" onBack={home} />;
     case "direction":
