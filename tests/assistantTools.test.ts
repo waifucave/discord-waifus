@@ -33,6 +33,24 @@ async function makeApp() {
 }
 
 describe("assistant tools", () => {
+  it("never uses JSON-Schema type arrays (Google proto schemas reject them)", () => {
+    const offenders: string[] = [];
+    const walk = (node: unknown, path: string) => {
+      if (Array.isArray(node)) {
+        node.forEach((item, index) => walk(item, `${path}[${index}]`));
+        return;
+      }
+      if (node && typeof node === "object") {
+        for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+          if (key === "type" && Array.isArray(value)) offenders.push(path);
+          walk(value, `${path}.${key}`);
+        }
+      }
+    };
+    for (const tool of toolDefs()) walk(tool.parameters, tool.name);
+    expect(offenders).toEqual([]);
+  });
+
   it("exposes every spec tool as a gateway ToolDef", () => {
     const names = toolDefs().map((tool) => tool.name);
     for (const required of [

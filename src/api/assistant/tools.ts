@@ -278,8 +278,10 @@ export const ASSISTANT_TOOLS: AssistantTool[] = [
     description:
       "Replace the Discord bots file (orchestrator entry + waifus array). Read it first with list_discord_bots; changing tokens is destructive — confirm in chat first.",
     parameters: {
+      // NOTE: keep every "type" a single string — Google's proto-based schema validation
+      // rejects JSON-Schema type arrays like ["object", "null"].
       type: "object",
-      properties: { orchestrator: { type: ["object", "null"] }, waifus: { type: "array", items: { type: "object" } } },
+      properties: { orchestrator: { type: "object" }, waifus: { type: "array", items: { type: "object" } } },
       additionalProperties: false
     },
     execute: async (ctx, args) => revisionedPut(ctx, "/api/discord-bots", () => args)
