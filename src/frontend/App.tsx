@@ -2,11 +2,12 @@ import { useState } from "react";
 import { useRoute } from "./state/router";
 import type { ViewId } from "./nav";
 import { HomeScreen } from "./screens/HomeScreen";
-import { ComingScreen } from "./screens/ComingScreen";
 import { CastScreen } from "./screens/CastScreen";
 import { DirectionScreen } from "./screens/DirectionScreen";
 import { RoomsScreen } from "./screens/RoomsScreen";
 import { MemoryScreen } from "./screens/MemoryScreen";
+import { ActivityScreen } from "./screens/ActivityScreen";
+import { SettingsScreen } from "./screens/SettingsScreen";
 import { AssistantLauncher, AssistantPanel } from "./components/assistant/AssistantPanel";
 import { OnboardingWizard } from "./components/onboarding/OnboardingWizard";
 import { useApi } from "./api/useApi";
@@ -74,9 +75,9 @@ function Screen({
     case "memory":
       return <MemoryScreen onNavigate={goto} />;
     case "activity":
-      return <ComingScreen title="Activity" onBack={home} />;
+      return <ActivityScreen tab={route.tab} onNavigate={goto} onTab={(tab) => goto("activity", tab)} />;
     case "settings":
-      return <ComingScreen title="Settings" onBack={home} />;
+      return <SettingsScreen tab={route.tab} onNavigate={goto} onTab={(tab) => goto("settings", tab)} />;
     default:
       return <HomeScreen onNavigate={goto} onAssistant={onAssistant} />;
   }
