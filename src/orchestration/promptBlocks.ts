@@ -134,7 +134,12 @@ export const WAIFU_PROMPT_BLOCKS: WaifuPromptBlockDef[] = [
       const voice = ctx.personaDigest?.voice ?? ctx.personalityContent.replace(/\s+/g, " ").slice(0, 200);
       const drives = ctx.personaDigest?.role ? ` Drives: ${ctx.personaDigest.role}` : "";
       const voiceLine = voice ? ` Voice: ${voice}${drives}` : "";
-      return `<${ctx.waifuTag}_anchor>\nYou are ${ctx.displayName}.${voiceLine}\nReminders: one short, fragment-y chat message, only your own voice, no narration, no meta.\n</${ctx.waifuTag}_anchor>`;
+      // The reply target is the one recency instruction left now that memories render in mid:
+      // it re-points a reasoning-off model at the conversation the trailing block displaced.
+      const replyTarget = ctx.directorNote
+        ? " React to the newest message above unless your director note points elsewhere."
+        : " React to the newest message above.";
+      return `<${ctx.waifuTag}_anchor>\nYou are ${ctx.displayName}.${voiceLine}\nReminders: one short, fragment-y chat message, only your own voice, no narration, no meta.${replyTarget}\n</${ctx.waifuTag}_anchor>`;
     }
   },
   {

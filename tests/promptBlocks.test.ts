@@ -173,6 +173,23 @@ describe("anchor block", () => {
     const parts = assembleWaifuPrompt(defaultWaifuPromptLayout(), ctx());
     expect(parts.trailingSystemBlock).not.toContain("Drives:");
   });
+
+  it("tells the waifu to react to the newest message", () => {
+    const parts = assembleWaifuPrompt(defaultWaifuPromptLayout(), ctx({ directorNote: undefined }));
+    expect(parts.trailingSystemBlock).toContain(
+      "no narration, no meta. React to the newest message above."
+    );
+  });
+
+  it("defers the reply target to the director note when one is present", () => {
+    const parts = assembleWaifuPrompt(
+      defaultWaifuPromptLayout(),
+      ctx({ directorNote: "steer toward weekend plans" })
+    );
+    expect(parts.trailingSystemBlock).toContain(
+      "React to the newest message above unless your director note points elsewhere."
+    );
+  });
 });
 
 describe("resolveGroupTag", () => {
