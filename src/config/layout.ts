@@ -25,6 +25,7 @@ export const DATA_LAYOUT_DIRS = [
   "user/orchestrator",
   "user/stage-manager",
   "user/reviewer",
+  "user/assistant",
   "user/servers"
 ] as const;
 

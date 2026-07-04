@@ -4,7 +4,8 @@ export type QueryRole =
   | "stage_manager_observer"
   | "stage_manager_librarian"
   | "dream"
-  | "reviewer";
+  | "reviewer"
+  | "assistant";
 
 export type CapturedQuery = {
   id: number;

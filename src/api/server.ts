@@ -370,6 +370,12 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     const body = AgentConfigBodySchema.parse(request.body);
     return updateAgentConfig(storage, request, "reviewer", body, 20);
   });
+
+  app.get("/api/assistant/config", async () => readAgentConfig(storage, "assistant"));
+  app.put("/api/assistant/config", async (request) => {
+    const body = AgentConfigBodySchema.parse(request.body);
+    return updateAgentConfig(storage, request, "assistant", body, 20);
+  });
   app.get("/api/reviewer/history", async () => readReviewerHistory(storage));
 
   app.get("/api/providers", async () => {
@@ -832,7 +838,7 @@ function sanitizeDiscordBot(bot: DiscordBotsFile["waifus"][number]) {
 
 async function readAgentConfig(
   storage: StorageService,
-  agent: "orchestrator" | "stage-manager" | "reviewer"
+  agent: "orchestrator" | "stage-manager" | "reviewer" | "assistant"
 ): Promise<AgentConfig> {
   const defaultWindow = agent === "stage-manager" ? 80 : 20;
   return storage.readJson(
@@ -851,7 +857,7 @@ async function readAgentConfig(
 async function updateAgentConfig(
   storage: StorageService,
   request: FastifyRequest,
-  agent: "orchestrator" | "stage-manager" | "reviewer",
+  agent: "orchestrator" | "stage-manager" | "reviewer" | "assistant",
   body: z.infer<typeof AgentConfigBodySchema>,
   defaultContextWindow: number
 ): Promise<AgentConfig> {

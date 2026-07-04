@@ -447,6 +447,32 @@ describe("Backend API", () => {
         await app.close();
       }
     });
+
+    it("serves and updates the assistant agent config", async () => {
+      const { app } = await makeApp();
+      try {
+        const initial = await app.inject({ method: "GET", url: "/api/assistant/config" });
+        expect(initial.statusCode).toBe(200);
+        expect(initial.json()).toMatchObject({ enabled: false, contextWindow: 20 });
+
+        const put = await app.inject({
+          method: "PUT",
+          url: "/api/assistant/config",
+          payload: { revision: initial.json().revision, providerId: "anthropic", modelId: "claude-haiku-4-5-20251001" }
+        });
+        expect(put.statusCode).toBe(200);
+        expect(put.json().modelId).toBe("claude-haiku-4-5-20251001");
+
+        const stale = await app.inject({
+          method: "PUT",
+          url: "/api/assistant/config",
+          payload: { revision: initial.json().revision, modelId: "claude-haiku-4-5-20251001" }
+        });
+        expect(stale.statusCode).toBe(409);
+      } finally {
+        await app.close();
+      }
+    });
   });
 
   // P5 Task 4 review fix: zod v4 `.partial()` does NOT keep fields-with-`.default()` absent —
