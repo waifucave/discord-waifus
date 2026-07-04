@@ -4,6 +4,7 @@ import type { ViewId } from "./nav";
 import { HomeScreen } from "./screens/HomeScreen";
 import { ComingScreen } from "./screens/ComingScreen";
 import { CastScreen } from "./screens/CastScreen";
+import { DirectionScreen } from "./screens/DirectionScreen";
 import { AssistantLauncher, AssistantPanel } from "./components/assistant/AssistantPanel";
 import { OnboardingWizard } from "./components/onboarding/OnboardingWizard";
 import { useApi } from "./api/useApi";
@@ -67,7 +68,7 @@ function Screen({
     case "rooms":
       return <ComingScreen title="Rooms" onBack={home} />;
     case "direction":
-      return <ComingScreen title="Direction" onBack={home} />;
+      return <DirectionScreen tab={route.tab} onNavigate={goto} onTab={(tab) => goto("direction", tab)} />;
     case "memory":
       return <ComingScreen title="Memory" onBack={home} />;
     case "activity":
