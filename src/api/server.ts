@@ -63,6 +63,7 @@ import { StorageConflictError } from "../storage/errors.js";
 import { StorageService } from "../storage/storageService.js";
 import { recentQueries, recentReplies, subscribeQueries, subscribeReplies } from "../shared/queryLog.js";
 import { listDocs, readDoc } from "./docsKb.js";
+import { registerAssistantRoutes } from "./assistant/routes.js";
 import { ApiError, badRequest, conflict, notFound, preconditionRequired } from "./errors.js";
 import { mergeConfiguredBotsIntoMembers } from "../discord/memberCache.js";
 import { assertKnownProvider, assertModelWriteValid } from "./writeValidation.js";
@@ -82,6 +83,10 @@ export type ApiServerOptions = {
   /** Test hook: overrides the fetch the mounted LLM gateway uses for provider calls. */
   llmGateway?: {
     fetchImpl?: typeof fetch;
+  };
+  /** Test hook: overrides the pipeline the assistant chat uses. */
+  assistant?: {
+    createPipeline?: (target: { providerId: string; modelId: string }) => ModelPipeline;
   };
 };
 
@@ -391,6 +396,8 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     const body = AgentConfigBodySchema.parse(request.body);
     return updateAgentConfig(storage, request, "assistant", body, 20);
   });
+
+  registerAssistantRoutes(app, { dataRoot: options.dataRoot, createPipeline: options.assistant?.createPipeline });
   app.get("/api/reviewer/history", async () => readReviewerHistory(storage));
 
   app.get("/api/providers", async () => {
