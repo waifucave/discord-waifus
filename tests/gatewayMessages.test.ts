@@ -84,7 +84,25 @@ describe("buildWaifuMessages", () => {
     expect(bNotes[0]!.content).toBe("<system_note>\nMID\n</system_note>");
   });
 
-  it("injects the mid block at context length - 2 and retryUserMessage last", async () => {
+  it("injects the mid block 10 messages before the end of the context", async () => {
+    // deepseek-v4-flash: multipleSystemMessages=false, input=text only
+    const model = gateway.getCapabilities("deepseek", "deepseek-v4-flash")!;
+    const messages = Array.from({ length: 12 }, (_, i) =>
+      msg({ id: `m${i}`, content: `msg-${i}` })
+    );
+    const out = await buildWaifuMessages(model, { ...base, messages });
+    const midIndex = out.findIndex(
+      (m) => typeof m.content === "string" && m.content.includes("MID")
+    );
+    const trailingIndex = out.findIndex(
+      (m) => typeof m.content === "string" && m.content.includes("TRAIL")
+    );
+    expect(midIndex).toBeGreaterThan(0);
+    // Exactly 10 conversation messages sit between the mid block and the trailing block.
+    expect(trailingIndex - midIndex - 1).toBe(10);
+  });
+
+  it("clamps the mid block to the context start when fewer than 10 messages, retryUserMessage last", async () => {
     // deepseek-v4-flash: multipleSystemMessages=false, input=text only
     const model = gateway.getCapabilities("deepseek", "deepseek-v4-flash")!;
     const out = await buildWaifuMessages(model, {

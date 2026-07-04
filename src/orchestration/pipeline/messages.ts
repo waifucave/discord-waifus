@@ -20,6 +20,12 @@ export type WaifuMessageInputs = {
 const systemNote = (content: string) =>
   `<system_note>\n${content}\n</system_note>`;
 
+// The mid block sits MID_BLOCK_DEPTH messages before the end so the live exchange is never
+// split by a system insertion (live capture 2026-07-03: room_info landed between a question
+// and its answer at depth 2). Depth 10 keeps the whole recent exchange contiguous while the
+// block stays inside every model's close-attention span at these prompt sizes.
+const MID_BLOCK_DEPTH = 10;
+
 async function inlineImages(
   message: ContextMessage,
   fetchImpl: typeof fetch
@@ -102,10 +108,8 @@ export async function buildWaifuMessages(
       ? { role: "system", content }
       : { role: "user", content: systemNote(content) };
 
-  // Inject mid block at context.length - 2 (same anchor as
-  // injectMemoriesIntoChatContext in pipelines.ts:1097).
   if (inputs.midSystemBlock) {
-    const at = Math.max(0, context.length - 2);
+    const at = Math.max(0, context.length - MID_BLOCK_DEPTH);
     context.splice(at, 0, auxTurn(inputs.midSystemBlock));
   }
 

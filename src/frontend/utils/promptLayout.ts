@@ -15,7 +15,7 @@ export const PROMPT_SECTION_LABELS: Record<PromptSectionKey, { title: string; hi
   },
   mid: {
     title: "Mid system block",
-    hint: "Injected two messages before the end of the chat context."
+    hint: "Injected ten messages before the end of the chat context."
   },
   trailing: {
     title: "Trailing system block",
