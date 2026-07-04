@@ -97,6 +97,10 @@ function CastMosaic({ onNavigate }: { onNavigate: (view: ViewId, tab?: string, i
           >
             +
           </button>
+          {/* pad the final grid row so no ink shows through */}
+          {Array.from({ length: (4 - ((cast.length + 1 + (cast.length > 0 ? 1 : 0)) % 4)) % 4 }, (_, i) => (
+            <div className="cell" key={`pad-${i}`} />
+          ))}
         </div>
       </div>
       <FootRow />
