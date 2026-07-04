@@ -24,6 +24,11 @@ describe("orchestration/tools", () => {
     expect(ORCHESTRATOR_TOOL_PARAMETERS).toEqual(orchestratorToolParameters(undefined, false, true));
   });
 
+  it("directive goal description demands destination-only phrasing", () => {
+    const schema = JSON.stringify(orchestratorToolParameters(undefined, false, true));
+    expect(schema).toContain("Never name the topic being left behind");
+  });
+
   it("schema builders produce stable shapes", () => {
     const orch = orchestratorToolParameters(["yuki", "riko"], true, false);
     expect(orch.properties).toHaveProperty("respondingWaifus");

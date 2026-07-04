@@ -183,7 +183,7 @@ export function orchestratorToolParameters(
                       type: "string",
                       maxLength: DIRECTIVE_GOAL_MAX_CHARS,
                       description:
-                        "A short GOAL for this one message ('steer toward LTS's car project', 'pull Kevin back in') — never reply content, wording, or anything she would say."
+                        "A short GOAL for this one message ('steer toward LTS's car project', 'pull Kevin back in') — never reply content, wording, or anything she would say. Name only the destination — what to move TO. Never name the topic being left behind ('pivot to weekend plans', never 'pivot away from the toast talk'): any topic this goal mentions tends to reappear in her message."
                     }
                   },
                   required: ["intent", "goal"]
