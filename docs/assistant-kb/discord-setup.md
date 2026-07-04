@@ -38,3 +38,14 @@ from a channel's list never speaks there, whatever the orchestrator wants.
 The app connects on start when `runtime.autoConnectDiscord` is on (Settings → App). Check
 `GET /api/status` → `discord.connected` / `orchestratorConnected` / `waifuBotCount`; warnings
 list bots that failed (bad token, missing intents).
+
+## Wiring a character's bot (canonical flow)
+
+1. `link_waifu_bot(waifuId, applicationId)` — creates/updates the discord-bots entry with
+   id = waifuId, stores the application id, and sets the waifu's `botId`. One call, all links.
+2. `request_secret(purpose: bot_token, botId: waifuId)` — the user pastes the token into a
+   secure form; it never enters the conversation. A `[secure-form]` receipt confirms it.
+3. `runtime_reload` — connects the new bot.
+
+Application IDs are not secret. Only the token goes through the secure form. Bot updates
+merge per entry server-side — stored tokens are preserved when omitted, nothing gets wiped.

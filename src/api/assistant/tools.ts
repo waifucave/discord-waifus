@@ -126,8 +126,10 @@ export const ASSISTANT_TOOLS: AssistantTool[] = [
       "The secret is posted by the browser directly to storage and NEVER enters this conversation. " +
       "ALWAYS use this instead of asking the user to paste a key or token into chat. " +
       "For provider_key set providerId; for bot_token set botId (a discord-bots entry id, or 'orchestrator'). " +
-      "After calling it, tell the user to paste the secret into the form and END your reply — you will receive a " +
-      "confirmation message once it is saved. Application IDs are not secret and go through update_discord_bots.",
+      "Open at most ONE form per reply, and only for a secret the user is ready to provide right now. " +
+      "After calling it, tell the user to paste the secret into the form and END your reply — an automated " +
+      "[secure-form] receipt message arrives once it is saved. Application IDs are not secret: set them via " +
+      "link_waifu_bot or update_discord_bots.",
     parameters: {
       type: "object",
       properties: {
@@ -311,9 +313,66 @@ export const ASSISTANT_TOOLS: AssistantTool[] = [
     }
   },
   {
+    name: "link_waifu_bot",
+    description:
+      "Wire a character to a Discord bot in one call: ensures a discord-bots entry with id = waifuId, sets its " +
+      "applicationId (if given), and sets the waifu's botId to that entry. This is the FIRST step when connecting " +
+      "a character to Discord. Then call request_secret(purpose bot_token, botId = waifuId) for the token, and " +
+      "finish with runtime_reload. Application IDs are not secret and belong in this call, not in request_secret.",
+    parameters: {
+      type: "object",
+      properties: {
+        waifuId: { type: "string" },
+        applicationId: { type: "string", description: "The Discord application id shown in the developer portal." }
+      },
+      required: ["waifuId"],
+      additionalProperties: false
+    },
+    execute: async (ctx, args) => {
+      const waifuId = String(args.waifuId);
+      const waifuResult = await inject(ctx, { method: "GET", url: `/api/waifus/${encodeURIComponent(waifuId)}` });
+      if (waifuResult.status !== 200) return `Waifu ${waifuId} not found (${waifuResult.status}).`;
+      const waifu = JSON.parse(waifuResult.body) as Record<string, unknown>;
+
+      const botsPut = await revisionedPut(ctx, "/api/discord-bots", (current) => {
+        const waifus = ((current.waifus as Array<Record<string, unknown>>) ?? []).slice();
+        const index = waifus.findIndex((bot) => bot.id === waifuId);
+        const existing = index >= 0 ? waifus[index] : undefined;
+        const entry = {
+          id: waifuId,
+          displayName: (waifu.displayName as string) || (waifu.name as string) || waifuId,
+          enabled: true,
+          ...(existing ?? {}),
+          ...(args.applicationId ? { applicationId: String(args.applicationId) } : {})
+        };
+        if (index >= 0) waifus[index] = entry;
+        else waifus.push(entry);
+        return { waifus };
+      });
+      if (botsPut.startsWith("GET ") || botsPut.startsWith("Conflict")) return botsPut;
+
+      const waifuPut = await revisionedPut(ctx, `/api/waifus/${encodeURIComponent(waifuId)}`, () => ({ botId: waifuId }));
+      if (waifuPut.startsWith("GET ") || waifuPut.startsWith("Conflict")) return waifuPut;
+
+      const bots = JSON.parse(botsPut) as { waifus: Array<Record<string, unknown>> };
+      const entry = bots.waifus.find((bot) => bot.id === waifuId);
+      return JSON.stringify({
+        linked: true,
+        botId: waifuId,
+        applicationId: entry?.applicationId ?? null,
+        tokenConfigured: Boolean(entry?.tokenConfigured),
+        next: entry?.tokenConfigured
+          ? "Token already stored — call runtime_reload to connect."
+          : "Now call request_secret with purpose bot_token and this botId, then runtime_reload after the user saves it."
+      });
+    }
+  },
+  {
     name: "update_discord_bots",
     description:
-      "Replace the Discord bots file (orchestrator entry + waifus array). Read it first with list_discord_bots; changing tokens is destructive — confirm in chat first.",
+      "Update Discord bot entries. The server MERGES per entry and preserves stored tokens when omitted — nothing is " +
+      "wiped by leaving fields out. For wiring a character's bot prefer link_waifu_bot; use this for orchestrator " +
+      "applicationId or display tweaks. Apply directly; no confirmation needed.",
     parameters: {
       // NOTE: keep every "type" a single string — Google's proto-based schema validation
       // rejects JSON-Schema type arrays like ["object", "null"].

@@ -146,6 +146,34 @@ describe("assistant tools", () => {
     }
   });
 
+  it("link_waifu_bot wires bot entry, applicationId, and waifu.botId in one call", async () => {
+    const { app } = await makeApp();
+    try {
+      const created = await executeAssistantTool(
+        { app },
+        "create_waifu",
+        JSON.stringify({ id: "reiko", name: "Reiko", displayName: "Reiko", persona: "sweet" })
+      );
+      expect(created).toContain("reiko");
+      const result = await executeAssistantTool(
+        { app },
+        "link_waifu_bot",
+        JSON.stringify({ waifuId: "reiko", applicationId: "1523083688701591562" })
+      );
+      const parsed = JSON.parse(result) as { linked: boolean; botId: string; tokenConfigured: boolean };
+      expect(parsed.linked).toBe(true);
+      expect(parsed.botId).toBe("reiko");
+      expect(parsed.tokenConfigured).toBe(false);
+      const bots = await app.inject({ method: "GET", url: "/api/discord-bots" });
+      const botsBody = JSON.parse(bots.body) as { waifus: Array<{ id: string; applicationId?: string }> };
+      expect(botsBody.waifus.find((b) => b.id === "reiko")?.applicationId).toBe("1523083688701591562");
+      const waifu = await app.inject({ method: "GET", url: "/api/waifus/reiko" });
+      expect((JSON.parse(waifu.body) as { botId?: string }).botId).toBe("reiko");
+    } finally {
+      await app.close();
+    }
+  });
+
   it("request_secret shows a secure form marker without touching storage", async () => {
     const { app } = await makeApp();
     try {

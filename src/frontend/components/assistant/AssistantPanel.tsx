@@ -54,7 +54,7 @@ function SecretForm({ args, onDone }: { args: SecretArgs; onDone: (outcome: stri
         await api.reload();
       }
       setValue("");
-      onDone(`(the ${args.purpose === "provider_key" ? `API key for ${target}` : `bot token for ${target}`} was submitted through the secure form and saved — it never entered this chat)`);
+      onDone(`[secure-form] the ${args.purpose === "provider_key" ? `API key for ${target}` : `bot token for ${target}`} was saved — it never entered this chat. Continue.`);
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -81,7 +81,7 @@ function SecretForm({ args, onDone }: { args: SecretArgs; onDone: (outcome: stri
         <button className="btn sm primary" onClick={submit} disabled={saving || !value.trim()}>
           {saving ? "Saving…" : "Save secret"}
         </button>
-        <button className="btn sm ghost" onClick={() => onDone("(the user dismissed the secure secret form without saving)")}>
+        <button className="btn sm ghost" onClick={() => onDone("[secure-form] the user dismissed the form without saving a secret.")}>
           Cancel
         </button>
       </div>
@@ -181,13 +181,22 @@ export function AssistantPanel({
           </div>
         )}
         {chat.items.map((item, index) => {
-          if (item.kind === "user")
+          if (item.kind === "user") {
+            if (item.content.startsWith("[secure-form]")) {
+              return (
+                <div key={index} className="m-tool">
+                  <span className="chip pink">secure form</span>
+                  {item.content.replace("[secure-form]", "").trim()}
+                </div>
+              );
+            }
             return (
               <div key={index} className="m-user">
                 <div className="m-label">You</div>
                 {item.content}
               </div>
             );
+          }
           if (item.kind === "assistant") return <div key={index} className="m-asst">{item.content}</div>;
           if (item.kind === "tool") {
             const secretArgs = item.name === "request_secret" ? parseSecretArgs(item.args) : undefined;
