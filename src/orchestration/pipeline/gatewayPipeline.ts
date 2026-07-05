@@ -1,3 +1,4 @@
+import { sanitizeChatMessages } from "../../shared/text.js";
 import { createGateway, Gateway, type ChatResponse, type TextBlock, type ToolCallBlock, type ToolDef } from "@waifucave/gateway";
 import { z } from "zod";
 import { createProviderCredentialsLookup } from "../../api/llmGatewayCredentials.js";
@@ -123,7 +124,7 @@ export class GatewayModelPipeline implements ModelPipeline {
     return this.gateway.chat({
       provider: providerId,
       model: modelId,
-      messages: request.messages,
+      messages: sanitizeChatMessages(request.messages),
       tools: request.tools,
       toolChoice: conformed.toolChoice,
       params: conformed.params,

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { clipSurrogateSafe } from "../shared/text.js";
 
 export const ReactionSummarySchema = z.object({
   emoji: z.string(),
@@ -181,7 +182,7 @@ const COMPACT_REPLY_PREVIEW_LIMIT = 80;
 
 function clipReplyPreview(preview: string): string {
   return preview.length > COMPACT_REPLY_PREVIEW_LIMIT
-    ? `${preview.slice(0, COMPACT_REPLY_PREVIEW_LIMIT - 1)}…`
+    ? `${clipSurrogateSafe(preview, COMPACT_REPLY_PREVIEW_LIMIT - 1)}…`
     : preview;
 }
 

@@ -380,7 +380,8 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   app.get("/api/logs", async (request) => {
     const limit = Math.min(Number((request.query as Record<string, string>).limit ?? 100) || 100, 500);
     const entries = options.logger?.recent?.() ?? [];
-    return { entries: entries.slice(-limit) };
+    // recent() is newest-first (logger unshifts) — take the head for the newest N
+    return { entries: entries.slice(0, limit) };
   });
 
   app.get("/api/docs", async () => ({ docs: await listDocs() }));
