@@ -650,6 +650,24 @@ describe("Backend API", () => {
       }
     });
 
+    it("GET /api/servers/:guildId returns one server (Rooms guild screen depends on it)", async () => {
+      const { app } = await makeApp();
+      try {
+        await app.inject({
+          method: "PUT",
+          url: "/api/servers/g-single",
+          payload: { name: "Single", enabled: true }
+        });
+        const single = await app.inject({ method: "GET", url: "/api/servers/g-single" });
+        expect(single.statusCode).toBe(200);
+        expect(JSON.parse(single.body).guildId).toBe("g-single");
+        const missing = await app.inject({ method: "GET", url: "/api/servers/nope" });
+        expect(missing.statusCode).toBe(404);
+      } finally {
+        await app.close();
+      }
+    });
+
     it("PUT server config omitting memoryInjectionLimit (real ServersView save body) leaves it untouched (reviewer repro)", async () => {
       const { app } = await makeApp();
       try {

@@ -576,6 +576,13 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   });
 
   app.get("/api/servers", async () => ({ servers: await listServers(storage) }));
+  app.get("/api/servers/:guildId", async (request, reply) => {
+    const { guildId } = parseIdParam(request.params, "guildId");
+    const servers = await listServers(storage);
+    const server = servers.find((entry) => entry.guildId === guildId);
+    if (!server) return reply.code(404).send({ error: "NotFound", message: `Server ${guildId} is not configured.` });
+    return server;
+  });
   app.put("/api/servers/:guildId", async (request) => {
     const { guildId } = parseIdParam(request.params, "guildId");
     const body = ServerConfigBodySchema.parse(request.body);
