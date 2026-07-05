@@ -235,6 +235,7 @@ function AgentForm({ agent }: { agent: AgentTab }) {
           <div className="cell" />
         </div>
       )}
+      {draft.modelId && (
       <div className="fused" style={{ flex: "none" }}>
         <ModelParamsForm
           providerId={draft.providerId ?? null}
@@ -244,6 +245,7 @@ function AgentForm({ agent }: { agent: AgentTab }) {
           onValidity={setParamsValid}
         />
       </div>
+      )}
 
       <div className="cell fcell" style={{ flex: "none" }}>
         <label className="field-label">{def.promptLabel ?? "Extra instructions"} · appended to the fixed harness prompt</label>

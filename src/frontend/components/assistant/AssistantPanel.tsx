@@ -67,7 +67,7 @@ function SecretForm({ args, onDone }: { args: SecretArgs; onDone: (outcome: stri
       <div className="m-label" style={{ marginBottom: 6 }}>
         Secure input · {args.purpose === "provider_key" ? `${target} API key` : `${target} bot token`} · bypasses the chat
       </div>
-      <div className="fgrid" style={{ gridTemplateColumns: "1fr 90px 32px", border: "var(--line) solid var(--ink)" }}>
+      <div className="fgrid" style={{ gridTemplateColumns: "1fr 90px 32px", margin: "0 -20px", borderTop: "var(--line) solid var(--ink)", borderBottom: "var(--line) solid var(--ink)" }}>
         <div className="fcell" style={{ padding: "10px 12px" }}>
           <input
             className="input"

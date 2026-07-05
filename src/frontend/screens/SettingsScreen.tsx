@@ -82,7 +82,7 @@ function ProvidersTab() {
             </span>
           </div>
           {editing === provider.id && (
-            <div className="fgrid" style={{ gridTemplateColumns: "1fr 120px 120px", marginTop: 14, border: "var(--line) solid var(--ink)" }}>
+            <div className="fgrid" style={{ gridTemplateColumns: "1fr 120px 120px", margin: "14px -26px -18px", borderTop: "var(--line) solid var(--ink)" }}>
               <div className="fcell" style={{ padding: "12px 16px" }}>
                 <input
                   className="input"
@@ -298,18 +298,18 @@ function BotsSection({
       {entries.map((entry) => {
         const draft = drafts[entry.key] ?? { applicationId: "", token: "" };
         return (
-          <div key={entry.key} className="cell" style={{ padding: "14px 20px 16px" }}>
-            <div style={{ display: "flex", alignItems: "baseline", gap: 12, marginBottom: 10 }}>
-              <span className="t-body">{entry.label}</span>
+          <div key={entry.key} style={{ display: "flex", flexDirection: "column", gap: "var(--line)", background: "var(--ink)" }}>
+            <div className="cell slabel">
+              <span className="t-small">{entry.label}</span>
               <span className="t-micro">
                 {entry.bot
                   ? `${entry.bot.applicationId ? `app ${entry.bot.applicationId}` : "no app id"} · ${entry.bot.tokenConfigured ? `token set${entry.bot.tokenHint ? ` (${entry.bot.tokenHint})` : ""}` : "no token"}`
                   : "not linked"}
+                {entry.bot?.tokenConfigured && <span className="chip sky" style={{ marginLeft: 8 }}>connected</span>}
               </span>
-              {entry.bot?.tokenConfigured && <span className="chip sky">connected</span>}
             </div>
-            <div className="fgrid" style={{ gridTemplateColumns: "1fr 1fr 120px", border: "var(--line) solid var(--ink)" }}>
-              <div className="fcell" style={{ padding: "10px 14px" }}>
+            <div className="fgrid" style={{ gridTemplateColumns: "1fr 1fr 120px" }}>
+              <div className="fcell">
                 <label className="field-label">Application ID</label>
                 <input
                   className="input"
@@ -317,7 +317,7 @@ function BotsSection({
                   onChange={(e) => setDrafts((d) => ({ ...d, [entry.key]: { ...draft, applicationId: e.target.value } }))}
                 />
               </div>
-              <div className="fcell" style={{ padding: "10px 14px" }}>
+              <div className="fcell">
                 <label className="field-label">Bot token · write-only</label>
                 <input
                   className="input"

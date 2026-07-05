@@ -152,8 +152,12 @@ button.cell, button.clickable, .clickable {
 /* fused form grid: every field is a cell of the shared field — no boxes in boxes */
 .fgrid { display: grid; gap: var(--line); background: var(--ink); }
 .fcell { background: var(--paper); padding: 16px 20px 14px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
-.fcell:focus-within { background: var(--sky); }
+.fcell:hover, .fcell:focus-within { background: var(--sky); }
+.fcell:hover .field-label, .fcell:hover .field-hint,
 .fcell:focus-within .field-label, .fcell:focus-within .field-hint { color: var(--ink); }
+/* bare control-cells (e.g. filter rows) react the same way */
+select.cell:hover, input.cell:hover, textarea.cell:hover,
+select.cell:focus, input.cell:focus, textarea.cell:focus { background: var(--sky); }
 /* section label rows inside the field */
 .slabel { background: var(--paper); padding: 12px 20px 10px; display: flex; justify-content: space-between; align-items: baseline; }
 
@@ -165,8 +169,10 @@ button.cell, button.clickable, .clickable {
 .fused .section-header .section-title { padding: 0; }
 .fused .grid { gap: var(--line); background: var(--ink); }
 .fused .field { background: var(--paper); padding: 16px 20px 14px; gap: 8px; }
-.fused .field:focus-within { background: var(--sky); }
+.fused .field:hover, .fused .field:focus-within { background: var(--sky); }
+.fused .field:hover .field-label, .fused .field:focus-within .field-label { color: var(--ink); }
 .fused .toggle-field { background: var(--paper); padding: 16px 20px 14px; }
+.fused .toggle-field:hover { background: var(--sky); }
 .fused .frow { gap: var(--line); background: var(--ink); margin: 0 0 var(--line); }
 .fused .frow:last-child { margin-bottom: 0; }
 .fused > .headline { background: var(--paper); padding: 12px 20px 10px; display: flex; justify-content: space-between; align-items: baseline; margin: 0; }
@@ -322,7 +328,7 @@ button.cell, button.clickable, .clickable {
 .norma .hint { color: var(--mute); font-size: 12.5px; border: 1px dashed var(--mute); padding: 12px; margin-bottom: 16px; }
 .norma .ninput { display: grid; grid-template-columns: 1fr 100px; gap: var(--line); background: var(--ink); }
 .norma .ninput textarea { background: var(--paper); border: none; resize: none; padding: 24px 16px 0; font-family: inherit; font-size: 13.5px; outline: none; }
-.norma .ninput textarea:focus { background: var(--sky); }
+.norma .ninput textarea:hover, .norma .ninput textarea:focus { background: var(--sky); }
 .norma .send { background: var(--paper); border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; font-family: inherit; font-size: 14px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink); }
 .norma .send:hover { background: var(--pink); }
 .norma .send:disabled { color: var(--mute); cursor: not-allowed; }

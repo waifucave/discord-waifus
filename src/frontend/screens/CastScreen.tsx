@@ -364,6 +364,7 @@ function CharacterEditor({
               />
             </div>
         </div>
+        {draft.modelId && (
         <div className="fused" style={{ flex: "none" }}>
           <ModelParamsForm
             providerId={draft.providerId ?? null}
@@ -373,6 +374,7 @@ function CharacterEditor({
             onValidity={setParamsValid}
           />
         </div>
+        )}
 
         {!creating && remote.data && draft.promptLayout && draft.tools && (
           <div className="fused" style={{ flex: "none" }}>

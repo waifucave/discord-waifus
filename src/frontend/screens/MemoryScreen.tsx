@@ -163,7 +163,7 @@ export function MemoryScreen({ onNavigate }: { onNavigate: (view: ViewId, tab?: 
               </span>
             </div>
             {editingId === record.id ? (
-              <div className="fgrid" style={{ gridTemplateColumns: "1fr 110px 110px", border: "var(--line) solid var(--ink)" }}>
+              <div className="fgrid" style={{ gridTemplateColumns: "1fr 110px 110px", margin: "8px -26px -14px", borderTop: "var(--line) solid var(--ink)" }}>
                 <div className="fcell" style={{ padding: "10px 14px" }}>
                   <input className="input" value={editContent} onChange={(e) => setEditContent(e.target.value)} />
                 </div>
