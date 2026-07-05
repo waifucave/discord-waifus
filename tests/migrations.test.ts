@@ -121,7 +121,8 @@ describe("runMigrations", () => {
       id: "short-no-reply",
       action: "no_reply",
       respondingWaifus: [],
-      retriggerAfterSeconds: 100,
+      // floor is 10s since 1.5.189 — a legacy 60s trigger is now within range and preserved
+      retriggerAfterSeconds: 60,
       status: "completed",
       waifuMessageIds: [],
       responderOutcomes: []

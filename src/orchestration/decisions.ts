@@ -4,7 +4,9 @@ export const ORCHESTRATOR_ACTION_VALUES = ["reply", "no_reply"] as const;
 export type OrchestratorAction = (typeof ORCHESTRATOR_ACTION_VALUES)[number];
 export const OrchestratorActionSchema = z.enum(ORCHESTRATOR_ACTION_VALUES);
 
-export const RETRIGGER_MIN_SECONDS = 100;
+export const RETRIGGER_MIN_SECONDS = 10;
+/** Used when the model omits retriggerAfterSeconds, and as the post-turn-limit cooldown with humans around. */
+export const RETRIGGER_DEFAULT_SECONDS = 100;
 export const RETRIGGER_MAX_SECONDS = 28800;
 export const MAX_WAIFU_DELAY_SECONDS = 30;
 export const DIRECTIVE_GOAL_MAX_CHARS = 100;

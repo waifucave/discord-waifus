@@ -82,6 +82,7 @@ import {
   MAX_WAIFU_DELAY_SECONDS,
   OrchestratorDecision,
   RETRIGGER_MAX_SECONDS,
+  RETRIGGER_DEFAULT_SECONDS,
   RETRIGGER_MIN_SECONDS
 } from "./decisions.js";
 import { assessLoop } from "./loopDetector.js";
@@ -1226,7 +1227,7 @@ export class RuntimeOrchestrator {
       });
 
       if (decision.action === "no_reply") {
-        let seconds = decision.retriggerAfterSeconds ?? RETRIGGER_MIN_SECONDS;
+        let seconds = decision.retriggerAfterSeconds ?? RETRIGGER_DEFAULT_SECONDS;
         if (timerWakeSeconds) {
           seconds = Math.max(seconds, Math.ceil(timerWakeSeconds * 1.5));
         }
@@ -1262,7 +1263,7 @@ export class RuntimeOrchestrator {
     const humanRecent =
       lastHumanMessageTs !== undefined &&
       Date.now() - Date.parse(lastHumanMessageTs) < HUMAN_RECENT_WINDOW_MS;
-    const cooldownSeconds = humanRecent ? RETRIGGER_MIN_SECONDS : CAST_ONLY_COOLDOWN_SECONDS;
+    const cooldownSeconds = humanRecent ? RETRIGGER_DEFAULT_SECONDS : CAST_ONLY_COOLDOWN_SECONDS;
     this.options.logger.warn("Automatic turn limit reached; scheduling cooldown", {
       guildId,
       channelId,
@@ -3147,7 +3148,7 @@ export class RuntimeOrchestrator {
       : "No waifus are currently enabled for this channel.";
 
     const pausePlanning =
-      "When you choose no_reply, retriggerAfterSeconds is a planned pause before YOU re-check the room — any new human message wakes you regardless, so long pauses cost nothing. wakePlan is one sentence on what you intend at wake; the runtime shows it back to you when the timer fires. A pivot plan should name the new topic, and when the wake comes you execute it with a change_topic directive — a plan without a directive usually dissolves into the old topic. Picking the pause: remember an ACTIVE room should rarely get here at all — if humans are engaged, the right move was a reply, not a pause. When the room genuinely cooled: 100–180s right after a beat lands (a quick check whether it caught), 240–600s for a cooling thread, 900–1800s for a planned revival of a quiet room, 3600s+ when you are mostly waiting for humans to return. Do NOT default to a round 300 — pick an exact number that matches the room's energy (e.g. 110, 140, 190, 420), and vary it so your pacing never becomes a predictable cycle. The same is true of your wake rhythm: if your last few wakes each produced the same shape (wake, two replies, pause), break the pattern — one voice instead of two, a directive instead of a reply, or a genuinely longer sleep. Repeated quiet checks must back off to longer pauses.";
+      "When you choose no_reply, retriggerAfterSeconds is a planned pause before YOU re-check the room — any new human message wakes you regardless, so long pauses cost nothing. wakePlan is one sentence on what you intend at wake; the runtime shows it back to you when the timer fires. A pivot plan should name the new topic, and when the wake comes you execute it with a change_topic directive — a plan without a directive usually dissolves into the old topic. Picking the pause: remember an ACTIVE room should rarely get here at all — if humans are engaged, the right move was a reply, not a pause. When the room genuinely cooled: 10–60s only to give a mid-flow room a short breath, 100–180s right after a beat lands (a quick check whether it caught), 240–600s for a cooling thread, 900–1800s for a planned revival of a quiet room, 3600s+ when you are mostly waiting for humans to return. Do NOT default to a round 300 — pick an exact number that matches the room's energy (e.g. 110, 140, 190, 420), and vary it so your pacing never becomes a predictable cycle. The same is true of your wake rhythm: if your last few wakes each produced the same shape (wake, two replies, pause), break the pattern — one voice instead of two, a directive instead of a reply, or a genuinely longer sleep. Repeated quiet checks must back off to longer pauses.";
 
     const task = replyRequired
       ? `${DEFAULT_ORCHESTRATOR_PROMPT}\n\n${manualRunReplyRequiredInstruction()}`
@@ -4172,7 +4173,7 @@ function formatOrchestratorDebugLog(input: {
       }
     }
   } else {
-    lines.push(`Idle trigger: ${input.decision.retriggerAfterSeconds ?? RETRIGGER_MIN_SECONDS}s`);
+    lines.push(`Idle trigger: ${input.decision.retriggerAfterSeconds ?? RETRIGGER_DEFAULT_SECONDS}s`);
     if (input.decision.wakePlan) {
       lines.push(`Wake plan: ${clipDebugText(input.decision.wakePlan)}`);
     }
