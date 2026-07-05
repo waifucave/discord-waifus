@@ -256,66 +256,61 @@ function CharacterEditor({
           </div>
         )}
 
-        <div className="cell formcell" style={{ flex: "none" }}>
-          <div className="headline">
-            <span className="t-title">Identity</span>
-            <span className="t-micro">who shows up in the room</span>
-          </div>
-          <div className="frow" style={{ gridTemplateColumns: creating ? "1fr 1fr 1fr" : "1fr 1fr" }}>
-            {creating && (
-              <div className="field">
-                <label className="field-label">Id (kebab-case)</label>
-                <input className="input" value={draft.id ?? ""} onChange={(e) => set({ id: e.target.value })} placeholder="momo" />
-              </div>
-            )}
-            <div className="field">
-              <label className="field-label">Name</label>
-              <input className="input" value={draft.name ?? ""} onChange={(e) => set({ name: e.target.value })} />
-            </div>
-            <div className="field">
-              <label className="field-label">Display name</label>
-              <input className="input" value={draft.displayName ?? ""} onChange={(e) => set({ displayName: e.target.value })} />
-            </div>
-          </div>
-          <div className="frow single">
-            <div className="field">
-              <label className="field-label">Persona</label>
-              <textarea className="textarea" rows={7} value={draft.persona ?? ""} onChange={(e) => set({ persona: e.target.value })} placeholder="Who is she? Voice, history, quirks, relationships…" />
-              <span className="field-hint">Character only — message length and chat format are enforced by the harness, not the persona.</span>
-            </div>
-          </div>
-          {!creating && (
-            <div className="frow">
-              <div className="field">
-                <label className="field-label">Enabled</label>
-                <label className="checkbox-chip">
-                  <input type="checkbox" checked={draft.enabled ?? false} onChange={(e) => set({ enabled: e.target.checked })} />
-                  {draft.enabled ? "In the cast" : "Benched"}
-                </label>
-              </div>
-              <div className="field">
-                <label className="field-label">Discord bot</label>
-                <select className="select" value={draft.botId ?? ""} onChange={(e) => set({ botId: e.target.value || undefined })}>
-                  <option value="">— none —</option>
-                  {(bots.data?.waifus ?? []).map((bot) => (
-                    <option key={bot.id} value={bot.id}>
-                      {bot.displayName} ({bot.id})
-                    </option>
-                  ))}
-                </select>
-                <span className="field-hint">Manage bot applications in Settings → Discord.</span>
-              </div>
+        <div className="cell slabel" style={{ flex: "none" }}>
+          <span className="t-micro" style={{ color: "var(--ink)" }}>Identity</span>
+          <span className="t-micro">who shows up in the room</span>
+        </div>
+        <div className="fgrid" style={{ flex: "none", gridTemplateColumns: creating ? "1fr 1fr 1fr" : "1fr 1fr" }}>
+          {creating && (
+            <div className="fcell">
+              <label className="field-label">Id (kebab-case)</label>
+              <input className="input" value={draft.id ?? ""} onChange={(e) => set({ id: e.target.value })} placeholder="momo" />
             </div>
           )}
-        </div>
-
-        <div className="cell formcell" style={{ flex: "none" }}>
-          <div className="headline">
-            <span className="t-title">Model</span>
-            <span className="t-micro">her brain</span>
+          <div className="fcell">
+            <label className="field-label">Name</label>
+            <input className="input" value={draft.name ?? ""} onChange={(e) => set({ name: e.target.value })} />
           </div>
-          <div className="frow" style={{ gridTemplateColumns: "1fr 1fr 200px" }}>
-            <div className="field">
+          <div className="fcell">
+            <label className="field-label">Display name</label>
+            <input className="input" value={draft.displayName ?? ""} onChange={(e) => set({ displayName: e.target.value })} />
+          </div>
+        </div>
+        <div className="cell fcell" style={{ flex: "none" }}>
+          <label className="field-label">Persona</label>
+          <textarea className="textarea" rows={7} value={draft.persona ?? ""} onChange={(e) => set({ persona: e.target.value })} placeholder="Who is she? Voice, history, quirks, relationships…" />
+          <span className="field-hint">Character only — message length and chat format are enforced by the harness, not the persona.</span>
+        </div>
+        {!creating && (
+          <div className="fgrid" style={{ flex: "none", gridTemplateColumns: "1fr 1fr" }}>
+            <div className="fcell">
+              <label className="field-label">Enabled</label>
+              <label className="checkbox-chip">
+                <input type="checkbox" checked={draft.enabled ?? false} onChange={(e) => set({ enabled: e.target.checked })} />
+                {draft.enabled ? "In the cast" : "Benched"}
+              </label>
+            </div>
+            <div className="fcell">
+              <label className="field-label">Discord bot</label>
+              <select className="select" value={draft.botId ?? ""} onChange={(e) => set({ botId: e.target.value || undefined })}>
+                <option value="">— none —</option>
+                {(bots.data?.waifus ?? []).map((bot) => (
+                  <option key={bot.id} value={bot.id}>
+                    {bot.displayName} ({bot.id})
+                  </option>
+                ))}
+              </select>
+              <span className="field-hint">Manage bot applications in Settings → Discord.</span>
+            </div>
+          </div>
+        )}
+
+        <div className="cell slabel" style={{ flex: "none" }}>
+          <span className="t-micro" style={{ color: "var(--ink)" }}>Model</span>
+          <span className="t-micro">her brain</span>
+        </div>
+        <div className="fgrid" style={{ flex: "none", gridTemplateColumns: "1fr 1fr 200px" }}>
+            <div className="fcell">
               <label className="field-label">Model</label>
               <select
                 className="select"
@@ -337,7 +332,7 @@ function CharacterEditor({
               </select>
             </div>
             {resolvedRoute && resolvedRoute.group.routes.length > 1 ? (
-              <div className="field">
+              <div className="fcell">
                 <label className="field-label">Route</label>
                 <select
                   className="select"
@@ -355,9 +350,9 @@ function CharacterEditor({
                 </select>
               </div>
             ) : (
-              <div />
+              <div className="cell" />
             )}
-            <div className="field">
+            <div className="fcell">
               <label className="field-label">Context window</label>
               <input
                 className="input"
@@ -368,7 +363,8 @@ function CharacterEditor({
                 onChange={(e) => set({ contextWindow: Number(e.target.value) })}
               />
             </div>
-          </div>
+        </div>
+        <div className="fused" style={{ flex: "none" }}>
           <ModelParamsForm
             providerId={draft.providerId ?? null}
             modelId={draft.modelId ?? null}
@@ -379,11 +375,7 @@ function CharacterEditor({
         </div>
 
         {!creating && remote.data && draft.promptLayout && draft.tools && (
-          <div className="cell formcell" style={{ flex: "none" }}>
-            <div className="headline">
-              <span className="t-title">Prompt layout</span>
-              <span className="t-micro">advanced · defaults are sensible</span>
-            </div>
+          <div className="fused" style={{ flex: "none" }}>
             <PromptLayoutEditor
               layout={draft.promptLayout}
               tools={draft.tools}

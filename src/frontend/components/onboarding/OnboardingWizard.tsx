@@ -184,7 +184,7 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
           <X className="icon" /> Skip setup
         </button>
       </aside>
-      <main className="onboarding-main">
+      <main className="onboarding-main fused-host">
         {error && <Notice tone="err">{error}</Notice>}
 
         {step === 0 && (
@@ -210,7 +210,7 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
           <section>
             <h1 className="onboarding-title">Add a model provider.</h1>
             <p className="onboarding-lede">Characters need a language model. Add one API key to start — more anytime in Settings.</p>
-            <div className="grid grid-2" style={{ maxWidth: 640 }}>
+            <div className="fused" style={{ maxWidth: 640 }}><div className="grid grid-2">
               <div className="field">
                 <label className="field-label">Provider</label>
                 <select className="select" value={keyProviderId} onChange={(e) => setKeyProviderId(e.target.value)}>
@@ -232,7 +232,7 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
                 />
                 <span className="field-hint">Stored locally, never shown again.</span>
               </div>
-            </div>
+            </div></div>
             <div className="onboarding-actions">
               <button className="btn ghost" onClick={() => setStep(0)}>
                 <ArrowLeft className="icon" /> Back
@@ -254,7 +254,7 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
               The director decides who speaks (needs solid tool-calling). The cast default is applied to your
               characters in the next step.
             </p>
-            <div className="grid grid-2" style={{ maxWidth: 640 }}>
+            <div className="fused" style={{ maxWidth: 640 }}><div className="grid grid-2">
               <div className="field">
                 <label className="field-label">Director (orchestrator)</label>
                 <ModelPicker
@@ -273,7 +273,7 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
                   onChange={setWaifuModel}
                 />
               </div>
-            </div>
+            </div></div>
             <div className="onboarding-actions">
               <button className="btn ghost" onClick={() => setStep(1)}>
                 <ArrowLeft className="icon" /> Back
@@ -330,7 +330,7 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
               afterwards.
             </p>
             <DiscordBotGuide kind="orchestrator" collapsedByDefault={false} applicationId={orchestratorAppId || undefined} />
-            <div className="grid grid-2" style={{ maxWidth: 640, marginTop: 16 }}>
+            <div className="fused" style={{ maxWidth: 640, marginTop: 16 }}><div className="grid grid-2">
               <div className="field">
                 <label className="field-label">Application ID</label>
                 <input className="input" value={orchestratorAppId} onChange={(e) => setOrchestratorAppId(e.target.value)} />
@@ -344,7 +344,7 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
                   onChange={(e) => setOrchestratorToken(e.target.value)}
                 />
               </div>
-            </div>
+            </div></div>
             {botsSaved && <Notice tone="ok">Saved — the runtime is reconnecting.</Notice>}
             <div className="onboarding-actions">
               <button className="btn ghost" onClick={() => setStep(3)}>

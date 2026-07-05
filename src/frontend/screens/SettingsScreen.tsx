@@ -82,20 +82,22 @@ function ProvidersTab() {
             </span>
           </div>
           {editing === provider.id && (
-            <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
-              <input
-                className="input"
-                type="password"
-                placeholder="sk-…"
-                value={key}
-                autoFocus
-                onChange={(e) => setKey(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && key.trim() && save(provider.id)}
-              />
-              <button className="btn primary" onClick={() => save(provider.id)} disabled={!key.trim()}>
+            <div className="fgrid" style={{ gridTemplateColumns: "1fr 120px 120px", marginTop: 14, border: "var(--line) solid var(--ink)" }}>
+              <div className="fcell" style={{ padding: "12px 16px" }}>
+                <input
+                  className="input"
+                  type="password"
+                  placeholder="paste the API key…"
+                  value={key}
+                  autoFocus
+                  onChange={(e) => setKey(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && key.trim() && save(provider.id)}
+                />
+              </div>
+              <button className="cell clickable btn" onClick={() => save(provider.id)} disabled={!key.trim()}>
                 Save
               </button>
-              <button className="btn ghost" onClick={() => setEditing(undefined)}>
+              <button className="cell clickable btn ghost" onClick={() => setEditing(undefined)}>
                 Cancel
               </button>
             </div>
@@ -140,18 +142,19 @@ function AppTab() {
 
       <BotsSection bots={bots} waifus={waifus} onResult={(ok, text) => { setTone(ok ? "ok" : "err"); setMessage(text); }} />
 
-      <div className="cell formcell" style={{ flex: "none" }}>
+      <div className="fused" style={{ flex: "none" }}>
         <div className="headline">
-          <span className="t-title">Runtime</span>
+          <span className="t-micro" style={{ color: "var(--ink)" }}>Runtime</span>
           <span className="t-micro">restart-free controls</span>
         </div>
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-          <button className="btn" onClick={() => act(() => api.pause(), "Paused — no new replies will start.")}>Pause</button>
-          <button className="btn" onClick={() => act(() => api.resume(), "Resumed.")}>Resume</button>
-          <button className="btn" onClick={() => act(() => api.reload(), "Reload accepted — Discord reconnecting.")}>Reload Discord</button>
-          <button className="btn" onClick={() => act(() => api.clearOcrCache(), "OCR cache cleared.")}>Clear OCR cache</button>
+        <div className="fgrid" style={{ gridTemplateColumns: "repeat(5, 1fr)" }}>
+          <button className="cell clickable btn" style={{ padding: "18px 0" }} onClick={() => act(() => api.pause(), "Paused — no new replies will start.")}>Pause</button>
+          <button className="cell clickable btn" style={{ padding: "18px 0" }} onClick={() => act(() => api.resume(), "Resumed.")}>Resume</button>
+          <button className="cell clickable btn" style={{ padding: "18px 0" }} onClick={() => act(() => api.reload(), "Reload accepted — Discord reconnecting.")}>Reload Discord</button>
+          <button className="cell clickable btn" style={{ padding: "18px 0" }} onClick={() => act(() => api.clearOcrCache(), "OCR cache cleared.")}>Clear OCR cache</button>
           <button
-            className="btn"
+            className="cell clickable btn"
+            style={{ padding: "18px 0" }}
             onClick={() => {
               localStorage.removeItem("onboarding-dismissed");
               localStorage.setItem("onboarding-force", "1");
@@ -180,9 +183,9 @@ function OcrSection({
   useEffect(() => setDraft(config.data), [config.data]);
   if (!draft) return null;
   return (
-    <div className="cell formcell" style={{ flex: "none" }}>
+    <div className="fused" style={{ flex: "none" }}>
       <div className="headline">
-        <span className="t-title">OCR</span>
+        <span className="t-micro" style={{ color: "var(--ink)" }}>OCR</span>
         <span className="t-micro">image text fallback for text-only models</span>
       </div>
       <div className="frow" style={{ gridTemplateColumns: "200px 260px 1fr" }}>
@@ -284,9 +287,9 @@ function BotsSection({
   };
 
   return (
-    <div className="cell formcell" style={{ flex: "none" }}>
+    <div className="fused" style={{ flex: "none" }}>
       <div className="headline">
-        <span className="t-title">Discord bots</span>
+        <span className="t-micro" style={{ color: "var(--ink)" }}>Discord bots</span>
         <button className="btn sm" onClick={() => setShowGuide((v) => !v)}>
           {showGuide ? "Hide guide" : "How to create a bot"}
         </button>
@@ -295,7 +298,7 @@ function BotsSection({
       {entries.map((entry) => {
         const draft = drafts[entry.key] ?? { applicationId: "", token: "" };
         return (
-          <div key={entry.key} style={{ borderTop: "var(--line) solid #eee", padding: "14px 0" }}>
+          <div key={entry.key} className="cell" style={{ padding: "14px 20px 16px" }}>
             <div style={{ display: "flex", alignItems: "baseline", gap: 12, marginBottom: 10 }}>
               <span className="t-body">{entry.label}</span>
               <span className="t-micro">
@@ -305,21 +308,25 @@ function BotsSection({
               </span>
               {entry.bot?.tokenConfigured && <span className="chip sky">connected</span>}
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 120px", gap: 10 }}>
-              <input
-                className="input"
-                placeholder="Application ID"
-                value={draft.applicationId}
-                onChange={(e) => setDrafts((d) => ({ ...d, [entry.key]: { ...draft, applicationId: e.target.value } }))}
-              />
-              <input
-                className="input"
-                type="password"
-                placeholder="Bot token (write-only)"
-                value={draft.token}
-                onChange={(e) => setDrafts((d) => ({ ...d, [entry.key]: { ...draft, token: e.target.value } }))}
-              />
-              <button className="btn" onClick={() => saveBot(entry)} disabled={!draft.applicationId && !draft.token}>
+            <div className="fgrid" style={{ gridTemplateColumns: "1fr 1fr 120px", border: "var(--line) solid var(--ink)" }}>
+              <div className="fcell" style={{ padding: "10px 14px" }}>
+                <label className="field-label">Application ID</label>
+                <input
+                  className="input"
+                  value={draft.applicationId}
+                  onChange={(e) => setDrafts((d) => ({ ...d, [entry.key]: { ...draft, applicationId: e.target.value } }))}
+                />
+              </div>
+              <div className="fcell" style={{ padding: "10px 14px" }}>
+                <label className="field-label">Bot token · write-only</label>
+                <input
+                  className="input"
+                  type="password"
+                  value={draft.token}
+                  onChange={(e) => setDrafts((d) => ({ ...d, [entry.key]: { ...draft, token: e.target.value } }))}
+                />
+              </div>
+              <button className="cell clickable btn" onClick={() => saveBot(entry)} disabled={!draft.applicationId && !draft.token}>
                 Save
               </button>
             </div>

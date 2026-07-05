@@ -158,10 +158,9 @@ function AgentForm({ agent }: { agent: AgentTab }) {
         </div>
       )}
 
-      <div className="cell formcell" style={{ flex: "none" }}>
-        <div className="headline">
-          <span className="t-title">Model</span>
-          <span className="t-micro">
+      <div className="cell slabel" style={{ flex: "none" }}>
+        <span className="t-micro" style={{ color: "var(--ink)" }}>Model</span>
+        <span className="t-micro">
             {agent === "assistant" && !draft.modelId
               ? fallbackModel
                 ? `unset — borrowing the orchestrator's ${fallbackModel}`
@@ -169,10 +168,10 @@ function AgentForm({ agent }: { agent: AgentTab }) {
               : agent === "stage-manager"
                 ? "forced tool calls — reasoning params buy nothing here"
                 : ""}
-          </span>
-        </div>
-        <div className="frow" style={{ gridTemplateColumns: "1fr 1fr 160px 160px" }}>
-          <div className="field">
+        </span>
+      </div>
+      <div className="fgrid" style={{ flex: "none", gridTemplateColumns: "1fr 1fr 160px 160px" }}>
+          <div className="fcell">
             <label className="field-label">Model</label>
             <select
               className="select"
@@ -194,7 +193,7 @@ function AgentForm({ agent }: { agent: AgentTab }) {
             </select>
           </div>
           {resolvedRoute && resolvedRoute.group.routes.length > 1 ? (
-            <div className="field">
+            <div className="fcell">
               <label className="field-label">Route</label>
               <select
                 className="select"
@@ -212,13 +211,13 @@ function AgentForm({ agent }: { agent: AgentTab }) {
               </select>
             </div>
           ) : (
-            <div />
+            <div className="cell" />
           )}
-          <div className="field">
+          <div className="fcell">
             <label className="field-label">Context window</label>
             <input className="input" type="number" min={1} max={100} value={draft.contextWindow ?? 20} onChange={(e) => set({ contextWindow: Number(e.target.value) })} />
           </div>
-          <div className="field">
+          <div className="fcell">
             <label className="field-label">Enabled</label>
             <label className="checkbox-chip">
               <input type="checkbox" checked={draft.enabled ?? false} onChange={(e) => set({ enabled: e.target.checked })} />
@@ -226,15 +225,17 @@ function AgentForm({ agent }: { agent: AgentTab }) {
             </label>
           </div>
         </div>
-        {agent === "orchestrator" && (
-          <div className="frow" style={{ gridTemplateColumns: "160px 1fr" }}>
-            <div className="field">
-              <label className="field-label">Directive cooldown</label>
-              <input className="input" type="number" min={0} value={draft.directiveCooldown ?? 3} onChange={(e) => set({ directiveCooldown: Number(e.target.value) })} />
-              <span className="field-hint">Decisions between steering directives.</span>
-            </div>
+      {agent === "orchestrator" && (
+        <div className="fgrid" style={{ flex: "none", gridTemplateColumns: "260px 1fr" }}>
+          <div className="fcell">
+            <label className="field-label">Directive cooldown</label>
+            <input className="input" type="number" min={0} value={draft.directiveCooldown ?? 3} onChange={(e) => set({ directiveCooldown: Number(e.target.value) })} />
+            <span className="field-hint">Decisions between steering directives.</span>
           </div>
-        )}
+          <div className="cell" />
+        </div>
+      )}
+      <div className="fused" style={{ flex: "none" }}>
         <ModelParamsForm
           providerId={draft.providerId ?? null}
           modelId={draft.modelId ?? null}
@@ -244,11 +245,8 @@ function AgentForm({ agent }: { agent: AgentTab }) {
         />
       </div>
 
-      <div className="cell formcell" style={{ flex: "none" }}>
-        <div className="headline">
-          <span className="t-title">{def.promptLabel ?? "Extra instructions"}</span>
-          <span className="t-micro">appended to the fixed harness prompt</span>
-        </div>
+      <div className="cell fcell" style={{ flex: "none" }}>
+        <label className="field-label">{def.promptLabel ?? "Extra instructions"} · appended to the fixed harness prompt</label>
         <textarea className="textarea" rows={6} value={draft.prompt ?? ""} onChange={(e) => set({ prompt: e.target.value })} />
       </div>
 

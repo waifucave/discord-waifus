@@ -111,9 +111,8 @@ export function MemoryScreen({ onNavigate }: { onNavigate: (view: ViewId, tab?: 
           </div>
         )}
         {adding && (
-          <div className="cell formcell" style={{ flex: "none" }}>
-            <div className="frow" style={{ gridTemplateColumns: "220px 220px 1fr" }}>
-              <div className="field">
+          <div className="fgrid" style={{ flex: "none", gridTemplateColumns: "220px 220px 1fr 200px" }}>
+              <div className="fcell">
                 <label className="field-label">Character</label>
                 <select className="select" value={newWaifuId} onChange={(e) => setNewWaifuId(e.target.value)}>
                   <option value="">pick…</option>
@@ -124,23 +123,22 @@ export function MemoryScreen({ onNavigate }: { onNavigate: (view: ViewId, tab?: 
                   ))}
                 </select>
               </div>
-              <div className="field">
+              <div className="fcell">
                 <label className="field-label">Guild id</label>
                 <input className="input" value={newGuildId} onChange={(e) => setNewGuildId(e.target.value)} placeholder="from Rooms" />
               </div>
-              <div className="field">
+              <div className="fcell">
                 <label className="field-label">Content</label>
                 <input className="input" value={newContent} onChange={(e) => setNewContent(e.target.value)} placeholder="K prefers green tea" />
               </div>
-            </div>
-            <div style={{ display: "flex", gap: 10 }}>
-              <button className="btn primary" onClick={add} disabled={!newWaifuId || !newContent.trim()}>
-                Add pinned memory
-              </button>
-              <button className="btn ghost" onClick={() => setAdding(false)}>
-                Cancel
-              </button>
-            </div>
+              <div className="fgrid" style={{ gridTemplateColumns: "1fr 1fr" }}>
+                <button className="cell clickable btn primary" onClick={add} disabled={!newWaifuId || !newContent.trim()}>
+                  Add
+                </button>
+                <button className="cell clickable btn ghost" onClick={() => setAdding(false)}>
+                  Cancel
+                </button>
+              </div>
           </div>
         )}
         {records.map((record) => (
@@ -165,12 +163,14 @@ export function MemoryScreen({ onNavigate }: { onNavigate: (view: ViewId, tab?: 
               </span>
             </div>
             {editingId === record.id ? (
-              <div style={{ display: "flex", gap: 10 }}>
-                <input className="input" value={editContent} onChange={(e) => setEditContent(e.target.value)} />
-                <button className="btn primary" onClick={() => saveEdit(record)}>
+              <div className="fgrid" style={{ gridTemplateColumns: "1fr 110px 110px", border: "var(--line) solid var(--ink)" }}>
+                <div className="fcell" style={{ padding: "10px 14px" }}>
+                  <input className="input" value={editContent} onChange={(e) => setEditContent(e.target.value)} />
+                </div>
+                <button className="cell clickable btn primary" onClick={() => saveEdit(record)}>
                   Save
                 </button>
-                <button className="btn ghost" onClick={() => setEditingId(undefined)}>
+                <button className="cell clickable btn ghost" onClick={() => setEditingId(undefined)}>
                   Cancel
                 </button>
               </div>

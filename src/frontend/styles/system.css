@@ -136,37 +136,60 @@ button.cell, button.clickable, .clickable {
 .field-error { color: #c22f2f; font-size: 11.5px; }
 .input, .select, .textarea {
   width: 100%;
-  border: var(--line) solid var(--ink);
-  background: var(--paper);
+  border: none;
+  background: transparent;
   font-family: inherit;
   font-weight: 400;
-  font-size: 14px;
-  padding: 12px 14px;
+  font-size: 15px;
+  padding: 0;
   outline: none;
   border-radius: 0;
   color: var(--ink);
 }
-.input:focus, .select:focus, .textarea:focus { background: var(--sky); }
 .textarea { resize: vertical; min-height: 90px; line-height: 1.55; }
-.select { appearance: none; -webkit-appearance: none; background-image: linear-gradient(45deg, transparent 50%, var(--ink) 50%), linear-gradient(135deg, var(--ink) 50%, transparent 50%); background-position: calc(100% - 18px) 50%, calc(100% - 13px) 50%; background-size: 5px 5px; background-repeat: no-repeat; padding-right: 34px; }
-.select:focus { background-color: var(--sky); }
+.select { appearance: none; -webkit-appearance: none; background-image: linear-gradient(45deg, transparent 50%, var(--ink) 50%), linear-gradient(135deg, var(--ink) 50%, transparent 50%); background-position: right 4px top 55%, right 9px top 55%; background-size: 5px 5px; background-repeat: no-repeat; padding-right: 26px; }
+
+/* fused form grid: every field is a cell of the shared field — no boxes in boxes */
+.fgrid { display: grid; gap: var(--line); background: var(--ink); }
+.fcell { background: var(--paper); padding: 16px 20px 14px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.fcell:focus-within { background: var(--sky); }
+.fcell:focus-within .field-label, .fcell:focus-within .field-hint { color: var(--ink); }
+/* section label rows inside the field */
+.slabel { background: var(--paper); padding: 12px 20px 10px; display: flex; justify-content: space-between; align-items: baseline; }
+
+/* legacy form markup (ModelParamsForm etc.) auto-fuses under this scope */
+.fused { display: flex; flex-direction: column; gap: var(--line); background: var(--ink); }
+.fused .section { margin: 0; display: flex; flex-direction: column; gap: var(--line); background: var(--ink); }
+.fused .section-title { background: var(--paper); padding: 12px 20px 10px; font-size: 10px; font-family: var(--font-mono); letter-spacing: 0.14em; text-transform: uppercase; color: var(--mute); font-weight: 400; }
+.fused .section-header { background: var(--paper); padding: 12px 20px 10px; margin: 0; gap: 3px; }
+.fused .section-header .section-title { padding: 0; }
+.fused .grid { gap: var(--line); background: var(--ink); }
+.fused .field { background: var(--paper); padding: 16px 20px 14px; gap: 8px; }
+.fused .field:focus-within { background: var(--sky); }
+.fused .toggle-field { background: var(--paper); padding: 16px 20px 14px; }
+.fused .frow { gap: var(--line); background: var(--ink); margin: 0 0 var(--line); }
+.fused .frow:last-child { margin-bottom: 0; }
+.fused > .headline { background: var(--paper); padding: 12px 20px 10px; display: flex; justify-content: space-between; align-items: baseline; margin: 0; }
+.fused .prompt-layout-lanes { border: none; }
 
 /* buttons inside form bodies (not cells): same language, outlined */
 .btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 8px;
-  border: var(--line) solid var(--ink); background: var(--paper); color: var(--ink);
-  font-family: inherit; font-weight: 400; font-size: 13px;
-  padding: 10px 16px; cursor: pointer; border-radius: 0; white-space: nowrap;
+  border: none; background: var(--paper); color: var(--ink);
+  font-family: inherit; font-weight: 400; font-size: 12px;
+  letter-spacing: 0.08em; text-transform: uppercase;
+  padding: 12px 18px; cursor: pointer; border-radius: 0; white-space: nowrap;
 }
 .btn:hover { background: var(--mint); }
-.btn.primary { background: var(--mint); border-color: var(--ink); }
+.btn.primary { background: var(--mint); }
 .btn.primary:hover { background: var(--mint); }
 .btn.danger:hover { background: var(--danger); }
-.btn.ghost { border-color: transparent; }
-.btn.ghost:hover { background: var(--sky); }
+.btn.ghost { color: var(--mute); }
+.btn.ghost:hover { background: var(--sky); color: var(--ink); }
 .btn.sm { padding: 6px 10px; font-size: 11.5px; }
-.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn:disabled { opacity: 1; color: var(--mute); cursor: not-allowed; }
 .btn:disabled:hover { background: var(--paper); }
+.btn.primary:disabled { background: var(--paper); }
 .btn .icon { width: 14px; height: 14px; }
 .icon { width: 16px; height: 16px; }
 .icon-btn { border: none; background: transparent; cursor: pointer; padding: 4px; color: var(--ink); display: inline-flex; }
@@ -202,8 +225,8 @@ button.cell, button.clickable, .clickable {
 .range-field .range-slider::-webkit-slider-thumb:hover { background: var(--mint); }
 .range-field .range-slider::-moz-range-thumb { width: 14px; height: 14px; border-radius: 0; border: none; background: var(--ink); cursor: pointer; }
 .range-field .range-number { width: 90px; flex: none; }
-.checkbox-chip { display: inline-flex; align-items: center; gap: 8px; border: var(--line) solid var(--ink); padding: 8px 12px; cursor: pointer; font-size: 12.5px; background: var(--paper); }
-.checkbox-chip:hover { background: var(--sky); }
+.checkbox-chip { display: inline-flex; align-items: center; gap: 8px; border: none; padding: 8px 0; cursor: pointer; font-size: 13.5px; background: transparent; }
+.checkbox-chip:has(input:checked) { color: var(--ink); }
 .checkbox-chip input { accent-color: var(--ink); }
 .tag-list {}
 .tag-list-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
@@ -217,15 +240,18 @@ button.cell, button.clickable, .clickable {
 .prompt-lane { background: var(--paper); display: flex; flex-direction: column; }
 .prompt-lane-head { padding: 10px 14px; border-bottom: var(--line) solid var(--ink); display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--mute); }
 .prompt-lane-title { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--mute); }
-.prompt-lane-body { padding: 10px; display: flex; flex-direction: column; gap: 8px; min-height: 80px; }
-.prompt-lane-empty { color: var(--mute); font-size: 11.5px; padding: 8px; }
-.prompt-card-main { border: var(--line) solid var(--ink); padding: 8px 10px; background: var(--paper); display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.prompt-lane-body { padding: 0; display: flex; flex-direction: column; gap: var(--line); background: var(--ink); min-height: 80px; flex: 1; }
+.prompt-lane-body::after { content: ""; background: var(--paper); flex: 1; }
+.prompt-lane-body > * { background: var(--paper); }
+.prompt-lane-empty { color: var(--mute); font-size: 11.5px; padding: 12px 14px; background: var(--paper); flex: 1; }
+.prompt-card-main { border: none; padding: 10px 14px; background: var(--paper); display: flex; align-items: center; gap: 8px; font-size: 12px; }
 .prompt-card-main:hover { background: var(--lavender); }
 .prompt-card-label { font-family: var(--font-mono); font-size: 10.5px; }
 .prompt-drag { cursor: grab; color: var(--mute); }
-.prompt-group { border: var(--line) solid var(--ink); }
-.prompt-group-head { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: var(--line) solid var(--ink); }
-.prompt-group-body { padding: 8px; display: flex; flex-direction: column; gap: 8px; }
+.prompt-group { border: none; display: flex; flex-direction: column; gap: var(--line); background: var(--ink); }
+.prompt-group-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--paper); }
+.prompt-group-body { padding: 0; display: flex; flex-direction: column; gap: var(--line); background: var(--ink); }
+.prompt-group-body > * { background: var(--paper); }
 .prompt-group-actions { display: flex; gap: 6px; margin-left: auto; }
 .prompt-group-tag-prefix { font-family: var(--font-mono); font-size: 10.5px; color: var(--mute); }
 .prompt-group-tag-input { border: none; border-bottom: var(--line) solid var(--ink); font-family: var(--font-mono); font-size: 11px; outline: none; }

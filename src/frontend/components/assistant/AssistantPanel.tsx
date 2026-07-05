@@ -63,28 +63,30 @@ function SecretForm({ args, onDone }: { args: SecretArgs; onDone: (outcome: stri
   };
 
   return (
-    <div style={{ border: "1px solid var(--ink)", padding: 14, margin: "0 0 16px" }}>
-      <div className="m-label" style={{ marginBottom: 8 }}>
+    <div style={{ margin: "0 0 16px" }}>
+      <div className="m-label" style={{ marginBottom: 6 }}>
         Secure input · {args.purpose === "provider_key" ? `${target} API key` : `${target} bot token`} · bypasses the chat
       </div>
-      <input
-        className="input"
-        type="password"
-        autoFocus
-        placeholder="paste the secret…"
-        value={value}
-        onChange={(e) => setValue(e.target.value)}
-        onKeyDown={(e) => e.key === "Enter" && submit()}
-      />
-      {error && <div className="m-err" style={{ marginTop: 8 }}>{error}</div>}
-      <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-        <button className="btn sm primary" onClick={submit} disabled={saving || !value.trim()}>
-          {saving ? "Saving…" : "Save secret"}
+      <div className="fgrid" style={{ gridTemplateColumns: "1fr 90px 32px", border: "var(--line) solid var(--ink)" }}>
+        <div className="fcell" style={{ padding: "10px 12px" }}>
+          <input
+            className="input"
+            type="password"
+            autoFocus
+            placeholder="paste the secret…"
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && submit()}
+          />
+        </div>
+        <button className="cell clickable btn" onClick={submit} disabled={saving || !value.trim()}>
+          {saving ? "…" : "Save"}
         </button>
-        <button className="btn sm ghost" onClick={() => onDone("[secure-form] the user dismissed the form without saving a secret.")}>
-          Cancel
+        <button className="cell clickable btn ghost" onClick={() => onDone("[secure-form] the user dismissed the form without saving a secret.")}>
+          ✕
         </button>
       </div>
+      {error && <div className="m-err" style={{ marginTop: 8 }}>{error}</div>}
     </div>
   );
 }
