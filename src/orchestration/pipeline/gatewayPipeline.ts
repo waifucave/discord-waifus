@@ -141,6 +141,7 @@ export class GatewayModelPipeline implements ModelPipeline {
   async decideOrchestrator(request: ProviderRequest): Promise<OrchestratorDecision> {
     const response = await this.chat({
       messages: buildOrchestratorChatMessages({
+        now: new Date(),
         systemPrompt: request.systemPrompt,
         trailingPrompt: request.trailingPrompt,
         messages: request.messages,

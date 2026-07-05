@@ -202,11 +202,24 @@ function replyQuoteLine(message: ContextMessage): string | null {
   return null;
 }
 
-export function formatOrchestratorMessageBlock(message: ContextMessage): string {
+/** Compact relative age for pacing awareness: 47s, 2m, 3h, 2d. */
+export function formatAge(timestamp: string, now: Date): string {
+  const deltaMs = Math.max(0, now.getTime() - Date.parse(timestamp));
+  const seconds = Math.floor(deltaMs / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
+}
+
+export function formatOrchestratorMessageBlock(message: ContextMessage, now?: Date): string {
   const lines: string[] = [];
   const quote = replyQuoteLine(message);
   if (quote) lines.push(quote);
-  lines.push(senderPrefixedContent(message.displayName, message.content));
+  const body = senderPrefixedContent(message.displayName, message.content);
+  lines.push(now ? `[${formatAge(message.timestamp, now)}] ${body}` : body);
   const imageCount = message.images?.length ?? 0;
   if (imageCount > 0) {
     lines.push(`[attachments: ${imageCount}x image]`);

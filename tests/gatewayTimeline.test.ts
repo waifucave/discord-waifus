@@ -56,3 +56,36 @@ describe("buildOrchestratorChatMessages", () => {
     expect(texts.some((t) => /\bgap\b|\bpass(ed)?\b|\bminutes?\b|\bm pass\b/i.test(t))).toBe(true);
   });
 });
+
+import { formatAge } from "../src/orchestration/context.js";
+
+describe("orchestrator time awareness", () => {
+  it("formatAge renders compact relative ages", () => {
+    const now = new Date("2026-07-05T22:49:00.000Z");
+    expect(formatAge("2026-07-05T22:48:13.000Z", now)).toBe("47s");
+    expect(formatAge("2026-07-05T22:47:00.000Z", now)).toBe("2m");
+    expect(formatAge("2026-07-05T19:49:00.000Z", now)).toBe("3h");
+    expect(formatAge("2026-07-03T22:49:00.000Z", now)).toBe("2d");
+  });
+
+  it("message blocks carry an age tag and the timeline ends with a now anchor", () => {
+    const now = new Date("2026-07-05T22:49:00.000Z");
+    const chat = buildOrchestratorChatMessages({
+      messages: [
+        {
+          id: "m1",
+          channelId: "c",
+          authorId: "u1",
+          authorKind: "user",
+          displayName: "K",
+          content: "feet pics?",
+          timestamp: "2026-07-05T22:47:00.000Z"
+        } as never
+      ],
+      now
+    });
+    const userMessages = chat.filter((m) => m.role === "user").map((m) => (typeof m.content === "string" ? m.content : ""));
+    expect(userMessages.some((c) => c.includes("[2m] K: feet pics?"))).toBe(true);
+    expect(userMessages[userMessages.length - 1]).toContain("now: 2026-07-05T22:49:00Z");
+  });
+});

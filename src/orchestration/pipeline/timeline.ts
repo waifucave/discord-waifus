@@ -1,5 +1,5 @@
 import type { ChatMessage } from "@waifucave/gateway";
-import { ContextMessage, formatOrchestratorMessageBlock, OrchestratorWakeMarker } from "../context.js";
+import { ContextMessage, formatOrchestratorMessageBlock, formatTimestamp, OrchestratorWakeMarker } from "../context.js";
 import { OrchestratorDecisionHistoryEntry } from "../../shared/schemas/domain.js";
 import { ORCHESTRATOR_TOOL_NAME } from "../tools.js";
 
@@ -102,6 +102,8 @@ export type OrchestratorTimelineInputs = {
   messages: ContextMessage[];
   pastDecisions?: OrchestratorDecisionHistoryEntry[];
   decisionMarkers?: OrchestratorWakeMarker[];
+  /** When set, each message gets a relative age tag and the timeline ends with a now anchor. */
+  now?: Date;
 };
 
 export function buildOrchestratorChatMessages(inputs: OrchestratorTimelineInputs): ChatMessage[] {
@@ -129,11 +131,17 @@ export function buildOrchestratorChatMessages(inputs: OrchestratorTimelineInputs
       });
       out.push({ role: "tool", toolCallId: id, content: formatDecisionOutcome(item.decision) });
     } else if (item.kind === "message") {
-      out.push({ role: "user", content: formatOrchestratorMessageBlock(item.message) });
+      out.push({ role: "user", content: formatOrchestratorMessageBlock(item.message, inputs.now) });
     } else {
       // note (gap or wake marker)
       out.push({ role: "user", content: item.text });
     }
+  }
+  if (inputs.now) {
+    out.push({
+      role: "user",
+      content: `[now: ${formatTimestamp(inputs.now)} — the [ages] on messages are relative to this moment]`
+    });
   }
   if (inputs.trailingPrompt) out.push({ role: "user", content: inputs.trailingPrompt });
   return out;
