@@ -85,7 +85,7 @@ import {
   RETRIGGER_DEFAULT_SECONDS,
   RETRIGGER_MIN_SECONDS
 } from "./decisions.js";
-import { assessLoop } from "./loopDetector.js";
+import { assessCastCadence, assessLoop } from "./loopDetector.js";
 
 // Hour of the day (local time, 0-23) at which the nightly dream pass fires. Exported so
 // msUntilNextDreamRun can reference it without the class bracket-access backdoor.
@@ -1128,9 +1128,19 @@ export class RuntimeOrchestrator {
       const requireReply = Boolean(options.firstOrchestratorMustReply && turns === 1);
 
       const loop = assessLoop(messages);
+      // Only nag about early cast retirement while humans are actually around — in a dead room
+      // the reply→pause rhythm is correct behavior, not a rut.
+      const newestHumanTs = messages.reduce<string | undefined>(
+        (acc, message) => (message.authorKind === "user" && (!acc || message.timestamp > acc) ? message.timestamp : acc),
+        undefined
+      );
+      const humanActiveNow =
+        newestHumanTs !== undefined && Date.now() - Date.parse(newestHumanTs) < HUMAN_RECENT_WINDOW_MS;
+      const cadence = humanActiveNow ? assessCastCadence(pastDecisions) : { suspected: false as const };
+      const runtimeNotice = [loop.notice, cadence.notice].filter(Boolean).join("\n") || undefined;
       const channelKey = timerKey(guildId, channelId);
       const directiveCount = this.directiveDecisionCounts.get(channelKey) ?? orchestrator.directiveCooldown;
-      const directiveBudgetOpen = loop.suspected || directiveCount >= orchestrator.directiveCooldown;
+      const directiveBudgetOpen = loop.suspected || cadence.suspected || directiveCount >= orchestrator.directiveCooldown;
 
       // On the first turn of a timer-fired retrigger, surface the wake marker (with the wake plan
       // the orchestrator promised last time) so it can pick up where it left off, plus escalate the
@@ -1153,7 +1163,7 @@ export class RuntimeOrchestrator {
         orchestrator,
         availableWaifus,
         requireReply,
-        loop.notice
+        runtimeNotice
       );
       // No typing scope for orchestrator decisions: the orchestrator bot showing "typing…" while it
       // deliberates leaks the machinery's presence into the room. Only the waifu send path types.

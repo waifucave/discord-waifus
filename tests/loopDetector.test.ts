@@ -75,3 +75,31 @@ describe("assessLoop", () => {
     expect(result.suspected).toBe(false);
   });
 });
+
+import { assessCastCadence } from "../src/orchestration/loopDetector.js";
+
+describe("assessCastCadence", () => {
+  const reply = { action: "reply" as const };
+  const pause = { action: "no_reply" as const };
+
+  it("flags the retire-after-two cadence (newest first: pause, reply, reply, pause, reply, pause)", () => {
+    const result = assessCastCadence([pause, reply, reply, pause, reply, pause]);
+    expect(result.suspected).toBe(true);
+    expect(result.notice).toMatch(/retir|timer|keep casting/i);
+  });
+
+  it("does not flag long reply streaks", () => {
+    const result = assessCastCadence([pause, reply, reply, reply, reply, pause]);
+    expect(result.suspected).toBe(false);
+  });
+
+  it("does not flag mostly-quiet rooms (single pause, no rhythm)", () => {
+    const result = assessCastCadence([pause, reply, reply]);
+    expect(result.suspected).toBe(false);
+  });
+
+  it("needs at least two pauses in the window to call it a cadence", () => {
+    const result = assessCastCadence([reply, reply, pause, reply, reply, reply]);
+    expect(result.suspected).toBe(false);
+  });
+});
