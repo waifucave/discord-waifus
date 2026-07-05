@@ -975,6 +975,11 @@ export class RuntimeOrchestrator {
           message: error instanceof Error ? error.message : String(error),
           details: error instanceof GatewayPipelineError ? summarizeProviderPipelineDetails(error.details) : undefined
         });
+        // A run that dies (provider outage, safety block, …) has already cleared any pending
+        // retrigger timer — without a recovery wake the channel stays dead until the next human
+        // message that doesn't crash (live incident 2026-07-05: a Gemini PROHIBITED_CONTENT block
+        // silenced an active room for hours). Fresh context on the retry usually clears the block.
+        void this.scheduleRetrigger(guildId, channelId, RECOVERY_RETRIGGER_SECONDS).catch(() => undefined);
       })
       .finally(async () => {
         if (this.activeRuns.get(key)?.controller === controller) {
@@ -4079,6 +4084,7 @@ function applyFirstResponderDirectiveOverride(
 }
 
 const HUMAN_RECENT_WINDOW_MS = 15 * 60 * 1000;
+const RECOVERY_RETRIGGER_SECONDS = 180;
 const CAST_ONLY_COOLDOWN_SECONDS = 900;
 
 const CAST_WAKE_MAX_TRAILING_BOT_MESSAGES = 4;
