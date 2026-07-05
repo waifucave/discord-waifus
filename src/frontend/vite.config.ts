@@ -22,7 +22,10 @@ export default defineConfig({
       "/api": {
         target: "http://127.0.0.1:3888",
         changeOrigin: true,
-        ws: true
+        ws: true,
+        // src/frontend/api/*.ts modules also live under the /api/ URL space in dev;
+        // returning the url from bypass makes Vite serve them instead of proxying.
+        bypass: (req) => (req.url && /\.(ts|tsx)(\?|$)/.test(req.url) ? req.url : undefined)
       }
     }
   }
