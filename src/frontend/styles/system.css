@@ -155,11 +155,20 @@ button.cell, button.clickable, .clickable {
 .fcell:hover, .fcell:focus-within { background: var(--sky); }
 .fcell:hover .field-label, .fcell:hover .field-hint,
 .fcell:focus-within .field-label, .fcell:focus-within .field-hint { color: var(--ink); }
-/* bare control-cells (e.g. filter rows) react the same way */
+/* bare control-cells (e.g. filter rows): paper by default, sky on hover/focus */
+select.cell, input.cell, textarea.cell { background-color: var(--paper); padding: 0 18px; }
+select.cell { padding-right: 34px; }
 select.cell:hover, input.cell:hover, textarea.cell:hover,
-select.cell:focus, input.cell:focus, textarea.cell:focus { background: var(--sky); }
+select.cell:focus, input.cell:focus, textarea.cell:focus { background-color: var(--sky); }
 /* section label rows inside the field */
 .slabel { background: var(--paper); padding: 12px 20px 10px; display: flex; justify-content: space-between; align-items: baseline; }
+
+/* collapsible advanced stripes */
+.disclosure-head { background: var(--paper); border: none; cursor: pointer; width: 100%; padding: 14px 20px; display: flex; justify-content: space-between; align-items: baseline; font-family: inherit; }
+.disclosure-head:hover { background: var(--lavender); }
+.disclosure-head:hover .t-micro { color: var(--ink); }
+.disclosure-head .caret { font-size: 12px; color: var(--mute); }
+.disclosure-head:hover .caret { color: var(--ink); }
 
 /* legacy form markup (ModelParamsForm etc.) auto-fuses under this scope */
 .fused { display: flex; flex-direction: column; gap: var(--line); background: var(--ink); }
@@ -224,7 +233,9 @@ select.cell:focus, input.cell:focus, textarea.cell:focus { background: var(--sky
 .panel { background: var(--paper); border: var(--line) solid var(--ink); padding: 18px; }
 
 .model-params-form {}
-.model-params-warnings { list-style: none; margin: 8px 0 0; padding: 0; font-size: 11.5px; color: #c22f2f; }
+.model-params-warnings { list-style: none; margin: 0; padding: 12px 20px; font-size: 11px; color: var(--mute); background: var(--paper); font-family: var(--font-mono); }
+.model-params-warnings::before { content: "this model ignores: "; }
+.model-params-warnings li { display: inline; margin-right: 10px; }
 .range-field { display: flex; align-items: center; gap: 12px; }
 .range-field .range-slider { flex: 1; appearance: none; -webkit-appearance: none; height: 2px; background: var(--ink); outline: none; cursor: pointer; }
 .range-field .range-slider::-webkit-slider-thumb { appearance: none; -webkit-appearance: none; width: 14px; height: 14px; border-radius: 0; background: var(--ink); cursor: pointer; }

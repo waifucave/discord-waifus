@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { useApi } from "../api/useApi";
 import { api } from "../api/client";
 import type { ProvidersResponse, RuntimeState } from "../api/types";
@@ -74,5 +74,22 @@ export function FootRow() {
       </div>
       <div className="cell t-micro">{runtime.data ? `${runtime.data.queues.active} queues` : ""}</div>
     </div>
+  );
+}
+
+/** Collapsed-by-default stripe for advanced content; expands in place. */
+export function Disclosure({ title, hint, children }: { title: string; hint?: string; children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button className="disclosure-head" style={{ flex: "none" }} onClick={() => setOpen((v) => !v)}>
+        <span className="t-micro" style={{ color: "var(--ink)" }}>{title}</span>
+        <span>
+          {hint && <span className="t-micro" style={{ marginRight: 14 }}>{hint}</span>}
+          <span className="caret">{open ? "▾" : "▸"}</span>
+        </span>
+      </button>
+      {open && children}
+    </>
   );
 }

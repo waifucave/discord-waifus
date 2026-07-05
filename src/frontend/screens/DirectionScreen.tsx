@@ -4,7 +4,7 @@ import { useApi } from "../api/useApi";
 import { llmModels, llmProviders, type LlmModelSummary } from "../api/llm";
 import type { AgentConfig, OrchestratorHistoryFile, UpdateAgentConfigBody } from "../api/types";
 import type { ViewId } from "../nav";
-import { FootRow, HeadRow, TabCells } from "./scaffold";
+import { Disclosure, FootRow, HeadRow, TabCells } from "./scaffold";
 import { ModelParamsForm } from "../components/modelParams/ModelParamsForm";
 import { Notice } from "../components/Notice";
 import {
@@ -236,15 +236,17 @@ function AgentForm({ agent }: { agent: AgentTab }) {
         </div>
       )}
       {draft.modelId && (
-      <div className="fused" style={{ flex: "none" }}>
-        <ModelParamsForm
-          providerId={draft.providerId ?? null}
-          modelId={draft.modelId ?? null}
-          value={draft.params ?? {}}
-          onChange={(params) => set({ params })}
-          onValidity={setParamsValid}
-        />
-      </div>
+        <Disclosure title="Model parameters" hint="temperature · reasoning · advanced">
+          <div className="fused" style={{ flex: "none" }}>
+            <ModelParamsForm
+              providerId={draft.providerId ?? null}
+              modelId={draft.modelId ?? null}
+              value={draft.params ?? {}}
+              onChange={(params) => set({ params })}
+              onValidity={setParamsValid}
+            />
+          </div>
+        </Disclosure>
       )}
 
       <div className="cell fcell" style={{ flex: "none" }}>

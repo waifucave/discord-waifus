@@ -4,7 +4,7 @@ import { useApi } from "../api/useApi";
 import { llmModels, llmProviders, type LlmModelSummary } from "../api/llm";
 import type { DiscordBotsFile, WaifuConfig, WaifusResponse } from "../api/types";
 import { characterHue, type ViewId } from "../nav";
-import { FootRow, HeadRow } from "./scaffold";
+import { Disclosure, FootRow, HeadRow } from "./scaffold";
 import { ModelParamsForm } from "../components/modelParams/ModelParamsForm";
 import { PromptLayoutEditor } from "../components/PromptLayoutEditor";
 import { Notice } from "../components/Notice";
@@ -365,18 +365,21 @@ function CharacterEditor({
             </div>
         </div>
         {draft.modelId && (
-        <div className="fused" style={{ flex: "none" }}>
-          <ModelParamsForm
-            providerId={draft.providerId ?? null}
-            modelId={draft.modelId ?? null}
-            value={draft.params ?? {}}
-            onChange={(params) => set({ params })}
-            onValidity={setParamsValid}
-          />
-        </div>
+          <Disclosure title="Model parameters" hint="temperature · reasoning · advanced">
+            <div className="fused" style={{ flex: "none" }}>
+              <ModelParamsForm
+                providerId={draft.providerId ?? null}
+                modelId={draft.modelId ?? null}
+                value={draft.params ?? {}}
+                onChange={(params) => set({ params })}
+                onValidity={setParamsValid}
+              />
+            </div>
+          </Disclosure>
         )}
 
         {!creating && remote.data && draft.promptLayout && draft.tools && (
+          <Disclosure title="Prompt layout" hint="advanced · defaults are sensible">
           <div className="fused" style={{ flex: "none" }}>
             <PromptLayoutEditor
               layout={draft.promptLayout}
@@ -386,6 +389,7 @@ function CharacterEditor({
               waifuName={draft.name || draft.id || "waifu"}
             />
           </div>
+          </Disclosure>
         )}
 
         {!creating && remote.data && (
