@@ -143,10 +143,6 @@ function AppTab() {
       <BotsSection bots={bots} waifus={waifus} onResult={(ok, text) => { setTone(ok ? "ok" : "err"); setMessage(text); }} />
 
       <div className="fused" style={{ flex: "none" }}>
-        <div className="headline">
-          <span className="t-micro" style={{ color: "var(--ink)" }}>Runtime</span>
-          <span className="t-micro">restart-free controls</span>
-        </div>
         <div className="fgrid" style={{ gridTemplateColumns: "repeat(5, 1fr)" }}>
           <button className="cell clickable btn" style={{ padding: "18px 0" }} onClick={() => act(() => api.pause(), "Paused — no new replies will start.")}>Pause</button>
           <button className="cell clickable btn" style={{ padding: "18px 0" }} onClick={() => act(() => api.resume(), "Resumed.")}>Resume</button>
@@ -184,13 +180,9 @@ function OcrSection({
   if (!draft) return null;
   return (
     <div className="fused" style={{ flex: "none" }}>
-      <div className="headline">
-        <span className="t-micro" style={{ color: "var(--ink)" }}>OCR</span>
-        <span className="t-micro">image text fallback for text-only models</span>
-      </div>
       <div className="frow" style={{ gridTemplateColumns: "200px 260px 1fr" }}>
         <div className="field">
-          <label className="field-label">Enabled</label>
+          <label className="field-label">OCR · image text fallback</label>
           <label className="checkbox-chip">
             <input
               type="checkbox"
@@ -288,13 +280,11 @@ function BotsSection({
 
   return (
     <div className="fused" style={{ flex: "none" }}>
-      <div className="headline">
-        <span className="t-micro" style={{ color: "var(--ink)" }}>Discord bots</span>
-        <button className="btn sm" onClick={() => setShowGuide((v) => !v)}>
-          {showGuide ? "Hide guide" : "How to create a bot"}
-        </button>
-      </div>
-      {showGuide && <DiscordBotGuide kind="orchestrator" collapsedByDefault={false} />}
+      <button className="disclosure-head" onClick={() => setShowGuide((v) => !v)}>
+        <span className="t-micro" style={{ color: "var(--ink)" }}>How to create a Discord bot</span>
+        <span className="caret">{showGuide ? "▾" : "▸"}</span>
+      </button>
+      {showGuide && <div className="cell" style={{ padding: "16px 20px" }}><DiscordBotGuide kind="orchestrator" collapsedByDefault={false} /></div>}
       {entries.map((entry) => {
         const draft = drafts[entry.key] ?? { applicationId: "", token: "" };
         return (

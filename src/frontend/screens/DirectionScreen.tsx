@@ -158,18 +158,6 @@ function AgentForm({ agent }: { agent: AgentTab }) {
         </div>
       )}
 
-      <div className="cell slabel" style={{ flex: "none" }}>
-        <span className="t-micro" style={{ color: "var(--ink)" }}>Model</span>
-        <span className="t-micro">
-            {agent === "assistant" && !draft.modelId
-              ? fallbackModel
-                ? `unset — borrowing the orchestrator's ${fallbackModel}`
-                : "unset, and the orchestrator has none either"
-              : agent === "stage-manager"
-                ? "forced tool calls — reasoning params buy nothing here"
-                : ""}
-        </span>
-      </div>
       <div className="fgrid" style={{ flex: "none", gridTemplateColumns: "1fr 1fr 160px 160px" }}>
           <div className="fcell">
             <label className="field-label">Model</label>
@@ -191,6 +179,12 @@ function AgentForm({ agent }: { agent: AgentTab }) {
                 </option>
               ))}
             </select>
+            {agent === "assistant" && !draft.modelId && (
+              <span className="field-hint">
+                {fallbackModel ? `unset — borrowing the orchestrator's ${fallbackModel}` : "unset, and the orchestrator has none either"}
+              </span>
+            )}
+            {agent === "stage-manager" && <span className="field-hint">forced tool calls — reasoning params buy nothing here</span>}
           </div>
           {resolvedRoute && resolvedRoute.group.routes.length > 1 ? (
             <div className="fcell">

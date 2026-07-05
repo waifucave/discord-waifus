@@ -256,10 +256,6 @@ function CharacterEditor({
           </div>
         )}
 
-        <div className="cell slabel" style={{ flex: "none" }}>
-          <span className="t-micro" style={{ color: "var(--ink)" }}>Identity</span>
-          <span className="t-micro">who shows up in the room</span>
-        </div>
         <div className="fgrid" style={{ flex: "none", gridTemplateColumns: creating ? "1fr 1fr 1fr" : "1fr 1fr" }}>
           {creating && (
             <div className="fcell">
@@ -305,10 +301,6 @@ function CharacterEditor({
           </div>
         )}
 
-        <div className="cell slabel" style={{ flex: "none" }}>
-          <span className="t-micro" style={{ color: "var(--ink)" }}>Model</span>
-          <span className="t-micro">her brain</span>
-        </div>
         <div className="fgrid" style={{ flex: "none", gridTemplateColumns: "1fr 1fr 200px" }}>
             <div className="fcell">
               <label className="field-label">Model</label>
