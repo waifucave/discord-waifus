@@ -30,6 +30,7 @@ import { SOFT_VALIDATOR_CHECKS, Violation, correctiveRetryMessage, validateWaifu
 import { ReplyQuoteExtraction, extractReplyQuote } from "./replyQuote.js";
 import { ModelPipeline, WaifuGenerationResult } from "../providers/types.js";
 import { createGatewayModelPipeline } from "./pipeline/gatewayPipeline.js";
+import { isPermissionError, PermissionWarningTracker } from "./permissionWarnings.js";
 import { GatewayPipelineError } from "./pipeline/params.js";
 import { resolveModelTarget, sharedRegistry } from "./pipeline/resolveTarget.js";
 import { QueryRole } from "../shared/queryLog.js";
@@ -170,6 +171,7 @@ type WaifuPromptDebugParts = {
 
 export class RuntimeOrchestrator {
   private readonly activeRuns = new Map<string, ActiveChannelRun>();
+  readonly permissionWarnings = new PermissionWarningTracker();
   // Exact prompt parts sent with each waifu's most recent generation, for /print system_prompt.
   private readonly lastSentWaifuPrompts = new Map<
     string,
@@ -963,6 +965,9 @@ export class RuntimeOrchestrator {
     const promise = this.runChannelLoop(guildId, channelId, controller.signal, options)
       .catch((error) => {
         if (controller.signal.aborted) return;
+        if (isPermissionError(error)) {
+          this.permissionWarnings.record(guildId, channelId, "a waifu bot", error);
+        }
         this.options.logger.error("Channel runtime loop failed", {
           guildId,
           channelId,
@@ -2572,14 +2577,21 @@ export class RuntimeOrchestrator {
             .catch(() => undefined);
           await this.sleep(typingDelayMs(input.chunks[i]), input.signal);
         }
-        const sentResult = await this.options.discord.sendWaifuMessage({
-          guildId: input.guildId,
-          channelId: input.channelId,
-          senderBotId: input.senderBotId,
-          content: input.chunks[i],
-          replyToMessageId: i === 0 ? input.replyToMessageId : undefined,
-          allowedUserMentionIds: input.allowedUserMentionIds
-        });
+        let sentResult;
+        try {
+          sentResult = await this.options.discord.sendWaifuMessage({
+            guildId: input.guildId,
+            channelId: input.channelId,
+            senderBotId: input.senderBotId,
+            content: input.chunks[i],
+            replyToMessageId: i === 0 ? input.replyToMessageId : undefined,
+            allowedUserMentionIds: input.allowedUserMentionIds
+          });
+        } catch (error) {
+          this.permissionWarnings.record(input.guildId, input.channelId, input.waifuId, error);
+          throw error;
+        }
+        this.permissionWarnings.resolve(input.guildId, input.channelId);
         this.rememberSelfSent(sentResult.messageId);
         messageIds.push(sentResult.messageId);
         if (input.orchestratorDecisionId) {

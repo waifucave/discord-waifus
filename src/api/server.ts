@@ -320,7 +320,15 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     queues: options.runtime.queues
   }));
 
-  app.get("/api/runtime", async () => options.runtime);
+  app.get("/api/runtime", async () => {
+    const orchestrator = options.runtimeControl?.getOrchestrator?.() ?? options.runtimeOrchestrator;
+    const live = orchestrator?.permissionWarnings.list() ?? [];
+    if (live.length === 0) return options.runtime;
+    return {
+      ...options.runtime,
+      discord: { ...options.runtime.discord, warnings: [...options.runtime.discord.warnings, ...live] }
+    };
+  });
 
   app.get("/api/config", async () => loadAppConfig(options.dataRoot));
   app.put("/api/config", async (request) => {
