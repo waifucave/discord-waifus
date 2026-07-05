@@ -1,6 +1,6 @@
 {
   "name": "@waifucave/discord-waifus",
-  "version": "1.5.185",
+  "version": "1.5.186",
   "description": "Local Discord waifu orchestrator backend, web UI, and CLI.",
   "type": "module",
   "private": false,
