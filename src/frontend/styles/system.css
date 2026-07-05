@@ -26,7 +26,9 @@
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
-html, body, #root { height: 100%; }
+html { height: 100%; }
+body { min-height: 100%; }
+#root { min-height: 100vh; }
 body {
   font-family: var(--font-sans);
   font-weight: 400;
@@ -39,7 +41,7 @@ body {
 
 /* ===== the frame: everything lives inside, fused ===== */
 .frame {
-  height: 100vh;
+  min-height: 100vh;
   display: flex;
   flex-direction: column;
   gap: var(--line);
@@ -80,7 +82,7 @@ button.cell, button.clickable, .clickable {
 .t-mute { color: var(--mute); }
 
 /* ===== generic screen scaffolding ===== */
-.screen { flex: 1; display: flex; flex-direction: column; gap: var(--line); min-height: 0; }
+.screen { flex: 1; display: flex; flex-direction: column; gap: var(--line); min-height: calc(100vh - 2 * var(--line)); }
 .headrow { display: grid; grid-template-columns: 96px 1fr 320px; gap: var(--line); background: var(--ink); height: 96px; flex: none; }
 .headrow.no-action { grid-template-columns: 96px 1fr; }
 .backcell { display: flex; align-items: center; justify-content: center; font-size: 26px; --hover-hue: var(--sky); }
@@ -94,8 +96,7 @@ button.cell, button.clickable, .clickable {
 .tabcells .tabcell.on { background: var(--ink); color: #fff; }
 
 /* scrolling content region composed of fused rows/mosaics */
-.content { flex: 1; display: flex; flex-direction: column; gap: var(--line); background: var(--ink); overflow-y: auto; min-height: 0; }
-.content::-webkit-scrollbar { width: 0; }
+.content { flex: 1; display: flex; flex-direction: column; gap: var(--line); background: var(--ink); }
 .mosaic { display: grid; gap: var(--line); background: var(--ink); }
 .growcell { flex: 1; min-height: 60px; }
 
