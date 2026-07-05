@@ -242,8 +242,15 @@ select.cell:focus, input.cell:focus, textarea.cell:focus { background-color: var
 .range-field .range-slider::-webkit-slider-thumb:hover { background: var(--mint); }
 .range-field .range-slider::-moz-range-thumb { width: 14px; height: 14px; border-radius: 0; border: none; background: var(--ink); cursor: pointer; }
 .range-field .range-number { width: 90px; flex: none; }
-.checkbox-chip { display: inline-flex; align-items: center; gap: 8px; border: none; padding: 8px 0; cursor: pointer; font-size: 13.5px; background: transparent; }
-.checkbox-chip:has(input:checked) { color: var(--ink); }
+/* boolean = a solid state block beside its label: mint when on, ink when off */
+.checkbox-chip { display: inline-flex; align-items: center; gap: 12px; border: none; padding: 4px 0; cursor: pointer; font-size: 13.5px; background: transparent; }
+.checkbox-chip input {
+  appearance: none; -webkit-appearance: none;
+  width: 22px; height: 22px; margin: 0; flex: none;
+  background: var(--ink); cursor: pointer; border-radius: 0;
+}
+.checkbox-chip input:checked { background: var(--mint); }
+.checkbox-chip:hover input:not(:checked) { background: var(--mute); }
 .checkbox-chip input { accent-color: var(--ink); }
 .tag-list {}
 .tag-list-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
