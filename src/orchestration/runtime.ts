@@ -31,6 +31,7 @@ import { ReplyQuoteExtraction, extractReplyQuote } from "./replyQuote.js";
 import { ModelPipeline, WaifuGenerationResult } from "../providers/types.js";
 import { createGatewayModelPipeline } from "./pipeline/gatewayPipeline.js";
 import { isPermissionError, PermissionWarningTracker } from "./permissionWarnings.js";
+import { decideDeterministically, type DeterministicCastMember } from "./deterministicOrchestrator.js";
 import { GatewayPipelineError } from "./pipeline/params.js";
 import { resolveModelTarget, sharedRegistry } from "./pipeline/resolveTarget.js";
 import { QueryRole } from "../shared/queryLog.js";
@@ -1083,10 +1084,8 @@ export class RuntimeOrchestrator {
       }
 
       const orchestrator = await this.readAgentConfig("orchestrator", 40);
-      if (!orchestrator.modelId) {
-        this.options.logger.warn("Orchestrator model is not configured; channel loop stopped", { guildId, channelId });
-        return;
-      }
+      // No model + enabled = free deterministic mode: structural speaker selection, no API spend.
+      const deterministicMode = !orchestrator.modelId;
       let messages = await this.options.discord.fetchFreshContext({
         guildId,
         channelId,
@@ -1094,11 +1093,13 @@ export class RuntimeOrchestrator {
         signal
       });
       await this.noteActiveChatParticipantsFromContext(guildId, channelId, messages);
-      messages = await this.messagesForModel(
-        messages,
-        { providerId: orchestrator.providerId, modelId: orchestrator.modelId },
-        signal
-      );
+      if (orchestrator.modelId) {
+        messages = await this.messagesForModel(
+          messages,
+          { providerId: orchestrator.providerId, modelId: orchestrator.modelId },
+          signal
+        );
+      }
       this.options.logger.info("Fetched Discord context for orchestrator", {
         guildId,
         channelId,
@@ -1121,14 +1122,17 @@ export class RuntimeOrchestrator {
           return;
         }
       }
-      const pipeline = this.pipelineFor(
-        { providerId: orchestrator.providerId, modelId: orchestrator.modelId },
-        "orchestrator"
-      );
-      if (!pipeline.decideOrchestrator) {
+      const pipeline = deterministicMode
+        ? undefined
+        : this.pipelineFor({ providerId: orchestrator.providerId, modelId: orchestrator.modelId! }, "orchestrator");
+      if (pipeline && !pipeline.decideOrchestrator) {
         throw new Error(`Model ${orchestrator.modelId} does not implement orchestrator decisions.`);
       }
       const availableWaifus = await this.listAvailableWaifusForChannel(channel);
+      const { cast: deterministicCast, nicknames: guildNicknames } = await this.buildDeterministicCast(
+        guildId,
+        availableWaifus
+      );
       const pastDecisions = await this.readCompletedOrchestratorDecisionsForChannel(guildId, channelId);
       const requireReply = Boolean(options.firstOrchestratorMustReply && turns === 1);
 
@@ -1168,23 +1172,48 @@ export class RuntimeOrchestrator {
         orchestrator,
         availableWaifus,
         requireReply,
-        runtimeNotice
+        runtimeNotice,
+        guildNicknames
       );
       // No typing scope for orchestrator decisions: the orchestrator bot showing "typing…" while it
       // deliberates leaks the machinery's presence into the room. Only the waifu send path types.
-      let decision: OrchestratorDecision = await pipeline.decideOrchestrator({
-        modelId: orchestrator.modelId,
-        messages,
-        pastDecisions,
-        decisionMarkers,
-        directiveBudgetOpen,
-        trailingPrompt,
-        systemPrompt: this.buildOrchestratorSystemPrompt(orchestrator, server, requireReply),
-        availableWaifuIds: availableWaifus.map((waifu) => waifu.id),
-        replyRequired: requireReply,
-        params: orchestrator.params,
-        signal
-      });
+      let decision: OrchestratorDecision;
+      if (!pipeline || !pipeline.decideOrchestrator) {
+        decision = decideDeterministically({ messages, cast: deterministicCast, now: new Date() });
+        this.options.logger.info("Deterministic orchestrator decision (no model configured)", {
+          guildId,
+          channelId,
+          action: decision.action,
+          reasoning: decision.reasoning
+        });
+      } else {
+        try {
+          decision = await pipeline.decideOrchestrator({
+            modelId: orchestrator.modelId!,
+            messages,
+            pastDecisions,
+            decisionMarkers,
+            directiveBudgetOpen,
+            trailingPrompt,
+            systemPrompt: this.buildOrchestratorSystemPrompt(orchestrator, server, requireReply),
+            availableWaifuIds: availableWaifus.map((waifu) => waifu.id),
+            replyRequired: requireReply,
+            params: orchestrator.params,
+            signal
+          });
+        } catch (error) {
+          // Manual /run promised the user a reply from the model — surface its failure instead.
+          if (requireReply || signal.aborted) throw error;
+          decision = decideDeterministically({ messages, cast: deterministicCast, now: new Date() });
+          this.options.logger.warn("Model orchestrator failed; deterministic fallback decision used", {
+            guildId,
+            channelId,
+            message: error instanceof Error ? error.message : String(error),
+            action: decision.action,
+            reasoning: decision.reasoning
+          });
+        }
+      }
       decision = capDecisionDelays(decision);
       if (requireReply) {
         decision = applyFirstResponderDirectiveOverride(
@@ -3119,6 +3148,37 @@ export class RuntimeOrchestrator {
     };
   }
 
+  /** Cast members + guild-nickname map for the deterministic decider and casting cards. */
+  private async buildDeterministicCast(
+    guildId: string,
+    waifus: WaifuConfig[]
+  ): Promise<{ cast: DeterministicCastMember[]; nicknames: Map<string, string> }> {
+    const [bots, members] = await Promise.all([
+      this.readDiscordBotsFile(),
+      this.options.storage.readJson(
+        path.join("user", "servers", guildId, "members.json"),
+        GuildMembersFileSchema,
+        GuildMembersFileSchema.parse(createEmptyRevisionedFile({ guildId, members: [] }))
+      )
+    ]);
+    const guildNameByUserId = new Map(
+      members.members
+        .filter((member) => member.guildDisplayName)
+        .map((member) => [member.userId, member.guildDisplayName as string])
+    );
+    const nicknames = new Map<string, string>();
+    const cast: DeterministicCastMember[] = [];
+    for (const waifu of waifus) {
+      const authorIds = resolveBotAuthorIds(waifu.botId, bots);
+      const nickname = authorIds.map((id) => guildNameByUserId.get(id)).find(Boolean);
+      if (nickname && nickname !== waifu.displayName) nicknames.set(waifu.id, nickname);
+      if (!waifu.modelId) continue; // she cannot generate a reply anyway
+      const names = [...new Set([waifu.name, waifu.displayName, nickname].filter((v): v is string => Boolean(v?.trim())))];
+      cast.push({ waifuId: waifu.id, names, authorIds, availability: waifu.availability });
+    }
+    return { cast, nicknames };
+  }
+
   private buildOrchestratorSystemPrompt(
     orchestrator: AgentConfig,
     server: ServerConfig,
@@ -3155,11 +3215,12 @@ export class RuntimeOrchestrator {
     orchestrator: AgentConfig,
     availableWaifus: WaifuConfig[],
     replyRequired = false,
-    loopNotice?: string
+    loopNotice?: string,
+    nicknames?: Map<string, string>
   ): string {
     const now = new Date();
     const activeWaifusContent = availableWaifus.length
-      ? availableWaifus.map((waifu) => castingCard(waifu, now, waifuSeesImages(waifu))).join("\n")
+      ? availableWaifus.map((waifu) => castingCard(waifu, now, waifuSeesImages(waifu), nicknames?.get(waifu.id))).join("\n")
       : "No waifus are currently enabled for this channel.";
 
     const pausePlanning =
@@ -4452,12 +4513,13 @@ function waifuSeesImages(waifu: WaifuConfig): boolean {
   }
 }
 
-function castingCard(waifu: WaifuConfig, now: Date, seesImages = false): string {
+function castingCard(waifu: WaifuConfig, now: Date, seesImages = false, serverNickname?: string): string {
   const tagName = promptTagName(waifu.name || waifu.id);
   const displayName = waifu.displayName || waifu.name;
+  const nicknamePart = serverNickname && serverNickname !== displayName ? ` · appears in this server as "${serverNickname}"` : "";
   const lines: string[] = [
     `<${tagName}>`,
-    `ID: ${waifu.id} · ${displayName}${seesImages ? " · sees images natively" : ""}`
+    `ID: ${waifu.id} · ${displayName}${nicknamePart}${seesImages ? " · sees images natively" : ""}`
   ];
   if (waifu.personaDigest) {
     lines.push(`Voice: ${waifu.personaDigest.voice}`);

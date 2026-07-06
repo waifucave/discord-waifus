@@ -44,3 +44,13 @@ Direction → Reviewer; history at `GET /api/reviewer/history`.
 The dashboard helper agent (this assistant). Own config at `/api/assistant/config`; when no
 model is set it borrows the orchestrator's. It operates the app through the same REST API the
 dashboard uses — changes apply immediately, so it confirms destructive actions in chat first.
+
+
+## Deterministic (free) orchestrator mode
+
+When the orchestrator is enabled with NO model configured, the app orchestrates
+deterministically: the next speaker is chosen from structural signals (reply targets, name/nickname
+addressing, references, thread participation, rotation, sleep/busy schedules) with zero API spend.
+The same decider runs automatically as a fallback whenever the model orchestrator call fails
+(provider outage or content block), so a failed call never silences a channel. Limitations: one
+speaker per pass, no directives or topic pivots, no content judgment.

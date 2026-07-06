@@ -179,6 +179,13 @@ function AgentForm({ agent }: { agent: AgentTab }) {
                 </option>
               ))}
             </select>
+            {agent === "orchestrator" && !draft.modelId && (
+              <span className="field-hint">
+                No model + enabled = free deterministic mode: next speaker picked by reply-targets, name
+                addressing, rotation, and availability — zero orchestration API spend, but no directives or
+                topic pivots. Also used automatically as the fallback whenever a model call fails.
+              </span>
+            )}
             {agent === "assistant" && !draft.modelId && (
               <span className="field-hint">
                 {fallbackModel ? `unset — borrowing the orchestrator's ${fallbackModel}` : "unset, and the orchestrator has none either"}
