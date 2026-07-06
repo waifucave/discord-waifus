@@ -27,6 +27,8 @@ export type ResumeChannelInput = {
   };
   /** Newest orchestrator decision recorded for this channel, regardless of status. */
   latestDecision?: OrchestratorDecisionHistoryEntry;
+  /** Newest human message visible in the channel at boot (supplied when Discord is reachable). */
+  newestHumanMessageAt?: string;
 };
 
 export type ResumeAction =
@@ -75,7 +77,22 @@ export function planRestartResume(input: ResumeChannelInput, now: Date): ResumeA
     }
   }
 
-  // 2. A scheduled wake: keep counting the original clock.
+  // 2. A human message nobody has processed yet (arrived during the downtime window)
+  // outranks any schedule — "keep counting" only applies when nothing new happened.
+  if (
+    input.newestHumanMessageAt &&
+    (!latestDecision || input.newestHumanMessageAt > latestDecision.createdAt)
+  ) {
+    return {
+      kind: "restore-timer",
+      guildId,
+      channelId,
+      seconds: PROMPT_STAGGER_SECONDS,
+      reason: "human message arrived during downtime"
+    };
+  }
+
+  // 3. A scheduled wake: keep counting the original clock.
   if (session.scheduledRetriggerAt) {
     const remainingSeconds = Math.round((Date.parse(session.scheduledRetriggerAt) - now.getTime()) / 1000);
     if (remainingSeconds > 0) {
@@ -84,7 +101,7 @@ export function planRestartResume(input: ResumeChannelInput, now: Date): ResumeA
     return { kind: "restore-timer", guildId, channelId, seconds: PROMPT_STAGGER_SECONDS, reason: "retrigger elapsed during downtime" };
   }
 
-  // 3. A run that died mid-flight without responders or a timer: check the room soon.
+  // 4. A run that died mid-flight without responders or a timer: check the room soon.
   if (session.activePipeline) {
     return { kind: "restore-timer", guildId, channelId, seconds: PROMPT_STAGGER_SECONDS, reason: "pipeline was active at shutdown" };
   }

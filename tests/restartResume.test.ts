@@ -109,6 +109,36 @@ describe("planRestartResume", () => {
     expect(plan.kind).toBe("none");
   });
 
+  it("a human message that arrived during downtime overrides the restored timer (wake promptly)", () => {
+    const plan = planRestartResume(
+      {
+        guildId: "g1",
+        channelId: "c1",
+        session: { scheduledRetriggerAt: iso(700), activePipeline: null },
+        latestDecision: decision({ createdAt: iso(-300) }),
+        newestHumanMessageAt: iso(-30) // newer than the last decision — nobody has seen it
+      },
+      NOW
+    );
+    expect(plan.kind).toBe("restore-timer");
+    expect(plan.kind === "restore-timer" && plan.seconds).toBeLessThanOrEqual(30);
+    expect(plan.kind === "restore-timer" && plan.reason).toMatch(/downtime|missed/i);
+  });
+
+  it("an old human message does not shorten the restored timer", () => {
+    const plan = planRestartResume(
+      {
+        guildId: "g1",
+        channelId: "c1",
+        session: { scheduledRetriggerAt: iso(700), activePipeline: null },
+        latestDecision: decision({ createdAt: iso(-300) }),
+        newestHumanMessageAt: iso(-400) // the last decision already saw it
+      },
+      NOW
+    );
+    expect(plan.kind === "restore-timer" && plan.seconds).toBe(700);
+  });
+
   it("nothing pending → no action", () => {
     const plan = planRestartResume(
       { guildId: "g1", channelId: "c1", session: { activePipeline: null }, latestDecision: decision({}) },

@@ -334,7 +334,23 @@ export class RuntimeOrchestrator {
         const latestDecision = history.decisions.find(
           (decision) => decision.guildId === guildId && decision.channelId === channelId
         );
-        const plan = planRestartResume({ guildId, channelId, session, latestDecision }, new Date());
+        // Best-effort: a human message that landed while the server was down must wake the
+        // channel promptly instead of resuming the old schedule (live 2026-07-06 10:08: K's
+        // message hit the deploy window and waited out a restored 130s timer).
+        let newestHumanMessageAt: string | undefined;
+        try {
+          const recent = await this.options.discord.fetchFreshContext({ guildId, channelId, limit: 10 });
+          newestHumanMessageAt = recent.reduce<string | undefined>(
+            (acc, message) =>
+              message.authorKind === "user" && message.authorBot !== true && (!acc || message.timestamp > acc)
+                ? message.timestamp
+                : acc,
+            undefined
+          );
+        } catch {
+          // Discord not ready or channel unreadable — fall back to schedule-only planning.
+        }
+        const plan = planRestartResume({ guildId, channelId, session, latestDecision, newestHumanMessageAt }, new Date());
         if (plan.kind === "restore-timer") {
           this.options.logger.info("Restart resume: retrigger restored", {
             guildId,
