@@ -32,6 +32,7 @@ import { ModelPipeline, WaifuGenerationResult } from "../providers/types.js";
 import { createGatewayModelPipeline } from "./pipeline/gatewayPipeline.js";
 import { isPermissionError, PermissionWarningTracker } from "./permissionWarnings.js";
 import { decideDeterministically, type DeterministicCastMember } from "./deterministicOrchestrator.js";
+import { planRestartResume } from "./restartResume.js";
 import { GatewayPipelineError } from "./pipeline/params.js";
 import { resolveModelTarget, sharedRegistry } from "./pipeline/resolveTarget.js";
 import { QueryRole } from "../shared/queryLog.js";
@@ -296,6 +297,67 @@ export class RuntimeOrchestrator {
     }
     await this.healPendingOrchestratorDecisions();
     await this.scheduleDreamRuns();
+    this.runBackground("Restart resume failed", {}, () => this.resumeOrchestrationState());
+  }
+
+  /**
+   * Pretend the server was never restarted: re-arm persisted retriggers with their REMAINING
+   * time, and re-execute decision responders whose lines the restart ate (directives intact,
+   * via the initialResponders path so all normal run bookkeeping applies).
+   */
+  private async resumeOrchestrationState(): Promise<void> {
+    // give the Discord bots a beat to finish connecting; failed sends self-heal regardless
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+    const guildIds = await this.listKnownGuildIds();
+    const history = await this.options.storage.readJson(
+      "user/orchestrator/history.json",
+      OrchestratorHistoryFileSchema,
+      OrchestratorHistoryFileSchema.parse(createEmptyRevisionedFile({ decisions: [] }))
+    );
+    for (const guildId of guildIds) {
+      let server: ServerConfig;
+      try {
+        server = await this.ensureServer(guildId);
+      } catch {
+        continue;
+      }
+      if (!server.enabled) continue;
+      for (const channel of Object.values(server.channels)) {
+        if (!this.channelHasWaifus(channel)) continue;
+        const channelId = channel.channelId;
+        const session = await this.options.storage.readJson(
+          sessionRelativePath(guildId, channelId),
+          ChannelSessionStateSchema,
+          createEmptyChannelSessionState(guildId, channelId)
+        );
+        // history is newest-first; find() returns the latest decision for this channel
+        const latestDecision = history.decisions.find(
+          (decision) => decision.guildId === guildId && decision.channelId === channelId
+        );
+        const plan = planRestartResume({ guildId, channelId, session, latestDecision }, new Date());
+        if (plan.kind === "restore-timer") {
+          this.options.logger.info("Restart resume: retrigger restored", {
+            guildId,
+            channelId,
+            seconds: plan.seconds,
+            reason: plan.reason
+          });
+          await this.scheduleRetrigger(guildId, channelId, plan.seconds);
+        } else if (plan.kind === "resume-responders") {
+          this.options.logger.info("Restart resume: executing responders the restart interrupted", {
+            guildId,
+            channelId,
+            decisionId: plan.decisionId,
+            responders: plan.responders.map((responder) => responder.waifuId)
+          });
+          this.startChannelRunBackground(guildId, channelId, "restart-resume", {
+            initialResponders: plan.responders,
+            initialReason: `Resuming a decision interrupted by a server restart: ${plan.reasoning}`,
+            trigger: "manual"
+          });
+        }
+      }
+    }
   }
 
   async stop(): Promise<void> {
