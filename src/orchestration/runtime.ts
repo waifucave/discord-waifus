@@ -1162,8 +1162,9 @@ export class RuntimeOrchestrator {
       }
 
       const orchestrator = await this.readAgentConfig("orchestrator", 40);
-      // No model + enabled = free deterministic mode: structural speaker selection, no API spend.
-      const deterministicMode = !orchestrator.modelId;
+      // Deterministic when: no global model configured (free mode), or this guild explicitly
+      // opted its channels into the model-free structural decider.
+      const deterministicMode = !orchestrator.modelId || server.orchestratorMode === "deterministic";
       let messages = await this.options.discord.fetchFreshContext({
         guildId,
         channelId,
@@ -1171,7 +1172,7 @@ export class RuntimeOrchestrator {
         signal
       });
       await this.noteActiveChatParticipantsFromContext(guildId, channelId, messages);
-      if (orchestrator.modelId) {
+      if (!deterministicMode && orchestrator.modelId) {
         messages = await this.messagesForModel(
           messages,
           { providerId: orchestrator.providerId, modelId: orchestrator.modelId },
@@ -2062,6 +2063,14 @@ export class RuntimeOrchestrator {
   }
 
   private async runStageManager(guildId: string, channelId: string): Promise<StageManagerRunResult> {
+    {
+      // Per-guild kill switch: observers (and everything they feed) stay off for this server.
+      const server = await this.ensureServer(guildId);
+      if (!server.stageManagerEnabled) {
+        this.options.logger.info("Stage manager disabled for this server; skipping run", { guildId, channelId });
+        return { status: "disabled", message: "Stage manager is disabled for this server." };
+      }
+    }
     const state = await this.ensureChannelSession(guildId, channelId);
     if (state.stageManager.active) {
       return { status: "already_running" };
@@ -2520,6 +2529,10 @@ export class RuntimeOrchestrator {
   // stable key has not yet been processed — so mutations from prior iterations cannot shift the
   // nth position into a chunk we already handled.
   private async runDreamPass(guildId: string): Promise<DreamPassResult> {
+    const server = await this.ensureServer(guildId);
+    if (!server.stageManagerEnabled) {
+      return { status: "disabled", applied: 0, skipped: 0, chunks: 0 };
+    }
     const config = await this.readAgentConfig("stage-manager", 80);
     if (!config.enabled || !config.modelId) {
       return { status: "disabled", applied: 0, skipped: 0, chunks: 0 };

@@ -2739,8 +2739,8 @@ describe("RuntimeOrchestrator", () => {
     ]);
 
     // Both runs completed (no_change: each guild had one memory and no pending ops).
-    expect(result1.status).toBe("no_change");
-    expect(result2.status).toBe("no_change");
+    expect(result1.status, JSON.stringify(result1)).toBe("no_change");
+    expect(result2.status, JSON.stringify(result2)).toBe("no_change");
 
     // decideDream was called once per guild — two total, no deduplication across guilds.
     expect(decideDreamCalls).toBe(2);

@@ -330,6 +330,8 @@ export type ServerConfig = Revisioned & {
   guildId: string;
   name?: string;
   enabled: boolean;
+  orchestratorMode?: "model" | "deterministic";
+  stageManagerEnabled?: boolean;
   contextWindows: {
     orchestrator: number;
     waifu: number;

@@ -642,6 +642,26 @@ describe("Backend API", () => {
       }
     });
 
+    it("per-server orchestratorMode and stageManagerEnabled round-trip with sane defaults", async () => {
+      const { app } = await makeApp();
+      try {
+        await app.inject({ method: "PUT", url: "/api/servers/g-modes", payload: { name: "Modes", enabled: true } });
+        let server = JSON.parse((await app.inject({ method: "GET", url: "/api/servers/g-modes" })).body) as Record<string, unknown>;
+        expect(server.orchestratorMode).toBe("model");
+        expect(server.stageManagerEnabled).toBe(true);
+        await app.inject({
+          method: "PUT",
+          url: "/api/servers/g-modes",
+          payload: { revision: server.revision, orchestratorMode: "deterministic", stageManagerEnabled: false }
+        });
+        server = JSON.parse((await app.inject({ method: "GET", url: "/api/servers/g-modes" })).body) as Record<string, unknown>;
+        expect(server.orchestratorMode).toBe("deterministic");
+        expect(server.stageManagerEnabled).toBe(false);
+      } finally {
+        await app.close();
+      }
+    });
+
     it("runtime triggers reject path-traversal ids", async () => {
       const { app } = await makeApp();
       try {

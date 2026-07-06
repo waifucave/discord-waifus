@@ -90,9 +90,52 @@ function GuildScreen({ guildId, onNavigate }: { guildId: string; onNavigate: (vi
     }
   };
 
+  const saveServerField = async (patch: Record<string, unknown>) => {
+    if (!server.data) return;
+    try {
+      const saved = await api.updateServer(guildId, { revision: server.data.revision, ...patch });
+      server.setData(saved);
+      setMessage(undefined);
+    } catch (err) {
+      setMessage((err as Error).message);
+      server.reload();
+    }
+  };
+  const mode = server.data?.orchestratorMode ?? "model";
+  const stageManagerOn = server.data?.stageManagerEnabled ?? true;
+
   return (
     <div className="screen">
       <HeadRow onBack={() => onNavigate("rooms")} title={server.data?.name ?? guildId} sub="toggle who may speak, per channel" />
+      <div className="fgrid" style={{ flex: "none", gridTemplateColumns: "1fr 1fr" }}>
+        <div className="fcell">
+          <label className="field-label">Orchestration for this server</label>
+          <select
+            className="select"
+            value={mode}
+            onChange={(e) => void saveServerField({ orchestratorMode: e.target.value })}
+          >
+            <option value="model">AI model (global orchestrator)</option>
+            <option value="deterministic">Deterministic (free, structural)</option>
+          </select>
+          <span className="field-hint">
+            Deterministic picks speakers from reply-targets, addressing, rotation, and availability — zero
+            orchestration API spend, no directives or topic pivots.
+          </span>
+        </div>
+        <div className="fcell">
+          <label className="field-label">Stage manager</label>
+          <label className="checkbox-chip">
+            <input
+              type="checkbox"
+              checked={stageManagerOn}
+              onChange={(e) => void saveServerField({ stageManagerEnabled: e.target.checked })}
+            />
+            {stageManagerOn ? "Active — observes, records memories, dreams" : "Disabled for this server"}
+          </label>
+          <span className="field-hint">Off = no observers, no new memories, no nightly dreams for this server.</span>
+        </div>
+      </div>
       <div className="content">
         {message && (
           <div className="cell" style={{ padding: 16, flex: "none" }}>

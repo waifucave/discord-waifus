@@ -277,6 +277,11 @@ export const ServerConfigSchema = RevisionedRecordSchema.extend({
     })
     .default({ orchestrator: 20, waifu: 50, stageManager: 80 }),
   memoryInjectionLimit: z.number().int().min(1).max(50).default(12),
+  // "model" uses the globally configured orchestrator model; "deterministic" forces the
+  // model-free structural decider for every channel of this guild (zero orchestration spend).
+  orchestratorMode: z.enum(["model", "deterministic"]).default("model"),
+  // Per-guild kill switch for the stage manager's automatic work (idle observers + dreams).
+  stageManagerEnabled: z.boolean().default(true),
   tools: ServerToolSettingsSchema,
   channels: z.record(
     z.string(),
