@@ -118,8 +118,8 @@ const CreateWaifuBodySchema = WaifuConfigSchema.omit({
 // `.unwrap()` on the sub-schemas that bundle their `.default()` internally) so an omitted field
 // parses to `undefined` — zod then omits it from the parsed body entirely — and the PUT
 // transform's `{...current, ...patch}` merge leaves the stored value alone instead of resetting
-// it. `params` gets the same treatment: present in the body replaces the stored value wholesale
-// (native gateway params have no partial-merge semantics), absent preserves it.
+// it. `params` MERGES with the stored object (an explicit null value unsets that key) — a
+// partial params write must never wipe the rest of a config's sampling/reasoning settings.
 const UpdateWaifuBodySchema = WaifuConfigSchema.omit({ personaDigest: true }).partial().extend({
   revision: z.number().int().nonnegative().optional(),
   params: z.record(z.string(), z.unknown()).optional(),
@@ -255,7 +255,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     }
     if (error instanceof ApiError) {
       void reply.status(error.statusCode).send({
-        error: error.name,
+        error: error.code,
         message: error.message,
         details: error.details
       });
@@ -264,6 +264,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     if (error instanceof z.ZodError) {
       void reply.status(400).send({
         error: "ValidationError",
+        message: error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join("; ").slice(0, 400),
         issues: error.issues
       });
       return;
@@ -396,7 +397,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   app.get("/api/docs/:slug", async (request, reply) => {
     const { slug } = request.params as { slug: string };
     const doc = await readDoc(slug);
-    if (!doc) return reply.code(404).send({ error: "unknown doc" });
+    if (!doc) return reply.code(404).send({ error: "NotFound", message: `Unknown doc: ${slug}` });
     return doc;
   });
 
@@ -511,6 +512,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
         const next = pruneUndefined({
           ...current,
           ...patch,
+          params: mergeParamsPatch(current.params, patch.params) ?? current.params,
           id: current.id,
           // personaDigest is server-managed; always carry it forward from current.
           personaDigest: current.personaDigest
@@ -530,6 +532,56 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
       // Errors are handled inside generatePersonaDigestIfStale with logger.warn.
     });
     return saved;
+  });
+
+  app.post("/api/waifus/:waifuId/link-bot", async (request, reply) => {
+    const { waifuId: id } = parseIdParam(request.params, "waifuId");
+    const body = z.object({ applicationId: z.string().min(1).optional() }).parse(request.body ?? {});
+    const waifuPath = waifuRelativePath(id);
+    if (!(await exists(resolveDataPath(options.dataRoot, waifuPath)))) {
+      return reply.code(404).send({ error: "NotFound", message: `Waifu ${id} is not configured.` });
+    }
+    const waifu = await storage.readJson(waifuPath, WaifuConfigSchema, null as never);
+    // 1. ensure the discord-bots entry (id = waifuId), merging by id and preserving tokens
+    const bots = await storage.updateRevisionedJson({
+      resourceKey: "discord-bots",
+      relativePath: "user/discord-bots.json",
+      schema: DiscordBotsFileSchema,
+      fallback: emptyDiscordBots(),
+      transform: (current) => {
+        const waifus = [...current.waifus];
+        const index = waifus.findIndex((bot) => bot.id === id);
+        const existing = index >= 0 ? waifus[index] : undefined;
+        const entry = {
+          id,
+          displayName: waifu.displayName || waifu.name || id,
+          enabled: true,
+          ...(existing ?? {}),
+          ...(body.applicationId ? { applicationId: body.applicationId } : {})
+        };
+        if (index >= 0) waifus[index] = entry;
+        else waifus.push(entry);
+        return { ...current, waifus };
+      }
+    });
+    // 2. link the waifu to the entry
+    const savedWaifu = await storage.updateRevisionedJson({
+      resourceKey: `waifu:${id}`,
+      relativePath: waifuPath,
+      schema: WaifuConfigSchema,
+      fallback: waifu,
+      transform: (current) => ({ ...current, botId: id })
+    });
+    const entry = bots.waifus.find((bot) => bot.id === id);
+    return {
+      linked: savedWaifu.botId === id,
+      botId: id,
+      applicationId: entry?.applicationId ?? null,
+      tokenConfigured: Boolean(entry?.token),
+      next: entry?.token
+        ? "Token already stored — reload Discord to connect."
+        : "Store the bot token (secure form or PUT /api/discord-bots), then reload Discord."
+    };
   });
 
   app.post("/api/waifus/:waifuId/digest", async (request) => {
@@ -623,6 +675,33 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     });
   });
 
+  app.delete("/api/servers/:guildId/channels/:channelId", async (request) => {
+    const { guildId } = parseIdParam(request.params, "guildId");
+    const { channelId } = parseIdParam(request.params, "channelId");
+    const body = (request.body ?? {}) as { revision?: number };
+    return storage.updateRevisionedJson({
+      resourceKey: `server:${guildId}`,
+      relativePath: serverRelativePath(guildId),
+      schema: ServerConfigSchema,
+      fallback: ServerConfigSchema.parse({ ...createRevisionedBase(), guildId }),
+      expectedRevision: expectedRevision(request, body),
+      transform: (current) => {
+        const { [channelId]: _removed, ...channels } = current.channels;
+        return { ...current, channels };
+      }
+    });
+  });
+
+  app.delete("/api/servers/:guildId", async (request, reply) => {
+    const { guildId } = parseIdParam(request.params, "guildId");
+    const serverPath = resolveDataPath(options.dataRoot, path.join("user", "servers", guildId));
+    if (!(await exists(serverPath))) {
+      return reply.code(404).send({ error: "NotFound", message: `Server ${guildId} is not configured.` });
+    }
+    await rm(serverPath, { recursive: true, force: true });
+    return { accepted: true, message: `Server ${guildId} configuration removed (sessions and rosters included).` };
+  });
+
   app.get("/api/servers/:guildId/members", async (request) => {
     const { guildId } = parseIdParam(request.params, "guildId");
     return readMembers(storage, guildId);
@@ -684,7 +763,27 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     });
   });
 
-  app.get("/api/memories", async () => readMemoryStore(storage));
+  app.get("/api/memories", async (request) => {
+    const query = z
+      .object({
+        guildId: z.string().optional(),
+        waifuId: z.string().optional(),
+        q: z.string().optional(),
+        status: z.string().optional(),
+        limit: z.coerce.number().int().min(1).max(500).optional()
+      })
+      .parse(request.query ?? {});
+    const store = await readMemoryStore(storage);
+    if (!query.guildId && !query.waifuId && !query.q && !query.status && !query.limit) return store;
+    const q = query.q?.toLowerCase();
+    const memories = store.memories
+      .filter((memory) => (query.guildId ? memory.guildId === query.guildId : true))
+      .filter((memory) => (query.waifuId ? memory.waifuId === query.waifuId : true))
+      .filter((memory) => (query.status ? memory.status === query.status : true))
+      .filter((memory) => (q ? memory.content.toLowerCase().includes(q) : true))
+      .slice(0, query.limit ?? 500);
+    return { ...store, memories };
+  });
   app.post("/api/memories", async (request, reply) => {
     const body = CreateMemoryBodySchema.parse(request.body);
     const now = nowIso();
@@ -774,6 +873,8 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   });
   app.post("/api/runtime/trigger/orchestrator", async (request) => {
     const body = RuntimeTriggerBodySchema.parse(request.body);
+    if (body?.guildId) assertSafeId(body.guildId);
+    if (body?.channelId) assertSafeId(body.channelId);
     const runtimeOrchestrator = options.runtimeControl?.getOrchestrator() ?? options.runtimeOrchestrator;
     if (body?.guildId && body.channelId && runtimeOrchestrator) {
       void runtimeOrchestrator.triggerChannel(body.guildId, body.channelId, "manual-api");
@@ -801,6 +902,8 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   });
   app.post("/api/runtime/trigger/stage-manager", async (request) => {
     const body = RuntimeTriggerBodySchema.parse(request.body);
+    if (body?.guildId) assertSafeId(body.guildId);
+    if (body?.channelId) assertSafeId(body.channelId);
     const runtimeOrchestrator = options.runtimeControl?.getOrchestrator() ?? options.runtimeOrchestrator;
     if (body?.guildId && body.channelId && runtimeOrchestrator) {
       void runtimeOrchestrator.triggerStageManager(body.guildId, body.channelId);
@@ -908,6 +1011,22 @@ async function readAgentConfig(
   );
 }
 
+
+// `params` used to replace wholesale on write, which made "set the temperature" wipe the rest
+// of a config's sampling/reasoning params for every consumer that forgot to merge client-side
+// (Norma did, curl agents did not). Merge server-side; a null value unsets that key.
+function mergeParamsPatch(
+  current: Record<string, unknown> | undefined,
+  patch: Record<string, unknown> | undefined
+): Record<string, unknown> | undefined {
+  if (patch === undefined) return undefined;
+  const merged: Record<string, unknown> = { ...(current ?? {}), ...patch };
+  for (const [key, value] of Object.entries(merged)) {
+    if (value === null) delete merged[key];
+  }
+  return merged;
+}
+
 async function updateAgentConfig(
   storage: StorageService,
   request: FastifyRequest,
@@ -929,7 +1048,7 @@ async function updateAgentConfig(
     expectedRevision: expectedRevision(request, body),
     transform: (current) => {
       const { revision: _revision, schemaVersion: _schemaVersion, updatedAt: _updatedAt, ...patch } = body;
-      const next = pruneUndefined({ ...current, ...patch });
+      const next = pruneUndefined({ ...current, ...patch, params: mergeParamsPatch(current.params, patch.params) ?? current.params });
       const target = assertModelWriteValid(next.providerId, next.modelId, next.params);
       if (target) {
         // Gateway P6 Task 4: persist the resolved pair (supersedes P4's store-literal

@@ -23,7 +23,7 @@ export function registerAssistantRoutes(
   app.get("/api/assistant/conversations/:id", async (request, reply) => {
     const { id } = request.params as { id: string };
     const conversation = store.get(id);
-    if (!conversation) return reply.code(404).send({ error: "unknown conversation" });
+    if (!conversation) return reply.code(404).send({ error: "NotFound", message: "Unknown conversation." });
     return { id: conversation.id, busy: conversation.busy, messages: conversation.messages };
   });
 
@@ -45,11 +45,19 @@ export function registerAssistantRoutes(
     }
   });
 
+  app.delete("/api/assistant/conversations/:id", (request, reply) => {
+    const { id } = request.params as { id: string };
+    if (!store.delete(id)) {
+      return reply.code(404).send({ error: "NotFound", message: "Unknown conversation." });
+    }
+    return { deleted: true };
+  });
+
   app.get("/api/assistant/conversations/:id/stream", (request, reply) => {
     const { id } = request.params as { id: string };
     const conversation = store.get(id);
     if (!conversation) {
-      reply.code(404).send({ error: "unknown conversation" });
+      reply.code(404).send({ error: "NotFound", message: "Unknown conversation." });
       return;
     }
     reply.hijack();

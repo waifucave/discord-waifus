@@ -121,7 +121,15 @@ function AgentForm({ agent }: { agent: AgentTab }) {
         enabled: draft.enabled,
         providerId: draft.providerId ?? null,
         modelId: draft.modelId ?? null,
-        params: draft.params,
+        // server merges params; removed keys must be sent as explicit nulls to unset
+        params: {
+          ...Object.fromEntries(
+            Object.keys(remote.data?.params ?? {})
+              .filter((key) => !(key in (draft.params ?? {})))
+              .map((key) => [key, null])
+          ),
+          ...(draft.params ?? {})
+        },
         prompt: draft.prompt,
         contextWindow: draft.contextWindow,
         ...(agent === "orchestrator" ? { directiveCooldown: draft.directiveCooldown } : {})

@@ -311,11 +311,12 @@ export type CreateWaifuBody = {
 // Gateway P6 Task 4: providerId/modelId accept explicit `null` on write to mean "unset" (see
 // UpdateAgentConfigBody above for why `undefined` alone can't carry that intent over the wire).
 export type UpdateWaifuBody = Partial<
-  Omit<WaifuConfig, "schemaVersion" | "updatedAt" | "providerId" | "modelId">
+  Omit<WaifuConfig, "schemaVersion" | "updatedAt" | "providerId" | "modelId" | "botId">
 > & {
   revision: number;
   providerId?: ProviderId | null;
   modelId?: string | null;
+  botId?: string | null;
 };
 
 export type ChannelConfig = {

@@ -246,7 +246,10 @@ export const WaifuConfigSchema = RevisionedRecordSchema.extend({
   // "field omitted, leave untouched" since a bare string schema rejects null outright.
   providerId: z.union([ProviderIdSchema, z.null()]).optional().transform((value) => value ?? undefined),
   modelId: z.union([z.string(), z.null()]).optional().transform((value) => value ?? undefined),
-  botId: z.string().optional(),
+  botId: z
+    .union([z.string(), z.null()])
+    .optional()
+    .transform((value) => value ?? undefined),
   contextWindow: z.number().int().min(1).max(100).default(50),
   params: z.record(z.string(), z.unknown()).default({}),
   availability: WaifuAvailabilitySchema,

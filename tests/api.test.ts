@@ -271,29 +271,21 @@ describe("Backend API", () => {
       }
     });
 
-    it("PUT waifu params replaces the stored value wholesale, not merged with the previous value", async () => {
+    it("PUT waifu params MERGES with the stored value; explicit null unsets a key", async () => {
       const { app } = await makeApp();
       try {
-        await app.inject({
-          method: "POST",
-          url: "/api/waifus",
-          payload: { id: "params-replace", name: "ParamsReplace", displayName: "ParamsReplace" }
-        });
-        const seeded = await app.inject({
-          method: "PUT",
-          url: "/api/waifus/params-replace",
-          payload: { revision: 0, params: { temperature: 0.5, topK: 40 } }
-        });
-        expect(seeded.json().params).toEqual({ temperature: 0.5, topK: 40 });
-
-        const replaced = await app.inject({
-          method: "PUT",
-          url: "/api/waifus/params-replace",
-          payload: { revision: 1, params: { "reasoning.effort": "high" } }
-        });
-        expect(replaced.statusCode).toBe(200);
-        // topK/temperature from the previous write are gone — params is a full replace, not a merge.
-        expect(replaced.json().params).toEqual({ "reasoning.effort": "high" });
+        await app.inject({ method: "POST", url: "/api/waifus", payload: { id: "pmerge", name: "P", displayName: "P", persona: "x" } });
+        let waifu = JSON.parse((await app.inject({ method: "GET", url: "/api/waifus/pmerge" })).body) as { revision: number };
+        await app.inject({ method: "PUT", url: "/api/waifus/pmerge", payload: { revision: waifu.revision, params: { temperature: 0.5, topK: 40 } } });
+        waifu = JSON.parse((await app.inject({ method: "GET", url: "/api/waifus/pmerge" })).body) as { revision: number };
+        // partial update keeps unmentioned keys
+        await app.inject({ method: "PUT", url: "/api/waifus/pmerge", payload: { revision: waifu.revision, params: { temperature: 0.9 } } });
+        waifu = JSON.parse((await app.inject({ method: "GET", url: "/api/waifus/pmerge" })).body) as { revision: number; params: Record<string, unknown> };
+        expect((waifu as { params: Record<string, unknown> }).params).toEqual({ temperature: 0.9, topK: 40 });
+        // null unsets
+        await app.inject({ method: "PUT", url: "/api/waifus/pmerge", payload: { revision: waifu.revision, params: { topK: null } } });
+        const after = JSON.parse((await app.inject({ method: "GET", url: "/api/waifus/pmerge" })).body) as { params: Record<string, unknown> };
+        expect(after.params).toEqual({ temperature: 0.9 });
       } finally {
         await app.close();
       }
@@ -645,6 +637,51 @@ describe("Backend API", () => {
         expect(created.contextWindow).toBe(50);
         expect(created.tools).toEqual({ toolUse: true });
         expect(created.promptLayout).toEqual(defaultWaifuPromptLayout());
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("runtime triggers reject path-traversal ids", async () => {
+      const { app } = await makeApp();
+      try {
+        const result = await app.inject({
+          method: "POST",
+          url: "/api/runtime/trigger/orchestrator",
+          payload: { guildId: "../../escape", channelId: "123" }
+        });
+        expect(result.statusCode).toBe(400);
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("PUT waifu with botId:null unlinks the bot", async () => {
+      const { app } = await makeApp();
+      try {
+        await app.inject({ method: "POST", url: "/api/waifus", payload: { id: "unlink-me", name: "U", displayName: "U", persona: "x" } });
+        let waifu = JSON.parse((await app.inject({ method: "GET", url: "/api/waifus/unlink-me" })).body) as { revision: number };
+        await app.inject({ method: "PUT", url: "/api/waifus/unlink-me", payload: { revision: waifu.revision, botId: "some-bot" } });
+        waifu = JSON.parse((await app.inject({ method: "GET", url: "/api/waifus/unlink-me" })).body) as { revision: number; botId?: string };
+        expect((waifu as { botId?: string }).botId).toBe("some-bot");
+        await app.inject({ method: "PUT", url: "/api/waifus/unlink-me", payload: { revision: waifu.revision, botId: null } });
+        const after = JSON.parse((await app.inject({ method: "GET", url: "/api/waifus/unlink-me" })).body) as { botId?: string };
+        expect(after.botId).toBeUndefined();
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("GET /api/memories supports server-side filters", async () => {
+      const { app } = await makeApp();
+      try {
+        await app.inject({ method: "POST", url: "/api/memories", payload: { waifuId: "a", guildId: "g1", content: "green tea preference" } });
+        await app.inject({ method: "POST", url: "/api/memories", payload: { waifuId: "b", guildId: "g2", content: "coffee vibration" } });
+        const filtered = JSON.parse((await app.inject({ method: "GET", url: "/api/memories?waifuId=a&q=tea" })).body) as { memories: Array<{ waifuId: string }> };
+        expect(filtered.memories).toHaveLength(1);
+        expect(filtered.memories[0].waifuId).toBe("a");
+        const all = JSON.parse((await app.inject({ method: "GET", url: "/api/memories" })).body) as { memories: unknown[] };
+        expect(all.memories).toHaveLength(2);
       } finally {
         await app.close();
       }

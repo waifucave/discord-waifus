@@ -94,6 +94,10 @@ export class ConversationStore {
     return () => conversation.listeners.delete(listener);
   }
 
+  delete(id: string): boolean {
+    return this.conversations.delete(id);
+  }
+
   emit(id: string, event: AssistantEvent): void {
     const conversation = this.conversations.get(id);
     if (!conversation) return;
