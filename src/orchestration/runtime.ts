@@ -31,7 +31,7 @@ import { ReplyQuoteExtraction, extractReplyQuote } from "./replyQuote.js";
 import { ModelPipeline, WaifuGenerationResult } from "../providers/types.js";
 import { createGatewayModelPipeline } from "./pipeline/gatewayPipeline.js";
 import { isPermissionError, PermissionWarningTracker } from "./permissionWarnings.js";
-import { decideDeterministically, type DeterministicCastMember } from "./deterministicOrchestrator.js";
+import { decideDeterministically, enforceWakePlan, type DeterministicCastMember } from "./deterministicOrchestrator.js";
 import { planRestartResume } from "./restartResume.js";
 import { GatewayPipelineError } from "./pipeline/params.js";
 import { resolveModelTarget, sharedRegistry } from "./pipeline/resolveTarget.js";
@@ -1276,6 +1276,37 @@ export class RuntimeOrchestrator {
           });
         }
       }
+      // Wake-plan enforcement: this pass IS the wake a no_reply plan scheduled. If the model
+      // answers no_reply again — its second consecutive plan with no execution — the runtime
+      // executes the promised plan itself (named waifu + the plan text as her change_topic
+      // goal). Live 2026-07-06 08:11: "have Lumi start a new topic" → no_reply restating it.
+      let wakePlanEnforced = false;
+      if (
+        !deterministicMode &&
+        !requireReply &&
+        timerWakeSeconds &&
+        lastNoReply?.wakePlan &&
+        decision.action === "no_reply" &&
+        pastDecisions[0]?.action === "no_reply"
+      ) {
+        const enforced = enforceWakePlan({
+          plan: lastNoReply.wakePlan,
+          cast: deterministicCast,
+          messages,
+          now: new Date()
+        });
+        if (enforced) {
+          this.options.logger.warn("Wake-plan enforcement: model deferred its own plan twice; executing it", {
+            guildId,
+            channelId,
+            plan: lastNoReply.wakePlan.slice(0, 140),
+            executor: enforced.respondingWaifus[0]?.waifuId,
+            modelReasoning: decision.reasoning.slice(0, 140)
+          });
+          decision = enforced;
+          wakePlanEnforced = true;
+        }
+      }
       // Enforcement tier for the retire-early rut: the cadence notice is advisory, and
       // flash-lite-class models demonstrably acknowledge an active room and pause anyway
       // (live 2026-07-06 06:07: "conversation is still very active, but…" → no_reply 45).
@@ -1319,7 +1350,8 @@ export class RuntimeOrchestrator {
         channelId,
         decision,
         directiveCooldown: orchestrator.directiveCooldown,
-        loopSuspected: loop.suspected
+        // wake-plan enforcement exists to fire a directive — it must not be budget-stripped
+        loopSuspected: loop.suspected || wakePlanEnforced
       });
       const responderOutcomes = await this.recordOrchestratorDecision({
         guildId,

@@ -142,3 +142,41 @@ describe("decideDeterministically", () => {
     expect(decision.action).toBe("no_reply");
   });
 });
+
+import { enforceWakePlan } from "../src/orchestration/deterministicOrchestrator.js";
+
+describe("enforceWakePlan", () => {
+  const NOW2 = new Date("2026-07-06T12:00:00.000Z");
+  const baseCast = cast;
+
+  it("executes a twice-deferred plan on the waifu it names", () => {
+    const override = enforceWakePlan({
+      plan: "If the room remains quiet, have Lumi (if awake) or someone else start a new, unrelated topic.",
+      cast: baseCast,
+      messages: [msg({ authorKind: "waifu", authorId: "bot-riko", displayName: "Riko", content: "done", timestamp: "2026-07-06T11:50:00.000Z" })],
+      now: NOW2
+    });
+    expect(override?.action).toBe("reply");
+    expect(override?.respondingWaifus[0]?.waifuId).toBe("lumi");
+    expect(override?.respondingWaifus[0]?.directive?.intent).toBe("change_topic");
+    expect(override?.respondingWaifus[0]?.directive?.goal).toContain("unrelated topic");
+  });
+
+  it("falls back to the stalest available waifu when the plan names nobody available", () => {
+    const override = enforceWakePlan({
+      plan: "If quiet, someone should shift the vibe.",
+      cast: baseCast,
+      messages: [
+        msg({ authorKind: "waifu", authorId: "bot-riko", displayName: "Riko", content: "a", timestamp: "2026-07-06T11:55:00.000Z" }),
+        msg({ authorKind: "waifu", authorId: "bot-aria", displayName: "Aria", content: "b", timestamp: "2026-07-06T11:58:00.000Z" })
+      ],
+      now: NOW2
+    });
+    expect(override?.respondingWaifus[0]?.waifuId).toBe("lumi");
+  });
+
+  it("returns undefined when no waifu is available", () => {
+    const override = enforceWakePlan({ plan: "have Lumi pivot", cast: [], messages: [], now: NOW2 });
+    expect(override).toBeUndefined();
+  });
+});

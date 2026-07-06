@@ -10,7 +10,7 @@
 // same convention as currentlyDoingForWaifu.
 
 import type { ContextMessage } from "./context.js";
-import type { OrchestratorDecision } from "./decisions.js";
+import { DIRECTIVE_GOAL_MAX_CHARS, type OrchestratorDecision } from "./decisions.js";
 import type { WaifuAvailability } from "../shared/schemas/domain.js";
 
 export type DeterministicCastMember = {
@@ -204,4 +204,64 @@ function dailyIntervalContains(currentMinutes: number, interval: { start: string
 function timeOfDayMinutes(value: string): number {
   const [hours = "0", minutes = "0"] = value.split(":");
   return Number(hours) * 60 + Number(minutes);
+}
+
+/**
+ * Wake-plan enforcement: when the model schedules a wake with a plan and then defers that
+ * plan again on the wake itself (live 2026-07-06 08:11: "have Lumi start a new topic" →
+ * no_reply restating the same plan), execute the plan deterministically — the plan text
+ * names the waifu, and the plan itself becomes her change_topic goal.
+ */
+export function enforceWakePlan(input: {
+  plan: string;
+  cast: DeterministicCastMember[];
+  messages: ContextMessage[];
+  now: Date;
+}): OrchestratorDecision | undefined {
+  const available = input.cast.filter((member) => isAvailable(member.availability, input.now));
+  if (available.length === 0) return undefined;
+  const named = available.find((member) => isReferenced(member, input.plan));
+  const member = named ?? stalestMember(available, input.messages);
+  if (!member) return undefined;
+  const goal = clipSurrogateSafeText(input.plan.trim(), DIRECTIVE_GOAL_MAX_CHARS);
+  return {
+    action: "reply",
+    respondingWaifus: [{ waifuId: member.waifuId, delaySeconds: 2, directive: { intent: "change_topic", goal } }],
+    reasoning: `deterministic wake-plan enforcement: the model deferred its own plan twice; ${member.waifuId} executes it`
+  };
+}
+
+function stalestMember(
+  candidates: DeterministicCastMember[],
+  messages: ContextMessage[]
+): DeterministicCastMember | undefined {
+  let best: DeterministicCastMember | undefined;
+  let bestStaleness = -1;
+  for (const member of candidates) {
+    let lastIndex = -1;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const message = messages[i];
+      if (
+        message.authorKind === "waifu" &&
+        (member.authorIds.includes(message.authorId) || member.names.some((n) => n.trim().toLowerCase() === message.displayName.trim().toLowerCase()))
+      ) {
+        lastIndex = i;
+        break;
+      }
+    }
+    const staleness = lastIndex === -1 ? messages.length + 1 : messages.length - 1 - lastIndex;
+    if (staleness > bestStaleness) {
+      bestStaleness = staleness;
+      best = member;
+    }
+  }
+  return best;
+}
+
+function clipSurrogateSafeText(text: string, max: number): string {
+  if (text.length <= max) return text;
+  let clipped = text.slice(0, max);
+  const last = clipped.charCodeAt(clipped.length - 1);
+  if (last >= 0xd800 && last <= 0xdbff) clipped = clipped.slice(0, -1);
+  return clipped;
 }
