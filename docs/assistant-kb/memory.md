@@ -25,9 +25,9 @@ decays trivia, promotes worthwhile notes into durable records. Watch results wit
 
 ## Managing memories
 
-- `GET /api/memories?guildId=&waifuId=&q=` — list/search.
+- `GET /api/memories` (full store — filter client-side) — list/search.
 - `POST /api/memories` — add (set `pinned: true` for canon facts you never want to decay).
-- `PATCH /api/memories/:memoryId` — edit content, kind, pinned, strength.
+- `PUT /api/memories/:memoryId` — edit content, kind, pinned, strength.
 - `DELETE /api/memories/:memoryId` — remove.
 
 Pin sparingly: pinned records occupy retrieval slots on every turn. Canon facts about the

@@ -174,6 +174,81 @@ describe("assistant tools", () => {
     }
   });
 
+  it("delete_waifu actually deletes (fetches the revision itself)", async () => {
+    const { app } = await makeApp();
+    try {
+      await executeAssistantTool({ app }, "create_waifu", JSON.stringify({ id: "doomed", name: "Doomed", displayName: "Doomed", persona: "x" }));
+      const result = await executeAssistantTool({ app }, "delete_waifu", JSON.stringify({ id: "doomed" }));
+      expect(result.toLowerCase()).toContain("deleted");
+      const check = await app.inject({ method: "GET", url: "/api/waifus/doomed" });
+      expect(check.statusCode).toBe(404);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("update_memory and delete_memory carry the store revision", async () => {
+    const { app } = await makeApp();
+    try {
+      await executeAssistantTool({ app }, "add_memory", JSON.stringify({ waifuId: "riko", guildId: "g1", content: "old fact" }));
+      const list = JSON.parse(await executeAssistantTool({ app }, "search_memories", JSON.stringify({ q: "old" }))) as Array<{ id: string }>;
+      const memoryId = list[0].id;
+      const updated = await executeAssistantTool({ app }, "update_memory", JSON.stringify({ memoryId, changes: { content: "new fact" } }));
+      expect(updated).toContain("new fact");
+      const deleted = await executeAssistantTool({ app }, "delete_memory", JSON.stringify({ memoryId }));
+      expect(deleted.toLowerCase()).toContain("delete");
+      const after = JSON.parse(await executeAssistantTool({ app }, "search_memories", JSON.stringify({ q: "fact" }))) as unknown[];
+      expect(after).toHaveLength(0);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("clear_provider_key removes a stored key", async () => {
+    const { app } = await makeApp();
+    try {
+      await executeAssistantTool({ app }, "set_provider_key", JSON.stringify({ providerId: "deepseek", apiKey: "sk-test" }));
+      const cleared = await executeAssistantTool({ app }, "clear_provider_key", JSON.stringify({ providerId: "deepseek" }));
+      expect(cleared.toLowerCase()).toContain("removed");
+      const providers = await app.inject({ method: "GET", url: "/api/providers" });
+      expect(providers.body).not.toContain('"configured":true');
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("update_discord_bots merges by entry id — unlisted bots survive", async () => {
+    const { app } = await makeApp();
+    try {
+      await executeAssistantTool({ app }, "update_discord_bots", JSON.stringify({ waifus: [
+        { id: "momo", displayName: "Momo", enabled: true, applicationId: "111" },
+        { id: "riko", displayName: "Riko", enabled: true, applicationId: "222" }
+      ] }));
+      await executeAssistantTool({ app }, "update_discord_bots", JSON.stringify({ waifus: [
+        { id: "momo", displayName: "Momo Renamed", enabled: true }
+      ] }));
+      const bots = JSON.parse((await app.inject({ method: "GET", url: "/api/discord-bots" })).body) as { waifus: Array<{ id: string; displayName: string; applicationId?: string }> };
+      expect(bots.waifus.find((b) => b.id === "riko")).toBeDefined();
+      expect(bots.waifus.find((b) => b.id === "momo")?.displayName).toBe("Momo Renamed");
+      expect(bots.waifus.find((b) => b.id === "momo")?.applicationId).toBe("111");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("update_waifu deep-merges params — setting temperature keeps the rest", async () => {
+    const { app } = await makeApp();
+    try {
+      await executeAssistantTool({ app }, "create_waifu", JSON.stringify({ id: "p1", name: "P", displayName: "P", persona: "x" }));
+      await executeAssistantTool({ app }, "update_waifu", JSON.stringify({ id: "p1", changes: { params: { temperature: 0.7, topP: 0.9 } } }));
+      await executeAssistantTool({ app }, "update_waifu", JSON.stringify({ id: "p1", changes: { params: { temperature: 0.3 } } }));
+      const waifu = JSON.parse((await app.inject({ method: "GET", url: "/api/waifus/p1" })).body) as { params: Record<string, unknown> };
+      expect(waifu.params).toEqual({ temperature: 0.3, topP: 0.9 });
+    } finally {
+      await app.close();
+    }
+  });
+
   it("request_secret shows a secure form marker without touching storage", async () => {
     const { app } = await makeApp();
     try {

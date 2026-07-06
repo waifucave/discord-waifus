@@ -35,7 +35,7 @@ does goes through these endpoints, so any agent can drive the app with plain HTT
 | POST | /api/waifus/:id/assets/pfp · /banner | Upload art. |
 | GET | /api/servers | Guilds with channels and enablement. |
 | GET | /api/servers/:guildId | One guild. |
-| PATCH | /api/servers/:guildId/channels/:channelId | `{enabledWaifuIds, ...}` per-channel settings. |
+| PUT | /api/servers/:guildId/channels/:channelId | `{enabledWaifuIds, ...}` per-channel settings. |
 | GET/POST | /api/servers/:guildId/members·roles·emojis(/refresh) | Guild caches. |
 | GET | /api/discord-bots | Bot entries (tokens redacted). |
 | PUT | /api/discord-bots | Replace orchestrator + waifus bot entries (revisioned). |
@@ -51,7 +51,7 @@ does goes through these endpoints, so any agent can drive the app with plain HTT
 | GET | /api/assistant/conversations/:id/stream | SSE: turn/tool events. |
 | GET | /api/memories | Query params: guildId, waifuId, q. |
 | POST | /api/memories | Add a memory record. |
-| PATCH/DELETE | /api/memories/:memoryId | Edit / remove. |
+| PUT/DELETE | /api/memories/:memoryId | Edit / remove. |
 | GET | /api/logs?limit=N | Recent backend log entries (max 500). |
 | GET | /api/docs · /api/docs/:slug | This knowledge base. |
 | GET | /api/events | SSE firehose: logs, runtime, captured model queries/replies. |

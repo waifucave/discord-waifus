@@ -450,6 +450,22 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     return providerCredentialsResponse(updated, providerId);
   });
 
+  app.delete("/api/providers/:providerId/credentials", async (request) => {
+    const { providerId } = z.object({ providerId: ProviderIdSchema }).parse(request.params);
+    assertKnownProvider(providerId);
+    const updated = await storage.updateRevisionedJson({
+      resourceKey: "providers",
+      relativePath: "user/providers.json",
+      schema: ProviderCredentialsFileSchema,
+      fallback: emptyProviderCredentials(),
+      transform: (current) => {
+        const { [providerId]: _removed, ...rest } = current.providers;
+        return { ...current, providers: rest };
+      }
+    });
+    return providerCredentialsResponse(updated, providerId);
+  });
+
   app.get("/api/waifus", async () => ({ waifus: await listWaifus(storage) }));
   app.post("/api/waifus", async (request, reply) => {
     const body = CreateWaifuBodySchema.parse(request.body);
@@ -1595,6 +1611,7 @@ function sendSseSnapshot(
   runtime: RuntimeState,
   logger: Logger
 ): void {
+  reply.hijack();
   reply.raw.writeHead(200, {
     "content-type": "text/event-stream",
     "cache-control": "no-cache",

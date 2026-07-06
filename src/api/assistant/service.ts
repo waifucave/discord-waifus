@@ -25,7 +25,7 @@ export async function resolveAssistantTarget(app: FastifyInstance, dataRoot: str
   const orchestrator = await getJson(app, "/api/orchestrator/config");
   const source = assistant?.modelId ? assistant : orchestrator?.modelId ? orchestrator : undefined;
   if (!source) {
-    return { ok: false, reason: "No model configured — set one on the assistant or the orchestrator." };
+    return { ok: false, reason: "No model is configured for the assistant. Set one under Direction \u2192 Assistant (do not repurpose the orchestrator\u2019s setting \u2014 an empty orchestrator model can be a deliberate free deterministic mode)." };
   }
   let target: { providerId: string; modelId: string };
   try {
@@ -99,10 +99,21 @@ export async function runAssistantTurn(deps: AssistantServiceDeps, conversationI
   const conversation = store.get(conversationId);
   if (!conversation) throw new AssistantTurnError(404, "Unknown conversation.");
   if (conversation.busy) throw new AssistantTurnError(409, "A turn is already running in this conversation.");
+  // claim the conversation BEFORE the first await — two concurrent POSTs both passed the
+  // check above and interleaved, last-writer-winning the model transcript (audit finding 6)
+  store.setBusy(conversationId, true);
 
-  const target = await resolveAssistantTarget(app, dataRoot);
-  if (!target.ok) throw new AssistantTurnError(503, target.reason);
-
+  let target;
+  try {
+    target = await resolveAssistantTarget(app, dataRoot);
+  } catch (error) {
+    store.setBusy(conversationId, false);
+    throw error;
+  }
+  if (!target.ok) {
+    store.setBusy(conversationId, false);
+    throw new AssistantTurnError(503, target.reason);
+  }
   const pipeline = deps.createPipeline
     ? deps.createPipeline({ providerId: target.providerId, modelId: target.modelId })
     : createGatewayModelPipeline({
@@ -111,7 +122,10 @@ export async function runAssistantTurn(deps: AssistantServiceDeps, conversationI
         queryRole: "assistant",
         dataRoot
       });
-  if (!pipeline.generateAssistantTurn) throw new AssistantTurnError(503, "The resolved pipeline cannot run assistant turns.");
+  if (!pipeline.generateAssistantTurn) {
+    store.setBusy(conversationId, false);
+    throw new AssistantTurnError(503, "The resolved pipeline cannot run assistant turns.");
+  }
 
   const transcript =
     conversation.chat.length > 0
@@ -119,7 +133,9 @@ export async function runAssistantTurn(deps: AssistantServiceDeps, conversationI
       : [{ role: "system" as const, content: assistantSystemPrompt(await buildSnapshot(app)) }];
   transcript.push({ role: "user", content: userContent });
 
-  store.setBusy(conversationId, true);
+  // persist the user turn into the MODEL transcript now: if the pipeline throws, the next
+  // turn must still contain this message (audit finding 8 — "well??" after a failed turn)
+  store.appendChat(conversationId, transcript);
   store.appendStored(conversationId, { role: "user", content: userContent, at: new Date().toISOString() });
   store.emit(conversationId, { type: "turn_started" });
   try {
@@ -129,7 +145,7 @@ export async function runAssistantTurn(deps: AssistantServiceDeps, conversationI
       tools: toolDefs(),
       params: target.params,
       executeTool: (name, argsJson) => executeAssistantTool({ app }, name, argsJson),
-      onEvent: (event) => store.emit(conversationId, event as AssistantEvent)
+      onEvent: (event) => store.emit(conversationId, scrubSecretsFromEvent(event as AssistantEvent))
     });
     store.appendChat(conversationId, result.messages);
     store.appendStored(conversationId, { role: "assistant", content: result.content, at: new Date().toISOString() });
@@ -143,4 +159,12 @@ export async function runAssistantTurn(deps: AssistantServiceDeps, conversationI
   } finally {
     store.setBusy(conversationId, false);
   }
+}
+
+/** Keys/tokens must never persist in the display transcript or SSE replay, even when the
+ * user pasted one into chat and the model called set_provider_key with it. */
+function scrubSecretsFromEvent(event: AssistantEvent): AssistantEvent {
+  if (event.type !== "tool_call") return event;
+  const scrubbed = event.arguments.replace(/("(?:apiKey|token)"\s*:\s*")([^"]+)(")/g, "$1[redacted]$3");
+  return scrubbed === event.arguments ? event : { ...event, arguments: scrubbed };
 }

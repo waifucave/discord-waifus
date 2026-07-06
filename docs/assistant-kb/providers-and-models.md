@@ -43,4 +43,4 @@ with a forced tool) are auto-corrected per call rather than failing.
 The `request_secret` tool shows the user a secure input form in the dashboard panel. The
 secret (provider API key or bot token) is posted by the browser directly to storage and
 never enters the assistant conversation. Always prefer it over asking for secrets in chat;
-application IDs are not secret and can be set via `update_discord_bots`.
+application IDs are not secret and can be set via `link_waifu_bot (for characters) or update_discord_bots (orchestrator only)`.

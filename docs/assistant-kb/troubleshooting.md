@@ -44,3 +44,12 @@ change on the fresh state, and PUT with the new `revision`.
 The output harness splits, dedupes, and length-checks replies; persona text should never
 contain length/format rules (they don't work there). Self-repeats are blocked automatically.
 If a waifu misreads recent context, check Queries for what her prompt actually contained.
+
+
+## Fast diagnosis tools
+
+- `get_orchestrator_history` — recent decisions with reasoning: THE tool for "why did/didn't she reply".
+- `get_runtime_status` — includes `discord.warnings` with live per-channel permission failures
+  (e.g. "riko cannot send in channel … — check the channel permissions in Discord").
+- If the orchestrator is enabled with no model, that is the free deterministic mode, not a
+  misconfiguration.

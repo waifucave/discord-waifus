@@ -12,10 +12,24 @@ function parseSecretArgs(raw: string | undefined): SecretArgs | undefined {
   try {
     const parsed = JSON.parse(raw) as SecretArgs;
     if (parsed.purpose !== "provider_key" && parsed.purpose !== "bot_token") return undefined;
+    // a form without a target would PUT to /providers/undefined — refuse to render it
+    if (parsed.purpose === "provider_key" && !parsed.providerId) return undefined;
+    if (parsed.purpose === "bot_token" && !parsed.botId) return undefined;
     return parsed;
   } catch {
     return undefined;
   }
+}
+
+/** A secret form is live only while its request is the newest thing in the transcript —
+ * replayed/answered requests (a [secure-form] receipt or any later user turn follows) are history. */
+function secretFormIsLive(items: ChatItem[], index: number): boolean {
+  for (let i = index + 1; i < items.length; i++) {
+    const item = items[i];
+    if (item.kind === "user") return false; // receipt or a newer user message supersedes it
+    if (item.kind === "assistant") continue; // Norma's "paste it into the form" reply is expected
+  }
+  return true;
 }
 
 /**
@@ -168,7 +182,16 @@ export function AssistantPanel({
           <span className="t-title">Norma</span>
           <span className="t-micro">assistant{model ? ` · ${model}` : ""}</span>
         </div>
-        <button className="cell clickable hbtn" data-hue style={{ ["--hover-hue" as string]: "var(--sky)" }} onClick={chat.reset} title="New conversation">
+        <button
+          className="cell clickable hbtn"
+          data-hue
+          style={{ ["--hover-hue" as string]: "var(--sky)" }}
+          onClick={() => {
+            chat.reset();
+            setHandledSecrets(new Set());
+          }}
+          title="New conversation"
+        >
           +
         </button>
         <button className="cell clickable hbtn" data-hue style={{ ["--hover-hue" as string]: "var(--peach)" }} onClick={onClose} aria-label="Close">
@@ -202,7 +225,7 @@ export function AssistantPanel({
           if (item.kind === "assistant") return <div key={index} className="m-asst">{item.content}</div>;
           if (item.kind === "tool") {
             const secretArgs = item.name === "request_secret" ? parseSecretArgs(item.args) : undefined;
-            if (secretArgs && !handledSecrets.has(index)) {
+            if (secretArgs && !handledSecrets.has(index) && secretFormIsLive(chat.items, index)) {
               return (
                 <div key={index}>
                   <ToolRow item={item} />

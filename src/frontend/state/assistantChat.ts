@@ -42,13 +42,21 @@ export function useAssistantChat(open: boolean) {
     }
   }, []);
 
+  const lastSeqRef = useRef(0);
   const attachStream = useCallback(
-    (conversationId: string) => {
+    (conversationId: string, options?: { skipReplay?: boolean }) => {
       sourceRef.current?.close();
       const source = new EventSource(`/api/assistant/conversations/${encodeURIComponent(conversationId)}/stream`);
       source.addEventListener("assistant", (raw) => {
+        const message = raw as MessageEvent;
+        // seq-guarded: replayed history after a reconnect (or an initial replay we already
+        // rendered from the stored transcript) must not fold twice
+        const seq = Number(message.lastEventId || 0);
+        if (seq > 0 && seq <= lastSeqRef.current) return;
+        if (seq > 0) lastSeqRef.current = seq;
+        if (options?.skipReplay && seq === 0) return;
         try {
-          foldEvent(JSON.parse((raw as MessageEvent).data) as AssistantEvent);
+          foldEvent(JSON.parse(message.data) as AssistantEvent);
         } catch {
           // Malformed frame — ignore; the POST response still carries the final reply.
         }
@@ -91,6 +99,14 @@ export function useAssistantChat(open: boolean) {
           else if (message.role === "assistant") restored.push({ kind: "assistant", content: message.content });
         }
         setItems(restored);
+        // the restored transcript already covers history: start the seq guard at the highest
+        // stored event seq so the stream's replay is swallowed but live events still fold
+        lastSeqRef.current = Math.max(
+          0,
+          ...(conversation.messages as AssistantStoredMessage[]).map((message) =>
+            message.role === "event" ? ((message as { seq?: number }).seq ?? 0) : 0
+          )
+        );
         attachStream(existing);
       })
       .catch(() => {
@@ -124,6 +140,7 @@ export function useAssistantChat(open: boolean) {
   );
 
   const reset = useCallback(() => {
+    lastSeqRef.current = 0;
     sourceRef.current?.close();
     sourceRef.current = undefined;
     conversationRef.current = undefined;

@@ -11,14 +11,15 @@ export type AssistantEvent =
 
 export type StoredMessage =
   | { role: "user" | "assistant"; content: string; at: string }
-  | { role: "event"; event: AssistantEvent; at: string };
+  | { role: "event"; event: AssistantEvent; seq?: number; at: string };
 
 type Conversation = {
   id: string;
   messages: StoredMessage[];
   chat: ChatMessage[];
   busy: boolean;
-  listeners: Set<(event: AssistantEvent) => void>;
+  eventSeq: number;
+  listeners: Set<(event: AssistantEvent, seq: number) => void>;
 };
 
 const MAX_CONVERSATIONS = 20;
@@ -34,11 +35,13 @@ export class ConversationStore {
 
   create(): { id: string } {
     const id = randomUUID();
-    this.conversations.set(id, { id, messages: [], chat: [], busy: false, listeners: new Set() });
-    // Map preserves insertion order — evict the oldest past the cap.
+    this.conversations.set(id, { id, messages: [], chat: [], busy: false, eventSeq: 0, listeners: new Set() });
+    // Map preserves insertion order; get() re-inserts, so iteration order is true LRU.
+    // Never evict a conversation mid-turn (its output would silently vanish).
     while (this.conversations.size > MAX_CONVERSATIONS) {
-      const oldest = this.conversations.keys().next().value as string;
-      this.conversations.delete(oldest);
+      const victim = [...this.conversations.values()].find((candidate) => !candidate.busy && candidate.id !== id);
+      if (!victim) break;
+      this.conversations.delete(victim.id);
     }
     return { id };
   }
@@ -46,13 +49,28 @@ export class ConversationStore {
   get(id: string): { id: string; messages: StoredMessage[]; chat: ChatMessage[]; busy: boolean } | undefined {
     const conversation = this.conversations.get(id);
     if (!conversation) return undefined;
+    // LRU touch: re-insert so create() evicts genuinely idle conversations first
+    this.conversations.delete(id);
+    this.conversations.set(id, conversation);
     const { listeners: _listeners, ...visible } = conversation;
     return visible;
   }
 
   appendChat(id: string, messages: ChatMessage[]): void {
     const conversation = this.conversations.get(id);
-    if (conversation) conversation.chat = messages;
+    if (!conversation) return;
+    // trim the model transcript from the front (never the system prompt) past a byte budget —
+    // tool results are up to 6000 chars each and were resent wholesale forever (audit finding 12)
+    const budget = 120_000;
+    let size = messages.reduce((sum, message) => sum + JSON.stringify(message).length, 0);
+    const trimmed = [...messages];
+    while (size > budget && trimmed.length > 2) {
+      const index = trimmed.findIndex((message) => message.role !== "system");
+      if (index === -1) break;
+      size -= JSON.stringify(trimmed[index]).length;
+      trimmed.splice(index, 1);
+    }
+    conversation.chat = trimmed;
   }
 
   appendStored(id: string, message: StoredMessage): void {
@@ -69,7 +87,7 @@ export class ConversationStore {
     if (conversation) conversation.busy = busy;
   }
 
-  subscribe(id: string, listener: (event: AssistantEvent) => void): () => void {
+  subscribe(id: string, listener: (event: AssistantEvent, seq: number) => void): () => void {
     const conversation = this.conversations.get(id);
     if (!conversation) return () => undefined;
     conversation.listeners.add(listener);
@@ -79,7 +97,10 @@ export class ConversationStore {
   emit(id: string, event: AssistantEvent): void {
     const conversation = this.conversations.get(id);
     if (!conversation) return;
-    this.appendStored(id, { role: "event", event, at: new Date().toISOString() });
-    for (const listener of conversation.listeners) listener(event);
+    // monotone sequence: the SSE layer sends it as the event id so clients can drop
+    // duplicates when the browser reconnects and history is replayed (audit finding 10)
+    const seq = ++conversation.eventSeq;
+    this.appendStored(id, { role: "event", event, seq, at: new Date().toISOString() });
+    for (const listener of conversation.listeners) listener(event, seq);
   }
 }

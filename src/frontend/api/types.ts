@@ -494,4 +494,4 @@ export type AssistantEvent =
 
 export type AssistantStoredMessage =
   | { role: "user" | "assistant"; content: string; at: string }
-  | { role: "event"; event: AssistantEvent; at: string };
+  | { role: "event"; event: AssistantEvent; seq?: number; at: string };

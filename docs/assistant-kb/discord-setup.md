@@ -47,5 +47,5 @@ list bots that failed (bad token, missing intents).
    secure form; it never enters the conversation. A `[secure-form]` receipt confirms it.
 3. `runtime_reload` — connects the new bot.
 
-Application IDs are not secret. Only the token goes through the secure form. Bot updates
-merge per entry server-side — stored tokens are preserved when omitted, nothing gets wiped.
+Application IDs are not secret. Only the token goes through the secure form. update_discord_bots merges entries BY ID: bots you do not mention are untouched, and stored
+tokens are preserved when omitted from an entry you do mention.
