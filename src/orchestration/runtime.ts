@@ -1214,6 +1214,23 @@ export class RuntimeOrchestrator {
           });
         }
       }
+      // Enforcement tier for the retire-early rut: the cadence notice is advisory, and
+      // flash-lite-class models demonstrably acknowledge an active room and pause anyway
+      // (live 2026-07-06 06:07: "conversation is still very active, but…" → no_reply 45).
+      // When the detector fired, humans are around, and the model still pauses, a
+      // deterministic reply keeps the room alive; the model resumes control next pass.
+      if (!deterministicMode && !requireReply && cadence.suspected && humanActiveNow && decision.action === "no_reply") {
+        const override = decideDeterministically({ messages, cast: deterministicCast, now: new Date() });
+        if (override.action === "reply") {
+          this.options.logger.warn("Cadence override: model retired an active room again; deterministic reply used", {
+            guildId,
+            channelId,
+            modelReasoning: decision.reasoning.slice(0, 160),
+            override: override.reasoning
+          });
+          decision = override;
+        }
+      }
       decision = capDecisionDelays(decision);
       if (requireReply) {
         decision = applyFirstResponderDirectiveOverride(
