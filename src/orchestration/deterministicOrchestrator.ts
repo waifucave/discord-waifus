@@ -221,6 +221,20 @@ export function enforceWakePlan(input: {
   const available = input.cast.filter((member) => isAvailable(member.availability, input.now));
   if (available.length === 0) return undefined;
   const named = available.find((member) => isReferenced(member, input.plan));
+  // Observation plans ("Check if K replies to Aria's comment…") name the waifu the room is
+  // waiting on a reply TO, not an intended actor. Executing the plan on her makes her restate
+  // her own message (live 2026-08-05 01:08, Aria). Someone else breaks the silence instead,
+  // and the plan text is dropped from the goal so the new speaker doesn't re-litigate the
+  // watched message either.
+  if (named && named.waifuId === latestCastSpeakerId(input.cast, input.messages)) {
+    const others = available.filter((member) => member.waifuId !== named.waifuId);
+    const executor = stalestMember(others, input.messages) ?? named;
+    return {
+      action: "reply",
+      respondingWaifus: [{ waifuId: executor.waifuId, delaySeconds: 2 }],
+      reasoning: `deterministic wake-plan enforcement: the plan watched ${named.waifuId}'s own message; ${executor.waifuId} breaks the silence instead`
+    };
+  }
   const member = named ?? stalestMember(available, input.messages);
   if (!member) return undefined;
   const goal = clipSurrogateSafeText(input.plan.trim(), DIRECTIVE_GOAL_MAX_CHARS);
@@ -229,6 +243,20 @@ export function enforceWakePlan(input: {
     respondingWaifus: [{ waifuId: member.waifuId, delaySeconds: 2, directive: { intent: "change_topic", goal } }],
     reasoning: `deterministic wake-plan enforcement: the model deferred its own plan twice; ${member.waifuId} executes it`
   };
+}
+
+/** The cast member who sent the latest waifu-authored message — whose message the room is waiting on. */
+function latestCastSpeakerId(cast: DeterministicCastMember[], messages: ContextMessage[]): string | undefined {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (message.authorKind !== "waifu") continue;
+    return cast.find(
+      (member) =>
+        member.authorIds.includes(message.authorId) ||
+        member.names.some((n) => n.trim().toLowerCase() === message.displayName.trim().toLowerCase())
+    )?.waifuId;
+  }
+  return undefined;
 }
 
 function stalestMember(

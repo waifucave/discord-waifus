@@ -179,4 +179,36 @@ describe("enforceWakePlan", () => {
     const override = enforceWakePlan({ plan: "have Lumi pivot", cast: [], messages: [], now: NOW2 });
     expect(override).toBeUndefined();
   });
+
+  it("a plan naming the last cast speaker casts someone else, without the plan as goal", () => {
+    // Live 2026-08-05 01:08: plan "Check if K replies to Aria's comment..." named Aria
+    // because the room was waiting on a reply TO her — executing it on her made her
+    // restate her own message.
+    const override = enforceWakePlan({
+      plan: "Check if K replies to Aria's comment about communication skills.",
+      cast: baseCast,
+      messages: [
+        msg({ authorKind: "waifu", authorId: "bot-riko", displayName: "Riko", content: "calm down", timestamp: "2026-07-06T11:55:00.000Z" }),
+        msg({ authorKind: "waifu", authorId: "bot-aria", displayName: "K的小娇妻", content: "K babe we need to talk about your communication skills fr", timestamp: "2026-07-06T11:58:00.000Z" })
+      ],
+      now: NOW2
+    });
+    expect(override?.action).toBe("reply");
+    expect(override?.respondingWaifus[0]?.waifuId).toBe("lumi");
+    expect(override?.respondingWaifus[0]?.directive).toBeUndefined();
+  });
+
+  it("single-member cast: the watched speaker still fires, but without the plan as goal", () => {
+    const override = enforceWakePlan({
+      plan: "Check if K replies to Aria's comment about communication skills.",
+      cast: [baseCast[1]],
+      messages: [
+        msg({ authorKind: "waifu", authorId: "bot-aria", displayName: "K的小娇妻", content: "K babe we need to talk about your communication skills fr", timestamp: "2026-07-06T11:58:00.000Z" })
+      ],
+      now: NOW2
+    });
+    expect(override?.action).toBe("reply");
+    expect(override?.respondingWaifus[0]?.waifuId).toBe("aria");
+    expect(override?.respondingWaifus[0]?.directive).toBeUndefined();
+  });
 });
