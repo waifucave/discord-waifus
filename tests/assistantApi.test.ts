@@ -117,3 +117,23 @@ describe("assistant chat API", () => {
     }
   });
 });
+
+describe("assistant conversation listing", () => {
+  it("lists conversations and reflects deletes", async () => {
+    const { app } = await makeApp();
+    try {
+      const a = JSON.parse((await app.inject({ method: "POST", url: "/api/assistant/conversations" })).body) as { conversationId: string };
+      const b = JSON.parse((await app.inject({ method: "POST", url: "/api/assistant/conversations" })).body) as { conversationId: string };
+      const list = JSON.parse((await app.inject({ method: "GET", url: "/api/assistant/conversations" })).body) as {
+        conversations: Array<{ id: string; createdAt: string; messageCount: number }>;
+      };
+      expect(list.conversations.map((c) => c.id).sort()).toEqual([a.conversationId, b.conversationId].sort());
+      expect(list.conversations.every((c) => typeof c.createdAt === "string" && c.messageCount === 0)).toBe(true);
+      await app.inject({ method: "DELETE", url: `/api/assistant/conversations/${a.conversationId}` });
+      const after = JSON.parse((await app.inject({ method: "GET", url: "/api/assistant/conversations" })).body) as { conversations: unknown[] };
+      expect(after.conversations).toHaveLength(1);
+    } finally {
+      await app.close();
+    }
+  });
+});

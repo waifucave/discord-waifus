@@ -1,6 +1,6 @@
 import { ApiError } from "./client";
 
-export type SaveErrorViolation = { param: string; code: string; rule?: string };
+export type SaveErrorViolation = { param: string; code: string; rule?: string; message?: string };
 
 /**
  * Pulls write-validation violations (`{param, code, rule?}`) out of a caught save error, when

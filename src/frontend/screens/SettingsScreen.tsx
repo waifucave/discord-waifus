@@ -19,7 +19,7 @@ export function SettingsScreen({
   const active = tab ?? "providers";
   return (
     <div className="screen">
-      <HeadRow onBack={() => onNavigate("home")} title="Settings" sub="providers · discord bots · app" />
+      <HeadRow onBack={() => onNavigate("home")} title="Settings" sub="providers · app" />
       <TabCells view="settings" active={active} onTab={onTab} />
       {active === "providers" ? <ProvidersTab /> : <AppTab />}
       <FootRow />
@@ -67,7 +67,7 @@ function ProvidersTab() {
             <span style={{ marginLeft: "auto" }}>
               {provider.docsUrl && (
                 <a className="t-micro" href={provider.docsUrl} target="_blank" rel="noreferrer" style={{ marginRight: 14, color: "var(--mute)" }}>
-                  get a key ↗
+                  Get a key ↗
                 </a>
               )}
               <button
@@ -284,7 +284,7 @@ function BotsSection({
         <span className="t-micro" style={{ color: "var(--ink)" }}>How to create a Discord bot</span>
         <span className="caret">{showGuide ? "▾" : "▸"}</span>
       </button>
-      {showGuide && <div className="cell" style={{ padding: "16px 20px" }}><DiscordBotGuide kind="orchestrator" collapsedByDefault={false} /></div>}
+      {showGuide && <div className="cell" style={{ padding: "16px 20px" }}><DiscordBotGuide kind="orchestrator" collapsedByDefault={false} hideHeader /></div>}
       {entries.map((entry) => {
         const draft = drafts[entry.key] ?? { applicationId: "", token: "" };
         return (

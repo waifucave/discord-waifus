@@ -65,10 +65,10 @@ export function HomeScreen({
       needsSetup: guilds.length > 0 && liveChannels === 0
     },
     direction: { text: "director · stage manager · reviewer · assistant" },
-    memory: { text: `${memoryCount} records` },
-    activity: { text: "logs · prompts · replies" },
+    memory: { text: `${memoryCount} memories` },
+    activity: { text: "logs · queries · events" },
     settings: {
-      text: anyProvider ? "providers · discord · app" : "add a provider key to start",
+      text: anyProvider ? "providers · app" : "add a provider key to start",
       needsSetup: !anyProvider
     }
   };
@@ -105,7 +105,7 @@ export function HomeScreen({
         >
           <span className="t-micro">Ask · change · fix</span>
           <span className="t-big">Assistant</span>
-          <span className="meta">"give nox a model", "why is lumi quiet?", "pause everything"</span>
+          <span className="meta">"give Aria a model", "why is Riko quiet?", "pause everything"</span>
         </button>
 
         <button
@@ -152,7 +152,7 @@ export function HomeScreen({
 
         <div style={{ gridColumn: 4, gridRow: "3 / 5", display: "flex", flexDirection: "column", gap: "var(--line)", background: "var(--ink)", minHeight: 0, overflow: "hidden" }}>
           <div className="cell" style={{ padding: "12px 20px 10px", flex: "none" }}>
-            <span className="t-micro">Direction feed · newest first</span>
+            <span className="t-micro">Recent decisions · newest first</span>
           </div>
           {feed.length === 0 && (
             <div className="cell" style={{ flex: 1, padding: 20 }}>

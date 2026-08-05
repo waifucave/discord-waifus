@@ -76,7 +76,7 @@ export function ActivityScreen({
     active === "logs"
       ? `${logs.length} recent lines · live`
       : active === "queries"
-        ? `${queries.length} captured model calls · live`
+        ? `${queries.length} captured queries · live`
         : `${replies.length} captured replies · live`;
 
   return (

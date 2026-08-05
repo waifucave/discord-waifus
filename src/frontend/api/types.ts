@@ -332,6 +332,7 @@ export type ServerConfig = Revisioned & {
   enabled: boolean;
   orchestratorMode?: "model" | "deterministic";
   stageManagerEnabled?: boolean;
+  paused?: boolean;
   contextWindows: {
     orchestrator: number;
     waifu: number;

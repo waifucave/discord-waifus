@@ -253,9 +253,8 @@ function CharacterEditor({
               {violations && violations.length > 0 && (
                 <ul className="model-params-warnings">
                   {violations.map((v, i) => (
-                    <li key={i}>
-                      {v.param}: {v.code}
-                      {v.rule ? ` (rule ${v.rule})` : ""}
+                    <li key={i} title={v.rule ? `rule ${v.rule}` : undefined}>
+                      {v.message ?? `${v.param} isn't supported by this model`}
                     </li>
                   ))}
                 </ul>
@@ -267,7 +266,7 @@ function CharacterEditor({
         <div className="fgrid" style={{ flex: "none", gridTemplateColumns: creating ? "1fr 1fr 1fr" : "1fr 1fr" }}>
           {creating && (
             <div className="fcell">
-              <label className="field-label">Id (kebab-case)</label>
+              <label className="field-label">ID (kebab-case)</label>
               <input className="input" value={draft.id ?? ""} onChange={(e) => set({ id: e.target.value })} placeholder="momo" />
             </div>
           )}
@@ -304,7 +303,7 @@ function CharacterEditor({
                   </option>
                 ))}
               </select>
-              <span className="field-hint">Manage bot applications in Settings → Discord.</span>
+              <span className="field-hint">Manage bot applications in Settings → App.</span>
             </div>
           </div>
         )}
@@ -386,7 +385,7 @@ function CharacterEditor({
               tools={draft.tools}
               onLayoutChange={(promptLayout) => set({ promptLayout })}
               onToolsChange={(tools) => set({ tools })}
-              waifuName={draft.name || draft.id || "waifu"}
+              waifuName={draft.name || draft.id || "character"}
             />
           </div>
           </Disclosure>

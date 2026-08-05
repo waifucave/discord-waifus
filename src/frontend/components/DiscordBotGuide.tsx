@@ -36,46 +36,51 @@ export function DiscordBotGuide({
   applicationId,
   guildId,
   collapsedByDefault = true,
+  hideHeader = false,
   botDisplayName
 }: {
   kind: BotKind;
   applicationId?: string;
   guildId?: string;
   collapsedByDefault?: boolean;
+  /** Skip the guide's own titled toggle — for hosts that already render their own disclosure heading. */
+  hideHeader?: boolean;
   botDisplayName?: string;
 }) {
-  const [open, setOpen] = useState(!collapsedByDefault);
+  const [open, setOpen] = useState(!collapsedByDefault || hideHeader);
   const intents = intentListFor(kind);
   const permissions = permissionListFor(kind);
   const inviteUrl = useMemo(() => {
     if (!applicationId || !isLikelyApplicationId(applicationId)) return undefined;
     return buildInviteUrl(applicationId, kind, guildId);
   }, [applicationId, kind, guildId]);
-  const niceKind = kind === "orchestrator" ? "orchestrator" : "waifu";
+  const niceKind = kind === "orchestrator" ? "orchestrator" : "character";
   const botLabel = botDisplayName ? `"${botDisplayName}"` : `this ${niceKind} bot`;
 
   return (
     <div className="panel" style={{ marginTop: 8 }}>
-      <button
-        className="btn ghost"
-        onClick={() => setOpen((o) => !o)}
-        style={{
-          width: "100%",
-          justifyContent: "space-between",
-          height: 36,
-          padding: "0 4px"
-        }}
-        aria-expanded={open}
-      >
-        <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-          {open ? <ChevronDown className="icon" /> : <ChevronRight className="icon" />}
-          <Info className="icon" style={{ color: "var(--info)" }} />
-          <strong style={{ fontWeight: 600 }}>
-            How to set up the {niceKind} bot in Discord
-          </strong>
-        </span>
-        <Pill tone="info">portal walkthrough</Pill>
-      </button>
+      {!hideHeader && (
+        <button
+          className="btn ghost"
+          onClick={() => setOpen((o) => !o)}
+          style={{
+            width: "100%",
+            justifyContent: "space-between",
+            height: 36,
+            padding: "0 4px"
+          }}
+          aria-expanded={open}
+        >
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+            {open ? <ChevronDown className="icon" /> : <ChevronRight className="icon" />}
+            <Info className="icon" style={{ color: "var(--info)" }} />
+            <strong style={{ fontWeight: 600 }}>
+              How to set up the {niceKind} bot in Discord
+            </strong>
+          </span>
+          <Pill tone="info">portal walkthrough</Pill>
+        </button>
+      )}
 
       {open && (
         <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 12 }}>
@@ -106,8 +111,8 @@ export function DiscordBotGuide({
                   <li><strong>APP ICON</strong> — square image. Becomes the bot's avatar.</li>
                   <li><strong>DESCRIPTION</strong> — shown on the bot's profile.</li>
                 </ul>
-                Discord stores avatars and banners on its side. Uploading via this UI is reserved
-                for our local cache.
+                Discord hosts each bot's avatar and banner; set them in the Discord Developer
+                Portal. The uploads here only change the local dashboard preview.
               </>
             }
           />
@@ -119,7 +124,7 @@ export function DiscordBotGuide({
               <>
                 Still on <strong>General Information</strong>, click{" "}
                 <strong>Copy</strong> under <code>APPLICATION ID</code> and paste it into the{" "}
-                <em>Application ID</em> field {kind === "orchestrator" ? "on the Orchestrator page" : "on this waifu"}.
+                <em>Application ID</em> field {kind === "orchestrator" ? "under Direction → Orchestrator" : "on this character"}.
                 It's a 17–20 digit number used to build the invite URL and to register slash
                 commands.
                 {applicationId && !isLikelyApplicationId(applicationId) && (
@@ -263,8 +268,8 @@ export function DiscordBotGuide({
                 operate in (right-click the channel → <strong>Edit Channel → Permissions</strong>
                 {" "}or via a role). Confirm{" "}
                 <em>View Channel, Send Messages, Read Message History, Add Reactions</em> are
-                allowed. Then come back here and choose at least one waifu for that channel on the{" "}
-                <strong>Servers</strong> page.
+                allowed. Then come back here and choose at least one character for that channel on the{" "}
+                <strong>Rooms</strong> page.
               </>
             }
           />

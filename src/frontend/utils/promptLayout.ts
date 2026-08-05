@@ -34,7 +34,7 @@ export type PromptBlockMeta = {
 // for tags that embed the waifu's name. `defaultSection` is used to place a block when it is
 // missing from a stored layout (reconcile) or restored to its home.
 export const PROMPT_BLOCK_META: PromptBlockMeta[] = [
-  { id: "identity", label: "<{name}_identity>", hint: "Who the waifu is, the Discord setting, and the cast roster.", defaultSection: "top" },
+  { id: "identity", label: "<{name}_identity>", hint: "Who the character is, the Discord setting, and the cast roster.", defaultSection: "top" },
   { id: "persona", label: "<{name}_persona>", hint: "The persona / character definition (raw, verbatim).", defaultSection: "top" },
   { id: "schedule", label: "<{name}_schedule>", hint: "The configured routine used for energy and timing.", defaultSection: "top" },
   { id: "ioFormat", label: "<io_format>", hint: "Input transcript format, reply-targeting syntax, and ping rules.", defaultSection: "top" },

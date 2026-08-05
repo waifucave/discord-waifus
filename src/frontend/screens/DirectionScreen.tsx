@@ -155,9 +155,8 @@ function AgentForm({ agent }: { agent: AgentTab }) {
             {violations && violations.length > 0 && (
               <ul className="model-params-warnings">
                 {violations.map((v, i) => (
-                  <li key={i}>
-                    {v.param}: {v.code}
-                    {v.rule ? ` (rule ${v.rule})` : ""}
+                  <li key={i} title={v.rule ? `rule ${v.rule}` : undefined}>
+                    {v.message ?? `${v.param} isn't supported by this model`}
                   </li>
                 ))}
               </ul>

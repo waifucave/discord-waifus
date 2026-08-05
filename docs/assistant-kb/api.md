@@ -86,3 +86,18 @@ curl -s -X PUT http://127.0.0.1:3888/api/waifus/riko \
   `DELETE /api/providers/:id/credentials`, `DELETE /api/assistant/conversations/:id`.
 - **Errors**: `{error, message, details?}` where `error` is one of BadRequest, NotFound,
   Conflict, PreconditionRequired, ValidationError, InternalServerError.
+- **Runtime stop**: `POST /api/runtime/stop` body `{guildId, channelId}` (both required)
+  aborts that channel's in-flight run and cancels its scheduled wake. Response
+  `{stoppedRun, clearedRetrigger, activeInAnotherChannel, message}`. Use it to kill a
+  runaway cast burst without pausing the whole runtime.
+- **Per-server pause**: `ServerConfig.paused` (PUT `/api/servers/:guildId` with
+  `{paused: true|false}`). Paused servers still observe messages (sessions stay warm)
+  but run no replies, wakes, stage-manager passes, or dreams. Distinct from the global
+  `POST /api/runtime/pause` and from per-channel enable flags.
+- **History filters**: the three history GETs (`/api/orchestrator/history`,
+  `/api/stage-manager/history`, `/api/reviewer/history`) accept
+  `?guildId=&channelId=&limit=` (limit 1–200). Entries recorded without a guild/channel
+  (untargeted manual triggers) never match an explicit filter.
+- **Conversations list**: `GET /api/assistant/conversations` returns
+  `{conversations: [{id, createdAt, messageCount, preview?}]}`, most recently used first.
+  Conversations are in-memory only and evicted LRU past 20.

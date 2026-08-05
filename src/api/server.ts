@@ -142,6 +142,13 @@ const UpdateWaifuBodySchema = WaifuConfigSchema.omit({ personaDigest: true }).pa
 const ServerConfigBodySchema = ServerConfigSchema.partial().extend({
   revision: z.number().int().nonnegative().optional(),
   enabled: z.boolean().optional(),
+  // Truly-optional re-declarations: .partial() alone still lets ZodDefault manufacture
+  // values for absent keys, which would reset stored state on unrelated PUTs
+  // (live-caught 2026-08-05: a PUT sending only `enabled` flipped orchestratorMode back
+  // to "model" and re-enabled the stage manager).
+  orchestratorMode: z.enum(["model", "deterministic"]).optional(),
+  stageManagerEnabled: z.boolean().optional(),
+  paused: z.boolean().optional(),
   contextWindows: ServerConfigSchema.shape.contextWindows.unwrap().optional(),
   memoryInjectionLimit: z.number().int().min(1).max(50).optional(),
   tools: ServerToolSettingsSchema.unwrap().optional(),
@@ -207,6 +214,29 @@ const RuntimeTriggerBodySchema = z.object({
   guildId: z.string().min(1).optional(),
   channelId: z.string().min(1).optional()
 }).optional();
+
+const RuntimeStopBodySchema = z.object({
+  guildId: z.string().min(1),
+  channelId: z.string().min(1)
+});
+
+const HistoryQuerySchema = z.object({
+  guildId: z.string().optional(),
+  channelId: z.string().optional(),
+  limit: z.coerce.number().int().min(1).max(200).optional()
+});
+
+/** Entries without the filtered field never match an explicit filter (untargeted manual triggers). */
+function filterHistoryEntries<T extends { guildId?: string; channelId?: string }>(
+  entries: T[],
+  query: { guildId?: string; channelId?: string; limit?: number }
+): T[] {
+  let out = entries;
+  if (query.guildId) out = out.filter((entry) => entry.guildId === query.guildId);
+  if (query.channelId) out = out.filter((entry) => entry.channelId === query.channelId);
+  if (query.limit !== undefined) out = out.slice(0, query.limit);
+  return out;
+}
 
 const ASSET_EXT_BY_MIME: Record<string, string> = {
   "image/png": "png",
@@ -371,14 +401,22 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     const body = AgentConfigBodySchema.parse(request.body);
     return updateAgentConfig(storage, request, "orchestrator", body, 20);
   });
-  app.get("/api/orchestrator/history", async () => readOrchestratorHistory(storage));
+  app.get("/api/orchestrator/history", async (request) => {
+    const query = HistoryQuerySchema.parse(request.query);
+    const history = await readOrchestratorHistory(storage);
+    return { ...history, decisions: filterHistoryEntries(history.decisions, query) };
+  });
 
   app.get("/api/stage-manager/config", async () => readAgentConfig(storage, "stage-manager"));
   app.put("/api/stage-manager/config", async (request) => {
     const body = AgentConfigBodySchema.parse(request.body);
     return updateAgentConfig(storage, request, "stage-manager", body, 80);
   });
-  app.get("/api/stage-manager/history", async () => readStageManagerHistory(storage));
+  app.get("/api/stage-manager/history", async (request) => {
+    const query = HistoryQuerySchema.parse(request.query);
+    const history = await readStageManagerHistory(storage);
+    return { ...history, edits: filterHistoryEntries(history.edits, query) };
+  });
 
   app.get("/api/reviewer/config", async () => readAgentConfig(storage, "reviewer"));
   app.put("/api/reviewer/config", async (request) => {
@@ -408,7 +446,11 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   });
 
   registerAssistantRoutes(app, { dataRoot: options.dataRoot, createPipeline: options.assistant?.createPipeline });
-  app.get("/api/reviewer/history", async () => readReviewerHistory(storage));
+  app.get("/api/reviewer/history", async (request) => {
+    const query = HistoryQuerySchema.parse(request.query);
+    const history = await readReviewerHistory(storage);
+    return { ...history, reviews: filterHistoryEntries(history.reviews, query) };
+  });
 
   app.get("/api/providers", async () => {
     const [credentials, gatewayList] = await Promise.all([
@@ -871,6 +913,30 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
       message: "Runtime reload applied. Discord clients and runtime orchestration were rebuilt without restarting HTTP."
     };
   });
+  app.post("/api/runtime/stop", async (request) => {
+    const body = RuntimeStopBodySchema.parse(request.body);
+    assertSafeId(body.guildId);
+    assertSafeId(body.channelId);
+    const runtimeOrchestrator = options.runtimeControl?.getOrchestrator() ?? options.runtimeOrchestrator;
+    if (!runtimeOrchestrator) {
+      return {
+        stoppedRun: false,
+        clearedRetrigger: false,
+        activeInAnotherChannel: false,
+        message: "No live runtime; nothing to stop."
+      };
+    }
+    const result = await runtimeOrchestrator.stopChannel(body.guildId, body.channelId, "manual-api-stop");
+    return {
+      ...result,
+      message: result.stoppedRun
+        ? "Active run stopped and any scheduled wake cancelled."
+        : result.clearedRetrigger
+          ? "No run was active; the scheduled wake was cancelled."
+          : "Nothing was running or scheduled for that channel."
+    };
+  });
+
   app.post("/api/runtime/trigger/orchestrator", async (request) => {
     const body = RuntimeTriggerBodySchema.parse(request.body);
     if (body?.guildId) assertSafeId(body.guildId);

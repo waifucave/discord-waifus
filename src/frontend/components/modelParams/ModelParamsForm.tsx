@@ -122,12 +122,12 @@ export function ModelParamsForm({
   if (docState.status === "not-found") {
     return (
       <Notice tone="err">
-        capability doc unavailable for {providerId}/{modelId}
+        Model capabilities unavailable for {providerId} / {modelId}
       </Notice>
     );
   }
   if (docState.status === "error") {
-    return <Notice tone="err">could not load capability doc — retry by reselecting the model</Notice>;
+    return <Notice tone="err">Could not load model capabilities — reselect the model to retry.</Notice>;
   }
 
   // "map" descriptors have no UI (brief: "map -> skip"); filtered here rather than in
@@ -227,7 +227,7 @@ function ParamControlInput({
           />
           {typeof value === "boolean" && (
             <button type="button" className="btn ghost sm" onClick={() => onChange(undefined)}>
-              reset
+              Reset
             </button>
           )}
         </div>

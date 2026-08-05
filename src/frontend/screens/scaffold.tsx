@@ -66,7 +66,7 @@ export function FootRow() {
   return (
     <div className="footrow">
       <div className="cell t-micro">
-        {runtime.data ? `${runtime.data.paused ? "paused" : "running"} · ${runtime.data.packageVersion}` : "…"}
+        {runtime.data ? `${runtime.data.paused ? "paused" : "live"} · ${runtime.data.packageVersion}` : "…"}
       </div>
       <div className="cell t-micro">{configured.length ? configured.join(" · ") + " ok" : "no providers"}</div>
       <div className="cell t-micro">

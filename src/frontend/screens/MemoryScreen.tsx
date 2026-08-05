@@ -115,7 +115,7 @@ export function MemoryScreen({ onNavigate }: { onNavigate: (view: ViewId, tab?: 
               <div className="fcell">
                 <label className="field-label">Character</label>
                 <select className="select" value={newWaifuId} onChange={(e) => setNewWaifuId(e.target.value)}>
-                  <option value="">pick…</option>
+                  <option value="">— pick —</option>
                   {cast.map((w) => (
                     <option key={w.id} value={w.id}>
                       {w.displayName || w.name}
@@ -124,7 +124,7 @@ export function MemoryScreen({ onNavigate }: { onNavigate: (view: ViewId, tab?: 
                 </select>
               </div>
               <div className="fcell">
-                <label className="field-label">Guild id</label>
+                <label className="field-label">Server ID</label>
                 <input className="input" value={newGuildId} onChange={(e) => setNewGuildId(e.target.value)} placeholder="from Rooms" />
               </div>
               <div className="fcell">
@@ -147,7 +147,7 @@ export function MemoryScreen({ onNavigate }: { onNavigate: (view: ViewId, tab?: 
               {record.waifuId} · <span className={"chip " + (KIND_HUES[record.kind] ?? "butter")}>{record.kind}</span>
               {record.pinned && <span className="chip butter" style={{ marginLeft: 6 }}>pinned</span>}
               <span style={{ float: "right" }}>
-                <button className="icon-btn t-micro" onClick={() => togglePin(record)}>{record.pinned ? "unpin" : "pin"}</button>
+                <button className="icon-btn t-micro" onClick={() => togglePin(record)}>{record.pinned ? "Unpin" : "Pin"}</button>
                 <button
                   className="icon-btn t-micro"
                   onClick={() => {
@@ -155,10 +155,10 @@ export function MemoryScreen({ onNavigate }: { onNavigate: (view: ViewId, tab?: 
                     setEditContent(record.content);
                   }}
                 >
-                  edit
+                  Edit
                 </button>
                 <button className="icon-btn t-micro" style={{ color: "#c22f2f" }} onClick={() => remove(record)}>
-                  delete
+                  Delete
                 </button>
               </span>
             </div>

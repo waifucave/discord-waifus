@@ -18,7 +18,7 @@ import {
   verticalListSortingStrategy
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { GripVertical, ChevronUp, ChevronDown, Plus, Trash2 } from "lucide-react";
+import { GripVertical, ChevronUp, ChevronDown, Plus, Ungroup } from "lucide-react";
 import type {
   PromptLayoutBlockNode,
   PromptLayoutGroupNode,
@@ -101,7 +101,7 @@ export function PromptLayoutEditor({
   return (
     <section className="section">
       <div className="section-header">
-        <h3 className="section-title">Waifu prompt layout</h3>
+        <h3 className="section-title">Character prompt layout</h3>
         <span className="section-description">
           Drag blocks to reorder them, move them between the three system messages, or in and out of
           groups. Toggle a block off to drop it from the prompt. Block wording is fixed; you control
@@ -318,7 +318,7 @@ function GroupCard({
             <ChevronDown className="icon" />
           </button>
           <button type="button" className="btn danger icon-btn" onClick={() => onDeleteGroup(group.id)} aria-label="Ungroup">
-            <Trash2 className="icon" />
+            <Ungroup className="icon" />
           </button>
           <Toggle checked={group.enabled} onChange={(value) => onGroupEnabled(group.id, value)} label="" />
         </div>
@@ -328,7 +328,7 @@ function GroupCard({
         {group.tag.includes("{name}") && (
           <>
             {" "}
-            (the <code>{"{name}"}</code> token becomes the waifu tag)
+            (the <code>{"{name}"}</code> token becomes the character tag)
           </>
         )}
       </span>

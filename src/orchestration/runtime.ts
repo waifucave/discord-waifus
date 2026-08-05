@@ -465,6 +465,15 @@ export class RuntimeOrchestrator {
       return;
     }
     const server = await this.ensureServer(event.guildId);
+    if (server.paused) {
+      this.options.logger.info("Discord message ignored because server is paused", {
+        guildId: event.guildId,
+        channelId: event.channelId,
+        messageId: event.messageId
+      });
+      await this.ensureChannelSession(event.guildId, event.channelId);
+      return;
+    }
     // Arm a dream timer for guilds that joined after startup (cheap check — no-op for existing guilds).
     if (!this.dreamTimers.has(event.guildId) && !this.options.isPaused?.()) {
       this.armDreamTimer(event.guildId);
@@ -1092,6 +1101,15 @@ export class RuntimeOrchestrator {
     // Tracks the newest human message seen across loop iterations so the post-limit
     // cooldown can distinguish an active room from cast-only self-chatter.
     let lastHumanMessageTs: string | undefined;
+    {
+      // Timer wakes and manual triggers land here directly, so the per-server pause
+      // must gate the loop itself, not just the message handler.
+      const server = await this.ensureServer(guildId);
+      if (server.paused) {
+        this.options.logger.info("Channel run skipped because server is paused", { guildId, channelId });
+        return;
+      }
+    }
     if (options.initialResponders?.length) {
       const server = await this.ensureServer(guildId);
       const channel = server.channels[channelId];
@@ -2070,6 +2088,10 @@ export class RuntimeOrchestrator {
         this.options.logger.info("Stage manager disabled for this server; skipping run", { guildId, channelId });
         return { status: "disabled", message: "Stage manager is disabled for this server." };
       }
+      if (server.paused) {
+        this.options.logger.info("Stage manager skipped because server is paused", { guildId, channelId });
+        return { status: "disabled", message: "Server is paused." };
+      }
     }
     const state = await this.ensureChannelSession(guildId, channelId);
     if (state.stageManager.active) {
@@ -2530,7 +2552,7 @@ export class RuntimeOrchestrator {
   // nth position into a chunk we already handled.
   private async runDreamPass(guildId: string): Promise<DreamPassResult> {
     const server = await this.ensureServer(guildId);
-    if (!server.stageManagerEnabled) {
+    if (!server.stageManagerEnabled || server.paused) {
       return { status: "disabled", applied: 0, skipped: 0, chunks: 0 };
     }
     const config = await this.readAgentConfig("stage-manager", 80);

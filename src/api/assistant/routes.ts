@@ -20,6 +20,8 @@ export function registerAssistantRoutes(
     return { conversationId: id };
   });
 
+  app.get("/api/assistant/conversations", async () => ({ conversations: store.list() }));
+
   app.get("/api/assistant/conversations/:id", async (request, reply) => {
     const { id } = request.params as { id: string };
     const conversation = store.get(id);

@@ -282,6 +282,9 @@ export const ServerConfigSchema = RevisionedRecordSchema.extend({
   orchestratorMode: z.enum(["model", "deterministic"]).default("model"),
   // Per-guild kill switch for the stage manager's automatic work (idle observers + dreams).
   stageManagerEnabled: z.boolean().default(true),
+  // Temporary per-guild mute: messages are observed (sessions stay warm) but nothing runs
+  // and nothing is scheduled until unpaused. Distinct from channel enabled flags.
+  paused: z.boolean().default(false),
   tools: ServerToolSettingsSchema,
   channels: z.record(
     z.string(),

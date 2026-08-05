@@ -103,11 +103,27 @@ function GuildScreen({ guildId, onNavigate }: { guildId: string; onNavigate: (vi
   };
   const mode = server.data?.orchestratorMode ?? "model";
   const stageManagerOn = server.data?.stageManagerEnabled ?? true;
+  const serverPaused = server.data?.paused ?? false;
 
   return (
     <div className="screen">
       <HeadRow onBack={() => onNavigate("rooms")} title={server.data?.name ?? guildId} sub="toggle who may speak, per channel" />
-      <div className="fgrid" style={{ flex: "none", gridTemplateColumns: "1fr 1fr" }}>
+      <div className="fgrid" style={{ flex: "none", gridTemplateColumns: "1fr 1fr 1fr" }}>
+        <div className="fcell">
+          <label className="field-label">Server</label>
+          <label className="checkbox-chip">
+            <input
+              type="checkbox"
+              checked={serverPaused}
+              onChange={(e) => void saveServerField({ paused: e.target.checked })}
+            />
+            {serverPaused ? "Paused — nothing speaks until unpaused" : "Live"}
+          </label>
+          <span className="field-hint">
+            Pause mutes every channel of this server: messages are still observed, but no replies, wakes, or
+            memory passes run.
+          </span>
+        </div>
         <div className="fcell">
           <label className="field-label">Orchestration for this server</label>
           <select

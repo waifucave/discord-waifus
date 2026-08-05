@@ -15,6 +15,7 @@ export type StoredMessage =
 
 type Conversation = {
   id: string;
+  createdAt: string;
   messages: StoredMessage[];
   chat: ChatMessage[];
   busy: boolean;
@@ -35,7 +36,15 @@ export class ConversationStore {
 
   create(): { id: string } {
     const id = randomUUID();
-    this.conversations.set(id, { id, messages: [], chat: [], busy: false, eventSeq: 0, listeners: new Set() });
+    this.conversations.set(id, {
+      id,
+      createdAt: new Date().toISOString(),
+      messages: [],
+      chat: [],
+      busy: false,
+      eventSeq: 0,
+      listeners: new Set()
+    });
     // Map preserves insertion order; get() re-inserts, so iteration order is true LRU.
     // Never evict a conversation mid-turn (its output would silently vanish).
     while (this.conversations.size > MAX_CONVERSATIONS) {
@@ -92,6 +101,21 @@ export class ConversationStore {
     if (!conversation) return () => undefined;
     conversation.listeners.add(listener);
     return () => conversation.listeners.delete(listener);
+  }
+
+  list(): Array<{ id: string; createdAt: string; messageCount: number; preview?: string }> {
+    return [...this.conversations.values()]
+      .map((conversation) => {
+        const firstUser = conversation.messages.find((message) => message.role === "user");
+        const preview = firstUser && "content" in firstUser ? firstUser.content.slice(0, 80) : undefined;
+        return {
+          id: conversation.id,
+          createdAt: conversation.createdAt,
+          messageCount: conversation.messages.filter((message) => message.role !== "event").length,
+          ...(preview ? { preview } : {})
+        };
+      })
+      .reverse();
   }
 
   delete(id: string): boolean {

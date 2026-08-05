@@ -326,7 +326,7 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
           <section>
             <h1 className="onboarding-title">Connect Discord.</h1>
             <p className="onboarding-lede">
-              Each character is its own Discord bot. Start with the director's bot; add one per character in Cast
+              Each character is her own Discord bot. Start with the director's bot; add one per character in Cast
               afterwards.
             </p>
             <DiscordBotGuide kind="orchestrator" collapsedByDefault={false} applicationId={orchestratorAppId || undefined} />

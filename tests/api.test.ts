@@ -18,7 +18,7 @@ afterEach(async () => {
   roots = [];
 });
 
-async function makeApp(extra: { llmFetch?: typeof fetch } = {}) {
+async function makeApp(extra: { llmFetch?: typeof fetch; runtimeOrchestrator?: unknown } = {}) {
   const root = await makeTempRoot();
   roots.push(root);
   await ensureDataLayout(root);
@@ -45,7 +45,8 @@ async function makeApp(extra: { llmFetch?: typeof fetch } = {}) {
     dataRoot: root,
     runtime,
     storage: new StorageService(root),
-    ...(extra.llmFetch ? { llmGateway: { fetchImpl: extra.llmFetch } } : {})
+    ...(extra.llmFetch ? { llmGateway: { fetchImpl: extra.llmFetch } } : {}),
+    ...(extra.runtimeOrchestrator ? { runtimeOrchestrator: extra.runtimeOrchestrator as never } : {})
   });
   return { app, root };
 }
@@ -671,6 +672,77 @@ describe("Backend API", () => {
           payload: { guildId: "../../escape", channelId: "123" }
         });
         expect(result.statusCode).toBe(400);
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("POST /api/runtime/stop aborts the channel run and rejects bad ids", async () => {
+      const calls: Array<[string, string]> = [];
+      const stub = {
+        stopChannel: async (guildId: string, channelId: string) => {
+          calls.push([guildId, channelId]);
+          return { stoppedRun: true, clearedRetrigger: true, activeInAnotherChannel: false };
+        }
+      };
+      const { app } = await makeApp({ runtimeOrchestrator: stub });
+      try {
+        const bad = await app.inject({ method: "POST", url: "/api/runtime/stop", payload: { guildId: "../../x", channelId: "1" } });
+        expect(bad.statusCode).toBe(400);
+        const missing = await app.inject({ method: "POST", url: "/api/runtime/stop", payload: {} });
+        expect(missing.statusCode).toBe(400);
+        const ok = await app.inject({ method: "POST", url: "/api/runtime/stop", payload: { guildId: "g1", channelId: "c1" } });
+        expect(ok.statusCode).toBe(200);
+        expect(JSON.parse(ok.body)).toMatchObject({ stoppedRun: true, clearedRetrigger: true });
+        expect(calls).toEqual([["g1", "c1"]]);
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("POST /api/runtime/stop without a live runtime reports nothing to stop", async () => {
+      const { app } = await makeApp();
+      try {
+        const res = await app.inject({ method: "POST", url: "/api/runtime/stop", payload: { guildId: "g1", channelId: "c1" } });
+        expect(res.statusCode).toBe(200);
+        expect(JSON.parse(res.body)).toMatchObject({ stoppedRun: false });
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("history endpoints accept guildId/channelId/limit filters", async () => {
+      const { app } = await makeApp();
+      try {
+        await app.inject({ method: "POST", url: "/api/runtime/trigger/orchestrator" });
+        await app.inject({ method: "POST", url: "/api/runtime/trigger/orchestrator" });
+        const all = JSON.parse((await app.inject({ method: "GET", url: "/api/orchestrator/history" })).body) as { decisions: unknown[] };
+        expect(all.decisions.length).toBe(2);
+        const limited = JSON.parse((await app.inject({ method: "GET", url: "/api/orchestrator/history?limit=1" })).body) as { decisions: unknown[] };
+        expect(limited.decisions.length).toBe(1);
+        const filtered = JSON.parse((await app.inject({ method: "GET", url: "/api/orchestrator/history?guildId=g-none" })).body) as { decisions: unknown[] };
+        expect(filtered.decisions.length).toBe(0);
+        const sm = await app.inject({ method: "GET", url: "/api/stage-manager/history?limit=1&guildId=g-none" });
+        expect(sm.statusCode).toBe(200);
+        const rv = await app.inject({ method: "GET", url: "/api/reviewer/history?limit=1" });
+        expect(rv.statusCode).toBe(200);
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("per-server paused round-trips, defaults false, and survives unrelated PUTs", async () => {
+      const { app } = await makeApp();
+      try {
+        await app.inject({ method: "PUT", url: "/api/servers/g-pause", payload: {} });
+        let server = JSON.parse((await app.inject({ method: "GET", url: "/api/servers/g-pause" })).body) as Record<string, unknown>;
+        expect(server.paused).toBe(false);
+        await app.inject({ method: "PUT", url: "/api/servers/g-pause", payload: { revision: server.revision, paused: true } });
+        server = JSON.parse((await app.inject({ method: "GET", url: "/api/servers/g-pause" })).body) as Record<string, unknown>;
+        expect(server.paused).toBe(true);
+        await app.inject({ method: "PUT", url: "/api/servers/g-pause", payload: { revision: server.revision, orchestratorMode: "deterministic" } });
+        server = JSON.parse((await app.inject({ method: "GET", url: "/api/servers/g-pause" })).body) as Record<string, unknown>;
+        expect(server.paused).toBe(true);
       } finally {
         await app.close();
       }
