@@ -7,7 +7,12 @@ describe("resolveModelTarget", () => {
     expect(resolveModelTarget({ modelId: "gpt-4o-mini" })).toEqual({ providerId: "openai", modelId: "gpt-5-nano", remapped: true });
     expect(resolveModelTarget({ modelId: "glm-5-turbo" })).toEqual({ providerId: "zai", modelId: "glm-5", remapped: true });
     expect(resolveModelTarget({ modelId: "gemini-3.5-flash" })).toEqual({ providerId: "google-ai-studio", modelId: "gemini-3-flash-preview", remapped: true });
-    expect(Object.keys(LEGACY_MODEL_MAP)).toHaveLength(4);
+    // removed in gateway 0.3.0 (2026-08 refresh): shut-down/delisted models remap to their announced replacements
+    expect(resolveModelTarget({ modelId: "gemini-2-0-flash" })).toEqual({ providerId: "google-ai-studio", modelId: "gemini-3.6-flash", remapped: true });
+    expect(resolveModelTarget({ modelId: "gemini-2.0-flash" })).toEqual({ providerId: "google-ai-studio", modelId: "gemini-3.6-flash", remapped: true });
+    expect(resolveModelTarget({ modelId: "mimo-v2-flash" })).toEqual({ providerId: "xiaomi", modelId: "mimo-v2.5", remapped: true });
+    expect(resolveModelTarget({ modelId: "trinity-large" })).toEqual({ providerId: "openrouter", modelId: "arcee-ai/trinity-large-thinking", remapped: true });
+    expect(Object.keys(LEGACY_MODEL_MAP)).toHaveLength(8);
   });
 
   it("passes through ids that exist in the registry, deriving the native provider", () => {

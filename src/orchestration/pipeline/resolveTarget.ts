@@ -7,6 +7,11 @@ export const LEGACY_MODEL_MAP: Record<string, { providerId: string; modelId: str
   "gpt-4o-mini": { providerId: "openai", modelId: "gpt-5-nano" },
   "glm-5-turbo": { providerId: "zai", modelId: "glm-5" },
   "gemini-3.5-flash": { providerId: "google-ai-studio", modelId: "gemini-3-flash-preview" },
+  // removed in gateway 0.3.0 (2026-08 refresh): provider-announced replacements
+  "gemini-2-0-flash": { providerId: "google-ai-studio", modelId: "gemini-3.6-flash" },
+  "gemini-2.0-flash": { providerId: "google-ai-studio", modelId: "gemini-3.6-flash" },
+  "mimo-v2-flash": { providerId: "xiaomi", modelId: "mimo-v2.5" },
+  "trinity-large": { providerId: "openrouter", modelId: "arcee-ai/trinity-large-thinking" },
 };
 
 let _registry: Registry | undefined;
