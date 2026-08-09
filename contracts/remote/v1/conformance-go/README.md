@@ -15,13 +15,16 @@ go -C contracts/remote/v1/conformance-go run ./cmd/generate-vectors --check
 ```
 
 `generate-vectors --check` independently builds the three `wipc-*.json` fixtures,
-`pairing-v1.json`, `pair-confirmation-v1.json`, and `pair-control-record-v1.json` with Go, then
+`pairing-v1.json`, `pair-confirmation-v1.json`, `pair-control-record-v1.json`, and
+`service-session-v1.json` with Go, then
 compares their exact compact canonical JSON bytes to the TypeScript-generated public fixtures. The
 current gate covers the WIPC header/state/authentication foundation plus canonical CBOR rejection,
-signed full tokens and identities, both pinned Noise XX
-patterns and channel bindings, contribution transport, pair-root/four-key derivation, and SAS
+signed full tokens and identities, both pinned Noise XX patterns and channel bindings, contribution
+transport, pair-root/four-key derivation, and SAS
 indices/fingerprint. It also covers confirmation-key MACs, canonical JSON boundaries, mailbox
 ordering, and terminal state. PairControl coverage includes all nine record types, signatures,
 transport routing, shared high-water/replay state, delayed delivery, and revocation/ack MACs. Later
-slices extend this same gate with the reviewed SAS wordlist, signed envelopes, endpoint encryption,
-and remaining boundaries.
+slices extend this same gate with the reviewed SAS wordlist, endpoint encryption, activation/control
+envelopes, and remaining boundaries. The service-session fixture already covers the direct
+four-message authentication gate, session-bound remote-browser proof, replay/state failures, and
+both strict approval-receipt sources.

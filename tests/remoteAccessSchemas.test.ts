@@ -231,6 +231,14 @@ describe("ApprovalReceiptV1Schema", () => {
     expect(ApprovalReceiptV1Schema.safeParse({ ...receipt, expiresAt: "1786270951" }).success).toBe(false);
     expect(ApprovalReceiptV1Schema.safeParse({ ...receipt, sasIndices: [1, 2, 3, 4] }).success).toBe(false);
     expect(ApprovalReceiptV1Schema.safeParse({ ...receipt, sasFingerprint: "A1B2C3D4E5F6" }).success).toBe(false);
+    expect(ApprovalReceiptV1Schema.safeParse({
+      ...receipt,
+      browserBinding: {
+        kind: "remote",
+        gatewayLaunchId: Buffer.alloc(32, 0x71).toString("base64url"),
+        browserSessionId: Buffer.alloc(32, 0x72).toString("base64url")
+      }
+    }).success).toBe(false);
     expect(ApprovalReceiptV1Schema.safeParse({ ...receipt, confirmationMethod: "post" }).success).toBe(false);
     expect(ApprovalReceiptV1Schema.safeParse({ ...receipt, action: "approve_device" }).success).toBe(false);
   });

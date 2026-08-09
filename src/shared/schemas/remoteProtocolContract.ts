@@ -20,6 +20,7 @@ import {
   ProtocolVersionSchema,
   PrincipalStableIdSchema,
   REMOTE_PROTOCOL_VERSION,
+  RemoteBrowserContextEnvelopeV1Schema,
   RemoteBrowserContextV1Schema,
   RequestPrincipalWireSchema,
   RuntimePurposeSchema,
@@ -53,6 +54,7 @@ const registeredSchemas: ReadonlyArray<readonly [string, z.ZodType]> = [
   ["ProtocolCapabilitiesDocument", ProtocolCapabilitiesDocumentSchema],
   ["ProtocolVersion", ProtocolVersionSchema],
   ["PrincipalStableId", PrincipalStableIdSchema],
+  ["RemoteBrowserContextEnvelopeV1", RemoteBrowserContextEnvelopeV1Schema],
   ["RemoteBrowserContextV1", RemoteBrowserContextV1Schema],
   ["RequestPrincipalWire", RequestPrincipalWireSchema],
   ["RuntimePurpose", RuntimePurposeSchema],
@@ -94,6 +96,26 @@ function addNonStructuralContractConstraints(definitions: Record<string, Contrac
   definitions.RequestPrincipalWire["x-waifus-derived-field"] = {
     stableId: "remote:<deviceId>"
   };
+  definitions.RemoteBrowserContextEnvelopeV1["x-waifus-outside-forwarded-headers"] = [
+    "browserContext",
+    "pairId",
+    "remoteDeviceId",
+    "remoteInstallationBundleHash",
+    "hostTrustEpoch",
+    "remoteTrustEpoch",
+    "applicationSessionHash",
+    "directRequestId",
+    "remoteParentStreamId",
+    "directStreamId",
+    "mac"
+  ];
+  definitions.RemoteBrowserContextEnvelopeV1["x-waifus-mac"] = {
+    algorithm: "HMAC-SHA-256",
+    context: "waifus/remote-browser-context/v1",
+    keyDerivation: "waifus/browser-context-key/v1"
+  };
+  definitions.RemoteBrowserContextEnvelopeV1["x-waifus-positive-odd-uint64-field"] =
+    "remoteParentStreamId";
 }
 
 export function createRemoteProtocolJsonSchema(): ContractJsonObject {
@@ -125,6 +147,7 @@ export function createRemoteProtocolJsonSchema(): ContractJsonObject {
       { $ref: "#/$defs/CompatibilityResult" },
       { $ref: "#/$defs/DeviceIdentityBundle" },
       { $ref: "#/$defs/ProtocolCapabilitiesDocument" },
+      { $ref: "#/$defs/RemoteBrowserContextEnvelopeV1" },
       { $ref: "#/$defs/RemoteBrowserContextV1" },
       { $ref: "#/$defs/RequestPrincipalWire" }
     ],

@@ -399,6 +399,16 @@ export const ApprovalReceiptV1Schema = z
         message: "Host and remote identity bundles must be distinct."
       });
     }
+    if (
+      (value.approvingPrincipal.kind === "local" && value.browserBinding.kind !== "local")
+      || (value.approvingPrincipal.kind === "remote_device" && value.browserBinding.kind !== "remote")
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["browserBinding", "kind"],
+        message: "Approval browser binding must match the approving principal source."
+      });
+    }
   });
 
 export type ApprovalReceiptV1 = z.infer<typeof ApprovalReceiptV1Schema>;

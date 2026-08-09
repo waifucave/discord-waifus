@@ -9,7 +9,8 @@ Current foundation:
 
 - `protocol.schema.json` defines canonical JSON uint64 values, protocol/capability negotiation,
   the closed control-profile/runtime-purpose values, signed V1 device identity bundles,
-  helper-derived request principals, and `RemoteBrowserContextV1`.
+  helper-derived request principals, `RemoteBrowserContextV1`, and its strict helper-authenticated
+  out-of-header envelope.
 - `capabilities.json` freezes protocol `1.0` and the initial required capability set.
 - `helper-manifest.schema.json` freezes the signed helper release manifest, its six exact
   package/target combinations, direct-only build pins, compatibility ranges, and bounded hashes.
@@ -44,9 +45,14 @@ Current foundation:
   type-specific payload hashes, the WebSocket/HTTPS transport matrix, per-side generation/sequence
   and nonce replay state across restart, delayed-poll timestamps, endpoint size limits, and the
   domain-separated revocation/revocation-ack MACs that remain opaque to the Worker.
+- `fixtures/crypto/service-session-v1.json` freezes the host-then-remote length-prefixed direct
+  application-session transcript, both installation signatures, the four-message authentication
+  gate, application-session-bound browser-context HKDF/HMAC, strict out-of-header binding envelope,
+  replay/state failures, and canonical local/remote approval-receipt context hashes.
 - `conformance-go/` independently recreates and validates the WIPC and pairing fixtures using Go
   1.26.5. It pins `github.com/flynn/noise` v1.1.0 and independently rejects the token, identity,
-  canonical-CBOR, pair-confirmation, PairControl, and revocation negative vectors.
+  canonical-CBOR, pair-confirmation, PairControl, revocation, service-session, browser-context, and
+  approval-receipt negative vectors.
 
 Run `npm run contracts:remote:generate` after an intentional contract change and
 `npm run contracts:remote:check` in validation. Schema documents are recursively key-sorted,
@@ -65,14 +71,15 @@ standard JSON Schema cannot express by itself. These currently cover:
 
 - bytewise ASCII ordering and disjoint sets;
 - ordered protocol/SemVer fields, derived principal IDs, and distinct old/new identities;
-- approval-expiry windows and decoded-CBOR byte ceilings;
+- approval-expiry/source binding and decoded-CBOR byte ceilings;
+- remote-browser envelope MAC provenance and positive odd parent-stream IDs;
 - whole-second UTC timestamps, canonical base64url CBOR, and exact origin-form request targets.
 
 Consumers must enforce those annotations or use the public conformance fixtures. A generic JSON
 Schema validator that ignores them is not a complete protocol validator.
 
 This remains an incomplete contract gate. The reviewed 1,024-word SAS artifact and word mapping,
-remaining remote-access/dashboard DTOs, service crypto,
+remaining remote-access/dashboard DTOs, endpoint crypto,
 activation/control envelopes, and signed-manifest trust vectors must land before production helper,
 pairing, Cloudflare, host bridge, or remote gateway work may rely on this directory as a complete
 V1 authority.

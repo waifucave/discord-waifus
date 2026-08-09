@@ -287,7 +287,17 @@
           "remoteIdentityBundleHash"
         ]
       ],
-      "x-waifus-expiry-window-seconds": 120
+      "x-waifus-expiry-window-seconds": 120,
+      "x-waifus-matching-discriminators": {
+        "approvingPrincipal": {
+          "local": {
+            "browserBinding": "local"
+          },
+          "remote_device": {
+            "browserBinding": "remote"
+          }
+        }
+      }
     },
     "Base64Url16Bytes": {
       "maxLength": 22,

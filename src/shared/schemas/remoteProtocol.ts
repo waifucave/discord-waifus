@@ -349,6 +349,7 @@ export function isCanonicalOriginFormTarget(value: string): boolean {
 }
 
 export const HttpMethodSchema = z.enum(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]);
+export type HttpMethod = z.infer<typeof HttpMethodSchema>;
 export const CanonicalTargetSchema = z
   .string()
   .min(1)
@@ -375,6 +376,36 @@ export const DeviceIdSchema = z
   .min(1)
   .max(64)
   .regex(/^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/, "Expected a canonical device ID.");
+
+export const RemoteBrowserContextEnvelopeV1Schema = z
+  .object({
+    version: z.literal(1),
+    browserContext: RemoteBrowserContextV1Schema,
+    pairId: Base64Url16BytesSchema,
+    remoteDeviceId: DeviceIdSchema,
+    remoteInstallationBundleHash: Base64Url32BytesSchema,
+    hostTrustEpoch: Uint64DecimalSchema,
+    remoteTrustEpoch: Uint64DecimalSchema,
+    applicationSessionHash: Base64Url32BytesSchema,
+    directRequestId: Base64Url16BytesSchema,
+    remoteParentStreamId: Uint64DecimalSchema,
+    directStreamId: z.literal("1"),
+    mac: Base64Url32BytesSchema
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    const parentStreamId = BigInt(value.remoteParentStreamId);
+    if (parentStreamId === 0n || (parentStreamId & 1n) === 0n) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["remoteParentStreamId"],
+        message: "Remote parent stream ID must be a positive odd uint64."
+      });
+    }
+  });
+
+export type RemoteBrowserContextEnvelopeV1 = z.infer<typeof RemoteBrowserContextEnvelopeV1Schema>;
+
 export const PrincipalStableIdSchema = z
   .string()
   .min(1)

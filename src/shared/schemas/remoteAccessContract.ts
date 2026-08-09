@@ -287,6 +287,12 @@ export function createRemoteAccessJsonSchema(): ContractJsonObject {
   sasIndices.minItems = 5;
   sasIndices.maxItems = 5;
   definitions.ApprovalReceiptV1["x-waifus-expiry-window-seconds"] = 120;
+  definitions.ApprovalReceiptV1["x-waifus-matching-discriminators"] = {
+    approvingPrincipal: {
+      local: { browserBinding: "local" },
+      remote_device: { browserBinding: "remote" }
+    }
+  };
   definitions.ApprovalReceiptV1["x-waifus-distinct-fields"] = [
     ["hostIdentityBundleCbor", "remoteIdentityBundleCbor"],
     ["hostIdentityBundleHash", "remoteIdentityBundleHash"]
@@ -432,6 +438,18 @@ export function createRemoteAccessFixtureSet(): ReadonlyMap<string, ContractJson
   const mixedBrowser = cloneFixture(approvalReceiptFixture("local"));
   (mixedBrowser.browserBinding as ContractJsonObject).gatewayLaunchId = fixtureBytes(32, 0x70);
   fixtures.set("fixtures/invalid/approval-receipt-mixed-browser.json", mixedBrowser);
+
+  const wrongLocalSource = cloneFixture(approvalReceiptFixture("local"));
+  wrongLocalSource.browserBinding = cloneFixture(
+    approvalReceiptFixture("remote").browserBinding as ContractJsonObject
+  );
+  fixtures.set("fixtures/invalid/approval-receipt-local-with-remote-browser.json", wrongLocalSource);
+
+  const wrongRemoteSource = cloneFixture(approvalReceiptFixture("remote"));
+  wrongRemoteSource.browserBinding = cloneFixture(
+    approvalReceiptFixture("local").browserBinding as ContractJsonObject
+  );
+  fixtures.set("fixtures/invalid/approval-receipt-remote-with-local-browser.json", wrongRemoteSource);
 
   const overlongExpiry = cloneFixture(approvalReceiptFixture("local"));
   overlongExpiry.expiresAt = "1786270951";

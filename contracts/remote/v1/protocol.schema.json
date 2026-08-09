@@ -340,6 +340,83 @@
       ],
       "type": "object"
     },
+    "RemoteBrowserContextEnvelopeV1": {
+      "additionalProperties": false,
+      "properties": {
+        "applicationSessionHash": {
+          "$ref": "#/$defs/Base64Url32Bytes"
+        },
+        "browserContext": {
+          "$ref": "#/$defs/RemoteBrowserContextV1"
+        },
+        "directRequestId": {
+          "$ref": "#/$defs/Base64Url16Bytes"
+        },
+        "directStreamId": {
+          "const": "1",
+          "type": "string"
+        },
+        "hostTrustEpoch": {
+          "$ref": "#/$defs/Uint64Decimal"
+        },
+        "mac": {
+          "$ref": "#/$defs/Base64Url32Bytes"
+        },
+        "pairId": {
+          "$ref": "#/$defs/Base64Url16Bytes"
+        },
+        "remoteDeviceId": {
+          "$ref": "#/$defs/DeviceId"
+        },
+        "remoteInstallationBundleHash": {
+          "$ref": "#/$defs/Base64Url32Bytes"
+        },
+        "remoteParentStreamId": {
+          "$ref": "#/$defs/Uint64Decimal"
+        },
+        "remoteTrustEpoch": {
+          "$ref": "#/$defs/Uint64Decimal"
+        },
+        "version": {
+          "const": 1,
+          "type": "number"
+        }
+      },
+      "required": [
+        "version",
+        "browserContext",
+        "pairId",
+        "remoteDeviceId",
+        "remoteInstallationBundleHash",
+        "hostTrustEpoch",
+        "remoteTrustEpoch",
+        "applicationSessionHash",
+        "directRequestId",
+        "remoteParentStreamId",
+        "directStreamId",
+        "mac"
+      ],
+      "type": "object",
+      "x-waifus-mac": {
+        "algorithm": "HMAC-SHA-256",
+        "context": "waifus/remote-browser-context/v1",
+        "keyDerivation": "waifus/browser-context-key/v1"
+      },
+      "x-waifus-outside-forwarded-headers": [
+        "browserContext",
+        "pairId",
+        "remoteDeviceId",
+        "remoteInstallationBundleHash",
+        "hostTrustEpoch",
+        "remoteTrustEpoch",
+        "applicationSessionHash",
+        "directRequestId",
+        "remoteParentStreamId",
+        "directStreamId",
+        "mac"
+      ],
+      "x-waifus-positive-odd-uint64-field": "remoteParentStreamId"
+    },
     "RemoteBrowserContextV1": {
       "additionalProperties": false,
       "properties": {
@@ -446,6 +523,9 @@
     },
     {
       "$ref": "#/$defs/ProtocolCapabilitiesDocument"
+    },
+    {
+      "$ref": "#/$defs/RemoteBrowserContextEnvelopeV1"
     },
     {
       "$ref": "#/$defs/RemoteBrowserContextV1"
