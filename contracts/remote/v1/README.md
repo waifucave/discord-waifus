@@ -19,11 +19,26 @@ Current foundation:
 - `remote-access.schema.json` currently freezes attended `ApprovalReceiptV1` plus the strict
   helper identity-reset command, status lookup, and crash-journal receipt records. Its fixtures
   cover both local and trusted-remote browser bindings and impossible reset stages.
+- `fixtures/crypto/wipc-v1.json` freezes all 14 V1 frame-type headers, valid and invalid
+  24-byte header boundaries, the exact eight-byte `WINDOW_UPDATE`, odd/even high-water and
+  exhaustion cases, and the capability-derived `parentProof`/`helperProof` bytes. Connection
+  control, START, CANCEL, and ERROR frames carry nonempty canonical JSON; CHUNK frames carry raw
+  bytes; REQUEST_END and RESPONSE_END carry no payload.
+- `conformance-go/` independently recreates and validates that WIPC fixture using Go 1.26.5.
+  It pins `github.com/flynn/noise` v1.1.0 now so later Noise vectors cannot silently select a
+  different implementation.
 
 Run `npm run contracts:remote:generate` after an intentional contract change and
 `npm run contracts:remote:check` in validation. Schema documents are recursively key-sorted,
 pretty-printed, and LF-terminated. Wire fixtures use compact RFC 8785 canonical JSON without a
 trailing newline so another repository can pin the exact signed bytes.
+
+Run the independent WIPC gate with Go 1.26.5:
+
+```bash
+go -C contracts/remote/v1/conformance-go test ./...
+go -C contracts/remote/v1/conformance-go run ./cmd/generate-vectors --check
+```
 
 The JSON Schemas use named `x-waifus-*` extension keywords and named formats for invariants that
 standard JSON Schema cannot express by itself. These currently cover:
@@ -36,7 +51,7 @@ standard JSON Schema cannot express by itself. These currently cover:
 Consumers must enforce those annotations or use the public conformance fixtures. A generic JSON
 Schema validator that ignores them is not a complete protocol validator.
 
-This remains an incomplete contract gate. The remaining remote-access/dashboard DTOs, WIPC and
-crypto fixtures, signed-manifest trust vectors, SAS wordlist, and independent Go conformance harness
-must land before production helper, pairing, Cloudflare, host bridge, or remote gateway work may
-rely on this directory.
+This remains an incomplete contract gate. The full WIPC stream state machine/credit-accounting
+vectors, remaining remote-access/dashboard DTOs, pairing and service crypto fixtures,
+signed-manifest trust vectors, and SAS wordlist must land before production helper, pairing,
+Cloudflare, host bridge, or remote gateway work may rely on this directory.
