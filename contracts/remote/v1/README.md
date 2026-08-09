@@ -53,11 +53,16 @@ Current foundation:
   canonical candidate CBOR, nonce/associated-data bytes, ChaCha20-Poly1305 ciphertext, unsafe and
   malformed candidate rejection, prepared/applied epoch recovery, rollback/conflict behavior, and
   the raw 1,184-byte plaintext/1,200-byte ciphertext ceiling.
-- `conformance-go/` independently recreates and validates the WIPC, pairing, service, and endpoint
-  fixtures using Go 1.26.5. It pins `github.com/flynn/noise` v1.1.0 and independently rejects the
-  token, identity,
-  canonical-CBOR, pair-confirmation, PairControl, revocation, service-session, browser-context, and
-  approval-receipt/endpoint negative vectors.
+- `fixtures/crypto/http-auth-envelope-v1.json` freezes canonical activation-certificate CBOR and
+  Worker signatures, all three installation-signed request classes, request-bound signed success,
+  safe-error, and WebSocket 101 responses, the browser-only unsigned exception, exact raw-header
+  classes, replay/lifetime rules, and field/header/transport substitution failures. Embedded seeds
+  are deterministic fixture inputs only and are not production trust keys.
+- `conformance-go/` independently recreates and validates the WIPC, pairing, service, endpoint,
+  and HTTP-auth fixtures using Go 1.26.5. It pins `github.com/flynn/noise` v1.1.0 and independently
+  rejects the token, identity, canonical-CBOR, pair-confirmation, PairControl, revocation, service-session,
+  browser-context, approval-receipt, endpoint, certificate, HTTP-header, request/response binding,
+  replay, and WebSocket negative vectors.
 
 Run `npm run contracts:remote:generate` after an intentional contract change and
 `npm run contracts:remote:check` in validation. Schema documents are recursively key-sorted,
@@ -84,7 +89,6 @@ Consumers must enforce those annotations or use the public conformance fixtures.
 Schema validator that ignores them is not a complete protocol validator.
 
 This remains an incomplete contract gate. The reviewed 1,024-word SAS artifact and word mapping,
-remaining remote-access/dashboard DTOs, activation/control envelopes, and signed-manifest trust
-vectors must land before production helper,
-pairing, Cloudflare, host bridge, or remote gateway work may rely on this directory as a complete
-V1 authority.
+remaining remote-access/dashboard DTOs and signed-manifest trust vectors must land before
+production helper, pairing, Cloudflare, host bridge, or remote gateway work may rely on this
+directory as a complete V1 authority.

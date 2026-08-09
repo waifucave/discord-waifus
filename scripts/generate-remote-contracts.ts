@@ -20,6 +20,7 @@ import { createPairConfirmationFixtureSet } from "../src/shared/pairConfirmation
 import { createPairControlFixtureSet } from "../src/shared/pairControlContract.js";
 import { createRemoteServiceSessionFixtureSet } from "../src/shared/remoteServiceContract.js";
 import { createEndpointEnvelopeFixtureSet } from "../src/shared/endpointEnvelopeContract.js";
+import { createHttpAuthEnvelopeFixtureSet } from "../src/shared/controlAuthContract.js";
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(scriptDirectory, "..");
@@ -101,6 +102,13 @@ for (const [relativePath, value] of createRemoteServiceSessionFixtureSet()) {
 }
 
 for (const [relativePath, value] of createEndpointEnvelopeFixtureSet()) {
+  generatedFiles.set(
+    path.join(contractRoot, relativePath),
+    serializeCanonicalContractJson(value)
+  );
+}
+
+for (const [relativePath, value] of createHttpAuthEnvelopeFixtureSet()) {
   generatedFiles.set(
     path.join(contractRoot, relativePath),
     serializeCanonicalContractJson(value)
