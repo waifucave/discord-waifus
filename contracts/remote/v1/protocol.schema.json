@@ -1,0 +1,329 @@
+{
+  "$defs": {
+    "Base64Url16Bytes": {
+      "maxLength": 22,
+      "minLength": 22,
+      "pattern": "^[A-Za-z0-9_-]{21}[AQgw]$",
+      "type": "string"
+    },
+    "Base64Url32Bytes": {
+      "maxLength": 43,
+      "minLength": 43,
+      "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$",
+      "type": "string"
+    },
+    "CanonicalTarget": {
+      "format": "waifus-origin-form-target-v1",
+      "maxLength": 2048,
+      "minLength": 1,
+      "type": "string",
+      "x-waifus-canonicalization": "Exact ASCII origin-form path/query; uppercase minimal percent escapes; no authority, fragment, dot segment, encoded slash, or encoded backslash."
+    },
+    "CapabilityName": {
+      "maxLength": 96,
+      "minLength": 1,
+      "pattern": "^[a-z][a-z0-9-]*(?:\\.[a-z][a-z0-9-]*)*\\.v(?:0|[1-9][0-9]*)$",
+      "type": "string"
+    },
+    "CapabilityNameList": {
+      "items": {
+        "$ref": "#/$defs/CapabilityName"
+      },
+      "maxItems": 128,
+      "type": "array",
+      "uniqueItems": true,
+      "x-waifus-ascii-sorted": true
+    },
+    "CapabilitySet": {
+      "additionalProperties": false,
+      "properties": {
+        "optional": {
+          "$ref": "#/$defs/CapabilityNameList"
+        },
+        "required": {
+          "$ref": "#/$defs/CapabilityNameList"
+        }
+      },
+      "required": [
+        "required",
+        "optional"
+      ],
+      "type": "object",
+      "x-waifus-disjoint-properties": [
+        "required",
+        "optional"
+      ]
+    },
+    "CompatibilityResult": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "capabilities": {
+              "$ref": "#/$defs/CapabilityNameList"
+            },
+            "compatible": {
+              "const": true,
+              "type": "boolean"
+            },
+            "protocol": {
+              "$ref": "#/$defs/ProtocolVersion"
+            }
+          },
+          "required": [
+            "compatible",
+            "protocol",
+            "capabilities"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "code": {
+              "enum": [
+                "protocol_major_mismatch",
+                "protocol_minor_downgrade",
+                "missing_required_capability",
+                "control_profile_mismatch",
+                "runtime_purpose_mismatch"
+              ],
+              "type": "string"
+            },
+            "compatible": {
+              "const": false,
+              "type": "boolean"
+            },
+            "message": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            "missingCapabilities": {
+              "$ref": "#/$defs/CapabilityNameList"
+            }
+          },
+          "required": [
+            "compatible",
+            "code",
+            "message"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ComponentHello": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "controlProfile": {
+                "const": 2
+              }
+            },
+            "required": [
+              "controlProfile"
+            ]
+          },
+          "then": {
+            "properties": {
+              "runtimePurpose": {
+                "enum": [
+                  "development",
+                  "release_validation"
+                ]
+              }
+            },
+            "required": [
+              "runtimePurpose"
+            ]
+          }
+        }
+      ],
+      "properties": {
+        "buildId": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[\\x21-\\x7e]+$",
+          "type": "string"
+        },
+        "capabilities": {
+          "$ref": "#/$defs/CapabilitySet"
+        },
+        "component": {
+          "$ref": "#/$defs/ComponentName"
+        },
+        "componentVersion": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$",
+          "type": "string"
+        },
+        "controlProfile": {
+          "$ref": "#/$defs/ControlProfileV1"
+        },
+        "nonce": {
+          "$ref": "#/$defs/Base64Url32Bytes"
+        },
+        "protocol": {
+          "$ref": "#/$defs/ProtocolVersion"
+        },
+        "runtimePurpose": {
+          "$ref": "#/$defs/RuntimePurpose"
+        }
+      },
+      "required": [
+        "protocol",
+        "component",
+        "componentVersion",
+        "buildId",
+        "nonce",
+        "capabilities",
+        "controlProfile",
+        "runtimePurpose"
+      ],
+      "type": "object"
+    },
+    "ComponentName": {
+      "enum": [
+        "discord_waifus",
+        "ts_connect"
+      ],
+      "type": "string"
+    },
+    "ControlProfileV1": {
+      "anyOf": [
+        {
+          "const": 1,
+          "type": "number"
+        },
+        {
+          "const": 2,
+          "type": "number"
+        }
+      ]
+    },
+    "HttpMethod": {
+      "enum": [
+        "GET",
+        "HEAD",
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE"
+      ],
+      "type": "string"
+    },
+    "ProtocolCapabilitiesDocument": {
+      "additionalProperties": false,
+      "properties": {
+        "capabilities": {
+          "$ref": "#/$defs/CapabilitySet"
+        },
+        "protocol": {
+          "$ref": "#/$defs/ProtocolVersion"
+        },
+        "schemaVersion": {
+          "const": 1,
+          "type": "number"
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "protocol",
+        "capabilities"
+      ],
+      "type": "object"
+    },
+    "ProtocolVersion": {
+      "additionalProperties": false,
+      "properties": {
+        "major": {
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "minor": {
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "major",
+        "minor"
+      ],
+      "type": "object"
+    },
+    "RemoteBrowserContextV1": {
+      "additionalProperties": false,
+      "properties": {
+        "browserSessionId": {
+          "$ref": "#/$defs/Base64Url32Bytes"
+        },
+        "canonicalTarget": {
+          "$ref": "#/$defs/CanonicalTarget"
+        },
+        "csrfValidated": {
+          "const": true,
+          "type": "boolean"
+        },
+        "gatewayLaunchId": {
+          "$ref": "#/$defs/Base64Url32Bytes"
+        },
+        "method": {
+          "$ref": "#/$defs/HttpMethod"
+        },
+        "requestNonce": {
+          "$ref": "#/$defs/Base64Url16Bytes"
+        },
+        "version": {
+          "const": 1,
+          "type": "number"
+        }
+      },
+      "required": [
+        "version",
+        "gatewayLaunchId",
+        "browserSessionId",
+        "requestNonce",
+        "method",
+        "canonicalTarget",
+        "csrfValidated"
+      ],
+      "type": "object"
+    },
+    "RuntimePurpose": {
+      "enum": [
+        "normal",
+        "development",
+        "release_validation"
+      ],
+      "type": "string"
+    },
+    "Uint64Decimal": {
+      "maxLength": 20,
+      "pattern": "^(?:0|[1-9][0-9]{0,18}|1[0-7][0-9]{18}|18[0-3][0-9]{17}|184[0-3][0-9]{16}|1844[0-5][0-9]{15}|18446[0-6][0-9]{14}|184467[0-3][0-9]{13}|1844674[0-3][0-9]{12}|184467440[0-6][0-9]{10}|1844674407[0-2][0-9]{9}|18446744073[0-6][0-9]{8}|1844674407370[0-8][0-9]{6}|18446744073709[0-4][0-9]{5}|184467440737095[0-4][0-9]{4}|18446744073709550[0-9]{3}|18446744073709551[0-5][0-9]{2}|1844674407370955160[0-9]{1}|1844674407370955161[0-4]|18446744073709551615)$",
+      "type": "string"
+    }
+  },
+  "$id": "https://waifucave.com/contracts/remote/v1/protocol.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Public JSON-facing protocol primitives. Runtime parsers and conformance fixtures enforce the named custom canonical formats.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/ComponentHello"
+    },
+    {
+      "$ref": "#/$defs/CompatibilityResult"
+    },
+    {
+      "$ref": "#/$defs/ProtocolCapabilitiesDocument"
+    },
+    {
+      "$ref": "#/$defs/RemoteBrowserContextV1"
+    }
+  ],
+  "title": "Waifus Remote Protocol V1"
+}
