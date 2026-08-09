@@ -14,9 +14,11 @@ go -C contracts/remote/v1/conformance-go test ./...
 go -C contracts/remote/v1/conformance-go run ./cmd/generate-vectors --check
 ```
 
-`generate-vectors --check` builds `fixtures/crypto/wipc-v1.json` independently with Go and compares
-the exact compact canonical JSON bytes to the TypeScript-generated public fixture. The current
-slice covers the WIPC header, payload classes, window-update encoding, per-side stream-ID
-high-water/exhaustion rules, and parent/helper HMAC transcript. Later slices extend this same gate
-with the full stream state machine, Noise transcripts, key derivations, signed envelopes, endpoint
-encryption, SAS, and remaining boundary fixtures.
+`generate-vectors --check` builds `fixtures/crypto/wipc-v1.json` and `wipc-state-v1.json`
+independently with Go and compares the exact compact canonical JSON bytes to the
+TypeScript-generated public fixtures. The current gate covers the WIPC header, payload classes,
+window-update encoding, per-side stream-ID high-water/exhaustion rules, parent/helper HMAC
+transcript, the full request/response/cancel lifecycle, bidirectional credit accounting, and the
+128-stream boundary. Later slices extend this same gate with authenticated session replay tests,
+Noise transcripts, key derivations, signed envelopes, endpoint encryption, SAS, and remaining
+boundary fixtures.

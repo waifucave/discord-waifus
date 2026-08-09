@@ -416,6 +416,590 @@ export function createWipcV1Fixture(): ContractJson {
   };
 }
 
+function stateSnapshot(
+  overrides: Partial<{
+    initiator: "node" | "helper";
+    requestState: "open" | "ended" | "cancelled" | "response_closed" | "failed";
+    responseState: "none" | "open" | "succeeded" | "failed";
+    cancelled: boolean;
+    protocolFailed: boolean;
+    requestCredit: number;
+    responseCredit: number;
+  }> = {}
+): ContractJson {
+  return {
+    initiator: "node",
+    requestState: "open",
+    responseState: "none",
+    cancelled: false,
+    protocolFailed: false,
+    requestCredit: WIPC_INITIAL_STREAM_CREDIT_BYTES,
+    responseCredit: WIPC_INITIAL_STREAM_CREDIT_BYTES,
+    ...overrides
+  };
+}
+
+export function createWipcStateV1Fixture(): ContractJson {
+  const startNode = {
+    action: "frame",
+    sender: "node",
+    frameType: WIPC_FRAME_TYPES.REQUEST_START,
+    streamId: "1",
+    expectedOutcome: "request_started",
+    expectedDispatch: true
+  };
+  return {
+    schemaVersion: 1,
+    initialStreamCreditBytes: WIPC_INITIAL_STREAM_CREDIT_BYTES,
+    maxConcurrentStreams: WIPC_MAX_CONCURRENT_STREAMS,
+    scenarios: [
+      {
+        name: "full-duplex-delayed-credit",
+        steps: [
+          { ...startNode, expectedSnapshot: stateSnapshot() },
+          {
+            action: "frame",
+            sender: "node",
+            frameType: WIPC_FRAME_TYPES.REQUEST_CHUNK,
+            streamId: "1",
+            payloadLength: 60_000,
+            expectedOutcome: "request_chunk_delivered",
+            expectedSnapshot: stateSnapshot({ requestCredit: 988_576 })
+          },
+          {
+            action: "frame",
+            sender: "helper",
+            frameType: WIPC_FRAME_TYPES.WINDOW_UPDATE,
+            streamId: "1",
+            windowUpdate: { direction: "request", creditIncrement: 60_000 },
+            expectedOutcome: "window_updated",
+            expectedSnapshot: stateSnapshot()
+          },
+          {
+            action: "frame",
+            sender: "helper",
+            frameType: WIPC_FRAME_TYPES.RESPONSE_START,
+            streamId: "1",
+            expectedOutcome: "response_started",
+            expectedSnapshot: stateSnapshot({ responseState: "open" })
+          },
+          {
+            action: "frame",
+            sender: "helper",
+            frameType: WIPC_FRAME_TYPES.RESPONSE_CHUNK,
+            streamId: "1",
+            payloadLength: 65_536,
+            expectedOutcome: "response_chunk_delivered",
+            expectedSnapshot: stateSnapshot({
+              responseState: "open",
+              responseCredit: 983_040
+            })
+          },
+          {
+            action: "frame",
+            sender: "node",
+            frameType: WIPC_FRAME_TYPES.WINDOW_UPDATE,
+            streamId: "1",
+            windowUpdate: { direction: "response", creditIncrement: 65_536 },
+            expectedOutcome: "window_updated",
+            expectedSnapshot: stateSnapshot({ responseState: "open" })
+          },
+          {
+            action: "frame",
+            sender: "node",
+            frameType: WIPC_FRAME_TYPES.REQUEST_END,
+            streamId: "1",
+            expectedOutcome: "request_ended",
+            expectedSnapshot: stateSnapshot({ requestState: "ended", responseState: "open" })
+          },
+          {
+            action: "frame",
+            sender: "helper",
+            frameType: WIPC_FRAME_TYPES.RESPONSE_END,
+            streamId: "1",
+            expectedOutcome: "response_ended",
+            expectedCloseRequestInput: false,
+            expectedSnapshot: stateSnapshot({ requestState: "ended", responseState: "succeeded" })
+          }
+        ]
+      },
+      {
+        name: "cancel-discard-remove-and-late-frames",
+        steps: [
+          startNode,
+          {
+            action: "frame",
+            sender: "node",
+            frameType: WIPC_FRAME_TYPES.REQUEST_CANCEL,
+            streamId: "1",
+            expectedOutcome: "request_cancelled",
+            expectedAbortRequest: true,
+            expectedSnapshot: stateSnapshot({ requestState: "cancelled", cancelled: true })
+          },
+          {
+            action: "frame",
+            sender: "node",
+            frameType: WIPC_FRAME_TYPES.REQUEST_CANCEL,
+            streamId: "1",
+            expectedOutcome: "cancel_ignored",
+            expectedAbortRequest: false
+          },
+          {
+            action: "frame",
+            sender: "node",
+            frameType: WIPC_FRAME_TYPES.REQUEST_CHUNK,
+            streamId: "1",
+            payloadLength: 100,
+            expectedOutcome: "request_chunk_discarded",
+            expectedSnapshot: stateSnapshot({
+              requestState: "cancelled",
+              cancelled: true,
+              requestCredit: 1_048_476
+            })
+          },
+          {
+            action: "frame",
+            sender: "helper",
+            frameType: WIPC_FRAME_TYPES.RESPONSE_ERROR,
+            streamId: "1",
+            expectedOutcome: "response_failed",
+            expectedCloseRequestInput: false,
+            expectedSnapshot: stateSnapshot({
+              requestState: "cancelled",
+              responseState: "failed",
+              cancelled: true,
+              requestCredit: 1_048_476
+            })
+          },
+          { action: "remove", streamId: "1", expectedOutcome: "removed" },
+          {
+            action: "frame",
+            sender: "node",
+            frameType: WIPC_FRAME_TYPES.REQUEST_CANCEL,
+            streamId: "1",
+            expectedOutcome: "inactive_frame_ignored"
+          },
+          {
+            action: "frame",
+            sender: "helper",
+            frameType: WIPC_FRAME_TYPES.WINDOW_UPDATE,
+            streamId: "1",
+            windowUpdate: { direction: "request", creditIncrement: 1 },
+            expectedOutcome: "inactive_frame_ignored"
+          },
+          {
+            action: "frame",
+            sender: "helper",
+            frameType: WIPC_FRAME_TYPES.RESPONSE_END,
+            streamId: "1",
+            expectedOutcome: "connection_error",
+            expectedConnectionError: "unknown_stream"
+          }
+        ]
+      },
+      {
+        name: "response-terminal-closes-request-input",
+        steps: [
+          startNode,
+          {
+            action: "frame",
+            sender: "helper",
+            frameType: WIPC_FRAME_TYPES.RESPONSE_START,
+            streamId: "1",
+            expectedOutcome: "response_started"
+          },
+          {
+            action: "frame",
+            sender: "helper",
+            frameType: WIPC_FRAME_TYPES.RESPONSE_END,
+            streamId: "1",
+            expectedOutcome: "response_ended",
+            expectedCloseRequestInput: true,
+            expectedSnapshot: stateSnapshot({
+              requestState: "response_closed",
+              responseState: "succeeded"
+            })
+          },
+          {
+            action: "frame",
+            sender: "node",
+            frameType: WIPC_FRAME_TYPES.REQUEST_CHUNK,
+            streamId: "1",
+            payloadLength: 10,
+            expectedOutcome: "request_chunk_discarded",
+            expectedSnapshot: stateSnapshot({
+              requestState: "response_closed",
+              responseState: "succeeded",
+              requestCredit: 1_048_566
+            })
+          },
+          {
+            action: "frame",
+            sender: "node",
+            frameType: WIPC_FRAME_TYPES.REQUEST_CANCEL,
+            streamId: "1",
+            expectedOutcome: "cancel_ignored",
+            expectedAbortRequest: false
+          },
+          {
+            action: "frame",
+            sender: "helper",
+            frameType: WIPC_FRAME_TYPES.WINDOW_UPDATE,
+            streamId: "1",
+            windowUpdate: { direction: "request", creditIncrement: 10 },
+            expectedOutcome: "window_ignored",
+            expectedSnapshot: stateSnapshot({
+              requestState: "response_closed",
+              responseState: "succeeded",
+              requestCredit: 1_048_566
+            })
+          }
+        ]
+      },
+      {
+        name: "invalid-transition-escalates",
+        steps: [
+          startNode,
+          {
+            action: "frame",
+            sender: "helper",
+            frameType: WIPC_FRAME_TYPES.RESPONSE_CHUNK,
+            streamId: "1",
+            payloadLength: 1,
+            expectedOutcome: "stream_failed",
+            expectedStreamError: "response_chunk_before_start",
+            expectedAbortRequest: true,
+            expectedResponseErrorPermitted: true,
+            expectedSnapshot: stateSnapshot({ requestState: "failed", protocolFailed: true })
+          },
+          {
+            action: "frame",
+            sender: "node",
+            frameType: WIPC_FRAME_TYPES.REQUEST_CANCEL,
+            streamId: "1",
+            expectedOutcome: "cancel_ignored",
+            expectedAbortRequest: false
+          },
+          {
+            action: "frame",
+            sender: "helper",
+            frameType: WIPC_FRAME_TYPES.RESPONSE_CHUNK,
+            streamId: "1",
+            payloadLength: 1,
+            expectedOutcome: "connection_error",
+            expectedConnectionError: "failed_stream_frame"
+          }
+        ]
+      },
+      {
+        name: "duplicate-request-terminal",
+        steps: [
+          startNode,
+          {
+            action: "frame",
+            sender: "node",
+            frameType: WIPC_FRAME_TYPES.REQUEST_END,
+            streamId: "1",
+            expectedOutcome: "request_ended"
+          },
+          {
+            action: "frame",
+            sender: "node",
+            frameType: WIPC_FRAME_TYPES.REQUEST_END,
+            streamId: "1",
+            expectedOutcome: "stream_failed",
+            expectedStreamError: "duplicate_request_end"
+          }
+        ]
+      },
+      {
+        name: "duplicate-response-start",
+        steps: [
+          startNode,
+          {
+            action: "frame",
+            sender: "helper",
+            frameType: WIPC_FRAME_TYPES.RESPONSE_START,
+            streamId: "1",
+            expectedOutcome: "response_started"
+          },
+          {
+            action: "frame",
+            sender: "helper",
+            frameType: WIPC_FRAME_TYPES.RESPONSE_START,
+            streamId: "1",
+            expectedOutcome: "stream_failed",
+            expectedStreamError: "duplicate_response_start"
+          }
+        ]
+      },
+      {
+        name: "duplicate-response-terminal",
+        steps: [
+          startNode,
+          {
+            action: "frame",
+            sender: "helper",
+            frameType: WIPC_FRAME_TYPES.RESPONSE_START,
+            streamId: "1",
+            expectedOutcome: "response_started"
+          },
+          {
+            action: "frame",
+            sender: "helper",
+            frameType: WIPC_FRAME_TYPES.RESPONSE_END,
+            streamId: "1",
+            expectedOutcome: "response_ended"
+          },
+          {
+            action: "frame",
+            sender: "helper",
+            frameType: WIPC_FRAME_TYPES.RESPONSE_ERROR,
+            streamId: "1",
+            expectedOutcome: "stream_failed",
+            expectedStreamError: "duplicate_response_terminal",
+            expectedAbortRequest: false,
+            expectedResponseErrorPermitted: false
+          }
+        ]
+      },
+      {
+        name: "unexpected-frame-sender",
+        steps: [
+          startNode,
+          {
+            action: "frame",
+            sender: "helper",
+            frameType: WIPC_FRAME_TYPES.REQUEST_CHUNK,
+            streamId: "1",
+            payloadLength: 1,
+            expectedOutcome: "stream_failed",
+            expectedStreamError: "unexpected_frame_sender",
+            expectedAbortRequest: true,
+            expectedResponseErrorPermitted: true
+          }
+        ]
+      },
+      {
+        name: "request-chunk-after-end",
+        steps: [
+          startNode,
+          {
+            action: "frame",
+            sender: "node",
+            frameType: WIPC_FRAME_TYPES.REQUEST_END,
+            streamId: "1",
+            expectedOutcome: "request_ended"
+          },
+          {
+            action: "frame",
+            sender: "node",
+            frameType: WIPC_FRAME_TYPES.REQUEST_CHUNK,
+            streamId: "1",
+            payloadLength: 1,
+            expectedOutcome: "stream_failed",
+            expectedStreamError: "request_chunk_after_terminal",
+            expectedAbortRequest: true,
+            expectedResponseErrorPermitted: true
+          }
+        ]
+      },
+      {
+        name: "response-terminal-before-start",
+        steps: [
+          startNode,
+          {
+            action: "frame",
+            sender: "helper",
+            frameType: WIPC_FRAME_TYPES.RESPONSE_END,
+            streamId: "1",
+            expectedOutcome: "stream_failed",
+            expectedStreamError: "response_terminal_before_start",
+            expectedAbortRequest: true,
+            expectedResponseErrorPermitted: true
+          }
+        ]
+      },
+      {
+        name: "response-chunk-after-terminal",
+        steps: [
+          startNode,
+          {
+            action: "frame",
+            sender: "helper",
+            frameType: WIPC_FRAME_TYPES.RESPONSE_START,
+            streamId: "1",
+            expectedOutcome: "response_started"
+          },
+          {
+            action: "frame",
+            sender: "helper",
+            frameType: WIPC_FRAME_TYPES.RESPONSE_END,
+            streamId: "1",
+            expectedOutcome: "response_ended"
+          },
+          {
+            action: "frame",
+            sender: "helper",
+            frameType: WIPC_FRAME_TYPES.RESPONSE_CHUNK,
+            streamId: "1",
+            payloadLength: 1,
+            expectedOutcome: "stream_failed",
+            expectedStreamError: "response_chunk_after_terminal",
+            expectedAbortRequest: false,
+            expectedResponseErrorPermitted: false
+          }
+        ]
+      },
+      {
+        name: "request-credit-overrun",
+        steps: [
+          startNode,
+          {
+            action: "frame",
+            sender: "node",
+            frameType: WIPC_FRAME_TYPES.REQUEST_CHUNK,
+            streamId: "1",
+            payloadLength: 65_536,
+            repeat: 16,
+            expectedOutcome: "request_chunk_delivered",
+            expectedSnapshot: stateSnapshot({ requestCredit: 0 })
+          },
+          {
+            action: "frame",
+            sender: "node",
+            frameType: WIPC_FRAME_TYPES.REQUEST_CHUNK,
+            streamId: "1",
+            payloadLength: 1,
+            expectedOutcome: "connection_error",
+            expectedConnectionError: "flow_control_error"
+          }
+        ]
+      },
+      {
+        name: "response-credit-overrun",
+        steps: [
+          startNode,
+          {
+            action: "frame",
+            sender: "helper",
+            frameType: WIPC_FRAME_TYPES.RESPONSE_START,
+            streamId: "1",
+            expectedOutcome: "response_started"
+          },
+          {
+            action: "frame",
+            sender: "helper",
+            frameType: WIPC_FRAME_TYPES.RESPONSE_CHUNK,
+            streamId: "1",
+            payloadLength: 65_536,
+            repeat: 16,
+            expectedOutcome: "response_chunk_delivered",
+            expectedSnapshot: stateSnapshot({ responseState: "open", responseCredit: 0 })
+          },
+          {
+            action: "frame",
+            sender: "helper",
+            frameType: WIPC_FRAME_TYPES.RESPONSE_CHUNK,
+            streamId: "1",
+            payloadLength: 1,
+            expectedOutcome: "connection_error",
+            expectedConnectionError: "flow_control_error"
+          }
+        ]
+      },
+      {
+        name: "wrong-side-window-update",
+        steps: [
+          startNode,
+          {
+            action: "frame",
+            sender: "node",
+            frameType: WIPC_FRAME_TYPES.WINDOW_UPDATE,
+            streamId: "1",
+            windowUpdate: { direction: "request", creditIncrement: 1 },
+            expectedOutcome: "connection_error",
+            expectedConnectionError: "flow_control_error"
+          }
+        ]
+      },
+      {
+        name: "window-credit-overflow",
+        steps: [
+          startNode,
+          {
+            action: "frame",
+            sender: "helper",
+            frameType: WIPC_FRAME_TYPES.WINDOW_UPDATE,
+            streamId: "1",
+            windowUpdate: { direction: "request", creditIncrement: 1 },
+            expectedOutcome: "connection_error",
+            expectedConnectionError: "flow_control_error"
+          }
+        ]
+      },
+      {
+        name: "helper-created-stream-symmetry",
+        steps: [
+          {
+            action: "frame",
+            sender: "helper",
+            frameType: WIPC_FRAME_TYPES.REQUEST_START,
+            streamId: "2",
+            expectedOutcome: "request_started",
+            expectedDispatch: true,
+            expectedSnapshot: stateSnapshot({ initiator: "helper" })
+          },
+          {
+            action: "frame",
+            sender: "helper",
+            frameType: WIPC_FRAME_TYPES.REQUEST_CHUNK,
+            streamId: "2",
+            payloadLength: 1,
+            expectedOutcome: "request_chunk_delivered",
+            expectedSnapshot: stateSnapshot({ initiator: "helper", requestCredit: 1_048_575 })
+          },
+          {
+            action: "frame",
+            sender: "node",
+            frameType: WIPC_FRAME_TYPES.WINDOW_UPDATE,
+            streamId: "2",
+            windowUpdate: { direction: "request", creditIncrement: 1 },
+            expectedOutcome: "window_updated",
+            expectedSnapshot: stateSnapshot({ initiator: "helper" })
+          },
+          {
+            action: "frame",
+            sender: "node",
+            frameType: WIPC_FRAME_TYPES.RESPONSE_ERROR,
+            streamId: "2",
+            expectedOutcome: "response_failed",
+            expectedCloseRequestInput: true,
+            expectedSnapshot: stateSnapshot({
+              initiator: "helper",
+              requestState: "response_closed",
+              responseState: "failed"
+            })
+          }
+        ]
+      }
+    ],
+    streamLimit: {
+      creator: "node",
+      firstStreamId: "1",
+      streamIdIncrement: "2",
+      acceptedCount: WIPC_MAX_CONCURRENT_STREAMS,
+      rejectedStreamId: "257",
+      expectedOutcome: "stream_limit",
+      expectedDispatch: false,
+      expectedHighWater: "257"
+    }
+  };
+}
+
 export function createWipcFixtureSet(): ReadonlyMap<string, ContractJson> {
-  return new Map([["fixtures/crypto/wipc-v1.json", createWipcV1Fixture()]]);
+  return new Map([
+    ["fixtures/crypto/wipc-v1.json", createWipcV1Fixture()],
+    ["fixtures/crypto/wipc-state-v1.json", createWipcStateV1Fixture()]
+  ]);
 }

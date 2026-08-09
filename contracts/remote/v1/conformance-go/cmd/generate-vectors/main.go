@@ -11,24 +11,33 @@ import (
 )
 
 func run() error {
-	check := flag.Bool("check", false, "verify that the committed WIPC fixture matches the independent Go generator")
+	check := flag.Bool("check", false, "verify that committed fixtures match the independent Go generator")
 	flag.Parse()
 	if !*check || flag.NArg() != 0 {
 		return fmt.Errorf("usage: generate-vectors --check")
 	}
-	expected, err := vectors.BuildWIPCV1JSON()
-	if err != nil {
-		return fmt.Errorf("build WIPC fixture: %w", err)
+	checks := []struct {
+		name  string
+		build func() ([]byte, error)
+	}{
+		{name: "wipc-v1.json", build: vectors.BuildWIPCV1JSON},
+		{name: "wipc-state-v1.json", build: vectors.BuildWIPCStateV1JSON},
 	}
-	fixturePath := filepath.Join("..", "fixtures", "crypto", "wipc-v1.json")
-	actual, err := os.ReadFile(fixturePath)
-	if err != nil {
-		return fmt.Errorf("read %s: %w", fixturePath, err)
+	for _, fixture := range checks {
+		expected, err := fixture.build()
+		if err != nil {
+			return fmt.Errorf("build %s: %w", fixture.name, err)
+		}
+		fixturePath := filepath.Join("..", "fixtures", "crypto", fixture.name)
+		actual, err := os.ReadFile(fixturePath)
+		if err != nil {
+			return fmt.Errorf("read %s: %w", fixturePath, err)
+		}
+		if !bytes.Equal(actual, expected) {
+			return fmt.Errorf("%s differs from the independent Go generator", fixturePath)
+		}
+		fmt.Printf("verified %s\n", fixturePath)
 	}
-	if !bytes.Equal(actual, expected) {
-		return fmt.Errorf("%s differs from the independent Go generator", fixturePath)
-	}
-	fmt.Printf("verified %s\n", fixturePath)
 	return nil
 }
 

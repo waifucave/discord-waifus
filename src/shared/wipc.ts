@@ -56,7 +56,12 @@ export type WipcProtocolErrorCode =
   | "stream_id_reused"
   | "stream_id_exhausted"
   | "invalid_auth_width"
-  | "invalid_auth_transcript";
+  | "invalid_auth_transcript"
+  | "frame_before_authentication"
+  | "invalid_stream_frame"
+  | "unknown_stream"
+  | "failed_stream_frame"
+  | "flow_control_error";
 
 export class WipcProtocolError extends Error {
   readonly code: WipcProtocolErrorCode;
