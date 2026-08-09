@@ -1,5 +1,142 @@
 {
   "$defs": {
+    "ActivationStartResult": {
+      "additionalProperties": false,
+      "properties": {
+        "activationOperationId": {
+          "$ref": "#/$defs/Base64Url32Bytes"
+        },
+        "expiresAt": {
+          "$ref": "#/$defs/Uint64Decimal"
+        },
+        "verificationUrl": {
+          "$ref": "#/$defs/ActivationVerificationUrl"
+        }
+      },
+      "required": [
+        "activationOperationId",
+        "verificationUrl",
+        "expiresAt"
+      ],
+      "type": "object",
+      "x-waifus-cache-control": "no-store",
+      "x-waifus-lifetime-seconds": 600
+    },
+    "ActivationStatus": {
+      "anyOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "activationOperationId": {
+              "$ref": "#/$defs/Base64Url32Bytes"
+            },
+            "expiresAt": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "state": {
+              "const": "pending",
+              "type": "string"
+            }
+          },
+          "required": [
+            "activationOperationId",
+            "expiresAt",
+            "state"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "activationOperationId": {
+              "$ref": "#/$defs/Base64Url32Bytes"
+            },
+            "completedAt": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "expiresAt": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "state": {
+              "const": "completed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "activationOperationId",
+            "expiresAt",
+            "state",
+            "completedAt"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "activationOperationId": {
+              "$ref": "#/$defs/Base64Url32Bytes"
+            },
+            "expiresAt": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "state": {
+              "const": "expired",
+              "type": "string"
+            }
+          },
+          "required": [
+            "activationOperationId",
+            "expiresAt",
+            "state"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "activationOperationId": {
+              "$ref": "#/$defs/Base64Url32Bytes"
+            },
+            "errorCode": {
+              "enum": [
+                "activation_rejected",
+                "activation_unavailable",
+                "certificate_invalid",
+                "helper_unavailable",
+                "worker_quota_exhausted"
+              ],
+              "type": "string"
+            },
+            "expiresAt": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "state": {
+              "const": "failed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "activationOperationId",
+            "expiresAt",
+            "state",
+            "errorCode"
+          ],
+          "type": "object"
+        }
+      ],
+      "x-waifus-cache-control": "no-store"
+    },
+    "ActivationVerificationUrl": {
+      "format": "waifus-activation-fragment-url-v1",
+      "maxLength": 160,
+      "minLength": 1,
+      "type": "string",
+      "x-waifus-allowed-origins": [
+        "https://pair.waifucave.com",
+        "https://pair-staging.waifucave.com"
+      ],
+      "x-waifus-fragment-id-bytes": 32
+    },
     "AdministrativeAuditRecordV1": {
       "additionalProperties": false,
       "properties": {
@@ -473,6 +610,98 @@
         }
       }
     },
+    "ApprovePairingInputV1": {
+      "additionalProperties": false,
+      "properties": {
+        "channelBinding": {
+          "$ref": "#/$defs/Base64Url32Bytes"
+        },
+        "invitationGeneration": {
+          "$ref": "#/$defs/Uint64Decimal"
+        },
+        "remoteIdentityBundleHash": {
+          "$ref": "#/$defs/Base64Url32Bytes"
+        },
+        "sasFingerprint": {
+          "maxLength": 12,
+          "minLength": 12,
+          "pattern": "^[0-9a-f]{12}$",
+          "type": "string"
+        },
+        "sasIndices": {
+          "prefixItems": [
+            {
+              "maximum": 1023,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "maximum": 1023,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "maximum": 1023,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "maximum": 1023,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "maximum": 1023,
+              "minimum": 0,
+              "type": "integer"
+            }
+          ],
+          "type": "array"
+        },
+        "transcriptHash": {
+          "$ref": "#/$defs/Base64Url32Bytes"
+        }
+      },
+      "required": [
+        "invitationGeneration",
+        "remoteIdentityBundleHash",
+        "transcriptHash",
+        "channelBinding",
+        "sasIndices",
+        "sasFingerprint"
+      ],
+      "type": "object"
+    },
+    "AssistantSafePairingRequestSummaryV1": {
+      "additionalProperties": false,
+      "properties": {
+        "claimedDisplayName": {
+          "$ref": "#/$defs/DeviceDisplayName"
+        },
+        "claimedPlatform": {
+          "$ref": "#/$defs/HelperTarget"
+        },
+        "expiresAt": {
+          "$ref": "#/$defs/Uint64Decimal"
+        },
+        "requestId": {
+          "$ref": "#/$defs/Base64Url16Bytes"
+        }
+      },
+      "required": [
+        "requestId",
+        "claimedDisplayName",
+        "claimedPlatform",
+        "expiresAt"
+      ],
+      "type": "object",
+      "x-waifus-exact-fields": [
+        "requestId",
+        "claimedDisplayName",
+        "claimedPlatform",
+        "expiresAt"
+      ]
+    },
     "Base64Url16Bytes": {
       "maxLength": 22,
       "minLength": 22,
@@ -498,6 +727,67 @@
       "maxLength": 2048,
       "minLength": 1,
       "type": "string"
+    },
+    "ClientContextV1": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "mode": {
+              "const": "host",
+              "type": "string"
+            }
+          },
+          "required": [
+            "mode"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "connectionShellOrigin": {
+              "$ref": "#/$defs/ConnectionShellOrigin"
+            },
+            "connectionState": {
+              "enum": [
+                "direct",
+                "reconnecting",
+                "direct_unavailable"
+              ],
+              "type": "string"
+            },
+            "mode": {
+              "const": "remote",
+              "type": "string"
+            },
+            "selectedHostId": {
+              "$ref": "#/$defs/Base64Url32Bytes"
+            }
+          },
+          "required": [
+            "mode",
+            "selectedHostId",
+            "connectionState",
+            "connectionShellOrigin"
+          ],
+          "type": "object"
+        }
+      ],
+      "x-waifus-cache-control": "no-store",
+      "x-waifus-csrf-delivery": "response header only"
+    },
+    "ConnectionShellOrigin": {
+      "format": "waifus-isolated-loopback-origin-v1",
+      "maxLength": 96,
+      "minLength": 1,
+      "type": "string",
+      "x-waifus-hostname": "waifus-<52 lowercase base32 characters>.localhost"
+    },
+    "CreateInvitationInputV1": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
     },
     "DashboardAssetContentType": {
       "enum": [
@@ -664,6 +954,18 @@
       "x-waifus-maximum-raw-bytes": 4194304,
       "x-waifus-required-asset": "index.html"
     },
+    "DeviceDisplayName": {
+      "maxLength": 80,
+      "minLength": 1,
+      "type": "string",
+      "x-waifus-forbidden-unicode": [
+        "C0 controls",
+        "DEL",
+        "bidi overrides",
+        "bidi isolates"
+      ],
+      "x-waifus-maximum-utf8-bytes": 256
+    },
     "DeviceRoleV1": {
       "anyOf": [
         {
@@ -684,6 +986,13 @@
       "x-waifus-sequence": "canonical uint64 decimal",
       "x-waifus-stream-epoch-bytes": 16
     },
+    "FullPairToken": {
+      "maxLength": 1024,
+      "minLength": 8,
+      "pattern": "^WF1\\.[A-Za-z0-9_-]+$",
+      "type": "string",
+      "x-waifus-secret-request-field": true
+    },
     "GetResetStatusCommand": {
       "additionalProperties": false,
       "properties": {
@@ -695,6 +1004,123 @@
         "resetTombstone"
       ],
       "type": "object"
+    },
+    "HelperTarget": {
+      "anyOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "arch": {
+              "const": "arm64",
+              "type": "string"
+            },
+            "os": {
+              "const": "darwin",
+              "type": "string"
+            }
+          },
+          "required": [
+            "os",
+            "arch"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "arch": {
+              "const": "x64",
+              "type": "string"
+            },
+            "os": {
+              "const": "win32",
+              "type": "string"
+            }
+          },
+          "required": [
+            "os",
+            "arch"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "arch": {
+              "const": "arm64",
+              "type": "string"
+            },
+            "os": {
+              "const": "win32",
+              "type": "string"
+            }
+          },
+          "required": [
+            "os",
+            "arch"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "arch": {
+              "const": "x64",
+              "type": "string"
+            },
+            "os": {
+              "const": "linux",
+              "type": "string"
+            }
+          },
+          "required": [
+            "os",
+            "arch"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "arch": {
+              "const": "arm64",
+              "type": "string"
+            },
+            "os": {
+              "const": "linux",
+              "type": "string"
+            }
+          },
+          "required": [
+            "os",
+            "arch"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "arch": {
+              "const": "arm",
+              "type": "string"
+            },
+            "goarm": {
+              "const": 7,
+              "type": "number"
+            },
+            "os": {
+              "const": "linux",
+              "type": "string"
+            }
+          },
+          "required": [
+            "os",
+            "arch",
+            "goarm"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "HttpMethod": {
       "enum": [
@@ -2521,6 +2947,424 @@
         }
       ]
     },
+    "PairInvitationV1": {
+      "additionalProperties": false,
+      "properties": {
+        "expiresAt": {
+          "$ref": "#/$defs/Uint64Decimal"
+        },
+        "fullToken": {
+          "$ref": "#/$defs/FullPairToken"
+        },
+        "invitationId": {
+          "$ref": "#/$defs/Base64Url16Bytes"
+        },
+        "shortCode": {
+          "$ref": "#/$defs/PairShortCode"
+        }
+      },
+      "required": [
+        "invitationId",
+        "fullToken",
+        "shortCode",
+        "expiresAt"
+      ],
+      "type": "object",
+      "x-waifus-cache-control": "no-store",
+      "x-waifus-lifetime-seconds": 300,
+      "x-waifus-secret-lifetime": "creator-bound until expiry or cancellation"
+    },
+    "PairOperationEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "at": {
+          "$ref": "#/$defs/Uint64Decimal"
+        },
+        "pairOperationId": {
+          "$ref": "#/$defs/Base64Url32Bytes"
+        },
+        "state": {
+          "enum": [
+            "starting",
+            "verification_required",
+            "awaiting_host_approval",
+            "connecting",
+            "completed",
+            "failed",
+            "expired",
+            "cancelled"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "pairOperationId",
+        "state",
+        "at"
+      ],
+      "type": "object",
+      "x-waifus-forbidden-fields": [
+        "sasWords",
+        "sasFingerprint",
+        "identity",
+        "transcript",
+        "channelBinding"
+      ]
+    },
+    "PairOperationStatus": {
+      "anyOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "expiresAt": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "pairOperationId": {
+              "$ref": "#/$defs/Base64Url32Bytes"
+            },
+            "state": {
+              "enum": [
+                "starting",
+                "awaiting_host_approval",
+                "connecting",
+                "completed",
+                "expired",
+                "cancelled"
+              ],
+              "type": "string"
+            },
+            "statusUrl": {
+              "maxLength": 67,
+              "minLength": 67,
+              "type": "string"
+            }
+          },
+          "required": [
+            "pairOperationId",
+            "statusUrl",
+            "expiresAt",
+            "state"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "claimedHostDisplayName": {
+              "$ref": "#/$defs/DeviceDisplayName"
+            },
+            "claimedHostInstallationFingerprint": {
+              "$ref": "#/$defs/Base64Url16Bytes"
+            },
+            "claimedHostPlatform": {
+              "$ref": "#/$defs/HelperTarget"
+            },
+            "entryFlow": {
+              "enum": [
+                "full_token",
+                "short_code"
+              ],
+              "type": "string"
+            },
+            "expiresAt": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "pairOperationId": {
+              "$ref": "#/$defs/Base64Url32Bytes"
+            },
+            "sasFingerprint": {
+              "maxLength": 12,
+              "minLength": 12,
+              "pattern": "^[0-9a-f]{12}$",
+              "type": "string"
+            },
+            "sasWords": {
+              "$ref": "#/$defs/SasWords"
+            },
+            "state": {
+              "const": "verification_required",
+              "type": "string"
+            },
+            "statusUrl": {
+              "maxLength": 67,
+              "minLength": 67,
+              "type": "string"
+            }
+          },
+          "required": [
+            "pairOperationId",
+            "statusUrl",
+            "expiresAt",
+            "state",
+            "entryFlow",
+            "sasWords",
+            "sasFingerprint",
+            "claimedHostDisplayName",
+            "claimedHostPlatform",
+            "claimedHostInstallationFingerprint"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "errorCode": {
+              "enum": [
+                "helper_unavailable",
+                "invalid_invitation",
+                "invitation_expired",
+                "pairing_rejected",
+                "pairing_unavailable",
+                "protocol_incompatible",
+                "self_pair",
+                "verification_mismatch"
+              ],
+              "type": "string"
+            },
+            "expiresAt": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "pairOperationId": {
+              "$ref": "#/$defs/Base64Url32Bytes"
+            },
+            "state": {
+              "const": "failed",
+              "type": "string"
+            },
+            "statusUrl": {
+              "maxLength": 67,
+              "minLength": 67,
+              "type": "string"
+            }
+          },
+          "required": [
+            "pairOperationId",
+            "statusUrl",
+            "expiresAt",
+            "state",
+            "errorCode"
+          ],
+          "type": "object"
+        }
+      ],
+      "x-waifus-cache-control": "no-store",
+      "x-waifus-comparison-detail-scope": "same shell browser session only",
+      "x-waifus-status-url-derived-from": "pairOperationId"
+    },
+    "PairShortCode": {
+      "maxLength": 9,
+      "minLength": 9,
+      "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{4}-[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{4}$",
+      "type": "string",
+      "x-waifus-lookup-only": true
+    },
+    "PairStartInput": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "full_token",
+              "type": "string"
+            },
+            "token": {
+              "$ref": "#/$defs/FullPairToken"
+            }
+          },
+          "required": [
+            "kind",
+            "token"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "code": {
+              "$ref": "#/$defs/PairShortCode"
+            },
+            "kind": {
+              "const": "short_code",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "code"
+          ],
+          "type": "object"
+        }
+      ],
+      "x-waifus-sensitive-request-only": [
+        "token",
+        "code"
+      ]
+    },
+    "PairStartResult": {
+      "additionalProperties": false,
+      "properties": {
+        "expiresAt": {
+          "$ref": "#/$defs/Uint64Decimal"
+        },
+        "pairOperationId": {
+          "$ref": "#/$defs/Base64Url32Bytes"
+        },
+        "state": {
+          "const": "starting",
+          "type": "string"
+        },
+        "statusUrl": {
+          "maxLength": 67,
+          "minLength": 67,
+          "type": "string"
+        }
+      },
+      "required": [
+        "pairOperationId",
+        "statusUrl",
+        "state",
+        "expiresAt"
+      ],
+      "type": "object",
+      "x-waifus-cache-control": "no-store",
+      "x-waifus-status-url-derived-from": "pairOperationId"
+    },
+    "PendingPairingRequestListV1": {
+      "additionalProperties": false,
+      "properties": {
+        "requests": {
+          "items": {
+            "$ref": "#/$defs/PendingPairingRequestV1"
+          },
+          "maxItems": 16,
+          "type": "array"
+        },
+        "version": {
+          "const": 1,
+          "type": "number"
+        }
+      },
+      "required": [
+        "version",
+        "requests"
+      ],
+      "type": "object",
+      "x-waifus-maximum-requests": 16
+    },
+    "PendingPairingRequestV1": {
+      "additionalProperties": false,
+      "properties": {
+        "channelBinding": {
+          "$ref": "#/$defs/Base64Url32Bytes"
+        },
+        "claimedDisplayName": {
+          "$ref": "#/$defs/DeviceDisplayName"
+        },
+        "claimedInstallationFingerprint": {
+          "$ref": "#/$defs/Base64Url16Bytes"
+        },
+        "claimedPlatform": {
+          "$ref": "#/$defs/HelperTarget"
+        },
+        "entryFlow": {
+          "enum": [
+            "full_token",
+            "short_code"
+          ],
+          "type": "string"
+        },
+        "expiresAt": {
+          "$ref": "#/$defs/Uint64Decimal"
+        },
+        "invitationGeneration": {
+          "$ref": "#/$defs/Uint64Decimal"
+        },
+        "invitationId": {
+          "$ref": "#/$defs/Base64Url16Bytes"
+        },
+        "protocol": {
+          "$ref": "#/$defs/ProtocolVersion"
+        },
+        "remoteIdentityBundleHash": {
+          "$ref": "#/$defs/Base64Url32Bytes"
+        },
+        "requestId": {
+          "$ref": "#/$defs/Base64Url16Bytes"
+        },
+        "sasFingerprint": {
+          "maxLength": 12,
+          "minLength": 12,
+          "pattern": "^[0-9a-f]{12}$",
+          "type": "string"
+        },
+        "sasIndices": {
+          "prefixItems": [
+            {
+              "maximum": 1023,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "maximum": 1023,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "maximum": 1023,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "maximum": 1023,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "maximum": 1023,
+              "minimum": 0,
+              "type": "integer"
+            }
+          ],
+          "type": "array"
+        },
+        "sasWords": {
+          "$ref": "#/$defs/SasWords"
+        },
+        "transcriptHash": {
+          "$ref": "#/$defs/Base64Url32Bytes"
+        },
+        "version": {
+          "const": 1,
+          "type": "number"
+        }
+      },
+      "required": [
+        "version",
+        "requestId",
+        "invitationId",
+        "invitationGeneration",
+        "entryFlow",
+        "claimedDisplayName",
+        "claimedPlatform",
+        "claimedInstallationFingerprint",
+        "remoteIdentityBundleHash",
+        "expiresAt",
+        "protocol",
+        "transcriptHash",
+        "channelBinding",
+        "sasIndices",
+        "sasWords",
+        "sasFingerprint"
+      ],
+      "type": "object",
+      "x-waifus-comparison-detail-scope": "full administrator browser; never assistant/model projection",
+      "x-waifus-forbidden-fields": [
+        "identityBundle",
+        "pairRoot",
+        "invitationSecret",
+        "endpointCandidates"
+      ]
+    },
     "PositiveUint64Decimal": {
       "$ref": "#/$defs/Uint64Decimal",
       "not": {
@@ -2553,6 +3397,501 @@
       ],
       "type": "object"
     },
+    "RemoteAccessDiagnosticsV1": {
+      "additionalProperties": false,
+      "properties": {
+        "appVersion": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$",
+          "type": "string"
+        },
+        "controlState": {
+          "enum": [
+            "inactive",
+            "connecting",
+            "connected",
+            "reconnecting",
+            "unavailable"
+          ],
+          "type": "string"
+        },
+        "dashboardBuildId": {
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "directState": {
+          "enum": [
+            "inactive",
+            "direct",
+            "reconnecting",
+            "direct_unavailable"
+          ],
+          "type": "string"
+        },
+        "helper": {
+          "additionalProperties": false,
+          "properties": {
+            "capabilities": {
+              "items": {
+                "maxLength": 96,
+                "minLength": 1,
+                "pattern": "^[a-z][a-z0-9-]*(?:\\.[a-z][a-z0-9-]*)*\\.v(?:0|[1-9][0-9]*)$",
+                "type": "string"
+              },
+              "maxItems": 128,
+              "type": "array"
+            },
+            "forkCommit": {
+              "anyOf": [
+                {
+                  "maxLength": 40,
+                  "minLength": 40,
+                  "pattern": "^[0-9a-f]{40}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "protocol": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ProtocolVersion"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "releaseSequence": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Uint64Decimal"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "secretStorage": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "keychain",
+                    "windows_protected_storage",
+                    "secret_service",
+                    "protected_file_fallback",
+                    "unavailable"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "state": {
+              "enum": [
+                "disabled",
+                "starting",
+                "ready",
+                "degraded",
+                "failed"
+              ],
+              "type": "string"
+            },
+            "target": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/HelperTarget"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "version": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "minLength": 1,
+                  "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "state",
+            "version",
+            "releaseSequence",
+            "forkCommit",
+            "target",
+            "protocol",
+            "capabilities",
+            "secretStorage"
+          ],
+          "type": "object"
+        },
+        "lastDirectAt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lastErrorCode": {
+          "anyOf": [
+            {
+              "enum": [
+                "activation_required",
+                "bind_not_loopback",
+                "control_unavailable",
+                "coordination_unavailable",
+                "custom_dashboard_unsupported",
+                "direct_path_lost",
+                "direct_timeout",
+                "helper_incompatible",
+                "helper_missing",
+                "helper_signature_invalid",
+                "helper_unavailable",
+                "identity_corrupt",
+                "port_mapping_unavailable",
+                "repair_required",
+                "stun_unavailable",
+                "udp_unavailable",
+                "unsupported_platform",
+                "vault_protected_file_fallback",
+                "vault_unavailable",
+                "worker_quota_exhausted"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lastTransitionAt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "portMapping": {
+          "enum": [
+            "unknown",
+            "available",
+            "unavailable"
+          ],
+          "type": "string"
+        },
+        "prohibited": {
+          "additionalProperties": false,
+          "properties": {
+            "derpApplicationBytes": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "derpRouteSelections": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "genericProxyBytes": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "genericProxyRequests": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "peerRelayApplicationBytes": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "peerRelayRouteSelections": {
+              "$ref": "#/$defs/Uint64Decimal"
+            }
+          },
+          "required": [
+            "derpRouteSelections",
+            "derpApplicationBytes",
+            "peerRelayRouteSelections",
+            "peerRelayApplicationBytes",
+            "genericProxyRequests",
+            "genericProxyBytes"
+          ],
+          "type": "object"
+        },
+        "stun": {
+          "enum": [
+            "unknown",
+            "available",
+            "unavailable"
+          ],
+          "type": "string"
+        },
+        "udp": {
+          "enum": [
+            "unknown",
+            "available",
+            "unavailable"
+          ],
+          "type": "string"
+        },
+        "version": {
+          "const": 1,
+          "type": "number"
+        }
+      },
+      "required": [
+        "version",
+        "appVersion",
+        "dashboardBuildId",
+        "helper",
+        "controlState",
+        "stun",
+        "udp",
+        "portMapping",
+        "directState",
+        "lastTransitionAt",
+        "lastDirectAt",
+        "lastErrorCode",
+        "prohibited"
+      ],
+      "type": "object",
+      "x-waifus-forbidden-fields": [
+        "rawEndpoints",
+        "candidates",
+        "socketPath",
+        "pairId",
+        "activationCredential",
+        "privateKey"
+      ]
+    },
+    "RemoteAccessStatusV1": {
+      "additionalProperties": false,
+      "properties": {
+        "activationState": {
+          "enum": [
+            "activation_required",
+            "active",
+            "renewal_due"
+          ],
+          "type": "string"
+        },
+        "appVersion": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$",
+          "type": "string"
+        },
+        "capabilities": {
+          "items": {
+            "maxLength": 96,
+            "minLength": 1,
+            "pattern": "^[a-z][a-z0-9-]*(?:\\.[a-z][a-z0-9-]*)*\\.v(?:0|[1-9][0-9]*)$",
+            "type": "string"
+          },
+          "maxItems": 128,
+          "type": "array"
+        },
+        "config": {
+          "additionalProperties": false,
+          "properties": {
+            "displayName": {
+              "$ref": "#/$defs/DeviceDisplayName"
+            },
+            "enabled": {
+              "type": "boolean"
+            },
+            "revision": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "updatedAt": {
+              "$ref": "#/$defs/Uint64Decimal"
+            }
+          },
+          "required": [
+            "revision",
+            "enabled",
+            "displayName",
+            "updatedAt"
+          ],
+          "type": "object"
+        },
+        "controlState": {
+          "enum": [
+            "inactive",
+            "connecting",
+            "connected",
+            "reconnecting",
+            "unavailable"
+          ],
+          "type": "string"
+        },
+        "dashboardBuildId": {
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "directState": {
+          "enum": [
+            "inactive",
+            "direct",
+            "reconnecting",
+            "direct_unavailable"
+          ],
+          "type": "string"
+        },
+        "helperReleaseSequence": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "helperState": {
+          "enum": [
+            "disabled",
+            "starting",
+            "ready",
+            "degraded",
+            "failed"
+          ],
+          "type": "string"
+        },
+        "helperVersion": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "identity": {
+          "additionalProperties": false,
+          "properties": {
+            "deviceId": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$",
+              "type": "string"
+            },
+            "installationFingerprint": {
+              "$ref": "#/$defs/Base64Url16Bytes"
+            }
+          },
+          "required": [
+            "deviceId",
+            "installationFingerprint"
+          ],
+          "type": "object"
+        },
+        "lastDirectAt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lastErrorCode": {
+          "anyOf": [
+            {
+              "enum": [
+                "activation_required",
+                "bind_not_loopback",
+                "control_unavailable",
+                "coordination_unavailable",
+                "custom_dashboard_unsupported",
+                "direct_path_lost",
+                "direct_timeout",
+                "helper_incompatible",
+                "helper_missing",
+                "helper_signature_invalid",
+                "helper_unavailable",
+                "identity_corrupt",
+                "port_mapping_unavailable",
+                "repair_required",
+                "stun_unavailable",
+                "udp_unavailable",
+                "unsupported_platform",
+                "vault_protected_file_fallback",
+                "vault_unavailable",
+                "worker_quota_exhausted"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "protocol": {
+          "$ref": "#/$defs/ProtocolVersion"
+        },
+        "version": {
+          "const": 1,
+          "type": "number"
+        }
+      },
+      "required": [
+        "version",
+        "config",
+        "identity",
+        "appVersion",
+        "dashboardBuildId",
+        "helperVersion",
+        "helperReleaseSequence",
+        "protocol",
+        "capabilities",
+        "helperState",
+        "activationState",
+        "controlState",
+        "directState",
+        "lastDirectAt",
+        "lastErrorCode"
+      ],
+      "type": "object",
+      "x-waifus-redacted": true
+    },
+    "RenameTrustedDeviceInputV1": {
+      "additionalProperties": false,
+      "properties": {
+        "displayName": {
+          "$ref": "#/$defs/DeviceDisplayName"
+        },
+        "revision": {
+          "$ref": "#/$defs/Uint64Decimal"
+        }
+      },
+      "required": [
+        "revision",
+        "displayName"
+      ],
+      "type": "object"
+    },
     "ResetIdentityCommand": {
       "additionalProperties": false,
       "properties": {
@@ -2568,6 +3907,42 @@
         "expectedOldFingerprint"
       ],
       "type": "object"
+    },
+    "SasWords": {
+      "prefixItems": [
+        {
+          "maxLength": 16,
+          "minLength": 2,
+          "pattern": "^[a-z]{2,16}$",
+          "type": "string"
+        },
+        {
+          "maxLength": 16,
+          "minLength": 2,
+          "pattern": "^[a-z]{2,16}$",
+          "type": "string"
+        },
+        {
+          "maxLength": 16,
+          "minLength": 2,
+          "pattern": "^[a-z]{2,16}$",
+          "type": "string"
+        },
+        {
+          "maxLength": 16,
+          "minLength": 2,
+          "pattern": "^[a-z]{2,16}$",
+          "type": "string"
+        },
+        {
+          "maxLength": 16,
+          "minLength": 2,
+          "pattern": "^[a-z]{2,16}$",
+          "type": "string"
+        }
+      ],
+      "type": "array",
+      "x-waifus-wordlist": "contracts/wordlists/sas-v1.txt"
     },
     "StreamSnapshotRequiredV1": {
       "additionalProperties": false,
@@ -2603,10 +3978,121 @@
       ],
       "type": "object"
     },
+    "TrustedDeviceListV1": {
+      "additionalProperties": false,
+      "properties": {
+        "devices": {
+          "items": {
+            "$ref": "#/$defs/TrustedDeviceSummaryV1"
+          },
+          "maxItems": 256,
+          "type": "array"
+        },
+        "version": {
+          "const": 1,
+          "type": "number"
+        }
+      },
+      "required": [
+        "version",
+        "devices"
+      ],
+      "type": "object",
+      "x-waifus-maximum-devices": 256
+    },
+    "TrustedDeviceSummaryV1": {
+      "additionalProperties": false,
+      "properties": {
+        "connectionState": {
+          "enum": [
+            "offline",
+            "direct",
+            "reconnecting",
+            "direct_unavailable"
+          ],
+          "type": "string"
+        },
+        "deviceId": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$",
+          "type": "string"
+        },
+        "displayName": {
+          "$ref": "#/$defs/DeviceDisplayName"
+        },
+        "installationFingerprint": {
+          "$ref": "#/$defs/Base64Url16Bytes"
+        },
+        "lastSeenAt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pairedAt": {
+          "$ref": "#/$defs/Uint64Decimal"
+        },
+        "platform": {
+          "$ref": "#/$defs/HelperTarget"
+        },
+        "revision": {
+          "$ref": "#/$defs/Uint64Decimal"
+        },
+        "trustEpoch": {
+          "$ref": "#/$defs/Uint64Decimal"
+        },
+        "version": {
+          "const": 1,
+          "type": "number"
+        }
+      },
+      "required": [
+        "version",
+        "deviceId",
+        "displayName",
+        "platform",
+        "installationFingerprint",
+        "trustEpoch",
+        "revision",
+        "pairedAt",
+        "lastSeenAt",
+        "connectionState"
+      ],
+      "type": "object",
+      "x-waifus-forbidden-fields": [
+        "pairId",
+        "identityBundle",
+        "endpointCandidates",
+        "pairSecret"
+      ]
+    },
     "Uint64Decimal": {
       "maxLength": 20,
       "pattern": "^(?:0|[1-9][0-9]{0,18}|1[0-7][0-9]{18}|18[0-3][0-9]{17}|184[0-3][0-9]{16}|1844[0-5][0-9]{15}|18446[0-6][0-9]{14}|184467[0-3][0-9]{13}|1844674[0-3][0-9]{12}|184467440[0-6][0-9]{10}|1844674407[0-2][0-9]{9}|18446744073[0-6][0-9]{8}|1844674407370[0-8][0-9]{6}|18446744073709[0-4][0-9]{5}|184467440737095[0-4][0-9]{4}|18446744073709550[0-9]{3}|18446744073709551[0-5][0-9]{2}|1844674407370955160[0-9]{1}|1844674407370955161[0-4]|18446744073709551615)$",
       "type": "string"
+    },
+    "UpdateRemoteAccessInputV1": {
+      "additionalProperties": false,
+      "properties": {
+        "displayName": {
+          "$ref": "#/$defs/DeviceDisplayName"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "revision": {
+          "$ref": "#/$defs/Uint64Decimal"
+        }
+      },
+      "required": [
+        "revision"
+      ],
+      "type": "object"
     }
   },
   "$id": "https://waifucave.com/contracts/remote/v1/remote-access.schema.json",
@@ -2617,7 +4103,25 @@
       "$ref": "#/$defs/AdministrativeAuditRecordV1"
     },
     {
+      "$ref": "#/$defs/ActivationStartResult"
+    },
+    {
+      "$ref": "#/$defs/ActivationStatus"
+    },
+    {
+      "$ref": "#/$defs/ApprovePairingInputV1"
+    },
+    {
+      "$ref": "#/$defs/AssistantSafePairingRequestSummaryV1"
+    },
+    {
       "$ref": "#/$defs/ApprovalReceiptV1"
+    },
+    {
+      "$ref": "#/$defs/ClientContextV1"
+    },
+    {
+      "$ref": "#/$defs/CreateInvitationInputV1"
     },
     {
       "$ref": "#/$defs/DashboardManifestV1"
@@ -2644,10 +4148,46 @@
       "$ref": "#/$defs/PairControlRecordV1"
     },
     {
+      "$ref": "#/$defs/PairInvitationV1"
+    },
+    {
+      "$ref": "#/$defs/PairOperationEvent"
+    },
+    {
+      "$ref": "#/$defs/PairOperationStatus"
+    },
+    {
+      "$ref": "#/$defs/PairStartInput"
+    },
+    {
+      "$ref": "#/$defs/PairStartResult"
+    },
+    {
+      "$ref": "#/$defs/PendingPairingRequestListV1"
+    },
+    {
+      "$ref": "#/$defs/PendingPairingRequestV1"
+    },
+    {
+      "$ref": "#/$defs/RemoteAccessDiagnosticsV1"
+    },
+    {
+      "$ref": "#/$defs/RemoteAccessStatusV1"
+    },
+    {
       "$ref": "#/$defs/ResetIdentityCommand"
     },
     {
+      "$ref": "#/$defs/RenameTrustedDeviceInputV1"
+    },
+    {
       "$ref": "#/$defs/StreamSnapshotRequiredV1"
+    },
+    {
+      "$ref": "#/$defs/TrustedDeviceListV1"
+    },
+    {
+      "$ref": "#/$defs/UpdateRemoteAccessInputV1"
     }
   ],
   "title": "Waifus Remote Access Wire Contracts V1"

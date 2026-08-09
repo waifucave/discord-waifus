@@ -3,8 +3,8 @@
 This directory contains the public, cross-repository contract for Waifus remote management.
 The checked-in JSON files are generated from the strict Zod schemas in
 `src/shared/schemas/remoteProtocol.ts`, `src/shared/schemas/remoteAccess.ts`, and
-`src/shared/schemas/adminOperations.ts`; edit those TypeScript authorities, not the generated
-files.
+`src/shared/schemas/adminOperations.ts`, and `src/shared/schemas/remoteLifecycle.ts`; edit those
+TypeScript authorities, not the generated files.
 
 Current foundation:
 
@@ -20,14 +20,18 @@ Current foundation:
   conformance layer. Each fixture file itself uses RFC 8785 canonical JSON bytes.
 - `remote-access.schema.json` currently freezes exact operation acknowledgements and status
   resources, administrative audit records, epoch-aware event cursors and snapshot-required
-  signals, attended `ApprovalReceiptV1`, exact `PairConfirmationV1`, all nine signed
-  `PairControlRecordV1` variants, the canonical dashboard bundle manifest, plus the strict helper
-  identity-reset command, status lookup, and crash-journal receipt records. Operational fixtures
-  pin same-origin status-URL derivation, status-specific retention, audit redaction, exact 128-bit
-  cursor epochs, and lossless uint64 sequences. Dashboard fixtures freeze normalized sorted asset
-  paths, the 16 MiB per-asset ceiling, exact content types, compatibility pins, and the
-  SHA-256-derived build ID. Approval and reset fixtures cover both local and trusted-remote browser
-  bindings and impossible reset stages.
+  signals; remote lifecycle/config, activation, invitation, pending-pair, trusted-device,
+  diagnostics, and client-context DTOs; gateway-local pair operations; attended
+  `ApprovalReceiptV1`; exact `PairConfirmationV1`; all nine signed `PairControlRecordV1` variants;
+  the canonical dashboard bundle manifest; plus the strict helper identity-reset command, status
+  lookup, and crash-journal receipt records. Operational fixtures pin same-origin status-URL
+  derivation, status-specific retention, audit redaction, exact 128-bit cursor epochs, and lossless
+  uint64 sequences. Lifecycle fixtures pin creator-only invitation secrets, fragment-only
+  activation, attended versus assistant-safe pairing projections, secret-free diagnostics, the
+  per-host isolated `.localhost` origin, and comparison-free gateway events. Dashboard fixtures
+  freeze normalized sorted asset paths, the 16 MiB per-asset ceiling, exact content types,
+  compatibility pins, and the SHA-256-derived build ID. Approval and reset fixtures cover both
+  local and trusted-remote browser bindings and impossible reset stages.
 - `fixtures/crypto/wipc-v1.json` freezes all 14 V1 frame-type headers, valid and invalid
   24-byte header boundaries, the exact eight-byte `WINDOW_UPDATE`, odd/even high-water and
   exhaustion cases, and the capability-derived `parentProof`/`helperProof` bytes. Connection
@@ -99,13 +103,14 @@ standard JSON Schema cannot express by itself. These currently cover:
 - remote-browser envelope MAC provenance and positive odd parent-stream IDs;
 - operation status-URL derivation, status-specific retention, and audit forbidden-content rules;
 - exact event-cursor epoch width and canonical uint64 sequence encoding;
+- activation URL/origin constraints, invitation secret lifetime, and assistant-safe pairing fields;
+- isolated connection-shell origins, pair-operation ownership, and comparison-detail scope;
 - whole-second UTC timestamps, canonical base64url CBOR, and exact origin-form request targets.
 
 Consumers must enforce those annotations or use the public conformance fixtures. A generic JSON
 Schema validator that ignores them is not a complete protocol validator.
 
 This remains an incomplete contract gate. The reviewed 1,024-word SAS artifact and word mapping,
-plus remote status/config, activation, invitation, pending-pair, trusted-device, diagnostics,
-client-context, and gateway-local pair-operation DTOs must land before production helper, pairing,
+plus gateway bootstrap and remembered-host local DTOs must land before production helper, pairing,
 Cloudflare, host bridge, or remote gateway work may rely on this directory as a complete V1
 authority.

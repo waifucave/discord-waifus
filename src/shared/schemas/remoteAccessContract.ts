@@ -58,6 +58,37 @@ import {
   Uint64DecimalSchema
 } from "./remoteProtocol.js";
 import {
+  ACTIVATION_CHALLENGE_LIFETIME_SECONDS,
+  ActivationStartResultSchema,
+  ActivationStatusSchema,
+  ActivationVerificationUrlSchema,
+  ApprovePairingInputV1Schema,
+  AssistantSafePairingRequestSummaryV1Schema,
+  ClientContextV1Schema,
+  ConnectionShellOriginSchema,
+  CreateInvitationInputV1Schema,
+  DeviceDisplayNameSchema,
+  FullPairTokenSchema,
+  MAX_PENDING_PAIRING_REQUESTS,
+  MAX_TRUSTED_DEVICES,
+  PAIR_INVITATION_LIFETIME_SECONDS,
+  PairInvitationV1Schema,
+  PairOperationEventSchema,
+  PairOperationStatusSchema,
+  PairShortCodeSchema,
+  PairStartInputSchema,
+  PairStartResultSchema,
+  PendingPairingRequestListV1Schema,
+  PendingPairingRequestV1Schema,
+  RemoteAccessDiagnosticsV1Schema,
+  RemoteAccessStatusV1Schema,
+  RenameTrustedDeviceInputV1Schema,
+  SasWordsSchema,
+  TrustedDeviceListV1Schema,
+  TrustedDeviceSummaryV1Schema,
+  UpdateRemoteAccessInputV1Schema
+} from "./remoteLifecycle.js";
+import {
   serializeCanonicalContractJson,
   type ContractJson
 } from "./remoteProtocolContract.js";
@@ -253,21 +284,38 @@ export function createHelperManifestFixtureSet(): ReadonlyMap<string, ContractJs
 
 const remoteAccessRegisteredSchemas: ReadonlyArray<readonly [string, z.ZodType]> = [
   ["AdministrativeAuditRecordV1", AdministrativeAuditRecordV1Schema],
+  ["ActivationStartResult", ActivationStartResultSchema],
+  ["ActivationStatus", ActivationStatusSchema],
+  ["ActivationVerificationUrl", ActivationVerificationUrlSchema],
+  ["ApprovePairingInputV1", ApprovePairingInputV1Schema],
+  ["AssistantSafePairingRequestSummaryV1", AssistantSafePairingRequestSummaryV1Schema],
   ["ApprovalReceiptV1", ApprovalReceiptV1Schema],
   ["Base64Url16Bytes", Base64Url16BytesSchema],
   ["Base64Url32Bytes", Base64Url32BytesSchema],
   ["CanonicalIdentityBundleCbor", CanonicalIdentityBundleCborSchema],
   ["CanonicalTarget", CanonicalTargetSchema],
+  ["ClientContextV1", ClientContextV1Schema],
+  ["ConnectionShellOrigin", ConnectionShellOriginSchema],
+  ["CreateInvitationInputV1", CreateInvitationInputV1Schema],
   ["DashboardAssetContentType", DashboardAssetContentTypeSchema],
   ["DashboardAssetV1", DashboardAssetSchema],
   ["DashboardManifestV1", DashboardManifestSchema],
+  ["DeviceDisplayName", DeviceDisplayNameSchema],
   ["DeviceRoleV1", DeviceRoleV1Schema],
   ["GetResetStatusCommand", GetResetStatusCommandSchema],
+  ["HelperTarget", HelperTargetSchema],
   ["HttpMethod", HttpMethodSchema],
   ["IdentityResetReceiptV1", IdentityResetReceiptV1Schema],
   ["EventCursorV1", EventCursorSchema],
+  ["FullPairToken", FullPairTokenSchema],
   ["OperationAcceptedV1", OperationAcceptedV1Schema],
   ["OperationStatusV1", OperationStatusV1Schema],
+  ["PairInvitationV1", PairInvitationV1Schema],
+  ["PairOperationEvent", PairOperationEventSchema],
+  ["PairOperationStatus", PairOperationStatusSchema],
+  ["PairShortCode", PairShortCodeSchema],
+  ["PairStartInput", PairStartInputSchema],
+  ["PairStartResult", PairStartResultSchema],
   ["PairConfirmationV1", PairConfirmationV1Schema],
   ["PairControlCapabilitiesPayloadV1", PairControlCapabilitiesPayloadV1Schema],
   ["PairControlEndpointAckPayloadV1", PairControlEndpointAckPayloadV1Schema],
@@ -284,8 +332,17 @@ const remoteAccessRegisteredSchemas: ReadonlyArray<readonly [string, z.ZodType]>
   ["PositiveUint64Decimal", PositiveUint64DecimalSchema],
   ["PrincipalStableId", PrincipalStableIdSchema],
   ["ProtocolVersion", ProtocolVersionSchema],
+  ["PendingPairingRequestListV1", PendingPairingRequestListV1Schema],
+  ["PendingPairingRequestV1", PendingPairingRequestV1Schema],
+  ["RemoteAccessDiagnosticsV1", RemoteAccessDiagnosticsV1Schema],
+  ["RemoteAccessStatusV1", RemoteAccessStatusV1Schema],
   ["ResetIdentityCommand", ResetIdentityCommandSchema],
+  ["RenameTrustedDeviceInputV1", RenameTrustedDeviceInputV1Schema],
+  ["SasWords", SasWordsSchema],
   ["StreamSnapshotRequiredV1", StreamSnapshotRequiredV1Schema],
+  ["TrustedDeviceListV1", TrustedDeviceListV1Schema],
+  ["TrustedDeviceSummaryV1", TrustedDeviceSummaryV1Schema],
+  ["UpdateRemoteAccessInputV1", UpdateRemoteAccessInputV1Schema],
   ["Uint64Decimal", Uint64DecimalSchema]
 ];
 
@@ -361,6 +418,81 @@ export function createRemoteAccessJsonSchema(): ContractJsonObject {
     "result",
     "secret_free_text"
   ];
+  definitions.DeviceDisplayName["x-waifus-maximum-utf8-bytes"] = 256;
+  definitions.DeviceDisplayName["x-waifus-forbidden-unicode"] = [
+    "C0 controls",
+    "DEL",
+    "bidi overrides",
+    "bidi isolates"
+  ];
+  definitions.ActivationVerificationUrl.format = "waifus-activation-fragment-url-v1";
+  definitions.ActivationVerificationUrl["x-waifus-allowed-origins"] = [
+    "https://pair.waifucave.com",
+    "https://pair-staging.waifucave.com"
+  ];
+  definitions.ActivationVerificationUrl["x-waifus-fragment-id-bytes"] = 32;
+  definitions.ActivationStartResult["x-waifus-cache-control"] = "no-store";
+  definitions.ActivationStartResult["x-waifus-lifetime-seconds"] =
+    ACTIVATION_CHALLENGE_LIFETIME_SECONDS;
+  definitions.ActivationStatus["x-waifus-cache-control"] = "no-store";
+  definitions.PairInvitationV1["x-waifus-cache-control"] = "no-store";
+  definitions.PairInvitationV1["x-waifus-lifetime-seconds"] = PAIR_INVITATION_LIFETIME_SECONDS;
+  definitions.PairInvitationV1["x-waifus-secret-lifetime"] =
+    "creator-bound until expiry or cancellation";
+  definitions.FullPairToken["x-waifus-secret-request-field"] = true;
+  definitions.PairShortCode["x-waifus-lookup-only"] = true;
+  definitions.PendingPairingRequestV1["x-waifus-comparison-detail-scope"] =
+    "full administrator browser; never assistant/model projection";
+  definitions.PendingPairingRequestV1["x-waifus-forbidden-fields"] = [
+    "identityBundle",
+    "pairRoot",
+    "invitationSecret",
+    "endpointCandidates"
+  ];
+  definitions.SasWords["x-waifus-wordlist"] = "contracts/wordlists/sas-v1.txt";
+  definitions.AssistantSafePairingRequestSummaryV1["x-waifus-exact-fields"] = [
+    "requestId",
+    "claimedDisplayName",
+    "claimedPlatform",
+    "expiresAt"
+  ];
+  definitions.PendingPairingRequestListV1["x-waifus-maximum-requests"] =
+    MAX_PENDING_PAIRING_REQUESTS;
+  definitions.TrustedDeviceListV1["x-waifus-maximum-devices"] = MAX_TRUSTED_DEVICES;
+  definitions.TrustedDeviceSummaryV1["x-waifus-forbidden-fields"] = [
+    "pairId",
+    "identityBundle",
+    "endpointCandidates",
+    "pairSecret"
+  ];
+  definitions.RemoteAccessStatusV1["x-waifus-redacted"] = true;
+  definitions.RemoteAccessDiagnosticsV1["x-waifus-forbidden-fields"] = [
+    "rawEndpoints",
+    "candidates",
+    "socketPath",
+    "pairId",
+    "activationCredential",
+    "privateKey"
+  ];
+  definitions.ConnectionShellOrigin.format = "waifus-isolated-loopback-origin-v1";
+  definitions.ConnectionShellOrigin["x-waifus-hostname"] =
+    "waifus-<52 lowercase base32 characters>.localhost";
+  definitions.ClientContextV1["x-waifus-csrf-delivery"] = "response header only";
+  definitions.ClientContextV1["x-waifus-cache-control"] = "no-store";
+  definitions.PairStartInput["x-waifus-sensitive-request-only"] = ["token", "code"];
+  definitions.PairStartResult["x-waifus-cache-control"] = "no-store";
+  definitions.PairStartResult["x-waifus-status-url-derived-from"] = "pairOperationId";
+  definitions.PairOperationStatus["x-waifus-cache-control"] = "no-store";
+  definitions.PairOperationStatus["x-waifus-status-url-derived-from"] = "pairOperationId";
+  definitions.PairOperationStatus["x-waifus-comparison-detail-scope"] =
+    "same shell browser session only";
+  definitions.PairOperationEvent["x-waifus-forbidden-fields"] = [
+    "sasWords",
+    "sasFingerprint",
+    "identity",
+    "transcript",
+    "channelBinding"
+  ];
   definitions.PairControlEndpointGenerationPayloadV1["x-waifus-sha256-of"] = {
     digestField: "ciphertextSha256",
     decodedBase64UrlField: "ciphertext"
@@ -394,7 +526,13 @@ export function createRemoteAccessJsonSchema(): ContractJsonObject {
       "Operational recovery, dashboard manifests, attended approval, pairing confirmation, pair-control, and installation-reset wire records shared by Discord Waifus and ts-connect.",
     oneOf: [
       { $ref: "#/$defs/AdministrativeAuditRecordV1" },
+      { $ref: "#/$defs/ActivationStartResult" },
+      { $ref: "#/$defs/ActivationStatus" },
+      { $ref: "#/$defs/ApprovePairingInputV1" },
+      { $ref: "#/$defs/AssistantSafePairingRequestSummaryV1" },
       { $ref: "#/$defs/ApprovalReceiptV1" },
+      { $ref: "#/$defs/ClientContextV1" },
+      { $ref: "#/$defs/CreateInvitationInputV1" },
       { $ref: "#/$defs/DashboardManifestV1" },
       { $ref: "#/$defs/EventCursorV1" },
       { $ref: "#/$defs/GetResetStatusCommand" },
@@ -403,8 +541,20 @@ export function createRemoteAccessJsonSchema(): ContractJsonObject {
       { $ref: "#/$defs/OperationStatusV1" },
       { $ref: "#/$defs/PairConfirmationV1" },
       { $ref: "#/$defs/PairControlRecordV1" },
+      { $ref: "#/$defs/PairInvitationV1" },
+      { $ref: "#/$defs/PairOperationEvent" },
+      { $ref: "#/$defs/PairOperationStatus" },
+      { $ref: "#/$defs/PairStartInput" },
+      { $ref: "#/$defs/PairStartResult" },
+      { $ref: "#/$defs/PendingPairingRequestListV1" },
+      { $ref: "#/$defs/PendingPairingRequestV1" },
+      { $ref: "#/$defs/RemoteAccessDiagnosticsV1" },
+      { $ref: "#/$defs/RemoteAccessStatusV1" },
       { $ref: "#/$defs/ResetIdentityCommand" },
-      { $ref: "#/$defs/StreamSnapshotRequiredV1" }
+      { $ref: "#/$defs/RenameTrustedDeviceInputV1" },
+      { $ref: "#/$defs/StreamSnapshotRequiredV1" },
+      { $ref: "#/$defs/TrustedDeviceListV1" },
+      { $ref: "#/$defs/UpdateRemoteAccessInputV1" }
     ],
     $defs: definitions
   };
@@ -724,6 +874,276 @@ export function createRemoteAccessFixtureSet(): ReadonlyMap<string, ContractJson
   const invalidSnapshot = cloneFixture(snapshotRequired);
   invalidSnapshot.reason = "server_error";
   fixtures.set("fixtures/invalid/snapshot-required-reason.json", invalidSnapshot);
+
+  const lifecyclePlatform: ContractJsonObject = { os: "darwin", arch: "arm64" };
+  const lifecycleStatus: ContractJsonObject = {
+    version: 1,
+    config: {
+      revision: "7",
+      enabled: true,
+      displayName: "Studio Host",
+      updatedAt: "1786270830"
+    },
+    identity: {
+      deviceId: "host-device-01",
+      installationFingerprint: fixtureBytes(16, 0x11)
+    },
+    appVersion: "1.5.203",
+    dashboardBuildId: "1".repeat(64),
+    helperVersion: "0.1.0",
+    helperReleaseSequence: "42",
+    protocol: { major: 1, minor: 0 },
+    capabilities: [
+      "waifus.browser-context.v1",
+      "waifus.http.v1",
+      "waifus.sse.cursor.v1"
+    ],
+    helperState: "ready",
+    activationState: "active",
+    controlState: "connected",
+    directState: "direct",
+    lastDirectAt: "1786270800",
+    lastErrorCode: null
+  };
+  const lifecycleUpdate: ContractJsonObject = {
+    revision: "7",
+    displayName: "Studio Host 2"
+  };
+  const activationOperationId = fixtureBytes(32, 0x31);
+  const activationId = fixtureBytes(32, 0x32);
+  const activationStart: ContractJsonObject = {
+    activationOperationId,
+    verificationUrl: `https://pair.waifucave.com/activate#${activationId}`,
+    expiresAt: "1786271430"
+  };
+  const activationStatus: ContractJsonObject = {
+    activationOperationId,
+    state: "completed",
+    expiresAt: "1786271430",
+    completedAt: "1786271000"
+  };
+  const pairInvitation: ContractJsonObject = {
+    invitationId: fixtureBytes(16, 0x41),
+    fullToken: `WF1.${"A".repeat(256)}`,
+    shortCode: "01AB-CDEF",
+    expiresAt: "1786271130"
+  };
+  const pendingPairing: ContractJsonObject = {
+    version: 1,
+    requestId: fixtureBytes(16, 0x21),
+    invitationId: fixtureBytes(16, 0x22),
+    invitationGeneration: "1",
+    entryFlow: "short_code",
+    claimedDisplayName: "Travel Mac",
+    claimedPlatform: lifecyclePlatform,
+    claimedInstallationFingerprint: fixtureBytes(16, 0x23),
+    remoteIdentityBundleHash: fixtureBytes(32, 0x24),
+    expiresAt: "1786271100",
+    protocol: { major: 1, minor: 0 },
+    transcriptHash: fixtureBytes(32, 0x25),
+    channelBinding: fixtureBytes(32, 0x26),
+    sasIndices: [1, 23, 456, 789, 1_023],
+    sasWords: ["amber", "birch", "cabin", "delta", "ember"],
+    sasFingerprint: "a1b2c3d4e5f6"
+  };
+  const approvePairingInput: ContractJsonObject = {
+    invitationGeneration: pendingPairing.invitationGeneration,
+    remoteIdentityBundleHash: pendingPairing.remoteIdentityBundleHash,
+    transcriptHash: pendingPairing.transcriptHash,
+    channelBinding: pendingPairing.channelBinding,
+    sasIndices: pendingPairing.sasIndices,
+    sasFingerprint: pendingPairing.sasFingerprint
+  };
+  const assistantSafePairing: ContractJsonObject = {
+    requestId: pendingPairing.requestId,
+    claimedDisplayName: pendingPairing.claimedDisplayName,
+    claimedPlatform: pendingPairing.claimedPlatform,
+    expiresAt: pendingPairing.expiresAt
+  };
+  const trustedDevice: ContractJsonObject = {
+    version: 1,
+    deviceId: "remote-device-01",
+    displayName: "Travel Mac",
+    platform: lifecyclePlatform,
+    installationFingerprint: fixtureBytes(16, 0x51),
+    trustEpoch: "9",
+    revision: "3",
+    pairedAt: "1786000000",
+    lastSeenAt: "1786270800",
+    connectionState: "direct"
+  };
+  const trustedDeviceList: ContractJsonObject = {
+    version: 1,
+    devices: [trustedDevice]
+  };
+  const trustedDeviceRename: ContractJsonObject = {
+    revision: "3",
+    displayName: "Travel Mac 2"
+  };
+  const lifecycleDiagnostics: ContractJsonObject = {
+    version: 1,
+    appVersion: "1.5.203",
+    dashboardBuildId: "2".repeat(64),
+    helper: {
+      state: "ready",
+      version: "0.1.0",
+      releaseSequence: "42",
+      forkCommit: "3".repeat(40),
+      target: lifecyclePlatform,
+      protocol: { major: 1, minor: 0 },
+      capabilities: ["waifus.http.v1", "waifus.sse.cursor.v1"],
+      secretStorage: "keychain"
+    },
+    controlState: "connected",
+    stun: "available",
+    udp: "available",
+    portMapping: "available",
+    directState: "direct",
+    lastTransitionAt: "1786270800",
+    lastDirectAt: "1786270800",
+    lastErrorCode: null,
+    prohibited: {
+      derpRouteSelections: "0",
+      derpApplicationBytes: "0",
+      peerRelayRouteSelections: "0",
+      peerRelayApplicationBytes: "0",
+      genericProxyRequests: "0",
+      genericProxyBytes: "0"
+    }
+  };
+  const hostClientContext: ContractJsonObject = { mode: "host" };
+  const remoteClientContext: ContractJsonObject = {
+    mode: "remote",
+    selectedHostId: fixtureBytes(32, 0x61),
+    connectionState: "reconnecting",
+    connectionShellOrigin: `http://waifus-${"a".repeat(52)}.localhost:43123`
+  };
+  const pairOperationId = fixtureBytes(32, 0x71);
+  const pairStatusUrl = `/_waifus_remote/v1/pair/${pairOperationId}`;
+  const pairStartFullToken: ContractJsonObject = {
+    kind: "full_token",
+    token: pairInvitation.fullToken
+  };
+  const pairStartShortCode: ContractJsonObject = {
+    kind: "short_code",
+    code: pairInvitation.shortCode
+  };
+  const pairStartResult: ContractJsonObject = {
+    pairOperationId,
+    statusUrl: pairStatusUrl,
+    state: "starting",
+    expiresAt: "1786271130"
+  };
+  const pairOperationStatus: ContractJsonObject = {
+    pairOperationId,
+    statusUrl: pairStatusUrl,
+    state: "verification_required",
+    expiresAt: "1786271130",
+    entryFlow: "short_code",
+    sasWords: pendingPairing.sasWords,
+    sasFingerprint: pendingPairing.sasFingerprint,
+    claimedHostDisplayName: "Studio Host",
+    claimedHostPlatform: lifecyclePlatform,
+    claimedHostInstallationFingerprint: fixtureBytes(16, 0x73)
+  };
+  const pairOperationEvent: ContractJsonObject = {
+    pairOperationId,
+    state: "verification_required",
+    at: "1786270830"
+  };
+
+  fixtures.set("fixtures/valid/remote-access-status.json", lifecycleStatus);
+  fixtures.set("fixtures/valid/remote-access-update.json", lifecycleUpdate);
+  fixtures.set("fixtures/valid/activation-start.json", activationStart);
+  fixtures.set("fixtures/valid/activation-status-completed.json", activationStatus);
+  fixtures.set("fixtures/valid/create-invitation-input.json", {});
+  fixtures.set("fixtures/valid/pair-invitation.json", pairInvitation);
+  fixtures.set("fixtures/valid/pending-pairing-request-list.json", {
+    version: 1,
+    requests: [pendingPairing]
+  });
+  fixtures.set("fixtures/valid/pending-pairing-request.json", pendingPairing);
+  fixtures.set("fixtures/valid/approve-pairing-input.json", approvePairingInput);
+  fixtures.set("fixtures/valid/assistant-safe-pairing-request.json", assistantSafePairing);
+  fixtures.set("fixtures/valid/trusted-device-list.json", trustedDeviceList);
+  fixtures.set("fixtures/valid/trusted-device-rename.json", trustedDeviceRename);
+  fixtures.set("fixtures/valid/remote-access-diagnostics.json", lifecycleDiagnostics);
+  fixtures.set("fixtures/valid/client-context-host.json", hostClientContext);
+  fixtures.set("fixtures/valid/client-context-remote.json", remoteClientContext);
+  fixtures.set("fixtures/valid/pair-start-input-full-token.json", pairStartFullToken);
+  fixtures.set("fixtures/valid/pair-start-input-short-code.json", pairStartShortCode);
+  fixtures.set("fixtures/valid/pair-start-result.json", pairStartResult);
+  fixtures.set("fixtures/valid/pair-operation-status-verification.json", pairOperationStatus);
+  fixtures.set("fixtures/valid/pair-operation-event.json", pairOperationEvent);
+
+  const statusEndpoint = cloneFixture(lifecycleStatus);
+  statusEndpoint.endpoint = "192.0.2.1:1234";
+  fixtures.set("fixtures/invalid/remote-access-status-endpoint.json", statusEndpoint);
+
+  const updatePrivatePath = cloneFixture(lifecycleUpdate);
+  updatePrivatePath.frontendStaticDir = "/tmp/dashboard";
+  fixtures.set("fixtures/invalid/remote-access-update-private-path.json", updatePrivatePath);
+
+  const activationQuery = cloneFixture(activationStart);
+  activationQuery.verificationUrl = `https://pair.waifucave.com/activate?id=${activationId}`;
+  fixtures.set("fixtures/invalid/activation-start-query.json", activationQuery);
+
+  const activationCertificate = cloneFixture(activationStatus);
+  activationCertificate.certificate = "must-never-appear";
+  fixtures.set("fixtures/invalid/activation-status-certificate.json", activationCertificate);
+
+  const invitationUrl = cloneFixture(pairInvitation);
+  invitationUrl.invitationUrl = "https://pair.waifucave.com/?token=secret";
+  fixtures.set("fixtures/invalid/pair-invitation-url.json", invitationUrl);
+
+  fixtures.set("fixtures/invalid/create-invitation-input-secret.json", {
+    invitationSecret: "must-never-be-supplied-by-node"
+  });
+
+  const pairingIdentity = cloneFixture(pendingPairing);
+  pairingIdentity.remoteIdentityBundle = "must-stay-helper-owned";
+  fixtures.set("fixtures/invalid/pending-pairing-request-identity.json", pairingIdentity);
+
+  const assistantComparison = cloneFixture(assistantSafePairing);
+  assistantComparison.sasFingerprint = pendingPairing.sasFingerprint;
+  fixtures.set("fixtures/invalid/assistant-safe-pairing-comparison.json", assistantComparison);
+
+  const devicePairId = cloneFixture(trustedDeviceList);
+  ((devicePairId.devices as ContractJsonObject[])[0]).pairId = fixtureBytes(16, 0x52);
+  fixtures.set("fixtures/invalid/trusted-device-list-pair-id.json", devicePairId);
+
+  const diagnosticEndpoints = cloneFixture(lifecycleDiagnostics);
+  diagnosticEndpoints.endpoints = ["192.0.2.1:1234"];
+  fixtures.set("fixtures/invalid/remote-access-diagnostics-endpoints.json", diagnosticEndpoints);
+
+  const clientContextToken = cloneFixture(remoteClientContext);
+  clientContextToken.csrfToken = fixtureBytes(32, 0x62);
+  fixtures.set("fixtures/invalid/client-context-token.json", clientContextToken);
+
+  const clientContextSharedParent = cloneFixture(remoteClientContext);
+  clientContextSharedParent.connectionShellOrigin =
+    `http://${"a".repeat(52)}.waifus.localhost:43123`;
+  fixtures.set("fixtures/invalid/client-context-shared-parent.json", clientContextSharedParent);
+
+  const pairDestination = cloneFixture(pairStartShortCode);
+  pairDestination.destination = "100.64.0.1";
+  fixtures.set("fixtures/invalid/pair-start-input-destination.json", pairDestination);
+
+  const pairLowercaseCode = cloneFixture(pairStartShortCode);
+  pairLowercaseCode.code = "01ab-cdef";
+  fixtures.set("fixtures/invalid/pair-start-input-lowercase.json", pairLowercaseCode);
+
+  const pairStatusMismatch = cloneFixture(pairStartResult);
+  pairStatusMismatch.statusUrl = `/_waifus_remote/v1/pair/${fixtureBytes(32, 0x72)}`;
+  fixtures.set("fixtures/invalid/pair-start-result-status-url.json", pairStatusMismatch);
+
+  const pairStatusToken = cloneFixture(pairOperationStatus);
+  pairStatusToken.token = pairInvitation.fullToken;
+  fixtures.set("fixtures/invalid/pair-operation-status-token.json", pairStatusToken);
+
+  const pairEventComparison = cloneFixture(pairOperationEvent);
+  pairEventComparison.sasWords = pendingPairing.sasWords;
+  fixtures.set("fixtures/invalid/pair-operation-event-comparison.json", pairEventComparison);
 
   return fixtures;
 }

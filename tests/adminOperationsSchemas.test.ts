@@ -265,11 +265,12 @@ describe("stream recovery DTO", () => {
 });
 
 function fixtureSchema(relativePath: string) {
-  if (relativePath.includes("operation-accepted")) return OperationAcceptedV1Schema;
-  if (relativePath.includes("operation-status")) return OperationStatusV1Schema;
-  if (relativePath.includes("admin-audit")) return AdministrativeAuditRecordV1Schema;
-  if (relativePath.includes("event-cursor")) return EventCursorSchema;
-  if (relativePath.includes("snapshot-required")) return StreamSnapshotRequiredV1Schema;
+  const fileName = path.basename(relativePath);
+  if (fileName.startsWith("operation-accepted")) return OperationAcceptedV1Schema;
+  if (fileName.startsWith("operation-status")) return OperationStatusV1Schema;
+  if (fileName.startsWith("admin-audit")) return AdministrativeAuditRecordV1Schema;
+  if (fileName.startsWith("event-cursor")) return EventCursorSchema;
+  if (fileName.startsWith("snapshot-required")) return StreamSnapshotRequiredV1Schema;
   return undefined;
 }
 
