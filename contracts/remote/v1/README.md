@@ -16,9 +16,10 @@ Current foundation:
 - `fixtures/helper-manifest/` contains generated structural accept/reject examples for both the
   Node resolver and the private Go packager. Signature/trust-window fixtures land with the crypto
   conformance layer. Each fixture file itself uses RFC 8785 canonical JSON bytes.
-- `remote-access.schema.json` currently freezes attended `ApprovalReceiptV1` plus the strict
-  helper identity-reset command, status lookup, and crash-journal receipt records. Its fixtures
-  cover both local and trusted-remote browser bindings and impossible reset stages.
+- `remote-access.schema.json` currently freezes attended `ApprovalReceiptV1`, exact
+  `PairConfirmationV1`, plus the strict helper identity-reset command, status lookup, and
+  crash-journal receipt records. Its fixtures cover both local and trusted-remote browser bindings
+  and impossible reset stages.
 - `fixtures/crypto/wipc-v1.json` freezes all 14 V1 frame-type headers, valid and invalid
   24-byte header boundaries, the exact eight-byte `WINDOW_UPDATE`, odd/even high-water and
   exhaustion cases, and the capability-derived `parentProof`/`helperProof` bytes. Connection
@@ -36,9 +37,12 @@ Current foundation:
   contribution transport ciphertext, pair root and all four separated keys, and 50-bit SAS
   indices/fingerprint. Embedded private keys and seeds are deterministic test-only vector inputs,
   never production material.
+- `fixtures/crypto/pair-confirmation-v1.json` freezes the exact confirmation-key MAC inputs for
+  both roles, every bound-context substitution, canonical JSON and 1,024-byte boundaries, the
+  distinct mailbox record type, and publish-local/verify-peer/consume ordering and idempotency.
 - `conformance-go/` independently recreates and validates the WIPC and pairing fixtures using Go
-  1.26.5. It pins `github.com/flynn/noise` v1.1.0 and rejects the token, identity, and
-  canonical-CBOR negative vectors independently of Node.
+  1.26.5. It pins `github.com/flynn/noise` v1.1.0 and independently rejects the token, identity,
+  canonical-CBOR, and pair-confirmation negative vectors.
 
 Run `npm run contracts:remote:generate` after an intentional contract change and
 `npm run contracts:remote:check` in validation. Schema documents are recursively key-sorted,
@@ -64,7 +68,7 @@ Consumers must enforce those annotations or use the public conformance fixtures.
 Schema validator that ignores them is not a complete protocol validator.
 
 This remains an incomplete contract gate. The reviewed 1,024-word SAS artifact and word mapping,
-remaining pairing confirmation/revocation and remote-access/dashboard DTOs, service crypto,
+remaining pairing revocation and remote-access/dashboard DTOs, service crypto,
 activation/control envelopes, and signed-manifest trust vectors must land before production helper,
 pairing, Cloudflare, host bridge, or remote gateway work may rely on this directory as a complete
 V1 authority.

@@ -4,6 +4,7 @@ import {
   Base64Url32BytesSchema,
   CanonicalTargetSchema,
   CapabilityNameListSchema,
+  DeviceRoleV1Schema,
   HttpMethodSchema,
   PrincipalStableIdSchema,
   ProtocolVersionSchema,
@@ -400,6 +401,29 @@ export const ApprovalReceiptV1Schema = z
   });
 
 export type ApprovalReceiptV1 = z.infer<typeof ApprovalReceiptV1Schema>;
+
+export const PairConfirmationV1Schema = z
+  .object({
+    version: z.literal(1),
+    invitationId: Base64Url16BytesSchema,
+    invitationGeneration: Uint64DecimalSchema,
+    pairId: Base64Url16BytesSchema,
+    side: DeviceRoleV1Schema,
+    transcriptHash: Base64Url32BytesSchema,
+    channelBinding: Base64Url32BytesSchema,
+    hostBundleHash: Base64Url32BytesSchema,
+    remoteBundleHash: Base64Url32BytesSchema,
+    approvalContextHash: Base64Url32BytesSchema,
+    confirmationNonce: Base64Url16BytesSchema,
+    confirmationMac: Base64Url32BytesSchema
+  })
+  .strict()
+  .refine(
+    (value) => value.hostBundleHash !== value.remoteBundleHash,
+    { path: ["remoteBundleHash"], message: "Host and remote bundle hashes must be distinct." }
+  );
+
+export type PairConfirmationV1 = z.infer<typeof PairConfirmationV1Schema>;
 
 export const ResetIdentityCommandSchema = z.object({
   resetTombstone: PositiveUint64DecimalSchema,

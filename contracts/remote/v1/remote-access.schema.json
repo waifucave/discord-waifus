@@ -315,6 +315,18 @@
       "minLength": 1,
       "type": "string"
     },
+    "DeviceRoleV1": {
+      "anyOf": [
+        {
+          "const": 1,
+          "type": "number"
+        },
+        {
+          "const": 2,
+          "type": "number"
+        }
+      ]
+    },
     "GetResetStatusCommand": {
       "additionalProperties": false,
       "properties": {
@@ -476,6 +488,63 @@
         ]
       ]
     },
+    "PairConfirmationV1": {
+      "additionalProperties": false,
+      "properties": {
+        "approvalContextHash": {
+          "$ref": "#/$defs/Base64Url32Bytes"
+        },
+        "channelBinding": {
+          "$ref": "#/$defs/Base64Url32Bytes"
+        },
+        "confirmationMac": {
+          "$ref": "#/$defs/Base64Url32Bytes"
+        },
+        "confirmationNonce": {
+          "$ref": "#/$defs/Base64Url16Bytes"
+        },
+        "hostBundleHash": {
+          "$ref": "#/$defs/Base64Url32Bytes"
+        },
+        "invitationGeneration": {
+          "$ref": "#/$defs/Uint64Decimal"
+        },
+        "invitationId": {
+          "$ref": "#/$defs/Base64Url16Bytes"
+        },
+        "pairId": {
+          "$ref": "#/$defs/Base64Url16Bytes"
+        },
+        "remoteBundleHash": {
+          "$ref": "#/$defs/Base64Url32Bytes"
+        },
+        "side": {
+          "$ref": "#/$defs/DeviceRoleV1"
+        },
+        "transcriptHash": {
+          "$ref": "#/$defs/Base64Url32Bytes"
+        },
+        "version": {
+          "const": 1,
+          "type": "number"
+        }
+      },
+      "required": [
+        "version",
+        "invitationId",
+        "invitationGeneration",
+        "pairId",
+        "side",
+        "transcriptHash",
+        "channelBinding",
+        "hostBundleHash",
+        "remoteBundleHash",
+        "approvalContextHash",
+        "confirmationNonce",
+        "confirmationMac"
+      ],
+      "type": "object"
+    },
     "PositiveUint64Decimal": {
       "$ref": "#/$defs/Uint64Decimal",
       "not": {
@@ -532,7 +601,7 @@
   },
   "$id": "https://waifucave.com/contracts/remote/v1/remote-access.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "description": "Attended approval and installation-reset wire records shared by Discord Waifus and ts-connect.",
+  "description": "Attended approval, pair-confirmation, and installation-reset wire records shared by Discord Waifus and ts-connect.",
   "oneOf": [
     {
       "$ref": "#/$defs/ApprovalReceiptV1"
@@ -542,6 +611,9 @@
     },
     {
       "$ref": "#/$defs/IdentityResetReceiptV1"
+    },
+    {
+      "$ref": "#/$defs/PairConfirmationV1"
     },
     {
       "$ref": "#/$defs/ResetIdentityCommand"

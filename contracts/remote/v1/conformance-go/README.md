@@ -14,10 +14,12 @@ go -C contracts/remote/v1/conformance-go test ./...
 go -C contracts/remote/v1/conformance-go run ./cmd/generate-vectors --check
 ```
 
-`generate-vectors --check` independently builds the three `wipc-*.json` fixtures and
-`pairing-v1.json` with Go, then compares their exact compact canonical JSON bytes to the
-TypeScript-generated public fixtures. The current gate covers the WIPC header/state/authentication
+`generate-vectors --check` independently builds the three `wipc-*.json` fixtures,
+`pairing-v1.json`, and `pair-confirmation-v1.json` with Go, then compares their exact compact
+canonical JSON bytes to the TypeScript-generated public fixtures. The current gate covers the
+WIPC header/state/authentication
 foundation plus canonical CBOR rejection, signed full tokens and identities, both pinned Noise XX
 patterns and channel bindings, contribution transport, pair-root/four-key derivation, and SAS
-indices/fingerprint. Later slices extend this same gate with the reviewed SAS wordlist, pairing
-confirmation/revocation MACs, signed envelopes, endpoint encryption, and remaining boundaries.
+indices/fingerprint. It also covers confirmation-key MACs, canonical JSON boundaries, mailbox
+ordering, and terminal state. Later slices extend this same gate with the reviewed SAS wordlist,
+pairing revocation MACs, signed envelopes, endpoint encryption, and remaining boundaries.

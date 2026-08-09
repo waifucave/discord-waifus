@@ -9,6 +9,7 @@ import {
   HelperManifestSchema,
   HelperTargetSchema,
   IdentityResetReceiptV1Schema,
+  PairConfirmationV1Schema,
   PositiveUint64DecimalSchema,
   ProtocolRangeSchema,
   ResetIdentityCommandSchema,
@@ -21,6 +22,7 @@ import {
   CanonicalTargetSchema,
   CapabilityNameListSchema,
   CapabilityNameSchema,
+  DeviceRoleV1Schema,
   HttpMethodSchema,
   PrincipalStableIdSchema,
   ProtocolVersionSchema,
@@ -224,9 +226,11 @@ const remoteAccessRegisteredSchemas: ReadonlyArray<readonly [string, z.ZodType]>
   ["Base64Url32Bytes", Base64Url32BytesSchema],
   ["CanonicalIdentityBundleCbor", CanonicalIdentityBundleCborSchema],
   ["CanonicalTarget", CanonicalTargetSchema],
+  ["DeviceRoleV1", DeviceRoleV1Schema],
   ["GetResetStatusCommand", GetResetStatusCommandSchema],
   ["HttpMethod", HttpMethodSchema],
   ["IdentityResetReceiptV1", IdentityResetReceiptV1Schema],
+  ["PairConfirmationV1", PairConfirmationV1Schema],
   ["PositiveUint64Decimal", PositiveUint64DecimalSchema],
   ["PrincipalStableId", PrincipalStableIdSchema],
   ["ProtocolVersion", ProtocolVersionSchema],
@@ -273,11 +277,12 @@ export function createRemoteAccessJsonSchema(): ContractJsonObject {
     $id: REMOTE_ACCESS_SCHEMA_ID,
     title: "Waifus Remote Access Wire Contracts V1",
     description:
-      "Attended approval and installation-reset wire records shared by Discord Waifus and ts-connect.",
+      "Attended approval, pair-confirmation, and installation-reset wire records shared by Discord Waifus and ts-connect.",
     oneOf: [
       { $ref: "#/$defs/ApprovalReceiptV1" },
       { $ref: "#/$defs/GetResetStatusCommand" },
       { $ref: "#/$defs/IdentityResetReceiptV1" },
+      { $ref: "#/$defs/PairConfirmationV1" },
       { $ref: "#/$defs/ResetIdentityCommand" }
     ],
     $defs: definitions
