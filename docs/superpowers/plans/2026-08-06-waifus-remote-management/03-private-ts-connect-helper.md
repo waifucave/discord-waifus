@@ -410,14 +410,45 @@ Encrypted Noise payloads carry strict contract records. Each installation bundle
 - Key sequence, exactly **1** in V1.
 - Current protocol/capability vector.
 
-The signature input is ASCII **waifus/identity-bundle/v1** followed by RFC 8949 canonical CBOR of the unsigned bundle fields. The decoder rejects duplicate keys and every noncanonical form before verifying the signature.
+The exact identity-bundle encoding is RFC 8949 deterministic/canonical CBOR with an unsigned map
+of keys **1–10** and a signed map of keys **1–11**:
+
+| Key | Field | Encoding |
+|---:|---|---|
+| 1 | version | unsigned integer, exactly 1 |
+| 2 | device ID | UTF-8 text matching the public `DeviceId` contract |
+| 3 | role | unsigned integer, exactly 1 host or 2 remote |
+| 4 | trust epoch | unsigned uint64 |
+| 5 | installation public key | exactly 32-byte Ed25519 public-key bstr |
+| 6 | node public key | exactly 32-byte WireGuard public-key bstr |
+| 7 | discovery public key | exactly 32-byte discovery public-key bstr |
+| 8 | key sequence | unsigned integer, exactly 1 in V1 |
+| 9 | protocol | map `{1: uint16 major, 2: uint16 minor}` |
+| 10 | capabilities | map `{1: required tstr array, 2: optional tstr array}` using the public sorted/disjoint rules |
+| 11 | signature | exactly 64-byte Ed25519 signature bstr |
+
+The signature input is ASCII **waifus/identity-bundle/v1** followed by canonical CBOR of the
+unsigned keys **1–10**. The decoder rejects duplicate/unknown keys and every noncanonical form
+before verifying the signature.
+
+The three XX handshake payloads are also exact canonical-CBOR maps. Message 1 is
+`{1:1, 2:2, 3:remoteBundleHash}`. Message 2 is
+`{1:1, 2:1, 3:hostBundleCbor, 4:remoteBundleHash}`. Message 3 is
+`{1:1, 2:2, 3:remoteBundleCbor, 4:hostBundleHash}`. The first field is the record version and the
+second is the sender role. Bundle hashes are 32-byte SHA-256 bstr values; bundle CBOR fields are
+the exact signed bytes above. Define **LP(x)=uint32BE(byteLength(x))||x** and
+**transcriptHash=SHA-256(LP(message1)||LP(message2)||LP(message3))** over the exact encoded Noise
+messages, including their Noise keys, ciphertext, payload, and tags. This transcript hash is
+distinct from, and never substituted for, the Noise library's final 32-byte channel binding.
 
 Each complete Noise handshake/mailbox record is at most **1,200 decoded bytes**. The helper
 rejects an oversized record before allocation, encoding, or Worker submission.
 
 ### Pair root and separated keys
 
-Noise channel binding alone is not treated as secret. Before closing the Noise transport, each side sends one independent 32-byte random pair contribution inside an encrypted Noise transport message.
+Noise channel binding alone is not treated as secret. Before closing the Noise transport, each
+side sends exactly one independent 32-byte random pair contribution as the entire plaintext of its
+first encrypted Noise transport message (transport nonce zero in that direction).
 
 Derive:
 

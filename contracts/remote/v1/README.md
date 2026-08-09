@@ -31,9 +31,14 @@ Current foundation:
 - `fixtures/crypto/wipc-auth-session-v1.json` freezes parent/helper proof sequencing, traffic
   gating, capability retention after a rejected candidate, capability erasure after success,
   replay/reflection rejection, socket-race recovery, and second-client refusal.
-- `conformance-go/` independently recreates and validates that WIPC fixture using Go 1.26.5.
-  It pins `github.com/flynn/noise` v1.1.0 now so later Noise vectors cannot silently select a
-  different implementation.
+- `fixtures/crypto/pairing-v1.json` freezes strict canonical CBOR, signed `WF1.` full tokens,
+  signed identity bundles, the exact XXpsk0 and XX messages/channel bindings, transcript hashes,
+  contribution transport ciphertext, pair root and all four separated keys, and 50-bit SAS
+  indices/fingerprint. Embedded private keys and seeds are deterministic test-only vector inputs,
+  never production material.
+- `conformance-go/` independently recreates and validates the WIPC and pairing fixtures using Go
+  1.26.5. It pins `github.com/flynn/noise` v1.1.0 and rejects the token, identity, and
+  canonical-CBOR negative vectors independently of Node.
 
 Run `npm run contracts:remote:generate` after an intentional contract change and
 `npm run contracts:remote:check` in validation. Schema documents are recursively key-sorted,
@@ -58,7 +63,8 @@ standard JSON Schema cannot express by itself. These currently cover:
 Consumers must enforce those annotations or use the public conformance fixtures. A generic JSON
 Schema validator that ignores them is not a complete protocol validator.
 
-This remains an incomplete contract gate. The remaining remote-access/dashboard DTOs, pairing and
-service crypto fixtures, signed-manifest trust vectors, and SAS wordlist must land before
-production helper, pairing, Cloudflare, host bridge, or remote gateway work may rely on this
-directory.
+This remains an incomplete contract gate. The reviewed 1,024-word SAS artifact and word mapping,
+remaining pairing confirmation/revocation and remote-access/dashboard DTOs, service crypto,
+activation/control envelopes, and signed-manifest trust vectors must land before production helper,
+pairing, Cloudflare, host bridge, or remote gateway work may rely on this directory as a complete
+V1 authority.

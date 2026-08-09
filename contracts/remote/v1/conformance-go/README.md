@@ -14,10 +14,10 @@ go -C contracts/remote/v1/conformance-go test ./...
 go -C contracts/remote/v1/conformance-go run ./cmd/generate-vectors --check
 ```
 
-`generate-vectors --check` independently builds the three `wipc-*.json` fixtures with Go and
-compares the exact compact canonical JSON bytes to the TypeScript-generated public fixtures. The
-current gate covers the WIPC header, payload classes, window-update encoding, per-side stream-ID
-high-water/exhaustion rules, parent/helper HMAC transcript and one-launch session, replay and
-socket-race behavior, the full request/response/cancel lifecycle, bidirectional credit accounting,
-and the 128-stream boundary. Later slices extend this same gate with Noise transcripts, key
-derivations, signed envelopes, endpoint encryption, SAS, and remaining boundary fixtures.
+`generate-vectors --check` independently builds the three `wipc-*.json` fixtures and
+`pairing-v1.json` with Go, then compares their exact compact canonical JSON bytes to the
+TypeScript-generated public fixtures. The current gate covers the WIPC header/state/authentication
+foundation plus canonical CBOR rejection, signed full tokens and identities, both pinned Noise XX
+patterns and channel bindings, contribution transport, pair-root/four-key derivation, and SAS
+indices/fingerprint. Later slices extend this same gate with the reviewed SAS wordlist, pairing
+confirmation/revocation MACs, signed envelopes, endpoint encryption, and remaining boundaries.

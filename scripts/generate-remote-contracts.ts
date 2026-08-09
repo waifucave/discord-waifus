@@ -15,6 +15,7 @@ import {
   createRemoteAccessJsonSchema
 } from "../src/shared/schemas/remoteAccessContract.js";
 import { createWipcFixtureSet } from "../src/shared/wipcContract.js";
+import { createRemotePairingFixtureSet } from "../src/shared/remotePairingContract.js";
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(scriptDirectory, "..");
@@ -61,6 +62,13 @@ for (const [relativePath, value] of createRemoteProtocolFixtureSet()) {
 }
 
 for (const [relativePath, value] of createWipcFixtureSet()) {
+  generatedFiles.set(
+    path.join(contractRoot, relativePath),
+    serializeCanonicalContractJson(value)
+  );
+}
+
+for (const [relativePath, value] of createRemotePairingFixtureSet()) {
   generatedFiles.set(
     path.join(contractRoot, relativePath),
     serializeCanonicalContractJson(value)
