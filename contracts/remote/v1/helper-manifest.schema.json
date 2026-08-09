@@ -1,0 +1,557 @@
+{
+  "$defs": {
+    "CanonicalReleasedAt": {
+      "format": "waifus-rfc3339-whole-second",
+      "maxLength": 20,
+      "minLength": 20,
+      "pattern": "^[0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]Z$",
+      "type": "string"
+    },
+    "CapabilityName": {
+      "maxLength": 96,
+      "minLength": 1,
+      "pattern": "^[a-z][a-z0-9-]*(?:\\.[a-z][a-z0-9-]*)*\\.v(?:0|[1-9][0-9]*)$",
+      "type": "string"
+    },
+    "CapabilityNameList": {
+      "items": {
+        "$ref": "#/$defs/CapabilityName"
+      },
+      "maxItems": 128,
+      "type": "array",
+      "uniqueItems": true,
+      "x-waifus-ascii-sorted": true
+    },
+    "GitCommitSha1": {
+      "maxLength": 40,
+      "minLength": 40,
+      "pattern": "^[0-9a-f]{40}$",
+      "type": "string"
+    },
+    "HelperManifest": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "oneOf": [
+            {
+              "properties": {
+                "binary": {
+                  "properties": {
+                    "relativePath": {
+                      "const": "bin/ts-connect"
+                    }
+                  },
+                  "required": [
+                    "relativePath"
+                  ]
+                },
+                "packageName": {
+                  "const": "@waifucave/ts-connect-darwin-arm64"
+                },
+                "target": {
+                  "const": {
+                    "arch": "arm64",
+                    "os": "darwin"
+                  }
+                }
+              },
+              "required": [
+                "binary",
+                "packageName",
+                "target"
+              ]
+            },
+            {
+              "properties": {
+                "binary": {
+                  "properties": {
+                    "relativePath": {
+                      "const": "bin/ts-connect.exe"
+                    }
+                  },
+                  "required": [
+                    "relativePath"
+                  ]
+                },
+                "packageName": {
+                  "const": "@waifucave/ts-connect-win32-x64"
+                },
+                "target": {
+                  "const": {
+                    "arch": "x64",
+                    "os": "win32"
+                  }
+                }
+              },
+              "required": [
+                "binary",
+                "packageName",
+                "target"
+              ]
+            },
+            {
+              "properties": {
+                "binary": {
+                  "properties": {
+                    "relativePath": {
+                      "const": "bin/ts-connect.exe"
+                    }
+                  },
+                  "required": [
+                    "relativePath"
+                  ]
+                },
+                "packageName": {
+                  "const": "@waifucave/ts-connect-win32-arm64"
+                },
+                "target": {
+                  "const": {
+                    "arch": "arm64",
+                    "os": "win32"
+                  }
+                }
+              },
+              "required": [
+                "binary",
+                "packageName",
+                "target"
+              ]
+            },
+            {
+              "properties": {
+                "binary": {
+                  "properties": {
+                    "relativePath": {
+                      "const": "bin/ts-connect"
+                    }
+                  },
+                  "required": [
+                    "relativePath"
+                  ]
+                },
+                "packageName": {
+                  "const": "@waifucave/ts-connect-linux-x64"
+                },
+                "target": {
+                  "const": {
+                    "arch": "x64",
+                    "os": "linux"
+                  }
+                }
+              },
+              "required": [
+                "binary",
+                "packageName",
+                "target"
+              ]
+            },
+            {
+              "properties": {
+                "binary": {
+                  "properties": {
+                    "relativePath": {
+                      "const": "bin/ts-connect"
+                    }
+                  },
+                  "required": [
+                    "relativePath"
+                  ]
+                },
+                "packageName": {
+                  "const": "@waifucave/ts-connect-linux-arm64"
+                },
+                "target": {
+                  "const": {
+                    "arch": "arm64",
+                    "os": "linux"
+                  }
+                }
+              },
+              "required": [
+                "binary",
+                "packageName",
+                "target"
+              ]
+            },
+            {
+              "properties": {
+                "binary": {
+                  "properties": {
+                    "relativePath": {
+                      "const": "bin/ts-connect"
+                    }
+                  },
+                  "required": [
+                    "relativePath"
+                  ]
+                },
+                "packageName": {
+                  "const": "@waifucave/ts-connect-linux-armv7"
+                },
+                "target": {
+                  "const": {
+                    "arch": "arm",
+                    "goarm": 7,
+                    "os": "linux"
+                  }
+                }
+              },
+              "required": [
+                "binary",
+                "packageName",
+                "target"
+              ]
+            }
+          ]
+        },
+        {
+          "x-waifus-semver-ordered-fields": [
+            "minimumDiscordWaifusVersion",
+            "maximumDiscordWaifusVersionExclusive"
+          ]
+        }
+      ],
+      "properties": {
+        "binary": {
+          "additionalProperties": false,
+          "properties": {
+            "byteSize": {
+              "$ref": "#/$defs/PositiveUint64Decimal"
+            },
+            "relativePath": {
+              "enum": [
+                "bin/ts-connect",
+                "bin/ts-connect.exe"
+              ],
+              "type": "string"
+            },
+            "sha256": {
+              "$ref": "#/$defs/Sha256Hex"
+            }
+          },
+          "required": [
+            "relativePath",
+            "byteSize",
+            "sha256"
+          ],
+          "type": "object"
+        },
+        "capabilities": {
+          "$ref": "#/$defs/CapabilityNameList"
+        },
+        "contractCommit": {
+          "$ref": "#/$defs/GitCommitSha1"
+        },
+        "directOnlyBuildTag": {
+          "const": "waifus_direct_only",
+          "type": "string"
+        },
+        "forkCommit": {
+          "$ref": "#/$defs/GitCommitSha1"
+        },
+        "goVersion": {
+          "const": "go1.26.5",
+          "type": "string"
+        },
+        "helperVersion": {
+          "$ref": "#/$defs/SemVer"
+        },
+        "maximumDiscordWaifusVersionExclusive": {
+          "$ref": "#/$defs/SemVer"
+        },
+        "minimumDiscordWaifusVersion": {
+          "$ref": "#/$defs/SemVer"
+        },
+        "ossNoticeSha256": {
+          "$ref": "#/$defs/Sha256Hex"
+        },
+        "packageName": {
+          "enum": [
+            "@waifucave/ts-connect-darwin-arm64",
+            "@waifucave/ts-connect-win32-x64",
+            "@waifucave/ts-connect-win32-arm64",
+            "@waifucave/ts-connect-linux-x64",
+            "@waifucave/ts-connect-linux-arm64",
+            "@waifucave/ts-connect-linux-armv7"
+          ],
+          "type": "string"
+        },
+        "protocols": {
+          "additionalProperties": false,
+          "properties": {
+            "coordination": {
+              "$ref": "#/$defs/ProtocolRange"
+            },
+            "directService": {
+              "$ref": "#/$defs/ProtocolRange"
+            },
+            "helperManifest": {
+              "$ref": "#/$defs/ProtocolRange"
+            },
+            "ipc": {
+              "$ref": "#/$defs/ProtocolRange"
+            }
+          },
+          "required": [
+            "ipc",
+            "coordination",
+            "directService",
+            "helperManifest"
+          ],
+          "type": "object"
+        },
+        "releaseKeyIds": {
+          "$ref": "#/$defs/ReleaseKeyIdList"
+        },
+        "releaseSequence": {
+          "$ref": "#/$defs/PositiveUint64Decimal"
+        },
+        "releasedAt": {
+          "$ref": "#/$defs/CanonicalReleasedAt"
+        },
+        "schemaVersion": {
+          "const": 1,
+          "type": "number"
+        },
+        "sourceCommit": {
+          "$ref": "#/$defs/GitCommitSha1"
+        },
+        "tailscale": {
+          "additionalProperties": false,
+          "properties": {
+            "commit": {
+              "const": "eb67e5dcbe145d63e1128b9b4b630f8a82da101f",
+              "type": "string"
+            },
+            "tag": {
+              "const": "v1.102.2",
+              "type": "string"
+            }
+          },
+          "required": [
+            "tag",
+            "commit"
+          ],
+          "type": "object"
+        },
+        "target": {
+          "$ref": "#/$defs/HelperTarget"
+        },
+        "workerTrustRingSha256": {
+          "$ref": "#/$defs/Sha256Hex"
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "helperVersion",
+        "releaseSequence",
+        "releasedAt",
+        "packageName",
+        "target",
+        "binary",
+        "protocols",
+        "capabilities",
+        "minimumDiscordWaifusVersion",
+        "maximumDiscordWaifusVersionExclusive",
+        "sourceCommit",
+        "contractCommit",
+        "forkCommit",
+        "workerTrustRingSha256",
+        "tailscale",
+        "goVersion",
+        "directOnlyBuildTag",
+        "ossNoticeSha256",
+        "releaseKeyIds"
+      ],
+      "type": "object"
+    },
+    "HelperTarget": {
+      "anyOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "arch": {
+              "const": "arm64",
+              "type": "string"
+            },
+            "os": {
+              "const": "darwin",
+              "type": "string"
+            }
+          },
+          "required": [
+            "os",
+            "arch"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "arch": {
+              "const": "x64",
+              "type": "string"
+            },
+            "os": {
+              "const": "win32",
+              "type": "string"
+            }
+          },
+          "required": [
+            "os",
+            "arch"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "arch": {
+              "const": "arm64",
+              "type": "string"
+            },
+            "os": {
+              "const": "win32",
+              "type": "string"
+            }
+          },
+          "required": [
+            "os",
+            "arch"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "arch": {
+              "const": "x64",
+              "type": "string"
+            },
+            "os": {
+              "const": "linux",
+              "type": "string"
+            }
+          },
+          "required": [
+            "os",
+            "arch"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "arch": {
+              "const": "arm64",
+              "type": "string"
+            },
+            "os": {
+              "const": "linux",
+              "type": "string"
+            }
+          },
+          "required": [
+            "os",
+            "arch"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "arch": {
+              "const": "arm",
+              "type": "string"
+            },
+            "goarm": {
+              "const": 7,
+              "type": "number"
+            },
+            "os": {
+              "const": "linux",
+              "type": "string"
+            }
+          },
+          "required": [
+            "os",
+            "arch",
+            "goarm"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "PositiveUint64Decimal": {
+      "$ref": "#/$defs/Uint64Decimal",
+      "not": {
+        "const": "0"
+      }
+    },
+    "ProtocolRange": {
+      "additionalProperties": false,
+      "properties": {
+        "major": {
+          "maximum": 65535,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "maximumMinor": {
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "minimumMinor": {
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "major",
+        "minimumMinor",
+        "maximumMinor"
+      ],
+      "type": "object",
+      "x-waifus-ordered-fields": [
+        "minimumMinor",
+        "maximumMinor"
+      ]
+    },
+    "ReleaseKeyIdList": {
+      "items": {
+        "maxLength": 96,
+        "minLength": 1,
+        "pattern": "^[a-z][a-z0-9-]{0,95}$",
+        "type": "string"
+      },
+      "maxItems": 8,
+      "minItems": 1,
+      "type": "array",
+      "uniqueItems": true,
+      "x-waifus-ascii-sorted": true
+    },
+    "SemVer": {
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$",
+      "type": "string"
+    },
+    "Sha256Hex": {
+      "maxLength": 64,
+      "minLength": 64,
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "Uint64Decimal": {
+      "maxLength": 20,
+      "pattern": "^(?:0|[1-9][0-9]{0,18}|1[0-7][0-9]{18}|18[0-3][0-9]{17}|184[0-3][0-9]{16}|1844[0-5][0-9]{15}|18446[0-6][0-9]{14}|184467[0-3][0-9]{13}|1844674[0-3][0-9]{12}|184467440[0-6][0-9]{10}|1844674407[0-2][0-9]{9}|18446744073[0-6][0-9]{8}|1844674407370[0-8][0-9]{6}|18446744073709[0-4][0-9]{5}|184467440737095[0-4][0-9]{4}|18446744073709550[0-9]{3}|18446744073709551[0-5][0-9]{2}|1844674407370955160[0-9]{1}|1844674407370955161[0-4]|18446744073709551615)$",
+      "type": "string"
+    }
+  },
+  "$id": "https://waifucave.com/contracts/remote/v1/helper-manifest.schema.json",
+  "$ref": "#/$defs/HelperManifest",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Signed canonical manifest for one target-specific direct-only ts-connect helper package.",
+  "title": "Waifus ts-connect Helper Manifest V1"
+}

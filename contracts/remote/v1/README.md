@@ -9,6 +9,11 @@ Current foundation:
 - `protocol.schema.json` defines canonical JSON uint64 values, protocol/capability negotiation,
   the closed control-profile/runtime-purpose values, and `RemoteBrowserContextV1`.
 - `capabilities.json` freezes protocol `1.0` and the initial required capability set.
+- `helper-manifest.schema.json` freezes the signed helper release manifest, its six exact
+  package/target combinations, direct-only build pins, compatibility ranges, and bounded hashes.
+- `fixtures/helper-manifest/` contains generated structural accept/reject examples for both the
+  Node resolver and the private Go packager. Signature/trust-window fixtures land with the crypto
+  conformance layer. Each fixture file itself uses RFC 8785 canonical JSON bytes.
 
 Run `npm run contracts:remote:generate` after an intentional contract change and
 `npm run contracts:remote:check` in validation. Generation is recursively key-sorted and

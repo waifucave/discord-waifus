@@ -38,6 +38,14 @@ const VISIBLE_ASCII_PATTERN = /^[\x21-\x7e]+$/;
 const TARGET_RAW_CHARACTER_PATTERN = /^[A-Za-z0-9\-._~!$&'()*+,;=:@/?]$/;
 const UNRESERVED_BYTE_PATTERN = /^[A-Za-z0-9\-._~]$/;
 
+export const SemVerSchema = z
+  .string()
+  .min(1)
+  .max(64)
+  .regex(SEMVER_PATTERN, "Expected SemVer.");
+
+export type SemVer = z.infer<typeof SemVerSchema>;
+
 export const Uint64DecimalSchema = z
   .string()
   .max(20)
@@ -164,7 +172,7 @@ export const ComponentHelloSchema = z
   .object({
     protocol: ProtocolVersionSchema,
     component: ComponentNameSchema,
-    componentVersion: z.string().min(1).max(64).regex(SEMVER_PATTERN, "Expected SemVer."),
+    componentVersion: SemVerSchema,
     buildId: z.string().min(1).max(128).regex(VISIBLE_ASCII_PATTERN, "Expected visible ASCII."),
     nonce: Base64Url32BytesSchema,
     capabilities: CapabilitySetSchema,

@@ -129,16 +129,44 @@ function sortContractJson(value: ContractJson): ContractJson {
   if (Array.isArray(value)) {
     return value.map(sortContractJson);
   }
+  if (typeof value === "number" && !Number.isFinite(value)) {
+    throw new TypeError("Canonical JSON does not permit non-finite numbers.");
+  }
+  if (typeof value === "string") {
+    assertWellFormedUnicode(value);
+  }
   if (typeof value !== "object" || value === null) {
     return value;
   }
   return Object.fromEntries(
     Object.entries(value)
       .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
-      .map(([key, child]) => [key, sortContractJson(child)])
+      .map(([key, child]) => {
+        assertWellFormedUnicode(key);
+        return [key, sortContractJson(child)];
+      })
   );
+}
+
+function assertWellFormedUnicode(value: string): void {
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      const following = value.charCodeAt(index + 1);
+      if (index + 1 >= value.length || following < 0xdc00 || following > 0xdfff) {
+        throw new TypeError("Canonical JSON requires well-formed Unicode strings.");
+      }
+      index += 1;
+    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+      throw new TypeError("Canonical JSON requires well-formed Unicode strings.");
+    }
+  }
 }
 
 export function serializeRemoteContractJson(value: ContractJson): string {
   return `${JSON.stringify(sortContractJson(value), null, 2)}\n`;
+}
+
+export function serializeCanonicalContractJson(value: ContractJson): string {
+  return JSON.stringify(sortContractJson(value));
 }

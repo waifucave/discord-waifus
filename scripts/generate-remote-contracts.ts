@@ -4,8 +4,13 @@ import { fileURLToPath } from "node:url";
 import {
   createRemoteCapabilitiesDocument,
   createRemoteProtocolJsonSchema,
+  serializeCanonicalContractJson,
   serializeRemoteContractJson
 } from "../src/shared/schemas/remoteProtocolContract.js";
+import {
+  createHelperManifestFixtureSet,
+  createHelperManifestJsonSchema
+} from "../src/shared/schemas/remoteAccessContract.js";
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(scriptDirectory, "..");
@@ -19,8 +24,19 @@ const generatedFiles = new Map<string, string>([
   [
     path.join(contractRoot, "capabilities.json"),
     serializeRemoteContractJson(createRemoteCapabilitiesDocument())
+  ],
+  [
+    path.join(contractRoot, "helper-manifest.schema.json"),
+    serializeRemoteContractJson(createHelperManifestJsonSchema())
   ]
 ]);
+
+for (const [relativePath, value] of createHelperManifestFixtureSet()) {
+  generatedFiles.set(
+    path.join(contractRoot, relativePath),
+    serializeCanonicalContractJson(value)
+  );
+}
 
 async function checkGeneratedFiles(): Promise<void> {
   const mismatches: string[] = [];
@@ -44,7 +60,9 @@ async function checkGeneratedFiles(): Promise<void> {
 }
 
 async function writeGeneratedFiles(): Promise<void> {
-  await mkdir(contractRoot, { recursive: true });
+  await Promise.all(
+    [...generatedFiles.keys()].map((filePath) => mkdir(path.dirname(filePath), { recursive: true }))
+  );
   await Promise.all(
     [...generatedFiles].map(([filePath, contents]) => writeFile(filePath, contents, "utf8"))
   );

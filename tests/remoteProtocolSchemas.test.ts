@@ -13,6 +13,7 @@ import {
 import {
   createRemoteCapabilitiesDocument,
   createRemoteProtocolJsonSchema,
+  serializeCanonicalContractJson,
   serializeRemoteContractJson
 } from "../src/shared/schemas/remoteProtocolContract.js";
 
@@ -240,6 +241,14 @@ describe("RemoteBrowserContextV1Schema", () => {
 });
 
 describe("checked-in remote protocol contract", () => {
+  it("serializes signing inputs with deterministic RFC 8785 key order", () => {
+    expect(serializeCanonicalContractJson({ z: 1, a: { y: 2, b: 3 } })).toBe(
+      "{\"a\":{\"b\":3,\"y\":2},\"z\":1}"
+    );
+    expect(() => serializeCanonicalContractJson(Number.NaN as never)).toThrow(/non-finite/i);
+    expect(() => serializeCanonicalContractJson("\ud800")).toThrow(/Unicode/i);
+  });
+
   it("is derived byte-for-byte from the TypeScript schemas", async () => {
     const contractRoot = path.join(process.cwd(), "contracts", "remote", "v1");
     const [protocolSchema, capabilities] = await Promise.all([
