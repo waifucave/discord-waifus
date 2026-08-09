@@ -16,9 +16,11 @@ import {
 
 export const MAX_TRUSTED_DEVICES = 256;
 export const MAX_PENDING_PAIRING_REQUESTS = 16;
+export const MAX_REMEMBERED_HOSTS = 256;
 export const ACTIVATION_CHALLENGE_LIFETIME_SECONDS = 600;
 export const PAIR_INVITATION_LIFETIME_SECONDS = 300;
 export const MAX_FULL_PAIR_TOKEN_CHARACTERS = 1_024;
+export const OFFLINE_FORGET_WARNING_CODE = "host_unreachable_remote_trust_may_remain";
 
 const DISPLAY_NAME_CONTROL_PATTERN = /[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/u;
 const FULL_PAIR_TOKEN_PATTERN = /^WF1\.[A-Za-z0-9_-]+$/;
@@ -582,3 +584,263 @@ export const PairOperationEventSchema = z.object({
 }).strict();
 
 export type PairOperationEvent = z.infer<typeof PairOperationEventSchema>;
+
+export const GatewaySelectionStateSchema = z.enum([
+  "no_hosts",
+  "selection_required",
+  "automatic_single",
+  "explicit"
+]);
+
+export type GatewaySelectionState = z.infer<typeof GatewaySelectionStateSchema>;
+
+const GatewayBrowserSessionSummaryV1Schema = z.object({
+  idleExpiresAt: Uint64DecimalSchema,
+  absoluteExpiresAt: Uint64DecimalSchema
+}).strict().superRefine((value, ctx) => {
+  if (BigInt(value.idleExpiresAt) > BigInt(value.absoluteExpiresAt)) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["idleExpiresAt"],
+      message: "Idle expiry cannot follow absolute expiry."
+    });
+  }
+});
+
+export const GatewayBootstrapV1Schema = z.object({
+  version: z.literal(1),
+  gatewayVersion: SemVerSchema,
+  helperVersion: SemVerSchema.nullable(),
+  helperReleaseSequence: Uint64DecimalSchema.nullable(),
+  protocol: ProtocolVersionSchema,
+  capabilities: CapabilityNameListSchema,
+  session: GatewayBrowserSessionSummaryV1Schema,
+  activationState: ActivationLifecycleStateSchema,
+  helperState: HelperLifecycleStateSchema,
+  controlState: ControlConnectionStateSchema,
+  directState: DirectConnectionStateSchema,
+  rememberedHostCount: z.number().int().min(0).max(MAX_REMEMBERED_HOSTS),
+  selectionState: GatewaySelectionStateSchema,
+  selectedHostId: Base64Url32BytesSchema.nullable(),
+  lastErrorCode: RemoteAccessErrorCodeSchema.nullable()
+}).strict().superRefine((value, ctx) => {
+  if ((value.helperVersion === null) !== (value.helperReleaseSequence === null)) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["helperReleaseSequence"],
+      message: "Helper version and release sequence must be present or absent together."
+    });
+  }
+
+  const hasSelection = value.selectedHostId !== null;
+  const selectionIsBound = value.selectionState === "automatic_single"
+    || value.selectionState === "explicit";
+  if (hasSelection !== selectionIsBound) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["selectedHostId"],
+      message: "Selected host presence must match the selection state."
+    });
+  }
+
+  if (value.selectionState === "no_hosts" && value.rememberedHostCount !== 0) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["rememberedHostCount"],
+      message: "The no-hosts state requires an empty remembered-host set."
+    });
+  }
+  if (value.selectionState === "selection_required" && value.rememberedHostCount < 2) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["rememberedHostCount"],
+      message: "Host selection is required only when multiple hosts are remembered."
+    });
+  }
+  if (value.selectionState === "automatic_single" && value.rememberedHostCount !== 1) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["rememberedHostCount"],
+      message: "Automatic selection requires exactly one remembered host."
+    });
+  }
+  if (value.selectionState === "explicit" && value.rememberedHostCount < 1) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["rememberedHostCount"],
+      message: "Explicit selection requires a remembered host."
+    });
+  }
+  if (!hasSelection && value.directState !== "inactive") {
+    ctx.addIssue({
+      code: "custom",
+      path: ["directState"],
+      message: "An unselected gateway cannot report a host direct path."
+    });
+  }
+});
+
+export type GatewayBootstrapV1 = z.infer<typeof GatewayBootstrapV1Schema>;
+
+export const RememberedHostSummaryV1Schema = z.object({
+  version: z.literal(1),
+  hostId: Base64Url32BytesSchema,
+  displayName: DeviceDisplayNameSchema,
+  platform: HelperTargetSchema,
+  installationFingerprint: Base64Url16BytesSchema,
+  trustEpoch: Uint64DecimalSchema,
+  revision: Uint64DecimalSchema,
+  pairedAt: Uint64DecimalSchema,
+  lastSeenAt: Uint64DecimalSchema.nullable(),
+  lastDirectAt: Uint64DecimalSchema.nullable(),
+  connectionState: TrustedDeviceConnectionStateSchema,
+  lastErrorCode: RemoteAccessErrorCodeSchema.nullable()
+}).strict();
+
+export type RememberedHostSummaryV1 = z.infer<typeof RememberedHostSummaryV1Schema>;
+
+export const RememberedHostListV1Schema = z.object({
+  version: z.literal(1),
+  hosts: z.array(RememberedHostSummaryV1Schema).max(MAX_REMEMBERED_HOSTS)
+}).strict().superRefine((value, ctx) => {
+  const hostIds = new Set<string>();
+  for (let index = 0; index < value.hosts.length; index += 1) {
+    const hostId = value.hosts[index]!.hostId;
+    if (hostIds.has(hostId)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["hosts", index, "hostId"],
+        message: "Remembered host IDs must be unique."
+      });
+    }
+    hostIds.add(hostId);
+  }
+});
+
+export type RememberedHostListV1 = z.infer<typeof RememberedHostListV1Schema>;
+
+export const RememberedHostActionInputV1Schema = z.object({}).strict();
+
+export type RememberedHostActionInputV1 = z.infer<typeof RememberedHostActionInputV1Schema>;
+
+export const ConnectRememberedHostResultV1Schema = z.object({
+  hostId: Base64Url32BytesSchema,
+  action: z.literal("connect"),
+  state: z.literal("connecting"),
+  acceptedAt: Uint64DecimalSchema
+}).strict();
+
+export type ConnectRememberedHostResultV1 = z.infer<
+  typeof ConnectRememberedHostResultV1Schema
+>;
+
+export const DisconnectRememberedHostResultV1Schema = z.object({
+  hostId: Base64Url32BytesSchema,
+  action: z.literal("disconnect"),
+  state: z.literal("offline"),
+  completedAt: Uint64DecimalSchema
+}).strict();
+
+export type DisconnectRememberedHostResultV1 = z.infer<
+  typeof DisconnectRememberedHostResultV1Schema
+>;
+
+const ReachableFirstForgetInputV1Schema = z.object({
+  revision: Uint64DecimalSchema,
+  mode: z.literal("reachable_first")
+}).strict();
+const LocalOnlyConfirmedForgetInputV1Schema = z.object({
+  revision: Uint64DecimalSchema,
+  mode: z.literal("local_only_confirmed"),
+  warningCode: z.literal(OFFLINE_FORGET_WARNING_CODE)
+}).strict();
+
+export const ForgetRememberedHostInputV1Schema = z.discriminatedUnion("mode", [
+  ReachableFirstForgetInputV1Schema,
+  LocalOnlyConfirmedForgetInputV1Schema
+]);
+
+export type ForgetRememberedHostInputV1 = z.infer<typeof ForgetRememberedHostInputV1Schema>;
+
+const LocalOnlyConfirmationRequiredResultV1Schema = z.object({
+  hostId: Base64Url32BytesSchema,
+  state: z.literal("local_only_confirmation_required"),
+  revision: Uint64DecimalSchema,
+  warningCode: z.literal(OFFLINE_FORGET_WARNING_CODE),
+  requiredMode: z.literal("local_only_confirmed")
+}).strict();
+const SignedForgetResultV1Schema = z.object({
+  hostId: Base64Url32BytesSchema,
+  state: z.literal("forgotten"),
+  revocation: z.literal("signed_self_revocation"),
+  forgottenAt: Uint64DecimalSchema
+}).strict();
+const LocalOnlyForgetResultV1Schema = z.object({
+  hostId: Base64Url32BytesSchema,
+  state: z.literal("forgotten"),
+  revocation: z.literal("local_only"),
+  warningCode: z.literal(OFFLINE_FORGET_WARNING_CODE),
+  forgottenAt: Uint64DecimalSchema
+}).strict();
+
+export const ForgetRememberedHostResultV1Schema = z.union([
+  LocalOnlyConfirmationRequiredResultV1Schema,
+  SignedForgetResultV1Schema,
+  LocalOnlyForgetResultV1Schema
+]);
+
+export type ForgetRememberedHostResultV1 = z.infer<typeof ForgetRememberedHostResultV1Schema>;
+
+const ActivationOperationStateChangedEventV1Schema = z.object({
+  version: z.literal(1),
+  type: z.literal("activation_operation_state_changed"),
+  activationOperationId: ActivationOperationIdSchema,
+  state: z.enum(["pending", "completed", "failed", "expired", "cancelled"]),
+  at: Uint64DecimalSchema
+}).strict();
+const PairOperationStateChangedEventV1Schema = z.object({
+  version: z.literal(1),
+  type: z.literal("pair_operation_state_changed"),
+  pairOperationId: PairOperationIdSchema,
+  state: PairOperationStateSchema,
+  at: Uint64DecimalSchema
+}).strict();
+const RememberedHostsChangedEventV1Schema = z.object({
+  version: z.literal(1),
+  type: z.literal("remembered_hosts_changed"),
+  at: Uint64DecimalSchema
+}).strict();
+const HostConnectionChangedEventV1Schema = z.object({
+  version: z.literal(1),
+  type: z.literal("host_connection_changed"),
+  hostId: Base64Url32BytesSchema,
+  state: TrustedDeviceConnectionStateSchema,
+  at: Uint64DecimalSchema
+}).strict();
+const HostSelectionChangedEventV1Schema = z.object({
+  version: z.literal(1),
+  type: z.literal("host_selection_changed"),
+  hostId: Base64Url32BytesSchema.nullable(),
+  selectionState: GatewaySelectionStateSchema,
+  at: Uint64DecimalSchema
+}).strict().superRefine((value, ctx) => {
+  const requiresHost = value.selectionState === "automatic_single"
+    || value.selectionState === "explicit";
+  if ((value.hostId !== null) !== requiresHost) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["hostId"],
+      message: "Selection events must bind a host exactly when selection is active."
+    });
+  }
+});
+
+export const GatewayLocalEventV1Schema = z.discriminatedUnion("type", [
+  ActivationOperationStateChangedEventV1Schema,
+  PairOperationStateChangedEventV1Schema,
+  RememberedHostsChangedEventV1Schema,
+  HostConnectionChangedEventV1Schema,
+  HostSelectionChangedEventV1Schema
+]);
+
+export type GatewayLocalEventV1 = z.infer<typeof GatewayLocalEventV1Schema>;

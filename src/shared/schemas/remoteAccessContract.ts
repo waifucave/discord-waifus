@@ -65,11 +65,18 @@ import {
   ApprovePairingInputV1Schema,
   AssistantSafePairingRequestSummaryV1Schema,
   ClientContextV1Schema,
+  ConnectRememberedHostResultV1Schema,
   ConnectionShellOriginSchema,
   CreateInvitationInputV1Schema,
   DeviceDisplayNameSchema,
+  DisconnectRememberedHostResultV1Schema,
+  ForgetRememberedHostInputV1Schema,
+  ForgetRememberedHostResultV1Schema,
   FullPairTokenSchema,
+  GatewayBootstrapV1Schema,
+  GatewayLocalEventV1Schema,
   MAX_PENDING_PAIRING_REQUESTS,
+  MAX_REMEMBERED_HOSTS,
   MAX_TRUSTED_DEVICES,
   PAIR_INVITATION_LIFETIME_SECONDS,
   PairInvitationV1Schema,
@@ -80,6 +87,9 @@ import {
   PairStartResultSchema,
   PendingPairingRequestListV1Schema,
   PendingPairingRequestV1Schema,
+  RememberedHostActionInputV1Schema,
+  RememberedHostListV1Schema,
+  RememberedHostSummaryV1Schema,
   RemoteAccessDiagnosticsV1Schema,
   RemoteAccessStatusV1Schema,
   RenameTrustedDeviceInputV1Schema,
@@ -295,6 +305,7 @@ const remoteAccessRegisteredSchemas: ReadonlyArray<readonly [string, z.ZodType]>
   ["CanonicalIdentityBundleCbor", CanonicalIdentityBundleCborSchema],
   ["CanonicalTarget", CanonicalTargetSchema],
   ["ClientContextV1", ClientContextV1Schema],
+  ["ConnectRememberedHostResultV1", ConnectRememberedHostResultV1Schema],
   ["ConnectionShellOrigin", ConnectionShellOriginSchema],
   ["CreateInvitationInputV1", CreateInvitationInputV1Schema],
   ["DashboardAssetContentType", DashboardAssetContentTypeSchema],
@@ -302,7 +313,12 @@ const remoteAccessRegisteredSchemas: ReadonlyArray<readonly [string, z.ZodType]>
   ["DashboardManifestV1", DashboardManifestSchema],
   ["DeviceDisplayName", DeviceDisplayNameSchema],
   ["DeviceRoleV1", DeviceRoleV1Schema],
+  ["DisconnectRememberedHostResultV1", DisconnectRememberedHostResultV1Schema],
+  ["ForgetRememberedHostInputV1", ForgetRememberedHostInputV1Schema],
+  ["ForgetRememberedHostResultV1", ForgetRememberedHostResultV1Schema],
   ["GetResetStatusCommand", GetResetStatusCommandSchema],
+  ["GatewayBootstrapV1", GatewayBootstrapV1Schema],
+  ["GatewayLocalEventV1", GatewayLocalEventV1Schema],
   ["HelperTarget", HelperTargetSchema],
   ["HttpMethod", HttpMethodSchema],
   ["IdentityResetReceiptV1", IdentityResetReceiptV1Schema],
@@ -334,6 +350,9 @@ const remoteAccessRegisteredSchemas: ReadonlyArray<readonly [string, z.ZodType]>
   ["ProtocolVersion", ProtocolVersionSchema],
   ["PendingPairingRequestListV1", PendingPairingRequestListV1Schema],
   ["PendingPairingRequestV1", PendingPairingRequestV1Schema],
+  ["RememberedHostActionInputV1", RememberedHostActionInputV1Schema],
+  ["RememberedHostListV1", RememberedHostListV1Schema],
+  ["RememberedHostSummaryV1", RememberedHostSummaryV1Schema],
   ["RemoteAccessDiagnosticsV1", RemoteAccessDiagnosticsV1Schema],
   ["RemoteAccessStatusV1", RemoteAccessStatusV1Schema],
   ["ResetIdentityCommand", ResetIdentityCommandSchema],
@@ -492,6 +511,63 @@ export function createRemoteAccessJsonSchema(): ContractJsonObject {
     "identity",
     "transcript",
     "channelBinding"
+  ];
+  definitions.GatewayBootstrapV1["x-waifus-cache-control"] = "no-store";
+  definitions.GatewayBootstrapV1["x-waifus-csrf-delivery"] =
+    "X-Waifus-CSRF response header only";
+  definitions.GatewayBootstrapV1["x-waifus-session-timeouts-seconds"] = {
+    idle: 30 * 60,
+    absolute: 8 * 60 * 60
+  };
+  definitions.GatewayBootstrapV1["x-waifus-origin-scope"] =
+    "installed connection-shell origin only; downloaded dashboard origins receive 404";
+  definitions.GatewayBootstrapV1["x-waifus-redacted"] = true;
+  definitions.GatewayBootstrapV1["x-waifus-forbidden-fields"] = [
+    "gatewayLaunchId",
+    "browserSessionId",
+    "csrfToken",
+    "dataRoot",
+    "helperSocketPath",
+    "endpoint",
+    "pairId"
+  ];
+  definitions.GatewayBootstrapV1["x-waifus-selection-state"] = {
+    no_hosts: "zero remembered hosts and no selected host",
+    selection_required: "multiple remembered hosts and no selected host",
+    automatic_single: "exactly one remembered host selected automatically",
+    explicit: "a remembered host selected by an explicit user or CLI choice"
+  };
+  definitions.RememberedHostListV1["x-waifus-maximum-hosts"] = MAX_REMEMBERED_HOSTS;
+  definitions.RememberedHostListV1["x-waifus-cache-control"] = "no-store";
+  definitions.RememberedHostListV1["x-waifus-unique-by"] = "hostId";
+  definitions.RememberedHostListV1["x-waifus-partition-scope"] = "canonical data root";
+  definitions.RememberedHostSummaryV1["x-waifus-forbidden-fields"] = [
+    "pairId",
+    "identityBundle",
+    "originEpoch",
+    "localOrigin",
+    "endpointCandidates",
+    "pairSecret"
+  ];
+  definitions.ForgetRememberedHostInputV1["x-waifus-local-only-warning-code"] =
+    "host_unreachable_remote_trust_may_remain";
+  definitions.ConnectRememberedHostResultV1["x-waifus-cache-control"] = "no-store";
+  definitions.DisconnectRememberedHostResultV1["x-waifus-cache-control"] = "no-store";
+  definitions.ForgetRememberedHostResultV1["x-waifus-cache-control"] = "no-store";
+  definitions.ForgetRememberedHostResultV1["x-waifus-forget-order"] =
+    "signed self-revocation before reachable deletion; explicit warning before local-only deletion";
+  definitions.ForgetRememberedHostResultV1["x-waifus-origin-transition"] =
+    "allocate a greater local origin epoch before deleting the remembered host";
+  definitions.GatewayLocalEventV1["x-waifus-cursor"] =
+    "SSE EventCursorV1 in the id field; Last-Event-ID enables bounded replay";
+  definitions.GatewayLocalEventV1["x-waifus-cache-control"] = "no-store";
+  definitions.GatewayLocalEventV1["x-waifus-forbidden-fields"] = [
+    "sasWords",
+    "sasFingerprint",
+    "identity",
+    "endpoint",
+    "token",
+    "code"
   ];
   definitions.PairControlEndpointGenerationPayloadV1["x-waifus-sha256-of"] = {
     digestField: "ciphertextSha256",
@@ -1051,6 +1127,96 @@ export function createRemoteAccessFixtureSet(): ReadonlyMap<string, ContractJson
     state: "verification_required",
     at: "1786270830"
   };
+  const rememberedHost: ContractJsonObject = {
+    version: 1,
+    hostId: fixtureBytes(32, 0x81),
+    displayName: "Studio Host",
+    platform: lifecyclePlatform,
+    installationFingerprint: fixtureBytes(16, 0x82),
+    trustEpoch: "7",
+    revision: "3",
+    pairedAt: "1786270000",
+    lastSeenAt: "1786270800",
+    lastDirectAt: "1786270800",
+    connectionState: "direct",
+    lastErrorCode: null
+  };
+  const rememberedHostList: ContractJsonObject = {
+    version: 1,
+    hosts: [rememberedHost]
+  };
+  const gatewayBootstrap: ContractJsonObject = {
+    version: 1,
+    gatewayVersion: "1.5.203",
+    helperVersion: "0.1.0",
+    helperReleaseSequence: "42",
+    protocol: { major: 1, minor: 0 },
+    capabilities: [
+      "waifus.browser-context.v1",
+      "waifus.http.v1",
+      "waifus.sse.cursor.v1"
+    ],
+    session: {
+      idleExpiresAt: "1786272600",
+      absoluteExpiresAt: "1786299600"
+    },
+    activationState: "active",
+    helperState: "ready",
+    controlState: "connected",
+    directState: "direct",
+    rememberedHostCount: 1,
+    selectionState: "automatic_single",
+    selectedHostId: rememberedHost.hostId,
+    lastErrorCode: null
+  };
+  const rememberedHostConnectResult: ContractJsonObject = {
+    hostId: rememberedHost.hostId,
+    action: "connect",
+    state: "connecting",
+    acceptedAt: "1786270830"
+  };
+  const rememberedHostDisconnectResult: ContractJsonObject = {
+    hostId: rememberedHost.hostId,
+    action: "disconnect",
+    state: "offline",
+    completedAt: "1786270831"
+  };
+  const reachableFirstForgetInput: ContractJsonObject = {
+    revision: rememberedHost.revision,
+    mode: "reachable_first"
+  };
+  const localOnlyForgetInput: ContractJsonObject = {
+    revision: rememberedHost.revision,
+    mode: "local_only_confirmed",
+    warningCode: "host_unreachable_remote_trust_may_remain"
+  };
+  const forgetConfirmationRequired: ContractJsonObject = {
+    hostId: rememberedHost.hostId,
+    state: "local_only_confirmation_required",
+    revision: rememberedHost.revision,
+    warningCode: "host_unreachable_remote_trust_may_remain",
+    requiredMode: "local_only_confirmed"
+  };
+  const signedForgetResult: ContractJsonObject = {
+    hostId: rememberedHost.hostId,
+    state: "forgotten",
+    revocation: "signed_self_revocation",
+    forgottenAt: "1786270832"
+  };
+  const localOnlyForgetResult: ContractJsonObject = {
+    hostId: rememberedHost.hostId,
+    state: "forgotten",
+    revocation: "local_only",
+    warningCode: "host_unreachable_remote_trust_may_remain",
+    forgottenAt: "1786270832"
+  };
+  const gatewayLocalEvent: ContractJsonObject = {
+    version: 1,
+    type: "pair_operation_state_changed",
+    pairOperationId,
+    state: "verification_required",
+    at: "1786270830"
+  };
 
   fixtures.set("fixtures/valid/remote-access-status.json", lifecycleStatus);
   fixtures.set("fixtures/valid/remote-access-update.json", lifecycleUpdate);
@@ -1075,6 +1241,36 @@ export function createRemoteAccessFixtureSet(): ReadonlyMap<string, ContractJson
   fixtures.set("fixtures/valid/pair-start-result.json", pairStartResult);
   fixtures.set("fixtures/valid/pair-operation-status-verification.json", pairOperationStatus);
   fixtures.set("fixtures/valid/pair-operation-event.json", pairOperationEvent);
+  fixtures.set("fixtures/valid/gateway-bootstrap.json", gatewayBootstrap);
+  fixtures.set("fixtures/valid/remembered-host-summary.json", rememberedHost);
+  fixtures.set("fixtures/valid/remembered-host-list.json", rememberedHostList);
+  fixtures.set("fixtures/valid/remembered-host-action-input.json", {});
+  fixtures.set("fixtures/valid/remembered-host-connect-result.json", rememberedHostConnectResult);
+  fixtures.set(
+    "fixtures/valid/remembered-host-disconnect-result.json",
+    rememberedHostDisconnectResult
+  );
+  fixtures.set(
+    "fixtures/valid/remembered-host-forget-input-reachable.json",
+    reachableFirstForgetInput
+  );
+  fixtures.set(
+    "fixtures/valid/remembered-host-forget-input-local-only.json",
+    localOnlyForgetInput
+  );
+  fixtures.set(
+    "fixtures/valid/remembered-host-forget-result-confirmation.json",
+    forgetConfirmationRequired
+  );
+  fixtures.set(
+    "fixtures/valid/remembered-host-forget-result-signed.json",
+    signedForgetResult
+  );
+  fixtures.set(
+    "fixtures/valid/remembered-host-forget-result-local-only.json",
+    localOnlyForgetResult
+  );
+  fixtures.set("fixtures/valid/gateway-local-event.json", gatewayLocalEvent);
 
   const statusEndpoint = cloneFixture(lifecycleStatus);
   statusEndpoint.endpoint = "192.0.2.1:1234";
@@ -1144,6 +1340,45 @@ export function createRemoteAccessFixtureSet(): ReadonlyMap<string, ContractJson
   const pairEventComparison = cloneFixture(pairOperationEvent);
   pairEventComparison.sasWords = pendingPairing.sasWords;
   fixtures.set("fixtures/invalid/pair-operation-event-comparison.json", pairEventComparison);
+
+  const gatewayBootstrapSessionId = cloneFixture(gatewayBootstrap);
+  gatewayBootstrapSessionId.browserSessionId = fixtureBytes(32, 0x83);
+  fixtures.set("fixtures/invalid/gateway-bootstrap-session-id.json", gatewayBootstrapSessionId);
+
+  const gatewayBootstrapBadSelection = cloneFixture(gatewayBootstrap);
+  gatewayBootstrapBadSelection.rememberedHostCount = 2;
+  fixtures.set(
+    "fixtures/invalid/gateway-bootstrap-automatic-multiple.json",
+    gatewayBootstrapBadSelection
+  );
+
+  const rememberedHostPairId = cloneFixture(rememberedHost);
+  rememberedHostPairId.pairId = fixtureBytes(16, 0x84);
+  fixtures.set("fixtures/invalid/remembered-host-summary-pair-id.json", rememberedHostPairId);
+
+  const duplicateRememberedHosts = cloneFixture(rememberedHostList);
+  duplicateRememberedHosts.hosts = [rememberedHost, rememberedHost];
+  fixtures.set("fixtures/invalid/remembered-host-list-duplicate.json", duplicateRememberedHosts);
+
+  fixtures.set("fixtures/invalid/remembered-host-action-input-destination.json", {
+    destination: "100.64.0.1"
+  });
+
+  fixtures.set("fixtures/invalid/remembered-host-forget-input-missing-warning.json", {
+    revision: rememberedHost.revision,
+    mode: "local_only_confirmed"
+  });
+
+  const missingLocalOnlyWarning = cloneFixture(localOnlyForgetResult);
+  delete missingLocalOnlyWarning.warningCode;
+  fixtures.set(
+    "fixtures/invalid/remembered-host-forget-result-missing-warning.json",
+    missingLocalOnlyWarning
+  );
+
+  const gatewayEventComparison = cloneFixture(gatewayLocalEvent);
+  gatewayEventComparison.sasWords = pendingPairing.sasWords;
+  fixtures.set("fixtures/invalid/gateway-local-event-comparison.json", gatewayEventComparison);
 
   return fixtures;
 }

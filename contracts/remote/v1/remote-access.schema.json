@@ -777,6 +777,33 @@
       "x-waifus-cache-control": "no-store",
       "x-waifus-csrf-delivery": "response header only"
     },
+    "ConnectRememberedHostResultV1": {
+      "additionalProperties": false,
+      "properties": {
+        "acceptedAt": {
+          "$ref": "#/$defs/Uint64Decimal"
+        },
+        "action": {
+          "const": "connect",
+          "type": "string"
+        },
+        "hostId": {
+          "$ref": "#/$defs/Base64Url32Bytes"
+        },
+        "state": {
+          "const": "connecting",
+          "type": "string"
+        }
+      },
+      "required": [
+        "hostId",
+        "action",
+        "state",
+        "acceptedAt"
+      ],
+      "type": "object",
+      "x-waifus-cache-control": "no-store"
+    },
     "ConnectionShellOrigin": {
       "format": "waifus-isolated-loopback-origin-v1",
       "maxLength": 96,
@@ -978,6 +1005,33 @@
         }
       ]
     },
+    "DisconnectRememberedHostResultV1": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "const": "disconnect",
+          "type": "string"
+        },
+        "completedAt": {
+          "$ref": "#/$defs/Uint64Decimal"
+        },
+        "hostId": {
+          "$ref": "#/$defs/Base64Url32Bytes"
+        },
+        "state": {
+          "const": "offline",
+          "type": "string"
+        }
+      },
+      "required": [
+        "hostId",
+        "action",
+        "state",
+        "completedAt"
+      ],
+      "type": "object",
+      "x-waifus-cache-control": "no-store"
+    },
     "EventCursorV1": {
       "format": "waifus-event-cursor-v1",
       "maxLength": 46,
@@ -986,12 +1040,544 @@
       "x-waifus-sequence": "canonical uint64 decimal",
       "x-waifus-stream-epoch-bytes": 16
     },
+    "ForgetRememberedHostInputV1": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "mode": {
+              "const": "reachable_first",
+              "type": "string"
+            },
+            "revision": {
+              "$ref": "#/$defs/Uint64Decimal"
+            }
+          },
+          "required": [
+            "revision",
+            "mode"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "mode": {
+              "const": "local_only_confirmed",
+              "type": "string"
+            },
+            "revision": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "warningCode": {
+              "const": "host_unreachable_remote_trust_may_remain",
+              "type": "string"
+            }
+          },
+          "required": [
+            "revision",
+            "mode",
+            "warningCode"
+          ],
+          "type": "object"
+        }
+      ],
+      "x-waifus-local-only-warning-code": "host_unreachable_remote_trust_may_remain"
+    },
+    "ForgetRememberedHostResultV1": {
+      "anyOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "hostId": {
+              "$ref": "#/$defs/Base64Url32Bytes"
+            },
+            "requiredMode": {
+              "const": "local_only_confirmed",
+              "type": "string"
+            },
+            "revision": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "state": {
+              "const": "local_only_confirmation_required",
+              "type": "string"
+            },
+            "warningCode": {
+              "const": "host_unreachable_remote_trust_may_remain",
+              "type": "string"
+            }
+          },
+          "required": [
+            "hostId",
+            "state",
+            "revision",
+            "warningCode",
+            "requiredMode"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "forgottenAt": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "hostId": {
+              "$ref": "#/$defs/Base64Url32Bytes"
+            },
+            "revocation": {
+              "const": "signed_self_revocation",
+              "type": "string"
+            },
+            "state": {
+              "const": "forgotten",
+              "type": "string"
+            }
+          },
+          "required": [
+            "hostId",
+            "state",
+            "revocation",
+            "forgottenAt"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "forgottenAt": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "hostId": {
+              "$ref": "#/$defs/Base64Url32Bytes"
+            },
+            "revocation": {
+              "const": "local_only",
+              "type": "string"
+            },
+            "state": {
+              "const": "forgotten",
+              "type": "string"
+            },
+            "warningCode": {
+              "const": "host_unreachable_remote_trust_may_remain",
+              "type": "string"
+            }
+          },
+          "required": [
+            "hostId",
+            "state",
+            "revocation",
+            "warningCode",
+            "forgottenAt"
+          ],
+          "type": "object"
+        }
+      ],
+      "x-waifus-cache-control": "no-store",
+      "x-waifus-forget-order": "signed self-revocation before reachable deletion; explicit warning before local-only deletion",
+      "x-waifus-origin-transition": "allocate a greater local origin epoch before deleting the remembered host"
+    },
     "FullPairToken": {
       "maxLength": 1024,
       "minLength": 8,
       "pattern": "^WF1\\.[A-Za-z0-9_-]+$",
       "type": "string",
       "x-waifus-secret-request-field": true
+    },
+    "GatewayBootstrapV1": {
+      "additionalProperties": false,
+      "properties": {
+        "activationState": {
+          "enum": [
+            "activation_required",
+            "active",
+            "renewal_due"
+          ],
+          "type": "string"
+        },
+        "capabilities": {
+          "items": {
+            "maxLength": 96,
+            "minLength": 1,
+            "pattern": "^[a-z][a-z0-9-]*(?:\\.[a-z][a-z0-9-]*)*\\.v(?:0|[1-9][0-9]*)$",
+            "type": "string"
+          },
+          "maxItems": 128,
+          "type": "array"
+        },
+        "controlState": {
+          "enum": [
+            "inactive",
+            "connecting",
+            "connected",
+            "reconnecting",
+            "unavailable"
+          ],
+          "type": "string"
+        },
+        "directState": {
+          "enum": [
+            "inactive",
+            "direct",
+            "reconnecting",
+            "direct_unavailable"
+          ],
+          "type": "string"
+        },
+        "gatewayVersion": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$",
+          "type": "string"
+        },
+        "helperReleaseSequence": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "helperState": {
+          "enum": [
+            "disabled",
+            "starting",
+            "ready",
+            "degraded",
+            "failed"
+          ],
+          "type": "string"
+        },
+        "helperVersion": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lastErrorCode": {
+          "anyOf": [
+            {
+              "enum": [
+                "activation_required",
+                "bind_not_loopback",
+                "control_unavailable",
+                "coordination_unavailable",
+                "custom_dashboard_unsupported",
+                "direct_path_lost",
+                "direct_timeout",
+                "helper_incompatible",
+                "helper_missing",
+                "helper_signature_invalid",
+                "helper_unavailable",
+                "identity_corrupt",
+                "port_mapping_unavailable",
+                "repair_required",
+                "stun_unavailable",
+                "udp_unavailable",
+                "unsupported_platform",
+                "vault_protected_file_fallback",
+                "vault_unavailable",
+                "worker_quota_exhausted"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "protocol": {
+          "$ref": "#/$defs/ProtocolVersion"
+        },
+        "rememberedHostCount": {
+          "maximum": 256,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "selectedHostId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Base64Url32Bytes"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "selectionState": {
+          "enum": [
+            "no_hosts",
+            "selection_required",
+            "automatic_single",
+            "explicit"
+          ],
+          "type": "string"
+        },
+        "session": {
+          "additionalProperties": false,
+          "properties": {
+            "absoluteExpiresAt": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "idleExpiresAt": {
+              "$ref": "#/$defs/Uint64Decimal"
+            }
+          },
+          "required": [
+            "idleExpiresAt",
+            "absoluteExpiresAt"
+          ],
+          "type": "object"
+        },
+        "version": {
+          "const": 1,
+          "type": "number"
+        }
+      },
+      "required": [
+        "version",
+        "gatewayVersion",
+        "helperVersion",
+        "helperReleaseSequence",
+        "protocol",
+        "capabilities",
+        "session",
+        "activationState",
+        "helperState",
+        "controlState",
+        "directState",
+        "rememberedHostCount",
+        "selectionState",
+        "selectedHostId",
+        "lastErrorCode"
+      ],
+      "type": "object",
+      "x-waifus-cache-control": "no-store",
+      "x-waifus-csrf-delivery": "X-Waifus-CSRF response header only",
+      "x-waifus-forbidden-fields": [
+        "gatewayLaunchId",
+        "browserSessionId",
+        "csrfToken",
+        "dataRoot",
+        "helperSocketPath",
+        "endpoint",
+        "pairId"
+      ],
+      "x-waifus-origin-scope": "installed connection-shell origin only; downloaded dashboard origins receive 404",
+      "x-waifus-redacted": true,
+      "x-waifus-selection-state": {
+        "automatic_single": "exactly one remembered host selected automatically",
+        "explicit": "a remembered host selected by an explicit user or CLI choice",
+        "no_hosts": "zero remembered hosts and no selected host",
+        "selection_required": "multiple remembered hosts and no selected host"
+      },
+      "x-waifus-session-timeouts-seconds": {
+        "absolute": 28800,
+        "idle": 1800
+      }
+    },
+    "GatewayLocalEventV1": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "activationOperationId": {
+              "$ref": "#/$defs/Base64Url32Bytes"
+            },
+            "at": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "state": {
+              "enum": [
+                "pending",
+                "completed",
+                "failed",
+                "expired",
+                "cancelled"
+              ],
+              "type": "string"
+            },
+            "type": {
+              "const": "activation_operation_state_changed",
+              "type": "string"
+            },
+            "version": {
+              "const": 1,
+              "type": "number"
+            }
+          },
+          "required": [
+            "version",
+            "type",
+            "activationOperationId",
+            "state",
+            "at"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "at": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "pairOperationId": {
+              "$ref": "#/$defs/Base64Url32Bytes"
+            },
+            "state": {
+              "enum": [
+                "starting",
+                "verification_required",
+                "awaiting_host_approval",
+                "connecting",
+                "completed",
+                "failed",
+                "expired",
+                "cancelled"
+              ],
+              "type": "string"
+            },
+            "type": {
+              "const": "pair_operation_state_changed",
+              "type": "string"
+            },
+            "version": {
+              "const": 1,
+              "type": "number"
+            }
+          },
+          "required": [
+            "version",
+            "type",
+            "pairOperationId",
+            "state",
+            "at"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "at": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "type": {
+              "const": "remembered_hosts_changed",
+              "type": "string"
+            },
+            "version": {
+              "const": 1,
+              "type": "number"
+            }
+          },
+          "required": [
+            "version",
+            "type",
+            "at"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "at": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "hostId": {
+              "$ref": "#/$defs/Base64Url32Bytes"
+            },
+            "state": {
+              "enum": [
+                "offline",
+                "direct",
+                "reconnecting",
+                "direct_unavailable"
+              ],
+              "type": "string"
+            },
+            "type": {
+              "const": "host_connection_changed",
+              "type": "string"
+            },
+            "version": {
+              "const": 1,
+              "type": "number"
+            }
+          },
+          "required": [
+            "version",
+            "type",
+            "hostId",
+            "state",
+            "at"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "at": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "hostId": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Base64Url32Bytes"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "selectionState": {
+              "enum": [
+                "no_hosts",
+                "selection_required",
+                "automatic_single",
+                "explicit"
+              ],
+              "type": "string"
+            },
+            "type": {
+              "const": "host_selection_changed",
+              "type": "string"
+            },
+            "version": {
+              "const": 1,
+              "type": "number"
+            }
+          },
+          "required": [
+            "version",
+            "type",
+            "hostId",
+            "selectionState",
+            "at"
+          ],
+          "type": "object"
+        }
+      ],
+      "x-waifus-cache-control": "no-store",
+      "x-waifus-cursor": "SSE EventCursorV1 in the id field; Last-Event-ID enables bounded replay",
+      "x-waifus-forbidden-fields": [
+        "sasWords",
+        "sasFingerprint",
+        "identity",
+        "endpoint",
+        "token",
+        "code"
+      ]
     },
     "GetResetStatusCommand": {
       "additionalProperties": false,
@@ -3396,6 +3982,150 @@
         "minor"
       ],
       "type": "object"
+    },
+    "RememberedHostActionInputV1": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+    },
+    "RememberedHostListV1": {
+      "additionalProperties": false,
+      "properties": {
+        "hosts": {
+          "items": {
+            "$ref": "#/$defs/RememberedHostSummaryV1"
+          },
+          "maxItems": 256,
+          "type": "array"
+        },
+        "version": {
+          "const": 1,
+          "type": "number"
+        }
+      },
+      "required": [
+        "version",
+        "hosts"
+      ],
+      "type": "object",
+      "x-waifus-cache-control": "no-store",
+      "x-waifus-maximum-hosts": 256,
+      "x-waifus-partition-scope": "canonical data root",
+      "x-waifus-unique-by": "hostId"
+    },
+    "RememberedHostSummaryV1": {
+      "additionalProperties": false,
+      "properties": {
+        "connectionState": {
+          "enum": [
+            "offline",
+            "direct",
+            "reconnecting",
+            "direct_unavailable"
+          ],
+          "type": "string"
+        },
+        "displayName": {
+          "$ref": "#/$defs/DeviceDisplayName"
+        },
+        "hostId": {
+          "$ref": "#/$defs/Base64Url32Bytes"
+        },
+        "installationFingerprint": {
+          "$ref": "#/$defs/Base64Url16Bytes"
+        },
+        "lastDirectAt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lastErrorCode": {
+          "anyOf": [
+            {
+              "enum": [
+                "activation_required",
+                "bind_not_loopback",
+                "control_unavailable",
+                "coordination_unavailable",
+                "custom_dashboard_unsupported",
+                "direct_path_lost",
+                "direct_timeout",
+                "helper_incompatible",
+                "helper_missing",
+                "helper_signature_invalid",
+                "helper_unavailable",
+                "identity_corrupt",
+                "port_mapping_unavailable",
+                "repair_required",
+                "stun_unavailable",
+                "udp_unavailable",
+                "unsupported_platform",
+                "vault_protected_file_fallback",
+                "vault_unavailable",
+                "worker_quota_exhausted"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lastSeenAt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pairedAt": {
+          "$ref": "#/$defs/Uint64Decimal"
+        },
+        "platform": {
+          "$ref": "#/$defs/HelperTarget"
+        },
+        "revision": {
+          "$ref": "#/$defs/Uint64Decimal"
+        },
+        "trustEpoch": {
+          "$ref": "#/$defs/Uint64Decimal"
+        },
+        "version": {
+          "const": 1,
+          "type": "number"
+        }
+      },
+      "required": [
+        "version",
+        "hostId",
+        "displayName",
+        "platform",
+        "installationFingerprint",
+        "trustEpoch",
+        "revision",
+        "pairedAt",
+        "lastSeenAt",
+        "lastDirectAt",
+        "connectionState",
+        "lastErrorCode"
+      ],
+      "type": "object",
+      "x-waifus-forbidden-fields": [
+        "pairId",
+        "identityBundle",
+        "originEpoch",
+        "localOrigin",
+        "endpointCandidates",
+        "pairSecret"
+      ]
     },
     "RemoteAccessDiagnosticsV1": {
       "additionalProperties": false,
