@@ -3,6 +3,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   ApprovalReceiptV1Schema,
+  DashboardManifestSchema,
   GetResetStatusCommandSchema,
   HELPER_PACKAGE_TARGETS,
   HelperManifestSchema,
@@ -357,8 +358,32 @@ describe("checked-in remote-access wire contract", () => {
       const expectedValid = relativePath.includes("/valid/");
       const schema = relativePath.includes("approval-receipt")
         ? ApprovalReceiptV1Schema
-        : IdentityResetReceiptV1Schema;
+        : relativePath.includes("dashboard-manifest")
+          ? DashboardManifestSchema
+          : IdentityResetReceiptV1Schema;
       expect(schema.safeParse(value).success, relativePath).toBe(expectedValid);
     }
+  });
+
+  it("publishes bounded, derived dashboard-manifest invariants", () => {
+    const schema = createRemoteAccessJsonSchema() as {
+      $defs: Record<string, Record<string, unknown>>;
+    };
+    expect(schema.$defs.DashboardAssetV1).toMatchObject({
+      additionalProperties: false,
+      "x-waifus-content-type-derived-from": "path",
+      "x-waifus-maximum-byte-size": 16_777_216,
+      "x-waifus-normalized-relative-path-field": "path"
+    });
+    expect(schema.$defs.DashboardManifestV1).toMatchObject({
+      additionalProperties: false,
+      "x-waifus-assets-ascii-sorted-unique": true,
+      "x-waifus-maximum-raw-bytes": 4_194_304,
+      "x-waifus-required-asset": "index.html"
+    });
+    expect(schema.$defs.DashboardManifestV1).toHaveProperty(
+      "x-waifus-build-id.input",
+      "RFC 8785 canonical manifest object with buildId omitted"
+    );
   });
 });

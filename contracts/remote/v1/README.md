@@ -18,9 +18,11 @@ Current foundation:
   Node resolver and the private Go packager. Signature/trust-window fixtures land with the crypto
   conformance layer. Each fixture file itself uses RFC 8785 canonical JSON bytes.
 - `remote-access.schema.json` currently freezes attended `ApprovalReceiptV1`, exact
-  `PairConfirmationV1`, all nine signed `PairControlRecordV1` variants, plus the strict helper
-  identity-reset command, status lookup, and crash-journal receipt records. Its fixtures cover both
-  local and trusted-remote browser bindings and impossible reset stages.
+  `PairConfirmationV1`, all nine signed `PairControlRecordV1` variants, the canonical dashboard
+  bundle manifest, plus the strict helper identity-reset command, status lookup, and crash-journal
+  receipt records. Dashboard fixtures freeze normalized sorted asset paths, the 16 MiB per-asset
+  ceiling, exact content types, compatibility pins, and the SHA-256-derived build ID. Approval and
+  reset fixtures cover both local and trusted-remote browser bindings and impossible reset stages.
 - `fixtures/crypto/wipc-v1.json` freezes all 14 V1 frame-type headers, valid and invalid
   24-byte header boundaries, the exact eight-byte `WINDOW_UPDATE`, odd/even high-water and
   exhaustion cases, and the capability-derived `parentProof`/`helperProof` bytes. Connection
@@ -96,6 +98,6 @@ Consumers must enforce those annotations or use the public conformance fixtures.
 Schema validator that ignores them is not a complete protocol validator.
 
 This remains an incomplete contract gate. The reviewed 1,024-word SAS artifact and word mapping,
-and remaining remote-access/dashboard DTOs must land before
+and remaining operational remote-access DTOs must land before
 production helper, pairing, Cloudflare, host bridge, or remote gateway work may rely on this
 directory as a complete V1 authority.

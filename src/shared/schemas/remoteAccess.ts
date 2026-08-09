@@ -290,6 +290,109 @@ export const HelperManifestSchema = z
 export type HelperManifest = z.infer<typeof HelperManifestSchema>;
 export type HelperManifestInput = z.input<typeof HelperManifestSchema>;
 
+export const DASHBOARD_ASSET_MAX_BYTES = 16 * 1024 * 1024;
+export const DASHBOARD_ASSET_MAX_COUNT = 4_096;
+export const DASHBOARD_MANIFEST_FILENAME = "waifus-dashboard-manifest.json";
+
+const DashboardAssetPathSchema = z
+  .string()
+  .min(1)
+  .max(512)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._/-]*$/)
+  .refine((value) => {
+    if (
+      value.startsWith("/")
+      || value.endsWith("/")
+      || value.includes("\\")
+      || value.includes("//")
+    ) {
+      return false;
+    }
+    return value.split("/").every((segment) => segment !== "." && segment !== "..");
+  }, "Expected a normalized relative dashboard asset path.")
+  .refine(
+    (value) => value !== DASHBOARD_MANIFEST_FILENAME,
+    "The dashboard manifest cannot include itself as an asset."
+  );
+
+export const DashboardAssetContentTypeSchema = z.enum([
+  "application/json; charset=utf-8",
+  "application/wasm",
+  "font/otf",
+  "font/ttf",
+  "font/woff",
+  "font/woff2",
+  "image/avif",
+  "image/gif",
+  "image/jpeg",
+  "image/png",
+  "image/svg+xml",
+  "image/webp",
+  "image/x-icon",
+  "text/css; charset=utf-8",
+  "text/html; charset=utf-8",
+  "text/javascript; charset=utf-8"
+]);
+
+export const DashboardAssetSchema = z.object({
+  path: DashboardAssetPathSchema,
+  byteSize: PositiveUint64DecimalSchema.refine(
+    (value) => BigInt(value) <= BigInt(DASHBOARD_ASSET_MAX_BYTES),
+    `Dashboard assets must not exceed ${DASHBOARD_ASSET_MAX_BYTES} bytes.`
+  ),
+  sha256: Sha256HexSchema,
+  contentType: DashboardAssetContentTypeSchema
+}).strict();
+
+const DashboardProtocolVersionV1Schema = z.object({
+  major: z.literal(1),
+  minor: z.literal(0)
+}).strict();
+
+export const DashboardManifestSchema = z.object({
+  schemaVersion: z.literal(1),
+  buildId: Sha256HexSchema,
+  discordWaifusVersion: SemVerSchema,
+  apiVersion: DashboardProtocolVersionV1Schema,
+  transportVersion: DashboardProtocolVersionV1Schema,
+  minimumHelperVersion: SemVerSchema,
+  minimumRemoteGatewayVersion: SemVerSchema,
+  requiredCapabilities: CapabilityNameListSchema.min(1),
+  assets: z.array(DashboardAssetSchema).min(1).max(DASHBOARD_ASSET_MAX_COUNT)
+}).strict().superRefine((value, ctx) => {
+  let foundIndex = false;
+  for (let index = 0; index < value.assets.length; index += 1) {
+    const asset = value.assets[index];
+    if (asset.path === "index.html") {
+      foundIndex = true;
+      if (asset.contentType !== "text/html; charset=utf-8") {
+        ctx.addIssue({
+          code: "custom",
+          path: ["assets", index, "contentType"],
+          message: "index.html must use the exact HTML content type."
+        });
+      }
+    }
+    if (index > 0 && value.assets[index - 1].path >= asset.path) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["assets", index, "path"],
+        message: "Dashboard assets must be ASCII-sorted and unique."
+      });
+    }
+  }
+  if (!foundIndex) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["assets"],
+      message: "Dashboard assets must contain index.html."
+    });
+  }
+});
+
+export type DashboardAsset = z.infer<typeof DashboardAssetSchema>;
+export type DashboardManifest = z.infer<typeof DashboardManifestSchema>;
+
 export const CanonicalIdentityBundleCborSchema = z
   .string()
   .min(1)

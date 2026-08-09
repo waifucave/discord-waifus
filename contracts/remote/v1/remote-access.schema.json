@@ -325,6 +325,171 @@
       "minLength": 1,
       "type": "string"
     },
+    "DashboardAssetContentType": {
+      "enum": [
+        "application/json; charset=utf-8",
+        "application/wasm",
+        "font/otf",
+        "font/ttf",
+        "font/woff",
+        "font/woff2",
+        "image/avif",
+        "image/gif",
+        "image/jpeg",
+        "image/png",
+        "image/svg+xml",
+        "image/webp",
+        "image/x-icon",
+        "text/css; charset=utf-8",
+        "text/html; charset=utf-8",
+        "text/javascript; charset=utf-8"
+      ],
+      "type": "string"
+    },
+    "DashboardAssetV1": {
+      "additionalProperties": false,
+      "properties": {
+        "byteSize": {
+          "$ref": "#/$defs/PositiveUint64Decimal",
+          "maxLength": 20,
+          "pattern": "^(?:0|[1-9][0-9]{0,18}|1[0-7][0-9]{18}|18[0-3][0-9]{17}|184[0-3][0-9]{16}|1844[0-5][0-9]{15}|18446[0-6][0-9]{14}|184467[0-3][0-9]{13}|1844674[0-3][0-9]{12}|184467440[0-6][0-9]{10}|1844674407[0-2][0-9]{9}|18446744073[0-6][0-9]{8}|1844674407370[0-8][0-9]{6}|18446744073709[0-4][0-9]{5}|184467440737095[0-4][0-9]{4}|18446744073709550[0-9]{3}|18446744073709551[0-5][0-9]{2}|1844674407370955160[0-9]{1}|1844674407370955161[0-4]|18446744073709551615)$",
+          "type": "string"
+        },
+        "contentType": {
+          "$ref": "#/$defs/DashboardAssetContentType"
+        },
+        "path": {
+          "maxLength": 512,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]*$",
+          "type": "string"
+        },
+        "sha256": {
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "byteSize",
+        "sha256",
+        "contentType"
+      ],
+      "type": "object",
+      "x-waifus-content-type-derived-from": "path",
+      "x-waifus-maximum-byte-size": 16777216,
+      "x-waifus-normalized-relative-path-field": "path"
+    },
+    "DashboardManifestV1": {
+      "additionalProperties": false,
+      "properties": {
+        "apiVersion": {
+          "additionalProperties": false,
+          "properties": {
+            "major": {
+              "const": 1,
+              "type": "number"
+            },
+            "minor": {
+              "const": 0,
+              "type": "number"
+            }
+          },
+          "required": [
+            "major",
+            "minor"
+          ],
+          "type": "object"
+        },
+        "assets": {
+          "items": {
+            "$ref": "#/$defs/DashboardAssetV1"
+          },
+          "maxItems": 4096,
+          "minItems": 1,
+          "type": "array"
+        },
+        "buildId": {
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "discordWaifusVersion": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$",
+          "type": "string"
+        },
+        "minimumHelperVersion": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$",
+          "type": "string"
+        },
+        "minimumRemoteGatewayVersion": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$",
+          "type": "string"
+        },
+        "requiredCapabilities": {
+          "items": {
+            "maxLength": 96,
+            "minLength": 1,
+            "pattern": "^[a-z][a-z0-9-]*(?:\\.[a-z][a-z0-9-]*)*\\.v(?:0|[1-9][0-9]*)$",
+            "type": "string"
+          },
+          "maxItems": 128,
+          "minItems": 1,
+          "type": "array"
+        },
+        "schemaVersion": {
+          "const": 1,
+          "type": "number"
+        },
+        "transportVersion": {
+          "additionalProperties": false,
+          "properties": {
+            "major": {
+              "const": 1,
+              "type": "number"
+            },
+            "minor": {
+              "const": 0,
+              "type": "number"
+            }
+          },
+          "required": [
+            "major",
+            "minor"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "buildId",
+        "discordWaifusVersion",
+        "apiVersion",
+        "transportVersion",
+        "minimumHelperVersion",
+        "minimumRemoteGatewayVersion",
+        "requiredCapabilities",
+        "assets"
+      ],
+      "type": "object",
+      "x-waifus-assets-ascii-sorted-unique": true,
+      "x-waifus-build-id": {
+        "algorithm": "SHA-256",
+        "encoding": "lowercase hex",
+        "input": "RFC 8785 canonical manifest object with buildId omitted"
+      },
+      "x-waifus-maximum-raw-bytes": 4194304,
+      "x-waifus-required-asset": "index.html"
+    },
     "DeviceRoleV1": {
       "anyOf": [
         {
@@ -1999,10 +2164,13 @@
   },
   "$id": "https://waifucave.com/contracts/remote/v1/remote-access.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "description": "Attended approval, pairing confirmation, pair-control, and installation-reset wire records shared by Discord Waifus and ts-connect.",
+  "description": "Dashboard manifests, attended approval, pairing confirmation, pair-control, and installation-reset wire records shared by Discord Waifus and ts-connect.",
   "oneOf": [
     {
       "$ref": "#/$defs/ApprovalReceiptV1"
+    },
+    {
+      "$ref": "#/$defs/DashboardManifestV1"
     },
     {
       "$ref": "#/$defs/GetResetStatusCommand"

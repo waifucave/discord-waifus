@@ -1,8 +1,13 @@
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
   ApprovalReceiptV1Schema,
   CanonicalReleasedAtSchema,
   CanonicalIdentityBundleCborSchema,
+  DASHBOARD_ASSET_MAX_BYTES,
+  DashboardAssetContentTypeSchema,
+  DashboardAssetSchema,
+  DashboardManifestSchema,
   GetResetStatusCommandSchema,
   GitCommitSha1Schema,
   HELPER_PACKAGE_TARGETS,
@@ -41,7 +46,10 @@ import {
   SemVerSchema,
   Uint64DecimalSchema
 } from "./remoteProtocol.js";
-import type { ContractJson } from "./remoteProtocolContract.js";
+import {
+  serializeCanonicalContractJson,
+  type ContractJson
+} from "./remoteProtocolContract.js";
 
 export const HELPER_MANIFEST_SCHEMA_ID =
   "https://waifucave.com/contracts/remote/v1/helper-manifest.schema.json";
@@ -238,6 +246,9 @@ const remoteAccessRegisteredSchemas: ReadonlyArray<readonly [string, z.ZodType]>
   ["Base64Url32Bytes", Base64Url32BytesSchema],
   ["CanonicalIdentityBundleCbor", CanonicalIdentityBundleCborSchema],
   ["CanonicalTarget", CanonicalTargetSchema],
+  ["DashboardAssetContentType", DashboardAssetContentTypeSchema],
+  ["DashboardAssetV1", DashboardAssetSchema],
+  ["DashboardManifestV1", DashboardManifestSchema],
   ["DeviceRoleV1", DeviceRoleV1Schema],
   ["GetResetStatusCommand", GetResetStatusCommandSchema],
   ["HttpMethod", HttpMethodSchema],
@@ -301,6 +312,17 @@ export function createRemoteAccessJsonSchema(): ContractJsonObject {
     ["oldInstallationPublicKey", "newInstallationPublicKey"],
     ["oldFingerprint", "newFingerprint"]
   ];
+  definitions.DashboardAssetV1["x-waifus-normalized-relative-path-field"] = "path";
+  definitions.DashboardAssetV1["x-waifus-content-type-derived-from"] = "path";
+  definitions.DashboardAssetV1["x-waifus-maximum-byte-size"] = DASHBOARD_ASSET_MAX_BYTES;
+  definitions.DashboardManifestV1["x-waifus-build-id"] = {
+    algorithm: "SHA-256",
+    encoding: "lowercase hex",
+    input: "RFC 8785 canonical manifest object with buildId omitted"
+  };
+  definitions.DashboardManifestV1["x-waifus-assets-ascii-sorted-unique"] = true;
+  definitions.DashboardManifestV1["x-waifus-required-asset"] = "index.html";
+  definitions.DashboardManifestV1["x-waifus-maximum-raw-bytes"] = 4 * 1024 * 1024;
   definitions.PairControlEndpointGenerationPayloadV1["x-waifus-sha256-of"] = {
     digestField: "ciphertextSha256",
     decodedBase64UrlField: "ciphertext"
@@ -331,9 +353,10 @@ export function createRemoteAccessJsonSchema(): ContractJsonObject {
     $id: REMOTE_ACCESS_SCHEMA_ID,
     title: "Waifus Remote Access Wire Contracts V1",
     description:
-      "Attended approval, pairing confirmation, pair-control, and installation-reset wire records shared by Discord Waifus and ts-connect.",
+      "Dashboard manifests, attended approval, pairing confirmation, pair-control, and installation-reset wire records shared by Discord Waifus and ts-connect.",
     oneOf: [
       { $ref: "#/$defs/ApprovalReceiptV1" },
+      { $ref: "#/$defs/DashboardManifestV1" },
       { $ref: "#/$defs/GetResetStatusCommand" },
       { $ref: "#/$defs/IdentityResetReceiptV1" },
       { $ref: "#/$defs/PairConfirmationV1" },
@@ -416,8 +439,49 @@ function identityResetReceiptFixture(stage: "prepared" | "complete"): ContractJs
   };
 }
 
+function dashboardManifestFixture(): ContractJsonObject {
+  const payload: ContractJsonObject = {
+    schemaVersion: 1,
+    discordWaifusVersion: "1.5.203",
+    apiVersion: { major: 1, minor: 0 },
+    transportVersion: { major: 1, minor: 0 },
+    minimumHelperVersion: "0.1.0",
+    minimumRemoteGatewayVersion: "1.5.203",
+    requiredCapabilities: [
+      "waifus.browser-context.v1",
+      "waifus.dashboard.manifest.v1",
+      "waifus.http.v1",
+      "waifus.principal.v1",
+      "waifus.sse.cursor.v1",
+      "waifus.stream.cancel.v1"
+    ],
+    assets: [
+      {
+        path: "assets/index-a1.js",
+        byteSize: "23",
+        sha256: "1".repeat(64),
+        contentType: "text/javascript; charset=utf-8"
+      },
+      {
+        path: "index.html",
+        byteSize: "64",
+        sha256: "2".repeat(64),
+        contentType: "text/html; charset=utf-8"
+      }
+    ]
+  };
+  const buildId = createHash("sha256")
+    .update(serializeCanonicalContractJson(payload))
+    .digest("hex");
+  return { ...payload, buildId };
+}
+
 export function createRemoteAccessFixtureSet(): ReadonlyMap<string, ContractJsonObject> {
   const fixtures = new Map<string, ContractJsonObject>();
+  fixtures.set(
+    "fixtures/valid/dashboard-manifest.json",
+    dashboardManifestFixture()
+  );
   fixtures.set(
     "fixtures/valid/approval-receipt-local.json",
     approvalReceiptFixture("local")
@@ -476,6 +540,25 @@ export function createRemoteAccessFixtureSet(): ReadonlyMap<string, ContractJson
   reusedIdentity.newInstallationPublicKey = reusedIdentity.oldInstallationPublicKey;
   reusedIdentity.newFingerprint = reusedIdentity.oldFingerprint;
   fixtures.set("fixtures/invalid/identity-reset-receipt-reused-identity.json", reusedIdentity);
+
+  const dashboardTraversal = cloneFixture(dashboardManifestFixture());
+  (dashboardTraversal.assets as ContractJsonObject[])[0].path = "../index.html";
+  fixtures.set("fixtures/invalid/dashboard-manifest-traversal.json", dashboardTraversal);
+
+  const dashboardUnsorted = cloneFixture(dashboardManifestFixture());
+  const unsortedAssets = dashboardUnsorted.assets as ContractJson[];
+  dashboardUnsorted.assets = [...unsortedAssets].reverse();
+  fixtures.set("fixtures/invalid/dashboard-manifest-unsorted.json", dashboardUnsorted);
+
+  const dashboardOversized = cloneFixture(dashboardManifestFixture());
+  (dashboardOversized.assets as ContractJsonObject[])[0].byteSize = (
+    DASHBOARD_ASSET_MAX_BYTES + 1
+  ).toString(10);
+  fixtures.set("fixtures/invalid/dashboard-manifest-oversized.json", dashboardOversized);
+
+  const dashboardSelfIncluded = cloneFixture(dashboardManifestFixture());
+  (dashboardSelfIncluded.assets as ContractJsonObject[])[0].path = "waifus-dashboard-manifest.json";
+  fixtures.set("fixtures/invalid/dashboard-manifest-self-included.json", dashboardSelfIncluded);
 
   return fixtures;
 }
