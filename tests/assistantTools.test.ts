@@ -4,6 +4,7 @@ import { createRuntimeState } from "../src/backend/runtime.js";
 import { ensureDataLayout } from "../src/config/layout.js";
 import { StorageService } from "../src/storage/storageService.js";
 import { executeAssistantTool, toolDefs } from "../src/api/assistant/tools.js";
+import { LOCAL_REQUEST_PRINCIPAL } from "../src/api/requestPrincipal.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
 
 let roots: string[] = [];
@@ -30,6 +31,10 @@ async function makeApp() {
   });
   const app = await createApiServer({ dataRoot: root, runtime, storage: new StorageService(root) });
   return { app, root };
+}
+
+function localToolContext(app: Awaited<ReturnType<typeof makeApp>>["app"]) {
+  return { app, principal: LOCAL_REQUEST_PRINCIPAL };
 }
 
 describe("assistant tools", () => {
@@ -82,7 +87,7 @@ describe("assistant tools", () => {
   it("creates and updates a waifu through the real API handlers", async () => {
     const { app } = await makeApp();
     try {
-      const ctx = { app };
+      const ctx = localToolContext(app);
       const created = await executeAssistantTool(
         ctx,
         "create_waifu",
@@ -105,7 +110,7 @@ describe("assistant tools", () => {
   it("never leaks provider keys through list_providers", async () => {
     const { app } = await makeApp();
     try {
-      const ctx = { app };
+      const ctx = localToolContext(app);
       await executeAssistantTool(ctx, "set_provider_key", JSON.stringify({ providerId: "deepseek", apiKey: "sk-super-secret" }));
       const listed = await executeAssistantTool(ctx, "list_providers", "{}");
       expect(listed).not.toContain("sk-super-secret");
@@ -118,7 +123,7 @@ describe("assistant tools", () => {
   it("reads agent configs and updates them with revision retry", async () => {
     const { app } = await makeApp();
     try {
-      const ctx = { app };
+      const ctx = localToolContext(app);
       const updated = await executeAssistantTool(
         ctx,
         "update_agent_config",
@@ -135,11 +140,11 @@ describe("assistant tools", () => {
   it("returns tool errors as strings instead of throwing", async () => {
     const { app } = await makeApp();
     try {
-      const missing = await executeAssistantTool({ app }, "get_waifu", JSON.stringify({ id: "ghost" }));
+      const missing = await executeAssistantTool(localToolContext(app), "get_waifu", JSON.stringify({ id: "ghost" }));
       expect(missing.toLowerCase()).toContain("not found");
-      const unknown = await executeAssistantTool({ app }, "no_such_tool", "{}");
+      const unknown = await executeAssistantTool(localToolContext(app), "no_such_tool", "{}");
       expect(unknown).toContain("Unknown tool");
-      const badArgs = await executeAssistantTool({ app }, "get_waifu", "{nope");
+      const badArgs = await executeAssistantTool(localToolContext(app), "get_waifu", "{nope");
       expect(badArgs).toContain("Invalid arguments");
     } finally {
       await app.close();
@@ -150,13 +155,13 @@ describe("assistant tools", () => {
     const { app } = await makeApp();
     try {
       const created = await executeAssistantTool(
-        { app },
+        localToolContext(app),
         "create_waifu",
         JSON.stringify({ id: "reiko", name: "Reiko", displayName: "Reiko", persona: "sweet" })
       );
       expect(created).toContain("reiko");
       const result = await executeAssistantTool(
-        { app },
+        localToolContext(app),
         "link_waifu_bot",
         JSON.stringify({ waifuId: "reiko", applicationId: "1523083688701591562" })
       );
@@ -177,8 +182,8 @@ describe("assistant tools", () => {
   it("delete_waifu actually deletes (fetches the revision itself)", async () => {
     const { app } = await makeApp();
     try {
-      await executeAssistantTool({ app }, "create_waifu", JSON.stringify({ id: "doomed", name: "Doomed", displayName: "Doomed", persona: "x" }));
-      const result = await executeAssistantTool({ app }, "delete_waifu", JSON.stringify({ id: "doomed" }));
+      await executeAssistantTool(localToolContext(app), "create_waifu", JSON.stringify({ id: "doomed", name: "Doomed", displayName: "Doomed", persona: "x" }));
+      const result = await executeAssistantTool(localToolContext(app), "delete_waifu", JSON.stringify({ id: "doomed" }));
       expect(result.toLowerCase()).toContain("deleted");
       const check = await app.inject({ method: "GET", url: "/api/waifus/doomed" });
       expect(check.statusCode).toBe(404);
@@ -190,14 +195,14 @@ describe("assistant tools", () => {
   it("update_memory and delete_memory carry the store revision", async () => {
     const { app } = await makeApp();
     try {
-      await executeAssistantTool({ app }, "add_memory", JSON.stringify({ waifuId: "riko", guildId: "g1", content: "old fact" }));
-      const list = JSON.parse(await executeAssistantTool({ app }, "search_memories", JSON.stringify({ q: "old" }))) as Array<{ id: string }>;
+      await executeAssistantTool(localToolContext(app), "add_memory", JSON.stringify({ waifuId: "riko", guildId: "g1", content: "old fact" }));
+      const list = JSON.parse(await executeAssistantTool(localToolContext(app), "search_memories", JSON.stringify({ q: "old" }))) as Array<{ id: string }>;
       const memoryId = list[0].id;
-      const updated = await executeAssistantTool({ app }, "update_memory", JSON.stringify({ memoryId, changes: { content: "new fact" } }));
+      const updated = await executeAssistantTool(localToolContext(app), "update_memory", JSON.stringify({ memoryId, changes: { content: "new fact" } }));
       expect(updated).toContain("new fact");
-      const deleted = await executeAssistantTool({ app }, "delete_memory", JSON.stringify({ memoryId }));
+      const deleted = await executeAssistantTool(localToolContext(app), "delete_memory", JSON.stringify({ memoryId }));
       expect(deleted.toLowerCase()).toContain("delete");
-      const after = JSON.parse(await executeAssistantTool({ app }, "search_memories", JSON.stringify({ q: "fact" }))) as unknown[];
+      const after = JSON.parse(await executeAssistantTool(localToolContext(app), "search_memories", JSON.stringify({ q: "fact" }))) as unknown[];
       expect(after).toHaveLength(0);
     } finally {
       await app.close();
@@ -207,8 +212,8 @@ describe("assistant tools", () => {
   it("clear_provider_key removes a stored key", async () => {
     const { app } = await makeApp();
     try {
-      await executeAssistantTool({ app }, "set_provider_key", JSON.stringify({ providerId: "deepseek", apiKey: "sk-test" }));
-      const cleared = await executeAssistantTool({ app }, "clear_provider_key", JSON.stringify({ providerId: "deepseek" }));
+      await executeAssistantTool(localToolContext(app), "set_provider_key", JSON.stringify({ providerId: "deepseek", apiKey: "sk-test" }));
+      const cleared = await executeAssistantTool(localToolContext(app), "clear_provider_key", JSON.stringify({ providerId: "deepseek" }));
       expect(cleared.toLowerCase()).toContain("removed");
       const providers = await app.inject({ method: "GET", url: "/api/providers" });
       expect(providers.body).not.toContain('"configured":true');
@@ -220,11 +225,11 @@ describe("assistant tools", () => {
   it("update_discord_bots merges by entry id — unlisted bots survive", async () => {
     const { app } = await makeApp();
     try {
-      await executeAssistantTool({ app }, "update_discord_bots", JSON.stringify({ waifus: [
+      await executeAssistantTool(localToolContext(app), "update_discord_bots", JSON.stringify({ waifus: [
         { id: "momo", displayName: "Momo", enabled: true, applicationId: "111" },
         { id: "riko", displayName: "Riko", enabled: true, applicationId: "222" }
       ] }));
-      await executeAssistantTool({ app }, "update_discord_bots", JSON.stringify({ waifus: [
+      await executeAssistantTool(localToolContext(app), "update_discord_bots", JSON.stringify({ waifus: [
         { id: "momo", displayName: "Momo Renamed", enabled: true }
       ] }));
       const bots = JSON.parse((await app.inject({ method: "GET", url: "/api/discord-bots" })).body) as { waifus: Array<{ id: string; displayName: string; applicationId?: string }> };
@@ -239,9 +244,9 @@ describe("assistant tools", () => {
   it("update_waifu deep-merges params — setting temperature keeps the rest", async () => {
     const { app } = await makeApp();
     try {
-      await executeAssistantTool({ app }, "create_waifu", JSON.stringify({ id: "p1", name: "P", displayName: "P", persona: "x" }));
-      await executeAssistantTool({ app }, "update_waifu", JSON.stringify({ id: "p1", changes: { params: { temperature: 0.7, topP: 0.9 } } }));
-      await executeAssistantTool({ app }, "update_waifu", JSON.stringify({ id: "p1", changes: { params: { temperature: 0.3 } } }));
+      await executeAssistantTool(localToolContext(app), "create_waifu", JSON.stringify({ id: "p1", name: "P", displayName: "P", persona: "x" }));
+      await executeAssistantTool(localToolContext(app), "update_waifu", JSON.stringify({ id: "p1", changes: { params: { temperature: 0.7, topP: 0.9 } } }));
+      await executeAssistantTool(localToolContext(app), "update_waifu", JSON.stringify({ id: "p1", changes: { params: { temperature: 0.3 } } }));
       const waifu = JSON.parse((await app.inject({ method: "GET", url: "/api/waifus/p1" })).body) as { params: Record<string, unknown> };
       expect(waifu.params).toEqual({ temperature: 0.3, topP: 0.9 });
     } finally {
@@ -253,7 +258,7 @@ describe("assistant tools", () => {
     const { app } = await makeApp();
     try {
       const result = await executeAssistantTool(
-        { app },
+        localToolContext(app),
         "request_secret",
         JSON.stringify({ purpose: "provider_key", providerId: "deepseek" })
       );
@@ -276,9 +281,9 @@ describe("assistant tools", () => {
   it("searches and reads the docs KB", async () => {
     const { app } = await makeApp();
     try {
-      const results = await executeAssistantTool({ app }, "docs_search", JSON.stringify({ query: "discord bot token intents" }));
+      const results = await executeAssistantTool(localToolContext(app), "docs_search", JSON.stringify({ query: "discord bot token intents" }));
       expect(results).toContain("discord-setup");
-      const doc = await executeAssistantTool({ app }, "docs_read", JSON.stringify({ slug: "waifus" }));
+      const doc = await executeAssistantTool(localToolContext(app), "docs_read", JSON.stringify({ slug: "waifus" }));
       expect(doc).toContain("persona");
     } finally {
       await app.close();

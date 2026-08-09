@@ -330,7 +330,12 @@ export async function startBackend(options: StartBackendOptions): Promise<Runnin
       },
       reload: enqueueReloadRuntime
     },
-    logger
+    logger,
+    browserSecurity: {
+      listenerHost: host,
+      port,
+      mode: options.mode ?? "start"
+    }
   });
 
   await app.listen({ host, port });

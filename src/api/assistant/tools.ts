@@ -1,8 +1,17 @@
 import type { FastifyInstance } from "fastify";
 import type { ToolDef } from "@waifucave/gateway";
 import { listDocs, readDoc, searchDocs } from "../docsKb.js";
+import { dispatchInternal } from "../internalDispatch.js";
+import type {
+  AssistantDelegation,
+  RequestPrincipal
+} from "../requestPrincipal.js";
 
-export type AssistantToolContext = { app: FastifyInstance };
+export type AssistantToolContext = {
+  app: FastifyInstance;
+  principal: RequestPrincipal;
+  delegation?: AssistantDelegation;
+};
 
 export type AssistantTool = {
   name: string;
@@ -15,7 +24,7 @@ async function inject(
   ctx: AssistantToolContext,
   options: { method: "GET" | "PUT" | "POST" | "DELETE"; url: string; payload?: unknown }
 ): Promise<{ status: number; body: string }> {
-  const response = await ctx.app.inject({
+  const response = await dispatchInternal(ctx.app, ctx.principal, ctx.delegation, {
     method: options.method,
     url: options.url,
     ...(options.payload === undefined ? {} : { payload: options.payload as Record<string, unknown> })

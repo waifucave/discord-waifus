@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { ModelPipeline } from "../../providers/types.js";
 import { ConversationStore } from "./conversations.js";
 import { AssistantTurnError, runAssistantTurn } from "./service.js";
+import { withoutBrowserContext } from "../requestPrincipal.js";
 
 const MessageBodySchema = z.object({ content: z.string().min(1).max(8000) });
 
@@ -34,7 +35,14 @@ export function registerAssistantRoutes(
     const body = MessageBodySchema.parse(request.body);
     try {
       const content = await runAssistantTurn(
-        { app, store, dataRoot: options.dataRoot, createPipeline: options.createPipeline },
+        {
+          app,
+          store,
+          dataRoot: options.dataRoot,
+          principal: withoutBrowserContext(request.principal),
+          delegation: { conversationId: id },
+          createPipeline: options.createPipeline
+        },
         id,
         body.content
       );

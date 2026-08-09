@@ -4,6 +4,8 @@ import { createRuntimeState } from "../src/backend/runtime.js";
 import { ensureDataLayout } from "../src/config/layout.js";
 import { StorageService } from "../src/storage/storageService.js";
 import type { ModelPipeline } from "../src/providers/types.js";
+import { dispatchInternal } from "../src/api/internalDispatch.js";
+import { createRemoteRequestPrincipal } from "../src/api/requestPrincipal.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
 
 let roots: string[] = [];
@@ -13,7 +15,10 @@ afterEach(async () => {
   roots = [];
 });
 
-async function makeApp(extra: { assistantPipeline?: ModelPipeline } = {}) {
+async function makeApp(extra: {
+  assistantPipeline?: ModelPipeline;
+  authorizeRemote?: (stableId: string) => boolean;
+} = {}) {
   const root = await makeTempRoot();
   roots.push(root);
   await ensureDataLayout(root);
@@ -32,7 +37,10 @@ async function makeApp(extra: { assistantPipeline?: ModelPipeline } = {}) {
     dataRoot: root,
     runtime,
     storage: new StorageService(root),
-    ...(extra.assistantPipeline ? { assistant: { createPipeline: () => extra.assistantPipeline! } } : {})
+    ...(extra.assistantPipeline ? { assistant: { createPipeline: () => extra.assistantPipeline! } } : {}),
+    ...(extra.authorizeRemote
+      ? { remoteTrust: { isAuthorized: (principal) => extra.authorizeRemote!(principal.stableId) } }
+      : {})
   });
   return { app, root };
 }
@@ -86,6 +94,53 @@ describe("assistant chat API", () => {
       expect(roles).toContain("user");
       expect(roles).toContain("assistant");
       expect(roles).toContain("event");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("keeps a remote actor through assistant snapshots and self-REST tools", async () => {
+    const authorizedStableIds: string[] = [];
+    const { app } = await makeApp({
+      assistantPipeline: fakePipeline,
+      authorizeRemote: (stableId) => {
+        authorizedStableIds.push(stableId);
+        return stableId === "remote:travel-mac";
+      }
+    });
+    try {
+      await app.inject({
+        method: "PUT",
+        url: "/api/providers/deepseek/credentials",
+        payload: { apiKey: "sk-test" }
+      });
+      const orchestrator = await app.inject({ method: "GET", url: "/api/orchestrator/config" });
+      await app.inject({
+        method: "PUT",
+        url: "/api/orchestrator/config",
+        payload: {
+          revision: orchestrator.json().revision,
+          providerId: "deepseek",
+          modelId: "deepseek-v4-pro"
+        }
+      });
+      const created = await app.inject({ method: "POST", url: "/api/assistant/conversations" });
+      const actor = createRemoteRequestPrincipal({
+        kind: "remote_device",
+        stableId: "remote:travel-mac",
+        deviceId: "travel-mac",
+        peerFingerprint: Buffer.alloc(16, 0x41).toString("base64url"),
+        transportSessionId: Buffer.alloc(16, 0x42).toString("base64url"),
+        trustEpoch: "5"
+      });
+      const response = await dispatchInternal(app, actor, undefined, {
+        method: "POST",
+        url: `/api/assistant/conversations/${created.json().conversationId}/messages`,
+        payload: { content: "how many?" }
+      });
+      expect(response.statusCode).toBe(200);
+      expect(authorizedStableIds.length).toBeGreaterThan(3);
+      expect(new Set(authorizedStableIds)).toEqual(new Set(["remote:travel-mac"]));
     } finally {
       await app.close();
     }

@@ -1,5 +1,9 @@
 import type { ConstraintRule, ParamDescriptor, ResolvedModel } from "@waifucave/gateway";
-import { ApiError } from "./client";
+import {
+  ApiError,
+  browserSecurityHeaders,
+  recoverBrowserSession
+} from "./client";
 
 // Re-export so callers only ever touch "@waifucave/gateway" through this module
 // (type-only — see docs/superpowers/plans/2026-07-02-gateway-p5-frontend.md Global Constraints:
@@ -43,33 +47,43 @@ const BASE = "/api/llm";
 type GatewayErrorEnvelope = { error?: { kind?: string; message?: string; retryable?: boolean } };
 
 async function request<T>(method: string, path: string, init?: { body?: unknown }): Promise<T> {
-  const headers: Record<string, string> = {};
+  let headers: Record<string, string> = {};
   let body: BodyInit | undefined;
   if (init?.body !== undefined) {
     headers["content-type"] = "application/json";
     body = JSON.stringify(init.body);
   }
-  let res: Response;
-  try {
-    res = await fetch(`${BASE}${path}`, { method, headers, body });
-  } catch (err) {
-    throw new ApiError(0, { error: "NetworkError", message: (err as Error).message });
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    let res: Response;
+    try {
+      headers = await browserSecurityHeaders(method, headers);
+      res = await fetch(`${BASE}${path}`, {
+        method,
+        headers,
+        body,
+        credentials: "same-origin"
+      });
+    } catch (err) {
+      throw new ApiError(0, { error: "NetworkError", message: (err as Error).message });
+    }
+    const text = await res.text();
+    let parsed: unknown;
+    try {
+      parsed = text ? JSON.parse(text) : undefined;
+    } catch {
+      parsed = { error: "InvalidResponse", message: text.slice(0, 200) };
+    }
+    if (attempt === 0 && recoverBrowserSession(res.status, parsed)) continue;
+    if (!res.ok) {
+      // The gateway's error envelope is {error:{kind,message,retryable}} — unwrap it into
+      // ApiError's own {error: string, message} shape rather than propagating the object.
+      const envelope = (parsed ?? {}) as GatewayErrorEnvelope;
+      const message = envelope.error?.message ?? `HTTP ${res.status}`;
+      throw new ApiError(res.status, { error: envelope.error?.kind ?? `HTTP ${res.status}`, message }, message);
+    }
+    return parsed as T;
   }
-  const text = await res.text();
-  let parsed: unknown;
-  try {
-    parsed = text ? JSON.parse(text) : undefined;
-  } catch {
-    parsed = { error: "InvalidResponse", message: text.slice(0, 200) };
-  }
-  if (!res.ok) {
-    // The gateway's error envelope is {error:{kind,message,retryable}} — unwrap it into
-    // ApiError's own {error: string, message} shape rather than propagating the object.
-    const envelope = (parsed ?? {}) as GatewayErrorEnvelope;
-    const message = envelope.error?.message ?? `HTTP ${res.status}`;
-    throw new ApiError(res.status, { error: envelope.error?.kind ?? `HTTP ${res.status}`, message }, message);
-  }
-  return parsed as T;
+  throw new ApiError(0, { error: "BrowserSessionError", message: "Browser session recovery failed." });
 }
 
 let modelsPromise: Promise<LlmModelSummary[]> | undefined;

@@ -1,6 +1,12 @@
 import { readFile } from "node:fs/promises";
 import { parse, stringify } from "smol-toml";
-import { AppConfig, AppConfigSchema, DEFAULT_APP_CONFIG } from "../shared/schemas/config.js";
+import {
+  AppConfig,
+  AppConfigSchema,
+  DEFAULT_APP_CONFIG,
+  UpdateAppConfigBodySchema,
+  type UpdateAppConfigBody
+} from "../shared/schemas/config.js";
 import { atomicWriteText } from "../storage/atomic.js";
 import { resolveDataPath } from "./paths.js";
 
@@ -24,4 +30,34 @@ export async function saveAppConfig(dataRoot: string, config: AppConfig): Promis
     mode: 0o600
   });
   return parsed;
+}
+
+export function mergeAppConfigPatch(
+  current: AppConfig,
+  patchInput: UpdateAppConfigBody
+): AppConfig {
+  const patch = UpdateAppConfigBodySchema.parse(patchInput);
+  const frontend = { ...current.frontend };
+  if (patch.frontend && Object.prototype.hasOwnProperty.call(patch.frontend, "staticDir")) {
+    if (patch.frontend.staticDir === null) {
+      delete frontend.staticDir;
+    } else if (patch.frontend.staticDir !== undefined) {
+      frontend.staticDir = patch.frontend.staticDir;
+    }
+  }
+  return AppConfigSchema.parse({
+    ...current,
+    ...patch,
+    http: { ...current.http, ...patch.http },
+    runtime: { ...current.runtime, ...patch.runtime },
+    frontend,
+    ocr: { ...current.ocr, ...patch.ocr }
+  });
+}
+
+export async function updateAppConfig(
+  dataRoot: string,
+  patch: UpdateAppConfigBody
+): Promise<AppConfig> {
+  return saveAppConfig(dataRoot, mergeAppConfigPatch(await loadAppConfig(dataRoot), patch));
 }

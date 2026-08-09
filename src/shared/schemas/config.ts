@@ -54,7 +54,37 @@ export const AppConfigSchema = z.object({
   ocr: OcrConfigSchema
 });
 
+// App config writes are partial updates. Re-declare every defaulted field without its default so
+// an omitted key remains absent through parsing and cannot reset a stored nondefault value.
+export const UpdateAppConfigBodySchema = z.object({
+  schemaVersion: z.literal(CURRENT_SCHEMA_VERSION).optional(),
+  http: z.object({
+    host: z.string().min(1).optional(),
+    port: z.number().int().min(1).max(65_535).optional()
+  }).strict().optional(),
+  runtime: z.object({
+    autoConnectDiscord: z.boolean().optional(),
+    paused: z.boolean().optional()
+  }).strict().optional(),
+  frontend: z.object({
+    staticDir: z.string().min(1).nullable().optional()
+  }).strict().optional(),
+  ocr: z.object({
+    enabled: z.boolean().optional(),
+    engine: z.preprocess(
+      (value) => value === "tesseract" ? "system-tesseract" : value,
+      z.enum(["auto", "apple-vision", "bundled-tesseract", "system-tesseract"])
+    ).optional(),
+    cacheTtlHours: z.number().int().min(1).max(24 * 30).optional(),
+    timeoutMs: z.number().int().min(250).max(30_000).optional(),
+    maxImageBytes: z.number().int().min(1024).max(32 * 1024 * 1024).optional(),
+    maxImagesPerModelCall: z.number().int().min(0).max(20).optional(),
+    maxTextCharsPerImage: z.number().int().min(100).max(10_000).optional()
+  }).strict().optional()
+}).strict();
+
 export type AppConfig = z.infer<typeof AppConfigSchema>;
+export type UpdateAppConfigBody = z.infer<typeof UpdateAppConfigBodySchema>;
 export type OcrConfig = z.infer<typeof OcrConfigSchema>;
 
 export const DEFAULT_APP_CONFIG: AppConfig = AppConfigSchema.parse({});

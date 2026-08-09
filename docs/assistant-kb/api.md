@@ -12,6 +12,11 @@ does goes through these endpoints, so any agent can drive the app with plain HTT
   `unsupported_parameter` naming a violated gateway rule).
 - Model params are gateway-native dotted keys inside `params`
   (e.g. `{"temperature": 0.9, "reasoning.enabled": false}`).
+- Assistant tool calls inherit the person or paired device that initiated the conversation. Never
+  manufacture principal, device, internal-dispatch, browser-session, or CSRF headers.
+- `PUT /api/config` is a partial merge. Omitted fields are preserved; use
+  `{"frontend":{"staticDir":null}}` to clear that optional path. Remote callers cannot read or
+  write the host bind address or frontend filesystem path.
 
 ## Endpoints
 
@@ -56,6 +61,7 @@ does goes through these endpoints, so any agent can drive the app with plain HTT
 | GET | /api/docs · /api/docs/:slug | This knowledge base. |
 | GET | /api/events | SSE firehose: logs, runtime, captured model queries/replies. |
 | GET | /api/config · PUT /api/config | App settings (autoConnectDiscord, ports...). |
+| GET | /api/client-context | Dashboard-only browser-session bootstrap; never call from assistant tools. |
 | GET | /api/diagnostics/bundle | One-shot diagnostic snapshot. |
 | POST | /api/cache/ocr/clear | Clear the OCR cache. |
 

@@ -52,50 +52,121 @@ export class ConflictError extends ApiError {
 // In dev, Vite proxies /api to backend. In production build served by backend,
 // the same origin works. Both cases use "" as base.
 const BASE = "";
+const CSRF_HEADER = "x-waifus-csrf";
+const CLIENT_CONTEXT_PATH = "/api/client-context";
+const CANONICAL_BASE64URL_32 = /^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/;
+
+let browserCsrfToken: string | undefined;
+let browserSessionPromise: Promise<string> | undefined;
+
+function isBrowserRuntime(): boolean {
+  return typeof window !== "undefined" && typeof document !== "undefined";
+}
+
+async function establishBrowserSession(): Promise<string> {
+  const response = await fetch(`${BASE}${CLIENT_CONTEXT_PATH}`, {
+    method: "GET",
+    credentials: "same-origin",
+    cache: "no-store"
+  });
+  if (!response.ok) {
+    throw new ApiError(response.status, {
+      error: "BrowserSessionError",
+      message: `Could not establish the local browser session (HTTP ${response.status}).`
+    });
+  }
+  const token = response.headers.get(CSRF_HEADER) ?? "";
+  if (token.length !== 43 || !CANONICAL_BASE64URL_32.test(token)) {
+    throw new ApiError(0, {
+      error: "BrowserSessionError",
+      message: "The local browser session returned an invalid CSRF token."
+    });
+  }
+  browserCsrfToken = token;
+  return token;
+}
+
+async function ensureBrowserSession(): Promise<string | undefined> {
+  if (!isBrowserRuntime()) return undefined;
+  if (browserCsrfToken) return browserCsrfToken;
+  if (!browserSessionPromise) {
+    const pending = establishBrowserSession();
+    pending.catch(() => {
+      if (browserSessionPromise === pending) browserSessionPromise = undefined;
+    });
+    browserSessionPromise = pending;
+  }
+  return browserSessionPromise;
+}
+
+export async function browserSecurityHeaders(
+  method: string,
+  initial: Record<string, string> = {}
+): Promise<Record<string, string>> {
+  const token = await ensureBrowserSession();
+  return token && method !== "GET" && method !== "HEAD"
+    ? { ...initial, [CSRF_HEADER]: token }
+    : initial;
+}
+
+export function recoverBrowserSession(status: number, body: unknown): boolean {
+  if (!isBrowserRuntime() || status !== 403 || !body || typeof body !== "object") return false;
+  const code = (body as { error?: unknown }).error;
+  if (code !== "BrowserSessionRequired" && code !== "CsrfInvalid") return false;
+  browserCsrfToken = undefined;
+  browserSessionPromise = undefined;
+  return true;
+}
 
 async function request<T>(
   method: string,
   path: string,
   init?: { body?: unknown; signal?: AbortSignal; headers?: Record<string, string> }
 ): Promise<T> {
-  const headers: Record<string, string> = { ...init?.headers };
+  let headers: Record<string, string> = { ...init?.headers };
   let body: BodyInit | undefined;
   if (init?.body !== undefined) {
     headers["content-type"] = "application/json";
     body = JSON.stringify(init.body);
   }
-  let res: Response;
-  try {
-    res = await fetch(`${BASE}${path}`, {
-      method,
-      headers,
-      body,
-      signal: init?.signal
-    });
-  } catch (err) {
-    if ((err as DOMException)?.name === "AbortError") {
-      throw err;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    let res: Response;
+    try {
+      headers = await browserSecurityHeaders(method, headers);
+      res = await fetch(`${BASE}${path}`, {
+        method,
+        headers,
+        body,
+        signal: init?.signal,
+        credentials: "same-origin"
+      });
+    } catch (err) {
+      if ((err as DOMException)?.name === "AbortError") {
+        throw err;
+      }
+      throw new ApiError(0, { error: "NetworkError", message: (err as Error).message });
     }
-    throw new ApiError(0, { error: "NetworkError", message: (err as Error).message });
-  }
-  if (res.status === 204) {
-    return undefined as T;
-  }
-  const text = await res.text();
-  let parsed: unknown;
-  try {
-    parsed = text ? JSON.parse(text) : undefined;
-  } catch {
-    parsed = { error: "InvalidResponse", message: text.slice(0, 200) };
-  }
-  if (!res.ok) {
-    const body = (parsed ?? { error: `HTTP ${res.status}` }) as ApiErrorBody;
-    if (res.status === 409) {
-      throw new ConflictError(body);
+    if (res.status === 204) {
+      return undefined as T;
     }
-    throw new ApiError(res.status, body);
+    const text = await res.text();
+    let parsed: unknown;
+    try {
+      parsed = text ? JSON.parse(text) : undefined;
+    } catch {
+      parsed = { error: "InvalidResponse", message: text.slice(0, 200) };
+    }
+    if (attempt === 0 && recoverBrowserSession(res.status, parsed)) continue;
+    if (!res.ok) {
+      const errorBody = (parsed ?? { error: `HTTP ${res.status}` }) as ApiErrorBody;
+      if (res.status === 409) {
+        throw new ConflictError(errorBody);
+      }
+      throw new ApiError(res.status, errorBody);
+    }
+    return parsed as T;
   }
-  return parsed as T;
+  throw new ApiError(0, { error: "BrowserSessionError", message: "Browser session recovery failed." });
 }
 
 export const api = {

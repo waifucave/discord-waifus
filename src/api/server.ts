@@ -7,7 +7,7 @@ import { z } from "zod";
 import { createGatewayHandler, type GatewayHandlerOptions, type ProviderDef } from "@waifucave/gateway";
 import gatewayPlugin from "@waifucave/gateway/fastify";
 import { createProviderCredentialsLookup } from "./llmGatewayCredentials.js";
-import { loadAppConfig, saveAppConfig } from "../config/appConfig.js";
+import { loadAppConfig, updateAppConfig } from "../config/appConfig.js";
 import { resolveDataPath, userDataPath } from "../config/paths.js";
 import { Logger, createLogger } from "../backend/logger.js";
 import { RuntimeState } from "../backend/runtime.js";
@@ -57,7 +57,7 @@ import {
   WaifuToolSettingsSchema,
   createEmptyRevisionedFile
 } from "../shared/schemas/domain.js";
-import { AppConfigSchema } from "../shared/schemas/config.js";
+import { UpdateAppConfigBodySchema, type AppConfig } from "../shared/schemas/config.js";
 import { createRevisionedBase, nowIso } from "../shared/schemas/common.js";
 import { StorageConflictError } from "../storage/errors.js";
 import { StorageService } from "../storage/storageService.js";
@@ -67,6 +67,11 @@ import { registerAssistantRoutes } from "./assistant/routes.js";
 import { ApiError, badRequest, conflict, notFound, preconditionRequired } from "./errors.js";
 import { mergeConfiguredBotsIntoMembers } from "../discord/memberCache.js";
 import { assertKnownProvider, assertModelWriteValid } from "./writeValidation.js";
+import { BrowserSecurity, type BrowserSecurityOptions } from "./browserSecurity.js";
+import { installRoutePolicy } from "./routePolicy.js";
+import { ROUTE_POLICY_MANIFEST } from "./routePolicyManifest.js";
+import type { RemoteRequestPrincipal } from "./requestPrincipal.js";
+import { ClientContextV1Schema } from "../shared/schemas/remoteLifecycle.js";
 
 export type ApiServerOptions = {
   dataRoot: string;
@@ -87,6 +92,10 @@ export type ApiServerOptions = {
   /** Test hook: overrides the pipeline the assistant chat uses. */
   assistant?: {
     createPipeline?: (target: { providerId: string; modelId: string }) => ModelPipeline;
+  };
+  browserSecurity?: Partial<BrowserSecurityOptions>;
+  remoteTrust?: {
+    isAuthorized: (principal: RemoteRequestPrincipal) => boolean | Promise<boolean>;
   };
 };
 
@@ -267,6 +276,27 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   const storage = options.storage ?? new StorageService(options.dataRoot);
   const logger = options.logger ?? createLogger({ dataRoot: options.dataRoot });
   const app = fastify({ logger: false });
+  const runtimeMode = options.runtime.mode === "dev" || options.runtime.mode === "test"
+    ? options.runtime.mode
+    : "start";
+  const browserSecurity = new BrowserSecurity({
+    listenerHost: options.browserSecurity?.listenerHost ?? "127.0.0.1",
+    port: options.browserSecurity?.port ?? options.runtime.port,
+    mode: options.browserSecurity?.mode ?? runtimeMode,
+    ...(options.browserSecurity?.now ? { now: options.browserSecurity.now } : {}),
+    ...(options.browserSecurity?.randomBytes
+      ? { randomBytes: options.browserSecurity.randomBytes }
+      : {})
+  });
+  const routePolicies = installRoutePolicy(app, {
+    manifest: ROUTE_POLICY_MANIFEST,
+    browserSecurity,
+    authorizeRemotePrincipal: options.remoteTrust?.isAuthorized
+  });
+  app.addHook("onSend", async (request, reply, payload) => {
+    browserSecurity.refreshResponseCookie(request, reply, request.principal);
+    return payload;
+  });
   app.addContentTypeParser(/^image\/(png|jpeg|webp|gif)$/u, { parseAs: "buffer" }, (_request, body, done) => {
     done(null, body);
   });
@@ -361,13 +391,35 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     };
   });
 
-  app.get("/api/config", async () => loadAppConfig(options.dataRoot));
+  app.get("/api/config", async (request) => {
+    const config = await loadAppConfig(options.dataRoot);
+    return request.principal.kind === "remote_device" ? remoteAppConfig(config) : config;
+  });
   app.put("/api/config", async (request) => {
-    const config = AppConfigSchema.parse(request.body);
-    const saved = await saveAppConfig(options.dataRoot, config);
+    const patch = UpdateAppConfigBodySchema.parse(request.body);
+    if (
+      request.principal.kind === "remote_device"
+      && (
+        hasOwn(patch.http, "host")
+        || hasOwn(patch.frontend, "staticDir")
+      )
+    ) {
+      throw new ApiError(
+        403,
+        "Host bind and filesystem-serving fields are local-only.",
+        undefined,
+        "RemoteConfigFieldForbidden"
+      );
+    }
+    const saved = await updateAppConfig(options.dataRoot, patch);
     options.runtime.paused = saved.runtime.paused;
     await options.runtimeControl?.reload("config-updated");
-    return saved;
+    return request.principal.kind === "remote_device" ? remoteAppConfig(saved) : saved;
+  });
+
+  app.get("/api/client-context", async (request, reply) => {
+    request.principal = browserSecurity.establishClientContext(request, reply);
+    return ClientContextV1Schema.parse({ mode: "host" });
   });
 
   app.post("/api/cache/ocr/clear", async () => {
@@ -998,13 +1050,36 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     if (request.url.startsWith("/api/")) {
       return reply.status(404).send({ error: "NotFound", message: `${request.method} ${request.url} was not found.` });
     }
+    if (request.principal.kind === "remote_device") {
+      return reply.status(403).send({
+        error: "RemoteRouteForbidden",
+        message: "Host dashboard/static routes are not remotely proxied."
+      });
+    }
     if (await tryServeFrontend(request, reply, options.dataRoot)) {
       return reply;
     }
     return reply.status(404).send({ error: "NotFound", message: `${request.method} ${request.url} was not found.` });
   });
 
+  routePolicies.registerNotFound();
+  routePolicies.assertComplete();
+
   return app;
+}
+
+function hasOwn(value: object | undefined, key: string): boolean {
+  return value !== undefined && Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function remoteAppConfig(config: AppConfig) {
+  return {
+    schemaVersion: config.schemaVersion,
+    http: { port: config.http.port },
+    runtime: config.runtime,
+    frontend: {},
+    ocr: config.ocr
+  };
 }
 
 async function readDiscordBots(storage: StorageService): Promise<DiscordBotsFile> {

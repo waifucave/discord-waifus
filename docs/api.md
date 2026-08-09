@@ -4,6 +4,19 @@ Base URL defaults to `http://127.0.0.1:3888`.
 
 All frontend code should use this HTTP API. It should not read `~/.dc-waifus` or `DC_WAIFUS_HOME` directly.
 
+## Browser session security
+
+The dashboard establishes a same-origin browser session with `GET /api/client-context`. The
+response body is only `{ "mode": "host" }`; the CSRF token is returned in the
+`X-Waifus-CSRF` response header and is kept in memory by the frontend. Browser writes must send
+that header and the host-only, HttpOnly session cookie. The frontend retries once after a browser
+session expires. It never stores the CSRF token in HTML, URLs, cookies, or browser storage.
+
+Loopback command-line clients without browser-origin headers remain compatible and do not need a
+browser session. Scripts must not send browser-only `Origin`, `Sec-Fetch-*`, principal, device, or
+internal-dispatch headers. The server rejects forged identity headers and browser requests from an
+unexpected Host, Origin, or cross-site fetch context.
+
 ## Runtime
 
 - `GET /api/health`
@@ -68,6 +81,11 @@ Config is backed by `config.toml` under the data root. Default config:
   }
 }
 ```
+
+`PUT /api/config` is a partial update: omitted fields retain their stored values, and the merged
+configuration is validated before it is saved. Send `{"frontend":{"staticDir":null}}` to clear an
+explicit static directory. A remotely authenticated device receives a redacted config and cannot
+read or write the host bind address or frontend filesystem path; those settings remain local-only.
 
 OCR is used only as a fallback for models that are not marked as vision-capable. `engine = "auto"` tries native OS OCR first where supported (Apple Vision on macOS), then the bundled WebAssembly Tesseract (`tesseract.js`, shipped with the package and working offline on every platform), then an explicit system Tesseract fallback. Valid engine values are `auto`, `apple-vision`, `bundled-tesseract`, and `system-tesseract`; legacy `tesseract` configs load as `system-tesseract`. Temporary image downloads live under `app/tmp/ocr`; cached text results live under `app/cache/ocr` and expire by `cacheTtlHours`. `POST /api/cache/ocr/clear` removes OCR cache and temporary OCR files.
 

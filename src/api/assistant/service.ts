@@ -5,13 +5,23 @@ import { resolveModelTarget } from "../../orchestration/pipeline/resolveTarget.j
 import { createProviderCredentialsLookup } from "../llmGatewayCredentials.js";
 import { executeAssistantTool, toolDefs } from "./tools.js";
 import { AssistantEvent, ConversationStore } from "./conversations.js";
+import { dispatchInternal } from "../internalDispatch.js";
+import type {
+  AssistantDelegation,
+  RequestPrincipal
+} from "../requestPrincipal.js";
 
 export type AssistantTarget =
   | { ok: true; providerId: string; modelId: string; params: Record<string, unknown> }
   | { ok: false; reason: string };
 
-async function getJson(app: FastifyInstance, url: string): Promise<Record<string, unknown> | undefined> {
-  const response = await app.inject({ method: "GET", url });
+async function getJson(
+  app: FastifyInstance,
+  principal: RequestPrincipal,
+  delegation: AssistantDelegation | undefined,
+  url: string
+): Promise<Record<string, unknown> | undefined> {
+  const response = await dispatchInternal(app, principal, delegation, { method: "GET", url });
   if (response.statusCode !== 200) return undefined;
   return JSON.parse(response.body) as Record<string, unknown>;
 }
@@ -20,9 +30,14 @@ async function getJson(app: FastifyInstance, url: string): Promise<Record<string
  * The assistant runs on its own configured model when set, otherwise it borrows the
  * orchestrator's. Params always come from the config that supplied the model.
  */
-export async function resolveAssistantTarget(app: FastifyInstance, dataRoot: string): Promise<AssistantTarget> {
-  const assistant = await getJson(app, "/api/assistant/config");
-  const orchestrator = await getJson(app, "/api/orchestrator/config");
+export async function resolveAssistantTarget(
+  app: FastifyInstance,
+  dataRoot: string,
+  principal: RequestPrincipal,
+  delegation?: AssistantDelegation
+): Promise<AssistantTarget> {
+  const assistant = await getJson(app, principal, delegation, "/api/assistant/config");
+  const orchestrator = await getJson(app, principal, delegation, "/api/orchestrator/config");
   const source = assistant?.modelId ? assistant : orchestrator?.modelId ? orchestrator : undefined;
   if (!source) {
     return { ok: false, reason: "No model is configured for the assistant. Set one under Direction \u2192 Assistant (do not repurpose the orchestrator\u2019s setting \u2014 an empty orchestrator model can be a deliberate free deterministic mode)." };
@@ -63,12 +78,16 @@ export function assistantSystemPrompt(snapshot: {
   ].join("\n");
 }
 
-async function buildSnapshot(app: FastifyInstance) {
+async function buildSnapshot(
+  app: FastifyInstance,
+  principal: RequestPrincipal,
+  delegation?: AssistantDelegation
+) {
   const [status, waifus, servers, providers] = await Promise.all([
-    getJson(app, "/api/status"),
-    getJson(app, "/api/waifus"),
-    getJson(app, "/api/servers"),
-    getJson(app, "/api/providers")
+    getJson(app, principal, delegation, "/api/status"),
+    getJson(app, principal, delegation, "/api/waifus"),
+    getJson(app, principal, delegation, "/api/servers"),
+    getJson(app, principal, delegation, "/api/providers")
   ]);
   const providerList = (providers?.providers as Array<Record<string, unknown>> | undefined) ?? [];
   return {
@@ -85,6 +104,8 @@ export type AssistantServiceDeps = {
   app: FastifyInstance;
   store: ConversationStore;
   dataRoot: string;
+  principal: RequestPrincipal;
+  delegation?: AssistantDelegation;
   createPipeline?: (target: { providerId: string; modelId: string }) => ModelPipeline;
 };
 
@@ -95,7 +116,7 @@ export class AssistantTurnError extends Error {
 }
 
 export async function runAssistantTurn(deps: AssistantServiceDeps, conversationId: string, userContent: string): Promise<string> {
-  const { app, store, dataRoot } = deps;
+  const { app, store, dataRoot, principal, delegation } = deps;
   const conversation = store.get(conversationId);
   if (!conversation) throw new AssistantTurnError(404, "Unknown conversation.");
   if (conversation.busy) throw new AssistantTurnError(409, "A turn is already running in this conversation.");
@@ -105,7 +126,7 @@ export async function runAssistantTurn(deps: AssistantServiceDeps, conversationI
 
   let target;
   try {
-    target = await resolveAssistantTarget(app, dataRoot);
+    target = await resolveAssistantTarget(app, dataRoot, principal, delegation);
   } catch (error) {
     store.setBusy(conversationId, false);
     throw error;
@@ -130,7 +151,10 @@ export async function runAssistantTurn(deps: AssistantServiceDeps, conversationI
   const transcript =
     conversation.chat.length > 0
       ? [...conversation.chat]
-      : [{ role: "system" as const, content: assistantSystemPrompt(await buildSnapshot(app)) }];
+      : [{
+          role: "system" as const,
+          content: assistantSystemPrompt(await buildSnapshot(app, principal, delegation))
+        }];
   transcript.push({ role: "user", content: userContent });
 
   // persist the user turn into the MODEL transcript now: if the pipeline throws, the next
@@ -144,7 +168,11 @@ export async function runAssistantTurn(deps: AssistantServiceDeps, conversationI
       messages: transcript,
       tools: toolDefs(),
       params: target.params,
-      executeTool: (name, argsJson) => executeAssistantTool({ app }, name, argsJson),
+      executeTool: (name, argsJson) => executeAssistantTool(
+        { app, principal, delegation },
+        name,
+        argsJson
+      ),
       onEvent: (event) => store.emit(conversationId, scrubSecretsFromEvent(event as AssistantEvent))
     });
     store.appendChat(conversationId, result.messages);
