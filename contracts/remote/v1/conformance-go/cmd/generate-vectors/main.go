@@ -27,6 +27,7 @@ func run() error {
 		{name: "pair-confirmation-v1.json", build: vectors.BuildPairConfirmationV1JSON},
 		{name: "pair-control-record-v1.json", build: vectors.BuildPairControlV1JSON},
 		{name: "service-session-v1.json", build: vectors.BuildServiceSessionV1JSON},
+		{name: "endpoint-envelope-v1.json", build: vectors.BuildEndpointEnvelopeV1JSON},
 	}
 	for _, fixture := range checks {
 		expected, err := fixture.build()

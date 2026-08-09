@@ -49,10 +49,15 @@ Current foundation:
   application-session transcript, both installation signatures, the four-message authentication
   gate, application-session-bound browser-context HKDF/HMAC, strict out-of-header binding envelope,
   replay/state failures, and canonical local/remote approval-receipt context hashes.
-- `conformance-go/` independently recreates and validates the WIPC and pairing fixtures using Go
-  1.26.5. It pins `github.com/flynn/noise` v1.1.0 and independently rejects the token, identity,
+- `fixtures/crypto/endpoint-envelope-v1.json` freezes both direction-separated endpoint keys,
+  canonical candidate CBOR, nonce/associated-data bytes, ChaCha20-Poly1305 ciphertext, unsafe and
+  malformed candidate rejection, prepared/applied epoch recovery, rollback/conflict behavior, and
+  the raw 1,184-byte plaintext/1,200-byte ciphertext ceiling.
+- `conformance-go/` independently recreates and validates the WIPC, pairing, service, and endpoint
+  fixtures using Go 1.26.5. It pins `github.com/flynn/noise` v1.1.0 and independently rejects the
+  token, identity,
   canonical-CBOR, pair-confirmation, PairControl, revocation, service-session, browser-context, and
-  approval-receipt negative vectors.
+  approval-receipt/endpoint negative vectors.
 
 Run `npm run contracts:remote:generate` after an intentional contract change and
 `npm run contracts:remote:check` in validation. Schema documents are recursively key-sorted,
@@ -79,7 +84,7 @@ Consumers must enforce those annotations or use the public conformance fixtures.
 Schema validator that ignores them is not a complete protocol validator.
 
 This remains an incomplete contract gate. The reviewed 1,024-word SAS artifact and word mapping,
-remaining remote-access/dashboard DTOs, endpoint crypto,
-activation/control envelopes, and signed-manifest trust vectors must land before production helper,
+remaining remote-access/dashboard DTOs, activation/control envelopes, and signed-manifest trust
+vectors must land before production helper,
 pairing, Cloudflare, host bridge, or remote gateway work may rely on this directory as a complete
 V1 authority.
