@@ -378,7 +378,7 @@ export function deriveX25519PublicKey(privateKey: Uint8Array): Buffer {
   return Buffer.from(encoded).subarray(X25519_SPKI_PREFIX.byteLength);
 }
 
-function signEd25519(privateKeySeed: Uint8Array, message: Uint8Array): Buffer {
+export function signEd25519(privateKeySeed: Uint8Array, message: Uint8Array): Buffer {
   return nodeSign(
     null,
     message,
@@ -386,7 +386,7 @@ function signEd25519(privateKeySeed: Uint8Array, message: Uint8Array): Buffer {
   );
 }
 
-function verifyEd25519(publicKey: Uint8Array, message: Uint8Array, signature: Uint8Array): boolean {
+export function verifyEd25519(publicKey: Uint8Array, message: Uint8Array, signature: Uint8Array): boolean {
   const signatureBytes = assertByteLength(signature, 64, "Ed25519 signature");
   return nodeVerify(
     null,

@@ -17,6 +17,7 @@ import {
 import { createWipcFixtureSet } from "../src/shared/wipcContract.js";
 import { createRemotePairingFixtureSet } from "../src/shared/remotePairingContract.js";
 import { createPairConfirmationFixtureSet } from "../src/shared/pairConfirmationContract.js";
+import { createPairControlFixtureSet } from "../src/shared/pairControlContract.js";
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(scriptDirectory, "..");
@@ -77,6 +78,13 @@ for (const [relativePath, value] of createRemotePairingFixtureSet()) {
 }
 
 for (const [relativePath, value] of createPairConfirmationFixtureSet()) {
+  generatedFiles.set(
+    path.join(contractRoot, relativePath),
+    serializeCanonicalContractJson(value)
+  );
+}
+
+for (const [relativePath, value] of createPairControlFixtureSet()) {
   generatedFiles.set(
     path.join(contractRoot, relativePath),
     serializeCanonicalContractJson(value)

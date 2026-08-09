@@ -10,6 +10,18 @@ import {
   HelperTargetSchema,
   IdentityResetReceiptV1Schema,
   PairConfirmationV1Schema,
+  PairControlCapabilitiesPayloadV1Schema,
+  PairControlEndpointAckPayloadV1Schema,
+  PairControlEndpointGenerationPayloadV1Schema,
+  PairControlErrorPayloadV1Schema,
+  PairControlHelloPayloadV1Schema,
+  PairControlPresencePayloadV1Schema,
+  PairControlReconnectPayloadV1Schema,
+  PairControlRecordV1Schema,
+  PairControlRevocationAckPayloadV1Schema,
+  PairControlRevocationPayloadV1Schema,
+  PairControlTypeV1Schema,
+  PairControlUnsignedRecordV1Schema,
   PositiveUint64DecimalSchema,
   ProtocolRangeSchema,
   ResetIdentityCommandSchema,
@@ -231,6 +243,18 @@ const remoteAccessRegisteredSchemas: ReadonlyArray<readonly [string, z.ZodType]>
   ["HttpMethod", HttpMethodSchema],
   ["IdentityResetReceiptV1", IdentityResetReceiptV1Schema],
   ["PairConfirmationV1", PairConfirmationV1Schema],
+  ["PairControlCapabilitiesPayloadV1", PairControlCapabilitiesPayloadV1Schema],
+  ["PairControlEndpointAckPayloadV1", PairControlEndpointAckPayloadV1Schema],
+  ["PairControlEndpointGenerationPayloadV1", PairControlEndpointGenerationPayloadV1Schema],
+  ["PairControlErrorPayloadV1", PairControlErrorPayloadV1Schema],
+  ["PairControlHelloPayloadV1", PairControlHelloPayloadV1Schema],
+  ["PairControlPresencePayloadV1", PairControlPresencePayloadV1Schema],
+  ["PairControlReconnectPayloadV1", PairControlReconnectPayloadV1Schema],
+  ["PairControlRecordV1", PairControlRecordV1Schema],
+  ["PairControlRevocationAckPayloadV1", PairControlRevocationAckPayloadV1Schema],
+  ["PairControlRevocationPayloadV1", PairControlRevocationPayloadV1Schema],
+  ["PairControlTypeV1", PairControlTypeV1Schema],
+  ["PairControlUnsignedRecordV1", PairControlUnsignedRecordV1Schema],
   ["PositiveUint64Decimal", PositiveUint64DecimalSchema],
   ["PrincipalStableId", PrincipalStableIdSchema],
   ["ProtocolVersion", ProtocolVersionSchema],
@@ -271,18 +295,43 @@ export function createRemoteAccessJsonSchema(): ContractJsonObject {
     ["oldInstallationPublicKey", "newInstallationPublicKey"],
     ["oldFingerprint", "newFingerprint"]
   ];
+  definitions.PairControlEndpointGenerationPayloadV1["x-waifus-sha256-of"] = {
+    digestField: "ciphertextSha256",
+    decodedBase64UrlField: "ciphertext"
+  };
+  definitions.PairControlRecordV1["x-waifus-maximum-raw-bytes"] = 2_048;
+  definitions.PairControlRecordV1["x-waifus-transport-type-matrix"] = {
+    websocket: [1, 2, 3, 4, 5, 6, 7, 8, 9],
+    https_publish: [1, 2, 3, 4, 5, 6, 9],
+    https_revoke: [7],
+    https_revocation_ack: [8],
+    https_poll: [1, 2, 3, 4, 5, 6, 7, 8, 9]
+  };
+  definitions.PairControlRecordV1["x-waifus-transport-directions"] = {
+    websocket: "ingress_and_delivery",
+    https_publish: "ingress",
+    https_revoke: "ingress",
+    https_revocation_ack: "ingress",
+    https_poll: "delivery_only"
+  };
+  definitions.PairControlRecordV1["x-waifus-first-ingress-timestamp-skew-seconds"] = 60;
+  definitions.PairControlRecordV1["x-waifus-shared-side-high-water"] = [
+    "connectionGeneration",
+    "sequence"
+  ];
 
   return {
     $schema: "https://json-schema.org/draft/2020-12/schema",
     $id: REMOTE_ACCESS_SCHEMA_ID,
     title: "Waifus Remote Access Wire Contracts V1",
     description:
-      "Attended approval, pair-confirmation, and installation-reset wire records shared by Discord Waifus and ts-connect.",
+      "Attended approval, pairing confirmation, pair-control, and installation-reset wire records shared by Discord Waifus and ts-connect.",
     oneOf: [
       { $ref: "#/$defs/ApprovalReceiptV1" },
       { $ref: "#/$defs/GetResetStatusCommand" },
       { $ref: "#/$defs/IdentityResetReceiptV1" },
       { $ref: "#/$defs/PairConfirmationV1" },
+      { $ref: "#/$defs/PairControlRecordV1" },
       { $ref: "#/$defs/ResetIdentityCommand" }
     ],
     $defs: definitions

@@ -545,6 +545,1394 @@
       ],
       "type": "object"
     },
+    "PairControlCapabilitiesPayloadV1": {
+      "additionalProperties": false,
+      "properties": {
+        "capabilitiesSha256": {
+          "$ref": "#/$defs/Base64Url32Bytes"
+        },
+        "coordinationMinor": {
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "capabilitiesSha256",
+        "coordinationMinor"
+      ],
+      "type": "object"
+    },
+    "PairControlEndpointAckPayloadV1": {
+      "additionalProperties": false,
+      "properties": {
+        "ciphertextSha256": {
+          "$ref": "#/$defs/Base64Url32Bytes"
+        },
+        "endpointEpoch": {
+          "$ref": "#/$defs/Uint64Decimal"
+        }
+      },
+      "required": [
+        "endpointEpoch",
+        "ciphertextSha256"
+      ],
+      "type": "object"
+    },
+    "PairControlEndpointGenerationPayloadV1": {
+      "additionalProperties": false,
+      "properties": {
+        "ciphertext": {
+          "maxLength": 1600,
+          "minLength": 2,
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "type": "string"
+        },
+        "ciphertextSha256": {
+          "$ref": "#/$defs/Base64Url32Bytes"
+        },
+        "endpointEpoch": {
+          "$ref": "#/$defs/Uint64Decimal"
+        }
+      },
+      "required": [
+        "endpointEpoch",
+        "ciphertext",
+        "ciphertextSha256"
+      ],
+      "type": "object",
+      "x-waifus-sha256-of": {
+        "decodedBase64UrlField": "ciphertext",
+        "digestField": "ciphertextSha256"
+      }
+    },
+    "PairControlErrorPayloadV1": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "enum": [
+            "protocol_mismatch",
+            "stale_generation",
+            "sequence_gap",
+            "revoked",
+            "resync_required"
+          ],
+          "type": "string"
+        },
+        "forConnectionGeneration": {
+          "$ref": "#/$defs/Uint64Decimal"
+        },
+        "forSequence": {
+          "$ref": "#/$defs/Uint64Decimal"
+        }
+      },
+      "required": [
+        "code",
+        "forConnectionGeneration",
+        "forSequence"
+      ],
+      "type": "object"
+    },
+    "PairControlHelloPayloadV1": {
+      "additionalProperties": false,
+      "properties": {
+        "resumeConnectionGeneration": {
+          "$ref": "#/$defs/Uint64Decimal"
+        },
+        "resumeSequence": {
+          "$ref": "#/$defs/Uint64Decimal"
+        }
+      },
+      "required": [
+        "resumeConnectionGeneration",
+        "resumeSequence"
+      ],
+      "type": "object"
+    },
+    "PairControlPresencePayloadV1": {
+      "additionalProperties": false,
+      "properties": {
+        "state": {
+          "enum": [
+            "online",
+            "offline"
+          ],
+          "type": "string"
+        },
+        "validUntil": {
+          "$ref": "#/$defs/Uint64Decimal"
+        }
+      },
+      "required": [
+        "state",
+        "validUntil"
+      ],
+      "type": "object"
+    },
+    "PairControlReconnectPayloadV1": {
+      "additionalProperties": false,
+      "properties": {
+        "lastReceivedConnectionGeneration": {
+          "$ref": "#/$defs/Uint64Decimal"
+        },
+        "lastReceivedSequence": {
+          "$ref": "#/$defs/Uint64Decimal"
+        }
+      },
+      "required": [
+        "lastReceivedConnectionGeneration",
+        "lastReceivedSequence"
+      ],
+      "type": "object"
+    },
+    "PairControlRecordV1": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "connectionGeneration": {
+              "$ref": "#/$defs/PositiveUint64Decimal"
+            },
+            "nonce": {
+              "$ref": "#/$defs/Base64Url16Bytes"
+            },
+            "pairId": {
+              "$ref": "#/$defs/Base64Url16Bytes"
+            },
+            "payload": {
+              "$ref": "#/$defs/PairControlHelloPayloadV1"
+            },
+            "protocolMajor": {
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "protocolMinor": {
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "sequence": {
+              "$ref": "#/$defs/PositiveUint64Decimal"
+            },
+            "side": {
+              "$ref": "#/$defs/DeviceRoleV1"
+            },
+            "signature": {
+              "maxLength": 86,
+              "minLength": 86,
+              "pattern": "^[A-Za-z0-9_-]{85}[AQgw]$",
+              "type": "string"
+            },
+            "timestamp": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "type": {
+              "const": 1,
+              "type": "number"
+            },
+            "version": {
+              "const": 1,
+              "type": "number"
+            }
+          },
+          "required": [
+            "version",
+            "protocolMajor",
+            "protocolMinor",
+            "pairId",
+            "side",
+            "connectionGeneration",
+            "sequence",
+            "timestamp",
+            "nonce",
+            "type",
+            "payload",
+            "signature"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "connectionGeneration": {
+              "$ref": "#/$defs/PositiveUint64Decimal"
+            },
+            "nonce": {
+              "$ref": "#/$defs/Base64Url16Bytes"
+            },
+            "pairId": {
+              "$ref": "#/$defs/Base64Url16Bytes"
+            },
+            "payload": {
+              "$ref": "#/$defs/PairControlCapabilitiesPayloadV1"
+            },
+            "protocolMajor": {
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "protocolMinor": {
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "sequence": {
+              "$ref": "#/$defs/PositiveUint64Decimal"
+            },
+            "side": {
+              "$ref": "#/$defs/DeviceRoleV1"
+            },
+            "signature": {
+              "maxLength": 86,
+              "minLength": 86,
+              "pattern": "^[A-Za-z0-9_-]{85}[AQgw]$",
+              "type": "string"
+            },
+            "timestamp": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "type": {
+              "const": 2,
+              "type": "number"
+            },
+            "version": {
+              "const": 1,
+              "type": "number"
+            }
+          },
+          "required": [
+            "version",
+            "protocolMajor",
+            "protocolMinor",
+            "pairId",
+            "side",
+            "connectionGeneration",
+            "sequence",
+            "timestamp",
+            "nonce",
+            "type",
+            "payload",
+            "signature"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "connectionGeneration": {
+              "$ref": "#/$defs/PositiveUint64Decimal"
+            },
+            "nonce": {
+              "$ref": "#/$defs/Base64Url16Bytes"
+            },
+            "pairId": {
+              "$ref": "#/$defs/Base64Url16Bytes"
+            },
+            "payload": {
+              "$ref": "#/$defs/PairControlEndpointGenerationPayloadV1"
+            },
+            "protocolMajor": {
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "protocolMinor": {
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "sequence": {
+              "$ref": "#/$defs/PositiveUint64Decimal"
+            },
+            "side": {
+              "$ref": "#/$defs/DeviceRoleV1"
+            },
+            "signature": {
+              "maxLength": 86,
+              "minLength": 86,
+              "pattern": "^[A-Za-z0-9_-]{85}[AQgw]$",
+              "type": "string"
+            },
+            "timestamp": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "type": {
+              "const": 3,
+              "type": "number"
+            },
+            "version": {
+              "const": 1,
+              "type": "number"
+            }
+          },
+          "required": [
+            "version",
+            "protocolMajor",
+            "protocolMinor",
+            "pairId",
+            "side",
+            "connectionGeneration",
+            "sequence",
+            "timestamp",
+            "nonce",
+            "type",
+            "payload",
+            "signature"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "connectionGeneration": {
+              "$ref": "#/$defs/PositiveUint64Decimal"
+            },
+            "nonce": {
+              "$ref": "#/$defs/Base64Url16Bytes"
+            },
+            "pairId": {
+              "$ref": "#/$defs/Base64Url16Bytes"
+            },
+            "payload": {
+              "$ref": "#/$defs/PairControlEndpointAckPayloadV1"
+            },
+            "protocolMajor": {
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "protocolMinor": {
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "sequence": {
+              "$ref": "#/$defs/PositiveUint64Decimal"
+            },
+            "side": {
+              "$ref": "#/$defs/DeviceRoleV1"
+            },
+            "signature": {
+              "maxLength": 86,
+              "minLength": 86,
+              "pattern": "^[A-Za-z0-9_-]{85}[AQgw]$",
+              "type": "string"
+            },
+            "timestamp": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "type": {
+              "const": 4,
+              "type": "number"
+            },
+            "version": {
+              "const": 1,
+              "type": "number"
+            }
+          },
+          "required": [
+            "version",
+            "protocolMajor",
+            "protocolMinor",
+            "pairId",
+            "side",
+            "connectionGeneration",
+            "sequence",
+            "timestamp",
+            "nonce",
+            "type",
+            "payload",
+            "signature"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "connectionGeneration": {
+              "$ref": "#/$defs/PositiveUint64Decimal"
+            },
+            "nonce": {
+              "$ref": "#/$defs/Base64Url16Bytes"
+            },
+            "pairId": {
+              "$ref": "#/$defs/Base64Url16Bytes"
+            },
+            "payload": {
+              "$ref": "#/$defs/PairControlPresencePayloadV1"
+            },
+            "protocolMajor": {
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "protocolMinor": {
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "sequence": {
+              "$ref": "#/$defs/PositiveUint64Decimal"
+            },
+            "side": {
+              "$ref": "#/$defs/DeviceRoleV1"
+            },
+            "signature": {
+              "maxLength": 86,
+              "minLength": 86,
+              "pattern": "^[A-Za-z0-9_-]{85}[AQgw]$",
+              "type": "string"
+            },
+            "timestamp": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "type": {
+              "const": 5,
+              "type": "number"
+            },
+            "version": {
+              "const": 1,
+              "type": "number"
+            }
+          },
+          "required": [
+            "version",
+            "protocolMajor",
+            "protocolMinor",
+            "pairId",
+            "side",
+            "connectionGeneration",
+            "sequence",
+            "timestamp",
+            "nonce",
+            "type",
+            "payload",
+            "signature"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "connectionGeneration": {
+              "$ref": "#/$defs/PositiveUint64Decimal"
+            },
+            "nonce": {
+              "$ref": "#/$defs/Base64Url16Bytes"
+            },
+            "pairId": {
+              "$ref": "#/$defs/Base64Url16Bytes"
+            },
+            "payload": {
+              "$ref": "#/$defs/PairControlReconnectPayloadV1"
+            },
+            "protocolMajor": {
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "protocolMinor": {
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "sequence": {
+              "$ref": "#/$defs/PositiveUint64Decimal"
+            },
+            "side": {
+              "$ref": "#/$defs/DeviceRoleV1"
+            },
+            "signature": {
+              "maxLength": 86,
+              "minLength": 86,
+              "pattern": "^[A-Za-z0-9_-]{85}[AQgw]$",
+              "type": "string"
+            },
+            "timestamp": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "type": {
+              "const": 6,
+              "type": "number"
+            },
+            "version": {
+              "const": 1,
+              "type": "number"
+            }
+          },
+          "required": [
+            "version",
+            "protocolMajor",
+            "protocolMinor",
+            "pairId",
+            "side",
+            "connectionGeneration",
+            "sequence",
+            "timestamp",
+            "nonce",
+            "type",
+            "payload",
+            "signature"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "connectionGeneration": {
+              "$ref": "#/$defs/PositiveUint64Decimal"
+            },
+            "nonce": {
+              "$ref": "#/$defs/Base64Url16Bytes"
+            },
+            "pairId": {
+              "$ref": "#/$defs/Base64Url16Bytes"
+            },
+            "payload": {
+              "$ref": "#/$defs/PairControlRevocationPayloadV1"
+            },
+            "protocolMajor": {
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "protocolMinor": {
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "sequence": {
+              "$ref": "#/$defs/PositiveUint64Decimal"
+            },
+            "side": {
+              "$ref": "#/$defs/DeviceRoleV1"
+            },
+            "signature": {
+              "maxLength": 86,
+              "minLength": 86,
+              "pattern": "^[A-Za-z0-9_-]{85}[AQgw]$",
+              "type": "string"
+            },
+            "timestamp": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "type": {
+              "const": 7,
+              "type": "number"
+            },
+            "version": {
+              "const": 1,
+              "type": "number"
+            }
+          },
+          "required": [
+            "version",
+            "protocolMajor",
+            "protocolMinor",
+            "pairId",
+            "side",
+            "connectionGeneration",
+            "sequence",
+            "timestamp",
+            "nonce",
+            "type",
+            "payload",
+            "signature"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "connectionGeneration": {
+              "$ref": "#/$defs/PositiveUint64Decimal"
+            },
+            "nonce": {
+              "$ref": "#/$defs/Base64Url16Bytes"
+            },
+            "pairId": {
+              "$ref": "#/$defs/Base64Url16Bytes"
+            },
+            "payload": {
+              "$ref": "#/$defs/PairControlRevocationAckPayloadV1"
+            },
+            "protocolMajor": {
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "protocolMinor": {
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "sequence": {
+              "$ref": "#/$defs/PositiveUint64Decimal"
+            },
+            "side": {
+              "$ref": "#/$defs/DeviceRoleV1"
+            },
+            "signature": {
+              "maxLength": 86,
+              "minLength": 86,
+              "pattern": "^[A-Za-z0-9_-]{85}[AQgw]$",
+              "type": "string"
+            },
+            "timestamp": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "type": {
+              "const": 8,
+              "type": "number"
+            },
+            "version": {
+              "const": 1,
+              "type": "number"
+            }
+          },
+          "required": [
+            "version",
+            "protocolMajor",
+            "protocolMinor",
+            "pairId",
+            "side",
+            "connectionGeneration",
+            "sequence",
+            "timestamp",
+            "nonce",
+            "type",
+            "payload",
+            "signature"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "connectionGeneration": {
+              "$ref": "#/$defs/PositiveUint64Decimal"
+            },
+            "nonce": {
+              "$ref": "#/$defs/Base64Url16Bytes"
+            },
+            "pairId": {
+              "$ref": "#/$defs/Base64Url16Bytes"
+            },
+            "payload": {
+              "$ref": "#/$defs/PairControlErrorPayloadV1"
+            },
+            "protocolMajor": {
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "protocolMinor": {
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "sequence": {
+              "$ref": "#/$defs/PositiveUint64Decimal"
+            },
+            "side": {
+              "$ref": "#/$defs/DeviceRoleV1"
+            },
+            "signature": {
+              "maxLength": 86,
+              "minLength": 86,
+              "pattern": "^[A-Za-z0-9_-]{85}[AQgw]$",
+              "type": "string"
+            },
+            "timestamp": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "type": {
+              "const": 9,
+              "type": "number"
+            },
+            "version": {
+              "const": 1,
+              "type": "number"
+            }
+          },
+          "required": [
+            "version",
+            "protocolMajor",
+            "protocolMinor",
+            "pairId",
+            "side",
+            "connectionGeneration",
+            "sequence",
+            "timestamp",
+            "nonce",
+            "type",
+            "payload",
+            "signature"
+          ],
+          "type": "object"
+        }
+      ],
+      "x-waifus-first-ingress-timestamp-skew-seconds": 60,
+      "x-waifus-maximum-raw-bytes": 2048,
+      "x-waifus-shared-side-high-water": [
+        "connectionGeneration",
+        "sequence"
+      ],
+      "x-waifus-transport-directions": {
+        "https_poll": "delivery_only",
+        "https_publish": "ingress",
+        "https_revocation_ack": "ingress",
+        "https_revoke": "ingress",
+        "websocket": "ingress_and_delivery"
+      },
+      "x-waifus-transport-type-matrix": {
+        "https_poll": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9
+        ],
+        "https_publish": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          9
+        ],
+        "https_revocation_ack": [
+          8
+        ],
+        "https_revoke": [
+          7
+        ],
+        "websocket": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9
+        ]
+      }
+    },
+    "PairControlRevocationAckPayloadV1": {
+      "additionalProperties": false,
+      "properties": {
+        "revocationEpoch": {
+          "$ref": "#/$defs/Uint64Decimal"
+        },
+        "revocationMac": {
+          "$ref": "#/$defs/Base64Url32Bytes"
+        }
+      },
+      "required": [
+        "revocationEpoch",
+        "revocationMac"
+      ],
+      "type": "object"
+    },
+    "PairControlRevocationPayloadV1": {
+      "additionalProperties": false,
+      "properties": {
+        "reason": {
+          "enum": [
+            "user_revoked",
+            "identity_reset",
+            "repair_required"
+          ],
+          "type": "string"
+        },
+        "revocationEpoch": {
+          "$ref": "#/$defs/Uint64Decimal"
+        },
+        "revocationMac": {
+          "$ref": "#/$defs/Base64Url32Bytes"
+        }
+      },
+      "required": [
+        "revocationEpoch",
+        "reason",
+        "revocationMac"
+      ],
+      "type": "object"
+    },
+    "PairControlTypeV1": {
+      "anyOf": [
+        {
+          "const": 1,
+          "type": "number"
+        },
+        {
+          "const": 2,
+          "type": "number"
+        },
+        {
+          "const": 3,
+          "type": "number"
+        },
+        {
+          "const": 4,
+          "type": "number"
+        },
+        {
+          "const": 5,
+          "type": "number"
+        },
+        {
+          "const": 6,
+          "type": "number"
+        },
+        {
+          "const": 7,
+          "type": "number"
+        },
+        {
+          "const": 8,
+          "type": "number"
+        },
+        {
+          "const": 9,
+          "type": "number"
+        }
+      ]
+    },
+    "PairControlUnsignedRecordV1": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "connectionGeneration": {
+              "$ref": "#/$defs/PositiveUint64Decimal"
+            },
+            "nonce": {
+              "$ref": "#/$defs/Base64Url16Bytes"
+            },
+            "pairId": {
+              "$ref": "#/$defs/Base64Url16Bytes"
+            },
+            "payload": {
+              "$ref": "#/$defs/PairControlHelloPayloadV1"
+            },
+            "protocolMajor": {
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "protocolMinor": {
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "sequence": {
+              "$ref": "#/$defs/PositiveUint64Decimal"
+            },
+            "side": {
+              "$ref": "#/$defs/DeviceRoleV1"
+            },
+            "timestamp": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "type": {
+              "const": 1,
+              "type": "number"
+            },
+            "version": {
+              "const": 1,
+              "type": "number"
+            }
+          },
+          "required": [
+            "version",
+            "protocolMajor",
+            "protocolMinor",
+            "pairId",
+            "side",
+            "connectionGeneration",
+            "sequence",
+            "timestamp",
+            "nonce",
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "connectionGeneration": {
+              "$ref": "#/$defs/PositiveUint64Decimal"
+            },
+            "nonce": {
+              "$ref": "#/$defs/Base64Url16Bytes"
+            },
+            "pairId": {
+              "$ref": "#/$defs/Base64Url16Bytes"
+            },
+            "payload": {
+              "$ref": "#/$defs/PairControlCapabilitiesPayloadV1"
+            },
+            "protocolMajor": {
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "protocolMinor": {
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "sequence": {
+              "$ref": "#/$defs/PositiveUint64Decimal"
+            },
+            "side": {
+              "$ref": "#/$defs/DeviceRoleV1"
+            },
+            "timestamp": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "type": {
+              "const": 2,
+              "type": "number"
+            },
+            "version": {
+              "const": 1,
+              "type": "number"
+            }
+          },
+          "required": [
+            "version",
+            "protocolMajor",
+            "protocolMinor",
+            "pairId",
+            "side",
+            "connectionGeneration",
+            "sequence",
+            "timestamp",
+            "nonce",
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "connectionGeneration": {
+              "$ref": "#/$defs/PositiveUint64Decimal"
+            },
+            "nonce": {
+              "$ref": "#/$defs/Base64Url16Bytes"
+            },
+            "pairId": {
+              "$ref": "#/$defs/Base64Url16Bytes"
+            },
+            "payload": {
+              "$ref": "#/$defs/PairControlEndpointGenerationPayloadV1"
+            },
+            "protocolMajor": {
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "protocolMinor": {
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "sequence": {
+              "$ref": "#/$defs/PositiveUint64Decimal"
+            },
+            "side": {
+              "$ref": "#/$defs/DeviceRoleV1"
+            },
+            "timestamp": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "type": {
+              "const": 3,
+              "type": "number"
+            },
+            "version": {
+              "const": 1,
+              "type": "number"
+            }
+          },
+          "required": [
+            "version",
+            "protocolMajor",
+            "protocolMinor",
+            "pairId",
+            "side",
+            "connectionGeneration",
+            "sequence",
+            "timestamp",
+            "nonce",
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "connectionGeneration": {
+              "$ref": "#/$defs/PositiveUint64Decimal"
+            },
+            "nonce": {
+              "$ref": "#/$defs/Base64Url16Bytes"
+            },
+            "pairId": {
+              "$ref": "#/$defs/Base64Url16Bytes"
+            },
+            "payload": {
+              "$ref": "#/$defs/PairControlEndpointAckPayloadV1"
+            },
+            "protocolMajor": {
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "protocolMinor": {
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "sequence": {
+              "$ref": "#/$defs/PositiveUint64Decimal"
+            },
+            "side": {
+              "$ref": "#/$defs/DeviceRoleV1"
+            },
+            "timestamp": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "type": {
+              "const": 4,
+              "type": "number"
+            },
+            "version": {
+              "const": 1,
+              "type": "number"
+            }
+          },
+          "required": [
+            "version",
+            "protocolMajor",
+            "protocolMinor",
+            "pairId",
+            "side",
+            "connectionGeneration",
+            "sequence",
+            "timestamp",
+            "nonce",
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "connectionGeneration": {
+              "$ref": "#/$defs/PositiveUint64Decimal"
+            },
+            "nonce": {
+              "$ref": "#/$defs/Base64Url16Bytes"
+            },
+            "pairId": {
+              "$ref": "#/$defs/Base64Url16Bytes"
+            },
+            "payload": {
+              "$ref": "#/$defs/PairControlPresencePayloadV1"
+            },
+            "protocolMajor": {
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "protocolMinor": {
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "sequence": {
+              "$ref": "#/$defs/PositiveUint64Decimal"
+            },
+            "side": {
+              "$ref": "#/$defs/DeviceRoleV1"
+            },
+            "timestamp": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "type": {
+              "const": 5,
+              "type": "number"
+            },
+            "version": {
+              "const": 1,
+              "type": "number"
+            }
+          },
+          "required": [
+            "version",
+            "protocolMajor",
+            "protocolMinor",
+            "pairId",
+            "side",
+            "connectionGeneration",
+            "sequence",
+            "timestamp",
+            "nonce",
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "connectionGeneration": {
+              "$ref": "#/$defs/PositiveUint64Decimal"
+            },
+            "nonce": {
+              "$ref": "#/$defs/Base64Url16Bytes"
+            },
+            "pairId": {
+              "$ref": "#/$defs/Base64Url16Bytes"
+            },
+            "payload": {
+              "$ref": "#/$defs/PairControlReconnectPayloadV1"
+            },
+            "protocolMajor": {
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "protocolMinor": {
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "sequence": {
+              "$ref": "#/$defs/PositiveUint64Decimal"
+            },
+            "side": {
+              "$ref": "#/$defs/DeviceRoleV1"
+            },
+            "timestamp": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "type": {
+              "const": 6,
+              "type": "number"
+            },
+            "version": {
+              "const": 1,
+              "type": "number"
+            }
+          },
+          "required": [
+            "version",
+            "protocolMajor",
+            "protocolMinor",
+            "pairId",
+            "side",
+            "connectionGeneration",
+            "sequence",
+            "timestamp",
+            "nonce",
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "connectionGeneration": {
+              "$ref": "#/$defs/PositiveUint64Decimal"
+            },
+            "nonce": {
+              "$ref": "#/$defs/Base64Url16Bytes"
+            },
+            "pairId": {
+              "$ref": "#/$defs/Base64Url16Bytes"
+            },
+            "payload": {
+              "$ref": "#/$defs/PairControlRevocationPayloadV1"
+            },
+            "protocolMajor": {
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "protocolMinor": {
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "sequence": {
+              "$ref": "#/$defs/PositiveUint64Decimal"
+            },
+            "side": {
+              "$ref": "#/$defs/DeviceRoleV1"
+            },
+            "timestamp": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "type": {
+              "const": 7,
+              "type": "number"
+            },
+            "version": {
+              "const": 1,
+              "type": "number"
+            }
+          },
+          "required": [
+            "version",
+            "protocolMajor",
+            "protocolMinor",
+            "pairId",
+            "side",
+            "connectionGeneration",
+            "sequence",
+            "timestamp",
+            "nonce",
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "connectionGeneration": {
+              "$ref": "#/$defs/PositiveUint64Decimal"
+            },
+            "nonce": {
+              "$ref": "#/$defs/Base64Url16Bytes"
+            },
+            "pairId": {
+              "$ref": "#/$defs/Base64Url16Bytes"
+            },
+            "payload": {
+              "$ref": "#/$defs/PairControlRevocationAckPayloadV1"
+            },
+            "protocolMajor": {
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "protocolMinor": {
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "sequence": {
+              "$ref": "#/$defs/PositiveUint64Decimal"
+            },
+            "side": {
+              "$ref": "#/$defs/DeviceRoleV1"
+            },
+            "timestamp": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "type": {
+              "const": 8,
+              "type": "number"
+            },
+            "version": {
+              "const": 1,
+              "type": "number"
+            }
+          },
+          "required": [
+            "version",
+            "protocolMajor",
+            "protocolMinor",
+            "pairId",
+            "side",
+            "connectionGeneration",
+            "sequence",
+            "timestamp",
+            "nonce",
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "connectionGeneration": {
+              "$ref": "#/$defs/PositiveUint64Decimal"
+            },
+            "nonce": {
+              "$ref": "#/$defs/Base64Url16Bytes"
+            },
+            "pairId": {
+              "$ref": "#/$defs/Base64Url16Bytes"
+            },
+            "payload": {
+              "$ref": "#/$defs/PairControlErrorPayloadV1"
+            },
+            "protocolMajor": {
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "protocolMinor": {
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "sequence": {
+              "$ref": "#/$defs/PositiveUint64Decimal"
+            },
+            "side": {
+              "$ref": "#/$defs/DeviceRoleV1"
+            },
+            "timestamp": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "type": {
+              "const": 9,
+              "type": "number"
+            },
+            "version": {
+              "const": 1,
+              "type": "number"
+            }
+          },
+          "required": [
+            "version",
+            "protocolMajor",
+            "protocolMinor",
+            "pairId",
+            "side",
+            "connectionGeneration",
+            "sequence",
+            "timestamp",
+            "nonce",
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "PositiveUint64Decimal": {
       "$ref": "#/$defs/Uint64Decimal",
       "not": {
@@ -601,7 +1989,7 @@
   },
   "$id": "https://waifucave.com/contracts/remote/v1/remote-access.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "description": "Attended approval, pair-confirmation, and installation-reset wire records shared by Discord Waifus and ts-connect.",
+  "description": "Attended approval, pairing confirmation, pair-control, and installation-reset wire records shared by Discord Waifus and ts-connect.",
   "oneOf": [
     {
       "$ref": "#/$defs/ApprovalReceiptV1"
@@ -614,6 +2002,9 @@
     },
     {
       "$ref": "#/$defs/PairConfirmationV1"
+    },
+    {
+      "$ref": "#/$defs/PairControlRecordV1"
     },
     {
       "$ref": "#/$defs/ResetIdentityCommand"

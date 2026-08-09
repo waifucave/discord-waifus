@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   Base64Url16BytesSchema,
   Base64Url32BytesSchema,
+  Base64Url64BytesSchema,
   CanonicalTargetSchema,
   CapabilityNameListSchema,
   DeviceRoleV1Schema,
@@ -424,6 +425,151 @@ export const PairConfirmationV1Schema = z
   );
 
 export type PairConfirmationV1 = z.infer<typeof PairConfirmationV1Schema>;
+
+export const PairControlTypeV1Schema = z.union([
+  z.literal(1),
+  z.literal(2),
+  z.literal(3),
+  z.literal(4),
+  z.literal(5),
+  z.literal(6),
+  z.literal(7),
+  z.literal(8),
+  z.literal(9)
+]);
+
+export type PairControlTypeV1 = z.infer<typeof PairControlTypeV1Schema>;
+
+const Uint16Schema = z.number().int().min(0).max(65_535);
+
+export const PairControlEndpointCiphertextSchema = z
+  .string()
+  .min(2)
+  .max(1_600)
+  .regex(/^[A-Za-z0-9_-]+$/, "Expected canonical unpadded base64url.")
+  .refine((value) => {
+    const decoded = Buffer.from(value, "base64url");
+    return decoded.byteLength >= 1
+      && decoded.byteLength <= 1_200
+      && decoded.toString("base64url") === value;
+  }, "Expected canonical base64url encoding of 1 to 1,200 bytes.");
+
+export const PairControlHelloPayloadV1Schema = z.object({
+  resumeConnectionGeneration: Uint64DecimalSchema,
+  resumeSequence: Uint64DecimalSchema
+}).strict();
+
+export const PairControlCapabilitiesPayloadV1Schema = z.object({
+  capabilitiesSha256: Base64Url32BytesSchema,
+  coordinationMinor: Uint16Schema
+}).strict();
+
+export const PairControlEndpointGenerationPayloadV1Schema = z.object({
+  endpointEpoch: Uint64DecimalSchema,
+  ciphertext: PairControlEndpointCiphertextSchema,
+  ciphertextSha256: Base64Url32BytesSchema
+}).strict();
+
+export const PairControlEndpointAckPayloadV1Schema = z.object({
+  endpointEpoch: Uint64DecimalSchema,
+  ciphertextSha256: Base64Url32BytesSchema
+}).strict();
+
+export const PairControlPresencePayloadV1Schema = z.object({
+  state: z.enum(["online", "offline"]),
+  validUntil: Uint64DecimalSchema
+}).strict();
+
+export const PairControlReconnectPayloadV1Schema = z.object({
+  lastReceivedConnectionGeneration: Uint64DecimalSchema,
+  lastReceivedSequence: Uint64DecimalSchema
+}).strict();
+
+export const PairControlRevocationPayloadV1Schema = z.object({
+  revocationEpoch: Uint64DecimalSchema,
+  reason: z.enum(["user_revoked", "identity_reset", "repair_required"]),
+  revocationMac: Base64Url32BytesSchema
+}).strict();
+
+export const PairControlRevocationAckPayloadV1Schema = z.object({
+  revocationEpoch: Uint64DecimalSchema,
+  revocationMac: Base64Url32BytesSchema
+}).strict();
+
+export const PairControlErrorPayloadV1Schema = z.object({
+  code: z.enum([
+    "protocol_mismatch",
+    "stale_generation",
+    "sequence_gap",
+    "revoked",
+    "resync_required"
+  ]),
+  forConnectionGeneration: Uint64DecimalSchema,
+  forSequence: Uint64DecimalSchema
+}).strict();
+
+const PairControlRecordBaseShape = {
+  version: z.literal(1),
+  protocolMajor: Uint16Schema,
+  protocolMinor: Uint16Schema,
+  pairId: Base64Url16BytesSchema,
+  side: DeviceRoleV1Schema,
+  connectionGeneration: PositiveUint64DecimalSchema,
+  sequence: PositiveUint64DecimalSchema,
+  timestamp: Uint64DecimalSchema,
+  nonce: Base64Url16BytesSchema
+};
+
+function pairControlUnsignedRecord<
+  Type extends PairControlTypeV1,
+  Payload extends z.ZodType
+>(type: Type, payload: Payload) {
+  return z.object({
+    ...PairControlRecordBaseShape,
+    type: z.literal(type),
+    payload
+  }).strict();
+}
+
+function pairControlRecord<
+  Type extends PairControlTypeV1,
+  Payload extends z.ZodType
+>(type: Type, payload: Payload) {
+  return z.object({
+    ...PairControlRecordBaseShape,
+    type: z.literal(type),
+    payload,
+    signature: Base64Url64BytesSchema
+  }).strict();
+}
+
+export const PairControlUnsignedRecordV1Schema = z.discriminatedUnion("type", [
+  pairControlUnsignedRecord(1, PairControlHelloPayloadV1Schema),
+  pairControlUnsignedRecord(2, PairControlCapabilitiesPayloadV1Schema),
+  pairControlUnsignedRecord(3, PairControlEndpointGenerationPayloadV1Schema),
+  pairControlUnsignedRecord(4, PairControlEndpointAckPayloadV1Schema),
+  pairControlUnsignedRecord(5, PairControlPresencePayloadV1Schema),
+  pairControlUnsignedRecord(6, PairControlReconnectPayloadV1Schema),
+  pairControlUnsignedRecord(7, PairControlRevocationPayloadV1Schema),
+  pairControlUnsignedRecord(8, PairControlRevocationAckPayloadV1Schema),
+  pairControlUnsignedRecord(9, PairControlErrorPayloadV1Schema)
+]);
+
+export type PairControlUnsignedRecordV1 = z.infer<typeof PairControlUnsignedRecordV1Schema>;
+
+export const PairControlRecordV1Schema = z.discriminatedUnion("type", [
+  pairControlRecord(1, PairControlHelloPayloadV1Schema),
+  pairControlRecord(2, PairControlCapabilitiesPayloadV1Schema),
+  pairControlRecord(3, PairControlEndpointGenerationPayloadV1Schema),
+  pairControlRecord(4, PairControlEndpointAckPayloadV1Schema),
+  pairControlRecord(5, PairControlPresencePayloadV1Schema),
+  pairControlRecord(6, PairControlReconnectPayloadV1Schema),
+  pairControlRecord(7, PairControlRevocationPayloadV1Schema),
+  pairControlRecord(8, PairControlRevocationAckPayloadV1Schema),
+  pairControlRecord(9, PairControlErrorPayloadV1Schema)
+]);
+
+export type PairControlRecordV1 = z.infer<typeof PairControlRecordV1Schema>;
 
 export const ResetIdentityCommandSchema = z.object({
   resetTombstone: PositiveUint64DecimalSchema,
