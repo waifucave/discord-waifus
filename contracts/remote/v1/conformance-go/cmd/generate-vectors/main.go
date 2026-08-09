@@ -22,6 +22,7 @@ func run() error {
 	}{
 		{name: "wipc-v1.json", build: vectors.BuildWIPCV1JSON},
 		{name: "wipc-state-v1.json", build: vectors.BuildWIPCStateV1JSON},
+		{name: "wipc-auth-session-v1.json", build: vectors.BuildWIPCAuthSessionV1JSON},
 	}
 	for _, fixture := range checks {
 		expected, err := fixture.build()

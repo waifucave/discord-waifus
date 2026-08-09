@@ -997,9 +997,147 @@ export function createWipcStateV1Fixture(): ContractJson {
   };
 }
 
+export function createWipcAuthSessionV1Fixture(): ContractJson {
+  const parentCapability = sequentialBytes(0x00);
+  const clientNonce = sequentialBytes(0x20);
+  const helloBytes = Buffer.from(
+    "{\"component\":\"discord_waifus\",\"nonce\":\"client\",\"protocol\":{\"major\":1,\"minor\":0}}",
+    "utf8"
+  );
+  const helperNonce = sequentialBytes(0x40);
+  const helloAckBytes = Buffer.from(
+    "{\"component\":\"ts_connect\",\"nonce\":\"helper\",\"protocol\":{\"major\":1,\"minor\":0}}",
+    "utf8"
+  );
+  const parentProof = deriveWipcParentProof({
+    parentCapability,
+    clientNonce,
+    helperNonce,
+    helloBytes,
+    helloAckBytes
+  });
+  const helperProof = deriveWipcHelperProof({
+    parentCapability,
+    clientNonce,
+    helperNonce,
+    helloBytes,
+    helloAckBytes,
+    parentProof
+  });
+
+  const replacementHelperNonce = sequentialBytes(0x60);
+  const replacementHelloAckBytes = Buffer.from(
+    "{\"component\":\"ts_connect\",\"nonce\":\"replacement\",\"protocol\":{\"major\":1,\"minor\":0}}",
+    "utf8"
+  );
+  const replacementParentProof = deriveWipcParentProof({
+    parentCapability,
+    clientNonce,
+    helperNonce: replacementHelperNonce,
+    helloBytes,
+    helloAckBytes: replacementHelloAckBytes
+  });
+  const replacementHelperProof = deriveWipcHelperProof({
+    parentCapability,
+    clientNonce,
+    helperNonce: replacementHelperNonce,
+    helloBytes,
+    helloAckBytes: replacementHelloAckBytes,
+    parentProof: replacementParentProof
+  });
+
+  const socketRaceHelperNonce = Buffer.alloc(32, 0x7f);
+  const socketRaceHelloAckBytes = Buffer.from(
+    "{\"component\":\"ts_connect\",\"nonce\":\"socket-race\",\"protocol\":{\"major\":1,\"minor\":0}}",
+    "utf8"
+  );
+  const socketRaceParentProof = deriveWipcParentProof({
+    parentCapability,
+    clientNonce,
+    helperNonce: socketRaceHelperNonce,
+    helloBytes,
+    helloAckBytes: socketRaceHelloAckBytes
+  });
+
+  const replayClientNonce = Buffer.from(clientNonce);
+  replayClientNonce[0] ^= 1;
+  const replayHelloBytes = Buffer.concat([helloBytes, Buffer.from(" ", "ascii")]);
+  const encode = (value: Uint8Array) => Buffer.from(value).toString("base64url");
+
+  return {
+    schemaVersion: 1,
+    parentCapabilityB64: encode(parentCapability),
+    parent: {
+      clientNonceB64: encode(clientNonce),
+      helloBytesB64: encode(helloBytes)
+    },
+    candidates: {
+      valid: {
+        helperNonceB64: encode(helperNonce),
+        helloAckBytesB64: encode(helloAckBytes),
+        parentProofB64: encode(parentProof),
+        helperProofB64: encode(helperProof),
+        expectedParentOutcome: "authenticated",
+        expectedHelperOutcome: "authenticated",
+        expectedCapabilityState: "erased"
+      },
+      replacement: {
+        helperNonceB64: encode(replacementHelperNonce),
+        helloAckBytesB64: encode(replacementHelloAckBytes),
+        parentProofB64: encode(replacementParentProof),
+        helperProofB64: encode(replacementHelperProof),
+        expectedParentOutcome: "authenticated",
+        expectedHelperOutcome: "authenticated",
+        expectedCapabilityState: "erased"
+      },
+      wrongHelperProof: {
+        helperNonceB64: encode(helperNonce),
+        helloAckBytesB64: encode(helloAckBytes),
+        parentProofB64: encode(parentProof),
+        helperProofB64: encode(Buffer.alloc(32, 0xff)),
+        expectedParentError: "invalid_helper_proof",
+        expectedCapabilityState: "retained"
+      },
+      reflectedParentProof: {
+        helperNonceB64: encode(helperNonce),
+        helloAckBytesB64: encode(helloAckBytes),
+        parentProofB64: encode(parentProof),
+        helperProofB64: encode(parentProof),
+        expectedParentError: "invalid_helper_proof",
+        expectedCapabilityState: "retained"
+      },
+      socketRaceImpersonator: {
+        helperNonceB64: encode(socketRaceHelperNonce),
+        helloAckBytesB64: encode(socketRaceHelloAckBytes),
+        parentProofB64: encode(socketRaceParentProof),
+        helperProofB64: encode(socketRaceParentProof),
+        expectedParentError: "invalid_helper_proof",
+        expectedCapabilityState: "retained"
+      },
+      replayedParentProof: {
+        clientNonceB64: encode(replayClientNonce),
+        helloBytesB64: encode(replayHelloBytes),
+        helperNonceB64: encode(helperNonce),
+        helloAckBytesB64: encode(helloAckBytes),
+        parentProofB64: encode(parentProof),
+        expectedHelperError: "invalid_parent_proof",
+        expectedCapabilityState: "retained"
+      }
+    },
+    rules: {
+      trafficBeforeAuthenticationError: "frame_before_authentication",
+      candidateAlreadyActiveError: "auth_sequence_error",
+      completionWithoutCandidateError: "auth_sequence_error",
+      secondClientError: "auth_capability_unavailable",
+      recoveryOrder: ["socketRaceImpersonator", "replacement"]
+    }
+  };
+}
+
 export function createWipcFixtureSet(): ReadonlyMap<string, ContractJson> {
   return new Map([
     ["fixtures/crypto/wipc-v1.json", createWipcV1Fixture()],
-    ["fixtures/crypto/wipc-state-v1.json", createWipcStateV1Fixture()]
+    ["fixtures/crypto/wipc-state-v1.json", createWipcStateV1Fixture()],
+    ["fixtures/crypto/wipc-auth-session-v1.json", createWipcAuthSessionV1Fixture()]
   ]);
 }

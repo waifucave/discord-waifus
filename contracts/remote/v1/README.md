@@ -28,6 +28,9 @@ Current foundation:
   parities, request/response transitions, cancellation and bounded discarded input, terminal and
   inactive-frame behavior, independent request/response credits, wrong-side/overflow failures,
   and the high-water-before-limit rule for the 129th stream.
+- `fixtures/crypto/wipc-auth-session-v1.json` freezes parent/helper proof sequencing, traffic
+  gating, capability retention after a rejected candidate, capability erasure after success,
+  replay/reflection rejection, socket-race recovery, and second-client refusal.
 - `conformance-go/` independently recreates and validates that WIPC fixture using Go 1.26.5.
   It pins `github.com/flynn/noise` v1.1.0 now so later Noise vectors cannot silently select a
   different implementation.
@@ -55,7 +58,7 @@ standard JSON Schema cannot express by itself. These currently cover:
 Consumers must enforce those annotations or use the public conformance fixtures. A generic JSON
 Schema validator that ignores them is not a complete protocol validator.
 
-This remains an incomplete contract gate. The authenticated one-launch session/replay harness,
-remaining remote-access/dashboard DTOs, pairing and service crypto fixtures, signed-manifest trust
-vectors, and SAS wordlist must land before production helper, pairing, Cloudflare, host bridge, or
-remote gateway work may rely on this directory.
+This remains an incomplete contract gate. The remaining remote-access/dashboard DTOs, pairing and
+service crypto fixtures, signed-manifest trust vectors, and SAS wordlist must land before
+production helper, pairing, Cloudflare, host bridge, or remote gateway work may rely on this
+directory.
