@@ -31,7 +31,10 @@ describe("GET /api/logs", () => {
     const entries = Array.from({ length: 10 }, (_, i) => ({
       time: new Date(Date.now() - i * 1000).toISOString(),
       level: "info" as const,
-      message: `entry-${9 - i}` // entry-9 is newest (index 0)
+      message: `entry-${9 - i}`, // entry-9 is newest (index 0)
+      ...(i === 0
+        ? { context: { authorization: "Bearer log-secret-sentinel-1234567890" } }
+        : {})
     }));
     const logger = { info() {}, warn() {}, error() {}, recent: () => entries };
     const app = await createApiServer({
@@ -46,6 +49,8 @@ describe("GET /api/logs", () => {
       const names = body.entries.map((e) => e.message);
       expect(names).toContain("entry-9"); // the newest must be present
       expect(names).not.toContain("entry-0"); // the oldest must not
+      expect(result.headers["cache-control"]).toBe("no-store");
+      expect(result.body).not.toContain("log-secret-sentinel-1234567890");
     } finally {
       await app.close();
     }

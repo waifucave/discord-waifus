@@ -11,6 +11,7 @@ import { loadAppConfig, updateAppConfig } from "../config/appConfig.js";
 import { resolveDataPath, userDataPath } from "../config/paths.js";
 import { Logger, createLogger } from "../backend/logger.js";
 import { RuntimeState } from "../backend/runtime.js";
+import { redactRemoteHostDetails, redactSecrets } from "../backend/redaction.js";
 import { RuntimeOrchestrator } from "../orchestration/runtime.js";
 import { clearOcrArtifacts } from "../orchestration/ocr.js";
 import { extractEntities } from "../orchestration/memoryEntities.js";
@@ -64,13 +65,20 @@ import { StorageService } from "../storage/storageService.js";
 import { recentQueries, recentReplies, subscribeQueries, subscribeReplies } from "../shared/queryLog.js";
 import { listDocs, readDoc } from "./docsKb.js";
 import { registerAssistantRoutes } from "./assistant/routes.js";
-import { ApiError, badRequest, conflict, notFound, preconditionRequired } from "./errors.js";
+import {
+  ApiError,
+  apiErrorResponse,
+  badRequest,
+  conflict,
+  notFound,
+  preconditionRequired
+} from "./errors.js";
 import { mergeConfiguredBotsIntoMembers } from "../discord/memberCache.js";
 import { assertKnownProvider, assertModelWriteValid } from "./writeValidation.js";
 import { BrowserSecurity, type BrowserSecurityOptions } from "./browserSecurity.js";
 import { installRoutePolicy } from "./routePolicy.js";
 import { ROUTE_POLICY_MANIFEST } from "./routePolicyManifest.js";
-import type { RemoteRequestPrincipal } from "./requestPrincipal.js";
+import type { RemoteRequestPrincipal, RequestPrincipal } from "./requestPrincipal.js";
 import { ClientContextV1Schema } from "../shared/schemas/remoteLifecycle.js";
 
 export type ApiServerOptions = {
@@ -293,7 +301,11 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     browserSecurity,
     authorizeRemotePrincipal: options.remoteTrust?.isAuthorized
   });
+  app.addHook("preSerialization", async (request, _reply, payload) =>
+    redactApiPayload(request.principal, payload, options.dataRoot)
+  );
   app.addHook("onSend", async (request, reply, payload) => {
+    if (request.url.startsWith("/api/")) reply.header("cache-control", "no-store");
     browserSecurity.refreshResponseCookie(request, reply, request.principal);
     return payload;
   });
@@ -304,33 +316,42 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     done(null, body);
   });
 
-  app.setErrorHandler((error, _request, reply) => {
+  app.setErrorHandler((error, request, reply) => {
+    reply.header("cache-control", "no-store");
     if (error instanceof StorageConflictError) {
       void reply.status(409).send({
         error: "Conflict",
-        message: error.message,
-        latest: error.latest
+        message: "Record has changed since it was read.",
+        latest: error.latestVersion
       });
       return;
     }
     if (error instanceof ApiError) {
-      void reply.status(error.statusCode).send({
-        error: error.code,
-        message: error.message,
-        details: error.details
-      });
+      void reply.status(error.statusCode).send(redactApiPayload(
+        request.principal,
+        apiErrorResponse(error),
+        options.dataRoot
+      ));
       return;
     }
     if (error instanceof z.ZodError) {
+      const issues = error.issues.map((issue) => ({
+        code: issue.code,
+        path: issue.path.map((segment) => typeof segment === "number" ? segment : String(segment)),
+        message: redactSecrets(issue.message)
+      }));
       void reply.status(400).send({
         error: "ValidationError",
-        message: error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join("; ").slice(0, 400),
-        issues: error.issues
+        message: issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join("; ").slice(0, 400),
+        issues
       });
       return;
     }
     const unknownError = error as Error;
-    logger.error("Unhandled API error", { message: unknownError.message, stack: unknownError.stack });
+    logger.error("Unhandled API error", redactSecrets({
+      message: unknownError.message,
+      stack: unknownError.stack
+    }));
     void reply.status(500).send({ error: "InternalServerError" });
   });
 
@@ -372,23 +393,20 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     time: new Date().toISOString()
   }));
 
-  app.get("/api/status", async () => ({
-    running: true,
-    paused: options.runtime.paused,
-    httpUrl: `http://127.0.0.1:${options.runtime.port}`,
-    dataRoot: options.dataRoot,
-    discord: options.runtime.discord,
-    queues: options.runtime.queues
-  }));
+  app.get("/api/status", async (request) =>
+    statusResponse(options.runtime, request.principal, options.dataRoot)
+  );
 
-  app.get("/api/runtime", async () => {
+  app.get("/api/runtime", async (request) => {
     const orchestrator = options.runtimeControl?.getOrchestrator?.() ?? options.runtimeOrchestrator;
     const live = orchestrator?.permissionWarnings.list() ?? [];
-    if (live.length === 0) return options.runtime;
-    return {
-      ...options.runtime,
-      discord: { ...options.runtime.discord, warnings: [...options.runtime.discord.warnings, ...live] }
-    };
+    const runtime = live.length === 0
+      ? options.runtime
+      : {
+          ...options.runtime,
+          discord: { ...options.runtime.discord, warnings: [...options.runtime.discord.warnings, ...live] }
+        };
+    return runtimeResponse(runtime, request.principal, options.dataRoot);
   });
 
   app.get("/api/config", async (request) => {
@@ -480,7 +498,11 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     const limit = Math.min(Number((request.query as Record<string, string>).limit ?? 100) || 100, 500);
     const entries = options.logger?.recent?.() ?? [];
     // recent() is newest-first (logger unshifts) — take the head for the newest N
-    return { entries: entries.slice(0, limit) };
+    return redactApiPayload(
+      request.principal,
+      { entries: entries.slice(0, limit) },
+      options.dataRoot
+    );
   });
 
   app.get("/api/docs", async () => ({ docs: await listDocs() }));
@@ -946,17 +968,17 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     });
   });
 
-  app.post("/api/runtime/pause", async () => {
+  app.post("/api/runtime/pause", async (request) => {
     options.runtime.paused = true;
     await (options.runtimeControl?.pause() ?? options.runtimeOrchestrator?.pause());
     options.runtime.updatedAt = nowIso();
-    return options.runtime;
+    return runtimeResponse(options.runtime, request.principal, options.dataRoot);
   });
-  app.post("/api/runtime/resume", async () => {
+  app.post("/api/runtime/resume", async (request) => {
     options.runtime.paused = false;
     await options.runtimeControl?.resume();
     options.runtime.updatedAt = nowIso();
-    return options.runtime;
+    return runtimeResponse(options.runtime, request.principal, options.dataRoot);
   });
   app.post("/api/runtime/reload", async () => {
     await options.runtimeControl?.reload("manual-api");
@@ -1043,8 +1065,13 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
       history
     };
   });
-  app.get("/api/diagnostics/bundle", async () => diagnosticBundle(storage, options.runtime));
-  app.get("/api/events", async (request, reply) => sendSseSnapshot(request, reply, options.runtime, logger));
+  app.get("/api/diagnostics/bundle", async (request) => diagnosticBundle(
+    storage,
+    runtimeResponse(options.runtime, request.principal, options.dataRoot)
+  ));
+  app.get("/api/events", async (request, reply) =>
+    sendSseSnapshot(request, reply, options.runtime, logger, options.dataRoot)
+  );
 
   app.setNotFoundHandler(async (request, reply) => {
     if (request.url.startsWith("/api/")) {
@@ -1070,6 +1097,55 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
 
 function hasOwn(value: object | undefined, key: string): boolean {
   return value !== undefined && Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function redactApiPayload<T>(
+  principal: RequestPrincipal | undefined,
+  value: T,
+  dataRoot: string
+): T {
+  return principal?.kind === "remote_device"
+    ? redactRemoteHostDetails(value, [dataRoot])
+    : redactSecrets(value);
+}
+
+function statusResponse(
+  runtime: RuntimeState,
+  principal: RequestPrincipal,
+  dataRoot: string
+) {
+  const shared = {
+    running: true,
+    paused: runtime.paused,
+    discord: runtime.discord,
+    queues: runtime.queues
+  };
+  return redactApiPayload(
+    principal,
+    principal.kind === "remote_device"
+      ? shared
+      : {
+          ...shared,
+          httpUrl: `http://127.0.0.1:${runtime.port}`,
+          dataRoot
+        },
+    dataRoot
+  );
+}
+
+function runtimeResponse(
+  runtime: RuntimeState,
+  principal: RequestPrincipal,
+  dataRoot: string
+) {
+  if (principal.kind === "local") return redactSecrets(runtime);
+  const {
+    pid: _pid,
+    port: _port,
+    dataRoot: _dataRoot,
+    ...remoteRuntime
+  } = runtime;
+  return redactRemoteHostDetails(remoteRuntime, [dataRoot]);
 }
 
 function remoteAppConfig(config: AppConfig) {
@@ -1869,35 +1945,40 @@ function sendSseSnapshot(
   request: FastifyRequest,
   reply: FastifyReply,
   runtime: RuntimeState,
-  logger: Logger
+  logger: Logger,
+  dataRoot: string
 ): void {
+  const writeEvent = (event: string, value: unknown): void => {
+    const redacted = redactApiPayload(request.principal, value, dataRoot);
+    reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(redacted)}\n\n`);
+  };
   reply.hijack();
   reply.raw.writeHead(200, {
     "content-type": "text/event-stream",
-    "cache-control": "no-cache",
+    "cache-control": "no-store",
     connection: "keep-alive"
   });
-  reply.raw.write(`event: runtime\ndata: ${JSON.stringify(runtime)}\n\n`);
+  writeEvent("runtime", runtimeResponse(runtime, request.principal, dataRoot));
   for (const entry of logger.recent?.().slice().reverse() ?? []) {
-    reply.raw.write(`event: log\ndata: ${JSON.stringify(entry)}\n\n`);
+    writeEvent("log", entry);
   }
   for (const entry of recentQueries()) {
-    reply.raw.write(`event: query\ndata: ${JSON.stringify(entry)}\n\n`);
+    writeEvent("query", entry);
   }
   for (const entry of recentReplies()) {
-    reply.raw.write(`event: reply\ndata: ${JSON.stringify(entry)}\n\n`);
+    writeEvent("reply", entry);
   }
   const unsubscribeLogs = logger.subscribe?.((entry) => {
-    reply.raw.write(`event: log\ndata: ${JSON.stringify(entry)}\n\n`);
+    writeEvent("log", entry);
   });
   const unsubscribeQueries = subscribeQueries((entry) => {
-    reply.raw.write(`event: query\ndata: ${JSON.stringify(entry)}\n\n`);
+    writeEvent("query", entry);
   });
   const unsubscribeReplies = subscribeReplies((entry) => {
-    reply.raw.write(`event: reply\ndata: ${JSON.stringify(entry)}\n\n`);
+    writeEvent("reply", entry);
   });
   const heartbeat = setInterval(() => {
-    reply.raw.write(`event: heartbeat\ndata: ${JSON.stringify({ time: new Date().toISOString() })}\n\n`);
+    writeEvent("heartbeat", { time: new Date().toISOString() });
   }, 30_000);
   request.raw.on("close", () => {
     clearInterval(heartbeat);

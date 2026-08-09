@@ -1,3 +1,5 @@
+import { redactSecrets } from "../backend/redaction.js";
+
 export type QueryRole =
   | "orchestrator"
   | "waifu"
@@ -68,7 +70,7 @@ export function recordProviderQuery(role: QueryRole, body: Record<string, unknow
     id: nextQueryId++,
     time: new Date().toISOString(),
     role,
-    payload
+    payload: redactSecrets(payload)
   };
   recentQueryEntries.push(entry);
   if (recentQueryEntries.length > MAX_RECENT) recentQueryEntries.shift();
@@ -90,7 +92,7 @@ export function recordProviderReply(
     queryId,
     status,
     ok,
-    payload
+    payload: redactSecrets(payload)
   };
   recentReplyEntries.push(entry);
   if (recentReplyEntries.length > MAX_RECENT) recentReplyEntries.shift();

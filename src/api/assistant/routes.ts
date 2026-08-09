@@ -4,6 +4,7 @@ import type { ModelPipeline } from "../../providers/types.js";
 import { ConversationStore } from "./conversations.js";
 import { AssistantTurnError, runAssistantTurn } from "./service.js";
 import { withoutBrowserContext } from "../requestPrincipal.js";
+import { redactRemoteHostDetails, redactSecrets } from "../../backend/redaction.js";
 
 const MessageBodySchema = z.object({ content: z.string().min(1).max(8000) });
 
@@ -73,19 +74,24 @@ export function registerAssistantRoutes(
     reply.hijack();
     reply.raw.writeHead(200, {
       "content-type": "text/event-stream",
-      "cache-control": "no-cache",
+      "cache-control": "no-store",
       connection: "keep-alive"
     });
+    const serializeEvent = (event: unknown): string => JSON.stringify(
+      request.principal.kind === "remote_device"
+        ? redactRemoteHostDetails(event, [options.dataRoot])
+        : redactSecrets(event)
+    );
     // Replay recorded events so a reopened panel catches up, then stream live. Each frame
     // carries the conversation-monotone seq as its SSE id so clients can drop duplicates
     // after browser auto-reconnects.
     for (const message of conversation.messages) {
       if (message.role === "event") {
-        reply.raw.write(`event: assistant\nid: ${message.seq ?? 0}\ndata: ${JSON.stringify(message.event)}\n\n`);
+        reply.raw.write(`event: assistant\nid: ${message.seq ?? 0}\ndata: ${serializeEvent(message.event)}\n\n`);
       }
     }
     const unsubscribe = store.subscribe(id, (event, seq) => {
-      reply.raw.write(`event: assistant\nid: ${seq}\ndata: ${JSON.stringify(event)}\n\n`);
+      reply.raw.write(`event: assistant\nid: ${seq}\ndata: ${serializeEvent(event)}\n\n`);
     });
     const heartbeat = setInterval(() => {
       reply.raw.write(`event: heartbeat\ndata: ${JSON.stringify({ time: new Date().toISOString() })}\n\n`);

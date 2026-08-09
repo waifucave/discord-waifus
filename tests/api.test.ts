@@ -175,7 +175,15 @@ describe("Backend API", () => {
         }
       });
       expect(stale.statusCode).toBe(409);
-      expect(stale.json().latest.revision).toBe(1);
+      expect(stale.json()).toEqual({
+        error: "Conflict",
+        message: "Record has changed since it was read.",
+        latest: {
+          schemaVersion: CURRENT_SCHEMA_VERSION,
+          revision: 1,
+          updatedAt: expect.any(String)
+        }
+      });
     } finally {
       await app.close();
     }
@@ -1203,7 +1211,15 @@ describe("Provider id widening + write validation (Gateway P4 Task 4)", () => {
         }
       });
       expect(stale.statusCode).toBe(409);
-      expect(stale.json().latest.revision).toBe(1);
+      expect(stale.json()).toEqual({
+        error: "Conflict",
+        message: "Record has changed since it was read.",
+        latest: {
+          schemaVersion: CURRENT_SCHEMA_VERSION,
+          revision: 1,
+          updatedAt: expect.any(String)
+        }
+      });
     } finally {
       await app.close();
     }

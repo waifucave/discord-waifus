@@ -11,6 +11,20 @@ export class ApiError extends Error {
   }
 }
 
+export type ApiErrorResponse = {
+  error: string;
+  message: string;
+  details?: unknown;
+};
+
+export function apiErrorResponse(error: ApiError): ApiErrorResponse {
+  return {
+    error: error.code,
+    message: error.message,
+    ...(error.details === undefined ? {} : { details: error.details })
+  };
+}
+
 export function badRequest(message: string, details?: unknown): ApiError {
   return new ApiError(400, message, details, "BadRequest");
 }

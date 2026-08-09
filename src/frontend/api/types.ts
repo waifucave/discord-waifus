@@ -483,7 +483,7 @@ export type ApiErrorBody = {
   error: string;
   message?: string;
   details?: unknown;
-  latest?: unknown;
+  latest?: Pick<Revisioned, "schemaVersion" | "revision" | "updatedAt">;
   issues?: unknown;
 };
 

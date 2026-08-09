@@ -32,6 +32,13 @@ unexpected Host, Origin, or cross-site fetch context.
 
 `/api/events` is an SSE endpoint. It emits a runtime snapshot and heartbeat events.
 
+API responses are marked `Cache-Control: no-store`. Credential material, Discord tokens, private
+keys, pairing/internal-capability material, and direct endpoint candidates are scrubbed from
+errors, logs, diagnostics, captured model traffic, and event serialization. A remote device gets
+the same operational status but not the host process ID, bind port, data root, loopback URL,
+absolute host paths, or helper IPC path. Local status/runtime responses retain their intended host
+details.
+
 When Discord auto-connect is enabled and an orchestrator token is saved, the backend starts the runtime loop:
 
 1. Discord `messageCreate` events discover guilds/channels and trigger enabled channel sessions.
@@ -66,7 +73,7 @@ Config is backed by `config.toml` under the data root. Default config:
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "http": { "host": "127.0.0.1", "port": 3888 },
   "runtime": { "autoConnectDiscord": true, "paused": false },
   "frontend": {},
@@ -122,7 +129,9 @@ Discord bot config responses never include raw bot tokens. They include `tokenCo
 - `POST /api/waifus/:waifuId/assets/pfp`
 - `POST /api/waifus/:waifuId/assets/banner`
 
-`PUT` and `DELETE` require either a `revision` body field or an `If-Match` header. Stale writes return `409 Conflict` with the latest server copy.
+`PUT` and `DELETE` require either a `revision` body field or an `If-Match` header. Stale writes
+return `409 Conflict` with only the latest revision metadata; callers re-read the resource before
+merging and retrying.
 
 Asset uploads accept raw `image/png`, `image/jpeg`, `image/webp`, or `image/gif` request bodies up to 8 MB. Files are stored in `user/waifus/<waifu-id>/`.
 
@@ -153,7 +162,7 @@ Editable JSON records include:
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "revision": 0,
   "updatedAt": "2026-05-15T00:00:00.000Z"
 }
@@ -165,9 +174,16 @@ Overwriting or destructive requests should send the last seen `revision`. If the
 {
   "error": "Conflict",
   "message": "Record has changed since it was read.",
-  "latest": {}
+  "latest": {
+    "schemaVersion": 2,
+    "revision": 1,
+    "updatedAt": "2026-05-15T00:01:00.000Z"
+  }
 }
 ```
+
+`latest` never contains resource-specific fields. In particular, stale credential or Discord-bot
+writes cannot return stored API keys or bot tokens.
 
 ## Discord Text Contract
 

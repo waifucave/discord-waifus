@@ -39,7 +39,7 @@ export function createLogger(options: {
     const entry: LogEntry = {
       time: new Date().toISOString(),
       level,
-      message,
+      message: redactSecrets(message),
       context: context === undefined ? undefined : redactSecrets(context)
     };
     recentEntries.unshift(entry);

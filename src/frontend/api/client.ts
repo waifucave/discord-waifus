@@ -42,7 +42,7 @@ export class ApiError extends Error {
 }
 
 export class ConflictError extends ApiError {
-  latest: unknown;
+  latest: ApiErrorBody["latest"];
   constructor(body: ApiErrorBody) {
     super(409, body);
     this.latest = body.latest;

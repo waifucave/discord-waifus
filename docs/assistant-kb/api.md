@@ -7,7 +7,8 @@ does goes through these endpoints, so any agent can drive the app with plain HTT
 
 - All user-owned resources are revisioned. Reads return a `revision`; writes must send the
   expected `revision` in the body (or an `If-Match` header). A mismatch returns **409** —
-  re-read, merge, retry.
+  re-read, merge, retry. The conflict `latest` object contains only `schemaVersion`, `revision`,
+  and `updatedAt`, never the current resource body.
 - Validation failures return **400** with a message (zod field errors, or
   `unsupported_parameter` naming a violated gateway rule).
 - Model params are gateway-native dotted keys inside `params`
@@ -24,7 +25,7 @@ does goes through these endpoints, so any agent can drive the app with plain HTT
 |---|---|---|
 | GET | /api/health | Liveness. |
 | GET | /api/status | Runtime + Discord connection state. |
-| GET | /api/runtime | Runtime state incl. data root, pause state, queues. |
+| GET | /api/runtime | Runtime state incl. pause state and queues; host paths/process fields are local-only. |
 | POST | /api/runtime/pause · /resume | Pause/resume all orchestration. |
 | POST | /api/runtime/reload | Reload configs into the running orchestrator. |
 | POST | /api/runtime/trigger/orchestrator | Body `{guildId, channelId}` — run a decision pass now. |
@@ -92,6 +93,9 @@ curl -s -X PUT http://127.0.0.1:3888/api/waifus/riko \
   `DELETE /api/providers/:id/credentials`, `DELETE /api/assistant/conversations/:id`.
 - **Errors**: `{error, message, details?}` where `error` is one of BadRequest, NotFound,
   Conflict, PreconditionRequired, ValidationError, InternalServerError.
+- **Caching and secrets**: API responses are `no-store`. Logs, diagnostics, errors, captured model
+  traffic, and events are serialized through secret redaction; never expect a credential or token
+  to be readable after writing it.
 - **Runtime stop**: `POST /api/runtime/stop` body `{guildId, channelId}` (both required)
   aborts that channel's in-flight run and cancels its scheduled wake. Response
   `{stoppedRun, clearedRetrigger, activeInAnotherChannel, message}`. Use it to kill a
