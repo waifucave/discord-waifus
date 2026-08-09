@@ -1,5 +1,179 @@
 {
   "$defs": {
+    "AdministrativeAuditRecordV1": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "actor": {
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "const": "local",
+                  "type": "string"
+                },
+                "stableId": {
+                  "const": "local",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "stableId"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "deviceId": {
+                  "maxLength": 64,
+                  "minLength": 1,
+                  "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$",
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "remote_device",
+                  "type": "string"
+                },
+                "stableId": {
+                  "$ref": "#/$defs/PrincipalStableId"
+                },
+                "trustEpoch": {
+                  "$ref": "#/$defs/Uint64Decimal"
+                }
+              },
+              "required": [
+                "kind",
+                "stableId",
+                "deviceId",
+                "trustEpoch"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "afterRevision": {
+          "$ref": "#/$defs/Uint64Decimal"
+        },
+        "beforeRevision": {
+          "$ref": "#/$defs/Uint64Decimal"
+        },
+        "delegation": {
+          "additionalProperties": false,
+          "properties": {
+            "conversationId": {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$",
+              "type": "string"
+            },
+            "pendingActionId": {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$",
+              "type": "string"
+            },
+            "toolCallId": {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "conversationId",
+            "toolCallId"
+          ],
+          "type": "object"
+        },
+        "eventId": {
+          "$ref": "#/$defs/Base64Url16Bytes"
+        },
+        "idempotencyKeyHash": {
+          "$ref": "#/$defs/Base64Url32Bytes"
+        },
+        "operationId": {
+          "$ref": "#/$defs/Base64Url32Bytes"
+        },
+        "origin": {
+          "enum": [
+            "local",
+            "remote"
+          ],
+          "type": "string"
+        },
+        "outcome": {
+          "enum": [
+            "accepted",
+            "completed",
+            "rejected",
+            "conflict",
+            "reconciled",
+            "unknown"
+          ],
+          "type": "string"
+        },
+        "requestId": {
+          "$ref": "#/$defs/Base64Url16Bytes"
+        },
+        "resource": {
+          "additionalProperties": false,
+          "properties": {
+            "identifier": {
+              "maxLength": 256,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9:._-]{0,255}$",
+              "type": "string"
+            },
+            "type": {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[a-z][a-z0-9_.:-]{0,127}$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "identifier"
+          ],
+          "type": "object"
+        },
+        "timestamp": {
+          "$ref": "#/$defs/Uint64Decimal"
+        },
+        "version": {
+          "const": 1,
+          "type": "number"
+        }
+      },
+      "required": [
+        "version",
+        "eventId",
+        "timestamp",
+        "actor",
+        "origin",
+        "action",
+        "resource",
+        "requestId",
+        "outcome"
+      ],
+      "type": "object",
+      "x-waifus-forbidden-content": [
+        "request_body",
+        "response_body",
+        "result",
+        "secret_free_text"
+      ],
+      "x-waifus-maximum-raw-bytes": 65536,
+      "x-waifus-retention-seconds": 7776000
+    },
     "ApprovalReceiptV1": {
       "additionalProperties": false,
       "properties": {
@@ -502,6 +676,14 @@
         }
       ]
     },
+    "EventCursorV1": {
+      "format": "waifus-event-cursor-v1",
+      "maxLength": 46,
+      "minLength": 27,
+      "type": "string",
+      "x-waifus-sequence": "canonical uint64 decimal",
+      "x-waifus-stream-epoch-bytes": 16
+    },
     "GetResetStatusCommand": {
       "additionalProperties": false,
       "properties": {
@@ -662,6 +844,237 @@
           "newFingerprint"
         ]
       ]
+    },
+    "OperationAcceptedV1": {
+      "additionalProperties": false,
+      "properties": {
+        "operationId": {
+          "$ref": "#/$defs/Base64Url32Bytes"
+        },
+        "status": {
+          "const": "accepted",
+          "type": "string"
+        },
+        "statusUrl": {
+          "maxLength": 65,
+          "minLength": 65,
+          "type": "string"
+        }
+      },
+      "required": [
+        "operationId",
+        "status",
+        "statusUrl"
+      ],
+      "type": "object",
+      "x-waifus-status-url-derived-from": "operationId"
+    },
+    "OperationStatusV1": {
+      "anyOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "createdAt": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "expiresAt": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "operationId": {
+              "$ref": "#/$defs/Base64Url32Bytes"
+            },
+            "status": {
+              "const": "prepared",
+              "type": "string"
+            },
+            "statusUrl": {
+              "maxLength": 65,
+              "minLength": 65,
+              "type": "string"
+            },
+            "updatedAt": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "version": {
+              "const": 1,
+              "type": "number"
+            }
+          },
+          "required": [
+            "version",
+            "operationId",
+            "statusUrl",
+            "createdAt",
+            "updatedAt",
+            "expiresAt",
+            "status"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "completedAt": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "createdAt": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "expiresAt": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "operationId": {
+              "$ref": "#/$defs/Base64Url32Bytes"
+            },
+            "outcome": {
+              "const": "succeeded",
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "completed",
+                "reconciled"
+              ],
+              "type": "string"
+            },
+            "statusUrl": {
+              "maxLength": 65,
+              "minLength": 65,
+              "type": "string"
+            },
+            "updatedAt": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "version": {
+              "const": 1,
+              "type": "number"
+            }
+          },
+          "required": [
+            "version",
+            "operationId",
+            "statusUrl",
+            "createdAt",
+            "updatedAt",
+            "expiresAt",
+            "status",
+            "completedAt",
+            "outcome"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "completedAt": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "createdAt": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "errorCode": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[a-z][a-z0-9_]{0,63}$",
+              "type": "string"
+            },
+            "expiresAt": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "operationId": {
+              "$ref": "#/$defs/Base64Url32Bytes"
+            },
+            "outcome": {
+              "const": "failed",
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "completed",
+                "reconciled"
+              ],
+              "type": "string"
+            },
+            "statusUrl": {
+              "maxLength": 65,
+              "minLength": 65,
+              "type": "string"
+            },
+            "updatedAt": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "version": {
+              "const": 1,
+              "type": "number"
+            }
+          },
+          "required": [
+            "version",
+            "operationId",
+            "statusUrl",
+            "createdAt",
+            "updatedAt",
+            "expiresAt",
+            "status",
+            "completedAt",
+            "outcome",
+            "errorCode"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "createdAt": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "determinedAt": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "errorCode": {
+              "const": "outcome_unknown",
+              "type": "string"
+            },
+            "expiresAt": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "operationId": {
+              "$ref": "#/$defs/Base64Url32Bytes"
+            },
+            "status": {
+              "const": "outcome_unknown",
+              "type": "string"
+            },
+            "statusUrl": {
+              "maxLength": 65,
+              "minLength": 65,
+              "type": "string"
+            },
+            "updatedAt": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "version": {
+              "const": 1,
+              "type": "number"
+            }
+          },
+          "required": [
+            "version",
+            "operationId",
+            "statusUrl",
+            "createdAt",
+            "updatedAt",
+            "expiresAt",
+            "status",
+            "determinedAt",
+            "errorCode"
+          ],
+          "type": "object"
+        }
+      ],
+      "x-waifus-completed-retention-seconds": 86400,
+      "x-waifus-status-url-derived-from": "operationId",
+      "x-waifus-unresolved-retention-seconds": 2592000
     },
     "PairConfirmationV1": {
       "additionalProperties": false,
@@ -2156,6 +2569,40 @@
       ],
       "type": "object"
     },
+    "StreamSnapshotRequiredV1": {
+      "additionalProperties": false,
+      "properties": {
+        "latestSequence": {
+          "$ref": "#/$defs/Uint64Decimal"
+        },
+        "reason": {
+          "enum": [
+            "epoch_mismatch",
+            "cursor_gap"
+          ],
+          "type": "string"
+        },
+        "streamEpoch": {
+          "$ref": "#/$defs/Base64Url16Bytes"
+        },
+        "type": {
+          "const": "snapshot_required",
+          "type": "string"
+        },
+        "version": {
+          "const": 1,
+          "type": "number"
+        }
+      },
+      "required": [
+        "version",
+        "type",
+        "reason",
+        "streamEpoch",
+        "latestSequence"
+      ],
+      "type": "object"
+    },
     "Uint64Decimal": {
       "maxLength": 20,
       "pattern": "^(?:0|[1-9][0-9]{0,18}|1[0-7][0-9]{18}|18[0-3][0-9]{17}|184[0-3][0-9]{16}|1844[0-5][0-9]{15}|18446[0-6][0-9]{14}|184467[0-3][0-9]{13}|1844674[0-3][0-9]{12}|184467440[0-6][0-9]{10}|1844674407[0-2][0-9]{9}|18446744073[0-6][0-9]{8}|1844674407370[0-8][0-9]{6}|18446744073709[0-4][0-9]{5}|184467440737095[0-4][0-9]{4}|18446744073709550[0-9]{3}|18446744073709551[0-5][0-9]{2}|1844674407370955160[0-9]{1}|1844674407370955161[0-4]|18446744073709551615)$",
@@ -2164,8 +2611,11 @@
   },
   "$id": "https://waifucave.com/contracts/remote/v1/remote-access.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "description": "Dashboard manifests, attended approval, pairing confirmation, pair-control, and installation-reset wire records shared by Discord Waifus and ts-connect.",
+  "description": "Operational recovery, dashboard manifests, attended approval, pairing confirmation, pair-control, and installation-reset wire records shared by Discord Waifus and ts-connect.",
   "oneOf": [
+    {
+      "$ref": "#/$defs/AdministrativeAuditRecordV1"
+    },
     {
       "$ref": "#/$defs/ApprovalReceiptV1"
     },
@@ -2173,10 +2623,19 @@
       "$ref": "#/$defs/DashboardManifestV1"
     },
     {
+      "$ref": "#/$defs/EventCursorV1"
+    },
+    {
       "$ref": "#/$defs/GetResetStatusCommand"
     },
     {
       "$ref": "#/$defs/IdentityResetReceiptV1"
+    },
+    {
+      "$ref": "#/$defs/OperationAcceptedV1"
+    },
+    {
+      "$ref": "#/$defs/OperationStatusV1"
     },
     {
       "$ref": "#/$defs/PairConfirmationV1"
@@ -2186,6 +2645,9 @@
     },
     {
       "$ref": "#/$defs/ResetIdentityCommand"
+    },
+    {
+      "$ref": "#/$defs/StreamSnapshotRequiredV1"
     }
   ],
   "title": "Waifus Remote Access Wire Contracts V1"

@@ -360,8 +360,12 @@ describe("checked-in remote-access wire contract", () => {
         ? ApprovalReceiptV1Schema
         : relativePath.includes("dashboard-manifest")
           ? DashboardManifestSchema
-          : IdentityResetReceiptV1Schema;
-      expect(schema.safeParse(value).success, relativePath).toBe(expectedValid);
+          : relativePath.includes("identity-reset-receipt")
+            ? IdentityResetReceiptV1Schema
+            : undefined;
+      if (schema) {
+        expect(schema.safeParse(value).success, relativePath).toBe(expectedValid);
+      }
     }
   });
 

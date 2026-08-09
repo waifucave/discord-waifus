@@ -1,6 +1,17 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
+  ADMIN_AUDIT_RETENTION_SECONDS,
+  AdministrativeAuditRecordV1Schema,
+  COMPLETED_OPERATION_RETENTION_SECONDS,
+  EventCursorSchema,
+  MAX_ADMIN_AUDIT_RECORD_BYTES,
+  OperationAcceptedV1Schema,
+  OperationStatusV1Schema,
+  StreamSnapshotRequiredV1Schema,
+  UNRESOLVED_OPERATION_RETENTION_SECONDS
+} from "./adminOperations.js";
+import {
   ApprovalReceiptV1Schema,
   CanonicalReleasedAtSchema,
   CanonicalIdentityBundleCborSchema,
@@ -241,6 +252,7 @@ export function createHelperManifestFixtureSet(): ReadonlyMap<string, ContractJs
 }
 
 const remoteAccessRegisteredSchemas: ReadonlyArray<readonly [string, z.ZodType]> = [
+  ["AdministrativeAuditRecordV1", AdministrativeAuditRecordV1Schema],
   ["ApprovalReceiptV1", ApprovalReceiptV1Schema],
   ["Base64Url16Bytes", Base64Url16BytesSchema],
   ["Base64Url32Bytes", Base64Url32BytesSchema],
@@ -253,6 +265,9 @@ const remoteAccessRegisteredSchemas: ReadonlyArray<readonly [string, z.ZodType]>
   ["GetResetStatusCommand", GetResetStatusCommandSchema],
   ["HttpMethod", HttpMethodSchema],
   ["IdentityResetReceiptV1", IdentityResetReceiptV1Schema],
+  ["EventCursorV1", EventCursorSchema],
+  ["OperationAcceptedV1", OperationAcceptedV1Schema],
+  ["OperationStatusV1", OperationStatusV1Schema],
   ["PairConfirmationV1", PairConfirmationV1Schema],
   ["PairControlCapabilitiesPayloadV1", PairControlCapabilitiesPayloadV1Schema],
   ["PairControlEndpointAckPayloadV1", PairControlEndpointAckPayloadV1Schema],
@@ -270,6 +285,7 @@ const remoteAccessRegisteredSchemas: ReadonlyArray<readonly [string, z.ZodType]>
   ["PrincipalStableId", PrincipalStableIdSchema],
   ["ProtocolVersion", ProtocolVersionSchema],
   ["ResetIdentityCommand", ResetIdentityCommandSchema],
+  ["StreamSnapshotRequiredV1", StreamSnapshotRequiredV1Schema],
   ["Uint64Decimal", Uint64DecimalSchema]
 ];
 
@@ -323,6 +339,28 @@ export function createRemoteAccessJsonSchema(): ContractJsonObject {
   definitions.DashboardManifestV1["x-waifus-assets-ascii-sorted-unique"] = true;
   definitions.DashboardManifestV1["x-waifus-required-asset"] = "index.html";
   definitions.DashboardManifestV1["x-waifus-maximum-raw-bytes"] = 4 * 1024 * 1024;
+  definitions.EventCursorV1.format = "waifus-event-cursor-v1";
+  definitions.EventCursorV1["x-waifus-stream-epoch-bytes"] = 16;
+  definitions.EventCursorV1["x-waifus-sequence"] = "canonical uint64 decimal";
+  definitions.OperationAcceptedV1["x-waifus-status-url-derived-from"] = "operationId";
+  definitions.OperationStatusV1["x-waifus-status-url-derived-from"] = "operationId";
+  definitions.OperationStatusV1["x-waifus-completed-retention-seconds"] = Number(
+    COMPLETED_OPERATION_RETENTION_SECONDS
+  );
+  definitions.OperationStatusV1["x-waifus-unresolved-retention-seconds"] = Number(
+    UNRESOLVED_OPERATION_RETENTION_SECONDS
+  );
+  definitions.AdministrativeAuditRecordV1["x-waifus-retention-seconds"] = Number(
+    ADMIN_AUDIT_RETENTION_SECONDS
+  );
+  definitions.AdministrativeAuditRecordV1["x-waifus-maximum-raw-bytes"] =
+    MAX_ADMIN_AUDIT_RECORD_BYTES;
+  definitions.AdministrativeAuditRecordV1["x-waifus-forbidden-content"] = [
+    "request_body",
+    "response_body",
+    "result",
+    "secret_free_text"
+  ];
   definitions.PairControlEndpointGenerationPayloadV1["x-waifus-sha256-of"] = {
     digestField: "ciphertextSha256",
     decodedBase64UrlField: "ciphertext"
@@ -353,15 +391,20 @@ export function createRemoteAccessJsonSchema(): ContractJsonObject {
     $id: REMOTE_ACCESS_SCHEMA_ID,
     title: "Waifus Remote Access Wire Contracts V1",
     description:
-      "Dashboard manifests, attended approval, pairing confirmation, pair-control, and installation-reset wire records shared by Discord Waifus and ts-connect.",
+      "Operational recovery, dashboard manifests, attended approval, pairing confirmation, pair-control, and installation-reset wire records shared by Discord Waifus and ts-connect.",
     oneOf: [
+      { $ref: "#/$defs/AdministrativeAuditRecordV1" },
       { $ref: "#/$defs/ApprovalReceiptV1" },
       { $ref: "#/$defs/DashboardManifestV1" },
+      { $ref: "#/$defs/EventCursorV1" },
       { $ref: "#/$defs/GetResetStatusCommand" },
       { $ref: "#/$defs/IdentityResetReceiptV1" },
+      { $ref: "#/$defs/OperationAcceptedV1" },
+      { $ref: "#/$defs/OperationStatusV1" },
       { $ref: "#/$defs/PairConfirmationV1" },
       { $ref: "#/$defs/PairControlRecordV1" },
-      { $ref: "#/$defs/ResetIdentityCommand" }
+      { $ref: "#/$defs/ResetIdentityCommand" },
+      { $ref: "#/$defs/StreamSnapshotRequiredV1" }
     ],
     $defs: definitions
   };
@@ -476,8 +519,8 @@ function dashboardManifestFixture(): ContractJsonObject {
   return { ...payload, buildId };
 }
 
-export function createRemoteAccessFixtureSet(): ReadonlyMap<string, ContractJsonObject> {
-  const fixtures = new Map<string, ContractJsonObject>();
+export function createRemoteAccessFixtureSet(): ReadonlyMap<string, ContractJson> {
+  const fixtures = new Map<string, ContractJson>();
   fixtures.set(
     "fixtures/valid/dashboard-manifest.json",
     dashboardManifestFixture()
@@ -559,6 +602,128 @@ export function createRemoteAccessFixtureSet(): ReadonlyMap<string, ContractJson
   const dashboardSelfIncluded = cloneFixture(dashboardManifestFixture());
   (dashboardSelfIncluded.assets as ContractJsonObject[])[0].path = "waifus-dashboard-manifest.json";
   fixtures.set("fixtures/invalid/dashboard-manifest-self-included.json", dashboardSelfIncluded);
+
+  const operationId = fixtureBytes(32, 0x21);
+  const statusUrl = `/api/admin/operations/${operationId}`;
+  const operationAccepted: ContractJsonObject = {
+    operationId,
+    status: "accepted",
+    statusUrl
+  };
+  const operationPrepared: ContractJsonObject = {
+    version: 1,
+    operationId,
+    status: "prepared",
+    statusUrl,
+    createdAt: "100",
+    updatedAt: "101",
+    expiresAt: "2592100"
+  };
+  const operationCompleted: ContractJsonObject = {
+    ...operationPrepared,
+    status: "completed",
+    updatedAt: "200",
+    completedAt: "200",
+    expiresAt: "86600",
+    outcome: "succeeded"
+  };
+  const operationReconciled: ContractJsonObject = {
+    ...operationCompleted,
+    status: "reconciled",
+    outcome: "failed",
+    errorCode: "helper_unavailable"
+  };
+  const operationUnknown: ContractJsonObject = {
+    ...operationPrepared,
+    status: "outcome_unknown",
+    updatedAt: "200",
+    determinedAt: "200",
+    expiresAt: "2592200",
+    errorCode: "outcome_unknown"
+  };
+  const localAudit: ContractJsonObject = {
+    version: 1,
+    eventId: fixtureBytes(16, 0x31),
+    timestamp: "1786270830",
+    actor: { kind: "local", stableId: "local" },
+    origin: "local",
+    action: "remote.device.rename",
+    resource: { type: "remote_device", identifier: "remote-device-01" },
+    requestId: fixtureBytes(16, 0x32),
+    idempotencyKeyHash: fixtureBytes(32, 0x33),
+    operationId,
+    beforeRevision: "7",
+    afterRevision: "8",
+    outcome: "completed"
+  };
+  const remoteAudit: ContractJsonObject = {
+    ...localAudit,
+    eventId: fixtureBytes(16, 0x34),
+    actor: {
+      kind: "remote_device",
+      stableId: "remote:remote-device-01",
+      deviceId: "remote-device-01",
+      trustEpoch: "9"
+    },
+    origin: "remote",
+    delegation: {
+      conversationId: "conversation-1",
+      toolCallId: "tool-1",
+      pendingActionId: "action-1"
+    },
+    outcome: "accepted"
+  };
+  const eventCursor = `v1:${fixtureBytes(16, 0x41)}:9007199254740992`;
+  const snapshotRequired: ContractJsonObject = {
+    version: 1,
+    type: "snapshot_required",
+    reason: "epoch_mismatch",
+    streamEpoch: fixtureBytes(16, 0x41),
+    latestSequence: "9007199254740992"
+  };
+
+  fixtures.set("fixtures/valid/operation-accepted.json", operationAccepted);
+  fixtures.set("fixtures/valid/operation-status-prepared.json", operationPrepared);
+  fixtures.set("fixtures/valid/operation-status-completed.json", operationCompleted);
+  fixtures.set("fixtures/valid/operation-status-reconciled.json", operationReconciled);
+  fixtures.set("fixtures/valid/operation-status-outcome-unknown.json", operationUnknown);
+  fixtures.set("fixtures/valid/admin-audit-local.json", localAudit);
+  fixtures.set("fixtures/valid/admin-audit-remote-assistant.json", remoteAudit);
+  fixtures.set("fixtures/valid/event-cursor.json", eventCursor);
+  fixtures.set("fixtures/valid/snapshot-required.json", snapshotRequired);
+
+  const mismatchedStatusUrl = cloneFixture(operationAccepted);
+  mismatchedStatusUrl.statusUrl = `/api/admin/operations/${fixtureBytes(32, 0x22)}`;
+  fixtures.set("fixtures/invalid/operation-accepted-status-url.json", mismatchedStatusUrl);
+
+  const secretResult = cloneFixture(operationCompleted);
+  secretResult.result = { activationCredential: "must-never-appear" };
+  fixtures.set("fixtures/invalid/operation-status-secret-result.json", secretResult);
+
+  const excessiveRetention = cloneFixture(operationCompleted);
+  excessiveRetention.expiresAt = "86601";
+  fixtures.set("fixtures/invalid/operation-status-retention.json", excessiveRetention);
+
+  const auditBody = cloneFixture(localAudit);
+  auditBody.requestBody = { token: "must-never-appear" };
+  fixtures.set("fixtures/invalid/admin-audit-request-body.json", auditBody);
+
+  const auditOrigin = cloneFixture(remoteAudit);
+  auditOrigin.origin = "local";
+  fixtures.set("fixtures/invalid/admin-audit-origin.json", auditOrigin);
+
+  fixtures.set(
+    "fixtures/invalid/event-cursor-leading-zero.json",
+    `v1:${fixtureBytes(16, 0x41)}:01`
+  );
+  fixtures.set(
+    "fixtures/invalid/event-cursor-overflow.json",
+    `v1:${fixtureBytes(16, 0x41)}:18446744073709551616`
+  );
+
+  const invalidSnapshot = cloneFixture(snapshotRequired);
+  invalidSnapshot.reason = "server_error";
+  fixtures.set("fixtures/invalid/snapshot-required-reason.json", invalidSnapshot);
 
   return fixtures;
 }
