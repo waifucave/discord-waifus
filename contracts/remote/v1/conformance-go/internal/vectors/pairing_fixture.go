@@ -211,6 +211,7 @@ func pairingHandshake(value pairingHandshakeInput) (map[string]any, error) {
 			"canonicalIdentityBundleHashB64": pairing.B64(sas.CanonicalIdentityBundleHash),
 			"sasBytesB64":                    pairing.B64(sas.Bytes),
 			"sasIndices":                     sas.Indices,
+			"sasWords":                       sas.Words,
 			"sasFingerprint":                 sas.Fingerprint,
 		},
 	}, nil

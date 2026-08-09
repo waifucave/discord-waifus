@@ -33,8 +33,10 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p src/frontend/tsconfig.json --noEmit",
-    "contracts:remote:check": "tsx scripts/generate-remote-contracts.ts --check",
-    "contracts:remote:generate": "tsx scripts/generate-remote-contracts.ts --write",
+    "contracts:sas:check": "tsx scripts/generate-sas-wordlist.ts --check",
+    "contracts:sas:generate": "tsx scripts/generate-sas-wordlist.ts --write",
+    "contracts:remote:check": "npm run contracts:sas:check && tsx scripts/generate-remote-contracts.ts --check",
+    "contracts:remote:generate": "npm run contracts:sas:generate && tsx scripts/generate-remote-contracts.ts --write",
     "prepublishOnly": "node ./scripts/check-no-file-deps.mjs && npm run test && npm run build",
     "release:beta": "node ./scripts/release.mjs"
   },

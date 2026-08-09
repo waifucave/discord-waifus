@@ -748,6 +748,7 @@ type SAS struct {
 	CanonicalIdentityBundleHash []byte
 	Bytes                       []byte
 	Indices                     [5]uint16
+	Words                       [5]string
 	Fingerprint                 string
 }
 
@@ -780,11 +781,16 @@ func DeriveSAS(channelBinding, pairID, hostBundle, remoteBundle []byte) (*SAS, e
 	for index := range indices {
 		indices[index] = uint16((bits >> uint((4-index)*10)) & 0x3ff)
 	}
+	words, err := MapSASIndicesToWordsV1(indices)
+	if err != nil {
+		return nil, err
+	}
 	fingerprint := Hash([]byte("waifus/sas-fingerprint/v1"), pairID, channelBinding, identityHash)[:6]
 	return &SAS{
 		CanonicalIdentityBundleHash: identityHash,
 		Bytes:                       sasBytes,
 		Indices:                     indices,
+		Words:                       words,
 		Fingerprint:                 fmt.Sprintf("%x", fingerprint),
 	}, nil
 }

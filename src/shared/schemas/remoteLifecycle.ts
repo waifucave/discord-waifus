@@ -13,6 +13,10 @@ import {
   SemVerSchema,
   Uint64DecimalSchema
 } from "./remoteProtocol.js";
+import {
+  SAS_WORDS_V1,
+  mapSasIndicesToWordsV1
+} from "../sasWordlist.js";
 
 export const MAX_TRUSTED_DEVICES = 256;
 export const MAX_PENDING_PAIRING_REQUESTS = 16;
@@ -25,7 +29,6 @@ export const OFFLINE_FORGET_WARNING_CODE = "host_unreachable_remote_trust_may_re
 const DISPLAY_NAME_CONTROL_PATTERN = /[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/u;
 const FULL_PAIR_TOKEN_PATTERN = /^WF1\.[A-Za-z0-9_-]+$/;
 const SHORT_CODE_PATTERN = /^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{4}-[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{4}$/;
-const SAS_WORD_PATTERN = /^[a-z]{2,16}$/;
 const SAS_FINGERPRINT_PATTERN = /^[0-9a-f]{12}$/;
 const REMOTE_SHELL_HOST_PATTERN = /^waifus-[a-z2-7]{52}\.localhost$/;
 
@@ -279,12 +282,13 @@ export const SasIndicesSchema = z.tuple([
   z.number().int().min(0).max(1_023),
   z.number().int().min(0).max(1_023)
 ]);
+export const SasWordV1Schema = z.enum(SAS_WORDS_V1);
 export const SasWordsSchema = z.tuple([
-  z.string().min(2).max(16).regex(SAS_WORD_PATTERN),
-  z.string().min(2).max(16).regex(SAS_WORD_PATTERN),
-  z.string().min(2).max(16).regex(SAS_WORD_PATTERN),
-  z.string().min(2).max(16).regex(SAS_WORD_PATTERN),
-  z.string().min(2).max(16).regex(SAS_WORD_PATTERN)
+  SasWordV1Schema,
+  SasWordV1Schema,
+  SasWordV1Schema,
+  SasWordV1Schema,
+  SasWordV1Schema
 ]);
 export const SasFingerprintSchema = z.string().length(12).regex(SAS_FINGERPRINT_PATTERN);
 
@@ -305,7 +309,18 @@ export const PendingPairingRequestV1Schema = z.object({
   sasIndices: SasIndicesSchema,
   sasWords: SasWordsSchema,
   sasFingerprint: SasFingerprintSchema
-}).strict();
+}).strict().superRefine((value, ctx) => {
+  const expected = mapSasIndicesToWordsV1(value.sasIndices);
+  for (let index = 0; index < expected.length; index += 1) {
+    if (value.sasWords[index] !== expected[index]) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["sasWords", index],
+        message: "SAS word does not match its V1 wordlist index."
+      });
+    }
+  }
+});
 
 export type PendingPairingRequestV1 = z.infer<typeof PendingPairingRequestV1Schema>;
 

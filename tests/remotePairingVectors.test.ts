@@ -145,6 +145,7 @@ describe("remote pairing V1 public crypto vectors", () => {
         remoteBundleCbor: Buffer.from(text(context.remoteBundleCborB64), "base64url")
       });
       expect(sas.indices).toEqual(expected.sasIndices);
+      expect(sas.words).toEqual(expected.sasWords);
       expect(sas.fingerprint).toBe(text(expected.sasFingerprint));
     }
   });

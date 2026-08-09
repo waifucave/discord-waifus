@@ -18,6 +18,10 @@ import {
   UINT64_MAX,
   type DeviceIdentityBundle
 } from "./schemas/remoteProtocol.js";
+import {
+  mapSasIndicesToWordsV1,
+  type SasWordsV1
+} from "./sasWordlist.js";
 
 export const FULL_PAIR_TOKEN_PREFIX = "WF1.";
 export const FULL_PAIR_TOKEN_VERSION = 1;
@@ -1216,6 +1220,7 @@ export interface PairingSas {
   canonicalIdentityBundleHash: Buffer;
   sasBytes: Buffer;
   indices: readonly [number, number, number, number, number];
+  words: SasWordsV1;
   fingerprint: string;
 }
 
@@ -1255,5 +1260,6 @@ export function derivePairingSas(input: DerivePairingSasInput): PairingSas {
     channelBinding,
     canonicalIdentityBundleHash
   ).subarray(0, 6).toString("hex");
-  return { canonicalIdentityBundleHash, sasBytes, indices, fingerprint };
+  const words = mapSasIndicesToWordsV1(indices);
+  return { canonicalIdentityBundleHash, sasBytes, indices, words, fingerprint };
 }

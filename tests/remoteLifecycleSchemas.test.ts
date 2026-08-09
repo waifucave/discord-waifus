@@ -84,7 +84,7 @@ function pendingPairingRequest() {
     transcriptHash: bytes32(0x25),
     channelBinding: bytes32(0x26),
     sasIndices: [1, 23, 456, 789, 1023],
-    sasWords: ["amber", "birch", "cabin", "delta", "ember"],
+    sasWords: ["acorn", "angel", "jeep", "slip", "zoom"],
     sasFingerprint: "a1b2c3d4e5f6"
   };
 }
@@ -237,7 +237,11 @@ describe("invitation and pairing-request DTOs", () => {
     }).success).toBe(false);
     expect(PendingPairingRequestV1Schema.safeParse({
       ...request,
-      sasWords: ["amber", "birch", "cabin", "delta"]
+      sasWords: ["acorn", "angel", "jeep", "slip"]
+    }).success).toBe(false);
+    expect(PendingPairingRequestV1Schema.safeParse({
+      ...request,
+      sasWords: ["angel", "acorn", "jeep", "slip", "zoom"]
     }).success).toBe(false);
   });
 
@@ -406,7 +410,7 @@ describe("gateway-local pair-operation DTOs", () => {
       state: "verification_required",
       expiresAt: "1786271130",
       entryFlow: "short_code",
-      sasWords: ["amber", "birch", "cabin", "delta", "ember"],
+      sasWords: ["acorn", "angel", "jeep", "slip", "zoom"],
       sasFingerprint: "a1b2c3d4e5f6",
       claimedHostDisplayName: "Studio Host",
       claimedHostPlatform: platform,
@@ -423,7 +427,7 @@ describe("gateway-local pair-operation DTOs", () => {
     expect(PairOperationEventSchema.parse(event)).toEqual(event);
     expect(PairOperationEventSchema.safeParse({
       ...event,
-      sasWords: ["amber", "birch", "cabin", "delta", "ember"]
+      sasWords: ["acorn", "angel", "jeep", "slip", "zoom"]
     }).success).toBe(false);
   });
 });

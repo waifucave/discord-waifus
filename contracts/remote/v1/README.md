@@ -49,8 +49,11 @@ Current foundation:
 - `fixtures/crypto/pairing-v1.json` freezes strict canonical CBOR, signed `WF1.` full tokens,
   signed identity bundles, the exact XXpsk0 and XX messages/channel bindings, transcript hashes,
   contribution transport ciphertext, pair root and all four separated keys, and 50-bit SAS
-  indices/fingerprint. Embedded private keys and seeds are deterministic test-only vector inputs,
-  never production material.
+  indices/fingerprint plus their exact five-word mapping. `../../wordlists/sas-v1.txt` freezes the
+  zero-based 1,024-word V1 authority with SHA-256
+  `75282c58b95c5c9b54f8b570a74bf85e1ffd78bd7d44973a82c7aebadb813874`; its source,
+  attribution, reviewed exclusions, and major-version change rule live beside it. Embedded private
+  keys and seeds are deterministic test-only vector inputs, never production material.
 - `fixtures/crypto/pair-confirmation-v1.json` freezes the exact confirmation-key MAC inputs for
   both roles, every bound-context substitution, canonical JSON and 1,024-byte boundaries, the
   distinct mailbox record type, and publish-local/verify-peer/consume ordering and idempotency.
@@ -113,6 +116,7 @@ standard JSON Schema cannot express by itself. These currently cover:
 Consumers must enforce those annotations or use the public conformance fixtures. A generic JSON
 Schema validator that ignores them is not a complete protocol validator.
 
-This remains an incomplete contract gate. The reviewed 1,024-word SAS artifact and word mapping
-must land before production helper, pairing, Cloudflare, host bridge, or remote gateway work may
-rely on this directory as a complete V1 authority.
+The public Gate A contract is complete for V1. Production helper, pairing, Cloudflare, host bridge,
+and remote gateway components must consume these exact schemas, fixtures, and wordlist bytes and
+pass the TypeScript and independent Go gates. This contract completion does not by itself claim
+that those production components are implemented.

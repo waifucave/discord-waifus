@@ -241,7 +241,7 @@ describe("gateway-local events", () => {
     expect(GatewayLocalEventV1Schema.parse(pairEvent)).toEqual(pairEvent);
     expect(GatewayLocalEventV1Schema.safeParse({
       ...pairEvent,
-      sasWords: ["amber", "birch", "cabin", "delta", "ember"]
+      sasWords: ["acorn", "angel", "jeep", "slip", "zoom"]
     }).success).toBe(false);
     expect(GatewayLocalEventV1Schema.safeParse({
       version: 1,

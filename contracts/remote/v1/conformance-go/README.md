@@ -22,10 +22,10 @@ the TypeScript-generated public fixtures. The
 current gate covers the WIPC header/state/authentication foundation plus canonical CBOR rejection,
 signed full tokens and identities, both pinned Noise XX patterns and channel bindings, contribution
 transport, pair-root/four-key derivation, and SAS
-indices/fingerprint. It also covers confirmation-key MACs, canonical JSON boundaries, mailbox
+indices/fingerprint plus the immutable 1,024-word mapping and artifact hash. It also covers
+confirmation-key MACs, canonical JSON boundaries, mailbox
 ordering, and terminal state. PairControl coverage includes all nine record types, signatures,
-transport routing, shared high-water/replay state, delayed delivery, and revocation/ack MACs. Later
-layers extend this same gate with the reviewed SAS wordlist and remaining boundaries. The
+transport routing, shared high-water/replay state, delayed delivery, and revocation/ack MACs. The
 service-session fixture covers the direct
 four-message authentication gate, session-bound remote-browser proof, replay/state failures, and
 both strict approval-receipt sources. Endpoint coverage includes canonical candidates, both

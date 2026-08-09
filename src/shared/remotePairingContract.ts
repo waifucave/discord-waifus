@@ -204,6 +204,7 @@ function createHandshakeFixture(input: HandshakeFixtureInput): ContractJson {
       canonicalIdentityBundleHashB64: b64(sas.canonicalIdentityBundleHash),
       sasBytesB64: b64(sas.sasBytes),
       sasIndices: [...sas.indices],
+      sasWords: [...sas.words],
       sasFingerprint: sas.fingerprint
     }
   };

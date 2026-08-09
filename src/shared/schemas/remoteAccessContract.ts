@@ -93,11 +93,13 @@ import {
   RemoteAccessDiagnosticsV1Schema,
   RemoteAccessStatusV1Schema,
   RenameTrustedDeviceInputV1Schema,
+  SasWordV1Schema,
   SasWordsSchema,
   TrustedDeviceListV1Schema,
   TrustedDeviceSummaryV1Schema,
   UpdateRemoteAccessInputV1Schema
 } from "./remoteLifecycle.js";
+import { SAS_WORDLIST_V1_SHA256 } from "../sasWordlist.js";
 import {
   serializeCanonicalContractJson,
   type ContractJson
@@ -357,6 +359,7 @@ const remoteAccessRegisteredSchemas: ReadonlyArray<readonly [string, z.ZodType]>
   ["RemoteAccessStatusV1", RemoteAccessStatusV1Schema],
   ["ResetIdentityCommand", ResetIdentityCommandSchema],
   ["RenameTrustedDeviceInputV1", RenameTrustedDeviceInputV1Schema],
+  ["SasWordV1", SasWordV1Schema],
   ["SasWords", SasWordsSchema],
   ["StreamSnapshotRequiredV1", StreamSnapshotRequiredV1Schema],
   ["TrustedDeviceListV1", TrustedDeviceListV1Schema],
@@ -469,6 +472,9 @@ export function createRemoteAccessJsonSchema(): ContractJsonObject {
     "endpointCandidates"
   ];
   definitions.SasWords["x-waifus-wordlist"] = "contracts/wordlists/sas-v1.txt";
+  definitions.SasWords["x-waifus-wordlist-sha256"] = SAS_WORDLIST_V1_SHA256;
+  definitions.SasWords["x-waifus-index-width-bits"] = 10;
+  definitions.SasWords["x-waifus-index-order"] = "most-significant 10-bit group first";
   definitions.AssistantSafePairingRequestSummaryV1["x-waifus-exact-fields"] = [
     "requestId",
     "claimedDisplayName",
@@ -1019,7 +1025,7 @@ export function createRemoteAccessFixtureSet(): ReadonlyMap<string, ContractJson
     transcriptHash: fixtureBytes(32, 0x25),
     channelBinding: fixtureBytes(32, 0x26),
     sasIndices: [1, 23, 456, 789, 1_023],
-    sasWords: ["amber", "birch", "cabin", "delta", "ember"],
+    sasWords: ["acorn", "angel", "jeep", "slip", "zoom"],
     sasFingerprint: "a1b2c3d4e5f6"
   };
   const approvePairingInput: ContractJsonObject = {
