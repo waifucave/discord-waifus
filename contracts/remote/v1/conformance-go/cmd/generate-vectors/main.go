@@ -29,6 +29,7 @@ func run() error {
 		{name: "service-session-v1.json", build: vectors.BuildServiceSessionV1JSON},
 		{name: "endpoint-envelope-v1.json", build: vectors.BuildEndpointEnvelopeV1JSON},
 		{name: "http-auth-envelope-v1.json", build: vectors.BuildHttpAuthEnvelopeV1JSON},
+		{name: "helper-manifest-trust-v1.json", build: vectors.BuildHelperManifestTrustV1JSON},
 	}
 	for _, fixture := range checks {
 		expected, err := fixture.build()

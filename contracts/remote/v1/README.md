@@ -58,11 +58,18 @@ Current foundation:
   safe-error, and WebSocket 101 responses, the browser-only unsigned exception, exact raw-header
   classes, replay/lifetime rules, and field/header/transport substitution failures. Embedded seeds
   are deterministic fixture inputs only and are not production trust keys.
+- `fixtures/crypto/helper-manifest-trust-v1.json` freezes exact canonical-manifest signatures,
+  overlap-key sequence and signed-time windows, domain-separated release-key fingerprints,
+  downgrade floors, package/target/protocol/capability/app compatibility, binary/notices hashes,
+  the Worker trust-ring hash, and exact embedded `version --json` metadata for both locked control
+  profiles. Its Ed25519 seeds are explicitly deterministic test-only inputs, not release keys.
 - `conformance-go/` independently recreates and validates the WIPC, pairing, service, endpoint,
-  and HTTP-auth fixtures using Go 1.26.5. It pins `github.com/flynn/noise` v1.1.0 and independently
+  HTTP-auth, and helper-manifest trust fixtures using Go 1.26.5. It pins
+  `github.com/flynn/noise` v1.1.0 and independently
   rejects the token, identity, canonical-CBOR, pair-confirmation, PairControl, revocation, service-session,
   browser-context, approval-receipt, endpoint, certificate, HTTP-header, request/response binding,
-  replay, and WebSocket negative vectors.
+  replay, WebSocket, release-signature, trust-window, downgrade, artifact-hash, and build-info
+  negative vectors.
 
 Run `npm run contracts:remote:generate` after an intentional contract change and
 `npm run contracts:remote:check` in validation. Schema documents are recursively key-sorted,
@@ -89,6 +96,6 @@ Consumers must enforce those annotations or use the public conformance fixtures.
 Schema validator that ignores them is not a complete protocol validator.
 
 This remains an incomplete contract gate. The reviewed 1,024-word SAS artifact and word mapping,
-remaining remote-access/dashboard DTOs and signed-manifest trust vectors must land before
+and remaining remote-access/dashboard DTOs must land before
 production helper, pairing, Cloudflare, host bridge, or remote gateway work may rely on this
 directory as a complete V1 authority.

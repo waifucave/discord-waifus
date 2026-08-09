@@ -21,6 +21,10 @@ import { createPairControlFixtureSet } from "../src/shared/pairControlContract.j
 import { createRemoteServiceSessionFixtureSet } from "../src/shared/remoteServiceContract.js";
 import { createEndpointEnvelopeFixtureSet } from "../src/shared/endpointEnvelopeContract.js";
 import { createHttpAuthEnvelopeFixtureSet } from "../src/shared/controlAuthContract.js";
+import {
+  createHelperManifestTrustFixtureSet,
+  serializeHelperManifestTrustFixture
+} from "../src/shared/helperManifestTrustContract.js";
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(scriptDirectory, "..");
@@ -112,6 +116,13 @@ for (const [relativePath, value] of createHttpAuthEnvelopeFixtureSet()) {
   generatedFiles.set(
     path.join(contractRoot, relativePath),
     serializeCanonicalContractJson(value)
+  );
+}
+
+for (const [relativePath, value] of createHelperManifestTrustFixtureSet()) {
+  generatedFiles.set(
+    path.join(contractRoot, relativePath),
+    serializeHelperManifestTrustFixture(value)
   );
 }
 

@@ -16,9 +16,9 @@ go -C contracts/remote/v1/conformance-go run ./cmd/generate-vectors --check
 
 `generate-vectors --check` independently builds the three `wipc-*.json` fixtures,
 `pairing-v1.json`, `pair-confirmation-v1.json`, `pair-control-record-v1.json`, and
-`service-session-v1.json`, `endpoint-envelope-v1.json`, and `http-auth-envelope-v1.json` with Go,
-then
-compares their exact compact canonical JSON bytes to the TypeScript-generated public fixtures. The
+`service-session-v1.json`, `endpoint-envelope-v1.json`, `http-auth-envelope-v1.json`, and
+`helper-manifest-trust-v1.json` with Go, then compares their exact compact canonical JSON bytes to
+the TypeScript-generated public fixtures. The
 current gate covers the WIPC header/state/authentication foundation plus canonical CBOR rejection,
 signed full tokens and identities, both pinned Noise XX patterns and channel bindings, contribution
 transport, pair-root/four-key derivation, and SAS
@@ -35,3 +35,7 @@ HTTP-auth coverage includes canonical 365-day activation certificates, profile-k
 credential-epoch and serial checks, certificate/pre-certificate requests, request-bound signed JSON
 and WebSocket responses, browser-only unsigned activation, strict raw/normalized headers, ten-minute
 nonce replay state, and the full certificate/request/response/101 substitution matrix.
+Helper-manifest coverage includes every declared overlap signature, signed sequence/time trust
+windows, release-key fingerprints, downgrade prevention, exact app/package/target compatibility,
+artifact and Worker trust-ring hashes, and embedded build-info equality. The fixture contains only
+clearly marked deterministic test keys; production release keys are outside this repository.
