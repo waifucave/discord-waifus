@@ -1,6 +1,12 @@
 import { z } from "zod";
 import {
+  Base64Url16BytesSchema,
+  Base64Url32BytesSchema,
+  CanonicalTargetSchema,
   CapabilityNameListSchema,
+  HttpMethodSchema,
+  PrincipalStableIdSchema,
+  ProtocolVersionSchema,
   SemVerSchema,
   Uint64DecimalSchema
 } from "./remoteProtocol.js";
@@ -281,3 +287,170 @@ export const HelperManifestSchema = z
 
 export type HelperManifest = z.infer<typeof HelperManifestSchema>;
 export type HelperManifestInput = z.input<typeof HelperManifestSchema>;
+
+export const CanonicalIdentityBundleCborSchema = z
+  .string()
+  .min(1)
+  .max(1_600)
+  .regex(/^[A-Za-z0-9_-]+$/, "Expected canonical unpadded base64url.")
+  .refine((value) => {
+    const decoded = Buffer.from(value, "base64url");
+    return decoded.byteLength > 0
+      && decoded.byteLength <= 1_200
+      && decoded.toString("base64url") === value;
+  }, "Expected canonical base64url encoding of at most 1,200 identity-bundle bytes.");
+
+const ApprovalBrowserBindingSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("local"),
+    hostServerLaunchId: Base64Url32BytesSchema,
+    browserSessionId: Base64Url32BytesSchema
+  }).strict(),
+  z.object({
+    kind: z.literal("remote"),
+    gatewayLaunchId: Base64Url32BytesSchema,
+    browserSessionId: Base64Url32BytesSchema
+  }).strict()
+]);
+
+const ApprovingPrincipalSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("local"),
+    stableId: z.literal("local")
+  }).strict(),
+  z.object({
+    kind: z.literal("remote_device"),
+    stableId: PrincipalStableIdSchema,
+    peerFingerprint: Base64Url16BytesSchema,
+    trustEpoch: Uint64DecimalSchema
+  }).strict()
+]);
+
+const AssistantProvenanceSchema = z.object({
+  conversationId: z.string().min(1).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9:._-]*$/),
+  toolCallId: z.string().min(1).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9:._-]*$/).optional(),
+  pendingActionId: z.string().min(1).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9:._-]*$/).optional(),
+  confirmedActionPayloadHash: Base64Url32BytesSchema
+}).strict();
+
+const SasIndicesSchema = z.tuple([
+  z.number().int().min(0).max(1_023),
+  z.number().int().min(0).max(1_023),
+  z.number().int().min(0).max(1_023),
+  z.number().int().min(0).max(1_023),
+  z.number().int().min(0).max(1_023)
+]);
+
+export const ApprovalReceiptV1Schema = z
+  .object({
+    version: z.literal(1),
+    receiptId: Base64Url32BytesSchema,
+    issuedAt: Uint64DecimalSchema,
+    expiresAt: Uint64DecimalSchema,
+    invitationId: Base64Url16BytesSchema,
+    invitationGeneration: Uint64DecimalSchema,
+    pendingPairId: Base64Url16BytesSchema,
+    hostIdentityBundleCbor: CanonicalIdentityBundleCborSchema,
+    hostIdentityBundleHash: Base64Url32BytesSchema,
+    remoteIdentityBundleCbor: CanonicalIdentityBundleCborSchema,
+    remoteIdentityBundleHash: Base64Url32BytesSchema,
+    noisePattern: z.enum([
+      "Noise_XXpsk0_25519_ChaChaPoly_SHA256",
+      "Noise_XX_25519_ChaChaPoly_SHA256"
+    ]),
+    protocol: ProtocolVersionSchema,
+    transcriptHash: Base64Url32BytesSchema,
+    channelBinding: Base64Url32BytesSchema,
+    sasIndices: SasIndicesSchema,
+    sasFingerprint: z.string().length(12).regex(/^[0-9a-f]{12}$/),
+    hostTrustEpoch: Uint64DecimalSchema,
+    remoteTrustEpoch: Uint64DecimalSchema,
+    hostKeySequence: z.literal(1),
+    remoteKeySequence: z.literal(1),
+    approvingPrincipal: ApprovingPrincipalSchema,
+    browserBinding: ApprovalBrowserBindingSchema,
+    confirmationRequestNonce: Base64Url16BytesSchema,
+    confirmationMethod: HttpMethodSchema,
+    confirmationTarget: CanonicalTargetSchema,
+    assistantProvenance: AssistantProvenanceSchema.optional(),
+    nonce: Base64Url32BytesSchema,
+    action: z.literal("approve_pair")
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    const issuedAt = BigInt(value.issuedAt);
+    const expiresAt = BigInt(value.expiresAt);
+    if (expiresAt <= issuedAt || expiresAt - issuedAt > 120n) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["expiresAt"],
+        message: "Approval receipt expiry must be within 120 seconds after issue."
+      });
+    }
+    if (
+      value.hostIdentityBundleCbor === value.remoteIdentityBundleCbor
+      || value.hostIdentityBundleHash === value.remoteIdentityBundleHash
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["remoteIdentityBundleHash"],
+        message: "Host and remote identity bundles must be distinct."
+      });
+    }
+  });
+
+export type ApprovalReceiptV1 = z.infer<typeof ApprovalReceiptV1Schema>;
+
+export const ResetIdentityCommandSchema = z.object({
+  resetTombstone: PositiveUint64DecimalSchema,
+  expectedOldFingerprint: Base64Url16BytesSchema
+}).strict();
+
+export const GetResetStatusCommandSchema = z.object({
+  resetTombstone: PositiveUint64DecimalSchema
+}).strict();
+
+const IdentityResetReceiptBaseShape = {
+  version: z.literal(1),
+  resetTombstone: PositiveUint64DecimalSchema,
+  resetId: Base64Url16BytesSchema,
+  oldInstallationPublicKey: Base64Url32BytesSchema,
+  newInstallationPublicKey: Base64Url32BytesSchema,
+  oldFingerprint: Base64Url16BytesSchema,
+  newFingerprint: Base64Url16BytesSchema,
+  clearedActivationCount: Uint64DecimalSchema,
+  clearedPairCount: Uint64DecimalSchema,
+  clearedHostRoleSecretCount: Uint64DecimalSchema,
+  clearedRemoteRoleSecretCount: Uint64DecimalSchema
+};
+
+const IncompleteIdentityResetReceiptV1Schema = z.object({
+  ...IdentityResetReceiptBaseShape,
+  stage: z.enum(["prepared", "old_state_cleared", "new_identity_committed"])
+}).strict();
+
+const CompleteIdentityResetReceiptV1Schema = z.object({
+  ...IdentityResetReceiptBaseShape,
+  stage: z.literal("complete"),
+  completedAt: Uint64DecimalSchema
+}).strict();
+
+export const IdentityResetReceiptV1Schema = z
+  .union([
+    IncompleteIdentityResetReceiptV1Schema,
+    CompleteIdentityResetReceiptV1Schema
+  ])
+  .superRefine((value, ctx) => {
+    if (
+      value.oldInstallationPublicKey === value.newInstallationPublicKey
+      || value.oldFingerprint === value.newFingerprint
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["newFingerprint"],
+        message: "Identity reset must commit a distinct new installation identity."
+      });
+    }
+  });
+
+export type IdentityResetReceiptV1 = z.infer<typeof IdentityResetReceiptV1Schema>;

@@ -2,13 +2,19 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  ApprovalReceiptV1Schema,
+  GetResetStatusCommandSchema,
   HELPER_PACKAGE_TARGETS,
   HelperManifestSchema,
+  IdentityResetReceiptV1Schema,
+  ResetIdentityCommandSchema,
   type HelperManifestInput
 } from "../src/shared/schemas/remoteAccess.js";
 import {
   createHelperManifestFixtureSet,
-  createHelperManifestJsonSchema
+  createHelperManifestJsonSchema,
+  createRemoteAccessFixtureSet,
+  createRemoteAccessJsonSchema
 } from "../src/shared/schemas/remoteAccessContract.js";
 import {
   serializeCanonicalContractJson,
@@ -154,6 +160,153 @@ describe("HelperManifestSchema", () => {
   });
 });
 
+const bytes16 = (value: number) => Buffer.alloc(16, value).toString("base64url");
+const bytes32 = (value: number) => Buffer.alloc(32, value).toString("base64url");
+
+function approvalReceipt(browserKind: "local" | "remote" = "local") {
+  return {
+    version: 1,
+    receiptId: bytes32(0x61),
+    issuedAt: "1786270830",
+    expiresAt: "1786270950",
+    invitationId: bytes16(0x62),
+    invitationGeneration: "1",
+    pendingPairId: bytes16(0x63),
+    hostIdentityBundleCbor: Buffer.from([0xa1, 0x01, 0x01]).toString("base64url"),
+    hostIdentityBundleHash: bytes32(0x64),
+    remoteIdentityBundleCbor: Buffer.from([0xa1, 0x01, 0x02]).toString("base64url"),
+    remoteIdentityBundleHash: bytes32(0x65),
+    noisePattern: "Noise_XXpsk0_25519_ChaChaPoly_SHA256",
+    protocol: { major: 1, minor: 0 },
+    transcriptHash: bytes32(0x66),
+    channelBinding: bytes32(0x67),
+    sasIndices: [1, 23, 456, 789, 1023],
+    sasFingerprint: "a1b2c3d4e5f6",
+    hostTrustEpoch: "1",
+    remoteTrustEpoch: "2",
+    hostKeySequence: 1,
+    remoteKeySequence: 1,
+    approvingPrincipal: browserKind === "local"
+      ? { kind: "local", stableId: "local" }
+      : {
+          kind: "remote_device",
+          stableId: "remote:approver-device",
+          peerFingerprint: bytes16(0x68),
+          trustEpoch: "7"
+        },
+    browserBinding: browserKind === "local"
+      ? {
+          kind: "local",
+          hostServerLaunchId: bytes32(0x69),
+          browserSessionId: bytes32(0x6a)
+        }
+      : {
+          kind: "remote",
+          gatewayLaunchId: bytes32(0x6b),
+          browserSessionId: bytes32(0x6c)
+        },
+    confirmationRequestNonce: bytes16(0x6d),
+    confirmationMethod: "POST",
+    confirmationTarget: "/api/remote-access/pairing-requests/request-1/approve",
+    nonce: bytes32(0x6e),
+    action: "approve_pair"
+  };
+}
+
+describe("ApprovalReceiptV1Schema", () => {
+  it("accepts exact local and trusted-remote browser bindings", () => {
+    expect(ApprovalReceiptV1Schema.safeParse(approvalReceipt("local")).success).toBe(true);
+    expect(ApprovalReceiptV1Schema.safeParse(approvalReceipt("remote")).success).toBe(true);
+  });
+
+  it("rejects mixed browser bindings, overlong expiry, and comparison substitutions", () => {
+    const receipt = approvalReceipt("local");
+    expect(ApprovalReceiptV1Schema.safeParse({
+      ...receipt,
+      browserBinding: {
+        ...receipt.browserBinding,
+        gatewayLaunchId: bytes32(0x70)
+      }
+    }).success).toBe(false);
+    expect(ApprovalReceiptV1Schema.safeParse({ ...receipt, expiresAt: "1786270951" }).success).toBe(false);
+    expect(ApprovalReceiptV1Schema.safeParse({ ...receipt, sasIndices: [1, 2, 3, 4] }).success).toBe(false);
+    expect(ApprovalReceiptV1Schema.safeParse({ ...receipt, sasFingerprint: "A1B2C3D4E5F6" }).success).toBe(false);
+    expect(ApprovalReceiptV1Schema.safeParse({ ...receipt, confirmationMethod: "post" }).success).toBe(false);
+    expect(ApprovalReceiptV1Schema.safeParse({ ...receipt, action: "approve_device" }).success).toBe(false);
+  });
+
+  it("requires assistant provenance to augment rather than replace browser proof", () => {
+    const receipt = approvalReceipt("remote");
+    expect(ApprovalReceiptV1Schema.safeParse({
+      ...receipt,
+      assistantProvenance: {
+        conversationId: "conversation-1",
+        toolCallId: "tool-1",
+        pendingActionId: "action-1",
+        confirmedActionPayloadHash: bytes32(0x71)
+      }
+    }).success).toBe(true);
+    expect(ApprovalReceiptV1Schema.safeParse({
+      ...receipt,
+      assistantProvenance: {
+        conversationId: "conversation-1"
+      }
+    }).success).toBe(false);
+    const { browserBinding: _browserBinding, ...withoutBrowser } = receipt;
+    expect(ApprovalReceiptV1Schema.safeParse(withoutBrowser).success).toBe(false);
+  });
+});
+
+describe("identity reset wire schemas", () => {
+  const command = {
+    resetTombstone: "9007199254740992",
+    expectedOldFingerprint: bytes16(0x72)
+  };
+  const receiptBase = {
+    version: 1,
+    resetTombstone: command.resetTombstone,
+    resetId: bytes16(0x73),
+    oldInstallationPublicKey: bytes32(0x74),
+    newInstallationPublicKey: bytes32(0x75),
+    oldFingerprint: command.expectedOldFingerprint,
+    newFingerprint: bytes16(0x76),
+    clearedActivationCount: "1",
+    clearedPairCount: "2",
+    clearedHostRoleSecretCount: "3",
+    clearedRemoteRoleSecretCount: "4"
+  };
+
+  it("accepts only strict reset and status commands", () => {
+    expect(ResetIdentityCommandSchema.parse(command)).toEqual(command);
+    expect(GetResetStatusCommandSchema.parse({ resetTombstone: command.resetTombstone })).toEqual({
+      resetTombstone: command.resetTombstone
+    });
+    expect(ResetIdentityCommandSchema.safeParse({ ...command, resetTombstone: 1 }).success).toBe(false);
+    expect(ResetIdentityCommandSchema.safeParse({ ...command, dataRoot: "/tmp/other" }).success).toBe(false);
+  });
+
+  it("locks impossible reset receipt stage/completion combinations", () => {
+    expect(IdentityResetReceiptV1Schema.safeParse({
+      ...receiptBase,
+      stage: "prepared"
+    }).success).toBe(true);
+    expect(IdentityResetReceiptV1Schema.safeParse({
+      ...receiptBase,
+      stage: "complete",
+      completedAt: "1786270950"
+    }).success).toBe(true);
+    expect(IdentityResetReceiptV1Schema.safeParse({
+      ...receiptBase,
+      stage: "complete"
+    }).success).toBe(false);
+    expect(IdentityResetReceiptV1Schema.safeParse({
+      ...receiptBase,
+      stage: "prepared",
+      completedAt: "1786270950"
+    }).success).toBe(false);
+  });
+});
+
 describe("checked-in helper manifest contract", () => {
   it("matches the generated schema and every generated fixture byte-for-byte", async () => {
     const contractRoot = path.join(process.cwd(), "contracts", "remote", "v1");
@@ -182,5 +335,22 @@ describe("checked-in helper manifest contract", () => {
       "format",
       "waifus-rfc3339-whole-second"
     );
+  });
+});
+
+describe("checked-in remote-access wire contract", () => {
+  it("matches the generated schema and strict valid/invalid fixtures", async () => {
+    const contractRoot = path.join(process.cwd(), "contracts", "remote", "v1");
+    const schemaBytes = await readFile(path.join(contractRoot, "remote-access.schema.json"), "utf8");
+    expect(schemaBytes).toBe(serializeRemoteContractJson(createRemoteAccessJsonSchema()));
+    for (const [relativePath, value] of createRemoteAccessFixtureSet()) {
+      const actual = await readFile(path.join(contractRoot, relativePath), "utf8");
+      expect(actual).toBe(serializeCanonicalContractJson(value));
+      const expectedValid = relativePath.includes("/valid/");
+      const schema = relativePath.includes("approval-receipt")
+        ? ApprovalReceiptV1Schema
+        : IdentityResetReceiptV1Schema;
+      expect(schema.safeParse(value).success, relativePath).toBe(expectedValid);
+    }
   });
 });

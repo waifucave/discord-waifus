@@ -88,9 +88,11 @@ function fixedWidthBase64UrlSchema(bytes: number) {
 
 export const Base64Url16BytesSchema = fixedWidthBase64UrlSchema(16).brand<"Base64Url16Bytes">();
 export const Base64Url32BytesSchema = fixedWidthBase64UrlSchema(32).brand<"Base64Url32Bytes">();
+export const Base64Url64BytesSchema = fixedWidthBase64UrlSchema(64).brand<"Base64Url64Bytes">();
 
 export type Base64Url16Bytes = z.infer<typeof Base64Url16BytesSchema>;
 export type Base64Url32Bytes = z.infer<typeof Base64Url32BytesSchema>;
+export type Base64Url64Bytes = z.infer<typeof Base64Url64BytesSchema>;
 
 export const ProtocolVersionSchema = z
   .object({
@@ -366,3 +368,51 @@ export const RemoteBrowserContextV1Schema = z
   .strict();
 
 export type RemoteBrowserContextV1 = z.infer<typeof RemoteBrowserContextV1Schema>;
+
+export const DeviceRoleV1Schema = z.union([z.literal(1), z.literal(2)]);
+export const DeviceIdSchema = z
+  .string()
+  .min(1)
+  .max(64)
+  .regex(/^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/, "Expected a canonical device ID.");
+export const PrincipalStableIdSchema = z
+  .string()
+  .min(1)
+  .max(128)
+  .regex(/^[a-z][a-z0-9:._-]*$/, "Expected a canonical principal stable ID.");
+
+export const DeviceIdentityBundleSchema = z
+  .object({
+    version: z.literal(1),
+    deviceId: DeviceIdSchema,
+    role: DeviceRoleV1Schema,
+    trustEpoch: Uint64DecimalSchema,
+    installationPublicKey: Base64Url32BytesSchema,
+    nodePublicKey: Base64Url32BytesSchema,
+    discoveryPublicKey: Base64Url32BytesSchema,
+    keySequence: z.literal(1),
+    protocol: ProtocolVersionSchema,
+    capabilities: CapabilitySetSchema,
+    signature: Base64Url64BytesSchema
+  })
+  .strict();
+
+export type DeviceIdentityBundle = z.infer<typeof DeviceIdentityBundleSchema>;
+
+export const RequestPrincipalWireSchema = z
+  .object({
+    kind: z.literal("remote_device"),
+    stableId: PrincipalStableIdSchema,
+    deviceId: DeviceIdSchema,
+    peerFingerprint: Base64Url16BytesSchema,
+    transportSessionId: Base64Url16BytesSchema,
+    trustEpoch: Uint64DecimalSchema,
+    browserContext: RemoteBrowserContextV1Schema.optional()
+  })
+  .strict()
+  .refine(
+    (value) => value.stableId === `remote:${value.deviceId}`,
+    { path: ["stableId"], message: "Remote principal stable ID must derive from its device ID." }
+  );
+
+export type RequestPrincipalWire = z.infer<typeof RequestPrincipalWireSchema>;

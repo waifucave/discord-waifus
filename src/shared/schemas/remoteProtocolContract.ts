@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   Base64Url16BytesSchema,
   Base64Url32BytesSchema,
+  Base64Url64BytesSchema,
   CanonicalTargetSchema,
   CapabilityNameListSchema,
   CapabilityNameSchema,
@@ -10,12 +11,17 @@ import {
   ComponentNameSchema,
   CompatibilityResultSchema,
   ControlProfileV1Schema,
+  DeviceIdSchema,
+  DeviceIdentityBundleSchema,
+  DeviceRoleV1Schema,
   HttpMethodSchema,
   INITIAL_REQUIRED_CAPABILITIES,
   ProtocolCapabilitiesDocumentSchema,
   ProtocolVersionSchema,
+  PrincipalStableIdSchema,
   REMOTE_PROTOCOL_VERSION,
   RemoteBrowserContextV1Schema,
+  RequestPrincipalWireSchema,
   RuntimePurposeSchema,
   Uint64DecimalSchema,
   type ProtocolCapabilitiesDocument
@@ -31,6 +37,7 @@ type ContractJsonObject = { [key: string]: ContractJson };
 const registeredSchemas: ReadonlyArray<readonly [string, z.ZodType]> = [
   ["Base64Url16Bytes", Base64Url16BytesSchema],
   ["Base64Url32Bytes", Base64Url32BytesSchema],
+  ["Base64Url64Bytes", Base64Url64BytesSchema],
   ["CanonicalTarget", CanonicalTargetSchema],
   ["CapabilityNameList", CapabilityNameListSchema],
   ["CapabilityName", CapabilityNameSchema],
@@ -39,10 +46,15 @@ const registeredSchemas: ReadonlyArray<readonly [string, z.ZodType]> = [
   ["ComponentName", ComponentNameSchema],
   ["CompatibilityResult", CompatibilityResultSchema],
   ["ControlProfileV1", ControlProfileV1Schema],
+  ["DeviceId", DeviceIdSchema],
+  ["DeviceIdentityBundle", DeviceIdentityBundleSchema],
+  ["DeviceRoleV1", DeviceRoleV1Schema],
   ["HttpMethod", HttpMethodSchema],
   ["ProtocolCapabilitiesDocument", ProtocolCapabilitiesDocumentSchema],
   ["ProtocolVersion", ProtocolVersionSchema],
+  ["PrincipalStableId", PrincipalStableIdSchema],
   ["RemoteBrowserContextV1", RemoteBrowserContextV1Schema],
+  ["RequestPrincipalWire", RequestPrincipalWireSchema],
   ["RuntimePurpose", RuntimePurposeSchema],
   ["Uint64Decimal", Uint64DecimalSchema]
 ];
@@ -78,6 +90,10 @@ function addNonStructuralContractConstraints(definitions: Record<string, Contrac
       }
     }
   ];
+
+  definitions.RequestPrincipalWire["x-waifus-derived-field"] = {
+    stableId: "remote:<deviceId>"
+  };
 }
 
 export function createRemoteProtocolJsonSchema(): ContractJsonObject {
@@ -107,8 +123,10 @@ export function createRemoteProtocolJsonSchema(): ContractJsonObject {
     oneOf: [
       { $ref: "#/$defs/ComponentHello" },
       { $ref: "#/$defs/CompatibilityResult" },
+      { $ref: "#/$defs/DeviceIdentityBundle" },
       { $ref: "#/$defs/ProtocolCapabilitiesDocument" },
-      { $ref: "#/$defs/RemoteBrowserContextV1" }
+      { $ref: "#/$defs/RemoteBrowserContextV1" },
+      { $ref: "#/$defs/RequestPrincipalWire" }
     ],
     $defs: definitions
   };
@@ -123,6 +141,83 @@ export function createRemoteCapabilitiesDocument(): ProtocolCapabilitiesDocument
       optional: []
     }
   });
+}
+
+function protocolFixtureBytes(size: number, value: number): string {
+  return Buffer.alloc(size, value).toString("base64url");
+}
+
+function deviceIdentityFixture(role: 1 | 2): ContractJson {
+  return {
+    version: 1,
+    deviceId: role === 1 ? "host-device-01h" : "remote-device-01h",
+    role,
+    trustEpoch: role === 1 ? "1" : "2",
+    installationPublicKey: protocolFixtureBytes(32, role === 1 ? 0x51 : 0x61),
+    nodePublicKey: protocolFixtureBytes(32, role === 1 ? 0x52 : 0x62),
+    discoveryPublicKey: protocolFixtureBytes(32, role === 1 ? 0x53 : 0x63),
+    keySequence: 1,
+    protocol: { major: 1, minor: 0 },
+    capabilities: {
+      required: [...INITIAL_REQUIRED_CAPABILITIES],
+      optional: []
+    },
+    signature: protocolFixtureBytes(64, role === 1 ? 0x54 : 0x64)
+  };
+}
+
+function requestPrincipalFixture(withBrowser: boolean): ContractJson {
+  return {
+    kind: "remote_device",
+    stableId: "remote:remote-device-01h",
+    deviceId: "remote-device-01h",
+    peerFingerprint: protocolFixtureBytes(16, 0x65),
+    transportSessionId: protocolFixtureBytes(16, 0x66),
+    trustEpoch: "2",
+    ...(withBrowser
+      ? {
+          browserContext: {
+            version: 1,
+            gatewayLaunchId: protocolFixtureBytes(32, 0x67),
+            browserSessionId: protocolFixtureBytes(32, 0x68),
+            requestNonce: protocolFixtureBytes(16, 0x69),
+            method: "GET",
+            canonicalTarget: "/api/remote-access",
+            csrfValidated: true
+          }
+        }
+      : {})
+  };
+}
+
+function cloneProtocolFixture(value: ContractJson): ContractJson {
+  return JSON.parse(JSON.stringify(value)) as ContractJson;
+}
+
+export function createRemoteProtocolFixtureSet(): ReadonlyMap<string, ContractJson> {
+  const fixtures = new Map<string, ContractJson>();
+  fixtures.set("fixtures/valid/device-identity-host.json", deviceIdentityFixture(1));
+  fixtures.set("fixtures/valid/device-identity-remote.json", deviceIdentityFixture(2));
+  fixtures.set("fixtures/valid/request-principal-browser.json", requestPrincipalFixture(true));
+  fixtures.set("fixtures/valid/request-principal-service.json", requestPrincipalFixture(false));
+
+  const wrongSequence = cloneProtocolFixture(deviceIdentityFixture(2)) as Record<string, ContractJson>;
+  wrongSequence.keySequence = 2;
+  fixtures.set("fixtures/invalid/device-identity-key-sequence.json", wrongSequence);
+
+  const secretField = cloneProtocolFixture(deviceIdentityFixture(2)) as Record<string, ContractJson>;
+  secretField.privateKey = "must-never-appear";
+  fixtures.set("fixtures/invalid/device-identity-secret-field.json", secretField);
+
+  const wrongStableId = cloneProtocolFixture(requestPrincipalFixture(true)) as Record<string, ContractJson>;
+  wrongStableId.stableId = "remote:another-device";
+  fixtures.set("fixtures/invalid/request-principal-stable-id.json", wrongStableId);
+
+  const wrongSessionWidth = cloneProtocolFixture(requestPrincipalFixture(true)) as Record<string, ContractJson>;
+  wrongSessionWidth.transportSessionId = protocolFixtureBytes(32, 0x66);
+  fixtures.set("fixtures/invalid/request-principal-transport-width.json", wrongSessionWidth);
+
+  return fixtures;
 }
 
 function sortContractJson(value: ContractJson): ContractJson {

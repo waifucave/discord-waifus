@@ -3,13 +3,16 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   createRemoteCapabilitiesDocument,
+  createRemoteProtocolFixtureSet,
   createRemoteProtocolJsonSchema,
   serializeCanonicalContractJson,
   serializeRemoteContractJson
 } from "../src/shared/schemas/remoteProtocolContract.js";
 import {
   createHelperManifestFixtureSet,
-  createHelperManifestJsonSchema
+  createHelperManifestJsonSchema,
+  createRemoteAccessFixtureSet,
+  createRemoteAccessJsonSchema
 } from "../src/shared/schemas/remoteAccessContract.js";
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
@@ -28,10 +31,28 @@ const generatedFiles = new Map<string, string>([
   [
     path.join(contractRoot, "helper-manifest.schema.json"),
     serializeRemoteContractJson(createHelperManifestJsonSchema())
+  ],
+  [
+    path.join(contractRoot, "remote-access.schema.json"),
+    serializeRemoteContractJson(createRemoteAccessJsonSchema())
   ]
 ]);
 
 for (const [relativePath, value] of createHelperManifestFixtureSet()) {
+  generatedFiles.set(
+    path.join(contractRoot, relativePath),
+    serializeCanonicalContractJson(value)
+  );
+}
+
+for (const [relativePath, value] of createRemoteAccessFixtureSet()) {
+  generatedFiles.set(
+    path.join(contractRoot, relativePath),
+    serializeCanonicalContractJson(value)
+  );
+}
+
+for (const [relativePath, value] of createRemoteProtocolFixtureSet()) {
   generatedFiles.set(
     path.join(contractRoot, relativePath),
     serializeCanonicalContractJson(value)

@@ -3,7 +3,9 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   ComponentHelloSchema,
+  DeviceIdentityBundleSchema,
   INITIAL_REQUIRED_CAPABILITIES,
+  RequestPrincipalWireSchema,
   RemoteBrowserContextV1Schema,
   Uint64DecimalSchema,
   formatUint64Decimal,
@@ -12,6 +14,7 @@ import {
 } from "../src/shared/schemas/remoteProtocol.js";
 import {
   createRemoteCapabilitiesDocument,
+  createRemoteProtocolFixtureSet,
   createRemoteProtocolJsonSchema,
   serializeCanonicalContractJson,
   serializeRemoteContractJson
@@ -240,6 +243,60 @@ describe("RemoteBrowserContextV1Schema", () => {
   });
 });
 
+describe("device identity and principal wire schemas", () => {
+  const identityBundle = {
+    version: 1,
+    deviceId: "device-01h-test",
+    role: 2,
+    trustEpoch: "1",
+    installationPublicKey: Buffer.alloc(32, 0x51).toString("base64url"),
+    nodePublicKey: Buffer.alloc(32, 0x52).toString("base64url"),
+    discoveryPublicKey: Buffer.alloc(32, 0x53).toString("base64url"),
+    keySequence: 1,
+    protocol: { major: 1, minor: 0 },
+    capabilities: {
+      required: [...INITIAL_REQUIRED_CAPABILITIES],
+      optional: []
+    },
+    signature: Buffer.alloc(64, 0x54).toString("base64url")
+  };
+
+  it("accepts only a strict signed V1 identity bundle", () => {
+    expect(DeviceIdentityBundleSchema.parse(identityBundle)).toEqual(identityBundle);
+    expect(DeviceIdentityBundleSchema.safeParse({ ...identityBundle, role: 3 }).success).toBe(false);
+    expect(DeviceIdentityBundleSchema.safeParse({ ...identityBundle, keySequence: 2 }).success).toBe(false);
+    expect(DeviceIdentityBundleSchema.safeParse({ ...identityBundle, trustEpoch: 1 }).success).toBe(false);
+    expect(DeviceIdentityBundleSchema.safeParse({ ...identityBundle, privateKey: "secret" }).success).toBe(false);
+  });
+
+  it("accepts only a helper-derived remote principal", () => {
+    const principal = {
+      kind: "remote_device",
+      stableId: "remote:device-01h-test",
+      deviceId: identityBundle.deviceId,
+      peerFingerprint: Buffer.alloc(16, 0x55).toString("base64url"),
+      transportSessionId: Buffer.alloc(16, 0x56).toString("base64url"),
+      trustEpoch: "1",
+      browserContext: {
+        version: 1,
+        gatewayLaunchId,
+        browserSessionId,
+        requestNonce,
+        method: "GET",
+        canonicalTarget: "/api/remote-access",
+        csrfValidated: true
+      }
+    };
+    expect(RequestPrincipalWireSchema.parse(principal)).toEqual(principal);
+    expect(RequestPrincipalWireSchema.safeParse({ ...principal, kind: "local" }).success).toBe(false);
+    expect(RequestPrincipalWireSchema.safeParse({ ...principal, stableId: "remote:other" }).success).toBe(false);
+    expect(RequestPrincipalWireSchema.safeParse({
+      ...principal,
+      forwardedPrincipalHeader: "remote_device"
+    }).success).toBe(false);
+  });
+});
+
 describe("checked-in remote protocol contract", () => {
   it("serializes signing inputs with deterministic RFC 8785 key order", () => {
     expect(serializeCanonicalContractJson({ z: 1, a: { y: 2, b: 3 } })).toBe(
@@ -258,6 +315,15 @@ describe("checked-in remote protocol contract", () => {
 
     expect(protocolSchema).toBe(serializeRemoteContractJson(createRemoteProtocolJsonSchema()));
     expect(capabilities).toBe(serializeRemoteContractJson(createRemoteCapabilitiesDocument()));
+
+    for (const [relativePath, value] of createRemoteProtocolFixtureSet()) {
+      const actual = await readFile(path.join(contractRoot, relativePath), "utf8");
+      expect(actual).toBe(serializeCanonicalContractJson(value));
+      const schema = relativePath.includes("device-identity")
+        ? DeviceIdentityBundleSchema
+        : RequestPrincipalWireSchema;
+      expect(schema.safeParse(value).success, relativePath).toBe(relativePath.includes("/valid/"));
+    }
   });
 
   it("publishes the strict browser context and staging-purpose constraint", () => {

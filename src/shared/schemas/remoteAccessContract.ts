@@ -1,18 +1,29 @@
 import { z } from "zod";
 import {
+  ApprovalReceiptV1Schema,
   CanonicalReleasedAtSchema,
+  CanonicalIdentityBundleCborSchema,
+  GetResetStatusCommandSchema,
   GitCommitSha1Schema,
   HELPER_PACKAGE_TARGETS,
   HelperManifestSchema,
   HelperTargetSchema,
+  IdentityResetReceiptV1Schema,
   PositiveUint64DecimalSchema,
   ProtocolRangeSchema,
+  ResetIdentityCommandSchema,
   ReleaseKeyIdListSchema,
   Sha256HexSchema
 } from "./remoteAccess.js";
 import {
+  Base64Url16BytesSchema,
+  Base64Url32BytesSchema,
+  CanonicalTargetSchema,
   CapabilityNameListSchema,
   CapabilityNameSchema,
+  HttpMethodSchema,
+  PrincipalStableIdSchema,
+  ProtocolVersionSchema,
   SemVerSchema,
   Uint64DecimalSchema
 } from "./remoteProtocol.js";
@@ -20,6 +31,8 @@ import type { ContractJson } from "./remoteProtocolContract.js";
 
 export const HELPER_MANIFEST_SCHEMA_ID =
   "https://waifucave.com/contracts/remote/v1/helper-manifest.schema.json";
+export const REMOTE_ACCESS_SCHEMA_ID =
+  "https://waifucave.com/contracts/remote/v1/remote-access.schema.json";
 
 type ContractJsonObject = { [key: string]: ContractJson };
 
@@ -201,6 +214,196 @@ export function createHelperManifestFixtureSet(): ReadonlyMap<string, ContractJs
   const unknownField = cloneFixture(base);
   unknownField.controlUrl = "https://example.invalid";
   fixtures.set("fixtures/helper-manifest/invalid/unknown-field.json", unknownField);
+
+  return fixtures;
+}
+
+const remoteAccessRegisteredSchemas: ReadonlyArray<readonly [string, z.ZodType]> = [
+  ["ApprovalReceiptV1", ApprovalReceiptV1Schema],
+  ["Base64Url16Bytes", Base64Url16BytesSchema],
+  ["Base64Url32Bytes", Base64Url32BytesSchema],
+  ["CanonicalIdentityBundleCbor", CanonicalIdentityBundleCborSchema],
+  ["CanonicalTarget", CanonicalTargetSchema],
+  ["GetResetStatusCommand", GetResetStatusCommandSchema],
+  ["HttpMethod", HttpMethodSchema],
+  ["IdentityResetReceiptV1", IdentityResetReceiptV1Schema],
+  ["PositiveUint64Decimal", PositiveUint64DecimalSchema],
+  ["PrincipalStableId", PrincipalStableIdSchema],
+  ["ProtocolVersion", ProtocolVersionSchema],
+  ["ResetIdentityCommand", ResetIdentityCommandSchema],
+  ["Uint64Decimal", Uint64DecimalSchema]
+];
+
+export function createRemoteAccessJsonSchema(): ContractJsonObject {
+  const registry = z.registry<{ id: string }>();
+  for (const [id, schema] of remoteAccessRegisteredSchemas) {
+    schema.register(registry, { id });
+  }
+  const generated = z.toJSONSchema(registry, {
+    uri: (id) => `#/$defs/${id}`
+  }) as { schemas: Record<string, Record<string, unknown>> };
+  const definitions: Record<string, ContractJsonObject> = {};
+  for (const [id, schema] of Object.entries(generated.schemas)) {
+    const definition = { ...schema } as Record<string, unknown>;
+    delete definition.$schema;
+    delete definition.$id;
+    definitions[id] = definition as ContractJsonObject;
+  }
+
+  definitions.PositiveUint64Decimal.not = { const: "0" };
+  definitions.CanonicalTarget.format = "waifus-origin-form-target-v1";
+  definitions.CanonicalIdentityBundleCbor.format = "waifus-canonical-cbor-base64url-v1";
+  definitions.CanonicalIdentityBundleCbor["x-waifus-maximum-decoded-bytes"] = 1_200;
+  const approvalProperties = definitions.ApprovalReceiptV1.properties as ContractJsonObject;
+  const sasIndices = approvalProperties.sasIndices as ContractJsonObject;
+  sasIndices.minItems = 5;
+  sasIndices.maxItems = 5;
+  definitions.ApprovalReceiptV1["x-waifus-expiry-window-seconds"] = 120;
+  definitions.ApprovalReceiptV1["x-waifus-distinct-fields"] = [
+    ["hostIdentityBundleCbor", "remoteIdentityBundleCbor"],
+    ["hostIdentityBundleHash", "remoteIdentityBundleHash"]
+  ];
+  definitions.IdentityResetReceiptV1["x-waifus-distinct-fields"] = [
+    ["oldInstallationPublicKey", "newInstallationPublicKey"],
+    ["oldFingerprint", "newFingerprint"]
+  ];
+
+  return {
+    $schema: "https://json-schema.org/draft/2020-12/schema",
+    $id: REMOTE_ACCESS_SCHEMA_ID,
+    title: "Waifus Remote Access Wire Contracts V1",
+    description:
+      "Attended approval and installation-reset wire records shared by Discord Waifus and ts-connect.",
+    oneOf: [
+      { $ref: "#/$defs/ApprovalReceiptV1" },
+      { $ref: "#/$defs/GetResetStatusCommand" },
+      { $ref: "#/$defs/IdentityResetReceiptV1" },
+      { $ref: "#/$defs/ResetIdentityCommand" }
+    ],
+    $defs: definitions
+  };
+}
+
+function fixtureBytes(size: number, value: number): string {
+  return Buffer.alloc(size, value).toString("base64url");
+}
+
+function approvalReceiptFixture(kind: "local" | "remote"): ContractJsonObject {
+  return {
+    version: 1,
+    receiptId: fixtureBytes(32, 0x61),
+    issuedAt: "1786270830",
+    expiresAt: "1786270950",
+    invitationId: fixtureBytes(16, 0x62),
+    invitationGeneration: "1",
+    pendingPairId: fixtureBytes(16, 0x63),
+    hostIdentityBundleCbor: Buffer.from([0xa1, 0x01, 0x01]).toString("base64url"),
+    hostIdentityBundleHash: fixtureBytes(32, 0x64),
+    remoteIdentityBundleCbor: Buffer.from([0xa1, 0x01, 0x02]).toString("base64url"),
+    remoteIdentityBundleHash: fixtureBytes(32, 0x65),
+    noisePattern: "Noise_XXpsk0_25519_ChaChaPoly_SHA256",
+    protocol: { major: 1, minor: 0 },
+    transcriptHash: fixtureBytes(32, 0x66),
+    channelBinding: fixtureBytes(32, 0x67),
+    sasIndices: [1, 23, 456, 789, 1_023],
+    sasFingerprint: "a1b2c3d4e5f6",
+    hostTrustEpoch: "1",
+    remoteTrustEpoch: "2",
+    hostKeySequence: 1,
+    remoteKeySequence: 1,
+    approvingPrincipal: kind === "local"
+      ? { kind: "local", stableId: "local" }
+      : {
+          kind: "remote_device",
+          stableId: "remote:approver-device",
+          peerFingerprint: fixtureBytes(16, 0x68),
+          trustEpoch: "7"
+        },
+    browserBinding: kind === "local"
+      ? {
+          kind: "local",
+          hostServerLaunchId: fixtureBytes(32, 0x69),
+          browserSessionId: fixtureBytes(32, 0x6a)
+        }
+      : {
+          kind: "remote",
+          gatewayLaunchId: fixtureBytes(32, 0x6b),
+          browserSessionId: fixtureBytes(32, 0x6c)
+        },
+    confirmationRequestNonce: fixtureBytes(16, 0x6d),
+    confirmationMethod: "POST",
+    confirmationTarget: "/api/remote-access/pairing-requests/request-1/approve",
+    nonce: fixtureBytes(32, 0x6e),
+    action: "approve_pair"
+  };
+}
+
+function identityResetReceiptFixture(stage: "prepared" | "complete"): ContractJsonObject {
+  return {
+    version: 1,
+    resetTombstone: "9007199254740992",
+    resetId: fixtureBytes(16, 0x73),
+    oldInstallationPublicKey: fixtureBytes(32, 0x74),
+    newInstallationPublicKey: fixtureBytes(32, 0x75),
+    oldFingerprint: fixtureBytes(16, 0x72),
+    newFingerprint: fixtureBytes(16, 0x76),
+    clearedActivationCount: "1",
+    clearedPairCount: "2",
+    clearedHostRoleSecretCount: "3",
+    clearedRemoteRoleSecretCount: "4",
+    stage,
+    ...(stage === "complete" ? { completedAt: "1786270950" } : {})
+  };
+}
+
+export function createRemoteAccessFixtureSet(): ReadonlyMap<string, ContractJsonObject> {
+  const fixtures = new Map<string, ContractJsonObject>();
+  fixtures.set(
+    "fixtures/valid/approval-receipt-local.json",
+    approvalReceiptFixture("local")
+  );
+  fixtures.set(
+    "fixtures/valid/approval-receipt-remote.json",
+    approvalReceiptFixture("remote")
+  );
+  fixtures.set(
+    "fixtures/valid/identity-reset-receipt-prepared.json",
+    identityResetReceiptFixture("prepared")
+  );
+  fixtures.set(
+    "fixtures/valid/identity-reset-receipt-complete.json",
+    identityResetReceiptFixture("complete")
+  );
+
+  const mixedBrowser = cloneFixture(approvalReceiptFixture("local"));
+  (mixedBrowser.browserBinding as ContractJsonObject).gatewayLaunchId = fixtureBytes(32, 0x70);
+  fixtures.set("fixtures/invalid/approval-receipt-mixed-browser.json", mixedBrowser);
+
+  const overlongExpiry = cloneFixture(approvalReceiptFixture("local"));
+  overlongExpiry.expiresAt = "1786270951";
+  fixtures.set("fixtures/invalid/approval-receipt-overlong-expiry.json", overlongExpiry);
+
+  const missingComparison = cloneFixture(approvalReceiptFixture("remote"));
+  missingComparison.sasIndices = [1, 2, 3, 4];
+  fixtures.set("fixtures/invalid/approval-receipt-missing-comparison.json", missingComparison);
+
+  const selfPair = cloneFixture(approvalReceiptFixture("local"));
+  selfPair.remoteIdentityBundleCbor = selfPair.hostIdentityBundleCbor;
+  selfPair.remoteIdentityBundleHash = selfPair.hostIdentityBundleHash;
+  fixtures.set("fixtures/invalid/approval-receipt-self-pair.json", selfPair);
+
+  const missingCompletion = cloneFixture(identityResetReceiptFixture("complete"));
+  delete missingCompletion.completedAt;
+  fixtures.set("fixtures/invalid/identity-reset-receipt-missing-completion.json", missingCompletion);
+
+  const earlyCompletion = cloneFixture(identityResetReceiptFixture("prepared"));
+  earlyCompletion.completedAt = "1786270950";
+  fixtures.set("fixtures/invalid/identity-reset-receipt-early-completion.json", earlyCompletion);
+
+  const reusedIdentity = cloneFixture(identityResetReceiptFixture("complete"));
+  reusedIdentity.newInstallationPublicKey = reusedIdentity.oldInstallationPublicKey;
+  reusedIdentity.newFingerprint = reusedIdentity.oldFingerprint;
+  fixtures.set("fixtures/invalid/identity-reset-receipt-reused-identity.json", reusedIdentity);
 
   return fixtures;
 }

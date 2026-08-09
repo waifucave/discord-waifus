@@ -1,0 +1,551 @@
+{
+  "$defs": {
+    "ApprovalReceiptV1": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "const": "approve_pair",
+          "type": "string"
+        },
+        "approvingPrincipal": {
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "const": "local",
+                  "type": "string"
+                },
+                "stableId": {
+                  "const": "local",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "stableId"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "const": "remote_device",
+                  "type": "string"
+                },
+                "peerFingerprint": {
+                  "$ref": "#/$defs/Base64Url16Bytes"
+                },
+                "stableId": {
+                  "$ref": "#/$defs/PrincipalStableId"
+                },
+                "trustEpoch": {
+                  "$ref": "#/$defs/Uint64Decimal"
+                }
+              },
+              "required": [
+                "kind",
+                "stableId",
+                "peerFingerprint",
+                "trustEpoch"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "assistantProvenance": {
+          "additionalProperties": false,
+          "properties": {
+            "confirmedActionPayloadHash": {
+              "$ref": "#/$defs/Base64Url32Bytes"
+            },
+            "conversationId": {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9:._-]*$",
+              "type": "string"
+            },
+            "pendingActionId": {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9:._-]*$",
+              "type": "string"
+            },
+            "toolCallId": {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9:._-]*$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "conversationId",
+            "confirmedActionPayloadHash"
+          ],
+          "type": "object"
+        },
+        "browserBinding": {
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "browserSessionId": {
+                  "$ref": "#/$defs/Base64Url32Bytes"
+                },
+                "hostServerLaunchId": {
+                  "$ref": "#/$defs/Base64Url32Bytes"
+                },
+                "kind": {
+                  "const": "local",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "hostServerLaunchId",
+                "browserSessionId"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "browserSessionId": {
+                  "$ref": "#/$defs/Base64Url32Bytes"
+                },
+                "gatewayLaunchId": {
+                  "$ref": "#/$defs/Base64Url32Bytes"
+                },
+                "kind": {
+                  "const": "remote",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "gatewayLaunchId",
+                "browserSessionId"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "channelBinding": {
+          "$ref": "#/$defs/Base64Url32Bytes"
+        },
+        "confirmationMethod": {
+          "$ref": "#/$defs/HttpMethod"
+        },
+        "confirmationRequestNonce": {
+          "$ref": "#/$defs/Base64Url16Bytes"
+        },
+        "confirmationTarget": {
+          "$ref": "#/$defs/CanonicalTarget"
+        },
+        "expiresAt": {
+          "$ref": "#/$defs/Uint64Decimal"
+        },
+        "hostIdentityBundleCbor": {
+          "$ref": "#/$defs/CanonicalIdentityBundleCbor"
+        },
+        "hostIdentityBundleHash": {
+          "$ref": "#/$defs/Base64Url32Bytes"
+        },
+        "hostKeySequence": {
+          "const": 1,
+          "type": "number"
+        },
+        "hostTrustEpoch": {
+          "$ref": "#/$defs/Uint64Decimal"
+        },
+        "invitationGeneration": {
+          "$ref": "#/$defs/Uint64Decimal"
+        },
+        "invitationId": {
+          "$ref": "#/$defs/Base64Url16Bytes"
+        },
+        "issuedAt": {
+          "$ref": "#/$defs/Uint64Decimal"
+        },
+        "noisePattern": {
+          "enum": [
+            "Noise_XXpsk0_25519_ChaChaPoly_SHA256",
+            "Noise_XX_25519_ChaChaPoly_SHA256"
+          ],
+          "type": "string"
+        },
+        "nonce": {
+          "$ref": "#/$defs/Base64Url32Bytes"
+        },
+        "pendingPairId": {
+          "$ref": "#/$defs/Base64Url16Bytes"
+        },
+        "protocol": {
+          "$ref": "#/$defs/ProtocolVersion"
+        },
+        "receiptId": {
+          "$ref": "#/$defs/Base64Url32Bytes"
+        },
+        "remoteIdentityBundleCbor": {
+          "$ref": "#/$defs/CanonicalIdentityBundleCbor"
+        },
+        "remoteIdentityBundleHash": {
+          "$ref": "#/$defs/Base64Url32Bytes"
+        },
+        "remoteKeySequence": {
+          "const": 1,
+          "type": "number"
+        },
+        "remoteTrustEpoch": {
+          "$ref": "#/$defs/Uint64Decimal"
+        },
+        "sasFingerprint": {
+          "maxLength": 12,
+          "minLength": 12,
+          "pattern": "^[0-9a-f]{12}$",
+          "type": "string"
+        },
+        "sasIndices": {
+          "maxItems": 5,
+          "minItems": 5,
+          "prefixItems": [
+            {
+              "maximum": 1023,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "maximum": 1023,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "maximum": 1023,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "maximum": 1023,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "maximum": 1023,
+              "minimum": 0,
+              "type": "integer"
+            }
+          ],
+          "type": "array"
+        },
+        "transcriptHash": {
+          "$ref": "#/$defs/Base64Url32Bytes"
+        },
+        "version": {
+          "const": 1,
+          "type": "number"
+        }
+      },
+      "required": [
+        "version",
+        "receiptId",
+        "issuedAt",
+        "expiresAt",
+        "invitationId",
+        "invitationGeneration",
+        "pendingPairId",
+        "hostIdentityBundleCbor",
+        "hostIdentityBundleHash",
+        "remoteIdentityBundleCbor",
+        "remoteIdentityBundleHash",
+        "noisePattern",
+        "protocol",
+        "transcriptHash",
+        "channelBinding",
+        "sasIndices",
+        "sasFingerprint",
+        "hostTrustEpoch",
+        "remoteTrustEpoch",
+        "hostKeySequence",
+        "remoteKeySequence",
+        "approvingPrincipal",
+        "browserBinding",
+        "confirmationRequestNonce",
+        "confirmationMethod",
+        "confirmationTarget",
+        "nonce",
+        "action"
+      ],
+      "type": "object",
+      "x-waifus-distinct-fields": [
+        [
+          "hostIdentityBundleCbor",
+          "remoteIdentityBundleCbor"
+        ],
+        [
+          "hostIdentityBundleHash",
+          "remoteIdentityBundleHash"
+        ]
+      ],
+      "x-waifus-expiry-window-seconds": 120
+    },
+    "Base64Url16Bytes": {
+      "maxLength": 22,
+      "minLength": 22,
+      "pattern": "^[A-Za-z0-9_-]{21}[AQgw]$",
+      "type": "string"
+    },
+    "Base64Url32Bytes": {
+      "maxLength": 43,
+      "minLength": 43,
+      "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$",
+      "type": "string"
+    },
+    "CanonicalIdentityBundleCbor": {
+      "format": "waifus-canonical-cbor-base64url-v1",
+      "maxLength": 1600,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string",
+      "x-waifus-maximum-decoded-bytes": 1200
+    },
+    "CanonicalTarget": {
+      "format": "waifus-origin-form-target-v1",
+      "maxLength": 2048,
+      "minLength": 1,
+      "type": "string"
+    },
+    "GetResetStatusCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "resetTombstone": {
+          "$ref": "#/$defs/PositiveUint64Decimal"
+        }
+      },
+      "required": [
+        "resetTombstone"
+      ],
+      "type": "object"
+    },
+    "HttpMethod": {
+      "enum": [
+        "GET",
+        "HEAD",
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE"
+      ],
+      "type": "string"
+    },
+    "IdentityResetReceiptV1": {
+      "anyOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "clearedActivationCount": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "clearedHostRoleSecretCount": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "clearedPairCount": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "clearedRemoteRoleSecretCount": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "newFingerprint": {
+              "$ref": "#/$defs/Base64Url16Bytes"
+            },
+            "newInstallationPublicKey": {
+              "$ref": "#/$defs/Base64Url32Bytes"
+            },
+            "oldFingerprint": {
+              "$ref": "#/$defs/Base64Url16Bytes"
+            },
+            "oldInstallationPublicKey": {
+              "$ref": "#/$defs/Base64Url32Bytes"
+            },
+            "resetId": {
+              "$ref": "#/$defs/Base64Url16Bytes"
+            },
+            "resetTombstone": {
+              "$ref": "#/$defs/PositiveUint64Decimal"
+            },
+            "stage": {
+              "enum": [
+                "prepared",
+                "old_state_cleared",
+                "new_identity_committed"
+              ],
+              "type": "string"
+            },
+            "version": {
+              "const": 1,
+              "type": "number"
+            }
+          },
+          "required": [
+            "version",
+            "resetTombstone",
+            "resetId",
+            "oldInstallationPublicKey",
+            "newInstallationPublicKey",
+            "oldFingerprint",
+            "newFingerprint",
+            "clearedActivationCount",
+            "clearedPairCount",
+            "clearedHostRoleSecretCount",
+            "clearedRemoteRoleSecretCount",
+            "stage"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "clearedActivationCount": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "clearedHostRoleSecretCount": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "clearedPairCount": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "clearedRemoteRoleSecretCount": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "completedAt": {
+              "$ref": "#/$defs/Uint64Decimal"
+            },
+            "newFingerprint": {
+              "$ref": "#/$defs/Base64Url16Bytes"
+            },
+            "newInstallationPublicKey": {
+              "$ref": "#/$defs/Base64Url32Bytes"
+            },
+            "oldFingerprint": {
+              "$ref": "#/$defs/Base64Url16Bytes"
+            },
+            "oldInstallationPublicKey": {
+              "$ref": "#/$defs/Base64Url32Bytes"
+            },
+            "resetId": {
+              "$ref": "#/$defs/Base64Url16Bytes"
+            },
+            "resetTombstone": {
+              "$ref": "#/$defs/PositiveUint64Decimal"
+            },
+            "stage": {
+              "const": "complete",
+              "type": "string"
+            },
+            "version": {
+              "const": 1,
+              "type": "number"
+            }
+          },
+          "required": [
+            "version",
+            "resetTombstone",
+            "resetId",
+            "oldInstallationPublicKey",
+            "newInstallationPublicKey",
+            "oldFingerprint",
+            "newFingerprint",
+            "clearedActivationCount",
+            "clearedPairCount",
+            "clearedHostRoleSecretCount",
+            "clearedRemoteRoleSecretCount",
+            "stage",
+            "completedAt"
+          ],
+          "type": "object"
+        }
+      ],
+      "x-waifus-distinct-fields": [
+        [
+          "oldInstallationPublicKey",
+          "newInstallationPublicKey"
+        ],
+        [
+          "oldFingerprint",
+          "newFingerprint"
+        ]
+      ]
+    },
+    "PositiveUint64Decimal": {
+      "$ref": "#/$defs/Uint64Decimal",
+      "not": {
+        "const": "0"
+      }
+    },
+    "PrincipalStableId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[a-z][a-z0-9:._-]*$",
+      "type": "string"
+    },
+    "ProtocolVersion": {
+      "additionalProperties": false,
+      "properties": {
+        "major": {
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "minor": {
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "major",
+        "minor"
+      ],
+      "type": "object"
+    },
+    "ResetIdentityCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "expectedOldFingerprint": {
+          "$ref": "#/$defs/Base64Url16Bytes"
+        },
+        "resetTombstone": {
+          "$ref": "#/$defs/PositiveUint64Decimal"
+        }
+      },
+      "required": [
+        "resetTombstone",
+        "expectedOldFingerprint"
+      ],
+      "type": "object"
+    },
+    "Uint64Decimal": {
+      "maxLength": 20,
+      "pattern": "^(?:0|[1-9][0-9]{0,18}|1[0-7][0-9]{18}|18[0-3][0-9]{17}|184[0-3][0-9]{16}|1844[0-5][0-9]{15}|18446[0-6][0-9]{14}|184467[0-3][0-9]{13}|1844674[0-3][0-9]{12}|184467440[0-6][0-9]{10}|1844674407[0-2][0-9]{9}|18446744073[0-6][0-9]{8}|1844674407370[0-8][0-9]{6}|18446744073709[0-4][0-9]{5}|184467440737095[0-4][0-9]{4}|18446744073709550[0-9]{3}|18446744073709551[0-5][0-9]{2}|1844674407370955160[0-9]{1}|1844674407370955161[0-4]|18446744073709551615)$",
+      "type": "string"
+    }
+  },
+  "$id": "https://waifucave.com/contracts/remote/v1/remote-access.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Attended approval and installation-reset wire records shared by Discord Waifus and ts-connect.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/ApprovalReceiptV1"
+    },
+    {
+      "$ref": "#/$defs/GetResetStatusCommand"
+    },
+    {
+      "$ref": "#/$defs/IdentityResetReceiptV1"
+    },
+    {
+      "$ref": "#/$defs/ResetIdentityCommand"
+    }
+  ],
+  "title": "Waifus Remote Access Wire Contracts V1"
+}
