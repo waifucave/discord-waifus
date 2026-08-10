@@ -62,6 +62,8 @@ import { UpdateAppConfigBodySchema, type AppConfig } from "../shared/schemas/con
 import { createRevisionedBase, nowIso } from "../shared/schemas/common.js";
 import { StorageConflictError } from "../storage/errors.js";
 import { StorageService } from "../storage/storageService.js";
+import { AuditStore } from "../storage/auditStore.js";
+import { OperationStore } from "../storage/operationStore.js";
 import { recentQueries, recentReplies, subscribeQueries, subscribeReplies } from "../shared/queryLog.js";
 import { listDocs, readDoc } from "./docsKb.js";
 import { registerAssistantRoutes } from "./assistant/routes.js";
@@ -80,6 +82,8 @@ import { installRoutePolicy } from "./routePolicy.js";
 import { ROUTE_POLICY_MANIFEST } from "./routePolicyManifest.js";
 import type { RemoteRequestPrincipal, RequestPrincipal } from "./requestPrincipal.js";
 import { ClientContextV1Schema } from "../shared/schemas/remoteLifecycle.js";
+import { registerAdminOperationRoutes } from "./adminOperations.js";
+import { installMutationHandling } from "./mutations.js";
 
 export type ApiServerOptions = {
   dataRoot: string;
@@ -104,6 +108,12 @@ export type ApiServerOptions = {
   browserSecurity?: Partial<BrowserSecurityOptions>;
   remoteTrust?: {
     isAuthorized: (principal: RemoteRequestPrincipal) => boolean | Promise<boolean>;
+  };
+  administration?: {
+    operationStore?: OperationStore;
+    auditStore?: AuditStore;
+    now?: () => bigint;
+    randomBytes?: (size: number) => Uint8Array;
   };
 };
 
@@ -282,6 +292,20 @@ function pruneUndefined<T extends Record<string, unknown>>(value: T): T {
 
 export async function createApiServer(options: ApiServerOptions): Promise<FastifyInstance> {
   const storage = options.storage ?? new StorageService(options.dataRoot);
+  const operationStore = options.administration?.operationStore ?? new OperationStore(
+    options.dataRoot,
+    {
+      storage,
+      ...(options.administration?.now ? { now: options.administration.now } : {}),
+      ...(options.administration?.randomBytes
+        ? { randomBytes: options.administration.randomBytes }
+        : {})
+    }
+  );
+  const auditStore = options.administration?.auditStore ?? new AuditStore(options.dataRoot, {
+    storage,
+    ...(options.administration?.now ? { now: options.administration.now } : {})
+  });
   const logger = options.logger ?? createLogger({ dataRoot: options.dataRoot });
   const app = fastify({ logger: false });
   const runtimeMode = options.runtime.mode === "dev" || options.runtime.mode === "test"
@@ -300,6 +324,14 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     manifest: ROUTE_POLICY_MANIFEST,
     browserSecurity,
     authorizeRemotePrincipal: options.remoteTrust?.isAuthorized
+  });
+  installMutationHandling(app, {
+    operationStore,
+    auditStore,
+    ...(options.administration?.now ? { now: options.administration.now } : {}),
+    ...(options.administration?.randomBytes
+      ? { randomBytes: options.administration.randomBytes }
+      : {})
   });
   app.addHook("preSerialization", async (request, _reply, payload) =>
     redactApiPayload(request.principal, payload, options.dataRoot)
@@ -408,6 +440,8 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
         };
     return runtimeResponse(runtime, request.principal, options.dataRoot);
   });
+
+  registerAdminOperationRoutes(app, operationStore);
 
   app.get("/api/config", async (request) => {
     const config = await loadAppConfig(options.dataRoot);
@@ -825,7 +859,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   app.post("/api/servers/:guildId/members/refresh", async (request, reply) => {
     const { guildId } = parseIdParam(request.params, "guildId");
     const refreshed = await refreshDiscordMembers(storage, guildId);
-    return reply.status(202).send(refreshed);
+    return reply.status(200).send(refreshed);
   });
 
   app.get("/api/servers/:guildId/emojis", async (request) => {
@@ -835,7 +869,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   app.post("/api/servers/:guildId/emojis/refresh", async (request, reply) => {
     const { guildId } = parseIdParam(request.params, "guildId");
     const refreshed = await refreshDiscordEmojis(storage, guildId);
-    return reply.status(202).send(refreshed);
+    return reply.status(200).send(refreshed);
   });
 
   app.get("/api/servers/:guildId/roles", async (request) => {
@@ -845,7 +879,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   app.post("/api/servers/:guildId/roles/refresh", async (request, reply) => {
     const { guildId } = parseIdParam(request.params, "guildId");
     const refreshed = await refreshDiscordRoles(storage, guildId);
-    return reply.status(202).send(refreshed);
+    return reply.status(200).send(refreshed);
   });
 
   app.put("/api/servers/:guildId/channels/:channelId", async (request) => {

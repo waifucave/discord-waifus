@@ -63,6 +63,7 @@ export const ROUTE_POLICY_MANIFEST: readonly RoutePolicyDefinition[] = Object.fr
   safe("/api/health"),
   safe("/api/status"),
   safe("/api/runtime"),
+  safe("/api/admin/operations/:operationId"),
   safe("/api/config", "full_admin", "app_config"),
   mutation("PUT", "/api/config", "reconciled", "config.update", "app_config"),
   mutation("POST", "/api/cache/ocr/clear", "reconciled", "cache.ocr.clear"),

@@ -247,7 +247,8 @@ describe("principal-aware response redaction", () => {
     });
     const remotePause = await dispatchInternal(app, actor, undefined, {
       method: "POST",
-      url: "/api/runtime/pause"
+      url: "/api/runtime/pause",
+      headers: { "idempotency-key": Buffer.alloc(32, 0x61).toString("base64url") }
     });
     const remoteDiagnostics = await dispatchInternal(app, actor, undefined, {
       method: "GET",

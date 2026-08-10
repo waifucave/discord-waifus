@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import type { ModelPipeline } from "../../providers/types.js";
 import { createGatewayModelPipeline } from "../../orchestration/pipeline/gatewayPipeline.js";
@@ -163,16 +164,30 @@ export async function runAssistantTurn(deps: AssistantServiceDeps, conversationI
   store.appendStored(conversationId, { role: "user", content: userContent, at: new Date().toISOString() });
   store.emit(conversationId, { type: "turn_started" });
   try {
+    let toolCallSequence = 0;
     const result = await pipeline.generateAssistantTurn({
       modelId: target.modelId,
       messages: transcript,
       tools: toolDefs(),
       params: target.params,
-      executeTool: (name, argsJson) => executeAssistantTool(
-        { app, principal, delegation },
-        name,
-        argsJson
-      ),
+      executeTool: (name, argsJson) => {
+        toolCallSequence += 1;
+        return executeAssistantTool(
+          {
+            app,
+            principal,
+            delegation: {
+              conversationId,
+              toolCallId: `tool-${toolCallSequence}-${randomUUID()}`,
+              ...(delegation?.pendingActionId
+                ? { pendingActionId: delegation.pendingActionId }
+                : {})
+            }
+          },
+          name,
+          argsJson
+        );
+      },
       onEvent: (event) => store.emit(conversationId, scrubSecretsFromEvent(event as AssistantEvent))
     });
     store.appendChat(conversationId, result.messages);

@@ -136,6 +136,7 @@ describe("assistant chat API", () => {
       const response = await dispatchInternal(app, actor, undefined, {
         method: "POST",
         url: `/api/assistant/conversations/${created.json().conversationId}/messages`,
+        headers: { "idempotency-key": Buffer.alloc(32, 0x71).toString("base64url") },
         payload: { content: "how many?" }
       });
       expect(response.statusCode).toBe(200);

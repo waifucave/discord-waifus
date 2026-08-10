@@ -15,6 +15,13 @@ does goes through these endpoints, so any agent can drive the app with plain HTT
   (e.g. `{"temperature": 0.9, "reasoning.enabled": false}`).
 - Assistant tool calls inherit the person or paired device that initiated the conversation. Never
   manufacture principal, device, internal-dispatch, browser-session, or CSRF headers.
+- Remote unsafe requests require an `Idempotency-Key`: canonical unpadded base64url for exactly 32
+  random bytes. Keep the same key for a logical retry. The built-in assistant tool dispatcher does
+  this automatically and adds conversation/tool-call provenance to the administrative audit.
+- `X-Waifus-Request-ID` identifies a mutation attempt. A `202` response contains only
+  `{operationId,status,statusUrl}`; recover through the returned
+  `GET /api/admin/operations/:operationId` URL. Never repeat an uncertain non-replayable effect with
+  a new key.
 - `PUT /api/config` is a partial merge. Omitted fields are preserved; use
   `{"frontend":{"staticDir":null}}` to clear that optional path. Remote callers cannot read or
   write the host bind address or frontend filesystem path.
@@ -26,6 +33,7 @@ does goes through these endpoints, so any agent can drive the app with plain HTT
 | GET | /api/health | Liveness. |
 | GET | /api/status | Runtime + Discord connection state. |
 | GET | /api/runtime | Runtime state incl. pause state and queues; host paths/process fields are local-only. |
+| GET | /api/admin/operations/:operationId | Principal-scoped mutation recovery status; no response body/result. |
 | POST | /api/runtime/pause · /resume | Pause/resume all orchestration. |
 | POST | /api/runtime/reload | Reload configs into the running orchestrator. |
 | POST | /api/runtime/trigger/orchestrator | Body `{guildId, channelId}` — run a decision pass now. |

@@ -16,6 +16,7 @@ import { makeTempRoot, removeTempRoot } from "./testUtils.js";
 const roots: string[] = [];
 const apps: Array<{ close: () => Promise<unknown> }> = [];
 const bytes16 = (value: number) => Buffer.alloc(16, value).toString("base64url");
+const bytes32 = (value: number) => Buffer.alloc(32, value).toString("base64url");
 
 afterEach(async () => {
   await Promise.all(apps.map((app) => app.close()));
@@ -296,6 +297,7 @@ describe("app config field policy", () => {
     const response = await dispatchInternal(app, remote(), undefined, {
       method: "PUT",
       url: "/api/config",
+      headers: { "idempotency-key": bytes32(0x51) },
       payload: { runtime: { paused: true } }
     });
     expect(response.statusCode).toBe(200);
@@ -320,13 +322,14 @@ describe("app config field policy", () => {
 
   it("rejects remote attempts to supply host bind or filesystem-serving fields", async () => {
     const { app } = await makeApp();
-    for (const payload of [
+    for (const [index, payload] of [
       { http: { host: "127.0.0.1" } },
       { frontend: { staticDir: "/tmp/remote-controlled" } }
-    ]) {
+    ].entries()) {
       const response = await dispatchInternal(app, remote(), undefined, {
         method: "PUT",
         url: "/api/config",
+        headers: { "idempotency-key": bytes32(0x52 + index) },
         payload
       });
       expect(response.statusCode).toBe(403);

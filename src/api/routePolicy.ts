@@ -133,6 +133,33 @@ function gatewaySemanticPolicy(
   });
 }
 
+export type EffectiveRequestPolicy = {
+  readonly retryClass: RetryClass;
+  readonly auditAction?: string;
+};
+
+export function effectiveRequestPolicy(
+  request: FastifyRequest
+): EffectiveRequestPolicy | undefined {
+  const definition = routePolicyForRequest(request);
+  if (!definition) return undefined;
+  if (definition.method === "*") {
+    const semantic = gatewaySemanticPolicy(definition, request.method, request.url);
+    return semantic
+      ? {
+          retryClass: semantic.retryClass,
+          ...(semantic.auditAction ? { auditAction: semantic.auditAction } : {})
+        }
+      : undefined;
+  }
+  if (definition.method === "GET") return { retryClass: "safe" };
+  if (!definition.retryClass) return undefined;
+  return {
+    retryClass: definition.retryClass,
+    ...(definition.auditAction ? { auditAction: definition.auditAction } : {})
+  };
+}
+
 async function authorize(
   request: FastifyRequest,
   principal: RequestPrincipal,

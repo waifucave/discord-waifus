@@ -17,11 +17,42 @@ browser session. Scripts must not send browser-only `Origin`, `Sec-Fetch-*`, pri
 internal-dispatch headers. The server rejects forged identity headers and browser requests from an
 unexpected Host, Origin, or cross-site fetch context.
 
+## Mutation recovery and idempotency
+
+Every unsafe request is recorded before its handler runs. Local callers may omit an idempotency
+key; the server generates one internally and returns a 16-byte base64url request identifier in
+`X-Waifus-Request-ID`. A remotely authenticated device must send `Idempotency-Key` as canonical,
+unpadded base64url encoding of exactly 32 random bytes. Missing remote keys return `428`; malformed
+keys return `400`, and neither request starts the effect.
+
+Reusing a key for the same actor, method, concrete target, and canonical body replays the stored,
+redacted response without running the effect again. Reusing it for that same target with a changed
+body returns `409 IdempotencyConflict`. A different path parameter or mutation-semantic query is a
+different operation. Callers must retain the key until the outcome is definitive; they must never
+automatically retry a non-replayable operation with a new key after a disconnect.
+
+An in-progress or uncertain retry returns only this `202` response:
+
+```json
+{
+  "operationId": "<32-byte base64url id>",
+  "status": "accepted",
+  "statusUrl": "/api/admin/operations/<operationId>"
+}
+```
+
+`GET /api/admin/operations/:operationId` is the authoritative, `no-store` recovery read. A remote
+device can read only operations created by that same device at the same trust epoch; local callers
+can read every operation in their data root. Missing, expired, malformed, and unauthorized IDs all
+return the same `404`. The status resource reports prepared, completed, reconciled, or
+`outcome_unknown` state but never includes a stored response body or secret material.
+
 ## Runtime
 
 - `GET /api/health`
 - `GET /api/status`
 - `GET /api/runtime`
+- `GET /api/admin/operations/:operationId`
 - `POST /api/runtime/pause`
 - `POST /api/runtime/resume`
 - `POST /api/runtime/reload`

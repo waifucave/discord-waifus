@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import type { ToolDef } from "@waifucave/gateway";
 import { listDocs, readDoc, searchDocs } from "../docsKb.js";
@@ -27,6 +28,9 @@ async function inject(
   const response = await dispatchInternal(ctx.app, ctx.principal, ctx.delegation, {
     method: options.method,
     url: options.url,
+    ...(options.method === "GET"
+      ? {}
+      : { headers: { "idempotency-key": randomBytes(32).toString("base64url") } }),
     ...(options.payload === undefined ? {} : { payload: options.payload as Record<string, unknown> })
   });
   return { status: response.statusCode, body: response.body };
