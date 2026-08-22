@@ -90,10 +90,15 @@ describe("assistant chat API", () => {
 
       const transcript = await app.inject({ method: "GET", url: `/api/assistant/conversations/${conversationId}` });
       expect(transcript.statusCode).toBe(200);
-      const roles = (transcript.json().messages as Array<{ role: string }>).map((m) => m.role);
+      const messages = transcript.json().messages as Array<{ role: string; cursor?: string }>;
+      const roles = messages.map((m) => m.role);
       expect(roles).toContain("user");
       expect(roles).toContain("assistant");
       expect(roles).toContain("event");
+      const eventCursors = messages.flatMap((message) => message.role === "event" ? [message.cursor] : []);
+      expect(eventCursors.length).toBeGreaterThan(0);
+      expect(eventCursors.every((cursor) => /^v1:[A-Za-z0-9_-]{21}[AQgw]:(?:0|[1-9][0-9]*)$/u.test(cursor ?? "")))
+        .toBe(true);
     } finally {
       await app.close();
     }

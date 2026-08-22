@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api } from "../api/client";
+import { api, openAssistantEventStream } from "../api/client";
+import { latestEventCursor } from "../api/eventCursor";
+import type { ResumableEventFeed } from "../api/resumableEventFeed";
 import type { AssistantEvent, AssistantStoredMessage } from "../api/types";
 
 const STORAGE_KEY = "assistant-conversation";
@@ -20,7 +22,7 @@ export function useAssistantChat(open: boolean) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>(undefined);
   const conversationRef = useRef<string | undefined>(sessionStorage.getItem(STORAGE_KEY) ?? undefined);
-  const sourceRef = useRef<EventSource | undefined>(undefined);
+  const sourceRef = useRef<ResumableEventFeed | undefined>(undefined);
 
   const foldEvent = useCallback((event: AssistantEvent) => {
     if (event.type === "tool_call") {
@@ -42,23 +44,38 @@ export function useAssistantChat(open: boolean) {
     }
   }, []);
 
-  const lastSeqRef = useRef(0);
   const attachStream = useCallback(
-    (conversationId: string, options?: { skipReplay?: boolean }) => {
+    (
+      conversationId: string,
+      options?: { initialCursor?: string; preserveItemsOnEmptySnapshot?: boolean }
+    ) => {
       sourceRef.current?.close();
-      const source = new EventSource(`/api/assistant/conversations/${encodeURIComponent(conversationId)}/stream`);
-      source.addEventListener("assistant", (raw) => {
-        const message = raw as MessageEvent;
-        // seq-guarded: replayed history after a reconnect (or an initial replay we already
-        // rendered from the stored transcript) must not fold twice
-        const seq = Number(message.lastEventId || 0);
-        if (seq > 0 && seq <= lastSeqRef.current) return;
-        if (seq > 0) lastSeqRef.current = seq;
-        if (options?.skipReplay && seq === 0) return;
-        try {
-          foldEvent(JSON.parse(message.data) as AssistantEvent);
-        } catch {
-          // Malformed frame — ignore; the POST response still carries the final reply.
+      const source = openAssistantEventStream(conversationId, {
+        ...(options?.initialCursor ? { initialCursor: options.initialCursor } : {}),
+        onReset: () => {
+          if (!options?.preserveItemsOnEmptySnapshot) setItems([]);
+        },
+        onEvent: (message) => {
+          try {
+            if (message.event === "snapshot") {
+              const snapshot = JSON.parse(message.data) as {
+                busy?: unknown;
+                messages?: AssistantStoredMessage[];
+              };
+              const messages = Array.isArray(snapshot.messages) ? snapshot.messages : [];
+              if (!(options?.preserveItemsOnEmptySnapshot && messages.length === 0)) {
+                setItems(restoreItems(messages));
+              }
+              setBusy(Boolean(snapshot.busy));
+            } else if (message.event === "assistant") {
+              const event = JSON.parse(message.data) as AssistantEvent;
+              foldEvent(event);
+              if (event.type === "turn_started") setBusy(true);
+              else if (event.type === "turn_completed" || event.type === "error") setBusy(false);
+            }
+          } catch {
+            // Malformed frames never replace the canonical transcript or POST result.
+          }
         }
       });
       sourceRef.current = source;
@@ -79,7 +96,7 @@ export function useAssistantChat(open: boolean) {
     const created = await api.createAssistantConversation();
     conversationRef.current = created.conversationId;
     sessionStorage.setItem(STORAGE_KEY, created.conversationId);
-    attachStream(created.conversationId);
+    attachStream(created.conversationId, { preserveItemsOnEmptySnapshot: true });
     return created.conversationId;
   }, [attachStream]);
 
@@ -93,21 +110,10 @@ export function useAssistantChat(open: boolean) {
       .assistantConversation(existing)
       .then((conversation) => {
         if (cancelled) return;
-        const restored: ChatItem[] = [];
-        for (const message of conversation.messages as AssistantStoredMessage[]) {
-          if (message.role === "user") restored.push({ kind: "user", content: message.content });
-          else if (message.role === "assistant") restored.push({ kind: "assistant", content: message.content });
-        }
-        setItems(restored);
-        // the restored transcript already covers history: start the seq guard at the highest
-        // stored event seq so the stream's replay is swallowed but live events still fold
-        lastSeqRef.current = Math.max(
-          0,
-          ...(conversation.messages as AssistantStoredMessage[]).map((message) =>
-            message.role === "event" ? ((message as { seq?: number }).seq ?? 0) : 0
-          )
-        );
-        attachStream(existing);
+        const messages = conversation.messages as AssistantStoredMessage[];
+        setItems(restoreItems(messages));
+        const initialCursor = storedLatestCursor(messages);
+        attachStream(existing, initialCursor ? { initialCursor } : undefined);
       })
       .catch(() => {
         conversationRef.current = undefined;
@@ -140,14 +146,54 @@ export function useAssistantChat(open: boolean) {
   );
 
   const reset = useCallback(() => {
-    lastSeqRef.current = 0;
     sourceRef.current?.close();
     sourceRef.current = undefined;
     conversationRef.current = undefined;
     sessionStorage.removeItem(STORAGE_KEY);
     setItems([]);
+    setBusy(false);
     setError(undefined);
   }, []);
 
   return { items, busy, error, send, reset };
+}
+
+function restoreItems(messages: readonly AssistantStoredMessage[]): ChatItem[] {
+  const restored: ChatItem[] = [];
+  for (const message of messages) {
+    if (message.role === "user") {
+      restored.push({ kind: "user", content: message.content });
+    } else if (message.role === "assistant") {
+      restored.push({ kind: "assistant", content: message.content });
+    } else if (message.role === "event") {
+      if (message.event.type === "tool_call") {
+        restored.push({
+          kind: "tool",
+          name: message.event.name,
+          args: message.event.arguments
+        });
+      } else if (message.event.type === "tool_result") {
+        for (let index = restored.length - 1; index >= 0; index -= 1) {
+          const item = restored[index];
+          if (item.kind === "tool" && item.name === message.event.name && item.result === undefined) {
+            restored[index] = { ...item, result: message.event.result };
+            break;
+          }
+        }
+      } else if (message.event.type === "error") {
+        restored.push({ kind: "error", message: message.event.message });
+      }
+    }
+  }
+  return restored;
+}
+
+function storedLatestCursor(messages: readonly AssistantStoredMessage[]): string | undefined {
+  try {
+    return latestEventCursor(
+      messages.flatMap((message) => message.role === "event" ? [message.cursor] : [])
+    );
+  } catch {
+    return undefined;
+  }
 }

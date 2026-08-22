@@ -326,16 +326,17 @@ describe("final serialization and error-log redaction", () => {
     const reader = response.body!.getReader();
     const decoder = new TextDecoder();
     let stream = "";
-    for (let index = 0; index < 20 && !stream.includes("event: reply"); index += 1) {
+    for (let index = 0; index < 20 && !stream.includes("event: snapshot"); index += 1) {
       const chunk = await reader.read();
       if (chunk.done) break;
       stream += decoder.decode(chunk.value, { stream: true });
     }
     controller.abort();
     await reader.cancel().catch(() => undefined);
-    expect(stream).toContain("event: runtime");
-    expect(stream).toContain("event: query");
-    expect(stream).toContain("event: reply");
+    expect(stream).toContain("event: snapshot");
+    expect(stream).toContain("\"runtime\"");
+    expect(stream).toContain("\"queries\"");
+    expect(stream).toContain("\"replies\"");
     expectNoSentinels(stream);
   });
 

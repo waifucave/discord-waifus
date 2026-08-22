@@ -1,17 +1,20 @@
 import { randomUUID } from "node:crypto";
 import type { ChatMessage } from "@waifucave/gateway";
+import type { EventCursor } from "../../shared/schemas/adminOperations.js";
+import { EventStream } from "../eventStream.js";
 
 export type AssistantEvent =
   | { type: "turn_started" }
   | { type: "text"; content: string }
   | { type: "tool_call"; name: string; arguments: string }
   | { type: "tool_result"; name: string; result: string }
+  | { type: "confirmation_required"; actionId: string; category: string; summary: string }
   | { type: "turn_completed" }
   | { type: "error"; message: string };
 
 export type StoredMessage =
   | { role: "user" | "assistant"; content: string; at: string }
-  | { role: "event"; event: AssistantEvent; seq?: number; at: string };
+  | { role: "event"; event: AssistantEvent; cursor: EventCursor; at: string };
 
 type Conversation = {
   id: string;
@@ -19,8 +22,7 @@ type Conversation = {
   messages: StoredMessage[];
   chat: ChatMessage[];
   busy: boolean;
-  eventSeq: number;
-  listeners: Set<(event: AssistantEvent, seq: number) => void>;
+  eventStream: EventStream<AssistantEvent>;
 };
 
 const MAX_CONVERSATIONS = 20;
@@ -34,6 +36,10 @@ const MAX_STORED_MESSAGES = 200;
 export class ConversationStore {
   private readonly conversations = new Map<string, Conversation>();
 
+  constructor(
+    private readonly createEventStream: () => EventStream<AssistantEvent> = () => new EventStream()
+  ) {}
+
   create(): { id: string } {
     const id = randomUUID();
     this.conversations.set(id, {
@@ -42,14 +48,14 @@ export class ConversationStore {
       messages: [],
       chat: [],
       busy: false,
-      eventSeq: 0,
-      listeners: new Set()
+      eventStream: this.createEventStream()
     });
     // Map preserves insertion order; get() re-inserts, so iteration order is true LRU.
     // Never evict a conversation mid-turn (its output would silently vanish).
     while (this.conversations.size > MAX_CONVERSATIONS) {
       const victim = [...this.conversations.values()].find((candidate) => !candidate.busy && candidate.id !== id);
       if (!victim) break;
+      victim.eventStream.close();
       this.conversations.delete(victim.id);
     }
     return { id };
@@ -61,7 +67,7 @@ export class ConversationStore {
     // LRU touch: re-insert so create() evicts genuinely idle conversations first
     this.conversations.delete(id);
     this.conversations.set(id, conversation);
-    const { listeners: _listeners, ...visible } = conversation;
+    const { eventStream: _eventStream, ...visible } = conversation;
     return visible;
   }
 
@@ -96,11 +102,26 @@ export class ConversationStore {
     if (conversation) conversation.busy = busy;
   }
 
-  subscribe(id: string, listener: (event: AssistantEvent, seq: number) => void): () => void {
+  subscribe(id: string, listener: (event: AssistantEvent, cursor: EventCursor) => void): () => void {
     const conversation = this.conversations.get(id);
     if (!conversation) return () => undefined;
-    conversation.listeners.add(listener);
-    return () => conversation.listeners.delete(listener);
+    const subscription = conversation.eventStream.subscribeAuthorized({
+      principal: "internal",
+      lastEventId: conversation.eventStream.latestCursor(),
+      authorize: () => true,
+      project: (_principal, _event, data) => data,
+      snapshot: () => null,
+      projectSnapshot: () => null,
+      onReset: () => undefined,
+      onSnapshot: () => undefined,
+      onEvent: (_event, data, cursor) => listener(data, cursor),
+      onUnauthorized: () => undefined
+    });
+    return subscription.close;
+  }
+
+  eventStream(id: string): EventStream<AssistantEvent> | undefined {
+    return this.conversations.get(id)?.eventStream;
   }
 
   list(): Array<{ id: string; createdAt: string; messageCount: number; preview?: string }> {
@@ -119,16 +140,16 @@ export class ConversationStore {
   }
 
   delete(id: string): boolean {
+    const conversation = this.conversations.get(id);
+    if (!conversation) return false;
+    conversation.eventStream.close();
     return this.conversations.delete(id);
   }
 
   emit(id: string, event: AssistantEvent): void {
     const conversation = this.conversations.get(id);
     if (!conversation) return;
-    // monotone sequence: the SSE layer sends it as the event id so clients can drop
-    // duplicates when the browser reconnects and history is replayed (audit finding 10)
-    const seq = ++conversation.eventSeq;
-    this.appendStored(id, { role: "event", event, seq, at: new Date().toISOString() });
-    for (const listener of conversation.listeners) listener(event, seq);
+    const cursor = conversation.eventStream.publish("assistant", event);
+    this.appendStored(id, { role: "event", event, cursor, at: new Date().toISOString() });
   }
 }

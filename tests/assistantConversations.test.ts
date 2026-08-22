@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { ConversationStore } from "../src/api/assistant/conversations.js";
 
 describe("ConversationStore", () => {
-  it("creates, records messages, and fans out events to subscribers", () => {
+  it("creates, records messages, and fans out events to subscribers", async () => {
     const store = new ConversationStore();
     const { id } = store.create();
     const seen: string[] = [];
@@ -10,12 +10,24 @@ describe("ConversationStore", () => {
 
     store.emit(id, { type: "turn_started" });
     store.emit(id, { type: "tool_call", name: "list_waifus", arguments: "{}" });
+    await new Promise<void>((resolve) => setImmediate(resolve));
     unsubscribe();
     store.emit(id, { type: "turn_completed" });
+    store.emit(id, {
+      type: "confirmation_required",
+      actionId: "action-1",
+      category: "external_side_effect",
+      summary: "Send a message"
+    });
 
     expect(seen).toEqual(["turn_started", "tool_call"]);
     const convo = store.get(id)!;
-    expect(convo.messages.filter((m) => m.role === "event")).toHaveLength(3);
+    const events = convo.messages.filter((message) => message.role === "event");
+    expect(events).toHaveLength(4);
+    expect(events.at(-1)).toMatchObject({
+      event: { type: "confirmation_required", actionId: "action-1" },
+      cursor: expect.stringMatching(/^v1:[A-Za-z0-9_-]{21}[AQgw]:4$/u)
+    });
   });
 
   it("stores user/assistant display messages and the model transcript separately", () => {

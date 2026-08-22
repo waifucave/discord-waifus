@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, openEventStream } from "../api/client";
+import type { ResumableEventFeed } from "../api/resumableEventFeed";
 import type { StatusResponse } from "../api/types";
 
 type Listener = (status: StatusResponse | undefined) => void;
@@ -7,7 +8,7 @@ type Listener = (status: StatusResponse | undefined) => void;
 class RuntimeStore {
   private current: StatusResponse | undefined;
   private listeners = new Set<Listener>();
-  private es: EventSource | undefined;
+  private feed: ResumableEventFeed | undefined;
   private pollTimer: number | undefined;
   private started = false;
 
@@ -16,44 +17,58 @@ class RuntimeStore {
     this.started = true;
     void this.refresh();
     try {
-      this.es = openEventStream();
-      this.es.addEventListener("runtime", (ev) => {
-        try {
-          const parsed = JSON.parse((ev as MessageEvent).data);
-          // backend sends RuntimeState shape; merge what we need into status
-          if (parsed && typeof parsed === "object") {
-            this.current = {
-              running: true,
-              paused: Boolean(parsed.paused),
-              httpUrl: `http://127.0.0.1:${parsed.port ?? 3888}`,
-              dataRoot: parsed.dataRoot ?? "",
-              discord: parsed.discord ?? {
-                connected: false,
-                orchestratorConnected: false,
-                waifuBotCount: 0,
-                warnings: []
-              },
-              queues: parsed.queues ?? { active: 0, configuredGuilds: 0 }
-            };
-            this.emit();
+      this.feed = openEventStream({
+        onEvent: (event) => {
+          if (event.event !== "runtime" && event.event !== "snapshot") return;
+          let parsed: unknown;
+          try {
+            parsed = JSON.parse(event.data);
+          } catch {
+            return;
           }
-        } catch {
-          // ignore parse errors
+          const runtime = event.event === "snapshot"
+            ? (parsed as { runtime?: unknown } | undefined)?.runtime
+            : parsed;
+          this.applyRuntime(runtime);
+        },
+        onError: () => {
+          // Polling below remains the quiet fallback while the feed reconnects.
         }
       });
-      this.es.onerror = () => {
-        // fall back to polling silently; SSE errors are noisy in dev
-      };
     } catch {
-      // ignore EventSource availability errors
+      // Polling below remains available when streaming cannot be constructed.
     }
     this.pollTimer = window.setInterval(() => void this.refresh(), 5_000);
   }
 
+  private applyRuntime(value: unknown): void {
+    try {
+      const parsed = value as Record<string, any> | undefined;
+      if (parsed && typeof parsed === "object") {
+        this.current = {
+          running: true,
+          paused: Boolean(parsed.paused),
+          httpUrl: `http://127.0.0.1:${parsed.port ?? 3888}`,
+          dataRoot: parsed.dataRoot ?? "",
+          discord: parsed.discord ?? {
+            connected: false,
+            orchestratorConnected: false,
+            waifuBotCount: 0,
+            warnings: []
+          },
+          queues: parsed.queues ?? { active: 0, configuredGuilds: 0 }
+        };
+        this.emit();
+      }
+    } catch {
+      // Ignore malformed stream payloads; polling remains authoritative.
+    }
+  }
+
   stop(): void {
     this.started = false;
-    this.es?.close();
-    this.es = undefined;
+    this.feed?.close();
+    this.feed = undefined;
     if (this.pollTimer !== undefined) {
       window.clearInterval(this.pollTimer);
       this.pollTimer = undefined;

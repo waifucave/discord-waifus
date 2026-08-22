@@ -493,9 +493,10 @@ export type AssistantEvent =
   | { type: "text"; content: string }
   | { type: "tool_call"; name: string; arguments: string }
   | { type: "tool_result"; name: string; result: string }
+  | { type: "confirmation_required"; actionId: string; category: string; summary: string }
   | { type: "turn_completed" }
   | { type: "error"; message: string };
 
 export type AssistantStoredMessage =
   | { role: "user" | "assistant"; content: string; at: string }
-  | { role: "event"; event: AssistantEvent; seq?: number; at: string };
+  | { role: "event"; event: AssistantEvent; cursor: string; at: string };

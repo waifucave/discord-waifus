@@ -9,7 +9,7 @@ import gatewayPlugin from "@waifucave/gateway/fastify";
 import { createProviderCredentialsLookup } from "./llmGatewayCredentials.js";
 import { loadAppConfig, updateAppConfig } from "../config/appConfig.js";
 import { resolveDataPath, userDataPath } from "../config/paths.js";
-import { Logger, createLogger } from "../backend/logger.js";
+import { Logger, createLogger, type LogEntry } from "../backend/logger.js";
 import { RuntimeState } from "../backend/runtime.js";
 import { redactRemoteHostDetails, redactSecrets } from "../backend/redaction.js";
 import { RuntimeOrchestrator } from "../orchestration/runtime.js";
@@ -84,6 +84,12 @@ import type { RemoteRequestPrincipal, RequestPrincipal } from "./requestPrincipa
 import { ClientContextV1Schema } from "../shared/schemas/remoteLifecycle.js";
 import { registerAdminOperationRoutes } from "./adminOperations.js";
 import { installMutationHandling } from "./mutations.js";
+import {
+  EVENT_AUTHORIZATION_HEARTBEAT_MS,
+  MAX_EVENT_BYTES
+} from "../shared/schemas/adminOperations.js";
+import { EventStream, serializeSseEvent } from "./eventStream.js";
+import type { CapturedQuery, CapturedReply } from "../shared/queryLog.js";
 
 export type ApiServerOptions = {
   dataRoot: string;
@@ -308,6 +314,24 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   });
   const logger = options.logger ?? createLogger({ dataRoot: options.dataRoot });
   const app = fastify({ logger: false });
+  const globalEvents = new EventStream<unknown>();
+  const publishGlobalEvent = (event: string, data: unknown): void => {
+    try {
+      globalEvents.publish(event, data);
+    } catch {
+      // Telemetry must never break the application path that produced it. Oversized events are
+      // omitted from replay; the next canonical snapshot still carries the bounded current state.
+    }
+  };
+  const sourceUnsubscribers = [
+    logger.subscribe?.((entry) => publishGlobalEvent("log", entry)),
+    subscribeQueries((entry) => publishGlobalEvent("query", entry)),
+    subscribeReplies((entry) => publishGlobalEvent("reply", entry))
+  ].filter((unsubscribe): unsubscribe is () => void => unsubscribe !== undefined);
+  app.addHook("onClose", async () => {
+    for (const unsubscribe of sourceUnsubscribers) unsubscribe();
+    globalEvents.close();
+  });
   const runtimeMode = options.runtime.mode === "dev" || options.runtime.mode === "test"
     ? options.runtime.mode
     : "start";
@@ -466,6 +490,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     const saved = await updateAppConfig(options.dataRoot, patch);
     options.runtime.paused = saved.runtime.paused;
     await options.runtimeControl?.reload("config-updated");
+    publishGlobalEvent("runtime", structuredClone(options.runtime));
     return request.principal.kind === "remote_device" ? remoteAppConfig(saved) : saved;
   });
 
@@ -553,7 +578,11 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     return updateAgentConfig(storage, request, "assistant", body, 20);
   });
 
-  registerAssistantRoutes(app, { dataRoot: options.dataRoot, createPipeline: options.assistant?.createPipeline });
+  registerAssistantRoutes(app, {
+    dataRoot: options.dataRoot,
+    createPipeline: options.assistant?.createPipeline,
+    authorizePrincipal: (principal) => requestPrincipalStillAuthorized(options, principal)
+  });
   app.get("/api/reviewer/history", async (request) => {
     const query = HistoryQuerySchema.parse(request.query);
     const history = await readReviewerHistory(storage);
@@ -1006,16 +1035,19 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     options.runtime.paused = true;
     await (options.runtimeControl?.pause() ?? options.runtimeOrchestrator?.pause());
     options.runtime.updatedAt = nowIso();
+    publishGlobalEvent("runtime", structuredClone(options.runtime));
     return runtimeResponse(options.runtime, request.principal, options.dataRoot);
   });
   app.post("/api/runtime/resume", async (request) => {
     options.runtime.paused = false;
     await options.runtimeControl?.resume();
     options.runtime.updatedAt = nowIso();
+    publishGlobalEvent("runtime", structuredClone(options.runtime));
     return runtimeResponse(options.runtime, request.principal, options.dataRoot);
   });
   app.post("/api/runtime/reload", async () => {
     await options.runtimeControl?.reload("manual-api");
+    publishGlobalEvent("runtime", structuredClone(options.runtime));
     return {
       accepted: true,
       message: "Runtime reload applied. Discord clients and runtime orchestration were rebuilt without restarting HTTP."
@@ -1104,7 +1136,15 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     runtimeResponse(options.runtime, request.principal, options.dataRoot)
   ));
   app.get("/api/events", async (request, reply) =>
-    sendSseSnapshot(request, reply, options.runtime, logger, options.dataRoot)
+    sendGlobalEventStream({
+      request,
+      reply,
+      stream: globalEvents,
+      runtime: options.runtime,
+      logger,
+      dataRoot: options.dataRoot,
+      authorize: (principal) => requestPrincipalStillAuthorized(options, principal)
+    })
   );
 
   app.setNotFoundHandler(async (request, reply) => {
@@ -1131,6 +1171,14 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
 
 function hasOwn(value: object | undefined, key: string): boolean {
   return value !== undefined && Object.prototype.hasOwnProperty.call(value, key);
+}
+
+async function requestPrincipalStillAuthorized(
+  options: ApiServerOptions,
+  principal: RequestPrincipal
+): Promise<boolean> {
+  if (principal.kind === "local") return true;
+  return options.remoteTrust !== undefined && await options.remoteTrust.isAuthorized(principal);
 }
 
 function redactApiPayload<T>(
@@ -1975,16 +2023,27 @@ function requireRevision(request: FastifyRequest, body: { revision?: number } | 
   }
 }
 
-function sendSseSnapshot(
-  request: FastifyRequest,
-  reply: FastifyReply,
-  runtime: RuntimeState,
-  logger: Logger,
-  dataRoot: string
-): void {
-  const writeEvent = (event: string, value: unknown): void => {
-    const redacted = redactApiPayload(request.principal, value, dataRoot);
-    reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(redacted)}\n\n`);
+type GlobalStreamSnapshot = {
+  version: 1;
+  runtime: RuntimeState;
+  logs: LogEntry[];
+  queries: CapturedQuery[];
+  replies: CapturedReply[];
+};
+
+function sendGlobalEventStream(input: {
+  request: FastifyRequest;
+  reply: FastifyReply;
+  stream: EventStream<unknown>;
+  runtime: RuntimeState;
+  logger: Logger;
+  dataRoot: string;
+  authorize: (principal: RequestPrincipal) => boolean | Promise<boolean>;
+}): void {
+  const { request, reply } = input;
+  const writeEvent = (event: string, value: unknown, cursor?: string): void => {
+    if (reply.raw.destroyed || reply.raw.writableEnded) throw new Error("SSE connection is closed.");
+    reply.raw.write(serializeSseEvent({ event, data: value, ...(cursor ? { cursor } : {}) }));
   };
   reply.hijack();
   reply.raw.writeHead(200, {
@@ -1992,35 +2051,80 @@ function sendSseSnapshot(
     "cache-control": "no-store",
     connection: "keep-alive"
   });
-  writeEvent("runtime", runtimeResponse(runtime, request.principal, dataRoot));
-  for (const entry of logger.recent?.().slice().reverse() ?? []) {
-    writeEvent("log", entry);
-  }
-  for (const entry of recentQueries()) {
-    writeEvent("query", entry);
-  }
-  for (const entry of recentReplies()) {
-    writeEvent("reply", entry);
-  }
-  const unsubscribeLogs = logger.subscribe?.((entry) => {
-    writeEvent("log", entry);
-  });
-  const unsubscribeQueries = subscribeQueries((entry) => {
-    writeEvent("query", entry);
-  });
-  const unsubscribeReplies = subscribeReplies((entry) => {
-    writeEvent("reply", entry);
+  const suppliedCursor = request.headers["last-event-id"];
+  const subscription = input.stream.subscribeAuthorized({
+    principal: request.principal,
+    ...(typeof suppliedCursor === "string" && suppliedCursor
+      ? { lastEventId: suppliedCursor }
+      : {}),
+    authorize: input.authorize,
+    project: (principal, event, data) => event === "runtime"
+      ? runtimeResponse(data as RuntimeState, principal, input.dataRoot)
+      : redactApiPayload(principal, data, input.dataRoot),
+    snapshot: (): GlobalStreamSnapshot => ({
+      version: 1,
+      runtime: structuredClone(input.runtime),
+      logs: input.logger.recent?.().slice().reverse() ?? [],
+      queries: recentQueries(),
+      replies: recentReplies()
+    }),
+    projectSnapshot: (principal, snapshot) => boundGlobalSnapshot({
+      version: 1,
+      runtime: runtimeResponse(snapshot.runtime, principal, input.dataRoot),
+      logs: redactApiPayload(principal, snapshot.logs, input.dataRoot),
+      queries: redactApiPayload(principal, snapshot.queries, input.dataRoot),
+      replies: redactApiPayload(principal, snapshot.replies, input.dataRoot)
+    }),
+    onReset: (reset) => writeEvent("snapshot_required", reset),
+    onSnapshot: (snapshot, cursor) => writeEvent("snapshot", snapshot, cursor),
+    onEvent: (event, data, cursor) => writeEvent(event, data, cursor),
+    onUnauthorized: () => endSseReply(reply),
+    onClose: () => endSseReply(reply),
+    onError: () => endSseReply(reply)
   });
   const heartbeat = setInterval(() => {
-    writeEvent("heartbeat", { time: new Date().toISOString() });
-  }, 30_000);
-  request.raw.on("close", () => {
+    void subscription.heartbeat(() => {
+      writeEvent("heartbeat", { time: new Date().toISOString() });
+    });
+  }, EVENT_AUTHORIZATION_HEARTBEAT_MS);
+  const cleanup = (): void => {
     clearInterval(heartbeat);
-    unsubscribeLogs?.();
-    unsubscribeQueries();
-    unsubscribeReplies();
-    reply.raw.end();
-  });
+    subscription.close();
+  };
+  request.raw.once("close", cleanup);
+  reply.raw.once("error", cleanup);
+  void subscription.ready;
+}
+
+function boundGlobalSnapshot(snapshot: {
+  version: 1;
+  runtime: unknown;
+  logs: unknown[];
+  queries: unknown[];
+  replies: unknown[];
+}) {
+  const bounded = structuredClone(snapshot);
+  const arrays = [bounded.logs, bounded.queries, bounded.replies];
+  const targetBytes = MAX_EVENT_BYTES - 512;
+  while (Buffer.byteLength(JSON.stringify(bounded), "utf8") > targetBytes) {
+    let selected: unknown[] | undefined;
+    let selectedBytes = -1;
+    for (const entries of arrays) {
+      if (entries.length === 0) continue;
+      const bytes = Buffer.byteLength(JSON.stringify(entries[0]), "utf8");
+      if (bytes > selectedBytes) {
+        selected = entries;
+        selectedBytes = bytes;
+      }
+    }
+    if (!selected) break;
+    selected.shift();
+  }
+  return bounded;
+}
+
+function endSseReply(reply: FastifyReply): void {
+  if (!reply.raw.destroyed && !reply.raw.writableEnded) reply.raw.end();
 }
 
 type DigestPipeline = ModelPipeline & { generatePersonaDigest: NonNullable<ModelPipeline["generatePersonaDigest"]> };

@@ -30,6 +30,10 @@ import type {
   WaifuConfig,
   WaifusResponse
 } from "./types";
+import {
+  ResumableEventFeed,
+  type ResumableEventFeedOptions
+} from "./resumableEventFeed";
 
 export class ApiError extends Error {
   status: number;
@@ -314,14 +318,44 @@ export const api = {
     })
 };
 
-/**
- * Subscribe to backend SSE runtime events. Returns an `EventSource` so callers
- * can attach handlers / close it. Events emitted by the backend:
- *  - "runtime": full runtime snapshot
- *  - "query": provider request payload
- *  - "reply": provider response payload
- *  - "heartbeat": keepalive
- */
-export function openEventStream(): EventSource {
-  return new EventSource(`${BASE}/api/events`);
+export type EventFeedOptions = Omit<
+  ResumableEventFeedOptions,
+  "url" | "prepareHeaders" | "onResponseError"
+>;
+
+/** Open the global epoch-aware feed after establishing the same-origin browser session. */
+export function openEventStream(options: EventFeedOptions): ResumableEventFeed {
+  return openResumableEventStream("/api/events", options);
+}
+
+export function openAssistantEventStream(
+  conversationId: string,
+  options: EventFeedOptions
+): ResumableEventFeed {
+  return openResumableEventStream(
+    `/api/assistant/conversations/${encodeURIComponent(conversationId)}/stream`,
+    options
+  );
+}
+
+function openResumableEventStream(
+  path: string,
+  options: EventFeedOptions
+): ResumableEventFeed {
+  const feed = new ResumableEventFeed({
+    ...options,
+    url: `${BASE}${path}`,
+    prepareHeaders: () => browserSecurityHeaders("GET"),
+    onResponseError: async (response) => {
+      let body: unknown;
+      try {
+        body = await response.clone().json();
+      } catch {
+        body = undefined;
+      }
+      return recoverBrowserSession(response.status, body);
+    }
+  });
+  feed.start();
+  return feed;
 }

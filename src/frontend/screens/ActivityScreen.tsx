@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { openEventStream } from "../api/client";
 import type { ViewId } from "../nav";
 import { FootRow, HeadRow, TabCells } from "./scaffold";
@@ -9,24 +9,46 @@ function useEventFeed() {
   const [logs, setLogs] = useState<StreamEntry[]>([]);
   const [queries, setQueries] = useState<StreamEntry[]>([]);
   const [replies, setReplies] = useState<StreamEntry[]>([]);
-  const sourceRef = useRef<EventSource | null>(null);
-
   useEffect(() => {
-    const source = openEventStream();
-    sourceRef.current = source;
-    const push = (setter: typeof setLogs) => (event: MessageEvent) => {
+    const decode = (value: string): Record<string, unknown> => {
       let data: Record<string, unknown> = {};
       try {
-        data = JSON.parse(event.data as string) as Record<string, unknown>;
+        data = JSON.parse(value) as Record<string, unknown>;
       } catch {
-        data = { raw: event.data };
+        data = { raw: value };
       }
+      return data;
+    };
+    const push = (setter: typeof setLogs, value: string) => {
+      const data = decode(value);
       setter((prev) => [{ receivedAt: new Date().toLocaleTimeString(), data }, ...prev].slice(0, 200));
     };
-    source.addEventListener("log", push(setLogs));
-    source.addEventListener("query", push(setQueries));
-    source.addEventListener("reply", push(setReplies));
-    return () => source.close();
+    const restore = (
+      setter: typeof setLogs,
+      entries: unknown
+    ): void => {
+      if (!Array.isArray(entries)) return;
+      setter(entries.slice(-200).reverse().map((entry) => ({
+        receivedAt: new Date().toLocaleTimeString(),
+        data: entry && typeof entry === "object"
+          ? entry as Record<string, unknown>
+          : { raw: entry }
+      })));
+    };
+    const feed = openEventStream({
+      onEvent: (event) => {
+        if (event.event === "log") push(setLogs, event.data);
+        else if (event.event === "query") push(setQueries, event.data);
+        else if (event.event === "reply") push(setReplies, event.data);
+        else if (event.event === "snapshot") {
+          const snapshot = decode(event.data);
+          restore(setLogs, snapshot.logs);
+          restore(setQueries, snapshot.queries);
+          restore(setReplies, snapshot.replies);
+        }
+      }
+    });
+    return () => feed.close();
   }, []);
 
   return { logs, queries, replies };

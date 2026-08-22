@@ -1,10 +1,18 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import type { ModelPipeline } from "../../providers/types.js";
 import { ConversationStore } from "./conversations.js";
 import { AssistantTurnError, runAssistantTurn } from "./service.js";
-import { withoutBrowserContext } from "../requestPrincipal.js";
+import {
+  withoutBrowserContext,
+  type RequestPrincipal
+} from "../requestPrincipal.js";
 import { redactRemoteHostDetails, redactSecrets } from "../../backend/redaction.js";
+import {
+  EVENT_AUTHORIZATION_HEARTBEAT_MS,
+  MAX_EVENT_BYTES
+} from "../../shared/schemas/adminOperations.js";
+import { serializeSseEvent } from "../eventStream.js";
 
 const MessageBodySchema = z.object({ content: z.string().min(1).max(8000) });
 
@@ -13,6 +21,7 @@ export function registerAssistantRoutes(
   options: {
     dataRoot: string;
     createPipeline?: (target: { providerId: string; modelId: string }) => ModelPipeline;
+    authorizePrincipal: (principal: RequestPrincipal) => boolean | Promise<boolean>;
   }
 ): void {
   const store = new ConversationStore();
@@ -71,35 +80,91 @@ export function registerAssistantRoutes(
       reply.code(404).send({ error: "NotFound", message: "Unknown conversation." });
       return;
     }
-    reply.hijack();
-    reply.raw.writeHead(200, {
-      "content-type": "text/event-stream",
-      "cache-control": "no-store",
-      connection: "keep-alive"
-    });
-    const serializeEvent = (event: unknown): string => JSON.stringify(
-      request.principal.kind === "remote_device"
-        ? redactRemoteHostDetails(event, [options.dataRoot])
-        : redactSecrets(event)
-    );
-    // Replay recorded events so a reopened panel catches up, then stream live. Each frame
-    // carries the conversation-monotone seq as its SSE id so clients can drop duplicates
-    // after browser auto-reconnects.
-    for (const message of conversation.messages) {
-      if (message.role === "event") {
-        reply.raw.write(`event: assistant\nid: ${message.seq ?? 0}\ndata: ${serializeEvent(message.event)}\n\n`);
-      }
-    }
-    const unsubscribe = store.subscribe(id, (event, seq) => {
-      reply.raw.write(`event: assistant\nid: ${seq}\ndata: ${serializeEvent(event)}\n\n`);
-    });
-    const heartbeat = setInterval(() => {
-      reply.raw.write(`event: heartbeat\ndata: ${JSON.stringify({ time: new Date().toISOString() })}\n\n`);
-    }, 30_000);
-    request.raw.on("close", () => {
-      clearInterval(heartbeat);
-      unsubscribe();
-      reply.raw.end();
-    });
+    sendAssistantEventStream({ request, reply, id, store, options });
   });
+}
+
+function sendAssistantEventStream(input: {
+  request: FastifyRequest;
+  reply: FastifyReply;
+  id: string;
+  store: ConversationStore;
+  options: {
+    dataRoot: string;
+    authorizePrincipal: (principal: RequestPrincipal) => boolean | Promise<boolean>;
+  };
+}): void {
+  const { request, reply } = input;
+  const stream = input.store.eventStream(input.id);
+  if (!stream) return;
+  const writeEvent = (event: string, value: unknown, cursor?: string): void => {
+    if (reply.raw.destroyed || reply.raw.writableEnded) throw new Error("SSE connection is closed.");
+    reply.raw.write(serializeSseEvent({ event, data: value, ...(cursor ? { cursor } : {}) }));
+  };
+  const redact = (principal: RequestPrincipal, value: unknown): unknown =>
+    principal.kind === "remote_device"
+      ? redactRemoteHostDetails(value, [input.options.dataRoot])
+      : redactSecrets(value);
+  reply.hijack();
+  reply.raw.writeHead(200, {
+    "content-type": "text/event-stream",
+    "cache-control": "no-store",
+    connection: "keep-alive"
+  });
+  const suppliedCursor = request.headers["last-event-id"];
+  const subscription = stream.subscribeAuthorized({
+    principal: request.principal,
+    ...(typeof suppliedCursor === "string" && suppliedCursor
+      ? { lastEventId: suppliedCursor }
+      : {}),
+    authorize: input.options.authorizePrincipal,
+    project: (principal, _event, data) => redact(principal, data),
+    snapshot: () => {
+      const conversation = input.store.get(input.id);
+      return conversation
+        ? {
+            version: 1 as const,
+            id: conversation.id,
+            busy: conversation.busy,
+            messages: conversation.messages
+          }
+        : { version: 1 as const, id: input.id, busy: false, messages: [] };
+    },
+    projectSnapshot: (principal, snapshot) => boundAssistantSnapshot(redact(principal, snapshot)),
+    onReset: (reset) => writeEvent("snapshot_required", reset),
+    onSnapshot: (snapshot, cursor) => writeEvent("snapshot", snapshot, cursor),
+    onEvent: (event, data, cursor) => writeEvent(event, data, cursor),
+    onUnauthorized: () => endAssistantSse(reply),
+    onClose: () => endAssistantSse(reply),
+    onError: () => endAssistantSse(reply)
+  });
+  const heartbeat = setInterval(() => {
+    void subscription.heartbeat(() => {
+      writeEvent("heartbeat", { time: new Date().toISOString() });
+    });
+  }, EVENT_AUTHORIZATION_HEARTBEAT_MS);
+  const cleanup = (): void => {
+    clearInterval(heartbeat);
+    subscription.close();
+  };
+  request.raw.once("close", cleanup);
+  reply.raw.once("error", cleanup);
+  void subscription.ready;
+}
+
+function boundAssistantSnapshot(value: unknown): unknown {
+  const snapshot = structuredClone(value) as { messages?: unknown[] };
+  const targetBytes = MAX_EVENT_BYTES - 512;
+  while (
+    Array.isArray(snapshot.messages)
+    && snapshot.messages.length > 0
+    && Buffer.byteLength(JSON.stringify(snapshot), "utf8") > targetBytes
+  ) {
+    snapshot.messages.shift();
+  }
+  return snapshot;
+}
+
+function endAssistantSse(reply: FastifyReply): void {
+  if (!reply.raw.destroyed && !reply.raw.writableEnded) reply.raw.end();
 }
