@@ -57,6 +57,17 @@ export type RuntimeState = {
   paused: boolean;
   discord: DiscordRuntime;
   queues: QueueRuntime;
+  remoteAccess?: {
+    version: 1;
+    enabled: boolean;
+    helperState: "disabled" | "starting" | "ready" | "degraded" | "failed";
+    activationState: "activation_required" | "active" | "renewal_due";
+    controlState: "inactive" | "connecting" | "connected" | "reconnecting" | "unavailable";
+    directState: "inactive" | "direct" | "reconnecting" | "direct_unavailable";
+    trustedDeviceCount: number;
+    lastDirectAt: string | null;
+    lastErrorCode: string | null;
+  };
 };
 
 export type AppConfig = {

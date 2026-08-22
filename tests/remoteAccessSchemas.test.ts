@@ -8,6 +8,8 @@ import {
   HELPER_PACKAGE_TARGETS,
   HelperManifestSchema,
   IdentityResetReceiptV1Schema,
+  RemoteAccessInstallationStateV1Schema,
+  RemoteAccessTrustIndexV1Schema,
   ResetIdentityCommandSchema,
   type HelperManifestInput
 } from "../src/shared/schemas/remoteAccess.js";
@@ -263,6 +265,50 @@ describe("ApprovalReceiptV1Schema", () => {
     }).success).toBe(false);
     const { browserBinding: _browserBinding, ...withoutBrowser } = receipt;
     expect(ApprovalReceiptV1Schema.safeParse(withoutBrowser).success).toBe(false);
+  });
+});
+
+describe("persistent nonsecret remote state schemas", () => {
+  it("accepts only a derived opaque vault label and never private-key fields", () => {
+    const installationId = bytes16(0x70);
+    const state = {
+      version: 1,
+      installationId,
+      vaultLabel: `waifus.installation.v1.${installationId}`,
+      activationReference: "vault:activation:reference",
+      createdAt: "9007199254740993"
+    };
+    expect(RemoteAccessInstallationStateV1Schema.parse(state)).toEqual(state);
+    expect(RemoteAccessInstallationStateV1Schema.safeParse({
+      ...state,
+      vaultLabel: "waifus.installation.v1.someone-else"
+    }).success).toBe(false);
+    expect(RemoteAccessInstallationStateV1Schema.safeParse({
+      ...state,
+      privateKey: bytes32(0x71)
+    }).success).toBe(false);
+  });
+
+  it("requires unique pairs and a monotonic trust-epoch high-water", () => {
+    const state = {
+      version: 1,
+      trustEpochHighWater: "9007199254740993",
+      resetTombstone: "4",
+      pairs: [{
+        deviceId: "travel-mac",
+        pairId: bytes16(0x72),
+        trustEpoch: "9007199254740993"
+      }]
+    };
+    expect(RemoteAccessTrustIndexV1Schema.parse(state)).toEqual(state);
+    expect(RemoteAccessTrustIndexV1Schema.safeParse({
+      ...state,
+      trustEpochHighWater: "9007199254740992"
+    }).success).toBe(false);
+    expect(RemoteAccessTrustIndexV1Schema.safeParse({
+      ...state,
+      pairs: [...state.pairs, { ...state.pairs[0], pairId: bytes16(0x73) }]
+    }).success).toBe(false);
   });
 });
 

@@ -3,6 +3,7 @@ import path from "node:path";
 import { writeFile } from "node:fs/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { startBackend, type RunningBackend } from "../src/backend/server.js";
+import { createRuntimeState, RuntimeStateSchema } from "../src/backend/runtime.js";
 import type { Logger } from "../src/backend/logger.js";
 import { ensureDataLayout } from "../src/config/layout.js";
 import type {
@@ -23,6 +24,43 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map(removeTempRoot));
   vi.useRealTimers();
   vi.restoreAllMocks();
+});
+
+describe("remote-access runtime summary", () => {
+  it("accepts a sanitized optional summary without requiring helper startup", () => {
+    const runtime = createRuntimeState({
+      pid: process.pid,
+      startedAt: "2026-08-10T12:00:00.000Z",
+      packageVersion: "1.5.203",
+      port: 3888,
+      dataRoot: "/private/tmp/waifus-runtime-test",
+      mode: "test",
+      paused: false,
+      discord: connectedStatus(),
+      queues: { active: 0, configuredGuilds: 0 },
+      remoteAccess: {
+        version: 1,
+        enabled: false,
+        helperState: "disabled",
+        activationState: "activation_required",
+        controlState: "inactive",
+        directState: "inactive",
+        trustedDeviceCount: 2,
+        lastDirectAt: null,
+        lastErrorCode: null
+      }
+    });
+
+    expect(runtime.remoteAccess).toMatchObject({
+      enabled: false,
+      trustedDeviceCount: 2,
+      directState: "inactive"
+    });
+    expect(() => RuntimeStateSchema.parse({
+      ...runtime,
+      remoteAccess: { ...runtime.remoteAccess, directState: "direct" }
+    })).toThrow(/inactive runtime state/u);
+  });
 });
 
 describe("backend Discord auto-connect retry", () => {

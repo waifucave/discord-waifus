@@ -5,6 +5,7 @@ import {
   Base64Url64BytesSchema,
   CanonicalTargetSchema,
   CapabilityNameListSchema,
+  DeviceIdSchema,
   DeviceRoleV1Schema,
   HttpMethodSchema,
   PrincipalStableIdSchema,
@@ -737,3 +738,76 @@ export const IdentityResetReceiptV1Schema = z
   });
 
 export type IdentityResetReceiptV1 = z.infer<typeof IdentityResetReceiptV1Schema>;
+
+// Node persists only opaque, nonsecret references to helper-owned installation material. The
+// private installation key and activation certificate never belong in this file.
+const LocalVaultReferenceSchema = z
+  .string()
+  .min(1)
+  .max(256)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/u, "Expected an opaque local vault reference.");
+
+export const RemoteAccessInstallationStateV1Schema = z.object({
+  version: z.literal(1),
+  installationId: Base64Url16BytesSchema,
+  vaultLabel: LocalVaultReferenceSchema,
+  activationReference: LocalVaultReferenceSchema.nullable(),
+  createdAt: Uint64DecimalSchema
+}).strict().superRefine((value, ctx) => {
+  if (value.vaultLabel !== `waifus.installation.v1.${value.installationId}`) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["vaultLabel"],
+      message: "Installation vault label must derive from the data-root installation ID."
+    });
+  }
+});
+
+export type RemoteAccessInstallationStateV1 = z.infer<
+  typeof RemoteAccessInstallationStateV1Schema
+>;
+
+export const RemoteAccessTrustIndexPairV1Schema = z.object({
+  deviceId: DeviceIdSchema,
+  pairId: Base64Url16BytesSchema,
+  trustEpoch: PositiveUint64DecimalSchema
+}).strict();
+
+export const RemoteAccessTrustIndexV1Schema = z.object({
+  version: z.literal(1),
+  trustEpochHighWater: Uint64DecimalSchema,
+  resetTombstone: Uint64DecimalSchema,
+  pairs: z.array(RemoteAccessTrustIndexPairV1Schema).max(256)
+}).strict().superRefine((value, ctx) => {
+  const deviceIds = new Set<string>();
+  const pairIds = new Set<string>();
+  const highWater = BigInt(value.trustEpochHighWater);
+  for (let index = 0; index < value.pairs.length; index += 1) {
+    const pair = value.pairs[index];
+    if (deviceIds.has(pair.deviceId)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["pairs", index, "deviceId"],
+        message: "Trust-index device IDs must be unique."
+      });
+    }
+    if (pairIds.has(pair.pairId)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["pairs", index, "pairId"],
+        message: "Trust-index pair IDs must be unique."
+      });
+    }
+    if (BigInt(pair.trustEpoch) > highWater) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["pairs", index, "trustEpoch"],
+        message: "Pair trust epoch cannot exceed the persisted high-water mark."
+      });
+    }
+    deviceIds.add(pair.deviceId);
+    pairIds.add(pair.pairId);
+  }
+});
+
+export type RemoteAccessTrustIndexV1 = z.infer<typeof RemoteAccessTrustIndexV1Schema>;

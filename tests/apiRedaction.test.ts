@@ -74,7 +74,18 @@ function makeRuntime(root: string): RuntimeState {
         PRIVATE_KEY
       ]
     },
-    queues: { active: 0, configuredGuilds: 0 }
+    queues: { active: 0, configuredGuilds: 0 },
+    remoteAccess: {
+      version: 1,
+      enabled: false,
+      helperState: "disabled",
+      activationState: "activation_required",
+      controlState: "inactive",
+      directState: "inactive",
+      trustedDeviceCount: 0,
+      lastDirectAt: null,
+      lastErrorCode: null
+    }
   });
 }
 
@@ -264,6 +275,17 @@ describe("principal-aware response redaction", () => {
     expect(remoteRuntime.json()).not.toHaveProperty("dataRoot");
     expect(remoteRuntime.json()).not.toHaveProperty("port");
     expect(remoteRuntime.json()).not.toHaveProperty("pid");
+    expect(remoteRuntime.json().remoteAccess).toEqual({
+      version: 1,
+      enabled: false,
+      helperState: "disabled",
+      activationState: "activation_required",
+      controlState: "inactive",
+      directState: "inactive",
+      trustedDeviceCount: 0,
+      lastDirectAt: null,
+      lastErrorCode: null
+    });
     expect(remotePause.json()).not.toHaveProperty("dataRoot");
     expect(remotePause.json()).not.toHaveProperty("port");
     expect(remotePause.json()).not.toHaveProperty("pid");

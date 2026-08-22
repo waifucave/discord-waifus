@@ -61,7 +61,10 @@ return the same `404`. The status resource reports prepared, completed, reconcil
 - `GET /api/diagnostics/bundle`
 - `GET /api/events`
 
-`/api/events` is an SSE endpoint. It emits a runtime snapshot and heartbeat events.
+`/api/events` is an epoch-aware SSE endpoint. A first connection receives a canonical `snapshot`;
+live events carry `v1:<128-bit epoch>:<uint64 sequence>` IDs. Reconnects send `Last-Event-ID` and
+receive the authorized replay suffix. An epoch mismatch or replay gap emits `snapshot_required`
+before a replacement snapshot. Authorization is rechecked for every protected event and heartbeat.
 
 API responses are marked `Cache-Control: no-store`. Credential material, Discord tokens, private
 keys, pairing/internal-capability material, and direct endpoint candidates are scrubbed from
@@ -85,6 +88,28 @@ When Discord auto-connect is enabled and an orchestrator token is saved, the bac
 Normal configuration changes apply at runtime. `PUT /api/config`, `PUT /api/discord-bots`, and `POST /api/runtime/reload` rebuild Discord clients and the runtime orchestrator in-process without restarting HTTP. Only HTTP host/port changes require the next process start.
 
 During startup, HTTP binds before Discord auto-connect completes. `/api/status` and `/api/runtime` set optional `discord.connecting` while Discord login is in progress. If Discord auto-connect fails with a transient DNS or network error, the backend keeps Discord offline and retries automatically. Retry metadata is optional: `retrying`, `retryAttempt`, `nextRetryAt`, `lastError`, and `lastErrorAt`.
+
+## Remote state and clean
+
+Remote identity/trust metadata is partitioned from ordinary user data under
+`app/remote-access/` (host role) and `app/remote-gateway/` (remote role). Verified dashboard
+bundles live only under `app/cache/remote-dashboard/`; live host/remote helper state lives under
+the separate `app/tmp/remote-host/` and `app/tmp/remote-gateway/` trees. Private identity, pair,
+node, and discovery keys remain helper-owned in the OS vault and are never stored in these Node
+JSON trees.
+
+`waifus clean` refuses before mutation while the host daemon, host remote helper, or remote gateway
+is live. Once stopped, clean removes ordinary user/config/cache data and transient role runtime
+state while preserving remote enabled/settings state, the opaque installation/activation
+references, trust and deny epochs, pair metadata, remembered hosts, operation receipts, and the
+administrative audit. `--include-logs` removes ordinary role diagnostics but never the audit.
+
+Full identity reset is deliberately not an alias for clean or per-device revoke/forget. Its path
+ownership is data-root-wide: the current local host daemon is the executor, and a separately live
+remote gateway/helper must produce `SiblingDaemonRunning` before any mutation. After helper-owned
+vault rotation is implemented, the typed flow will be exposed only by local Settings → Remote
+Access through `POST /api/remote-access/reset`; it will clear both roles' identity/trust/origin and
+dashboard-cache state while retaining operation receipts, audit, and the monotonic reset tombstone.
 
 ## Config
 

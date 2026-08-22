@@ -1,4 +1,4 @@
-import { readFile, readdir, rm } from "node:fs/promises";
+import { chmod, lstat, readFile, readdir, rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
@@ -15,6 +15,12 @@ import {
 import { CURRENT_SCHEMA_VERSION } from "../shared/schemas/common.js";
 import { legacyToParams, LegacyGeneration, LegacyReasoning } from "../shared/paramsCompat.js";
 import { atomicWriteJson, atomicWriteText } from "../storage/atomic.js";
+import {
+  RemoteAccessInstallationStateV1Schema,
+  RemoteAccessTrustIndexV1Schema
+} from "../shared/schemas/remoteAccess.js";
+import { RemoteAccessConfigV1Schema } from "../shared/schemas/remoteLifecycle.js";
+import { remoteStatePaths } from "../remote/paths.js";
 
 export { extractEntities } from "../orchestration/memoryEntities.js";
 
@@ -25,6 +31,10 @@ export type MigrationResult = {
 export async function runMigrations(dataRoot: string): Promise<MigrationResult> {
   await ensureDataLayout(dataRoot);
   const applied: string[] = [];
+
+  if (await validateAndHardenRemoteAccessState(dataRoot)) {
+    applied.push("harden-remote-access-state-v1");
+  }
 
   if (await migrateOrchestratorHistory(dataRoot)) {
     applied.push("migrate-orchestrator-history-to-responding-waifus");
@@ -82,6 +92,33 @@ export async function runMigrations(dataRoot: string): Promise<MigrationResult> 
   }
 
   return { applied };
+}
+
+async function validateAndHardenRemoteAccessState(dataRoot: string): Promise<boolean> {
+  const paths = remoteStatePaths(dataRoot);
+  const files = [
+    { filePath: paths.hostConfig, schema: RemoteAccessConfigV1Schema },
+    { filePath: paths.installation, schema: RemoteAccessInstallationStateV1Schema },
+    { filePath: paths.trustIndex, schema: RemoteAccessTrustIndexV1Schema }
+  ] as const;
+  let changed = false;
+  for (const { filePath, schema } of files) {
+    const value = await readJsonOrUndefined(filePath);
+    if (value === undefined) {
+      throw new Error(`Required remote state file is missing: ${path.relative(dataRoot, filePath)}`);
+    }
+    schema.parse(value);
+    const info = await lstat(filePath);
+    if (info.isSymbolicLink() || !info.isFile()) {
+      throw new Error(`Remote state path is not an owned regular file: ${path.relative(dataRoot, filePath)}`);
+    }
+    const mode = info.mode & 0o777;
+    if (mode !== 0o600) {
+      await chmod(filePath, 0o600);
+      changed = true;
+    }
+  }
+  return changed;
 }
 
 async function removeGuildWideActiveParticipantCaches(dataRoot: string): Promise<number> {

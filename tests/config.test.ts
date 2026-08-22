@@ -1,4 +1,4 @@
-import { access, readFile, rm, writeFile } from "node:fs/promises";
+import { access, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ensureDataLayout } from "../src/config/layout.js";
@@ -7,6 +7,16 @@ import { DATA_ROOT_ENV, getDataRoot } from "../src/config/paths.js";
 import { loadAppConfig } from "../src/config/appConfig.js";
 import { redactSecrets } from "../src/backend/redaction.js";
 import { CURRENT_SCHEMA_VERSION } from "../src/shared/schemas/common.js";
+import {
+  RemoteAccessInstallationStateV1Schema,
+  RemoteAccessTrustIndexV1Schema
+} from "../src/shared/schemas/remoteAccess.js";
+import { RemoteAccessConfigV1Schema } from "../src/shared/schemas/remoteLifecycle.js";
+import {
+  IDENTITY_RESET_PATH_OWNERSHIP,
+  REMOTE_STATE_RELATIVE_PATHS,
+  remoteStatePaths
+} from "../src/remote/paths.js";
 import {
   ServerConfigSchema,
   WaifuConfigSchema,
@@ -38,6 +48,44 @@ describe("data root and config", () => {
     await expect(access(path.join(root, "user", "waifus"))).resolves.toBeUndefined();
     await expect(access(path.join(root, "user", "servers"))).resolves.toBeUndefined();
 
+    const remotePaths = remoteStatePaths(root);
+    for (const directory of [
+      remotePaths.hostStateRoot,
+      remotePaths.trustRoot,
+      remotePaths.operationsRoot,
+      remotePaths.auditRoot,
+      remotePaths.remoteGatewayStateRoot,
+      remotePaths.dashboardCacheRoot,
+      remotePaths.hostRuntimeRoot,
+      remotePaths.remoteGatewayRuntimeRoot
+    ]) {
+      await expect(access(directory)).resolves.toBeUndefined();
+    }
+    const remoteConfig = RemoteAccessConfigV1Schema.parse(
+      JSON.parse(await readFile(remotePaths.hostConfig, "utf8"))
+    );
+    const installation = RemoteAccessInstallationStateV1Schema.parse(
+      JSON.parse(await readFile(remotePaths.installation, "utf8"))
+    );
+    const trust = RemoteAccessTrustIndexV1Schema.parse(
+      JSON.parse(await readFile(remotePaths.trustIndex, "utf8"))
+    );
+    expect(remoteConfig).toMatchObject({
+      revision: "0",
+      enabled: false,
+      displayName: "Discord Waifus Host"
+    });
+    expect(installation.activationReference).toBeNull();
+    expect(trust).toEqual({
+      version: 1,
+      trustEpochHighWater: "0",
+      resetTombstone: "0",
+      pairs: []
+    });
+    for (const filePath of [remotePaths.hostConfig, remotePaths.installation, remotePaths.trustIndex]) {
+      expect((await stat(filePath)).mode & 0o777).toBe(0o600);
+    }
+
     const config = await loadAppConfig(root);
     expect(config.http.port).toBe(3888);
     expect(config.runtime.autoConnectDiscord).toBe(true);
@@ -50,6 +98,66 @@ describe("data root and config", () => {
       maxImagesPerModelCall: 4,
       maxTextCharsPerImage: 1500
     });
+  });
+
+  it("keeps independent installation IDs per DC_WAIFUS_HOME and never rewrites existing state", async () => {
+    const firstRoot = await makeTempRoot();
+    const secondRoot = await makeTempRoot();
+    roots.push(firstRoot, secondRoot);
+    const firstResolved = getDataRoot({ [DATA_ROOT_ENV]: firstRoot });
+    const secondResolved = getDataRoot({ [DATA_ROOT_ENV]: secondRoot });
+    await Promise.all([ensureDataLayout(firstResolved), ensureDataLayout(secondResolved)]);
+    const firstPaths = remoteStatePaths(firstResolved);
+    const secondPaths = remoteStatePaths(secondResolved);
+    const firstBefore = await readFile(firstPaths.installation, "utf8");
+    const firstConfigBefore = await readFile(firstPaths.hostConfig, "utf8");
+    const first = RemoteAccessInstallationStateV1Schema.parse(JSON.parse(firstBefore));
+    const second = RemoteAccessInstallationStateV1Schema.parse(
+      JSON.parse(await readFile(secondPaths.installation, "utf8"))
+    );
+
+    expect(first.installationId).not.toBe(second.installationId);
+    await ensureDataLayout(firstResolved);
+    expect(await readFile(firstPaths.installation, "utf8")).toBe(firstBefore);
+    expect(await readFile(firstPaths.hostConfig, "utf8")).toBe(firstConfigBefore);
+  });
+
+  it("initializes one stable installation under concurrent layout calls", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await Promise.all(Array.from({ length: 12 }, () => ensureDataLayout(root)));
+    const paths = remoteStatePaths(root);
+    const installation = RemoteAccessInstallationStateV1Schema.parse(
+      JSON.parse(await readFile(paths.installation, "utf8"))
+    );
+    expect(installation.vaultLabel).toBe(
+      `waifus.installation.v1.${installation.installationId}`
+    );
+    expect(RemoteAccessTrustIndexV1Schema.safeParse(
+      JSON.parse(await readFile(paths.trustIndex, "utf8"))
+    ).success).toBe(true);
+  });
+
+  it("freezes disjoint clean/runtime and identity-reset path ownership", () => {
+    expect(REMOTE_STATE_RELATIVE_PATHS).toMatchObject({
+      hostStateRoot: "app/remote-access",
+      remoteGatewayStateRoot: "app/remote-gateway",
+      dashboardCacheRoot: "app/cache/remote-dashboard",
+      hostRuntimeRoot: "app/tmp/remote-host",
+      remoteGatewayRuntimeRoot: "app/tmp/remote-gateway",
+      hostLog: "app/logs/remote-host.log",
+      remoteGatewayLog: "app/logs/remote-gateway.log"
+    });
+    const cleared = new Set(IDENTITY_RESET_PATH_OWNERSHIP.clearAfterVerifiedHelperReceipt);
+    const rewritten = new Set(IDENTITY_RESET_PATH_OWNERSHIP.rewriteAfterVerifiedHelperReceipt);
+    const preserved = new Set(IDENTITY_RESET_PATH_OWNERSHIP.preserve);
+    expect([...cleared].filter((value) => rewritten.has(value) || preserved.has(value))).toEqual([]);
+    expect([...rewritten].filter((value) => preserved.has(value))).toEqual([]);
+    expect(preserved).toEqual(new Set([
+      "app/remote-access/operations",
+      "app/remote-access/audit",
+      "app/remote-access/reset-tombstone.json"
+    ]));
   });
 
   it("fills OCR defaults when loading older config files", async () => {

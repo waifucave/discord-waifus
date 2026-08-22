@@ -1,7 +1,7 @@
 import { spawn, type SpawnOptions } from "node:child_process";
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
-import { open, readFile, rm, stat } from "node:fs/promises";
+import { lstat, open, readFile, readdir, rm, stat } from "node:fs/promises";
 import { z } from "zod";
 import { ensureDataLayout } from "../config/layout.js";
 import { appDataPath, DATA_ROOT_ENV, getDataRoot, resolveDataPath } from "../config/paths.js";
@@ -15,6 +15,12 @@ import {
 } from "../backend/migrations.js";
 import { RuntimeStateSchema } from "../backend/runtime.js";
 import type { RuntimeState } from "../backend/runtime.js";
+import {
+  RemoteAccessInstallationStateV1Schema,
+  RemoteAccessTrustIndexV1Schema
+} from "../shared/schemas/remoteAccess.js";
+import { RemoteAccessConfigV1Schema } from "../shared/schemas/remoteLifecycle.js";
+import { remoteStatePaths } from "../remote/paths.js";
 import { diagnoseBundledOcr } from "../orchestration/ocrPackages.js";
 import { StorageService } from "../storage/storageService.js";
 import { DEFAULT_APP_CONFIG } from "../shared/schemas/config.js";
@@ -92,7 +98,7 @@ export async function runCommand(parsed: ParsedCli, options: CliRuntimeOptions =
     case "doctor":
       return doctorCommand(dataRoot);
     case "clean":
-      return cleanCommand(parsed, dataRoot);
+      return cleanCommand(parsed, dataRoot, options.processAlive ?? isProcessAlive);
     case "update":
       return updateCommand(parsed, options);
   }
@@ -413,9 +419,23 @@ function unwrapZodErrorCause(error: unknown): z.ZodError | undefined {
   return cause instanceof z.ZodError ? cause : undefined;
 }
 
-async function cleanCommand(parsed: ParsedCli, dataRoot: string): Promise<number> {
+async function cleanCommand(
+  parsed: ParsedCli,
+  dataRoot: string,
+  processAlive: (pid: number) => boolean
+): Promise<number> {
   const force = flagBoolean(parsed.flags, "force");
   const includeLogs = flagBoolean(parsed.flags, "includeLogs");
+  const daemonState = await inspectCleanDaemonState(dataRoot, processAlive);
+  if (reportCleanDaemonRefusal(daemonState)) return 1;
+
+  let preservedPairCount: number;
+  try {
+    preservedPairCount = await validatePreservedRemoteStateForClean(dataRoot);
+  } catch (error) {
+    console.error(`clean refused: ${(error as Error).message}`);
+    return 1;
+  }
   if (!force) {
     const confirmed = await confirm(
       `Delete saved Discord Waifus user data in ${dataRoot}? Type "delete" to continue: `
@@ -426,15 +446,177 @@ async function cleanCommand(parsed: ParsedCli, dataRoot: string): Promise<number
     }
   }
 
+  // Confirmation may take arbitrarily long. Recheck immediately before deletion so a daemon
+  // started while the prompt was open cannot be cleaned out from underneath its live state.
+  const finalDaemonState = await inspectCleanDaemonState(dataRoot, processAlive);
+  if (reportCleanDaemonRefusal(finalDaemonState)) return 1;
+  try {
+    preservedPairCount = await validatePreservedRemoteStateForClean(dataRoot);
+  } catch (error) {
+    console.error(`clean refused: ${(error as Error).message}`);
+    return 1;
+  }
+
+  const paths = remoteStatePaths(dataRoot);
   await Promise.all([
     rm(resolveDataPath(dataRoot, "user"), { recursive: true, force: true }),
     rm(resolveDataPath(dataRoot, "config.toml"), { force: true }),
     rm(appDataPath(dataRoot, "cache"), { recursive: true, force: true }),
+    rm(paths.backendPid, { force: true }),
+    rm(paths.backendRuntime, { force: true }),
+    rm(paths.hostRuntimeRoot, { recursive: true, force: true }),
+    rm(paths.remoteGatewayRuntimeRoot, { recursive: true, force: true }),
     includeLogs ? rm(appDataPath(dataRoot, "logs"), { recursive: true, force: true }) : Promise.resolve()
   ]);
   await ensureDataLayout(dataRoot);
-  console.log(`cleaned user data in ${dataRoot}`);
+  console.log(
+    `cleaned ordinary user data in ${dataRoot}; preserved ${preservedPairCount} remote pairing${preservedPairCount === 1 ? "" : "s"}.`
+  );
+  console.log(
+    "To remove the installation identity and all pairings, use Reset identity in local Settings → Remote Access. The POST /api/remote-access/reset flow is local-only."
+  );
   return 0;
+}
+
+function reportCleanDaemonRefusal(state: {
+  running: Array<{ label: string; pid: number }>;
+  error?: string;
+}): boolean {
+  if (state.error) {
+    console.error(`clean refused: ${state.error}`);
+    return true;
+  }
+  if (state.running.length > 0) {
+    console.error(
+      `clean refused: stop the running ${state.running.map((entry) => `${entry.label} (pid ${entry.pid})`).join(", ")} first.`
+    );
+    return true;
+  }
+  return false;
+}
+
+const CleanPidStateSchema = z.object({
+  pid: z.number().int().positive()
+}).passthrough();
+
+async function inspectCleanDaemonState(
+  dataRoot: string,
+  processAlive: (pid: number) => boolean
+): Promise<{
+  running: Array<{ label: string; pid: number }>;
+  error?: string;
+}> {
+  const paths = remoteStatePaths(dataRoot);
+  const candidates = [
+    { label: "host daemon", filePath: paths.backendPid },
+    { label: "host remote helper", filePath: paths.hostRuntimePid },
+    { label: "remote gateway", filePath: paths.remoteGatewayRuntimePid }
+  ];
+  const running: Array<{ label: string; pid: number }> = [];
+  for (const candidate of candidates) {
+    let value: unknown;
+    try {
+      const info = await lstat(candidate.filePath);
+      if (info.isSymbolicLink() || !info.isFile()) {
+        throw new Error("PID state is not a regular file.");
+      }
+      const raw = await readFile(candidate.filePath, "utf8");
+      value = JSON.parse(raw);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      return {
+        running,
+        error: `cannot verify ${candidate.label} state at ${candidate.filePath}; no files were changed.`
+      };
+    }
+    const parsed = CleanPidStateSchema.safeParse(value);
+    if (!parsed.success) {
+      return {
+        running,
+        error: `cannot verify ${candidate.label} PID state at ${candidate.filePath}; no files were changed.`
+      };
+    }
+    try {
+      if (processAlive(parsed.data.pid)) {
+        running.push({ label: candidate.label, pid: parsed.data.pid });
+      }
+    } catch {
+      return {
+        running,
+        error: `cannot verify whether ${candidate.label} pid ${parsed.data.pid} is stopped; no files were changed.`
+      };
+    }
+  }
+  return { running };
+}
+
+async function validatePreservedRemoteStateForClean(dataRoot: string): Promise<number> {
+  const paths = remoteStatePaths(dataRoot);
+  for (const directory of [
+    paths.hostStateRoot,
+    paths.trustRoot,
+    paths.operationsRoot,
+    paths.auditRoot,
+    paths.remoteGatewayStateRoot
+  ]) {
+    await assertOptionalOwnedDirectory(directory);
+  }
+  const [config, installation, trustIndex] = await Promise.all([
+    readOptionalJson(paths.hostConfig),
+    readOptionalJson(paths.installation),
+    readOptionalJson(paths.trustIndex)
+  ]);
+  if (config === undefined && installation === undefined && trustIndex === undefined) {
+    const entries = await readDirectoryOrEmpty(paths.trustRoot);
+    if (entries.length > 0) {
+      throw new Error("remote trust metadata exists without its index; repair it before cleaning.");
+    }
+    return 0;
+  }
+  if (config === undefined || installation === undefined || trustIndex === undefined) {
+    throw new Error("preserved remote installation state is incomplete; repair it before cleaning.");
+  }
+  RemoteAccessConfigV1Schema.parse(config);
+  RemoteAccessInstallationStateV1Schema.parse(installation);
+  return RemoteAccessTrustIndexV1Schema.parse(trustIndex).pairs.length;
+}
+
+async function readOptionalJson(filePath: string): Promise<unknown | undefined> {
+  try {
+    const info = await lstat(filePath);
+    if (info.isSymbolicLink() || !info.isFile()) {
+      throw new Error(`preserved remote state is not an owned regular file: ${filePath}`);
+    }
+    return JSON.parse(await readFile(filePath, "utf8"));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
+async function readDirectoryOrEmpty(directory: string): Promise<string[]> {
+  try {
+    const info = await lstat(directory);
+    if (info.isSymbolicLink() || !info.isDirectory()) {
+      throw new Error(`preserved remote state is not an owned directory: ${directory}`);
+    }
+    return await readdir(directory);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+}
+
+async function assertOptionalOwnedDirectory(directory: string): Promise<void> {
+  try {
+    const info = await lstat(directory);
+    if (info.isSymbolicLink() || !info.isDirectory()) {
+      throw new Error(`preserved remote state is not an owned directory: ${directory}`);
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
 }
 
 async function updateCommand(parsed: ParsedCli, options: CliRuntimeOptions): Promise<number> {

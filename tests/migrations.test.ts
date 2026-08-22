@@ -1,7 +1,8 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { runMigrations } from "../src/backend/migrations.js";
+import { ensureDataLayout } from "../src/config/layout.js";
 import { loadAppConfig } from "../src/config/appConfig.js";
 import { RuntimeStateSchema } from "../src/backend/runtime.js";
 import { CURRENT_SCHEMA_VERSION } from "../src/shared/schemas/common.js";
@@ -16,6 +17,11 @@ import {
   defaultWaifuPromptLayout
 } from "../src/shared/schemas/domain.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
+import {
+  RemoteAccessInstallationStateV1Schema,
+  RemoteAccessTrustIndexV1Schema
+} from "../src/shared/schemas/remoteAccess.js";
+import { remoteStatePaths } from "../src/remote/paths.js";
 
 const roots: string[] = [];
 
@@ -25,6 +31,78 @@ afterEach(async () => {
 });
 
 describe("runMigrations", () => {
+  it("hardens remote state idempotently without rotating identity or lowering trust epochs", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const paths = remoteStatePaths(root);
+    const installationBefore = await readFile(paths.installation, "utf8");
+    const pairId = Buffer.alloc(16, 0x62).toString("base64url");
+    await writeFile(paths.trustIndex, `${JSON.stringify({
+      version: 1,
+      trustEpochHighWater: "9007199254740993",
+      resetTombstone: "4",
+      pairs: [{ deviceId: "travel-mac", pairId, trustEpoch: "9007199254740993" }]
+    }, null, 2)}\n`, "utf8");
+    for (const filePath of [paths.hostConfig, paths.installation, paths.trustIndex]) {
+      await chmod(filePath, 0o644);
+    }
+
+    const first = await runMigrations(root);
+    expect(first.applied).toContain("harden-remote-access-state-v1");
+    expect(await readFile(paths.installation, "utf8")).toBe(installationBefore);
+    expect(() => RemoteAccessInstallationStateV1Schema.parse(JSON.parse(installationBefore))).not.toThrow();
+    expect(RemoteAccessTrustIndexV1Schema.parse(
+      JSON.parse(await readFile(paths.trustIndex, "utf8"))
+    )).toMatchObject({
+      trustEpochHighWater: "9007199254740993",
+      resetTombstone: "4"
+    });
+    for (const filePath of [paths.hostConfig, paths.installation, paths.trustIndex]) {
+      expect((await stat(filePath)).mode & 0o777).toBe(0o600);
+    }
+
+    const second = await runMigrations(root);
+    expect(second.applied).not.toContain("harden-remote-access-state-v1");
+    expect(await readFile(paths.installation, "utf8")).toBe(installationBefore);
+  });
+
+  it("fails closed on invalid remote state instead of replacing identity or epochs", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const paths = remoteStatePaths(root);
+    const installationBefore = await readFile(paths.installation, "utf8");
+    await writeFile(paths.trustIndex, `${JSON.stringify({
+      version: 1,
+      trustEpochHighWater: "7",
+      resetTombstone: "0",
+      pairs: [{
+        deviceId: "travel-mac",
+        pairId: Buffer.alloc(16, 0x63).toString("base64url"),
+        trustEpoch: "8"
+      }]
+    })}\n`, "utf8");
+
+    await expect(runMigrations(root)).rejects.toThrow(/high-water/u);
+    expect(await readFile(paths.installation, "utf8")).toBe(installationBefore);
+  });
+
+  it("rejects symlinked preserved remote state without touching its external target", async () => {
+    const root = await makeTempRoot();
+    const outside = await makeTempRoot();
+    roots.push(root, outside);
+    await ensureDataLayout(root);
+    const paths = remoteStatePaths(root);
+    const externalTarget = path.join(outside, "external-trust.json");
+    const externalBytes = "external-target-must-not-change\n";
+    await writeFile(externalTarget, externalBytes, "utf8");
+    await rm(paths.trustIndex);
+    await symlink(externalTarget, paths.trustIndex);
+
+    await expect(runMigrations(root)).rejects.toThrow(/owned regular file/u);
+    expect(await readFile(externalTarget, "utf8")).toBe(externalBytes);
+  });
   it("migrates legacy orchestrator decisions, prompt sections, and sessions", async () => {
     const root = await makeTempRoot();
     roots.push(root);
