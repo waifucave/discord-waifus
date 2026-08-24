@@ -224,6 +224,7 @@ One object per installation public key. SQLite tables:
 - installation_id_hash primary key
 - installation_public_key
 - credential_epoch
+- current_certificate, containing the exact bounded canonical certificate bytes
 - current_certificate_serial
 - current_certificate_signing_key_id
 - certificate_expires_at
@@ -249,6 +250,20 @@ One object per installation public key. SQLite tables:
 - nonce_hash primary key
 - expires_at
 
+**certificate_renewal**
+
+- previous_certificate_serial primary key
+- previous_certificate_hash
+- previous_credential_epoch
+- renewed_certificate, containing the exact bounded canonical replacement bytes
+- expires_at, equal to the prior certificate expiry
+
+The current certificate bytes and one renewal result per prior serial are persisted transactionally
+with the credential-epoch advance. Concurrent renewals and retries after a lost response therefore
+return the byte-identical replacement certificate without advancing the epoch twice. The retry row
+is accepted only for the exact prior certificate hash/epoch and is removed once that prior
+certificate expires.
+
 **quota_bucket**
 
 - bucket_name
@@ -257,6 +272,29 @@ One object per installation public key. SQLite tables:
 - primary key over bucket_name and window_start
 
 InstallationDO serializes activation, renewal, suspension, nonce, and per-installation quotas.
+
+### ActivationDO
+
+One short-lived object per activation ID, named from **HMAC(routingKey, activationId)**. This is the
+minimum routing index required because the unsigned browser completion knows the random activation
+ID but never receives the installation public key or stable InstallationDO name. SQLite table:
+
+**activation_route**
+
+- activation_id_hash primary key
+- installation_id_hash
+- state enum: prepared, active, completed, expired
+- expires_at
+- completed_at nullable
+
+It never stores the plaintext activation ID, installation public key, helper nonce, browser nonce,
+Turnstile token, or certificate. Begin first reserves this route, then InstallationDO atomically
+opens/replaces its authoritative challenge, then the route becomes active. The activation hash is
+the idempotent saga identity. A prepared route cannot consume Turnstile; retry reconciles it, and an
+alarm deletes it at expiry. Browser completion first proves the route is active, validates and
+immediately discards Turnstile, then ActivationDO forwards only keyed hashes plus an HMAC-authenticated
+internal binding to the authoritative InstallationDO. Replacement makes an older route harmless
+because InstallationDO accepts completion only for its one current activation hash.
 
 ### InvitationDO
 
@@ -729,7 +767,7 @@ Expected: tests pass and dry run produces a Worker bundle without deploying.
 
 **Files:**
 
-- Create: **worker/src/auth/**, **worker/src/durable/installation.ts**, **worker/src/turnstile.ts**, **worker/src/activationPage.ts**
+- Create: **worker/src/auth/**, **worker/src/durable/activation.ts**, **worker/src/durable/installation.ts**, **worker/src/turnstile.ts**, **worker/src/activationPage.ts**
 - Create SQLite migrations and test fixtures
 
 - [ ] Consume the helper-produced cross-language goldens for exact canonical certificate bytes and
@@ -751,7 +789,9 @@ Expected: tests pass and dry run produces a Worker bundle without deploying.
   `crypto.getRandomValues` nonce, exact completion POST/status UI, and zero fragment/token/nonce leak
   to query/path/Referer/history/console/DOM/server log/localhost. Completion/poll carry IDs only in
   bounded bodies.
-- [ ] Implement InstallationDO schema and migrations.
+- [ ] Implement ActivationDO and InstallationDO schemas, the idempotent begin-routing saga, expiry
+  alarms, and replacement reconciliation. Prove browser completion can locate only the exact active
+  challenge without learning or accepting an installation key.
 - [ ] Verify Turnstile server-side and discard the token immediately.
 - [ ] Issue 365-day Ed25519 certificates and proof-of-key renewal inside 30 days.
 - [ ] Add Worker signing-key ring support:
@@ -761,6 +801,14 @@ Expected: tests pass and dry run produces a Worker bundle without deploying.
     helper release must pin the next key in that profile's `WORKER_KEYS.lock` before accepting a
     response/certificate signed by it, and the Worker keeps signing with the old key while any
     supported helper lacks the next key.
+  - The signed **201 activation-begin** body always contains `workerKeys` after `expiresAt`. It is an
+    exact one-to-eight-entry array whose first entry is the current key and whose remaining entries
+    are next keys sorted by `keyId`. Each entry has the exact canonical field order and shape
+    `{"state":"current"|"next","keyId":"...","publicKey":"<32-byte canonical base64url>"}`.
+    The current entry must name the response-signing key and exactly match the helper's pinned
+    bytes. A next entry is syntax/namespace/duplicate checked; if its ID is already compiled into
+    the helper, its bytes must also match. Unpinned advertised keys are discarded after validation
+    and are never inserted into the live profile, persisted, or accepted for signatures.
   - A retired key remains verify-only until the later of the 180-day coordination compatibility
     window and 365 days plus 60 seconds after its last certificate issuance; no still-valid
     certificate becomes unverifiable during rotation.
