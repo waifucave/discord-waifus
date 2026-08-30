@@ -29,6 +29,7 @@ import {
 } from "../storage/operationStore.js";
 import { auditActorFromPrincipal } from "./adminOperations.js";
 import { ApiError } from "./errors.js";
+import { getInternalDispatchContext } from "./internalDispatch.js";
 import { effectiveRequestPolicy, type RetryClass } from "./routePolicy.js";
 import type { AssistantDelegation } from "./requestPrincipal.js";
 
@@ -45,6 +46,7 @@ export type MutationRequestContext = {
   readonly actor: AuditActorV1;
   readonly delegation?: AssistantDelegation;
   readonly beforeRevision?: string;
+  abortCleanup?: () => void;
   finalizationAttempted: boolean;
 };
 
@@ -61,6 +63,32 @@ export function installMutationHandling(
 ): void {
   const now = options.now ?? (() => BigInt(Math.floor(Date.now() / 1000)));
   const random = options.randomBytes ?? randomBytes;
+  const markAbortedUnknown = async (context: MutationRequestContext): Promise<void> => {
+    if (context.finalizationAttempted) return;
+    context.finalizationAttempted = true;
+    context.abortCleanup?.();
+    delete context.abortCleanup;
+    try {
+      await options.operationStore.markUnknown(context.operationId);
+      await options.auditStore.append(buildAuditRecord({
+        actor: context.actor,
+        delegation: context.delegation,
+        action: context.action,
+        resource: context.resource,
+        requestId: context.requestId,
+        idempotencyKeyHash: context.idempotencyKeyHash,
+        operationId: context.operationId,
+        beforeRevision: context.beforeRevision,
+        outcome: "unknown",
+        now,
+        random
+      }));
+    } catch {
+      // The client is already gone, so there is no safe response channel. OperationStore's boot
+      // normalization also converts any abandoned prepared receipt to outcome_unknown after a
+      // restart; keep this request-abort hook best-effort and secret-free.
+    }
+  };
 
   app.addHook("preParsing", async (request, _reply, payload) => {
     const policy = effectiveRequestPolicy(request);
@@ -281,12 +309,33 @@ export function installMutationHandling(
       ...(beforeRevision ? { beforeRevision } : {}),
       finalizationAttempted: false
     };
+    const internalSignal = getInternalDispatchContext()?.signal;
+    if (internalSignal) {
+      const context = request.mutationContext;
+      const onAbort = (): void => {
+        void markAbortedUnknown(context);
+      };
+      internalSignal.addEventListener("abort", onAbort, { once: true });
+      request.mutationContext.abortCleanup = () => {
+        internalSignal.removeEventListener("abort", onAbort);
+      };
+    }
+    if (request.raw.aborted || internalSignal?.aborted) {
+      await markAbortedUnknown(request.mutationContext);
+      return reply;
+    }
+  });
+
+  app.addHook("onRequestAbort", async (request) => {
+    if (request.mutationContext) await markAbortedUnknown(request.mutationContext);
   });
 
   app.addHook("onSend", async (request, reply, payload) => {
     const context = request.mutationContext;
     if (!context || context.finalizationAttempted) return payload;
     context.finalizationAttempted = true;
+    context.abortCleanup?.();
+    delete context.abortCleanup;
     const statusCode = reply.statusCode;
     const parsedPayload = parseJsonPayload(payload);
     const auditOutcome = statusCode === 409
