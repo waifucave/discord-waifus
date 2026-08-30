@@ -139,6 +139,12 @@ export class WipcParentAuthSession {
     }
   }
 
+  close(): void {
+    this.#clearCandidate();
+    erase(this.#parentCapability);
+    this.#parentCapability = null;
+  }
+
   #requireCapability(): Buffer {
     if (!this.#parentCapability) {
       authError(

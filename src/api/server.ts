@@ -1905,25 +1905,35 @@ async function diagnosticBundle(storage: StorageService, runtime: unknown) {
   };
 }
 
-async function resolveStaticDir(configured?: string): Promise<string | undefined> {
-  const bundledCandidates = [
+export type ResolvedStaticDir = {
+  readonly path: string;
+  readonly source: "bundled" | "custom";
+};
+
+export async function resolveStaticDir(configured?: string): Promise<ResolvedStaticDir | undefined> {
+  const bundledCandidates: ResolvedStaticDir[] = [
     // Default to the frontend bundled with the installed package, resolved
     // relative to this module rather than process.cwd(), so `waifus start`
     // serves the dashboard no matter which directory it was launched from.
     // (dist/api/server.js and src/api/server.ts both sit two levels under the
     // package root, where dist-frontend/ lives.)
-    path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "dist-frontend"),
+    {
+      path: path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "dist-frontend"),
+      source: "bundled"
+    },
     // Backwards-compatible fallback for setups that relied on the working directory.
-    path.resolve(process.cwd(), "dist-frontend")
+    { path: path.resolve(process.cwd(), "dist-frontend"), source: "bundled" }
   ];
-  const candidates = configured ? [path.resolve(configured), ...bundledCandidates] : bundledCandidates;
+  const candidates: ResolvedStaticDir[] = configured
+    ? [{ path: path.resolve(configured), source: "custom" }, ...bundledCandidates]
+    : bundledCandidates;
   const seen = new Set<string>();
   for (const candidate of candidates) {
-    if (seen.has(candidate)) {
+    if (seen.has(candidate.path)) {
       continue;
     }
-    seen.add(candidate);
-    if (await exists(candidate)) {
+    seen.add(candidate.path);
+    if (await exists(candidate.path)) {
       return candidate;
     }
   }
@@ -1937,10 +1947,11 @@ async function tryServeFrontend(
   overrideUrl?: string
 ): Promise<boolean> {
   const config = await loadAppConfig(dataRoot);
-  const staticDir = await resolveStaticDir(config.frontend.staticDir);
-  if (!staticDir) {
+  const resolvedStaticDir = await resolveStaticDir(config.frontend.staticDir);
+  if (!resolvedStaticDir) {
     return false;
   }
+  const staticDir = resolvedStaticDir.path;
   const url = new URL(overrideUrl ?? request.url, "http://waifus.local");
   const requestedPath = decodeURIComponent(url.pathname);
   const relativePath = requestedPath === "/" ? "index.html" : requestedPath.replace(/^\/+/, "");
