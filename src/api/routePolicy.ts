@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyRequest, HTTPMethods } from "fastify";
 import { ApiError, badRequest } from "./errors.js";
 import {
+  bindInternalDispatchAbort,
   getInternalDispatchContext,
   registerInternalDispatchReceiver
 } from "./internalDispatch.js";
@@ -203,11 +204,12 @@ export function installRoutePolicy(
     };
   });
 
-  app.addHook("onRequest", async (request) => {
+  app.addHook("onRequest", async (request, reply) => {
     if (containsForgedPrincipalHeader(request)) {
       throw badRequest("Client-supplied principal metadata is forbidden.");
     }
     const internal = getInternalDispatchContext();
+    if (internal?.signal) bindInternalDispatchAbort(request, reply, internal.signal);
     let principal: RequestPrincipal;
     if (internal) {
       principal = internal.principal;
