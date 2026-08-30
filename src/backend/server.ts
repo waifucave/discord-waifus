@@ -23,10 +23,20 @@ import {
   GuildRolesFileSchema,
   createEmptyRevisionedFile
 } from "../shared/schemas/domain.js";
-import { createApiServer } from "../api/server.js";
+import { createApiServer, resolveStaticDir } from "../api/server.js";
 import { createLogger, Logger } from "./logger.js";
 import { runMigrations } from "./migrations.js";
 import { RuntimeState, createRuntimeState } from "./runtime.js";
+import {
+  RemoteAccessService,
+  type HelperSupervisorController,
+  type ResolvedRemoteDashboard
+} from "./remoteAccess/remoteAccessService.js";
+import { RemoteRequestBridge } from "./remoteAccess/requestBridge.js";
+import { HelperSupervisor } from "../remote/helperSupervisor.js";
+import { HelperSupervisorError } from "../remote/helperTypes.js";
+import { ProtectedHelperProcessFactory } from "../remote/helperClient.js";
+import { loadBundledDashboardManifest } from "../remote/dashboardManifest.js";
 
 export type StartBackendOptions = {
   dataRoot: string;
@@ -36,11 +46,17 @@ export type StartBackendOptions = {
   logger?: Logger;
   createDiscordGateway?: (options: DiscordJsGatewayOptions) => DiscordGatewayFacade;
   discordRetryDelaysMs?: number[];
+  /** Internal dependency hooks used by helper packaging and lifecycle tests. */
+  remoteAccess?: {
+    supervisor?: HelperSupervisorController;
+    dashboard?: ResolvedRemoteDashboard;
+  };
 };
 
 export type RunningBackend = {
   url: string;
   runtime: RuntimeState;
+  remoteAccess: RemoteAccessService;
   close: () => Promise<void>;
 };
 
@@ -69,6 +85,35 @@ export async function startBackend(options: StartBackendOptions): Promise<Runnin
       active: 0,
       configuredGuilds: await countConfiguredGuilds(storage)
     }
+  });
+  const dashboard = options.remoteAccess?.dashboard ?? await resolveRemoteDashboard(
+    config.frontend.staticDir,
+    logger
+  );
+  const helperSupervisor = options.remoteAccess?.supervisor ?? new HelperSupervisor({
+    role: "host",
+    dataRoot: options.dataRoot,
+    appVersion: packageVersion,
+    buildId: dashboard.buildId,
+    controlProfile: 1,
+    runtimePurpose: "normal",
+    packageResolver: {
+      resolve: async () => {
+        throw new HelperSupervisorError(
+          "helper_missing",
+          "No verified ts-connect helper package is installed for this target."
+        );
+      }
+    },
+    processFactory: new ProtectedHelperProcessFactory(),
+    logger
+  });
+  const remoteAccess = new RemoteAccessService({
+    dataRoot: options.dataRoot,
+    runtime,
+    effectiveHost: host,
+    dashboard,
+    supervisor: helperSupervisor
   });
 
   const createDiscordGateway =
@@ -335,10 +380,26 @@ export async function startBackend(options: StartBackendOptions): Promise<Runnin
       listenerHost: host,
       port,
       mode: options.mode ?? "start"
+    },
+    remoteTrust: {
+      isAuthorized: (principal) => remoteAccess.isAuthorized(principal)
     }
+  });
+  const remoteRequestBridge = new RemoteRequestBridge(app);
+  remoteAccess.attachRequestBridge(remoteRequestBridge);
+  let remoteRuntimeWriteQueue: Promise<void> = Promise.resolve();
+  const unsubscribeRemoteAccess = remoteAccess.subscribe(() => {
+    remoteRuntimeWriteQueue = remoteRuntimeWriteQueue
+      .then(() => writeRuntimeFiles(options.dataRoot, runtime))
+      .catch((error) => {
+        logger.warn("Remote runtime status persistence failed", {
+          message: error instanceof Error ? error.message : String(error)
+        });
+      });
   });
 
   await app.listen({ host, port });
+  await remoteAccess.start();
   await writeRuntimeFiles(options.dataRoot, runtime);
   logger.info("Backend started", { url: `http://${host}:${port}`, dataRoot: options.dataRoot });
   void enqueueReloadRuntime("startup").catch((error) => {
@@ -349,12 +410,20 @@ export async function startBackend(options: StartBackendOptions): Promise<Runnin
   return {
     url: `http://${host}:${port}`,
     runtime,
+    remoteAccess,
     close: async () => {
       closing = true;
       clearDiscordRetry();
       const shutdownStartedAt = Date.now();
-      logger.info("Shutdown step start", { step: "orchestrator.stop" });
+      logger.info("Shutdown step start", { step: "remoteAccess.close" });
       let stepStartedAt = Date.now();
+      await remoteAccess.close();
+      unsubscribeRemoteAccess();
+      await remoteRuntimeWriteQueue;
+      logger.info("Shutdown step done", { step: "remoteAccess.close", ms: Date.now() - stepStartedAt });
+
+      logger.info("Shutdown step start", { step: "orchestrator.stop" });
+      stepStartedAt = Date.now();
       await runtimeOrchestrator?.stop();
       logger.info("Shutdown step done", { step: "orchestrator.stop", ms: Date.now() - stepStartedAt });
 
@@ -374,6 +443,44 @@ export async function startBackend(options: StartBackendOptions): Promise<Runnin
       logger.info("Backend stopped", { dataRoot: options.dataRoot, totalMs: Date.now() - shutdownStartedAt });
     }
   };
+}
+
+async function resolveRemoteDashboard(
+  configuredStaticDir: string | undefined,
+  logger: Logger
+): Promise<ResolvedRemoteDashboard> {
+  const resolved = await resolveStaticDir(configuredStaticDir);
+  if (!resolved) {
+    return {
+      path: "",
+      source: "custom",
+      buildId: "dashboard-unavailable"
+    };
+  }
+  if (resolved.source === "custom") {
+    return {
+      ...resolved,
+      buildId: "custom-dashboard"
+    };
+  }
+  try {
+    const manifest = await loadBundledDashboardManifest(path.dirname(resolved.path));
+    return {
+      ...resolved,
+      buildId: manifest.buildId
+    };
+  } catch (error) {
+    logger.warn("Bundled dashboard manifest verification failed", {
+      code: error && typeof error === "object" && "code" in error
+        ? String((error as { code: unknown }).code)
+        : "dashboard_unavailable"
+    });
+    return {
+      path: resolved.path,
+      source: "custom",
+      buildId: "dashboard-unavailable"
+    };
+  }
 }
 
 function offlineDiscordStatus(warnings: string[] = []): DiscordRuntimeStatus {

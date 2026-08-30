@@ -3,7 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { createApiServer } from "../src/api/server.js";
+import { createApiServer, resolveStaticDir } from "../src/api/server.js";
 import { createRuntimeState } from "../src/backend/runtime.js";
 import { ensureDataLayout } from "../src/config/layout.js";
 import { CURRENT_SCHEMA_VERSION } from "../src/shared/schemas/common.js";
@@ -127,6 +127,13 @@ describe("Backend API", () => {
     }
 
     const { app, root } = await makeApp();
+    const staleStaticDir = path.join(
+      root,
+      "missing-old-package",
+      "@starlight-ai",
+      "discord-waifus",
+      "dist-frontend"
+    );
     try {
       const current = await app.inject({ method: "GET", url: "/api/config" });
       await app.inject({
@@ -135,9 +142,14 @@ describe("Backend API", () => {
         payload: {
           ...current.json(),
           frontend: {
-            staticDir: path.join(root, "missing-old-package", "@starlight-ai", "discord-waifus", "dist-frontend")
+            staticDir: staleStaticDir
           }
         }
+      });
+
+      await expect(resolveStaticDir(staleStaticDir)).resolves.toEqual({
+        path: distFrontend,
+        source: "bundled"
       });
 
       const res = await app.inject({ method: "GET", url: "/" });
@@ -1161,6 +1173,10 @@ describe("Backend API", () => {
       const staticDir = path.join(root, "static");
       await mkdir(staticDir, { recursive: true });
       await writeFile(path.join(staticDir, "index.html"), "<div id=\"root\">ok</div>");
+      await expect(resolveStaticDir(staticDir)).resolves.toEqual({
+        path: staticDir,
+        source: "custom"
+      });
       const current = await app.inject({ method: "GET", url: "/api/config" });
       await app.inject({
         method: "PUT",

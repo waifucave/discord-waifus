@@ -1,6 +1,6 @@
 import net from "node:net";
 import path from "node:path";
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { startBackend, type RunningBackend } from "../src/backend/server.js";
 import { createRuntimeState, RuntimeStateSchema } from "../src/backend/runtime.js";
@@ -15,6 +15,12 @@ import type {
 import type { ContextMessage } from "../src/orchestration/context.js";
 import { createRevisionedBase } from "../src/shared/schemas/common.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
+import { remoteStatePaths } from "../src/remote/paths.js";
+import type {
+  HelperRuntimeStatus,
+  HelperSupervisorSnapshot
+} from "../src/remote/helperTypes.js";
+import type { HelperSupervisorController } from "../src/backend/remoteAccess/remoteAccessService.js";
 
 let roots: string[] = [];
 let backends: RunningBackend[] = [];
@@ -61,7 +67,179 @@ describe("remote-access runtime summary", () => {
       remoteAccess: { ...runtime.remoteAccess, directState: "direct" }
     })).toThrow(/inactive runtime state/u);
   });
+
+  it("integrates disabled remote access without launching the helper", async () => {
+    const root = await initializedRemoteRoot();
+    const supervisor = new FakeRemoteSupervisor();
+    const backend = await startRemoteTestBackend(root, supervisor);
+
+    expect(supervisor.startCalls).toBe(0);
+    expect(backend.runtime.remoteAccess).toEqual({
+      version: 1,
+      enabled: false,
+      helperState: "disabled",
+      activationState: "activation_required",
+      controlState: "inactive",
+      directState: "inactive",
+      trustedDeviceCount: 0,
+      lastDirectAt: null,
+      lastErrorCode: null
+    });
+  });
+
+  it("listens before starting the helper and mirrors its sanitized status", async () => {
+    const root = await initializedRemoteRoot();
+    await enableRemoteAccess(root);
+    const port = await freePort();
+    let healthDuringHelperStart = 0;
+    const supervisor = new FakeRemoteSupervisor(remoteSupervisorSnapshot({
+      runtimeStatus: remoteHelperStatus({
+        directState: "direct",
+        lastDirectAt: "100" as never
+      })
+    }));
+    supervisor.onStart = async () => {
+      healthDuringHelperStart = (await fetch(`http://127.0.0.1:${port}/api/health`)).status;
+    };
+
+    const backend = await startRemoteTestBackend(root, supervisor, { port });
+
+    expect(healthDuringHelperStart).toBe(200);
+    expect(supervisor.startCalls).toBe(1);
+    expect(backend.runtime.remoteAccess).toMatchObject({
+      enabled: true,
+      helperState: "ready",
+      directState: "direct",
+      lastDirectAt: "100"
+    });
+  });
+
+  it("keeps the local host online when helper startup degrades", async () => {
+    const root = await initializedRemoteRoot();
+    await enableRemoteAccess(root);
+    const supervisor = new FakeRemoteSupervisor();
+    supervisor.startError = Object.assign(new Error("missing verified helper"), {
+      code: "helper_missing"
+    });
+    const backend = await startRemoteTestBackend(root, supervisor);
+
+    expect((await fetch(`${backend.url}/api/health`)).status).toBe(200);
+    expect(backend.runtime.remoteAccess).toMatchObject({
+      enabled: true,
+      helperState: "failed",
+      lastErrorCode: "helper_missing"
+    });
+  });
+
+  it("uses the effective runtime host for the loopback prerequisite", async () => {
+    const root = await initializedRemoteRoot();
+    await enableRemoteAccess(root);
+    const supervisor = new FakeRemoteSupervisor();
+    const backend = await startRemoteTestBackend(root, supervisor, { host: "0.0.0.0" });
+
+    expect(supervisor.startCalls).toBe(0);
+    expect(backend.runtime.remoteAccess).toMatchObject({
+      enabled: true,
+      helperState: "failed",
+      lastErrorCode: "bind_not_loopback"
+    });
+  });
+
+  it("stops the helper while Fastify is still serving, then closes HTTP", async () => {
+    const root = await initializedRemoteRoot();
+    await enableRemoteAccess(root);
+    const port = await freePort();
+    let healthDuringHelperClose = 0;
+    const supervisor = new FakeRemoteSupervisor();
+    supervisor.onClose = async () => {
+      healthDuringHelperClose = (await fetch(`http://127.0.0.1:${port}/api/health`)).status;
+    };
+    const backend = await startRemoteTestBackend(root, supervisor, { port });
+
+    await backend.close();
+    backends = backends.filter((running) => running !== backend);
+
+    expect(supervisor.closeCalls).toBe(1);
+    expect(healthDuringHelperClose).toBe(200);
+    await expect(fetch(`http://127.0.0.1:${port}/api/health`)).rejects.toThrow();
+  });
 });
+
+class FakeRemoteSupervisor implements HelperSupervisorController {
+  startCalls = 0;
+  reconnectCalls = 0;
+  closeCalls = 0;
+  startError: Error | undefined;
+  onStart: (() => Promise<void>) | undefined;
+  onClose: (() => Promise<void>) | undefined;
+  readonly #listeners = new Set<(snapshot: HelperSupervisorSnapshot) => void>();
+
+  constructor(private current = remoteSupervisorSnapshot()) {}
+
+  snapshot(): HelperSupervisorSnapshot {
+    return this.current;
+  }
+
+  subscribe(listener: (snapshot: HelperSupervisorSnapshot) => void): () => void {
+    this.#listeners.add(listener);
+    return () => this.#listeners.delete(listener);
+  }
+
+  async start(): Promise<void> {
+    this.startCalls += 1;
+    await this.onStart?.();
+    if (this.startError) throw this.startError;
+    for (const listener of this.#listeners) listener(this.current);
+  }
+
+  async reconnect(): Promise<void> {
+    this.reconnectCalls += 1;
+  }
+
+  async close(): Promise<void> {
+    this.closeCalls += 1;
+    await this.onClose?.();
+  }
+}
+
+function remoteHelperStatus(
+  overrides: Partial<HelperRuntimeStatus> = {}
+): HelperRuntimeStatus {
+  return {
+    activationState: "active",
+    controlState: "connected",
+    directState: "inactive",
+    lastDirectAt: null,
+    lastErrorCode: null,
+    ...overrides
+  };
+}
+
+function remoteSupervisorSnapshot(
+  overrides: Partial<HelperSupervisorSnapshot> = {}
+): HelperSupervisorSnapshot {
+  return {
+    state: "ready",
+    helperVersion: "0.1.0",
+    releaseSequence: "42" as never,
+    forkCommit: "0123456789abcdef0123456789abcdef01234567",
+    target: { os: "darwin", arch: "arm64" },
+    protocol: { major: 1, minor: 0 },
+    capabilities: [
+      "waifus.browser-context.v1",
+      "waifus.dashboard.manifest.v1",
+      "waifus.http.v1",
+      "waifus.principal.v1",
+      "waifus.sse.cursor.v1",
+      "waifus.stream.cancel.v1"
+    ],
+    runtimeStatus: remoteHelperStatus(),
+    lastErrorCode: null,
+    consecutiveFailures: 0,
+    restartScheduled: false,
+    ...overrides
+  };
+}
 
 describe("backend Discord auto-connect retry", () => {
   it("serves HTTP before slow Discord auto-connect completes", async () => {
@@ -329,6 +507,55 @@ async function initializedRootWithOrchestrator(): Promise<string> {
     ) + "\n"
   );
   return root;
+}
+
+async function initializedRemoteRoot(): Promise<string> {
+  const root = await makeTempRoot("waifus-backend-remote-");
+  roots.push(root);
+  await ensureDataLayout(root);
+  return root;
+}
+
+async function enableRemoteAccess(root: string): Promise<void> {
+  const paths = remoteStatePaths(root);
+  const config = JSON.parse(await readFile(paths.hostConfig, "utf8")) as Record<string, unknown>;
+  await writeFile(paths.hostConfig, JSON.stringify({
+    ...config,
+    revision: "1",
+    enabled: true,
+    updatedAt: "1"
+  }, null, 2) + "\n", { mode: 0o600 });
+  const installation = JSON.parse(
+    await readFile(paths.installation, "utf8")
+  ) as Record<string, unknown>;
+  await writeFile(paths.installation, JSON.stringify({
+    ...installation,
+    activationReference: "waifus.activation.v1.test"
+  }, null, 2) + "\n", { mode: 0o600 });
+}
+
+async function startRemoteTestBackend(
+  root: string,
+  supervisor: HelperSupervisorController,
+  options: { port?: number; host?: string } = {}
+): Promise<RunningBackend> {
+  const backend = await startBackend({
+    dataRoot: root,
+    host: options.host ?? "127.0.0.1",
+    port: options.port ?? await freePort(),
+    mode: "test",
+    logger: quietLogger(),
+    remoteAccess: {
+      supervisor,
+      dashboard: {
+        path: path.resolve("dist-frontend"),
+        source: "bundled",
+        buildId: "a".repeat(64)
+      }
+    }
+  });
+  backends.push(backend);
+  return backend;
 }
 
 async function startTestBackend(
