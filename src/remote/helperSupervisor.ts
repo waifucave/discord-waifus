@@ -18,6 +18,7 @@ import {
   HELPER_HELLO_TIMEOUT_MS,
   HELPER_RESTART_DELAYS_MS,
   HelperSupervisorError,
+  parseHelperIdentityStatus,
   parseHelperHello,
   parseHelperRuntimeStatus,
   parseHelperTarget,
@@ -27,6 +28,7 @@ import {
   type HelperActivationCancel,
   type HelperActivationPoll,
   type HelperActivationStart,
+  type HelperIdentityStatus,
   type HelperLaunch,
   type HelperPackageResolver,
   type HelperProcessFactory,
@@ -200,6 +202,7 @@ export class HelperSupervisor {
   #snapshot = initialSnapshot();
   #launch: HelperLaunch | undefined;
   #client: AuthenticatedHelperClient | undefined;
+  #identityStatus: HelperIdentityStatus | undefined;
   #unsubscribeStatus: (() => void) | undefined;
   #attemptPromise: Promise<void> | undefined;
   #restartTimer: TimerHandle | undefined;
@@ -223,6 +226,10 @@ export class HelperSupervisor {
   subscribe(listener: (snapshot: HelperSupervisorSnapshot) => void): () => void {
     this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);
+  }
+
+  identityStatus(): HelperIdentityStatus | null {
+    return this.#identityStatus ? structuredClone(this.#identityStatus) : null;
   }
 
   async start(): Promise<void> {
@@ -356,12 +363,17 @@ export class HelperSupervisor {
         this.#options.controlProfile,
         this.#options.runtimePurpose
       );
+      const identityStatus = parseHelperIdentityStatus(await client.identityStatus());
       if (this.#closing || generation !== this.#generation) {
         await client.close().catch(() => undefined);
         return;
       }
       this.#client = client;
-      const runtimeStatus = parseHelperRuntimeStatus(client.currentStatus());
+      this.#identityStatus = identityStatus;
+      const runtimeStatus = parseHelperRuntimeStatus({
+        ...client.currentStatus(),
+        activationState: identityStatus.activationState
+      });
       this.#unsubscribeStatus = client.subscribeStatus((value) => {
         if (this.#client !== client || this.#closing) return;
         try {

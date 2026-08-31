@@ -64,6 +64,7 @@ export const ROUTE_POLICY_MANIFEST: readonly RoutePolicyDefinition[] = Object.fr
   safe("/api/status"),
   safe("/api/runtime"),
   safe("/api/admin/operations/:operationId"),
+  safe("/api/remote-access"),
   {
     method: "POST",
     path: "/api/remote-access/activation",
@@ -81,6 +82,13 @@ export const ROUTE_POLICY_MANIFEST: readonly RoutePolicyDefinition[] = Object.fr
     auditAction: "remote_access.activation.cancel"
   },
   mutation("PUT", "/api/remote-access", "reconciled", "remote_access.update"),
+  mutation(
+    "POST",
+    "/api/remote-access/reconnect",
+    "reconciled",
+    "remote_access.reconnect"
+  ),
+  safe("/api/remote-access/diagnostics"),
   safe("/api/config", "full_admin", "app_config"),
   mutation("PUT", "/api/config", "reconciled", "config.update", "app_config"),
   mutation("POST", "/api/cache/ocr/clear", "reconciled", "cache.ocr.clear"),

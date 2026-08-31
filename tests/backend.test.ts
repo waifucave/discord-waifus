@@ -180,6 +180,10 @@ class FakeRemoteSupervisor implements HelperSupervisorController {
     return this.current;
   }
 
+  identityStatus() {
+    return null;
+  }
+
   subscribe(listener: (snapshot: HelperSupervisorSnapshot) => void): () => void {
     this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);

@@ -93,6 +93,10 @@ class ActivationSupervisor {
     return this.#snapshot;
   }
 
+  identityStatus() {
+    return null;
+  }
+
   subscribe(listener: (snapshot: HelperSupervisorSnapshot) => void): () => void {
     this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);
@@ -432,8 +436,10 @@ describe("anonymous remote activation API", () => {
 
     await harness.activateInstallation();
     const enabled = await update();
-    expect(enabled.statusCode).toBe(200);
-    expect(enabled.json()).toMatchObject({ revision: "1", enabled: true });
+    expect(enabled.statusCode).toBe(202);
+    expect(enabled.json()).toMatchObject({ status: "accepted" });
+    const after = JSON.parse(await readFile(remoteStatePaths(harness.root).hostConfig, "utf8"));
+    expect(after).toMatchObject({ revision: "1", enabled: true });
     expect(harness.supervisor.startCalls).toBe(1);
   });
 
@@ -452,10 +458,10 @@ describe("anonymous remote activation API", () => {
       payload: { revision, enabled }
     });
 
-    expect((await update("0", true)).statusCode).toBe(200);
+    expect((await update("0", true)).statusCode).toBe(202);
     const started = await beginActivation(harness, browser);
     const operationId = started.json().activationOperationId;
-    expect((await update("1", false)).statusCode).toBe(200);
+    expect((await update("1", false)).statusCode).toBe(202);
     expect(harness.supervisor.stopCalls).toBe(0);
 
     harness.supervisor.pollResult = {

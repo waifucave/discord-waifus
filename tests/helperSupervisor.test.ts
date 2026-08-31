@@ -69,6 +69,12 @@ function helperClient(overrides: Partial<AuthenticatedHelperClient> = {}): Authe
     negotiatedCapabilities: [...REQUIRED_CAPABILITIES],
     currentStatus: () => helperStatus(),
     subscribeStatus: () => () => {},
+    identityStatus: async () => ({
+      activationState: "active",
+      deviceId: "host-device-01",
+      installationFingerprint: Buffer.alloc(16, 0x71).toString("base64url") as never,
+      secretStorage: "keychain"
+    }),
     close: async () => {},
     ...overrides
   };

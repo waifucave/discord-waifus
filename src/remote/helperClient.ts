@@ -32,11 +32,13 @@ import {
   HelperActivationErrorCodeSchema,
   HelperActivationPollSchema,
   HelperActivationStartSchema,
+  HelperIdentityStatusSchema,
   parseHelperRuntimeStatus,
   type AuthenticatedHelperClient,
   type HelperActivationCancel,
   type HelperActivationPoll,
   type HelperActivationStart,
+  type HelperIdentityStatus,
   type HelperLaunch,
   type HelperLaunchRequest,
   type HelperProcessExit,
@@ -49,10 +51,29 @@ const AuthenticateParentResultSchema = z.object({
   helperProof: Base64Url32BytesSchema
 }).strict();
 const HelperCommandFailureSchema = z.object({
-  command: z.enum(["activation_begin", "activation_poll", "activation_cancel"]),
+  command: z.enum([
+    "activation_begin",
+    "activation_poll",
+    "activation_cancel",
+    "identity_status"
+  ]),
   errorCode: HelperActivationErrorCodeSchema,
   ok: z.literal(false),
-  operationId: Base64Url32BytesSchema
+  operationId: Base64Url32BytesSchema.optional()
+}).strict();
+const IdentityStatusWireSchema = z.object({
+  activationState: z.enum(["activation_required", "active", "renewal_due"]),
+  command: z.literal("identity_status"),
+  deviceId: z.string(),
+  installationFingerprint: z.string(),
+  ok: z.literal(true),
+  secretStorage: z.enum([
+    "keychain",
+    "windows_protected_storage",
+    "secret_service",
+    "protected_file_fallback",
+    "unavailable"
+  ])
 }).strict();
 const ActivationBeginWireSchema = z.object({
   command: z.literal("activation_begin"),
@@ -249,7 +270,7 @@ class ProcessHelperClient implements AuthenticatedHelperClient {
   readonly negotiatedProtocol: ProtocolVersion;
   readonly negotiatedCapabilities: readonly string[];
   readonly #socket: Socket;
-  readonly #status: HelperRuntimeStatus;
+  #status: HelperRuntimeStatus;
   readonly #dataRoot: string;
   readonly #role: "host" | "remote";
   #commandTail: Promise<void> = Promise.resolve();
@@ -270,7 +291,7 @@ class ProcessHelperClient implements AuthenticatedHelperClient {
     this.#dataRoot = dataRoot;
     this.#role = role;
     this.#status = Object.freeze(parseHelperRuntimeStatus({
-      activationState: "active",
+      activationState: "activation_required",
       controlState: "inactive",
       directState: "inactive",
       lastDirectAt: null,
@@ -284,6 +305,25 @@ class ProcessHelperClient implements AuthenticatedHelperClient {
 
   subscribeStatus(): () => void {
     return () => {};
+  }
+
+  async identityStatus(): Promise<HelperIdentityStatus> {
+    const result = await this.#command({
+      command: "identity_status",
+      dataRoot: this.#dataRoot,
+      role: this.#role
+    }, IdentityStatusWireSchema, "identity status RESULT");
+    const status = HelperIdentityStatusSchema.parse({
+      activationState: result.activationState,
+      deviceId: result.deviceId,
+      installationFingerprint: result.installationFingerprint,
+      secretStorage: result.secretStorage
+    });
+    this.#status = Object.freeze(parseHelperRuntimeStatus({
+      ...this.#status,
+      activationState: status.activationState
+    }));
+    return status;
   }
 
   async beginActivation(operationId: string): Promise<HelperActivationStart> {
@@ -324,8 +364,8 @@ class ProcessHelperClient implements AuthenticatedHelperClient {
     });
   }
 
-  async #command<T extends { command: string; ok: true; operationId: string }>(
-    command: { command: string; operationId: string } & Record<string, unknown>,
+  async #command<T extends { command: string; ok: true; operationId?: string }>(
+    command: { command: string; operationId?: string } & Record<string, unknown>,
     schema: z.ZodType<T>,
     label: string
   ): Promise<T> {

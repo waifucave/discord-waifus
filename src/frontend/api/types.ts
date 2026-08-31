@@ -459,6 +459,44 @@ export type ProviderCredentialsBody = {
   revision?: number;
 };
 
+export type RemoteAccessDiagnostics = {
+  version: 1;
+  appVersion: string;
+  dashboardBuildId: string;
+  helper: {
+    state: "disabled" | "starting" | "ready" | "degraded" | "failed";
+    version: string | null;
+    releaseSequence: string | null;
+    forkCommit: string | null;
+    target: { os: string; arch: string } | null;
+    protocol: { major: number; minor: number } | null;
+    capabilities: string[];
+    secretStorage:
+      | "keychain"
+      | "windows_protected_storage"
+      | "secret_service"
+      | "protected_file_fallback"
+      | "unavailable"
+      | null;
+  };
+  controlState: "inactive" | "connecting" | "connected" | "reconnecting" | "unavailable";
+  stun: "unknown" | "available" | "unavailable";
+  udp: "unknown" | "available" | "unavailable";
+  portMapping: "unknown" | "available" | "unavailable";
+  directState: "inactive" | "direct" | "reconnecting" | "direct_unavailable";
+  lastTransitionAt: string | null;
+  lastDirectAt: string | null;
+  lastErrorCode: string | null;
+  prohibited: {
+    derpRouteSelections: string;
+    derpApplicationBytes: string;
+    peerRelayRouteSelections: string;
+    peerRelayApplicationBytes: string;
+    genericProxyRequests: string;
+    genericProxyBytes: string;
+  };
+};
+
 export type DiagnosticBundle = {
   generatedAt: string;
   runtime: RuntimeState;
@@ -488,6 +526,7 @@ export type DiagnosticBundle = {
     promptLength: number;
   };
   memories: { revision: number; count: number };
+  remoteAccess?: RemoteAccessDiagnostics;
 };
 
 export type ApiErrorBody = {
