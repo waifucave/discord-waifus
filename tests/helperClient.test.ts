@@ -181,6 +181,13 @@ describe("protected helper process client", () => {
     const client = await launch.authenticated;
     const operationId = Buffer.alloc(32, 0x61).toString("base64url");
 
+    await expect(client.identityStatus()).resolves.toEqual({
+      activationState: "activation_required",
+      deviceId: "host-device-01",
+      installationFingerprint: Buffer.alloc(16, 0x73).toString("base64url"),
+      secretStorage: "keychain"
+    });
+
     const started = await client.beginActivation(operationId);
     expect(started).toEqual({
       operationId,

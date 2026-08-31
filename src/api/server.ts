@@ -1137,7 +1137,8 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   });
   app.get("/api/diagnostics/bundle", async (request) => diagnosticBundle(
     storage,
-    runtimeResponse(options.runtime, request.principal, options.dataRoot)
+    runtimeResponse(options.runtime, request.principal, options.dataRoot),
+    options.remoteAccess ? await options.remoteAccess.diagnostics() : undefined
   ));
   app.get("/api/events", async (request, reply) =>
     sendGlobalEventStream({
@@ -1857,7 +1858,11 @@ async function discordApiFetch(token: string, pathAndQuery: string): Promise<unk
   return parsed;
 }
 
-async function diagnosticBundle(storage: StorageService, runtime: unknown) {
+async function diagnosticBundle(
+  storage: StorageService,
+  runtime: unknown,
+  remoteAccess?: Awaited<ReturnType<RemoteAccessService["diagnostics"]>>
+) {
   const [providers, bots, orchestrator, stageManager, memories] = await Promise.all([
     readProviderCredentials(storage),
     readDiscordBots(storage),
@@ -1905,7 +1910,8 @@ async function diagnosticBundle(storage: StorageService, runtime: unknown) {
     memories: {
       revision: memories.revision,
       count: memories.memories.length
-    }
+    },
+    ...(remoteAccess ? { remoteAccess } : {})
   };
 }
 

@@ -74,6 +74,10 @@ class FakeSupervisor implements HelperSupervisorController {
     return this.#snapshot;
   }
 
+  identityStatus() {
+    return null;
+  }
+
   subscribe(listener: (snapshot: HelperSupervisorSnapshot) => void): () => void {
     this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);

@@ -161,6 +161,17 @@ async function main(capability) {
     const operationId = process.env.FAKE_HELPER_ACTIVATION_MISMATCH === "1"
       ? Buffer.alloc(32, 0x56).toString("base64url")
       : activation.operationId;
+    if (activation.command === "identity_status") {
+      socket.write(frame(RESULT, canonicalJson({
+        activationState: "activation_required",
+        command: "identity_status",
+        deviceId: "host-device-01",
+        installationFingerprint: Buffer.alloc(16, 0x73).toString("base64url"),
+        ok: true,
+        secretStorage: "keychain"
+      })));
+      continue;
+    }
     if (activation.command === "activation_begin") {
       socket.write(frame(RESULT, canonicalJson({
         command: "activation_begin",

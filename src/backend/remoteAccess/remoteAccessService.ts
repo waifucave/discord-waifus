@@ -8,11 +8,15 @@ import {
   ActivationOperationIdSchema,
   ActivationStartResultSchema,
   ActivationStatusSchema,
+  RemoteAccessDiagnosticsV1Schema,
   RemoteAccessErrorCodeSchema,
+  RemoteAccessStatusV1Schema,
   UpdateRemoteAccessInputV1Schema,
   type ActivationStartResult,
   type ActivationStatus,
   type RemoteAccessConfigV1,
+  type RemoteAccessDiagnosticsV1,
+  type RemoteAccessStatusV1,
   type RemoteAccessErrorCode
 } from "../../shared/schemas/remoteLifecycle.js";
 import { Base64Url32BytesSchema } from "../../shared/schemas/remoteProtocol.js";
@@ -26,6 +30,7 @@ import {
   type HelperActivationCancel,
   type HelperActivationPoll,
   type HelperActivationStart,
+  type HelperIdentityStatus,
   type HelperSupervisorSnapshot
 } from "../../remote/helperTypes.js";
 import { RemoteAccessEvents } from "./events.js";
@@ -41,6 +46,7 @@ const TERMINAL_ACTIVATION_RETENTION_SECONDS = 600n;
 
 export type HelperSupervisorController = {
   snapshot: () => HelperSupervisorSnapshot;
+  identityStatus: () => HelperIdentityStatus | null;
   subscribe: (listener: (snapshot: HelperSupervisorSnapshot) => void) => () => void;
   start: () => Promise<void>;
   stop: () => Promise<void>;
@@ -88,6 +94,24 @@ export class RemoteAccessServiceUnavailableError extends Error {
   constructor() {
     super("Remote-access state is unavailable.");
     this.name = "RemoteAccessServiceUnavailableError";
+  }
+}
+
+export class RemoteAccessInactiveError extends Error {
+  constructor() {
+    super("Remote access is not active.");
+    this.name = "RemoteAccessInactiveError";
+  }
+}
+
+export class RemoteAccessEnableBlockedError extends Error {
+  constructor(
+    readonly code: "bind_not_loopback" | "custom_dashboard_unsupported"
+  ) {
+    super(code === "bind_not_loopback"
+      ? "Remote access requires the host API to remain loopback-only."
+      : "Remote access requires the bundled dashboard build.");
+    this.name = "RemoteAccessEnableBlockedError";
   }
 }
 
@@ -203,6 +227,7 @@ export class RemoteAccessService {
   readonly #now: () => number;
   readonly #randomBytes: (size: number) => Uint8Array;
   readonly #activationOperations = new Map<string, ActivationOperation>();
+  #lastVerifiedHelperSnapshot: HelperSupervisorSnapshot | undefined;
   #state: RemoteAccessPersistedState | undefined;
   #summary: RemoteAccessRuntimeSummary | undefined;
   #unsubscribeSupervisor: (() => void) | undefined;
@@ -250,6 +275,7 @@ export class RemoteAccessService {
     this.#subscribeSupervisor();
     try {
       await this.#options.supervisor.start();
+      this.#rememberHelperSnapshot(this.#options.supervisor.snapshot());
     } catch (error) {
       this.#unsubscribeSupervisor?.();
       this.#unsubscribeSupervisor = undefined;
@@ -285,9 +311,94 @@ export class RemoteAccessService {
 
   async reconnect(): Promise<void> {
     if (!this.#started || this.#closed || !this.#summary?.enabled) {
-      throw new Error("Remote access is not active.");
+      throw new RemoteAccessInactiveError();
     }
     await this.#options.supervisor.reconnect();
+    this.#rememberHelperSnapshot(this.#options.supervisor.snapshot());
+  }
+
+  async getStatus(): Promise<RemoteAccessStatusV1> {
+    const state = this.#requireState();
+    const identity = await this.#ensureIdentityStatus();
+    const summary = this.getRuntimeSummary();
+    const helper = this.#lastVerifiedHelperSnapshot ?? this.#options.supervisor.snapshot();
+    return RemoteAccessStatusV1Schema.parse({
+      version: 1,
+      config: state.config,
+      identity: {
+        deviceId: identity.deviceId,
+        installationFingerprint: identity.installationFingerprint
+      },
+      appVersion: this.#options.runtime.packageVersion,
+      dashboardBuildId: this.#options.dashboard.buildId,
+      helperVersion: helper.helperVersion,
+      helperReleaseSequence: helper.releaseSequence,
+      protocol: helper.protocol ?? { major: 1, minor: 0 },
+      capabilities: helper.capabilities,
+      helperState: summary.helperState,
+      activationState: summary.activationState,
+      controlState: summary.controlState,
+      directState: summary.directState,
+      lastDirectAt: summary.lastDirectAt,
+      lastErrorCode: summary.lastErrorCode
+    });
+  }
+
+  async diagnostics(): Promise<RemoteAccessDiagnosticsV1> {
+    let identity = this.#options.supervisor.identityStatus();
+    let diagnosticErrorCode: RemoteAccessErrorCode | null = null;
+    if (!identity) {
+      try {
+        identity = await this.#ensureIdentityStatus();
+      } catch (error) {
+        diagnosticErrorCode = lifecycleErrorCode(error);
+      }
+    }
+    const summary = this.getRuntimeSummary();
+    const helper = this.#lastVerifiedHelperSnapshot ?? this.#options.supervisor.snapshot();
+    const helperState = summary.helperState === "ready" && (
+      helper.helperVersion === null
+      || helper.releaseSequence === null
+      || helper.forkCommit === null
+      || helper.target === null
+      || helper.protocol === null
+      || identity === null
+    )
+      ? "failed"
+      : summary.helperState;
+    return RemoteAccessDiagnosticsV1Schema.parse({
+      version: 1,
+      appVersion: this.#options.runtime.packageVersion,
+      dashboardBuildId: this.#options.dashboard.buildId,
+      helper: {
+        state: helperState,
+        version: helper.helperVersion,
+        releaseSequence: helper.releaseSequence,
+        forkCommit: helper.forkCommit,
+        target: helper.target,
+        protocol: helper.protocol,
+        capabilities: helper.capabilities,
+        secretStorage: identity?.secretStorage ?? null
+      },
+      controlState: summary.controlState,
+      stun: "unknown",
+      udp: "unknown",
+      portMapping: "unknown",
+      directState: summary.directState,
+      lastTransitionAt: null,
+      lastDirectAt: summary.lastDirectAt,
+      lastErrorCode: summary.lastErrorCode
+        ?? diagnosticErrorCode
+        ?? (helperState !== summary.helperState ? "helper_unavailable" : null),
+      prohibited: {
+        derpRouteSelections: "0",
+        derpApplicationBytes: "0",
+        peerRelayRouteSelections: "0",
+        peerRelayApplicationBytes: "0",
+        genericProxyRequests: "0",
+        genericProxyBytes: "0"
+      }
+    });
   }
 
   async beginActivation(actorValue: LocalActivationActor): Promise<ActivationStartResult> {
@@ -302,6 +413,7 @@ export class RemoteAccessService {
     const operationId = this.#newActivationOperationId();
     try {
       await this.#options.supervisor.start();
+      this.#rememberHelperSnapshot(this.#options.supervisor.snapshot());
       const helperResult = await this.#options.supervisor.beginActivation(operationId);
       if (helperResult.operationId !== operationId) {
         throw new HelperSupervisorError(
@@ -441,6 +553,12 @@ export class RemoteAccessService {
     if (input.enabled === true && current.installation.activationReference === null) {
       throw new ActivationRequiredError();
     }
+    if (input.enabled === true && !await this.#effectiveBindIsLoopback()) {
+      throw new RemoteAccessEnableBlockedError("bind_not_loopback");
+    }
+    if (input.enabled === true && this.#options.dashboard.source !== "bundled") {
+      throw new RemoteAccessEnableBlockedError("custom_dashboard_unsupported");
+    }
     const next = await this.#stateStore.updateConfig(input, this.#nowSeconds());
     this.#state = next;
     if (!next.config.enabled) {
@@ -448,7 +566,6 @@ export class RemoteAccessService {
         this.#unsubscribeSupervisor?.();
         this.#unsubscribeSupervisor = undefined;
       }
-      await this.#stopHelperIfInactiveAndIdle();
       this.#publish(inactiveSummary(next));
       return structuredClone(next.config);
     }
@@ -463,11 +580,17 @@ export class RemoteAccessService {
     this.#subscribeSupervisor();
     try {
       await this.#options.supervisor.start();
+      this.#rememberHelperSnapshot(this.#options.supervisor.snapshot());
       this.#publish(snapshotSummary(next, this.#options.supervisor.snapshot()));
     } catch (error) {
       this.#publish(failedSummary(next, lifecycleErrorCode(error)));
     }
     return structuredClone(next.config);
+  }
+
+  async drainDisabledHelper(): Promise<void> {
+    if (!this.#started || this.#closed || this.#state?.config.enabled !== false) return;
+    await this.#stopHelperIfInactiveAndIdle();
   }
 
   async close(): Promise<void> {
@@ -510,6 +633,7 @@ export class RemoteAccessService {
     if (this.#unsubscribeSupervisor) return;
     this.#unsubscribeSupervisor = this.#options.supervisor.subscribe((snapshot) => {
       if (!this.#state || this.#closed || !this.#state.config.enabled) return;
+      this.#rememberHelperSnapshot(snapshot);
       this.#publish(snapshotSummary(this.#state, snapshot));
     });
   }
@@ -618,6 +742,39 @@ export class RemoteAccessService {
     if (!hasPendingActivation) {
       await this.#options.supervisor.stop().catch(() => undefined);
     }
+  }
+
+  #rememberHelperSnapshot(snapshot: HelperSupervisorSnapshot): void {
+    if (
+      snapshot.helperVersion === null
+      || snapshot.releaseSequence === null
+      || snapshot.forkCommit === null
+      || snapshot.target === null
+      || snapshot.protocol === null
+    ) {
+      return;
+    }
+    this.#lastVerifiedHelperSnapshot = structuredClone(snapshot);
+  }
+
+  async #ensureIdentityStatus(): Promise<HelperIdentityStatus> {
+    const cached = this.#options.supervisor.identityStatus();
+    if (cached) return cached;
+    const state = this.#requireState();
+    await this.#options.supervisor.start();
+    const snapshot = this.#options.supervisor.snapshot();
+    this.#rememberHelperSnapshot(snapshot);
+    const identity = this.#options.supervisor.identityStatus();
+    if (!state.config.enabled && !this.#hasPendingActivation()) {
+      await this.#options.supervisor.stop().catch(() => undefined);
+    }
+    if (!identity) throw new RemoteAccessServiceUnavailableError();
+    return identity;
+  }
+
+  #hasPendingActivation(): boolean {
+    return [...this.#activationOperations.values()]
+      .some((operation) => operation.status.state === "pending");
   }
 }
 

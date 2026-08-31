@@ -7,11 +7,14 @@ import {
   DirectConnectionStateSchema,
   HelperLifecycleStateSchema,
   RemoteAccessErrorCodeSchema,
+  SecretStorageKindSchema,
   type RemoteAccessErrorCode
 } from "../shared/schemas/remoteLifecycle.js";
 import {
+  Base64Url16BytesSchema,
   CapabilityNameListSchema,
   ComponentHelloSchema,
+  DeviceIdSchema,
   ProtocolVersionSchema,
   Uint64DecimalSchema,
   type ComponentHello,
@@ -46,6 +49,15 @@ export type HelperRuntimeStatus = Omit<
 > & {
   readonly lastDirectAt: Uint64Decimal | null;
 };
+
+export const HelperIdentityStatusSchema = z.object({
+  activationState: ActivationLifecycleStateSchema,
+  deviceId: DeviceIdSchema,
+  installationFingerprint: Base64Url16BytesSchema,
+  secretStorage: SecretStorageKindSchema
+}).strict();
+
+export type HelperIdentityStatus = z.infer<typeof HelperIdentityStatusSchema>;
 
 export const HelperActivationErrorCodeSchema = z.enum([
   "activation_rejected",
@@ -119,6 +131,7 @@ export type AuthenticatedHelperClient = {
   readonly negotiatedCapabilities: readonly string[];
   currentStatus: () => HelperRuntimeStatus;
   subscribeStatus: (listener: (status: HelperRuntimeStatus) => void) => () => void;
+  identityStatus: () => Promise<HelperIdentityStatus>;
   beginActivation: (operationId: string) => Promise<HelperActivationStart>;
   pollActivation: (operationId: string) => Promise<HelperActivationPoll>;
   cancelActivation: (operationId: string) => Promise<HelperActivationCancel>;
@@ -189,6 +202,10 @@ export class HelperCommandError extends Error {
 
 export function parseHelperRuntimeStatus(value: unknown): HelperRuntimeStatus {
   return HelperRuntimeStatusSchema.parse(value) as HelperRuntimeStatus;
+}
+
+export function parseHelperIdentityStatus(value: unknown): HelperIdentityStatus {
+  return HelperIdentityStatusSchema.parse(value);
 }
 
 export function parseHelperHello(value: unknown): ComponentHello {
