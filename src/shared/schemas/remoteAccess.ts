@@ -761,6 +761,16 @@ export const RemoteAccessInstallationStateV1Schema = z.object({
       message: "Installation vault label must derive from the data-root installation ID."
     });
   }
+  if (
+    value.activationReference !== null
+    && value.activationReference !== `waifus.activation.v1.${value.installationId}`
+  ) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["activationReference"],
+      message: "Activation vault reference must derive from the data-root installation ID."
+    });
+  }
 });
 
 export type RemoteAccessInstallationStateV1 = z.infer<

@@ -40,3 +40,7 @@ export function conflict(message: string, details?: unknown): ApiError {
 export function preconditionRequired(message: string): ApiError {
   return new ApiError(428, message, undefined, "PreconditionRequired");
 }
+
+export function activationRequired(message = "Remote access must be activated before it can be enabled."): ApiError {
+  return new ApiError(428, message, undefined, "ActivationRequired");
+}

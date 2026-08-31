@@ -64,6 +64,23 @@ export const ROUTE_POLICY_MANIFEST: readonly RoutePolicyDefinition[] = Object.fr
   safe("/api/status"),
   safe("/api/runtime"),
   safe("/api/admin/operations/:operationId"),
+  {
+    method: "POST",
+    path: "/api/remote-access/activation",
+    remotePolicy: "local_only",
+    retryClass: "non_replayable",
+    auditAction: "remote_access.activation.begin",
+    persistResponse: false
+  },
+  safe("/api/remote-access/activation/:activationOperationId", "local_only"),
+  {
+    method: "DELETE",
+    path: "/api/remote-access/activation/:activationOperationId",
+    remotePolicy: "local_only",
+    retryClass: "reconciled",
+    auditAction: "remote_access.activation.cancel"
+  },
+  mutation("PUT", "/api/remote-access", "reconciled", "remote_access.update"),
   safe("/api/config", "full_admin", "app_config"),
   mutation("PUT", "/api/config", "reconciled", "config.update", "app_config"),
   mutation("POST", "/api/cache/ocr/clear", "reconciled", "cache.ocr.clear"),

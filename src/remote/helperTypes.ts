@@ -1,5 +1,7 @@
 import { z } from "zod";
 import {
+  ActivationOperationIdSchema,
+  ActivationVerificationUrlSchema,
   ActivationLifecycleStateSchema,
   ControlConnectionStateSchema,
   DirectConnectionStateSchema,
@@ -21,6 +23,7 @@ import {
 import { HelperTargetSchema, type HelperTarget } from "../shared/schemas/remoteAccess.js";
 
 export const HELPER_HELLO_TIMEOUT_MS = 5_000;
+export const HELPER_COMMAND_TIMEOUT_MS = 30_000;
 export const HELPER_GRACEFUL_DRAIN_MS = 20_000;
 export const HELPER_FAILURE_WINDOW_MS = 5 * 60_000;
 export const HELPER_FAILURE_LIMIT = 10;
@@ -43,6 +46,49 @@ export type HelperRuntimeStatus = Omit<
 > & {
   readonly lastDirectAt: Uint64Decimal | null;
 };
+
+export const HelperActivationErrorCodeSchema = z.enum([
+  "activation_rejected",
+  "activation_unavailable",
+  "certificate_invalid",
+  "helper_unavailable",
+  "worker_quota_exhausted"
+]);
+
+export type HelperActivationErrorCode = z.infer<typeof HelperActivationErrorCodeSchema>;
+
+export const HelperActivationStartSchema = z.object({
+  operationId: ActivationOperationIdSchema,
+  verificationUrl: ActivationVerificationUrlSchema,
+  expiresAt: Uint64DecimalSchema
+}).strict();
+
+export type HelperActivationStart = z.infer<typeof HelperActivationStartSchema>;
+
+const HelperActivationPollBaseShape = {
+  operationId: ActivationOperationIdSchema,
+  expiresAt: Uint64DecimalSchema
+};
+
+export const HelperActivationPollSchema = z.discriminatedUnion("state", [
+  z.object({ ...HelperActivationPollBaseShape, state: z.literal("pending") }).strict(),
+  z.object({ ...HelperActivationPollBaseShape, state: z.literal("completed") }).strict(),
+  z.object({ ...HelperActivationPollBaseShape, state: z.literal("expired") }).strict(),
+  z.object({
+    ...HelperActivationPollBaseShape,
+    state: z.literal("failed"),
+    errorCode: HelperActivationErrorCodeSchema
+  }).strict()
+]);
+
+export type HelperActivationPoll = z.infer<typeof HelperActivationPollSchema>;
+
+export const HelperActivationCancelSchema = z.object({
+  operationId: ActivationOperationIdSchema,
+  cancelled: z.literal(true)
+}).strict();
+
+export type HelperActivationCancel = z.infer<typeof HelperActivationCancelSchema>;
 
 export type VerifiedHelperSelection = {
   readonly binaryPath: string;
@@ -73,6 +119,9 @@ export type AuthenticatedHelperClient = {
   readonly negotiatedCapabilities: readonly string[];
   currentStatus: () => HelperRuntimeStatus;
   subscribeStatus: (listener: (status: HelperRuntimeStatus) => void) => () => void;
+  beginActivation: (operationId: string) => Promise<HelperActivationStart>;
+  pollActivation: (operationId: string) => Promise<HelperActivationPoll>;
+  cancelActivation: (operationId: string) => Promise<HelperActivationCancel>;
   close: () => Promise<void>;
 };
 
@@ -83,6 +132,7 @@ export type HelperProcessExit = {
 
 export type HelperLaunchRequest = {
   readonly role: HelperRole;
+  readonly dataRoot: string;
   readonly binaryPath: string;
   readonly argv: readonly string[];
   readonly environment: Readonly<Record<string, string>>;
@@ -124,6 +174,16 @@ export class HelperSupervisorError extends Error {
   ) {
     super(message);
     this.name = "HelperSupervisorError";
+  }
+}
+
+export class HelperCommandError extends Error {
+  constructor(
+    readonly code: HelperActivationErrorCode,
+    message: string
+  ) {
+    super(message);
+    this.name = "HelperCommandError";
   }
 }
 

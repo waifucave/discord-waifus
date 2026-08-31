@@ -192,8 +192,22 @@ class FakeRemoteSupervisor implements HelperSupervisorController {
     for (const listener of this.#listeners) listener(this.current);
   }
 
+  async stop(): Promise<void> {}
+
   async reconnect(): Promise<void> {
     this.reconnectCalls += 1;
+  }
+
+  async beginActivation(): Promise<never> {
+    throw new Error("Activation is not configured in this backend lifecycle test.");
+  }
+
+  async pollActivation(): Promise<never> {
+    throw new Error("Activation is not configured in this backend lifecycle test.");
+  }
+
+  async cancelActivation(): Promise<never> {
+    throw new Error("Activation is not configured in this backend lifecycle test.");
   }
 
   async close(): Promise<void> {
@@ -530,7 +544,7 @@ async function enableRemoteAccess(root: string): Promise<void> {
   ) as Record<string, unknown>;
   await writeFile(paths.installation, JSON.stringify({
     ...installation,
-    activationReference: "waifus.activation.v1.test"
+    activationReference: `waifus.activation.v1.${String(installation.installationId)}`
   }, null, 2) + "\n", { mode: 0o600 });
 }
 

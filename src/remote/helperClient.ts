@@ -26,8 +26,17 @@ import {
 import { WipcParentAuthSession } from "../shared/wipcAuthSession.js";
 import {
   HelperSupervisorError,
+  HELPER_COMMAND_TIMEOUT_MS,
+  HelperCommandError,
+  HelperActivationCancelSchema,
+  HelperActivationErrorCodeSchema,
+  HelperActivationPollSchema,
+  HelperActivationStartSchema,
   parseHelperRuntimeStatus,
   type AuthenticatedHelperClient,
+  type HelperActivationCancel,
+  type HelperActivationPoll,
+  type HelperActivationStart,
   type HelperLaunch,
   type HelperLaunchRequest,
   type HelperProcessExit,
@@ -38,6 +47,42 @@ import {
 const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
 const AuthenticateParentResultSchema = z.object({
   helperProof: Base64Url32BytesSchema
+}).strict();
+const HelperCommandFailureSchema = z.object({
+  command: z.enum(["activation_begin", "activation_poll", "activation_cancel"]),
+  errorCode: HelperActivationErrorCodeSchema,
+  ok: z.literal(false),
+  operationId: Base64Url32BytesSchema
+}).strict();
+const ActivationBeginWireSchema = z.object({
+  command: z.literal("activation_begin"),
+  expiresAt: z.string(),
+  ok: z.literal(true),
+  operationId: Base64Url32BytesSchema,
+  verificationUrl: z.string()
+}).strict();
+const ActivationPollWireSchema = z.union([
+  z.object({
+    command: z.literal("activation_poll"),
+    expiresAt: z.string(),
+    ok: z.literal(true),
+    operationId: Base64Url32BytesSchema,
+    state: z.enum(["pending", "completed", "expired"])
+  }).strict(),
+  z.object({
+    command: z.literal("activation_poll"),
+    errorCode: HelperActivationErrorCodeSchema,
+    expiresAt: z.string(),
+    ok: z.literal(true),
+    operationId: Base64Url32BytesSchema,
+    state: z.literal("failed")
+  }).strict()
+]);
+const ActivationCancelWireSchema = z.object({
+  cancelled: z.literal(true),
+  command: z.literal("activation_cancel"),
+  ok: z.literal(true),
+  operationId: Base64Url32BytesSchema
 }).strict();
 
 type WipcFrame = {
@@ -138,7 +183,7 @@ async function writeFrame(socket: Socket, type: WipcFrameType, payload: Buffer):
 
 function requireFrame(frame: WipcFrame, expected: WipcFrameType, label: string): void {
   if (frame.type !== expected) {
-    throw new HelperSupervisorError("helper_incompatible", `Expected ${label} during helper authentication.`);
+    throw new HelperSupervisorError("helper_incompatible", `Expected ${label} during the helper protocol exchange.`);
   }
 }
 
@@ -205,17 +250,25 @@ class ProcessHelperClient implements AuthenticatedHelperClient {
   readonly negotiatedCapabilities: readonly string[];
   readonly #socket: Socket;
   readonly #status: HelperRuntimeStatus;
+  readonly #dataRoot: string;
+  readonly #role: "host" | "remote";
+  #commandTail: Promise<void> = Promise.resolve();
+  #closed = false;
 
   constructor(
     socket: Socket,
     hello: ComponentHello,
     negotiatedProtocol: ProtocolVersion,
-    negotiatedCapabilities: readonly string[]
+    negotiatedCapabilities: readonly string[],
+    dataRoot: string,
+    role: "host" | "remote"
   ) {
     this.#socket = socket;
     this.hello = Object.freeze(hello);
     this.negotiatedProtocol = Object.freeze(negotiatedProtocol);
     this.negotiatedCapabilities = Object.freeze([...negotiatedCapabilities]);
+    this.#dataRoot = dataRoot;
+    this.#role = role;
     this.#status = Object.freeze(parseHelperRuntimeStatus({
       activationState: "active",
       controlState: "inactive",
@@ -233,7 +286,119 @@ class ProcessHelperClient implements AuthenticatedHelperClient {
     return () => {};
   }
 
+  async beginActivation(operationId: string): Promise<HelperActivationStart> {
+    const result = await this.#command({
+      command: "activation_begin",
+      dataRoot: this.#dataRoot,
+      operationId: Base64Url32BytesSchema.parse(operationId),
+      role: this.#role
+    }, ActivationBeginWireSchema, "activation begin RESULT");
+    return HelperActivationStartSchema.parse({
+      operationId: result.operationId,
+      verificationUrl: result.verificationUrl,
+      expiresAt: result.expiresAt
+    });
+  }
+
+  async pollActivation(operationId: string): Promise<HelperActivationPoll> {
+    const result = await this.#command({
+      command: "activation_poll",
+      operationId: Base64Url32BytesSchema.parse(operationId)
+    }, ActivationPollWireSchema, "activation poll RESULT");
+    return HelperActivationPollSchema.parse({
+      operationId: result.operationId,
+      state: result.state,
+      expiresAt: result.expiresAt,
+      ...(result.state === "failed" ? { errorCode: result.errorCode } : {})
+    });
+  }
+
+  async cancelActivation(operationId: string): Promise<HelperActivationCancel> {
+    const result = await this.#command({
+      command: "activation_cancel",
+      operationId: Base64Url32BytesSchema.parse(operationId)
+    }, ActivationCancelWireSchema, "activation cancel RESULT");
+    return HelperActivationCancelSchema.parse({
+      operationId: result.operationId,
+      cancelled: result.cancelled
+    });
+  }
+
+  async #command<T extends { command: string; ok: true; operationId: string }>(
+    command: { command: string; operationId: string } & Record<string, unknown>,
+    schema: z.ZodType<T>,
+    label: string
+  ): Promise<T> {
+    let release!: () => void;
+    const prior = this.#commandTail;
+    this.#commandTail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await prior;
+    try {
+      if (this.#closed || this.#socket.destroyed) {
+        throw new HelperCommandError("helper_unavailable", "Helper command channel is closed.");
+      }
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      const exchange = (async () => {
+        await writeFrame(this.#socket, WIPC_FRAME_TYPES.COMMAND, canonicalBytes(command));
+        return readFrame(this.#socket);
+      })();
+      const frame = await Promise.race([
+        exchange,
+        new Promise<never>((_resolve, reject) => {
+          timeout = setTimeout(() => {
+            this.#socket.destroy();
+            reject(new HelperCommandError(
+              "helper_unavailable",
+              "Helper command deadline expired."
+            ));
+          }, HELPER_COMMAND_TIMEOUT_MS);
+        })
+      ]).finally(() => {
+        if (timeout) clearTimeout(timeout);
+      });
+      requireFrame(frame, WIPC_FRAME_TYPES.RESULT, "RESULT");
+      const failure = (() => {
+        try {
+          return parseCanonical(frame.payload, HelperCommandFailureSchema, label);
+        } catch {
+          return undefined;
+        }
+      })();
+      if (failure) {
+        if (
+          failure.command !== command.command
+          || failure.operationId !== command.operationId
+        ) {
+          throw new HelperSupervisorError(
+            "helper_incompatible",
+            "Helper command failure did not match the request."
+          );
+        }
+        throw new HelperCommandError(failure.errorCode, "Helper rejected the activation command.");
+      }
+      const result = parseCanonical(frame.payload, schema, label);
+      if (
+        result.command !== command.command
+        || result.operationId !== command.operationId
+      ) {
+        throw new HelperSupervisorError(
+          "helper_incompatible",
+          "Helper command result did not match the request."
+        );
+      }
+      return result;
+    } catch (error) {
+      if (error instanceof HelperCommandError || error instanceof HelperSupervisorError) throw error;
+      throw new HelperCommandError("helper_unavailable", "Helper command channel failed.");
+    } finally {
+      release();
+    }
+  }
+
   async close(): Promise<void> {
+    this.#closed = true;
     this.#socket.destroy();
   }
 }
@@ -241,7 +406,9 @@ class ProcessHelperClient implements AuthenticatedHelperClient {
 async function authenticateSocket(
   socket: Socket,
   parentHelloInput: ComponentHello,
-  parentCapability: Buffer
+  parentCapability: Buffer,
+  dataRoot: string,
+  role: "host" | "remote"
 ): Promise<ProcessHelperClient> {
   let authentication: WipcParentAuthSession | undefined;
   try {
@@ -299,7 +466,9 @@ async function authenticateSocket(
       socket,
       helperHello,
       compatibility.protocol,
-      compatibility.capabilities
+      compatibility.capabilities,
+      dataRoot,
+      role
     );
   } catch (error) {
     authentication?.close();
@@ -376,7 +545,13 @@ export class ProtectedHelperProcessFactory implements HelperProcessFactory {
         socket.destroy();
         return;
       }
-      void authenticateSocket(socket, request.parentHello, capability).then((client) => {
+      void authenticateSocket(
+        socket,
+        request.parentHello,
+        capability,
+        request.dataRoot,
+        request.role
+      ).then((client) => {
         if (authenticationSettled) {
           void client.close();
           return;

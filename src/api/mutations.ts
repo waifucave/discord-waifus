@@ -42,6 +42,7 @@ export type MutationRequestContext = {
   readonly idempotencyKeyHash: string;
   readonly retryClass: Exclude<RetryClass, "safe">;
   readonly action: string;
+  readonly persistResponse: boolean;
   readonly resource: { type: string; identifier: string };
   readonly actor: AuditActorV1;
   readonly delegation?: AssistantDelegation;
@@ -303,6 +304,7 @@ export function installMutationHandling(
       idempotencyKeyHash: reservation.idempotencyKeyHash,
       retryClass,
       action: policy.auditAction,
+      persistResponse: policy.persistResponse !== false,
       resource,
       actor,
       ...(delegation ? { delegation } : {}),
@@ -360,7 +362,9 @@ export function installMutationHandling(
         now,
         random
       }));
-      const storedResponse = storedResponseInput(reply, payload);
+      const storedResponse = context.persistResponse
+        ? storedResponseInput(reply, payload)
+        : undefined;
       await options.operationStore.complete(context.operationId, {
         outcome: statusCode >= 400 ? "failed" : "succeeded",
         reconciled: context.retryClass === "reconciled",
@@ -524,9 +528,8 @@ function requestRevision(request: FastifyRequest): string | undefined {
   const body = request.body;
   if (body && typeof body === "object" && !Buffer.isBuffer(body)) {
     const revision = (body as Record<string, unknown>).revision;
-    if (typeof revision === "number" && Number.isSafeInteger(revision) && revision >= 0) {
-      return Uint64DecimalSchema.parse(revision.toString());
-    }
+    const parsedRevision = revisionDecimal(revision);
+    if (parsedRevision) return parsedRevision;
   }
   const ifMatch = request.headers["if-match"];
   if (typeof ifMatch !== "string") return undefined;
@@ -544,8 +547,15 @@ function responseRevision(body: unknown): string | undefined {
       ? (candidate.latest as Record<string, unknown>).revision
       : undefined
   );
-  return typeof revision === "number" && Number.isSafeInteger(revision) && revision >= 0
-    ? Uint64DecimalSchema.parse(revision.toString())
+  return revisionDecimal(revision);
+}
+
+function revisionDecimal(value: unknown): string | undefined {
+  if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) {
+    return Uint64DecimalSchema.parse(value.toString());
+  }
+  return typeof value === "string" && Uint64DecimalSchema.safeParse(value).success
+    ? Uint64DecimalSchema.parse(value)
     : undefined;
 }
 
