@@ -275,13 +275,17 @@ describe("persistent nonsecret remote state schemas", () => {
       version: 1,
       installationId,
       vaultLabel: `waifus.installation.v1.${installationId}`,
-      activationReference: "vault:activation:reference",
+      activationReference: `waifus.activation.v1.${installationId}`,
       createdAt: "9007199254740993"
     };
     expect(RemoteAccessInstallationStateV1Schema.parse(state)).toEqual(state);
     expect(RemoteAccessInstallationStateV1Schema.safeParse({
       ...state,
       vaultLabel: "waifus.installation.v1.someone-else"
+    }).success).toBe(false);
+    expect(RemoteAccessInstallationStateV1Schema.safeParse({
+      ...state,
+      activationReference: "waifus.activation.v1.someone-else"
     }).success).toBe(false);
     expect(RemoteAccessInstallationStateV1Schema.safeParse({
       ...state,

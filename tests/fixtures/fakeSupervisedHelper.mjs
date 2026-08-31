@@ -153,6 +153,45 @@ async function main(capability) {
     return;
   }
   socket.write(resultFrame);
+  if (process.env.FAKE_HELPER_ACTIVATION !== "1") return;
+  for (;;) {
+    const next = await readFrame();
+    if (next.type !== COMMAND) throw new Error("expected activation command");
+    const activation = JSON.parse(next.payload.toString("utf8"));
+    const operationId = process.env.FAKE_HELPER_ACTIVATION_MISMATCH === "1"
+      ? Buffer.alloc(32, 0x56).toString("base64url")
+      : activation.operationId;
+    if (activation.command === "activation_begin") {
+      socket.write(frame(RESULT, canonicalJson({
+        command: "activation_begin",
+        expiresAt: "1786271400",
+        ok: true,
+        operationId,
+        verificationUrl: `https://pair.waifucave.com/activate#${Buffer.alloc(32, 0x55).toString("base64url")}`
+      })));
+      continue;
+    }
+    if (activation.command === "activation_poll") {
+      socket.write(frame(RESULT, canonicalJson({
+        command: "activation_poll",
+        expiresAt: "1786271400",
+        ok: true,
+        operationId,
+        state: process.env.FAKE_HELPER_ACTIVATION_POLL_STATE ?? "pending"
+      })));
+      continue;
+    }
+    if (activation.command === "activation_cancel") {
+      socket.write(frame(RESULT, canonicalJson({
+        cancelled: true,
+        command: "activation_cancel",
+        ok: true,
+        operationId
+      })));
+      continue;
+    }
+    throw new Error("unknown activation command");
+  }
 }
 
 const capabilityPipe = createReadStream(null, { fd: 3, autoClose: true });

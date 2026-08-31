@@ -24,6 +24,9 @@ import {
   parseNegotiatedCapabilities,
   parseNegotiatedProtocol,
   type AuthenticatedHelperClient,
+  type HelperActivationCancel,
+  type HelperActivationPoll,
+  type HelperActivationStart,
   type HelperLaunch,
   type HelperPackageResolver,
   type HelperProcessFactory,
@@ -241,6 +244,27 @@ export class HelperSupervisor {
     await this.#runAttempt();
   }
 
+  async stop(): Promise<void> {
+    if (this.#closing) return;
+    this.#generation += 1;
+    this.#cancelRestart();
+    this.#failureTimes = [];
+    await this.#shutdownCurrentLaunch();
+    this.#update(initialSnapshot());
+  }
+
+  async beginActivation(operationId: string): Promise<HelperActivationStart> {
+    return this.#readyClient().beginActivation(operationId);
+  }
+
+  async pollActivation(operationId: string): Promise<HelperActivationPoll> {
+    return this.#readyClient().pollActivation(operationId);
+  }
+
+  async cancelActivation(operationId: string): Promise<HelperActivationCancel> {
+    return this.#readyClient().cancelActivation(operationId);
+  }
+
   async close(): Promise<void> {
     if (this.#closing) return;
     this.#closing = true;
@@ -313,6 +337,7 @@ export class HelperSupervisor {
       try {
         launch = await this.#options.processFactory.launch({
           role: this.#options.role,
+          dataRoot: this.#options.dataRoot,
           binaryPath: selection.binaryPath,
           argv: Object.freeze(["supervised", "--parent-endpoint", endpoint]),
           environment: Object.freeze({}),
@@ -397,6 +422,13 @@ export class HelperSupervisor {
     } finally {
       if (timeout) this.#clearTimeout(timeout);
     }
+  }
+
+  #readyClient(): AuthenticatedHelperClient {
+    if (this.#closing || this.#snapshot.state !== "ready" || !this.#client) {
+      throw new HelperSupervisorError("helper_unavailable", "Remote helper is not ready.");
+    }
+    return this.#client;
   }
 
   async #discardFailedLaunch(launch: HelperLaunch): Promise<void> {

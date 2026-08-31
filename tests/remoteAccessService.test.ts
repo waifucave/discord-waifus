@@ -85,8 +85,22 @@ class FakeSupervisor implements HelperSupervisorController {
     this.emit(this.#snapshot);
   }
 
+  async stop(): Promise<void> {}
+
   async reconnect(): Promise<void> {
     this.reconnectCalls += 1;
+  }
+
+  async beginActivation(): Promise<never> {
+    throw new Error("Activation is not configured in this lifecycle test.");
+  }
+
+  async pollActivation(): Promise<never> {
+    throw new Error("Activation is not configured in this lifecycle test.");
+  }
+
+  async cancelActivation(): Promise<never> {
+    throw new Error("Activation is not configured in this lifecycle test.");
   }
 
   async close(): Promise<void> {
@@ -128,7 +142,7 @@ async function enableRemoteAccess(
     ) as Record<string, unknown>;
     await writeJson(paths.installation, {
       ...installation,
-      activationReference: "waifus.activation.v1.test"
+      activationReference: `waifus.activation.v1.${String(installation.installationId)}`
     });
   }
   if (options.deviceId) {

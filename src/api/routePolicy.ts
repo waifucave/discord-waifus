@@ -37,6 +37,7 @@ export type RoutePolicyDefinition = {
   readonly retryClass?: RetryClass;
   readonly auditAction?: string;
   readonly fieldPolicy?: RouteFieldPolicy;
+  readonly persistResponse?: boolean;
   readonly gatewaySemanticRoutes?: readonly GatewaySemanticRoutePolicy[];
   readonly synthetic?: "not_found";
 };
@@ -137,6 +138,7 @@ function gatewaySemanticPolicy(
 export type EffectiveRequestPolicy = {
   readonly retryClass: RetryClass;
   readonly auditAction?: string;
+  readonly persistResponse?: boolean;
 };
 
 export function effectiveRequestPolicy(
@@ -157,7 +159,8 @@ export function effectiveRequestPolicy(
   if (!definition.retryClass) return undefined;
   return {
     retryClass: definition.retryClass,
-    ...(definition.auditAction ? { auditAction: definition.auditAction } : {})
+    ...(definition.auditAction ? { auditAction: definition.auditAction } : {}),
+    ...(definition.persistResponse === false ? { persistResponse: false } : {})
   };
 }
 

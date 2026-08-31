@@ -32,6 +32,7 @@ async function launchRequest(
   await chmod(runtimeRoot, 0o700);
   return {
     role: "host",
+    dataRoot: root,
     binaryPath: process.execPath,
     argv: [fixture, "supervised", "--parent-endpoint", path.join(runtimeRoot, "p")],
     environment,
@@ -169,5 +170,55 @@ describe("protected helper process client", () => {
       code: 70
     });
     await launch.closeParentChannel();
+  });
+
+  unixIt("keeps activation commands authenticated and exposes only sanitized operation state", async () => {
+    const request = await launchRequest({
+      FAKE_HELPER_ACTIVATION: "1",
+      FAKE_HELPER_ACTIVATION_POLL_STATE: "completed"
+    });
+    const launch = await new ProtectedHelperProcessFactory().launch(request);
+    const client = await launch.authenticated;
+    const operationId = Buffer.alloc(32, 0x61).toString("base64url");
+
+    const started = await client.beginActivation(operationId);
+    expect(started).toEqual({
+      operationId,
+      verificationUrl: `https://pair.waifucave.com/activate#${Buffer.alloc(32, 0x55).toString("base64url")}`,
+      expiresAt: "1786271400"
+    });
+    expect(started.verificationUrl).not.toContain(operationId);
+
+    await expect(client.pollActivation(operationId)).resolves.toEqual({
+      operationId,
+      state: "completed",
+      expiresAt: "1786271400"
+    });
+    await expect(client.cancelActivation(operationId)).resolves.toEqual({
+      operationId,
+      cancelled: true
+    });
+
+    await client.close();
+    await launch.closeParentChannel();
+    await launch.exited;
+  });
+
+  unixIt("rejects an activation result that is not correlated to its request", async () => {
+    const request = await launchRequest({
+      FAKE_HELPER_ACTIVATION: "1",
+      FAKE_HELPER_ACTIVATION_MISMATCH: "1"
+    });
+    const launch = await new ProtectedHelperProcessFactory().launch(request);
+    const client = await launch.authenticated;
+    const operationId = Buffer.alloc(32, 0x61).toString("base64url");
+
+    await expect(client.beginActivation(operationId)).rejects.toMatchObject({
+      code: "helper_incompatible"
+    });
+
+    await client.close();
+    await launch.closeParentChannel();
+    await launch.exited;
   });
 });

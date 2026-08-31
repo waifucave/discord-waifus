@@ -83,6 +83,8 @@ import { ROUTE_POLICY_MANIFEST } from "./routePolicyManifest.js";
 import type { RemoteRequestPrincipal, RequestPrincipal } from "./requestPrincipal.js";
 import { ClientContextV1Schema } from "../shared/schemas/remoteLifecycle.js";
 import { registerAdminOperationRoutes } from "./adminOperations.js";
+import { registerRemoteAccessRoutes } from "./remoteAccess.js";
+import type { RemoteAccessService } from "../backend/remoteAccess/remoteAccessService.js";
 import { installMutationHandling } from "./mutations.js";
 import {
   EVENT_AUTHORIZATION_HEARTBEAT_MS,
@@ -115,6 +117,7 @@ export type ApiServerOptions = {
   remoteTrust?: {
     isAuthorized: (principal: RemoteRequestPrincipal) => boolean | Promise<boolean>;
   };
+  remoteAccess?: RemoteAccessService;
   administration?: {
     operationStore?: OperationStore;
     auditStore?: AuditStore;
@@ -466,6 +469,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   });
 
   registerAdminOperationRoutes(app, operationStore);
+  registerRemoteAccessRoutes(app, options.remoteAccess);
 
   app.get("/api/config", async (request) => {
     const config = await loadAppConfig(options.dataRoot);

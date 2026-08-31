@@ -383,7 +383,8 @@ export async function startBackend(options: StartBackendOptions): Promise<Runnin
     },
     remoteTrust: {
       isAuthorized: (principal) => remoteAccess.isAuthorized(principal)
-    }
+    },
+    remoteAccess
   });
   const remoteRequestBridge = new RemoteRequestBridge(app);
   remoteAccess.attachRequestBridge(remoteRequestBridge);

@@ -267,7 +267,7 @@ describe("waifus clean remote-state boundaries", () => {
     silenceCliOutput();
     const paths = remoteStatePaths(root);
     const installation = JSON.parse(await readFile(paths.installation, "utf8")) as Record<string, unknown>;
-    installation.activationReference = "vault:activation:test";
+    installation.activationReference = `waifus.activation.v1.${String(installation.installationId)}`;
     await writeJsonFile(paths.installation, installation);
     await writeJsonFile(paths.hostConfig, {
       revision: "7",
