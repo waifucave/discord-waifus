@@ -1008,6 +1008,23 @@ again without a wrapper. A helper serializes polls per pair and advances the req
 the exact tuple returned by its preceding successful poll; an unseen, skipped, or non-advancing
 acknowledgement is rejected.
 
+The WebSocket uses only UTF-8 text frames; binary frames are protocol violations even when their
+bytes decode to valid JSON. The first frame on every newly opened or replacement socket is a signed
+`hello`. Only one authenticated socket may be current for each pair side, and a newer authenticated
+upgrade closes the prior side socket with code `4001` and reason `replaced`. Each later frame is
+re-authorized against the attachment's certificate serial/credential epoch and the installation's
+current unsuspended state before its independent record signature and high-water can commit.
+
+For WebSocket delivery, the `hello` resume tuple and `reconnect` last-received tuple are the exact
+acknowledgement cursor for the last peer record durably applied by the helper. Types `2–5` and
+`7–9` remain the receiver's one outstanding record until one of those signed cursor records
+acknowledges the exact tuple; the helper persists/applies the received record before sending that
+cursor and does not expect the next blocking record first. Session-only `hello` and `reconnect`
+records are non-blocking after the receiver has sent its own initial `hello`, so acknowledgements do
+not create an acknowledgement loop. A session record sent before that initial hello may be replayed
+until the receiver establishes its cursor. HTTPS poll and a replacement WebSocket continue from the
+same durable cursor.
+
 Every payload has exactly its listed fields; hashes must match decoded bytes. Define `typeByte` by
 the table and `payloadBytes` as the exact RFC 8785 canonical payload object. The signature input is:
 
