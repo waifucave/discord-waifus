@@ -362,6 +362,7 @@ One object per 16-byte invitation ID. SQLite tables:
 - short_code_ownership_token_hash
 - claim_id_hash nullable
 - pair_initialization_token_hash nullable
+- finalization_receipt_hash nullable
 - finalization_step
 
 **mailbox_record**
@@ -371,6 +372,15 @@ One object per 16-byte invitation ID. SQLite tables:
 - record_type enum: noise_1, noise_2, noise_3, noise_transport, approval, rejection, pair_confirmation
 - payload
 - created_at
+
+**consume_record**
+
+- side enum: host or remote, primary key
+- record_hash, Worker-keyed commitment to the exact canonical `PairConfirmationV1`
+- nonce_hash, Worker-keyed commitment to that side's fixed confirmation nonce
+- confirmation_mac_hash, Worker-keyed commitment to the opaque MAC the Worker cannot verify
+- created_at
+- tombstone_expires_at nullable
 
 Maximum 12 mailbox records and 12 KiB total per invitation. `pair_confirmation` is the distinct
 post-approval/pre-consume RFC 8785 `PairConfirmationV1` type from plan 03, never Noise transport:
@@ -446,8 +456,8 @@ crash-recoverable finalization saga makes it `active`. SQLite tables:
 - remote_key_sequence
 - protocol_major
 - protocol_minor
-- host_capabilities_hash
-- remote_capabilities_hash
+- host_capabilities_hash nullable until the first authenticated capability record
+- remote_capabilities_hash nullable until the first authenticated capability record
 - created_at
 - last_seen_at
 - revocation_epoch
@@ -455,6 +465,16 @@ crash-recoverable finalization saga makes it `active`. SQLite tables:
 - revoked_at nullable
 - host_acknowledged_revocation_epoch
 - remote_acknowledged_revocation_epoch
+
+**pair_compensation**
+
+- pair_id_hash primary key
+- initialization_token_hash
+- released_at
+
+This small terminal tombstone is written even when expiry/cancellation reaches PairDO before a
+delayed prepare call. That later prepare is permanently rejected, closing the release-before-create
+race without retaining invitation or Noise bytes.
 
 **endpoint_generation**
 
@@ -539,7 +559,10 @@ Shard by rotating HMAC of coarse IP prefix, ASN, route class, and time bucket. S
 ### Crash-recoverable cross-DO sagas
 
 Cross-DO correctness uses idempotent sagas, never an alleged shared transaction. Saga IDs are 16
-random bytes; ownership/initialization tokens are 32 random bytes and only keyed hashes persist.
+random bytes. The pair initialization token is a domain-separated 32-byte Worker PRF output over
+the invitation, pair, generation, approval context, and both exact consume-record commitments, so
+every crash retry reconstructs the same unpredictable token while only its keyed hash persists.
+Other ownership tokens follow their owning saga's locked derivation; raw tokens do not persist.
 Every internal DO step takes the same saga ID plus token, stores its result before returning, and
 returns that byte-identical result on retry. Conflicting IDs/tokens fail. DO alarms and every later
 related request reconcile unfinished steps; terminal expiry also compensates them.
@@ -568,11 +591,16 @@ Short-code claim is exact:
 
 Pair finalization after both exact possession acknowledgements is exact:
 
-1. InvitationDO writes `finalizing` with its already transcript-bound pair ID, one initialization
-   token hash, and the complete immutable pair fields.
-2. PairDO idempotently writes those fields as `prepared`; it rejects all endpoint/control input.
-3. InvitationDO commits the durable `pair_finalized` decision and its receipt hash.
-4. PairDO verifies that exact token/receipt and changes only that prepared row to `active`.
+1. InvitationDO writes `finalizing` with its already transcript-bound pair ID, one reconstructible
+   initialization-token hash, both consume commitments, and the complete immutable pair fields the
+   Worker possesses. Capability hashes remain null because capability vectors are inside encrypted
+   identity bundles; each side's first authenticated capability record initializes its own value.
+2. PairDO idempotently writes those fields as `prepared`, rejects all endpoint/control input, and
+   returns a context-bound preparation receipt.
+3. InvitationDO verifies that preparation receipt, commits the durable `pair_finalized` decision,
+   and only then returns/stores the distinct finalization receipt and its keyed hash.
+4. PairDO verifies that exact token/finalization receipt and changes only that prepared row to
+   `active`; the earlier preparation receipt is not accepted as a finalization receipt.
 5. InvitationDO advances to `consumed`, clears mailbox bytes, and ShortCodeDO marks the matching
    owner consumed/released. Cleanup may retry, but the fixed pair ID/token means no second PairDO.
 
