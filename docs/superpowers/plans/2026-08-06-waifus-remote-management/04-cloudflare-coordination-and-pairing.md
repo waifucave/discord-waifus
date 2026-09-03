@@ -71,10 +71,13 @@ alone receives the larger body/string exceptions below:
 - Turnstile completion raw body maximum: **4,096 bytes**
 - Unknown fields rejected
 - Nesting depth maximum: **8**
-- Strings maximum **256 UTF-8 bytes** unless a smaller field limit applies
-- Sole larger-string exception: **/v1/activation/complete** field `turnstileToken` is 1–2,048
-  printable non-whitespace ASCII bytes to match the provider-compatible token ceiling. It remains
-  inside the 4,096-byte raw-body cap; no other field inherits this exception.
+- Strings maximum **256 UTF-8 bytes** unless one of the fixed binary/token fields below applies.
+- **/v1/activation/complete** field `turnstileToken` is 1–2,048 printable non-whitespace ASCII
+  bytes to match the provider-compatible token ceiling. It remains inside the 4,096-byte raw-body
+  cap; no other field inherits the Turnstile exception.
+- A typed Noise mailbox `payload` or endpoint `ciphertext` is the only binary-string exception:
+  canonical unpadded base64url encoding at most 1,600 ASCII characters and decoding to at most
+  1,200 bytes. The route's complete raw JSON body still cannot exceed 2,048 bytes.
 - Arrays have explicit per-schema limits
 - WebSocket control record maximum: **2,048 bytes**
 - Noise mailbox bytes are unpadded base64url inside a typed record and at most **1,200 decoded bytes**
@@ -196,6 +199,16 @@ strict body. Every POST except browser completion uses the signed installation r
 | POST | **/v1/pairs/:pairId/control/poll** | HTTPS fallback: at most one retained PairControl type `1–9` (or empty) above acknowledged cursor; no hanging response |
 | POST | **/v1/pairs/:pairId/revoke** | Exactly PairControl type `7`, monotonic signed revocation; bypasses ordinary quotas |
 | POST | **/v1/pairs/:pairId/revocation/ack** | Exactly PairControl type `8`, acknowledging one exact revocation epoch |
+
+The V1 Noise mailbox request bodies are exact. Send accepts only
+`{version:1,invitationGeneration,sequence,recordType,payload}` and poll accepts only
+`{version:1,invitationGeneration,afterSequence}`. Generation, sequence, and cursor are canonical
+uint64 decimal strings; payload is the bounded canonical base64url field above. The authenticated
+installation identity determines host/remote role, so a caller cannot submit a role. The initial
+handshake slots are fixed globally as remote `noise_1` sequence `1`, host `noise_2` sequence `2`,
+and remote `noise_3` sequence `3`; an exact same-slot retry is idempotent and changed bytes,
+changed type, skipped slots, or role swaps conflict. Poll returns only the lowest peer-authored
+record above the supplied cursor, or `null`, and never long-polls.
 
 `HEAD`, automatic `OPTIONS`, alternate pluralization, ID-in-query variants, and trailing-path
 variants are not registered. CORS is not enabled. Expiry and deletion alarms are internal Durable
