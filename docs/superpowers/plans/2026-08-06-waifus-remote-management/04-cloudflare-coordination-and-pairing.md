@@ -221,6 +221,11 @@ trust epochs so a retry cannot replace them. Approval inserts only its 32-byte c
 host-authored sequence `4` mailbox payload; raw browser/session receipt metadata never leaves the
 helper. Afterward, host `noise_transport` is fixed at sequence `5` and remote `noise_transport` at
 sequence `6`; either contribution may arrive first, but each role owns only its one slot.
+Only after both contribution slots exist may the host publish canonical `PairConfirmationV1` in
+sequence `7` and the remote in sequence `8`, again in either order. InvitationDO enforces the
+approved invitation/generation/pair/side/transcript/channel/bundle/context fields and the 1,024-byte
+payload limit. It forwards the fixed-width nonce and MAC opaquely: accepting the record never means
+the Worker verified a secret confirmation key that it does not possess.
 
 `HEAD`, automatic `OPTIONS`, alternate pluralization, ID-in-query variants, and trailing-path
 variants are not registered. CORS is not enabled. Expiry and deletion alarms are internal Durable
