@@ -356,6 +356,7 @@ One object named from **HMAC(routingKey, normalizedShortCode)**. SQLite table:
 **short_code**
 
 - code_hash primary key
+- sealed_invitation_id, exactly 16 bytes
 - invitation_id_hash
 - ownership_token_hash
 - create_saga_id_hash
@@ -377,6 +378,16 @@ uses that keyed hash for the DO name/storage, and discards plaintext. It never a
 HMAC/routing material. A different invitation colliding with an active/prepared hash receives a
 typed collision and the host helper generates a fresh code; an exact duplicate create request is
 idempotently reconciled to its original invitation instead of consuming a second quota/code.
+
+The short-code joiner must learn the 16-byte invitation ID needed by the later concrete mailbox
+paths, while the code owner must not retain that ID as plaintext. Store
+`sealed_invitation_id = invitationID XOR first16(HMAC-SHA-256(internalKey,
+LP(ASCII "waifus/short-code-invitation-seal/v1") || LP(invitationIdHash) || LP(codeHash)))`.
+Return the unsealed ID only after the authenticated one-claim reservation succeeds, recompute its
+Worker-keyed `invitationIdHash`, and fail closed unless it matches the stored route hash. Clear the
+active code mapping on claim, cancellation, rejection, or expiry. An exact short-claim retry may
+retain the sealed ID only in the bounded ten-minute nonsecret replay tombstone; full-token claims
+and all tombstone expiry remove it. Logs and metrics never receive either form.
 
 ### PairDO
 
