@@ -210,6 +210,14 @@ and remote `noise_3` sequence `3`; an exact same-slot retry is idempotent and ch
 changed type, skipped slots, or role swaps conflict. Poll returns only the lowest peer-authored
 record above the supplied cursor, or `null`, and never long-polls.
 
+The PairControl HTTPS bodies are equally exact. **/control/publish**, **/revoke**, and
+**/revocation/ack** receive the raw canonical `PairControlRecordV1` bytes. **/control/poll** receives
+only `{version:1,acknowledgedConnectionGeneration,acknowledgedSequence}`; both cursor fields are
+canonical uint64 decimal strings and the initial cursor is exactly `"0"`/`"0"`. A signed successful
+poll returns either the raw canonical peer record or literal JSON `null`, with no response wrapper.
+Publish/revoke/ack success returns only the accepted disposition, authenticated side, record type,
+connection generation, and sequence.
+
 Approval accepts only
 `{version:1,invitationGeneration,pendingPairId,approvalContextHash,transcriptHash,channelBinding,hostIdentityCommitment,remoteIdentityCommitment,hostBundleHash,remoteBundleHash,hostRole,remoteRole,noisePattern,protocol,hostTrustEpoch,remoteTrustEpoch,hostKeySequence,remoteKeySequence}`.
 The signed caller must be the locked host; roles are exactly `1` then `2`, protocol is exactly V1,
@@ -525,6 +533,18 @@ race without retaining invitation or Noise bytes.
 - acknowledged_at_u64be nullable
 - primary key over sender_side and record_type
 
+**pair_control_delivery**
+
+- receiver_side primary key
+- sender_side
+- record_type
+- connection_generation_u64be
+- sequence_u64be
+- delivered_at_u64be
+
+This table is only the receiver's one-record outstanding-delivery marker. It never duplicates the
+canonical record or carries a management payload, and it is bounded to one row per pair side.
+
 **revocation_replay_nonce**
 
 - side
@@ -556,6 +576,11 @@ hello/presence/reconnect/error expire after their signed validity or 10 minutes,
 earlier; endpoint acknowledgements persist until acknowledged/replaced for at most 24 hours. An
 ack advances only to a record actually delivered to that side and then prunes eligible records.
 Switching WS to HTTPS or back never resets either high-water. PairDO stores no management payload.
+While an outstanding marker still names a retained record, the same cursor deterministically
+returns the same bytes. An exact ACK clears that marker and selects the next lowest tuple. If the
+marked transient record expires or is replaced before ACK, the marker is cleared and polling moves
+to the next retained tuple; the helper therefore serializes polls and never acknowledges a tuple it
+did not receive from its immediately preceding successful poll.
 
 ### RateLimitDO
 
