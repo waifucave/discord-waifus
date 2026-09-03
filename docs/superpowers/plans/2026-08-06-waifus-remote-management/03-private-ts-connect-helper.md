@@ -996,6 +996,18 @@ another type through a dedicated revocation route) is rejected and cannot consum
 revocation replay/quota store. All transports use byte-identical record/signature semantics and one
 PairDO high-water.
 
+The HTTPS ingress bodies for **/control/publish**, **/revoke**, and **/revocation/ack** are the
+byte-exact canonical `PairControlRecordV1`; they are not wrapped in another JSON object. A successful
+ingress response is exactly
+`{state:"accepted"|"duplicate",side:"host"|"remote",type,connectionGeneration,sequence}`.
+**/control/poll** accepts exactly
+`{version:1,acknowledgedConnectionGeneration,acknowledgedSequence}` with canonical uint64 decimal
+strings. The initial cursor is exactly `"0"`/`"0"`; either field being zero alone is invalid. Its
+signed 200 response body is either the byte-exact canonical peer record or the literal JSON `null`,
+again without a wrapper. A helper serializes polls per pair and advances the request cursor only to
+the exact tuple returned by its preceding successful poll; an unseen, skipped, or non-advancing
+acknowledgement is rejected.
+
 Every payload has exactly its listed fields; hashes must match decoded bytes. Define `typeByte` by
 the table and `payloadBytes` as the exact RFC 8785 canonical payload object. The signature input is:
 
@@ -1017,6 +1029,12 @@ bound to the retained capability hash. The first valid `revocation` changes an a
 participant-revoked and closes every ordinary type immediately. That terminal state accepts only a
 higher monotonic `revocation` or the opposite side's exact `revocation_ack`; a system-compensated
 prepared-pair tombstone accepts no control record at all.
+
+Dedicated **/revoke** and **/revocation/ack** requests still require a current, unsuspended
+activation certificate, but their outer request nonce does not enter the installation's ordinary
+request-replay bucket. The signed inner type `7` or `8` record is the operation authority and uses
+PairDO's isolated 64-entry replay window per side and per route kind. Retrying the identical signed
+record is idempotent; reusing its inner nonce for different bytes or a different tuple fails.
 
 The Worker validates the certificate/trust side, concrete pair, type, complete payload hash,
 signature, timestamp within plus/minus 60 seconds at first ingress, nonce, and
