@@ -210,6 +210,18 @@ and remote `noise_3` sequence `3`; an exact same-slot retry is idempotent and ch
 changed type, skipped slots, or role swaps conflict. Poll returns only the lowest peer-authored
 record above the supplied cursor, or `null`, and never long-polls.
 
+Approval accepts only
+`{version:1,invitationGeneration,pendingPairId,approvalContextHash,transcriptHash,channelBinding,hostIdentityCommitment,remoteIdentityCommitment,hostBundleHash,remoteBundleHash,hostRole,remoteRole,noisePattern,protocol,hostTrustEpoch,remoteTrustEpoch,hostKeySequence,remoteKeySequence}`.
+The signed caller must be the locked host; roles are exactly `1` then `2`, protocol is exactly V1,
+and both key sequences are integer `1`. The full-token claim locks
+`Noise_XXpsk0_25519_ChaChaPoly_SHA256`; the short-code claim locks
+`Noise_XX_25519_ChaChaPoly_SHA256`. The pair ID hash and both identity/bundle hashes must match the
+claim, while the first valid approval durably locks the context, transcript, channel binding, and
+trust epochs so a retry cannot replace them. Approval inserts only its 32-byte context hash as the
+host-authored sequence `4` mailbox payload; raw browser/session receipt metadata never leaves the
+helper. Afterward, host `noise_transport` is fixed at sequence `5` and remote `noise_transport` at
+sequence `6`; either contribution may arrive first, but each role owns only its one slot.
+
 `HEAD`, automatic `OPTIONS`, alternate pluralization, ID-in-query variants, and trailing-path
 variants are not registered. CORS is not enabled. Expiry and deletion alarms are internal Durable
 Object callbacks, not Internet routes. Health/synthetic checks use deployment tooling and do not
