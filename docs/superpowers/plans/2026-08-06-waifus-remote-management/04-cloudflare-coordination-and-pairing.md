@@ -830,6 +830,14 @@ peer helper can verify that pair-secret MAC.
 Unknown fields/types, opaque payload, pair/type/payload substitution, stale generation/sequence,
 nonce replay, and same-tuple different bytes fail before dispatch.
 
+Only UTF-8 text frames are accepted. A newly opened or replacement side socket must send `hello`
+first; a binary frame, another first type, or any invalid record closes that sender with the fixed
+policy-violation close. PairDO keeps at most one open socket tagged to each side. A later valid
+signed upgrade for that same side closes the old socket with code `4001`/`replaced`, and a final
+synchronous current-socket guard inside every record/cursor commit prevents a queued frame from the
+replaced socket from mutating state. A peer-socket failure closes only that peer and cannot turn a
+valid sender record into a sender failure.
+
 Hibernation attachments contain only pair hash, side, certificate serial/epoch, connection
 generation, and acknowledged cursor; authoritative high-waters and bounded latest complete signed
 records remain in PairDO. WS/HTTPS transitions and Worker restarts resume the same cursor. An
@@ -840,6 +848,15 @@ revoke only `7`; dedicated revocation acknowledgement only `8`; poll returns at 
 `1–9`. Every route shares byte-identical records and PairDO high-waters. A wrong-route type fails
 without touching the reserved store; revocation routes/WS dispatch use dedicated replay/quota state
 so ordinary saturation cannot delay them.
+
+`hello.resumeConnectionGeneration/resumeSequence` and
+`reconnect.lastReceivedConnectionGeneration/lastReceivedSequence` acknowledge the exact last peer
+tuple durably applied on that socket. Types `2–5` and `7–9` use the same one-outstanding marker as
+HTTPS. PairDO replays that record until the cursor matches, then selects the next lowest tuple.
+WebSocket-delivered type `1`/`6` session records become non-blocking once the receiver has sent its
+own initial hello; before then they may replay. This prevents an acknowledgement-of-acknowledgement
+loop without weakening durable delivery of capabilities, endpoints, presence, revocation, or
+errors. Every HTTPS poll cursor update is also serialized into an open socket attachment.
 
 The Worker forwards only the other approved side's fixed record. It cannot address any third device or destination.
 
