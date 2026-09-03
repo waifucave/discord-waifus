@@ -538,7 +538,12 @@ never read/write **pair_replay_nonce** or the installation's ordinary replay buc
 certificate checks route valid revoke/ack inputs into this separate reserved store before any
 ordinary control quota.
 
-Only the latest endpoint generation per side is retained. PairDO never decrypts it. A stale/different same-epoch update fails atomically inside PairDO. Both stored key-sequence fields are immutable integer `1` in V1; another value rejects pair preparation/control, and there is no bundle/key rotation transition.
+Only the latest endpoint generation per side is retained. PairDO never decrypts it. A stale/different same-epoch update fails atomically inside PairDO. An endpoint acknowledgement is receiver-signed and must match the opposite side's current endpoint epoch and ciphertext hash; self-acknowledgement, a stale epoch, or a different hash fails without mutation. Presence is accepted only after that same side has published authenticated capabilities and is bound to the retained capability hash. Both stored key-sequence fields are immutable integer `1` in V1; another value rejects pair preparation/control, and there is no bundle/key rotation transition.
+
+The first valid revocation changes an active pair to participant-revoked and closes ordinary types
+immediately. That state accepts only a higher monotonic revocation or the opposite side's exact
+revocation acknowledgement, using the reserved stores. A system-compensated prepared-pair
+tombstone accepts no control record, including reserved revocation traffic.
 
 `pair_control_side` retains each side's connection-generation/sequence acceptance high-water and
 the other side's acknowledged cursor across hibernation, Worker restart, and HTTPS fallback.
@@ -759,7 +764,9 @@ server logs, analytics, or error text.
 5. Each helper calls **POST /v1/invitations/:invitationId/consume** with its exact possession/confirmation
    acknowledgement. The second valid side starts or reconciles the exact finalization saga above.
 6. Only PairDO `active`, reached after InvitationDO's durable `pair_finalized` decision, may accept
-   an endpoint/control record; mailbox/code cleanup then finishes idempotently.
+   a pair's first endpoint/control record. After a participant revokes it, PairDO accepts only the
+   reserved monotonic revocation/peer-ack completion described above; a system compensation accepts
+   nothing. Mailbox/code cleanup then finishes idempotently.
 
 Rejection through **POST /v1/invitations/:invitationId/reject** or creator cancellation through
 **POST /v1/invitations/:invitationId/cancel** clears mailbox records immediately. Expiry is

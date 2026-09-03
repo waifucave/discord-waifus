@@ -1009,6 +1009,15 @@ LP(ASCII "waifus/pair-control-record/v1")
 || LP(SHA-256(payloadBytes))
 ~~~
 
+An `endpoint_generation` belongs to its signing side. An `endpoint_ack` is signed by the receiving
+peer and must match the opposite side's currently retained endpoint epoch and ciphertext hash;
+self-acknowledgement, an old epoch, or a different hash fails atomically. A side must publish an
+authenticated `capabilities` record before its `presence` can be accepted, and that presence is
+bound to the retained capability hash. The first valid `revocation` changes an active pair to
+participant-revoked and closes every ordinary type immediately. That terminal state accepts only a
+higher monotonic `revocation` or the opposite side's exact `revocation_ack`; a system-compensated
+prepared-pair tombstone accepts no control record at all.
+
 The Worker validates the certificate/trust side, concrete pair, type, complete payload hash,
 signature, timestamp within plus/minus 60 seconds at first ingress, nonce, and
 `(connectionGeneration, sequence)` high-water before durable acceptance. It records that
