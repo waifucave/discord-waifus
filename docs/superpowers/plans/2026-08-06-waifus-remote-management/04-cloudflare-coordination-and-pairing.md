@@ -584,7 +584,14 @@ did not receive from its immediately preceding successful poll.
 
 ### RateLimitDO
 
-Shard by rotating HMAC of coarse IP prefix, ASN, route class, and time bucket. Store only keyed hashes, window, and counts. Never store raw IP in application tables.
+Shard every central fixed-window bucket by a profile-separated rotating HMAC of its fixed policy,
+subject class, coarse subject, and aligned time bucket. IPv4 is coarsened to `/24`, IPv6 to `/56`,
+and ASN comes only from Cloudflare request metadata; non-local profiles fail closed if either value
+is absent or malformed. The Durable Object name and stored identity are the resulting 32-byte keyed
+hash. Its event retry keys are separately domain-separated keyed hashes. Store only those hashes,
+the fixed policy/window/limit, a bounded count, and expiry. Never store or log raw IP, ASN, request
+bytes, public keys, certificates, codes, or endpoint material in rate-limit state. The `local`
+profile alone uses deterministic loopback/ASN-zero metadata when workerd supplies no edge metadata.
 
 ### Crash-recoverable cross-DO sagas
 
@@ -673,10 +680,14 @@ Durable Object counters are authoritative; Cloudflare edge limiting is only an a
 
 - One live control WebSocket per pair side; a newly authenticated generation replaces the prior socket.
 - Ordinary signed HTTPS requests, excluding the exact **.../revoke** and **.../revocation/ack**
-  routes: 120 per installation per minute with burst 30.
+  routes: 120 per installation per minute with burst 30 per aligned 10-second window.
 - Ordinary WebSocket records, excluding **revocation/revocation_ack**: 120 per pair side per minute
-  with burst 30.
-- Endpoint generation publication: burst 3, minimum 5 seconds between ordinary updates, maximum 12 per 5 minutes; a signed network-change reason may bypass the minimum once per 10 seconds.
+  with burst 30 per aligned 10-second window.
+- Endpoint generation publication: burst 3 per aligned 10-second window, minimum 5 seconds between
+  higher-epoch ordinary updates, and maximum 12 per 5 minutes. In V1, an accepted signed type-6
+  `reconnect` record is the network-change signal: a following higher endpoint epoch may consume
+  that signal to bypass the 5-second minimum once per 10 seconds. An exact already-retained endpoint
+  epoch/ciphertext retry does not consume an endpoint-publication quota.
 - Presence: maximum 12 per minute.
 - Revocation: maximum 10 new monotonic revocation epochs per pair side per hour; acknowledgements do
   not consume that mutation quota.
@@ -685,7 +696,12 @@ Durable Object counters are authoritative; Cloudflare edge limiting is only an a
   per 10 minutes, separate from ordinary nonce/request/WebSocket/route buckets. Ordinary saturation
   cannot consume this capacity; duplicates still fail.
 
-Quota excess returns **429 quota_exceeded** with bounded retry-after. It never falls back to a larger arbitrary storage/message operation.
+For HTTPS, quota excess returns **429 quota_exceeded**, a bounded integer `retryAfter` in the signed
+JSON body, and the same decimal `Retry-After` header. A WebSocket frame cannot receive an HTTP
+status, so a quota violation closes only the offending socket with **1008 policy_violation**. It
+never falls back to a larger arbitrary storage/message operation. Exact accepted-record retries are
+recognized before rate mutation, and PairDO performs semantic mutation and all applicable quota
+increments in one local transaction so a later quota or semantic failure commits neither.
 
 ## Activation Certificate Flow
 
