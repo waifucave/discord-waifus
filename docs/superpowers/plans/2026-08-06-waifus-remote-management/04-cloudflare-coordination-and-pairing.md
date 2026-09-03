@@ -765,6 +765,20 @@ Rejection through **POST /v1/invitations/:invitationId/reject** or creator cance
 **POST /v1/invitations/:invitationId/cancel** clears mailbox records immediately. Expiry is
 enforced on every operation and by an internal DO alarm; there is no public expire route.
 
+The strict cancellation body is exactly `{ version: 1, invitationGeneration }`. The strict
+rejection body is exactly `{ version: 1, invitationGeneration, pendingPairId, transcriptHash,
+channelBinding, hostIdentityCommitment, remoteIdentityCommitment, protocol }`. Only the creator may
+cancel. Only the pinned host may reject, and only after Noise messages 1–3 have locked one pending
+pair; the signed rejection must match that pair and both stored identity commitments. Its transcript
+and channel-binding hashes become the immutable idempotency context, so an exact retry succeeds and
+a changed retry fails.
+
+InvitationDO commits the terminal decision before cross-object cleanup. Retry then idempotently
+retires the matching short-code ownership or claim tombstone and releases the host's active-invitation
+reservation without refunding its creation quota. If cancellation wins while pair finalization is
+still uncommitted, it compensates PairDO whether release arrives before or after prepare. If
+`pair_finalized` wins first, cancellation is rejected and can never roll back the active decision.
+
 ## Pair Control WebSocket
 
 Endpoint: **GET /v1/pairs/:pairId/control** with WebSocket upgrade and signed authentication.
