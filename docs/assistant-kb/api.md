@@ -73,6 +73,11 @@ does goes through these endpoints, so any agent can drive the app with plain HTT
 | GET | /api/client-context | Dashboard-only browser-session bootstrap; never call from assistant tools. |
 | GET | /api/diagnostics/bundle | One-shot diagnostic snapshot. |
 | POST | /api/cache/ocr/clear | Clear the OCR cache. |
+| GET/PUT | /api/remote-access | Remote-access status and revisioned settings. |
+| POST | /api/remote-access/reconnect | Reconnect the direct-only remote runtime. |
+| GET | /api/remote-access/diagnostics | Sanitized helper/control/direct-network diagnostics. |
+| GET | /api/remote-access/dashboard-manifest | Canonical pinned host dashboard manifest (transport use). |
+| GET | /api/remote-access/dashboard-assets/:buildId/* | One allowlisted immutable host dashboard asset (transport use). |
 
 ## Read-modify-write example
 
@@ -103,7 +108,8 @@ curl -s -X PUT http://127.0.0.1:3888/api/waifus/riko \
   Conflict, PreconditionRequired, ValidationError, InternalServerError.
 - **Caching and secrets**: API responses are `no-store`. Logs, diagnostics, errors, captured model
   traffic, and events are serialized through secret redaction; never expect a credential or token
-  to be readable after writing it.
+  to be readable after writing it. The only caching exception is a non-HTML asset under the exact
+  hash-addressed remote-dashboard build route; it is never a general filesystem endpoint.
 - **Runtime stop**: `POST /api/runtime/stop` body `{guildId, channelId}` (both required)
   aborts that channel's in-flight run and cancels its scheduled wake. Response
   `{stoppedRun, clearedRetrigger, activeInAnotherChannel, message}`. Use it to kill a

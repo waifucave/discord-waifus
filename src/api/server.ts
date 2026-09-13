@@ -85,6 +85,7 @@ import { ClientContextV1Schema } from "../shared/schemas/remoteLifecycle.js";
 import { registerAdminOperationRoutes } from "./adminOperations.js";
 import { registerRemoteAccessRoutes } from "./remoteAccess.js";
 import type { RemoteAccessService } from "../backend/remoteAccess/remoteAccessService.js";
+import type { DashboardBuild } from "../backend/remoteAccess/dashboardBuild.js";
 import { installMutationHandling } from "./mutations.js";
 import {
   EVENT_AUTHORIZATION_HEARTBEAT_MS,
@@ -118,6 +119,7 @@ export type ApiServerOptions = {
     isAuthorized: (principal: RemoteRequestPrincipal) => boolean | Promise<boolean>;
   };
   remoteAccess?: RemoteAccessService;
+  dashboardBuild?: DashboardBuild;
   administration?: {
     operationStore?: OperationStore;
     auditStore?: AuditStore;
@@ -469,7 +471,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   });
 
   registerAdminOperationRoutes(app, operationStore);
-  registerRemoteAccessRoutes(app, options.remoteAccess);
+  registerRemoteAccessRoutes(app, options.remoteAccess, options.dashboardBuild);
 
   app.get("/api/config", async (request) => {
     const config = await loadAppConfig(options.dataRoot);
