@@ -21,6 +21,14 @@ import {
 
 export type RemoteGatewaySurface = "dashboard" | "shell";
 
+export type RemoteGatewayHandlerSecurity = Readonly<{
+  session: Readonly<{
+    idleExpiresAt: string;
+    absoluteExpiresAt: string;
+  }>;
+  deliverCsrf: () => void;
+}>;
+
 type RemoteGatewayOriginSelection =
   | {
       readonly hostname: string;
@@ -44,7 +52,8 @@ export type StartRemoteGatewayOptions = RemoteBrowserSessionStoreOptions & Remot
   readonly handleAuthenticatedRequest?: (
     request: FastifyRequest,
     reply: FastifyReply,
-    browserContext: RemoteBrowserContextV1
+    browserContext: RemoteBrowserContextV1,
+    security: RemoteGatewayHandlerSecurity
   ) => unknown | Promise<unknown>;
 };
 
@@ -164,8 +173,17 @@ export async function startRemoteGateway(
         const context = createRemoteBrowserContext(refreshed, validated, {
           randomBytes: options.randomBytes
         });
+        const handlerSecurity: RemoteGatewayHandlerSecurity = Object.freeze({
+          session: Object.freeze({
+            idleExpiresAt: BigInt(Math.floor(refreshed.idleExpiresAt / 1_000)).toString(),
+            absoluteExpiresAt: BigInt(Math.floor(refreshed.absoluteExpiresAt / 1_000)).toString()
+          }),
+          deliverCsrf: () => {
+            reply.header("x-waifus-csrf", refreshed.csrfToken);
+          }
+        });
         const result = options.handleAuthenticatedRequest
-          ? await options.handleAuthenticatedRequest(request, reply, context)
+          ? await options.handleAuthenticatedRequest(request, reply, context, handlerSecurity)
           : undefined;
         if (reply.sent) return;
         if (result === undefined) return reply.code(404).send({ error: "Not Found" });
