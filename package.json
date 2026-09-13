@@ -24,9 +24,10 @@
     "waifus": "./bin/waifus.mjs"
   },
   "scripts": {
-    "build": "npm run build:backend && npm run build:frontend",
+    "build": "npm run build:backend && npm run build:frontend && npm run build:remote-shell",
     "build:backend": "rm -rf dist && tsc -p tsconfig.json",
     "build:frontend": "vite build --config src/frontend/vite.config.ts && tsx scripts/generate-dashboard-manifest.mjs",
+    "build:remote-shell": "vite build --config src/frontend/remote-shell/vite.config.ts",
     "dev": "node ./bin/waifus.mjs dev",
     "dev:frontend": "vite --config src/frontend/vite.config.ts",
     "waifus": "node ./bin/waifus.mjs",
@@ -44,6 +45,7 @@
     "bin/",
     "dist/",
     "dist-frontend/",
+    "dist-remote-shell/",
     "assets/ocr/",
     "docs/assistant-kb/",
     "docs/api.md",

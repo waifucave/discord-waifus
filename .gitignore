@@ -1,6 +1,7 @@
 node_modules/
 dist/
 dist-frontend/
+dist-remote-shell/
 coverage/
 .dc-waifus/
 .claude/
