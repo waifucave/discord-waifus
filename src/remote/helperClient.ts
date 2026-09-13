@@ -3,7 +3,7 @@ import { once } from "node:events";
 import { lstat, chmod } from "node:fs/promises";
 import net, { type Socket } from "node:net";
 import path from "node:path";
-import { PassThrough } from "node:stream";
+import { PassThrough, type Readable } from "node:stream";
 import { TextDecoder } from "node:util";
 import { z } from "zod";
 import type {
@@ -14,7 +14,10 @@ import type {
 import {
   Base64Url16BytesSchema,
   Base64Url32BytesSchema,
+  CanonicalTargetSchema,
   ComponentHelloSchema,
+  HttpMethodSchema,
+  RemoteBrowserContextV1Schema,
   Uint64DecimalSchema,
   negotiateComponentCompatibility,
   type ComponentHello,
@@ -30,15 +33,19 @@ import {
   WIPC_HEADER_BYTES,
   WIPC_PROTOCOL_VERSION,
   WIPC_DATA_PAYLOAD_MAX_BYTES,
+  WIPC_MAX_CONCURRENT_STREAMS,
+  assertWipcEncodedHeadersLength,
   decodeWipcHeader,
   decodeWipcWindowUpdate,
   encodeWipcHeader,
   encodeWipcWindowUpdate,
+  nextWipcStreamId,
   type WipcFrameType
 } from "../shared/wipc.js";
 import { WipcParentAuthSession } from "../shared/wipcAuthSession.js";
 import { WipcConnectionState, type WipcStreamTransition } from "../shared/wipcState.js";
 import {
+  HelperStreamError,
   HelperSupervisorError,
   HELPER_COMMAND_TIMEOUT_MS,
   HelperCommandError,
@@ -57,6 +64,8 @@ import {
   type HelperLaunchRequest,
   type HelperProcessExit,
   type HelperProcessFactory,
+  type HelperRemoteRequest,
+  type HelperRemoteResponse,
   type HelperRuntimeStatus
 } from "./helperTypes.js";
 
@@ -137,6 +146,43 @@ const RegisterGatewayLaunchWireSchema = z.object({
   command: z.literal("register_gateway_launch"),
   ok: z.literal(true)
 }).strict();
+const HeaderTupleWireSchema = z.tuple([
+  z.string().min(1).max(128).regex(/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/u),
+  z.string().max(8_192).regex(/^[\t\x20-\x7E]*$/u)
+]);
+const HeaderBlockWireSchema = z.array(HeaderTupleWireSchema).max(256).superRefine(
+  (headers, context) => {
+    try {
+      assertWipcEncodedHeadersLength(canonicalBytes(headers).byteLength);
+    } catch {
+      context.addIssue({
+        code: "custom",
+        message: "Encoded HTTP headers exceed 16 KiB."
+      });
+    }
+  }
+);
+const RemoteParentRequestStartWireSchema = z.object({
+  version: z.literal(1),
+  method: HttpMethodSchema,
+  canonicalTarget: CanonicalTargetSchema,
+  headers: HeaderBlockWireSchema,
+  browserContext: RemoteBrowserContextV1Schema
+}).strict().refine(
+  (value) => value.method === value.browserContext.method
+    && value.canonicalTarget === value.browserContext.canonicalTarget,
+  "Remote browser context must match the request method and target."
+);
+const ResponseStartWireSchema = z.object({
+  version: z.literal(1),
+  statusCode: z.number().int().min(100).max(599),
+  statusMessage: z.string().max(256).regex(/^[\t\x20-\x7E]*$/u),
+  headers: HeaderBlockWireSchema
+}).strict();
+const StreamErrorWireSchema = z.object({
+  code: z.string().regex(/^[a-z][a-z0-9_]{0,63}$/u),
+  message: z.string().min(1).max(1_024).regex(/^[^\u0000-\u001F\u007F]+$/u)
+}).strict();
 
 type WipcFrame = {
   readonly type: WipcFrameType;
@@ -150,6 +196,7 @@ type PendingCommand = {
 };
 
 type ActiveHostStream = {
+  readonly kind: "host";
   readonly streamId: bigint;
   readonly body: PassThrough;
   readonly controller: AbortController;
@@ -158,6 +205,22 @@ type ActiveHostStream = {
   readonly responseCreditWaiters: Set<() => void>;
   closed: boolean;
 };
+
+type ActiveRemoteStream = {
+  readonly kind: "remote";
+  readonly streamId: bigint;
+  readonly body: PassThrough;
+  readonly requestBody: Readable | undefined;
+  readonly controller: AbortController;
+  readonly requestCreditWaiters: Set<() => void>;
+  responseWriteTail: Promise<void>;
+  resolveResponse: (response: HelperRemoteResponse) => void;
+  rejectResponse: (error: Error) => void;
+  removeExternalAbort: () => void;
+  closed: boolean;
+};
+
+type ActiveStream = ActiveHostStream | ActiveRemoteStream;
 
 function canonicalBytes(value: unknown): Buffer {
   return Buffer.from(serializeCanonicalContractJson(value as ContractJson), "utf8");
@@ -217,7 +280,10 @@ async function readExactly(socket: Socket, size: number): Promise<Buffer> {
   const result = Buffer.allocUnsafe(size);
   let offset = 0;
   while (offset < size) {
-    const chunk = socket.read(size - offset) as Buffer | null;
+    const readableBytes = Math.min(size - offset, socket.readableLength);
+    const chunk = readableBytes > 0
+      ? socket.read(readableBytes) as Buffer | null
+      : null;
     if (!chunk) {
       await waitForReadable(socket);
       continue;
@@ -343,7 +409,7 @@ class ProcessHelperClient implements AuthenticatedHelperClient {
   readonly #dataRoot: string;
   readonly #role: "host" | "remote";
   readonly #statusListeners = new Set<(status: HelperRuntimeStatus) => void>();
-  readonly #streams = new Map<bigint, ActiveHostStream>();
+  readonly #streams = new Map<bigint, ActiveStream>();
   #pendingCommand: PendingCommand | undefined;
   #bridgeConnection: RemoteBridgeConnection | undefined;
   #terminalError: Error | undefined;
@@ -386,7 +452,134 @@ class ProcessHelperClient implements AuthenticatedHelperClient {
     return () => this.#statusListeners.delete(listener);
   }
 
+  async request(input: HelperRemoteRequest): Promise<HelperRemoteResponse> {
+    if (this.#role !== "remote") {
+      throw new HelperSupervisorError(
+        "helper_incompatible",
+        "Only a remote-role helper client may open host requests."
+      );
+    }
+    if (this.#closed || this.#socket.destroyed || this.#terminalError) {
+      throw new HelperSupervisorError("helper_unavailable", "Helper request channel is closed.");
+    }
+    if (input.signal?.aborted) {
+      throw new HelperStreamError("cancelled", "Remote request was cancelled before dispatch.");
+    }
+    const start = RemoteParentRequestStartWireSchema.parse({
+      version: 1,
+      method: input.method,
+      canonicalTarget: input.canonicalTarget,
+      headers: input.headers,
+      browserContext: input.browserContext
+    });
+    if (this.#connectionState.activeStreamCount >= WIPC_MAX_CONCURRENT_STREAMS) {
+      throw new HelperStreamError(
+        "stream_limit",
+        "The helper connection already has 128 active requests."
+      );
+    }
+    const highest = this.#connectionState.highWaterSnapshot().highestNodeStreamId;
+    const streamId = nextWipcStreamId("node", highest);
+    const body = new PassThrough({ highWaterMark: WIPC_DATA_PAYLOAD_MAX_BYTES });
+    body.on("error", () => {});
+    const controller = new AbortController();
+    let resolveResponse!: (response: HelperRemoteResponse) => void;
+    let rejectResponse!: (error: Error) => void;
+    const responsePromise = new Promise<HelperRemoteResponse>((resolve, reject) => {
+      resolveResponse = resolve;
+      rejectResponse = reject;
+    });
+    // Cancellation may happen while REQUEST_START is still flushing. Keep the inner promise
+    // observed until this async method returns it to the caller.
+    void responsePromise.catch(() => undefined);
+    const onExternalAbort = () => {
+      this.#cancelRemoteStream(stream, input.signal?.reason);
+    };
+    const stream: ActiveRemoteStream = {
+      kind: "remote",
+      streamId,
+      body,
+      requestBody: input.body,
+      controller,
+      requestCreditWaiters: new Set(),
+      responseWriteTail: Promise.resolve(),
+      resolveResponse,
+      rejectResponse,
+      removeExternalAbort: () => input.signal?.removeEventListener("abort", onExternalAbort),
+      closed: false
+    };
+    this.#streams.set(streamId, stream);
+    input.signal?.addEventListener("abort", onExternalAbort, { once: true });
+    try {
+      await this.#sendStreamFrame(stream, WIPC_FRAME_TYPES.REQUEST_START, canonicalBytes(start));
+      if (stream.controller.signal.aborted) {
+        return responsePromise;
+      }
+      if (input.body) {
+        void this.#pumpRemoteRequestBody(stream, input.body);
+      } else {
+        await this.#sendStreamFrame(stream, WIPC_FRAME_TYPES.REQUEST_END, Buffer.alloc(0));
+      }
+    } catch (error) {
+      if (stream.controller.signal.aborted) return responsePromise;
+      this.#failConnection(error);
+      throw new HelperSupervisorError("helper_unavailable", "Helper request channel failed.");
+    }
+    return responsePromise;
+  }
+
+  async #pumpRemoteRequestBody(
+    stream: ActiveRemoteStream,
+    source: AsyncIterable<unknown>
+  ): Promise<void> {
+    try {
+      for await (const value of source) {
+        const chunk = Buffer.from(value as Uint8Array);
+        let offset = 0;
+        while (offset < chunk.byteLength) {
+          const available = await this.#waitForRequestCredit(stream);
+          const size = Math.min(
+            WIPC_DATA_PAYLOAD_MAX_BYTES,
+            available,
+            chunk.byteLength - offset
+          );
+          await this.#sendStreamFrame(
+            stream,
+            WIPC_FRAME_TYPES.REQUEST_CHUNK,
+            chunk.subarray(offset, offset + size)
+          );
+          offset += size;
+        }
+      }
+      if (!stream.closed && !stream.controller.signal.aborted) {
+        await this.#sendStreamFrame(stream, WIPC_FRAME_TYPES.REQUEST_END, Buffer.alloc(0));
+      }
+    } catch (error) {
+      this.#cancelRemoteStream(stream, error);
+    }
+  }
+
+  async #waitForRequestCredit(stream: ActiveRemoteStream): Promise<number> {
+    for (;;) {
+      if (stream.closed || this.#closed || stream.controller.signal.aborted) {
+        throw new Error("Helper request stream is closed.");
+      }
+      const snapshot = this.#connectionState.snapshot(stream.streamId);
+      if (!snapshot || snapshot.requestState !== "open") {
+        throw new Error("Helper request stream is no longer writable.");
+      }
+      if (snapshot.requestCredit > 0) return snapshot.requestCredit;
+      await new Promise<void>((resolve) => stream.requestCreditWaiters.add(resolve));
+    }
+  }
+
   attachRequestBridge(bridge: RemoteRequestBridge): void {
+    if (this.#role !== "host") {
+      throw new HelperSupervisorError(
+        "helper_incompatible",
+        "Only a host-role helper client may attach the Fastify request bridge."
+      );
+    }
     if (this.#closed || this.#terminalError) {
       throw new HelperSupervisorError("helper_unavailable", "Helper request channel is closed.");
     }
@@ -473,7 +666,8 @@ class ProcessHelperClient implements AuthenticatedHelperClient {
       return;
     }
     if (transition.outcome === "stream_failed") {
-      if (transition.responseErrorPermitted) {
+      const failedStream = this.#streams.get(frame.streamId);
+      if (failedStream?.kind === "host" && transition.responseErrorPermitted) {
         await writeFrame(
           this.#socket,
           WIPC_FRAME_TYPES.RESPONSE_ERROR,
@@ -489,6 +683,7 @@ class ProcessHelperClient implements AuthenticatedHelperClient {
       const body = new PassThrough({ highWaterMark: WIPC_DATA_PAYLOAD_MAX_BYTES });
       body.on("error", () => {});
       const stream: ActiveHostStream = {
+        kind: "host",
         streamId: frame.streamId,
         body,
         controller: new AbortController(),
@@ -513,6 +708,10 @@ class ProcessHelperClient implements AuthenticatedHelperClient {
     if (!stream) {
       throw new HelperSupervisorError("helper_incompatible", "Active helper stream has no request owner.");
     }
+    if (stream.kind === "remote") {
+      this.#handleRemoteStreamFrame(stream, transition, frame);
+      return;
+    }
     switch (transition.outcome) {
       case "request_chunk_delivered":
         this.#enqueueRequestChunk(stream, Buffer.from(frame.payload));
@@ -520,7 +719,11 @@ class ProcessHelperClient implements AuthenticatedHelperClient {
       case "request_ended":
         stream.requestWriteTail = stream.requestWriteTail.then(() => {
           if (!stream.body.destroyed && !stream.body.writableEnded) stream.body.end();
-        });
+          const snapshot = this.#connectionState.snapshot(stream.streamId);
+          if (snapshot && ["succeeded", "failed"].includes(snapshot.responseState)) {
+            this.#removeStream(stream.streamId);
+          }
+        }).catch((error) => this.#failConnection(error));
         return;
       case "request_cancelled":
         this.#cancelHostStream(stream, new Error("Remote request was cancelled."));
@@ -531,6 +734,119 @@ class ProcessHelperClient implements AuthenticatedHelperClient {
       default:
         throw new HelperSupervisorError("helper_incompatible", "Helper stream transition is unsupported.");
     }
+  }
+
+  #handleRemoteStreamFrame(
+    stream: ActiveRemoteStream,
+    transition: WipcStreamTransition,
+    frame: WipcFrame
+  ): void {
+    if (transition.closeRequestInput && stream.requestBody && !stream.requestBody.destroyed) {
+      stream.requestBody.destroy(new Error("Remote response closed the request upload."));
+    }
+    switch (transition.outcome) {
+      case "response_started": {
+        const response = parseCanonical(
+          frame.payload,
+          ResponseStartWireSchema,
+          "Helper response metadata"
+        );
+        stream.body.once("close", () => {
+          if (!stream.body.readableEnded && !stream.closed) {
+            this.#cancelRemoteStream(stream, new HelperStreamError(
+              "cancelled",
+              "Remote response consumer disconnected."
+            ));
+          }
+        });
+        stream.resolveResponse(Object.freeze({
+          statusCode: response.statusCode,
+          statusMessage: response.statusMessage,
+          headers: Object.freeze(response.headers.map((header) => Object.freeze(header))),
+          body: stream.body,
+          cancel: (reason?: unknown) => this.#cancelRemoteStream(stream, reason)
+        }));
+        return;
+      }
+      case "response_chunk_delivered":
+        this.#enqueueResponseChunk(stream, Buffer.from(frame.payload));
+        return;
+      case "response_ended":
+        stream.responseWriteTail = stream.responseWriteTail.then(async () => {
+          if (!stream.body.destroyed && !stream.body.writableEnded) stream.body.end();
+          await this.#finishRemoteRequestInput(stream);
+          this.#removeStream(stream.streamId, undefined, true);
+        }).catch((error) => this.#failConnection(error));
+        return;
+      case "response_failed": {
+        const decoded = parseCanonical(
+          frame.payload,
+          StreamErrorWireSchema,
+          "Helper stream error"
+        );
+        const error = new HelperStreamError(decoded.code, decoded.message);
+        stream.rejectResponse(error);
+        if (!stream.body.destroyed) stream.body.destroy(error);
+        void this.#finishRemoteRequestInput(stream).then(() => {
+          this.#removeStream(stream.streamId, error);
+        }).catch((sendError) => this.#failConnection(sendError));
+        return;
+      }
+      case "window_updated":
+        if (transition.direction === "request") this.#wakeRequestCredit(stream);
+        return;
+      default:
+        throw new HelperSupervisorError(
+          "helper_incompatible",
+          "Helper remote stream transition is unsupported."
+        );
+    }
+  }
+
+  async #finishRemoteRequestInput(stream: ActiveRemoteStream): Promise<void> {
+    if (this.#connectionState.snapshot(stream.streamId)?.requestState === "response_closed") {
+      await this.#sendStreamFrame(stream, WIPC_FRAME_TYPES.REQUEST_END, Buffer.alloc(0));
+    }
+  }
+
+  #enqueueResponseChunk(stream: ActiveRemoteStream, payload: Buffer): void {
+    stream.responseWriteTail = stream.responseWriteTail.then(async () => {
+      if (stream.closed || stream.body.destroyed || stream.body.writableEnded) return;
+      if (!stream.body.write(payload)) {
+        await Promise.race([
+          once(stream.body, "drain"),
+          once(stream.body, "close")
+        ]);
+      }
+      if (stream.closed || stream.body.destroyed) return;
+      await this.#sendStreamFrame(
+        stream,
+        WIPC_FRAME_TYPES.WINDOW_UPDATE,
+        encodeWipcWindowUpdate({ direction: "response", creditIncrement: payload.byteLength })
+      );
+    }).catch((error) => this.#failConnection(error));
+  }
+
+  #wakeRequestCredit(stream: ActiveRemoteStream): void {
+    for (const resolve of stream.requestCreditWaiters) resolve();
+    stream.requestCreditWaiters.clear();
+  }
+
+  #cancelRemoteStream(stream: ActiveRemoteStream, reason?: unknown): void {
+    if (stream.closed || stream.controller.signal.aborted) return;
+    const error = reason instanceof HelperStreamError
+      ? reason
+      : new HelperStreamError("cancelled", "Remote request was cancelled.");
+    stream.controller.abort(error);
+    stream.rejectResponse(error);
+    if (stream.requestBody && !stream.requestBody.destroyed) stream.requestBody.destroy(error);
+    if (!stream.body.destroyed) stream.body.destroy(error);
+    this.#wakeRequestCredit(stream);
+    void this.#sendStreamFrame(
+      stream,
+      WIPC_FRAME_TYPES.REQUEST_CANCEL,
+      canonicalBytes({})
+    ).catch((sendError) => this.#failConnection(sendError));
   }
 
   #enqueueRequestChunk(stream: ActiveHostStream, payload: Buffer): void {
@@ -592,8 +908,7 @@ class ProcessHelperClient implements AuthenticatedHelperClient {
         }
       }
       await this.#sendStreamFrame(stream, WIPC_FRAME_TYPES.RESPONSE_END, Buffer.alloc(0));
-      stream.response = undefined;
-      this.#removeStream(stream.streamId);
+      this.#finishHostResponse(stream);
     } catch (error) {
       await this.#rejectHostStream(
         stream,
@@ -622,7 +937,7 @@ class ProcessHelperClient implements AuthenticatedHelperClient {
   }
 
   async #sendStreamFrame(
-    stream: ActiveHostStream,
+    stream: ActiveStream,
     type: WipcFrameType,
     payload: Buffer
   ): Promise<void> {
@@ -666,6 +981,22 @@ class ProcessHelperClient implements AuthenticatedHelperClient {
         this.#failConnection(error);
       }
     }
+    this.#finishHostResponse(stream, reason);
+  }
+
+  #finishHostResponse(stream: ActiveHostStream, reason?: unknown): void {
+    if (stream.closed) return;
+    stream.response = undefined;
+    const snapshot = this.#connectionState.snapshot(stream.streamId);
+    if (snapshot?.requestState === "response_closed") {
+      if (!stream.body.destroyed) {
+        stream.body.destroy(
+          reason instanceof Error ? reason : new Error("Host response closed the request upload.")
+        );
+      }
+      this.#wakeResponseCredit(stream);
+      return;
+    }
     this.#removeStream(stream.streamId, reason);
   }
 
@@ -677,7 +1008,7 @@ class ProcessHelperClient implements AuthenticatedHelperClient {
     this.#wakeResponseCredit(stream);
   }
 
-  #removeStream(streamId: bigint, reason?: unknown): void {
+  #removeStream(streamId: bigint, reason?: unknown, preserveBody = false): void {
     const stream = this.#streams.get(streamId);
     if (!stream) {
       try {
@@ -689,12 +1020,23 @@ class ProcessHelperClient implements AuthenticatedHelperClient {
     }
     stream.closed = true;
     this.#streams.delete(streamId);
-    this.#wakeResponseCredit(stream);
+    if (stream.kind === "host") {
+      this.#wakeResponseCredit(stream);
+    } else {
+      stream.removeExternalAbort();
+      this.#wakeRequestCredit(stream);
+    }
     if (reason !== undefined) {
       stream.controller.abort(reason);
-      stream.response?.cancel(reason);
+      if (stream.kind === "host") stream.response?.cancel(reason);
+      else {
+        stream.rejectResponse(reason instanceof Error ? reason : new Error("Remote request failed."));
+        if (stream.requestBody && !stream.requestBody.destroyed) {
+          stream.requestBody.destroy(reason instanceof Error ? reason : undefined);
+        }
+      }
     }
-    if (!stream.body.destroyed && !stream.body.readableEnded) {
+    if (!preserveBody && !stream.body.destroyed && !stream.body.readableEnded) {
       stream.body.destroy(reason instanceof Error ? reason : undefined);
     }
     try {

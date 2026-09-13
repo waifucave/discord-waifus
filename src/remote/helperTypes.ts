@@ -1,3 +1,4 @@
+import type { Readable } from "node:stream";
 import { z } from "zod";
 import {
   ActivationOperationIdSchema,
@@ -19,12 +20,18 @@ import {
   Uint64DecimalSchema,
   type ComponentHello,
   type ControlProfileV1,
+  type HttpMethod,
   type ProtocolVersion,
+  type RemoteBrowserContextV1,
   type RuntimePurpose,
   type Uint64Decimal
 } from "../shared/schemas/remoteProtocol.js";
 import { HelperTargetSchema, type HelperTarget } from "../shared/schemas/remoteAccess.js";
-import type { RemoteRequestBridge } from "../backend/remoteAccess/requestBridge.js";
+import type {
+  RemoteBridgeResponse,
+  RemoteRequestBridge
+} from "../backend/remoteAccess/requestBridge.js";
+import type { RemoteHeaderTuple } from "../backend/remoteAccess/bridgeProtocol.js";
 
 export const HELPER_HELLO_TIMEOUT_MS = 5_000;
 export const HELPER_COMMAND_TIMEOUT_MS = 30_000;
@@ -126,6 +133,17 @@ export type HelperPackageResolver = {
   resolve: (input: ResolveHelperPackageInput) => Promise<VerifiedHelperSelection>;
 };
 
+export type HelperRemoteRequest = {
+  readonly method: HttpMethod;
+  readonly canonicalTarget: string;
+  readonly headers: readonly RemoteHeaderTuple[];
+  readonly browserContext: RemoteBrowserContextV1;
+  readonly body?: Readable;
+  readonly signal?: AbortSignal;
+};
+
+export type HelperRemoteResponse = RemoteBridgeResponse;
+
 export type AuthenticatedHelperClient = {
   readonly hello: ComponentHello;
   readonly negotiatedProtocol: ProtocolVersion;
@@ -141,9 +159,20 @@ export type AuthenticatedHelperClient = {
   reconnectRuntime: () => Promise<HelperRuntimeStatus>;
   stopRuntime: () => Promise<HelperRuntimeStatus>;
   registerGatewayLaunch: (gatewayLaunchId: string, expiresAt: string) => Promise<void>;
+  request: (request: HelperRemoteRequest) => Promise<HelperRemoteResponse>;
   attachRequestBridge: (bridge: RemoteRequestBridge) => void;
   close: () => Promise<void>;
 };
+
+export class HelperStreamError extends Error {
+  constructor(
+    readonly code: string,
+    message: string
+  ) {
+    super(message);
+    this.name = "HelperStreamError";
+  }
+}
 
 export type HelperProcessExit = {
   readonly code: number | null;

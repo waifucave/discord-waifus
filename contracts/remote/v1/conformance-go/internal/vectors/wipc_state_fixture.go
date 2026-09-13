@@ -240,6 +240,15 @@ func BuildWIPCStateV1Fixture() WIPCStateV1Fixture {
 						}),
 					},
 					{
+						Action: "frame", Sender: "node", FrameType: uint8(wipc.FrameRequestEnd), StreamID: "1",
+						ExpectedOutcome: "request_ended",
+						ExpectedSnapshot: stateSnapshot(func(value *StateSnapshot) {
+							value.RequestState = "ended"
+							value.ResponseState = "succeeded"
+							value.RequestCredit = 1048566
+						}),
+					},
+					{
 						Action: "frame", Sender: "node", FrameType: uint8(wipc.FrameRequestCancel), StreamID: "1",
 						ExpectedOutcome:      "cancel_ignored",
 						ExpectedAbortRequest: boolPointer(false),
@@ -249,7 +258,7 @@ func BuildWIPCStateV1Fixture() WIPCStateV1Fixture {
 						WindowUpdate:    &StateWindowUpdate{Direction: "request", CreditIncrement: 10},
 						ExpectedOutcome: "window_ignored",
 						ExpectedSnapshot: stateSnapshot(func(value *StateSnapshot) {
-							value.RequestState = "response_closed"
+							value.RequestState = "ended"
 							value.ResponseState = "succeeded"
 							value.RequestCredit = 1048566
 						}),

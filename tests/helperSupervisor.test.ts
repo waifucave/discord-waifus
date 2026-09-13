@@ -1,4 +1,5 @@
 import path from "node:path";
+import { Readable } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Logger } from "../src/backend/logger.js";
 import type { RemoteRequestBridge } from "../src/backend/remoteAccess/requestBridge.js";
@@ -81,6 +82,13 @@ function helperClient(overrides: Partial<AuthenticatedHelperClient> = {}): Authe
     reconnectRuntime: async () => helperStatus({ controlState: "reconnecting", directState: "reconnecting" }),
     stopRuntime: async () => helperStatus({ controlState: "inactive", directState: "inactive" }),
     registerGatewayLaunch: async () => {},
+    request: async () => ({
+      statusCode: 204,
+      statusMessage: "No Content",
+      headers: [],
+      body: Readable.from([]),
+      cancel: () => {}
+    }),
     attachRequestBridge: () => {},
     close: async () => {},
     ...overrides
@@ -188,6 +196,58 @@ async function settle(): Promise<void> {
 }
 
 describe("role-neutral helper supervisor", () => {
+  it("rejects attaching a host request bridge to a remote-role supervisor", async () => {
+    const factory = new FakeProcessFactory();
+    const { supervisor } = await makeSupervisor(factory, { role: "remote" });
+
+    expect(() => supervisor.attachRequestBridge({} as RemoteRequestBridge)).toThrowError(
+      "Only a host-role helper supervisor may attach the Fastify request bridge."
+    );
+    expect(factory.requests).toHaveLength(0);
+
+    await supervisor.close();
+  });
+
+  it("exposes remote requests only through its current authenticated client", async () => {
+    const factory = new FakeProcessFactory();
+    const remoteSelection = {
+      ...selection("/tmp/waifus-test-ts-connect.exe"),
+      target: { os: "win32" as const, arch: "x64" as const }
+    };
+    const { supervisor } = await makeSupervisor(factory, {
+      role: "remote",
+      packageResolver: { resolve: async () => remoteSelection }
+    });
+    const canonicalTarget = "/api/remote-access/dashboard-manifest";
+    const input = {
+      method: "GET" as const,
+      canonicalTarget,
+      headers: [["accept", "application/json"]] as const,
+      browserContext: {
+        version: 1 as const,
+        gatewayLaunchId: Buffer.alloc(32, 0x31).toString("base64url") as never,
+        browserSessionId: Buffer.alloc(32, 0x32).toString("base64url") as never,
+        requestNonce: Buffer.alloc(16, 0x33).toString("base64url") as never,
+        method: "GET" as const,
+        canonicalTarget,
+        csrfValidated: true as const
+      }
+    };
+
+    await expect(supervisor.request(input)).rejects.toMatchObject({ code: "helper_unavailable" });
+    const request = vi.fn(helperClient().request);
+    const started = supervisor.start();
+    await vi.waitFor(() => expect(factory.launches).toHaveLength(1));
+    factory.launches[0]!.resolveAuthenticated(helperClient({ request }));
+    await started;
+
+    const response = await supervisor.request(input);
+    expect(response.statusCode).toBe(204);
+    expect(request).toHaveBeenCalledWith(input);
+
+    await supervisor.close();
+  });
+
   it("attaches the authenticated request bridge and restores the desired runtime", async () => {
     const factory = new FakeProcessFactory();
     const { supervisor } = await makeSupervisor(factory);

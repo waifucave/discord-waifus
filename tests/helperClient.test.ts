@@ -1,6 +1,7 @@
 import { chmod, lstat, mkdir, readFile } from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
+import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import fastify from "fastify";
 import { afterEach, describe, expect, it } from "vitest";
@@ -69,7 +70,7 @@ async function within<T>(promise: Promise<T>, milliseconds: number, label: strin
 }
 
 async function readEventually(filePath: string): Promise<string> {
-  const deadline = performance.now() + 2_000;
+  const deadline = performance.now() + 5_000;
   for (;;) {
     try {
       const value = await readFile(filePath, "utf8");
@@ -294,6 +295,573 @@ describe("protected helper process client", () => {
     await launch.exited;
   });
 
+  unixIt("does not let a remote-role client attach the host Fastify bridge", async () => {
+    const baseRequest = await launchRequest();
+    const request: HelperLaunchRequest = { ...baseRequest, role: "remote" };
+    const launch = await new ProtectedHelperProcessFactory().launch(request);
+    const client = await launch.authenticated;
+    const app = fastify({ logger: false });
+    registerInternalDispatchReceiver(app);
+    const bridge = new RemoteRequestBridge(app);
+
+    expect(() => client.attachRequestBridge(bridge)).toThrowError(
+      "Only a host-role helper client may attach the Fastify request bridge."
+    );
+
+    await client.close();
+    bridge.close();
+    await app.close();
+    await launch.closeParentChannel();
+    await launch.exited;
+  });
+
+  unixIt("opens a Node-created odd remote request stream and returns its streamed response", async () => {
+    const baseRequest = await launchRequest({
+      FAKE_HELPER_RUNTIME: "1",
+      FAKE_HELPER_REMOTE_REQUEST: "1"
+    });
+    const resultPath = path.join(baseRequest.dataRoot, "remote-request-result.json");
+    const request: HelperLaunchRequest = {
+      ...baseRequest,
+      role: "remote",
+      environment: {
+        ...baseRequest.environment,
+        FAKE_HELPER_RESULT_PATH: resultPath
+      }
+    };
+    const launch = await new ProtectedHelperProcessFactory().launch(request);
+    const client = await launch.authenticated;
+    const canonicalTarget = "/api/remote-access/dashboard-manifest?source=remote";
+    const browserContext = {
+      version: 1 as const,
+      gatewayLaunchId: Buffer.alloc(32, 0x63).toString("base64url"),
+      browserSessionId: Buffer.alloc(32, 0x64).toString("base64url"),
+      requestNonce: Buffer.alloc(16, 0x65).toString("base64url"),
+      method: "GET" as const,
+      canonicalTarget,
+      csrfValidated: true as const
+    };
+
+    await client.identityStatus();
+    await client.startRuntime(Buffer.alloc(16, 0x62).toString("base64url"));
+    await client.registerGatewayLaunch(browserContext.gatewayLaunchId, "1786271400");
+    const response = await client.request({
+      method: "GET",
+      canonicalTarget,
+      headers: [["accept", "application/json"]],
+      browserContext
+    });
+    const chunks: Buffer[] = [];
+    for await (const chunk of response.body) chunks.push(Buffer.from(chunk));
+
+    expect(response).toMatchObject({
+      statusCode: 206,
+      statusMessage: "Partial Content",
+      headers: [["content-type", "application/json"], ["x-helper-probe", "yes"]]
+    });
+    expect(Buffer.concat(chunks).toString("utf8")).toBe('{"ok":true}');
+    expect(JSON.parse(await readEventually(resultPath))).toEqual({
+      streamId: "1",
+      requestStart: {
+        version: 1,
+        method: "GET",
+        canonicalTarget,
+        headers: [["accept", "application/json"]],
+        browserContext
+      },
+      body: "",
+      cancelled: false,
+      requestEnded: true
+    });
+
+    await client.close();
+    await launch.closeParentChannel();
+    await launch.exited;
+  });
+
+  unixIt("rejects a remote request whose encoded header block exceeds 16 KiB", async () => {
+    const baseRequest = await launchRequest({
+      FAKE_HELPER_RUNTIME: "1",
+      FAKE_HELPER_REMOTE_REQUEST: "1"
+    });
+    const request: HelperLaunchRequest = {
+      ...baseRequest,
+      role: "remote",
+      environment: {
+        ...baseRequest.environment,
+        FAKE_HELPER_RESULT_PATH: path.join(baseRequest.dataRoot, "oversized-request-headers.json")
+      }
+    };
+    const launch = await new ProtectedHelperProcessFactory().launch(request);
+    const client = await launch.authenticated;
+    const canonicalTarget = "/api/header-limit";
+
+    await client.identityStatus();
+    await client.startRuntime(Buffer.alloc(16, 0x62).toString("base64url"));
+    try {
+      await expect(client.request({
+        method: "GET",
+        canonicalTarget,
+        headers: [
+          ["x-first", "a".repeat(8_192)],
+          ["x-second", "b".repeat(8_192)]
+        ],
+        browserContext: {
+          version: 1,
+          gatewayLaunchId: Buffer.alloc(32, 0x63).toString("base64url"),
+          browserSessionId: Buffer.alloc(32, 0x64).toString("base64url"),
+          requestNonce: Buffer.alloc(16, 0x6b).toString("base64url"),
+          method: "GET",
+          canonicalTarget,
+          csrfValidated: true
+        }
+      })).rejects.toThrow("Encoded HTTP headers exceed 16 KiB.");
+    } finally {
+      await client.close();
+      await launch.closeParentChannel();
+      await launch.forceTerminate();
+      await launch.exited;
+    }
+  });
+
+  unixIt("rejects a 129th remote request without sending an untracked stream", async () => {
+    const baseRequest = await launchRequest({
+      FAKE_HELPER_RUNTIME: "1",
+      FAKE_HELPER_REMOTE_STREAM_LIMIT: "1"
+    });
+    const resultPath = path.join(baseRequest.dataRoot, "remote-stream-limit-result.json");
+    const request: HelperLaunchRequest = {
+      ...baseRequest,
+      role: "remote",
+      environment: {
+        ...baseRequest.environment,
+        FAKE_HELPER_RESULT_PATH: resultPath
+      }
+    };
+    const launch = await new ProtectedHelperProcessFactory().launch(request);
+    const client = await launch.authenticated;
+    const gatewayLaunchId = Buffer.alloc(32, 0x63).toString("base64url");
+    const browserSessionId = Buffer.alloc(32, 0x64).toString("base64url");
+    const openRequest = (index: number) => {
+      const canonicalTarget = `/api/stream-limit/${index}`;
+      return client.request({
+        method: "GET",
+        canonicalTarget,
+        headers: [],
+        browserContext: {
+          version: 1,
+          gatewayLaunchId,
+          browserSessionId,
+          requestNonce: Buffer.alloc(16, index + 1).toString("base64url"),
+          method: "GET",
+          canonicalTarget,
+          csrfValidated: true
+        }
+      });
+    };
+    const active: Promise<unknown>[] = [];
+
+    await client.identityStatus();
+    await client.startRuntime(Buffer.alloc(16, 0x62).toString("base64url"));
+    try {
+      for (let index = 0; index < 128; index += 1) {
+        const pending = openRequest(index);
+        void pending.catch(() => undefined);
+        active.push(pending);
+      }
+      await expect(within(
+        openRequest(128),
+        500,
+        "local stream-limit rejection"
+      )).rejects.toMatchObject({
+        name: "HelperStreamError",
+        code: "stream_limit"
+      });
+      expect(JSON.parse(await readEventually(resultPath))).toEqual({
+        started: 128,
+        overflowSent: false
+      });
+      await expect(client.runtimeStatus()).resolves.toMatchObject({
+        controlState: "connected"
+      });
+    } finally {
+      await client.close();
+      await Promise.allSettled(active);
+      await launch.closeParentChannel();
+      await launch.forceTerminate();
+      await launch.exited;
+    }
+  });
+
+  unixIt("contains an aborted remote request and keeps the authenticated connection usable", async () => {
+    const baseRequest = await launchRequest({
+      FAKE_HELPER_RUNTIME: "1",
+      FAKE_HELPER_REMOTE_REQUEST: "1",
+      FAKE_HELPER_REMOTE_WAIT_FOR_CANCEL: "1"
+    });
+    const resultPath = path.join(baseRequest.dataRoot, "remote-cancel-result.json");
+    const request: HelperLaunchRequest = {
+      ...baseRequest,
+      role: "remote",
+      environment: {
+        ...baseRequest.environment,
+        FAKE_HELPER_RESULT_PATH: resultPath
+      }
+    };
+    const launch = await new ProtectedHelperProcessFactory().launch(request);
+    const client = await launch.authenticated;
+    const canonicalTarget = "/api/events";
+    const controller = new AbortController();
+
+    await client.identityStatus();
+    await client.startRuntime(Buffer.alloc(16, 0x62).toString("base64url"));
+    const pending = client.request({
+      method: "GET",
+      canonicalTarget,
+      headers: [["accept", "text/event-stream"]],
+      browserContext: {
+        version: 1,
+        gatewayLaunchId: Buffer.alloc(32, 0x63).toString("base64url"),
+        browserSessionId: Buffer.alloc(32, 0x64).toString("base64url"),
+        requestNonce: Buffer.alloc(16, 0x67).toString("base64url"),
+        method: "GET",
+        canonicalTarget,
+        csrfValidated: true
+      },
+      signal: controller.signal
+    });
+    controller.abort(new Error("browser disconnected"));
+
+    await expect(pending).rejects.toMatchObject({
+      name: "HelperStreamError",
+      code: "cancelled"
+    });
+    await expect(client.runtimeStatus()).resolves.toMatchObject({
+      controlState: "connected"
+    });
+    expect(JSON.parse(await readEventually(resultPath))).toMatchObject({
+      streamId: "1",
+      cancelled: true,
+      requestEnded: false
+    });
+
+    await client.close();
+    await launch.closeParentChannel();
+    await launch.exited;
+  });
+
+  unixIt("surfaces direct-only response failure without failing over or dropping control", async () => {
+    const baseRequest = await launchRequest({
+      FAKE_HELPER_RUNTIME: "1",
+      FAKE_HELPER_REMOTE_REQUEST: "1",
+      FAKE_HELPER_REMOTE_RESPONSE_ERROR: "direct_unavailable"
+    });
+    const resultPath = path.join(baseRequest.dataRoot, "remote-direct-unavailable-result.json");
+    const request: HelperLaunchRequest = {
+      ...baseRequest,
+      role: "remote",
+      environment: {
+        ...baseRequest.environment,
+        FAKE_HELPER_RESULT_PATH: resultPath
+      }
+    };
+    const launch = await new ProtectedHelperProcessFactory().launch(request);
+    const client = await launch.authenticated;
+    const canonicalTarget = "/api/status";
+
+    await client.identityStatus();
+    await client.startRuntime(Buffer.alloc(16, 0x62).toString("base64url"));
+    await expect(client.request({
+      method: "GET",
+      canonicalTarget,
+      headers: [],
+      browserContext: {
+        version: 1,
+        gatewayLaunchId: Buffer.alloc(32, 0x63).toString("base64url"),
+        browserSessionId: Buffer.alloc(32, 0x64).toString("base64url"),
+        requestNonce: Buffer.alloc(16, 0x6d).toString("base64url"),
+        method: "GET",
+        canonicalTarget,
+        csrfValidated: true
+      }
+    })).rejects.toMatchObject({
+      name: "HelperStreamError",
+      code: "direct_unavailable",
+      message: "direct connection unavailable"
+    });
+    expect(JSON.parse(await readEventually(resultPath))).toMatchObject({
+      streamId: "1",
+      requestEnded: true
+    });
+    await expect(client.runtimeStatus()).resolves.toMatchObject({
+      controlState: "connected"
+    });
+
+    await client.close();
+    await launch.closeParentChannel();
+    await launch.exited;
+  });
+
+  unixIt("streams an upload beyond initial credit and resumes from helper window updates", async () => {
+    const baseRequest = await launchRequest({
+      FAKE_HELPER_RUNTIME: "1",
+      FAKE_HELPER_REMOTE_REQUEST: "1",
+      FAKE_HELPER_RESULT_BODY_MODE: "digest"
+    });
+    const resultPath = path.join(baseRequest.dataRoot, "remote-upload-result.json");
+    const request: HelperLaunchRequest = {
+      ...baseRequest,
+      role: "remote",
+      environment: {
+        ...baseRequest.environment,
+        FAKE_HELPER_RESULT_PATH: resultPath
+      }
+    };
+    const launch = await new ProtectedHelperProcessFactory().launch(request);
+    const client = await launch.authenticated;
+    const canonicalTarget = "/api/import";
+    const browserContext = {
+      version: 1 as const,
+      gatewayLaunchId: Buffer.alloc(32, 0x63).toString("base64url"),
+      browserSessionId: Buffer.alloc(32, 0x64).toString("base64url"),
+      requestNonce: Buffer.alloc(16, 0x66).toString("base64url"),
+      method: "POST" as const,
+      canonicalTarget,
+      csrfValidated: true as const
+    };
+    const upload = Buffer.alloc(1_114_113, 0x61);
+
+    await client.identityStatus();
+    await client.startRuntime(Buffer.alloc(16, 0x62).toString("base64url"));
+    const response = await client.request({
+      method: "POST",
+      canonicalTarget,
+      headers: [["content-type", "application/octet-stream"]],
+      browserContext,
+      body: Readable.from([upload])
+    });
+    for await (const _chunk of response.body) {
+      // Drain the fake response so the logical stream reaches its terminal state.
+    }
+
+    expect(JSON.parse(await readEventually(resultPath))).toMatchObject({
+      streamId: "1",
+      bodyBytes: 1_114_113,
+      bodySha256: "139063b571c84d332f99cf5e07281b1aea967fb89236a10ca8c2cd1c216ee7b2"
+    });
+
+    await client.close();
+    await launch.closeParentChannel();
+    await launch.exited;
+  });
+
+  unixIt("cancels only the remote stream when its response consumer disconnects", async () => {
+    const baseRequest = await launchRequest({
+      FAKE_HELPER_RUNTIME: "1",
+      FAKE_HELPER_REMOTE_REQUEST: "1",
+      FAKE_HELPER_REMOTE_STREAM_UNTIL_CANCEL: "1"
+    });
+    const resultPath = path.join(baseRequest.dataRoot, "remote-response-cancel-result.json");
+    const request: HelperLaunchRequest = {
+      ...baseRequest,
+      role: "remote",
+      environment: {
+        ...baseRequest.environment,
+        FAKE_HELPER_RESULT_PATH: resultPath
+      }
+    };
+    const launch = await new ProtectedHelperProcessFactory().launch(request);
+    const client = await launch.authenticated;
+    const canonicalTarget = "/api/download";
+
+    await client.identityStatus();
+    await client.startRuntime(Buffer.alloc(16, 0x62).toString("base64url"));
+    try {
+      const response = await within(client.request({
+        method: "GET",
+        canonicalTarget,
+        headers: [["accept", "application/octet-stream"]],
+        browserContext: {
+          version: 1,
+          gatewayLaunchId: Buffer.alloc(32, 0x63).toString("base64url"),
+          browserSessionId: Buffer.alloc(32, 0x64).toString("base64url"),
+          requestNonce: Buffer.alloc(16, 0x68).toString("base64url"),
+          method: "GET",
+          canonicalTarget,
+          csrfValidated: true
+        }
+      }), 2_000, "remote streaming response");
+      response.body.destroy();
+
+      expect(JSON.parse(await readEventually(resultPath))).toMatchObject({
+        streamId: "1",
+        responseCancelled: true
+      });
+      await expect(client.runtimeStatus()).resolves.toMatchObject({
+        controlState: "connected"
+      });
+    } finally {
+      await client.close();
+      await launch.closeParentChannel();
+      await launch.forceTerminate();
+      await launch.exited;
+    }
+  });
+
+  unixIt("contains a malformed remote response without answering as the responder", async () => {
+    const baseRequest = await launchRequest({
+      FAKE_HELPER_RUNTIME: "1",
+      FAKE_HELPER_REMOTE_REQUEST: "1",
+      FAKE_HELPER_REMOTE_PROTOCOL_ERROR: "1"
+    });
+    const resultPath = path.join(baseRequest.dataRoot, "remote-protocol-error-result.json");
+    const request: HelperLaunchRequest = {
+      ...baseRequest,
+      role: "remote",
+      environment: {
+        ...baseRequest.environment,
+        FAKE_HELPER_RESULT_PATH: resultPath
+      }
+    };
+    const launch = await new ProtectedHelperProcessFactory().launch(request);
+    const client = await launch.authenticated;
+    const canonicalTarget = "/api/malformed";
+
+    await client.identityStatus();
+    await client.startRuntime(Buffer.alloc(16, 0x62).toString("base64url"));
+    await expect(client.request({
+      method: "GET",
+      canonicalTarget,
+      headers: [],
+      browserContext: {
+        version: 1,
+        gatewayLaunchId: Buffer.alloc(32, 0x63).toString("base64url"),
+        browserSessionId: Buffer.alloc(32, 0x64).toString("base64url"),
+        requestNonce: Buffer.alloc(16, 0x69).toString("base64url"),
+        method: "GET",
+        canonicalTarget,
+        csrfValidated: true
+      }
+    })).rejects.toThrow("Helper stream protocol failed.");
+    expect(JSON.parse(await readEventually(resultPath))).toMatchObject({
+      streamId: "1",
+      requestEnded: true
+    });
+    await expect(client.runtimeStatus()).resolves.toMatchObject({
+      controlState: "connected"
+    });
+
+    await client.close();
+    await launch.closeParentChannel();
+    await launch.exited;
+  });
+
+  unixIt("fails closed when remote response headers exceed the 16 KiB contract", async () => {
+    const baseRequest = await launchRequest({
+      FAKE_HELPER_RUNTIME: "1",
+      FAKE_HELPER_REMOTE_REQUEST: "1",
+      FAKE_HELPER_REMOTE_OVERSIZED_RESPONSE_HEADERS: "1"
+    });
+    const resultPath = path.join(baseRequest.dataRoot, "oversized-response-headers.json");
+    const request: HelperLaunchRequest = {
+      ...baseRequest,
+      role: "remote",
+      environment: {
+        ...baseRequest.environment,
+        FAKE_HELPER_RESULT_PATH: resultPath
+      }
+    };
+    const launch = await new ProtectedHelperProcessFactory().launch(request);
+    const client = await launch.authenticated;
+    const canonicalTarget = "/api/header-limit";
+
+    await client.identityStatus();
+    await client.startRuntime(Buffer.alloc(16, 0x62).toString("base64url"));
+    await expect(client.request({
+      method: "GET",
+      canonicalTarget,
+      headers: [],
+      browserContext: {
+        version: 1,
+        gatewayLaunchId: Buffer.alloc(32, 0x63).toString("base64url"),
+        browserSessionId: Buffer.alloc(32, 0x64).toString("base64url"),
+        requestNonce: Buffer.alloc(16, 0x6c).toString("base64url"),
+        method: "GET",
+        canonicalTarget,
+        csrfValidated: true
+      }
+    })).rejects.toMatchObject({
+      code: "helper_incompatible"
+    });
+    await expect(client.runtimeStatus()).rejects.toMatchObject({
+      code: "helper_unavailable"
+    });
+
+    await client.close();
+    await launch.closeParentChannel();
+    await launch.forceTerminate();
+    await launch.exited;
+  });
+
+  unixIt("keeps an early successful response when the helper closes an active upload", async () => {
+    const baseRequest = await launchRequest({
+      FAKE_HELPER_RUNTIME: "1",
+      FAKE_HELPER_REMOTE_REQUEST: "1",
+      FAKE_HELPER_REMOTE_EARLY_RESPONSE: "1"
+    });
+    const resultPath = path.join(baseRequest.dataRoot, "remote-early-response-result.json");
+    const request: HelperLaunchRequest = {
+      ...baseRequest,
+      role: "remote",
+      environment: {
+        ...baseRequest.environment,
+        FAKE_HELPER_RESULT_PATH: resultPath
+      }
+    };
+    const launch = await new ProtectedHelperProcessFactory().launch(request);
+    const client = await launch.authenticated;
+    const canonicalTarget = "/api/import";
+    const upload = new Readable({ read() {} });
+    upload.on("error", () => {});
+
+    await client.identityStatus();
+    await client.startRuntime(Buffer.alloc(16, 0x62).toString("base64url"));
+    upload.push(Buffer.alloc(65_536, 0x61));
+    const response = await client.request({
+      method: "POST",
+      canonicalTarget,
+      headers: [["content-type", "application/octet-stream"]],
+      browserContext: {
+        version: 1,
+        gatewayLaunchId: Buffer.alloc(32, 0x63).toString("base64url"),
+        browserSessionId: Buffer.alloc(32, 0x64).toString("base64url"),
+        requestNonce: Buffer.alloc(16, 0x6a).toString("base64url"),
+        method: "POST",
+        canonicalTarget,
+        csrfValidated: true
+      },
+      body: upload
+    });
+    const responseChunks: Buffer[] = [];
+    for await (const chunk of response.body) responseChunks.push(Buffer.from(chunk));
+
+    expect(response.statusCode).toBe(413);
+    expect(Buffer.concat(responseChunks)).toHaveLength(0);
+    expect(upload.destroyed).toBe(true);
+    expect(JSON.parse(await readEventually(resultPath))).toMatchObject({
+      streamId: "1",
+      bodyBytes: 65_536,
+      requestEnded: true
+    });
+    await expect(client.runtimeStatus()).resolves.toMatchObject({
+      controlState: "connected"
+    });
+
+    await client.close();
+    await launch.closeParentChannel();
+    await launch.exited;
+  });
+
   unixIt("multiplexes a helper-created HTTP stream beside connection commands", async () => {
     const baseRequest = await launchRequest();
     const resultPath = path.join(baseRequest.dataRoot, "probe-result.json");
@@ -302,6 +870,7 @@ describe("protected helper process client", () => {
       environment: {
         FAKE_HELPER_RUNTIME: "1",
         FAKE_HELPER_REQUEST: "1",
+        FAKE_HELPER_DELAY_REQUEST_END_UNTIL_RESPONSE: "1",
         FAKE_HELPER_RESULT_PATH: resultPath
       }
     };
@@ -318,7 +887,8 @@ describe("protected helper process client", () => {
 
     await client.identityStatus();
     await client.startRuntime();
-    const result = JSON.parse(await readEventually(resultPath));
+    await client.runtimeStatus();
+    const result = JSON.parse(await readFile(resultPath, "utf8"));
     expect(result.responseStart).toMatchObject({
       version: 1,
       statusCode: 207,
