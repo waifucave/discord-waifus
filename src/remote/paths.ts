@@ -25,6 +25,25 @@ export type RemoteStatePaths = {
   [Key in keyof typeof REMOTE_STATE_RELATIVE_PATHS]: string;
 };
 
+export type RemoteRole = "host" | "remote";
+
+export type RemoteRolePaths = {
+  readonly role: RemoteRole;
+  readonly stateRoot: string;
+  readonly helperRoleState: string;
+  readonly helperRoleLock: string;
+  readonly helperPairIndex: string;
+  readonly helperPairJournal: string;
+  readonly controlNonceState: string;
+  readonly pairControlState: string;
+  readonly runtimeRoot: string;
+  readonly runtimePid: string;
+  readonly runtimeState: string;
+  readonly runtimeLock: string;
+  readonly parentEndpoint: string;
+  readonly log: string;
+};
+
 export function remoteStatePaths(dataRoot: string): RemoteStatePaths {
   const canonicalRoot = path.resolve(dataRoot);
   return Object.fromEntries(
@@ -33,6 +52,28 @@ export function remoteStatePaths(dataRoot: string): RemoteStatePaths {
       path.join(canonicalRoot, ...relativePath.split("/"))
     ])
   ) as RemoteStatePaths;
+}
+
+export function remoteRolePaths(dataRoot: string, role: RemoteRole): RemoteRolePaths {
+  const paths = remoteStatePaths(dataRoot);
+  const stateRoot = role === "host" ? paths.hostStateRoot : paths.remoteGatewayStateRoot;
+  const runtimeRoot = role === "host" ? paths.hostRuntimeRoot : paths.remoteGatewayRuntimeRoot;
+  return Object.freeze({
+    role,
+    stateRoot,
+    helperRoleState: path.join(stateRoot, "helper-role-v1.json"),
+    helperRoleLock: path.join(stateRoot, ".helper.lock"),
+    helperPairIndex: path.join(stateRoot, "helper-pairs-v1.json"),
+    helperPairJournal: path.join(stateRoot, "helper-pair-journal-v1.json"),
+    controlNonceState: path.join(stateRoot, "control-response-nonces-v1.json"),
+    pairControlState: path.join(stateRoot, "pair-control-state-v1.json"),
+    runtimeRoot,
+    runtimePid: path.join(runtimeRoot, "pid.json"),
+    runtimeState: path.join(runtimeRoot, "runtime.json"),
+    runtimeLock: path.join(runtimeRoot, "daemon.lock"),
+    parentEndpoint: path.join(runtimeRoot, "p"),
+    log: role === "host" ? paths.hostLog : paths.remoteGatewayLog
+  });
 }
 
 /**

@@ -146,7 +146,7 @@ async function startDetachedCommand(
   dataRoot: string,
   options: CliRuntimeOptions
 ): Promise<number> {
-  const existing = await readRuntimeFile(dataRoot, "pid.json");
+  const existing = await readRuntimeFile(appDataPath(dataRoot, "pid.json"), RuntimeStateReadSchema);
   const processAlive = options.processAlive ?? isProcessAlive;
   if (existing && processAlive(existing.pid)) {
     console.log(`waifus backend already running at http://127.0.0.1:${existing.port}`);
@@ -235,7 +235,7 @@ function backendStartArgs(parsed: ParsedCli, dataRoot: string): string[] {
 }
 
 async function stopCommand(dataRoot: string, options: { quiet?: boolean } = {}): Promise<number> {
-  const pidState = await readRuntimeFile(dataRoot, "pid.json");
+  const pidState = await readRuntimeFile(appDataPath(dataRoot, "pid.json"), RuntimeStateReadSchema);
   if (!pidState) {
     if (!options.quiet) {
       console.log("waifus backend is not running: no pid file found");
@@ -290,8 +290,8 @@ async function stopCommand(dataRoot: string, options: { quiet?: boolean } = {}):
 }
 
 async function statusCommand(dataRoot: string): Promise<number> {
-  const runtime = await readRuntimeFile(dataRoot, "runtime.json");
-  const pidState = await readRuntimeFile(dataRoot, "pid.json");
+  const runtime = await readRuntimeFile(appDataPath(dataRoot, "runtime.json"), RuntimeStateReadSchema);
+  const pidState = await readRuntimeFile(appDataPath(dataRoot, "pid.json"), RuntimeStateReadSchema);
   const running = pidState ? isProcessAlive(pidState.pid) : false;
   console.log(
     JSON.stringify(
@@ -788,10 +788,13 @@ const RuntimeStateReadSchema = RuntimeStateSchema.extend({
   schemaVersion: z.number().int().nonnegative()
 });
 
-async function readRuntimeFile(dataRoot: string, name: "pid.json" | "runtime.json"): Promise<RuntimeState | undefined> {
+async function readRuntimeFile<T>(
+  filePath: string,
+  schema: z.ZodType<T>
+): Promise<T | undefined> {
   try {
-    const raw = await readFile(appDataPath(dataRoot, name), "utf8");
-    return RuntimeStateReadSchema.parse(JSON.parse(raw)) as RuntimeState;
+    const raw = await readFile(filePath, "utf8");
+    return schema.parse(JSON.parse(raw));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       return undefined;
@@ -884,7 +887,10 @@ async function tailShutdownLog(logFile: string, fromOffset: number, signal: Abor
 async function waitForBackendStart(dataRoot: string, pid: number, timeoutMs: number) {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
-    const runtime = await readRuntimeFile(dataRoot, "runtime.json");
+    const runtime = await readRuntimeFile(
+      appDataPath(dataRoot, "runtime.json"),
+      RuntimeStateReadSchema
+    );
     if (runtime?.pid === pid && isProcessAlive(pid)) {
       return runtime;
     }

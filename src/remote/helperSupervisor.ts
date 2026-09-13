@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import path from "node:path";
 import type { Logger } from "../backend/logger.js";
 import type { RemoteRequestBridge } from "../backend/remoteAccess/requestBridge.js";
-import { remoteStatePaths } from "./paths.js";
+import { remoteRolePaths } from "./paths.js";
 import {
   INITIAL_REQUIRED_CAPABILITIES,
   SemVerSchema,
@@ -147,11 +147,9 @@ function validatedSelection(value: VerifiedHelperSelection): VerifiedHelperSelec
 }
 
 function unixEndpoint(dataRoot: string, role: HelperRole): string {
-  const paths = remoteStatePaths(dataRoot);
-  const runtimeRoot = role === "host" ? paths.hostRuntimeRoot : paths.remoteGatewayRuntimeRoot;
   // Keep the basename deliberately tiny: macOS limits pathname Unix sockets to 103 bytes, while
   // the runtime directory must remain inside the selected data root for ownership isolation.
-  const endpoint = path.join(runtimeRoot, "p");
+  const endpoint = remoteRolePaths(dataRoot, role).parentEndpoint;
   if (Buffer.byteLength(endpoint, "utf8") > 103) {
     throw new HelperSupervisorError(
       "helper_unavailable",
