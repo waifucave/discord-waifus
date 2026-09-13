@@ -72,9 +72,17 @@ async function readEventually(filePath: string): Promise<string> {
   const deadline = performance.now() + 2_000;
   for (;;) {
     try {
-      return await readFile(filePath, "utf8");
+      const value = await readFile(filePath, "utf8");
+      JSON.parse(value);
+      return value;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT" || performance.now() >= deadline) {
+      if (
+        (error as NodeJS.ErrnoException).code !== "ENOENT"
+        && !(error instanceof SyntaxError)
+      ) {
+        throw error;
+      }
+      if (performance.now() >= deadline) {
         throw error;
       }
       await new Promise<void>((resolve) => setTimeout(resolve, 10));
