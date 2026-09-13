@@ -142,6 +142,15 @@ describe("remote origin persistence", () => {
     expect(repaired.hostname).not.toBe(first.hostname);
   });
 
+  it("advances the high-water mark even when a never-selected remembered host is forgotten", async () => {
+    const { store } = await originStore("waifus-origin-unselected-forget-");
+    expect(await store.advanceForForget(pinnedHost(0x63))).toBe("1");
+    expect(await store.getState()).toMatchObject({
+      originEpochHighWater: "1",
+      hosts: []
+    });
+  });
+
   it("does not mutate state when a stale forget or preferred-port change is rejected", async () => {
     const { store } = await originStore("waifus-origin-stale-");
     const binding = await store.allocateOrReuse(pinnedHost(0x62), "3");

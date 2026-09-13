@@ -318,6 +318,20 @@ export class RemoteOriginStore {
     });
   }
 
+  async advanceForForget(pinnedHostIdValue: string): Promise<string> {
+    const pinnedHostId = Base64Url32BytesSchema.parse(pinnedHostIdValue);
+    return originStateLocks.withLock(this.#statePath, async () => {
+      const { state } = await this.#readState();
+      const highWater = this.#nextEpoch(state);
+      await this.#writeState(RemoteOriginStateV1Schema.parse({
+        ...state,
+        originEpochHighWater: highWater,
+        hosts: state.hosts.filter((host) => host.pinnedHostId !== pinnedHostId)
+      }));
+      return highWater;
+    });
+  }
+
   #binding(
     state: RemoteOriginStateV1,
     host: RemoteOriginStateV1["hosts"][number]

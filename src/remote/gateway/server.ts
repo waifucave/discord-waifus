@@ -65,6 +65,7 @@ export type RunningRemoteGateway = Readonly<{
   gatewayLaunchId: string;
   expiresAt: string;
   address: AddressInfo;
+  issueBootstrapUrl: () => string;
   close: () => Promise<void>;
 }>;
 
@@ -161,6 +162,12 @@ export async function startRemoteGateway(
         typeof request.headers.cookie === "string" ? request.headers.cookie : undefined
       );
       if (!session) return reply.code(403).send({ error: "Forbidden" });
+      if (
+        options.surface !== "shell"
+        && (request.raw.url ?? request.url).split("?", 1)[0].startsWith("/_waifus_remote/v1/")
+      ) {
+        return reply.code(404).send({ error: "NotFound" });
+      }
       try {
         const validated = validateRemoteBrowserRequest(
           browserRequest(request),
@@ -182,6 +189,8 @@ export async function startRemoteGateway(
             reply.header("x-waifus-csrf", refreshed.csrfToken);
           }
         });
+        const refreshedCookie = sessions.sessionCookieHeaderIfActive(refreshed);
+        if (refreshedCookie) reply.header("set-cookie", refreshedCookie);
         const result = options.handleAuthenticatedRequest
           ? await options.handleAuthenticatedRequest(request, reply, context, handlerSecurity)
           : undefined;
@@ -255,6 +264,10 @@ export async function startRemoteGateway(
     gatewayLaunchId: sessions.gatewayLaunchId,
     expiresAt,
     address: Object.freeze({ ...address }),
+    issueBootstrapUrl: () => {
+      if (closed) throw new Error("Remote gateway is closed.");
+      return `${origin}${bootstrapPrefix}${sessions.issueBootstrapToken()}`;
+    },
     close: async () => {
       if (closed) return;
       closed = true;
