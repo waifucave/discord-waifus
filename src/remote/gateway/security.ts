@@ -150,6 +150,10 @@ function tokenEqual(left: string, right: string): boolean {
 
 function containsForgedContextBodyField(value: unknown): boolean {
   if (value === null || typeof value !== "object" || value instanceof Uint8Array) return false;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== Array.prototype && prototype !== null) {
+    return false;
+  }
   const pending: object[] = [value];
   const visited = new Set<object>();
   let inspected = 0;
@@ -162,6 +166,14 @@ function containsForgedContextBodyField(value: unknown): boolean {
     for (const [key, nested] of Object.entries(current)) {
       if (FORGED_CONTEXT_BODY_FIELDS.has(key)) return true;
       if (nested !== null && typeof nested === "object" && !(nested instanceof Uint8Array)) {
+        const nestedPrototype = Object.getPrototypeOf(nested);
+        if (
+          nestedPrototype !== Object.prototype
+          && nestedPrototype !== Array.prototype
+          && nestedPrototype !== null
+        ) {
+          continue;
+        }
         pending.push(nested);
       }
     }
