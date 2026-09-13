@@ -115,6 +115,10 @@ export async function startRemoteGateway(
 
   const sessions = new RemoteBrowserSessionStore(options);
   const app = fastify({ logger: false });
+  if (options.surface !== "shell") {
+    app.removeAllContentTypeParsers();
+    app.addContentTypeParser("*", (_request, payload, done) => done(null, payload));
+  }
   let securityOptions: { expectedAuthority: string; expectedOrigin: string } | undefined;
   let expose!: () => void;
   let rejectExposure!: (error: Error) => void;
@@ -131,6 +135,7 @@ export async function startRemoteGateway(
   app.addHook("onSend", async (request, reply, payload) => {
     removeHostControlledSecurityHeaders(reply);
     for (const [name, value] of Object.entries(policy)) reply.header(name, value);
+    if (reply.getHeader("cache-control") === undefined) reply.header("cache-control", "no-store");
     const session = refreshedSessions.get(request);
     const cookie = session ? sessions.sessionCookieHeaderIfActive(session) : undefined;
     if (cookie) reply.header("set-cookie", cookie);

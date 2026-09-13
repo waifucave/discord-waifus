@@ -58,6 +58,11 @@ export type VerifiedDashboardBuild = {
   readonly manifest: DashboardManifest;
 };
 
+export type VerifiedDashboardAsset = {
+  readonly asset: DashboardAsset;
+  readonly body: Buffer;
+};
+
 export type DashboardCacheLimits = {
   readonly buildMaxBytes: number;
   readonly cacheMaxBytes: number;
@@ -435,6 +440,54 @@ export class DashboardCache {
       } finally {
         if (!promoted) await rm(staging, { recursive: true, force: true }).catch(() => undefined);
       }
+    });
+  }
+
+  async readVerifiedAsset(
+    hostKeyValue: DashboardCacheHostKey,
+    manifestValue: DashboardManifest,
+    requestedPath: string
+  ): Promise<VerifiedDashboardAsset | null> {
+    return this.#exclusive(async () => {
+      await this.#initialize();
+      const hostKey = validateHostKey(hostKeyValue);
+      const manifest = validateManifest(
+        manifestValue,
+        Math.min(this.#limits.buildMaxBytes, this.#limits.cacheMaxBytes)
+      );
+      const asset = manifest.assets.find((candidate) => candidate.path === requestedPath);
+      if (!asset) return null;
+      const directory = this.#buildDirectory(hostKey, manifest.buildId);
+      let metadata;
+      try {
+        metadata = await lstat(directory);
+      } catch (error) {
+        if (missing(error)) return null;
+        throw error;
+      }
+      if (
+        metadata.isSymbolicLink()
+        || !metadata.isDirectory()
+        || (typeof process.getuid === "function"
+          && (metadata.uid !== process.getuid() || (metadata.mode & 0o077) !== 0))
+      ) {
+        return cacheError("dashboard_cache_entry_invalid", "Dashboard build is not trusted.");
+      }
+      const body = await safeFileBytes(
+        path.join(directory, ...asset.path.split("/")),
+        DASHBOARD_ASSET_MAX_BYTES
+      );
+      if (
+        body.byteLength !== Number(asset.byteSize)
+        || createHash("sha256").update(body).digest("hex") !== asset.sha256
+      ) {
+        return cacheError(
+          "dashboard_asset_hash_mismatch",
+          "Dashboard asset changed after build verification."
+        );
+      }
+      await this.#touch(directory);
+      return Object.freeze({ asset, body });
     });
   }
 
