@@ -94,7 +94,9 @@ function canonicalJson(value: unknown): string {
   return serializeCanonicalContractJson(value as ContractJson);
 }
 
-function contentTypeForAsset(relativePath: string): DashboardAsset["contentType"] {
+export function dashboardContentTypeForPath(
+  relativePath: string
+): DashboardAsset["contentType"] {
   const extension = path.posix.extname(relativePath).toLowerCase();
   const contentType = DASHBOARD_CONTENT_TYPES.get(extension);
   if (!contentType) {
@@ -229,7 +231,7 @@ async function scanDashboardAssetDirectory(
         `dashboard asset ${relativePath} must contain 1-${DASHBOARD_ASSET_MAX_BYTES} bytes.`
       );
     }
-    const contentType = contentTypeForAsset(relativePath);
+    const contentType = dashboardContentTypeForPath(relativePath);
     const bytes = await readVerifiedRegularFile(
       filePath,
       `dashboard asset ${relativePath}`,
