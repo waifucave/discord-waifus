@@ -8,6 +8,7 @@ import {
 import {
   startRemoteGateway,
   type RemoteGatewaySurface,
+  type RemoteGatewayHandlerSecurity,
   type RunningRemoteGateway
 } from "./server.js";
 import type { RemoteBrowserSessionStoreOptions } from "./session.js";
@@ -25,7 +26,8 @@ export type StartRemoteGatewayRuntimeOptions = RemoteBrowserSessionStoreOptions 
   readonly handleAuthenticatedRequest?: (
     request: FastifyRequest,
     reply: FastifyReply,
-    browserContext: RemoteBrowserContextV1
+    browserContext: RemoteBrowserContextV1,
+    security: RemoteGatewayHandlerSecurity
   ) => unknown | Promise<unknown>;
 };
 

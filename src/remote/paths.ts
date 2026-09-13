@@ -11,6 +11,7 @@ export const REMOTE_STATE_RELATIVE_PATHS = Object.freeze({
   resetTombstone: "app/remote-access/reset-tombstone.json",
   remoteGatewayStateRoot: "app/remote-gateway",
   remoteOriginState: "app/remote-gateway/origins-v1.json",
+  remoteRememberedHosts: "app/remote-gateway/remembered-hosts-v1.json",
   dashboardCacheRoot: "app/cache/remote-dashboard",
   hostRuntimeRoot: "app/tmp/remote-host",
   hostRuntimePid: "app/tmp/remote-host/pid.json",
