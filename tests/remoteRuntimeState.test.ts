@@ -24,6 +24,9 @@ describe("role-separated remote paths", () => {
     roots.push(root);
     const host = remoteRolePaths(root, "host");
     const remote = remoteRolePaths(root, "remote");
+    expect(remoteStatePaths(root).remoteOriginState).toBe(
+      path.join(root, "app", "remote-gateway", "origins-v1.json")
+    );
 
     expect(host).toMatchObject({
       role: "host",
