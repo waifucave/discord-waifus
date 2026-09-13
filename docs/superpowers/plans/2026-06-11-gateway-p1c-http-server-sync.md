@@ -8,7 +8,7 @@
 
 **Tech Stack:** TypeScript (ESM, NodeNext, strict, `noUncheckedIndexedAccess`), Node ≥ 20 (global `fetch`/`Request`/`Response`/`ReadableStream`, `util.parseArgs`, `AbortSignal.timeout`), Vitest. **Zero runtime dependencies** — Fastify becomes an *optional peer* + devDependency; `src/server/fastify.ts` may use only `import type` from fastify.
 
-**Repo location:** `/Users/karimjadvji/Xcode progects/waifucave-gateway`. All commands run from there. Committing directly to `main` is the agreed workflow; push only after final review.
+**Repo location:** `/Users/example/Xcode projects/waifucave-gateway`. All commands run from there. Committing directly to `main` is the agreed workflow; push only after final review.
 
 **Context docs:** `Discord Waifus/MIGRATION_PLAN.md` (§4.6 HTTP API, §4.7 drift sync, §4.5 unified shapes, §5 provider matrix), P1b plan + execution record (`2026-06-11-gateway-p1b-codecs-transport-client.md`) — its carryovers #2 (timeout covers headers only), #3 (chat/stream abort asymmetry), #5 (client-level integration tests for responses/google wires) are addressed by this plan; #1 (Gemini-3 functionCall `thoughtSignature`) and #4 (registry data gaps) are explicitly NOT.
 

@@ -8,7 +8,7 @@
 
 **Tech Stack:** TypeScript (ESM, NodeNext, strict), Node ≥ 20, Vitest. Zero runtime dependencies (zod stays dev-only and, after Task 1, out of `src/` entirely).
 
-**Repo location:** `/Users/karimjadvji/Xcode progects/waifucave-gateway`. All commands run from there. Committing directly to `main` is the agreed workflow.
+**Repo location:** `/Users/example/Xcode projects/waifucave-gateway`. All commands run from there. Committing directly to `main` is the agreed workflow.
 
 **Context docs:** `Discord Waifus/MIGRATION_PLAN.md` (§4.4–4.5 codecs, unified request/response, streaming, error taxonomy; §4.8 testing), `Discord Waifus/docs/superpowers/plans/2026-06-10-gateway-p1a-registry-validation.md` (execution record lists the 5 P1b carryover items — all are implemented by this plan: #1 `buildUrl` Google seam → Task 4; #2 `schema.js` tarball carve-out → Task 1; #3 pseudo-param force/drop/clamp guard → Task 1; #4 export `ParamType`/`Confidence` → Task 1; #5 client gates on `ok` → Task 9).
 

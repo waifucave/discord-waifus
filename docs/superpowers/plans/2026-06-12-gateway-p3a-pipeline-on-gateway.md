@@ -8,7 +8,7 @@
 
 **Tech Stack:** TypeScript ESM NodeNext (`.js` on local imports), `@waifucave/gateway` (file: dep, registry at `c279736`), Vitest with `vi.fn` fetch fakes (the sanctioned network seam), zod parsing of tool arguments kept as-is.
 
-**Repo:** `/Users/karimjadvji/Xcode progects/Discord Waifus` (quote the space). Commit to `main`. Do NOT touch the gateway repo. Baseline: **593 passed | 15 skipped** across 24 files; typecheck clean.
+**Repo:** `/Users/example/Xcode projects/Discord Waifus` (quote the space). Commit to `main`. Do NOT touch the gateway repo. Baseline: **593 passed | 15 skipped** across 24 files; typecheck clean.
 
 ---
 

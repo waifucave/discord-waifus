@@ -499,7 +499,7 @@ git commit -m "feat: directive goals name only the destination topic"
 Run: `npm run typecheck` then `npm run test` (NEVER pipe test output through grep — the release script's internal gate is authoritative).
 Expected: both clean, 690+ tests passing.
 
-- [x] **Step 2: Fix-1 soak check on Beta (gate)** — over SSH (`karimjadvji@100.99.186.78`):
+- [x] **Step 2: Fix-1 soak check on Beta (gate)** — over SSH (`<remote-user>@<tailscale-ip>`):
   - `grep -c '"level":"error"' ~/.dc-waifus/app/logs/backend.log` scoped to since the 1.5.174 restart (2026-07-03 ~12:10Z) — expect no new error burst.
   - Dump `/api/events` (`curl -sN -m 6 http://127.0.0.1:3888/api/events`) and confirm recent waifu queries still show assistant self-turns.
   - Skim the newest orchestrator decisions for misattribution-style reasonings.
@@ -515,7 +515,7 @@ npm run release:beta -- 1.5.175 --yes --message "feat: recency layout — memori
 - [x] **Step 4: Deploy Beta pinned + restart**
 
 ```bash
-ssh karimjadvji@100.99.186.78 'export PATH="$PATH:/opt/homebrew/bin"; npm install -g @waifucave/discord-waifus@1.5.175 && waifus restart'
+ssh <remote-user>@<tailscale-ip> 'export PATH="$PATH:/opt/homebrew/bin"; npm install -g @waifucave/discord-waifus@1.5.175 && waifus restart'
 ```
 
 - [x] **Step 5: Verify live**

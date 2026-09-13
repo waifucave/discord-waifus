@@ -788,11 +788,11 @@ git commit -m "feat: assistant chat API — conversations, turns, SSE"
 - [x] **Step 2:** `git push origin main && npm run release:beta -- 1.5.177 --yes --message "feat: assistant backbone — chat API, tool loop, self-REST tools, docs KB"`.
 - [x] **Step 3:** Deploy Beta pinned + restart:
 ```bash
-ssh karimjadvji@100.99.186.78 'export PATH="$PATH:/opt/homebrew/bin"; npm install -g @waifucave/discord-waifus@1.5.177 && waifus restart'
+ssh <remote-user>@<tailscale-ip> 'export PATH="$PATH:/opt/homebrew/bin"; npm install -g @waifucave/discord-waifus@1.5.177 && waifus restart'
 ```
 - [x] **Step 4: Live smoke on Beta** — real model end-to-end:
 ```bash
-ssh karimjadvji@100.99.186.78 'CID=$(curl -s -X POST http://127.0.0.1:3888/api/assistant/conversations | python3 -c "import json,sys; print(json.load(sys.stdin)[\"conversationId\"])"); curl -s -X POST http://127.0.0.1:3888/api/assistant/conversations/$CID/messages -H "content-type: application/json" -d "{\"content\": \"How many waifus are configured and which models do they use? Do not change anything.\"}"'
+ssh <remote-user>@<tailscale-ip> 'CID=$(curl -s -X POST http://127.0.0.1:3888/api/assistant/conversations | python3 -c "import json,sys; print(json.load(sys.stdin)[\"conversationId\"])"); curl -s -X POST http://127.0.0.1:3888/api/assistant/conversations/$CID/messages -H "content-type: application/json" -d "{\"content\": \"How many waifus are configured and which models do they use? Do not change anything.\"}"'
 ```
 Expected: JSON reply naming the five waifus/models; `/api/events` capture shows `role: "assistant"` queries; no errors in backend.log.
 - [x] **Step 5:** Update memory (`live-server-access.md`): Phase 1 shipped in 1.5.177; note the assistant API surface for future sessions.

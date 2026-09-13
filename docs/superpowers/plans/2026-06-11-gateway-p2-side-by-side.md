@@ -8,7 +8,7 @@
 
 **Tech Stack:** TypeScript (ESM, NodeNext — local imports need `.js` extensions), Fastify 5, Vitest with real temp data roots (`tests/testUtils.ts`, no mocks for storage), `@waifucave/gateway@0.0.0` consumed as an npm `file:` symlink.
 
-**Repo location:** `/Users/karimjadvji/Xcode progects/Discord Waifus`. All commands run from there. Commit directly to `main`. The gateway repo (`../waifucave-gateway`) is consumed read-only this round — zero gateway commits planned.
+**Repo location:** `/Users/example/Xcode projects/Discord Waifus`. All commands run from there. Commit directly to `main`. The gateway repo (`../waifucave-gateway`) is consumed read-only this round — zero gateway commits planned.
 
 **Context docs:** `MIGRATION_PLAN.md` (§7.4 API server, §8 row P2, §10 concurrent work), `docs/superpowers/plans/2026-06-11-prompting-overhaul/06-gateway-coordination.md` (no P2 overlap; P3 must re-check), P1c plan + execution record (`2026-06-11-gateway-p1c-http-server-sync.md`) — its P2 carryovers #1 (codec TypeErrors for malformed elements), #2 (bare-prefix+query 404 edge), #3 (499 reuses kind "network") are inherited and explicitly NOT fixed here.
 

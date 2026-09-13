@@ -8,7 +8,7 @@
 
 **Tech Stack:** TypeScript (ESM, NodeNext, strict), Node ≥ 20, Vitest, zod (devDependency only).
 
-**Repo location:** `/Users/karimjadvji/Xcode progects/waifucave-gateway` (sibling of `Discord Waifus`; pushed later to `waifucave/gateway`). All commands below run from that directory unless stated otherwise.
+**Repo location:** `/Users/example/Xcode projects/waifucave-gateway` (sibling of `Discord Waifus`; pushed later to `waifucave/gateway`). All commands below run from that directory unless stated otherwise.
 
 **Context docs:** `Discord Waifus/MIGRATION_PLAN.md` (§4 gateway design, Table B providers), `Discord Waifus/research/p0-capability-docs/` (the 15 data files + findings.md).
 
@@ -63,8 +63,8 @@ Responsibilities: `types.ts` is the single type authority (schema.ts mirrors it;
 - [ ] **Step 1: Create directory and git init**
 
 ```bash
-mkdir -p "/Users/karimjadvji/Xcode progects/waifucave-gateway"
-cd "/Users/karimjadvji/Xcode progects/waifucave-gateway"
+mkdir -p "/Users/example/Xcode projects/waifucave-gateway"
+cd "/Users/example/Xcode projects/waifucave-gateway"
 git init -b main
 ```
 
@@ -162,10 +162,10 @@ git commit -m "chore: scaffold @waifucave/gateway package"
 - [ ] **Step 1: Copy data verbatim from the Discord Waifus repo**
 
 ```bash
-cd "/Users/karimjadvji/Xcode progects/waifucave-gateway"
+cd "/Users/example/Xcode projects/waifucave-gateway"
 mkdir -p data docs
-cp "/Users/karimjadvji/Xcode progects/Discord Waifus/research/p0-capability-docs/"*.json data/
-cp "/Users/karimjadvji/Xcode progects/Discord Waifus/research/p0-capability-docs/findings.md" docs/research-findings.md
+cp "/Users/example/Xcode projects/Discord Waifus/research/p0-capability-docs/"*.json data/
+cp "/Users/example/Xcode projects/Discord Waifus/research/p0-capability-docs/findings.md" docs/research-findings.md
 ```
 
 - [ ] **Step 2: Sanity-check the copy**

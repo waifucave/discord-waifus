@@ -21,7 +21,7 @@
 
 ### Task 1 (gateway): LICENSE + malformed-element 400 hardening + version 0.1.1
 
-**Files (gateway repo /Users/karimjadvji/Xcode progects/waifucave-gateway):**
+**Files (gateway repo `/Users/example/Xcode projects/waifucave-gateway`):**
 - Create: `LICENSE` (MIT, standard text, copyright holder "waifucave")
 - Modify: `src/server/handler.ts` (element-level request validation), `package.json` (version 0.1.1)
 - Test: `tests/server/handler.test.ts` (or the existing handler test file)
