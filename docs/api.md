@@ -91,6 +91,25 @@ During startup, HTTP binds before Discord auto-connect completes. `/api/status` 
 
 ## Remote state and clean
 
+Host remote-access management uses these loopback API routes. The same routes are available to a
+currently trusted remote `full_admin` principal through the authenticated direct helper bridge:
+
+- `GET /api/remote-access` — sanitized configuration, identity fingerprint, compatibility, and
+  live direct/control state.
+- `PUT /api/remote-access` — update the display name or enable/disable remote access.
+- `POST /api/remote-access/reconnect` — reconnect the direct runtime.
+- `GET /api/remote-access/diagnostics` — sanitized direct-network and helper diagnostics.
+- `POST/GET/DELETE /api/remote-access/activation...` — local bound-browser-only activation flow.
+- `GET /api/remote-access/dashboard-manifest` — the exact canonical manifest for the host's pinned
+  bundled dashboard.
+- `GET /api/remote-access/dashboard-assets/:buildId/*` — only a declared asset from that exact
+  current build; this is not a general filesystem route.
+
+The manifest is always `no-store`. `index.html` is also `no-store`; hash-addressed non-HTML assets
+use a one-year immutable cache and an ETag equal to their declared SHA-256. The host verifies the
+complete bundled build at startup and fails closed if its manifest, asset identity, size, hash, or
+content type changes. Dashboard assets are the sole `/api` caching exception.
+
 Remote identity/trust metadata is partitioned from ordinary user data under
 `app/remote-access/` (host role) and `app/remote-gateway/` (remote role). Verified dashboard
 bundles live only under `app/cache/remote-dashboard/`; live host/remote helper state lives under

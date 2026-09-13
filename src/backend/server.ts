@@ -36,7 +36,7 @@ import { RemoteRequestBridge } from "./remoteAccess/requestBridge.js";
 import { HelperSupervisor } from "../remote/helperSupervisor.js";
 import { HelperSupervisorError } from "../remote/helperTypes.js";
 import { ProtectedHelperProcessFactory } from "../remote/helperClient.js";
-import { loadBundledDashboardManifest } from "../remote/dashboardManifest.js";
+import { DashboardBuild } from "./remoteAccess/dashboardBuild.js";
 
 export type StartBackendOptions = {
   dataRoot: string;
@@ -50,6 +50,7 @@ export type StartBackendOptions = {
   remoteAccess?: {
     supervisor?: HelperSupervisorController;
     dashboard?: ResolvedRemoteDashboard;
+    dashboardBuild?: DashboardBuild;
   };
 };
 
@@ -86,10 +87,15 @@ export async function startBackend(options: StartBackendOptions): Promise<Runnin
       configuredGuilds: await countConfiguredGuilds(storage)
     }
   });
-  const dashboard = options.remoteAccess?.dashboard ?? await resolveRemoteDashboard(
-    config.frontend.staticDir,
-    logger
-  );
+  const dashboardResolution = options.remoteAccess?.dashboard
+    ? {
+        dashboard: options.remoteAccess.dashboard,
+        ...(options.remoteAccess.dashboardBuild
+          ? { build: options.remoteAccess.dashboardBuild }
+          : {})
+      }
+    : await resolveRemoteDashboard(config.frontend.staticDir, logger);
+  const dashboard = dashboardResolution.dashboard;
   const helperSupervisor = options.remoteAccess?.supervisor ?? new HelperSupervisor({
     role: "host",
     dataRoot: options.dataRoot,
@@ -384,7 +390,8 @@ export async function startBackend(options: StartBackendOptions): Promise<Runnin
     remoteTrust: {
       isAuthorized: (principal) => remoteAccess.isAuthorized(principal)
     },
-    remoteAccess
+    remoteAccess,
+    ...(dashboardResolution.build ? { dashboardBuild: dashboardResolution.build } : {})
   });
   const remoteRequestBridge = new RemoteRequestBridge(app);
   remoteAccess.attachRequestBridge(remoteRequestBridge);
@@ -449,26 +456,36 @@ export async function startBackend(options: StartBackendOptions): Promise<Runnin
 async function resolveRemoteDashboard(
   configuredStaticDir: string | undefined,
   logger: Logger
-): Promise<ResolvedRemoteDashboard> {
+): Promise<{
+  readonly dashboard: ResolvedRemoteDashboard;
+  readonly build?: DashboardBuild;
+}> {
   const resolved = await resolveStaticDir(configuredStaticDir);
   if (!resolved) {
     return {
-      path: "",
-      source: "custom",
-      buildId: "dashboard-unavailable"
+      dashboard: {
+        path: "",
+        source: "custom",
+        buildId: "dashboard-unavailable"
+      }
     };
   }
   if (resolved.source === "custom") {
     return {
-      ...resolved,
-      buildId: "custom-dashboard"
+      dashboard: {
+        ...resolved,
+        buildId: "custom-dashboard"
+      }
     };
   }
   try {
-    const manifest = await loadBundledDashboardManifest(path.dirname(resolved.path));
+    const build = await DashboardBuild.load({ bundleDirectory: resolved.path });
     return {
-      ...resolved,
-      buildId: manifest.buildId
+      dashboard: {
+        ...resolved,
+        buildId: build.buildId
+      },
+      build
     };
   } catch (error) {
     logger.warn("Bundled dashboard manifest verification failed", {
@@ -477,9 +494,11 @@ async function resolveRemoteDashboard(
         : "dashboard_unavailable"
     });
     return {
-      path: resolved.path,
-      source: "custom",
-      buildId: "dashboard-unavailable"
+      dashboard: {
+        path: resolved.path,
+        source: "custom",
+        buildId: "dashboard-unavailable"
+      }
     };
   }
 }

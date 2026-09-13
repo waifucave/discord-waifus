@@ -1,4 +1,4 @@
-import type { FastifyInstance, FastifyRequest } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import {
   ActivationOperationIdSchema,
@@ -15,15 +15,25 @@ import {
   RemoteAccessServiceUnavailableError,
   type LocalActivationActor
 } from "../backend/remoteAccess/remoteAccessService.js";
+import {
+  DashboardBuild,
+  DashboardBuildError
+} from "../backend/remoteAccess/dashboardBuild.js";
 import { HelperCommandError, HelperSupervisorError } from "../remote/helperTypes.js";
 import {
   OperationAcceptedV1Schema,
   createOperationStatusUrl
 } from "../shared/schemas/adminOperations.js";
 import { activationRequired, ApiError, conflict, notFound } from "./errors.js";
+import { getInternalDispatchContext } from "./internalDispatch.js";
 
 const ActivationParamsSchema = z.object({
   activationOperationId: ActivationOperationIdSchema
+}).strict();
+
+const DashboardAssetParamsSchema = z.object({
+  buildId: z.string(),
+  "*": z.string()
 }).strict();
 
 function localBrowserActor(request: FastifyRequest): LocalActivationActor {
@@ -119,9 +129,62 @@ function acceptedOperation(request: FastifyRequest) {
   });
 }
 
+function requiredDashboardBuild(build: DashboardBuild | undefined): DashboardBuild {
+  if (!build) {
+    throw new ApiError(
+      503,
+      "The bundled remote dashboard is unavailable.",
+      undefined,
+      "RemoteDashboardUnavailable"
+    );
+  }
+  return build;
+}
+
+function dashboardApiError(error: unknown): never {
+  if (error instanceof DashboardBuildError) {
+    if (error.code === "dashboard_asset_not_found") {
+      throw notFound("The dashboard asset was not found in the current build.");
+    }
+    if (error.code === "dashboard_asset_cancelled") throw error;
+    throw new ApiError(
+      503,
+      "The pinned remote dashboard build is no longer available.",
+      undefined,
+      error.code === "dashboard_build_changed"
+        ? "RemoteDashboardChanged"
+        : "RemoteDashboardUnavailable"
+    );
+  }
+  throw error;
+}
+
+async function waitForResponseDrain(reply: FastifyReply): Promise<boolean> {
+  if (reply.raw.destroyed || reply.raw.writableEnded) return false;
+  return new Promise<boolean>((resolve) => {
+    const cleanup = () => {
+      reply.raw.removeListener("drain", drained);
+      reply.raw.removeListener("close", closed);
+      reply.raw.removeListener("error", closed);
+    };
+    const drained = () => {
+      cleanup();
+      resolve(true);
+    };
+    const closed = () => {
+      cleanup();
+      resolve(false);
+    };
+    reply.raw.once("drain", drained);
+    reply.raw.once("close", closed);
+    reply.raw.once("error", closed);
+  });
+}
+
 export function registerRemoteAccessRoutes(
   app: FastifyInstance,
-  service?: RemoteAccessService
+  service?: RemoteAccessService,
+  dashboardBuild?: DashboardBuild
 ): void {
   app.get("/api/remote-access", async () => {
     try {
@@ -195,6 +258,55 @@ export function registerRemoteAccessRoutes(
       return await requiredService(service).diagnostics();
     } catch (error) {
       return activationApiError(error);
+    }
+  });
+
+  app.get("/api/remote-access/dashboard-manifest", async (_request, reply) => {
+    try {
+      const current = await requiredDashboardBuild(dashboardBuild).readManifest();
+      return reply
+        .header("content-type", "application/json; charset=utf-8")
+        .header("content-length", current.bytes.byteLength)
+        .send(current.bytes);
+    } catch (error) {
+      return dashboardApiError(error);
+    }
+  });
+
+  app.get("/api/remote-access/dashboard-assets/:buildId/*", async (request, reply) => {
+    try {
+      const params = DashboardAssetParamsSchema.parse(request.params);
+      const opened = await requiredDashboardBuild(dashboardBuild).openAsset(
+        params.buildId,
+        params["*"],
+        getInternalDispatchContext()?.signal
+      );
+      const immutable = opened.asset.path !== "index.html";
+      reply.raw.writeHead(200, {
+        "content-type": opened.asset.contentType,
+        "content-length": opened.asset.byteSize,
+        "cache-control": immutable
+          ? "public, max-age=31536000, immutable"
+          : "no-store",
+        "x-content-type-options": "nosniff",
+        ...(immutable ? { etag: `"${opened.asset.sha256}"` } : {})
+      });
+      try {
+        if (request.method !== "HEAD") {
+          for await (const chunk of opened.stream) {
+            if (reply.raw.destroyed || reply.raw.writableEnded) break;
+            if (!reply.raw.write(chunk) && !await waitForResponseDrain(reply)) break;
+          }
+        } else {
+          opened.stream.destroy();
+        }
+        if (!reply.raw.destroyed && !reply.raw.writableEnded) reply.raw.end();
+      } catch {
+        if (!reply.raw.destroyed) reply.raw.destroy();
+      }
+      return reply;
+    } catch (error) {
+      return dashboardApiError(error);
     }
   });
 }
