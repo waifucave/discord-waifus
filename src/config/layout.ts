@@ -44,6 +44,20 @@ export const DATA_LAYOUT_DIRS = [
   "user/servers"
 ] as const;
 
+export const REMOTE_ONLY_LAYOUT_DIRS = [
+  "app",
+  "app/logs",
+  "app/cache",
+  "app/cache/remote-dashboard",
+  "app/tmp",
+  "app/tmp/remote-gateway",
+  "app/remote-access",
+  "app/remote-access/trust",
+  "app/remote-access/operations",
+  "app/remote-access/audit",
+  "app/remote-gateway"
+] as const;
+
 const DEFAULT_JSON_FILES: Array<{ relativePath: string; content: unknown }> = [
   {
     relativePath: "user/providers.json",
@@ -147,6 +161,16 @@ export async function ensureDataLayout(dataRoot: string): Promise<void> {
   await seedPrebuiltWaifusOnce(dataRoot);
 }
 
+export async function ensureRemoteOnlyLayout(dataRoot: string): Promise<void> {
+  await mkdir(dataRoot, { recursive: true, mode: 0o700 });
+  await Promise.all(REMOTE_ONLY_LAYOUT_DIRS.map(async (directory) => {
+    const resolved = resolveDataPath(dataRoot, directory);
+    await mkdir(resolved, { recursive: true, mode: 0o700 });
+    await chmod(resolved, 0o700);
+  }));
+  await ensureRemoteAccessLayout(dataRoot, [remoteStatePaths(dataRoot).remoteGatewayRuntimeRoot]);
+}
+
 export class RemoteStateRepairRequiredError extends Error {
   constructor(message: string) {
     super(message);
@@ -154,7 +178,10 @@ export class RemoteStateRepairRequiredError extends Error {
   }
 }
 
-async function ensureRemoteAccessLayout(dataRoot: string): Promise<void> {
+async function ensureRemoteAccessLayout(
+  dataRoot: string,
+  runtimeRoots?: readonly string[]
+): Promise<void> {
   const paths = remoteStatePaths(dataRoot);
   await Promise.all([
     paths.hostStateRoot,
@@ -163,8 +190,8 @@ async function ensureRemoteAccessLayout(dataRoot: string): Promise<void> {
     paths.auditRoot,
     paths.remoteGatewayStateRoot,
     paths.dashboardCacheRoot,
-    paths.hostRuntimeRoot,
-    paths.remoteGatewayRuntimeRoot
+    path.dirname(paths.hostLog),
+    ...(runtimeRoots ?? [paths.hostRuntimeRoot, paths.remoteGatewayRuntimeRoot])
   ].map(async (directory) => {
     await mkdir(directory, { recursive: true, mode: 0o700 });
     const info = await lstat(directory);
