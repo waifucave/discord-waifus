@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import path from "node:path";
 import type { Logger } from "../backend/logger.js";
+import type { RemoteRequestBridge } from "../backend/remoteAccess/requestBridge.js";
 import { remoteStatePaths } from "./paths.js";
 import {
   INITIAL_REQUIRED_CAPABILITIES,
@@ -202,6 +203,9 @@ export class HelperSupervisor {
   #snapshot = initialSnapshot();
   #launch: HelperLaunch | undefined;
   #client: AuthenticatedHelperClient | undefined;
+  #requestBridge: RemoteRequestBridge | undefined;
+  #desiredRuntime: Readonly<{ selectedPairId?: string }> | undefined;
+  #runtimeActive = false;
   #identityStatus: HelperIdentityStatus | undefined;
   #unsubscribeStatus: (() => void) | undefined;
   #attemptPromise: Promise<void> | undefined;
@@ -232,6 +236,14 @@ export class HelperSupervisor {
     return this.#identityStatus ? structuredClone(this.#identityStatus) : null;
   }
 
+  attachRequestBridge(bridge: RemoteRequestBridge): void {
+    if (this.#requestBridge && this.#requestBridge !== bridge) {
+      throw new HelperSupervisorError("helper_incompatible", "Remote request bridge cannot be replaced.");
+    }
+    this.#requestBridge = bridge;
+    this.#client?.attachRequestBridge(bridge);
+  }
+
   async start(): Promise<void> {
     if (this.#closing) {
       throw new HelperSupervisorError("helper_unavailable", "Remote helper supervisor is closed.");
@@ -256,6 +268,7 @@ export class HelperSupervisor {
     this.#generation += 1;
     this.#cancelRestart();
     this.#failureTimes = [];
+    this.#desiredRuntime = undefined;
     await this.#shutdownCurrentLaunch();
     this.#update(initialSnapshot());
   }
@@ -272,11 +285,51 @@ export class HelperSupervisor {
     return this.#readyClient().cancelActivation(operationId);
   }
 
+  async startRuntime(selectedPairId?: string): Promise<HelperRuntimeStatus> {
+    this.#desiredRuntime = Object.freeze({
+      ...(selectedPairId !== undefined ? { selectedPairId } : {})
+    });
+    const status = await this.#readyClient().startRuntime(selectedPairId);
+    this.#runtimeActive = true;
+    this.#update({ runtimeStatus: status, lastErrorCode: status.lastErrorCode });
+    return status;
+  }
+
+  async runtimeStatus(): Promise<HelperRuntimeStatus> {
+    const status = await this.#readyClient().runtimeStatus();
+    this.#update({ runtimeStatus: status, lastErrorCode: status.lastErrorCode });
+    return status;
+  }
+
+  async reconnectRuntime(): Promise<HelperRuntimeStatus> {
+    const client = this.#readyClient();
+    const desired = this.#desiredRuntime;
+    const status = !this.#runtimeActive && desired
+      ? await client.startRuntime(desired.selectedPairId)
+      : await client.reconnectRuntime();
+    this.#runtimeActive = true;
+    this.#update({ runtimeStatus: status, lastErrorCode: status.lastErrorCode });
+    return status;
+  }
+
+  async stopRuntime(): Promise<HelperRuntimeStatus> {
+    this.#desiredRuntime = undefined;
+    const status = await this.#readyClient().stopRuntime();
+    this.#runtimeActive = false;
+    this.#update({ runtimeStatus: status, lastErrorCode: status.lastErrorCode });
+    return status;
+  }
+
+  async registerGatewayLaunch(gatewayLaunchId: string, expiresAt: string): Promise<void> {
+    await this.#readyClient().registerGatewayLaunch(gatewayLaunchId, expiresAt);
+  }
+
   async close(): Promise<void> {
     if (this.#closing) return;
     this.#closing = true;
     this.#generation += 1;
     this.#cancelRestart();
+    this.#desiredRuntime = undefined;
     await this.#shutdownCurrentLaunch();
     this.#update({
       ...initialSnapshot(),
@@ -363,17 +416,27 @@ export class HelperSupervisor {
         this.#options.controlProfile,
         this.#options.runtimePurpose
       );
+      if (this.#requestBridge) client.attachRequestBridge(this.#requestBridge);
       const identityStatus = parseHelperIdentityStatus(await client.identityStatus());
-      if (this.#closing || generation !== this.#generation) {
-        await client.close().catch(() => undefined);
-        return;
-      }
-      this.#client = client;
-      this.#identityStatus = identityStatus;
-      const runtimeStatus = parseHelperRuntimeStatus({
+      let runtimeStatus = parseHelperRuntimeStatus({
         ...client.currentStatus(),
         activationState: identityStatus.activationState
       });
+      let runtimeStarted = false;
+      if (this.#desiredRuntime) {
+        runtimeStatus = parseHelperRuntimeStatus(
+          await client.startRuntime(this.#desiredRuntime.selectedPairId)
+        );
+        runtimeStarted = true;
+      }
+      if (this.#closing || generation !== this.#generation) {
+        if (runtimeStarted) await client.stopRuntime().catch(() => undefined);
+        await client.close().catch(() => undefined);
+        return;
+      }
+      this.#runtimeActive = runtimeStarted;
+      this.#client = client;
+      this.#identityStatus = identityStatus;
       this.#unsubscribeStatus = client.subscribeStatus((value) => {
         if (this.#client !== client || this.#closing) return;
         try {
@@ -455,6 +518,7 @@ export class HelperSupervisor {
     this.#unsubscribeStatus?.();
     this.#unsubscribeStatus = undefined;
     this.#client = undefined;
+    this.#runtimeActive = false;
     if (this.#launch === launch) this.#launch = undefined;
     await client?.close().catch(() => undefined);
     await Promise.resolve(launch.closeParentChannel()).catch(() => undefined);
@@ -529,7 +593,12 @@ export class HelperSupervisor {
     this.#client = undefined;
     this.#unsubscribeStatus?.();
     this.#unsubscribeStatus = undefined;
+    const runtimeWasActive = this.#runtimeActive;
+    this.#runtimeActive = false;
     if (!launch) return;
+    if (client && runtimeWasActive) {
+      await client.stopRuntime().catch(() => undefined);
+    }
     await client?.close().catch(() => undefined);
     await Promise.resolve(launch.requestDrain()).catch(() => undefined);
     let drainTimer: TimerHandle | undefined;

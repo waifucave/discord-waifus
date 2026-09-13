@@ -61,6 +61,10 @@ function supervisorSnapshot(
 class FakeSupervisor implements HelperSupervisorController {
   startCalls = 0;
   reconnectCalls = 0;
+  startRuntimeCalls = 0;
+  reconnectRuntimeCalls = 0;
+  stopRuntimeCalls = 0;
+  attachedBridge: unknown;
   closeCalls = 0;
   startError: Error | undefined;
   #snapshot: HelperSupervisorSnapshot;
@@ -83,6 +87,10 @@ class FakeSupervisor implements HelperSupervisorController {
     return () => this.#listeners.delete(listener);
   }
 
+  attachRequestBridge(bridge: unknown): void {
+    this.attachedBridge = bridge;
+  }
+
   async start(): Promise<void> {
     this.startCalls += 1;
     if (this.startError) throw this.startError;
@@ -94,6 +102,27 @@ class FakeSupervisor implements HelperSupervisorController {
   async reconnect(): Promise<void> {
     this.reconnectCalls += 1;
   }
+
+  async startRuntime(): Promise<HelperRuntimeStatus> {
+    this.startRuntimeCalls += 1;
+    return this.#snapshot.runtimeStatus;
+  }
+
+  async runtimeStatus(): Promise<HelperRuntimeStatus> {
+    return this.#snapshot.runtimeStatus;
+  }
+
+  async reconnectRuntime(): Promise<HelperRuntimeStatus> {
+    this.reconnectRuntimeCalls += 1;
+    return this.#snapshot.runtimeStatus;
+  }
+
+  async stopRuntime(): Promise<HelperRuntimeStatus> {
+    this.stopRuntimeCalls += 1;
+    return this.#snapshot.runtimeStatus;
+  }
+
+  async registerGatewayLaunch(): Promise<void> {}
 
   async beginActivation(): Promise<never> {
     throw new Error("Activation is not configured in this lifecycle test.");
@@ -246,6 +275,7 @@ describe("host remote-access lifecycle service", () => {
     await remote.start();
 
     expect(supervisor.startCalls).toBe(1);
+    expect(supervisor.startRuntimeCalls).toBe(1);
     expect(remote.getRuntimeSummary()).toMatchObject({
       enabled: true,
       helperState: "ready",
@@ -258,6 +288,24 @@ describe("host remote-access lifecycle service", () => {
     });
     expect(await remote.isAuthorized(principal("travel-mac", "7"))).toBe(true);
     expect(await remote.isAuthorized(principal("travel-mac", "6"))).toBe(false);
+  });
+
+  it("attaches the request bridge before startup and reconnects only the direct runtime", async () => {
+    const root = await makeRoot();
+    await enableRemoteAccess(root);
+    const supervisor = new FakeSupervisor();
+    const remote = service(root, supervisor);
+    const bridge = { close: () => undefined } as never;
+
+    remote.attachRequestBridge(bridge);
+    expect(supervisor.attachedBridge).toBe(bridge);
+    await remote.start();
+    await remote.reconnect();
+
+    expect(supervisor.startCalls).toBe(1);
+    expect(supervisor.startRuntimeCalls).toBe(1);
+    expect(supervisor.reconnectRuntimeCalls).toBe(1);
+    expect(supervisor.reconnectCalls).toBe(0);
   });
 
   it("fails remote startup on non-loopback bind or an active custom dashboard", async () => {

@@ -24,6 +24,7 @@ import {
   type Uint64Decimal
 } from "../shared/schemas/remoteProtocol.js";
 import { HelperTargetSchema, type HelperTarget } from "../shared/schemas/remoteAccess.js";
+import type { RemoteRequestBridge } from "../backend/remoteAccess/requestBridge.js";
 
 export const HELPER_HELLO_TIMEOUT_MS = 5_000;
 export const HELPER_COMMAND_TIMEOUT_MS = 30_000;
@@ -135,6 +136,12 @@ export type AuthenticatedHelperClient = {
   beginActivation: (operationId: string) => Promise<HelperActivationStart>;
   pollActivation: (operationId: string) => Promise<HelperActivationPoll>;
   cancelActivation: (operationId: string) => Promise<HelperActivationCancel>;
+  startRuntime: (selectedPairId?: string) => Promise<HelperRuntimeStatus>;
+  runtimeStatus: () => Promise<HelperRuntimeStatus>;
+  reconnectRuntime: () => Promise<HelperRuntimeStatus>;
+  stopRuntime: () => Promise<HelperRuntimeStatus>;
+  registerGatewayLaunch: (gatewayLaunchId: string, expiresAt: string) => Promise<void>;
+  attachRequestBridge: (bridge: RemoteRequestBridge) => void;
   close: () => Promise<void>;
 };
 

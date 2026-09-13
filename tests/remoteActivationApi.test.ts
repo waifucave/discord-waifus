@@ -71,6 +71,8 @@ class ActivationSupervisor {
   closeCalls = 0;
   pollCalls = 0;
   cancelCalls = 0;
+  startRuntimeCalls = 0;
+  startRuntimeError: Error | undefined;
   localOperationId: string | undefined;
   pollResult: HelperActivationPoll;
   readonly workerActivationId = bytes32(0x55);
@@ -102,6 +104,8 @@ class ActivationSupervisor {
     return () => this.#listeners.delete(listener);
   }
 
+  attachRequestBridge(): void {}
+
   async start(): Promise<void> {
     if (this.#ready) return;
     this.#ready = true;
@@ -114,6 +118,26 @@ class ActivationSupervisor {
   }
 
   async reconnect(): Promise<void> {}
+
+  async startRuntime() {
+    this.startRuntimeCalls += 1;
+    if (this.startRuntimeError) throw this.startRuntimeError;
+    return this.#snapshot.runtimeStatus;
+  }
+
+  async runtimeStatus() {
+    return this.#snapshot.runtimeStatus;
+  }
+
+  async reconnectRuntime() {
+    return this.#snapshot.runtimeStatus;
+  }
+
+  async stopRuntime() {
+    return this.#snapshot.runtimeStatus;
+  }
+
+  async registerGatewayLaunch(): Promise<void> {}
 
   async close(): Promise<void> {
     this.closeCalls += 1;
@@ -209,6 +233,7 @@ async function makeHarness() {
   return {
     app,
     root,
+    remoteAccess,
     supervisor,
     session,
     setNow: (value: number) => { now = value; },
@@ -349,6 +374,48 @@ describe("anonymous remote activation API", () => {
       headers: { ...browserHeaders(), cookie: browser.cookie }
     });
     expect(missing.statusCode).toBe(404);
+  });
+
+  it("keeps a durable activation completed when the enabled runtime cannot start", async () => {
+    const harness = await makeHarness();
+    const browser = await harness.session();
+    const started = await beginActivation(harness, browser);
+    const operationId = started.json().activationOperationId;
+    const paths = remoteStatePaths(harness.root);
+    harness.supervisor.onCompleted = async () => {
+      await harness.activateInstallation();
+      const config = JSON.parse(await readFile(paths.hostConfig, "utf8"));
+      await writeFile(paths.hostConfig, JSON.stringify({
+        ...config,
+        revision: "1",
+        enabled: true,
+        updatedAt: "1786270800"
+      }, null, 2) + "\n", { mode: 0o600 });
+    };
+    harness.supervisor.pollResult = {
+      operationId,
+      state: "completed",
+      expiresAt: "1786271400"
+    } as HelperActivationPoll;
+    harness.supervisor.startRuntimeError = Object.assign(new Error("runtime unavailable"), {
+      code: "udp_unavailable"
+    });
+
+    const completed = await harness.app.inject({
+      method: "GET",
+      url: `/api/remote-access/activation/${operationId}`,
+      headers: { ...browserHeaders(), cookie: browser.cookie }
+    });
+
+    expect(completed.statusCode).toBe(200);
+    expect(completed.json()).toMatchObject({ state: "completed" });
+    expect(harness.supervisor.startRuntimeCalls).toBe(1);
+    expect(harness.remoteAccess.getRuntimeSummary()).toMatchObject({
+      enabled: true,
+      helperState: "failed",
+      directState: "direct_unavailable",
+      lastErrorCode: "udp_unavailable"
+    });
   });
 
   it("returns sanitized helper failure state and never persists the Worker handle or certificate", async () => {

@@ -1,8 +1,11 @@
-import { chmod, lstat, mkdir } from "node:fs/promises";
+import { chmod, lstat, mkdir, readFile } from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import fastify from "fastify";
 import { afterEach, describe, expect, it } from "vitest";
+import { registerInternalDispatchReceiver } from "../src/api/internalDispatch.js";
+import { RemoteRequestBridge } from "../src/backend/remoteAccess/requestBridge.js";
 import { ProtectedHelperProcessFactory } from "../src/remote/helperClient.js";
 import type { HelperLaunchRequest } from "../src/remote/helperTypes.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
@@ -62,6 +65,20 @@ async function within<T>(promise: Promise<T>, milliseconds: number, label: strin
     ]);
   } finally {
     if (timer) clearTimeout(timer);
+  }
+}
+
+async function readEventually(filePath: string): Promise<string> {
+  const deadline = performance.now() + 2_000;
+  for (;;) {
+    try {
+      return await readFile(filePath, "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT" || performance.now() >= deadline) {
+        throw error;
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    }
   }
 }
 
@@ -207,6 +224,106 @@ describe("protected helper process client", () => {
     });
 
     await client.close();
+    await launch.closeParentChannel();
+    await launch.exited;
+  });
+
+  unixIt("owns the supervised direct runtime through strict correlated commands", async () => {
+    const request = await launchRequest({ FAKE_HELPER_RUNTIME: "1" });
+    const launch = await new ProtectedHelperProcessFactory().launch(request);
+    const client = await launch.authenticated;
+
+    await expect(client.identityStatus()).resolves.toMatchObject({ activationState: "active" });
+    await expect(client.startRuntime()).resolves.toEqual({
+      activationState: "active",
+      controlState: "connected",
+      directState: "reconnecting",
+      lastDirectAt: null,
+      lastErrorCode: null
+    });
+    await expect(client.startRuntime(Buffer.alloc(16, 0x61).toString("base64url")))
+      .rejects.toMatchObject({ code: "helper_incompatible" });
+    await expect(client.runtimeStatus()).resolves.toMatchObject({
+      controlState: "connected",
+      directState: "reconnecting"
+    });
+    await expect(client.reconnectRuntime()).resolves.toMatchObject({
+      controlState: "connected"
+    });
+    await expect(client.stopRuntime()).resolves.toMatchObject({
+      controlState: "inactive",
+      directState: "inactive"
+    });
+    expect(client.currentStatus()).toMatchObject({
+      controlState: "inactive",
+      directState: "inactive"
+    });
+
+    await client.close();
+    await launch.closeParentChannel();
+    await launch.exited;
+  });
+
+  unixIt("requires one canonical host selection for a remote runtime", async () => {
+    const baseRequest = await launchRequest({ FAKE_HELPER_RUNTIME: "1" });
+    const request: HelperLaunchRequest = { ...baseRequest, role: "remote" };
+    const launch = await new ProtectedHelperProcessFactory().launch(request);
+    const client = await launch.authenticated;
+    const pairId = Buffer.alloc(16, 0x62).toString("base64url");
+    const gatewayLaunchId = Buffer.alloc(32, 0x63).toString("base64url");
+
+    await client.identityStatus();
+    await expect(client.startRuntime()).rejects.toMatchObject({ code: "helper_incompatible" });
+    await expect(client.startRuntime(pairId)).resolves.toMatchObject({
+      controlState: "connected",
+      directState: "reconnecting"
+    });
+    await expect(client.registerGatewayLaunch(gatewayLaunchId, "1786271400"))
+      .resolves.toBeUndefined();
+
+    await client.close();
+    await launch.closeParentChannel();
+    await launch.exited;
+  });
+
+  unixIt("multiplexes a helper-created HTTP stream beside connection commands", async () => {
+    const baseRequest = await launchRequest();
+    const resultPath = path.join(baseRequest.dataRoot, "probe-result.json");
+    const request = {
+      ...baseRequest,
+      environment: {
+        FAKE_HELPER_RUNTIME: "1",
+        FAKE_HELPER_REQUEST: "1",
+        FAKE_HELPER_RESULT_PATH: resultPath
+      }
+    };
+    const app = fastify({ logger: false });
+    registerInternalDispatchReceiver(app);
+    app.get("/probe", async (incoming, reply) => {
+      reply.code(207).header("x-host-safe", "yes");
+      return { query: incoming.query, header: incoming.headers["x-probe"] };
+    });
+    const bridge = new RemoteRequestBridge(app);
+    const launch = await new ProtectedHelperProcessFactory().launch(request);
+    const client = await launch.authenticated;
+    client.attachRequestBridge(bridge);
+
+    await client.identityStatus();
+    await client.startRuntime();
+    const result = JSON.parse(await readEventually(resultPath));
+    expect(result.responseStart).toMatchObject({
+      version: 1,
+      statusCode: 207,
+      headers: expect.arrayContaining([["x-host-safe", "yes"]])
+    });
+    expect(JSON.parse(result.body)).toEqual({
+      query: { source: "helper" },
+      header: "present"
+    });
+
+    await client.close();
+    bridge.close();
+    await app.close();
     await launch.closeParentChannel();
     await launch.exited;
   });
