@@ -1,6 +1,7 @@
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Logger } from "../src/backend/logger.js";
+import type { RemoteRequestBridge } from "../src/backend/remoteAccess/requestBridge.js";
 import {
   HelperSupervisor,
   type HelperSupervisorOptions
@@ -75,6 +76,12 @@ function helperClient(overrides: Partial<AuthenticatedHelperClient> = {}): Authe
       installationFingerprint: Buffer.alloc(16, 0x71).toString("base64url") as never,
       secretStorage: "keychain"
     }),
+    startRuntime: async () => helperStatus({ controlState: "connected", directState: "reconnecting" }),
+    runtimeStatus: async () => helperStatus({ controlState: "connected", directState: "reconnecting" }),
+    reconnectRuntime: async () => helperStatus({ controlState: "reconnecting", directState: "reconnecting" }),
+    stopRuntime: async () => helperStatus({ controlState: "inactive", directState: "inactive" }),
+    registerGatewayLaunch: async () => {},
+    attachRequestBridge: () => {},
     close: async () => {},
     ...overrides
   };
@@ -181,6 +188,77 @@ async function settle(): Promise<void> {
 }
 
 describe("role-neutral helper supervisor", () => {
+  it("attaches the authenticated request bridge and restores the desired runtime", async () => {
+    const factory = new FakeProcessFactory();
+    const { supervisor } = await makeSupervisor(factory);
+    const bridge = {} as RemoteRequestBridge;
+    const attachRequestBridge = vi.fn();
+    const startRuntime = vi.fn(async () => helperStatus({
+      controlState: "connected",
+      directState: "reconnecting"
+    }));
+    const stopRuntime = vi.fn(async () => helperStatus({
+      controlState: "inactive",
+      directState: "inactive"
+    }));
+    supervisor.attachRequestBridge(bridge);
+    const started = supervisor.start();
+    await settle();
+    factory.launches[0]!.resolveAuthenticated(helperClient({
+      attachRequestBridge,
+      startRuntime,
+      stopRuntime
+    }));
+    await started;
+
+    await supervisor.startRuntime();
+    expect(attachRequestBridge).toHaveBeenCalledWith(bridge);
+    expect(startRuntime).toHaveBeenCalledWith(undefined);
+    expect(supervisor.snapshot().runtimeStatus).toMatchObject({
+      controlState: "connected",
+      directState: "reconnecting"
+    });
+
+    const restarted = supervisor.reconnect();
+    await vi.waitFor(() => expect(factory.launches).toHaveLength(2));
+    const restartedClient = helperClient({ attachRequestBridge, startRuntime, stopRuntime });
+    factory.launches[1]!.resolveAuthenticated(restartedClient);
+    await restarted;
+    expect(startRuntime).toHaveBeenCalledTimes(2);
+
+    await supervisor.stop();
+    expect(stopRuntime).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries the desired runtime start when the first start did not become active", async () => {
+    const factory = new FakeProcessFactory();
+    const { supervisor } = await makeSupervisor(factory);
+    const startRuntime = vi.fn()
+      .mockRejectedValueOnce(new Error("first start failed"))
+      .mockResolvedValueOnce(helperStatus({
+        controlState: "connected",
+        directState: "reconnecting"
+      }));
+    const reconnectRuntime = vi.fn(async () => helperStatus());
+    const started = supervisor.start();
+    await settle();
+    factory.launches[0]!.resolveAuthenticated(helperClient({
+      startRuntime,
+      reconnectRuntime
+    }));
+    await started;
+
+    await expect(supervisor.startRuntime()).rejects.toThrow("first start failed");
+    await expect(supervisor.reconnectRuntime()).resolves.toMatchObject({
+      controlState: "connected",
+      directState: "reconnecting"
+    });
+    expect(startRuntime).toHaveBeenCalledTimes(2);
+    expect(reconnectRuntime).not.toHaveBeenCalled();
+
+    await supervisor.close();
+  });
+
   it("passes secrets only through the protected capability field and validates HELLO metadata", async () => {
     const factory = new FakeProcessFactory();
     const { supervisor, verified, dataRoot, logs } = await makeSupervisor(factory);

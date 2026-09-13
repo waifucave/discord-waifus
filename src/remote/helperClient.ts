@@ -1,12 +1,21 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { once } from "node:events";
 import { lstat, chmod } from "node:fs/promises";
 import net, { type Socket } from "node:net";
 import path from "node:path";
+import { PassThrough } from "node:stream";
 import { TextDecoder } from "node:util";
 import { z } from "zod";
+import type {
+  RemoteBridgeConnection,
+  RemoteBridgeResponse,
+  RemoteRequestBridge
+} from "../backend/remoteAccess/requestBridge.js";
 import {
+  Base64Url16BytesSchema,
   Base64Url32BytesSchema,
   ComponentHelloSchema,
+  Uint64DecimalSchema,
   negotiateComponentCompatibility,
   type ComponentHello,
   type ProtocolVersion
@@ -15,15 +24,20 @@ import {
   serializeCanonicalContractJson,
   type ContractJson
 } from "../shared/schemas/remoteProtocolContract.js";
+import { RemoteAccessErrorCodeSchema } from "../shared/schemas/remoteLifecycle.js";
 import {
   WIPC_FRAME_TYPES,
   WIPC_HEADER_BYTES,
   WIPC_PROTOCOL_VERSION,
+  WIPC_DATA_PAYLOAD_MAX_BYTES,
   decodeWipcHeader,
+  decodeWipcWindowUpdate,
   encodeWipcHeader,
+  encodeWipcWindowUpdate,
   type WipcFrameType
 } from "../shared/wipc.js";
 import { WipcParentAuthSession } from "../shared/wipcAuthSession.js";
+import { WipcConnectionState, type WipcStreamTransition } from "../shared/wipcState.js";
 import {
   HelperSupervisorError,
   HELPER_COMMAND_TIMEOUT_MS,
@@ -55,9 +69,14 @@ const HelperCommandFailureSchema = z.object({
     "activation_begin",
     "activation_poll",
     "activation_cancel",
-    "identity_status"
+    "identity_status",
+    "runtime_start",
+    "runtime_status",
+    "runtime_reconnect",
+    "runtime_stop",
+    "register_gateway_launch"
   ]),
-  errorCode: HelperActivationErrorCodeSchema,
+  errorCode: z.union([HelperActivationErrorCodeSchema, RemoteAccessErrorCodeSchema]),
   ok: z.literal(false),
   operationId: Base64Url32BytesSchema.optional()
 }).strict();
@@ -105,10 +124,39 @@ const ActivationCancelWireSchema = z.object({
   ok: z.literal(true),
   operationId: Base64Url32BytesSchema
 }).strict();
+const RuntimeStatusWireSchema = z.object({
+  activationState: z.enum(["activation_required", "active", "renewal_due"]),
+  command: z.enum(["runtime_start", "runtime_status", "runtime_reconnect", "runtime_stop"]),
+  controlState: z.enum(["inactive", "connecting", "connected", "reconnecting", "unavailable"]),
+  directState: z.enum(["inactive", "direct", "reconnecting", "direct_unavailable"]),
+  lastDirectAt: Uint64DecimalSchema.nullable(),
+  lastErrorCode: RemoteAccessErrorCodeSchema.nullable(),
+  ok: z.literal(true)
+}).strict();
+const RegisterGatewayLaunchWireSchema = z.object({
+  command: z.literal("register_gateway_launch"),
+  ok: z.literal(true)
+}).strict();
 
 type WipcFrame = {
   readonly type: WipcFrameType;
+  readonly streamId: bigint;
   readonly payload: Buffer;
+};
+
+type PendingCommand = {
+  resolve: (frame: WipcFrame) => void;
+  reject: (error: Error) => void;
+};
+
+type ActiveHostStream = {
+  readonly streamId: bigint;
+  readonly body: PassThrough;
+  readonly controller: AbortController;
+  requestWriteTail: Promise<void>;
+  response: RemoteBridgeResponse | undefined;
+  readonly responseCreditWaiters: Set<() => void>;
+  closed: boolean;
 };
 
 function canonicalBytes(value: unknown): Buffer {
@@ -184,16 +232,22 @@ async function readFrame(socket: Socket): Promise<WipcFrame> {
   const header = decodeWipcHeader(await readExactly(socket, WIPC_HEADER_BYTES));
   return {
     type: header.frameType,
+    streamId: header.streamId,
     payload: await readExactly(socket, header.payloadLength)
   };
 }
 
-async function writeFrame(socket: Socket, type: WipcFrameType, payload: Buffer): Promise<void> {
+async function writeFrame(
+  socket: Socket,
+  type: WipcFrameType,
+  payload: Buffer,
+  streamId = 0n
+): Promise<void> {
   const header = encodeWipcHeader({
     ...WIPC_PROTOCOL_VERSION,
     frameType: type,
     flags: 0,
-    streamId: 0n,
+    streamId,
     payloadLength: payload.byteLength
   });
   const encoded = Buffer.concat([header, payload]);
@@ -203,7 +257,7 @@ async function writeFrame(socket: Socket, type: WipcFrameType, payload: Buffer):
 }
 
 function requireFrame(frame: WipcFrame, expected: WipcFrameType, label: string): void {
-  if (frame.type !== expected) {
+  if (frame.type !== expected || frame.streamId !== 0n) {
     throw new HelperSupervisorError("helper_incompatible", `Expected ${label} during the helper protocol exchange.`);
   }
 }
@@ -265,14 +319,34 @@ async function listenProtectedUnix(server: net.Server, endpoint: string): Promis
   assertOwnedMode(socketMetadata, 0o600, "Parent Unix socket");
 }
 
+function forwardWipcTransition(transition: WipcStreamTransition): boolean {
+  return ![
+    "request_chunk_discarded",
+    "cancel_ignored",
+    "window_ignored",
+    "inactive_frame_ignored"
+  ].includes(transition.outcome);
+}
+
+function boundedStreamError(code: string, message: string): Buffer {
+  return canonicalBytes({ code, message });
+}
+
 class ProcessHelperClient implements AuthenticatedHelperClient {
   readonly hello: ComponentHello;
   readonly negotiatedProtocol: ProtocolVersion;
   readonly negotiatedCapabilities: readonly string[];
   readonly #socket: Socket;
+  readonly #authentication: WipcParentAuthSession;
+  readonly #connectionState = new WipcConnectionState();
   #status: HelperRuntimeStatus;
   readonly #dataRoot: string;
   readonly #role: "host" | "remote";
+  readonly #statusListeners = new Set<(status: HelperRuntimeStatus) => void>();
+  readonly #streams = new Map<bigint, ActiveHostStream>();
+  #pendingCommand: PendingCommand | undefined;
+  #bridgeConnection: RemoteBridgeConnection | undefined;
+  #terminalError: Error | undefined;
   #commandTail: Promise<void> = Promise.resolve();
   #closed = false;
 
@@ -282,9 +356,11 @@ class ProcessHelperClient implements AuthenticatedHelperClient {
     negotiatedProtocol: ProtocolVersion,
     negotiatedCapabilities: readonly string[],
     dataRoot: string,
-    role: "host" | "remote"
+    role: "host" | "remote",
+    authentication: WipcParentAuthSession
   ) {
     this.#socket = socket;
+    this.#authentication = authentication;
     this.hello = Object.freeze(hello);
     this.negotiatedProtocol = Object.freeze(negotiatedProtocol);
     this.negotiatedCapabilities = Object.freeze([...negotiatedCapabilities]);
@@ -297,14 +373,356 @@ class ProcessHelperClient implements AuthenticatedHelperClient {
       lastDirectAt: null,
       lastErrorCode: null
     }));
+    this.#connectionState.markAuthenticated();
+    void this.#readLoop();
   }
 
   currentStatus(): HelperRuntimeStatus {
     return this.#status;
   }
 
-  subscribeStatus(): () => void {
-    return () => {};
+  subscribeStatus(listener: (status: HelperRuntimeStatus) => void): () => void {
+    this.#statusListeners.add(listener);
+    return () => this.#statusListeners.delete(listener);
+  }
+
+  attachRequestBridge(bridge: RemoteRequestBridge): void {
+    if (this.#closed || this.#terminalError) {
+      throw new HelperSupervisorError("helper_unavailable", "Helper request channel is closed.");
+    }
+    if (this.#bridgeConnection) {
+      throw new HelperSupervisorError("helper_incompatible", "Helper request bridge is already attached.");
+    }
+    this.#bridgeConnection = bridge.openAuthenticatedConnection(
+      `helper:${this.hello.nonce}`,
+      this.#authentication
+    );
+  }
+
+  #publishStatus(value: unknown): HelperRuntimeStatus {
+    const status = Object.freeze(parseHelperRuntimeStatus(value));
+    this.#status = status;
+    for (const listener of this.#statusListeners) listener(status);
+    return status;
+  }
+
+  async #readLoop(): Promise<void> {
+    try {
+      while (!this.#closed) {
+        const frame = await readFrame(this.#socket);
+        if (frame.streamId === 0n) {
+          this.#handleConnectionFrame(frame);
+        } else {
+          await this.#handleStreamFrame(frame);
+        }
+      }
+    } catch (error) {
+      if (!this.#closed) this.#failConnection(error);
+    }
+  }
+
+  #handleConnectionFrame(frame: WipcFrame): void {
+    if (frame.type !== WIPC_FRAME_TYPES.RESULT || !this.#pendingCommand) {
+      throw new HelperSupervisorError(
+        "helper_incompatible",
+        "Helper sent an unexpected post-authentication connection frame."
+      );
+    }
+    const pending = this.#pendingCommand;
+    this.#pendingCommand = undefined;
+    pending.resolve(frame);
+  }
+
+  #decodedRequestStart(payload: Buffer): unknown {
+    let value: unknown;
+    try {
+      value = JSON.parse(UTF8_DECODER.decode(payload));
+    } catch {
+      throw new HelperSupervisorError("helper_incompatible", "Helper request metadata is not UTF-8 JSON.");
+    }
+    if (!canonicalBytes(value).equals(payload)) {
+      throw new HelperSupervisorError("helper_incompatible", "Helper request metadata is not canonical.");
+    }
+    return value;
+  }
+
+  #receiveStreamFrame(frame: WipcFrame): WipcStreamTransition {
+    return this.#connectionState.receive({
+      sender: "helper",
+      frameType: frame.type,
+      streamId: frame.streamId,
+      ...(frame.type === WIPC_FRAME_TYPES.REQUEST_CHUNK
+        || frame.type === WIPC_FRAME_TYPES.RESPONSE_CHUNK
+        ? { payloadLength: frame.payload.byteLength }
+        : {}),
+      ...(frame.type === WIPC_FRAME_TYPES.WINDOW_UPDATE
+        ? { windowUpdate: decodeWipcWindowUpdate(frame.payload) }
+        : {})
+    });
+  }
+
+  async #handleStreamFrame(frame: WipcFrame): Promise<void> {
+    const transition = this.#receiveStreamFrame(frame);
+    if (transition.outcome === "stream_limit") {
+      await writeFrame(
+        this.#socket,
+        WIPC_FRAME_TYPES.RESPONSE_ERROR,
+        boundedStreamError("stream_limit", "too many concurrent requests"),
+        frame.streamId
+      );
+      return;
+    }
+    if (transition.outcome === "stream_failed") {
+      if (transition.responseErrorPermitted) {
+        await writeFrame(
+          this.#socket,
+          WIPC_FRAME_TYPES.RESPONSE_ERROR,
+          boundedStreamError(transition.errorCode ?? "stream_protocol", "stream protocol violation"),
+          frame.streamId
+        );
+      }
+      this.#removeStream(frame.streamId, new Error("Helper stream protocol failed."));
+      return;
+    }
+    if (!forwardWipcTransition(transition)) return;
+    if (transition.outcome === "request_started") {
+      const body = new PassThrough({ highWaterMark: WIPC_DATA_PAYLOAD_MAX_BYTES });
+      body.on("error", () => {});
+      const stream: ActiveHostStream = {
+        streamId: frame.streamId,
+        body,
+        controller: new AbortController(),
+        requestWriteTail: Promise.resolve(),
+        response: undefined,
+        responseCreditWaiters: new Set(),
+        closed: false
+      };
+      this.#streams.set(frame.streamId, stream);
+      let requestStart: unknown;
+      try {
+        requestStart = this.#decodedRequestStart(frame.payload);
+      } catch (error) {
+        void this.#rejectHostStream(stream, "invalid_request", "request metadata is invalid", error);
+        return;
+      }
+      void this.#dispatchHostStream(stream, requestStart);
+      return;
+    }
+
+    const stream = this.#streams.get(frame.streamId);
+    if (!stream) {
+      throw new HelperSupervisorError("helper_incompatible", "Active helper stream has no request owner.");
+    }
+    switch (transition.outcome) {
+      case "request_chunk_delivered":
+        this.#enqueueRequestChunk(stream, Buffer.from(frame.payload));
+        return;
+      case "request_ended":
+        stream.requestWriteTail = stream.requestWriteTail.then(() => {
+          if (!stream.body.destroyed && !stream.body.writableEnded) stream.body.end();
+        });
+        return;
+      case "request_cancelled":
+        this.#cancelHostStream(stream, new Error("Remote request was cancelled."));
+        return;
+      case "window_updated":
+        if (transition.direction === "response") this.#wakeResponseCredit(stream);
+        return;
+      default:
+        throw new HelperSupervisorError("helper_incompatible", "Helper stream transition is unsupported.");
+    }
+  }
+
+  #enqueueRequestChunk(stream: ActiveHostStream, payload: Buffer): void {
+    stream.requestWriteTail = stream.requestWriteTail.then(async () => {
+      if (stream.closed || stream.body.destroyed || stream.body.writableEnded) return;
+      if (!stream.body.write(payload)) {
+        await Promise.race([
+          once(stream.body, "drain"),
+          once(stream.body, "close")
+        ]);
+      }
+      if (stream.closed || stream.body.destroyed) return;
+      await this.#sendStreamFrame(
+        stream,
+        WIPC_FRAME_TYPES.WINDOW_UPDATE,
+        encodeWipcWindowUpdate({ direction: "request", creditIncrement: payload.byteLength })
+      );
+    }).catch((error) => this.#failConnection(error));
+  }
+
+  async #dispatchHostStream(stream: ActiveHostStream, requestStart: unknown): Promise<void> {
+    try {
+      if (!this.#bridgeConnection) {
+        throw new HelperSupervisorError("helper_unavailable", "Authenticated request bridge is unavailable.");
+      }
+      const response = await this.#bridgeConnection.dispatch({
+        streamId: stream.streamId,
+        requestStart,
+        body: stream.body,
+        signal: stream.controller.signal
+      });
+      if (stream.closed || stream.controller.signal.aborted) {
+        response.cancel(stream.controller.signal.reason);
+        return;
+      }
+      stream.response = response;
+      await this.#sendStreamFrame(stream, WIPC_FRAME_TYPES.RESPONSE_START, canonicalBytes({
+        version: 1,
+        statusCode: response.statusCode,
+        statusMessage: response.statusMessage,
+        headers: response.headers
+      }));
+      for await (const value of response.body) {
+        const chunk = Buffer.from(value);
+        let offset = 0;
+        while (offset < chunk.byteLength) {
+          const available = await this.#waitForResponseCredit(stream);
+          const size = Math.min(
+            WIPC_DATA_PAYLOAD_MAX_BYTES,
+            available,
+            chunk.byteLength - offset
+          );
+          await this.#sendStreamFrame(
+            stream,
+            WIPC_FRAME_TYPES.RESPONSE_CHUNK,
+            chunk.subarray(offset, offset + size)
+          );
+          offset += size;
+        }
+      }
+      await this.#sendStreamFrame(stream, WIPC_FRAME_TYPES.RESPONSE_END, Buffer.alloc(0));
+      stream.response = undefined;
+      this.#removeStream(stream.streamId);
+    } catch (error) {
+      await this.#rejectHostStream(
+        stream,
+        stream.controller.signal.aborted ? "request_cancelled" : "request_failed",
+        stream.controller.signal.aborted ? "request was cancelled" : "host request failed",
+        error
+      );
+    }
+  }
+
+  async #waitForResponseCredit(stream: ActiveHostStream): Promise<number> {
+    for (;;) {
+      if (stream.closed || this.#closed || stream.controller.signal.aborted) {
+        throw new Error("Helper response stream is closed.");
+      }
+      const snapshot = this.#connectionState.snapshot(stream.streamId);
+      if (!snapshot) throw new Error("Helper response stream state is unavailable.");
+      if (snapshot.responseCredit > 0) return snapshot.responseCredit;
+      await new Promise<void>((resolve) => stream.responseCreditWaiters.add(resolve));
+    }
+  }
+
+  #wakeResponseCredit(stream: ActiveHostStream): void {
+    for (const resolve of stream.responseCreditWaiters) resolve();
+    stream.responseCreditWaiters.clear();
+  }
+
+  async #sendStreamFrame(
+    stream: ActiveHostStream,
+    type: WipcFrameType,
+    payload: Buffer
+  ): Promise<void> {
+    if (stream.closed || this.#closed) throw new Error("Helper stream is closed.");
+    const transition = this.#connectionState.receive({
+      sender: "node",
+      frameType: type,
+      streamId: stream.streamId,
+      ...(type === WIPC_FRAME_TYPES.REQUEST_CHUNK || type === WIPC_FRAME_TYPES.RESPONSE_CHUNK
+        ? { payloadLength: payload.byteLength }
+        : {}),
+      ...(type === WIPC_FRAME_TYPES.WINDOW_UPDATE
+        ? { windowUpdate: decodeWipcWindowUpdate(payload) }
+        : {})
+    });
+    if (transition.outcome === "stream_failed") {
+      throw new Error("Node response violated WIPC stream state.");
+    }
+    if (!forwardWipcTransition(transition)) return;
+    await writeFrame(this.#socket, type, payload, stream.streamId);
+  }
+
+  async #rejectHostStream(
+    stream: ActiveHostStream,
+    code: string,
+    message: string,
+    reason: unknown
+  ): Promise<void> {
+    if (stream.closed) return;
+    stream.controller.abort(reason);
+    stream.response?.cancel(reason);
+    const snapshot = this.#connectionState.snapshot(stream.streamId);
+    if (snapshot && !snapshot.protocolFailed && !["succeeded", "failed"].includes(snapshot.responseState)) {
+      try {
+        await this.#sendStreamFrame(
+          stream,
+          WIPC_FRAME_TYPES.RESPONSE_ERROR,
+          boundedStreamError(code, message)
+        );
+      } catch (error) {
+        this.#failConnection(error);
+      }
+    }
+    this.#removeStream(stream.streamId, reason);
+  }
+
+  #cancelHostStream(stream: ActiveHostStream, reason: Error): void {
+    if (stream.closed) return;
+    stream.controller.abort(reason);
+    stream.response?.cancel(reason);
+    if (!stream.body.destroyed) stream.body.destroy(reason);
+    this.#wakeResponseCredit(stream);
+  }
+
+  #removeStream(streamId: bigint, reason?: unknown): void {
+    const stream = this.#streams.get(streamId);
+    if (!stream) {
+      try {
+        this.#connectionState.removeStream(streamId);
+      } catch {
+        // The high-water mark still contains rejected streams that were never active.
+      }
+      return;
+    }
+    stream.closed = true;
+    this.#streams.delete(streamId);
+    this.#wakeResponseCredit(stream);
+    if (reason !== undefined) {
+      stream.controller.abort(reason);
+      stream.response?.cancel(reason);
+    }
+    if (!stream.body.destroyed && !stream.body.readableEnded) {
+      stream.body.destroy(reason instanceof Error ? reason : undefined);
+    }
+    try {
+      this.#connectionState.removeStream(streamId);
+    } catch {
+      // Connection teardown owns nonterminal streams; no later frame is accepted.
+    }
+  }
+
+  #failConnection(reason: unknown): void {
+    if (this.#closed || this.#terminalError) return;
+    const error = reason instanceof Error
+      ? reason
+      : new HelperSupervisorError("helper_unavailable", "Helper session failed.");
+    this.#terminalError = error;
+    this.#pendingCommand?.reject(error);
+    this.#pendingCommand = undefined;
+    for (const streamId of [...this.#streams.keys()]) this.#removeStream(streamId, error);
+    this.#bridgeConnection?.close(error);
+    this.#bridgeConnection = undefined;
+    this.#authentication.close();
+    this.#socket.destroy();
+    this.#publishStatus({
+      ...this.#status,
+      controlState: "unavailable",
+      directState: this.#status.directState === "direct" ? "direct" : "direct_unavailable",
+      lastErrorCode: "helper_unavailable"
+    });
   }
 
   async identityStatus(): Promise<HelperIdentityStatus> {
@@ -319,10 +737,10 @@ class ProcessHelperClient implements AuthenticatedHelperClient {
       installationFingerprint: result.installationFingerprint,
       secretStorage: result.secretStorage
     });
-    this.#status = Object.freeze(parseHelperRuntimeStatus({
+    this.#publishStatus({
       ...this.#status,
       activationState: status.activationState
-    }));
+    });
     return status;
   }
 
@@ -364,6 +782,64 @@ class ProcessHelperClient implements AuthenticatedHelperClient {
     });
   }
 
+  async startRuntime(selectedPairId?: string): Promise<HelperRuntimeStatus> {
+    const selection = selectedPairId === undefined
+      ? undefined
+      : Base64Url16BytesSchema.parse(selectedPairId);
+    if (this.#role === "host" && selection !== undefined) {
+      throw new HelperSupervisorError("helper_incompatible", "Host runtime cannot select a remote pair.");
+    }
+    if (this.#role === "remote" && selection === undefined) {
+      throw new HelperSupervisorError("helper_incompatible", "Remote runtime requires one selected host.");
+    }
+    const result = await this.#command({
+      command: "runtime_start",
+      dataRoot: this.#dataRoot,
+      role: this.#role,
+      ...(selection ? { selectedPairId: selection } : {})
+    }, RuntimeStatusWireSchema, "runtime start RESULT");
+    return this.#publishStatus({
+      activationState: result.activationState,
+      controlState: result.controlState,
+      directState: result.directState,
+      lastDirectAt: result.lastDirectAt,
+      lastErrorCode: result.lastErrorCode
+    });
+  }
+
+  async runtimeStatus(): Promise<HelperRuntimeStatus> {
+    return this.#runtimeStatusCommand("runtime_status");
+  }
+
+  async reconnectRuntime(): Promise<HelperRuntimeStatus> {
+    return this.#runtimeStatusCommand("runtime_reconnect");
+  }
+
+  async stopRuntime(): Promise<HelperRuntimeStatus> {
+    return this.#runtimeStatusCommand("runtime_stop");
+  }
+
+  async #runtimeStatusCommand(
+    command: "runtime_status" | "runtime_reconnect" | "runtime_stop"
+  ): Promise<HelperRuntimeStatus> {
+    const result = await this.#command({ command }, RuntimeStatusWireSchema, `${command} RESULT`);
+    return this.#publishStatus({
+      activationState: result.activationState,
+      controlState: result.controlState,
+      directState: result.directState,
+      lastDirectAt: result.lastDirectAt,
+      lastErrorCode: result.lastErrorCode
+    });
+  }
+
+  async registerGatewayLaunch(gatewayLaunchId: string, expiresAt: string): Promise<void> {
+    await this.#command({
+      command: "register_gateway_launch",
+      gatewayLaunchId: Base64Url32BytesSchema.parse(gatewayLaunchId),
+      expiresAt: Uint64DecimalSchema.parse(expiresAt)
+    }, RegisterGatewayLaunchWireSchema, "register gateway launch RESULT");
+  }
+
   async #command<T extends { command: string; ok: true; operationId?: string }>(
     command: { command: string; operationId?: string } & Record<string, unknown>,
     schema: z.ZodType<T>,
@@ -376,27 +852,42 @@ class ProcessHelperClient implements AuthenticatedHelperClient {
     });
     await prior;
     try {
-      if (this.#closed || this.#socket.destroyed) {
+      if (this.#closed || this.#socket.destroyed || this.#terminalError) {
         throw new HelperCommandError("helper_unavailable", "Helper command channel is closed.");
       }
       let timeout: ReturnType<typeof setTimeout> | undefined;
-      const exchange = (async () => {
+      let resolveFrame!: (frame: WipcFrame) => void;
+      let rejectFrame!: (error: Error) => void;
+      const exchange = new Promise<WipcFrame>((resolve, reject) => {
+        resolveFrame = resolve;
+        rejectFrame = reject;
+      });
+      const pending: PendingCommand = { resolve: resolveFrame, reject: rejectFrame };
+      if (this.#pendingCommand) {
+        throw new HelperSupervisorError("helper_incompatible", "A helper command is already pending.");
+      }
+      this.#pendingCommand = pending;
+      try {
         await writeFrame(this.#socket, WIPC_FRAME_TYPES.COMMAND, canonicalBytes(command));
-        return readFrame(this.#socket);
-      })();
+      } catch (error) {
+        if (this.#pendingCommand === pending) this.#pendingCommand = undefined;
+        throw error;
+      }
       const frame = await Promise.race([
         exchange,
         new Promise<never>((_resolve, reject) => {
           timeout = setTimeout(() => {
-            this.#socket.destroy();
-            reject(new HelperCommandError(
+            const error = new HelperCommandError(
               "helper_unavailable",
               "Helper command deadline expired."
-            ));
+            );
+            this.#failConnection(error);
+            reject(error);
           }, HELPER_COMMAND_TIMEOUT_MS);
         })
       ]).finally(() => {
         if (timeout) clearTimeout(timeout);
+        if (this.#pendingCommand === pending) this.#pendingCommand = undefined;
       });
       requireFrame(frame, WIPC_FRAME_TYPES.RESULT, "RESULT");
       const failure = (() => {
@@ -416,7 +907,26 @@ class ProcessHelperClient implements AuthenticatedHelperClient {
             "Helper command failure did not match the request."
           );
         }
-        throw new HelperCommandError(failure.errorCode, "Helper rejected the activation command.");
+        const activationCommand = command.command === "identity_status"
+          || command.command.startsWith("activation_");
+        if (activationCommand) {
+          const code = HelperActivationErrorCodeSchema.safeParse(failure.errorCode);
+          if (!code.success) {
+            throw new HelperSupervisorError(
+              "helper_incompatible",
+              "Helper returned an invalid activation failure code."
+            );
+          }
+          throw new HelperCommandError(code.data, "Helper rejected the activation command.");
+        }
+        const code = RemoteAccessErrorCodeSchema.safeParse(failure.errorCode);
+        if (!code.success) {
+          throw new HelperSupervisorError(
+            "helper_incompatible",
+            "Helper returned an invalid runtime failure code."
+          );
+        }
+        throw new HelperSupervisorError(code.data, "Helper rejected the runtime command.");
       }
       const result = parseCanonical(frame.payload, schema, label);
       if (
@@ -438,7 +948,16 @@ class ProcessHelperClient implements AuthenticatedHelperClient {
   }
 
   async close(): Promise<void> {
+    if (this.#closed) return;
     this.#closed = true;
+    const error = new Error("Helper client is closing.");
+    this.#pendingCommand?.reject(error);
+    this.#pendingCommand = undefined;
+    for (const streamId of [...this.#streams.keys()]) this.#removeStream(streamId, error);
+    this.#bridgeConnection?.close(error);
+    this.#bridgeConnection = undefined;
+    this.#authentication.close();
+    this.#statusListeners.clear();
     this.#socket.destroy();
   }
 }
@@ -508,7 +1027,8 @@ async function authenticateSocket(
       compatibility.protocol,
       compatibility.capabilities,
       dataRoot,
-      role
+      role,
+      authentication
     );
   } catch (error) {
     authentication?.close();

@@ -1,5 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { createReadStream } from "node:fs";
+import { writeFile } from "node:fs/promises";
 import net from "node:net";
 
 const HEADER_BYTES = 24;
@@ -7,6 +8,13 @@ const HELLO = 0x01;
 const HELLO_ACK = 0x02;
 const COMMAND = 0x03;
 const RESULT = 0x04;
+const REQUEST_START = 0x10;
+const REQUEST_END = 0x12;
+const RESPONSE_START = 0x20;
+const RESPONSE_CHUNK = 0x21;
+const RESPONSE_END = 0x22;
+const RESPONSE_ERROR = 0x23;
+const WINDOW_UPDATE = 0x30;
 const REQUIRED_CAPABILITIES = [
   "waifus.browser-context.v1",
   "waifus.dashboard.manifest.v1",
@@ -30,12 +38,13 @@ function canonicalJson(value) {
   return Buffer.from(JSON.stringify(sortJson(value)));
 }
 
-function frame(type, payload) {
+function frame(type, payload, streamId = 0n) {
   const header = Buffer.alloc(HEADER_BYTES);
   header.write("WIPC", 0, "ascii");
   header.writeUInt16BE(1, 4);
   header.writeUInt16BE(0, 6);
   header.writeUInt8(type, 8);
+  header.writeBigUInt64BE(streamId, 12);
   header.writeUInt32BE(payload.byteLength, 20);
   return Buffer.concat([header, payload]);
 }
@@ -72,7 +81,7 @@ function frameReader(socket) {
       waiting.push({ size, resolve, reject });
       flush();
     });
-    return { type: header.readUInt8(8), payload };
+    return { type: header.readUInt8(8), streamId: header.readBigUInt64BE(12), payload };
   };
 }
 
@@ -85,6 +94,55 @@ function proof(domain, capability, clientNonce, helperNonce, hello, helloAck, pa
     .update(helloAck);
   if (parentProof) hmac.update(parentProof);
   return hmac.digest();
+}
+
+async function runRequestProbe(socket, readFrame) {
+  const resultPath = process.env.FAKE_HELPER_RESULT_PATH;
+  if (!resultPath) throw new Error("missing request probe result path");
+  const bytes16 = (value) => Buffer.alloc(16, value).toString("base64url");
+  socket.write(frame(REQUEST_START, canonicalJson({
+    version: 1,
+    method: "GET",
+    canonicalTarget: "/probe?source=helper",
+    headers: [["x-probe", "present"]],
+    principal: {
+      kind: "remote_device",
+      stableId: "remote:fixture-device",
+      deviceId: "fixture-device",
+      peerFingerprint: bytes16(0x21),
+      transportSessionId: bytes16(0x22),
+      trustEpoch: "7"
+    }
+  }), 2n));
+  socket.write(frame(REQUEST_END, Buffer.alloc(0), 2n));
+
+  let responseStart;
+  const chunks = [];
+  for (;;) {
+    const incoming = await readFrame();
+    if (incoming.streamId !== 2n) throw new Error("unexpected probe stream");
+    if (incoming.type === RESPONSE_START) {
+      responseStart = JSON.parse(incoming.payload.toString("utf8"));
+      continue;
+    }
+    if (incoming.type === RESPONSE_CHUNK) {
+      chunks.push(incoming.payload);
+      const update = Buffer.alloc(8);
+      update.writeUInt8(2, 0);
+      update.writeUInt32BE(incoming.payload.byteLength, 4);
+      socket.write(frame(WINDOW_UPDATE, update, 2n));
+      continue;
+    }
+    if (incoming.type === RESPONSE_ERROR) {
+      throw new Error(`probe failed: ${incoming.payload.toString("utf8")}`);
+    }
+    if (incoming.type === RESPONSE_END) break;
+    throw new Error("unexpected probe response frame");
+  }
+  await writeFile(resultPath, JSON.stringify({
+    responseStart,
+    body: Buffer.concat(chunks).toString("utf8")
+  }));
 }
 
 async function main(capability) {
@@ -153,22 +211,45 @@ async function main(capability) {
     return;
   }
   socket.write(resultFrame);
-  if (process.env.FAKE_HELPER_ACTIVATION !== "1") return;
+  if (process.env.FAKE_HELPER_ACTIVATION !== "1" && process.env.FAKE_HELPER_RUNTIME !== "1") return;
   for (;;) {
     const next = await readFrame();
-    if (next.type !== COMMAND) throw new Error("expected activation command");
+    if (next.type !== COMMAND || next.streamId !== 0n) throw new Error("expected connection command");
     const activation = JSON.parse(next.payload.toString("utf8"));
     const operationId = process.env.FAKE_HELPER_ACTIVATION_MISMATCH === "1"
       ? Buffer.alloc(32, 0x56).toString("base64url")
       : activation.operationId;
     if (activation.command === "identity_status") {
       socket.write(frame(RESULT, canonicalJson({
-        activationState: "activation_required",
+        activationState: process.env.FAKE_HELPER_RUNTIME === "1" ? "active" : "activation_required",
         command: "identity_status",
         deviceId: "host-device-01",
         installationFingerprint: Buffer.alloc(16, 0x73).toString("base64url"),
         ok: true,
         secretStorage: "keychain"
+      })));
+      continue;
+    }
+    if (["runtime_start", "runtime_status", "runtime_reconnect", "runtime_stop"].includes(activation.command)) {
+      const stopped = activation.command === "runtime_stop";
+      socket.write(frame(RESULT, canonicalJson({
+        activationState: "active",
+        command: activation.command,
+        controlState: stopped ? "inactive" : "connected",
+        directState: stopped ? "inactive" : "reconnecting",
+        lastDirectAt: null,
+        lastErrorCode: null,
+        ok: true
+      })));
+      if (activation.command === "runtime_start" && process.env.FAKE_HELPER_REQUEST === "1") {
+        await runRequestProbe(socket, readFrame);
+      }
+      continue;
+    }
+    if (activation.command === "register_gateway_launch") {
+      socket.write(frame(RESULT, canonicalJson({
+        command: "register_gateway_launch",
+        ok: true
       })));
       continue;
     }

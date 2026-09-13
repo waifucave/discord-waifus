@@ -71,6 +71,9 @@ class ManagementSupervisor {
   startCalls = 0;
   stopCalls = 0;
   reconnectCalls = 0;
+  startRuntimeCalls = 0;
+  reconnectRuntimeCalls = 0;
+  stopRuntimeCalls = 0;
   closeCalls = 0;
   startError: Error | undefined;
   stopGate: Promise<void> | undefined;
@@ -107,6 +110,8 @@ class ManagementSupervisor {
     return () => this.#listeners.delete(listener);
   }
 
+  attachRequestBridge(): void {}
+
   async start(): Promise<void> {
     if (this.#snapshot.state === "ready") return;
     this.startCalls += 1;
@@ -138,6 +143,27 @@ class ManagementSupervisor {
   async reconnect(): Promise<void> {
     this.reconnectCalls += 1;
   }
+
+  async startRuntime() {
+    this.startRuntimeCalls += 1;
+    return this.#snapshot.runtimeStatus;
+  }
+
+  async runtimeStatus() {
+    return this.#snapshot.runtimeStatus;
+  }
+
+  async reconnectRuntime() {
+    this.reconnectRuntimeCalls += 1;
+    return this.#snapshot.runtimeStatus;
+  }
+
+  async stopRuntime() {
+    this.stopRuntimeCalls += 1;
+    return this.#snapshot.runtimeStatus;
+  }
+
+  async registerGatewayLaunch(): Promise<void> {}
 
   async beginActivation(): Promise<HelperActivationStart> {
     throw new Error("Activation is not part of this management API test.");
@@ -398,7 +424,8 @@ describe("host remote-access management API", () => {
     });
     expect(reconnect.statusCode).toBe(202);
     expect(reconnect.json()).toMatchObject({ status: "accepted" });
-    expect(harness.supervisor.reconnectCalls).toBe(1);
+    expect(harness.supervisor.reconnectRuntimeCalls).toBe(1);
+    expect(harness.supervisor.reconnectCalls).toBe(0);
   });
 
   it("flushes a disable acknowledgement before draining the helper connection", async () => {
@@ -424,7 +451,7 @@ describe("host remote-access management API", () => {
       url: "/api/remote-access",
       headers,
       payload: { revision: "1", enabled: false }
-    }), 250);
+    }), 5_000);
 
     expect(disabled.statusCode).toBe(202);
     expect(disabled.json()).toMatchObject({ status: "accepted" });

@@ -168,6 +168,9 @@ describe("remote-access runtime summary", () => {
 class FakeRemoteSupervisor implements HelperSupervisorController {
   startCalls = 0;
   reconnectCalls = 0;
+  startRuntimeCalls = 0;
+  reconnectRuntimeCalls = 0;
+  stopRuntimeCalls = 0;
   closeCalls = 0;
   startError: Error | undefined;
   onStart: (() => Promise<void>) | undefined;
@@ -189,6 +192,8 @@ class FakeRemoteSupervisor implements HelperSupervisorController {
     return () => this.#listeners.delete(listener);
   }
 
+  attachRequestBridge(): void {}
+
   async start(): Promise<void> {
     this.startCalls += 1;
     await this.onStart?.();
@@ -201,6 +206,27 @@ class FakeRemoteSupervisor implements HelperSupervisorController {
   async reconnect(): Promise<void> {
     this.reconnectCalls += 1;
   }
+
+  async startRuntime(): Promise<HelperRuntimeStatus> {
+    this.startRuntimeCalls += 1;
+    return this.current.runtimeStatus;
+  }
+
+  async runtimeStatus(): Promise<HelperRuntimeStatus> {
+    return this.current.runtimeStatus;
+  }
+
+  async reconnectRuntime(): Promise<HelperRuntimeStatus> {
+    this.reconnectRuntimeCalls += 1;
+    return this.current.runtimeStatus;
+  }
+
+  async stopRuntime(): Promise<HelperRuntimeStatus> {
+    this.stopRuntimeCalls += 1;
+    return this.current.runtimeStatus;
+  }
+
+  async registerGatewayLaunch(): Promise<void> {}
 
   async beginActivation(): Promise<never> {
     throw new Error("Activation is not configured in this backend lifecycle test.");

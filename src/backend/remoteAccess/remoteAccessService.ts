@@ -48,9 +48,15 @@ export type HelperSupervisorController = {
   snapshot: () => HelperSupervisorSnapshot;
   identityStatus: () => HelperIdentityStatus | null;
   subscribe: (listener: (snapshot: HelperSupervisorSnapshot) => void) => () => void;
+  attachRequestBridge: (bridge: RemoteRequestBridge) => void;
   start: () => Promise<void>;
   stop: () => Promise<void>;
   reconnect: () => Promise<void>;
+  startRuntime: (selectedPairId?: string) => Promise<HelperSupervisorSnapshot["runtimeStatus"]>;
+  runtimeStatus: () => Promise<HelperSupervisorSnapshot["runtimeStatus"]>;
+  reconnectRuntime: () => Promise<HelperSupervisorSnapshot["runtimeStatus"]>;
+  stopRuntime: () => Promise<HelperSupervisorSnapshot["runtimeStatus"]>;
+  registerGatewayLaunch: (gatewayLaunchId: string, expiresAt: string) => Promise<void>;
   beginActivation: (operationId: string) => Promise<HelperActivationStart>;
   pollActivation: (operationId: string) => Promise<HelperActivationPoll>;
   cancelActivation: (operationId: string) => Promise<HelperActivationCancel>;
@@ -275,6 +281,7 @@ export class RemoteAccessService {
     this.#subscribeSupervisor();
     try {
       await this.#options.supervisor.start();
+      await this.#options.supervisor.startRuntime();
       this.#rememberHelperSnapshot(this.#options.supervisor.snapshot());
     } catch (error) {
       this.#unsubscribeSupervisor?.();
@@ -302,6 +309,7 @@ export class RemoteAccessService {
       throw new Error("Remote request bridge is already attached.");
     }
     this.#requestBridge = bridge;
+    this.#options.supervisor.attachRequestBridge(bridge);
   }
 
   async isAuthorized(principal: RemoteRequestPrincipal): Promise<boolean> {
@@ -313,7 +321,7 @@ export class RemoteAccessService {
     if (!this.#started || this.#closed || !this.#summary?.enabled) {
       throw new RemoteAccessInactiveError();
     }
-    await this.#options.supervisor.reconnect();
+    await this.#options.supervisor.reconnectRuntime();
     this.#rememberHelperSnapshot(this.#options.supervisor.snapshot());
   }
 
@@ -508,33 +516,39 @@ export class RemoteAccessService {
       await this.#stopHelperIfInactiveAndIdle();
       return structuredClone(operation.status);
     }
+    let state: RemoteAccessPersistedState;
     try {
-      const state = await this.#stateStore.load();
-      if (state.installation.activationReference === null) {
-        operation.status = this.#failedActivationStatus(operation, "certificate_invalid");
-        await this.#stopHelperIfInactiveAndIdle();
-        return structuredClone(operation.status);
-      }
-      this.#state = state;
-      operation.status = ActivationStatusSchema.parse({
-        activationOperationId: operation.operationId,
-        state: "completed",
-        expiresAt: operation.expiresAt.toString(),
-        completedAt: now.toString()
-      });
-      if (state.config.enabled) {
-        this.#subscribeSupervisor();
-        this.#publish(snapshotSummary(state, this.#options.supervisor.snapshot()));
-      } else {
-        this.#publish(inactiveSummary(state));
-      }
-      await this.#stopHelperIfInactiveAndIdle();
-      return structuredClone(operation.status);
+      state = await this.#stateStore.load();
     } catch {
       operation.status = this.#failedActivationStatus(operation, "certificate_invalid");
       await this.#stopHelperIfInactiveAndIdle();
       return structuredClone(operation.status);
     }
+    if (state.installation.activationReference === null) {
+      operation.status = this.#failedActivationStatus(operation, "certificate_invalid");
+      await this.#stopHelperIfInactiveAndIdle();
+      return structuredClone(operation.status);
+    }
+    this.#state = state;
+    operation.status = ActivationStatusSchema.parse({
+      activationOperationId: operation.operationId,
+      state: "completed",
+      expiresAt: operation.expiresAt.toString(),
+      completedAt: now.toString()
+    });
+    if (state.config.enabled) {
+      this.#subscribeSupervisor();
+      try {
+        await this.#options.supervisor.startRuntime();
+        this.#publish(snapshotSummary(state, this.#options.supervisor.snapshot()));
+      } catch (error) {
+        this.#publish(failedSummary(state, lifecycleErrorCode(error)));
+      }
+    } else {
+      this.#publish(inactiveSummary(state));
+    }
+    await this.#stopHelperIfInactiveAndIdle();
+    return structuredClone(operation.status);
   }
 
   async cancelActivation(operationIdValue: string, actorValue: LocalActivationActor): Promise<void> {
@@ -580,6 +594,7 @@ export class RemoteAccessService {
     this.#subscribeSupervisor();
     try {
       await this.#options.supervisor.start();
+      await this.#options.supervisor.startRuntime();
       this.#rememberHelperSnapshot(this.#options.supervisor.snapshot());
       this.#publish(snapshotSummary(next, this.#options.supervisor.snapshot()));
     } catch (error) {
