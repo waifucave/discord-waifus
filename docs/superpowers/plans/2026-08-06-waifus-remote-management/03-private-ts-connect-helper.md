@@ -184,12 +184,14 @@ The per-stream state machine is exact:
 5. REQUEST_CANCEL from the stream initiator is valid after REQUEST_START and before response
    terminal. The first sets cancelled and triggers the abort exactly once; duplicate cancel is a
    no-op. Cancel after response terminal is a no-op.
-6. Raw request frames already in flight after cancel/response terminal are discarded, never
-   delivered or credited again, and still may not exceed the last request credit. Valid late
-   WINDOW_UPDATE is ignored. A duplicate REQUEST_END, RESPONSE_START, or response terminal, a chunk
-   before its start/after its direction terminal, or a frame forbidden by the state marks that
-   stream failed; emit at most one safe RESPONSE_ERROR when possible. Any further
-   non-cancel/non-window frame on that failed stream closes the connection.
+6. Raw request chunks already in flight after cancel/response terminal are discarded, never
+   delivered or credited again, and still may not exceed the last request credit. The first
+   REQUEST_END received after a response terminal records the closed request input as ended without
+   delivering it; the initiator emits that terminal after suppressing further request chunks. Valid
+   late WINDOW_UPDATE is ignored. A duplicate REQUEST_END, RESPONSE_START, or response terminal, a
+   chunk before its start/after its direction terminal, or a frame forbidden by the state marks that
+   stream failed; emit at most one safe RESPONSE_ERROR when possible. Any further non-cancel/non-window
+   frame on that failed stream closes the connection.
 7. Once a stream is removed from the active map, a late CANCEL or valid WINDOW_UPDATE for an ID at
    or below the correct side's high-water mark is ignored; every other frame for an inactive/unknown
    ID closes the connection. Any frame received before mutual connection authentication also closes

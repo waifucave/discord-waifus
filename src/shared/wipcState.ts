@@ -345,6 +345,10 @@ export class WipcConnectionState {
     if (senderFailure) {
       return senderFailure;
     }
+    if (state.requestState === "response_closed") {
+      state.requestState = "ended";
+      return { outcome: "request_ended", streamId: frame.streamId };
+    }
     if (state.requestState !== "open") {
       return this.#failStream(state, frame.streamId, "duplicate_request_end");
     }

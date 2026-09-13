@@ -636,6 +636,18 @@ export function createWipcStateV1Fixture(): ContractJson {
           {
             action: "frame",
             sender: "node",
+            frameType: WIPC_FRAME_TYPES.REQUEST_END,
+            streamId: "1",
+            expectedOutcome: "request_ended",
+            expectedSnapshot: stateSnapshot({
+              requestState: "ended",
+              responseState: "succeeded",
+              requestCredit: 1_048_566
+            })
+          },
+          {
+            action: "frame",
+            sender: "node",
             frameType: WIPC_FRAME_TYPES.REQUEST_CANCEL,
             streamId: "1",
             expectedOutcome: "cancel_ignored",
@@ -649,7 +661,7 @@ export function createWipcStateV1Fixture(): ContractJson {
             windowUpdate: { direction: "request", creditIncrement: 10 },
             expectedOutcome: "window_ignored",
             expectedSnapshot: stateSnapshot({
-              requestState: "response_closed",
+              requestState: "ended",
               responseState: "succeeded",
               requestCredit: 1_048_566
             })

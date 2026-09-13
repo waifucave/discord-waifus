@@ -176,6 +176,12 @@ describe("WIPC request/response lifecycle", () => {
     expect(connection.snapshot(1n)?.requestCredit).toBe(WIPC_INITIAL_STREAM_CREDIT_BYTES - 10);
     expect(connection.receive({
       sender: "node",
+      frameType: WIPC_FRAME_TYPES.REQUEST_END,
+      streamId: 1n
+    }).outcome).toBe("request_ended");
+    expect(connection.snapshot(1n)?.requestState).toBe("ended");
+    expect(connection.receive({
+      sender: "node",
       frameType: WIPC_FRAME_TYPES.REQUEST_CANCEL,
       streamId: 1n
     }).outcome).toBe("cancel_ignored");

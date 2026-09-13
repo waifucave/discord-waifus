@@ -33,6 +33,8 @@ import {
   type HelperLaunch,
   type HelperPackageResolver,
   type HelperProcessFactory,
+  type HelperRemoteRequest,
+  type HelperRemoteResponse,
   type HelperRole,
   type HelperRuntimeStatus,
   type HelperSupervisorSnapshot,
@@ -235,6 +237,12 @@ export class HelperSupervisor {
   }
 
   attachRequestBridge(bridge: RemoteRequestBridge): void {
+    if (this.#options.role !== "host") {
+      throw new HelperSupervisorError(
+        "helper_incompatible",
+        "Only a host-role helper supervisor may attach the Fastify request bridge."
+      );
+    }
     if (this.#requestBridge && this.#requestBridge !== bridge) {
       throw new HelperSupervisorError("helper_incompatible", "Remote request bridge cannot be replaced.");
     }
@@ -320,6 +328,10 @@ export class HelperSupervisor {
 
   async registerGatewayLaunch(gatewayLaunchId: string, expiresAt: string): Promise<void> {
     await this.#readyClient().registerGatewayLaunch(gatewayLaunchId, expiresAt);
+  }
+
+  async request(input: HelperRemoteRequest): Promise<HelperRemoteResponse> {
+    return this.#readyClient().request(input);
   }
 
   async close(): Promise<void> {

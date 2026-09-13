@@ -342,6 +342,10 @@ func (connection *ConnectionState) receiveRequestEnd(
 	if failure := connection.expectedSenderFailure(state, frame, state.Initiator); failure != nil {
 		return *failure, nil
 	}
+	if state.RequestState == string(RequestResponseClosed) {
+		state.RequestState = string(RequestEnded)
+		return Transition{Outcome: "request_ended", StreamID: frame.StreamID}, nil
+	}
 	if state.RequestState != string(RequestOpen) {
 		return connection.failStream(state, frame.StreamID, "duplicate_request_end"), nil
 	}

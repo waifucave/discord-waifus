@@ -1,6 +1,6 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { writeFile } from "node:fs/promises";
+import { rename, writeFile } from "node:fs/promises";
 import net from "node:net";
 
 const HEADER_BYTES = 24;
@@ -9,7 +9,9 @@ const HELLO_ACK = 0x02;
 const COMMAND = 0x03;
 const RESULT = 0x04;
 const REQUEST_START = 0x10;
+const REQUEST_CHUNK = 0x11;
 const REQUEST_END = 0x12;
+const REQUEST_CANCEL = 0x13;
 const RESPONSE_START = 0x20;
 const RESPONSE_CHUNK = 0x21;
 const RESPONSE_END = 0x22;
@@ -36,6 +38,12 @@ function sortJson(value) {
 
 function canonicalJson(value) {
   return Buffer.from(JSON.stringify(sortJson(value)));
+}
+
+async function writeResult(resultPath, value) {
+  const stagingPath = `${resultPath}.${process.pid}.tmp`;
+  await writeFile(stagingPath, JSON.stringify(value));
+  await rename(stagingPath, resultPath);
 }
 
 function frame(type, payload, streamId = 0n) {
@@ -114,12 +122,22 @@ async function runRequestProbe(socket, readFrame) {
       trustEpoch: "7"
     }
   }), 2n));
-  socket.write(frame(REQUEST_END, Buffer.alloc(0), 2n));
+  const delayedRequestEnd = process.env.FAKE_HELPER_DELAY_REQUEST_END_UNTIL_RESPONSE === "1";
+  if (!delayedRequestEnd) socket.write(frame(REQUEST_END, Buffer.alloc(0), 2n));
 
   let responseStart;
   const chunks = [];
+  let pendingRuntimeStatus = false;
   for (;;) {
     const incoming = await readFrame();
+    if (incoming.streamId === 0n && incoming.type === COMMAND) {
+      const command = JSON.parse(incoming.payload.toString("utf8"));
+      if (command.command !== "runtime_status" || pendingRuntimeStatus) {
+        throw new Error("unexpected concurrent probe command");
+      }
+      pendingRuntimeStatus = true;
+      continue;
+    }
     if (incoming.streamId !== 2n) throw new Error("unexpected probe stream");
     if (incoming.type === RESPONSE_START) {
       responseStart = JSON.parse(incoming.payload.toString("utf8"));
@@ -136,13 +154,189 @@ async function runRequestProbe(socket, readFrame) {
     if (incoming.type === RESPONSE_ERROR) {
       throw new Error(`probe failed: ${incoming.payload.toString("utf8")}`);
     }
-    if (incoming.type === RESPONSE_END) break;
+    if (incoming.type === RESPONSE_END) {
+      if (delayedRequestEnd) socket.write(frame(REQUEST_END, Buffer.alloc(0), 2n));
+      break;
+    }
     throw new Error("unexpected probe response frame");
   }
-  await writeFile(resultPath, JSON.stringify({
+  await writeResult(resultPath, {
     responseStart,
     body: Buffer.concat(chunks).toString("utf8")
-  }));
+  });
+  if (pendingRuntimeStatus) {
+    socket.write(frame(RESULT, canonicalJson({
+      activationState: "active",
+      command: "runtime_status",
+      controlState: "connected",
+      directState: "reconnecting",
+      lastDirectAt: null,
+      lastErrorCode: null,
+      ok: true
+    })));
+  }
+}
+
+async function runRemoteRequestProbe(socket, readFrame, startFrame) {
+  const resultPath = process.env.FAKE_HELPER_RESULT_PATH;
+  if (!resultPath) throw new Error("missing remote request probe result path");
+  if (startFrame.streamId !== 1n) throw new Error("expected first Node-created stream");
+  const requestStart = JSON.parse(startFrame.payload.toString("utf8"));
+  const chunks = [];
+  let cancelled = false;
+  let requestEnded = false;
+  let earlyResponseSent = false;
+  for (;;) {
+    const incoming = await readFrame();
+    if (incoming.streamId !== startFrame.streamId) throw new Error("unexpected remote request stream");
+    if (incoming.type === REQUEST_CHUNK) {
+      chunks.push(incoming.payload);
+      if (process.env.FAKE_HELPER_REMOTE_EARLY_RESPONSE === "1" && !earlyResponseSent) {
+        earlyResponseSent = true;
+        socket.write(frame(RESPONSE_START, canonicalJson({
+          version: 1,
+          statusCode: 413,
+          statusMessage: "Payload Too Large",
+          headers: [["content-length", "0"]]
+        }), startFrame.streamId));
+        socket.write(frame(RESPONSE_END, Buffer.alloc(0), startFrame.streamId));
+        continue;
+      }
+      if (earlyResponseSent) continue;
+      const update = Buffer.alloc(8);
+      update.writeUInt8(1, 0);
+      update.writeUInt32BE(incoming.payload.byteLength, 4);
+      socket.write(frame(WINDOW_UPDATE, update, startFrame.streamId));
+      continue;
+    }
+    if (incoming.type === REQUEST_CANCEL) {
+      cancelled = true;
+      break;
+    }
+    if (incoming.type === REQUEST_END) {
+      requestEnded = true;
+      if (process.env.FAKE_HELPER_REMOTE_WAIT_FOR_CANCEL === "1") continue;
+      break;
+    }
+    throw new Error("unexpected remote request frame");
+  }
+
+  const requestBody = Buffer.concat(chunks);
+  const result = {
+    streamId: startFrame.streamId.toString(10),
+    requestStart,
+    cancelled,
+    requestEnded
+  };
+  if (process.env.FAKE_HELPER_RESULT_BODY_MODE === "digest") {
+    result.bodyBytes = requestBody.byteLength;
+    result.bodySha256 = createHash("sha256").update(requestBody).digest("hex");
+  } else {
+    result.body = requestBody.toString("utf8");
+  }
+  if (earlyResponseSent) {
+    result.bodyBytes = requestBody.byteLength;
+    await writeResult(resultPath, result);
+    return;
+  }
+  if (cancelled) {
+    await writeResult(resultPath, result);
+    socket.write(frame(RESPONSE_ERROR, canonicalJson({
+      code: "cancelled",
+      message: "request cancelled"
+    }), startFrame.streamId));
+    return;
+  }
+  if (process.env.FAKE_HELPER_REMOTE_RESPONSE_ERROR) {
+    await writeResult(resultPath, result);
+    socket.write(frame(RESPONSE_ERROR, canonicalJson({
+      code: process.env.FAKE_HELPER_REMOTE_RESPONSE_ERROR,
+      message: "direct connection unavailable"
+    }), startFrame.streamId));
+    return;
+  }
+  if (process.env.FAKE_HELPER_REMOTE_PROTOCOL_ERROR === "1") {
+    await writeResult(resultPath, result);
+    socket.write(frame(RESPONSE_CHUNK, Buffer.from("response-before-metadata"), startFrame.streamId));
+    return;
+  }
+  if (process.env.FAKE_HELPER_REMOTE_OVERSIZED_RESPONSE_HEADERS === "1") {
+    await writeResult(resultPath, result);
+    socket.write(frame(RESPONSE_START, canonicalJson({
+      version: 1,
+      statusCode: 200,
+      statusMessage: "OK",
+      headers: [
+        ["x-first", "a".repeat(8_192)],
+        ["x-second", "b".repeat(8_192)]
+      ]
+    }), startFrame.streamId));
+    return;
+  }
+  if (process.env.FAKE_HELPER_REMOTE_STREAM_UNTIL_CANCEL === "1") {
+    socket.write(frame(RESPONSE_START, canonicalJson({
+      version: 1,
+      statusCode: 200,
+      statusMessage: "OK",
+      headers: [["content-type", "application/octet-stream"]]
+    }), startFrame.streamId));
+    socket.write(frame(RESPONSE_CHUNK, Buffer.alloc(65_536, 0x5a), startFrame.streamId));
+    for (;;) {
+      const incoming = await readFrame();
+      if (incoming.streamId !== startFrame.streamId) throw new Error("unexpected streaming response frame");
+      if (incoming.type === WINDOW_UPDATE) continue;
+      if (incoming.type !== REQUEST_CANCEL) throw new Error("expected streaming response cancellation");
+      result.responseCancelled = true;
+      await writeResult(resultPath, result);
+      socket.write(frame(RESPONSE_ERROR, canonicalJson({
+        code: "cancelled",
+        message: "response consumer disconnected"
+      }), startFrame.streamId));
+      return;
+    }
+  }
+  await writeResult(resultPath, result);
+  socket.write(frame(RESPONSE_START, canonicalJson({
+    version: 1,
+    statusCode: 206,
+    statusMessage: "Partial Content",
+    headers: [["content-type", "application/json"], ["x-helper-probe", "yes"]]
+  }), startFrame.streamId));
+  socket.write(frame(RESPONSE_CHUNK, Buffer.from('{"ok":'), startFrame.streamId));
+  socket.write(frame(RESPONSE_CHUNK, Buffer.from("true}"), startFrame.streamId));
+  socket.write(frame(RESPONSE_END, Buffer.alloc(0), startFrame.streamId));
+}
+
+async function runRemoteStreamLimitProbe(socket, readFrame, startFrame) {
+  const resultPath = process.env.FAKE_HELPER_RESULT_PATH;
+  if (!resultPath) throw new Error("missing stream-limit probe result path");
+  const started = new Set();
+  const ended = new Set();
+  let incoming = startFrame;
+  for (;;) {
+    if (incoming.type === REQUEST_START) {
+      started.add(incoming.streamId.toString(10));
+      if (started.size > 128) {
+        await writeResult(resultPath, {
+          started: started.size,
+          overflowSent: true
+        });
+        return;
+      }
+    } else if (incoming.type === REQUEST_END) {
+      ended.add(incoming.streamId.toString(10));
+    } else {
+      throw new Error("unexpected stream-limit probe frame");
+    }
+    if (started.size === 128 && ended.size === 128) {
+      await writeResult(resultPath, {
+        started: started.size,
+        overflowSent: false
+      });
+      return;
+    }
+    incoming = await readFrame();
+  }
 }
 
 async function main(capability) {
@@ -214,6 +408,14 @@ async function main(capability) {
   if (process.env.FAKE_HELPER_ACTIVATION !== "1" && process.env.FAKE_HELPER_RUNTIME !== "1") return;
   for (;;) {
     const next = await readFrame();
+    if (next.type === REQUEST_START && process.env.FAKE_HELPER_REMOTE_STREAM_LIMIT === "1") {
+      await runRemoteStreamLimitProbe(socket, readFrame, next);
+      continue;
+    }
+    if (next.type === REQUEST_START && process.env.FAKE_HELPER_REMOTE_REQUEST === "1") {
+      await runRemoteRequestProbe(socket, readFrame, next);
+      continue;
+    }
     if (next.type !== COMMAND || next.streamId !== 0n) throw new Error("expected connection command");
     const activation = JSON.parse(next.payload.toString("utf8"));
     const operationId = process.env.FAKE_HELPER_ACTIVATION_MISMATCH === "1"
