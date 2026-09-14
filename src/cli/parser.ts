@@ -7,12 +7,16 @@ export type CliCommand =
   | "doctor"
   | "clean"
   | "update"
-  | "dev";
+  | "dev"
+  | "remote";
+
+export type RemoteCliAction = "start" | "status" | "stop";
 
 export type ParsedCli = {
   command: CliCommand;
   flags: Record<string, string | boolean>;
   positional: string[];
+  remoteAction?: RemoteCliAction;
 };
 
 const COMMANDS = new Set<CliCommand>([
@@ -24,13 +28,24 @@ const COMMANDS = new Set<CliCommand>([
   "doctor",
   "clean",
   "update",
-  "dev"
+  "dev",
+  "remote"
 ]);
 
 export function parseCliArgs(argv: string[]): ParsedCli {
   const [first, ...rest] = argv;
   const command = COMMANDS.has(first as CliCommand) ? (first as CliCommand) : "help";
-  const args = command === "help" && first && !first.startsWith("-") && first !== "help" ? argv : rest;
+  const commandArgs = command === "help" && first && !first.startsWith("-") && first !== "help"
+    ? argv
+    : rest;
+  const remoteAction = command === "remote" && (commandArgs[0] === "status" || commandArgs[0] === "stop")
+    ? commandArgs[0]
+    : command === "remote"
+      ? "start"
+      : undefined;
+  const args = remoteAction === "status" || remoteAction === "stop"
+    ? commandArgs.slice(1)
+    : commandArgs;
   const flags: Record<string, string | boolean> = {};
   const positional: string[] = [];
 
@@ -60,7 +75,7 @@ export function parseCliArgs(argv: string[]): ParsedCli {
     }
   }
 
-  return { command, flags, positional };
+  return { command, flags, positional, ...(remoteAction ? { remoteAction } : {}) };
 }
 
 export function flagString(flags: Record<string, string | boolean>, key: string): string | undefined {

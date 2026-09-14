@@ -2,9 +2,12 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { runCommand } from "../src/cli/commands.js";
+import { createRuntimeState } from "../src/backend/runtime.js";
+import { runCommand, type CliRuntimeOptions } from "../src/cli/commands.js";
 import { parseCliArgs } from "../src/cli/parser.js";
 import { ensureDataLayout } from "../src/config/layout.js";
+import { remoteRolePaths, remoteStatePaths } from "../src/remote/paths.js";
+import { createRemoteDaemonState } from "../src/shared/schemas/remoteRuntime.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
 
 type DoctorResult = {
@@ -15,6 +18,30 @@ type DoctorResult = {
   models: { unresolved: Array<{ scope: string; providerId: string | null; modelId: string }> };
   providersConfigured: string[];
   discord: { orchestratorConfigured: boolean; waifuBotCount: number };
+  remoteAccess: {
+    target: {
+      platform: NodeJS.Platform;
+      arch: NodeJS.Architecture;
+      supported: boolean;
+      note: string | null;
+    };
+    helperPackage: {
+      state: "missing" | "unsupported" | "runtime_verified";
+      verified: boolean;
+      version: string | null;
+      releaseSequence: string | null;
+      protocol: { major: number; minor: number } | null;
+      capabilities: string[];
+      lastErrorCode: string | null;
+    };
+    host: Record<string, unknown>;
+    remote: Record<string, unknown>;
+    network: {
+      stun: "unknown";
+      udp: "unknown";
+      portMapping: "unknown";
+    };
+  };
 };
 
 const roots: string[] = [];
@@ -80,6 +107,153 @@ describe("waifus doctor: unresolved models and unstamped schema files", () => {
     expect(result.models.unresolved).toEqual([
       { scope: "orchestrator", providerId: "openai", modelId: "totally-unknown-model" }
     ]);
+  });
+});
+
+describe("waifus doctor: remote management", () => {
+  it("reports the gated missing helper on supported targets and Intel macOS as a later follow-up", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+
+    const supported = await runDoctor(root, { platform: "linux", arch: "x64" });
+    expect(supported.result.remoteAccess).toMatchObject({
+      target: {
+        platform: "linux",
+        arch: "x64",
+        supported: true,
+        note: null
+      },
+      helperPackage: {
+        state: "missing",
+        verified: false,
+        version: null,
+        releaseSequence: null,
+        protocol: null,
+        capabilities: [],
+        lastErrorCode: "helper_missing"
+      },
+      host: { running: false, runtime: null },
+      remote: { running: false, runtime: null },
+      network: { stun: "unknown", udp: "unknown", portMapping: "unknown" }
+    });
+
+    const intel = await runDoctor(root, { platform: "darwin", arch: "x64" });
+    expect(intel.result.remoteAccess).toMatchObject({
+      target: {
+        platform: "darwin",
+        arch: "x64",
+        supported: false,
+        note: expect.stringContaining("later follow-up")
+      },
+      helperPackage: {
+        state: "unsupported",
+        verified: false
+      }
+    });
+  });
+
+  it("reports only sanitized state supplied by running host and remote daemons", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const paths = remoteStatePaths(root);
+    const remotePaths = remoteRolePaths(root, "remote");
+    const hostRuntime = createRuntimeState({
+      pid: 5151,
+      startedAt: "2026-09-13T06:00:00.000Z",
+      packageVersion: "1.5.203",
+      port: 3888,
+      dataRoot: root,
+      mode: "start",
+      paused: false,
+      discord: {
+        connected: true,
+        orchestratorConnected: true,
+        waifuBotCount: 2,
+        warnings: []
+      },
+      queues: { active: 0, configuredGuilds: 1 },
+      remoteAccess: {
+        version: 1,
+        enabled: true,
+        helperState: "ready",
+        activationState: "active",
+        controlState: "connected",
+        directState: "direct",
+        trustedDeviceCount: 1,
+        lastDirectAt: "1786270900",
+        lastErrorCode: null
+      }
+    });
+    const remoteRuntime = createRemoteDaemonState({
+      pid: 4242,
+      startedAt: "2026-09-13T06:00:00.000Z",
+      packageVersion: "1.5.203",
+      port: 43123,
+      dataRoot: root,
+      mode: "remote",
+      connectionShellOrigin: `http://waifus-${"a".repeat(52)}.localhost:43123`,
+      helperVersion: "0.1.0",
+      helperReleaseSequence: "42",
+      protocol: { major: 1, minor: 0 },
+      capabilities: ["waifus.http.v1"],
+      helperState: "ready",
+      activationState: "active",
+      controlState: "connected",
+      directState: "direct",
+      rememberedHostCount: 1,
+      selectionState: "automatic_single",
+      selectedHostId: Buffer.alloc(32, 0x51).toString("base64url"),
+      lastDirectAt: "1786270900",
+      lastErrorCode: null
+    });
+    await writeFile(paths.backendPid, `${JSON.stringify(hostRuntime)}\n`, "utf8");
+    await writeFile(paths.backendRuntime, `${JSON.stringify(hostRuntime)}\n`, "utf8");
+    await writeFile(paths.remoteGatewayRuntimePid, `${JSON.stringify(remoteRuntime)}\n`, "utf8");
+    await writeFile(remotePaths.runtimeState, `${JSON.stringify(remoteRuntime)}\n`, "utf8");
+    await writeJson(root, "app/remote-gateway/helper-role-v1.json", {
+      endpointCandidates: ["198.51.100.2:443"],
+      privateKey: "must-not-appear",
+      certificate: "must-not-appear"
+    });
+
+    const { result } = await runDoctor(root, {
+      platform: "linux",
+      arch: "x64",
+      processAlive: (pid) => pid === 5151 || pid === 4242
+    });
+
+    expect(result.remoteAccess).toMatchObject({
+      helperPackage: {
+        state: "runtime_verified",
+        verified: true,
+        version: "0.1.0",
+        releaseSequence: "42",
+        protocol: { major: 1, minor: 0 },
+        capabilities: ["waifus.http.v1"],
+        lastErrorCode: null
+      },
+      host: {
+        running: true,
+        runtime: {
+          enabled: true,
+          helperState: "ready",
+          controlState: "connected",
+          directState: "direct"
+        }
+      },
+      remote: {
+        running: true,
+        runtime: {
+          helperState: "ready",
+          controlState: "connected",
+          directState: "direct"
+        }
+      }
+    });
+    expect(JSON.stringify(result.remoteAccess)).not.toMatch(
+      /198\.51\.100\.2|endpointCandidates|privateKey|certificate/iu
+    );
   });
 });
 
@@ -199,13 +373,16 @@ describe("waifus status/stop: tolerate unmigrated runtime files", () => {
   });
 });
 
-async function runDoctor(root: string): Promise<{ code: number; result: DoctorResult }> {
+async function runDoctor(
+  root: string,
+  options: CliRuntimeOptions = {}
+): Promise<{ code: number; result: DoctorResult }> {
   const logs: string[] = [];
   const logSpy = vi.spyOn(console, "log").mockImplementation((message?: unknown) => {
     if (typeof message === "string") logs.push(message);
   });
   try {
-    const code = await runCommand(parseCliArgs(["doctor", "--data-root", root]));
+    const code = await runCommand(parseCliArgs(["doctor", "--data-root", root]), options);
     const jsonLine = logs.find((line) => line.trim().startsWith("{"));
     if (!jsonLine) {
       throw new Error(`doctor did not print a JSON result; logs: ${JSON.stringify(logs)}`);

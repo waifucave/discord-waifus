@@ -26,6 +26,17 @@ import { StorageService } from "../storage/storageService.js";
 import { DEFAULT_APP_CONFIG } from "../shared/schemas/config.js";
 import { DiscordBotsFileSchema, ProviderCredentialsFileSchema, createEmptyRevisionedFile } from "../shared/schemas/domain.js";
 import { ParsedCli, flagBoolean, flagNumber, flagString } from "./parser.js";
+import {
+  readRemoteDaemonStatus,
+  runRemoteCommand,
+  type RemoteCliOptions
+} from "./remoteCommand.js";
+import {
+  processIsAlive,
+  readProcessState,
+  stopDaemonProcess,
+  type StopDaemonResult
+} from "./processState.js";
 
 const LEGACY_PACKAGE_NAME = "@starlight-ai/discord-waifus";
 const UPDATE_PACKAGE_NAME = "@waifucave/discord-waifus";
@@ -52,7 +63,7 @@ export type GitHubRelease = {
   assets?: GitHubReleaseAsset[];
 };
 
-export type CliRuntimeOptions = {
+export type CliRuntimeOptions = RemoteCliOptions & {
   processRunner?: CliProcessRunner;
   githubReleaseFetcher?: () => Promise<GitHubRelease>;
   env?: NodeJS.ProcessEnv;
@@ -85,22 +96,33 @@ export async function runCommand(parsed: ParsedCli, options: CliRuntimeOptions =
     case "dev":
       return startCommand(parsed, dataRoot, "dev", options);
     case "stop":
-      return stopCommand(dataRoot);
+      return stopCommand(dataRoot, {
+        isAlive: options.processAlive,
+        kill: options.killProcess,
+        waitForExit: options.waitForProcessExit
+      });
     case "restart": {
-      const stopCode = await stopCommand(dataRoot, { quiet: true });
+      const stopCode = await stopCommand(dataRoot, {
+        quiet: true,
+        isAlive: options.processAlive,
+        kill: options.killProcess,
+        waitForExit: options.waitForProcessExit
+      });
       if (stopCode !== 0) {
         return stopCode;
       }
       return startCommand(parsed, dataRoot, "start", options);
     }
     case "status":
-      return statusCommand(dataRoot);
+      return statusCommand(dataRoot, options.processAlive);
     case "doctor":
-      return doctorCommand(dataRoot);
+      return doctorCommand(dataRoot, options);
     case "clean":
-      return cleanCommand(parsed, dataRoot, options.processAlive ?? isProcessAlive);
+      return cleanCommand(parsed, dataRoot, options.processAlive ?? processIsAlive);
     case "update":
       return updateCommand(parsed, options);
+    case "remote":
+      return runRemoteCommand(parsed, dataRoot, options);
   }
 }
 
@@ -122,6 +144,9 @@ Usage:
   waifus doctor [--data-root PATH]
   waifus clean [--force] [--include-logs] [--data-root PATH]
   waifus update [--npm | --github]
+  waifus remote [--foreground] [--no-open] [--host ID_OR_NAME] [--port PORT] [--data-root PATH]
+  waifus remote status [--data-root PATH]
+  waifus remote stop [--data-root PATH]
 
 Environment:
   ${DATA_ROOT_ENV}=PATH overrides the default ~/.dc-waifus data root.
@@ -146,8 +171,8 @@ async function startDetachedCommand(
   dataRoot: string,
   options: CliRuntimeOptions
 ): Promise<number> {
-  const existing = await readRuntimeFile(appDataPath(dataRoot, "pid.json"), RuntimeStateReadSchema);
-  const processAlive = options.processAlive ?? isProcessAlive;
+  const existing = await readProcessState(appDataPath(dataRoot, "pid.json"), RuntimeStateReadSchema);
+  const processAlive = options.processAlive ?? processIsAlive;
   if (existing && processAlive(existing.pid)) {
     console.log(`waifus backend already running at http://127.0.0.1:${existing.port}`);
     console.log(`data root: ${dataRoot}`);
@@ -234,82 +259,89 @@ function backendStartArgs(parsed: ParsedCli, dataRoot: string): string[] {
   return args;
 }
 
-async function stopCommand(dataRoot: string, options: { quiet?: boolean } = {}): Promise<number> {
-  const pidState = await readRuntimeFile(appDataPath(dataRoot, "pid.json"), RuntimeStateReadSchema);
-  if (!pidState) {
-    if (!options.quiet) {
-      console.log("waifus backend is not running: no pid file found");
-    }
-    return 0;
-  }
-  if (!isProcessAlive(pidState.pid)) {
-    await rm(appDataPath(dataRoot, "pid.json"), { force: true });
-    if (!options.quiet) {
-      console.log(`waifus backend is not running: stale pid ${pidState.pid} removed`);
-    }
-    return 0;
-  }
+async function stopCommand(
+  dataRoot: string,
+  options: {
+    quiet?: boolean;
+    isAlive?: (pid: number) => boolean;
+    kill?: (pid: number, signal: NodeJS.Signals) => void;
+    waitForExit?: (pid: number, timeoutMs: number) => Promise<boolean>;
+  } = {}
+): Promise<number> {
   const logFile = appDataPath(dataRoot, "logs", "backend.log");
-  const logStartOffset = await fileSize(logFile);
-  const tailController = new AbortController();
-  const tailDone = options.quiet
-    ? Promise.resolve()
-    : tailShutdownLog(logFile, logStartOffset, tailController.signal);
-
-  if (!options.quiet) {
-    console.log(`sending SIGTERM to pid ${pidState.pid}`);
-  }
-  process.kill(pidState.pid, "SIGTERM");
-  let stopped = await waitForExit(pidState.pid, 20_000);
-  if (!stopped) {
-    if (!options.quiet) {
-      console.log(`pid ${pidState.pid} did not exit within 20s of SIGTERM; escalating to SIGKILL`);
-    }
-    try {
-      process.kill(pidState.pid, "SIGKILL");
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ESRCH") {
-        tailController.abort();
-        await tailDone;
-        throw error;
+  let tailController: AbortController | undefined;
+  let tailDone: Promise<void> | undefined;
+  let result: StopDaemonResult;
+  try {
+    result = await stopDaemonProcess({
+      pidFile: appDataPath(dataRoot, "pid.json"),
+      schema: RuntimeStateReadSchema,
+      isAlive: options.isAlive,
+      kill: options.kill,
+      waitForExit: options.waitForExit,
+      beforeTerminate: async (pid) => {
+        if (!options.quiet) {
+          const logStartOffset = await fileSize(logFile);
+          tailController = new AbortController();
+          tailDone = tailShutdownLog(logFile, logStartOffset, tailController.signal);
+          console.log(`sending SIGTERM to pid ${pid}`);
+        }
+      },
+      beforeEscalate: (pid) => {
+        if (!options.quiet) {
+          console.log(`pid ${pid} did not exit within 20s of SIGTERM; escalating to SIGKILL`);
+        }
       }
-    }
-    stopped = await waitForExit(pidState.pid, 3_000);
+    });
+  } finally {
+    tailController?.abort();
+    await tailDone;
   }
-  tailController.abort();
-  await tailDone;
-  if (!stopped) {
-    console.error(`pid ${pidState.pid} is still alive after SIGKILL`);
-    return 1;
-  }
-  await rm(appDataPath(dataRoot, "pid.json"), { force: true });
-  if (!options.quiet) {
-    console.log(`stopped waifus backend pid ${pidState.pid}`);
-  }
-  return 0;
+  if (!options.quiet) reportHostStop(result);
+  return result.state === "still_running" ? 1 : 0;
 }
 
-async function statusCommand(dataRoot: string): Promise<number> {
-  const runtime = await readRuntimeFile(appDataPath(dataRoot, "runtime.json"), RuntimeStateReadSchema);
-  const pidState = await readRuntimeFile(appDataPath(dataRoot, "pid.json"), RuntimeStateReadSchema);
-  const running = pidState ? isProcessAlive(pidState.pid) : false;
+function reportHostStop(result: StopDaemonResult): void {
+  if (result.state === "absent") console.log("waifus backend is not running: no pid file found");
+  if (result.state === "stale_removed") {
+    console.log(`waifus backend is not running: stale pid ${result.pid} removed`);
+  }
+  if (result.state === "stopped") console.log(`stopped waifus backend pid ${result.pid}`);
+  if (result.state === "still_running") {
+    console.error(`pid ${result.pid} is still alive after SIGKILL`);
+  }
+}
+
+async function statusCommand(
+  dataRoot: string,
+  isAlive: (pid: number) => boolean = processIsAlive
+): Promise<number> {
+  const [runtime, pidState, remote] = await Promise.all([
+    readProcessState(appDataPath(dataRoot, "runtime.json"), RuntimeStateReadSchema),
+    readProcessState(appDataPath(dataRoot, "pid.json"), RuntimeStateReadSchema),
+    readRemoteDaemonStatus(dataRoot, isAlive)
+  ]);
+  const hostRunning = pidState ? isAlive(pidState.pid) : false;
   console.log(
     JSON.stringify(
       {
-        running,
-        pid: pidState?.pid,
-        url: runtime ? `http://127.0.0.1:${runtime.port}` : undefined,
         dataRoot,
-        runtime
+        host: {
+          running: hostRunning,
+          pid: pidState?.pid,
+          url: runtime ? `http://127.0.0.1:${runtime.port}` : undefined,
+          runtime
+        },
+        remote
       },
       null,
       2
     )
   );
-  return running ? 0 : 1;
+  return hostRunning || remote.running ? 0 : 1;
 }
 
-async function doctorCommand(dataRoot: string): Promise<number> {
+async function doctorCommand(dataRoot: string, options: CliRuntimeOptions): Promise<number> {
   await ensureDataLayout(dataRoot);
 
   // doctor is read-only: it never calls runMigrations. An unmigrated (schemaVersion 1) data root
@@ -360,10 +392,11 @@ async function doctorCommand(dataRoot: string): Promise<number> {
   }
 
   const nodeMajor = Number.parseInt(process.versions.node.split(".")[0] ?? "0", 10);
-  const [bundledOcr, unstamped, unresolvedModels] = await Promise.all([
+  const [bundledOcr, unstamped, unresolvedModels, remoteAccess] = await Promise.all([
     diagnoseBundledOcr(),
     findUnstampedFiles(dataRoot),
-    findUnresolvedModels(dataRoot)
+    findUnresolvedModels(dataRoot),
+    remoteManagementDoctorSummary(dataRoot, options)
   ]);
   const result = {
     node: {
@@ -393,12 +426,104 @@ async function doctorCommand(dataRoot: string): Promise<number> {
         "MESSAGE_CONTENT intent must be enabled for complete Discord channel context.",
         "GUILD_MEMBERS intent is optional unless full member refreshes are required."
       ]
-    }
+    },
+    remoteAccess
   };
   console.log(JSON.stringify(result, null, 2));
   // models.unresolved is informational only (§7.3 doctor-warning intent) — it never flips the
   // exit code.
   return result.node.ok ? 0 : 1;
+}
+
+function remoteTargetSupport(
+  platform: NodeJS.Platform,
+  arch: NodeJS.Architecture
+): Readonly<{ supported: boolean; note: string | null }> {
+  if (platform === "darwin" && arch === "x64") {
+    return Object.freeze({
+      supported: false,
+      note: "Intel macOS remote mode is a later follow-up."
+    });
+  }
+  const supported = (platform === "darwin" && arch === "arm64")
+    || (platform === "win32" && (arch === "x64" || arch === "arm64"))
+    || (platform === "linux" && (arch === "x64" || arch === "arm64" || arch === "arm"));
+  return Object.freeze({
+    supported,
+    note: supported ? null : `Remote mode is not supported on ${platform}/${arch}.`
+  });
+}
+
+async function remoteManagementDoctorSummary(
+  dataRoot: string,
+  options: CliRuntimeOptions
+): Promise<Record<string, unknown>> {
+  const platform = options.platform ?? process.platform;
+  const arch = options.arch ?? process.arch;
+  const target = remoteTargetSupport(platform, arch);
+  const isAlive = options.processAlive ?? processIsAlive;
+  const [hostRuntime, hostPid, remote] = await Promise.all([
+    readProcessState(appDataPath(dataRoot, "runtime.json"), RuntimeStateReadSchema),
+    readProcessState(appDataPath(dataRoot, "pid.json"), RuntimeStateReadSchema),
+    readRemoteDaemonStatus(dataRoot, isAlive)
+  ]);
+  const hostRunning = hostPid ? isAlive(hostPid.pid) : false;
+  const remoteRuntime = remote.runtime;
+  const runtimeVerified = remote.running
+    && remoteRuntime?.helperState === "ready"
+    && remoteRuntime.helperVersion !== null
+    && remoteRuntime.helperReleaseSequence !== null;
+  const helperState = !target.supported
+    ? "unsupported"
+    : runtimeVerified
+      ? "runtime_verified"
+      : "missing";
+  return Object.freeze({
+    target: Object.freeze({ platform, arch, ...target }),
+    helperPackage: Object.freeze({
+      state: helperState,
+      verified: runtimeVerified,
+      version: runtimeVerified ? remoteRuntime.helperVersion : null,
+      releaseSequence: runtimeVerified ? remoteRuntime.helperReleaseSequence : null,
+      protocol: runtimeVerified ? remoteRuntime.protocol : null,
+      capabilities: runtimeVerified ? [...remoteRuntime.capabilities] : [],
+      lastErrorCode: runtimeVerified || !target.supported
+        ? null
+        : remoteRuntime?.lastErrorCode
+          ?? hostRuntime?.remoteAccess?.lastErrorCode
+          ?? "helper_missing"
+    }),
+    host: Object.freeze({
+      running: hostRunning,
+      pid: hostPid?.pid,
+      runtime: hostRuntime?.remoteAccess ?? null
+    }),
+    remote: Object.freeze({
+      running: remote.running,
+      pid: remote.pid,
+      runtime: remoteRuntime
+        ? Object.freeze({
+            helperVersion: remoteRuntime.helperVersion,
+            helperReleaseSequence: remoteRuntime.helperReleaseSequence,
+            protocol: remoteRuntime.protocol,
+            capabilities: [...remoteRuntime.capabilities],
+            helperState: remoteRuntime.helperState,
+            activationState: remoteRuntime.activationState,
+            controlState: remoteRuntime.controlState,
+            directState: remoteRuntime.directState,
+            rememberedHostCount: remoteRuntime.rememberedHostCount,
+            selectionState: remoteRuntime.selectionState,
+            lastDirectAt: remoteRuntime.lastDirectAt,
+            lastErrorCode: remoteRuntime.lastErrorCode
+          })
+        : null
+    }),
+    network: Object.freeze({
+      stun: "unknown",
+      udp: "unknown",
+      portMapping: "unknown"
+    })
+  });
 }
 
 // True only when every issue in the Zod failure is the schemaVersion literal mismatch — i.e. the
@@ -788,41 +913,6 @@ const RuntimeStateReadSchema = RuntimeStateSchema.extend({
   schemaVersion: z.number().int().nonnegative()
 });
 
-async function readRuntimeFile<T>(
-  filePath: string,
-  schema: z.ZodType<T>
-): Promise<T | undefined> {
-  try {
-    const raw = await readFile(filePath, "utf8");
-    return schema.parse(JSON.parse(raw));
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return undefined;
-    }
-    throw error;
-  }
-}
-
-function isProcessAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
-  }
-}
-
-async function waitForExit(pid: number, timeoutMs: number): Promise<boolean> {
-  const started = Date.now();
-  while (Date.now() - started < timeoutMs) {
-    if (!isProcessAlive(pid)) {
-      return true;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  return !isProcessAlive(pid);
-}
-
 async function fileSize(filePath: string): Promise<number> {
   try {
     const info = await stat(filePath);
@@ -887,11 +977,11 @@ async function tailShutdownLog(logFile: string, fromOffset: number, signal: Abor
 async function waitForBackendStart(dataRoot: string, pid: number, timeoutMs: number) {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
-    const runtime = await readRuntimeFile(
+    const runtime = await readProcessState(
       appDataPath(dataRoot, "runtime.json"),
       RuntimeStateReadSchema
     );
-    if (runtime?.pid === pid && isProcessAlive(pid)) {
+    if (runtime?.pid === pid && processIsAlive(pid)) {
       return runtime;
     }
     await new Promise((resolve) => setTimeout(resolve, 100));
