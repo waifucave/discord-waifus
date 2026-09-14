@@ -4,54 +4,81 @@ import type { ViewId } from "../nav";
 import { FootRow, HeadRow, TabCells } from "./scaffold";
 
 type StreamEntry = { receivedAt: string; data: Record<string, unknown> };
+export type ActivityFeedState = {
+  logs: StreamEntry[];
+  queries: StreamEntry[];
+  replies: StreamEntry[];
+};
+
+export type ActivityFeedAction =
+  | { type: "reset" }
+  | { type: "event"; event: string; data: string; receivedAt: string };
+
+const EMPTY_ACTIVITY: ActivityFeedState = { logs: [], queries: [], replies: [] };
+
+function decodeActivityValue(value: string): Record<string, unknown> {
+  try {
+    return JSON.parse(value) as Record<string, unknown>;
+  } catch {
+    return { raw: value };
+  }
+}
+
+function restoreActivityEntries(entries: unknown, receivedAt: string): StreamEntry[] {
+  if (!Array.isArray(entries)) return [];
+  return entries.slice(-200).reverse().map((entry) => ({
+    receivedAt,
+    data: entry && typeof entry === "object"
+      ? entry as Record<string, unknown>
+      : { raw: entry }
+  }));
+}
+
+export function reduceActivityFeed(
+  state: ActivityFeedState,
+  action: ActivityFeedAction
+): ActivityFeedState {
+  if (action.type === "reset") return EMPTY_ACTIVITY;
+  const data = decodeActivityValue(action.data);
+  if (action.event === "snapshot") {
+    return {
+      logs: restoreActivityEntries(data.logs, action.receivedAt),
+      queries: restoreActivityEntries(data.queries, action.receivedAt),
+      replies: restoreActivityEntries(data.replies, action.receivedAt)
+    };
+  }
+  const key = action.event === "log"
+    ? "logs"
+    : action.event === "query"
+      ? "queries"
+      : action.event === "reply"
+        ? "replies"
+        : undefined;
+  if (!key) return state;
+  return {
+    ...state,
+    [key]: [{ receivedAt: action.receivedAt, data }, ...state[key]].slice(0, 200)
+  };
+}
 
 function useEventFeed() {
-  const [logs, setLogs] = useState<StreamEntry[]>([]);
-  const [queries, setQueries] = useState<StreamEntry[]>([]);
-  const [replies, setReplies] = useState<StreamEntry[]>([]);
+  const [state, setState] = useState<ActivityFeedState>(EMPTY_ACTIVITY);
   useEffect(() => {
-    const decode = (value: string): Record<string, unknown> => {
-      let data: Record<string, unknown> = {};
-      try {
-        data = JSON.parse(value) as Record<string, unknown>;
-      } catch {
-        data = { raw: value };
-      }
-      return data;
-    };
-    const push = (setter: typeof setLogs, value: string) => {
-      const data = decode(value);
-      setter((prev) => [{ receivedAt: new Date().toLocaleTimeString(), data }, ...prev].slice(0, 200));
-    };
-    const restore = (
-      setter: typeof setLogs,
-      entries: unknown
-    ): void => {
-      if (!Array.isArray(entries)) return;
-      setter(entries.slice(-200).reverse().map((entry) => ({
-        receivedAt: new Date().toLocaleTimeString(),
-        data: entry && typeof entry === "object"
-          ? entry as Record<string, unknown>
-          : { raw: entry }
-      })));
-    };
     const feed = openEventStream({
+      onReset: () => setState((current) => reduceActivityFeed(current, { type: "reset" })),
       onEvent: (event) => {
-        if (event.event === "log") push(setLogs, event.data);
-        else if (event.event === "query") push(setQueries, event.data);
-        else if (event.event === "reply") push(setReplies, event.data);
-        else if (event.event === "snapshot") {
-          const snapshot = decode(event.data);
-          restore(setLogs, snapshot.logs);
-          restore(setQueries, snapshot.queries);
-          restore(setReplies, snapshot.replies);
-        }
+        setState((current) => reduceActivityFeed(current, {
+          type: "event",
+          event: event.event,
+          data: event.data,
+          receivedAt: new Date().toLocaleTimeString()
+        }));
       }
     });
     return () => feed.close();
   }, []);
 
-  return { logs, queries, replies };
+  return state;
 }
 
 function pick(data: Record<string, unknown>, keys: string[]): string {

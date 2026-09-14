@@ -1,11 +1,47 @@
 import { useEffect, useState } from "react";
 import { api, openEventStream } from "../api/client";
 import type { ResumableEventFeed } from "../api/resumableEventFeed";
-import type { StatusResponse } from "../api/types";
+import type { RuntimeState, StatusResponse } from "../api/types";
 
 type Listener = (status: StatusResponse | undefined) => void;
 
-class RuntimeStore {
+export type RuntimeFeedAction =
+  | { type: "reset" }
+  | { type: "event"; event: string; data: string };
+
+export function reduceRuntimeFeed(
+  current: StatusResponse | undefined,
+  action: RuntimeFeedAction
+): StatusResponse | undefined {
+  if (action.type === "reset") return undefined;
+  if (action.event !== "runtime" && action.event !== "snapshot") return current;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(action.data);
+  } catch {
+    return current;
+  }
+  const runtime = action.event === "snapshot"
+    ? (parsed as { runtime?: unknown } | undefined)?.runtime
+    : parsed;
+  const value = runtime as Partial<RuntimeState> | undefined;
+  if (!value || typeof value !== "object") return current;
+  return {
+    running: true,
+    paused: Boolean(value.paused),
+    httpUrl: `http://127.0.0.1:${value.port ?? 3888}`,
+    dataRoot: value.dataRoot ?? "",
+    discord: value.discord ?? {
+      connected: false,
+      orchestratorConnected: false,
+      waifuBotCount: 0,
+      warnings: []
+    },
+    queues: value.queues ?? { active: 0, configuredGuilds: 0 }
+  };
+}
+
+export class RuntimeStore {
   private current: StatusResponse | undefined;
   private listeners = new Set<Listener>();
   private feed: ResumableEventFeed | undefined;
@@ -18,18 +54,12 @@ class RuntimeStore {
     void this.refresh();
     try {
       this.feed = openEventStream({
+        onReset: () => {
+          this.applyFeed({ type: "reset" });
+          void this.refresh();
+        },
         onEvent: (event) => {
-          if (event.event !== "runtime" && event.event !== "snapshot") return;
-          let parsed: unknown;
-          try {
-            parsed = JSON.parse(event.data);
-          } catch {
-            return;
-          }
-          const runtime = event.event === "snapshot"
-            ? (parsed as { runtime?: unknown } | undefined)?.runtime
-            : parsed;
-          this.applyRuntime(runtime);
+          this.applyFeed({ type: "event", event: event.event, data: event.data });
         },
         onError: () => {
           // Polling below remains the quiet fallback while the feed reconnects.
@@ -41,28 +71,11 @@ class RuntimeStore {
     this.pollTimer = window.setInterval(() => void this.refresh(), 5_000);
   }
 
-  private applyRuntime(value: unknown): void {
-    try {
-      const parsed = value as Record<string, any> | undefined;
-      if (parsed && typeof parsed === "object") {
-        this.current = {
-          running: true,
-          paused: Boolean(parsed.paused),
-          httpUrl: `http://127.0.0.1:${parsed.port ?? 3888}`,
-          dataRoot: parsed.dataRoot ?? "",
-          discord: parsed.discord ?? {
-            connected: false,
-            orchestratorConnected: false,
-            waifuBotCount: 0,
-            warnings: []
-          },
-          queues: parsed.queues ?? { active: 0, configuredGuilds: 0 }
-        };
-        this.emit();
-      }
-    } catch {
-      // Ignore malformed stream payloads; polling remains authoritative.
-    }
+  private applyFeed(action: RuntimeFeedAction): void {
+    const next = reduceRuntimeFeed(this.current, action);
+    if (next === this.current) return;
+    this.current = next;
+    this.emit();
   }
 
   stop(): void {

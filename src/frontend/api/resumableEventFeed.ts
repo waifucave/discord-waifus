@@ -191,6 +191,7 @@ export class ResumableEventFeed {
     try {
       while (!signal.aborted) {
         const chunk = await reader.read();
+        if (signal.aborted) return;
         if (chunk.done) {
           for (const event of parser.push(decoder.decode())) await this.accept(event);
           for (const event of parser.finish()) await this.accept(event);
