@@ -6,6 +6,7 @@ import type { ViewId } from "../nav";
 import { FootRow, HeadRow, TabCells } from "./scaffold";
 import { Notice } from "../components/Notice";
 import { DiscordBotGuide } from "../components/DiscordBotGuide";
+import { ContextExternalLink } from "../components/ContextExternalLink";
 
 export function SettingsScreen({
   tab,
@@ -66,9 +67,9 @@ function ProvidersTab() {
             {provider.credentials.configured && <span className="chip mint">active</span>}
             <span style={{ marginLeft: "auto" }}>
               {provider.docsUrl && (
-                <a className="t-micro" href={provider.docsUrl} target="_blank" rel="noreferrer" style={{ marginRight: 14, color: "var(--mute)" }}>
+                <ContextExternalLink className="t-micro" href={provider.docsUrl} style={{ marginRight: 14, color: "var(--mute)" }}>
                   Get a key ↗
-                </a>
+                </ContextExternalLink>
               )}
               <button
                 className="btn sm"

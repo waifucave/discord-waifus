@@ -1,4 +1,4 @@
-import type { FastifyInstance, FastifyRequest, HTTPMethods } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import { ApiError, badRequest } from "./errors.js";
 import {
   bindInternalDispatchAbort,
@@ -12,35 +12,19 @@ import {
   type RequestPrincipal
 } from "./requestPrincipal.js";
 import type { BrowserSecurity } from "./browserSecurity.js";
-
-export type RemotePolicy = "full_admin" | "local_only" | "never_proxy";
-export type RetryClass =
-  | "safe"
-  | "transactional"
-  | "reconciled"
-  | "non_replayable"
-  | "invitation_recovery";
-export type RouteFieldPolicy = "app_config";
-
-export type GatewaySemanticRoutePolicy = {
-  readonly method: "GET" | "POST";
-  readonly path: string;
-  readonly pathPattern?: RegExp;
-  readonly retryClass: RetryClass;
-  readonly auditAction?: string;
-};
-
-export type RoutePolicyDefinition = {
-  readonly method: HTTPMethods | "*";
-  readonly path: string;
-  readonly remotePolicy: RemotePolicy;
-  readonly retryClass?: RetryClass;
-  readonly auditAction?: string;
-  readonly fieldPolicy?: RouteFieldPolicy;
-  readonly persistResponse?: boolean;
-  readonly gatewaySemanticRoutes?: readonly GatewaySemanticRoutePolicy[];
-  readonly synthetic?: "not_found";
-};
+import {
+  expectedRoutePolicyInventory,
+  type GatewaySemanticRoutePolicy,
+  type RetryClass,
+  type RoutePolicyDefinition
+} from "./routePolicyDefinitions.js";
+export type {
+  GatewaySemanticRoutePolicy,
+  RemotePolicy,
+  RetryClass,
+  RouteFieldPolicy,
+  RoutePolicyDefinition
+} from "./routePolicyDefinitions.js";
 
 type RoutePolicyInstallOptions = {
   manifest: readonly RoutePolicyDefinition[];
@@ -53,32 +37,10 @@ type RoutePolicyRegistration = {
   registerNotFound: () => void;
 };
 
-const GATEWAY_METHODS = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT", "TRACE"];
 const registrations = new WeakMap<FastifyInstance, Set<string>>();
 
 function inventoryKey(method: string, path: string): string {
   return `${method.toUpperCase()} ${path}`;
-}
-
-function expectedInventory(manifest: readonly RoutePolicyDefinition[]): string[] {
-  const result: string[] = [];
-  for (const definition of manifest) {
-    if (definition.synthetic === "not_found") {
-      result.push(inventoryKey("*", definition.path));
-    } else if (definition.method === "*") {
-      result.push(...GATEWAY_METHODS.map((method) => inventoryKey(method, definition.path)));
-    } else {
-      result.push(inventoryKey(definition.method, definition.path));
-      if (definition.method === "GET") result.push(inventoryKey("HEAD", definition.path));
-    }
-  }
-  return result.sort();
-}
-
-export function expectedRoutePolicyInventory(
-  manifest: readonly RoutePolicyDefinition[]
-): string[] {
-  return expectedInventory(manifest);
 }
 
 function findDefinition(
@@ -249,7 +211,7 @@ export function installRoutePolicy(
       seen.add(inventoryKey("*", definition.path));
     },
     assertComplete: () => {
-      const expected = expectedInventory(options.manifest);
+      const expected = expectedRoutePolicyInventory(options.manifest);
       const actual = [...seen].sort();
       if (JSON.stringify(actual) !== JSON.stringify(expected)) {
         const missing = expected.filter((entry) => !seen.has(entry));

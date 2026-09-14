@@ -4,6 +4,7 @@ import type {
   ApiErrorBody,
   AgentConfig,
   ChannelBody,
+  ClientContext,
   CreateMemoryBody,
   CreateWaifuBody,
   DiagnosticBundle,
@@ -30,10 +31,16 @@ import type {
   WaifuConfig,
   WaifusResponse
 } from "./types";
+import { parseClientContext } from "../state/clientContext";
 import {
   ResumableEventFeed,
   type ResumableEventFeedOptions
 } from "./resumableEventFeed";
+import {
+  LogicalMutationRegistry,
+  LogicalMutationTransportError,
+  type LogicalMutationResponse
+} from "./logicalMutation";
 
 export class ApiError extends Error {
   status: number;
@@ -57,17 +64,20 @@ export class ConflictError extends ApiError {
 // the same origin works. Both cases use "" as base.
 const BASE = "";
 const CSRF_HEADER = "x-waifus-csrf";
+const IDEMPOTENCY_HEADER = "idempotency-key";
 const CLIENT_CONTEXT_PATH = "/api/client-context";
 const CANONICAL_BASE64URL_32 = /^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/;
 
 let browserCsrfToken: string | undefined;
-let browserSessionPromise: Promise<string> | undefined;
+let browserClientContext: ClientContext | undefined;
+let browserSessionPromise: Promise<ClientContext> | undefined;
+const logicalMutations = new LogicalMutationRegistry();
 
 function isBrowserRuntime(): boolean {
   return typeof window !== "undefined" && typeof document !== "undefined";
 }
 
-async function establishBrowserSession(): Promise<string> {
+async function establishBrowserSession(): Promise<ClientContext> {
   const response = await fetch(`${BASE}${CLIENT_CONTEXT_PATH}`, {
     method: "GET",
     credentials: "same-origin",
@@ -79,6 +89,24 @@ async function establishBrowserSession(): Promise<string> {
       message: `Could not establish the local browser session (HTTP ${response.status}).`
     });
   }
+  let contextValue: unknown;
+  try {
+    contextValue = await response.json();
+  } catch {
+    throw new ApiError(0, {
+      error: "BrowserSessionError",
+      message: "The local browser session returned invalid client context."
+    });
+  }
+  let context: ClientContext;
+  try {
+    context = parseClientContext(contextValue);
+  } catch {
+    throw new ApiError(0, {
+      error: "BrowserSessionError",
+      message: "The local browser session returned invalid client context."
+    });
+  }
   const token = response.headers.get(CSRF_HEADER) ?? "";
   if (token.length !== 43 || !CANONICAL_BASE64URL_32.test(token)) {
     throw new ApiError(0, {
@@ -87,12 +115,13 @@ async function establishBrowserSession(): Promise<string> {
     });
   }
   browserCsrfToken = token;
-  return token;
+  browserClientContext = context;
+  return context;
 }
 
-async function ensureBrowserSession(): Promise<string | undefined> {
+async function ensureBrowserSession(): Promise<ClientContext | undefined> {
   if (!isBrowserRuntime()) return undefined;
-  if (browserCsrfToken) return browserCsrfToken;
+  if (browserCsrfToken && browserClientContext) return browserClientContext;
   if (!browserSessionPromise) {
     const pending = establishBrowserSession();
     pending.catch(() => {
@@ -107,10 +136,21 @@ export async function browserSecurityHeaders(
   method: string,
   initial: Record<string, string> = {}
 ): Promise<Record<string, string>> {
-  const token = await ensureBrowserSession();
-  return token && method !== "GET" && method !== "HEAD"
-    ? { ...initial, [CSRF_HEADER]: token }
+  const context = await ensureBrowserSession();
+  return context && browserCsrfToken && method !== "GET" && method !== "HEAD"
+    ? { ...initial, [CSRF_HEADER]: browserCsrfToken }
     : initial;
+}
+
+export async function loadClientContext(): Promise<ClientContext> {
+  const context = await ensureBrowserSession();
+  if (!context) {
+    throw new ApiError(0, {
+      error: "BrowserSessionError",
+      message: "Client context is available only in a browser session."
+    });
+  }
+  return context;
 }
 
 export function recoverBrowserSession(status: number, body: unknown): boolean {
@@ -118,16 +158,34 @@ export function recoverBrowserSession(status: number, body: unknown): boolean {
   const code = (body as { error?: unknown }).error;
   if (code !== "BrowserSessionRequired" && code !== "CsrfInvalid") return false;
   browserCsrfToken = undefined;
+  browserClientContext = undefined;
   browserSessionPromise = undefined;
   return true;
 }
 
-async function request<T>(
+function operationStatusUrl(status: number, parsed: unknown): string | undefined {
+  if (status !== 202) return undefined;
+  if (
+    !parsed
+    || typeof parsed !== "object"
+    || typeof (parsed as { statusUrl?: unknown }).statusUrl !== "string"
+  ) {
+    throw new ApiError(0, {
+      error: "InvalidResponse",
+      message: "An accepted mutation did not return an operation status URL."
+    });
+  }
+  return (parsed as { statusUrl: string }).statusUrl;
+}
+
+async function sendRequest<T>(
   method: string,
   path: string,
-  init?: { body?: unknown; signal?: AbortSignal; headers?: Record<string, string> }
-): Promise<T> {
+  init: { body?: unknown; signal?: AbortSignal; headers?: Record<string, string> } | undefined,
+  idempotencyKey?: string
+): Promise<LogicalMutationResponse<T>> {
   let headers: Record<string, string> = { ...init?.headers };
+  if (idempotencyKey) headers[IDEMPOTENCY_HEADER] = idempotencyKey;
   let body: BodyInit | undefined;
   if (init?.body !== undefined) {
     headers["content-type"] = "application/json";
@@ -148,10 +206,14 @@ async function request<T>(
       if ((err as DOMException)?.name === "AbortError") {
         throw err;
       }
-      throw new ApiError(0, { error: "NetworkError", message: (err as Error).message });
+      const message = err instanceof Error ? err.message : "The network request failed.";
+      if (idempotencyKey) {
+        throw new LogicalMutationTransportError(message, { cause: err });
+      }
+      throw new ApiError(0, { error: "NetworkError", message });
     }
     if (res.status === 204) {
-      return undefined as T;
+      return { value: undefined as T };
     }
     const text = await res.text();
     let parsed: unknown;
@@ -168,9 +230,31 @@ async function request<T>(
       }
       throw new ApiError(res.status, errorBody);
     }
-    return parsed as T;
+    const statusUrl = operationStatusUrl(res.status, parsed);
+    return {
+      value: parsed as T,
+      ...(statusUrl ? { statusUrl } : {})
+    };
   }
   throw new ApiError(0, { error: "BrowserSessionError", message: "Browser session recovery failed." });
+}
+
+async function request<T>(
+  method: string,
+  path: string,
+  init?: { body?: unknown; signal?: AbortSignal; headers?: Record<string, string> }
+): Promise<T> {
+  if (method === "GET" || method === "HEAD") {
+    return (await sendRequest<T>(method, path, init)).value;
+  }
+  const action = await logicalMutations.begin({
+    method,
+    target: path,
+    body: init?.body
+  });
+  return action.execute(({ idempotencyKey }) =>
+    sendRequest<T>(method, path, init, idempotencyKey)
+  );
 }
 
 export const api = {

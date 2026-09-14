@@ -4,7 +4,7 @@ import {
   ChevronDown,
   ChevronRight,
   Copy,
-  ExternalLink,
+  ExternalLink as ExternalLinkIcon,
   Info,
   ShieldAlert
 } from "lucide-react";
@@ -21,6 +21,7 @@ import {
 } from "../utils/discord";
 import { Pill } from "./Pill";
 import { Notice } from "./Notice";
+import { ContextExternalLink } from "./ContextExternalLink";
 
 /**
  * Step-by-step Discord developer-portal walkthrough.
@@ -90,9 +91,9 @@ export function DiscordBotGuide({
             body={
               <>
                 Open the{" "}
-                <a href={DISCORD_PORTAL_URL} target="_blank" rel="noreferrer">
-                  Discord Developer Portal <ExternalLink className="icon" style={iconSm} />
-                </a>{" "}
+                <ContextExternalLink href={DISCORD_PORTAL_URL}>
+                  Discord Developer Portal <ExternalLinkIcon className="icon" style={iconSm} />
+                </ContextExternalLink>{" "}
                 and click <strong>New Application</strong>. Use the name you want to appear in
                 Discord for {botLabel} — e.g.{" "}
                 <em>{kind === "orchestrator" ? "Orchestrator" : botDisplayName || "Aria"}</em>.
@@ -184,9 +185,9 @@ export function DiscordBotGuide({
                   ))}
                 </ul>
                 Leave <code>PRESENCE INTENT</code> off — we don't use it.{" "}
-                <a href={DISCORD_INTENTS_DOC} target="_blank" rel="noreferrer">
-                  Discord intent docs <ExternalLink className="icon" style={iconSm} />
-                </a>
+                <ContextExternalLink href={DISCORD_INTENTS_DOC}>
+                  Discord intent docs <ExternalLinkIcon className="icon" style={iconSm} />
+                </ContextExternalLink>
               </>
             }
           />
@@ -247,13 +248,13 @@ export function DiscordBotGuide({
                 <em> Manage Server</em> on the target guild.
                 <InviteBlock url={inviteUrl} applicationId={applicationId} guildId={guildId} kind={kind} />
                 <div style={{ marginTop: 6 }}>
-                  <a href={DISCORD_OAUTH_DOC} target="_blank" rel="noreferrer">
-                    OAuth2 bot-authorization docs <ExternalLink className="icon" style={iconSm} />
-                  </a>{" "}
+                  <ContextExternalLink href={DISCORD_OAUTH_DOC}>
+                    OAuth2 bot-authorization docs <ExternalLinkIcon className="icon" style={iconSm} />
+                  </ContextExternalLink>{" "}
                   ·{" "}
-                  <a href={DISCORD_PERMISSIONS_DOC} target="_blank" rel="noreferrer">
-                    Permission reference <ExternalLink className="icon" style={iconSm} />
-                  </a>
+                  <ContextExternalLink href={DISCORD_PERMISSIONS_DOC}>
+                    Permission reference <ExternalLinkIcon className="icon" style={iconSm} />
+                  </ContextExternalLink>
                 </div>
               </>
             }
@@ -337,9 +338,9 @@ function InviteBlock({
         {copied ? <Check className="icon" /> : <Copy className="icon" />}
         {copied ? "Copied" : "Copy URL"}
       </button>
-      <a className="btn primary" href={url} target="_blank" rel="noreferrer">
-        Open invite <ExternalLink className="icon" />
-      </a>
+      <ContextExternalLink className="btn primary" href={url}>
+        Open invite <ExternalLinkIcon className="icon" />
+      </ContextExternalLink>
       {guildId && (
         <Pill tone="info">
           targets guild <code>{guildId}</code>

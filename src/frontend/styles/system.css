@@ -48,6 +48,30 @@ body {
   background: var(--ink);
   padding: var(--line);
 }
+.client-context-gate {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 10px;
+  padding: 32px;
+}
+.remote-connection-banner {
+  flex: none;
+  display: grid;
+  grid-template-columns: minmax(180px, 0.7fr) minmax(280px, 1.3fr) minmax(340px, 2fr);
+  align-items: center;
+  gap: 18px;
+  min-height: 48px;
+  padding: 10px 20px;
+  border-left: 8px solid var(--mint);
+}
+.remote-connection-banner[data-tone="warn"] { border-left-color: var(--butter); }
+.remote-connection-banner[data-tone="err"] { border-left-color: var(--danger); }
+.remote-connection-state { font-size: 15px; }
+.remote-connection-banner code { user-select: all; overflow-wrap: anywhere; }
+.external-link-copy { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 6px; cursor: text; }
+.external-link-copy code { user-select: all; overflow-wrap: anywhere; text-transform: none; }
 .cell { background: var(--paper); }
 
 button.cell, button.clickable, .clickable {
@@ -208,6 +232,8 @@ select.cell:focus, input.cell:focus, textarea.cell:focus { background-color: var
 .btn:disabled:hover { background: var(--paper); }
 .btn.primary:disabled { background: var(--paper); }
 .btn .icon { width: 14px; height: 14px; }
+.btn.external-link-copy { cursor: text; white-space: normal; }
+.btn.external-link-copy:hover { background: var(--mint); }
 .icon { width: 16px; height: 16px; }
 .icon-btn { border: none; background: transparent; cursor: pointer; padding: 4px; color: var(--ink); display: inline-flex; }
 .icon-btn:hover { background: var(--sky); }

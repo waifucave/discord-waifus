@@ -11,10 +11,21 @@ import { SettingsScreen } from "./screens/SettingsScreen";
 import { AssistantLauncher, AssistantPanel } from "./components/assistant/AssistantPanel";
 import { OnboardingWizard } from "./components/onboarding/OnboardingWizard";
 import { useApi } from "./api/useApi";
-import { api } from "./api/client";
+import { api, loadClientContext } from "./api/client";
 import type { ProvidersResponse } from "./api/types";
+import { RemoteConnectionBanner } from "./components/RemoteConnectionBanner";
+import { ClientContextProvider, useClientContext } from "./state/clientContext";
 
 export function App() {
+  return (
+    <ClientContextProvider loadContext={loadClientContext}>
+      <ReadyApp />
+    </ClientContextProvider>
+  );
+}
+
+function ReadyApp() {
+  const clientContext = useClientContext();
   const [route, navigate] = useRoute();
   const [assistantOpen, setAssistantOpen] = useState(false);
   const [onboardingDone, setOnboardingDone] = useState(() => localStorage.getItem("onboarding-dismissed") === "1");
@@ -31,6 +42,7 @@ export function App() {
 
   return (
     <div className="frame">
+      <RemoteConnectionBanner context={clientContext} />
       <Screen route={route} goto={goto} home={home} onAssistant={() => setAssistantOpen((v) => !v)} />
 
       {!needsOnboarding && (
