@@ -7,6 +7,7 @@ import { FootRow, HeadRow, TabCells } from "./scaffold";
 import { Notice } from "../components/Notice";
 import { DiscordBotGuide } from "../components/DiscordBotGuide";
 import { ContextExternalLink } from "../components/ContextExternalLink";
+import { RemoteAccessTab } from "../components/remoteAccess/RemoteAccessTab";
 
 export function SettingsScreen({
   tab,
@@ -20,9 +21,13 @@ export function SettingsScreen({
   const active = tab ?? "providers";
   return (
     <div className="screen">
-      <HeadRow onBack={() => onNavigate("home")} title="Settings" sub="providers · app" />
+      <HeadRow onBack={() => onNavigate("home")} title="Settings" sub="providers · app · remote access" />
       <TabCells view="settings" active={active} onTab={onTab} />
-      {active === "providers" ? <ProvidersTab /> : <AppTab />}
+      {active === "providers"
+        ? <ProvidersTab />
+        : active === "remote-access"
+          ? <RemoteAccessTab />
+          : <AppTab />}
       <FootRow />
     </div>
   );

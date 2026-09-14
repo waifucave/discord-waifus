@@ -55,6 +55,99 @@ export type RemoteAccessStatus = {
   lastErrorCode: string | null;
 };
 
+export type HelperTarget =
+  | { os: "darwin"; arch: "arm64" }
+  | { os: "win32"; arch: "x64" | "arm64" }
+  | { os: "linux"; arch: "x64" | "arm64" }
+  | { os: "linux"; arch: "arm"; goarm: 7 };
+
+export type ActivationStartResult = {
+  activationOperationId: string;
+  verificationUrl: string;
+  expiresAt: string;
+};
+
+export type ActivationStatus =
+  | { activationOperationId: string; expiresAt: string; state: "pending" }
+  | {
+      activationOperationId: string;
+      expiresAt: string;
+      state: "completed";
+      completedAt: string;
+    }
+  | { activationOperationId: string; expiresAt: string; state: "expired" }
+  | {
+      activationOperationId: string;
+      expiresAt: string;
+      state: "failed";
+      errorCode: string;
+    };
+
+export type OperationAccepted = {
+  operationId: string;
+  status: "accepted";
+  statusUrl: string;
+};
+
+export type PairInvitation = {
+  invitationId: string;
+  fullToken: string;
+  shortCode: string;
+  expiresAt: string;
+};
+
+export type PendingPairingRequest = {
+  version: 1;
+  requestId: string;
+  invitationId: string;
+  invitationGeneration: string;
+  entryFlow: "full_token" | "short_code";
+  claimedDisplayName: string;
+  claimedPlatform: HelperTarget;
+  claimedInstallationFingerprint: string;
+  remoteIdentityBundleHash: string;
+  expiresAt: string;
+  protocol: { major: number; minor: number };
+  transcriptHash: string;
+  channelBinding: string;
+  sasIndices: [number, number, number, number, number];
+  sasWords: [string, string, string, string, string];
+  sasFingerprint: string;
+};
+
+export type PendingPairingRequestList = {
+  version: 1;
+  requests: PendingPairingRequest[];
+};
+
+export type ApprovePairingInput = Pick<
+  PendingPairingRequest,
+  | "invitationGeneration"
+  | "remoteIdentityBundleHash"
+  | "transcriptHash"
+  | "channelBinding"
+  | "sasIndices"
+  | "sasFingerprint"
+>;
+
+export type TrustedDevice = {
+  version: 1;
+  deviceId: string;
+  displayName: string;
+  platform: HelperTarget;
+  installationFingerprint: string;
+  trustEpoch: string;
+  revision: string;
+  pairedAt: string;
+  lastSeenAt: string | null;
+  connectionState: "offline" | "direct" | "reconnecting" | "direct_unavailable";
+};
+
+export type TrustedDeviceList = {
+  version: 1;
+  devices: TrustedDevice[];
+};
+
 export type DiscordRuntime = {
   connected: boolean;
   orchestratorConnected: boolean;
@@ -505,7 +598,7 @@ export type RemoteAccessDiagnostics = {
     version: string | null;
     releaseSequence: string | null;
     forkCommit: string | null;
-    target: { os: string; arch: string } | null;
+    target: HelperTarget | null;
     protocol: { major: number; minor: number } | null;
     capabilities: string[];
     secretStorage:

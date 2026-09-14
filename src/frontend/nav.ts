@@ -34,7 +34,8 @@ export const SECTION_TABS: Partial<Record<ViewId, Array<{ id: string; label: str
   ],
   settings: [
     { id: "providers", label: "Providers" },
-    { id: "app", label: "App" }
+    { id: "app", label: "App" },
+    { id: "remote-access", label: "Remote Access" }
   ]
 };
 
