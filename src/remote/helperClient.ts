@@ -16,6 +16,7 @@ import {
   Base64Url32BytesSchema,
   CanonicalTargetSchema,
   ComponentHelloSchema,
+  DeviceIdSchema,
   HttpMethodSchema,
   RemoteBrowserContextV1Schema,
   Uint64DecimalSchema,
@@ -27,7 +28,21 @@ import {
   serializeCanonicalContractJson,
   type ContractJson
 } from "../shared/schemas/remoteProtocolContract.js";
-import { RemoteAccessErrorCodeSchema } from "../shared/schemas/remoteLifecycle.js";
+import {
+  ApprovePairingInputV1Schema,
+  PairInvitationV1Schema,
+  PendingPairingRequestListV1Schema,
+  RenameTrustedDeviceInputV1Schema,
+  RemoteAccessErrorCodeSchema,
+  TrustedDeviceListV1Schema,
+  TrustedDeviceSummaryV1Schema,
+  type ApprovePairingInputV1,
+  type PairInvitationV1,
+  type PendingPairingRequestListV1,
+  type RenameTrustedDeviceInputV1,
+  type TrustedDeviceListV1,
+  type TrustedDeviceSummaryV1
+} from "../shared/schemas/remoteLifecycle.js";
 import {
   WIPC_FRAME_TYPES,
   WIPC_HEADER_BYTES,
@@ -53,19 +68,23 @@ import {
   HelperActivationErrorCodeSchema,
   HelperActivationPollSchema,
   HelperActivationStartSchema,
+  HelperConfirmedAdminActorSchema,
   HelperIdentityStatusSchema,
+  HelperRequestActorSchema,
   parseHelperRuntimeStatus,
   type AuthenticatedHelperClient,
   type HelperActivationCancel,
   type HelperActivationPoll,
   type HelperActivationStart,
   type HelperIdentityStatus,
+  type HelperConfirmedAdminActor,
   type HelperLaunch,
   type HelperLaunchRequest,
   type HelperProcessExit,
   type HelperProcessFactory,
   type HelperRemoteRequest,
   type HelperRemoteResponse,
+  type HelperRequestActor,
   type HelperRuntimeStatus
 } from "./helperTypes.js";
 
@@ -83,11 +102,22 @@ const HelperCommandFailureSchema = z.object({
     "runtime_status",
     "runtime_reconnect",
     "runtime_stop",
-    "register_gateway_launch"
+    "register_gateway_launch",
+    "invitation_create",
+    "invitation_cancel",
+    "pairing_requests_list",
+    "pairing_request_approve",
+    "pairing_request_reject",
+    "trusted_devices_list",
+    "trusted_device_rename",
+    "trusted_device_revoke"
   ]),
   errorCode: z.union([HelperActivationErrorCodeSchema, RemoteAccessErrorCodeSchema]),
   ok: z.literal(false),
-  operationId: Base64Url32BytesSchema.optional()
+  operationId: Base64Url32BytesSchema.optional(),
+  invitationId: Base64Url16BytesSchema.optional(),
+  requestId: Base64Url16BytesSchema.optional(),
+  deviceId: DeviceIdSchema.optional()
 }).strict();
 const IdentityStatusWireSchema = z.object({
   activationState: z.enum(["activation_required", "active", "renewal_due"]),
@@ -144,6 +174,42 @@ const RuntimeStatusWireSchema = z.object({
 }).strict();
 const RegisterGatewayLaunchWireSchema = z.object({
   command: z.literal("register_gateway_launch"),
+  ok: z.literal(true)
+}).strict();
+const InvitationCreateWireSchema = PairInvitationV1Schema.extend({
+  command: z.literal("invitation_create"),
+  ok: z.literal(true)
+});
+const InvitationCancelWireSchema = z.object({
+  command: z.literal("invitation_cancel"),
+  invitationId: Base64Url16BytesSchema,
+  ok: z.literal(true)
+}).strict();
+const PairingRequestsListWireSchema = PendingPairingRequestListV1Schema.extend({
+  command: z.literal("pairing_requests_list"),
+  ok: z.literal(true)
+});
+const PairingRequestApproveWireSchema = z.object({
+  command: z.literal("pairing_request_approve"),
+  requestId: Base64Url16BytesSchema,
+  ok: z.literal(true)
+}).strict();
+const PairingRequestRejectWireSchema = z.object({
+  command: z.literal("pairing_request_reject"),
+  requestId: Base64Url16BytesSchema,
+  ok: z.literal(true)
+}).strict();
+const TrustedDevicesListWireSchema = TrustedDeviceListV1Schema.extend({
+  command: z.literal("trusted_devices_list"),
+  ok: z.literal(true)
+});
+const TrustedDeviceRenameWireSchema = TrustedDeviceSummaryV1Schema.extend({
+  command: z.literal("trusted_device_rename"),
+  ok: z.literal(true)
+});
+const TrustedDeviceRevokeWireSchema = z.object({
+  command: z.literal("trusted_device_revoke"),
+  deviceId: DeviceIdSchema,
   ok: z.literal(true)
 }).strict();
 const HeaderTupleWireSchema = z.tuple([
@@ -224,6 +290,17 @@ type ActiveStream = ActiveHostStream | ActiveRemoteStream;
 
 function canonicalBytes(value: unknown): Buffer {
   return Buffer.from(serializeCanonicalContractJson(value as ContractJson), "utf8");
+}
+
+function commandResultMatches(
+  result: Record<string, unknown>,
+  command: Record<string, unknown>
+): boolean {
+  if (result.command !== command.command) return false;
+  for (const field of ["operationId", "invitationId", "requestId", "deviceId"] as const) {
+    if (command[field] !== undefined && result[field] !== command[field]) return false;
+  }
+  return true;
 }
 
 function parseCanonical<T>(
@@ -1182,8 +1259,152 @@ class ProcessHelperClient implements AuthenticatedHelperClient {
     }, RegisterGatewayLaunchWireSchema, "register gateway launch RESULT");
   }
 
-  async #command<T extends { command: string; ok: true; operationId?: string }>(
-    command: { command: string; operationId?: string } & Record<string, unknown>,
+  async createInvitation(
+    actorValue: HelperConfirmedAdminActor,
+    idempotencyKeyValue: string
+  ): Promise<PairInvitationV1> {
+    this.#requireHostManagement();
+    const result = await this.#command({
+      command: "invitation_create",
+      actor: HelperConfirmedAdminActorSchema.parse(actorValue),
+      idempotencyKey: Base64Url32BytesSchema.parse(idempotencyKeyValue)
+    }, InvitationCreateWireSchema, "invitation create RESULT");
+    return PairInvitationV1Schema.parse({
+      invitationId: result.invitationId,
+      fullToken: result.fullToken,
+      shortCode: result.shortCode,
+      expiresAt: result.expiresAt
+    });
+  }
+
+  async cancelInvitation(
+    invitationIdValue: string,
+    actorValue: HelperConfirmedAdminActor
+  ): Promise<void> {
+    this.#requireHostManagement();
+    await this.#command({
+      command: "invitation_cancel",
+      invitationId: Base64Url16BytesSchema.parse(invitationIdValue),
+      actor: HelperConfirmedAdminActorSchema.parse(actorValue)
+    }, InvitationCancelWireSchema, "invitation cancel RESULT");
+  }
+
+  async listPairingRequests(
+    actorValue: HelperRequestActor
+  ): Promise<PendingPairingRequestListV1> {
+    this.#requireHostManagement();
+    const result = await this.#command({
+      command: "pairing_requests_list",
+      actor: HelperRequestActorSchema.parse(actorValue)
+    }, PairingRequestsListWireSchema, "pairing requests list RESULT");
+    return PendingPairingRequestListV1Schema.parse({
+      version: result.version,
+      requests: result.requests
+    });
+  }
+
+  async approvePairingRequest(
+    requestIdValue: string,
+    inputValue: ApprovePairingInputV1,
+    actorValue: HelperConfirmedAdminActor
+  ): Promise<void> {
+    this.#requireHostManagement();
+    await this.#command({
+      command: "pairing_request_approve",
+      requestId: Base64Url16BytesSchema.parse(requestIdValue),
+      input: ApprovePairingInputV1Schema.parse(inputValue),
+      actor: HelperConfirmedAdminActorSchema.parse(actorValue)
+    }, PairingRequestApproveWireSchema, "pairing request approve RESULT");
+  }
+
+  async rejectPairingRequest(
+    requestIdValue: string,
+    actorValue: HelperRequestActor
+  ): Promise<void> {
+    this.#requireHostManagement();
+    await this.#command({
+      command: "pairing_request_reject",
+      requestId: Base64Url16BytesSchema.parse(requestIdValue),
+      actor: HelperRequestActorSchema.parse(actorValue)
+    }, PairingRequestRejectWireSchema, "pairing request reject RESULT");
+  }
+
+  async listDevices(): Promise<TrustedDeviceListV1> {
+    this.#requireHostManagement();
+    const result = await this.#command(
+      { command: "trusted_devices_list" },
+      TrustedDevicesListWireSchema,
+      "trusted devices list RESULT"
+    );
+    return TrustedDeviceListV1Schema.parse({
+      version: result.version,
+      devices: result.devices
+    });
+  }
+
+  async renameDevice(
+    deviceIdValue: string,
+    inputValue: RenameTrustedDeviceInputV1,
+    actorValue: HelperRequestActor
+  ): Promise<TrustedDeviceSummaryV1> {
+    this.#requireHostManagement();
+    const deviceId = DeviceIdSchema.parse(deviceIdValue);
+    const result = await this.#command({
+      command: "trusted_device_rename",
+      deviceId,
+      input: RenameTrustedDeviceInputV1Schema.parse(inputValue),
+      actor: HelperRequestActorSchema.parse(actorValue)
+    }, TrustedDeviceRenameWireSchema, "trusted device rename RESULT");
+    return TrustedDeviceSummaryV1Schema.parse({
+      version: result.version,
+      deviceId: result.deviceId,
+      displayName: result.displayName,
+      platform: result.platform,
+      installationFingerprint: result.installationFingerprint,
+      trustEpoch: result.trustEpoch,
+      revision: result.revision,
+      pairedAt: result.pairedAt,
+      lastSeenAt: result.lastSeenAt,
+      connectionState: result.connectionState
+    });
+  }
+
+  async revokeDevice(
+    deviceIdValue: string,
+    actorValue: HelperConfirmedAdminActor
+  ): Promise<void> {
+    this.#requireHostManagement();
+    await this.#command({
+      command: "trusted_device_revoke",
+      deviceId: DeviceIdSchema.parse(deviceIdValue),
+      actor: HelperConfirmedAdminActorSchema.parse(actorValue)
+    }, TrustedDeviceRevokeWireSchema, "trusted device revoke RESULT");
+  }
+
+  #requireHostManagement(): void {
+    if (this.#role !== "host") {
+      throw new HelperSupervisorError(
+        "helper_incompatible",
+        "Pairing and trusted-device management require a host-role helper."
+      );
+    }
+  }
+
+  async #command<T extends {
+    command: string;
+    ok: true;
+    operationId?: string;
+    invitationId?: string;
+    requestId?: string;
+    deviceId?: string;
+  }>(
+    command: {
+      command: string;
+      operationId?: string;
+      invitationId?: string;
+      requestId?: string;
+      deviceId?: string;
+    } & Record<string, unknown>,
     schema: z.ZodType<T>,
     label: string
   ): Promise<T> {
@@ -1240,10 +1461,7 @@ class ProcessHelperClient implements AuthenticatedHelperClient {
         }
       })();
       if (failure) {
-        if (
-          failure.command !== command.command
-          || failure.operationId !== command.operationId
-        ) {
+        if (!commandResultMatches(failure, command)) {
           throw new HelperSupervisorError(
             "helper_incompatible",
             "Helper command failure did not match the request."
@@ -1271,10 +1489,7 @@ class ProcessHelperClient implements AuthenticatedHelperClient {
         throw new HelperSupervisorError(code.data, "Helper rejected the runtime command.");
       }
       const result = parseCanonical(frame.payload, schema, label);
-      if (
-        result.command !== command.command
-        || result.operationId !== command.operationId
-      ) {
+      if (!commandResultMatches(result, command)) {
         throw new HelperSupervisorError(
           "helper_incompatible",
           "Helper command result did not match the request."

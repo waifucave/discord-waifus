@@ -273,6 +273,56 @@ describe("protected helper process client", () => {
     await launch.exited;
   });
 
+  unixIt("uses strict correlated helper commands for host pairing and trusted-device management", async () => {
+    const request = await launchRequest({ FAKE_HELPER_RUNTIME: "1" });
+    const launch = await new ProtectedHelperProcessFactory().launch(request);
+    const client = await launch.authenticated;
+    const invitationId = Buffer.alloc(16, 0x41).toString("base64url");
+    const requestId = Buffer.alloc(16, 0x45).toString("base64url");
+    const actor = {
+      kind: "local" as const,
+      stableId: "local" as const,
+      hostServerLaunchId: Buffer.alloc(32, 0x31).toString("base64url"),
+      browserSessionId: Buffer.alloc(32, 0x32).toString("base64url")
+    };
+    const requestActor = { kind: "local" as const, stableId: "local" as const };
+    const approval = {
+      invitationGeneration: "1",
+      remoteIdentityBundleHash: Buffer.alloc(32, 0x24).toString("base64url"),
+      transcriptHash: Buffer.alloc(32, 0x25).toString("base64url"),
+      channelBinding: Buffer.alloc(32, 0x26).toString("base64url"),
+      sasIndices: [1, 23, 456, 789, 1023] as [number, number, number, number, number],
+      sasFingerprint: "a1b2c3d4e5f6"
+    };
+
+    await expect(client.createInvitation(
+      actor,
+      Buffer.alloc(32, 0x33).toString("base64url")
+    )).resolves.toMatchObject({ invitationId, shortCode: "01AB-CDEF" });
+    await expect(client.cancelInvitation(invitationId, actor)).resolves.toBeUndefined();
+    await expect(client.listPairingRequests(requestActor))
+      .resolves.toEqual({ version: 1, requests: [] });
+    await expect(client.approvePairingRequest(requestId, approval, actor))
+      .resolves.toBeUndefined();
+    await expect(client.rejectPairingRequest(requestId, requestActor))
+      .resolves.toBeUndefined();
+    await expect(client.listDevices()).resolves.toEqual({ version: 1, devices: [] });
+    await expect(client.renameDevice(
+      "travel-mac",
+      { revision: "1", displayName: "Travel Laptop" },
+      requestActor
+    )).resolves.toMatchObject({
+      deviceId: "travel-mac",
+      displayName: "Travel Laptop",
+      revision: "2"
+    });
+    await expect(client.revokeDevice("travel-mac", actor)).resolves.toBeUndefined();
+
+    await client.close();
+    await launch.closeParentChannel();
+    await launch.exited;
+  });
+
   unixIt("requires one canonical host selection for a remote runtime", async () => {
     const baseRequest = await launchRequest({ FAKE_HELPER_RUNTIME: "1" });
     const request: HelperLaunchRequest = { ...baseRequest, role: "remote" };
@@ -289,6 +339,9 @@ describe("protected helper process client", () => {
     });
     await expect(client.registerGatewayLaunch(gatewayLaunchId, "1786271400"))
       .resolves.toBeUndefined();
+    await expect(client.listDevices()).rejects.toMatchObject({
+      code: "helper_incompatible"
+    });
 
     await client.close();
     await launch.closeParentChannel();

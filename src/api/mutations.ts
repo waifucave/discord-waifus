@@ -39,6 +39,7 @@ const REQUEST_ID_HEADER = "x-waifus-request-id";
 export type MutationRequestContext = {
   readonly operationId: string;
   readonly requestId: string;
+  readonly idempotencyKey: string;
   readonly idempotencyKeyHash: string;
   readonly retryClass: Exclude<RetryClass, "safe">;
   readonly action: string;
@@ -301,6 +302,7 @@ export function installMutationHandling(
     request.mutationContext = {
       operationId: reservation.operationId,
       requestId: reservation.requestId,
+      idempotencyKey,
       idempotencyKeyHash: reservation.idempotencyKeyHash,
       retryClass,
       action: policy.auditAction,

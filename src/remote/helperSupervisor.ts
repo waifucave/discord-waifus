@@ -12,6 +12,14 @@ import {
   type RuntimePurpose
 } from "../shared/schemas/remoteProtocol.js";
 import { RemoteAccessErrorCodeSchema } from "../shared/schemas/remoteLifecycle.js";
+import type {
+  ApprovePairingInputV1,
+  PairInvitationV1,
+  PendingPairingRequestListV1,
+  RenameTrustedDeviceInputV1,
+  TrustedDeviceListV1,
+  TrustedDeviceSummaryV1
+} from "../shared/schemas/remoteLifecycle.js";
 import {
   HELPER_FAILURE_LIMIT,
   HELPER_FAILURE_WINDOW_MS,
@@ -30,11 +38,13 @@ import {
   type HelperActivationPoll,
   type HelperActivationStart,
   type HelperIdentityStatus,
+  type HelperConfirmedAdminActor,
   type HelperLaunch,
   type HelperPackageResolver,
   type HelperProcessFactory,
   type HelperRemoteRequest,
   type HelperRemoteResponse,
+  type HelperRequestActor,
   type HelperRole,
   type HelperRuntimeStatus,
   type HelperSupervisorSnapshot,
@@ -328,6 +338,60 @@ export class HelperSupervisor {
 
   async registerGatewayLaunch(gatewayLaunchId: string, expiresAt: string): Promise<void> {
     await this.#readyClient().registerGatewayLaunch(gatewayLaunchId, expiresAt);
+  }
+
+  async createInvitation(
+    actor: HelperConfirmedAdminActor,
+    idempotencyKey: string
+  ): Promise<PairInvitationV1> {
+    return this.#readyClient().createInvitation(actor, idempotencyKey);
+  }
+
+  async cancelInvitation(
+    invitationId: string,
+    actor: HelperConfirmedAdminActor
+  ): Promise<void> {
+    await this.#readyClient().cancelInvitation(invitationId, actor);
+  }
+
+  async listPairingRequests(
+    actor: HelperRequestActor
+  ): Promise<PendingPairingRequestListV1> {
+    return this.#readyClient().listPairingRequests(actor);
+  }
+
+  async approvePairingRequest(
+    requestId: string,
+    input: ApprovePairingInputV1,
+    actor: HelperConfirmedAdminActor
+  ): Promise<void> {
+    await this.#readyClient().approvePairingRequest(requestId, input, actor);
+  }
+
+  async rejectPairingRequest(
+    requestId: string,
+    actor: HelperRequestActor
+  ): Promise<void> {
+    await this.#readyClient().rejectPairingRequest(requestId, actor);
+  }
+
+  async listDevices(): Promise<TrustedDeviceListV1> {
+    return this.#readyClient().listDevices();
+  }
+
+  async renameDevice(
+    deviceId: string,
+    input: RenameTrustedDeviceInputV1,
+    actor: HelperRequestActor
+  ): Promise<TrustedDeviceSummaryV1> {
+    return this.#readyClient().renameDevice(deviceId, input, actor);
+  }
+
+  async revokeDevice(
+    deviceId: string,
+    actor: HelperConfirmedAdminActor
+  ): Promise<void> {
+    await this.#readyClient().revokeDevice(deviceId, actor);
   }
 
   async request(input: HelperRemoteRequest): Promise<HelperRemoteResponse> {

@@ -2,18 +2,29 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import {
   ActivationOperationIdSchema,
+  ApprovePairingInputV1Schema,
+  CreateInvitationInputV1Schema,
+  PairInvitationV1Schema,
+  PendingPairingRequestListV1Schema,
+  RenameTrustedDeviceInputV1Schema,
+  TrustedDeviceListV1Schema,
+  TrustedDeviceSummaryV1Schema,
   UpdateRemoteAccessInputV1Schema
 } from "../shared/schemas/remoteLifecycle.js";
+import { Base64Url16BytesSchema, DeviceIdSchema } from "../shared/schemas/remoteProtocol.js";
 import {
   ActivationOperationCapacityError,
   ActivationOperationNotFoundError,
   ActivationRequiredError,
+  RemoteAccessActorUnauthorizedError,
   RemoteAccessEnableBlockedError,
   RemoteAccessRevisionConflictError,
   RemoteAccessInactiveError,
   RemoteAccessService,
   RemoteAccessServiceUnavailableError,
-  type LocalActivationActor
+  type ConfirmedAdminActor,
+  type LocalActivationActor,
+  type RemoteAccessRequestActor
 } from "../backend/remoteAccess/remoteAccessService.js";
 import {
   DashboardBuild,
@@ -36,6 +47,18 @@ const DashboardAssetParamsSchema = z.object({
   "*": z.string()
 }).strict();
 
+const InvitationParamsSchema = z.object({
+  invitationId: Base64Url16BytesSchema
+}).strict();
+
+const PairingRequestParamsSchema = z.object({
+  requestId: Base64Url16BytesSchema
+}).strict();
+
+const TrustedDeviceParamsSchema = z.object({
+  deviceId: DeviceIdSchema
+}).strict();
+
 function localBrowserActor(request: FastifyRequest): LocalActivationActor {
   const context = request.principal.kind === "local"
     ? request.principal.browserContext
@@ -54,6 +77,49 @@ function localBrowserActor(request: FastifyRequest): LocalActivationActor {
   return {
     hostServerLaunchId: context.hostServerLaunchId,
     browserSessionId: context.browserSessionId
+  };
+}
+
+function requestActor(request: FastifyRequest): RemoteAccessRequestActor {
+  const principal = request.principal;
+  return principal.kind === "local"
+    ? { kind: "local", stableId: "local" }
+    : {
+        kind: "remote_device",
+        stableId: principal.stableId,
+        deviceId: principal.deviceId,
+        trustEpoch: principal.trustEpoch
+      };
+}
+
+function confirmedAdminActor(request: FastifyRequest): ConfirmedAdminActor {
+  const principal = request.principal;
+  if (!principal.browserContext) {
+    throw new ApiError(
+      403,
+      "A helper-verified browser session is required for this administrative action.",
+      undefined,
+      "ConfirmedBrowserRequired"
+    );
+  }
+  if (!principal.browserContext.csrfValidated) {
+    throw new ApiError(403, "CSRF validation is required.", undefined, "CsrfInvalid");
+  }
+  if (principal.kind === "local") {
+    return {
+      kind: "local",
+      stableId: "local",
+      hostServerLaunchId: principal.browserContext.hostServerLaunchId,
+      browserSessionId: principal.browserContext.browserSessionId
+    };
+  }
+  return {
+    kind: "remote_device",
+    stableId: principal.stableId,
+    deviceId: principal.deviceId,
+    trustEpoch: principal.trustEpoch,
+    gatewayLaunchId: principal.browserContext.gatewayLaunchId,
+    browserSessionId: principal.browserContext.browserSessionId
   };
 }
 
@@ -92,6 +158,9 @@ function activationApiError(error: unknown): never {
   }
   if (error instanceof RemoteAccessInactiveError) {
     throw conflict(error.message);
+  }
+  if (error instanceof RemoteAccessActorUnauthorizedError) {
+    throw new ApiError(403, error.message, undefined, "RemotePrincipalUnauthorized");
   }
   if (error instanceof RemoteAccessServiceUnavailableError) {
     throw new ApiError(503, error.message, undefined, "RemoteAccessUnavailable");
@@ -238,6 +307,114 @@ export function registerRemoteAccessRoutes(
           void requiredService(service).drainDisabledHelper();
         });
       }
+      return reply.status(202).send(acceptedOperation(request));
+    } catch (error) {
+      return activationApiError(error);
+    }
+  });
+
+  app.post("/api/remote-access/invitations", async (request, reply) => {
+    try {
+      CreateInvitationInputV1Schema.parse(request.body);
+      const mutation = request.mutationContext;
+      if (!mutation) {
+        throw new ApiError(
+          503,
+          "Administrative operation tracking is unavailable.",
+          undefined,
+          "OperationUnavailable"
+        );
+      }
+      const invitation = await requiredService(service).createInvitation(
+        confirmedAdminActor(request),
+        mutation.idempotencyKey
+      );
+      return reply
+        .status(201)
+        .header("cache-control", "no-store")
+        .send(PairInvitationV1Schema.parse(invitation));
+    } catch (error) {
+      return activationApiError(error);
+    }
+  });
+
+  app.delete("/api/remote-access/invitations/:invitationId", async (request, reply) => {
+    try {
+      const params = InvitationParamsSchema.parse(request.params);
+      await requiredService(service).cancelInvitation(
+        params.invitationId,
+        confirmedAdminActor(request)
+      );
+      return reply.status(202).send(acceptedOperation(request));
+    } catch (error) {
+      return activationApiError(error);
+    }
+  });
+
+  app.get("/api/remote-access/pairing-requests", async (request) => {
+    try {
+      const result = await requiredService(service).listPairingRequests(requestActor(request));
+      return PendingPairingRequestListV1Schema.parse(result);
+    } catch (error) {
+      return activationApiError(error);
+    }
+  });
+
+  app.post("/api/remote-access/pairing-requests/:requestId/approve", async (request, reply) => {
+    try {
+      const params = PairingRequestParamsSchema.parse(request.params);
+      const input = ApprovePairingInputV1Schema.parse(request.body);
+      await requiredService(service).approvePairingRequest(
+        params.requestId,
+        input,
+        confirmedAdminActor(request)
+      );
+      return reply.status(202).send(acceptedOperation(request));
+    } catch (error) {
+      return activationApiError(error);
+    }
+  });
+
+  app.post("/api/remote-access/pairing-requests/:requestId/reject", async (request, reply) => {
+    try {
+      const params = PairingRequestParamsSchema.parse(request.params);
+      await requiredService(service).rejectPairingRequest(params.requestId, requestActor(request));
+      return reply.status(202).send(acceptedOperation(request));
+    } catch (error) {
+      return activationApiError(error);
+    }
+  });
+
+  app.get("/api/remote-access/devices", async () => {
+    try {
+      return TrustedDeviceListV1Schema.parse(await requiredService(service).listDevices());
+    } catch (error) {
+      return activationApiError(error);
+    }
+  });
+
+  app.put("/api/remote-access/devices/:deviceId", async (request) => {
+    try {
+      const params = TrustedDeviceParamsSchema.parse(request.params);
+      const input = RenameTrustedDeviceInputV1Schema.parse(request.body);
+      const device = await requiredService(service).renameDevice(
+        params.deviceId,
+        input,
+        requestActor(request)
+      );
+      return TrustedDeviceSummaryV1Schema.parse(device);
+    } catch (error) {
+      return activationApiError(error);
+    }
+  });
+
+  app.delete("/api/remote-access/devices/:deviceId", async (request, reply) => {
+    try {
+      const params = TrustedDeviceParamsSchema.parse(request.params);
+      await requiredService(service).revokeDevice(
+        params.deviceId,
+        confirmedAdminActor(request)
+      );
       return reply.status(202).send(acceptedOperation(request));
     } catch (error) {
       return activationApiError(error);
