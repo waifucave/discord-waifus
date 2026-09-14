@@ -5,6 +5,7 @@ import { ensureDataLayout } from "../src/config/layout.js";
 import { StorageService } from "../src/storage/storageService.js";
 import { executeAssistantTool, toolDefs } from "../src/api/assistant/tools.js";
 import { LOCAL_REQUEST_PRINCIPAL } from "../src/api/requestPrincipal.js";
+import { conversationOwner } from "../src/api/assistant/conversations.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
 
 let roots: string[] = [];
@@ -34,7 +35,11 @@ async function makeApp() {
 }
 
 function localToolContext(app: Awaited<ReturnType<typeof makeApp>>["app"]) {
-  return { app, principal: LOCAL_REQUEST_PRINCIPAL };
+  return {
+    app,
+    actor: conversationOwner(LOCAL_REQUEST_PRINCIPAL),
+    principal: LOCAL_REQUEST_PRINCIPAL
+  };
 }
 
 describe("assistant tools", () => {

@@ -587,7 +587,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   registerAssistantRoutes(app, {
     dataRoot: options.dataRoot,
     createPipeline: options.assistant?.createPipeline,
-    authorizePrincipal: (principal) => requestPrincipalStillAuthorized(options, principal)
+    authorizePrincipal: (principal) => requestPrincipalStillAuthorized(options, browserSecurity, principal)
   });
   app.get("/api/reviewer/history", async (request) => {
     const query = HistoryQuerySchema.parse(request.query);
@@ -1150,7 +1150,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
       runtime: options.runtime,
       logger,
       dataRoot: options.dataRoot,
-      authorize: (principal) => requestPrincipalStillAuthorized(options, principal)
+      authorize: (principal) => requestPrincipalStillAuthorized(options, browserSecurity, principal)
     })
   );
 
@@ -1182,9 +1182,10 @@ function hasOwn(value: object | undefined, key: string): boolean {
 
 async function requestPrincipalStillAuthorized(
   options: ApiServerOptions,
+  browserSecurity: BrowserSecurity,
   principal: RequestPrincipal
 ): Promise<boolean> {
-  if (principal.kind === "local") return true;
+  if (principal.kind === "local") return browserSecurity.isPrincipalCurrent(principal);
   return options.remoteTrust !== undefined && await options.remoteTrust.isAuthorized(principal);
 }
 

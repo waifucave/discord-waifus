@@ -5,7 +5,10 @@ import fastify from "fastify";
 import { createApiServer } from "../src/api/server.js";
 import { BrowserSecurity } from "../src/api/browserSecurity.js";
 import { dispatchInternal } from "../src/api/internalDispatch.js";
-import { createRemoteRequestPrincipal } from "../src/api/requestPrincipal.js";
+import {
+  createRemoteRequestPrincipal,
+  parseRequestPrincipal
+} from "../src/api/requestPrincipal.js";
 import { installRoutePolicy, type RoutePolicyDefinition } from "../src/api/routePolicy.js";
 import { createRuntimeState } from "../src/backend/runtime.js";
 import { loadAppConfig } from "../src/config/appConfig.js";
@@ -118,12 +121,14 @@ describe("host browser session and CSRF", () => {
   });
 
   it("attaches immutable launch, session, nonce, target, and CSRF results to browser principals", async () => {
+    let now = 1_800_000_000_000;
     const app = fastify({ logger: false });
     apps.push(app);
     const security = new BrowserSecurity({
       listenerHost: "127.0.0.1",
       port: 3888,
-      mode: "test"
+      mode: "test",
+      now: () => now
     });
     const manifest: readonly RoutePolicyDefinition[] = [
       { method: "GET", path: "/context", remotePolicy: "never_proxy" },
@@ -168,6 +173,8 @@ describe("host browser session and CSRF", () => {
     expect(Buffer.from(String(safeContext.hostServerLaunchId), "base64url")).toHaveLength(32);
     expect(Buffer.from(String(safeContext.browserSessionId), "base64url")).toHaveLength(32);
     expect(Buffer.from(String(safeContext.requestNonce), "base64url")).toHaveLength(16);
+    const safePrincipal = parseRequestPrincipal(safe.json());
+    expect(security.isPrincipalCurrent(safePrincipal)).toBe(true);
 
     const unsafe = await app.inject({
       method: "POST",
@@ -180,6 +187,8 @@ describe("host browser session and CSRF", () => {
       canonicalTarget: "/mutate",
       csrfValidated: true
     });
+    now += 30 * 60 * 1000 + 1;
+    expect(security.isPrincipalCurrent(safePrincipal)).toBe(false);
   });
 
   it("requires the exact cookie and CSRF token before unsafe browser handlers run", async () => {

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { ChatMessage } from "@waifucave/gateway";
 import type { EventCursor } from "../../shared/schemas/adminOperations.js";
 import { EventStream } from "../eventStream.js";
+import type { RequestPrincipal } from "../requestPrincipal.js";
 
 export type AssistantEvent =
   | { type: "turn_started" }
@@ -19,6 +20,7 @@ export type StoredMessage =
 type Conversation = {
   id: string;
   createdAt: string;
+  owner: ConversationOwner;
   messages: StoredMessage[];
   chat: ChatMessage[];
   busy: boolean;
@@ -27,6 +29,29 @@ type Conversation = {
 
 const MAX_CONVERSATIONS = 20;
 const MAX_STORED_MESSAGES = 200;
+
+export type ConversationOwner = Readonly<{
+  kind: RequestPrincipal["kind"];
+  stableId: string;
+  trustEpoch: string | null;
+  browserSessionId: string | null;
+}>;
+
+export function conversationOwner(principal: RequestPrincipal): ConversationOwner {
+  return Object.freeze({
+    kind: principal.kind,
+    stableId: principal.stableId,
+    trustEpoch: principal.kind === "remote_device" ? principal.trustEpoch : null,
+    browserSessionId: principal.browserContext?.browserSessionId ?? null
+  });
+}
+
+function sameOwner(left: ConversationOwner, right: ConversationOwner): boolean {
+  return left.kind === right.kind
+    && left.stableId === right.stableId
+    && left.trustEpoch === right.trustEpoch
+    && left.browserSessionId === right.browserSessionId;
+}
 
 /**
  * In-memory conversation state for the dashboard assistant. `messages` is the display
@@ -40,11 +65,12 @@ export class ConversationStore {
     private readonly createEventStream: () => EventStream<AssistantEvent> = () => new EventStream()
   ) {}
 
-  create(): { id: string } {
+  create(owner: ConversationOwner): { id: string } {
     const id = randomUUID();
     this.conversations.set(id, {
       id,
       createdAt: new Date().toISOString(),
+      owner: Object.freeze({ ...owner }),
       messages: [],
       chat: [],
       busy: false,
@@ -61,18 +87,21 @@ export class ConversationStore {
     return { id };
   }
 
-  get(id: string): { id: string; messages: StoredMessage[]; chat: ChatMessage[]; busy: boolean } | undefined {
+  get(
+    id: string,
+    owner: ConversationOwner
+  ): { id: string; createdAt: string; messages: StoredMessage[]; chat: ChatMessage[]; busy: boolean } | undefined {
     const conversation = this.conversations.get(id);
-    if (!conversation) return undefined;
+    if (!conversation || !sameOwner(conversation.owner, owner)) return undefined;
     // LRU touch: re-insert so create() evicts genuinely idle conversations first
     this.conversations.delete(id);
     this.conversations.set(id, conversation);
-    const { eventStream: _eventStream, ...visible } = conversation;
+    const { eventStream: _eventStream, owner: _owner, ...visible } = conversation;
     return visible;
   }
 
-  appendChat(id: string, messages: ChatMessage[]): void {
-    const conversation = this.conversations.get(id);
+  appendChat(id: string, owner: ConversationOwner, messages: ChatMessage[]): void {
+    const conversation = this.ownedConversation(id, owner);
     if (!conversation) return;
     // trim the model transcript from the front (never the system prompt) past a byte budget —
     // tool results are up to 6000 chars each and were resent wholesale forever (audit finding 12)
@@ -88,8 +117,8 @@ export class ConversationStore {
     conversation.chat = trimmed;
   }
 
-  appendStored(id: string, message: StoredMessage): void {
-    const conversation = this.conversations.get(id);
+  appendStored(id: string, owner: ConversationOwner, message: StoredMessage): void {
+    const conversation = this.ownedConversation(id, owner);
     if (!conversation) return;
     conversation.messages.push(message);
     if (conversation.messages.length > MAX_STORED_MESSAGES) {
@@ -97,13 +126,17 @@ export class ConversationStore {
     }
   }
 
-  setBusy(id: string, busy: boolean): void {
-    const conversation = this.conversations.get(id);
+  setBusy(id: string, owner: ConversationOwner, busy: boolean): void {
+    const conversation = this.ownedConversation(id, owner);
     if (conversation) conversation.busy = busy;
   }
 
-  subscribe(id: string, listener: (event: AssistantEvent, cursor: EventCursor) => void): () => void {
-    const conversation = this.conversations.get(id);
+  subscribe(
+    id: string,
+    owner: ConversationOwner,
+    listener: (event: AssistantEvent, cursor: EventCursor) => void
+  ): () => void {
+    const conversation = this.ownedConversation(id, owner);
     if (!conversation) return () => undefined;
     const subscription = conversation.eventStream.subscribeAuthorized({
       principal: "internal",
@@ -120,12 +153,13 @@ export class ConversationStore {
     return subscription.close;
   }
 
-  eventStream(id: string): EventStream<AssistantEvent> | undefined {
-    return this.conversations.get(id)?.eventStream;
+  eventStream(id: string, owner: ConversationOwner): EventStream<AssistantEvent> | undefined {
+    return this.ownedConversation(id, owner)?.eventStream;
   }
 
-  list(): Array<{ id: string; createdAt: string; messageCount: number; preview?: string }> {
+  list(owner: ConversationOwner): Array<{ id: string; createdAt: string; messageCount: number; preview?: string }> {
     return [...this.conversations.values()]
+      .filter((conversation) => sameOwner(conversation.owner, owner))
       .map((conversation) => {
         const firstUser = conversation.messages.find((message) => message.role === "user");
         const preview = firstUser && "content" in firstUser ? firstUser.content.slice(0, 80) : undefined;
@@ -139,17 +173,26 @@ export class ConversationStore {
       .reverse();
   }
 
-  delete(id: string): boolean {
-    const conversation = this.conversations.get(id);
+  delete(id: string, owner: ConversationOwner): boolean {
+    const conversation = this.ownedConversation(id, owner);
     if (!conversation) return false;
     conversation.eventStream.close();
     return this.conversations.delete(id);
   }
 
-  emit(id: string, event: AssistantEvent): void {
-    const conversation = this.conversations.get(id);
+  emit(id: string, owner: ConversationOwner, event: AssistantEvent): void {
+    const conversation = this.ownedConversation(id, owner);
     if (!conversation) return;
     const cursor = conversation.eventStream.publish("assistant", event);
-    this.appendStored(id, { role: "event", event, cursor, at: new Date().toISOString() });
+    this.appendStored(id, owner, { role: "event", event, cursor, at: new Date().toISOString() });
+  }
+
+  isOwner(id: string, owner: ConversationOwner): boolean {
+    return this.ownedConversation(id, owner) !== undefined;
+  }
+
+  private ownedConversation(id: string, owner: ConversationOwner): Conversation | undefined {
+    const conversation = this.conversations.get(id);
+    return conversation && sameOwner(conversation.owner, owner) ? conversation : undefined;
   }
 }

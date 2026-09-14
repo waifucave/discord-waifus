@@ -175,6 +175,19 @@ export class BrowserSecurity {
     );
   }
 
+  isPrincipalCurrent(principal: RequestPrincipal): boolean {
+    if (principal.kind !== "local" || !principal.browserContext) return true;
+    if (principal.browserContext.hostServerLaunchId !== this.hostServerLaunchId) return false;
+    const session = this.sessions.get(principal.browserContext.browserSessionId);
+    if (!session) return false;
+    const now = this.now();
+    if (now >= session.idleExpiresAt || now >= session.absoluteExpiresAt) {
+      this.sessions.delete(session.id);
+      return false;
+    }
+    return true;
+  }
+
   private validateBrowserHeaders(request: FastifyRequest): void {
     const host = headerValue(request, "host")?.toLowerCase();
     if (host !== this.expectedAuthority.toLowerCase()) {

@@ -5,7 +5,11 @@ import { createGatewayModelPipeline } from "../../orchestration/pipeline/gateway
 import { resolveModelTarget } from "../../orchestration/pipeline/resolveTarget.js";
 import { createProviderCredentialsLookup } from "../llmGatewayCredentials.js";
 import { executeAssistantTool, toolDefs } from "./tools.js";
-import { AssistantEvent, ConversationStore } from "./conversations.js";
+import {
+  AssistantEvent,
+  ConversationStore,
+  type ConversationOwner
+} from "./conversations.js";
 import { dispatchInternal } from "../internalDispatch.js";
 import type {
   AssistantDelegation,
@@ -105,8 +109,11 @@ export type AssistantServiceDeps = {
   app: FastifyInstance;
   store: ConversationStore;
   dataRoot: string;
+  actor: ConversationOwner;
   principal: RequestPrincipal;
+  authorizationPrincipal: RequestPrincipal;
   delegation?: AssistantDelegation;
+  authorizePrincipal: (principal: RequestPrincipal) => boolean | Promise<boolean>;
   createPipeline?: (target: { providerId: string; modelId: string }) => ModelPipeline;
 };
 
@@ -116,65 +123,74 @@ export class AssistantTurnError extends Error {
   }
 }
 
+async function assertConversationOwnerAuthorized(
+  deps: AssistantServiceDeps,
+  conversationId: string
+): Promise<void> {
+  if (!deps.store.isOwner(conversationId, deps.actor)) {
+    throw new AssistantTurnError(403, "The conversation owner is no longer authorized.");
+  }
+  const authorized = await deps.authorizePrincipal(deps.authorizationPrincipal);
+  if (!authorized || !deps.store.isOwner(conversationId, deps.actor)) {
+    throw new AssistantTurnError(403, "The conversation owner is no longer authorized.");
+  }
+}
+
 export async function runAssistantTurn(deps: AssistantServiceDeps, conversationId: string, userContent: string): Promise<string> {
-  const { app, store, dataRoot, principal, delegation } = deps;
-  const conversation = store.get(conversationId);
+  const { app, store, dataRoot, actor, principal, delegation } = deps;
+  const conversation = store.get(conversationId, actor);
   if (!conversation) throw new AssistantTurnError(404, "Unknown conversation.");
   if (conversation.busy) throw new AssistantTurnError(409, "A turn is already running in this conversation.");
   // claim the conversation BEFORE the first await — two concurrent POSTs both passed the
   // check above and interleaved, last-writer-winning the model transcript (audit finding 6)
-  store.setBusy(conversationId, true);
-
-  let target;
+  store.setBusy(conversationId, actor, true);
+  let turnStarted = false;
   try {
-    target = await resolveAssistantTarget(app, dataRoot, principal, delegation);
-  } catch (error) {
-    store.setBusy(conversationId, false);
-    throw error;
-  }
-  if (!target.ok) {
-    store.setBusy(conversationId, false);
-    throw new AssistantTurnError(503, target.reason);
-  }
-  const pipeline = deps.createPipeline
-    ? deps.createPipeline({ providerId: target.providerId, modelId: target.modelId })
-    : createGatewayModelPipeline({
-        providerId: target.providerId,
-        modelId: target.modelId,
-        queryRole: "assistant",
-        dataRoot
-      });
-  if (!pipeline.generateAssistantTurn) {
-    store.setBusy(conversationId, false);
-    throw new AssistantTurnError(503, "The resolved pipeline cannot run assistant turns.");
-  }
+    await assertConversationOwnerAuthorized(deps, conversationId);
+    const target = await resolveAssistantTarget(app, dataRoot, principal, delegation);
+    await assertConversationOwnerAuthorized(deps, conversationId);
+    if (!target.ok) throw new AssistantTurnError(503, target.reason);
+    const pipeline = deps.createPipeline
+      ? deps.createPipeline({ providerId: target.providerId, modelId: target.modelId })
+      : createGatewayModelPipeline({
+          providerId: target.providerId,
+          modelId: target.modelId,
+          queryRole: "assistant",
+          dataRoot
+        });
+    if (!pipeline.generateAssistantTurn) {
+      throw new AssistantTurnError(503, "The resolved pipeline cannot run assistant turns.");
+    }
 
-  const transcript =
-    conversation.chat.length > 0
-      ? [...conversation.chat]
-      : [{
-          role: "system" as const,
-          content: assistantSystemPrompt(await buildSnapshot(app, principal, delegation))
-        }];
-  transcript.push({ role: "user", content: userContent });
+    const transcript =
+      conversation.chat.length > 0
+        ? [...conversation.chat]
+        : [{
+            role: "system" as const,
+            content: assistantSystemPrompt(await buildSnapshot(app, principal, delegation))
+          }];
+    await assertConversationOwnerAuthorized(deps, conversationId);
+    transcript.push({ role: "user", content: userContent });
 
-  // persist the user turn into the MODEL transcript now: if the pipeline throws, the next
-  // turn must still contain this message (audit finding 8 — "well??" after a failed turn)
-  store.appendChat(conversationId, transcript);
-  store.appendStored(conversationId, { role: "user", content: userContent, at: new Date().toISOString() });
-  store.emit(conversationId, { type: "turn_started" });
-  try {
+    // Persist the accepted user turn before invoking the provider. If the provider fails, the
+    // next turn still has the user's message, but an owner revoked during setup stores nothing.
+    store.appendChat(conversationId, actor, transcript);
+    store.appendStored(conversationId, actor, { role: "user", content: userContent, at: new Date().toISOString() });
+    store.emit(conversationId, actor, { type: "turn_started" });
+    turnStarted = true;
     let toolCallSequence = 0;
     const result = await pipeline.generateAssistantTurn({
       modelId: target.modelId,
       messages: transcript,
-      tools: toolDefs(),
+      tools: toolDefs({ actor, principal }),
       params: target.params,
-      executeTool: (name, argsJson) => {
+      executeTool: async (name, argsJson) => {
+        await assertConversationOwnerAuthorized(deps, conversationId);
         toolCallSequence += 1;
-        return executeAssistantTool(
+        const result = await executeAssistantTool(
           {
             app,
+            actor,
             principal,
             delegation: {
               conversationId,
@@ -187,20 +203,28 @@ export async function runAssistantTurn(deps: AssistantServiceDeps, conversationI
           name,
           argsJson
         );
+        await assertConversationOwnerAuthorized(deps, conversationId);
+        return result;
       },
-      onEvent: (event) => store.emit(conversationId, scrubSecretsFromEvent(event as AssistantEvent))
+      onEvent: (event) => store.emit(
+        conversationId,
+        actor,
+        scrubSecretsFromEvent(event as AssistantEvent)
+      )
     });
-    store.appendChat(conversationId, result.messages);
-    store.appendStored(conversationId, { role: "assistant", content: result.content, at: new Date().toISOString() });
-    store.emit(conversationId, { type: "text", content: result.content });
-    store.emit(conversationId, { type: "turn_completed" });
+    await assertConversationOwnerAuthorized(deps, conversationId);
+    store.appendChat(conversationId, actor, result.messages);
+    store.appendStored(conversationId, actor, { role: "assistant", content: result.content, at: new Date().toISOString() });
+    store.emit(conversationId, actor, { type: "text", content: result.content });
+    store.emit(conversationId, actor, { type: "turn_completed" });
     return result.content;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    store.emit(conversationId, { type: "error", message });
+    if (turnStarted) store.emit(conversationId, actor, { type: "error", message });
+    if (error instanceof AssistantTurnError) throw error;
     throw new AssistantTurnError(500, message);
   } finally {
-    store.setBusy(conversationId, false);
+    store.setBusy(conversationId, actor, false);
   }
 }
 

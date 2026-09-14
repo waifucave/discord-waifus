@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import type { ModelPipeline } from "../../providers/types.js";
-import { ConversationStore } from "./conversations.js";
+import { ConversationStore, conversationOwner } from "./conversations.js";
 import { AssistantTurnError, runAssistantTurn } from "./service.js";
 import {
   withoutBrowserContext,
@@ -26,16 +26,18 @@ export function registerAssistantRoutes(
 ): void {
   const store = new ConversationStore();
 
-  app.post("/api/assistant/conversations", async () => {
-    const { id } = store.create();
+  app.post("/api/assistant/conversations", async (request) => {
+    const { id } = store.create(conversationOwner(request.principal));
     return { conversationId: id };
   });
 
-  app.get("/api/assistant/conversations", async () => ({ conversations: store.list() }));
+  app.get("/api/assistant/conversations", async (request) => ({
+    conversations: store.list(conversationOwner(request.principal))
+  }));
 
   app.get("/api/assistant/conversations/:id", async (request, reply) => {
     const { id } = request.params as { id: string };
-    const conversation = store.get(id);
+    const conversation = store.get(id, conversationOwner(request.principal));
     if (!conversation) return reply.code(404).send({ error: "NotFound", message: "Unknown conversation." });
     return { id: conversation.id, busy: conversation.busy, messages: conversation.messages };
   });
@@ -49,8 +51,11 @@ export function registerAssistantRoutes(
           app,
           store,
           dataRoot: options.dataRoot,
+          actor: conversationOwner(request.principal),
           principal: withoutBrowserContext(request.principal),
+          authorizationPrincipal: request.principal,
           delegation: { conversationId: id },
+          authorizePrincipal: options.authorizePrincipal,
           createPipeline: options.createPipeline
         },
         id,
@@ -67,7 +72,7 @@ export function registerAssistantRoutes(
 
   app.delete("/api/assistant/conversations/:id", (request, reply) => {
     const { id } = request.params as { id: string };
-    if (!store.delete(id)) {
+    if (!store.delete(id, conversationOwner(request.principal))) {
       return reply.code(404).send({ error: "NotFound", message: "Unknown conversation." });
     }
     return { deleted: true };
@@ -75,12 +80,13 @@ export function registerAssistantRoutes(
 
   app.get("/api/assistant/conversations/:id/stream", (request, reply) => {
     const { id } = request.params as { id: string };
-    const conversation = store.get(id);
+    const owner = conversationOwner(request.principal);
+    const conversation = store.get(id, owner);
     if (!conversation) {
       reply.code(404).send({ error: "NotFound", message: "Unknown conversation." });
       return;
     }
-    sendAssistantEventStream({ request, reply, id, store, options });
+    sendAssistantEventStream({ request, reply, id, owner, store, options });
   });
 }
 
@@ -88,6 +94,7 @@ function sendAssistantEventStream(input: {
   request: FastifyRequest;
   reply: FastifyReply;
   id: string;
+  owner: ReturnType<typeof conversationOwner>;
   store: ConversationStore;
   options: {
     dataRoot: string;
@@ -95,7 +102,7 @@ function sendAssistantEventStream(input: {
   };
 }): void {
   const { request, reply } = input;
-  const stream = input.store.eventStream(input.id);
+  const stream = input.store.eventStream(input.id, input.owner);
   if (!stream) return;
   const writeEvent = (event: string, value: unknown, cursor?: string): void => {
     if (reply.raw.destroyed || reply.raw.writableEnded) throw new Error("SSE connection is closed.");
@@ -117,10 +124,12 @@ function sendAssistantEventStream(input: {
     ...(typeof suppliedCursor === "string" && suppliedCursor
       ? { lastEventId: suppliedCursor }
       : {}),
-    authorize: input.options.authorizePrincipal,
+    authorize: async (principal) =>
+      input.store.isOwner(input.id, conversationOwner(principal))
+      && await input.options.authorizePrincipal(principal),
     project: (principal, _event, data) => redact(principal, data),
     snapshot: () => {
-      const conversation = input.store.get(input.id);
+      const conversation = input.store.get(input.id, input.owner);
       return conversation
         ? {
             version: 1 as const,

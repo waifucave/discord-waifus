@@ -250,12 +250,15 @@ describe("global event API", () => {
 describe("assistant event API", () => {
   it("closes a remote assistant stream without leaking the next protected event after revocation", async () => {
     let finishTurn!: () => void;
+    let markTurnStarted!: () => void;
     const turnGate = new Promise<void>((resolve) => { finishTurn = resolve; });
+    const turnStarted = new Promise<void>((resolve) => { markTurnStarted = resolve; });
     const pipeline: ModelPipeline = {
       async generateWaifu() {
         throw new Error("unused");
       },
       async generateAssistantTurn(request) {
+        markTurnStarted();
         await turnGate;
         return {
           content: "must-not-cross-assistant-revocation",
@@ -290,19 +293,26 @@ describe("assistant event API", () => {
         modelId: "deepseek-v4-pro"
       }
     });
-    const created = await app.inject({ method: "POST", url: "/api/assistant/conversations" });
-    const conversationId = created.json().conversationId as string;
-    const streamPromise = dispatchInternal(app, remotePrincipal(), undefined, {
+    const actor = remotePrincipal();
+    const created = await dispatchInternal(app, actor, undefined, {
+      method: "POST",
+      url: "/api/assistant/conversations",
+      headers: { "idempotency-key": Buffer.alloc(32, 0x71).toString("base64url") }
+    });
+    const conversationId = created.json<{ conversationId: string }>().conversationId;
+    authorizationChecks = 0;
+    const streamPromise = dispatchInternal(app, actor, undefined, {
       method: "GET",
       url: `/api/assistant/conversations/${conversationId}/stream`
     });
     await waitFor(() => authorizationChecks >= 2, "remote assistant snapshot authorization");
-    const turnPromise = app.inject({
+    const turnPromise = dispatchInternal(app, actor, undefined, {
       method: "POST",
       url: `/api/assistant/conversations/${conversationId}/messages`,
+      headers: { "idempotency-key": Buffer.alloc(32, 0x72).toString("base64url") },
       payload: { content: "continue" }
     });
-    await waitFor(() => authorizationChecks >= 3, "authorized assistant event");
+    await turnStarted;
     allowed = false;
     finishTurn();
 
@@ -310,7 +320,7 @@ describe("assistant event API", () => {
       withTimeout(streamPromise, 3_000, "revoked assistant stream close"),
       withTimeout(turnPromise, 3_000, "assistant turn completion")
     ]);
-    expect(turnResponse.statusCode).toBe(200);
+    expect(turnResponse.statusCode).toBe(403);
     expect(streamResponse.statusCode).toBe(200);
     expect(streamResponse.body).toContain("event: snapshot");
     expect(streamResponse.body).toContain("\"type\":\"turn_started\"");
