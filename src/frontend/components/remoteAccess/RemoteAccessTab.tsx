@@ -5,11 +5,11 @@ import type {
   ActivationStatus,
   PendingPairingRequest,
   RemoteAccessConfig,
-  RemoteAccessStatus,
   TrustedDevice
 } from "../../api/types";
 import { useApi, useInterval } from "../../api/useApi";
 import { useClientContext } from "../../state/clientContext";
+import { useRemoteAccessState } from "../../state/useRemoteAccessState";
 import { ContextExternalLink } from "../ContextExternalLink";
 import { Notice } from "../Notice";
 import { InvitationCard } from "./InvitationCard";
@@ -35,7 +35,7 @@ function StatusValue({ label, value, tone }: { label: string; value: string; ton
 
 export function RemoteAccessTab() {
   const context = useClientContext();
-  const status = useApi<RemoteAccessStatus>((signal) => api.remoteAccessStatus(signal), []);
+  const status = useRemoteAccessState(context);
   const pairingRequests = useApi((signal) => api.remoteAccessPairingRequests(signal), []);
   const devices = useApi((signal) => api.remoteAccessDevices(signal), []);
   const diagnostics = useApi((signal) => api.remoteAccessDiagnostics(signal), []);
@@ -81,7 +81,6 @@ export function RemoteAccessTab() {
   }, [activation, activationStatus?.state, status.reload]);
 
   useInterval(() => {
-    status.reload();
     pairingRequests.reload();
     devices.reload();
     diagnostics.reload();
@@ -196,7 +195,7 @@ export function RemoteAccessTab() {
     return <div className="content"><div className="cell remote-loading">Loading remote access…</div></div>;
   }
 
-  if (status.error || !status.data) {
+  if (!status.data) {
     return (
       <div className="content">
         <div className="cell remote-access-section">
@@ -215,6 +214,11 @@ export function RemoteAccessTab() {
   return (
     <div className="content remote-access-content">
       {notice && <div className="cell remote-notice"><Notice tone={notice.tone}>{notice.message}</Notice></div>}
+      {status.error && (
+        <div className="cell remote-notice">
+          <Notice tone="warn">Live Remote Access updates are reconnecting: {status.error.message}</Notice>
+        </div>
+      )}
 
       <section className="cell remote-access-section">
         <div className="remote-section-head">

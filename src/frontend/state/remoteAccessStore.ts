@@ -1,4 +1,5 @@
 import type { ClientContext, RemoteAccessStatus } from "../api/types";
+import type { FeedReset, ResumableEvent, ResumableEventFeed } from "../api/resumableEventFeed";
 
 export type RemoteAccessStoreState = Readonly<{
   contextKey: string;
@@ -11,6 +12,12 @@ export type RemoteAccessStoreState = Readonly<{
 
 export type RemoteAccessLoader = (signal: AbortSignal) => Promise<RemoteAccessStatus>;
 type Listener = (state: RemoteAccessStoreState) => void;
+
+export type RemoteAccessFeedOpener = (options: {
+  onReset: (reset: FeedReset) => void | Promise<void>;
+  onEvent: (event: ResumableEvent) => void | Promise<void>;
+  onError: (error: unknown) => void | Promise<void>;
+}) => ResumableEventFeed;
 
 function clientContextKey(context: ClientContext): string {
   return context.mode === "host" ? "host" : `remote:${context.selectedHostId}`;
@@ -37,6 +44,9 @@ export class RemoteAccessStore {
   #state = initialState();
   #requestGeneration = 0;
   #request: AbortController | undefined;
+  #streamGeneration = 0;
+  #feed: ResumableEventFeed | undefined;
+  #feedContextKey: string | undefined;
 
   constructor(load: RemoteAccessLoader) {
     this.#load = load;
@@ -55,6 +65,10 @@ export class RemoteAccessStore {
   setContext(context: ClientContext): void {
     const contextKey = clientContextKey(context);
     if (contextKey === this.#state.contextKey) return;
+    this.#streamGeneration += 1;
+    this.#feed?.close();
+    this.#feed = undefined;
+    this.#feedContextKey = undefined;
     this.#request?.abort();
     this.#request = undefined;
     this.#requestGeneration += 1;
@@ -67,6 +81,48 @@ export class RemoteAccessStore {
       error: undefined
     });
     this.#emit();
+  }
+
+  start(context: ClientContext, openFeed: RemoteAccessFeedOpener): void {
+    this.setContext(context);
+    const contextKey = clientContextKey(context);
+    if (this.#feed && this.#feedContextKey === contextKey) return;
+    this.#feed?.close();
+    const generation = ++this.#streamGeneration;
+    this.#feedContextKey = contextKey;
+    void this.refresh(context);
+    this.#feed = openFeed({
+      onReset: async () => {
+        if (!this.#streamIsCurrent(generation, contextKey)) return;
+        this.#request?.abort();
+        this.#request = undefined;
+        this.#requestGeneration += 1;
+        this.#state = Object.freeze({
+          ...this.#state,
+          sourceEpoch: this.#state.sourceEpoch + 1,
+          dashboardBuildId: undefined,
+          loading: false,
+          status: undefined,
+          error: undefined
+        });
+        this.#emit();
+        await this.refresh(context);
+      },
+      onEvent: async (event) => {
+        if (!this.#streamIsCurrent(generation, contextKey)) return;
+        if (event.event === "snapshot" || event.event === "runtime") {
+          await this.refresh(context);
+        }
+      },
+      onError: (error) => {
+        if (!this.#streamIsCurrent(generation, contextKey)) return;
+        this.#state = Object.freeze({
+          ...this.#state,
+          error: error instanceof Error ? error.message : "Remote Access event stream failed."
+        });
+        this.#emit();
+      }
+    });
   }
 
   applySnapshot(context: ClientContext, status: RemoteAccessStatus): void {
@@ -119,6 +175,10 @@ export class RemoteAccessStore {
   }
 
   stop(): void {
+    this.#streamGeneration += 1;
+    this.#feed?.close();
+    this.#feed = undefined;
+    this.#feedContextKey = undefined;
     this.#requestGeneration += 1;
     this.#request?.abort();
     this.#request = undefined;
@@ -126,6 +186,10 @@ export class RemoteAccessStore {
       this.#state = Object.freeze({ ...this.#state, loading: false });
       this.#emit();
     }
+  }
+
+  #streamIsCurrent(generation: number, contextKey: string): boolean {
+    return generation === this.#streamGeneration && contextKey === this.#state.contextKey;
   }
 
   #emit(): void {

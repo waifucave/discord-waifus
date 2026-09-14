@@ -50,10 +50,13 @@ export function useAssistantChat(open: boolean) {
       options?: { initialCursor?: string; preserveItemsOnEmptySnapshot?: boolean }
     ) => {
       sourceRef.current?.close();
+      let preserveInitialEmptySnapshot = options?.preserveItemsOnEmptySnapshot === true;
       const source = openAssistantEventStream(conversationId, {
         ...(options?.initialCursor ? { initialCursor: options.initialCursor } : {}),
         onReset: () => {
-          if (!options?.preserveItemsOnEmptySnapshot) setItems([]);
+          preserveInitialEmptySnapshot = false;
+          setItems([]);
+          setBusy(false);
         },
         onEvent: (message) => {
           try {
@@ -63,9 +66,10 @@ export function useAssistantChat(open: boolean) {
                 messages?: AssistantStoredMessage[];
               };
               const messages = Array.isArray(snapshot.messages) ? snapshot.messages : [];
-              if (!(options?.preserveItemsOnEmptySnapshot && messages.length === 0)) {
+              if (!(preserveInitialEmptySnapshot && messages.length === 0)) {
                 setItems(restoreItems(messages));
               }
+              preserveInitialEmptySnapshot = false;
               setBusy(Boolean(snapshot.busy));
             } else if (message.event === "assistant") {
               const event = JSON.parse(message.data) as AssistantEvent;
