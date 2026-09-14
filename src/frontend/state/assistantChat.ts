@@ -10,6 +10,7 @@ export type ChatItem =
   | { kind: "user"; content: string }
   | { kind: "assistant"; content: string }
   | { kind: "tool"; name: string; args?: string; result?: string }
+  | { kind: "action"; actionId: string; category: string; summary: string }
   | { kind: "error"; message: string };
 
 /**
@@ -41,6 +42,13 @@ export function useAssistantChat(open: boolean) {
       });
     } else if (event.type === "error") {
       setItems((prev) => [...prev, { kind: "error", message: event.message }]);
+    } else if (event.type === "confirmation_required") {
+      setItems((prev) => [...prev, {
+        kind: "action",
+        actionId: event.actionId,
+        category: event.category,
+        summary: event.summary
+      }]);
     }
   }, []);
 
@@ -67,7 +75,7 @@ export function useAssistantChat(open: boolean) {
               };
               const messages = Array.isArray(snapshot.messages) ? snapshot.messages : [];
               if (!(preserveInitialEmptySnapshot && messages.length === 0)) {
-                setItems(restoreItems(messages));
+                setItems(restoreAssistantItems(messages));
               }
               preserveInitialEmptySnapshot = false;
               setBusy(Boolean(snapshot.busy));
@@ -115,7 +123,7 @@ export function useAssistantChat(open: boolean) {
       .then((conversation) => {
         if (cancelled) return;
         const messages = conversation.messages as AssistantStoredMessage[];
-        setItems(restoreItems(messages));
+        setItems(restoreAssistantItems(messages));
         const initialCursor = storedLatestCursor(messages);
         attachStream(existing, initialCursor ? { initialCursor } : undefined);
       })
@@ -162,7 +170,7 @@ export function useAssistantChat(open: boolean) {
   return { items, busy, error, send, reset };
 }
 
-function restoreItems(messages: readonly AssistantStoredMessage[]): ChatItem[] {
+export function restoreAssistantItems(messages: readonly AssistantStoredMessage[]): ChatItem[] {
   const restored: ChatItem[] = [];
   for (const message of messages) {
     if (message.role === "user") {
@@ -186,6 +194,13 @@ function restoreItems(messages: readonly AssistantStoredMessage[]): ChatItem[] {
         }
       } else if (message.event.type === "error") {
         restored.push({ kind: "error", message: message.event.message });
+      } else if (message.event.type === "confirmation_required") {
+        restored.push({
+          kind: "action",
+          actionId: message.event.actionId,
+          category: message.event.category,
+          summary: message.event.summary
+        });
       }
     }
   }

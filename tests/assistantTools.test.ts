@@ -82,6 +82,18 @@ describe("assistant tools", () => {
       "add_memory",
       "trigger_orchestrator",
       "read_logs",
+      "get_remote_access_status",
+      "set_remote_access_enabled",
+      "request_remote_pairing_invite",
+      "cancel_remote_pairing_invite",
+      "list_remote_pairing_requests",
+      "approve_remote_pairing_request",
+      "reject_remote_pairing_request",
+      "list_remote_devices",
+      "rename_remote_device",
+      "revoke_remote_device",
+      "reconnect_remote_access",
+      "get_remote_access_diagnostics",
       "docs_search",
       "docs_read"
     ]) {

@@ -244,6 +244,7 @@ describe("remote-access route authorization", () => {
     expect(invite.headers["cache-control"]).toContain("no-store");
     expect(invite.json()).toMatchObject({
       invitationId: bytes16(0x41),
+      fullToken: `WF1.${Buffer.alloc(192).toString("base64url")}`,
       shortCode: "01AB-CDEF"
     });
 

@@ -1,6 +1,14 @@
 import { randomBytes } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import type { ToolDef } from "@waifucave/gateway";
+import {
+  ApprovePairingInputV1Schema,
+  AssistantSafePairingRequestSummaryV1Schema,
+  PendingPairingRequestListV1Schema,
+  RemoteAccessStatusV1Schema,
+  TrustedDeviceListV1Schema,
+  TrustedDeviceSummaryV1Schema
+} from "../../shared/schemas/remoteLifecycle.js";
 import { listDocs, readDoc, searchDocs } from "../docsKb.js";
 import { dispatchInternal } from "../internalDispatch.js";
 import type {
@@ -8,12 +16,22 @@ import type {
   RequestPrincipal
 } from "../requestPrincipal.js";
 import type { ConversationOwner } from "./conversations.js";
+import type {
+  AssistantActionProposal,
+  AssistantActionSummary
+} from "./actions.js";
+
+export type AssistantActionController = {
+  propose: (proposal: AssistantActionProposal) => Promise<AssistantActionSummary>;
+  cancelOwnedInvitation: (invitationId: string) => Promise<string | undefined>;
+};
 
 export type AssistantToolContext = {
   app: FastifyInstance;
   actor: ConversationOwner;
   principal: RequestPrincipal;
   delegation?: AssistantDelegation;
+  actions?: AssistantActionController;
 };
 
 export type AssistantTool = {
@@ -67,6 +85,26 @@ const AGENT_CONFIG_URLS: Record<string, string> = {
   reviewer: "/api/reviewer/config",
   assistant: "/api/assistant/config"
 };
+
+function actionController(ctx: AssistantToolContext): AssistantActionController {
+  if (!ctx.actions) throw new Error("Secure assistant actions require a bound browser session.");
+  return ctx.actions;
+}
+
+function confirmationResult(action: AssistantActionSummary): string {
+  return JSON.stringify({
+    status: "confirmation_required",
+    actionId: action.actionId,
+    category: action.category,
+    expiresAt: action.expiresAt,
+    note: "A secure dashboard card is waiting for the user. The assistant cannot confirm it."
+  });
+}
+
+function helperTargetLabel(target: { os: string; arch: string; goarm?: number }): string {
+  const architecture = target.arch === "arm" && target.goarm ? `armv${target.goarm}` : target.arch;
+  return `${target.os} ${architecture}`;
+}
 
 export const ASSISTANT_TOOLS: AssistantTool[] = [
   {
@@ -634,6 +672,266 @@ export const ASSISTANT_TOOLS: AssistantTool[] = [
       revisionedPut(ctx, `/api/servers/${encodeURIComponent(String(args.guildId))}`, () => ({
         ...(args.changes as Record<string, unknown>)
       }))
+  },
+  {
+    name: "get_remote_access_status",
+    description:
+      "Read the host's Remote Access lifecycle, helper, protocol, and direct-connection status. " +
+      "Remote management is direct-only and never relays application traffic.",
+    parameters: NO_ARGS,
+    execute: async (ctx) => {
+      const result = await inject(ctx, { method: "GET", url: "/api/remote-access" });
+      if (result.status !== 200) return result.body;
+      const status = RemoteAccessStatusV1Schema.parse(JSON.parse(result.body));
+      return JSON.stringify({
+        ...status,
+        identity: { deviceId: status.identity.deviceId }
+      });
+    }
+  },
+  {
+    name: "set_remote_access_enabled",
+    description:
+      "Propose enabling or disabling Remote Access. The change runs only if the user accepts the " +
+      "separate secure dashboard confirmation card.",
+    parameters: {
+      type: "object",
+      properties: { enabled: { type: "boolean" } },
+      required: ["enabled"],
+      additionalProperties: false
+    },
+    execute: async (ctx, args) => {
+      const statusResult = await inject(ctx, { method: "GET", url: "/api/remote-access" });
+      if (statusResult.status !== 200) return statusResult.body;
+      const status = RemoteAccessStatusV1Schema.parse(JSON.parse(statusResult.body));
+      const enabled = args.enabled === true;
+      const action = await actionController(ctx).propose({
+        category: enabled ? "remote_access_enable" : "remote_access_disable",
+        summary: `${enabled ? "Enable" : "Disable"} Remote Access on ${status.config.displayName}.`,
+        resource: { type: "remote_access", identifier: status.identity.deviceId },
+        operation: {
+          kind: "exact_http",
+          method: "PUT",
+          canonicalTarget: "/api/remote-access",
+          payload: { revision: status.config.revision, enabled }
+        }
+      });
+      return confirmationResult(action);
+    }
+  },
+  {
+    name: "request_remote_pairing_invite",
+    description:
+      "Ask the dashboard to show a secure invitation card. Only the browser can create and see " +
+      "the pairing token, manual code, or QR; none of them enter this chat.",
+    parameters: NO_ARGS,
+    execute: async (ctx) => confirmationResult(await actionController(ctx).propose({
+      category: "remote_pairing_invitation",
+      summary: "Create a private, short-lived invitation for another device.",
+      resource: { type: "remote_pairing_invitation", identifier: "new" },
+      operation: {
+        kind: "exact_http",
+        method: "POST",
+        canonicalTarget: "/api/remote-access/invitations",
+        payload: {},
+        resultPolicy: "pair_invitation"
+      }
+    }))
+  },
+  {
+    name: "cancel_remote_pairing_invite",
+    description:
+      "Cancel a pairing invitation by opaque invitation ID. An invitation created by this browser " +
+      "is cancelled directly; cancelling another administrator's invitation requires a secure card.",
+    parameters: {
+      type: "object",
+      properties: { invitationId: { type: "string" } },
+      required: ["invitationId"],
+      additionalProperties: false
+    },
+    execute: async (ctx, args) => {
+      const invitationId = String(args.invitationId);
+      const ownedResult = await actionController(ctx).cancelOwnedInvitation(invitationId);
+      if (ownedResult !== undefined) return ownedResult;
+      const action = await actionController(ctx).propose({
+        category: "remote_invitation_cancel",
+        summary: `Cancel pairing invitation ${invitationId}.`,
+        resource: { type: "remote_pairing_invitation", identifier: invitationId },
+        operation: {
+          kind: "exact_http",
+          method: "DELETE",
+          canonicalTarget: `/api/remote-access/invitations/${encodeURIComponent(invitationId)}`
+        }
+      });
+      return confirmationResult(action);
+    }
+  },
+  {
+    name: "list_remote_pairing_requests",
+    description:
+      "List pending pairing requests using assistant-safe identity claims only. Safety words, " +
+      "fingerprints, transcript bindings, and key material are intentionally withheld from chat.",
+    parameters: NO_ARGS,
+    execute: async (ctx) => {
+      const result = await inject(ctx, { method: "GET", url: "/api/remote-access/pairing-requests" });
+      if (result.status !== 200) return result.body;
+      const parsed = PendingPairingRequestListV1Schema.parse(JSON.parse(result.body));
+      return JSON.stringify(parsed.requests.map((request) =>
+        AssistantSafePairingRequestSummaryV1Schema.parse({
+          requestId: request.requestId,
+          claimedDisplayName: request.claimedDisplayName,
+          claimedPlatform: request.claimedPlatform,
+          expiresAt: request.expiresAt
+        })
+      ));
+    }
+  },
+  {
+    name: "approve_remote_pairing_request",
+    description:
+      "Propose approving one opaque pairing request ID. The assistant never receives the safety " +
+      "phrase or fingerprint; the user must compare both in the secure dashboard card.",
+    parameters: {
+      type: "object",
+      properties: { requestId: { type: "string" } },
+      required: ["requestId"],
+      additionalProperties: false
+    },
+    execute: async (ctx, args) => {
+      const requestId = String(args.requestId);
+      const result = await inject(ctx, { method: "GET", url: "/api/remote-access/pairing-requests" });
+      if (result.status !== 200) return result.body;
+      const requests = PendingPairingRequestListV1Schema.parse(JSON.parse(result.body)).requests;
+      const request = requests.find((candidate) => candidate.requestId === requestId);
+      if (!request) return "The pairing request is no longer pending.";
+      const expectedPayload = ApprovePairingInputV1Schema.parse({
+        invitationGeneration: request.invitationGeneration,
+        remoteIdentityBundleHash: request.remoteIdentityBundleHash,
+        transcriptHash: request.transcriptHash,
+        channelBinding: request.channelBinding,
+        sasIndices: request.sasIndices,
+        sasFingerprint: request.sasFingerprint
+      });
+      const action = await actionController(ctx).propose({
+        category: "remote_pairing_approval",
+        summary: `Approve ${request.claimedDisplayName} (${helperTargetLabel(request.claimedPlatform)}) after comparing its safety phrase.`,
+        resource: { type: "remote_pairing_request", identifier: request.requestId },
+        operation: {
+          kind: "derived_pairing_approval",
+          method: "POST",
+          canonicalTarget: `/api/remote-access/pairing-requests/${encodeURIComponent(request.requestId)}/approve`,
+          requestId: request.requestId,
+          expectedPayload
+        }
+      });
+      return confirmationResult(action);
+    }
+  },
+  {
+    name: "reject_remote_pairing_request",
+    description: "Reject a pending remote pairing request by opaque request ID.",
+    parameters: {
+      type: "object",
+      properties: { requestId: { type: "string" } },
+      required: ["requestId"],
+      additionalProperties: false
+    },
+    execute: async (ctx, args) => {
+      const requestId = String(args.requestId);
+      const result = await inject(ctx, {
+        method: "POST",
+        url: `/api/remote-access/pairing-requests/${encodeURIComponent(requestId)}/reject`
+      });
+      return result.status === 202 ? `Pairing request ${requestId} was rejected.` : result.body;
+    }
+  },
+  {
+    name: "list_remote_devices",
+    description: "List trusted remote devices, their revisions, last-seen times, and direct status.",
+    parameters: NO_ARGS,
+    execute: async (ctx) => {
+      const result = await inject(ctx, { method: "GET", url: "/api/remote-access/devices" });
+      if (result.status !== 200) return result.body;
+      const devices = TrustedDeviceListV1Schema.parse(JSON.parse(result.body)).devices;
+      return JSON.stringify(devices.map(({ installationFingerprint: _fingerprint, ...device }) => device));
+    }
+  },
+  {
+    name: "rename_remote_device",
+    description: "Rename a trusted remote device's display metadata.",
+    parameters: {
+      type: "object",
+      properties: {
+        deviceId: { type: "string" },
+        displayName: { type: "string" }
+      },
+      required: ["deviceId", "displayName"],
+      additionalProperties: false
+    },
+    execute: async (ctx, args) => {
+      const deviceId = String(args.deviceId);
+      const listed = await inject(ctx, { method: "GET", url: "/api/remote-access/devices" });
+      if (listed.status !== 200) return listed.body;
+      const device = TrustedDeviceListV1Schema.parse(JSON.parse(listed.body)).devices
+        .find((candidate) => candidate.deviceId === deviceId);
+      if (!device) return `Unknown remote device: ${deviceId}`;
+      const result = await inject(ctx, {
+        method: "PUT",
+        url: `/api/remote-access/devices/${encodeURIComponent(deviceId)}`,
+        payload: { revision: device.revision, displayName: String(args.displayName) }
+      });
+      if (result.status !== 200) return result.body;
+      const { installationFingerprint: _fingerprint, ...renamed } =
+        TrustedDeviceSummaryV1Schema.parse(JSON.parse(result.body));
+      return JSON.stringify(renamed);
+    }
+  },
+  {
+    name: "revoke_remote_device",
+    description:
+      "Propose revoking a trusted remote device. Trust is removed only if the user accepts the " +
+      "separate secure dashboard confirmation card.",
+    parameters: {
+      type: "object",
+      properties: { deviceId: { type: "string" } },
+      required: ["deviceId"],
+      additionalProperties: false
+    },
+    execute: async (ctx, args) => {
+      const deviceId = String(args.deviceId);
+      const listed = await inject(ctx, { method: "GET", url: "/api/remote-access/devices" });
+      if (listed.status !== 200) return listed.body;
+      const device = TrustedDeviceListV1Schema.parse(JSON.parse(listed.body)).devices
+        .find((candidate) => candidate.deviceId === deviceId);
+      if (!device) return `Unknown remote device: ${deviceId}`;
+      const action = await actionController(ctx).propose({
+        category: "remote_device_revoke",
+        summary: `Revoke ${device.displayName} (${device.deviceId}) from this host.`,
+        resource: { type: "remote_device", identifier: device.deviceId },
+        operation: {
+          kind: "exact_http",
+          method: "DELETE",
+          canonicalTarget: `/api/remote-access/devices/${encodeURIComponent(device.deviceId)}`
+        }
+      });
+      return confirmationResult(action);
+    }
+  },
+  {
+    name: "reconnect_remote_access",
+    description: "Ask the embedded connector to rediscover a direct path. This never enables relay traffic.",
+    parameters: NO_ARGS,
+    execute: async (ctx) => {
+      const result = await inject(ctx, { method: "POST", url: "/api/remote-access/reconnect" });
+      return result.status === 202 ? "Direct reconnection started." : result.body;
+    }
+  },
+  {
+    name: "get_remote_access_diagnostics",
+    description:
+      "Read sanitized direct-connect diagnostics and the prohibited relay/proxy counters. Never returns endpoints or keys.",
+    parameters: NO_ARGS,
+    execute: async (ctx) => (await inject(ctx, { method: "GET", url: "/api/remote-access/diagnostics" })).body
   },
   {
     name: "runtime_pause",

@@ -171,6 +171,21 @@ export const ROUTE_POLICY_MANIFEST: readonly RoutePolicyDefinition[] = Object.fr
     "assistant.conversation.delete"
   ),
   safe("/api/assistant/conversations/:id/stream"),
+  safe("/api/assistant/actions/:actionId"),
+  {
+    method: "POST",
+    path: "/api/assistant/actions/:actionId/confirm",
+    remotePolicy: "full_admin",
+    retryClass: "non_replayable",
+    auditAction: "assistant.action.confirm",
+    persistResponse: false
+  },
+  mutation(
+    "DELETE",
+    "/api/assistant/actions/:actionId",
+    "transactional",
+    "assistant.action.cancel"
+  ),
   safe("/api/providers"),
   mutation(
     "PUT",

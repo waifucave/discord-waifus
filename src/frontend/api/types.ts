@@ -680,3 +680,30 @@ export type AssistantEvent =
 export type AssistantStoredMessage =
   | { role: "user" | "assistant"; content: string; at: string }
   | { role: "event"; event: AssistantEvent; cursor: string; at: string };
+
+export type AssistantActionDetail = {
+  version: 1;
+  actionId: string;
+  category: string;
+  summary: string;
+  expiresAt: string;
+  secure?: {
+    kind: "pairing_request";
+    requestId: string;
+    claimedDisplayName: string;
+    claimedPlatform: HelperTarget;
+    expiresAt: string;
+    sasWords: [string, string, string, string, string];
+    sasFingerprint: string;
+  };
+};
+
+export type AssistantActionConfirmation = {
+  version: 1;
+  actionId: string;
+  category: string;
+  status: "completed" | "failed";
+  message: string;
+  resourceId?: string;
+  invitation?: PairInvitation;
+};

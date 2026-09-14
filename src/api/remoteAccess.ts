@@ -329,10 +329,15 @@ export function registerRemoteAccessRoutes(
         confirmedAdminActor(request),
         mutation.idempotencyKey
       );
+      const body = JSON.stringify(PairInvitationV1Schema.parse(invitation));
       return reply
         .status(201)
+        .header("content-type", "application/json; charset=utf-8")
         .header("cache-control", "no-store")
-        .send(PairInvitationV1Schema.parse(invitation));
+        // Pair tokens are intentionally visible only in this confirmed, no-store browser
+        // response. Sending pre-serialized JSON prevents the global log/transcript redactor from
+        // replacing the one-time token before the secure invitation card can render it.
+        .send(body);
     } catch (error) {
       return activationApiError(error);
     }

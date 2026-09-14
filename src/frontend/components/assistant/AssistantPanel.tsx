@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { useApi } from "../../api/useApi";
 import { api } from "../../api/client";
-import type { AgentConfig } from "../../api/types";
+import type { AgentConfig, AssistantActionDetail } from "../../api/types";
 import { useAssistantChat, type ChatItem } from "../../state/assistantChat";
 import type { ViewId } from "../../nav";
+import { InvitationCard } from "../remoteAccess/InvitationCard";
+import { formatHelperTarget, formatUnixSeconds } from "../remoteAccess/presentation";
 
 type SecretArgs = { purpose: "provider_key" | "bot_token"; providerId?: string; botId?: string };
 
@@ -30,6 +32,10 @@ function secretFormIsLive(items: ChatItem[], index: number): boolean {
     if (item.kind === "assistant") continue; // Norma's "paste it into the form" reply is expected
   }
   return true;
+}
+
+export function secureActionIsLive(items: ChatItem[], index: number): boolean {
+  return !items.slice(index + 1).some((item) => item.kind === "user");
 }
 
 /**
@@ -118,6 +124,133 @@ function ToolRow({ item }: { item: Extract<ChatItem, { kind: "tool" }> }) {
   );
 }
 
+export function AssistantActionCard({
+  item,
+  onDone
+}: {
+  item: Extract<ChatItem, { kind: "action" }>;
+  onDone: (outcome: string) => void;
+}) {
+  const [detail, setDetail] = useState<AssistantActionDetail | undefined>();
+  const [invitation, setInvitation] = useState<Awaited<ReturnType<typeof api.confirmAssistantAction>>["invitation"]>();
+  const [acknowledged, setAcknowledged] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<string | undefined>();
+  const [error, setError] = useState<string | undefined>();
+
+  useEffect(() => {
+    const controller = new AbortController();
+    api.assistantAction(item.actionId, controller.signal)
+      .then(setDetail)
+      .catch((reason) => {
+        if ((reason as DOMException)?.name !== "AbortError") setError((reason as Error).message);
+      });
+    return () => controller.abort();
+  }, [item.actionId]);
+
+  const cancel = async () => {
+    setBusy(true);
+    setError(undefined);
+    try {
+      await api.cancelAssistantAction(item.actionId);
+      onDone(`The ${item.category.replaceAll("_", " ")} request was cancelled without making a change.`);
+    } catch (reason) {
+      setError((reason as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const confirm = async () => {
+    setBusy(true);
+    setError(undefined);
+    try {
+      const result = await api.confirmAssistantAction(item.actionId);
+      if (result.invitation) {
+        setInvitation(result.invitation);
+      } else {
+        onDone(`${result.message}${result.resourceId ? ` Resource ${result.resourceId}.` : ""}`);
+      }
+    } catch (reason) {
+      setError((reason as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (invitation) {
+    return (
+      <div className="assistant-secure-action" data-assistant-action={item.actionId}>
+        {notice && <div className="m-tool"><span className="chip pink">secure action</span>{notice}</div>}
+        <InvitationCard
+          invitation={invitation}
+          onCancel={async () => {
+            setError(undefined);
+            try {
+              await api.cancelRemoteAccessInvitation(invitation.invitationId);
+              onDone(`Pairing invitation ${invitation.invitationId} was cancelled. Its token and code never entered the chat transcript.`);
+            } catch (reason) {
+              setError((reason as Error).message);
+            }
+          }}
+          onMessage={(message, failed) => failed ? setError(message) : setNotice(message)}
+        />
+        {error && <div className="m-err">{error}</div>}
+      </div>
+    );
+  }
+
+  const pairing = detail?.secure?.kind === "pairing_request" ? detail.secure : undefined;
+  const invitationRequest = item.category === "remote_pairing_invitation";
+  return (
+    <article className="cell pairing-request-card assistant-secure-action" data-assistant-action={item.actionId}>
+      <div className="remote-section-head">
+        <div>
+          <span className="t-micro">Secure assistant action</span>
+          <div className="t-title">{pairing?.claimedDisplayName ?? "Confirmation required"}</div>
+        </div>
+        <span className="chip butter">{detail ? "pending" : "loading"}</span>
+      </div>
+      <p className="t-small">{detail?.summary ?? item.summary}</p>
+      {pairing && (
+        <>
+          <p className="t-small t-mute">
+            Claimed device: {formatHelperTarget(pairing.claimedPlatform)} · expires {formatUnixSeconds(pairing.expiresAt)}
+          </p>
+          <div className="sas-phrase" aria-label="Safety phrase">{pairing.sasWords.join(" ")}</div>
+          <div className="sas-fingerprint">
+            <span className="field-label">Safety fingerprint</span>
+            <code>{pairing.sasFingerprint}</code>
+          </div>
+        </>
+      )}
+      {!invitationRequest && (
+        <label className="checkbox-chip pairing-confirmation">
+          <input
+            type="checkbox"
+            checked={acknowledged}
+            onChange={(event) => setAcknowledged(event.target.checked)}
+          />
+          {pairing
+            ? "I compared both the words and fingerprint on the requesting device"
+            : "I reviewed this exact action and want to apply it"}
+        </label>
+      )}
+      <div className="remote-actions">
+        <button
+          className="btn primary"
+          disabled={busy || !detail || (!invitationRequest && !acknowledged)}
+          onClick={confirm}
+        >
+          {busy ? "Working…" : invitationRequest ? "Create private invitation" : pairing ? "Approve device" : "Confirm action"}
+        </button>
+        <button className="btn" disabled={busy} onClick={cancel}>Cancel</button>
+      </div>
+      {error && <div className="m-err">{error}</div>}
+    </article>
+  );
+}
+
 export function AssistantLauncher({ open, onToggle }: { open: boolean; onToggle: () => void }) {
   if (open) return null;
   return (
@@ -155,6 +288,7 @@ export function AssistantPanel({
   const chat = useAssistantChat(open);
   const [draft, setDraft] = useState("");
   const [handledSecrets, setHandledSecrets] = useState<Set<number>>(new Set());
+  const [actionReceipts, setActionReceipts] = useState<Map<string, string>>(new Map());
   const scrollRef = useRef<HTMLDivElement>(null);
   const assistantConfig = useApi<AgentConfig | undefined>(async (s) => (open ? api.assistantConfig(s) : undefined), [open]);
   const orchestratorConfig = useApi<AgentConfig | undefined>(async (s) => (open ? api.orchestratorConfig(s) : undefined), [open]);
@@ -189,6 +323,7 @@ export function AssistantPanel({
           onClick={() => {
             chat.reset();
             setHandledSecrets(new Set());
+            setActionReceipts(new Map());
           }}
           title="New conversation"
         >
@@ -207,11 +342,12 @@ export function AssistantPanel({
         )}
         {chat.items.map((item, index) => {
           if (item.kind === "user") {
-            if (item.content.startsWith("[secure-form]")) {
+            if (item.content.startsWith("[secure-form]") || item.content.startsWith("[secure-action]")) {
+              const marker = item.content.startsWith("[secure-form]") ? "[secure-form]" : "[secure-action]";
               return (
                 <div key={index} className="m-tool">
-                  <span className="chip pink">secure form</span>
-                  {item.content.replace("[secure-form]", "").trim()}
+                  <span className="chip pink">{marker === "[secure-form]" ? "secure form" : "secure action"}</span>
+                  {item.content.replace(marker, "").trim()}
                 </div>
               );
             }
@@ -240,6 +376,26 @@ export function AssistantPanel({
               );
             }
             return <ToolRow key={index} item={item} />;
+          }
+          if (item.kind === "action") {
+            const receipt = actionReceipts.get(item.actionId);
+            if (receipt || !secureActionIsLive(chat.items, index)) {
+              return (
+                <div key={index} className="m-tool">
+                  <span className="chip pink">secure action</span>
+                  {receipt ?? item.summary}
+                </div>
+              );
+            }
+            return (
+              <AssistantActionCard
+                key={index}
+                item={item}
+                onDone={(outcome) => {
+                  setActionReceipts((previous) => new Map(previous).set(item.actionId, outcome));
+                }}
+              />
+            );
           }
           return <div key={index} className="m-err">{item.message}</div>;
         })}
