@@ -45,6 +45,38 @@ async function makeApp(extra: {
   return { app, root };
 }
 
+function remoteActor(deviceId: string, trustEpoch = "5", transportByte = 0x42) {
+  return createRemoteRequestPrincipal({
+    kind: "remote_device",
+    stableId: `remote:${deviceId}`,
+    deviceId,
+    peerFingerprint: Buffer.alloc(16, 0x41).toString("base64url"),
+    transportSessionId: Buffer.alloc(16, transportByte).toString("base64url"),
+    trustEpoch
+  });
+}
+
+function browserHeaders() {
+  return {
+    host: "127.0.0.1:3888",
+    origin: "http://127.0.0.1:3888",
+    "sec-fetch-site": "same-origin"
+  };
+}
+
+async function browserSession(app: Awaited<ReturnType<typeof makeApp>>["app"]) {
+  const response = await app.inject({
+    method: "GET",
+    url: "/api/client-context",
+    headers: browserHeaders()
+  });
+  expect(response.statusCode).toBe(200);
+  return {
+    cookie: String(response.headers["set-cookie"]),
+    csrf: String(response.headers["x-waifus-csrf"])
+  };
+}
+
 const fakePipeline: ModelPipeline = {
   async generateWaifu() {
     throw new Error("unused");
@@ -129,24 +161,261 @@ describe("assistant chat API", () => {
           modelId: "deepseek-v4-pro"
         }
       });
-      const created = await app.inject({ method: "POST", url: "/api/assistant/conversations" });
-      const actor = createRemoteRequestPrincipal({
-        kind: "remote_device",
-        stableId: "remote:travel-mac",
-        deviceId: "travel-mac",
-        peerFingerprint: Buffer.alloc(16, 0x41).toString("base64url"),
-        transportSessionId: Buffer.alloc(16, 0x42).toString("base64url"),
-        trustEpoch: "5"
+      const actor = remoteActor("travel-mac");
+      const created = await dispatchInternal(app, actor, undefined, {
+        method: "POST",
+        url: "/api/assistant/conversations",
+        headers: { "idempotency-key": Buffer.alloc(32, 0x70).toString("base64url") }
       });
       const response = await dispatchInternal(app, actor, undefined, {
         method: "POST",
-        url: `/api/assistant/conversations/${created.json().conversationId}/messages`,
+        url: `/api/assistant/conversations/${created.json<{ conversationId: string }>().conversationId}/messages`,
         headers: { "idempotency-key": Buffer.alloc(32, 0x71).toString("base64url") },
         payload: { content: "how many?" }
       });
       expect(response.statusCode).toBe(200);
       expect(authorizedStableIds.length).toBeGreaterThan(3);
       expect(new Set(authorizedStableIds)).toEqual(new Set(["remote:travel-mac"]));
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("hides conversations from other actors and invalidates a changed trust epoch", async () => {
+    const { app } = await makeApp({ authorizeRemote: () => true });
+    try {
+      const owner = remoteActor("travel-mac", "5", 0x42);
+      const reconnectedOwner = remoteActor("travel-mac", "5", 0x43);
+      const changedEpoch = remoteActor("travel-mac", "6", 0x44);
+      const otherDevice = remoteActor("studio-pc", "5", 0x45);
+      const created = await dispatchInternal(app, owner, undefined, {
+        method: "POST",
+        url: "/api/assistant/conversations",
+        headers: { "idempotency-key": Buffer.alloc(32, 0x72).toString("base64url") }
+      });
+      const id = created.json<{ conversationId: string }>().conversationId;
+
+      expect((await dispatchInternal(app, reconnectedOwner, undefined, {
+        method: "GET",
+        url: `/api/assistant/conversations/${id}`
+      })).statusCode).toBe(200);
+      for (const actor of [changedEpoch, otherDevice]) {
+        expect((await dispatchInternal(app, actor, undefined, {
+          method: "GET",
+          url: `/api/assistant/conversations/${id}`
+        })).statusCode).toBe(404);
+        expect((await dispatchInternal(app, actor, undefined, {
+          method: "GET",
+          url: "/api/assistant/conversations"
+        })).json<{ conversations: unknown[] }>().conversations).toEqual([]);
+      }
+      expect((await dispatchInternal(app, otherDevice, undefined, {
+        method: "POST",
+        url: `/api/assistant/conversations/${id}/messages`,
+        headers: { "idempotency-key": Buffer.alloc(32, 0x75).toString("base64url") },
+        payload: { content: "cross-owner turn" }
+      })).statusCode).toBe(404);
+      expect((await dispatchInternal(app, otherDevice, undefined, {
+        method: "DELETE",
+        url: `/api/assistant/conversations/${id}`,
+        headers: { "idempotency-key": Buffer.alloc(32, 0x76).toString("base64url") }
+      })).statusCode).toBe(404);
+      expect((await dispatchInternal(app, otherDevice, undefined, {
+        method: "GET",
+        url: `/api/assistant/conversations/${id}/stream`
+      })).statusCode).toBe(404);
+      expect((await app.inject({
+        method: "GET",
+        url: `/api/assistant/conversations/${id}`
+      })).statusCode).toBe(404);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("isolates conversations between local browser sessions", async () => {
+    const { app } = await makeApp();
+    try {
+      const browserA = await browserSession(app);
+      const browserB = await browserSession(app);
+      const created = await app.inject({
+        method: "POST",
+        url: "/api/assistant/conversations",
+        headers: {
+          ...browserHeaders(),
+          cookie: browserA.cookie,
+          "x-waifus-csrf": browserA.csrf,
+          "idempotency-key": Buffer.alloc(32, 0x77).toString("base64url")
+        }
+      });
+      expect(created.statusCode).toBe(200);
+      const id = created.json().conversationId as string;
+
+      expect((await app.inject({
+        method: "GET",
+        url: `/api/assistant/conversations/${id}`,
+        headers: { ...browserHeaders(), cookie: browserA.cookie }
+      })).statusCode).toBe(200);
+      expect((await app.inject({
+        method: "GET",
+        url: `/api/assistant/conversations/${id}`,
+        headers: { ...browserHeaders(), cookie: browserB.cookie }
+      })).statusCode).toBe(404);
+      const listB = await app.inject({
+        method: "GET",
+        url: "/api/assistant/conversations",
+        headers: { ...browserHeaders(), cookie: browserB.cookie }
+      });
+      expect(listB.json().conversations).toEqual([]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("does not commit a model reply after the remote owner is revoked mid-turn", async () => {
+    let authorized = true;
+    let markStarted: (() => void) | undefined;
+    let finishTurn: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const finish = new Promise<void>((resolve) => {
+      finishTurn = resolve;
+    });
+    const delayedPipeline: ModelPipeline = {
+      async generateWaifu() {
+        throw new Error("unused");
+      },
+      async generateAssistantTurn(request) {
+        markStarted!();
+        await finish;
+        return {
+          content: "stale reply",
+          messages: [...request.messages, { role: "assistant", content: "stale reply" }]
+        };
+      }
+    };
+    const { app } = await makeApp({
+      assistantPipeline: delayedPipeline,
+      authorizeRemote: () => authorized
+    });
+    try {
+      await app.inject({
+        method: "PUT",
+        url: "/api/providers/deepseek/credentials",
+        payload: { apiKey: "sk-test" }
+      });
+      const orchestrator = await app.inject({ method: "GET", url: "/api/orchestrator/config" });
+      await app.inject({
+        method: "PUT",
+        url: "/api/orchestrator/config",
+        payload: {
+          revision: orchestrator.json().revision,
+          providerId: "deepseek",
+          modelId: "deepseek-v4-pro"
+        }
+      });
+      const actor = remoteActor("travel-mac");
+      const created = await dispatchInternal(app, actor, undefined, {
+        method: "POST",
+        url: "/api/assistant/conversations",
+        headers: { "idempotency-key": Buffer.alloc(32, 0x73).toString("base64url") }
+      });
+      const id = created.json<{ conversationId: string }>().conversationId;
+      const pending = dispatchInternal(app, actor, undefined, {
+        method: "POST",
+        url: `/api/assistant/conversations/${id}/messages`,
+        headers: { "idempotency-key": Buffer.alloc(32, 0x74).toString("base64url") },
+        payload: { content: "wait for it" }
+      });
+      await started;
+      authorized = false;
+      finishTurn!();
+      expect((await pending).statusCode).toBe(403);
+
+      authorized = true;
+      const transcript = await dispatchInternal(app, actor, undefined, {
+        method: "GET",
+        url: `/api/assistant/conversations/${id}`
+      });
+      expect(transcript.statusCode).toBe(200);
+      const body = transcript.json<{ busy: boolean; messages: Array<{ role: string; content?: string }> }>();
+      expect(body.busy).toBe(false);
+      expect(body.messages).not.toContainEqual(expect.objectContaining({ role: "assistant", content: "stale reply" }));
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("blocks a queued tool mutation after the remote owner is revoked", async () => {
+    let authorized = true;
+    let markToolQueued: (() => void) | undefined;
+    let releaseTool: (() => void) | undefined;
+    const toolQueued = new Promise<void>((resolve) => {
+      markToolQueued = resolve;
+    });
+    const toolGate = new Promise<void>((resolve) => {
+      releaseTool = resolve;
+    });
+    const queuedToolPipeline: ModelPipeline = {
+      async generateWaifu() {
+        throw new Error("unused");
+      },
+      async generateAssistantTurn(request) {
+        markToolQueued!();
+        await toolGate;
+        await request.executeTool("runtime_pause", "{}");
+        return {
+          content: "paused",
+          messages: [...request.messages, { role: "assistant", content: "paused" }]
+        };
+      }
+    };
+    const { app } = await makeApp({
+      assistantPipeline: queuedToolPipeline,
+      authorizeRemote: () => authorized
+    });
+    try {
+      await app.inject({
+        method: "PUT",
+        url: "/api/providers/deepseek/credentials",
+        payload: { apiKey: "sk-test" }
+      });
+      const orchestrator = await app.inject({ method: "GET", url: "/api/orchestrator/config" });
+      await app.inject({
+        method: "PUT",
+        url: "/api/orchestrator/config",
+        payload: {
+          revision: orchestrator.json().revision,
+          providerId: "deepseek",
+          modelId: "deepseek-v4-pro"
+        }
+      });
+      const actor = remoteActor("travel-mac");
+      const created = await dispatchInternal(app, actor, undefined, {
+        method: "POST",
+        url: "/api/assistant/conversations",
+        headers: { "idempotency-key": Buffer.alloc(32, 0x78).toString("base64url") }
+      });
+      const id = created.json<{ conversationId: string }>().conversationId;
+      const pending = dispatchInternal(app, actor, undefined, {
+        method: "POST",
+        url: `/api/assistant/conversations/${id}/messages`,
+        headers: { "idempotency-key": Buffer.alloc(32, 0x79).toString("base64url") },
+        payload: { content: "pause it" }
+      });
+      await toolQueued;
+      authorized = false;
+      releaseTool!();
+      expect((await pending).statusCode).toBe(403);
+
+      authorized = true;
+      const status = await dispatchInternal(app, actor, undefined, {
+        method: "GET",
+        url: "/api/status"
+      });
+      expect(status.statusCode).toBe(200);
+      expect(status.json<{ paused: boolean }>().paused).toBe(false);
     } finally {
       await app.close();
     }

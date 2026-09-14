@@ -7,9 +7,11 @@ import type {
   AssistantDelegation,
   RequestPrincipal
 } from "../requestPrincipal.js";
+import type { ConversationOwner } from "./conversations.js";
 
 export type AssistantToolContext = {
   app: FastifyInstance;
+  actor: ConversationOwner;
   principal: RequestPrincipal;
   delegation?: AssistantDelegation;
 };
@@ -710,7 +712,7 @@ export const ASSISTANT_TOOLS: AssistantTool[] = [
 
 const TOOLS_BY_NAME = new Map(ASSISTANT_TOOLS.map((tool) => [tool.name, tool]));
 
-export function toolDefs(): ToolDef[] {
+export function toolDefs(_context?: Pick<AssistantToolContext, "actor" | "principal">): ToolDef[] {
   return ASSISTANT_TOOLS.map(({ name, description, parameters }) => ({ name, description, parameters }));
 }
 
