@@ -1,4 +1,6 @@
 import type {
+  AssistantActionConfirmation,
+  AssistantActionDetail,
   AssistantStoredMessage,
   AppConfig,
   ActivationStartResult,
@@ -393,6 +395,19 @@ export const api = {
     request<{ reply: string }>("POST", `/api/assistant/conversations/${encodeURIComponent(id)}/messages`, {
       body: { content }
     }),
+  assistantAction: (actionId: string, signal?: AbortSignal) =>
+    request<AssistantActionDetail>(
+      "GET",
+      `/api/assistant/actions/${encodeURIComponent(actionId)}`,
+      { signal }
+    ),
+  confirmAssistantAction: (actionId: string) =>
+    request<AssistantActionConfirmation>(
+      "POST",
+      `/api/assistant/actions/${encodeURIComponent(actionId)}/confirm`
+    ),
+  cancelAssistantAction: (actionId: string) =>
+    request<void>("DELETE", `/api/assistant/actions/${encodeURIComponent(actionId)}`),
 
   // Providers
   providers: (signal?: AbortSignal) =>

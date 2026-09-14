@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import type { ModelPipeline } from "../../providers/types.js";
 import { createGatewayModelPipeline } from "../../orchestration/pipeline/gatewayPipeline.js";
@@ -10,6 +10,10 @@ import {
   ConversationStore,
   type ConversationOwner
 } from "./conversations.js";
+import {
+  AssistantActionStore,
+  retargetAssistantBrowserPrincipal
+} from "./actions.js";
 import { dispatchInternal } from "../internalDispatch.js";
 import type {
   AssistantDelegation,
@@ -71,11 +75,14 @@ export function assistantSystemPrompt(snapshot: {
   return [
     "You are Norma, the Discord Waifus dashboard assistant. You operate a locally-hosted multi-character Discord bot app on the user's behalf. Users may address you by name.",
     "Never ask the user to paste API keys or bot tokens into this chat: call request_secret so they can enter the secret in a secure form that bypasses the conversation entirely.",
-    "You have tools that read AND directly modify live configuration (waifus, servers, providers, agent configs, memories) plus a docs knowledge base (docs_search/docs_read).",
+    "You have tools that read AND directly modify live configuration (waifus, servers, providers, agent configs, memories), manage direct-only Remote Access, and search a docs knowledge base (docs_search/docs_read).",
     "Rules:",
-    "- Apply changes directly — the user chose an agent that writes without asking. Only DELETIONS (delete_waifu, delete_memory, clear_provider_key) need a confirmation in chat first. Config updates, model changes, bot wiring, and token forms never do.",
-    "- Always answer the user's NEWEST message. Messages starting with [secure-form] are automated receipts from the dashboard (not the user speaking); acknowledge them briefly and continue the task.",
+    "- Apply ordinary changes directly — the user chose an agent that writes without asking. Only DELETIONS (delete_waifu, delete_memory, clear_provider_key) need a confirmation in chat first. Config updates, model changes, bot wiring, and token forms never do.",
+    "- Remote Access is direct-only: pair.waifucave.com coordinates handshakes but never carries dashboard/API traffic. Never claim a relay or proxy fallback exists.",
+    "- Remote Access enable/disable, pairing approval, device revocation, and another actor's invitation cancellation create secure dashboard cards. You cannot confirm those cards yourself or replace their stored target. Invitation tokens, QR data, safety words, fingerprints, transcript bindings, and identity bundles must never be requested, quoted, or placed in chat.",
+    "- Always answer the user's NEWEST message. Messages starting with [secure-form] are automated receipts from the dashboard (not the user speaking); acknowledge them briefly and continue the task. Secure-action receipts stay outside the model transcript.",
     "- To connect a character to Discord: link_waifu_bot(waifuId, applicationId) first, then request_secret(purpose bot_token, botId = waifuId) for the token, then runtime_reload once saved. Open at most one secret form per reply.",
+    "- /api/runtime/stop and its tools stop a channel run; they do not stop or restart the host operating-system process.",
     "- Never echo API keys or bot tokens back to the user, even if they appear in tool output.",
     "- Prefer docs_search before answering how-to questions you are not certain about.",
     "- Be concise. Report what you changed with the field values that matter.",
@@ -108,6 +115,7 @@ async function buildSnapshot(
 export type AssistantServiceDeps = {
   app: FastifyInstance;
   store: ConversationStore;
+  actions: AssistantActionStore;
   dataRoot: string;
   actor: ConversationOwner;
   principal: RequestPrincipal;
@@ -137,7 +145,7 @@ async function assertConversationOwnerAuthorized(
 }
 
 export async function runAssistantTurn(deps: AssistantServiceDeps, conversationId: string, userContent: string): Promise<string> {
-  const { app, store, dataRoot, actor, principal, delegation } = deps;
+  const { app, store, actions, dataRoot, actor, principal, authorizationPrincipal, delegation } = deps;
   const conversation = store.get(conversationId, actor);
   if (!conversation) throw new AssistantTurnError(404, "Unknown conversation.");
   if (conversation.busy) throw new AssistantTurnError(409, "A turn is already running in this conversation.");
@@ -187,17 +195,59 @@ export async function runAssistantTurn(deps: AssistantServiceDeps, conversationI
       executeTool: async (name, argsJson) => {
         await assertConversationOwnerAuthorized(deps, conversationId);
         toolCallSequence += 1;
+        const toolDelegation = {
+          conversationId,
+          toolCallId: `tool-${toolCallSequence}-${randomUUID()}`,
+          ...(delegation?.pendingActionId
+            ? { pendingActionId: delegation.pendingActionId }
+            : {})
+        };
         const result = await executeAssistantTool(
           {
             app,
             actor,
             principal,
-            delegation: {
-              conversationId,
-              toolCallId: `tool-${toolCallSequence}-${randomUUID()}`,
-              ...(delegation?.pendingActionId
-                ? { pendingActionId: delegation.pendingActionId }
-                : {})
+            delegation: toolDelegation,
+            actions: {
+              propose: async (proposal) => {
+                await assertConversationOwnerAuthorized(deps, conversationId);
+                const action = actions.create({
+                  principal: authorizationPrincipal,
+                  delegation: toolDelegation,
+                  proposal
+                });
+                try {
+                  store.emit(conversationId, actor, {
+                    type: "confirmation_required",
+                    actionId: action.actionId,
+                    category: action.category,
+                    summary: action.summary
+                  });
+                } catch (error) {
+                  actions.discard(action.actionId);
+                  throw error;
+                }
+                return action;
+              },
+              cancelOwnedInvitation: async (invitationId) => {
+                await assertConversationOwnerAuthorized(deps, conversationId);
+                if (!actions.ownsInvitation(invitationId, authorizationPrincipal)) return undefined;
+                const target = `/api/remote-access/invitations/${encodeURIComponent(invitationId)}`;
+                const response = await dispatchInternal(
+                  app,
+                  retargetAssistantBrowserPrincipal(authorizationPrincipal, "DELETE", target),
+                  toolDelegation,
+                  {
+                    method: "DELETE",
+                    url: target,
+                    headers: { "idempotency-key": randomBytes(32).toString("base64url") }
+                  }
+                );
+                await assertConversationOwnerAuthorized(deps, conversationId);
+                if (response.statusCode !== 202) return response.body;
+                actions.forgetInvitation(invitationId);
+                return `Pairing invitation ${invitationId} was cancelled.`;
+              }
             }
           },
           name,
