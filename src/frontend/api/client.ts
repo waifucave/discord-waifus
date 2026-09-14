@@ -1,6 +1,9 @@
 import type {
   AssistantStoredMessage,
   AppConfig,
+  ActivationStartResult,
+  ActivationStatus,
+  ApprovePairingInput,
   ApiErrorBody,
   AgentConfig,
   ChannelBody,
@@ -15,15 +18,23 @@ import type {
   HealthResponse,
   MemoryStore,
   OrchestratorHistoryFile,
+  OperationAccepted,
+  PairInvitation,
+  PendingPairingRequestList,
   ProviderCredentialsBody,
   ProviderId,
   ProvidersResponse,
+  RemoteAccessConfig,
+  RemoteAccessDiagnostics,
+  RemoteAccessStatus,
   RuntimeState,
   ServerConfig,
   ServersResponse,
   StageManagerHistoryFile,
   ReviewerHistoryFile,
   StatusResponse,
+  TrustedDevice,
+  TrustedDeviceList,
   UpdateAgentConfigBody,
   UpdateMemoryBody,
   UpdateServerBody,
@@ -279,6 +290,65 @@ export const api = {
     ),
   diagnosticsBundle: (signal?: AbortSignal) =>
     request<DiagnosticBundle>("GET", "/api/diagnostics/bundle", { signal }),
+
+  // Remote access
+  remoteAccessStatus: (signal?: AbortSignal) =>
+    request<RemoteAccessStatus>("GET", "/api/remote-access", { signal }),
+  beginRemoteAccessActivation: () =>
+    request<ActivationStartResult>("POST", "/api/remote-access/activation"),
+  remoteAccessActivation: (activationOperationId: string, signal?: AbortSignal) =>
+    request<ActivationStatus>(
+      "GET",
+      `/api/remote-access/activation/${encodeURIComponent(activationOperationId)}`,
+      { signal }
+    ),
+  cancelRemoteAccessActivation: (activationOperationId: string) =>
+    request<void>(
+      "DELETE",
+      `/api/remote-access/activation/${encodeURIComponent(activationOperationId)}`
+    ),
+  updateRemoteAccess: (body: {
+    revision: string;
+    enabled?: boolean;
+    displayName?: string;
+  }) => request<RemoteAccessConfig | OperationAccepted>("PUT", "/api/remote-access", { body }),
+  createRemoteAccessInvitation: () =>
+    request<PairInvitation>("POST", "/api/remote-access/invitations", { body: {} }),
+  cancelRemoteAccessInvitation: (invitationId: string) =>
+    request<OperationAccepted>(
+      "DELETE",
+      `/api/remote-access/invitations/${encodeURIComponent(invitationId)}`
+    ),
+  remoteAccessPairingRequests: (signal?: AbortSignal) =>
+    request<PendingPairingRequestList>("GET", "/api/remote-access/pairing-requests", { signal }),
+  approveRemoteAccessPairing: (requestId: string, body: ApprovePairingInput) =>
+    request<OperationAccepted>(
+      "POST",
+      `/api/remote-access/pairing-requests/${encodeURIComponent(requestId)}/approve`,
+      { body }
+    ),
+  rejectRemoteAccessPairing: (requestId: string) =>
+    request<OperationAccepted>(
+      "POST",
+      `/api/remote-access/pairing-requests/${encodeURIComponent(requestId)}/reject`
+    ),
+  remoteAccessDevices: (signal?: AbortSignal) =>
+    request<TrustedDeviceList>("GET", "/api/remote-access/devices", { signal }),
+  renameRemoteAccessDevice: (deviceId: string, body: { revision: string; displayName: string }) =>
+    request<TrustedDevice>(
+      "PUT",
+      `/api/remote-access/devices/${encodeURIComponent(deviceId)}`,
+      { body }
+    ),
+  revokeRemoteAccessDevice: (deviceId: string) =>
+    request<OperationAccepted>(
+      "DELETE",
+      `/api/remote-access/devices/${encodeURIComponent(deviceId)}`
+    ),
+  reconnectRemoteAccess: () =>
+    request<OperationAccepted>("POST", "/api/remote-access/reconnect"),
+  remoteAccessDiagnostics: (signal?: AbortSignal) =>
+    request<RemoteAccessDiagnostics>("GET", "/api/remote-access/diagnostics", { signal }),
 
   // Config
   getConfig: (signal?: AbortSignal) => request<AppConfig>("GET", "/api/config", { signal }),
