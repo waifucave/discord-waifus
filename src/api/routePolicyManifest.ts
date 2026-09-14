@@ -4,7 +4,7 @@ import {
   type RetryClass,
   type RouteFieldPolicy,
   type RoutePolicyDefinition
-} from "./routePolicy.js";
+} from "./routePolicyDefinitions.js";
 
 function safe(
   path: string,

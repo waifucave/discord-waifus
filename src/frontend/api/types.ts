@@ -18,6 +18,43 @@ export type HealthResponse = {
   time: string;
 };
 
+export type ClientContext =
+  | { mode: "host" }
+  | {
+      mode: "remote";
+      selectedHostId: string;
+      connectionState: "direct" | "reconnecting" | "direct_unavailable";
+      connectionShellOrigin: string;
+    };
+
+export type RemoteAccessConfig = {
+  revision: string;
+  enabled: boolean;
+  displayName: string;
+  updatedAt: string;
+};
+
+export type RemoteAccessStatus = {
+  version: 1;
+  config: RemoteAccessConfig;
+  identity: {
+    deviceId: string;
+    installationFingerprint: string;
+  };
+  appVersion: string;
+  dashboardBuildId: string;
+  helperVersion: string | null;
+  helperReleaseSequence: string | null;
+  protocol: { major: number; minor: number };
+  capabilities: string[];
+  helperState: "disabled" | "starting" | "ready" | "degraded" | "failed";
+  activationState: "activation_required" | "active" | "renewal_due";
+  controlState: "inactive" | "connecting" | "connected" | "reconnecting" | "unavailable";
+  directState: "inactive" | "direct" | "reconnecting" | "direct_unavailable";
+  lastDirectAt: string | null;
+  lastErrorCode: string | null;
+};
+
 export type DiscordRuntime = {
   connected: boolean;
   orchestratorConnected: boolean;
