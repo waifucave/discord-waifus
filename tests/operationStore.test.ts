@@ -105,6 +105,25 @@ describe("OperationStore", () => {
     expect(disk).not.toContain("sk-this-value-must-not-survive");
   });
 
+  it("returns a helper-recovery reservation for a completed invitation without persisting its secret", async () => {
+    const { store } = await makeStore();
+    const invitationIntent = intent({
+      retryClass: "invitation_recovery",
+      method: "POST",
+      canonicalTarget: "/api/remote-access/invitations",
+      bodyBytes: Buffer.from("json\0{}", "utf8")
+    });
+    const created = await store.reserve(invitationIntent);
+    await store.complete(created.operationId, { outcome: "succeeded" });
+
+    await expect(store.reserve(invitationIntent)).resolves.toMatchObject({
+      kind: "recover",
+      operationId: created.operationId,
+      status: { status: "completed", outcome: "succeeded" }
+    });
+    expect(await readFile(store.filePath, "utf8")).not.toContain("WF1.");
+  });
+
   it("conflicts on a changed body but treats a different concrete target as an independent identity", async () => {
     const { store } = await makeStore();
     const first = await store.reserve(intent());

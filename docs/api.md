@@ -31,6 +31,11 @@ body returns `409 IdempotencyConflict`. A different path parameter or mutation-s
 different operation. Callers must retain the key until the outcome is definitive; they must never
 automatically retry a non-replayable operation with a new key after a disconnect.
 
+Invitation creation is the one named exception to ordinary response replay. Its bearer token is
+never persisted in the operation ledger. A completed same-actor, same-session, same-key, same-body
+retry asks the protected helper to recover the still-active creator-bound invitation; expiry,
+cancellation, or a different actor/session cannot retrieve it.
+
 An in-progress or uncertain retry returns only this `202` response:
 
 ```json
@@ -100,6 +105,13 @@ currently trusted remote `full_admin` principal through the authenticated direct
 - `POST /api/remote-access/reconnect` — reconnect the direct runtime.
 - `GET /api/remote-access/diagnostics` — sanitized direct-network and helper diagnostics.
 - `POST/GET/DELETE /api/remote-access/activation...` — local bound-browser-only activation flow.
+- `POST/DELETE /api/remote-access/invitations...` — create or cancel an attended invitation;
+  creation and cross-creator cancellation require a confirmed browser context.
+- `GET /api/remote-access/pairing-requests` and
+  `POST /api/remote-access/pairing-requests/:requestId/approve|reject` — list and decide pending
+  attended pairings; approval requires a confirmed browser context and the complete comparison.
+- `GET/PUT/DELETE /api/remote-access/devices...` — list, rename, or revoke trusted devices;
+  revocation requires a confirmed browser context.
 - `GET /api/remote-access/dashboard-manifest` — the exact canonical manifest for the host's pinned
   bundled dashboard.
 - `GET /api/remote-access/dashboard-assets/:buildId/*` — only a declared asset from that exact

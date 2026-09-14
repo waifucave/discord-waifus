@@ -455,6 +455,84 @@ async function main(capability) {
       })));
       continue;
     }
+    if (activation.command === "invitation_create") {
+      socket.write(frame(RESULT, canonicalJson({
+        command: "invitation_create",
+        expiresAt: "1786271130",
+        fullToken: `WF1.${Buffer.alloc(192).toString("base64url")}`,
+        invitationId: Buffer.alloc(16, 0x41).toString("base64url"),
+        ok: true,
+        shortCode: "01AB-CDEF"
+      })));
+      continue;
+    }
+    if (activation.command === "invitation_cancel") {
+      socket.write(frame(RESULT, canonicalJson({
+        command: "invitation_cancel",
+        invitationId: activation.invitationId,
+        ok: true
+      })));
+      continue;
+    }
+    if (activation.command === "pairing_requests_list") {
+      socket.write(frame(RESULT, canonicalJson({
+        command: "pairing_requests_list",
+        ok: true,
+        requests: [],
+        version: 1
+      })));
+      continue;
+    }
+    if (activation.command === "pairing_request_approve") {
+      socket.write(frame(RESULT, canonicalJson({
+        command: "pairing_request_approve",
+        ok: true,
+        requestId: activation.requestId
+      })));
+      continue;
+    }
+    if (activation.command === "pairing_request_reject") {
+      socket.write(frame(RESULT, canonicalJson({
+        command: "pairing_request_reject",
+        ok: true,
+        requestId: activation.requestId
+      })));
+      continue;
+    }
+    if (activation.command === "trusted_devices_list") {
+      socket.write(frame(RESULT, canonicalJson({
+        command: "trusted_devices_list",
+        devices: [],
+        ok: true,
+        version: 1
+      })));
+      continue;
+    }
+    if (activation.command === "trusted_device_rename") {
+      socket.write(frame(RESULT, canonicalJson({
+        command: "trusted_device_rename",
+        connectionState: "direct",
+        deviceId: activation.deviceId,
+        displayName: activation.input.displayName,
+        installationFingerprint: Buffer.alloc(16, 0x42).toString("base64url"),
+        lastSeenAt: "1786270800",
+        ok: true,
+        pairedAt: "1786000000",
+        platform: { arch: "arm64", os: "darwin" },
+        revision: String(BigInt(activation.input.revision) + 1n),
+        trustEpoch: "7",
+        version: 1
+      })));
+      continue;
+    }
+    if (activation.command === "trusted_device_revoke") {
+      socket.write(frame(RESULT, canonicalJson({
+        command: "trusted_device_revoke",
+        deviceId: activation.deviceId,
+        ok: true
+      })));
+      continue;
+    }
     if (activation.command === "activation_begin") {
       socket.write(frame(RESULT, canonicalJson({
         command: "activation_begin",

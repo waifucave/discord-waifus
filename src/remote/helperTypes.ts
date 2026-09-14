@@ -4,18 +4,32 @@ import {
   ActivationOperationIdSchema,
   ActivationVerificationUrlSchema,
   ActivationLifecycleStateSchema,
+  ApprovePairingInputV1Schema,
   ControlConnectionStateSchema,
   DirectConnectionStateSchema,
   HelperLifecycleStateSchema,
+  PairInvitationV1Schema,
+  PendingPairingRequestListV1Schema,
+  RenameTrustedDeviceInputV1Schema,
   RemoteAccessErrorCodeSchema,
   SecretStorageKindSchema,
-  type RemoteAccessErrorCode
+  TrustedDeviceListV1Schema,
+  TrustedDeviceSummaryV1Schema,
+  type ApprovePairingInputV1,
+  type PairInvitationV1,
+  type PendingPairingRequestListV1,
+  type RenameTrustedDeviceInputV1,
+  type RemoteAccessErrorCode,
+  type TrustedDeviceListV1,
+  type TrustedDeviceSummaryV1
 } from "../shared/schemas/remoteLifecycle.js";
 import {
   Base64Url16BytesSchema,
+  Base64Url32BytesSchema,
   CapabilityNameListSchema,
   ComponentHelloSchema,
   DeviceIdSchema,
+  PrincipalStableIdSchema,
   ProtocolVersionSchema,
   Uint64DecimalSchema,
   type ComponentHello,
@@ -110,6 +124,46 @@ export const HelperActivationCancelSchema = z.object({
 
 export type HelperActivationCancel = z.infer<typeof HelperActivationCancelSchema>;
 
+const HelperLocalRequestActorSchema = z.object({
+  kind: z.literal("local"),
+  stableId: z.literal("local")
+}).strict();
+
+const HelperRemoteRequestActorBaseSchema = z.object({
+  kind: z.literal("remote_device"),
+  stableId: PrincipalStableIdSchema,
+  deviceId: DeviceIdSchema,
+  trustEpoch: Uint64DecimalSchema
+}).strict();
+
+const HelperRemoteRequestActorSchema = HelperRemoteRequestActorBaseSchema.refine(
+  (value) => value.stableId === `remote:${value.deviceId}`,
+  { path: ["stableId"], message: "Remote actor stable ID must derive from device ID." }
+);
+
+export const HelperRequestActorSchema = z.discriminatedUnion("kind", [
+  HelperLocalRequestActorSchema,
+  HelperRemoteRequestActorSchema
+]);
+
+export type HelperRequestActor = z.infer<typeof HelperRequestActorSchema>;
+
+export const HelperConfirmedAdminActorSchema = z.discriminatedUnion("kind", [
+  HelperLocalRequestActorSchema.extend({
+    hostServerLaunchId: Base64Url32BytesSchema,
+    browserSessionId: Base64Url32BytesSchema
+  }),
+  HelperRemoteRequestActorBaseSchema.extend({
+    gatewayLaunchId: Base64Url32BytesSchema,
+    browserSessionId: Base64Url32BytesSchema
+  }).refine(
+    (value) => value.stableId === `remote:${value.deviceId}`,
+    { path: ["stableId"], message: "Remote actor stable ID must derive from device ID." }
+  )
+]);
+
+export type HelperConfirmedAdminActor = z.infer<typeof HelperConfirmedAdminActorSchema>;
+
 export type VerifiedHelperSelection = {
   readonly binaryPath: string;
   readonly helperVersion: string;
@@ -159,6 +213,36 @@ export type AuthenticatedHelperClient = {
   reconnectRuntime: () => Promise<HelperRuntimeStatus>;
   stopRuntime: () => Promise<HelperRuntimeStatus>;
   registerGatewayLaunch: (gatewayLaunchId: string, expiresAt: string) => Promise<void>;
+  createInvitation: (
+    actor: HelperConfirmedAdminActor,
+    idempotencyKey: string
+  ) => Promise<PairInvitationV1>;
+  cancelInvitation: (
+    invitationId: string,
+    actor: HelperConfirmedAdminActor
+  ) => Promise<void>;
+  listPairingRequests: (
+    actor: HelperRequestActor
+  ) => Promise<PendingPairingRequestListV1>;
+  approvePairingRequest: (
+    requestId: string,
+    input: ApprovePairingInputV1,
+    actor: HelperConfirmedAdminActor
+  ) => Promise<void>;
+  rejectPairingRequest: (
+    requestId: string,
+    actor: HelperRequestActor
+  ) => Promise<void>;
+  listDevices: () => Promise<TrustedDeviceListV1>;
+  renameDevice: (
+    deviceId: string,
+    input: RenameTrustedDeviceInputV1,
+    actor: HelperRequestActor
+  ) => Promise<TrustedDeviceSummaryV1>;
+  revokeDevice: (
+    deviceId: string,
+    actor: HelperConfirmedAdminActor
+  ) => Promise<void>;
   request: (request: HelperRemoteRequest) => Promise<HelperRemoteResponse>;
   attachRequestBridge: (bridge: RemoteRequestBridge) => void;
   close: () => Promise<void>;

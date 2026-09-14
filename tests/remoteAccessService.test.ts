@@ -3,6 +3,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createRuntimeState } from "../src/backend/runtime.js";
 import {
+  RemoteAccessActorUnauthorizedError,
   RemoteAccessService,
   type HelperSupervisorController
 } from "../src/backend/remoteAccess/remoteAccessService.js";
@@ -67,6 +68,7 @@ class FakeSupervisor implements HelperSupervisorController {
   attachedBridge: unknown;
   closeCalls = 0;
   startError: Error | undefined;
+  managementCalls: Array<{ command: string; input: unknown[] }> = [];
   #snapshot: HelperSupervisorSnapshot;
   readonly #listeners = new Set<(snapshot: HelperSupervisorSnapshot) => void>();
 
@@ -134,6 +136,58 @@ class FakeSupervisor implements HelperSupervisorController {
 
   async cancelActivation(): Promise<never> {
     throw new Error("Activation is not configured in this lifecycle test.");
+  }
+
+  async createInvitation(...input: unknown[]) {
+    this.managementCalls.push({ command: "invitation_create", input });
+    return {
+      invitationId: Buffer.alloc(16, 0x41).toString("base64url"),
+      fullToken: `WF1.${Buffer.alloc(192).toString("base64url")}`,
+      shortCode: "01AB-CDEF",
+      expiresAt: "1786271130"
+    };
+  }
+
+  async cancelInvitation(...input: unknown[]): Promise<void> {
+    this.managementCalls.push({ command: "invitation_cancel", input });
+  }
+
+  async listPairingRequests(...input: unknown[]) {
+    this.managementCalls.push({ command: "pairing_requests_list", input });
+    return { version: 1 as const, requests: [] };
+  }
+
+  async approvePairingRequest(...input: unknown[]): Promise<void> {
+    this.managementCalls.push({ command: "pairing_request_approve", input });
+  }
+
+  async rejectPairingRequest(...input: unknown[]): Promise<void> {
+    this.managementCalls.push({ command: "pairing_request_reject", input });
+  }
+
+  async listDevices(...input: unknown[]) {
+    this.managementCalls.push({ command: "trusted_devices_list", input });
+    return { version: 1 as const, devices: [] };
+  }
+
+  async renameDevice(deviceId: string, input: { displayName: string }, ...rest: unknown[]) {
+    this.managementCalls.push({ command: "trusted_device_rename", input: [deviceId, input, ...rest] });
+    return {
+      version: 1 as const,
+      deviceId,
+      displayName: input.displayName,
+      platform: { os: "darwin" as const, arch: "arm64" as const },
+      installationFingerprint: Buffer.alloc(16, 0x42).toString("base64url"),
+      trustEpoch: "7",
+      revision: "2",
+      pairedAt: "1786000000",
+      lastSeenAt: "1786270800",
+      connectionState: "direct" as const
+    };
+  }
+
+  async revokeDevice(...input: unknown[]): Promise<void> {
+    this.managementCalls.push({ command: "trusted_device_revoke", input });
   }
 
   async close(): Promise<void> {
@@ -363,6 +417,92 @@ describe("host remote-access lifecycle service", () => {
       lastErrorCode: "coordination_unavailable"
     });
     expect(events).toContain("unavailable:direct:coordination_unavailable");
+  });
+
+  it("delegates strict pairing and trusted-device management to the authenticated helper", async () => {
+    const root = await makeRoot();
+    await enableRemoteAccess(root);
+    const supervisor = new FakeSupervisor();
+    const remote = service(root, supervisor);
+    await remote.start();
+    const actor = {
+      kind: "local" as const,
+      stableId: "local" as const,
+      hostServerLaunchId: Buffer.alloc(32, 0x31).toString("base64url"),
+      browserSessionId: Buffer.alloc(32, 0x32).toString("base64url")
+    };
+    const requestActor = { kind: "local" as const, stableId: "local" as const };
+
+    await expect(remote.createInvitation(
+      actor,
+      Buffer.alloc(32, 0x33).toString("base64url")
+    )).resolves.toMatchObject({ shortCode: "01AB-CDEF" });
+    await expect(remote.listPairingRequests(requestActor))
+      .resolves.toEqual({ version: 1, requests: [] });
+    await expect(remote.cancelInvitation(
+      Buffer.alloc(16, 0x41).toString("base64url"),
+      actor
+    )).resolves.toBeUndefined();
+    const pairingRequestId = Buffer.alloc(16, 0x45).toString("base64url");
+    const approval = {
+      invitationGeneration: "1",
+      remoteIdentityBundleHash: Buffer.alloc(32, 0x24).toString("base64url"),
+      transcriptHash: Buffer.alloc(32, 0x25).toString("base64url"),
+      channelBinding: Buffer.alloc(32, 0x26).toString("base64url"),
+      sasIndices: [1, 23, 456, 789, 1023] as [number, number, number, number, number],
+      sasFingerprint: "a1b2c3d4e5f6"
+    };
+    await expect(remote.approvePairingRequest(pairingRequestId, approval, actor))
+      .resolves.toBeUndefined();
+    await expect(remote.rejectPairingRequest(pairingRequestId, requestActor))
+      .resolves.toBeUndefined();
+    await expect(remote.listDevices()).resolves.toEqual({ version: 1, devices: [] });
+    await expect(remote.renameDevice(
+      "travel-mac",
+      { revision: "1", displayName: "Travel Laptop" },
+      requestActor
+    )).resolves.toMatchObject({ displayName: "Travel Laptop", revision: "2" });
+    await expect(remote.revokeDevice("travel-mac", actor)).resolves.toBeUndefined();
+
+    expect(supervisor.managementCalls.map((call) => call.command)).toEqual([
+      "invitation_create",
+      "pairing_requests_list",
+      "invitation_cancel",
+      "pairing_request_approve",
+      "pairing_request_reject",
+      "trusted_devices_list",
+      "trusted_device_rename",
+      "trusted_device_revoke"
+    ]);
+  });
+
+  it("rechecks a remote administrative actor against current trust before helper delegation", async () => {
+    const root = await makeRoot();
+    await enableRemoteAccess(root, { deviceId: "travel-mac", trustEpoch: "7" });
+    const supervisor = new FakeSupervisor();
+    const remote = service(root, supervisor);
+    await remote.start();
+    const actor = {
+      kind: "remote_device" as const,
+      stableId: "remote:travel-mac" as const,
+      deviceId: "travel-mac",
+      trustEpoch: "7",
+      gatewayLaunchId: Buffer.alloc(32, 0x31).toString("base64url"),
+      browserSessionId: Buffer.alloc(32, 0x32).toString("base64url")
+    };
+    const paths = remoteStatePaths(root);
+    await writeJson(paths.trustIndex, {
+      version: 1,
+      trustEpochHighWater: "8",
+      resetTombstone: "0",
+      pairs: []
+    });
+
+    await expect(remote.createInvitation(
+      actor,
+      Buffer.alloc(32, 0x33).toString("base64url")
+    )).rejects.toBeInstanceOf(RemoteAccessActorUnauthorizedError);
+    expect(supervisor.managementCalls).toEqual([]);
   });
 
   it("keeps trust authorization isolated by data root and rechecks revocation", async () => {

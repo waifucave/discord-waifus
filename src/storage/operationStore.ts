@@ -151,6 +151,13 @@ export type OperationReservation =
       requestId: string;
       idempotencyKeyHash: string;
       status: OperationStatusV1;
+    }
+  | {
+      kind: "recover";
+      operationId: OperationId;
+      requestId: string;
+      idempotencyKeyHash: string;
+      status: OperationStatusV1;
     };
 
 export class OperationIdempotencyConflictError extends Error {
@@ -225,9 +232,15 @@ export class OperationStore {
           idempotencyKeyHash: existing.idempotencyKeyHash,
           status: publicOperationStatus(existing)
         };
-        return existing.response
-          ? { kind: "replay", ...base, response: existing.response }
-          : { kind: "pending", ...base };
+        if (existing.response) return { kind: "replay", ...base, response: existing.response };
+        if (
+          existing.retryClass === "invitation_recovery"
+          && existing.status === "completed"
+          && existing.outcome === "succeeded"
+        ) {
+          return { kind: "recover", ...base };
+        }
+        return { kind: "pending", ...base };
       }
 
       const operationId = this.createUniqueOperationId(ledger.records);

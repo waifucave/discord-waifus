@@ -28,7 +28,29 @@ function principal() {
   });
 }
 
-function fakeService() {
+function confirmedPrincipal(method: "POST" | "DELETE", canonicalTarget: string) {
+  return createRemoteRequestPrincipal({
+    kind: "remote_device",
+    stableId: "remote:travel-mac",
+    deviceId: "travel-mac",
+    peerFingerprint: bytes16(0x31),
+    transportSessionId: bytes16(0x32),
+    trustEpoch: "3",
+    browserContext: {
+      version: 1,
+      gatewayLaunchId: bytes32(0x33),
+      browserSessionId: bytes32(0x34),
+      requestNonce: bytes16(0x35),
+      method,
+      canonicalTarget,
+      csrfValidated: true
+    }
+  });
+}
+
+function fakeService(
+  onCreateInvitation?: (actor: unknown, idempotencyKey: string) => void
+) {
   return {
     getStatus: async () => ({
       version: 1,
@@ -95,11 +117,41 @@ function fakeService() {
       state: "pending",
       expiresAt: "1786271400"
     }),
-    cancelActivation: async () => {}
+    cancelActivation: async () => {},
+    createInvitation: async (actor: unknown, idempotencyKey: string) => {
+      onCreateInvitation?.(actor, idempotencyKey);
+      return {
+        invitationId: bytes16(0x41),
+        fullToken: `WF1.${Buffer.alloc(192).toString("base64url")}`,
+        shortCode: "01AB-CDEF",
+        expiresAt: "1786271130"
+      };
+    },
+    cancelInvitation: async () => {},
+    listPairingRequests: async () => ({ version: 1, requests: [] }),
+    approvePairingRequest: async () => {},
+    rejectPairingRequest: async () => {},
+    listDevices: async () => ({ version: 1, devices: [] }),
+    renameDevice: async (deviceId: string, input: { displayName: string }) => ({
+      version: 1,
+      deviceId,
+      displayName: input.displayName,
+      platform: { os: "darwin", arch: "arm64" },
+      installationFingerprint: bytes16(0x42),
+      trustEpoch: "3",
+      revision: "2",
+      pairedAt: "1786000000",
+      lastSeenAt: "1786270800",
+      connectionState: "direct"
+    }),
+    revokeDevice: async () => {}
   } as unknown as RemoteAccessService;
 }
 
-async function makeApp(authorized = true) {
+async function makeApp(
+  authorized = true,
+  remoteAccess = fakeService()
+) {
   const root = await makeTempRoot("waifus-remote-authorization-");
   roots.push(root);
   const runtime = createRuntimeState({
@@ -118,7 +170,7 @@ async function makeApp(authorized = true) {
     runtime,
     storage: new StorageService(root),
     remoteTrust: { isAuthorized: () => authorized },
-    remoteAccess: fakeService(),
+    remoteAccess,
     browserSecurity: { listenerHost: "127.0.0.1", port: 3888, mode: "test" }
   });
   apps.push(app);
@@ -152,6 +204,129 @@ describe("remote-access route authorization", () => {
     });
     expect(accepted.statusCode).toBe(202);
     expect(accepted.json()).toMatchObject({ status: "accepted" });
+  });
+
+  it("exposes redacted pairing requests and trusted devices to a full admin", async () => {
+    const app = await makeApp();
+    for (const url of [
+      "/api/remote-access/pairing-requests",
+      "/api/remote-access/devices"
+    ]) {
+      const response = await dispatchInternal(app, principal(), undefined, {
+        method: "GET",
+        url
+      });
+      expect(response.statusCode, url).toBe(200);
+      expect(response.headers["cache-control"], url).toBe("no-store");
+      expect(response.json(), url).toMatchObject({ version: 1 });
+    }
+  });
+
+  it("requires a helper-verified browser context for trust expansion and revocation", async () => {
+    const app = await makeApp();
+    const invitePath = "/api/remote-access/invitations";
+    const withoutBrowser = await dispatchInternal(app, principal(), undefined, {
+      method: "POST",
+      url: invitePath,
+      headers: { "idempotency-key": bytes32(0x62) },
+      payload: {}
+    });
+    expect(withoutBrowser.statusCode).toBe(403);
+    expect(withoutBrowser.json()).toMatchObject({ error: "ConfirmedBrowserRequired" });
+
+    const invite = await dispatchInternal(app, confirmedPrincipal("POST", invitePath), undefined, {
+      method: "POST",
+      url: invitePath,
+      headers: { "idempotency-key": bytes32(0x63) },
+      payload: {}
+    });
+    expect(invite.statusCode).toBe(201);
+    expect(invite.headers["cache-control"]).toContain("no-store");
+    expect(invite.json()).toMatchObject({
+      invitationId: bytes16(0x41),
+      shortCode: "01AB-CDEF"
+    });
+
+    const revokePath = "/api/remote-access/devices/travel-mac";
+    const revoked = await dispatchInternal(
+      app,
+      confirmedPrincipal("DELETE", revokePath),
+      undefined,
+      {
+        method: "DELETE",
+        url: revokePath,
+        headers: { "idempotency-key": bytes32(0x64) }
+      }
+    );
+    expect(revoked.statusCode).toBe(202);
+    expect(revoked.json()).toMatchObject({ status: "accepted" });
+  });
+
+  it("recovers the same helper-held invitation with the same actor, session, key, and body", async () => {
+    const calls: Array<{ actor: unknown; idempotencyKey: string }> = [];
+    const app = await makeApp(true, fakeService((actor, idempotencyKey) => {
+      calls.push({ actor, idempotencyKey });
+    }));
+    const path = "/api/remote-access/invitations";
+    const key = bytes32(0x67);
+    const request = {
+      method: "POST" as const,
+      url: path,
+      headers: { "idempotency-key": key },
+      payload: {}
+    };
+
+    const first = await dispatchInternal(
+      app,
+      confirmedPrincipal("POST", path),
+      undefined,
+      request
+    );
+    const recovered = await dispatchInternal(
+      app,
+      confirmedPrincipal("POST", path),
+      undefined,
+      request
+    );
+
+    expect(first.statusCode).toBe(201);
+    expect(recovered.statusCode).toBe(201);
+    expect(recovered.body).toBe(first.body);
+    expect(recovered.headers["cache-control"]).toContain("no-store");
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toEqual(calls[1]);
+  });
+
+  it("validates pairing approval and device rename bodies with strict shared schemas", async () => {
+    const app = await makeApp();
+    const requestId = bytes16(0x45);
+    const approvalPath = `/api/remote-access/pairing-requests/${requestId}/approve`;
+    const invalidApproval = await dispatchInternal(
+      app,
+      confirmedPrincipal("POST", approvalPath),
+      undefined,
+      {
+        method: "POST",
+        url: approvalPath,
+        headers: { "idempotency-key": bytes32(0x65) },
+        payload: { invitationGeneration: "1", sasFingerprint: "a1b2c3d4e5f6" }
+      }
+    );
+    expect(invalidApproval.statusCode).toBe(400);
+    expect(invalidApproval.json()).toMatchObject({ error: "ValidationError" });
+
+    const renamed = await dispatchInternal(app, principal(), undefined, {
+      method: "PUT",
+      url: "/api/remote-access/devices/travel-mac",
+      headers: { "idempotency-key": bytes32(0x66) },
+      payload: { revision: "1", displayName: "Travel Laptop" }
+    });
+    expect(renamed.statusCode).toBe(200);
+    expect(renamed.json()).toMatchObject({
+      deviceId: "travel-mac",
+      displayName: "Travel Laptop",
+      revision: "2"
+    });
   });
 
   it("keeps activation local-only and requires a real bound browser session", async () => {

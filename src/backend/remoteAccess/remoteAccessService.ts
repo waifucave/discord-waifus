@@ -8,9 +8,21 @@ import {
   ActivationOperationIdSchema,
   ActivationStartResultSchema,
   ActivationStatusSchema,
+  ApprovePairingInputV1Schema,
+  PairInvitationV1Schema,
+  PendingPairingRequestListV1Schema,
+  RenameTrustedDeviceInputV1Schema,
+  TrustedDeviceListV1Schema,
+  TrustedDeviceSummaryV1Schema,
+  type ApprovePairingInputV1,
+  type PairInvitationV1,
+  type PendingPairingRequestListV1,
   RemoteAccessDiagnosticsV1Schema,
   RemoteAccessErrorCodeSchema,
   RemoteAccessStatusV1Schema,
+  type RenameTrustedDeviceInputV1,
+  type TrustedDeviceListV1,
+  type TrustedDeviceSummaryV1,
   UpdateRemoteAccessInputV1Schema,
   type ActivationStartResult,
   type ActivationStatus,
@@ -19,18 +31,26 @@ import {
   type RemoteAccessStatusV1,
   type RemoteAccessErrorCode
 } from "../../shared/schemas/remoteLifecycle.js";
-import { Base64Url32BytesSchema } from "../../shared/schemas/remoteProtocol.js";
+import {
+  Base64Url16BytesSchema,
+  Base64Url32BytesSchema,
+  DeviceIdSchema
+} from "../../shared/schemas/remoteProtocol.js";
 import {
   RemoteAccessRuntimeSummarySchema,
   type RemoteAccessRuntimeSummary
 } from "../runtime.js";
 import {
   HelperCommandError,
+  HelperConfirmedAdminActorSchema,
+  HelperRequestActorSchema,
   HelperSupervisorError,
   type HelperActivationCancel,
   type HelperActivationPoll,
   type HelperActivationStart,
   type HelperIdentityStatus,
+  type HelperConfirmedAdminActor,
+  type HelperRequestActor,
   type HelperSupervisorSnapshot
 } from "../../remote/helperTypes.js";
 import { RemoteAccessEvents } from "./events.js";
@@ -60,6 +80,30 @@ export type HelperSupervisorController = {
   beginActivation: (operationId: string) => Promise<HelperActivationStart>;
   pollActivation: (operationId: string) => Promise<HelperActivationPoll>;
   cancelActivation: (operationId: string) => Promise<HelperActivationCancel>;
+  createInvitation?: (
+    actor: ConfirmedAdminActor,
+    idempotencyKey: string
+  ) => Promise<PairInvitationV1>;
+  cancelInvitation?: (invitationId: string, actor: ConfirmedAdminActor) => Promise<void>;
+  listPairingRequests?: (
+    actor: RemoteAccessRequestActor
+  ) => Promise<PendingPairingRequestListV1>;
+  approvePairingRequest?: (
+    requestId: string,
+    input: ApprovePairingInputV1,
+    actor: ConfirmedAdminActor
+  ) => Promise<void>;
+  rejectPairingRequest?: (
+    requestId: string,
+    actor: RemoteAccessRequestActor
+  ) => Promise<void>;
+  listDevices?: () => Promise<TrustedDeviceListV1>;
+  renameDevice?: (
+    deviceId: string,
+    input: RenameTrustedDeviceInputV1,
+    actor: RemoteAccessRequestActor
+  ) => Promise<TrustedDeviceSummaryV1>;
+  revokeDevice?: (deviceId: string, actor: ConfirmedAdminActor) => Promise<void>;
   close: () => Promise<void>;
 };
 
@@ -67,6 +111,9 @@ export type LocalActivationActor = {
   readonly hostServerLaunchId: string;
   readonly browserSessionId: string;
 };
+
+export type RemoteAccessRequestActor = HelperRequestActor;
+export type ConfirmedAdminActor = HelperConfirmedAdminActor;
 
 type ActivationOperation = {
   readonly operationId: string;
@@ -100,6 +147,13 @@ export class RemoteAccessServiceUnavailableError extends Error {
   constructor() {
     super("Remote-access state is unavailable.");
     this.name = "RemoteAccessServiceUnavailableError";
+  }
+}
+
+export class RemoteAccessActorUnauthorizedError extends Error {
+  constructor() {
+    super("The remote administrative actor is no longer authorized.");
+    this.name = "RemoteAccessActorUnauthorizedError";
   }
 }
 
@@ -323,6 +377,121 @@ export class RemoteAccessService {
     }
     await this.#options.supervisor.reconnectRuntime();
     this.#rememberHelperSnapshot(this.#options.supervisor.snapshot());
+  }
+
+  async createInvitation(
+    actorValue: ConfirmedAdminActor,
+    idempotencyKeyValue: string
+  ): Promise<PairInvitationV1> {
+    this.#requireActiveManagement();
+    const actor = await this.#authorizeConfirmedActor(actorValue);
+    const idempotencyKey = Base64Url32BytesSchema.parse(idempotencyKeyValue);
+    const method = this.#options.supervisor.createInvitation;
+    if (!method) throw new RemoteAccessServiceUnavailableError();
+    return PairInvitationV1Schema.parse(
+      await method.call(this.#options.supervisor, actor, idempotencyKey)
+    );
+  }
+
+  async cancelInvitation(
+    invitationId: string,
+    actorValue: ConfirmedAdminActor
+  ): Promise<void> {
+    this.#requireActiveManagement();
+    const actor = await this.#authorizeConfirmedActor(actorValue);
+    const method = this.#options.supervisor.cancelInvitation;
+    if (!method) throw new RemoteAccessServiceUnavailableError();
+    await method.call(this.#options.supervisor, Base64Url16BytesSchema.parse(invitationId), actor);
+  }
+
+  async listPairingRequests(
+    actorValue: RemoteAccessRequestActor
+  ): Promise<PendingPairingRequestListV1> {
+    this.#requireActiveManagement();
+    const actor = await this.#authorizeRequestActor(actorValue);
+    const method = this.#options.supervisor.listPairingRequests;
+    if (!method) throw new RemoteAccessServiceUnavailableError();
+    return PendingPairingRequestListV1Schema.parse(
+      await method.call(this.#options.supervisor, actor)
+    );
+  }
+
+  async approvePairingRequest(
+    requestId: string,
+    inputValue: ApprovePairingInputV1,
+    actorValue: ConfirmedAdminActor
+  ): Promise<void> {
+    this.#requireActiveManagement();
+    const actor = await this.#authorizeConfirmedActor(actorValue);
+    const input = ApprovePairingInputV1Schema.parse(inputValue);
+    const method = this.#options.supervisor.approvePairingRequest;
+    if (!method) throw new RemoteAccessServiceUnavailableError();
+    await method.call(
+      this.#options.supervisor,
+      Base64Url16BytesSchema.parse(requestId),
+      input,
+      actor
+    );
+  }
+
+  async rejectPairingRequest(
+    requestId: string,
+    actorValue: RemoteAccessRequestActor
+  ): Promise<void> {
+    this.#requireActiveManagement();
+    const actor = await this.#authorizeRequestActor(actorValue);
+    const method = this.#options.supervisor.rejectPairingRequest;
+    if (!method) throw new RemoteAccessServiceUnavailableError();
+    await method.call(
+      this.#options.supervisor,
+      Base64Url16BytesSchema.parse(requestId),
+      actor
+    );
+  }
+
+  async listDevices(): Promise<TrustedDeviceListV1> {
+    this.#requireState();
+    const method = this.#options.supervisor.listDevices;
+    if (!method) throw new RemoteAccessServiceUnavailableError();
+    return TrustedDeviceListV1Schema.parse(await method.call(this.#options.supervisor));
+  }
+
+  async renameDevice(
+    deviceIdValue: string,
+    inputValue: RenameTrustedDeviceInputV1,
+    actorValue: RemoteAccessRequestActor
+  ): Promise<TrustedDeviceSummaryV1> {
+    this.#requireState();
+    const actor = await this.#authorizeRequestActor(actorValue);
+    const deviceId = DeviceIdSchema.parse(deviceIdValue);
+    const input = RenameTrustedDeviceInputV1Schema.parse(inputValue);
+    const method = this.#options.supervisor.renameDevice;
+    if (!method) throw new RemoteAccessServiceUnavailableError();
+    const result = TrustedDeviceSummaryV1Schema.parse(
+      await method.call(this.#options.supervisor, deviceId, input, actor)
+    );
+    if (result.deviceId !== deviceId) {
+      throw new HelperSupervisorError(
+        "helper_incompatible",
+        "Helper returned a different trusted-device ID."
+      );
+    }
+    return result;
+  }
+
+  async revokeDevice(
+    deviceIdValue: string,
+    actorValue: ConfirmedAdminActor
+  ): Promise<void> {
+    this.#requireState();
+    const actor = await this.#authorizeConfirmedActor(actorValue);
+    const method = this.#options.supervisor.revokeDevice;
+    if (!method) throw new RemoteAccessServiceUnavailableError();
+    await method.call(
+      this.#options.supervisor,
+      DeviceIdSchema.parse(deviceIdValue),
+      actor
+    );
   }
 
   async getStatus(): Promise<RemoteAccessStatusV1> {
@@ -658,6 +827,39 @@ export class RemoteAccessService {
       throw new RemoteAccessServiceUnavailableError();
     }
     return this.#state;
+  }
+
+  #requireActiveManagement(): void {
+    this.#requireState();
+    if (!this.#summary?.enabled || this.#summary.helperState !== "ready") {
+      throw new RemoteAccessInactiveError();
+    }
+  }
+
+  async #authorizeRequestActor(
+    actorValue: RemoteAccessRequestActor
+  ): Promise<RemoteAccessRequestActor> {
+    const actor = HelperRequestActorSchema.parse(actorValue);
+    if (
+      actor.kind === "remote_device"
+      && !await this.#stateStore.isAuthorized(actor.deviceId, actor.trustEpoch)
+    ) {
+      throw new RemoteAccessActorUnauthorizedError();
+    }
+    return Object.freeze(actor);
+  }
+
+  async #authorizeConfirmedActor(
+    actorValue: ConfirmedAdminActor
+  ): Promise<ConfirmedAdminActor> {
+    const actor = HelperConfirmedAdminActorSchema.parse(actorValue);
+    if (
+      actor.kind === "remote_device"
+      && !await this.#stateStore.isAuthorized(actor.deviceId, actor.trustEpoch)
+    ) {
+      throw new RemoteAccessActorUnauthorizedError();
+    }
+    return Object.freeze(actor);
   }
 
   #nowSeconds(): bigint {

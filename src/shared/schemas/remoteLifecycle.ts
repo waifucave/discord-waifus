@@ -329,6 +329,8 @@ export const PendingPairingRequestListV1Schema = z.object({
   requests: z.array(PendingPairingRequestV1Schema).max(MAX_PENDING_PAIRING_REQUESTS)
 }).strict();
 
+export type PendingPairingRequestListV1 = z.infer<typeof PendingPairingRequestListV1Schema>;
+
 export const ApprovePairingInputV1Schema = z.object({
   invitationGeneration: Uint64DecimalSchema,
   remoteIdentityBundleHash: Base64Url32BytesSchema,
@@ -370,6 +372,8 @@ export const TrustedDeviceListV1Schema = z.object({
   version: z.literal(1),
   devices: z.array(TrustedDeviceSummaryV1Schema).max(MAX_TRUSTED_DEVICES)
 }).strict();
+
+export type TrustedDeviceListV1 = z.infer<typeof TrustedDeviceListV1Schema>;
 
 export const RenameTrustedDeviceInputV1Schema = z.object({
   revision: Uint64DecimalSchema,

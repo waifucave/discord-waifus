@@ -88,6 +88,46 @@ export const ROUTE_POLICY_MANIFEST: readonly RoutePolicyDefinition[] = Object.fr
     "reconciled",
     "remote_access.reconnect"
   ),
+  {
+    method: "POST",
+    path: "/api/remote-access/invitations",
+    remotePolicy: "full_admin",
+    retryClass: "invitation_recovery",
+    auditAction: "remote_access.invitation.create",
+    persistResponse: false
+  },
+  mutation(
+    "DELETE",
+    "/api/remote-access/invitations/:invitationId",
+    "reconciled",
+    "remote_access.invitation.cancel"
+  ),
+  safe("/api/remote-access/pairing-requests"),
+  mutation(
+    "POST",
+    "/api/remote-access/pairing-requests/:requestId/approve",
+    "reconciled",
+    "remote_access.pairing.approve"
+  ),
+  mutation(
+    "POST",
+    "/api/remote-access/pairing-requests/:requestId/reject",
+    "reconciled",
+    "remote_access.pairing.reject"
+  ),
+  safe("/api/remote-access/devices"),
+  mutation(
+    "PUT",
+    "/api/remote-access/devices/:deviceId",
+    "transactional",
+    "remote_access.device.rename"
+  ),
+  mutation(
+    "DELETE",
+    "/api/remote-access/devices/:deviceId",
+    "reconciled",
+    "remote_access.device.revoke"
+  ),
   safe("/api/remote-access/diagnostics"),
   safe("/api/remote-access/dashboard-manifest"),
   safe("/api/remote-access/dashboard-assets/:buildId/*"),

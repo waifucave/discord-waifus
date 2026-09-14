@@ -82,6 +82,30 @@ function helperClient(overrides: Partial<AuthenticatedHelperClient> = {}): Authe
     reconnectRuntime: async () => helperStatus({ controlState: "reconnecting", directState: "reconnecting" }),
     stopRuntime: async () => helperStatus({ controlState: "inactive", directState: "inactive" }),
     registerGatewayLaunch: async () => {},
+    createInvitation: async () => ({
+      invitationId: Buffer.alloc(16, 0x41).toString("base64url"),
+      fullToken: `WF1.${Buffer.alloc(192).toString("base64url")}`,
+      shortCode: "01AB-CDEF",
+      expiresAt: "1786271130"
+    }),
+    cancelInvitation: async () => {},
+    listPairingRequests: async () => ({ version: 1, requests: [] }),
+    approvePairingRequest: async () => {},
+    rejectPairingRequest: async () => {},
+    listDevices: async () => ({ version: 1, devices: [] }),
+    renameDevice: async (deviceId, input) => ({
+      version: 1,
+      deviceId,
+      displayName: input.displayName,
+      platform: { os: "darwin", arch: "arm64" },
+      installationFingerprint: Buffer.alloc(16, 0x42).toString("base64url"),
+      trustEpoch: "7",
+      revision: String(BigInt(input.revision) + 1n),
+      pairedAt: "1786000000",
+      lastSeenAt: "1786270800",
+      connectionState: "direct"
+    }),
+    revokeDevice: async () => {},
     request: async () => ({
       statusCode: 204,
       statusMessage: "No Content",
