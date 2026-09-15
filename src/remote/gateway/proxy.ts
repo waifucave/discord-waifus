@@ -14,7 +14,6 @@ import {
   sanitizeGatewayRequestHeaders,
   sanitizeGatewayResponseHeaders
 } from "./headerPolicy.js";
-import { DASHBOARD_SECURITY_HEADERS } from "./security.js";
 import type { RemoteGatewayHandlerSecurity } from "./server.js";
 
 export type RemoteSelectedHostProxyOptions = {
@@ -93,7 +92,9 @@ export class RemoteSelectedHostProxy {
         upstreamOrigins: this.#options.upstreamOrigins
       });
       headers["cache-control"] = "no-store";
-      for (const [name, value] of Object.entries(DASHBOARD_SECURITY_HEADERS)) headers[name] = value;
+      for (const [name, value] of Object.entries(security.responseSecurityHeaders)) {
+        headers[name] = value;
+      }
       const sessionCookie = reply.getHeader("set-cookie");
       if (sessionCookie !== undefined) {
         headers["set-cookie"] = Array.isArray(sessionCookie)

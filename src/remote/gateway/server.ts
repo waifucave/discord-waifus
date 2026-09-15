@@ -9,6 +9,8 @@ import {
   DASHBOARD_SECURITY_HEADERS,
   RemoteBrowserRequestError,
   SHELL_SECURITY_HEADERS,
+  dashboardSecurityHeaders,
+  frameShellSecurityHeaders,
   validateRemoteBootstrapRequest,
   validateRemoteBrowserRequest,
   type RemoteBrowserRequest
@@ -19,13 +21,15 @@ import {
   type RemoteBrowserSessionStoreOptions
 } from "./session.js";
 
-export type RemoteGatewaySurface = "dashboard" | "shell";
+export type RemoteGatewaySurface = "dashboard" | "frame_shell" | "shell";
+export const REMOTE_SESSION_READY_PATH = "/_waifus_remote/session-ready";
 
 export type RemoteGatewayHandlerSecurity = Readonly<{
   session: Readonly<{
     idleExpiresAt: string;
     absoluteExpiresAt: string;
   }>;
+  responseSecurityHeaders: Readonly<Record<string, string>>;
   deliverCsrf: () => void;
 }>;
 
@@ -42,6 +46,8 @@ type RemoteGatewayOriginSelection =
 export type StartRemoteGatewayOptions = RemoteBrowserSessionStoreOptions & RemoteGatewayOriginSelection & {
   readonly port: number;
   readonly surface?: RemoteGatewaySurface;
+  readonly frameAncestorOrigin?: string | (() => string | undefined);
+  readonly frameChildOrigin?: string;
   readonly bootstrapRedirectPath?: string;
   readonly beforeExpose?: (launch: Readonly<{
     hostname: string;
@@ -107,15 +113,21 @@ export async function startRemoteGateway(
   if (!Number.isInteger(options.port) || options.port < 0 || options.port > 65_535) {
     throw new TypeError("Remote gateway port must be an integer from 0 through 65535.");
   }
+  if (options.surface === "frame_shell" && options.frameChildOrigin === undefined) {
+    throw new TypeError("A dashboard frame shell requires one exact dashboard origin.");
+  }
+  if (options.surface !== "frame_shell" && options.frameChildOrigin !== undefined) {
+    throw new TypeError("Only a dashboard frame shell may declare a child frame origin.");
+  }
   if (options.hostname !== undefined) validateHostname(options.hostname);
-  const redirectPath = options.bootstrapRedirectPath ?? "/";
+  const redirectPath = options.bootstrapRedirectPath ?? REMOTE_SESSION_READY_PATH;
   if (!redirectPath.startsWith("/") || redirectPath.startsWith("//")) {
     throw new TypeError("Remote gateway bootstrap redirect must be an origin-form path.");
   }
 
   const sessions = new RemoteBrowserSessionStore(options);
   const app = fastify({ logger: false });
-  if (options.surface !== "shell") {
+  if (options.surface === undefined || options.surface === "dashboard") {
     app.removeAllContentTypeParsers();
     app.addContentTypeParser("*", (_request, payload, done) => done(null, payload));
   }
@@ -127,13 +139,26 @@ export async function startRemoteGateway(
     rejectExposure = reject;
   });
   void exposure.catch(() => undefined);
-  const policy = options.surface === "shell" ? SHELL_SECURITY_HEADERS : DASHBOARD_SECURITY_HEADERS;
   const refreshedSessions = new WeakMap<FastifyRequest, RemoteBrowserSession>();
+  const responsePolicy = (): Readonly<Record<string, string>> => {
+    const frameAncestorOrigin = typeof options.frameAncestorOrigin === "function"
+      ? options.frameAncestorOrigin()
+      : options.frameAncestorOrigin;
+    if (options.surface === "shell") return SHELL_SECURITY_HEADERS;
+    if (options.surface === "frame_shell") {
+      if (!securityOptions) throw new Error("Dashboard frame shell origin is unavailable.");
+      return frameShellSecurityHeaders(options.frameChildOrigin!, securityOptions.expectedOrigin);
+    }
+    if (!frameAncestorOrigin) return DASHBOARD_SECURITY_HEADERS;
+    if (!securityOptions) throw new Error("Dashboard gateway origin is unavailable.");
+    return dashboardSecurityHeaders(frameAncestorOrigin, securityOptions.expectedOrigin);
+  };
 
   app.addHook("onRequest", async () => exposure);
 
   app.addHook("onSend", async (request, reply, payload) => {
     removeHostControlledSecurityHeaders(reply);
+    const policy = responsePolicy();
     for (const [name, value] of Object.entries(policy)) reply.header(name, value);
     if (reply.getHeader("cache-control") === undefined) reply.header("cache-control", "no-store");
     const session = refreshedSessions.get(request);
@@ -156,6 +181,21 @@ export async function startRemoteGateway(
     if (!session) return reply.code(404).send({ error: "Not Found" });
     reply.header("set-cookie", sessions.sessionCookieHeader(session));
     return reply.code(303).header("location", redirectPath).send();
+  });
+
+  app.get(REMOTE_SESSION_READY_PATH, async (request, reply) => {
+    if (!securityOptions) return reply.code(503).send({ error: "Unavailable" });
+    try {
+      validateRemoteBootstrapRequest(browserRequest(request), securityOptions);
+    } catch {
+      return reply.code(403).send({ error: "Forbidden" });
+    }
+    reply.header("cache-control", "no-store");
+    reply.header("content-type", "text/html; charset=utf-8");
+    reply.header("refresh", "0;url=/");
+    return reply.send(
+      "<!doctype html><html><head><meta charset=\"utf-8\"><meta http-equiv=\"refresh\" content=\"0;url=/\"><title>Opening Waifus</title></head><body></body></html>"
+    );
   });
 
   app.route({
@@ -190,6 +230,7 @@ export async function startRemoteGateway(
             idleExpiresAt: BigInt(Math.floor(refreshed.idleExpiresAt / 1_000)).toString(),
             absoluteExpiresAt: BigInt(Math.floor(refreshed.absoluteExpiresAt / 1_000)).toString()
           }),
+          responseSecurityHeaders: Object.freeze({ ...responsePolicy() }),
           deliverCsrf: () => {
             reply.header("x-waifus-csrf", refreshed.csrfToken);
           }

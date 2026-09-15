@@ -147,14 +147,25 @@ export function useAssistantChat(open: boolean) {
       try {
         const conversationId = await ensureConversation();
         const result = await api.sendAssistantMessage(conversationId, content);
-        setItems((prev) => [...prev, { kind: "assistant", content: result.reply }]);
+        try {
+          const canonical = await api.assistantConversation(conversationId);
+          const restored = restoreAssistantItems(canonical.messages);
+          const cursor = storedLatestCursor(canonical.messages);
+          setItems(restored);
+          attachStream(conversationId, {
+            ...(cursor ? { initialCursor: cursor } : {}),
+            preserveItemsOnEmptySnapshot: true
+          });
+        } catch {
+          setItems((prev) => [...prev, { kind: "assistant", content: result.reply }]);
+        }
       } catch (err) {
         setError((err as Error).message);
       } finally {
         setBusy(false);
       }
     },
-    [ensureConversation]
+    [attachStream, ensureConversation]
   );
 
   const reset = useCallback(() => {

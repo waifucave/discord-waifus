@@ -7,6 +7,9 @@ import {
   DASHBOARD_SECURITY_HEADERS,
   RemoteBrowserRequestError,
   SHELL_SECURITY_HEADERS,
+  dashboardSecurityHeaders,
+  frameShellSecurityHeaders,
+  validateRemoteBootstrapRequest,
   validateRemoteBrowserRequest
 } from "../src/remote/gateway/security.js";
 import {
@@ -15,6 +18,7 @@ import {
   RemoteBrowserSessionStore
 } from "../src/remote/gateway/session.js";
 import {
+  REMOTE_SESSION_READY_PATH,
   startRemoteGateway,
   type RunningRemoteGateway
 } from "../src/remote/gateway/server.js";
@@ -288,6 +292,49 @@ describe("remote browser request validation", () => {
       }
     )).toThrowError(RemoteBrowserRequestError);
   });
+
+  it("allows only document or sandboxed-frame navigation to carry a bootstrap token across isolated localhost sites", () => {
+    const options = {
+      expectedAuthority: "waifus-test.localhost:43123",
+      expectedOrigin: "http://waifus-test.localhost:43123"
+    };
+    expect(validateRemoteBootstrapRequest({
+      method: "GET",
+      canonicalTarget: `/_waifus_remote/bootstrap/${Buffer.alloc(32, 0x51).toString("base64url")}`,
+      headers: {
+        host: options.expectedAuthority,
+        "sec-fetch-site": "cross-site",
+        "sec-fetch-mode": "navigate",
+        "sec-fetch-dest": "document"
+      }
+    }, options).csrfValidated).toBe(true);
+    expect(validateRemoteBootstrapRequest({
+      method: "GET",
+      canonicalTarget: `/_waifus_remote/bootstrap/${Buffer.alloc(32, 0x52).toString("base64url")}`,
+      headers: {
+        host: options.expectedAuthority,
+        "sec-fetch-site": "cross-site",
+        "sec-fetch-mode": "navigate",
+        "sec-fetch-dest": "iframe"
+      }
+    }, options).csrfValidated).toBe(true);
+
+    for (const headers of [
+      { "sec-fetch-mode": "cors", "sec-fetch-dest": "empty" },
+      { "sec-fetch-mode": "navigate", "sec-fetch-dest": "document", origin: "http://evil.example" },
+      { "sec-fetch-mode": "navigate", "sec-fetch-dest": "object" }
+    ]) {
+      expect(() => validateRemoteBootstrapRequest({
+        method: "GET",
+        canonicalTarget: "/_waifus_remote/bootstrap/token",
+        headers: {
+          host: options.expectedAuthority,
+          "sec-fetch-site": "cross-site",
+          ...headers
+        }
+      }, options)).toThrowError(RemoteBrowserRequestError);
+    }
+  });
 });
 
 describe("remote gateway response policy", () => {
@@ -320,6 +367,57 @@ describe("remote gateway response policy", () => {
     );
     expect(policy).not.toContain("allow-popups-to-escape-sandbox");
     expect(policy).not.toContain("top-navigation");
+    expect(policy).toContain("frame-src 'none'");
+  });
+
+  it("pins an embedded dashboard to one exact validated shell origin", () => {
+    const hostname = `waifus-${"z".repeat(52)}.localhost`;
+    const shellOrigin = `http://${hostname}:43124`;
+    const dashboardOrigin = `http://${hostname}:43125`;
+    const policy = dashboardSecurityHeaders(
+      shellOrigin,
+      dashboardOrigin
+    )["content-security-policy"];
+    expect(policy).toContain(`frame-ancestors ${shellOrigin}`);
+    expect(policy).not.toContain("frame-ancestors 'none'");
+    for (const invalid of [
+      "https://waifus-example.localhost:43124",
+      "http://evil.localhost:43124",
+      `http://waifus-${"z".repeat(52)}.localhost:43124/path`,
+      "http://example.invalid"
+    ]) {
+      expect(() => dashboardSecurityHeaders(invalid, dashboardOrigin)).toThrow(TypeError);
+    }
+    expect(() => dashboardSecurityHeaders(
+      `http://waifus-${"y".repeat(52)}.localhost:43124`,
+      dashboardOrigin
+    )).toThrow(TypeError);
+    expect(() => dashboardSecurityHeaders(dashboardOrigin, dashboardOrigin)).toThrow(TypeError);
+  });
+
+  it("pins a trusted frame shell to one same-host dashboard origin", () => {
+    const hostname = `waifus-${"z".repeat(52)}.localhost`;
+    const frameShellOrigin = `http://${hostname}:43124`;
+    const dashboardOrigin = `http://${hostname}:43125`;
+    const policy = frameShellSecurityHeaders(
+      dashboardOrigin,
+      frameShellOrigin
+    )["content-security-policy"];
+    expect(policy.split(";").map((value) => value.trim())[0]).toBe(
+      "sandbox allow-scripts allow-forms allow-same-origin allow-downloads"
+    );
+    expect(policy).toContain(`frame-src 'self' ${dashboardOrigin}`);
+    expect(policy).toContain("frame-ancestors 'none'");
+    expect(policy).not.toContain("allow-popups");
+    expect(policy).not.toContain("top-navigation");
+
+    for (const invalid of [
+      ["http://example.invalid", frameShellOrigin],
+      [`http://waifus-${"y".repeat(52)}.localhost:43125`, frameShellOrigin],
+      [frameShellOrigin, frameShellOrigin]
+    ] as const) {
+      expect(() => frameShellSecurityHeaders(...invalid)).toThrow(TypeError);
+    }
   });
 });
 
@@ -356,10 +454,25 @@ describe("remote gateway listener", () => {
     });
     expect(bootstrap.statusCode).toBe(303);
     expect(bootstrap.headers["cache-control"]).toBe("no-store");
-    expect(bootstrap.headers.location).toBe("/");
+    expect(bootstrap.headers.location).toBe(REMOTE_SESSION_READY_PATH);
     expect(bootstrap.headers.location).not.toContain(bootstrapPath);
     expect(bootstrap.headers["x-waifus-csrf"]).toBeUndefined();
     const setCookie = String(bootstrap.headers["set-cookie"]);
+
+    const ready = await rawRequest({
+      port: gateway.port,
+      path: REMOTE_SESSION_READY_PATH,
+      headers: {
+        host: expectedHost,
+        "sec-fetch-site": "cross-site",
+        "sec-fetch-mode": "navigate",
+        "sec-fetch-dest": "document"
+      }
+    });
+    expect(ready.statusCode).toBe(200);
+    expect(ready.headers["cache-control"]).toBe("no-store");
+    expect(ready.headers.refresh).toBe("0;url=/");
+    expect(ready.body).not.toContain(bootstrapPath);
 
     const replay = await rawRequest({
       port: gateway.port,

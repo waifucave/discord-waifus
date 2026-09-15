@@ -93,6 +93,7 @@ export type RemoteLocalApiOptions = {
   readonly backend: RemoteGatewayLocalBackend;
   readonly rememberedHosts: RememberedHostStore;
   readonly origins: RemoteOriginStore;
+  readonly issueSelectedHostBootstrap?: (host: RememberedHostRecordV1) => Promise<string>;
   readonly now?: () => number;
   readonly randomBytes?: (size: number) => Uint8Array;
   readonly shellRoot?: string;
@@ -162,6 +163,9 @@ export class RemoteLocalApi {
   readonly #backend: RemoteGatewayLocalBackend;
   readonly #rememberedHosts: RememberedHostStore;
   readonly #origins: RemoteOriginStore;
+  readonly #issueSelectedHostBootstrap:
+    | ((host: RememberedHostRecordV1) => Promise<string>)
+    | undefined;
   readonly #now: () => number;
   readonly #random: (size: number) => Uint8Array;
   readonly #shellRoot: string;
@@ -176,6 +180,7 @@ export class RemoteLocalApi {
     this.#backend = options.backend;
     this.#rememberedHosts = options.rememberedHosts;
     this.#origins = options.origins;
+    this.#issueSelectedHostBootstrap = options.issueSelectedHostBootstrap;
     this.#now = options.now ?? Date.now;
     this.#random = options.randomBytes ?? cryptoRandomBytes;
     this.#shellRoot = path.resolve(options.shellRoot ?? path.join(
@@ -196,6 +201,12 @@ export class RemoteLocalApi {
   ): Promise<unknown> => {
     const target = localPath(browserContext.canonicalTarget);
     if (!target.pathname.startsWith("/_waifus_remote/v1/")) {
+      const openMatch = target.pathname.match(
+        /^\/_waifus_remote\/open\/([A-Za-z0-9_-]{43})$/u
+      );
+      if (openMatch && request.method === "GET" && !target.hasQuery) {
+        return this.#openSelectedHost(reply, openMatch[1]);
+      }
       return this.#shellAsset(request, reply, target);
     }
     reply.header("cache-control", "no-store");
@@ -353,6 +364,44 @@ export class RemoteLocalApi {
       selectedHostId: selection.selectedHostId,
       lastErrorCode: snapshot.lastErrorCode
     });
+  }
+
+  async #openSelectedHost(reply: FastifyReply, hostId: string): Promise<unknown> {
+    reply.header("cache-control", "no-store");
+    try {
+      const [selection, snapshot, host] = await Promise.all([
+        this.#rememberedHosts.selection(),
+        this.#backend.snapshot(),
+        this.#rememberedHosts.record(hostId)
+      ]);
+      if (
+        !host
+        || selection.selectedHostId !== host.hostId
+        || snapshot.directState !== "direct"
+        || !this.#issueSelectedHostBootstrap
+      ) {
+        return reply.code(409).send({ error: "DirectUnavailable" });
+      }
+      const rawBootstrapUrl = await this.#issueSelectedHostBootstrap(host);
+      const bootstrapUrl = new URL(rawBootstrapUrl);
+      if (
+        bootstrapUrl.protocol !== "http:"
+        || !/^waifus-[a-z2-7]{52}\.localhost$/u.test(bootstrapUrl.hostname)
+        || !/^(?:[1-9][0-9]{0,4})$/u.test(bootstrapUrl.port)
+        || Number(bootstrapUrl.port) > 65_535
+        || !/^\/_waifus_remote\/bootstrap\/[A-Za-z0-9_-]{43}$/u.test(bootstrapUrl.pathname)
+        || bootstrapUrl.search !== ""
+        || bootstrapUrl.hash !== ""
+        || bootstrapUrl.username !== ""
+        || bootstrapUrl.password !== ""
+        || bootstrapUrl.href !== rawBootstrapUrl
+      ) {
+        throw new Error("Selected-host bootstrap URL is invalid.");
+      }
+      return reply.code(303).header("location", bootstrapUrl.href).send();
+    } catch {
+      return reply.code(503).send({ error: "RemoteUnavailable" });
+    }
   }
 
   async #shellAsset(

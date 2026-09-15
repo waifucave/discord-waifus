@@ -6,6 +6,7 @@ coverage/
 .dc-waifus/
 .claude/
 .playwright-cli/
+/output/playwright/
 *.tgz
 release-artifacts/
 *.log

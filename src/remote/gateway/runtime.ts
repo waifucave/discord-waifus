@@ -21,6 +21,7 @@ export type StartRemoteGatewayRuntimeOptions = RemoteBrowserSessionStoreOptions 
   readonly pinnedHostId: string;
   readonly hostTrustEpoch: string;
   readonly surface?: RemoteGatewaySurface;
+  readonly frameAncestorOrigin?: string | (() => string | undefined);
   readonly bootstrapRedirectPath?: string;
   readonly registerGatewayLaunch: (gatewayLaunchId: string, expiresAt: string) => Promise<void>;
   readonly handleAuthenticatedRequest?: (
@@ -66,6 +67,7 @@ export async function startRemoteGatewayRuntime(
   let binding = await origins.allocateOrReuse(options.pinnedHostId, options.hostTrustEpoch);
   const common = {
     surface: options.surface,
+    frameAncestorOrigin: options.frameAncestorOrigin,
     bootstrapRedirectPath: options.bootstrapRedirectPath,
     now: options.now,
     randomBytes: options.randomBytes,
