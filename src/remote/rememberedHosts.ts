@@ -90,6 +90,11 @@ export type RememberedHostSelection = Readonly<{
   selectedHostId: string | null;
 }>;
 
+export type RememberedHostStateInspection = Readonly<{
+  exists: boolean;
+  hostCount: number;
+}>;
+
 export type RememberedHostStoreErrorCode =
   | "host_conflict"
   | "host_limit"
@@ -121,6 +126,19 @@ function sortedHosts(hosts: readonly RememberedHostRecordV1[]): RememberedHostRe
 function publicSummary(record: RememberedHostRecordV1): RememberedHostSummaryV1 {
   const { helperPairId: _helperPairId, installationPublicKey: _installationPublicKey, ...summary } = record;
   return Object.freeze(RememberedHostSummaryV1Schema.parse(summary));
+}
+
+/**
+ * Validate remembered-host state for maintenance commands without creating a default file,
+ * recovering atomic-write temps, or otherwise changing the preserved remote trust tree.
+ */
+export async function inspectRememberedHostState(
+  dataRoot: string
+): Promise<RememberedHostStateInspection> {
+  const { state, exists } = await readRememberedHostStateFile(
+    remoteStatePaths(dataRoot).remoteRememberedHosts
+  );
+  return Object.freeze({ exists, hostCount: state.hosts.length });
 }
 
 export class RememberedHostStore {
@@ -267,37 +285,7 @@ export class RememberedHostStore {
   async #readState(): Promise<{ state: RememberedHostStateV1; exists: boolean }> {
     await this.#ensureStateRoot();
     await recoverAtomicWriteTemps(this.#statePath);
-    let metadata;
-    try {
-      metadata = await lstat(this.#statePath);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        return {
-          exists: false,
-          state: { version: 1, explicitSelectedHostId: null, hosts: [] }
-        };
-      }
-      throw error;
-    }
-    if (metadata.isSymbolicLink() || !metadata.isFile()) {
-      return fail("remembered_hosts_untrusted", "Remembered-host state must be a regular file.");
-    }
-    if (typeof process.getuid === "function" && metadata.uid !== process.getuid()) {
-      return fail("remembered_hosts_untrusted", "Remembered-host state has the wrong owner.");
-    }
-    if (process.platform !== "win32" && (metadata.mode & 0o077) !== 0) {
-      return fail("remembered_hosts_untrusted", "Remembered-host state permissions are too broad.");
-    }
-    try {
-      return {
-        exists: true,
-        state: RememberedHostStateV1Schema.parse(
-          JSON.parse(await readFile(this.#statePath, "utf8"))
-        )
-      };
-    } catch {
-      return fail("remembered_hosts_invalid", "Remembered-host state is invalid.");
-    }
+    return readRememberedHostStateFile(this.#statePath);
   }
 
   async #ensureStateRoot(): Promise<void> {
@@ -316,5 +304,41 @@ export class RememberedHostStore {
 
   async #writeState(state: RememberedHostStateV1): Promise<void> {
     await atomicWriteJson(this.#statePath, RememberedHostStateV1Schema.parse(state), { mode: 0o600 });
+  }
+}
+
+async function readRememberedHostStateFile(
+  statePath: string
+): Promise<{ state: RememberedHostStateV1; exists: boolean }> {
+  let metadata;
+  try {
+    metadata = await lstat(statePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return {
+        exists: false,
+        state: { version: 1, explicitSelectedHostId: null, hosts: [] }
+      };
+    }
+    throw error;
+  }
+  if (metadata.isSymbolicLink() || !metadata.isFile()) {
+    return fail("remembered_hosts_untrusted", "Remembered-host state must be a regular file.");
+  }
+  if (typeof process.getuid === "function" && metadata.uid !== process.getuid()) {
+    return fail("remembered_hosts_untrusted", "Remembered-host state has the wrong owner.");
+  }
+  if (process.platform !== "win32" && (metadata.mode & 0o077) !== 0) {
+    return fail("remembered_hosts_untrusted", "Remembered-host state permissions are too broad.");
+  }
+  try {
+    return {
+      exists: true,
+      state: RememberedHostStateV1Schema.parse(
+        JSON.parse(await readFile(statePath, "utf8"))
+      )
+    };
+  } catch {
+    return fail("remembered_hosts_invalid", "Remembered-host state is invalid.");
   }
 }

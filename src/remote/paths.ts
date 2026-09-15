@@ -17,6 +17,7 @@ export const REMOTE_STATE_RELATIVE_PATHS = Object.freeze({
   hostRuntimePid: "app/tmp/remote-host/pid.json",
   remoteGatewayRuntimeRoot: "app/tmp/remote-gateway",
   remoteGatewayRuntimePid: "app/tmp/remote-gateway/pid.json",
+  backendLog: "app/logs/backend.log",
   hostLog: "app/logs/remote-host.log",
   remoteGatewayLog: "app/logs/remote-gateway.log",
   backendPid: "app/pid.json",
