@@ -329,6 +329,76 @@ describe("protected helper process client", () => {
     await launch.exited;
   });
 
+  unixIt("validates and returns the complete host identity-reset receipt", async () => {
+    const request = await launchRequest({ FAKE_HELPER_RUNTIME: "1" });
+    const launch = await new ProtectedHelperProcessFactory().launch(request);
+    const client = await launch.authenticated;
+    const oldFingerprint = Buffer.alloc(16, 0x74).toString("base64url");
+
+    await expect(client.resetIdentity({
+      resetTombstone: "19",
+      expectedOldFingerprint: oldFingerprint
+    })).resolves.toEqual({
+      version: 1,
+      resetTombstone: "19",
+      resetId: Buffer.alloc(16, 0x71).toString("base64url"),
+      oldInstallationPublicKey: Buffer.alloc(32, 0x72).toString("base64url"),
+      newInstallationPublicKey: Buffer.alloc(32, 0x73).toString("base64url"),
+      oldFingerprint,
+      newFingerprint: Buffer.alloc(16, 0x75).toString("base64url"),
+      clearedActivationCount: "1",
+      clearedPairCount: "2",
+      clearedHostRoleSecretCount: "3",
+      clearedRemoteRoleSecretCount: "4",
+      stage: "complete",
+      completedAt: "1786270950"
+    });
+
+    await client.close();
+    await launch.closeParentChannel();
+    await launch.exited;
+  });
+
+  unixIt("queries one exact identity-reset tombstone for crash recovery", async () => {
+    const request = await launchRequest({ FAKE_HELPER_RUNTIME: "1" });
+    const launch = await new ProtectedHelperProcessFactory().launch(request);
+    const client = await launch.authenticated;
+
+    await expect(client.getResetStatus({ resetTombstone: "19" })).resolves.toMatchObject({
+      version: 1,
+      resetTombstone: "19",
+      oldFingerprint: Buffer.alloc(16, 0x74).toString("base64url"),
+      newFingerprint: Buffer.alloc(16, 0x75).toString("base64url"),
+      stage: "complete",
+      completedAt: "1786270950"
+    });
+
+    await client.close();
+    await launch.closeParentChannel();
+    await launch.exited;
+  });
+
+  unixIt("preserves the typed sibling-daemon reset failure without helper detail", async () => {
+    const request = await launchRequest({
+      FAKE_HELPER_RUNTIME: "1",
+      FAKE_HELPER_RESET_SIBLING: "1"
+    });
+    const launch = await new ProtectedHelperProcessFactory().launch(request);
+    const client = await launch.authenticated;
+
+    await expect(client.resetIdentity({
+      resetTombstone: "19",
+      expectedOldFingerprint: Buffer.alloc(16, 0x74).toString("base64url")
+    })).rejects.toMatchObject({
+      code: "sibling_daemon_running",
+      message: "Helper rejected the identity reset command."
+    });
+
+    await client.close();
+    await launch.closeParentChannel();
+    await launch.exited;
+  });
+
   unixIt("requires one canonical host selection for a remote runtime", async () => {
     const baseRequest = await launchRequest({ FAKE_HELPER_RUNTIME: "1" });
     const request: HelperLaunchRequest = { ...baseRequest, role: "remote" };

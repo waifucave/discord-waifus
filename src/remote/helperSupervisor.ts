@@ -13,6 +13,11 @@ import {
 } from "../shared/schemas/remoteProtocol.js";
 import { RemoteAccessErrorCodeSchema } from "../shared/schemas/remoteLifecycle.js";
 import type {
+  GetResetStatusCommand,
+  IdentityResetReceiptV1,
+  ResetIdentityCommand
+} from "../shared/schemas/remoteAccess.js";
+import type {
   ApprovePairingInputV1,
   PairInvitationV1,
   PendingPairingRequestListV1,
@@ -399,6 +404,22 @@ export class HelperSupervisor {
     input: HelperDeviceRevocationRecovery
   ): Promise<void> {
     await this.#readyClient().reconcileDeviceRevocation(input);
+  }
+
+  async resetIdentity(input: ResetIdentityCommand): Promise<IdentityResetReceiptV1> {
+    const receipt = await this.#readyClient().resetIdentity(input);
+    this.#generation += 1;
+    this.#cancelRestart();
+    this.#failureTimes = [];
+    this.#desiredRuntime = undefined;
+    this.#identityStatus = undefined;
+    await this.#shutdownCurrentLaunch();
+    this.#update(initialSnapshot());
+    return receipt;
+  }
+
+  async getResetStatus(input: GetResetStatusCommand): Promise<IdentityResetReceiptV1> {
+    return this.#readyClient().getResetStatus(input);
   }
 
   async request(input: HelperRemoteRequest): Promise<HelperRemoteResponse> {

@@ -29,6 +29,14 @@ import {
   type ContractJson
 } from "../shared/schemas/remoteProtocolContract.js";
 import {
+  GetResetStatusCommandSchema,
+  IdentityResetReceiptV1Schema,
+  ResetIdentityCommandSchema,
+  type GetResetStatusCommand,
+  type IdentityResetReceiptV1,
+  type ResetIdentityCommand
+} from "../shared/schemas/remoteAccess.js";
+import {
   ApprovePairingInputV1Schema,
   PairInvitationV1Schema,
   PendingPairingRequestListV1Schema,
@@ -64,6 +72,8 @@ import {
   HelperSupervisorError,
   HELPER_COMMAND_TIMEOUT_MS,
   HelperCommandError,
+  HelperIdentityResetError,
+  HelperIdentityResetErrorCodeSchema,
   HelperActivationCancelSchema,
   HelperActivationErrorCodeSchema,
   HelperActivationPollSchema,
@@ -113,9 +123,15 @@ const HelperCommandFailureSchema = z.object({
     "trusted_devices_list",
     "trusted_device_rename",
     "trusted_device_revoke",
-    "trusted_device_revoke_reconcile"
+    "trusted_device_revoke_reconcile",
+    "reset_identity",
+    "get_reset_status"
   ]),
-  errorCode: z.union([HelperActivationErrorCodeSchema, RemoteAccessErrorCodeSchema]),
+  errorCode: z.union([
+    HelperActivationErrorCodeSchema,
+    RemoteAccessErrorCodeSchema,
+    HelperIdentityResetErrorCodeSchema
+  ]),
   ok: z.literal(false),
   operationId: Base64Url32BytesSchema.optional(),
   invitationId: Base64Url16BytesSchema.optional(),
@@ -219,6 +235,11 @@ const TrustedDeviceRevokeReconcileWireSchema = z.object({
   command: z.literal("trusted_device_revoke_reconcile"),
   deviceId: DeviceIdSchema,
   ok: z.literal(true)
+}).strict();
+const IdentityResetWireSchema = z.object({
+  command: z.enum(["reset_identity", "get_reset_status"]),
+  ok: z.literal(true),
+  receipt: IdentityResetReceiptV1Schema
 }).strict();
 const HeaderTupleWireSchema = z.tuple([
   z.string().min(1).max(128).regex(/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/u),
@@ -1403,6 +1424,27 @@ class ProcessHelperClient implements AuthenticatedHelperClient {
     }, TrustedDeviceRevokeReconcileWireSchema, "trusted device revoke recovery RESULT");
   }
 
+  async resetIdentity(inputValue: ResetIdentityCommand): Promise<IdentityResetReceiptV1> {
+    this.#requireHostManagement();
+    const input = ResetIdentityCommandSchema.parse(inputValue);
+    const result = await this.#command({
+      command: "reset_identity",
+      resetTombstone: input.resetTombstone,
+      expectedOldFingerprint: input.expectedOldFingerprint
+    }, IdentityResetWireSchema, "identity reset RESULT");
+    return IdentityResetReceiptV1Schema.parse(result.receipt);
+  }
+
+  async getResetStatus(inputValue: GetResetStatusCommand): Promise<IdentityResetReceiptV1> {
+    this.#requireHostManagement();
+    const input = GetResetStatusCommandSchema.parse(inputValue);
+    const result = await this.#command({
+      command: "get_reset_status",
+      resetTombstone: input.resetTombstone
+    }, IdentityResetWireSchema, "identity reset status RESULT");
+    return IdentityResetReceiptV1Schema.parse(result.receipt);
+  }
+
   #requireHostManagement(): void {
     if (this.#role !== "host") {
       throw new HelperSupervisorError(
@@ -1501,6 +1543,21 @@ class ProcessHelperClient implements AuthenticatedHelperClient {
           }
           throw new HelperCommandError(code.data, "Helper rejected the activation command.");
         }
+        const identityResetCommand = command.command === "reset_identity"
+          || command.command === "get_reset_status";
+        if (identityResetCommand) {
+          const code = HelperIdentityResetErrorCodeSchema.safeParse(failure.errorCode);
+          if (!code.success) {
+            throw new HelperSupervisorError(
+              "helper_incompatible",
+              "Helper returned an invalid identity reset failure code."
+            );
+          }
+          throw new HelperIdentityResetError(
+            code.data,
+            "Helper rejected the identity reset command."
+          );
+        }
         const code = RemoteAccessErrorCodeSchema.safeParse(failure.errorCode);
         if (!code.success) {
           throw new HelperSupervisorError(
@@ -1519,7 +1576,11 @@ class ProcessHelperClient implements AuthenticatedHelperClient {
       }
       return result;
     } catch (error) {
-      if (error instanceof HelperCommandError || error instanceof HelperSupervisorError) throw error;
+      if (
+        error instanceof HelperCommandError
+        || error instanceof HelperIdentityResetError
+        || error instanceof HelperSupervisorError
+      ) throw error;
       throw new HelperCommandError("helper_unavailable", "Helper command channel failed.");
     } finally {
       release();
