@@ -40,7 +40,13 @@ import {
   type RuntimePurpose,
   type Uint64Decimal
 } from "../shared/schemas/remoteProtocol.js";
-import { HelperTargetSchema, type HelperTarget } from "../shared/schemas/remoteAccess.js";
+import {
+  HelperTargetSchema,
+  type GetResetStatusCommand,
+  type HelperTarget,
+  type IdentityResetReceiptV1,
+  type ResetIdentityCommand
+} from "../shared/schemas/remoteAccess.js";
 import type {
   RemoteBridgeResponse,
   RemoteRequestBridge
@@ -112,6 +118,15 @@ export const HelperActivationErrorCodeSchema = z.enum([
 ]);
 
 export type HelperActivationErrorCode = z.infer<typeof HelperActivationErrorCodeSchema>;
+
+export const HelperIdentityResetErrorCodeSchema = z.enum([
+  "helper_unavailable",
+  "sibling_daemon_running"
+]);
+
+export type HelperIdentityResetErrorCode = z.infer<
+  typeof HelperIdentityResetErrorCodeSchema
+>;
 
 export const HelperActivationStartSchema = z.object({
   operationId: ActivationOperationIdSchema,
@@ -268,6 +283,8 @@ export type AuthenticatedHelperClient = {
   reconcileDeviceRevocation: (
     input: HelperDeviceRevocationRecovery
   ) => Promise<void>;
+  resetIdentity: (input: ResetIdentityCommand) => Promise<IdentityResetReceiptV1>;
+  getResetStatus: (input: GetResetStatusCommand) => Promise<IdentityResetReceiptV1>;
   request: (request: HelperRemoteRequest) => Promise<HelperRemoteResponse>;
   attachRequestBridge: (bridge: RemoteRequestBridge) => void;
   close: () => Promise<void>;
@@ -342,6 +359,16 @@ export class HelperCommandError extends Error {
   ) {
     super(message);
     this.name = "HelperCommandError";
+  }
+}
+
+export class HelperIdentityResetError extends Error {
+  constructor(
+    readonly code: HelperIdentityResetErrorCode,
+    message: string
+  ) {
+    super(message);
+    this.name = "HelperIdentityResetError";
   }
 }
 

@@ -541,6 +541,58 @@ async function main(capability) {
       })));
       continue;
     }
+    if (activation.command === "reset_identity") {
+      if (process.env.FAKE_HELPER_RESET_SIBLING === "1") {
+        socket.write(frame(RESULT, canonicalJson({
+          command: "reset_identity",
+          errorCode: "sibling_daemon_running",
+          ok: false
+        })));
+        continue;
+      }
+      socket.write(frame(RESULT, canonicalJson({
+        command: "reset_identity",
+        ok: true,
+        receipt: {
+          clearedActivationCount: "1",
+          clearedHostRoleSecretCount: "3",
+          clearedPairCount: "2",
+          clearedRemoteRoleSecretCount: "4",
+          completedAt: "1786270950",
+          newFingerprint: Buffer.alloc(16, 0x75).toString("base64url"),
+          newInstallationPublicKey: Buffer.alloc(32, 0x73).toString("base64url"),
+          oldFingerprint: activation.expectedOldFingerprint,
+          oldInstallationPublicKey: Buffer.alloc(32, 0x72).toString("base64url"),
+          resetId: Buffer.alloc(16, 0x71).toString("base64url"),
+          resetTombstone: activation.resetTombstone,
+          stage: "complete",
+          version: 1
+        }
+      })));
+      continue;
+    }
+    if (activation.command === "get_reset_status") {
+      socket.write(frame(RESULT, canonicalJson({
+        command: "get_reset_status",
+        ok: true,
+        receipt: {
+          clearedActivationCount: "1",
+          clearedHostRoleSecretCount: "3",
+          clearedPairCount: "2",
+          clearedRemoteRoleSecretCount: "4",
+          completedAt: "1786270950",
+          newFingerprint: Buffer.alloc(16, 0x75).toString("base64url"),
+          newInstallationPublicKey: Buffer.alloc(32, 0x73).toString("base64url"),
+          oldFingerprint: Buffer.alloc(16, 0x74).toString("base64url"),
+          oldInstallationPublicKey: Buffer.alloc(32, 0x72).toString("base64url"),
+          resetId: Buffer.alloc(16, 0x71).toString("base64url"),
+          resetTombstone: activation.resetTombstone,
+          stage: "complete",
+          version: 1
+        }
+      })));
+      continue;
+    }
     if (activation.command === "activation_begin") {
       socket.write(frame(RESULT, canonicalJson({
         command: "activation_begin",

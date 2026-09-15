@@ -16,6 +16,7 @@ import type {
   HelperRuntimeStatus,
   VerifiedHelperSelection
 } from "../src/remote/helperTypes.js";
+import type { IdentityResetReceiptV1 } from "../src/shared/schemas/remoteAccess.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
 
 const REQUIRED_CAPABILITIES = [
@@ -107,6 +108,8 @@ function helperClient(overrides: Partial<AuthenticatedHelperClient> = {}): Authe
     }),
     revokeDevice: async () => {},
     reconcileDeviceRevocation: async () => {},
+    resetIdentity: async () => identityResetReceipt(),
+    getResetStatus: async () => identityResetReceipt(),
     request: async () => ({
       statusCode: 204,
       statusMessage: "No Content",
@@ -117,6 +120,24 @@ function helperClient(overrides: Partial<AuthenticatedHelperClient> = {}): Authe
     attachRequestBridge: () => {},
     close: async () => {},
     ...overrides
+  };
+}
+
+function identityResetReceipt(): IdentityResetReceiptV1 {
+  return {
+    version: 1,
+    resetTombstone: "19",
+    resetId: Buffer.alloc(16, 0x51).toString("base64url"),
+    oldInstallationPublicKey: Buffer.alloc(32, 0x52).toString("base64url"),
+    newInstallationPublicKey: Buffer.alloc(32, 0x53).toString("base64url"),
+    oldFingerprint: Buffer.alloc(16, 0x54).toString("base64url"),
+    newFingerprint: Buffer.alloc(16, 0x55).toString("base64url"),
+    clearedActivationCount: "1",
+    clearedPairCount: "2",
+    clearedHostRoleSecretCount: "3",
+    clearedRemoteRoleSecretCount: "4",
+    stage: "complete",
+    completedAt: "1786271200"
   };
 }
 
@@ -313,6 +334,53 @@ describe("role-neutral helper supervisor", () => {
 
     await supervisor.stop();
     expect(stopRuntime).toHaveBeenCalledTimes(2);
+  });
+
+  it("drains the helper and clears runtime restart intent after identity rotation", async () => {
+    vi.useFakeTimers();
+    const factory = new FakeProcessFactory();
+    const { supervisor } = await makeSupervisor(factory);
+    const resetIdentity = vi.fn(async () => identityResetReceipt());
+    const getResetStatus = vi.fn(async () => identityResetReceipt());
+    const startRuntime = vi.fn(async () => helperStatus({
+      controlState: "connected",
+      directState: "reconnecting"
+    }));
+    const started = supervisor.start();
+    await settle();
+    const launch = factory.launches[0]!;
+    launch.resolveAuthenticated(helperClient({ resetIdentity, getResetStatus, startRuntime }));
+    await started;
+    await supervisor.startRuntime();
+
+    await expect(supervisor.getResetStatus({ resetTombstone: "19" }))
+      .resolves.toEqual(identityResetReceipt());
+    expect(getResetStatus).toHaveBeenCalledWith({ resetTombstone: "19" });
+
+    await expect(supervisor.resetIdentity({
+      resetTombstone: "19",
+      expectedOldFingerprint: Buffer.alloc(16, 0x54).toString("base64url")
+    })).resolves.toEqual(identityResetReceipt());
+
+    expect(resetIdentity).toHaveBeenCalledWith({
+      resetTombstone: "19",
+      expectedOldFingerprint: Buffer.alloc(16, 0x54).toString("base64url")
+    });
+    expect(launch.drainCalls).toBe(1);
+    expect(launch.parentCloseCalls).toBe(1);
+    expect(supervisor.snapshot()).toMatchObject({
+      state: "disabled",
+      restartScheduled: false,
+      runtimeStatus: {
+        activationState: "activation_required",
+        controlState: "inactive",
+        directState: "inactive"
+      }
+    });
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(factory.launches).toHaveLength(1);
+    await supervisor.close();
   });
 
   it("retries the desired runtime start when the first start did not become active", async () => {

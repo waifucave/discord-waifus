@@ -690,9 +690,13 @@ export const ResetIdentityCommandSchema = z.object({
   expectedOldFingerprint: Base64Url16BytesSchema
 }).strict();
 
+export type ResetIdentityCommand = z.infer<typeof ResetIdentityCommandSchema>;
+
 export const GetResetStatusCommandSchema = z.object({
   resetTombstone: PositiveUint64DecimalSchema
 }).strict();
+
+export type GetResetStatusCommand = z.infer<typeof GetResetStatusCommandSchema>;
 
 const IdentityResetReceiptBaseShape = {
   version: z.literal(1),
