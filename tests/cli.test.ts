@@ -5,6 +5,8 @@ import { runCommand, type CliProcessOptions, type CliProcessRunner } from "../sr
 import { flagBoolean, flagNumber, flagString, parseCliArgs } from "../src/cli/parser.js";
 import { ensureDataLayout } from "../src/config/layout.js";
 import { remoteStatePaths } from "../src/remote/paths.js";
+import { RememberedHostStore } from "../src/remote/rememberedHosts.js";
+import { derivePinnedHostId } from "../src/remote/gateway/originStore.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
 
 type RunnerCall = { command: string; args: string[]; options?: CliProcessOptions };
@@ -292,6 +294,23 @@ describe("waifus clean remote-state boundaries", () => {
         }
       ]
     });
+    const installationPublicKey = Buffer.alloc(32, 0x73);
+    await new RememberedHostStore(root).upsert({
+      version: 1,
+      hostId: derivePinnedHostId(installationPublicKey),
+      displayName: "Remote studio",
+      platform: { os: "linux", arch: "x64" },
+      installationFingerprint: Buffer.alloc(16, 0x74).toString("base64url"),
+      trustEpoch: "4",
+      revision: "2",
+      pairedAt: "1786000000",
+      lastSeenAt: "1786270800",
+      lastDirectAt: "1786270800",
+      connectionState: "offline",
+      lastErrorCode: null,
+      helperPairId: Buffer.alloc(16, 0x75).toString("base64url"),
+      installationPublicKey: installationPublicKey.toString("base64url")
+    });
     const preservedFiles = [
       paths.hostConfig,
       paths.installation,
@@ -299,12 +318,11 @@ describe("waifus clean remote-state boundaries", () => {
       path.join(paths.trustRoot, "pinned-public-bundle.json"),
       path.join(paths.operationsRoot, "ledger.json"),
       path.join(paths.auditRoot, "ledger.json"),
-      path.join(paths.remoteGatewayStateRoot, "remembered-hosts.json")
+      paths.remoteRememberedHosts
     ];
     await writeTextFile(preservedFiles[3], "trust-sentinel\n");
     await writeTextFile(preservedFiles[4], "operation-sentinel\n");
     await writeTextFile(preservedFiles[5], "administrative-audit-sentinel\n");
-    await writeTextFile(preservedFiles[6], "remembered-host-sentinel\n");
     const preserved = new Map<string, string>();
     for (const filePath of preservedFiles) preserved.set(filePath, await readFile(filePath, "utf8"));
 
@@ -344,7 +362,7 @@ describe("waifus clean remote-state boundaries", () => {
     expect(await readFile(hostLog, "utf8")).toBe("host-log-sentinel\n");
     expect(await readFile(remoteLog, "utf8")).toBe("remote-log-sentinel\n");
     expect(await readFile(path.join(root, "config.toml"), "utf8")).not.toContain("ordinary-config-sentinel");
-    expect(console.log).toHaveBeenCalledWith(expect.stringContaining("preserved 2 remote pairings"));
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining("preserved 3 remote pairings"));
     expect(console.log).toHaveBeenCalledWith(expect.stringContaining("local Settings → Remote Access"));
     expect(console.log).toHaveBeenCalledWith(expect.stringContaining("POST /api/remote-access/reset"));
   });

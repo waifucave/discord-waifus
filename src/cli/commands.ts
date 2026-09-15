@@ -1,4 +1,5 @@
 import { spawn, type SpawnOptions } from "node:child_process";
+import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { lstat, open, readFile, readdir, rm, stat } from "node:fs/promises";
@@ -21,6 +22,7 @@ import {
 } from "../shared/schemas/remoteAccess.js";
 import { RemoteAccessConfigV1Schema } from "../shared/schemas/remoteLifecycle.js";
 import { remoteStatePaths } from "../remote/paths.js";
+import { inspectRememberedHostState } from "../remote/rememberedHosts.js";
 import { diagnoseBundledOcr } from "../orchestration/ocrPackages.js";
 import { StorageService } from "../storage/storageService.js";
 import { DEFAULT_APP_CONFIG } from "../shared/schemas/config.js";
@@ -583,16 +585,28 @@ async function cleanCommand(
   }
 
   const paths = remoteStatePaths(dataRoot);
-  await Promise.all([
-    rm(resolveDataPath(dataRoot, "user"), { recursive: true, force: true }),
-    rm(resolveDataPath(dataRoot, "config.toml"), { force: true }),
-    rm(appDataPath(dataRoot, "cache"), { recursive: true, force: true }),
-    rm(paths.backendPid, { force: true }),
-    rm(paths.backendRuntime, { force: true }),
-    rm(paths.hostRuntimeRoot, { recursive: true, force: true }),
-    rm(paths.remoteGatewayRuntimeRoot, { recursive: true, force: true }),
-    includeLogs ? rm(appDataPath(dataRoot, "logs"), { recursive: true, force: true }) : Promise.resolve()
-  ]);
+  const deletionTargets = [
+    { filePath: resolveDataPath(dataRoot, "user"), recursive: true },
+    { filePath: resolveDataPath(dataRoot, "config.toml"), recursive: false },
+    { filePath: appDataPath(dataRoot, "cache"), recursive: true },
+    { filePath: paths.backendPid, recursive: false },
+    { filePath: paths.backendRuntime, recursive: false },
+    { filePath: paths.hostRuntimeRoot, recursive: true },
+    { filePath: paths.remoteGatewayRuntimeRoot, recursive: true },
+    ...(includeLogs
+      ? [paths.backendLog, paths.hostLog, paths.remoteGatewayLog].map((filePath) => ({
+          filePath,
+          recursive: false
+        }))
+      : [])
+  ];
+  const validatedTargets = deletionTargets.map(({ filePath, recursive }) => ({
+    filePath: cleanTargetPath(dataRoot, filePath),
+    recursive
+  }));
+  await Promise.all(validatedTargets.map(({ filePath, recursive }) =>
+    rm(filePath, { recursive, force: true })
+  ));
   await ensureDataLayout(dataRoot);
   console.log(
     `cleaned ordinary user data in ${dataRoot}; preserved ${preservedPairCount} remote pairing${preservedPairCount === 1 ? "" : "s"}.`
@@ -686,15 +700,19 @@ async function validatePreservedRemoteStateForClean(dataRoot: string): Promise<n
   ]) {
     await assertOptionalOwnedDirectory(directory);
   }
-  const [config, installation, trustIndex] = await Promise.all([
+  const [config, installation, trustIndex, rememberedHosts] = await Promise.all([
     readOptionalJson(paths.hostConfig),
     readOptionalJson(paths.installation),
-    readOptionalJson(paths.trustIndex)
+    readOptionalJson(paths.trustIndex),
+    inspectRememberedHostState(dataRoot)
   ]);
   if (config === undefined && installation === undefined && trustIndex === undefined) {
-    const entries = await readDirectoryOrEmpty(paths.trustRoot);
-    if (entries.length > 0) {
-      throw new Error("remote trust metadata exists without its index; repair it before cleaning.");
+    const [trustEntries, gatewayEntries] = await Promise.all([
+      readDirectoryOrEmpty(paths.trustRoot),
+      readDirectoryOrEmpty(paths.remoteGatewayStateRoot)
+    ]);
+    if (trustEntries.length > 0 || gatewayEntries.length > 0 || rememberedHosts.exists) {
+      throw new Error("remote trust metadata exists without its installation state; repair it before cleaning.");
     }
     return 0;
   }
@@ -703,7 +721,22 @@ async function validatePreservedRemoteStateForClean(dataRoot: string): Promise<n
   }
   RemoteAccessConfigV1Schema.parse(config);
   RemoteAccessInstallationStateV1Schema.parse(installation);
-  return RemoteAccessTrustIndexV1Schema.parse(trustIndex).pairs.length;
+  return RemoteAccessTrustIndexV1Schema.parse(trustIndex).pairs.length + rememberedHosts.hostCount;
+}
+
+function cleanTargetPath(dataRoot: string, filePath: string): string {
+  const root = path.resolve(dataRoot);
+  const target = path.resolve(filePath);
+  const relative = path.relative(root, target);
+  if (
+    relative === ""
+    || relative === ".."
+    || relative.startsWith(`..${path.sep}`)
+    || path.isAbsolute(relative)
+  ) {
+    throw new Error(`clean target escapes the canonical data root: ${filePath}`);
+  }
+  return target;
 }
 
 async function readOptionalJson(filePath: string): Promise<unknown | undefined> {
@@ -711,6 +744,12 @@ async function readOptionalJson(filePath: string): Promise<unknown | undefined> 
     const info = await lstat(filePath);
     if (info.isSymbolicLink() || !info.isFile()) {
       throw new Error(`preserved remote state is not an owned regular file: ${filePath}`);
+    }
+    if (typeof process.getuid === "function" && info.uid !== process.getuid()) {
+      throw new Error(`preserved remote state has the wrong owner: ${filePath}`);
+    }
+    if (process.platform !== "win32" && (info.mode & 0o077) !== 0) {
+      throw new Error(`preserved remote state permissions are too broad: ${filePath}`);
     }
     return JSON.parse(await readFile(filePath, "utf8"));
   } catch (error) {
@@ -737,6 +776,12 @@ async function assertOptionalOwnedDirectory(directory: string): Promise<void> {
     const info = await lstat(directory);
     if (info.isSymbolicLink() || !info.isDirectory()) {
       throw new Error(`preserved remote state is not an owned directory: ${directory}`);
+    }
+    if (typeof process.getuid === "function" && info.uid !== process.getuid()) {
+      throw new Error(`preserved remote state directory has the wrong owner: ${directory}`);
+    }
+    if (process.platform !== "win32" && (info.mode & 0o077) !== 0) {
+      throw new Error(`preserved remote state directory permissions are too broad: ${directory}`);
     }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
