@@ -9,6 +9,7 @@ import { CURRENT_SCHEMA_VERSION, createRevisionedBase } from "../shared/schemas/
 import { WaifuConfigSchema } from "../shared/schemas/domain.js";
 import {
   RemoteAccessInstallationStateV1Schema,
+  RemoteAccessLocalDenyIndexV1Schema,
   RemoteAccessTrustIndexV1Schema
 } from "../shared/schemas/remoteAccess.js";
 import { RemoteAccessConfigV1Schema } from "../shared/schemas/remoteLifecycle.js";
@@ -241,6 +242,14 @@ async function ensureRemoteAccessLayout(
     }));
   }
 
+  if (!trustEntries.includes("local-deny-v1.json")) {
+    await writeJsonIfMissing(paths.localDenyIndex, RemoteAccessLocalDenyIndexV1Schema.parse({
+      version: 1,
+      trustEpochHighWater: "0",
+      devices: []
+    }));
+  }
+
   if (!hasConfig) {
     await writeJsonIfMissing(paths.hostConfig, RemoteAccessConfigV1Schema.parse({
       revision: "0",
@@ -252,7 +261,8 @@ async function ensureRemoteAccessLayout(
   await Promise.all([
     paths.hostConfig,
     paths.installation,
-    paths.trustIndex
+    paths.trustIndex,
+    paths.localDenyIndex
   ].map(assertOwnedRegularFile));
 }
 

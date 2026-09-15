@@ -116,6 +116,14 @@ type FakeRemoteState = {
   rejectedRequestIds?: string[];
   renameInputs?: Array<{ deviceId: string; input: unknown; actor: unknown }>;
   reconnectCount?: number;
+  invalidationListener?: (event: {
+    version: 1;
+    kind: "device_trust_revoked";
+    stableId: string;
+    deviceId: string;
+    trustEpoch: string;
+    denyEpoch: string;
+  }) => void;
 };
 
 function pairingRequest() {
@@ -142,6 +150,12 @@ function pairingRequest() {
 
 function fakeRemoteAccess(state: FakeRemoteState): RemoteAccessService {
   return {
+    subscribeInvalidations: (listener: NonNullable<FakeRemoteState["invalidationListener"]>) => {
+      state.invalidationListener = listener;
+      return () => {
+        if (state.invalidationListener === listener) state.invalidationListener = undefined;
+      };
+    },
     getStatus: async () => ({
       version: 1,
       config: {
@@ -554,9 +568,79 @@ describe("AssistantActionStore", () => {
     now += 61_000;
     expect(store.ownsInvitation(invitationId, owner)).toBe(false);
   });
+
+  it("invalidates all actions and invitation ownership for one revoked device epoch", () => {
+    const store = new AssistantActionStore({ randomBytes: deterministicRandom() });
+    const revoked = remotePrincipal();
+    const pending = store.create({ principal: revoked, delegation, proposal: proposal() });
+    const executing = store.create({ principal: revoked, delegation, proposal: proposal() });
+    store.beginConsume(executing.actionId, revoked);
+    const completed = store.create({ principal: revoked, delegation, proposal: proposal() });
+    const repairedEpoch = remotePrincipal({ trustEpoch: "6" });
+    const unaffected = store.create({ principal: repairedEpoch, delegation, proposal: proposal() });
+    store.beginConsume(completed.actionId, revoked);
+    store.complete(completed.actionId, revoked, { status: "completed", message: "Done." });
+    const revokedInvitation = bytes16(0x71);
+    const unaffectedInvitation = bytes16(0x72);
+    store.rememberInvitation(revokedInvitation, "1893456000", revoked);
+    store.rememberInvitation(unaffectedInvitation, "1893456000", repairedEpoch);
+
+    expect(store.invalidateOwner("remote:travel-mac", "5")).toBe(3);
+
+    for (const action of [pending, executing, completed]) {
+      expect(() => store.get(action.actionId, revoked)).toThrow(AssistantActionNotFoundError);
+    }
+    expect(store.get(unaffected.actionId, repairedEpoch).actionId).toBe(unaffected.actionId);
+    expect(store.ownsInvitation(revokedInvitation, revoked)).toBe(false);
+    expect(store.ownsInvitation(unaffectedInvitation, repairedEpoch)).toBe(true);
+    expect(store.stats()).toMatchObject({ records: 1, live: 1 });
+  });
 });
 
 describe("assistant action API", () => {
+  it("drops a revoked device epoch's conversations and actions from the host invalidation event", async () => {
+    let toolResult = "";
+    const state: FakeRemoteState = {
+      authorized: true,
+      enabled: true,
+      updateInputs: [],
+      approvalInputs: [],
+      invitationActors: [],
+      pairingRequest: undefined
+    };
+    const { app } = await makeActionApp(
+      scriptedToolPipeline("set_remote_access_enabled", { enabled: false }, (value) => {
+        toolResult = value;
+      }),
+      state
+    );
+    const conversationId = await createRemoteActionConversation(app);
+    const actionId = (JSON.parse(toolResult) as { actionId: string }).actionId;
+    expect(state.invalidationListener).toBeTypeOf("function");
+
+    state.invalidationListener?.({
+      version: 1,
+      kind: "device_trust_revoked",
+      stableId: "remote:travel-mac",
+      deviceId: "travel-mac",
+      trustEpoch: "5",
+      denyEpoch: "6"
+    });
+
+    const conversationTarget = `/api/assistant/conversations/${conversationId}`;
+    const conversation = await dispatchInternal(app, remotePrincipal({
+      method: "GET",
+      canonicalTarget: conversationTarget
+    }), undefined, { method: "GET", url: conversationTarget });
+    expect(conversation.statusCode).toBe(404);
+    const actionTarget = `/api/assistant/actions/${actionId}`;
+    const action = await dispatchInternal(app, remotePrincipal({
+      method: "GET",
+      canonicalTarget: actionTarget
+    }), undefined, { method: "GET", url: actionTarget });
+    expect(action.statusCode).toBe(404);
+  });
+
   it("confirms one exact action for the originating remote browser and audits that actor", async () => {
     let toolResult = "";
     const state: FakeRemoteState = {

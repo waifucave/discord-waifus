@@ -7,6 +7,7 @@ import {
   RemoteAccessService,
   type HelperSupervisorController
 } from "../src/backend/remoteAccess/remoteAccessService.js";
+import { RemoteAccessStateStore } from "../src/backend/remoteAccess/stateStore.js";
 import { ensureDataLayout } from "../src/config/layout.js";
 import { remoteStatePaths } from "../src/remote/paths.js";
 import type {
@@ -68,7 +69,20 @@ class FakeSupervisor implements HelperSupervisorController {
   attachedBridge: unknown;
   closeCalls = 0;
   startError: Error | undefined;
+  reconcileError: Error | undefined;
   managementCalls: Array<{ command: string; input: unknown[] }> = [];
+  devices: Array<{
+    version: 1;
+    deviceId: string;
+    displayName: string;
+    platform: { os: "darwin"; arch: "arm64" };
+    installationFingerprint: string;
+    trustEpoch: string;
+    revision: string;
+    pairedAt: string;
+    lastSeenAt: string;
+    connectionState: "direct";
+  }> = [];
   #snapshot: HelperSupervisorSnapshot;
   readonly #listeners = new Set<(snapshot: HelperSupervisorSnapshot) => void>();
 
@@ -167,7 +181,7 @@ class FakeSupervisor implements HelperSupervisorController {
 
   async listDevices(...input: unknown[]) {
     this.managementCalls.push({ command: "trusted_devices_list", input });
-    return { version: 1 as const, devices: [] };
+    return { version: 1 as const, devices: this.devices };
   }
 
   async renameDevice(deviceId: string, input: { displayName: string }, ...rest: unknown[]) {
@@ -188,6 +202,15 @@ class FakeSupervisor implements HelperSupervisorController {
 
   async revokeDevice(...input: unknown[]): Promise<void> {
     this.managementCalls.push({ command: "trusted_device_revoke", input });
+    const [deviceId] = input;
+    this.devices = this.devices.filter((device) => device.deviceId !== deviceId);
+  }
+
+  async reconcileDeviceRevocation(...input: unknown[]): Promise<void> {
+    this.managementCalls.push({ command: "trusted_device_revoke_reconcile", input });
+    if (this.reconcileError) throw this.reconcileError;
+    const [{ deviceId }] = input as [{ deviceId: string }];
+    this.devices = this.devices.filter((device) => device.deviceId !== deviceId);
   }
 
   async close(): Promise<void> {
@@ -462,7 +485,22 @@ describe("host remote-access lifecycle service", () => {
       { revision: "1", displayName: "Travel Laptop" },
       requestActor
     )).resolves.toMatchObject({ displayName: "Travel Laptop", revision: "2" });
-    await expect(remote.revokeDevice("travel-mac", actor)).resolves.toBeUndefined();
+    supervisor.devices = [{
+      version: 1,
+      deviceId: "travel-mac",
+      displayName: "Travel Laptop",
+      platform: { os: "darwin", arch: "arm64" },
+      installationFingerprint: Buffer.alloc(16, 0x42).toString("base64url"),
+      trustEpoch: "7",
+      revision: "2",
+      pairedAt: "1786000000",
+      lastSeenAt: "1786270800",
+      connectionState: "direct"
+    }];
+    await enableRemoteAccess(root, { deviceId: "travel-mac", trustEpoch: "7" });
+    const revocation = await remote.revokeDevice("travel-mac", { revision: "2" }, actor);
+    expect(supervisor.managementCalls.at(-1)?.command).toBe("trusted_devices_list");
+    await remote.finishDeviceRevocation(revocation);
 
     expect(supervisor.managementCalls.map((call) => call.command)).toEqual([
       "invitation_create",
@@ -472,8 +510,109 @@ describe("host remote-access lifecycle service", () => {
       "pairing_request_reject",
       "trusted_devices_list",
       "trusted_device_rename",
-      "trusted_device_revoke"
+      "trusted_devices_list",
+      "trusted_device_revoke_reconcile"
     ]);
+  });
+
+  it("denies locally before publishing one invalidation and asking the helper to converge", async () => {
+    const root = await makeRoot();
+    await enableRemoteAccess(root, { deviceId: "travel-mac", trustEpoch: "7" });
+    const supervisor = new FakeSupervisor();
+    supervisor.devices = [{
+      version: 1,
+      deviceId: "travel-mac",
+      displayName: "Travel Laptop",
+      platform: { os: "darwin", arch: "arm64" },
+      installationFingerprint: Buffer.alloc(16, 0x42).toString("base64url"),
+      trustEpoch: "7",
+      revision: "2",
+      pairedAt: "1786000000",
+      lastSeenAt: "1786270800",
+      connectionState: "direct"
+    }];
+    const remote = service(root, supervisor);
+    await remote.start();
+    const invalidations: unknown[] = [];
+    remote.subscribeInvalidations((event) => invalidations.push(event));
+    const actor = {
+      kind: "local" as const,
+      stableId: "local" as const,
+      hostServerLaunchId: Buffer.alloc(32, 0x31).toString("base64url"),
+      browserSessionId: Buffer.alloc(32, 0x32).toString("base64url")
+    };
+
+    const revocation = await remote.revokeDevice("travel-mac", { revision: "2" }, actor);
+
+    expect(await remote.isAuthorized(principal("travel-mac", "7"))).toBe(false);
+    expect(supervisor.managementCalls.map((call) => call.command)).toEqual([
+      "trusted_devices_list"
+    ]);
+    expect(invalidations).toEqual([]);
+
+    await remote.finishDeviceRevocation(revocation);
+    await remote.finishDeviceRevocation(revocation);
+
+    expect(invalidations).toEqual([{
+      version: 1,
+      kind: "device_trust_revoked",
+      stableId: "remote:travel-mac",
+      deviceId: "travel-mac",
+      trustEpoch: "7",
+      denyEpoch: "8"
+    }]);
+    expect(supervisor.managementCalls.map((call) => call.command)).toEqual([
+      "trusted_devices_list",
+      "trusted_device_revoke_reconcile"
+    ]);
+  });
+
+  it("resumes helper revocation from the durable local cutoff after restart", async () => {
+    const root = await makeRoot();
+    await enableRemoteAccess(root, { deviceId: "travel-mac", trustEpoch: "7" });
+    await new RemoteAccessStateStore(root).denyDevice("travel-mac", "7", 100n);
+    const supervisor = new FakeSupervisor();
+    const remote = service(root, supervisor);
+
+    await remote.start();
+
+    expect(await remote.isAuthorized(principal("travel-mac", "7"))).toBe(false);
+    expect(supervisor.managementCalls).toContainEqual({
+      command: "trusted_device_revoke_reconcile",
+      input: [{
+        deviceId: "travel-mac",
+        pairId: Buffer.alloc(16, 0x51).toString("base64url"),
+        deniedTrustEpoch: "7",
+        denyEpoch: "8"
+      }]
+    });
+  });
+
+  it("stays ready after one coalesced recovery failure and retries on the next ready snapshot", async () => {
+    const root = await makeRoot();
+    await enableRemoteAccess(root, { deviceId: "travel-mac", trustEpoch: "7" });
+    await new RemoteAccessStateStore(root).denyDevice("travel-mac", "7", 100n);
+    const supervisor = new FakeSupervisor();
+    supervisor.reconcileError = new Error("helper temporarily unavailable");
+    const remote = service(root, supervisor);
+
+    await remote.start();
+
+    expect(remote.getRuntimeSummary()).toMatchObject({
+      enabled: true,
+      helperState: "ready",
+      controlState: "connected"
+    });
+    expect(await remote.isAuthorized(principal("travel-mac", "7"))).toBe(false);
+    expect(supervisor.managementCalls.filter(
+      (call) => call.command === "trusted_device_revoke_reconcile"
+    )).toHaveLength(1);
+
+    supervisor.reconcileError = undefined;
+    supervisor.emit(supervisorSnapshot());
+    await expect.poll(() => supervisor.managementCalls.filter(
+      (call) => call.command === "trusted_device_revoke_reconcile"
+    ).length).toBe(2);
   });
 
   it("rechecks a remote administrative actor against current trust before helper delegation", async () => {

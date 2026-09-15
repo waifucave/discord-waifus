@@ -39,6 +39,7 @@ import {
   type HelperActivationStart,
   type HelperIdentityStatus,
   type HelperConfirmedAdminActor,
+  type HelperDeviceRevocationRecovery,
   type HelperLaunch,
   type HelperPackageResolver,
   type HelperProcessFactory,
@@ -392,6 +393,12 @@ export class HelperSupervisor {
     actor: HelperConfirmedAdminActor
   ): Promise<void> {
     await this.#readyClient().revokeDevice(deviceId, actor);
+  }
+
+  async reconcileDeviceRevocation(
+    input: HelperDeviceRevocationRecovery
+  ): Promise<void> {
+    await this.#readyClient().reconcileDeviceRevocation(input);
   }
 
   async request(input: HelperRemoteRequest): Promise<HelperRemoteResponse> {

@@ -69,6 +69,7 @@ import {
   HelperActivationPollSchema,
   HelperActivationStartSchema,
   HelperConfirmedAdminActorSchema,
+  HelperDeviceRevocationRecoverySchema,
   HelperIdentityStatusSchema,
   HelperRequestActorSchema,
   parseHelperRuntimeStatus,
@@ -78,6 +79,7 @@ import {
   type HelperActivationStart,
   type HelperIdentityStatus,
   type HelperConfirmedAdminActor,
+  type HelperDeviceRevocationRecovery,
   type HelperLaunch,
   type HelperLaunchRequest,
   type HelperProcessExit,
@@ -110,7 +112,8 @@ const HelperCommandFailureSchema = z.object({
     "pairing_request_reject",
     "trusted_devices_list",
     "trusted_device_rename",
-    "trusted_device_revoke"
+    "trusted_device_revoke",
+    "trusted_device_revoke_reconcile"
   ]),
   errorCode: z.union([HelperActivationErrorCodeSchema, RemoteAccessErrorCodeSchema]),
   ok: z.literal(false),
@@ -209,6 +212,11 @@ const TrustedDeviceRenameWireSchema = TrustedDeviceSummaryV1Schema.extend({
 });
 const TrustedDeviceRevokeWireSchema = z.object({
   command: z.literal("trusted_device_revoke"),
+  deviceId: DeviceIdSchema,
+  ok: z.literal(true)
+}).strict();
+const TrustedDeviceRevokeReconcileWireSchema = z.object({
+  command: z.literal("trusted_device_revoke_reconcile"),
   deviceId: DeviceIdSchema,
   ok: z.literal(true)
 }).strict();
@@ -1379,6 +1387,20 @@ class ProcessHelperClient implements AuthenticatedHelperClient {
       deviceId: DeviceIdSchema.parse(deviceIdValue),
       actor: HelperConfirmedAdminActorSchema.parse(actorValue)
     }, TrustedDeviceRevokeWireSchema, "trusted device revoke RESULT");
+  }
+
+  async reconcileDeviceRevocation(
+    inputValue: HelperDeviceRevocationRecovery
+  ): Promise<void> {
+    this.#requireHostManagement();
+    const input = HelperDeviceRevocationRecoverySchema.parse(inputValue);
+    await this.#command({
+      command: "trusted_device_revoke_reconcile",
+      deviceId: input.deviceId,
+      pairId: input.pairId,
+      deniedTrustEpoch: input.deniedTrustEpoch,
+      denyEpoch: input.denyEpoch
+    }, TrustedDeviceRevokeReconcileWireSchema, "trusted device revoke recovery RESULT");
   }
 
   #requireHostManagement(): void {

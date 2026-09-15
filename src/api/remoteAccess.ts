@@ -7,6 +7,7 @@ import {
   PairInvitationV1Schema,
   PendingPairingRequestListV1Schema,
   RenameTrustedDeviceInputV1Schema,
+  RevokeTrustedDeviceInputV1Schema,
   TrustedDeviceListV1Schema,
   TrustedDeviceSummaryV1Schema,
   UpdateRemoteAccessInputV1Schema
@@ -17,15 +18,18 @@ import {
   ActivationOperationNotFoundError,
   ActivationRequiredError,
   RemoteAccessActorUnauthorizedError,
+  RemoteAccessDeviceRevisionConflictError,
   RemoteAccessEnableBlockedError,
   RemoteAccessRevisionConflictError,
   RemoteAccessInactiveError,
   RemoteAccessService,
   RemoteAccessServiceUnavailableError,
+  RemoteAccessTrustedDeviceNotFoundError,
   type ConfirmedAdminActor,
   type LocalActivationActor,
   type RemoteAccessRequestActor
 } from "../backend/remoteAccess/remoteAccessService.js";
+import { RemoteAccessTrustConflictError } from "../backend/remoteAccess/stateStore.js";
 import {
   DashboardBuild,
   DashboardBuildError
@@ -36,7 +40,10 @@ import {
   createOperationStatusUrl
 } from "../shared/schemas/adminOperations.js";
 import { activationRequired, ApiError, conflict, notFound } from "./errors.js";
-import { getInternalDispatchContext } from "./internalDispatch.js";
+import {
+  afterInternalResponseDrained,
+  getInternalDispatchContext
+} from "./internalDispatch.js";
 
 const ActivationParamsSchema = z.object({
   activationOperationId: ActivationOperationIdSchema
@@ -145,6 +152,15 @@ function activationApiError(error: unknown): never {
   }
   if (error instanceof RemoteAccessRevisionConflictError) {
     throw conflict(error.message, { latest: error.latest });
+  }
+  if (error instanceof RemoteAccessDeviceRevisionConflictError) {
+    throw conflict(error.message, { latest: error.latest });
+  }
+  if (error instanceof RemoteAccessTrustedDeviceNotFoundError) {
+    throw notFound(error.message);
+  }
+  if (error instanceof RemoteAccessTrustConflictError) {
+    throw conflict(error.message);
   }
   if (error instanceof RemoteAccessEnableBlockedError) {
     throw new ApiError(
@@ -416,10 +432,17 @@ export function registerRemoteAccessRoutes(
   app.delete("/api/remote-access/devices/:deviceId", async (request, reply) => {
     try {
       const params = TrustedDeviceParamsSchema.parse(request.params);
-      await requiredService(service).revokeDevice(
+      const input = RevokeTrustedDeviceInputV1Schema.parse(request.body);
+      const remoteAccess = requiredService(service);
+      const revocation = await remoteAccess.revokeDevice(
         params.deviceId,
+        input,
         confirmedAdminActor(request)
       );
+      const finish = () => {
+        void remoteAccess.finishDeviceRevocation(revocation).catch(() => undefined);
+      };
+      if (!afterInternalResponseDrained(finish)) reply.raw.once("finish", finish);
       return reply.status(202).send(acceptedOperation(request));
     } catch (error) {
       return activationApiError(error);

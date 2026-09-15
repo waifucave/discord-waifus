@@ -821,3 +821,60 @@ export const RemoteAccessTrustIndexV1Schema = z.object({
 });
 
 export type RemoteAccessTrustIndexV1 = z.infer<typeof RemoteAccessTrustIndexV1Schema>;
+
+export const RemoteAccessLocalDenyEntryV1Schema = z.object({
+  deviceId: DeviceIdSchema,
+  pairId: Base64Url16BytesSchema,
+  deniedTrustEpoch: PositiveUint64DecimalSchema,
+  denyEpoch: PositiveUint64DecimalSchema,
+  revokedAt: Uint64DecimalSchema
+}).strict().superRefine((value, ctx) => {
+  if (BigInt(value.denyEpoch) <= BigInt(value.deniedTrustEpoch)) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["denyEpoch"],
+      message: "A local deny epoch must advance beyond the denied trust epoch."
+    });
+  }
+});
+
+export const RemoteAccessLocalDenyIndexV1Schema = z.object({
+  version: z.literal(1),
+  trustEpochHighWater: Uint64DecimalSchema,
+  devices: z.array(RemoteAccessLocalDenyEntryV1Schema).max(256)
+}).strict().superRefine((value, ctx) => {
+  const deviceIds = new Set<string>();
+  const highWater = BigInt(value.trustEpochHighWater);
+  for (let index = 0; index < value.devices.length; index += 1) {
+    const denial = value.devices[index];
+    if (deviceIds.has(denial.deviceId)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["devices", index, "deviceId"],
+        message: "Local deny device IDs must be unique."
+      });
+    }
+    if (BigInt(denial.denyEpoch) > highWater) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["devices", index, "denyEpoch"],
+        message: "Local deny epoch cannot exceed the persisted high-water mark."
+      });
+    }
+    if (index > 0 && value.devices[index - 1].deviceId >= denial.deviceId) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["devices", index, "deviceId"],
+        message: "Local deny device IDs must be ASCII-sorted."
+      });
+    }
+    deviceIds.add(denial.deviceId);
+  }
+});
+
+export type RemoteAccessLocalDenyEntryV1 = z.infer<
+  typeof RemoteAccessLocalDenyEntryV1Schema
+>;
+export type RemoteAccessLocalDenyIndexV1 = z.infer<
+  typeof RemoteAccessLocalDenyIndexV1Schema
+>;

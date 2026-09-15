@@ -76,6 +76,12 @@ does goes through these endpoints, so any agent can drive the app with plain HTT
 | GET/PUT | /api/remote-access | Remote-access status and revisioned settings. |
 | POST | /api/remote-access/reconnect | Reconnect the direct-only remote runtime. |
 | GET | /api/remote-access/diagnostics | Sanitized helper/control/direct-network diagnostics. |
+| POST/DELETE | /api/remote-access/invitations(/:invitationId) | Create or cancel an attended pairing invitation. |
+| GET | /api/remote-access/pairing-requests | Pending attended pairing requests. |
+| POST | /api/remote-access/pairing-requests/:requestId/approve·reject | Decide a pending request; approval uses the secure comparison surface. |
+| GET | /api/remote-access/devices | Trusted devices with current revision and direct state. |
+| PUT | /api/remote-access/devices/:deviceId | Rename with `{revision,displayName}`. |
+| DELETE | /api/remote-access/devices/:deviceId | Revoke with `{revision}` through a confirmed browser action. |
 | GET | /api/remote-access/dashboard-manifest | Canonical pinned host dashboard manifest (transport use). |
 | GET | /api/remote-access/dashboard-assets/:buildId/* | One allowlisted immutable host dashboard asset (transport use). |
 
@@ -125,3 +131,7 @@ curl -s -X PUT http://127.0.0.1:3888/api/waifus/riko \
 - **Conversations list**: `GET /api/assistant/conversations` returns
   `{conversations: [{id, createdAt, messageCount, preview?}]}`, most recently used first.
   Conversations are in-memory only and evicted LRU past 20.
+- **Remote revoke**: always re-read `/api/remote-access/devices` and send that device's current
+  `revision`. The host durably rejects the old device epoch before acknowledging, drains the
+  accepted response, closes only that device's streams, clears its conversations/actions, and
+  reconciles the helper in the background.

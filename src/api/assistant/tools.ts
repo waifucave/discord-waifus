@@ -911,7 +911,8 @@ export const ASSISTANT_TOOLS: AssistantTool[] = [
         operation: {
           kind: "exact_http",
           method: "DELETE",
-          canonicalTarget: `/api/remote-access/devices/${encodeURIComponent(device.deviceId)}`
+          canonicalTarget: `/api/remote-access/devices/${encodeURIComponent(device.deviceId)}`,
+          payload: { revision: device.revision }
         }
       });
       return confirmationResult(action);

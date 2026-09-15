@@ -106,6 +106,7 @@ function helperClient(overrides: Partial<AuthenticatedHelperClient> = {}): Authe
       connectionState: "direct"
     }),
     revokeDevice: async () => {},
+    reconcileDeviceRevocation: async () => {},
     request: async () => ({
       statusCode: 204,
       statusMessage: "No Content",

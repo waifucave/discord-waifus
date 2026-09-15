@@ -407,6 +407,30 @@ export class AssistantActionStore {
     if (parsed.success) this.invitationOwners.delete(parsed.data);
   }
 
+  invalidateOwner(stableId: string, trustEpoch: string): number {
+    let invalidated = 0;
+    for (const record of [...this.records.values()]) {
+      if (
+        record.owner.kind === "remote_device"
+        && record.owner.stableId === stableId
+        && record.owner.trustEpoch === trustEpoch
+      ) {
+        this.remove(record);
+        invalidated += 1;
+      }
+    }
+    for (const [invitationId, invitation] of this.invitationOwners) {
+      if (
+        invitation.owner.kind === "remote_device"
+        && invitation.owner.stableId === stableId
+        && invitation.owner.trustEpoch === trustEpoch
+      ) {
+        this.invitationOwners.delete(invitationId);
+      }
+    }
+    return invalidated;
+  }
+
   stats(): Readonly<{ records: number; live: number; accountedBytes: number }> {
     const now = this.currentTime();
     this.prune(now, false);

@@ -180,6 +180,22 @@ export class ConversationStore {
     return this.conversations.delete(id);
   }
 
+  invalidateOwner(stableId: string, trustEpoch: string): number {
+    let invalidated = 0;
+    for (const conversation of [...this.conversations.values()]) {
+      if (
+        conversation.owner.kind !== "remote_device"
+        || conversation.owner.stableId !== stableId
+        || conversation.owner.trustEpoch !== trustEpoch
+      ) {
+        continue;
+      }
+      conversation.eventStream.close();
+      if (this.conversations.delete(conversation.id)) invalidated += 1;
+    }
+    return invalidated;
+  }
+
   emit(id: string, owner: ConversationOwner, event: AssistantEvent): void {
     const conversation = this.ownedConversation(id, owner);
     if (!conversation) return;

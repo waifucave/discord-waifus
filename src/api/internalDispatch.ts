@@ -18,6 +18,12 @@ export type InternalDispatchContext = {
   readonly principal: RequestPrincipal;
   readonly delegation?: AssistantDelegation;
   readonly signal?: AbortSignal;
+  readonly responseDrain?: InternalResponseDrain;
+};
+
+type InternalResponseDrain = {
+  register: (callback: () => void) => void;
+  settle: () => void;
 };
 
 export type InternalStreamingInjectOptions = Omit<InjectOptions, "payloadAsStream" | "signal"> & {
@@ -65,11 +71,19 @@ export function getInternalDispatchContext(): InternalDispatchContext | undefine
   return internalDispatchStorage.getStore();
 }
 
+export function afterInternalResponseDrained(callback: () => void): boolean {
+  const responseDrain = internalDispatchStorage.getStore()?.responseDrain;
+  if (!responseDrain) return false;
+  responseDrain.register(callback);
+  return true;
+}
+
 function prepareInternalDispatch(
   app: FastifyInstance,
   principal: RequestPrincipal,
   delegation: AssistantDelegation | undefined,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  responseDrain?: InternalResponseDrain
 ): InternalDispatchContext {
   if (principal === undefined || principal === null) {
     throw new TypeError("Internal dispatch requires an explicit request principal.");
@@ -81,11 +95,33 @@ function prepareInternalDispatch(
   const parsedDelegation = delegation === undefined
     ? undefined
     : parseAssistantDelegation(delegation);
+  const effectiveResponseDrain = responseDrain
+    ?? internalDispatchStorage.getStore()?.responseDrain;
   return Object.freeze({
     principal: parsedPrincipal,
     ...(parsedDelegation ? { delegation: parsedDelegation } : {}),
-    ...(signal ? { signal } : {})
+    ...(signal ? { signal } : {}),
+    ...(effectiveResponseDrain ? { responseDrain: effectiveResponseDrain } : {})
   });
+}
+
+function createInternalResponseDrain(): InternalResponseDrain {
+  const callbacks: Array<() => void> = [];
+  let settled = false;
+  return {
+    register(callback) {
+      if (settled) {
+        queueMicrotask(callback);
+        return;
+      }
+      callbacks.push(callback);
+    },
+    settle() {
+      if (settled) return;
+      settled = true;
+      for (const callback of callbacks.splice(0)) callback();
+    }
+  };
 }
 
 function abortReason(signal: AbortSignal): Error {
@@ -142,13 +178,34 @@ export async function dispatchInternalStreaming(
   delegation: AssistantDelegation | undefined,
   options: InternalStreamingInjectOptions
 ): Promise<InternalStreamingResponse> {
-  const context = prepareInternalDispatch(app, principal, delegation, options.signal);
+  const responseDrain = createInternalResponseDrain();
+  const context = prepareInternalDispatch(
+    app,
+    principal,
+    delegation,
+    options.signal,
+    responseDrain
+  );
   // light-my-request resolves this promise when response headers are written. Its stream mode
   // forwards every later chunk through a backpressured Readable instead of accumulating body.
   // Await inside the ALS scope so both the initial request and async handler resources inherit the
   // authenticated principal without placing it in a forgeable HTTP header.
-  return internalDispatchStorage.run(
+  const response = await internalDispatchStorage.run(
     context,
     async () => await app.inject({ ...options, payloadAsStream: true })
   );
+  const body = response.stream();
+  const settle = () => responseDrain.settle();
+  body.once("end", settle);
+  body.once("error", settle);
+  body.once("close", settle);
+  if (body.readableEnded || body.destroyed) settle();
+  return {
+    raw: response.raw,
+    headers: response.headers,
+    statusCode: response.statusCode,
+    statusMessage: response.statusMessage,
+    trailers: response.trailers,
+    stream: () => body
+  };
 }

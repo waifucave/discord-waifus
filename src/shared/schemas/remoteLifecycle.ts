@@ -382,6 +382,12 @@ export const RenameTrustedDeviceInputV1Schema = z.object({
 
 export type RenameTrustedDeviceInputV1 = z.infer<typeof RenameTrustedDeviceInputV1Schema>;
 
+export const RevokeTrustedDeviceInputV1Schema = z.object({
+  revision: Uint64DecimalSchema
+}).strict();
+
+export type RevokeTrustedDeviceInputV1 = z.infer<typeof RevokeTrustedDeviceInputV1Schema>;
+
 export const AvailabilityStateSchema = z.enum(["unknown", "available", "unavailable"]);
 export const SecretStorageKindSchema = z.enum([
   "keychain",
