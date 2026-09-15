@@ -12,6 +12,7 @@ import {
   PairInvitationV1Schema,
   PendingPairingRequestListV1Schema,
   RenameTrustedDeviceInputV1Schema,
+  RevokeTrustedDeviceInputV1Schema,
   TrustedDeviceListV1Schema,
   TrustedDeviceSummaryV1Schema,
   type ApprovePairingInputV1,
@@ -21,6 +22,7 @@ import {
   RemoteAccessErrorCodeSchema,
   RemoteAccessStatusV1Schema,
   type RenameTrustedDeviceInputV1,
+  type RevokeTrustedDeviceInputV1,
   type TrustedDeviceListV1,
   type TrustedDeviceSummaryV1,
   UpdateRemoteAccessInputV1Schema,
@@ -43,6 +45,7 @@ import {
 import {
   HelperCommandError,
   HelperConfirmedAdminActorSchema,
+  HelperDeviceRevocationRecoverySchema,
   HelperRequestActorSchema,
   HelperSupervisorError,
   type HelperActivationCancel,
@@ -50,10 +53,16 @@ import {
   type HelperActivationStart,
   type HelperIdentityStatus,
   type HelperConfirmedAdminActor,
+  type HelperDeviceRevocationRecovery,
   type HelperRequestActor,
   type HelperSupervisorSnapshot
 } from "../../remote/helperTypes.js";
 import { RemoteAccessEvents } from "./events.js";
+import {
+  RemoteAccessInvalidations,
+  RemoteAccessInvalidationV1Schema,
+  type RemoteAccessInvalidationListener
+} from "./invalidation.js";
 import {
   RemoteAccessRevisionConflictError,
   RemoteAccessStateStore,
@@ -104,6 +113,7 @@ export type HelperSupervisorController = {
     actor: RemoteAccessRequestActor
   ) => Promise<TrustedDeviceSummaryV1>;
   revokeDevice?: (deviceId: string, actor: ConfirmedAdminActor) => Promise<void>;
+  reconcileDeviceRevocation?: (input: HelperDeviceRevocationRecovery) => Promise<void>;
   close: () => Promise<void>;
 };
 
@@ -175,6 +185,29 @@ export class RemoteAccessEnableBlockedError extends Error {
   }
 }
 
+export class RemoteAccessTrustedDeviceNotFoundError extends Error {
+  constructor() {
+    super("The trusted remote device was not found.");
+    this.name = "RemoteAccessTrustedDeviceNotFoundError";
+  }
+}
+
+export class RemoteAccessDeviceRevisionConflictError extends Error {
+  constructor(readonly latest: TrustedDeviceSummaryV1) {
+    super("The trusted remote device changed since it was reviewed.");
+    this.name = "RemoteAccessDeviceRevisionConflictError";
+  }
+}
+
+export type PreparedDeviceRevocation = Readonly<{
+  version: 1;
+  deviceId: string;
+  pairId: string;
+  trustEpoch: string;
+  denyEpoch: string;
+  created: boolean;
+}>;
+
 export type ResolvedRemoteDashboard = {
   readonly path: string;
   readonly source: "bundled" | "custom";
@@ -205,7 +238,7 @@ function inactiveSummary(
       : "active",
     controlState: "inactive",
     directState: "inactive",
-    trustedDeviceCount: state.trustIndex.pairs.length,
+    trustedDeviceCount: trustedDeviceCount(state),
     lastDirectAt: null,
     lastErrorCode: null
   });
@@ -224,7 +257,7 @@ function failedSummary(
       : "active",
     controlState: "unavailable",
     directState: "direct_unavailable",
-    trustedDeviceCount: state.trustIndex.pairs.length,
+    trustedDeviceCount: trustedDeviceCount(state),
     lastDirectAt: null,
     lastErrorCode: errorCode
   });
@@ -264,10 +297,22 @@ function snapshotSummary(
     activationState: runtimeStatus.activationState,
     controlState: runtimeStatus.controlState,
     directState: runtimeStatus.directState,
-    trustedDeviceCount: state.trustIndex.pairs.length,
+    trustedDeviceCount: trustedDeviceCount(state),
     lastDirectAt: runtimeStatus.lastDirectAt,
     lastErrorCode: snapshot.lastErrorCode ?? runtimeStatus.lastErrorCode
   });
+}
+
+function trustedDeviceCount(state: RemoteAccessPersistedState): number {
+  return state.trustIndex.pairs.filter((pair) => {
+    const denial = state.localDenyIndex.devices.find(
+      (candidate) => candidate.deviceId === pair.deviceId
+    );
+    return !denial || (
+      pair.pairId !== denial.pairId
+      && BigInt(pair.trustEpoch) > BigInt(denial.denyEpoch)
+    );
+  }).length;
 }
 
 async function defaultResolveHost(host: string): Promise<readonly string[]> {
@@ -283,10 +328,14 @@ export class RemoteAccessService {
   readonly #options: RemoteAccessServiceOptions;
   readonly #stateStore: RemoteAccessStateStore;
   readonly #events = new RemoteAccessEvents();
+  readonly #invalidations = new RemoteAccessInvalidations();
   readonly #resolveHost: (host: string) => Promise<readonly string[]>;
   readonly #now: () => number;
   readonly #randomBytes: (size: number) => Uint8Array;
   readonly #activationOperations = new Map<string, ActivationOperation>();
+  readonly #revocationFinalizers = new Map<string, Promise<void>>();
+  readonly #publishedRevocations = new Set<string>();
+  #revocationRecovery: Promise<void> | undefined;
   #lastVerifiedHelperSnapshot: HelperSupervisorSnapshot | undefined;
   #state: RemoteAccessPersistedState | undefined;
   #summary: RemoteAccessRuntimeSummary | undefined;
@@ -344,6 +393,7 @@ export class RemoteAccessService {
       return;
     }
     this.#publish(snapshotSummary(state, this.#options.supervisor.snapshot()));
+    await this.#recoverPendingDeviceRevocations().catch(() => undefined);
   }
 
   getRuntimeSummary(): RemoteAccessRuntimeSummary {
@@ -353,6 +403,10 @@ export class RemoteAccessService {
 
   subscribe(listener: (summary: RemoteAccessRuntimeSummary) => void): () => void {
     return this.#events.subscribe(listener);
+  }
+
+  subscribeInvalidations(listener: RemoteAccessInvalidationListener): () => void {
+    return this.#invalidations.subscribe(listener);
   }
 
   attachRequestBridge(bridge: RemoteRequestBridge): void {
@@ -377,6 +431,7 @@ export class RemoteAccessService {
     }
     await this.#options.supervisor.reconnectRuntime();
     this.#rememberHelperSnapshot(this.#options.supervisor.snapshot());
+    await this.#recoverPendingDeviceRevocations().catch(() => undefined);
   }
 
   async createInvitation(
@@ -453,7 +508,25 @@ export class RemoteAccessService {
     this.#requireState();
     const method = this.#options.supervisor.listDevices;
     if (!method) throw new RemoteAccessServiceUnavailableError();
-    return TrustedDeviceListV1Schema.parse(await method.call(this.#options.supervisor));
+    const result = TrustedDeviceListV1Schema.parse(await method.call(this.#options.supervisor));
+    const state = await this.#stateStore.load();
+    return TrustedDeviceListV1Schema.parse({
+      version: 1,
+      devices: result.devices.filter((device) => {
+        const pair = state.trustIndex.pairs.find(
+          (candidate) => candidate.deviceId === device.deviceId
+        );
+        const denial = state.localDenyIndex.devices.find(
+          (candidate) => candidate.deviceId === device.deviceId
+        );
+        return pair && pair.trustEpoch === device.trustEpoch && (
+          !denial || (
+            pair.pairId !== denial.pairId
+            && BigInt(pair.trustEpoch) > BigInt(denial.denyEpoch)
+          )
+        );
+      })
+    });
   }
 
   async renameDevice(
@@ -481,17 +554,99 @@ export class RemoteAccessService {
 
   async revokeDevice(
     deviceIdValue: string,
+    inputValue: RevokeTrustedDeviceInputV1,
     actorValue: ConfirmedAdminActor
-  ): Promise<void> {
-    this.#requireState();
-    const actor = await this.#authorizeConfirmedActor(actorValue);
-    const method = this.#options.supervisor.revokeDevice;
-    if (!method) throw new RemoteAccessServiceUnavailableError();
-    await method.call(
-      this.#options.supervisor,
-      DeviceIdSchema.parse(deviceIdValue),
-      actor
+  ): Promise<PreparedDeviceRevocation> {
+    this.#requireActiveManagement();
+    await this.#authorizeConfirmedActor(actorValue);
+    const deviceId = DeviceIdSchema.parse(deviceIdValue);
+    const input = RevokeTrustedDeviceInputV1Schema.parse(inputValue);
+    const listMethod = this.#options.supervisor.listDevices;
+    if (!listMethod || !this.#options.supervisor.reconcileDeviceRevocation) {
+      throw new RemoteAccessServiceUnavailableError();
+    }
+    const devices = TrustedDeviceListV1Schema.parse(
+      await listMethod.call(this.#options.supervisor)
     );
+    const target = devices.devices.find((device) => device.deviceId === deviceId);
+    if (!target) throw new RemoteAccessTrustedDeviceNotFoundError();
+    if (target.revision !== input.revision) {
+      throw new RemoteAccessDeviceRevisionConflictError(target);
+    }
+    const local = await this.#stateStore.denyDevice(
+      deviceId,
+      target.trustEpoch,
+      this.#nowSeconds()
+    );
+    this.#state = await this.#stateStore.load();
+    if (this.#summary?.enabled) {
+      this.#publish(snapshotSummary(this.#state, this.#options.supervisor.snapshot()));
+    }
+    return Object.freeze({
+      version: 1,
+      deviceId,
+      pairId: local.denial.pairId,
+      trustEpoch: local.denial.deniedTrustEpoch,
+      denyEpoch: local.denial.denyEpoch,
+      created: local.created
+    });
+  }
+
+  async finishDeviceRevocation(revocation: PreparedDeviceRevocation): Promise<void> {
+    const parsed = Object.freeze({
+      version: 1 as const,
+      deviceId: DeviceIdSchema.parse(revocation.deviceId),
+      pairId: Base64Url16BytesSchema.parse(revocation.pairId),
+      trustEpoch: revocation.trustEpoch,
+      denyEpoch: revocation.denyEpoch,
+      created: revocation.created === true
+    });
+    const event = RemoteAccessInvalidationV1Schema.parse({
+      version: 1,
+      kind: "device_trust_revoked",
+      stableId: `remote:${parsed.deviceId}`,
+      deviceId: parsed.deviceId,
+      trustEpoch: parsed.trustEpoch,
+      denyEpoch: parsed.denyEpoch
+    });
+    const key = `${parsed.deviceId}:${parsed.denyEpoch}`;
+    const pending = this.#revocationFinalizers.get(key);
+    if (pending) return pending;
+    const finalizer = (async () => {
+      if (!this.#publishedRevocations.has(key)) {
+        this.#publishedRevocations.add(key);
+        this.#invalidations.emit(event);
+        this.#requestBridge?.cancelDevice(
+          parsed.deviceId,
+          new Error("Remote device trust was revoked.")
+        );
+      }
+      const method = this.#options.supervisor.reconcileDeviceRevocation;
+      if (!method) throw new RemoteAccessServiceUnavailableError();
+      await method.call(this.#options.supervisor, HelperDeviceRevocationRecoverySchema.parse({
+        deviceId: parsed.deviceId,
+        pairId: parsed.pairId,
+        deniedTrustEpoch: parsed.trustEpoch,
+        denyEpoch: parsed.denyEpoch
+      }));
+      try {
+        const state = await this.#stateStore.load();
+        this.#state = state;
+        if (this.#summary?.enabled) {
+          this.#publish(snapshotSummary(state, this.#options.supervisor.snapshot()));
+        }
+      } catch {
+        // The durable local denial remains authoritative even if the helper's public mirror cannot
+        // be reread immediately. A later authorization read still fails closed.
+      }
+    })();
+    this.#revocationFinalizers.set(key, finalizer);
+    try {
+      await finalizer;
+    } catch (error) {
+      this.#revocationFinalizers.delete(key);
+      throw error;
+    }
   }
 
   async getStatus(): Promise<RemoteAccessStatusV1> {
@@ -769,6 +924,9 @@ export class RemoteAccessService {
     } catch (error) {
       this.#publish(failedSummary(next, lifecycleErrorCode(error)));
     }
+    if (this.#summary?.helperState === "ready") {
+      await this.#recoverPendingDeviceRevocations().catch(() => undefined);
+    }
     return structuredClone(next.config);
   }
 
@@ -786,11 +944,13 @@ export class RemoteAccessService {
       await this.#options.supervisor.cancelActivation(operation.operationId).catch(() => undefined);
     }
     this.#activationOperations.clear();
+    await Promise.allSettled(this.#revocationFinalizers.values());
     this.#requestBridge?.close(new Error("Remote access service is stopping."));
     this.#unsubscribeSupervisor?.();
     this.#unsubscribeSupervisor = undefined;
     await this.#options.supervisor.close();
     this.#events.clear();
+    this.#invalidations.clear();
   }
 
   async #effectiveBindIsLoopback(): Promise<boolean> {
@@ -819,7 +979,65 @@ export class RemoteAccessService {
       if (!this.#state || this.#closed || !this.#state.config.enabled) return;
       this.#rememberHelperSnapshot(snapshot);
       this.#publish(snapshotSummary(this.#state, snapshot));
+      if (snapshot.state === "ready") {
+        void this.#recoverPendingDeviceRevocations().catch(() => undefined);
+      }
     });
+  }
+
+  #recoverPendingDeviceRevocations(): Promise<void> {
+    if (this.#revocationRecovery) return this.#revocationRecovery;
+    const recovery = this.#runPendingDeviceRevocations();
+    this.#revocationRecovery = recovery;
+    const clear = () => {
+      if (this.#revocationRecovery === recovery) this.#revocationRecovery = undefined;
+    };
+    void recovery.then(clear, clear);
+    return recovery;
+  }
+
+  async #runPendingDeviceRevocations(): Promise<void> {
+    if (this.#closed) return;
+    const method = this.#options.supervisor.reconcileDeviceRevocation;
+    if (!method) return;
+    const state = await this.#stateStore.load();
+    for (const denial of state.localDenyIndex.devices) {
+      const pair = state.trustIndex.pairs.find(
+        (candidate) => candidate.deviceId === denial.deviceId
+      );
+      if (
+        !pair
+        || pair.pairId !== denial.pairId
+        || pair.trustEpoch !== denial.deniedTrustEpoch
+      ) {
+        continue;
+      }
+      const key = `${denial.deviceId}:${denial.denyEpoch}`;
+      if (this.#revocationFinalizers.has(key)) continue;
+      const convergence = method.call(this.#options.supervisor, {
+        deviceId: denial.deviceId,
+        pairId: denial.pairId,
+        deniedTrustEpoch: denial.deniedTrustEpoch,
+        denyEpoch: denial.denyEpoch
+      });
+      this.#revocationFinalizers.set(key, convergence);
+      try {
+        await convergence;
+      } catch (error) {
+        this.#revocationFinalizers.delete(key);
+        throw error;
+      }
+    }
+    try {
+      const refreshed = await this.#stateStore.load();
+      this.#state = refreshed;
+      if (this.#summary?.enabled) {
+        this.#publish(snapshotSummary(refreshed, this.#options.supervisor.snapshot()));
+      }
+    } catch {
+      // Authorization rereads the durable deny ledger and remains fail closed. A later helper
+      // snapshot retries public-state refresh without weakening the cutoff.
+    }
   }
 
   #requireState(): RemoteAccessPersistedState {

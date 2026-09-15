@@ -587,7 +587,14 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   registerAssistantRoutes(app, {
     dataRoot: options.dataRoot,
     createPipeline: options.assistant?.createPipeline,
-    authorizePrincipal: (principal) => requestPrincipalStillAuthorized(options, browserSecurity, principal)
+    authorizePrincipal: (principal) => requestPrincipalStillAuthorized(options, browserSecurity, principal),
+    ...(typeof options.remoteAccess?.subscribeInvalidations === "function"
+      ? {
+          subscribeInvalidations: options.remoteAccess.subscribeInvalidations.bind(
+            options.remoteAccess
+          )
+        }
+      : {})
   });
   app.get("/api/reviewer/history", async (request) => {
     const query = HistoryQuerySchema.parse(request.query);

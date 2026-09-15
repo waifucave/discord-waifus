@@ -317,6 +317,12 @@ describe("protected helper process client", () => {
       revision: "2"
     });
     await expect(client.revokeDevice("travel-mac", actor)).resolves.toBeUndefined();
+    await expect(client.reconcileDeviceRevocation({
+      deviceId: "travel-mac",
+      pairId: Buffer.alloc(16, 0x46).toString("base64url"),
+      deniedTrustEpoch: "7",
+      denyEpoch: "8"
+    })).resolves.toBeUndefined();
 
     await client.close();
     await launch.closeParentChannel();

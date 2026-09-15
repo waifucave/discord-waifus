@@ -186,7 +186,7 @@ export function RemoteAccessTab() {
   });
 
   const revokeDevice = (device: TrustedDevice) => run(`revoke:${device.deviceId}`, async () => {
-    await api.revokeRemoteAccessDevice(device.deviceId);
+    await api.revokeRemoteAccessDevice(device.deviceId, device.revision);
     setNotice({ tone: "ok", message: `${device.displayName} was revoked.` });
     reloadManagement();
   });

@@ -201,6 +201,14 @@ class AuthenticatedRemoteBridgeConnection implements RemoteBridgeConnection {
     }
   }
 
+  cancelDevice(deviceId: string, reason?: unknown): void {
+    for (const active of this.#active.values()) {
+      if (active.deviceId === deviceId) {
+        active.controller.abort(abortError(reason, "Remote device trust was invalidated."));
+      }
+    }
+  }
+
   close(reason?: unknown): void {
     if (this.#closed) return;
     this.#closed = true;
@@ -258,6 +266,12 @@ export class RemoteRequestBridge {
 
   connectionClosed(connectionId: string, connection: AuthenticatedRemoteBridgeConnection): void {
     if (this.#connections.get(connectionId) === connection) this.#connections.delete(connectionId);
+  }
+
+  cancelDevice(deviceId: string, reason?: unknown): void {
+    for (const connection of this.#connections.values()) {
+      connection.cancelDevice(deviceId, reason);
+    }
   }
 
   close(reason?: unknown): void {

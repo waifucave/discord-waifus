@@ -6,6 +6,7 @@ export const REMOTE_STATE_RELATIVE_PATHS = Object.freeze({
   installation: "app/remote-access/installation.json",
   trustRoot: "app/remote-access/trust",
   trustIndex: "app/remote-access/trust/index.json",
+  localDenyIndex: "app/remote-access/trust/local-deny-v1.json",
   operationsRoot: "app/remote-access/operations",
   auditRoot: "app/remote-access/audit",
   resetTombstone: "app/remote-access/reset-tombstone.json",

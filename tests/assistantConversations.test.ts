@@ -113,4 +113,22 @@ describe("ConversationStore", () => {
     expect(store.get(id, browserB)).toBeUndefined();
     expect(store.eventStream(id, browserB)).toBeUndefined();
   });
+
+  it("invalidates every conversation for one revoked device epoch only", () => {
+    const store = new ConversationStore();
+    const revokedOwner = remoteOwner("travel-mac", "5");
+    const revokedIds = [store.create(revokedOwner).id, store.create(revokedOwner).id];
+    const repairedEpochOwner = remoteOwner("travel-mac", "6");
+    const repairedEpochId = store.create(repairedEpochOwner).id;
+    const otherOwner = remoteOwner("studio-pc", "5");
+    const otherId = store.create(otherOwner).id;
+    const localId = store.create(localOwner).id;
+
+    expect(store.invalidateOwner("remote:travel-mac", "5")).toBe(2);
+
+    for (const id of revokedIds) expect(store.get(id, revokedOwner)).toBeUndefined();
+    expect(store.get(repairedEpochId, repairedEpochOwner)).toBeDefined();
+    expect(store.get(otherId, otherOwner)).toBeDefined();
+    expect(store.get(localId, localOwner)).toBeDefined();
+  });
 });

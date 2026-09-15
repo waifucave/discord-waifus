@@ -342,10 +342,11 @@ export const api = {
       `/api/remote-access/devices/${encodeURIComponent(deviceId)}`,
       { body }
     ),
-  revokeRemoteAccessDevice: (deviceId: string) =>
+  revokeRemoteAccessDevice: (deviceId: string, revision: string) =>
     request<OperationAccepted>(
       "DELETE",
-      `/api/remote-access/devices/${encodeURIComponent(deviceId)}`
+      `/api/remote-access/devices/${encodeURIComponent(deviceId)}`,
+      { body: { revision } }
     ),
   reconnectRemoteAccess: () =>
     request<OperationAccepted>("POST", "/api/remote-access/reconnect"),

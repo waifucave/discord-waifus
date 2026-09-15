@@ -533,6 +533,14 @@ async function main(capability) {
       })));
       continue;
     }
+    if (activation.command === "trusted_device_revoke_reconcile") {
+      socket.write(frame(RESULT, canonicalJson({
+        command: "trusted_device_revoke_reconcile",
+        deviceId: activation.deviceId,
+        ok: true
+      })));
+      continue;
+    }
     if (activation.command === "activation_begin") {
       socket.write(frame(RESULT, canonicalJson({
         command: "activation_begin",

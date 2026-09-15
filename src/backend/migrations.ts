@@ -17,6 +17,7 @@ import { legacyToParams, LegacyGeneration, LegacyReasoning } from "../shared/par
 import { atomicWriteJson, atomicWriteText } from "../storage/atomic.js";
 import {
   RemoteAccessInstallationStateV1Schema,
+  RemoteAccessLocalDenyIndexV1Schema,
   RemoteAccessTrustIndexV1Schema
 } from "../shared/schemas/remoteAccess.js";
 import { RemoteAccessConfigV1Schema } from "../shared/schemas/remoteLifecycle.js";
@@ -99,7 +100,8 @@ async function validateAndHardenRemoteAccessState(dataRoot: string): Promise<boo
   const files = [
     { filePath: paths.hostConfig, schema: RemoteAccessConfigV1Schema },
     { filePath: paths.installation, schema: RemoteAccessInstallationStateV1Schema },
-    { filePath: paths.trustIndex, schema: RemoteAccessTrustIndexV1Schema }
+    { filePath: paths.trustIndex, schema: RemoteAccessTrustIndexV1Schema },
+    { filePath: paths.localDenyIndex, schema: RemoteAccessLocalDenyIndexV1Schema }
   ] as const;
   let changed = false;
   for (const { filePath, schema } of files) {

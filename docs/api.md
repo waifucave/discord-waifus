@@ -110,8 +110,9 @@ currently trusted remote `full_admin` principal through the authenticated direct
 - `GET /api/remote-access/pairing-requests` and
   `POST /api/remote-access/pairing-requests/:requestId/approve|reject` — list and decide pending
   attended pairings; approval requires a confirmed browser context and the complete comparison.
-- `GET/PUT/DELETE /api/remote-access/devices...` — list, rename, or revoke trusted devices;
-  revocation requires a confirmed browser context.
+- `GET/PUT/DELETE /api/remote-access/devices...` — list, rename, or revoke trusted devices.
+  Rename sends `{revision,displayName}` and revoke sends `{revision}` from the latest device list;
+  revocation also requires a confirmed browser context.
 - `GET /api/remote-access/dashboard-manifest` — the exact canonical manifest for the host's pinned
   bundled dashboard.
 - `GET /api/remote-access/dashboard-assets/:buildId/*` — only a declared asset from that exact
@@ -128,6 +129,13 @@ bundles live only under `app/cache/remote-dashboard/`; live host/remote helper s
 the separate `app/tmp/remote-host/` and `app/tmp/remote-gateway/` trees. Private identity, pair,
 node, and discovery keys remain helper-owned in the OS vault and are never stored in these Node
 JSON trees.
+
+Per-device revoke is fail closed and restart safe. The host first persists a Node-owned local deny
+cutoff, so new requests and assistant actions from that device epoch are rejected even if the helper
+or coordination service is temporarily unavailable. Only after the accepted response has drained
+does it close that device's existing streams and ask the helper to persist and publish the
+cryptographic revocation. An unfinished helper step is retried from the durable cutoff on helper
+reconnect or host restart; another device's streams and assistant state are not affected.
 
 `waifus clean` refuses before mutation while the host daemon, host remote helper, or remote gateway
 is live. Once stopped, clean removes ordinary user/config/cache data and transient role runtime

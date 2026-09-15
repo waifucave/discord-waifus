@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { createApiServer } from "../src/api/server.js";
-import { dispatchInternal } from "../src/api/internalDispatch.js";
+import { dispatchInternal, dispatchInternalStreaming } from "../src/api/internalDispatch.js";
 import { createRemoteRequestPrincipal } from "../src/api/requestPrincipal.js";
 import type { RemoteAccessService } from "../src/backend/remoteAccess/remoteAccessService.js";
 import { createRuntimeState } from "../src/backend/runtime.js";
@@ -49,7 +49,8 @@ function confirmedPrincipal(method: "POST" | "DELETE", canonicalTarget: string) 
 }
 
 function fakeService(
-  onCreateInvitation?: (actor: unknown, idempotencyKey: string) => void
+  onCreateInvitation?: (actor: unknown, idempotencyKey: string) => void,
+  onRevocation?: (phase: "prepared" | "finished") => void
 ) {
   return {
     getStatus: async () => ({
@@ -144,7 +145,20 @@ function fakeService(
       lastSeenAt: "1786270800",
       connectionState: "direct"
     }),
-    revokeDevice: async () => {}
+    revokeDevice: async (deviceId: string) => {
+      onRevocation?.("prepared");
+      return {
+        version: 1,
+        deviceId,
+        pairId: bytes16(0x45),
+        trustEpoch: "3",
+        denyEpoch: "4",
+        created: true
+      };
+    },
+    finishDeviceRevocation: async () => {
+      onRevocation?.("finished");
+    }
   } as unknown as RemoteAccessService;
 }
 
@@ -256,11 +270,44 @@ describe("remote-access route authorization", () => {
       {
         method: "DELETE",
         url: revokePath,
-        headers: { "idempotency-key": bytes32(0x64) }
+        headers: { "idempotency-key": bytes32(0x64) },
+        payload: { revision: "1" }
       }
     );
     expect(revoked.statusCode).toBe(202);
     expect(revoked.json()).toMatchObject({ status: "accepted" });
+  });
+
+  it("finishes revocation only after the accepted remote response body is drained", async () => {
+    const phases: string[] = [];
+    const app = await makeApp(true, fakeService(undefined, (phase) => phases.push(phase)));
+    const revokePath = "/api/remote-access/devices/travel-mac";
+    const response = await dispatchInternalStreaming(
+      app,
+      confirmedPrincipal("DELETE", revokePath),
+      undefined,
+      {
+        method: "DELETE",
+        url: revokePath,
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": bytes32(0x68)
+        },
+        payload: JSON.stringify({ revision: "1" })
+      }
+    );
+
+    expect(response.statusCode).toBe(202);
+    expect(phases).toEqual(["prepared"]);
+    expect(JSON.parse((await new Promise<Buffer>((resolve, reject) => {
+      const chunks: Buffer[] = [];
+      const body = response.stream();
+      body.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+      body.once("end", () => resolve(Buffer.concat(chunks)));
+      body.once("error", reject);
+    })).toString("utf8"))).toMatchObject({ status: "accepted" });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(phases).toEqual(["prepared", "finished"]);
   });
 
   it("recovers the same helper-held invitation with the same actor, session, key, and body", async () => {

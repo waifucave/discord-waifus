@@ -596,6 +596,34 @@ describe("authenticated remote request bridge", () => {
     await closed;
   });
 
+  it("cancels only streams owned by the invalidated device", async () => {
+    const { bridge } = await makeApp();
+    const helper = new FakeTsConnect(bridge);
+    const firstController = new AbortController();
+    const secondController = new AbortController();
+    const first = await helper.request(start("first-mac", "GET", "/cancel"), {
+      signal: firstController.signal,
+      streamId: 2n
+    });
+    const second = await helper.request(start("second-mac", "GET", "/cancel"), {
+      signal: secondController.signal,
+      streamId: 4n
+    });
+
+    const firstClosed = waitForClose(first.body);
+    bridge.cancelDevice("first-mac", new Error("device trust revoked"));
+    await firstClosed;
+
+    expect(first.body.destroyed).toBe(true);
+    expect(second.body.destroyed).toBe(false);
+    expect(bridge.activeStreamCount("first-mac")).toBe(0);
+    expect(bridge.activeStreamCount("second-mac")).toBe(1);
+
+    const secondClosed = waitForClose(second.body);
+    secondController.abort();
+    await secondClosed;
+  });
+
   it("caps one helper connection at 128 backpressured streams and 8 MiB queued", async () => {
     const { bridge } = await makeApp();
     const helper = new FakeTsConnect(bridge);

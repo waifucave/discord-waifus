@@ -1,5 +1,10 @@
 import { lstat, readFile } from "node:fs/promises";
-import { RemoteAccessInstallationStateV1Schema, RemoteAccessTrustIndexV1Schema } from "../../shared/schemas/remoteAccess.js";
+import {
+  RemoteAccessInstallationStateV1Schema,
+  RemoteAccessLocalDenyIndexV1Schema,
+  RemoteAccessTrustIndexV1Schema,
+  type RemoteAccessLocalDenyEntryV1
+} from "../../shared/schemas/remoteAccess.js";
 import {
   RemoteAccessConfigV1Schema,
   UpdateRemoteAccessInputV1Schema,
@@ -13,7 +18,20 @@ export type RemoteAccessPersistedState = {
   readonly config: ReturnType<typeof RemoteAccessConfigV1Schema.parse>;
   readonly installation: ReturnType<typeof RemoteAccessInstallationStateV1Schema.parse>;
   readonly trustIndex: ReturnType<typeof RemoteAccessTrustIndexV1Schema.parse>;
+  readonly localDenyIndex: ReturnType<typeof RemoteAccessLocalDenyIndexV1Schema.parse>;
 };
+
+export type RemoteAccessDeviceDenialResult = Readonly<{
+  created: boolean;
+  denial: RemoteAccessLocalDenyEntryV1;
+}>;
+
+export class RemoteAccessTrustConflictError extends Error {
+  constructor() {
+    super("The trusted device changed before its local denial could be persisted.");
+    this.name = "RemoteAccessTrustConflictError";
+  }
+}
 
 export class RemoteAccessRevisionConflictError extends Error {
   constructor(readonly latest: RemoteAccessConfigV1) {
@@ -45,15 +63,17 @@ export class RemoteAccessStateStore {
   }
 
   async load(): Promise<RemoteAccessPersistedState> {
-    const [config, installation, trustIndex] = await Promise.all([
+    const [config, installation, trustIndex, localDenyIndex] = await Promise.all([
       readOwnedJson(this.#paths.hostConfig),
       readOwnedJson(this.#paths.installation),
-      readOwnedJson(this.#paths.trustIndex)
+      readOwnedJson(this.#paths.trustIndex),
+      readOwnedJson(this.#paths.localDenyIndex)
     ]);
     return Object.freeze({
       config: Object.freeze(RemoteAccessConfigV1Schema.parse(config)),
       installation: Object.freeze(RemoteAccessInstallationStateV1Schema.parse(installation)),
-      trustIndex: Object.freeze(RemoteAccessTrustIndexV1Schema.parse(trustIndex))
+      trustIndex: Object.freeze(RemoteAccessTrustIndexV1Schema.parse(trustIndex)),
+      localDenyIndex: Object.freeze(RemoteAccessLocalDenyIndexV1Schema.parse(localDenyIndex))
     });
   }
 
@@ -62,9 +82,71 @@ export class RemoteAccessStateStore {
       const state = await this.load();
       if (!state.config.enabled) return false;
       const pair = state.trustIndex.pairs.find((candidate) => candidate.deviceId === deviceId);
-      return pair?.trustEpoch === trustEpoch;
+      if (pair?.trustEpoch !== trustEpoch) return false;
+      const denial = state.localDenyIndex.devices.find(
+        (candidate) => candidate.deviceId === deviceId
+      );
+      return !denial || (
+        pair.pairId !== denial.pairId
+        && BigInt(trustEpoch) > BigInt(denial.denyEpoch)
+      );
     } catch {
       return false;
+    }
+  }
+
+  async denyDevice(
+    deviceId: string,
+    deniedTrustEpoch: string,
+    nowSeconds: bigint
+  ): Promise<RemoteAccessDeviceDenialResult> {
+    let release!: () => void;
+    const prior = this.#mutationTail;
+    this.#mutationTail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await prior;
+    try {
+      const current = await this.load();
+      const existing = current.localDenyIndex.devices.find(
+        (candidate) => candidate.deviceId === deviceId
+      );
+      if (existing?.deniedTrustEpoch === deniedTrustEpoch) {
+        return Object.freeze({ created: false, denial: Object.freeze(existing) });
+      }
+      const pair = current.trustIndex.pairs.find(
+        (candidate) => candidate.deviceId === deviceId
+      );
+      if (!pair || pair.trustEpoch !== deniedTrustEpoch) {
+        throw new RemoteAccessTrustConflictError();
+      }
+      const highWater = [
+        BigInt(current.trustIndex.trustEpochHighWater),
+        BigInt(current.localDenyIndex.trustEpochHighWater)
+      ].reduce((highest, value) => value > highest ? value : highest, 0n);
+      if (highWater === 18_446_744_073_709_551_615n) {
+        throw new RemoteAccessTrustConflictError();
+      }
+      const denial = RemoteAccessLocalDenyIndexV1Schema.shape.devices.element.parse({
+        deviceId,
+        pairId: pair.pairId,
+        deniedTrustEpoch,
+        denyEpoch: (highWater + 1n).toString(),
+        revokedAt: nowSeconds.toString()
+      });
+      const devices = current.localDenyIndex.devices
+        .filter((candidate) => candidate.deviceId !== deviceId)
+        .concat(denial)
+        .sort((left, right) => left.deviceId.localeCompare(right.deviceId));
+      const next = RemoteAccessLocalDenyIndexV1Schema.parse({
+        version: 1,
+        trustEpochHighWater: denial.denyEpoch,
+        devices
+      });
+      await atomicWriteJson(this.#paths.localDenyIndex, next, { mode: 0o600 });
+      return Object.freeze({ created: true, denial: Object.freeze(denial) });
+    } finally {
+      release();
     }
   }
 

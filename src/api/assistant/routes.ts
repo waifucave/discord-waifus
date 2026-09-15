@@ -37,6 +37,7 @@ import {
   type AssistantActionLease,
   type AssistantActionReceipt
 } from "./actions.js";
+import type { RemoteAccessInvalidationListener } from "../../backend/remoteAccess/invalidation.js";
 
 const MessageBodySchema = z.object({ content: z.string().min(1).max(8000) });
 const ActionParamsSchema = z.object({ actionId: Base64Url32BytesSchema }).strict();
@@ -48,10 +49,18 @@ export function registerAssistantRoutes(
     dataRoot: string;
     createPipeline?: (target: { providerId: string; modelId: string }) => ModelPipeline;
     authorizePrincipal: (principal: RequestPrincipal) => boolean | Promise<boolean>;
+    subscribeInvalidations?: (listener: RemoteAccessInvalidationListener) => () => void;
   }
 ): void {
   const store = new ConversationStore();
   const actions = new AssistantActionStore();
+  const unsubscribeInvalidations = options.subscribeInvalidations?.((event) => {
+    store.invalidateOwner(event.stableId, event.trustEpoch);
+    actions.invalidateOwner(event.stableId, event.trustEpoch);
+  });
+  if (unsubscribeInvalidations) {
+    app.addHook("onClose", async () => unsubscribeInvalidations());
+  }
 
   app.post("/api/assistant/conversations", async (request) => {
     const { id } = store.create(conversationOwner(request.principal));

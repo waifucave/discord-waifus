@@ -79,6 +79,28 @@ export const HelperIdentityStatusSchema = z.object({
   secretStorage: SecretStorageKindSchema
 }).strict();
 
+export const HelperDeviceRevocationRecoverySchema = z.object({
+  deviceId: DeviceIdSchema,
+  pairId: Base64Url16BytesSchema,
+  deniedTrustEpoch: Uint64DecimalSchema.refine(
+    (value) => value !== "0",
+    "A denied trust epoch must be positive."
+  ),
+  denyEpoch: Uint64DecimalSchema
+}).strict().superRefine((value, ctx) => {
+  if (BigInt(value.denyEpoch) <= BigInt(value.deniedTrustEpoch)) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["denyEpoch"],
+      message: "A recovery deny epoch must advance beyond its denied trust epoch."
+    });
+  }
+});
+
+export type HelperDeviceRevocationRecovery = z.infer<
+  typeof HelperDeviceRevocationRecoverySchema
+>;
+
 export type HelperIdentityStatus = z.infer<typeof HelperIdentityStatusSchema>;
 
 export const HelperActivationErrorCodeSchema = z.enum([
@@ -242,6 +264,9 @@ export type AuthenticatedHelperClient = {
   revokeDevice: (
     deviceId: string,
     actor: HelperConfirmedAdminActor
+  ) => Promise<void>;
+  reconcileDeviceRevocation: (
+    input: HelperDeviceRevocationRecovery
   ) => Promise<void>;
   request: (request: HelperRemoteRequest) => Promise<HelperRemoteResponse>;
   attachRequestBridge: (bridge: RemoteRequestBridge) => void;
