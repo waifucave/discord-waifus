@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   asEventCursor,
   compareEventCursors,
@@ -64,6 +64,36 @@ describe("incremental SSE parsing", () => {
 });
 
 describe("ResumableEventFeed", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("invokes the browser fetch method with its global receiver", async () => {
+    let feed!: ResumableEventFeed;
+    const errors: unknown[] = [];
+    const browserFetch = vi.fn(function (this: typeof globalThis): Promise<Response> {
+      if (this !== globalThis) throw new TypeError("Illegal invocation");
+      feed.close();
+      return Promise.resolve(new Response(new Uint8Array(), { status: 200 }));
+    });
+    vi.stubGlobal("fetch", browserFetch);
+    feed = new ResumableEventFeed({
+      url: "/api/events",
+      reconnectDelayMs: 0,
+      onEvent: () => undefined,
+      onError: (error) => {
+        errors.push(error);
+        feed.close();
+      }
+    });
+
+    feed.start();
+    await feed.settled();
+
+    expect(browserFetch).toHaveBeenCalledOnce();
+    expect(errors).toEqual([]);
+  });
+
   it("uses same-origin fetch, decodes fragmented UTF-8, suppresses duplicates, and reconnects with an exact cursor", async () => {
     const snapshotCursor = `v1:${EPOCH_A}:0`;
     const eventCursor = `v1:${EPOCH_A}:1`;

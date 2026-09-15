@@ -138,18 +138,23 @@ test("manages invitations, attended approvals, and revocation through the remote
     entry.action === "invitation_create"
     || entry.action === "invitation_cancel"
     || entry.action === "pairing_request_approve"
-    || entry.action === "trusted_device_revoke"
+    || entry.action === "trusted_device_revoke_reconcile"
   ));
   expect(mutations.map((entry) => entry.action)).toEqual([
     "invitation_create",
     "invitation_cancel",
     "pairing_request_approve",
-    "trusted_device_revoke"
+    "trusted_device_revoke_reconcile"
   ]);
-  expect(mutations.every((entry) => (
+  expect(mutations.filter((entry) => entry.action !== "trusted_device_revoke_reconcile").every((entry) => (
     entry.hostId === current.hosts.a.record.hostId
     && entry.actorKind === "remote_device"
   ))).toBe(true);
+  expect(mutations.at(-1)).toMatchObject({
+    hostId: current.hosts.a.record.hostId,
+    action: "trusted_device_revoke_reconcile",
+    targetId: "new-travel-laptop"
+  });
   expect(JSON.stringify(current.ledger)).not.toContain(fullToken);
   expect(browserEgress(current)).toEqual([]);
 });
