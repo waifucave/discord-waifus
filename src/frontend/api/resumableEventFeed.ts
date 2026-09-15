@@ -119,7 +119,7 @@ export class ResumableEventFeed {
   private runPromise: Promise<void> | undefined;
 
   constructor(private readonly options: ResumableEventFeedOptions) {
-    this.fetchImpl = options.fetchImpl ?? fetch;
+    this.fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
     this.reconnectDelayMs = boundedDelay(options.reconnectDelayMs ?? DEFAULT_RECONNECT_DELAY_MS);
     this.cursorValue = options.initialCursor === undefined
       ? undefined

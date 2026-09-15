@@ -33,6 +33,7 @@ import type {
   PairOperationStatus,
   PairStartInput
 } from "../../../src/shared/schemas/remoteLifecycle.js";
+import { RemoteAccessTrustIndexV1Schema } from "../../../src/shared/schemas/remoteAccess.js";
 import type {
   RequestPrincipalWire,
   RemoteBrowserContextV1
@@ -49,6 +50,7 @@ import type {
   HelperActivationCancel,
   HelperActivationPoll,
   HelperActivationStart,
+  HelperDeviceRevocationRecovery,
   HelperIdentityStatus,
   HelperRuntimeStatus,
   HelperSupervisorSnapshot
@@ -305,6 +307,7 @@ function helperSnapshot(key: "a" | "b"): HelperSupervisorSnapshot {
 class HostManagementSupervisor implements HelperSupervisorController {
   readonly #hostId: string;
   readonly #key: "a" | "b";
+  readonly #dataRoot: string;
   readonly #ledger: RemoteHarnessLedger;
   readonly #listeners = new Set<(snapshot: HelperSupervisorSnapshot) => void>();
   #snapshot: HelperSupervisorSnapshot;
@@ -312,9 +315,10 @@ class HostManagementSupervisor implements HelperSupervisorController {
   #devices: TrustedDeviceSummaryV1[];
   #invitation: PairInvitationV1 | undefined;
 
-  constructor(key: "a" | "b", hostId: string, ledger: RemoteHarnessLedger) {
+  constructor(key: "a" | "b", hostId: string, dataRoot: string, ledger: RemoteHarnessLedger) {
     this.#hostId = hostId;
     this.#key = key;
+    this.#dataRoot = dataRoot;
     this.#ledger = ledger;
     this.#snapshot = helperSnapshot(key);
     const sasIndices = [1, 23, 456, 789, 1_023] as const;
@@ -439,7 +443,7 @@ class HostManagementSupervisor implements HelperSupervisorController {
     const request = this.#requests.find((candidate) => candidate.requestId === requestId);
     this.#requests = this.#requests.filter((candidate) => candidate.requestId !== requestId);
     if (request) {
-      this.#devices.push(TrustedDeviceSummaryV1Schema.parse({
+      const device = TrustedDeviceSummaryV1Schema.parse({
         version: 1,
         deviceId: "new-travel-laptop",
         displayName: request.claimedDisplayName,
@@ -450,7 +454,23 @@ class HostManagementSupervisor implements HelperSupervisorController {
         pairedAt: seconds(),
         lastSeenAt: seconds(),
         connectionState: "direct"
+      });
+      await this.#updateTrustIndex((current) => ({
+        ...current,
+        trustEpochHighWater: (
+          BigInt(current.trustEpochHighWater) > 12n
+            ? current.trustEpochHighWater
+            : "12"
+        ),
+        pairs: current.pairs
+          .filter((pair) => pair.deviceId !== device.deviceId)
+          .concat({
+            deviceId: device.deviceId,
+            pairId: bytes16(0x75),
+            trustEpoch: device.trustEpoch
+          })
       }));
+      this.#devices.push(device);
     }
   }
 
@@ -482,12 +502,34 @@ class HostManagementSupervisor implements HelperSupervisorController {
     return updated;
   }
 
-  async revokeDevice(deviceId: string, actor: ConfirmedAdminActor): Promise<void> {
-    this.#record("trusted_device_revoke", actor.kind, deviceId);
-    this.#devices = this.#devices.filter((device) => device.deviceId !== deviceId);
+  async reconcileDeviceRevocation(input: HelperDeviceRevocationRecovery): Promise<void> {
+    await this.#updateTrustIndex((current) => ({
+      ...current,
+      trustEpochHighWater: (
+        BigInt(current.trustEpochHighWater) > BigInt(input.denyEpoch)
+          ? current.trustEpochHighWater
+          : input.denyEpoch
+      ),
+      pairs: current.pairs.filter((pair) => pair.deviceId !== input.deviceId)
+    }));
+    this.#devices = this.#devices.filter((device) => device.deviceId !== input.deviceId);
+    this.#record("trusted_device_revoke_reconcile", undefined, input.deviceId);
   }
 
   async close(): Promise<void> {}
+
+  async #updateTrustIndex(
+    update: (
+      current: ReturnType<typeof RemoteAccessTrustIndexV1Schema.parse>
+    ) => unknown
+  ): Promise<void> {
+    const trustIndexPath = remoteStatePaths(this.#dataRoot).trustIndex;
+    const current = RemoteAccessTrustIndexV1Schema.parse(
+      JSON.parse(await readFile(trustIndexPath, "utf8"))
+    );
+    const next = RemoteAccessTrustIndexV1Schema.parse(update(current));
+    await writeFile(trustIndexPath, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
+  }
 
   #record(
     action: string,
@@ -532,6 +574,10 @@ async function enableHostRemoteAccess(
         deviceId: REMOTE_DEVICE_ID,
         pairId: bytes16(0x73),
         trustEpoch: REMOTE_DEVICE_TRUST_EPOCH
+      }, {
+        deviceId: "tablet-01",
+        pairId: bytes16(0x74),
+        trustEpoch: "3"
       }]
     }, null, 2) + "\n", { mode: 0o600 })
   ]);
@@ -568,7 +614,7 @@ async function createHostRuntime(
     },
     queues: { active: 0, configuredGuilds: 0 }
   });
-  const supervisor = new HostManagementSupervisor(key, record.hostId, ledger);
+  const supervisor = new HostManagementSupervisor(key, record.hostId, dataRoot, ledger);
   const remoteAccess = new RemoteAccessService({
     dataRoot,
     runtime,
