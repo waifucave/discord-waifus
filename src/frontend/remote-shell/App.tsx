@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   RemoteShellApiError,
   openActivationUrl,
@@ -32,6 +32,8 @@ export function App() {
   const [offlineForget, setOfflineForget] = useState<RememberedHost>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  const openingHost = useRef<string | undefined>(undefined);
+  const requestedHost = useRef<string | undefined>(undefined);
 
   const refresh = useCallback(async () => {
     const [nextBootstrap, nextHosts] = await Promise.all([
@@ -45,6 +47,27 @@ export function App() {
   useEffect(() => {
     void refresh().catch((value) => setError(errorLabel(value)));
   }, [refresh]);
+
+  useEffect(() => {
+    const selectedHostId = bootstrap?.selectedHostId;
+    const shouldOpen = bootstrap?.selectionState === "automatic_single"
+      || requestedHost.current === selectedHostId;
+    if (bootstrap?.directState !== "direct" || !selectedHostId || !shouldOpen) {
+      openingHost.current = undefined;
+      return;
+    }
+    if (openingHost.current === selectedHostId) return;
+    openingHost.current = selectedHostId;
+    window.location.assign(`/_waifus_remote/open/${encodeURIComponent(selectedHostId)}`);
+  }, [bootstrap?.directState, bootstrap?.selectedHostId, bootstrap?.selectionState]);
+
+  useEffect(() => {
+    if (!bootstrap?.selectedHostId || bootstrap.directState === "direct") return;
+    const timer = window.setInterval(() => {
+      void refresh().catch((value) => setError(errorLabel(value)));
+    }, 1_000);
+    return () => window.clearInterval(timer);
+  }, [bootstrap?.directState, bootstrap?.selectedHostId, refresh]);
 
   useEffect(() => {
     if (!pair || !["starting", "verification_required", "awaiting_host_approval", "connecting"].includes(pair.state)) {
@@ -221,7 +244,10 @@ export function App() {
               <code>{host.installationFingerprint}</code>
             </div>
             <div className="actions">
-              <button disabled={busy} onClick={() => void hostAction(() => shellApi.connect(host.hostId))}>Connect</button>
+              <button disabled={busy} onClick={() => {
+                requestedHost.current = host.hostId;
+                void hostAction(() => shellApi.connect(host.hostId));
+              }}>Connect</button>
               <button disabled={busy} onClick={() => void hostAction(() => shellApi.disconnect(host.hostId))}>Disconnect</button>
               <button className="danger" disabled={busy} onClick={() => {
                 setOfflineForget(host);

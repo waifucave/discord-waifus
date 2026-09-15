@@ -87,10 +87,80 @@ const COMMON_SECURITY_HEADERS = {
   "x-content-type-options": "nosniff"
 } as const;
 
-export const DASHBOARD_SECURITY_HEADERS = Object.freeze({
-  ...COMMON_SECURITY_HEADERS,
-  "content-security-policy": DASHBOARD_CSP
-});
+function exactLocalGatewayOrigin(value: string, label: string): URL {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new TypeError(`${label} must be an exact local gateway origin.`);
+  }
+  if (
+    url.origin !== value
+    || url.protocol !== "http:"
+    || url.username !== ""
+    || url.password !== ""
+    || url.pathname !== "/"
+    || url.search !== ""
+    || url.hash !== ""
+    || !/^waifus-[a-z2-7]{52}\.localhost$/u.test(url.hostname)
+    || !/^[0-9]{1,5}$/u.test(url.port)
+  ) {
+    throw new TypeError(`${label} must be an exact local gateway origin.`);
+  }
+  return url;
+}
+
+function exactDashboardFramePair(
+  dashboardOrigin: string,
+  frameShellOrigin: string
+): Readonly<{ dashboard: URL; frameShell: URL }> {
+  const dashboard = exactLocalGatewayOrigin(dashboardOrigin, "Dashboard frame origin");
+  const frameShell = exactLocalGatewayOrigin(frameShellOrigin, "Dashboard frame shell origin");
+  if (dashboard.hostname !== frameShell.hostname || dashboard.origin === frameShell.origin) {
+    throw new TypeError(
+      "Dashboard frame and its trusted shell must use the same isolated hostname on distinct ports."
+    );
+  }
+  return { dashboard, frameShell };
+}
+
+export function dashboardSecurityHeaders(
+  frameAncestorOrigin?: string,
+  dashboardOrigin?: string
+) {
+  if ((frameAncestorOrigin === undefined) !== (dashboardOrigin === undefined)) {
+    throw new TypeError("An embedded dashboard requires both dashboard and frame shell origins.");
+  }
+  const framePair = frameAncestorOrigin === undefined || dashboardOrigin === undefined
+    ? undefined
+    : exactDashboardFramePair(dashboardOrigin, frameAncestorOrigin);
+  const contentSecurityPolicy = framePair === undefined
+    ? DASHBOARD_CSP
+    : DASHBOARD_CSP.replace(
+        "frame-ancestors 'none'",
+        `frame-ancestors ${framePair.frameShell.origin}`
+      );
+  return Object.freeze({
+    ...COMMON_SECURITY_HEADERS,
+    "content-security-policy": contentSecurityPolicy
+  });
+}
+
+export const DASHBOARD_SECURITY_HEADERS = dashboardSecurityHeaders();
+
+export function frameShellSecurityHeaders(
+  dashboardOrigin: string,
+  frameShellOrigin: string
+) {
+  const { dashboard } = exactDashboardFramePair(dashboardOrigin, frameShellOrigin);
+  return Object.freeze({
+    ...COMMON_SECURITY_HEADERS,
+    "content-security-policy": DASHBOARD_CSP.replace(
+      "frame-src 'none'",
+      `frame-src 'self' ${dashboard.origin}`
+    )
+  });
+}
 
 export const SHELL_SECURITY_HEADERS = Object.freeze({
   ...COMMON_SECURITY_HEADERS,
@@ -196,7 +266,8 @@ function cookieMatches(cookieHeader: string | undefined, session: RemoteBrowserS
 
 function validateEnvelope(
   request: RemoteBrowserRequest,
-  options: RemoteBrowserSecurityOptions
+  options: RemoteBrowserSecurityOptions,
+  requestKind: "bootstrap" | "session" = "session"
 ): { method: HttpMethod; canonicalTarget: string; headers: Map<string, readonly string[]> } {
   const methodResult = HttpMethodSchema.safeParse(request.method);
   const targetResult = CanonicalTargetSchema.safeParse(request.canonicalTarget);
@@ -224,7 +295,21 @@ function validateEnvelope(
     return fail("browser_origin_invalid", "Browser Origin does not match the isolated local origin.");
   }
   const fetchSite = singleton(headers, "sec-fetch-site");
-  if (fetchSite !== undefined && fetchSite !== "same-origin" && fetchSite !== "none") {
+  const isolatedOriginNavigation = requestKind === "bootstrap"
+    && methodResult.data === "GET"
+    && origin === undefined
+    && (fetchSite === "same-site" || fetchSite === "cross-site")
+    && singleton(headers, "sec-fetch-mode") === "navigate"
+    && (
+      singleton(headers, "sec-fetch-dest") === "document"
+      || singleton(headers, "sec-fetch-dest") === "iframe"
+    );
+  if (
+    fetchSite !== undefined
+    && fetchSite !== "same-origin"
+    && fetchSite !== "none"
+    && !isolatedOriginNavigation
+  ) {
     return fail("browser_fetch_metadata_invalid", "Cross-site browser requests are forbidden.");
   }
   if (!SAFE_METHODS.has(methodResult.data)) {
@@ -242,7 +327,7 @@ export function validateRemoteBootstrapRequest(
   request: RemoteBrowserRequest,
   options: RemoteBrowserSecurityOptions
 ): ValidatedRemoteBrowserRequest {
-  const validated = validateEnvelope(request, options);
+  const validated = validateEnvelope(request, options, "bootstrap");
   if (validated.method !== "GET") {
     return fail("browser_request_invalid", "Remote bootstrap accepts only GET.");
   }
