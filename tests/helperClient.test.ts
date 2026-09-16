@@ -9,6 +9,7 @@ import { registerInternalDispatchReceiver } from "../src/api/internalDispatch.js
 import { RemoteRequestBridge } from "../src/backend/remoteAccess/requestBridge.js";
 import { ProtectedHelperProcessFactory } from "../src/remote/helperClient.js";
 import type { HelperLaunchRequest } from "../src/remote/helperTypes.js";
+import { deriveInstallationFingerprint } from "../src/shared/remotePairing.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
 
 const roots: string[] = [];
@@ -323,6 +324,49 @@ describe("protected helper process client", () => {
       deniedTrustEpoch: "7",
       denyEpoch: "8"
     })).resolves.toBeUndefined();
+
+    await client.close();
+    await launch.closeParentChannel();
+    await launch.exited;
+  });
+
+  unixIt("uses strict correlated helper commands for the remote pairing lifecycle", async () => {
+    const baseRequest = await launchRequest({ FAKE_HELPER_RUNTIME: "1" });
+    const request: HelperLaunchRequest = { ...baseRequest, role: "remote" };
+    const launch = await new ProtectedHelperProcessFactory().launch(request);
+    const client = await launch.authenticated;
+    const operationId = Buffer.alloc(32, 0x47).toString("base64url");
+
+    await expect(client.beginPair(operationId, {
+      kind: "short_code",
+      code: "0123-4567"
+    })).resolves.toEqual({ operationId, expiresAt: "1786271130" });
+    await expect(client.pollPair(operationId)).resolves.toEqual({
+      operationId,
+      state: "verification_required",
+      expiresAt: "1786271130",
+      entryFlow: "short_code",
+      sasWords: ["acid", "acorn", "acre", "afar", "affix"],
+      sasFingerprint: "0123456789ab",
+      claimedHostDisplayName: "Studio Host",
+      claimedHostPlatform: { os: "darwin", arch: "arm64" },
+      claimedHostInstallationFingerprint: Buffer.alloc(16, 0x48).toString("base64url")
+    });
+    await expect(client.consumeCompletedPair(operationId)).resolves.toEqual({
+      operationId,
+      pairId: Buffer.alloc(16, 0x49).toString("base64url"),
+      hostDisplayName: "Studio Host",
+      hostPlatform: { os: "darwin", arch: "arm64" },
+      hostInstallationPublicKey: Buffer.alloc(32, 0x4a).toString("base64url"),
+      hostInstallationFingerprint: deriveInstallationFingerprint(Buffer.alloc(32, 0x4a))
+        .toString("base64url"),
+      hostTrustEpoch: "7",
+      pairedAt: "1786271000"
+    });
+    await expect(client.cancelPair(operationId)).resolves.toEqual({
+      operationId,
+      cancelled: true
+    });
 
     await client.close();
     await launch.closeParentChannel();

@@ -20,6 +20,7 @@ import type {
 import type {
   ApprovePairingInputV1,
   PairInvitationV1,
+  PairStartInput,
   PendingPairingRequestListV1,
   RenameTrustedDeviceInputV1,
   TrustedDeviceListV1,
@@ -43,6 +44,10 @@ import {
   type HelperActivationPoll,
   type HelperActivationStart,
   type HelperIdentityStatus,
+  type HelperPairStart,
+  type HelperPairPoll,
+  type HelperPairCancel,
+  type HelperCompletedPair,
   type HelperConfirmedAdminActor,
   type HelperDeviceRevocationRecovery,
   type HelperLaunch,
@@ -305,6 +310,22 @@ export class HelperSupervisor {
 
   async cancelActivation(operationId: string): Promise<HelperActivationCancel> {
     return this.#readyClient().cancelActivation(operationId);
+  }
+
+  async beginPair(operationId: string, input: PairStartInput): Promise<HelperPairStart> {
+    return this.#readyClient().beginPair(operationId, input);
+  }
+
+  async pollPair(operationId: string): Promise<HelperPairPoll> {
+    return this.#readyClient().pollPair(operationId);
+  }
+
+  async cancelPair(operationId: string): Promise<HelperPairCancel> {
+    return this.#readyClient().cancelPair(operationId);
+  }
+
+  async consumeCompletedPair(operationId: string): Promise<HelperCompletedPair> {
+    return this.#readyClient().consumeCompletedPair(operationId);
   }
 
   async startRuntime(selectedPairId?: string): Promise<HelperRuntimeStatus> {
