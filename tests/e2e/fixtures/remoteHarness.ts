@@ -957,8 +957,6 @@ export async function createRemoteHarness(
       const statusUrl = `/_waifus_remote/v1/pair/${operationId}`;
       if (pairOutcome) {
         if (pairOutcome.state === "completed") {
-          if (!await rememberedHosts.record(records.a.hostId)) await rememberedHosts.upsert(records.a);
-          desiredConnections.set(records.a.hostId, "direct");
           return { pairOperationId: operationId, statusUrl, state: "completed", expiresAt } as PairOperationStatus;
         }
         if (pairOutcome.state === "expired") {
@@ -989,6 +987,10 @@ export async function createRemoteHarness(
       pairFlows.delete(operationId);
       pairExpires.delete(operationId);
       pairPolls.delete(operationId);
+    },
+    consumeCompletedPair: async () => {
+      desiredConnections.set(records.a.hostId, "direct");
+      return records.a;
     },
     connectRememberedHost: async (host: RememberedHostRecordV1) => {
       if (!desiredConnections.has(host.hostId)) desiredConnections.set(host.hostId, "direct");

@@ -84,10 +84,12 @@ class FakeLocalBackend implements RemoteGatewayLocalBackend {
   beginPairCalls = 0;
   pollPairCalls = 0;
   cancelPairCalls = 0;
+  consumeCompletedPairCalls = 0;
   lastPairInput: unknown;
   signedRevocation = false;
   readonly hostActions: string[] = [];
-  pairStatus: "verification_required" | "awaiting_host_approval" = "verification_required";
+  pairStatus: "verification_required" | "awaiting_host_approval" | "completed" = "verification_required";
+  completedPairHost = record(0x75);
   pollPairError = false;
   pollActivationError = false;
 
@@ -150,6 +152,9 @@ class FakeLocalBackend implements RemoteGatewayLocalBackend {
     if (this.pairStatus === "awaiting_host_approval") {
       return { ...common, state: "awaiting_host_approval" as const };
     }
+    if (this.pairStatus === "completed") {
+      return { ...common, state: "completed" as const };
+    }
     return {
       ...common,
       state: "verification_required" as const,
@@ -164,6 +169,11 @@ class FakeLocalBackend implements RemoteGatewayLocalBackend {
 
   async cancelPair(): Promise<void> {
     this.cancelPairCalls += 1;
+  }
+
+  async consumeCompletedPair(): Promise<RememberedHostRecordV1> {
+    this.consumeCompletedPairCalls += 1;
+    return this.completedPairHost;
   }
 
   async connectRememberedHost(host: RememberedHostRecordV1): Promise<void> {
@@ -613,6 +623,40 @@ describe("remote connection-shell local API", () => {
     for (const stateFile of stateFiles) {
       expect(await readFile(stateFile, "utf8").catch(() => "")).not.toContain(token);
     }
+  });
+
+  it("persists a completed pair exactly once without exposing helper-only host material", async () => {
+    const harness = await shellHarness();
+    const token = `WF1.${Buffer.alloc(32, 0x7c).toString("base64url")}`;
+    const started = await harness.request("/_waifus_remote/v1/pair", {
+      method: "POST",
+      csrf: harness.csrf,
+      body: { kind: "full_token", token }
+    });
+    const operation = JSON.parse(started.body);
+    harness.backend.pairStatus = "completed";
+
+    const completed = await harness.request(operation.statusUrl);
+
+    expect(completed.statusCode).toBe(200);
+    expect(JSON.parse(completed.body)).toEqual({
+      pairOperationId: operation.pairOperationId,
+      statusUrl: operation.statusUrl,
+      state: "completed",
+      expiresAt: "1786271100"
+    });
+    expect(completed.body).not.toContain(harness.backend.completedPairHost.helperPairId);
+    expect(completed.body).not.toContain(harness.backend.completedPairHost.installationPublicKey);
+    expect(await harness.hosts.record(harness.backend.completedPairHost.hostId))
+      .toEqual(harness.backend.completedPairHost);
+
+    const listed = await harness.request("/_waifus_remote/v1/hosts");
+    expect(listed.statusCode).toBe(200);
+    expect(listed.body).toContain(harness.backend.completedPairHost.displayName);
+    expect(listed.body).not.toContain(harness.backend.completedPairHost.helperPairId);
+    expect(listed.body).not.toContain(harness.backend.completedPairHost.installationPublicKey);
+    expect((await harness.request(operation.statusUrl)).statusCode).toBe(200);
+    expect(harness.backend.consumeCompletedPairCalls).toBe(1);
   });
 
   it("turns helper loss into a terminal redacted failure and cancels live work on session close", async () => {
