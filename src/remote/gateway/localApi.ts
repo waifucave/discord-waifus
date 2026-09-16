@@ -83,6 +83,7 @@ export type RemoteGatewayLocalBackend = {
   ) => Promise<Readonly<{ expiresAt: string }>>;
   pollPair: (operationId: string) => Promise<PairOperationStatus>;
   cancelPair: (operationId: string) => Promise<void>;
+  consumeCompletedPair: (operationId: string) => Promise<RememberedHostRecordV1>;
   connectRememberedHost: (host: RememberedHostRecordV1) => Promise<void>;
   disconnectRememberedHost: (host: RememberedHostRecordV1) => Promise<void>;
   requestSignedSelfRevocation: (host: RememberedHostRecordV1) => Promise<boolean>;
@@ -109,6 +110,7 @@ type PairOperation = {
   readonly ownerSessionId: string;
   readonly expiresAt: string;
   status: PairOperationStatus;
+  completion?: Promise<void>;
 };
 
 type LocalEventRecord = {
@@ -612,6 +614,10 @@ export class RemoteLocalApi {
         ) {
           throw new Error("Pair helper response does not match its local operation.");
         }
+        if (status.state === "completed") {
+          operation.completion ??= this.#persistCompletedPair(parsed.data);
+          await operation.completion;
+        }
       } catch {
         status = PairOperationStatusSchema.parse({
           pairOperationId: parsed.data,
@@ -634,6 +640,12 @@ export class RemoteLocalApi {
       });
     }
     return status;
+  }
+
+  async #persistCompletedPair(operationId: string): Promise<void> {
+    const host = await this.#backend.consumeCompletedPair(operationId);
+    await this.#rememberedHosts.upsert(host);
+    this.#hostsChanged();
   }
 
   async #cancelPair(ownerSessionId: string, operationIdValue: string): Promise<boolean> {
