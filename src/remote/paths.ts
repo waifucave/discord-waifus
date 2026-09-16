@@ -81,18 +81,25 @@ export function remoteRolePaths(dataRoot: string, role: RemoteRole): RemoteRoleP
 }
 
 /**
- * Ownership contract for the later typed installation reset. The current local host daemon is
+ * Ownership contract for the typed installation reset. The current local host daemon is
  * the executor; a live remote-gateway/helper sibling must cause `SiblingDaemonRunning` before any
- * mutation. Helper-owned vault rotation happens before Node clears or rewrites these paths.
+ * mutation. Helper-owned vault rotation happens before Node clears or rewrites these exact paths;
+ * freshly generated helper role metadata under both role roots is retained and the replacement
+ * installation metadata is verified rather than rewritten by Node.
  */
 export const IDENTITY_RESET_PATH_OWNERSHIP = Object.freeze({
   clearAfterVerifiedHelperReceipt: Object.freeze([
     REMOTE_STATE_RELATIVE_PATHS.trustRoot,
-    REMOTE_STATE_RELATIVE_PATHS.remoteGatewayStateRoot,
+    REMOTE_STATE_RELATIVE_PATHS.remoteOriginState,
+    REMOTE_STATE_RELATIVE_PATHS.remoteRememberedHosts,
     REMOTE_STATE_RELATIVE_PATHS.dashboardCacheRoot
   ]),
   rewriteAfterVerifiedHelperReceipt: Object.freeze([
     REMOTE_STATE_RELATIVE_PATHS.hostConfig,
+    REMOTE_STATE_RELATIVE_PATHS.trustIndex,
+    REMOTE_STATE_RELATIVE_PATHS.localDenyIndex
+  ]),
+  verifyAfterHelperReceipt: Object.freeze([
     REMOTE_STATE_RELATIVE_PATHS.installation
   ]),
   preserve: Object.freeze([

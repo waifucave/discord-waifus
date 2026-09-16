@@ -350,6 +350,10 @@ export const api = {
     ),
   reconnectRemoteAccess: () =>
     request<OperationAccepted>("POST", "/api/remote-access/reconnect"),
+  resetRemoteAccess: (confirmation: string) =>
+    request<OperationAccepted>("POST", "/api/remote-access/reset", {
+      body: { confirmation }
+    }),
   remoteAccessDiagnostics: (signal?: AbortSignal) =>
     request<RemoteAccessDiagnostics>("GET", "/api/remote-access/diagnostics", { signal }),
 

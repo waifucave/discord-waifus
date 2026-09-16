@@ -150,9 +150,22 @@ describe("data root and config", () => {
     });
     const cleared = new Set(IDENTITY_RESET_PATH_OWNERSHIP.clearAfterVerifiedHelperReceipt);
     const rewritten = new Set(IDENTITY_RESET_PATH_OWNERSHIP.rewriteAfterVerifiedHelperReceipt);
+    const verified = new Set(IDENTITY_RESET_PATH_OWNERSHIP.verifyAfterHelperReceipt);
     const preserved = new Set(IDENTITY_RESET_PATH_OWNERSHIP.preserve);
     expect([...cleared].filter((value) => rewritten.has(value) || preserved.has(value))).toEqual([]);
     expect([...rewritten].filter((value) => preserved.has(value))).toEqual([]);
+    expect(cleared).toEqual(new Set([
+      "app/remote-access/trust",
+      "app/remote-gateway/origins-v1.json",
+      "app/remote-gateway/remembered-hosts-v1.json",
+      "app/cache/remote-dashboard"
+    ]));
+    expect(rewritten).toEqual(new Set([
+      "app/remote-access/config.json",
+      "app/remote-access/trust/index.json",
+      "app/remote-access/trust/local-deny-v1.json"
+    ]));
+    expect(verified).toEqual(new Set(["app/remote-access/installation.json"]));
     expect(preserved).toEqual(new Set([
       "app/remote-access/operations",
       "app/remote-access/audit",

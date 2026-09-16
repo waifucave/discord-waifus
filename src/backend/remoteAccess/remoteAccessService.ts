@@ -39,6 +39,14 @@ import {
   DeviceIdSchema
 } from "../../shared/schemas/remoteProtocol.js";
 import {
+  GetResetStatusCommandSchema,
+  IdentityResetReceiptV1Schema,
+  ResetIdentityCommandSchema,
+  type GetResetStatusCommand,
+  type IdentityResetReceiptV1,
+  type ResetIdentityCommand
+} from "../../shared/schemas/remoteAccess.js";
+import {
   RemoteAccessRuntimeSummarySchema,
   type RemoteAccessRuntimeSummary
 } from "../runtime.js";
@@ -63,6 +71,11 @@ import {
   RemoteAccessInvalidationV1Schema,
   type RemoteAccessInvalidationListener
 } from "./invalidation.js";
+import {
+  IdentityResetState,
+  IdentityResetStateError,
+  type IdentityResetTombstoneV1
+} from "./identityResetState.js";
 import {
   RemoteAccessRevisionConflictError,
   RemoteAccessStateStore,
@@ -114,6 +127,8 @@ export type HelperSupervisorController = {
   ) => Promise<TrustedDeviceSummaryV1>;
   revokeDevice?: (deviceId: string, actor: ConfirmedAdminActor) => Promise<void>;
   reconcileDeviceRevocation?: (input: HelperDeviceRevocationRecovery) => Promise<void>;
+  resetIdentity?: (input: ResetIdentityCommand) => Promise<IdentityResetReceiptV1>;
+  getResetStatus?: (input: GetResetStatusCommand) => Promise<IdentityResetReceiptV1>;
   close: () => Promise<void>;
 };
 
@@ -221,6 +236,7 @@ export type RemoteAccessServiceOptions = {
   dashboard: ResolvedRemoteDashboard;
   supervisor: HelperSupervisorController;
   stateStore?: RemoteAccessStateStore;
+  identityResetState?: IdentityResetState;
   resolveHost?: (host: string) => Promise<readonly string[]>;
   now?: () => number;
   randomBytes?: (size: number) => Uint8Array;
@@ -277,6 +293,20 @@ function repairRequiredSummary(): RemoteAccessRuntimeSummary {
   });
 }
 
+function resetPendingSummary(errorCode: RemoteAccessErrorCode | null = null): RemoteAccessRuntimeSummary {
+  return RemoteAccessRuntimeSummarySchema.parse({
+    version: 1,
+    enabled: false,
+    helperState: "disabled",
+    activationState: "activation_required",
+    controlState: "inactive",
+    directState: "inactive",
+    trustedDeviceCount: 0,
+    lastDirectAt: null,
+    lastErrorCode: errorCode
+  });
+}
+
 function lifecycleErrorCode(error: unknown): RemoteAccessErrorCode {
   const candidate = error && typeof error === "object"
     ? (error as { code?: unknown }).code
@@ -327,6 +357,7 @@ function canonicalHost(value: string): string {
 export class RemoteAccessService {
   readonly #options: RemoteAccessServiceOptions;
   readonly #stateStore: RemoteAccessStateStore;
+  readonly #identityReset: IdentityResetState;
   readonly #events = new RemoteAccessEvents();
   readonly #invalidations = new RemoteAccessInvalidations();
   readonly #resolveHost: (host: string) => Promise<readonly string[]>;
@@ -336,6 +367,7 @@ export class RemoteAccessService {
   readonly #revocationFinalizers = new Map<string, Promise<void>>();
   readonly #publishedRevocations = new Set<string>();
   #revocationRecovery: Promise<void> | undefined;
+  #identityResetPromise: Promise<IdentityResetReceiptV1> | undefined;
   #lastVerifiedHelperSnapshot: HelperSupervisorSnapshot | undefined;
   #state: RemoteAccessPersistedState | undefined;
   #summary: RemoteAccessRuntimeSummary | undefined;
@@ -347,6 +379,7 @@ export class RemoteAccessService {
   constructor(options: RemoteAccessServiceOptions) {
     this.#options = options;
     this.#stateStore = options.stateStore ?? new RemoteAccessStateStore(options.dataRoot);
+    this.#identityReset = options.identityResetState ?? new IdentityResetState(options.dataRoot);
     this.#resolveHost = options.resolveHost ?? defaultResolveHost;
     this.#now = options.now ?? (() => Math.floor(Date.now() / 1000));
     this.#randomBytes = options.randomBytes ?? randomBytes;
@@ -356,6 +389,21 @@ export class RemoteAccessService {
     if (this.#closed) throw new Error("Remote access service is closed.");
     if (this.#started) return;
     this.#started = true;
+    let resetState: IdentityResetTombstoneV1 | undefined;
+    try {
+      resetState = await this.#identityReset.load();
+      if (resetState && resetState.stage !== "complete") {
+        await this.#recoverIdentityReset(resetState);
+      }
+    } catch (error) {
+      try {
+        this.#state = await this.#stateStore.load();
+        this.#publish(resetPendingSummary(lifecycleErrorCode(error)));
+      } catch {
+        this.#publish(repairRequiredSummary());
+      }
+      return;
+    }
     let state: RemoteAccessPersistedState;
     try {
       state = await this.#stateStore.load();
@@ -432,6 +480,22 @@ export class RemoteAccessService {
     await this.#options.supervisor.reconnectRuntime();
     this.#rememberHelperSnapshot(this.#options.supervisor.snapshot());
     await this.#recoverPendingDeviceRevocations().catch(() => undefined);
+  }
+
+  async assertNoLiveRemoteSibling(): Promise<void> {
+    await this.#identityReset.assertNoLiveRemoteSibling();
+  }
+
+  async resetIdentity(): Promise<IdentityResetReceiptV1> {
+    this.#requireState();
+    if (this.#identityResetPromise) return this.#identityResetPromise;
+    const reset = this.#runIdentityReset();
+    this.#identityResetPromise = reset;
+    const clear = () => {
+      if (this.#identityResetPromise === reset) this.#identityResetPromise = undefined;
+    };
+    void reset.then(clear, clear);
+    return reset;
   }
 
   async createInvitation(
@@ -944,6 +1008,7 @@ export class RemoteAccessService {
       await this.#options.supervisor.cancelActivation(operation.operationId).catch(() => undefined);
     }
     this.#activationOperations.clear();
+    await this.#identityResetPromise?.catch(() => undefined);
     await Promise.allSettled(this.#revocationFinalizers.values());
     this.#requestBridge?.close(new Error("Remote access service is stopping."));
     this.#unsubscribeSupervisor?.();
@@ -963,6 +1028,131 @@ export class RemoteAccessService {
       return false;
     }
     return addresses.length > 0 && addresses.every(isLoopbackAddress);
+  }
+
+  async #runIdentityReset(): Promise<IdentityResetReceiptV1> {
+    await this.#identityReset.assertNoLiveRemoteSibling();
+    const identity = await this.#ensureIdentityStatus();
+    const prepared = await this.#identityReset.prepare(
+      identity.installationFingerprint,
+      this.#nowSeconds()
+    );
+    this.#state = await this.#stateStore.load();
+    this.#publish(resetPendingSummary());
+
+    const pendingActivations = [...this.#activationOperations.values()]
+      .filter((operation) => operation.status.state === "pending");
+    for (const operation of pendingActivations) {
+      await this.#options.supervisor.cancelActivation(operation.operationId).catch(() => undefined);
+    }
+    this.#activationOperations.clear();
+
+    for (const pair of prepared.pairs) {
+      const event = RemoteAccessInvalidationV1Schema.parse({
+        version: 1,
+        kind: "device_trust_revoked",
+        stableId: `remote:${pair.deviceId}`,
+        deviceId: pair.deviceId,
+        trustEpoch: pair.trustEpoch,
+        denyEpoch: prepared.resetTombstone
+      });
+      const key = `${pair.deviceId}:${prepared.resetTombstone}`;
+      if (!this.#publishedRevocations.has(key)) {
+        this.#publishedRevocations.add(key);
+        this.#invalidations.emit(event);
+        this.#requestBridge?.cancelDevice(
+          pair.deviceId,
+          new Error("Remote installation identity was reset.")
+        );
+      }
+    }
+
+    const method = this.#options.supervisor.resetIdentity;
+    if (!method) throw new RemoteAccessServiceUnavailableError();
+    try {
+      await this.#options.supervisor.start();
+      const receipt = IdentityResetReceiptV1Schema.parse(await method.call(
+        this.#options.supervisor,
+        ResetIdentityCommandSchema.parse({
+          resetTombstone: prepared.resetTombstone,
+          expectedOldFingerprint: prepared.expectedOldFingerprint
+        })
+      ));
+      await this.#verifyReplacementIdentity(receipt);
+      await this.#identityReset.markHelperComplete(receipt, this.#nowSeconds());
+      await this.#identityReset.finalize(this.#nowSeconds());
+      const state = await this.#stateStore.load();
+      this.#state = state;
+      this.#unsubscribeSupervisor?.();
+      this.#unsubscribeSupervisor = undefined;
+      this.#publish(inactiveSummary(state));
+      return receipt;
+    } catch (error) {
+      await this.#options.supervisor.stop().catch(() => undefined);
+      throw error;
+    }
+  }
+
+  async #recoverIdentityReset(resetState: IdentityResetTombstoneV1): Promise<void> {
+    if (resetState.stage === "complete") return;
+    if (resetState.stage === "helper_complete") {
+      await this.#identityReset.finalize(this.#nowSeconds());
+      return;
+    }
+
+    const prepared = await this.#identityReset.prepare(
+      resetState.expectedOldFingerprint,
+      this.#nowSeconds()
+    );
+    const getStatus = this.#options.supervisor.getResetStatus;
+    const resetIdentity = this.#options.supervisor.resetIdentity;
+    if (!getStatus || !resetIdentity) throw new RemoteAccessServiceUnavailableError();
+    await this.#options.supervisor.start();
+    try {
+      let receipt: IdentityResetReceiptV1 | undefined;
+      try {
+        receipt = IdentityResetReceiptV1Schema.parse(await getStatus.call(
+          this.#options.supervisor,
+          GetResetStatusCommandSchema.parse({ resetTombstone: prepared.resetTombstone })
+        ));
+      } catch {
+        // An interrupted command may not yet have created its helper journal. Reissuing the exact
+        // same tombstone/fingerprint is the helper's idempotent recovery path.
+      }
+      if (!receipt || receipt.stage !== "complete") {
+        receipt = IdentityResetReceiptV1Schema.parse(await resetIdentity.call(
+          this.#options.supervisor,
+          ResetIdentityCommandSchema.parse({
+            resetTombstone: prepared.resetTombstone,
+            expectedOldFingerprint: prepared.expectedOldFingerprint
+          })
+        ));
+      }
+      await this.#verifyReplacementIdentity(receipt);
+      await this.#identityReset.markHelperComplete(receipt, this.#nowSeconds());
+      await this.#identityReset.finalize(this.#nowSeconds());
+    } finally {
+      await this.#options.supervisor.stop().catch(() => undefined);
+    }
+  }
+
+  async #verifyReplacementIdentity(receipt: IdentityResetReceiptV1): Promise<void> {
+    try {
+      await this.#options.supervisor.start();
+      const identity = this.#options.supervisor.identityStatus();
+      if (
+        !identity
+        || identity.activationState !== "activation_required"
+        || identity.installationFingerprint !== receipt.newFingerprint
+      ) {
+        throw new IdentityResetStateError(
+          "Replacement helper identity does not match the completed reset receipt."
+        );
+      }
+      this.#rememberHelperSnapshot(this.#options.supervisor.snapshot());
+    } finally {
+      await this.#options.supervisor.stop().catch(() => undefined);
+    }
   }
 
   #publish(summary: RemoteAccessRuntimeSummary): void {

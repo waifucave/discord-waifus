@@ -7,6 +7,7 @@ import {
   PairInvitationV1Schema,
   PendingPairingRequestListV1Schema,
   RenameTrustedDeviceInputV1Schema,
+  ResetRemoteAccessInputV1Schema,
   RevokeTrustedDeviceInputV1Schema,
   TrustedDeviceListV1Schema,
   TrustedDeviceSummaryV1Schema,
@@ -29,12 +30,20 @@ import {
   type LocalActivationActor,
   type RemoteAccessRequestActor
 } from "../backend/remoteAccess/remoteAccessService.js";
+import {
+  IdentityResetSiblingDaemonRunningError,
+  IdentityResetStateError
+} from "../backend/remoteAccess/identityResetState.js";
 import { RemoteAccessTrustConflictError } from "../backend/remoteAccess/stateStore.js";
 import {
   DashboardBuild,
   DashboardBuildError
 } from "../backend/remoteAccess/dashboardBuild.js";
-import { HelperCommandError, HelperSupervisorError } from "../remote/helperTypes.js";
+import {
+  HelperCommandError,
+  HelperIdentityResetError,
+  HelperSupervisorError
+} from "../remote/helperTypes.js";
 import {
   OperationAcceptedV1Schema,
   createOperationStatusUrl
@@ -181,6 +190,25 @@ function activationApiError(error: unknown): never {
   if (error instanceof RemoteAccessServiceUnavailableError) {
     throw new ApiError(503, error.message, undefined, "RemoteAccessUnavailable");
   }
+  if (
+    error instanceof IdentityResetSiblingDaemonRunningError
+    || (error instanceof HelperIdentityResetError && error.code === "sibling_daemon_running")
+  ) {
+    throw new ApiError(
+      409,
+      "A remote gateway for this data root is still running.",
+      undefined,
+      "SiblingDaemonRunning"
+    );
+  }
+  if (error instanceof IdentityResetStateError || error instanceof HelperIdentityResetError) {
+    throw new ApiError(
+      503,
+      "Identity reset could not be completed safely.",
+      undefined,
+      "IdentityResetUnavailable"
+    );
+  }
   if (error instanceof HelperCommandError) {
     const code = error.code === "worker_quota_exhausted"
       ? "WorkerQuotaExhausted"
@@ -326,6 +354,30 @@ export function registerRemoteAccessRoutes(
       return reply.status(202).send(acceptedOperation(request));
     } catch (error) {
       return activationApiError(error);
+    }
+  });
+
+  app.route({
+    method: "POST",
+    url: "/api/remote-access/reset",
+    preValidation: async (request) => {
+      try {
+        localBrowserActor(request);
+        ResetRemoteAccessInputV1Schema.parse(request.body);
+        await requiredService(service).assertNoLiveRemoteSibling();
+      } catch (error) {
+        return activationApiError(error);
+      }
+    },
+    handler: async (request, reply) => {
+      try {
+        localBrowserActor(request);
+        ResetRemoteAccessInputV1Schema.parse(request.body);
+        await requiredService(service).resetIdentity();
+        return reply.status(202).send(acceptedOperation(request));
+      } catch (error) {
+        return activationApiError(error);
+      }
     }
   });
 

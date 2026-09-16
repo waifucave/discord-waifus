@@ -13,6 +13,7 @@ import {
 } from "../../shared/schemas/remoteLifecycle.js";
 import { remoteStatePaths } from "../../remote/paths.js";
 import { atomicWriteJson } from "../../storage/atomic.js";
+import { IdentityResetState } from "./identityResetState.js";
 
 export type RemoteAccessPersistedState = {
   readonly config: ReturnType<typeof RemoteAccessConfigV1Schema.parse>;
@@ -56,10 +57,12 @@ async function readOwnedJson(filePath: string): Promise<unknown> {
 
 export class RemoteAccessStateStore {
   readonly #paths: ReturnType<typeof remoteStatePaths>;
+  readonly #identityReset: IdentityResetState;
   #mutationTail: Promise<void> = Promise.resolve();
 
   constructor(dataRoot: string) {
     this.#paths = remoteStatePaths(dataRoot);
+    this.#identityReset = new IdentityResetState(dataRoot);
   }
 
   async load(): Promise<RemoteAccessPersistedState> {
@@ -79,17 +82,19 @@ export class RemoteAccessStateStore {
 
   async isAuthorized(deviceId: string, trustEpoch: string): Promise<boolean> {
     try {
-      const state = await this.load();
-      if (!state.config.enabled) return false;
-      const pair = state.trustIndex.pairs.find((candidate) => candidate.deviceId === deviceId);
-      if (pair?.trustEpoch !== trustEpoch) return false;
-      const denial = state.localDenyIndex.devices.find(
-        (candidate) => candidate.deviceId === deviceId
-      );
-      return !denial || (
-        pair.pairId !== denial.pairId
-        && BigInt(trustEpoch) > BigInt(denial.denyEpoch)
-      );
+      return this.#identityReset.authorizeWhileIdle(async () => {
+        const state = await this.load();
+        if (!state.config.enabled) return false;
+        const pair = state.trustIndex.pairs.find((candidate) => candidate.deviceId === deviceId);
+        if (pair?.trustEpoch !== trustEpoch) return false;
+        const denial = state.localDenyIndex.devices.find(
+          (candidate) => candidate.deviceId === deviceId
+        );
+        return !denial || (
+          pair.pairId !== denial.pairId
+          && BigInt(trustEpoch) > BigInt(denial.denyEpoch)
+        );
+      });
     } catch {
       return false;
     }
@@ -107,44 +112,46 @@ export class RemoteAccessStateStore {
     });
     await prior;
     try {
-      const current = await this.load();
-      const existing = current.localDenyIndex.devices.find(
-        (candidate) => candidate.deviceId === deviceId
-      );
-      if (existing?.deniedTrustEpoch === deniedTrustEpoch) {
-        return Object.freeze({ created: false, denial: Object.freeze(existing) });
-      }
-      const pair = current.trustIndex.pairs.find(
-        (candidate) => candidate.deviceId === deviceId
-      );
-      if (!pair || pair.trustEpoch !== deniedTrustEpoch) {
-        throw new RemoteAccessTrustConflictError();
-      }
-      const highWater = [
-        BigInt(current.trustIndex.trustEpochHighWater),
-        BigInt(current.localDenyIndex.trustEpochHighWater)
-      ].reduce((highest, value) => value > highest ? value : highest, 0n);
-      if (highWater === 18_446_744_073_709_551_615n) {
-        throw new RemoteAccessTrustConflictError();
-      }
-      const denial = RemoteAccessLocalDenyIndexV1Schema.shape.devices.element.parse({
-        deviceId,
-        pairId: pair.pairId,
-        deniedTrustEpoch,
-        denyEpoch: (highWater + 1n).toString(),
-        revokedAt: nowSeconds.toString()
+      return await this.#identityReset.runWhileIdle(async () => {
+        const current = await this.load();
+        const existing = current.localDenyIndex.devices.find(
+          (candidate) => candidate.deviceId === deviceId
+        );
+        if (existing?.deniedTrustEpoch === deniedTrustEpoch) {
+          return Object.freeze({ created: false, denial: Object.freeze(existing) });
+        }
+        const pair = current.trustIndex.pairs.find(
+          (candidate) => candidate.deviceId === deviceId
+        );
+        if (!pair || pair.trustEpoch !== deniedTrustEpoch) {
+          throw new RemoteAccessTrustConflictError();
+        }
+        const highWater = [
+          BigInt(current.trustIndex.trustEpochHighWater),
+          BigInt(current.localDenyIndex.trustEpochHighWater)
+        ].reduce((highest, value) => value > highest ? value : highest, 0n);
+        if (highWater === 18_446_744_073_709_551_615n) {
+          throw new RemoteAccessTrustConflictError();
+        }
+        const denial = RemoteAccessLocalDenyIndexV1Schema.shape.devices.element.parse({
+          deviceId,
+          pairId: pair.pairId,
+          deniedTrustEpoch,
+          denyEpoch: (highWater + 1n).toString(),
+          revokedAt: nowSeconds.toString()
+        });
+        const devices = current.localDenyIndex.devices
+          .filter((candidate) => candidate.deviceId !== deviceId)
+          .concat(denial)
+          .sort((left, right) => left.deviceId.localeCompare(right.deviceId));
+        const next = RemoteAccessLocalDenyIndexV1Schema.parse({
+          version: 1,
+          trustEpochHighWater: denial.denyEpoch,
+          devices
+        });
+        await atomicWriteJson(this.#paths.localDenyIndex, next, { mode: 0o600 });
+        return Object.freeze({ created: true, denial: Object.freeze(denial) });
       });
-      const devices = current.localDenyIndex.devices
-        .filter((candidate) => candidate.deviceId !== deviceId)
-        .concat(denial)
-        .sort((left, right) => left.deviceId.localeCompare(right.deviceId));
-      const next = RemoteAccessLocalDenyIndexV1Schema.parse({
-        version: 1,
-        trustEpochHighWater: denial.denyEpoch,
-        devices
-      });
-      await atomicWriteJson(this.#paths.localDenyIndex, next, { mode: 0o600 });
-      return Object.freeze({ created: true, denial: Object.freeze(denial) });
     } finally {
       release();
     }
@@ -162,21 +169,23 @@ export class RemoteAccessStateStore {
     });
     await prior;
     try {
-      const current = await this.load();
-      if (current.config.revision !== input.revision) {
-        throw new RemoteAccessRevisionConflictError(current.config);
-      }
-      const nextConfig = RemoteAccessConfigV1Schema.parse({
-        ...current.config,
-        ...(input.enabled === undefined ? {} : { enabled: input.enabled }),
-        ...(input.displayName === undefined ? {} : { displayName: input.displayName }),
-        revision: (BigInt(current.config.revision) + 1n).toString(),
-        updatedAt: nowSeconds.toString()
-      });
-      await atomicWriteJson(this.#paths.hostConfig, nextConfig, { mode: 0o600 });
-      return Object.freeze({
-        ...current,
-        config: Object.freeze(nextConfig)
+      return await this.#identityReset.runWhileIdle(async () => {
+        const current = await this.load();
+        if (current.config.revision !== input.revision) {
+          throw new RemoteAccessRevisionConflictError(current.config);
+        }
+        const nextConfig = RemoteAccessConfigV1Schema.parse({
+          ...current.config,
+          ...(input.enabled === undefined ? {} : { enabled: input.enabled }),
+          ...(input.displayName === undefined ? {} : { displayName: input.displayName }),
+          revision: (BigInt(current.config.revision) + 1n).toString(),
+          updatedAt: nowSeconds.toString()
+        });
+        await atomicWriteJson(this.#paths.hostConfig, nextConfig, { mode: 0o600 });
+        return Object.freeze({
+          ...current,
+          config: Object.freeze(nextConfig)
+        });
       });
     } finally {
       release();

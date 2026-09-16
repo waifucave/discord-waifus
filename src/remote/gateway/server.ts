@@ -126,7 +126,7 @@ export async function startRemoteGateway(
   }
 
   const sessions = new RemoteBrowserSessionStore(options);
-  const app = fastify({ logger: false });
+  const app = fastify({ logger: false, forceCloseConnections: true });
   if (options.surface === undefined || options.surface === "dashboard") {
     app.removeAllContentTypeParsers();
     app.addContentTypeParser("*", (_request, payload, done) => done(null, payload));

@@ -146,9 +146,12 @@ administrative audit. `--include-logs` removes ordinary role diagnostics but nev
 Full identity reset is deliberately not an alias for clean or per-device revoke/forget. Its path
 ownership is data-root-wide: the current local host daemon is the executor, and a separately live
 remote gateway/helper must produce `SiblingDaemonRunning` before any mutation. After helper-owned
-vault rotation is implemented, the typed flow will be exposed only by local Settings → Remote
-Access through `POST /api/remote-access/reset`; it will clear both roles' identity/trust/origin and
-dashboard-cache state while retaining operation receipts, audit, and the monotonic reset tombstone.
+vault rotation, the typed flow is exposed only by local Settings → Remote Access through
+`POST /api/remote-access/reset` with the exact confirmation `RESET REMOTE ACCESS`. It clears both
+roles' old identity/trust/origin state, remembered hosts, and dashboard cache while retaining
+operation receipts, audit, the monotonic reset tombstone, and the helper's freshly generated role
+metadata. The replacement identity is verified unactivated before the reset is finalized, so every
+device must be activated and paired again.
 
 ## Config
 

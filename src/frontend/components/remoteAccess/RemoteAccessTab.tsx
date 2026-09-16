@@ -13,6 +13,7 @@ import { useRemoteAccessState } from "../../state/useRemoteAccessState";
 import { ContextExternalLink } from "../ContextExternalLink";
 import { Notice } from "../Notice";
 import { InvitationCard } from "./InvitationCard";
+import { IdentityResetControl } from "./IdentityResetControl";
 import { PairingRequestCard } from "./PairingRequestCard";
 import { RemoteDiagnostics } from "./RemoteDiagnostics";
 import { TrustedDevices } from "./TrustedDevices";
@@ -188,6 +189,18 @@ export function RemoteAccessTab() {
   const revokeDevice = (device: TrustedDevice) => run(`revoke:${device.deviceId}`, async () => {
     await api.revokeRemoteAccessDevice(device.deviceId, device.revision);
     setNotice({ tone: "ok", message: `${device.displayName} was revoked.` });
+    reloadManagement();
+  });
+
+  const resetIdentity = (confirmation: string) => run("identity-reset", async () => {
+    await api.resetRemoteAccess(confirmation);
+    setInvitation(undefined);
+    setActivation(undefined);
+    setActivationStatus(undefined);
+    setNotice({
+      tone: "ok",
+      message: "Remote Access identity was reset. Activate and pair every device again."
+    });
     reloadManagement();
   });
 
@@ -388,20 +401,11 @@ export function RemoteAccessTab() {
         ? <div className="cell remote-access-section"><Notice tone="err">{diagnostics.error.message}</Notice></div>
         : diagnostics.data && <RemoteDiagnostics diagnostics={diagnostics.data} />}
 
-      <section className="cell remote-access-section remote-reset-section">
-        <div className="remote-section-head">
-          <div>
-            <span className="t-micro">Identity reset</span>
-            <div className="t-title">Reset Remote Access</div>
-          </div>
-          <button className="btn danger" disabled>Reset identity</button>
-        </div>
-        <p className="t-small t-mute">
-          {context.mode === "remote"
-            ? "Identity reset is local-only. It cannot be started from a remote device."
-            : "The fail-closed typed reset flow is not connected in this build. No identity or trusted-device data will be changed."}
-        </p>
-      </section>
+      <IdentityResetControl
+        mode={context.mode}
+        busy={busy === "identity-reset"}
+        onReset={resetIdentity}
+      />
 
       <div className="cell growcell" />
     </div>
