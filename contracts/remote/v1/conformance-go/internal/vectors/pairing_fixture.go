@@ -60,26 +60,66 @@ func identityJSON(identity *pairing.Identity) map[string]any {
 	}
 }
 
-func pairingPayloads(host, remote *pairing.Identity) ([][]byte, error) {
+type fixtureDeviceDescriptor struct {
+	displayName string
+	os          string
+	arch        string
+	goarm       uint64
+}
+
+var hostFixtureDescriptor = fixtureDeviceDescriptor{
+	displayName: "Studio Host", os: "darwin", arch: "arm64",
+}
+
+var remoteFixtureDescriptor = fixtureDeviceDescriptor{
+	displayName: "Travel PC", os: "win32", arch: "x64",
+}
+
+func descriptorCBOR(value fixtureDeviceDescriptor) ([]byte, error) {
+	return pairing.EncodeCanonicalCBOR(map[uint64]any{
+		1: uint64(1), 2: value.displayName, 3: value.os, 4: value.arch, 5: value.goarm,
+	})
+}
+
+func descriptorJSON(value fixtureDeviceDescriptor) map[string]any {
+	platform := map[string]any{"os": value.os, "arch": value.arch}
+	if value.goarm != 0 {
+		platform["goarm"] = value.goarm
+	}
+	return map[string]any{"displayName": value.displayName, "platform": platform}
+}
+
+func pairingPayloads(
+	host, remote *pairing.Identity,
+	hostDescriptor, remoteDescriptor fixtureDeviceDescriptor,
+) ([][]byte, []byte, []byte, error) {
+	hostDescriptorCBOR, err := descriptorCBOR(hostDescriptor)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	remoteDescriptorCBOR, err := descriptorCBOR(remoteDescriptor)
+	if err != nil {
+		return nil, nil, nil, err
+	}
 	first, err := pairing.EncodeCanonicalCBOR(map[uint64]any{
 		1: uint64(1), 2: uint64(2), 3: remote.BundleHash,
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
 	second, err := pairing.EncodeCanonicalCBOR(map[uint64]any{
-		1: uint64(1), 2: uint64(1), 3: host.BundleCBOR, 4: remote.BundleHash,
+		1: uint64(1), 2: uint64(1), 3: host.BundleCBOR, 4: remote.BundleHash, 5: hostDescriptorCBOR,
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
 	third, err := pairing.EncodeCanonicalCBOR(map[uint64]any{
-		1: uint64(1), 2: uint64(2), 3: remote.BundleCBOR, 4: host.BundleHash,
+		1: uint64(1), 2: uint64(2), 3: remote.BundleCBOR, 4: host.BundleHash, 5: remoteDescriptorCBOR,
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
-	return [][]byte{first, second, third}, nil
+	return [][]byte{first, second, third}, hostDescriptorCBOR, remoteDescriptorCBOR, nil
 }
 
 func b64Values(values [][]byte) []string {
@@ -104,6 +144,8 @@ type pairingHandshakeInput struct {
 	remoteContribution     []byte
 	host                   *pairing.Identity
 	remote                 *pairing.Identity
+	hostDescriptor         fixtureDeviceDescriptor
+	remoteDescriptor       fixtureDeviceDescriptor
 }
 
 func pairingHandshake(value pairingHandshakeInput) (map[string]any, error) {
@@ -111,7 +153,12 @@ func pairingHandshake(value pairingHandshakeInput) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	payloads, err := pairingPayloads(value.host, value.remote)
+	payloads, hostDescriptorCBOR, remoteDescriptorCBOR, err := pairingPayloads(
+		value.host,
+		value.remote,
+		value.hostDescriptor,
+		value.remoteDescriptor,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -200,6 +247,10 @@ func pairingHandshake(value pairingHandshakeInput) (map[string]any, error) {
 			"remoteBundleHashB64":            pairing.B64(value.remote.BundleHash),
 			"hostInstallationPublicKeyB64":   pairing.B64(value.host.InstallationPublicKey),
 			"remoteInstallationPublicKeyB64": pairing.B64(value.remote.InstallationPublicKey),
+			"hostDescriptorCborB64":          pairing.B64(hostDescriptorCBOR),
+			"remoteDescriptorCborB64":        pairing.B64(remoteDescriptorCBOR),
+			"hostDescriptor":                 descriptorJSON(value.hostDescriptor),
+			"remoteDescriptor":               descriptorJSON(value.remoteDescriptor),
 		},
 		"derived": map[string]any{
 			"pairRootB64":                    pairing.B64(keys.PairRoot),
@@ -294,6 +345,7 @@ func BuildPairingV1Fixture() (map[string]any, error) {
 		hostEphemeralPrivate: pairing.Sequence(0x50, 32), remoteEphemeralPrivate: pairing.Sequence(0x70, 32),
 		psk: fullToken.PSK, hostContribution: pairing.Sequence(0x90, 32), remoteContribution: pairing.Sequence(0xb0, 32),
 		host: host, remote: remote,
+		hostDescriptor: hostFixtureDescriptor, remoteDescriptor: remoteFixtureDescriptor,
 	})
 	if err != nil {
 		return nil, err
@@ -304,6 +356,7 @@ func BuildPairingV1Fixture() (map[string]any, error) {
 		hostEphemeralPrivate: pairing.Sequence(0x71, 32), remoteEphemeralPrivate: pairing.Sequence(0x91, 32),
 		hostContribution: pairing.Sequence(0xb1, 32), remoteContribution: pairing.Sequence(0xd1, 32),
 		host: host, remote: remote,
+		hostDescriptor: hostFixtureDescriptor, remoteDescriptor: remoteFixtureDescriptor,
 	})
 	if err != nil {
 		return nil, err

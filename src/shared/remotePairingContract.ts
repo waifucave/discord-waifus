@@ -68,11 +68,55 @@ function testIdentity(
   };
 }
 
+interface FixtureDeviceDescriptor {
+  readonly displayName: string;
+  readonly os: "darwin" | "win32" | "linux";
+  readonly arch: "x64" | "arm64" | "arm";
+  readonly goarm: 0 | 7;
+}
+
+const HOST_DESCRIPTOR: FixtureDeviceDescriptor = Object.freeze({
+  displayName: "Studio Host",
+  os: "darwin",
+  arch: "arm64",
+  goarm: 0
+});
+
+const REMOTE_DESCRIPTOR: FixtureDeviceDescriptor = Object.freeze({
+  displayName: "Travel PC",
+  os: "win32",
+  arch: "x64",
+  goarm: 0
+});
+
+function descriptorCbor(value: FixtureDeviceDescriptor): Buffer {
+  return encodeCanonicalCbor(new Map<CanonicalCborValue, CanonicalCborValue>([
+    [1n, 1n],
+    [2n, value.displayName],
+    [3n, value.os],
+    [4n, value.arch],
+    [5n, BigInt(value.goarm)]
+  ]));
+}
+
+function descriptorJson(value: FixtureDeviceDescriptor): ContractJson {
+  return {
+    displayName: value.displayName,
+    platform: {
+      os: value.os,
+      arch: value.arch,
+      ...(value.goarm === 7 ? { goarm: 7 } : {})
+    }
+  };
+}
+
 function handshakePayloads(
   hostBundleCbor: Buffer,
   hostBundleHash: Buffer,
   remoteBundleCbor: Buffer,
-  remoteBundleHash: Buffer
+  remoteBundleHash: Buffer,
+  hostDescriptorCbor: Buffer,
+  remoteDescriptorCbor: Buffer
 ): readonly [Buffer, Buffer, Buffer] {
   return [
     encodeCanonicalCbor(new Map<CanonicalCborValue, CanonicalCborValue>([
@@ -84,13 +128,15 @@ function handshakePayloads(
       [1n, 1n],
       [2n, 1n],
       [3n, hostBundleCbor],
-      [4n, remoteBundleHash]
+      [4n, remoteBundleHash],
+      [5n, hostDescriptorCbor]
     ])),
     encodeCanonicalCbor(new Map<CanonicalCborValue, CanonicalCborValue>([
       [1n, 1n],
       [2n, 2n],
       [3n, remoteBundleCbor],
-      [4n, hostBundleHash]
+      [4n, hostBundleHash],
+      [5n, remoteDescriptorCbor]
     ]))
   ];
 }
@@ -113,6 +159,8 @@ interface HandshakeFixtureInput {
   remoteBundleHash: Buffer;
   hostInstallationPublicKey: Buffer;
   remoteInstallationPublicKey: Buffer;
+  hostDescriptor: FixtureDeviceDescriptor;
+  remoteDescriptor: FixtureDeviceDescriptor;
 }
 
 function createHandshakeFixture(input: HandshakeFixtureInput): ContractJson {
@@ -121,7 +169,9 @@ function createHandshakeFixture(input: HandshakeFixtureInput): ContractJson {
     input.hostBundleCbor,
     input.hostBundleHash,
     input.remoteBundleCbor,
-    input.remoteBundleHash
+    input.remoteBundleHash,
+    descriptorCbor(input.hostDescriptor),
+    descriptorCbor(input.remoteDescriptor)
   );
   const handshake = runNoiseXXHandshake({
     prologue,
@@ -192,7 +242,11 @@ function createHandshakeFixture(input: HandshakeFixtureInput): ContractJson {
       hostBundleHashB64: b64(input.hostBundleHash),
       remoteBundleHashB64: b64(input.remoteBundleHash),
       hostInstallationPublicKeyB64: b64(input.hostInstallationPublicKey),
-      remoteInstallationPublicKeyB64: b64(input.remoteInstallationPublicKey)
+      remoteInstallationPublicKeyB64: b64(input.remoteInstallationPublicKey),
+      hostDescriptorCborB64: b64(descriptorCbor(input.hostDescriptor)),
+      remoteDescriptorCborB64: b64(descriptorCbor(input.remoteDescriptor)),
+      hostDescriptor: descriptorJson(input.hostDescriptor),
+      remoteDescriptor: descriptorJson(input.remoteDescriptor)
     },
     derived: {
       pairRootB64: b64(pairKeys.pairRoot),
@@ -293,7 +347,9 @@ export function createRemotePairingV1Fixture(): ContractJson {
     remoteBundleCbor: remoteIdentity.bundleCbor,
     remoteBundleHash: remoteIdentity.bundleHash,
     hostInstallationPublicKey: Buffer.from(hostIdentity.bundle.installationPublicKey, "base64url"),
-    remoteInstallationPublicKey: Buffer.from(remoteIdentity.bundle.installationPublicKey, "base64url")
+    remoteInstallationPublicKey: Buffer.from(remoteIdentity.bundle.installationPublicKey, "base64url"),
+    hostDescriptor: HOST_DESCRIPTOR,
+    remoteDescriptor: REMOTE_DESCRIPTOR
   });
   const shortHandshake = createHandshakeFixture({
     name: "short-code",
@@ -311,7 +367,9 @@ export function createRemotePairingV1Fixture(): ContractJson {
     remoteBundleCbor: remoteIdentity.bundleCbor,
     remoteBundleHash: remoteIdentity.bundleHash,
     hostInstallationPublicKey: Buffer.from(hostIdentity.bundle.installationPublicKey, "base64url"),
-    remoteInstallationPublicKey: Buffer.from(remoteIdentity.bundle.installationPublicKey, "base64url")
+    remoteInstallationPublicKey: Buffer.from(remoteIdentity.bundle.installationPublicKey, "base64url"),
+    hostDescriptor: HOST_DESCRIPTOR,
+    remoteDescriptor: REMOTE_DESCRIPTOR
   });
 
   return {
