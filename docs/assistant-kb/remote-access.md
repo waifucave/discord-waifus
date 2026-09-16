@@ -29,6 +29,10 @@ device revocation, and trigger direct reconnection. Trust-expanding or trust-rem
 server-held confirmation cards; the model cannot confirm its own proposal or replace the stored
 target. A remote assistant call remains attributed to its paired device and browser session.
 
+Full installation identity reset is intentionally not an assistant tool. It is available only from
+the host's bound local Settings -> Remote Access page, requires the exact typed confirmation, and
+removes every pairing before requiring activation again.
+
 ## Revocation and recovery
 
 Always list devices immediately before rename or revoke and use the returned `revision`. A mismatch

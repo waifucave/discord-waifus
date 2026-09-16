@@ -787,6 +787,10 @@ export const RemoteAccessTrustIndexPairV1Schema = z.object({
   trustEpoch: PositiveUint64DecimalSchema
 }).strict();
 
+export type RemoteAccessTrustIndexPairV1 = z.infer<
+  typeof RemoteAccessTrustIndexPairV1Schema
+>;
+
 export const RemoteAccessTrustIndexV1Schema = z.object({
   version: z.literal(1),
   trustEpochHighWater: Uint64DecimalSchema,

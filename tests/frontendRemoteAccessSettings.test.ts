@@ -6,6 +6,11 @@ import { PairingRequestCard } from "../src/frontend/components/remoteAccess/Pair
 import { RemoteDiagnostics } from "../src/frontend/components/remoteAccess/RemoteDiagnostics.js";
 import { TrustedDevices } from "../src/frontend/components/remoteAccess/TrustedDevices.js";
 import {
+  IDENTITY_RESET_CONFIRMATION,
+  IdentityResetControl,
+  identityResetConfirmationMatches
+} from "../src/frontend/components/remoteAccess/IdentityResetControl.js";
+import {
   formatHelperTarget,
   prohibitedTrafficIsZero
 } from "../src/frontend/components/remoteAccess/presentation.js";
@@ -142,6 +147,29 @@ describe("Remote Access settings presentation", () => {
     expect(html).toContain("Travel laptop");
     expect(html).toContain("Revoke");
     expect(html).not.toContain("Confirm revoke");
+  });
+
+  it("keeps identity rotation behind the exact local-only typed confirmation", () => {
+    expect(identityResetConfirmationMatches(IDENTITY_RESET_CONFIRMATION)).toBe(true);
+    expect(identityResetConfirmationMatches("reset remote access")).toBe(false);
+    expect(identityResetConfirmationMatches(`${IDENTITY_RESET_CONFIRMATION} `)).toBe(false);
+
+    const local = renderToStaticMarkup(createElement(IdentityResetControl, {
+      mode: "host",
+      busy: false,
+      onReset: async () => undefined
+    }));
+    expect(local).toContain(`Type ${IDENTITY_RESET_CONFIRMATION} to confirm`);
+    expect(local).toMatch(/<button[^>]*disabled=""[^>]*>Reset identity<\/button>/);
+    expect(local).not.toContain("not connected in this build");
+
+    const remote = renderToStaticMarkup(createElement(IdentityResetControl, {
+      mode: "remote",
+      busy: false,
+      onReset: async () => undefined
+    }));
+    expect(remote).toContain("Identity reset is local-only");
+    expect(remote).not.toContain(`aria-label="Type ${IDENTITY_RESET_CONFIRMATION} to confirm"`);
   });
 
   it("makes the direct-only prohibited counters prominent and never renders endpoints", () => {

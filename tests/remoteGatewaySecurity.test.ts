@@ -548,6 +548,62 @@ describe("remote gateway listener", () => {
     gateways.push(gateway);
     expect((await earlyRequest).statusCode).toBe(403);
   });
+
+  it("terminates active browser streams when the gateway is intentionally closed", async () => {
+    let streamOpened!: () => void;
+    const opened = new Promise<void>((resolve) => {
+      streamOpened = resolve;
+    });
+    const gateway = await startRemoteGateway({
+      hostname: "waifus-stream.localhost",
+      port: 0,
+      randomBytes: deterministicRandom(),
+      handleAuthenticatedRequest: async (_request, reply) => {
+        reply.hijack();
+        reply.raw.writeHead(200, {
+          "content-type": "text/event-stream",
+          "cache-control": "no-store"
+        });
+        reply.raw.write(": stream-open\n\n");
+        streamOpened();
+      }
+    });
+    gateways.push(gateway);
+    const expectedHost = `waifus-stream.localhost:${gateway.port}`;
+    const bootstrap = await rawRequest({
+      port: gateway.port,
+      path: new URL(gateway.bootstrapUrl).pathname,
+      headers: { host: expectedHost, "sec-fetch-site": "none" }
+    });
+    const request = httpRequest({
+      host: "127.0.0.1",
+      port: gateway.port,
+      path: "/api/events",
+      headers: {
+        host: expectedHost,
+        origin: gateway.origin,
+        "sec-fetch-site": "same-origin",
+        cookie: String(bootstrap.headers["set-cookie"]).split(";", 1)[0]
+      }
+    });
+    request.on("response", (response) => {
+      response.on("error", () => undefined);
+      response.resume();
+    });
+    request.on("error", () => undefined);
+    request.end();
+    await opened;
+
+    const closing = gateway.close();
+    const outcome = await Promise.race([
+      closing.then(() => "closed" as const),
+      new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 250))
+    ]);
+    request.destroy();
+    await closing;
+
+    expect(outcome).toBe("closed");
+  });
 });
 
 describe("remote gateway origin runtime", () => {

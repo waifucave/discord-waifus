@@ -82,6 +82,13 @@ export const ROUTE_POLICY_MANIFEST: readonly RoutePolicyDefinition[] = Object.fr
     auditAction: "remote_access.activation.cancel"
   },
   mutation("PUT", "/api/remote-access", "reconciled", "remote_access.update"),
+  {
+    method: "POST",
+    path: "/api/remote-access/reset",
+    remotePolicy: "local_only",
+    retryClass: "reconciled",
+    auditAction: "remote_access.identity.reset"
+  },
   mutation(
     "POST",
     "/api/remote-access/reconnect",

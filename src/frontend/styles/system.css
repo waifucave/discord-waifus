@@ -447,6 +447,9 @@ select.cell:focus, input.cell:focus, textarea.cell:focus { background-color: var
 .pairing-confirmation { align-items: flex-start; }
 .remote-actions, .remote-state-chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .remote-revoke-confirmation { padding-top: 16px; border-top: var(--line) solid var(--ink); display: flex; flex-direction: column; gap: 12px; }
+.remote-reset-section { background: color-mix(in srgb, var(--danger) 12%, var(--paper)); }
+.remote-reset-confirmation { padding-top: 16px; border-top: var(--line) solid var(--ink); display: flex; flex-direction: column; gap: 12px; }
+.remote-reset-confirmation .field { max-width: 520px; }
 .remote-diagnostics-grid { display: grid; grid-template-columns: repeat(4, minmax(130px, 1fr)); gap: var(--line); background: var(--ink); }
 .remote-diagnostic-value { background: var(--paper); padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .remote-diagnostic-value .mono { overflow-wrap: anywhere; }

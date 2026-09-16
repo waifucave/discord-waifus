@@ -119,6 +119,12 @@ export const UpdateRemoteAccessInputV1Schema = z.object({
 
 export type UpdateRemoteAccessInputV1 = z.infer<typeof UpdateRemoteAccessInputV1Schema>;
 
+export const ResetRemoteAccessInputV1Schema = z.object({
+  confirmation: z.literal("RESET REMOTE ACCESS")
+}).strict();
+
+export type ResetRemoteAccessInputV1 = z.infer<typeof ResetRemoteAccessInputV1Schema>;
+
 export const RemoteAccessStatusV1Schema = z.object({
   version: z.literal(1),
   config: RemoteAccessConfigV1Schema,
