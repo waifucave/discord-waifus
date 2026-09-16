@@ -1,6 +1,5 @@
 import { spawn, type SpawnOptions } from "node:child_process";
-import { rm } from "node:fs/promises";
-import { z } from "zod";
+import { lstat, readFile, rm } from "node:fs/promises";
 import { ensureRemoteOnlyLayout } from "../config/layout.js";
 import { FullPairTokenSchema } from "../shared/schemas/remoteLifecycle.js";
 import {
@@ -8,6 +7,7 @@ import {
   type RemoteDaemonState
 } from "../shared/schemas/remoteRuntime.js";
 import { remoteRolePaths } from "../remote/paths.js";
+import { RemoteDaemonStartupHandoffSchema } from "../remote/daemonState.js";
 import { flagBoolean, flagString, type ParsedCli } from "./parser.js";
 import { openBrowser } from "./openBrowser.js";
 import {
@@ -18,10 +18,6 @@ import {
 } from "./processState.js";
 
 const REMOTE_START_TIMEOUT_MS = 30_000;
-const BootstrapHandoffSchema = z.object({
-  runtime: RemoteDaemonStateSchema,
-  bootstrapUrl: z.string().url()
-}).strict();
 const RemoteDaemonStateReadSchema = RemoteDaemonStateSchema;
 
 export type RemoteDetachedChild = {
@@ -98,7 +94,7 @@ function validateHandoff(
   value: Readonly<{ runtime: RemoteDaemonState; bootstrapUrl: string }>,
   expectedPid: number
 ): Readonly<{ runtime: RemoteDaemonState; bootstrapUrl: string }> {
-  const parsed = BootstrapHandoffSchema.parse(value);
+  const parsed = RemoteDaemonStartupHandoffSchema.parse(value);
   const url = new URL(parsed.bootstrapUrl);
   if (
     parsed.runtime.pid !== expectedPid
@@ -211,6 +207,7 @@ async function remoteDetached(
     return 0;
   }
   if (existing) await rm(paths.runtimePid, { force: true });
+  await rm(paths.startupHandoff, { force: true });
 
   const entrypoint = (options.argv ?? process.argv)[1];
   if (!entrypoint) throw new RemoteCliError("Cannot locate waifus CLI entrypoint for remote start.");
@@ -317,13 +314,18 @@ export async function readRemoteDaemonStatus(
 
 async function remoteStop(dataRoot: string, options: RemoteCliOptions): Promise<number> {
   const paths = remoteRolePaths(dataRoot, "remote");
-  const result = await stopDaemonProcess({
-    pidFile: paths.runtimePid,
-    schema: RemoteDaemonStateReadSchema,
-    isAlive: options.processAlive,
-    kill: options.killProcess,
-    waitForExit: options.waitForProcessExit
-  });
+  let result: StopDaemonResult;
+  try {
+    result = await stopDaemonProcess({
+      pidFile: paths.runtimePid,
+      schema: RemoteDaemonStateReadSchema,
+      isAlive: options.processAlive,
+      kill: options.killProcess,
+      waitForExit: options.waitForProcessExit
+    });
+  } finally {
+    await rm(paths.startupHandoff, { force: true });
+  }
   reportStop(result);
   return result.state === "still_running" ? 1 : 0;
 }
@@ -337,6 +339,49 @@ function reportStop(result: StopDaemonResult): void {
   if (result.state === "still_running") console.error(`remote gateway pid ${result.pid} is still alive`);
 }
 
-async function waitForRemoteStart(): Promise<undefined> {
+async function readRemoteStartupHandoff(
+  filePath: string
+): Promise<Readonly<{ runtime: RemoteDaemonState; bootstrapUrl: string }> | undefined> {
+  let found = false;
+  try {
+    const metadata = await lstat(filePath);
+    found = true;
+    if (metadata.isSymbolicLink() || !metadata.isFile()) {
+      throw new RemoteCliError("Remote daemon startup handoff is not an owned regular file.");
+    }
+    if (typeof process.getuid === "function" && metadata.uid !== process.getuid()) {
+      throw new RemoteCliError("Remote daemon startup handoff has the wrong owner.");
+    }
+    if (process.platform !== "win32" && (metadata.mode & 0o077) !== 0) {
+      throw new RemoteCliError("Remote daemon startup handoff permissions are too broad.");
+    }
+    return RemoteDaemonStartupHandoffSchema.parse(JSON.parse(await readFile(filePath, "utf8")));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  } finally {
+    if (found) await rm(filePath, { force: true });
+  }
+}
+
+async function waitForRemoteStart(
+  dataRoot: string,
+  pid: number,
+  timeoutMs: number
+): Promise<Readonly<{ runtime: RemoteDaemonState; bootstrapUrl: string }> | undefined> {
+  const paths = remoteRolePaths(dataRoot, "remote");
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const handoff = await readRemoteStartupHandoff(paths.startupHandoff);
+    if (handoff) {
+      if (handoff.runtime.pid !== pid || handoff.runtime.dataRoot !== dataRoot) {
+        throw new RemoteCliError("Remote daemon startup handoff does not match the spawned process.");
+      }
+      return handoff;
+    }
+    if (!processIsAlive(pid)) return undefined;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  await rm(paths.startupHandoff, { force: true });
   return undefined;
 }
