@@ -60,6 +60,12 @@ The Worker accepts only the exact routes in the V1 route table below, whose oper
 
 There is no arbitrary room message, destination URL, callback URL, file/blob, byte stream, broadcast, user-selected socket, management request, or packet-forwarding route. Any route or schema capable of accepting an opaque payload larger than the fixed control envelope is a release blocker.
 
+Device display names and platforms are never Worker request fields, database columns, routing
+keys, logs, or metrics. They exist only as `DeviceDescriptorV1` bytes inside encrypted Noise
+messages 2 and 3 from plan 03. The Worker can enforce the mailbox record type, sender, phase, and
+size, but it neither decrypts nor interprets those descriptors. Dashboard/API/WebSocket payloads
+remain direct peer-to-peer traffic and never enter this coordination plane.
+
 ## Locked HTTP and WebSocket Envelope
 
 All API routes are under **/v1/** and their request/response bodies are strict JSON, including

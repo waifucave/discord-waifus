@@ -111,8 +111,8 @@ describe("SAS V1 wordlist artifact", () => {
 
     const fixture = record(createRemotePairingV1Fixture());
     const expectedWords = [
-      ["froth", "rally", "flap", "scan", "storm"],
-      ["next", "petty", "trade", "gown", "clump"]
+      ["halo", "chew", "bride", "decoy", "buggy"],
+      ["water", "apple", "debug", "spend", "aroma"]
     ];
     for (const [index, handshake] of (fixture.handshakes as unknown[]).entries()) {
       expect(record(record(handshake).derived).sasWords).toEqual(expectedWords[index]);

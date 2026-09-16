@@ -433,12 +433,35 @@ The signature input is ASCII **waifus/identity-bundle/v1** followed by canonical
 unsigned keys **1–10**. The decoder rejects duplicate/unknown keys and every noncanonical form
 before verifying the signature.
 
+Each side also sends one strict **DeviceDescriptorV1** inside its encrypted Noise identity
+payload. It is the exact RFC 8949 deterministic/canonical CBOR map
+`{1:1, 2:displayName, 3:os, 4:arch, 5:goarm}`:
+
+| Key | Field | Encoding |
+|---:|---|---|
+| 1 | version | unsigned integer, exactly 1 |
+| 2 | display name | UTF-8 text matching the public `DeviceDisplayName` contract |
+| 3 | operating system | exactly `darwin`, `win32`, or `linux` |
+| 4 | architecture | exactly `x64`, `arm64`, or `arm`, subject to the supported matrix below |
+| 5 | GOARM | unsigned integer, exactly 7 for `linux/arm`; exactly 0 otherwise |
+
+The only accepted targets are `darwin/arm64`, `win32/x64`, `win32/arm64`, `linux/x64`,
+`linux/arm64`, and `linux/arm` with GOARM 7. In particular, `darwin/x64` remains the explicit
+Intel macOS follow-up and cannot be represented as a supported V1 descriptor. The display name is
+1–80 UTF-16 code units and at most 256 UTF-8 bytes, has no leading or trailing ECMAScript trim
+character, and rejects C0 controls, DEL, bidi overrides, and bidi isolates. Decoders reject every
+unknown field, noncanonical encoding, unsupported tuple, and descriptor over 512 encoded bytes.
+
 The three XX handshake payloads are also exact canonical-CBOR maps. Message 1 is
 `{1:1, 2:2, 3:remoteBundleHash}`. Message 2 is
-`{1:1, 2:1, 3:hostBundleCbor, 4:remoteBundleHash}`. Message 3 is
-`{1:1, 2:2, 3:remoteBundleCbor, 4:hostBundleHash}`. The first field is the record version and the
-second is the sender role. Bundle hashes are 32-byte SHA-256 bstr values; bundle CBOR fields are
-the exact signed bytes above. Define **LP(x)=uint32BE(byteLength(x))||x** and
+`{1:1, 2:1, 3:hostBundleCbor, 4:remoteBundleHash, 5:hostDescriptorCbor}`. Message 3 is
+`{1:1, 2:2, 3:remoteBundleCbor, 4:hostBundleHash, 5:remoteDescriptorCbor}`. The first field is the
+record version and the second is the sender role. Bundle hashes are 32-byte SHA-256 bstr values;
+bundle and descriptor CBOR fields are bstr values containing the exact canonical bytes above.
+Messages 2 and 3 protect each descriptor with Noise encryption/authentication and bind it into the
+channel binding, transcript hash, and SAS. The device name and platform are therefore obtained
+from the authenticated peer descriptor, never fabricated locally or read from Worker metadata.
+Define **LP(x)=uint32BE(byteLength(x))||x** and
 **transcriptHash=SHA-256(LP(message1)||LP(message2)||LP(message3))** over the exact encoded Noise
 messages, including their Noise keys, ciphertext, payload, and tags. This transcript hash is
 distinct from, and never substituted for, the Noise library's final 32-byte channel binding.
