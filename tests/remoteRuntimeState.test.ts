@@ -7,6 +7,8 @@ import {
   RemoteDaemonStateSchema,
   createRemoteDaemonState
 } from "../src/shared/schemas/remoteRuntime.js";
+import { publishRemoteDaemonStartup } from "../src/remote/daemonState.js";
+import { IdentityResetState } from "../src/backend/remoteAccess/identityResetState.js";
 import { remoteRolePaths, remoteStatePaths } from "../src/remote/paths.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
 
@@ -191,5 +193,44 @@ describe("remote daemon runtime state", () => {
       queues: { active: 0, configuredGuilds: 0 }
     }).success).toBe(true);
     expect(RemoteDaemonStateSchema.safeParse(validState()).success).toBe(true);
+  });
+
+  it("publishes the process state before an owner-only one-use bootstrap handoff", async () => {
+    const root = await makeTempRoot("waifus-remote-startup-state-");
+    roots.push(root);
+    await ensureRemoteOnlyLayout(root);
+    const runtime = RemoteDaemonStateSchema.parse({ ...validState(), dataRoot: root });
+    const bootstrapUrl = `${runtime.connectionShellOrigin}/_waifus_remote/bootstrap/${Buffer.alloc(32, 0x71).toString("base64url")}`;
+
+    await publishRemoteDaemonStartup({ dataRoot: root, runtime, bootstrapUrl });
+
+    const paths = remoteRolePaths(root, "remote");
+    expect(JSON.parse(await readFile(paths.runtimePid, "utf8"))).toEqual(runtime);
+    expect(JSON.parse(await readFile(paths.runtimeState, "utf8"))).toEqual(runtime);
+    expect(JSON.parse(await readFile(paths.startupHandoff, "utf8"))).toEqual({
+      runtime,
+      bootstrapUrl
+    });
+    for (const filePath of [paths.runtimePid, paths.runtimeState, paths.startupHandoff]) {
+      expect((await lstat(filePath)).mode & 0o777).toBe(0o600);
+    }
+  });
+
+  it("refuses to advertise a remote daemon while identity reset is pending", async () => {
+    const root = await makeTempRoot("waifus-remote-startup-reset-");
+    roots.push(root);
+    await ensureRemoteOnlyLayout(root);
+    const runtime = RemoteDaemonStateSchema.parse({ ...validState(), dataRoot: root });
+    const bootstrapUrl = `${runtime.connectionShellOrigin}/_waifus_remote/bootstrap/${Buffer.alloc(32, 0x72).toString("base64url")}`;
+    const reset = new IdentityResetState(root, { processIsAlive: () => false });
+    await reset.prepare(Buffer.alloc(16, 0x73).toString("base64url"), 100n);
+
+    await expect(publishRemoteDaemonStartup({ dataRoot: root, runtime, bootstrapUrl }))
+      .rejects.toThrow(/identity reset is in progress/i);
+
+    const paths = remoteRolePaths(root, "remote");
+    for (const filePath of [paths.runtimePid, paths.runtimeState, paths.startupHandoff]) {
+      await expect(access(filePath)).rejects.toMatchObject({ code: "ENOENT" });
+    }
   });
 });

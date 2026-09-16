@@ -43,6 +43,7 @@ export type RemoteRolePaths = {
   readonly runtimeRoot: string;
   readonly runtimePid: string;
   readonly runtimeState: string;
+  readonly startupHandoff: string;
   readonly runtimeLock: string;
   readonly parentEndpoint: string;
   readonly log: string;
@@ -74,6 +75,7 @@ export function remoteRolePaths(dataRoot: string, role: RemoteRole): RemoteRoleP
     runtimeRoot,
     runtimePid: path.join(runtimeRoot, "pid.json"),
     runtimeState: path.join(runtimeRoot, "runtime.json"),
+    startupHandoff: path.join(runtimeRoot, "startup-handoff.json"),
     runtimeLock: path.join(runtimeRoot, "daemon.lock"),
     parentEndpoint: path.join(runtimeRoot, "p"),
     log: role === "host" ? paths.hostLog : paths.remoteGatewayLog

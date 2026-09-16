@@ -1,4 +1,4 @@
-import { access, mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createRuntimeState } from "../src/backend/runtime.js";
@@ -210,6 +210,78 @@ describe("waifus remote lifecycle", () => {
     expect(JSON.stringify(spawnCalls)).not.toContain("WF1.");
   });
 
+  it("consumes the detached child's owner-only bootstrap handoff before opening the browser", async () => {
+    const root = await makeTempRoot("waifus-remote-cli-real-waiter-");
+    roots.push(root);
+    silence();
+    const paths = remoteRolePaths(root, "remote");
+    let handoffWrite: Promise<void> | undefined;
+    const browserOpener = vi.fn(async (url: string) => {
+      expect(url).toBe(bootstrapUrl);
+    });
+
+    const code = await runCommand(parseCliArgs([
+      "remote",
+      "--data-root",
+      root
+    ]), {
+      argv: ["node", "waifus"],
+      processAlive: (pid) => pid === process.pid,
+      remotePreflight: async () => undefined,
+      detachedSpawner: () => {
+        const runtime = state(process.pid, root);
+        handoffWrite = (async () => {
+          await mkdir(paths.runtimeRoot, { recursive: true, mode: 0o700 });
+          await writeFile(paths.runtimePid, `${JSON.stringify(runtime)}\n`, { mode: 0o600 });
+          await writeFile(paths.runtimeState, `${JSON.stringify(runtime)}\n`, { mode: 0o600 });
+          await writeFile(paths.startupHandoff, `${JSON.stringify({ runtime, bootstrapUrl })}\n`, {
+            mode: 0o600
+          });
+        })();
+        return { pid: process.pid, unref: vi.fn() };
+      },
+      browserOpener
+    });
+    await handoffWrite;
+
+    expect(code).toBe(0);
+    expect(browserOpener).toHaveBeenCalledTimes(1);
+    await expect(access(paths.startupHandoff)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects and erases a startup handoff whose permissions could expose its token", async () => {
+    const root = await makeTempRoot("waifus-remote-cli-handoff-mode-");
+    roots.push(root);
+    silence();
+    const paths = remoteRolePaths(root, "remote");
+    let handoffWrite: Promise<void> | undefined;
+    const browserOpener = vi.fn();
+
+    const code = await runCommand(parseCliArgs(["remote", "--data-root", root]), {
+      argv: ["node", "waifus"],
+      processAlive: (pid) => pid === process.pid,
+      remotePreflight: async () => undefined,
+      detachedSpawner: () => {
+        const runtime = state(process.pid, root);
+        handoffWrite = (async () => {
+          await mkdir(paths.runtimeRoot, { recursive: true, mode: 0o700 });
+          await writeFile(paths.startupHandoff, `${JSON.stringify({ runtime, bootstrapUrl })}\n`, {
+            mode: 0o600
+          });
+          await chmod(paths.startupHandoff, 0o644);
+        })();
+        return { pid: process.pid, unref: vi.fn() };
+      },
+      browserOpener
+    });
+    await handoffWrite;
+
+    expect(code).toBe(1);
+    expect(browserOpener).not.toHaveBeenCalled();
+    expect(console.error).toHaveBeenCalledWith(expect.stringContaining("permissions are too broad"));
+    await expect(access(paths.startupHandoff)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("honors --no-open and forwards foreground options only after preflight", async () => {
     const root = await makeTempRoot("waifus-remote-cli-foreground-");
     roots.push(root);
@@ -277,6 +349,10 @@ describe("waifus remote lifecycle", () => {
     const hostPid = remoteStatePaths(root).backendPid;
     await writeFile(remote.runtimePid, `${JSON.stringify(state(4242))}\n`);
     await writeFile(remote.runtimeState, `${JSON.stringify(state(4242))}\n`);
+    await writeFile(remote.startupHandoff, `${JSON.stringify({
+      runtime: state(4242),
+      bootstrapUrl
+    })}\n`, { mode: 0o600 });
     await writeFile(hostPid, `${JSON.stringify({ pid: 5151 })}\n`);
 
     expect(await runCommand(parseCliArgs(["remote", "status", "--data-root", root]), {
@@ -295,6 +371,7 @@ describe("waifus remote lifecycle", () => {
     expect(killed).toEqual([{ pid: 4242, signal: "SIGTERM" }]);
     expect(alive.has(5151)).toBe(true);
     expect(JSON.parse(await readFile(hostPid, "utf8"))).toEqual({ pid: 5151 });
+    await expect(access(remote.startupHandoff)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("fails unsupported Intel macOS and missing helpers before spawning", async () => {
