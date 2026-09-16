@@ -4,7 +4,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createRuntimeState } from "../src/backend/runtime.js";
 import {
   RemoteAccessActorUnauthorizedError,
+  RemoteAccessDeviceRevisionConflictError,
   RemoteAccessService,
+  RemoteAccessTrustedDeviceNotFoundError,
   type HelperSupervisorController
 } from "../src/backend/remoteAccess/remoteAccessService.js";
 import { RemoteAccessStateStore } from "../src/backend/remoteAccess/stateStore.js";
@@ -480,6 +482,18 @@ describe("host remote-access lifecycle service", () => {
     await expect(remote.rejectPairingRequest(pairingRequestId, requestActor))
       .resolves.toBeUndefined();
     await expect(remote.listDevices()).resolves.toEqual({ version: 1, devices: [] });
+    supervisor.devices = [{
+      version: 1,
+      deviceId: "travel-mac",
+      displayName: "Travel Mac",
+      platform: { os: "darwin", arch: "arm64" },
+      installationFingerprint: Buffer.alloc(16, 0x42).toString("base64url"),
+      trustEpoch: "7",
+      revision: "1",
+      pairedAt: "1786000000",
+      lastSeenAt: "1786270800",
+      connectionState: "direct"
+    }];
     await expect(remote.renameDevice(
       "travel-mac",
       { revision: "1", displayName: "Travel Laptop" },
@@ -509,9 +523,48 @@ describe("host remote-access lifecycle service", () => {
       "pairing_request_approve",
       "pairing_request_reject",
       "trusted_devices_list",
+      "trusted_devices_list",
       "trusted_device_rename",
       "trusted_devices_list",
       "trusted_device_revoke_reconcile"
+    ]);
+  });
+
+  it("preflights trusted-device rename revisions and missing devices before mutating the helper", async () => {
+    const root = await makeRoot();
+    const supervisor = new FakeSupervisor();
+    supervisor.devices = [{
+      version: 1,
+      deviceId: "travel-mac",
+      displayName: "Travel Mac",
+      platform: { os: "darwin", arch: "arm64" },
+      installationFingerprint: Buffer.alloc(16, 0x42).toString("base64url"),
+      trustEpoch: "7",
+      revision: "3",
+      pairedAt: "1786000000",
+      lastSeenAt: "1786270800",
+      connectionState: "direct"
+    }];
+    const remote = service(root, supervisor);
+    await remote.start();
+    const actor = { kind: "local" as const, stableId: "local" as const };
+
+    await expect(remote.renameDevice(
+      "travel-mac",
+      { revision: "2", displayName: "Stale Rename" },
+      actor
+    )).rejects.toMatchObject({
+      name: RemoteAccessDeviceRevisionConflictError.name,
+      latest: { deviceId: "travel-mac", revision: "3", displayName: "Travel Mac" }
+    });
+    await expect(remote.renameDevice(
+      "missing-device",
+      { revision: "0", displayName: "Missing" },
+      actor
+    )).rejects.toBeInstanceOf(RemoteAccessTrustedDeviceNotFoundError);
+    expect(supervisor.managementCalls.map((call) => call.command)).toEqual([
+      "trusted_devices_list",
+      "trusted_devices_list"
     ]);
   });
 

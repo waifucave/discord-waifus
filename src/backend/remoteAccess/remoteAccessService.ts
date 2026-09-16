@@ -602,8 +602,17 @@ export class RemoteAccessService {
     const actor = await this.#authorizeRequestActor(actorValue);
     const deviceId = DeviceIdSchema.parse(deviceIdValue);
     const input = RenameTrustedDeviceInputV1Schema.parse(inputValue);
+    const listMethod = this.#options.supervisor.listDevices;
     const method = this.#options.supervisor.renameDevice;
-    if (!method) throw new RemoteAccessServiceUnavailableError();
+    if (!listMethod || !method) throw new RemoteAccessServiceUnavailableError();
+    const devices = TrustedDeviceListV1Schema.parse(
+      await listMethod.call(this.#options.supervisor)
+    );
+    const target = devices.devices.find((device) => device.deviceId === deviceId);
+    if (!target) throw new RemoteAccessTrustedDeviceNotFoundError();
+    if (target.revision !== input.revision) {
+      throw new RemoteAccessDeviceRevisionConflictError(target);
+    }
     const result = TrustedDeviceSummaryV1Schema.parse(
       await method.call(this.#options.supervisor, deviceId, input, actor)
     );
