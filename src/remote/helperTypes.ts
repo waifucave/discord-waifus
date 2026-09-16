@@ -6,16 +6,21 @@ import {
   ActivationLifecycleStateSchema,
   ApprovePairingInputV1Schema,
   ControlConnectionStateSchema,
+  DeviceDisplayNameSchema,
   DirectConnectionStateSchema,
   HelperLifecycleStateSchema,
+  PairEntryFlowSchema,
   PairInvitationV1Schema,
   PendingPairingRequestListV1Schema,
   RenameTrustedDeviceInputV1Schema,
   RemoteAccessErrorCodeSchema,
+  SasFingerprintSchema,
+  SasWordsSchema,
   SecretStorageKindSchema,
   TrustedDeviceListV1Schema,
   TrustedDeviceSummaryV1Schema,
   type ApprovePairingInputV1,
+  type PairStartInput,
   type PairInvitationV1,
   type PendingPairingRequestListV1,
   type RenameTrustedDeviceInputV1,
@@ -161,6 +166,85 @@ export const HelperActivationCancelSchema = z.object({
 
 export type HelperActivationCancel = z.infer<typeof HelperActivationCancelSchema>;
 
+export const HelperPairErrorCodeSchema = z.enum([
+  "helper_unavailable",
+  "invalid_invitation",
+  "invitation_expired",
+  "pairing_rejected",
+  "pairing_unavailable",
+  "protocol_incompatible",
+  "self_pair",
+  "verification_mismatch"
+]);
+
+export type HelperPairErrorCode = z.infer<typeof HelperPairErrorCodeSchema>;
+
+export const HelperPairStartSchema = z.object({
+  operationId: Base64Url32BytesSchema,
+  expiresAt: Uint64DecimalSchema
+}).strict();
+
+export type HelperPairStart = z.infer<typeof HelperPairStartSchema>;
+
+const HelperPairPollBaseShape = {
+  operationId: Base64Url32BytesSchema,
+  expiresAt: Uint64DecimalSchema
+};
+
+export const HelperPairPollSchema = z.discriminatedUnion("state", [
+  z.object({
+    ...HelperPairPollBaseShape,
+    state: z.enum([
+      "starting",
+      "awaiting_host_approval",
+      "connecting",
+      "completed",
+      "expired",
+      "cancelled"
+    ])
+  }).strict(),
+  z.object({
+    ...HelperPairPollBaseShape,
+    state: z.literal("verification_required"),
+    entryFlow: PairEntryFlowSchema,
+    sasWords: SasWordsSchema,
+    sasFingerprint: SasFingerprintSchema,
+    claimedHostDisplayName: DeviceDisplayNameSchema,
+    claimedHostPlatform: HelperTargetSchema,
+    claimedHostInstallationFingerprint: Base64Url16BytesSchema
+  }).strict(),
+  z.object({
+    ...HelperPairPollBaseShape,
+    state: z.literal("failed"),
+    errorCode: HelperPairErrorCodeSchema
+  }).strict()
+]);
+
+export type HelperPairPoll = z.infer<typeof HelperPairPollSchema>;
+
+export const HelperPairCancelSchema = z.object({
+  operationId: Base64Url32BytesSchema,
+  cancelled: z.literal(true)
+}).strict();
+
+export type HelperPairCancel = z.infer<typeof HelperPairCancelSchema>;
+
+export const HelperCompletedPairSchema = z.object({
+  operationId: Base64Url32BytesSchema,
+  pairId: Base64Url16BytesSchema,
+  hostDisplayName: DeviceDisplayNameSchema,
+  hostPlatform: HelperTargetSchema,
+  hostInstallationPublicKey: Base64Url32BytesSchema,
+  hostInstallationFingerprint: Base64Url16BytesSchema,
+  hostTrustEpoch: Uint64DecimalSchema.refine(
+    (value) => value !== "0",
+    "A host trust epoch must be positive."
+  ),
+  pairedAt: Uint64DecimalSchema
+}).strict();
+
+export type HelperCompletedPair = z.infer<typeof HelperCompletedPairSchema>;
+
 const HelperLocalRequestActorSchema = z.object({
   kind: z.literal("local"),
   stableId: z.literal("local")
@@ -245,6 +329,10 @@ export type AuthenticatedHelperClient = {
   beginActivation: (operationId: string) => Promise<HelperActivationStart>;
   pollActivation: (operationId: string) => Promise<HelperActivationPoll>;
   cancelActivation: (operationId: string) => Promise<HelperActivationCancel>;
+  beginPair: (operationId: string, input: PairStartInput) => Promise<HelperPairStart>;
+  pollPair: (operationId: string) => Promise<HelperPairPoll>;
+  cancelPair: (operationId: string) => Promise<HelperPairCancel>;
+  consumeCompletedPair: (operationId: string) => Promise<HelperCompletedPair>;
   startRuntime: (selectedPairId?: string) => Promise<HelperRuntimeStatus>;
   runtimeStatus: () => Promise<HelperRuntimeStatus>;
   reconnectRuntime: () => Promise<HelperRuntimeStatus>;
@@ -369,6 +457,16 @@ export class HelperIdentityResetError extends Error {
   ) {
     super(message);
     this.name = "HelperIdentityResetError";
+  }
+}
+
+export class HelperPairCommandError extends Error {
+  constructor(
+    readonly code: HelperPairErrorCode,
+    message: string
+  ) {
+    super(message);
+    this.name = "HelperPairCommandError";
   }
 }
 

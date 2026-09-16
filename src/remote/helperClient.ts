@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { timingSafeEqual } from "node:crypto";
 import { once } from "node:events";
 import { lstat, chmod } from "node:fs/promises";
 import net, { type Socket } from "node:net";
@@ -30,6 +31,7 @@ import {
 } from "../shared/schemas/remoteProtocolContract.js";
 import {
   GetResetStatusCommandSchema,
+  HelperTargetSchema,
   IdentityResetReceiptV1Schema,
   ResetIdentityCommandSchema,
   type GetResetStatusCommand,
@@ -38,19 +40,26 @@ import {
 } from "../shared/schemas/remoteAccess.js";
 import {
   ApprovePairingInputV1Schema,
+  DeviceDisplayNameSchema,
+  PairEntryFlowSchema,
   PairInvitationV1Schema,
+  PairStartInputSchema,
   PendingPairingRequestListV1Schema,
   RenameTrustedDeviceInputV1Schema,
   RemoteAccessErrorCodeSchema,
+  SasFingerprintSchema,
+  SasWordsSchema,
   TrustedDeviceListV1Schema,
   TrustedDeviceSummaryV1Schema,
   type ApprovePairingInputV1,
   type PairInvitationV1,
+  type PairStartInput,
   type PendingPairingRequestListV1,
   type RenameTrustedDeviceInputV1,
   type TrustedDeviceListV1,
   type TrustedDeviceSummaryV1
 } from "../shared/schemas/remoteLifecycle.js";
+import { deriveInstallationFingerprint } from "../shared/remotePairing.js";
 import {
   WIPC_FRAME_TYPES,
   WIPC_HEADER_BYTES,
@@ -74,6 +83,12 @@ import {
   HelperCommandError,
   HelperIdentityResetError,
   HelperIdentityResetErrorCodeSchema,
+  HelperPairCommandError,
+  HelperPairErrorCodeSchema,
+  HelperPairStartSchema,
+  HelperPairPollSchema,
+  HelperPairCancelSchema,
+  HelperCompletedPairSchema,
   HelperActivationCancelSchema,
   HelperActivationErrorCodeSchema,
   HelperActivationPollSchema,
@@ -88,6 +103,10 @@ import {
   type HelperActivationPoll,
   type HelperActivationStart,
   type HelperIdentityStatus,
+  type HelperPairStart,
+  type HelperPairPoll,
+  type HelperPairCancel,
+  type HelperCompletedPair,
   type HelperConfirmedAdminActor,
   type HelperDeviceRevocationRecovery,
   type HelperLaunch,
@@ -109,6 +128,10 @@ const HelperCommandFailureSchema = z.object({
     "activation_begin",
     "activation_poll",
     "activation_cancel",
+    "pair_begin",
+    "pair_poll",
+    "pair_cancel",
+    "pair_completed_consume",
     "identity_status",
     "runtime_start",
     "runtime_status",
@@ -129,6 +152,7 @@ const HelperCommandFailureSchema = z.object({
   ]),
   errorCode: z.union([
     HelperActivationErrorCodeSchema,
+    HelperPairErrorCodeSchema,
     RemoteAccessErrorCodeSchema,
     HelperIdentityResetErrorCodeSchema
   ]),
@@ -181,6 +205,52 @@ const ActivationCancelWireSchema = z.object({
   command: z.literal("activation_cancel"),
   ok: z.literal(true),
   operationId: Base64Url32BytesSchema
+}).strict();
+const PairBeginWireSchema = HelperPairStartSchema.extend({
+  command: z.literal("pair_begin"),
+  ok: z.literal(true)
+}).strict();
+const PairPollWireBaseShape = {
+  command: z.literal("pair_poll"),
+  ok: z.literal(true),
+  operationId: Base64Url32BytesSchema,
+  expiresAt: Uint64DecimalSchema
+};
+const PairPollWireSchema = z.discriminatedUnion("state", [
+  z.object({
+    ...PairPollWireBaseShape,
+    state: z.enum([
+      "starting",
+      "awaiting_host_approval",
+      "connecting",
+      "completed",
+      "expired",
+      "cancelled"
+    ])
+  }).strict(),
+  z.object({
+    ...PairPollWireBaseShape,
+    state: z.literal("verification_required"),
+    entryFlow: PairEntryFlowSchema,
+    sasWords: SasWordsSchema,
+    sasFingerprint: SasFingerprintSchema,
+    claimedHostDisplayName: DeviceDisplayNameSchema,
+    claimedHostPlatform: HelperTargetSchema,
+    claimedHostInstallationFingerprint: Base64Url16BytesSchema
+  }).strict(),
+  z.object({
+    ...PairPollWireBaseShape,
+    state: z.literal("failed"),
+    errorCode: HelperPairErrorCodeSchema
+  }).strict()
+]);
+const PairCancelWireSchema = HelperPairCancelSchema.extend({
+  command: z.literal("pair_cancel"),
+  ok: z.literal(true)
+}).strict();
+const PairCompletedConsumeWireSchema = HelperCompletedPairSchema.extend({
+  command: z.literal("pair_completed_consume"),
+  ok: z.literal(true)
 }).strict();
 const RuntimeStatusWireSchema = z.object({
   activationState: z.enum(["activation_required", "active", "renewal_due"]),
@@ -1230,6 +1300,76 @@ class ProcessHelperClient implements AuthenticatedHelperClient {
     });
   }
 
+  async beginPair(
+    operationIdValue: string,
+    inputValue: PairStartInput
+  ): Promise<HelperPairStart> {
+    this.#requireRemotePairing();
+    const operationId = Base64Url32BytesSchema.parse(operationIdValue);
+    const result = await this.#command({
+      command: "pair_begin",
+      operationId,
+      input: PairStartInputSchema.parse(inputValue)
+    }, PairBeginWireSchema, "pair begin RESULT");
+    return HelperPairStartSchema.parse({
+      operationId: result.operationId,
+      expiresAt: result.expiresAt
+    });
+  }
+
+  async pollPair(operationIdValue: string): Promise<HelperPairPoll> {
+    this.#requireRemotePairing();
+    const result = await this.#command({
+      command: "pair_poll",
+      operationId: Base64Url32BytesSchema.parse(operationIdValue)
+    }, PairPollWireSchema, "pair poll RESULT");
+    const { command: _command, ok: _ok, ...status } = result;
+    return HelperPairPollSchema.parse(status);
+  }
+
+  async cancelPair(operationIdValue: string): Promise<HelperPairCancel> {
+    this.#requireRemotePairing();
+    const result = await this.#command({
+      command: "pair_cancel",
+      operationId: Base64Url32BytesSchema.parse(operationIdValue)
+    }, PairCancelWireSchema, "pair cancel RESULT");
+    return HelperPairCancelSchema.parse({
+      operationId: result.operationId,
+      cancelled: result.cancelled
+    });
+  }
+
+  async consumeCompletedPair(operationIdValue: string): Promise<HelperCompletedPair> {
+    this.#requireRemotePairing();
+    const result = await this.#command({
+      command: "pair_completed_consume",
+      operationId: Base64Url32BytesSchema.parse(operationIdValue)
+    }, PairCompletedConsumeWireSchema, "completed pair consume RESULT");
+    const pair = HelperCompletedPairSchema.parse({
+      operationId: result.operationId,
+      pairId: result.pairId,
+      hostDisplayName: result.hostDisplayName,
+      hostPlatform: result.hostPlatform,
+      hostInstallationPublicKey: result.hostInstallationPublicKey,
+      hostInstallationFingerprint: result.hostInstallationFingerprint,
+      hostTrustEpoch: result.hostTrustEpoch,
+      pairedAt: result.pairedAt
+    });
+    const expectedFingerprint = deriveInstallationFingerprint(
+      Buffer.from(pair.hostInstallationPublicKey, "base64url")
+    );
+    if (!timingSafeEqual(
+      expectedFingerprint,
+      Buffer.from(pair.hostInstallationFingerprint, "base64url")
+    )) {
+      throw new HelperSupervisorError(
+        "helper_incompatible",
+        "Completed pair fingerprint does not match its host installation key."
+      );
+    }
+    return pair;
+  }
+
   async startRuntime(selectedPairId?: string): Promise<HelperRuntimeStatus> {
     const selection = selectedPairId === undefined
       ? undefined
@@ -1454,6 +1594,15 @@ class ProcessHelperClient implements AuthenticatedHelperClient {
     }
   }
 
+  #requireRemotePairing(): void {
+    if (this.#role !== "remote") {
+      throw new HelperSupervisorError(
+        "helper_incompatible",
+        "Remote pairing commands require a remote-role helper."
+      );
+    }
+  }
+
   async #command<T extends {
     command: string;
     ok: true;
@@ -1558,6 +1707,20 @@ class ProcessHelperClient implements AuthenticatedHelperClient {
             "Helper rejected the identity reset command."
           );
         }
+        const pairCommand = command.command.startsWith("pair_");
+        if (pairCommand) {
+          const code = HelperPairErrorCodeSchema.safeParse(failure.errorCode);
+          if (!code.success) {
+            throw new HelperSupervisorError(
+              "helper_incompatible",
+              "Helper returned an invalid remote pairing failure code."
+            );
+          }
+          throw new HelperPairCommandError(
+            code.data,
+            "Helper rejected the remote pairing command."
+          );
+        }
         const code = RemoteAccessErrorCodeSchema.safeParse(failure.errorCode);
         if (!code.success) {
           throw new HelperSupervisorError(
@@ -1579,6 +1742,7 @@ class ProcessHelperClient implements AuthenticatedHelperClient {
       if (
         error instanceof HelperCommandError
         || error instanceof HelperIdentityResetError
+        || error instanceof HelperPairCommandError
         || error instanceof HelperSupervisorError
       ) throw error;
       throw new HelperCommandError("helper_unavailable", "Helper command channel failed.");

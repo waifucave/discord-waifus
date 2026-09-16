@@ -455,6 +455,61 @@ async function main(capability) {
       })));
       continue;
     }
+    if (activation.command === "pair_begin") {
+      socket.write(frame(RESULT, canonicalJson({
+        command: "pair_begin",
+        expiresAt: "1786271130",
+        ok: true,
+        operationId
+      })));
+      continue;
+    }
+    if (activation.command === "pair_poll") {
+      socket.write(frame(RESULT, canonicalJson({
+        claimedHostDisplayName: "Studio Host",
+        claimedHostInstallationFingerprint: Buffer.alloc(16, 0x48).toString("base64url"),
+        claimedHostPlatform: { arch: "arm64", os: "darwin" },
+        command: "pair_poll",
+        entryFlow: "short_code",
+        expiresAt: "1786271130",
+        ok: true,
+        operationId,
+        sasFingerprint: "0123456789ab",
+        sasWords: ["acid", "acorn", "acre", "afar", "affix"],
+        state: "verification_required"
+      })));
+      continue;
+    }
+    if (activation.command === "pair_completed_consume") {
+      const hostInstallationPublicKey = Buffer.alloc(32, 0x4a);
+      const hostInstallationFingerprint = createHash("sha256")
+        .update("waifus/install/fingerprint/v1", "ascii")
+        .update(hostInstallationPublicKey)
+        .digest()
+        .subarray(0, 16);
+      socket.write(frame(RESULT, canonicalJson({
+        command: "pair_completed_consume",
+        hostDisplayName: "Studio Host",
+        hostInstallationFingerprint: hostInstallationFingerprint.toString("base64url"),
+        hostInstallationPublicKey: hostInstallationPublicKey.toString("base64url"),
+        hostPlatform: { arch: "arm64", os: "darwin" },
+        hostTrustEpoch: "7",
+        ok: true,
+        operationId,
+        pairId: Buffer.alloc(16, 0x49).toString("base64url"),
+        pairedAt: "1786271000"
+      })));
+      continue;
+    }
+    if (activation.command === "pair_cancel") {
+      socket.write(frame(RESULT, canonicalJson({
+        cancelled: true,
+        command: "pair_cancel",
+        ok: true,
+        operationId
+      })));
+      continue;
+    }
     if (activation.command === "invitation_create") {
       socket.write(frame(RESULT, canonicalJson({
         command: "invitation_create",
