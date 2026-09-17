@@ -53,6 +53,7 @@ import {
 import {
   HelperCommandError,
   HelperConfirmedAdminActorSchema,
+  HelperDeviceDescriptorSchema,
   HelperDeviceRevocationRecoverySchema,
   HelperRequestActorSchema,
   HelperSupervisorError,
@@ -61,6 +62,7 @@ import {
   type HelperActivationStart,
   type HelperIdentityStatus,
   type HelperConfirmedAdminActor,
+  type HelperDeviceDescriptor,
   type HelperDeviceRevocationRecovery,
   type HelperRequestActor,
   type HelperSupervisorSnapshot
@@ -104,7 +106,8 @@ export type HelperSupervisorController = {
   cancelActivation: (operationId: string) => Promise<HelperActivationCancel>;
   createInvitation?: (
     actor: ConfirmedAdminActor,
-    idempotencyKey: string
+    idempotencyKey: string,
+    descriptor: HelperDeviceDescriptor
   ) => Promise<PairInvitationV1>;
   cancelInvitation?: (invitationId: string, actor: ConfirmedAdminActor) => Promise<void>;
   listPairingRequests?: (
@@ -502,13 +505,19 @@ export class RemoteAccessService {
     actorValue: ConfirmedAdminActor,
     idempotencyKeyValue: string
   ): Promise<PairInvitationV1> {
-    this.#requireActiveManagement();
+    const state = this.#requireActiveManagement();
     const actor = await this.#authorizeConfirmedActor(actorValue);
     const idempotencyKey = Base64Url32BytesSchema.parse(idempotencyKeyValue);
     const method = this.#options.supervisor.createInvitation;
     if (!method) throw new RemoteAccessServiceUnavailableError();
+    const target = this.#options.supervisor.snapshot().target;
+    if (!target) throw new RemoteAccessServiceUnavailableError();
+    const descriptor = HelperDeviceDescriptorSchema.parse({
+      displayName: state.config.displayName,
+      platform: target
+    });
     return PairInvitationV1Schema.parse(
-      await method.call(this.#options.supervisor, actor, idempotencyKey)
+      await method.call(this.#options.supervisor, actor, idempotencyKey, descriptor)
     );
   }
 
@@ -1246,11 +1255,12 @@ export class RemoteAccessService {
     return this.#state;
   }
 
-  #requireActiveManagement(): void {
-    this.#requireState();
+  #requireActiveManagement(): RemoteAccessPersistedState {
+    const state = this.#requireState();
     if (!this.#summary?.enabled || this.#summary.helperState !== "ready") {
       throw new RemoteAccessInactiveError();
     }
+    return state;
   }
 
   async #authorizeRequestActor(

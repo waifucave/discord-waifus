@@ -298,7 +298,11 @@ describe("protected helper process client", () => {
 
     await expect(client.createInvitation(
       actor,
-      Buffer.alloc(32, 0x33).toString("base64url")
+      Buffer.alloc(32, 0x33).toString("base64url"),
+      {
+        displayName: "Studio Host",
+        platform: { os: "darwin", arch: "arm64" }
+      }
     )).resolves.toMatchObject({ invitationId, shortCode: "01AB-CDEF" });
     await expect(client.cancelInvitation(invitationId, actor)).resolves.toBeUndefined();
     await expect(client.listPairingRequests(requestActor))
@@ -340,6 +344,9 @@ describe("protected helper process client", () => {
     await expect(client.beginPair(operationId, {
       kind: "short_code",
       code: "0123-4567"
+    }, {
+      displayName: "Travel Mac",
+      platform: { os: "darwin", arch: "arm64" }
     })).resolves.toEqual({ operationId, expiresAt: "1786271130" });
     await expect(client.pollPair(operationId)).resolves.toEqual({
       operationId,

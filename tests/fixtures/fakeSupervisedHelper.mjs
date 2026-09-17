@@ -456,6 +456,12 @@ async function main(capability) {
       continue;
     }
     if (activation.command === "pair_begin") {
+      if (canonicalJson(activation.descriptor).toString("utf8") !== canonicalJson({
+        displayName: "Travel Mac",
+        platform: { arch: "arm64", os: "darwin" }
+      }).toString("utf8")) {
+        throw new Error("pair_begin omitted or changed the authenticated device descriptor");
+      }
       socket.write(frame(RESULT, canonicalJson({
         command: "pair_begin",
         expiresAt: "1786271130",
@@ -511,6 +517,12 @@ async function main(capability) {
       continue;
     }
     if (activation.command === "invitation_create") {
+      if (canonicalJson(activation.descriptor).toString("utf8") !== canonicalJson({
+        displayName: "Studio Host",
+        platform: { arch: "arm64", os: "darwin" }
+      }).toString("utf8")) {
+        throw new Error("invitation_create omitted or changed the authenticated device descriptor");
+      }
       socket.write(frame(RESULT, canonicalJson({
         command: "invitation_create",
         expiresAt: "1786271130",
