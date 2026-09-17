@@ -462,6 +462,17 @@ describe("host remote-access lifecycle service", () => {
       actor,
       Buffer.alloc(32, 0x33).toString("base64url")
     )).resolves.toMatchObject({ shortCode: "01AB-CDEF" });
+    expect(supervisor.managementCalls[0]).toEqual({
+      command: "invitation_create",
+      input: [
+        actor,
+        Buffer.alloc(32, 0x33).toString("base64url"),
+        {
+          displayName: "Discord Waifus Host",
+          platform: { os: "darwin", arch: "arm64" }
+        }
+      ]
+    });
     await expect(remote.listPairingRequests(requestActor))
       .resolves.toEqual({ version: 1, requests: [] });
     await expect(remote.cancelInvitation(

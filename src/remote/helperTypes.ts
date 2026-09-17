@@ -114,6 +114,13 @@ export type HelperDeviceRevocationRecovery = z.infer<
 
 export type HelperIdentityStatus = z.infer<typeof HelperIdentityStatusSchema>;
 
+export const HelperDeviceDescriptorSchema = z.object({
+  displayName: DeviceDisplayNameSchema,
+  platform: HelperTargetSchema
+}).strict();
+
+export type HelperDeviceDescriptor = z.infer<typeof HelperDeviceDescriptorSchema>;
+
 export const HelperActivationErrorCodeSchema = z.enum([
   "activation_rejected",
   "activation_unavailable",
@@ -329,7 +336,11 @@ export type AuthenticatedHelperClient = {
   beginActivation: (operationId: string) => Promise<HelperActivationStart>;
   pollActivation: (operationId: string) => Promise<HelperActivationPoll>;
   cancelActivation: (operationId: string) => Promise<HelperActivationCancel>;
-  beginPair: (operationId: string, input: PairStartInput) => Promise<HelperPairStart>;
+  beginPair: (
+    operationId: string,
+    input: PairStartInput,
+    descriptor: HelperDeviceDescriptor
+  ) => Promise<HelperPairStart>;
   pollPair: (operationId: string) => Promise<HelperPairPoll>;
   cancelPair: (operationId: string) => Promise<HelperPairCancel>;
   consumeCompletedPair: (operationId: string) => Promise<HelperCompletedPair>;
@@ -340,7 +351,8 @@ export type AuthenticatedHelperClient = {
   registerGatewayLaunch: (gatewayLaunchId: string, expiresAt: string) => Promise<void>;
   createInvitation: (
     actor: HelperConfirmedAdminActor,
-    idempotencyKey: string
+    idempotencyKey: string,
+    descriptor: HelperDeviceDescriptor
   ) => Promise<PairInvitationV1>;
   cancelInvitation: (
     invitationId: string,

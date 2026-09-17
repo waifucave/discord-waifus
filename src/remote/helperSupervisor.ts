@@ -43,6 +43,7 @@ import {
   type HelperActivationCancel,
   type HelperActivationPoll,
   type HelperActivationStart,
+  type HelperDeviceDescriptor,
   type HelperIdentityStatus,
   type HelperPairStart,
   type HelperPairPoll,
@@ -312,8 +313,12 @@ export class HelperSupervisor {
     return this.#readyClient().cancelActivation(operationId);
   }
 
-  async beginPair(operationId: string, input: PairStartInput): Promise<HelperPairStart> {
-    return this.#readyClient().beginPair(operationId, input);
+  async beginPair(
+    operationId: string,
+    input: PairStartInput,
+    descriptor: HelperDeviceDescriptor
+  ): Promise<HelperPairStart> {
+    return this.#readyClient().beginPair(operationId, input, descriptor);
   }
 
   async pollPair(operationId: string): Promise<HelperPairPoll> {
@@ -369,9 +374,10 @@ export class HelperSupervisor {
 
   async createInvitation(
     actor: HelperConfirmedAdminActor,
-    idempotencyKey: string
+    idempotencyKey: string,
+    descriptor: HelperDeviceDescriptor
   ): Promise<PairInvitationV1> {
-    return this.#readyClient().createInvitation(actor, idempotencyKey);
+    return this.#readyClient().createInvitation(actor, idempotencyKey, descriptor);
   }
 
   async cancelInvitation(

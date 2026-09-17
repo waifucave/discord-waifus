@@ -94,6 +94,7 @@ import {
   HelperActivationPollSchema,
   HelperActivationStartSchema,
   HelperConfirmedAdminActorSchema,
+  HelperDeviceDescriptorSchema,
   HelperDeviceRevocationRecoverySchema,
   HelperIdentityStatusSchema,
   HelperRequestActorSchema,
@@ -108,6 +109,7 @@ import {
   type HelperPairCancel,
   type HelperCompletedPair,
   type HelperConfirmedAdminActor,
+  type HelperDeviceDescriptor,
   type HelperDeviceRevocationRecovery,
   type HelperLaunch,
   type HelperLaunchRequest,
@@ -1302,12 +1304,14 @@ class ProcessHelperClient implements AuthenticatedHelperClient {
 
   async beginPair(
     operationIdValue: string,
-    inputValue: PairStartInput
+    inputValue: PairStartInput,
+    descriptorValue: HelperDeviceDescriptor
   ): Promise<HelperPairStart> {
     this.#requireRemotePairing();
     const operationId = Base64Url32BytesSchema.parse(operationIdValue);
     const result = await this.#command({
       command: "pair_begin",
+      descriptor: HelperDeviceDescriptorSchema.parse(descriptorValue),
       operationId,
       input: PairStartInputSchema.parse(inputValue)
     }, PairBeginWireSchema, "pair begin RESULT");
@@ -1430,12 +1434,14 @@ class ProcessHelperClient implements AuthenticatedHelperClient {
 
   async createInvitation(
     actorValue: HelperConfirmedAdminActor,
-    idempotencyKeyValue: string
+    idempotencyKeyValue: string,
+    descriptorValue: HelperDeviceDescriptor
   ): Promise<PairInvitationV1> {
     this.#requireHostManagement();
     const result = await this.#command({
       command: "invitation_create",
       actor: HelperConfirmedAdminActorSchema.parse(actorValue),
+      descriptor: HelperDeviceDescriptorSchema.parse(descriptorValue),
       idempotencyKey: Base64Url32BytesSchema.parse(idempotencyKeyValue)
     }, InvitationCreateWireSchema, "invitation create RESULT");
     return PairInvitationV1Schema.parse({
