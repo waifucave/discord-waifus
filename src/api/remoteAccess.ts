@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import {
@@ -42,6 +43,7 @@ import {
 import {
   HelperCommandError,
   HelperIdentityResetError,
+  HelperPairingApprovalRequestBindingSchema,
   HelperSupervisorError
 } from "../remote/helperTypes.js";
 import {
@@ -53,6 +55,7 @@ import {
   afterInternalResponseDrained,
   getInternalDispatchContext
 } from "./internalDispatch.js";
+import { canonicalMutationBodyBytes } from "./mutations.js";
 
 const ActivationParamsSchema = z.object({
   activationOperationId: ActivationOperationIdSchema
@@ -137,6 +140,37 @@ function confirmedAdminActor(request: FastifyRequest): ConfirmedAdminActor {
     gatewayLaunchId: principal.browserContext.gatewayLaunchId,
     browserSessionId: principal.browserContext.browserSessionId
   };
+}
+
+function pairingApprovalRequestBinding(
+  request: FastifyRequest,
+  input: unknown
+) {
+  const context = request.principal.browserContext;
+  if (!context) {
+    throw new ApiError(
+      403,
+      "A helper-verified browser session is required for this administrative action.",
+      undefined,
+      "ConfirmedBrowserRequired"
+    );
+  }
+  const delegation = getInternalDispatchContext()?.delegation;
+  return HelperPairingApprovalRequestBindingSchema.parse({
+    confirmationRequestNonce: context.requestNonce,
+    confirmationMethod: context.method,
+    confirmationTarget: context.canonicalTarget,
+    ...(delegation
+      ? {
+          assistantProvenance: {
+            ...delegation,
+            confirmedActionPayloadHash: createHash("sha256")
+              .update(canonicalMutationBodyBytes(input))
+              .digest("base64url")
+          }
+        }
+      : {})
+  });
 }
 
 function requiredService(service: RemoteAccessService | undefined): RemoteAccessService {
@@ -440,7 +474,8 @@ export function registerRemoteAccessRoutes(
       await requiredService(service).approvePairingRequest(
         params.requestId,
         input,
-        confirmedAdminActor(request)
+        confirmedAdminActor(request),
+        pairingApprovalRequestBinding(request, input)
       );
       return reply.status(202).send(acceptedOperation(request));
     } catch (error) {

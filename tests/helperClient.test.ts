@@ -295,6 +295,11 @@ describe("protected helper process client", () => {
       sasIndices: [1, 23, 456, 789, 1023] as [number, number, number, number, number],
       sasFingerprint: "a1b2c3d4e5f6"
     };
+    const approvalRequestBinding = {
+      confirmationRequestNonce: Buffer.alloc(16, 0x27).toString("base64url"),
+      confirmationMethod: "POST" as const,
+      confirmationTarget: `/api/remote-access/pairing-requests/${requestId}/approve`
+    };
 
     await expect(client.createInvitation(
       actor,
@@ -307,7 +312,7 @@ describe("protected helper process client", () => {
     await expect(client.cancelInvitation(invitationId, actor)).resolves.toBeUndefined();
     await expect(client.listPairingRequests(requestActor))
       .resolves.toEqual({ version: 1, requests: [] });
-    await expect(client.approvePairingRequest(requestId, approval, actor))
+    await expect(client.approvePairingRequest(requestId, approval, actor, approvalRequestBinding))
       .resolves.toBeUndefined();
     await expect(client.rejectPairingRequest(requestId, requestActor))
       .resolves.toBeUndefined();

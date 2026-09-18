@@ -551,6 +551,16 @@ async function main(capability) {
       continue;
     }
     if (activation.command === "pairing_request_approve") {
+      const binding = activation.requestBinding;
+      const expectedTarget = `/api/remote-access/pairing-requests/${activation.requestId}/approve`;
+      if (
+        !binding
+        || Buffer.from(binding.confirmationRequestNonce ?? "", "base64url").byteLength !== 16
+        || binding.confirmationMethod !== "POST"
+        || binding.confirmationTarget !== expectedTarget
+      ) {
+        throw new Error("pairing approval request binding is invalid");
+      }
       socket.write(frame(RESULT, canonicalJson({
         command: "pairing_request_approve",
         ok: true,
