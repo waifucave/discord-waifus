@@ -97,6 +97,7 @@ import {
   HelperDeviceDescriptorSchema,
   HelperDeviceRevocationRecoverySchema,
   HelperIdentityStatusSchema,
+  HelperPairingApprovalRequestBindingSchema,
   HelperRequestActorSchema,
   parseHelperRuntimeStatus,
   type AuthenticatedHelperClient,
@@ -104,6 +105,7 @@ import {
   type HelperActivationPoll,
   type HelperActivationStart,
   type HelperIdentityStatus,
+  type HelperPairingApprovalRequestBinding,
   type HelperPairStart,
   type HelperPairPoll,
   type HelperPairCancel,
@@ -1481,14 +1483,24 @@ class ProcessHelperClient implements AuthenticatedHelperClient {
   async approvePairingRequest(
     requestIdValue: string,
     inputValue: ApprovePairingInputV1,
-    actorValue: HelperConfirmedAdminActor
+    actorValue: HelperConfirmedAdminActor,
+    requestBindingValue: HelperPairingApprovalRequestBinding
   ): Promise<void> {
     this.#requireHostManagement();
+    const requestId = Base64Url16BytesSchema.parse(requestIdValue);
+    const requestBinding = HelperPairingApprovalRequestBindingSchema.parse(requestBindingValue);
+    if (
+      requestBinding.confirmationTarget
+      !== `/api/remote-access/pairing-requests/${requestId}/approve`
+    ) {
+      throw new TypeError("Pairing approval request binding target does not match its request ID.");
+    }
     await this.#command({
       command: "pairing_request_approve",
-      requestId: Base64Url16BytesSchema.parse(requestIdValue),
+      requestId,
       input: ApprovePairingInputV1Schema.parse(inputValue),
-      actor: HelperConfirmedAdminActorSchema.parse(actorValue)
+      actor: HelperConfirmedAdminActorSchema.parse(actorValue),
+      requestBinding
     }, PairingRequestApproveWireSchema, "pairing request approve RESULT");
   }
 

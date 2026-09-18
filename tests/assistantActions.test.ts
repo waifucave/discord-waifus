@@ -9,7 +9,8 @@ import {
   AssistantActionTooLargeError,
   AssistantActionUnsafeContentError,
   MAX_ASSISTANT_ACTION_BYTES,
-  MAX_ASSISTANT_ACTIONS_PER_OWNER
+  MAX_ASSISTANT_ACTIONS_PER_OWNER,
+  assistantActionPayloadHash
 } from "../src/api/assistant/actions.js";
 import { createApiServer } from "../src/api/server.js";
 import { dispatchInternal } from "../src/api/internalDispatch.js";
@@ -109,7 +110,12 @@ type FakeRemoteState = {
   authorized: boolean;
   enabled: boolean;
   updateInputs: unknown[];
-  approvalInputs: Array<{ requestId: string; input: unknown; actor: unknown }>;
+  approvalInputs: Array<{
+    requestId: string;
+    input: unknown;
+    actor: unknown;
+    requestBinding: unknown;
+  }>;
   invitationActors: unknown[];
   pairingRequest: ReturnType<typeof pairingRequest> | undefined;
   cancellationActors?: unknown[];
@@ -204,8 +210,18 @@ function fakeRemoteAccess(state: FakeRemoteState): RemoteAccessService {
       version: 1,
       requests: state.pairingRequest ? [state.pairingRequest] : []
     }),
-    approvePairingRequest: async (requestId: string, input: unknown, actor: unknown) => {
-      state.approvalInputs.push({ requestId, input: structuredClone(input), actor: structuredClone(actor) });
+    approvePairingRequest: async (
+      requestId: string,
+      input: unknown,
+      actor: unknown,
+      requestBinding: unknown
+    ) => {
+      state.approvalInputs.push({
+        requestId,
+        input: structuredClone(input),
+        actor: structuredClone(actor),
+        requestBinding: structuredClone(requestBinding)
+      });
       state.pairingRequest = undefined;
     },
     rejectPairingRequest: async (requestId: string) => {
@@ -854,8 +870,31 @@ describe("assistant action API", () => {
         trustEpoch: "5",
         gatewayLaunchId: bytes32(0x33),
         browserSessionId: bytes32(0x34)
+      },
+      requestBinding: {
+        confirmationRequestNonce: expect.any(String),
+        confirmationMethod: "POST",
+        confirmationTarget: `/api/remote-access/pairing-requests/${pending.requestId}/approve`,
+        assistantProvenance: {
+          conversationId,
+          toolCallId: expect.any(String),
+          pendingActionId: actionId,
+          confirmedActionPayloadHash: assistantActionPayloadHash({
+            invitationGeneration: pending.invitationGeneration,
+            remoteIdentityBundleHash: pending.remoteIdentityBundleHash,
+            transcriptHash: pending.transcriptHash,
+            channelBinding: pending.channelBinding,
+            sasIndices: pending.sasIndices,
+            sasFingerprint: pending.sasFingerprint
+          })
+        }
       }
     });
+    expect(Buffer.from(
+      (state.approvalInputs[0]?.requestBinding as { confirmationRequestNonce: string })
+        .confirmationRequestNonce,
+      "base64url"
+    )).toHaveLength(16);
     const auditJson = JSON.stringify(await auditStore.list());
     for (const value of forbidden) expect(auditJson).not.toContain(value);
   });

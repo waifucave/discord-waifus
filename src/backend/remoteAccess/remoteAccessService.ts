@@ -55,6 +55,7 @@ import {
   HelperConfirmedAdminActorSchema,
   HelperDeviceDescriptorSchema,
   HelperDeviceRevocationRecoverySchema,
+  HelperPairingApprovalRequestBindingSchema,
   HelperRequestActorSchema,
   HelperSupervisorError,
   type HelperActivationCancel,
@@ -64,6 +65,7 @@ import {
   type HelperConfirmedAdminActor,
   type HelperDeviceDescriptor,
   type HelperDeviceRevocationRecovery,
+  type HelperPairingApprovalRequestBinding,
   type HelperRequestActor,
   type HelperSupervisorSnapshot
 } from "../../remote/helperTypes.js";
@@ -116,7 +118,8 @@ export type HelperSupervisorController = {
   approvePairingRequest?: (
     requestId: string,
     input: ApprovePairingInputV1,
-    actor: ConfirmedAdminActor
+    actor: ConfirmedAdminActor,
+    requestBinding: HelperPairingApprovalRequestBinding
   ) => Promise<void>;
   rejectPairingRequest?: (
     requestId: string,
@@ -547,18 +550,28 @@ export class RemoteAccessService {
   async approvePairingRequest(
     requestId: string,
     inputValue: ApprovePairingInputV1,
-    actorValue: ConfirmedAdminActor
+    actorValue: ConfirmedAdminActor,
+    requestBindingValue: HelperPairingApprovalRequestBinding
   ): Promise<void> {
     this.#requireActiveManagement();
     const actor = await this.#authorizeConfirmedActor(actorValue);
     const input = ApprovePairingInputV1Schema.parse(inputValue);
+    const requestBinding = HelperPairingApprovalRequestBindingSchema.parse(requestBindingValue);
+    const parsedRequestId = Base64Url16BytesSchema.parse(requestId);
+    if (
+      requestBinding.confirmationTarget
+      !== `/api/remote-access/pairing-requests/${parsedRequestId}/approve`
+    ) {
+      throw new TypeError("Pairing approval request binding target does not match its request ID.");
+    }
     const method = this.#options.supervisor.approvePairingRequest;
     if (!method) throw new RemoteAccessServiceUnavailableError();
     await method.call(
       this.#options.supervisor,
-      Base64Url16BytesSchema.parse(requestId),
+      parsedRequestId,
       input,
-      actor
+      actor,
+      requestBinding
     );
   }
 

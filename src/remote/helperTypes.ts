@@ -32,6 +32,7 @@ import {
   Base64Url16BytesSchema,
   Base64Url32BytesSchema,
   CapabilityNameListSchema,
+  CanonicalTargetSchema,
   ComponentHelloSchema,
   DeviceIdSchema,
   PrincipalStableIdSchema,
@@ -292,6 +293,27 @@ export const HelperConfirmedAdminActorSchema = z.discriminatedUnion("kind", [
 
 export type HelperConfirmedAdminActor = z.infer<typeof HelperConfirmedAdminActorSchema>;
 
+const HelperApprovalIdentifierSchema = z.string()
+  .min(1)
+  .max(128)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9:._-]*$/u);
+
+export const HelperPairingApprovalRequestBindingSchema = z.object({
+  confirmationRequestNonce: Base64Url16BytesSchema,
+  confirmationMethod: z.literal("POST"),
+  confirmationTarget: CanonicalTargetSchema,
+  assistantProvenance: z.object({
+    conversationId: HelperApprovalIdentifierSchema,
+    toolCallId: HelperApprovalIdentifierSchema.optional(),
+    pendingActionId: HelperApprovalIdentifierSchema.optional(),
+    confirmedActionPayloadHash: Base64Url32BytesSchema
+  }).strict().optional()
+}).strict();
+
+export type HelperPairingApprovalRequestBinding = z.infer<
+  typeof HelperPairingApprovalRequestBindingSchema
+>;
+
 export type VerifiedHelperSelection = {
   readonly binaryPath: string;
   readonly helperVersion: string;
@@ -364,7 +386,8 @@ export type AuthenticatedHelperClient = {
   approvePairingRequest: (
     requestId: string,
     input: ApprovePairingInputV1,
-    actor: HelperConfirmedAdminActor
+    actor: HelperConfirmedAdminActor,
+    requestBinding: HelperPairingApprovalRequestBinding
   ) => Promise<void>;
   rejectPairingRequest: (
     requestId: string,

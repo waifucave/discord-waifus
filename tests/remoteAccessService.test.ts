@@ -488,8 +488,24 @@ describe("host remote-access lifecycle service", () => {
       sasIndices: [1, 23, 456, 789, 1023] as [number, number, number, number, number],
       sasFingerprint: "a1b2c3d4e5f6"
     };
-    await expect(remote.approvePairingRequest(pairingRequestId, approval, actor))
+    const approvalRequestBinding = {
+      confirmationRequestNonce: Buffer.alloc(16, 0x27).toString("base64url"),
+      confirmationMethod: "POST" as const,
+      confirmationTarget: `/api/remote-access/pairing-requests/${pairingRequestId}/approve`
+    };
+    await expect(remote.approvePairingRequest(
+      pairingRequestId,
+      approval,
+      actor,
+      approvalRequestBinding
+    ))
       .resolves.toBeUndefined();
+    await expect(remote.approvePairingRequest(
+      pairingRequestId,
+      approval,
+      actor,
+      { ...approvalRequestBinding, confirmationTarget: "/api/remote-access/pairing-requests/wrong/approve" }
+    )).rejects.toThrow("does not match its request ID");
     await expect(remote.rejectPairingRequest(pairingRequestId, requestActor))
       .resolves.toBeUndefined();
     await expect(remote.listDevices()).resolves.toEqual({ version: 1, devices: [] });

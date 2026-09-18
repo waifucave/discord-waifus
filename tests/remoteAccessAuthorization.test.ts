@@ -50,7 +50,8 @@ function confirmedPrincipal(method: "POST" | "DELETE", canonicalTarget: string) 
 
 function fakeService(
   onCreateInvitation?: (actor: unknown, idempotencyKey: string) => void,
-  onRevocation?: (phase: "prepared" | "finished") => void
+  onRevocation?: (phase: "prepared" | "finished") => void,
+  onApproval?: (requestId: string, input: unknown, actor: unknown, requestBinding: unknown) => void
 ) {
   return {
     getStatus: async () => ({
@@ -130,7 +131,12 @@ function fakeService(
     },
     cancelInvitation: async () => {},
     listPairingRequests: async () => ({ version: 1, requests: [] }),
-    approvePairingRequest: async () => {},
+    approvePairingRequest: async (
+      requestId: string,
+      input: unknown,
+      actor: unknown,
+      requestBinding: unknown
+    ) => onApproval?.(requestId, input, actor, requestBinding),
     rejectPairingRequest: async () => {},
     listDevices: async () => ({ version: 1, devices: [] }),
     renameDevice: async (deviceId: string, input: { displayName: string }) => ({
@@ -346,7 +352,12 @@ describe("remote-access route authorization", () => {
   });
 
   it("validates pairing approval and device rename bodies with strict shared schemas", async () => {
-    const app = await makeApp();
+    const approvals: unknown[][] = [];
+    const app = await makeApp(true, fakeService(
+      undefined,
+      undefined,
+      (...input) => approvals.push(input)
+    ));
     const requestId = bytes16(0x45);
     const approvalPath = `/api/remote-access/pairing-requests/${requestId}/approve`;
     const invalidApproval = await dispatchInternal(
@@ -362,6 +373,44 @@ describe("remote-access route authorization", () => {
     );
     expect(invalidApproval.statusCode).toBe(400);
     expect(invalidApproval.json()).toMatchObject({ error: "ValidationError" });
+
+    const approval = {
+      invitationGeneration: "1",
+      remoteIdentityBundleHash: bytes32(0x71),
+      transcriptHash: bytes32(0x72),
+      channelBinding: bytes32(0x73),
+      sasIndices: [1, 23, 456, 789, 1023],
+      sasFingerprint: "a1b2c3d4e5f6"
+    };
+    const approved = await dispatchInternal(
+      app,
+      confirmedPrincipal("POST", approvalPath),
+      undefined,
+      {
+        method: "POST",
+        url: approvalPath,
+        headers: { "idempotency-key": bytes32(0x67) },
+        payload: approval
+      }
+    );
+    expect(approved.statusCode).toBe(202);
+    expect(approvals).toEqual([[
+      requestId,
+      approval,
+      {
+        kind: "remote_device",
+        stableId: "remote:travel-mac",
+        deviceId: "travel-mac",
+        trustEpoch: "3",
+        gatewayLaunchId: bytes32(0x33),
+        browserSessionId: bytes32(0x34)
+      },
+      {
+        confirmationRequestNonce: bytes16(0x35),
+        confirmationMethod: "POST",
+        confirmationTarget: approvalPath
+      }
+    ]]);
 
     const renamed = await dispatchInternal(app, principal(), undefined, {
       method: "PUT",

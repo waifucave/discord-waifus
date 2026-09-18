@@ -48,6 +48,7 @@ import {
   type HelperPairStart,
   type HelperPairPoll,
   type HelperPairCancel,
+  type HelperPairingApprovalRequestBinding,
   type HelperCompletedPair,
   type HelperConfirmedAdminActor,
   type HelperDeviceRevocationRecovery,
@@ -396,9 +397,10 @@ export class HelperSupervisor {
   async approvePairingRequest(
     requestId: string,
     input: ApprovePairingInputV1,
-    actor: HelperConfirmedAdminActor
+    actor: HelperConfirmedAdminActor,
+    requestBinding: HelperPairingApprovalRequestBinding
   ): Promise<void> {
-    await this.#readyClient().approvePairingRequest(requestId, input, actor);
+    await this.#readyClient().approvePairingRequest(requestId, input, actor, requestBinding);
   }
 
   async rejectPairingRequest(
