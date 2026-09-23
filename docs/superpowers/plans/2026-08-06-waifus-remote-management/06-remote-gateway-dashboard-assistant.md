@@ -1237,5 +1237,6 @@ waifus remote stop [--data-root PATH]
    manifest is deliberately reviewed.
 5. Real signed-binary and network-roaming tests depend on the direct-only fork feasibility gate and
    private helper/coordination implementation. Fake-helper success is not direct-connectivity proof.
-6. Per-OS CI runners/signing/notarization credentials and the explicit user-authorized publication
-   sequence belong to the packaging/release part; never infer those credentials or authority here.
+6. Per-OS CI runners, protected Ed25519 helper-manifest signing credentials, unsigned-helper OS
+   execution-policy tests, and the explicit user-authorized publication sequence belong to the
+   packaging/release part; never infer those credentials or authority here.

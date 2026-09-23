@@ -8,7 +8,15 @@
 
 **Depends on:** every functional/security/platform gate in plans 01–06
 
-**Goal:** Produce six signed target-specific helper packages, prove source and npm installs use identical bytes, roll out Worker → helper → Discord Waifus in a reversible order, and independently verify the public result without ever releasing a relay-capable or unverified helper.
+**Goal:** Produce six manifest-signed target-specific helper packages, prove source and npm installs use identical bytes, roll out Worker → helper → Discord Waifus in a reversible order, and independently verify the public result without ever releasing a relay-capable or unverified helper.
+
+**2026-09-23 user decision:** Keep the npm-installed command-line shape. Do not require Apple
+Developer ID/notarization or Windows Authenticode for the native helper. The pinned Ed25519 release
+manifest and exact executable hash remain mandatory before launch. Native Keychain/DPAPI secret
+storage is independent of OS code signing and remains in scope. Test unsigned npm installation on
+real macOS and Windows targets without telling users to disable Gatekeeper or Smart App Control;
+some managed or Smart App Control-enforced devices may block unsigned executables, which must be
+reported honestly rather than bypassed.
 
 ## Locked Release Model
 
@@ -18,9 +26,9 @@
 
 | npm package | Go target | npm os | npm cpu | Extra runtime check |
 |---|---|---|---|---|
-| **@waifucave/ts-connect-darwin-arm64** | darwin/arm64 | darwin | arm64 | signed/notarized Mach-O |
-| **@waifucave/ts-connect-win32-x64** | windows/amd64 | win32 | x64 | Authenticode |
-| **@waifucave/ts-connect-win32-arm64** | windows/arm64 | win32 | arm64 | Authenticode |
+| **@waifucave/ts-connect-darwin-arm64** | darwin/arm64 | darwin | arm64 | unsigned OS binary; signed-manifest/hash verification |
+| **@waifucave/ts-connect-win32-x64** | windows/amd64 | win32 | x64 | unsigned OS binary; signed-manifest/hash verification |
+| **@waifucave/ts-connect-win32-arm64** | windows/arm64 | win32 | arm64 | unsigned OS binary; signed-manifest/hash verification |
 | **@waifucave/ts-connect-linux-x64** | linux/amd64 | linux | x64 | static executable |
 | **@waifucave/ts-connect-linux-arm64** | linux/arm64 | linux | arm64 | static executable |
 | **@waifucave/ts-connect-linux-armv7** | linux/arm/v7 | linux | arm | signed manifest says GOARM 7 |
@@ -47,7 +55,7 @@
 Local builds, dry runs, package tarballs, and test signatures do not authorize:
 
 - Creating/reconfiguring npm packages or trusted publishers.
-- Using production signing/notarization credentials.
+- Using the production Ed25519 helper-manifest signing key.
 - Pushing helper/fork/root tags.
 - Changing npm dist-tags.
 - Deploying staging/production Worker changes.
@@ -103,10 +111,9 @@ Ed25519 signs the exact canonical **manifest.json** bytes, not a parsed/reserial
 4. Verify package name/target/version/protocol/capabilities/release sequence.
 5. Hash the binary and notices and compare.
 6. Apply the minimum helper/release-sequence floor.
-7. Check platform signature where applicable.
-8. Launch **version --json** and require embedded metadata to equal the signed manifest.
+7. Launch **version --json** and require embedded metadata to equal the signed manifest.
 
-Unknown keys, missing overlap signature, wrong target, malformed canonical JSON, invalid hash/platform signature, incompatible capability, or downgrade fails before execution.
+Unknown keys, missing overlap signature, wrong target, malformed canonical JSON, invalid hash, incompatible capability, or downgrade fails before execution.
 
 ## Release-Key Rotation
 
@@ -131,7 +138,8 @@ their historical window remain verifiable indefinitely.
 
 The private keys are protected GitHub Environment secrets on an approval-gated release environment or a stronger signing service selected before setup. They never enter the repository, package, log, artifact cache, or unprotected PR job. Key compromise triggers new key/root releases; an existing npm package is never silently replaced.
 
-Apple Developer ID/notary and Windows Authenticode identities rotate independently. Their certificate identifiers and timestamp service are recorded in the release evidence without exposing private material.
+The Ed25519 helper-manifest signing key is distinct from both Worker certificate keys. No OS
+code-signing identity or notarization credential is required for this npm command-line release.
 
 ## Compatibility Window
 
@@ -232,7 +240,7 @@ artifacts; no draft manifest is release-signed and no publication occurs.
 
 **Suggested commit:** **build: produce pinned direct-only helper artifacts**
 
-## Task 3: Provision approval-gated signing and notarization
+## Task 3: Provision approval-gated helper-manifest signing
 
 **External setup — requires user approval before each provider/account mutation.**
 
@@ -259,29 +267,23 @@ artifacts; no draft manifest is release-signed and no publication occurs.
   record the pushed Discord Waifus commit SHA in protected signing evidence. Private signing/
   package CI checks out that exact public commit. No Task 4 package smoke or manifest signing starts
   until the reviewed fingerprint and commit SHA match independently.
-- [ ] Provision Apple Developer ID Application signing and App Store Connect notary credentials.
-- [ ] Provision a Windows Authenticode code-signing identity usable on protected x64 and ARM64 runners, with RFC 3161 timestamping.
 - [ ] Restrict signing jobs to protected tags, clean exact commits, approved GitHub Environment, and non-fork events.
 - [ ] Before signing the first helper manifests, lock the exact planned Discord Waifus beta SemVer
   and reviewed maximum-exclusive compatible app version. Put those exact bounds in all six
   manifests; the later root release must use the already recorded SemVer rather than choosing a new
   one after helpers are immutable.
-- [ ] macOS ARM64:
-  - Sign Mach-O with hardened runtime and trusted timestamp.
-  - Submit a ZIP containing the signed binary to **notarytool** and wait for acceptance.
-  - Validate the extracted binary with **codesign --verify --strict --verbose=2** and **spctl -a -vv -t exec**.
-- [ ] Windows x64/ARM64:
-  - Authenticode-sign with SHA-256 file digest and RFC 3161 timestamp.
-  - Verify with **signtool verify /pa /all /v** and PowerShell Authenticode status.
-- [ ] Linux: detached manifest signature is the executable integrity boundary.
-- [ ] Only after every platform binary has its final byte sequence, regenerate each canonical
-  manifest from that final binary hash/size and final notice inventory, then Ed25519-sign the exact
-  canonical manifest bytes. Never sign a manifest produced before code signing/timestamping.
-- [ ] Re-run platform verification, binary hash, manifest signature, and embedded-metadata checks
+- [ ] On all six targets, the detached Ed25519 manifest signature and pinned binary hash are the
+  executable integrity boundary. Verify the ordinary npm-installed helper can run on clean real
+  macOS and Windows machines without disabling OS protections; record any Gatekeeper, Smart App
+  Control, or managed-policy refusal as a compatibility limitation.
+- [ ] Only after every platform binary has its final byte sequence, generate each canonical
+  manifest from that binary hash/size and final notice inventory, then Ed25519-sign the exact
+  canonical manifest bytes. Never modify a binary after its manifest is signed.
+- [ ] Re-run binary hash, manifest signature, and embedded-metadata checks
   against the same immutable final files that Task 4 will pack.
-- [ ] Delete signing workspaces and revoke ephemeral credentials after the job.
+- [ ] Delete signing workspaces and revoke ephemeral manifest-signing credentials after the job.
 
-Expected: platform verification and detached-manifest verification pass; a one-byte binary/manifest mutation fails.
+Expected: detached-manifest verification passes; a one-byte binary/manifest mutation fails.
 
 **Suggested commit:** **ci: add approval-gated helper signing**
 
@@ -359,7 +361,7 @@ publisher setup remains an external action requiring explicit user approval.
   - name/version/os/cpu/license/dist integrity
   - exact manifest/signature/binary hashes
   - package inventory
-  - detached and platform signatures
+  - detached manifest signatures and binary hashes
   - initial **next** tag and absence of **latest** mutation
 - [ ] Save one immutable approved artifact-set manifest listing every tarball SHA-256, package
   integrity, helper/source/fork/contract commit, Worker protocol range, and release workflow run.
@@ -374,8 +376,8 @@ registry queries still prove **0.1.0** was not published or dist-tagged by this 
 **External Cloudflare and npm actions — separate confirmations required.**
 
 - [ ] Complete plan 04 staging and security gates.
-- [ ] Byte-compare the six immutable signed 0.1.0 tarballs/binaries with the Task 5 staging-tested
-  hashes. Any rebuild, resign, retimestamp, manifest change, or profile-specific byte change returns
+- [ ] Byte-compare the six immutable manifest-signed 0.1.0 tarballs/binaries with the Task 5 staging-tested
+  hashes. Any rebuild, manifest resigning/change, or profile-specific byte change returns
   to Task 5; production testing/publication cannot continue.
 - [ ] Show the exact backward-compatible production Worker deployment, migrations, hash, and rollback.
 - [ ] After approval, deploy production Worker first.
@@ -390,7 +392,7 @@ registry queries still prove **0.1.0** was not published or dist-tagged by this 
   **publish-helper.yml** workflow when npm permits it, then revoke the one-time bootstrap
   credential.
 - [ ] Independently query/download every **next** package and verify name/version/os/cpu/license,
-  registry integrity, approved tarball hash, inventory, detached signature, platform signature,
+  registry integrity, approved tarball hash, inventory, detached manifest signature and binary hash,
   and absence of a **latest** tag.
 - [ ] Re-run the six-target install/activation/pair/direct/roam/revoke smoke against npm downloads,
   not CI-local tarballs.
@@ -501,8 +503,8 @@ Existing direct sessions continue through control-plane rollback when their path
 
 - [ ] Contract, security baseline, fork, helper, coordination, host bridge, gateway/dashboard, assistant, and browser-isolation gates all pass.
 - [ ] Direct-only structural and observed proofs show zero DERP/peer-relay routes, connections, and bytes.
-- [ ] Six public packages are signed, immutable, byte-verified, and tested on real target environments.
-- [ ] Those exact six signed binary hashes passed staging profile 2 and production/default profile
+- [ ] Six public packages are manifest-signed, immutable, byte-verified, and tested on real target environments.
+- [ ] Those exact six manifest-verified binary hashes passed staging profile 2 and production/default profile
   1 without rebuild, with zero inactive-profile/cross-profile/third-origin egress.
 - [ ] Source and npm installs resolve identical helper bytes.
 - [ ] Worker is deployed first and supports the compatibility window.
@@ -521,9 +523,9 @@ These are intentional stop points, not implementation guesses:
    **waifucave-pair-certificate-2026-01** and staging key ID
    **waifucave-pair-staging-certificate-2026-01**, plus the two reviewed public Turnstile site keys.
 3. Approved helper binary distribution license text.
-4. Apple Developer ID/notary identifiers and Windows Authenticode provider/certificate/timestamp details.
-5. Exact protected runner inventory for macOS ARM64, Windows ARM64, Linux ARM64, and Linux ARMv7.
-6. npm scope ownership/trusted-publisher configuration and one-time first-publication method.
-7. The exact Discord Waifus beta SemVer and helper maximum-exclusive app bound, chosen before Task
+4. Exact protected runner inventory for macOS ARM64, Windows ARM64, Linux ARM64, and Linux ARMv7,
+   including unsigned npm-helper launch tests under default OS security settings.
+5. npm scope ownership/trusted-publisher configuration and one-time first-publication method.
+6. The exact Discord Waifus beta SemVer and helper maximum-exclusive app bound, chosen before Task
    3 helper-manifest signing and reused unchanged by the later root release.
-8. User approval for production Worker deployment, helper publication/promotion, root publication, and Intel macOS follow-up issue creation.
+7. User approval for production Worker deployment, helper publication/promotion, root publication, and Intel macOS follow-up issue creation.
