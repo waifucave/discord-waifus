@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { ensureRemoteOnlyLayout } from "../src/config/layout.js";
 import {
   RemoteOriginStore,
+  deriveConnectionShellHostname,
   derivePinnedHostId,
   deriveRemoteOriginHostname
 } from "../src/remote/gateway/originStore.js";
@@ -36,6 +37,16 @@ afterEach(async () => {
 });
 
 describe("remote origin derivation", () => {
+  it("derives a stable connection-shell origin separate from every selected host", () => {
+    const hostId = derivePinnedHostId(Buffer.alloc(32, 0x22));
+    const shell = deriveConnectionShellHostname(seed);
+    expect(shell).toMatch(/^waifus-[a-z2-7]{52}\.localhost$/u);
+    expect(shell).toBe(deriveConnectionShellHostname(seed));
+    expect(shell).not.toBe(deriveConnectionShellHostname(Buffer.alloc(32, 0x12)));
+    expect(shell).not.toBe(deriveRemoteOriginHostname(seed, hostId, "1"));
+    expect(() => deriveConnectionShellHostname(Buffer.alloc(31))).toThrow(/exactly 32 bytes/u);
+  });
+
   it("matches the frozen host-id, uint64, HMAC, and lowercase base32 vector", () => {
     const hostId = derivePinnedHostId(Buffer.alloc(32, 0x22));
     expect(hostId).toBe("L0P6YYCoPxkF_mxNt0A4FcoDxiqqZkVT982je2HcrSI");

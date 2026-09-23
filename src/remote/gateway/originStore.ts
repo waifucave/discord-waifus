@@ -16,6 +16,7 @@ import { remoteStatePaths } from "../paths.js";
 
 const HOST_ID_DOMAIN = Buffer.from("waifus/host-id/v1", "ascii");
 const ORIGIN_DOMAIN = Buffer.from("waifus/origin/v1", "ascii");
+const CONNECTION_SHELL_ORIGIN_DOMAIN = Buffer.from("waifus/connection-shell-origin/v1", "ascii");
 const BASE32_ALPHABET = "abcdefghijklmnopqrstuvwxyz234567";
 const originStateLocks = new ResourceLockManager();
 
@@ -172,6 +173,16 @@ export function deriveRemoteOriginHostname(
     .digest();
   const label = encodeBase32(digest);
   if (label.length !== 52) throw new Error("Remote origin digest did not encode to 52 characters.");
+  return `waifus-${label}.localhost`;
+}
+
+export function deriveConnectionShellHostname(localOriginSeed: Uint8Array): string {
+  const seed = validate32Bytes(localOriginSeed, "Local origin seed");
+  const digest = createHmac("sha256", seed)
+    .update(CONNECTION_SHELL_ORIGIN_DOMAIN)
+    .digest();
+  const label = encodeBase32(digest);
+  if (label.length !== 52) throw new Error("Connection-shell digest did not encode to 52 characters.");
   return `waifus-${label}.localhost`;
 }
 
