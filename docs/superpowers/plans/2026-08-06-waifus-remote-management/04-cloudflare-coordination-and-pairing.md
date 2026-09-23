@@ -713,9 +713,12 @@ increments in one local transaction so a later quota or semantic failure commits
 
 Worker signing uses Ed25519. Each profile uses only the exact certificate key ID in the profile
 table; production initially uses **waifucave-pair-certificate-2026-01**. The helper embeds both
-profile-separated Worker public-key rings; private
-signing keys exist only as protected Cloudflare/GitHub deployment secrets. The actual initial
-public-key bytes/fingerprint are a deployment input and must be pinned before a helper release.
+profile-separated Worker public-key rings; live private signing keys exist only as protected
+Cloudflare/GitHub deployment secrets. The owner keeps a separate recovery copy of each production
+private key in Apple Passwords, outside Git, CI logs, and release artifacts. Confirm that recovery
+entry is saved and can be read back before activating the corresponding live secret. The actual
+initial public-key bytes/fingerprint are a deployment input and must be pinned before a helper
+release.
 
 1. Helper sends **POST /v1/activation/challenges** with only a 32-byte random activation ID and 32-byte helper nonce in strict JSON; installation public key, protocol, timestamp, request nonce, and installation-key signature live only in the exact pre-certificate headers. That activation ID is the challenge ID; the Worker stores only its keyed hash.
 2. Production returns exactly `https://pair.waifucave.com/activate#<activationId>` and staging
