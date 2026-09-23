@@ -58,7 +58,6 @@ export type ResolveTsConnectBinaryOptions = Readonly<{
   trustRoots: readonly HelperReleaseTrustEntryV1[];
   resolvePackageJson?: (packageName: string) => string | Promise<string>;
   probeBinary?: (binaryPath: string) => Promise<HelperEmbeddedBuildInfoV1>;
-  verifyPlatformSignature?: (binaryPath: string, target: HelperTarget) => Promise<void>;
 }>;
 
 function unsupported(platform: NodeJS.Platform, arch: NodeJS.Architecture): never {
@@ -204,36 +203,6 @@ async function signaturesFromPackage(
   return signatures;
 }
 
-async function defaultPlatformSignatureVerifier(
-  binaryPath: string,
-  target: HelperTarget
-): Promise<void> {
-  if (target.os === "darwin") {
-    await execFileAsync("/usr/bin/codesign", ["--verify", "--strict", "--verbose=2", binaryPath], {
-      timeout: 15_000,
-      windowsHide: true
-    });
-    await execFileAsync("/usr/sbin/spctl", ["--assess", "--verbose=2", "--type", "execute", binaryPath], {
-      timeout: 30_000,
-      windowsHide: true
-    });
-    return;
-  }
-  if (target.os === "win32") {
-    await execFileAsync("powershell.exe", [
-      "-NoLogo",
-      "-NoProfile",
-      "-NonInteractive",
-      "-Command",
-      "$signature=Get-AuthenticodeSignature -LiteralPath $env:WAIFUS_HELPER_VERIFY_PATH; if ($signature.Status -ne 'Valid') { exit 1 }"
-    ], {
-      env: { ...process.env, WAIFUS_HELPER_VERIFY_PATH: binaryPath },
-      timeout: 20_000,
-      windowsHide: true
-    });
-  }
-}
-
 async function defaultBinaryProbe(binaryPath: string): Promise<HelperEmbeddedBuildInfoV1> {
   const result = await execFileAsync(binaryPath, ["version", "--json"], {
     encoding: "utf8",
@@ -340,7 +309,9 @@ export async function resolveTsConnectBinary(
       const binaryInfo = await lstat(binaryPath);
       if ((binaryInfo.mode & 0o111) === 0) throw new Error("Helper binary is not executable.");
     }
-    await (options.verifyPlatformSignature ?? defaultPlatformSignatureVerifier)(binaryPath, target);
+    // The signed manifest and its pinned binary hash are the cross-platform
+    // execution boundary. We do not require OS code signing here; a device's
+    // own execution policy may still refuse an unsigned binary.
     const embeddedBuildInfo = await (options.probeBinary ?? defaultBinaryProbe)(binaryPath);
     const verified = verifyHelperPackageManifest({
       manifestBytes,

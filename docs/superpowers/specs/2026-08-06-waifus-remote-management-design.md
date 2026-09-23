@@ -177,7 +177,8 @@ Owns:
 - The direct-only application service built on the public fork.
 - The ordinary HTTPS/hibernating-WebSocket protocol used with `pair.waifucave.com`.
 - Cloudflare Worker and Durable Object implementation.
-- Platform build, signing, notarization, and binary-package publishing workflows.
+- Platform builds, Ed25519 release-manifest signing, and binary-package publishing workflows;
+  Apple notarization and Windows Authenticode are not required for the npm CLI helper.
 
 The repository may remain private as an additional barrier against casual copying, but its
 secrecy is not an authorization boundary. The distributed binary can be inspected or driven
@@ -967,7 +968,8 @@ and Linux end-to-end smoke tests.
 
 - Clean npm installation selects exactly one target helper.
 - Source checkout installs and verifies the identical binary.
-- macOS signing/notarization, Windows Authenticode, and cross-platform signature manifests.
+- Cross-platform Ed25519 release-manifest and binary-hash verification before helper execution;
+  test unsigned npm-installed helpers under each OS's default execution policy.
 - License and third-party notice inclusion for the statically linked helper.
 - `waifus doctor` reports actionable errors for missing, invalid, or incompatible helpers.
 

@@ -152,7 +152,9 @@ async function createFixturePackage(
     signatures?: ReadonlyMap<string, Buffer>;
   }> = {}
 ): Promise<void> {
-  const manifest = manifestFrom(valid);
+  const manifest = overrides.manifestBytes
+    ? JSON.parse(overrides.manifestBytes.toString("utf8")) as HelperManifest
+    : manifestFrom(valid);
   const packageJson = overrides.packageJson ?? {
     name: manifest.packageName,
     version: manifest.helperVersion,
@@ -197,7 +199,6 @@ function resolverOptions(
     trustRoots: valid.trustEntries as HelperReleaseTrustEntryV1[],
     resolvePackageJson: async () => path.join(packageRoot, "package.json"),
     probeBinary: async () => valid.embeddedBuildInfo as HelperEmbeddedBuildInfoV1,
-    verifyPlatformSignature: async () => undefined,
     ...overrides
   };
 }
@@ -278,23 +279,36 @@ describe("signed ts-connect package resolution", () => {
     });
   });
 
-  it("checks platform authenticity before running the signed version probe", async () => {
+  it("resolves synthetic macOS and Windows packages without an OS-signature check", async () => {
     const fixture = await trustFixture();
     const valid = object(fixture.valid, "valid fixture");
-    const root = await makeTempRoot("waifus-helper-order-");
+    const root = await makeTempRoot("waifus-helper-unsigned-os-");
     roots.push(root);
-    const packageRoot = path.join(root, "package");
-    await createFixturePackage(packageRoot, valid);
-    const order: string[] = [];
-    await resolveTsConnectBinary({
-      ...resolverOptions(packageRoot, valid),
-      verifyPlatformSignature: async () => { order.push("platform-signature"); },
-      probeBinary: async () => {
-        order.push("version-probe");
-        return valid.embeddedBuildInfo as HelperEmbeddedBuildInfoV1;
-      }
-    });
-    expect(order).toEqual(["platform-signature", "version-probe"]);
+    for (const target of [
+      { platform: "darwin" as const, arch: "arm64" as const, packageName: "@waifucave/ts-connect-darwin-arm64", binaryPath: "bin/ts-connect" },
+      { platform: "win32" as const, arch: "x64" as const, packageName: "@waifucave/ts-connect-win32-x64", binaryPath: "bin/ts-connect.exe" },
+      { platform: "win32" as const, arch: "arm64" as const, packageName: "@waifucave/ts-connect-win32-arm64", binaryPath: "bin/ts-connect.exe" }
+    ]) {
+      const changed = await signedVariant(fixture, (manifest) => {
+        manifest.packageName = target.packageName as HelperManifest["packageName"];
+        manifest.target = { os: target.platform, arch: target.arch };
+        manifest.binary.relativePath = target.binaryPath;
+      });
+      const packageRoot = path.join(root, `${target.platform}-${target.arch}`);
+      await createFixturePackage(packageRoot, valid, {
+        manifestBytes: changed.manifestBytes,
+        signatures: changed.signatures
+      });
+      const probeBinary = vi.fn(async () => changed.embeddedBuildInfo);
+      const resolved = await resolveTsConnectBinary({
+        ...resolverOptions(packageRoot, valid),
+        platform: target.platform,
+        arch: target.arch,
+        probeBinary
+      });
+      expect(resolved.packageName).toBe(target.packageName);
+      expect(probeBinary).toHaveBeenCalledExactlyOnceWith(path.join(packageRoot, target.binaryPath));
+    }
   });
 
   it("reports a missing optional package and never searches PATH", async () => {
@@ -349,13 +363,10 @@ describe("signed ts-connect package resolution", () => {
         signatures
       });
       const probeBinary = vi.fn(async () => valid.embeddedBuildInfo as HelperEmbeddedBuildInfoV1);
-      const verifyPlatformSignature = vi.fn(async () => undefined);
       await expect(resolveTsConnectBinary({
         ...resolverOptions(packageRoot, valid),
-        probeBinary,
-        verifyPlatformSignature
+        probeBinary
       })).rejects.toMatchObject({ code: "helper_signature_invalid" });
-      expect(verifyPlatformSignature).not.toHaveBeenCalled();
       expect(probeBinary).not.toHaveBeenCalled();
     }
   });
