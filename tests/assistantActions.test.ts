@@ -803,6 +803,7 @@ describe("assistant action API", () => {
     const { app, auditStore } = await makeActionApp(pipeline, state);
     const conversationId = await createRemoteActionConversation(app);
     const actionId = (JSON.parse(actionResult) as { actionId: string }).actionId;
+    expect(actionId, actionResult).toEqual(expect.any(String));
     const forbidden = [
       pending.remoteIdentityBundleHash,
       pending.transcriptHash,
@@ -827,7 +828,7 @@ describe("assistant action API", () => {
       method: "GET",
       canonicalTarget: detailTarget
     }), undefined, { method: "GET", url: detailTarget });
-    expect(detail.statusCode).toBe(200);
+    expect(detail.statusCode, detail.body).toBe(200);
     expect(detail.json()).toMatchObject({
       actionId,
       secure: {

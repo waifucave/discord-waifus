@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createApiServer } from "../src/api/server.js";
 import { dispatchInternal } from "../src/api/internalDispatch.js";
 import {
+  canonicalAuditResourceIdentifier,
   canonicalMutationBodyBytes,
   canonicalMutationTarget
 } from "../src/api/mutations.js";
@@ -87,6 +88,16 @@ async function makeApp() {
 }
 
 describe("administrative mutation policy", () => {
+  it("maps leading base64url symbols into canonical audit identifiers", () => {
+    expect(canonicalAuditResourceIdentifier("-leading-dash")).toBe("id:-leading-dash");
+    expect(canonicalAuditResourceIdentifier("_leading-underscore")).toBe("id:_leading-underscore");
+    expect(canonicalAuditResourceIdentifier("ordinary-id")).toBe("ordinary-id");
+    expect(canonicalAuditResourceIdentifier("")).toBe("global");
+    const bounded = canonicalAuditResourceIdentifier(`-${"a".repeat(300)}`);
+    expect(bounded).toHaveLength(256);
+    expect(bounded).toMatch(/^[A-Za-z0-9][A-Za-z0-9:._-]{0,255}$/u);
+  });
+
   it("requires a canonical remote idempotency key and audits rejected attempts before effects", async () => {
     const { app, auditStore, calls } = await makeApp();
     const missing = await dispatchInternal(app, remote(), undefined, {
