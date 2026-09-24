@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `npm run build:backend` — backend only. Run this when you change `src/**/*.ts` and want the shipped CLI to pick the change up, since `bin/waifus.mjs` prefers `dist/cli/main.js` over the `tsx` fallback.
 - `npm run typecheck` — type-checks backend and frontend configs separately, no emit.
 - `npm run test` / `npm run test:watch` — Vitest, Node environment, `tests/**/*.test.ts`. Run one file with `npx vitest run tests/<name>.test.ts`; one test with `npx vitest run -t "<name pattern>"`.
-- `npm run waifus -- <cmd>` — invoke the CLI through the local bin (`start`, `dev`, `stop`, `restart`, `status`, `doctor`, `clean`, `update`).
+- `npm run waifus -- <cmd>` — invoke the CLI through the local bin (`start`, `dev`, `stop`, `restart`, `status`, `remote`, `doctor`, `clean`, `update`). `remote status` and `remote stop` target only the remote gateway daemon.
 - `npm run dev:frontend` — Vite dashboard on `:5173`, proxies `/api` to `127.0.0.1:3888`. Pair with `npm run waifus -- dev` for end-to-end iteration.
 - `npm run release:beta -- <version> --yes --message "..."` — full release from a clean `main`: validates (tests, build, `check-no-file-deps`), packs, pushes the `v<version>` tag, and the GitHub workflow publishes the tarball to npm (`npm publish <tarball>` runs no lifecycle scripts, so `prepublishOnly` never fires on that path). Deploying to a machine is a separate manual `npm install -g @waifucave/discord-waifus@<version>` + `waifus restart`.
 
@@ -16,7 +16,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Architecture
 
-Single-process local app. The CLI boots a Fastify backend that also serves the prebuilt React SPA. There is no separate server-side process.
+The ordinary host is one local Node process: the CLI boots a Fastify backend that also serves the
+prebuilt React SPA and Discord runtime. When Remote Access is enabled, that host supervises one
+platform-specific `ts-connect` child. `waifus remote` is a separate local Node gateway with no
+Discord runtime and supervises its own remote-role helper child.
 
 **Startup pipeline** (`src/backend/server.ts:startBackend`): `runMigrations` → `loadAppConfig` → instantiate `StorageService` (per-resource locking JSON store rooted at the data root) → optional Discord connect (`maybeConnectDiscord`, gated by `runtime.autoConnectDiscord`) → build `RuntimeOrchestrator` → mount API via `createApiServer`. Runtime state is persisted to `~/.dc-waifus/runtime.json` so `waifus status`/`stop` can find the live process.
 
@@ -33,6 +36,24 @@ Single-process local app. The CLI boots a Fastify backend that also serves the p
 **Frontend** (`src/frontend/`): React 19 SPA. `screens/` mirrors top-level navigation (`nav.ts`); shared client state lives in `state/runtimeStore.ts`. API types are mirrored in `src/frontend/api/types.ts` — these must stay in sync with `src/shared/schemas/domain.ts` manually (no codegen).
 
 **Dashboard assistant** (`src/api/assistant/`): a built-in agent reachable from the dashboard chat. `routes.ts` exposes conversations under `/api/assistant/*` with SSE streaming; `service.ts` runs the gateway-pipeline tool loop; `tools.ts` defines self-REST tools that mutate app state by dispatching to the app's own HTTP routes via `app.inject` (with revision-conflict retry). Its knowledge base is `docs/assistant-kb/*.md`, served read-only at `/api/docs` — update those docs when endpoint semantics change.
+
+**Remote management** (`src/remote/`, `src/backend/remoteAccess/`): the host and remote gateway both
+use the same signed `ts-connect` helper package resolver and authenticated WIPC supervisor. The
+helper owns installation/pair keys in the native OS vault, performs bounded coordination through
+the compiled `pair.waifucave.com` profile, and carries dashboard/API traffic only over an
+authenticated direct peer path. Fastify is never exposed as a network listener. The remote browser
+first sees the isolated connection shell in `src/frontend/remote-shell/`; after pairing and direct
+authentication, the gateway downloads, hashes, and serves the host's exact bundled dashboard from
+its verified manifest. Browser origin/session/CSRF checks and the route policy remain enforced at
+the gateway and host bridge. There is deliberately no DERP, TURN, peer-relay, or arbitrary
+coordination-origin fallback.
+
+Production helper launch is fail-closed: `src/remote/helperReleaseTrust.ts` contains only reviewed
+Ed25519 release public keys, `remote-compatibility.json` binds the exact app/helper/protocol window,
+and `src/remote/helperBinary.ts` verifies package inventory, manifest signatures, binary/notices
+hashes, target metadata, and embedded build info before execution. The six V1 targets are macOS
+ARM64, Windows x64/ARM64, and Linux x64/ARM64/ARMv7. Intel macOS is a later follow-up and must never
+fall back to the ARM64 helper.
 
 ## Conventions
 

@@ -54,6 +54,8 @@ It runs **entirely on your own machine**, configured through a clean **web dashb
 - 🧷 **Persistent memory** — they remember things across conversations.
 - 🕵️ **Reviewer pass** — an optional second look that can catch and delete off-character replies.
 - 🖥️ **Web dashboard** — set everything up in your browser. No hand-edited config files.
+- 🌐 **Direct remote dashboard** — pair another device and manage the same host UI without
+  installing Tailscale or exposing the local API to the Internet.
 - 🔒 **Local-first & private** — runs on your machine; all your data stays in `~/.dc-waifus`.
 
 ---
@@ -74,6 +76,30 @@ http://127.0.0.1:3888
 ```
 
 That's it. 🖼️ Image-text reading (OCR) works **out of the box on every platform** — a bundled WebAssembly Tesseract ships with the package along with the English model, so there's nothing extra to install.
+
+### Remote management
+
+Enable **Settings → Remote Access** on the host, create a short-lived invitation, then run this on
+the other device:
+
+```sh
+waifus remote
+```
+
+The protected local connection window accepts either the full invitation token/QR flow or the
+manual short code. Compare the safety phrase on both devices before approving the request on the
+host. Later connections remember the approved device.
+
+The remote device downloads and verifies the host's exact dashboard build, so different app
+versions can work when their signed protocols are compatible. Dashboard, API, assistant, upload,
+download, and event-stream traffic travels directly between the two devices. `pair.waifucave.com`
+handles bounded coordination metadata only and never relays management traffic. If a direct path
+cannot be established—for example, because both networks block usable UDP—the connection stays
+offline instead of falling back to a relay.
+
+Remote V1 supports Apple-silicon macOS, Windows x64/ARM64, and Linux x64/ARM64/ARMv7. Intel macOS
+is a later follow-up. Remote management cannot stop or restart the host OS process; use the host
+device for `waifus stop` and `waifus restart`.
 
 <details>
 <summary>🔁 Migrating from the old <code>@starlight-ai</code> package?</summary>
@@ -172,6 +198,9 @@ Everything is also drivable from the terminal via the global `waifus` command:
 | `waifus stop`      | Stop the running app.                                   |
 | `waifus restart`   | Restart it.                                             |
 | `waifus status`    | Show whether it's running and where.                    |
+| `waifus remote`    | Open the local remote-management gateway and dashboard. |
+| `waifus remote status` | Show only the remote gateway daemon.               |
+| `waifus remote stop` | Stop only the remote gateway daemon.                 |
 | `waifus doctor`    | Health check (incl. whether bundled OCR is usable).     |
 | `waifus clean`     | Delete saved user data (use intentionally!).            |
 | `waifus update`    | Update the installed package.                           |

@@ -10,8 +10,9 @@ each waifu generates her own messages with her own model and persona, a stage-ma
 conversations and records memories, and an optional reviewer can delete rule-breaking messages.
 
 Everything is stored locally under the data root (default `~/.dc-waifus`, override with
-`DC_WAIFUS_HOME`). Nothing is sent anywhere except to the model providers you configure and to
-Discord itself.
+`DC_WAIFUS_HOME`). Ordinary operation sends data only to the model providers you configure and to
+Discord. If Remote Access is enabled, `pair.waifucave.com` also receives bounded coordination
+metadata; dashboard and API traffic remains direct between the paired devices and is never relayed.
 
 ## The pieces you need before anything works
 
@@ -31,6 +32,19 @@ Discord itself.
 - `waifus status` — where it runs and whether Discord is connected.
 - `waifus doctor` — quick health diagnostics.
 - Dashboard: http://127.0.0.1:3888 (local only).
+
+## Optional remote management
+
+On the host, activate and enable Settings → Remote Access, then create a short-lived invitation.
+On the other device, run `waifus remote`. Its protected loopback connection window accepts either
+the full token/QR flow or the manual short code. Compare the displayed safety phrase on both
+devices before approving the pending request on the host.
+
+The remote gateway fetches and verifies the host's exact dashboard build. Compatible app versions
+can therefore connect without requiring identical installations. Management traffic is direct
+peer to peer and has no relay fallback; hard NAT or blocked UDP can leave the host offline.
+`waifus remote status` and `waifus remote stop` manage only the remote gateway. Remote V1 does not
+stop or restart the host OS process. Intel macOS is not supported in V1.
 
 ## How a conversation works
 

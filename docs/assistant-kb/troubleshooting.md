@@ -31,6 +31,25 @@ Content intent, she must be `enabled`, and she must be in the channel's `enabled
 Someone else changed the resource between your read and write. Re-read (GET), reapply your
 change on the fresh state, and PUT with the new `revision`.
 
+## Remote Access does not connect
+
+- `helper_missing`: install the normal Discord Waifus package with optional dependencies enabled;
+  do not download or bypass an unverified helper manually.
+- `helper_signature_invalid` or `helper_incompatible`: update Discord Waifus. The app refuses a
+  helper whose signed release, target, capabilities, Worker trust ring, or app-version bounds do
+  not match.
+- `activation_required`: activate this installation from its protected local Remote Access UI.
+- `direct_unavailable` or repeated `reconnecting`: check that both networks permit usable UDP,
+  then use Reconnect. Interface changes and roaming are rediscovered automatically, but V1 never
+  sends management traffic through a relay.
+- Pairing does not appear: confirm that the invitation is still active, use either its full token
+  or exact manual code, and compare the safety phrase before the host approves it.
+- Intel macOS: remote mode is intentionally unsupported in V1; ordinary local `waifus start`
+  remains available.
+
+`waifus remote status` reports only the remote gateway. Ordinary `waifus status` reports both
+roles. A trusted remote can manage the app but cannot stop or restart the host OS process.
+
 ## Where the evidence lives
 
 - `GET /api/logs?limit=200` — recent backend log entries.
