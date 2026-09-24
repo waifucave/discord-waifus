@@ -585,6 +585,46 @@ async function listenProtectedUnix(server: net.Server, endpoint: string): Promis
   assertOwnedMode(socketMetadata, 0o600, "Parent Unix socket");
 }
 
+function validateWindowsParentEndpoint(endpoint: string): void {
+  const prefix = "\\\\.\\pipe\\waifus-parent.";
+  const token = endpoint.startsWith(prefix) ? endpoint.slice(prefix.length) : "";
+  const decoded = /^[A-Za-z0-9_-]{22}$/u.test(token)
+    ? Buffer.from(token, "base64url")
+    : Buffer.alloc(0);
+  if (decoded.byteLength !== 16 || decoded.toString("base64url") !== token) {
+    decoded.fill(0);
+    throw new HelperSupervisorError(
+      "helper_unavailable",
+      "Parent Windows named-pipe endpoint is invalid."
+    );
+  }
+  decoded.fill(0);
+}
+
+async function listenProtectedWindows(server: net.Server, endpoint: string): Promise<void> {
+  validateWindowsParentEndpoint(endpoint);
+  await new Promise<void>((resolve, reject) => {
+    const onError = (error: Error) => {
+      server.off("listening", onListening);
+      reject(error);
+    };
+    const onListening = () => {
+      server.off("error", onError);
+      resolve();
+    };
+    server.once("error", onError);
+    server.once("listening", onListening);
+    // Node/libuv's default pipe ACL is owner-scoped. Keep both broad-access
+    // switches explicitly false so the listener is never relaxed to all users.
+    server.listen({
+      path: endpoint,
+      readableAll: false,
+      writableAll: false,
+      exclusive: true
+    });
+  });
+}
+
 function forwardWipcTransition(transition: WipcStreamTransition): boolean {
   return ![
     "request_chunk_discarded",
@@ -1923,21 +1963,37 @@ function processExit(child: ChildProcess): {
   };
 }
 
+export type ProtectedHelperProcessFactoryOptions = Readonly<{
+  platform?: NodeJS.Platform;
+}>;
+
 export class ProtectedHelperProcessFactory implements HelperProcessFactory {
+  readonly #platform: NodeJS.Platform;
+
+  constructor(options: ProtectedHelperProcessFactoryOptions = {}) {
+    this.#platform = options.platform ?? process.platform;
+  }
+
   async launch(request: HelperLaunchRequest): Promise<HelperLaunch> {
-    if (process.platform === "win32") {
-      request.parentCapability.fill(0);
-      throw new HelperSupervisorError(
-        "unsupported_platform",
-        "A current-user-only Windows named-pipe launcher is not installed."
-      );
-    }
-    await validateUnixRuntimeDirectory(request.parentEndpoint);
     const capability = Buffer.from(request.parentCapability);
     request.parentCapability.fill(0);
     if (capability.byteLength !== 32) {
       capability.fill(0);
       throw new HelperSupervisorError("helper_unavailable", "Parent capability has invalid width.");
+    }
+    try {
+      if (this.#platform === "win32") {
+        validateWindowsParentEndpoint(request.parentEndpoint);
+      } else {
+        await validateUnixRuntimeDirectory(request.parentEndpoint);
+      }
+    } catch (error) {
+      capability.fill(0);
+      if (error instanceof HelperSupervisorError) throw error;
+      throw new HelperSupervisorError(
+        "helper_unavailable",
+        error instanceof Error ? error.message : "Protected parent endpoint is invalid."
+      );
     }
 
     const server = net.createServer();
@@ -1989,7 +2045,11 @@ export class ProtectedHelperProcessFactory implements HelperProcessFactory {
     });
 
     try {
-      await listenProtectedUnix(server, request.parentEndpoint);
+      if (this.#platform === "win32") {
+        await listenProtectedWindows(server, request.parentEndpoint);
+      } else {
+        await listenProtectedUnix(server, request.parentEndpoint);
+      }
     } catch (error) {
       capability.fill(0);
       stopListening(server);
