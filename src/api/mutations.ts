@@ -439,10 +439,13 @@ function auditResource(action: string, params: unknown): { type: string; identif
         .sort(([left], [right]) => left.localeCompare(right))
         .map(([, value]) => String(value))
     : [];
-  const identifier = (identifiers.join(":") || "global")
-    .replace(/[^A-Za-z0-9:._-]+/g, "_")
-    .slice(0, 256);
-  return { type, identifier: identifier || "global" };
+  return { type, identifier: canonicalAuditResourceIdentifier(identifiers.join(":")) };
+}
+
+export function canonicalAuditResourceIdentifier(value: string): string {
+  const sanitized = (value || "global").replace(/[^A-Za-z0-9:._-]+/g, "_");
+  const prefixed = /^[A-Za-z0-9]/u.test(sanitized) ? sanitized : `id:${sanitized}`;
+  return prefixed.slice(0, 256);
 }
 
 function buildAuditRecord(input: {
