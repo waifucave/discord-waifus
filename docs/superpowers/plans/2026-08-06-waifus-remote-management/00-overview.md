@@ -28,7 +28,7 @@ Durable Objects, Turnstile, npm optional platform packages, Ed25519 signatures.
 | Phase | Document | Primary repository | Hard dependency |
 |---|---|---|---|
 | 0–1 | [Contracts and security baseline](./01-contracts-security-baseline.md) | `waifucave/discord-waifus` | None |
-| 2 | [Public tsnet fork and feasibility spike](./02-tsnet-fork-spike.md) | `HeavenllyDemon/tsnet` | Frozen v1 contracts |
+| 2 | [Public tsnet fork and feasibility spike](./02-tsnet-fork-spike.md) | `Winterrks/tsnet` | Frozen v1 contracts |
 | 3 | [Private ts-connect helper](./03-private-ts-connect-helper.md) | `waifucave/ts-connect` | Fork gate passed |
 | 4 | [Cloudflare coordination and pairing](./04-cloudflare-coordination-and-pairing.md) | `waifucave/ts-connect` | Helper simulator and crypto vectors |
 | 5a | [Host API and authenticated bridge](./05-host-api-and-bridge.md) | `waifucave/discord-waifus` | Signed/dev helper protocol available |

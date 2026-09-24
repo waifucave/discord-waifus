@@ -135,7 +135,7 @@ the current platform.
 
 Remains the LLM/provider gateway. It receives no peer-to-peer networking responsibility.
 
-### `HeavenllyDemon/tsnet` — public
+### `Winterrks/tsnet` — public
 
 A true GitHub-network fork of the complete `tailscale/tailscale` repository. The target is
 currently unused. Preserve upstream history, the BSD-3-Clause `LICENSE`, `PATENTS`, source
@@ -978,7 +978,7 @@ and Linux end-to-end smoke tests.
 - `waifucave/discord-waifus`: Vitest for schemas, routes, principals, proxying, assistant,
   cache, CLI, and storage; existing `npm run test`, `npm run typecheck`, and `npm run build`
   remain required.
-- `HeavenllyDemon/tsnet`: focused Go unit/integration/race tests for the control seam,
+- `Winterrks/tsnet`: focused Go unit/integration/race tests for the control seam,
   direct-only enforcement, map construction, egress, and upstream compatibility; run the
   applicable upstream Go suite and license checks.
 - Private `waifucave/ts-connect`: Go helper/IPC/crypto tests plus Cloudflare Worker/Durable
@@ -994,7 +994,7 @@ and Linux end-to-end smoke tests.
    fixtures before parallel repository work.
 1. **Existing security baseline:** fix current redaction/conflict leaks and add generic route
    policy, actor, audit, retry-operation, and SSE cursor primitives without remote exposure.
-2. **Public fork and mandatory spike:** create/publish `HeavenllyDemon/tsnet`, pin upstream,
+2. **Public fork and mandatory spike:** create/publish `Winterrks/tsnet`, pin upstream,
    implement the narrow custom-control/direct-only seam, and pass the feasibility gate before
    tagging a helper dependency.
 3. **Private connector foundation:** create `waifucave/ts-connect`, helper IPC, identity/key

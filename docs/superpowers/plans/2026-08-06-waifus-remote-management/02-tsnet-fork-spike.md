@@ -4,7 +4,7 @@
 
 **Status:** ready for staged execution
 
-**Repository owner:** public GitHub repository **HeavenllyDemon/tsnet**
+**Repository owner:** public GitHub repository **Winterrks/tsnet**
 
 **Depends on:** the public remote-contract lock from plan 01
 
@@ -38,7 +38,7 @@ production without rebuild drift.
 
 ## Explicit Action Boundary
 
-Creating **HeavenllyDemon/tsnet**, pushing branches/tags, or changing GitHub settings is an explicit later external action. Local inspection, patches in a temporary clone, and tests do not authorize repository creation or publication. Before the first GitHub mutation, show the exact authenticated owner, target name, visibility, upstream base, and command, then obtain the user's confirmation.
+Creating **Winterrks/tsnet**, pushing branches/tags, or changing GitHub settings is an explicit later external action. Local inspection, patches in a temporary clone, and tests do not authorize repository creation or publication. Before the first GitHub mutation, show the exact authenticated owner, target name, visibility, upstream base, and command, then obtain the user's confirmation.
 
 ## Direct-Only Structural Contract
 
@@ -68,7 +68,7 @@ The spike must include both source-structure checks and observed egress checks. 
 **Repositories:**
 
 - Read: **tailscale/tailscale**
-- Create later: **HeavenllyDemon/tsnet**
+- Create later: **Winterrks/tsnet**
 
 - [ ] Confirm the upstream tag and commit without changing state:
 
@@ -78,7 +78,7 @@ git ls-remote https://github.com/tailscale/tailscale.git refs/tags/v1.102.2 refs
 
 Expected: the peeled tag resolves to **eb67e5dcbe145d63e1128b9b4b630f8a82da101f**. Stop if it differs.
 
-- [ ] Confirm the authenticated GitHub owner and that **HeavenllyDemon/tsnet** still does not exist.
+- [ ] Confirm the authenticated GitHub owner and that **Winterrks/tsnet** still does not exist.
 - [ ] Ask the user before creating the fork.
 - [ ] Create a true GitHub-network fork with full history, then add an **upstream** remote.
 - [ ] Create a working branch from the exact commit, not current upstream main:
@@ -98,7 +98,7 @@ Expected: **git merge-base --is-ancestor eb67e5... HEAD** succeeds and GitHub sh
 
 ## Task 2: Lock the toolchain and establish the untouched baseline
 
-**Files in HeavenllyDemon/tsnet:**
+**Files in Winterrks/tsnet:**
 
 - Modify only if needed: **go.toolchain.version**, CI toolchain configuration
 - Create: **.github/workflows/waifus-ci.yml**
@@ -129,7 +129,7 @@ Expected: all applicable upstream tests pass. Record any reproducible upstream-o
 
 ## Task 3: Add a production control-client injection seam
 
-**Likely files in HeavenllyDemon/tsnet, verified against the pinned checkout before editing:**
+**Likely files in Winterrks/tsnet, verified against the pinned checkout before editing:**
 
 - Modify: **ipn/ipnlocal/local.go**
 - Modify: **tsnet/tsnet.go**
@@ -163,7 +163,7 @@ Expected: new tests fail before implementation and pass after; ordinary tsnet te
 
 ## Task 4: Make DERP and peer relay structurally unavailable
 
-**Likely files in HeavenllyDemon/tsnet:**
+**Likely files in Winterrks/tsnet:**
 
 - Modify: **wgengine/magicsock/magicsock.go**
 - Modify/tag-split: **wgengine/magicsock/derp.go**
@@ -198,7 +198,7 @@ Expected: direct paths pass, all forbidden maps/paths fail closed, and no test o
 
 ## Task 5: Reject generic tailnet configuration and unused services
 
-**Files in HeavenllyDemon/tsnet:**
+**Files in Winterrks/tsnet:**
 
 - Create: a narrow Waifus map validator near the injected control/backend boundary
 - Modify: only construction/configuration sites necessary to prevent unused services
@@ -244,7 +244,7 @@ Expected: every forbidden fixture is rejected before network or route configurat
 
 ## Task 6: Build the two-peer feasibility harness
 
-**Files in HeavenllyDemon/tsnet:**
+**Files in Winterrks/tsnet:**
 
 - Create: **cmd/waifus-direct-spike/**
 - Create: **tstest/waifuscontrol/** or equivalent fake injected control client

@@ -4,7 +4,7 @@
 
 **Status:** ready for staged execution
 
-**Repositories:** public **HeavenllyDemon/tsnet**, private **waifucave/ts-connect**, public **waifucave/discord-waifus**
+**Repositories:** public **Winterrks/tsnet**, private **waifucave/ts-connect**, public **waifucave/discord-waifus**
 
 **Depends on:** every functional/security/platform gate in plans 01–06
 
