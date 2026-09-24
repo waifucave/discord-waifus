@@ -1,4 +1,4 @@
-import { appendFile, mkdir } from "node:fs/promises";
+import { appendFile, chmod, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { appDataPath } from "../config/paths.js";
 import { redactSecrets } from "./redaction.js";
@@ -23,12 +23,14 @@ export type Logger = {
 
 export function createLogger(options: {
   dataRoot?: string;
+  logFile?: string;
   level?: LogLevel;
   console?: Pick<Console, "log" | "error">;
 } = {}): Logger {
   const minLevel = levelWeight(options.level ?? "info");
   const output = options.console ?? console;
-  const logFile = options.dataRoot ? appDataPath(options.dataRoot, "logs", "backend.log") : undefined;
+  const logFile = options.logFile
+    ?? (options.dataRoot ? appDataPath(options.dataRoot, "logs", "backend.log") : undefined);
   const listeners = new Set<(entry: LogEntry) => void>();
   const recentEntries: LogEntry[] = [];
 
@@ -58,6 +60,7 @@ export function createLogger(options: {
     if (logFile) {
       void mkdir(path.dirname(logFile), { recursive: true })
         .then(() => appendFile(logFile, line + "\n", { mode: 0o600 }))
+        .then(() => chmod(logFile, 0o600))
         .catch(() => undefined);
     }
   }

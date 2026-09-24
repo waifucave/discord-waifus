@@ -7,6 +7,7 @@ import {
   HelperSupervisor,
   type HelperSupervisorOptions
 } from "../src/remote/helperSupervisor.js";
+import { createProductionHelperSupervisor } from "../src/remote/productionHelper.js";
 import type {
   AuthenticatedHelperClient,
   HelperLaunch,
@@ -244,6 +245,43 @@ async function settle(): Promise<void> {
 }
 
 describe("role-neutral helper supervisor", () => {
+  it("constructs the production supervisor with the verified package and protected process seams", async () => {
+    const factory = new FakeProcessFactory();
+    const dataRoot = await makeTempRoot("wph-");
+    roots.push(dataRoot);
+    const verified = selection(path.join(dataRoot, "package", "bin", "ts-connect"));
+    const supervisor = await createProductionHelperSupervisor({
+      role: "remote",
+      dataRoot,
+      appVersion: "1.5.203",
+      buildId: "remote-gateway-1.5.203",
+      logger: recordingLogger().logger,
+      packageResolver: { resolve: async () => verified },
+      processFactory: factory
+    });
+
+    const starting = supervisor.start();
+    await settle();
+    factory.launches[0].resolveAuthenticated(helperClient());
+    await starting;
+
+    expect(factory.requests).toHaveLength(1);
+    expect(factory.requests[0]).toMatchObject({
+      role: "remote",
+      dataRoot,
+      binaryPath: verified.binaryPath,
+      argv: ["supervised", "--parent-endpoint", expect.any(String)],
+      parentHello: {
+        component: "discord_waifus",
+        componentVersion: "1.5.203",
+        buildId: "remote-gateway-1.5.203",
+        controlProfile: 1,
+        runtimePurpose: "normal"
+      }
+    });
+    await supervisor.close();
+  });
+
   it("rejects attaching a host request bridge to a remote-role supervisor", async () => {
     const factory = new FakeProcessFactory();
     const { supervisor } = await makeSupervisor(factory, { role: "remote" });

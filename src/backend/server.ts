@@ -33,9 +33,8 @@ import {
   type ResolvedRemoteDashboard
 } from "./remoteAccess/remoteAccessService.js";
 import { RemoteRequestBridge } from "./remoteAccess/requestBridge.js";
-import { HelperSupervisor } from "../remote/helperSupervisor.js";
-import { HelperSupervisorError } from "../remote/helperTypes.js";
-import { ProtectedHelperProcessFactory } from "../remote/helperClient.js";
+import { createProductionHelperSupervisor } from "../remote/productionHelper.js";
+import { remoteRolePaths } from "../remote/paths.js";
 import { DashboardBuild } from "./remoteAccess/dashboardBuild.js";
 
 export type StartBackendOptions = {
@@ -96,24 +95,14 @@ export async function startBackend(options: StartBackendOptions): Promise<Runnin
       }
     : await resolveRemoteDashboard(config.frontend.staticDir, logger);
   const dashboard = dashboardResolution.dashboard;
-  const helperSupervisor = options.remoteAccess?.supervisor ?? new HelperSupervisor({
-    role: "host",
-    dataRoot: options.dataRoot,
-    appVersion: packageVersion,
-    buildId: dashboard.buildId,
-    controlProfile: 1,
-    runtimePurpose: "normal",
-    packageResolver: {
-      resolve: async () => {
-        throw new HelperSupervisorError(
-          "helper_missing",
-          "No verified ts-connect helper package is installed for this target."
-        );
-      }
-    },
-    processFactory: new ProtectedHelperProcessFactory(),
-    logger
-  });
+  const helperSupervisor = options.remoteAccess?.supervisor
+    ?? await createProductionHelperSupervisor({
+      role: "host",
+      dataRoot: options.dataRoot,
+      appVersion: packageVersion,
+      buildId: dashboard.buildId,
+      logger: createLogger({ logFile: remoteRolePaths(options.dataRoot, "host").log })
+    });
   const remoteAccess = new RemoteAccessService({
     dataRoot: options.dataRoot,
     runtime,

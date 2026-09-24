@@ -3,6 +3,7 @@ import { chmod, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  loadRemoteCompatibilityV1,
   parseRemoteCompatibilityV1,
   type RemoteCompatibilityV1
 } from "../src/remote/componentCompatibility.js";
@@ -10,6 +11,7 @@ import {
   resolveTsConnectBinary,
   supportedHelperTarget
 } from "../src/remote/helperBinary.js";
+import { createProductionHelperPackageResolver } from "../src/remote/productionHelper.js";
 import { verifyHelperPackageManifest } from "../src/remote/helperPackageManifest.js";
 import {
   HELPER_CONTROL_PROFILES_V1,
@@ -254,6 +256,46 @@ describe("root remote compatibility", () => {
 });
 
 describe("signed ts-connect package resolution", () => {
+  it("builds the production resolver from the exact shipped compatibility table", async () => {
+    const fixture = await trustFixture();
+    const valid = object(fixture.valid, "valid fixture");
+    const root = await makeTempRoot("waifus-production-helper-package-");
+    roots.push(root);
+    const packageRoot = path.join(root, "package");
+    const compatibility = await loadRemoteCompatibilityV1("1.5.203");
+    const changed = await signedVariant(fixture, (manifest) => {
+      manifest.workerTrustRingSha256 = compatibility.helper.workerTrustRingSha256;
+    });
+    await createFixturePackage(packageRoot, valid, {
+      manifestBytes: changed.manifestBytes,
+      signatures: changed.signatures
+    });
+
+    const resolver = await createProductionHelperPackageResolver({
+      appVersion: "1.5.203",
+      trustRoots: valid.trustEntries as HelperReleaseTrustEntryV1[],
+      platform: "linux",
+      arch: "x64",
+      resolvePackageJson: async () => path.join(packageRoot, "package.json"),
+      probeBinary: async () => changed.embeddedBuildInfo
+    });
+
+    await expect(resolver.resolve({
+      role: "remote",
+      dataRoot: root,
+      appVersion: "1.5.203"
+    })).resolves.toMatchObject({
+      binaryPath: path.join(packageRoot, "bin", "ts-connect"),
+      helperVersion: "0.1.0",
+      releaseSequence: "42"
+    });
+    await expect(resolver.resolve({
+      role: "remote",
+      dataRoot: root,
+      appVersion: "1.5.202"
+    })).rejects.toThrow(/running app version/u);
+  });
+
   it("resolves source and installed copies to byte-identical verified helpers", async () => {
     const fixture = await trustFixture();
     const valid = object(fixture.valid, "valid fixture");

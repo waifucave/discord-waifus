@@ -1,12 +1,22 @@
 import { spawn, type SpawnOptions } from "node:child_process";
 import { lstat, readFile, rm } from "node:fs/promises";
+import { hostname } from "node:os";
+import { createLogger } from "../backend/logger.js";
 import { ensureRemoteOnlyLayout } from "../config/layout.js";
+import { readPackageVersion } from "../config/layout.js";
 import { FullPairTokenSchema } from "../shared/schemas/remoteLifecycle.js";
+import { DeviceDisplayNameSchema } from "../shared/schemas/remoteLifecycle.js";
 import {
   RemoteDaemonStateSchema,
   type RemoteDaemonState
 } from "../shared/schemas/remoteRuntime.js";
 import { remoteRolePaths } from "../remote/paths.js";
+import { startRemoteGatewayDaemon } from "../remote/daemon.js";
+import {
+  createProductionHelperPackageResolver,
+  createProductionHelperSupervisor,
+  HELPER_RELEASE_TRUST_ROOTS
+} from "../remote/productionHelper.js";
 import { RemoteDaemonStartupHandoffSchema } from "../remote/daemonState.js";
 import { flagBoolean, flagString, type ParsedCli } from "./parser.js";
 import { openBrowser } from "./openBrowser.js";
@@ -109,17 +119,46 @@ function validateHandoff(
 }
 
 async function defaultPreflight(input: {
+  dataRoot: string;
   platform: NodeJS.Platform;
   arch: NodeJS.Architecture;
 }): Promise<void> {
-  if (input.platform === "darwin" && input.arch === "x64") {
-    throw new RemoteCliError(
-      "Intel macOS remote mode is not supported yet; this is a planned follow-up."
-    );
-  }
-  throw new RemoteCliError(
-    "A verified ts-connect helper package is not installed for this platform. Run `waifus doctor` for details."
-  );
+  const appVersion = await readPackageVersion();
+  const resolver = await createProductionHelperPackageResolver({
+    appVersion,
+    trustRoots: HELPER_RELEASE_TRUST_ROOTS,
+    platform: input.platform,
+    arch: input.arch
+  });
+  await resolver.resolve({ role: "remote", dataRoot: input.dataRoot, appVersion });
+}
+
+async function defaultForegroundStarter(input: Readonly<{
+  dataRoot: string;
+  port?: number;
+  host?: string;
+}>): Promise<RunningRemoteCliDaemon> {
+  const appVersion = await readPackageVersion();
+  const paths = remoteRolePaths(input.dataRoot, "remote");
+  const logger = createLogger({ logFile: paths.log });
+  const supervisor = await createProductionHelperSupervisor({
+    role: "remote",
+    dataRoot: input.dataRoot,
+    appVersion,
+    buildId: `remote-gateway-${appVersion}`,
+    logger
+  });
+  const deviceDisplayName = DeviceDisplayNameSchema.safeParse(hostname()).data
+    ?? "Discord Waifus Remote";
+  return startRemoteGatewayDaemon({
+    ...input,
+    appVersion,
+    deviceDisplayName,
+    supervisor,
+    onStatusError: (error) => logger.warn("Remote gateway status refresh failed", {
+      message: error instanceof Error ? error.message : String(error)
+    })
+  });
 }
 
 function remoteChildArgs(parsed: ParsedCli, dataRoot: string): string[] {
@@ -255,11 +294,7 @@ async function remoteForeground(
   dataRoot: string,
   options: RemoteCliOptions
 ): Promise<number> {
-  const starter = options.remoteForegroundStarter ?? (async () => {
-    throw new RemoteCliError(
-      "Remote gateway runtime is unavailable without a verified ts-connect helper."
-    );
-  });
+  const starter = options.remoteForegroundStarter ?? defaultForegroundStarter;
   const running = await starter({
     dataRoot,
     port: parsePort(parsed),
