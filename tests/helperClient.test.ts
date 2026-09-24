@@ -95,6 +95,31 @@ async function readEventually(filePath: string): Promise<string> {
 const unixIt = process.platform === "win32" ? it.skip : it;
 
 describe("protected helper process client", () => {
+  it("validates Windows named-pipe launches without an unsupported-platform fallback", async () => {
+    const request = await launchRequest();
+    request.parentCapability = Buffer.alloc(31, 0x31);
+    request.parentEndpoint = `\\\\.\\pipe\\waifus-parent.${Buffer.alloc(16, 0x42).toString("base64url")}`;
+    const factory = new ProtectedHelperProcessFactory({ platform: "win32" });
+
+    await expect(factory.launch(request)).rejects.toMatchObject({
+      code: "helper_unavailable",
+      message: "Parent capability has invalid width."
+    });
+    expect(request.parentCapability.equals(Buffer.alloc(31))).toBe(true);
+  });
+
+  it("rejects a noncanonical Windows named-pipe endpoint before listening", async () => {
+    const request = await launchRequest();
+    request.parentEndpoint = "\\\\.\\pipe\\waifus-parent.predictable";
+    const factory = new ProtectedHelperProcessFactory({ platform: "win32" });
+
+    await expect(factory.launch(request)).rejects.toMatchObject({
+      code: "helper_unavailable",
+      message: "Parent Windows named-pipe endpoint is invalid."
+    });
+    expect(request.parentCapability.equals(Buffer.alloc(32))).toBe(true);
+  });
+
   unixIt("authenticates the exact canonical transcript over a current-user Unix socket", async () => {
     const request = await launchRequest({ FAKE_HELPER_AUTH_DELAY_MS: "100" });
     const factory = new ProtectedHelperProcessFactory();
