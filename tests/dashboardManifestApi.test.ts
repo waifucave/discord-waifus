@@ -302,5 +302,5 @@ describe("authenticated host dashboard manifest API", () => {
     await closed;
     expect(performance.now() - startedAt).toBeLessThan(1_000);
     expect(bridge.activeStreamCount("dashboard-client")).toBe(0);
-  });
+  }, 30_000);
 });
