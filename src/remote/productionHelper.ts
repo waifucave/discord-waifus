@@ -15,11 +15,11 @@ import {
   type HelperRole,
   type ResolveHelperPackageInput
 } from "./helperTypes.js";
+import { HELPER_RELEASE_TRUST_ROOTS } from "./helperReleaseTrust.js";
 import type { Logger } from "../backend/logger.js";
 import type { HelperReleaseTrustEntryV1 } from "../shared/helperManifestTrust.js";
 
-/** Populated with reviewed production public keys by plan 07 before helper publication. */
-export const HELPER_RELEASE_TRUST_ROOTS: readonly HelperReleaseTrustEntryV1[] = Object.freeze([]);
+export { HELPER_RELEASE_TRUST_ROOTS } from "./helperReleaseTrust.js";
 
 export type ProductionHelperPackageResolverOptions = Omit<
   ResolveTsConnectBinaryOptions,
