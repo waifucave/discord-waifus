@@ -1,3 +1,6 @@
+import { lstat, readFile } from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import {
   PositiveUint64DecimalSchema,
@@ -8,8 +11,15 @@ import {
 } from "../shared/schemas/remoteAccess.js";
 import {
   CapabilityNameListSchema,
+  INITIAL_REQUIRED_CAPABILITIES,
   SemVerSchema
 } from "../shared/schemas/remoteProtocol.js";
+import {
+  serializeCanonicalContractJson,
+  type ContractJson
+} from "../shared/schemas/remoteProtocolContract.js";
+
+const MAX_COMPATIBILITY_BYTES = 16 * 1024;
 
 const RemoteComponentProtocolsV1Schema = z.object({
   ipc: ProtocolRangeSchema,
@@ -48,6 +58,15 @@ export const RemoteCompatibilityV1Schema = z.object({
       path: ["protocols", "helperManifest"],
       message: "The app must support helper manifest protocol 1.0."
     });
+  }
+  for (const capability of INITIAL_REQUIRED_CAPABILITIES) {
+    if (!value.requiredCapabilities.includes(capability)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["requiredCapabilities"],
+        message: `The app must require ${capability}.`
+      });
+    }
   }
 });
 
@@ -98,6 +117,32 @@ export function parseRemoteCompatibilityV1(
     }),
     requiredCapabilities: Object.freeze([...parsed.requiredCapabilities])
   });
+}
+
+/** Load the exact versioned table shipped beside package.json; never infer an open-ended range. */
+export async function loadRemoteCompatibilityV1(
+  expectedAppVersion: string,
+  filePath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "remote-compatibility.json")
+): Promise<RemoteCompatibilityV1> {
+  const metadata = await lstat(filePath);
+  if (metadata.isSymbolicLink() || !metadata.isFile() || metadata.size < 1 || metadata.size > MAX_COMPATIBILITY_BYTES) {
+    return fail("Remote compatibility file is not a bounded regular file.");
+  }
+  const raw = await readFile(filePath, "utf8");
+  if (Buffer.byteLength(raw, "utf8") > MAX_COMPATIBILITY_BYTES) {
+    return fail("Remote compatibility file exceeds its size limit.");
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    return fail("Remote compatibility file is not valid JSON.");
+  }
+  const parsed = parseRemoteCompatibilityV1(value, expectedAppVersion);
+  if (raw !== `${serializeCanonicalContractJson(value as ContractJson)}\n`) {
+    return fail("Remote compatibility file is not canonical JSON.");
+  }
+  return parsed;
 }
 
 function rangesOverlap(
