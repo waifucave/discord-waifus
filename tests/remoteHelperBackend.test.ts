@@ -55,7 +55,9 @@ function fixture() {
     }),
     stopRuntime: vi.fn(async () => {
       calls.push("stop");
-    })
+    }),
+    requestSignedSelfRevocation: vi.fn(async () => true),
+    forgetRememberedHost: vi.fn(async () => undefined)
   };
   const backend = createRemoteHelperBackend({
     supervisor: helper as never,
@@ -114,8 +116,8 @@ describe("remote helper backend", () => {
     });
   });
 
-  it("stops the old selected pair before switching and never claims forget succeeded", async () => {
-    const { backend, calls } = fixture();
+  it("stops the old selected pair before switching and binds individual forget to its helper pair", async () => {
+    const { backend, helper, calls } = fixture();
     const first = rememberedHostFromCompletedPair({
       operationId,
       pairId,
@@ -137,9 +139,35 @@ describe("remote helper backend", () => {
       `start:${second.helperPairId}`,
       "stop"
     ]);
+    expect(await backend.requestSignedSelfRevocation(first)).toBe(true);
+    expect(helper.requestSignedSelfRevocation).toHaveBeenCalledWith(first.helperPairId);
+    await backend.forgetRememberedHost(first);
+    expect(helper.forgetRememberedHost).toHaveBeenCalledWith(first.helperPairId);
+  });
+
+  it("clears a selected helper runtime after an uncertain revocation or local forget", async () => {
+    const { backend, helper, calls } = fixture();
+    const first = rememberedHostFromCompletedPair({
+      operationId,
+      pairId,
+      hostDisplayName: "Test host",
+      hostPlatform: { os: "linux", arch: "x64" },
+      hostInstallationPublicKey: publicKey,
+      hostInstallationFingerprint: bytes(16, 0x34),
+      hostTrustEpoch: "7",
+      pairedAt: "100"
+    } as never);
+    helper.requestSignedSelfRevocation.mockResolvedValueOnce(false);
+
+    await backend.connectRememberedHost(first);
     expect(await backend.requestSignedSelfRevocation(first)).toBe(false);
-    await expect(backend.forgetRememberedHost(first)).rejects.toMatchObject({
-      code: "helper_unavailable"
-    });
+    await backend.connectRememberedHost(first);
+    await backend.forgetRememberedHost(first);
+    expect(calls).toEqual([
+      `start:${pairId}`,
+      "stop",
+      `start:${pairId}`,
+      "stop"
+    ]);
   });
 });

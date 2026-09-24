@@ -371,6 +371,8 @@ export type AuthenticatedHelperClient = {
   reconnectRuntime: () => Promise<HelperRuntimeStatus>;
   stopRuntime: () => Promise<HelperRuntimeStatus>;
   registerGatewayLaunch: (gatewayLaunchId: string, expiresAt: string) => Promise<void>;
+  requestSignedSelfRevocation: (pairId: string) => Promise<boolean>;
+  forgetRememberedHost: (pairId: string) => Promise<void>;
   createInvitation: (
     actor: HelperConfirmedAdminActor,
     idempotencyKey: string,

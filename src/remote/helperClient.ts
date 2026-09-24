@@ -142,6 +142,8 @@ const HelperCommandFailureSchema = z.object({
     "runtime_reconnect",
     "runtime_stop",
     "register_gateway_launch",
+    "request_signed_self_revocation",
+    "forget_remembered_host",
     "invitation_create",
     "invitation_cancel",
     "pairing_requests_list",
@@ -268,6 +270,17 @@ const RuntimeStatusWireSchema = z.object({
 const RegisterGatewayLaunchWireSchema = z.object({
   command: z.literal("register_gateway_launch"),
   ok: z.literal(true)
+}).strict();
+const RequestSignedSelfRevocationWireSchema = z.object({
+  command: z.literal("request_signed_self_revocation"),
+  ok: z.literal(true),
+  pairId: Base64Url16BytesSchema,
+  signed: z.boolean()
+}).strict();
+const ForgetRememberedHostWireSchema = z.object({
+  command: z.literal("forget_remembered_host"),
+  ok: z.literal(true),
+  pairId: Base64Url16BytesSchema
 }).strict();
 const InvitationCreateWireSchema = PairInvitationV1Schema.extend({
   command: z.literal("invitation_create"),
@@ -402,6 +415,13 @@ function commandResultMatches(
   if (result.command !== command.command) return false;
   for (const field of ["operationId", "invitationId", "requestId", "deviceId"] as const) {
     if (command[field] !== undefined && result[field] !== command[field]) return false;
+  }
+  if (
+    result.ok === true
+    && (command.command === "request_signed_self_revocation" || command.command === "forget_remembered_host")
+    && result.pairId !== command.pairId
+  ) {
+    return false;
   }
   return true;
 }
@@ -1432,6 +1452,23 @@ class ProcessHelperClient implements AuthenticatedHelperClient {
       gatewayLaunchId: Base64Url32BytesSchema.parse(gatewayLaunchId),
       expiresAt: Uint64DecimalSchema.parse(expiresAt)
     }, RegisterGatewayLaunchWireSchema, "register gateway launch RESULT");
+  }
+
+  async requestSignedSelfRevocation(pairIdValue: string): Promise<boolean> {
+    this.#requireRemotePairing();
+    const result = await this.#command({
+      command: "request_signed_self_revocation",
+      pairId: Base64Url16BytesSchema.parse(pairIdValue)
+    }, RequestSignedSelfRevocationWireSchema, "signed self-revocation RESULT");
+    return result.signed;
+  }
+
+  async forgetRememberedHost(pairIdValue: string): Promise<void> {
+    this.#requireRemotePairing();
+    await this.#command({
+      command: "forget_remembered_host",
+      pairId: Base64Url16BytesSchema.parse(pairIdValue)
+    }, ForgetRememberedHostWireSchema, "remembered-host forget RESULT");
   }
 
   async createInvitation(

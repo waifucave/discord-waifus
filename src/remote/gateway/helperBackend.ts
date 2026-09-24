@@ -28,6 +28,8 @@ type RemoteHelper = Pick<HelperSupervisor,
   | "consumeCompletedPair"
   | "startRuntime"
   | "stopRuntime"
+  | "requestSignedSelfRevocation"
+  | "forgetRememberedHost"
 >;
 
 export type RemoteHelperBackendOptions = Readonly<{
@@ -136,11 +138,22 @@ export function createRemoteHelperBackend(
       await supervisor.stopRuntime();
       selectedPairId = undefined;
     },
-    // Signed self-revocation and individual local deny are separate helper IPC
-    // operations. Until those are wired, never claim a successful forget.
-    requestSignedSelfRevocation: async () => false,
-    forgetRememberedHost: async () => {
-      throw new HelperSupervisorError("helper_unavailable", "Individual remembered-host forget is not available yet.");
+    requestSignedSelfRevocation: async (host) => {
+      try {
+        return await supervisor.requestSignedSelfRevocation(host.helperPairId);
+      } finally {
+        if (selectedPairId === host.helperPairId) {
+          selectedPairId = undefined;
+          await supervisor.stopRuntime().catch(() => undefined);
+        }
+      }
+    },
+    forgetRememberedHost: async (host) => {
+      await supervisor.forgetRememberedHost(host.helperPairId);
+      if (selectedPairId === host.helperPairId) {
+        selectedPairId = undefined;
+        await supervisor.stopRuntime().catch(() => undefined);
+      }
     }
   };
 }

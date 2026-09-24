@@ -173,6 +173,14 @@ export async function startRemoteGatewayApplication(
         await helperBackend.disconnectRememberedHost(host);
       });
     },
+    requestSignedSelfRevocation: async (host) => {
+      if (closing) throw new Error("Remote gateway is closing.");
+      if (runtimeHostKey?.hostId === host.hostId) runtimeHostKey = undefined;
+      return serializeSelection(async () => {
+        if (selected?.hostId === host.hostId) await closeSelected();
+        return helperBackend.requestSignedSelfRevocation(host);
+      });
+    },
     forgetRememberedHost: async (host) => {
       if (closing) throw new Error("Remote gateway is closing.");
       if (runtimeHostKey?.hostId === host.hostId) runtimeHostKey = undefined;
