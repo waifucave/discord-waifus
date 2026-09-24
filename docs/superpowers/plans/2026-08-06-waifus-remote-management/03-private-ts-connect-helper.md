@@ -16,7 +16,7 @@
 
 - Go: **1.26.5**
 - Tailscale base: **v1.102.2**, upstream SHA **eb67e5dcbe145d63e1128b9b4b630f8a82da101f**
-- Fork dependency: exact reviewed **HeavenllyDemon/tsnet** commit produced by plan 02
+- Fork dependency: exact reviewed **Winterrks/tsnet** commit produced by plan 02
 - Noise library: **github.com/flynn/noise v1.1.0**, commit **4d9f71cd4ba1fe81415efac312664ccc4bc79b46**
 - Noise cipher suite: **25519 / ChaChaPoly / SHA-256**
 - Full-token handshake: **Noise_XXpsk0_25519_ChaChaPoly_SHA256**
