@@ -734,5 +734,12 @@ capabilityPipe.on("data", (chunk) => {
     void main(capabilityBytes).catch(() => process.exit(74));
   }
 });
-capabilityPipe.on("end", () => process.exit(started ? 70 : 75));
+capabilityPipe.on("end", () => {
+  if (!started) process.exit(75);
+  // A graceful drain closes the authenticated socket and the inherited
+  // liveness pipe almost together. Give the socket close handler priority so
+  // this fixture reports a clean exit deterministically under loaded CI. If
+  // the socket remains open, the parent channel really disappeared first.
+  setTimeout(() => process.exit(70), 100);
+});
 capabilityPipe.on("error", () => process.exit(76));
