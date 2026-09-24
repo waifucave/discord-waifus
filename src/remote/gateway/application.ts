@@ -31,6 +31,7 @@ export type StartRemoteGatewayApplicationOptions = Readonly<{
 export type RunningRemoteGatewayApplication = Readonly<{
   shell: RunningRemoteGateway;
   rememberedHosts: RememberedHostStore;
+  connectRememberedHost: (host: RememberedHostRecordV1) => Promise<void>;
   close: () => Promise<void>;
 }>;
 
@@ -210,6 +211,11 @@ export async function startRemoteGatewayApplication(
   return Object.freeze({
     shell,
     rememberedHosts,
+    connectRememberedHost: async (host: RememberedHostRecordV1) => {
+      if (closing) throw new Error("Remote gateway is closing.");
+      await backend.connectRememberedHost(host);
+      await rememberedHosts.updateConnection(host.hostId, "reconnecting", null, null);
+    },
     close: () => {
       if (closePromise) return closePromise;
       closing = true;

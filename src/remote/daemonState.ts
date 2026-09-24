@@ -56,3 +56,19 @@ export async function publishRemoteDaemonStartup(input: Readonly<{
     await atomicWriteJson(paths.startupHandoff, handoff, { mode: 0o600 });
   });
 }
+
+/** Refresh the public, sanitized status without minting another browser bootstrap token. */
+export async function publishRemoteDaemonState(input: Readonly<{
+  dataRoot: string;
+  runtime: RemoteDaemonState;
+}>): Promise<void> {
+  const dataRoot = path.resolve(input.dataRoot);
+  const runtime = RemoteDaemonStateSchema.parse(input.runtime);
+  if (runtime.dataRoot !== dataRoot) {
+    throw new TypeError("Remote daemon state belongs to another data root.");
+  }
+  const paths = remoteRolePaths(dataRoot, "remote");
+  await new IdentityResetState(dataRoot).runWhileIdle(async () => {
+    await atomicWriteJson(paths.runtimeState, runtime, { mode: 0o600 });
+  });
+}
