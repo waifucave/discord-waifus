@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 
-import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { spawnSync } from "node:child_process";
+import { rewriteRemoteCompatibilityVersion } from "./releaseCompatibility.mjs";
 
 const repo = "waifucave/discord-waifus";
 const npmCache = "/tmp/codex-npm-cache";
@@ -65,19 +66,29 @@ async function main() {
   ensureNoRemoteTag(tag);
   ensureNoRelease(tag);
   ensurePackageVersionMissing(rootPackage, version);
+  rewriteRemoteCompatibilityVersion(
+    readFileSync(join(root, "remote-compatibility.json"), "utf8"),
+    pkg.version,
+    version,
+  );
 
   if (args.dryRun) {
     console.log(`Dry run passed. ${tag} can be released from ${head}.`);
     return;
   }
 
-  bumpVersions(version);
-  const tarball = validateAndPack(version);
-
-  await confirmOrExit(
-    `Validation passed. Push main, create ${tag}, and publish npm packages?`,
-    args.yes,
-  );
+  const restoreVersionEdits = bumpVersions(version);
+  let tarball;
+  try {
+    tarball = validateAndPack(version);
+    await confirmOrExit(
+      `Validation passed. Push main, create ${tag}, and publish npm packages?`,
+      args.yes,
+    );
+  } catch (error) {
+    restoreVersionEdits();
+    throw error;
+  }
 
   stageTrackedReleaseChanges();
   const staged = captureAllowFail("git", ["diff", "--cached", "--stat"]).stdout.trim();
@@ -260,8 +271,58 @@ function isSemver(version) {
 }
 
 function bumpVersions(version) {
-  run("npm", ["version", version, "--no-git-tag-version"]);
-  run("npm", ["install", "--package-lock-only", "--ignore-scripts"]);
+  const paths = ["package.json", "package-lock.json", "remote-compatibility.json"];
+  const originals = new Map(paths.map((filePath) => [filePath, readFileSync(filePath, "utf8")]));
+  const oldPackage = JSON.parse(originals.get("package.json"));
+  const oldLock = JSON.parse(originals.get("package-lock.json"));
+  if (oldPackage.version !== oldLock.version || oldLock.packages?.[""]?.version !== oldPackage.version) {
+    throw new Error("Package and lockfile versions disagree before release.");
+  }
+  const compatibility = rewriteRemoteCompatibilityVersion(
+    originals.get("remote-compatibility.json"),
+    oldPackage.version,
+    version,
+  );
+  const restore = () => {
+    const safeToRestore = [];
+    for (const filePath of paths) {
+      const current = readFileSync(filePath, "utf8");
+      const original = originals.get(filePath);
+      if (current === original) continue;
+      let currentValue;
+      let originalValue;
+      try {
+        currentValue = JSON.parse(current);
+        originalValue = JSON.parse(original);
+      } catch {
+        throw new Error(`Cannot safely restore ${filePath}; its content changed unexpectedly.`);
+      }
+      if (filePath === "package-lock.json") {
+        currentValue.version = originalValue.version;
+        currentValue.packages[""].version = originalValue.packages[""].version;
+      } else if (filePath === "package.json") {
+        currentValue.version = originalValue.version;
+      } else {
+        currentValue.discordWaifusVersion = originalValue.discordWaifusVersion;
+      }
+      if (JSON.stringify(currentValue) !== JSON.stringify(originalValue)) {
+        throw new Error(`Cannot safely restore ${filePath}; non-version content changed during release.`);
+      }
+      safeToRestore.push([filePath, original]);
+    }
+    for (const [filePath, original] of safeToRestore) {
+      writeFileSync(filePath, original);
+    }
+  };
+  try {
+    run("npm", ["version", version, "--no-git-tag-version"]);
+    run("npm", ["install", "--package-lock-only", "--ignore-scripts"]);
+    writeFileSync("remote-compatibility.json", compatibility);
+  } catch (error) {
+    restore();
+    throw error;
+  }
+  return restore;
 }
 
 function validateAndPack(version) {
