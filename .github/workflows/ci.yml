@@ -1,0 +1,43 @@
+name: Discord Waifus CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: discord-waifus-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate public package
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Install Node and npm dependencies
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: npm
+      - name: Install exact dependency tree
+        run: npm ci
+      - name: Reject local dependency references
+        run: node scripts/check-no-file-deps.mjs
+      - name: Verify generated remote contracts
+        run: npm run contracts:remote:check
+      - name: Type-check backend and dashboard
+        run: npm run typecheck
+      - name: Run test suite
+        run: npm test
+      - name: Build all shipped surfaces
+        run: npm run build
+      - name: Audit package inventory
+        run: npm pack --dry-run --json > "${RUNNER_TEMP}/npm-pack.json"
