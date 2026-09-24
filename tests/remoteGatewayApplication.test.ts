@@ -40,7 +40,7 @@ function host(value: number): RememberedHostRecordV1 {
   } as RememberedHostRecordV1;
 }
 
-function request(port: number, path: string, headers: Record<string, string>, body?: unknown): Promise<{
+function request(port: number, path: string, headers: Record<string, string>, body?: unknown, method?: string): Promise<{
   status: number;
   headers: Record<string, string | string[] | undefined>;
   body: string;
@@ -51,7 +51,7 @@ function request(port: number, path: string, headers: Record<string, string>, bo
       host: "127.0.0.1",
       port,
       path,
-      method: encoded === undefined ? "GET" : "POST",
+      method: method ?? (encoded === undefined ? "GET" : "POST"),
       headers: {
         ...headers,
         ...(encoded === undefined ? {} : {
@@ -110,6 +110,8 @@ describe("remote gateway application", () => {
         directState = "direct";
       }),
       stopRuntime: vi.fn(async () => { directState = "inactive"; }),
+      requestSignedSelfRevocation: vi.fn(async () => true),
+      forgetRememberedHost: vi.fn(async () => undefined),
       registerGatewayLaunch: vi.fn(async () => undefined),
       request: vi.fn(async () => { throw new Error("Not expected in this test."); })
     };
@@ -181,5 +183,26 @@ describe("remote gateway application", () => {
     const secondFrame = new URL(String(secondOpen.headers.location));
     expect(secondFrame.origin).not.toBe(firstFrame.origin);
     expect(supervisor.registerGatewayLaunch).toHaveBeenCalledTimes(2);
+
+    const forgotten = await request(
+      application.shell.port,
+      `/_waifus_remote/v1/hosts/${second.hostId}`,
+      { ...headers, "x-waifus-csrf": csrf },
+      { revision: "1", mode: "reachable_first" },
+      "DELETE"
+    );
+    expect(forgotten.status).toBe(200);
+    expect(JSON.parse(forgotten.body)).toMatchObject({
+      state: "forgotten",
+      revocation: "signed_self_revocation"
+    });
+    expect(supervisor.requestSignedSelfRevocation).toHaveBeenCalledWith(second.helperPairId);
+    expect(supervisor.forgetRememberedHost).toHaveBeenCalledWith(second.helperPairId);
+    expect(await hosts.record(second.hostId)).toBeUndefined();
+    await expect(request(
+      Number(secondFrame.port),
+      "/_waifus_remote/session-ready",
+      { host: secondFrame.host, "sec-fetch-site": "none" }
+    )).rejects.toThrow();
   });
 });

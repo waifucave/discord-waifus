@@ -373,6 +373,14 @@ export class HelperSupervisor {
     await this.#readyClient().registerGatewayLaunch(gatewayLaunchId, expiresAt);
   }
 
+  async requestSignedSelfRevocation(pairId: string): Promise<boolean> {
+    return this.#readyClient().requestSignedSelfRevocation(pairId);
+  }
+
+  async forgetRememberedHost(pairId: string): Promise<void> {
+    await this.#readyClient().forgetRememberedHost(pairId);
+  }
+
   async createInvitation(
     actor: HelperConfirmedAdminActor,
     idempotencyKey: string,

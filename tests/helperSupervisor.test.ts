@@ -83,6 +83,8 @@ function helperClient(overrides: Partial<AuthenticatedHelperClient> = {}): Authe
     reconnectRuntime: async () => helperStatus({ controlState: "reconnecting", directState: "reconnecting" }),
     stopRuntime: async () => helperStatus({ controlState: "inactive", directState: "inactive" }),
     registerGatewayLaunch: async () => {},
+    requestSignedSelfRevocation: async () => true,
+    forgetRememberedHost: async () => {},
     createInvitation: async () => ({
       invitationId: Buffer.alloc(16, 0x41).toString("base64url"),
       fullToken: `WF1.${Buffer.alloc(192).toString("base64url")}`,

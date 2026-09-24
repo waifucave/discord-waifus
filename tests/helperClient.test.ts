@@ -480,6 +480,39 @@ describe("protected helper process client", () => {
     await launch.exited;
   });
 
+  unixIt("correlates remote remembered-host revocation and forget to the exact helper pair", async () => {
+    const baseRequest = await launchRequest({ FAKE_HELPER_RUNTIME: "1" });
+    const launch = await new ProtectedHelperProcessFactory().launch({ ...baseRequest, role: "remote" });
+    const client = await launch.authenticated;
+    const pairId = Buffer.alloc(16, 0x64).toString("base64url");
+
+    await expect(client.requestSignedSelfRevocation(pairId)).resolves.toBe(true);
+    await expect(client.forgetRememberedHost(pairId)).resolves.toBeUndefined();
+    await expect(client.forgetRememberedHost("not-a-pair-id")).rejects.toThrow();
+
+    await client.close();
+    await launch.closeParentChannel();
+    await launch.exited;
+  });
+
+  unixIt("rejects a helper that substitutes the pair on a forget result", async () => {
+    const baseRequest = await launchRequest({
+      FAKE_HELPER_RUNTIME: "1",
+      FAKE_HELPER_SWAP_REMEMBERED_PAIR: "1"
+    });
+    const launch = await new ProtectedHelperProcessFactory().launch({ ...baseRequest, role: "remote" });
+    const client = await launch.authenticated;
+    const pairId = Buffer.alloc(16, 0x64).toString("base64url");
+
+    await expect(client.forgetRememberedHost(pairId)).rejects.toMatchObject({
+      code: "helper_incompatible"
+    });
+
+    await client.close();
+    await launch.closeParentChannel();
+    await launch.exited;
+  });
+
   unixIt("does not let a remote-role client attach the host Fastify bridge", async () => {
     const baseRequest = await launchRequest();
     const request: HelperLaunchRequest = { ...baseRequest, role: "remote" };

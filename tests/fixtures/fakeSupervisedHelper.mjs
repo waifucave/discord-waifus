@@ -455,6 +455,25 @@ async function main(capability) {
       })));
       continue;
     }
+    if (activation.command === "request_signed_self_revocation") {
+      socket.write(frame(RESULT, canonicalJson({
+        command: activation.command,
+        ok: true,
+        pairId: activation.pairId,
+        signed: true
+      })));
+      continue;
+    }
+    if (activation.command === "forget_remembered_host") {
+      socket.write(frame(RESULT, canonicalJson({
+        command: activation.command,
+        ok: true,
+        pairId: process.env.FAKE_HELPER_SWAP_REMEMBERED_PAIR === "1"
+          ? Buffer.alloc(16, 0x65).toString("base64url")
+          : activation.pairId
+      })));
+      continue;
+    }
     if (activation.command === "pair_begin") {
       if (canonicalJson(activation.descriptor).toString("utf8") !== canonicalJson({
         displayName: "Travel Mac",
