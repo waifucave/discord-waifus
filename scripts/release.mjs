@@ -7,6 +7,7 @@ import { join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { spawnSync } from "node:child_process";
+import { auditRootPackageInventory } from "./audit-root-package.mjs";
 import { rewriteRemoteCompatibilityVersion } from "./releaseCompatibility.mjs";
 
 const repo = "waifucave/discord-waifus";
@@ -333,6 +334,11 @@ function validateAndPack(version) {
   run("npm", ["run", "typecheck"]);
   run("npm", ["test"]);
   run("npm", ["run", "build"]);
+  auditRootPackageInventory(JSON.parse(capture(
+    "npm",
+    ["pack", "--dry-run", "--json"],
+    { npmCache: true },
+  )));
   mkdirSync(releaseArtifactsDir, { recursive: true });
   run("npm", ["pack", "--pack-destination", releaseArtifactsDir], { npmCache: true });
 

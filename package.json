@@ -47,6 +47,7 @@
     "dist/",
     "dist-frontend/",
     "dist-remote-shell/",
+    "contracts/remote/v1/",
     "remote-compatibility.json",
     "assets/ocr/",
     "docs/assistant-kb/",
