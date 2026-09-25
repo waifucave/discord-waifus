@@ -40,4 +40,8 @@ jobs:
       - name: Build all shipped surfaces
         run: npm run build
       - name: Audit package inventory
-        run: npm pack --dry-run --json > "${RUNNER_TEMP}/npm-pack.json"
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm pack --dry-run --json > "${RUNNER_TEMP}/npm-pack.json"
+          node scripts/audit-root-package.mjs "${RUNNER_TEMP}/npm-pack.json"
