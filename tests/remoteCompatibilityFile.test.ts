@@ -29,7 +29,7 @@ describe("shipped remote compatibility table", () => {
         minimumVersion: "0.1.0",
         maximumVersionExclusive: "0.2.0",
         minimumReleaseSequence: "1",
-        workerTrustRingSha256: "26d6afdf3ccb12a14a06c7a5edf61221b3db3255b814926d7fe006cdb9ced245"
+        workerTrustRingSha256: "3e9dbb617de4046dfd73420b6e938e462f45107df31ea674aef7c37160ee418a"
       }
     });
     expect(compatibility.requiredCapabilities).toEqual(INITIAL_REQUIRED_CAPABILITIES);
