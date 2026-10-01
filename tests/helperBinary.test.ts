@@ -257,6 +257,25 @@ describe("root remote compatibility", () => {
 });
 
 describe("signed ts-connect package resolution", () => {
+  it("rejects the superseded 0.1.0 native candidate before executing its version probe", async () => {
+    const fixture = await trustFixture();
+    const valid = object(fixture.valid, "valid fixture");
+    const root = await makeTempRoot("waifus-superseded-helper-");
+    roots.push(root);
+    const packageRoot = path.join(root, "package");
+    const appVersion = await readPackageVersion();
+    const compatibility = await loadRemoteCompatibilityV1(appVersion);
+    const changed = await signedVariant(fixture, (manifest) => {
+      manifest.workerTrustRingSha256 = compatibility.helper.workerTrustRingSha256;
+    });
+    await createFixturePackage(packageRoot, valid, { manifestBytes: changed.manifestBytes, signatures: changed.signatures });
+    const probeBinary = vi.fn(async () => changed.embeddedBuildInfo);
+    await expect(resolveTsConnectBinary({
+      ...resolverOptions(packageRoot, valid), appVersion, compatibility, probeBinary
+    })).rejects.toMatchObject({ code: "helper_incompatible" });
+    expect(probeBinary).not.toHaveBeenCalled();
+  });
+
   it("builds the production resolver from the exact shipped compatibility table", async () => {
     const fixture = await trustFixture();
     const valid = object(fixture.valid, "valid fixture");
@@ -266,6 +285,7 @@ describe("signed ts-connect package resolution", () => {
     const appVersion = await readPackageVersion();
     const compatibility = await loadRemoteCompatibilityV1(appVersion);
     const changed = await signedVariant(fixture, (manifest) => {
+      manifest.helperVersion = "0.1.1";
       manifest.workerTrustRingSha256 = compatibility.helper.workerTrustRingSha256;
     });
     await createFixturePackage(packageRoot, valid, {
@@ -288,7 +308,7 @@ describe("signed ts-connect package resolution", () => {
       appVersion
     })).resolves.toMatchObject({
       binaryPath: path.join(packageRoot, "bin", "ts-connect"),
-      helperVersion: "0.1.0",
+      helperVersion: "0.1.1",
       releaseSequence: "42"
     });
     await expect(resolver.resolve({
