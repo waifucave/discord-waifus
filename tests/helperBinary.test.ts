@@ -12,6 +12,7 @@ import {
   supportedHelperTarget
 } from "../src/remote/helperBinary.js";
 import { createProductionHelperPackageResolver } from "../src/remote/productionHelper.js";
+import { readPackageVersion } from "../src/config/layout.js";
 import { verifyHelperPackageManifest } from "../src/remote/helperPackageManifest.js";
 import {
   HELPER_CONTROL_PROFILES_V1,
@@ -262,7 +263,8 @@ describe("signed ts-connect package resolution", () => {
     const root = await makeTempRoot("waifus-production-helper-package-");
     roots.push(root);
     const packageRoot = path.join(root, "package");
-    const compatibility = await loadRemoteCompatibilityV1("1.5.203");
+    const appVersion = await readPackageVersion();
+    const compatibility = await loadRemoteCompatibilityV1(appVersion);
     const changed = await signedVariant(fixture, (manifest) => {
       manifest.workerTrustRingSha256 = compatibility.helper.workerTrustRingSha256;
     });
@@ -272,7 +274,7 @@ describe("signed ts-connect package resolution", () => {
     });
 
     const resolver = await createProductionHelperPackageResolver({
-      appVersion: "1.5.203",
+      appVersion,
       trustRoots: valid.trustEntries as HelperReleaseTrustEntryV1[],
       platform: "linux",
       arch: "x64",
@@ -283,7 +285,7 @@ describe("signed ts-connect package resolution", () => {
     await expect(resolver.resolve({
       role: "remote",
       dataRoot: root,
-      appVersion: "1.5.203"
+      appVersion
     })).resolves.toMatchObject({
       binaryPath: path.join(packageRoot, "bin", "ts-connect"),
       helperVersion: "0.1.0",

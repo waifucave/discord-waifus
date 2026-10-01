@@ -282,7 +282,7 @@ export class AssistantActionStore {
     const liveCount = [...this.records.values()].filter(isLive).length;
     if (liveCount >= MAX_ASSISTANT_ACTIONS) throw new AssistantActionCapacityError();
 
-    const actionId = this.newToken(32, Base64Url32BytesSchema);
+    const actionId = this.newToken(32, Base64Url32BytesSchema, true);
     const idempotencyKey = this.newToken(32, Base64Url32BytesSchema);
     const createdAt = new Date(now).toISOString();
     const expiresAtMs = now + ASSISTANT_ACTION_TTL_MS;
@@ -461,10 +461,15 @@ export class AssistantActionStore {
 
   private newToken<T extends string>(
     size: number,
-    schema: { parse(value: unknown): T }
+    schema: { parse(value: unknown): T },
+    requireDelegationIdentifier = false
   ): T {
-    for (let attempt = 0; attempt < 4; attempt += 1) {
+    for (let attempt = 0; attempt < (requireDelegationIdentifier ? 32 : 4); attempt += 1) {
       const token = schema.parse(Buffer.from(this.random(size)).toString("base64url"));
+      // Pending action IDs are forwarded through the stricter delegation schemas.
+      // Resample the two non-alphanumeric leading encodings without changing the
+      // canonical 32-byte token shape or weakening downstream identifier validation.
+      if (requireDelegationIdentifier && !/^[A-Za-z0-9]/u.test(token)) continue;
       if (!this.records.has(token)) return token;
     }
     throw new AssistantActionCapacityError("Could not allocate a unique assistant action ID.");
