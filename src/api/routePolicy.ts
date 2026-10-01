@@ -13,6 +13,7 @@ import {
 } from "./requestPrincipal.js";
 import type { BrowserSecurity } from "./browserSecurity.js";
 import {
+  GATEWAY_METHODS,
   expectedRoutePolicyInventory,
   type GatewaySemanticRoutePolicy,
   type RetryClass,
@@ -150,9 +151,21 @@ export function installRoutePolicy(
   registerInternalDispatchReceiver(app);
 
   app.addHook("onRoute", (routeOptions) => {
-    const methods = Array.isArray(routeOptions.method)
+    let methods = Array.isArray(routeOptions.method)
       ? routeOptions.method
       : [routeOptions.method];
+    const wildcard = options.manifest.find((definition) => (
+      !definition.synthetic && definition.method === "*" && definition.path === routeOptions.url
+    ));
+    if (wildcard) {
+      // The upstream adapter uses app.all(), whose method set can grow in later Fastify
+      // releases. Register only the reviewed methods, not newly supported upstream verbs.
+      methods = methods.filter((method) => GATEWAY_METHODS.includes(String(method).toUpperCase()));
+      if (methods.length === 0) {
+        throw new Error(`Unclassified Fastify route method: ${routeOptions.url}`);
+      }
+      routeOptions.method = methods;
+    }
     const definitions = methods.map((method) => findDefinition(
       options.manifest,
       String(method).toUpperCase(),
