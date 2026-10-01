@@ -18,6 +18,22 @@ real macOS and Windows targets without telling users to disable Gatekeeper or Sm
 some managed or Smart App Control-enforced devices may block unsigned executables, which must be
 reported honestly rather than bypassed.
 
+**2026-09-30 user decision:** Initial helper releases are signed locally on the owner's Mac.
+GitHub continues to build and test the unsigned candidate set; it receives no release private key.
+The signing workspace is owned/mode 0700, the temporary seed is mode 0600, and recovery is saved in
+Apple Passwords and independently read back before signing. Review the public fingerprint, exact
+source/build-run identity, immutable six-binary hashes, public trust diff, and app compatibility
+bounds before use. Local signing replaces the private GitHub Environment signing requirements
+below because the current GitHub plan cannot provide that protected environment. It does not
+remove the manifest, signature, immutable-byte, platform, staging/production, or publication gates.
+No Apple Passwords interaction is part of a user's ordinary remote connection.
+
+The reviewed initial candidate is helper **0.1.0**, sequence **1**, source
+**070581ff0fb267d71071543cdfa70b53f9714b74**, signed release timestamp
+**2026-09-30T21:51:16Z**. Lock the root beta to **1.5.204** and the helper's maximum-exclusive
+compatible app version to **1.6.0** before signing; the root version cut remains the later release
+step after the preceding gates.
+
 ## Locked Release Model
 
 - Helper packages use one independent SemVer as a release set. Initial beta set: **0.1.0**.
