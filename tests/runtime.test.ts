@@ -2867,6 +2867,7 @@ describe("RuntimeOrchestrator", () => {
       }
     });
 
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     await runtime.handleDiscordMessage({
       guildId: "guild-1",
       channelId: "channel-1",
@@ -2876,10 +2877,11 @@ describe("RuntimeOrchestrator", () => {
     });
     expect(stageCalls).toBe(0);
 
+    await vi.advanceTimersByTimeAsync(120);
     await waitForStageCalls(1);
     expect(stageCalls).toBe(1);
 
-    await new Promise((resolve) => setTimeout(resolve, 200));
+    await vi.advanceTimersByTimeAsync(200);
     expect(stageCalls).toBe(1);
     await runtime.stop();
   });
@@ -2930,6 +2932,7 @@ describe("RuntimeOrchestrator", () => {
       }
     });
 
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     await runtime.handleDiscordMessage({
       guildId: "guild-1",
       channelId: "channel-1",
@@ -2937,7 +2940,7 @@ describe("RuntimeOrchestrator", () => {
       authorId: "u1",
       authorBot: false
     });
-    await new Promise((resolve) => setTimeout(resolve, 400));
+    await vi.advanceTimersByTimeAsync(400);
     await runtime.handleDiscordMessage({
       guildId: "guild-1",
       channelId: "channel-1",
@@ -2945,12 +2948,13 @@ describe("RuntimeOrchestrator", () => {
       authorId: "u1",
       authorBot: false
     });
-    await new Promise((resolve) => setTimeout(resolve, 700));
+    await vi.advanceTimersByTimeAsync(700);
     expect(stageCalls).toBe(0);
 
+    await vi.advanceTimersByTimeAsync(300);
     await waitForStageCalls(1);
     expect(stageCalls).toBe(1);
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    await vi.advanceTimersByTimeAsync(250);
     expect(stageCalls).toBe(1);
     await runtime.stop();
   });
@@ -2989,6 +2993,7 @@ describe("RuntimeOrchestrator", () => {
       }
     });
 
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     await runtime.handleDiscordMessage({
       guildId: "guild-1",
       channelId: "channel-1",
@@ -2996,7 +3001,7 @@ describe("RuntimeOrchestrator", () => {
       authorId: "u1",
       authorBot: false
     });
-    await new Promise((resolve) => setTimeout(resolve, 80));
+    await vi.advanceTimersByTimeAsync(80);
     expect(stageCalls).toBe(0);
 
     await enableWaifus(storage, ["yuki"]);
@@ -3008,7 +3013,7 @@ describe("RuntimeOrchestrator", () => {
       authorBot: false
     });
     await runtime.pause();
-    await new Promise((resolve) => setTimeout(resolve, 120));
+    await vi.advanceTimersByTimeAsync(120);
     expect(stageCalls).toBe(0);
   });
 

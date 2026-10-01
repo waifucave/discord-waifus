@@ -15,6 +15,7 @@ import {
 import { createApiServer } from "../src/api/server.js";
 import { dispatchInternal } from "../src/api/internalDispatch.js";
 import {
+  AssistantDelegationSchema,
   createLocalRequestPrincipal,
   createRemoteRequestPrincipal
 } from "../src/api/requestPrincipal.js";
@@ -393,6 +394,18 @@ async function createRemoteActionConversation(app: Awaited<ReturnType<typeof mak
 }
 
 describe("AssistantActionStore", () => {
+  it.each([0xfb, 0xff])("resamples action IDs whose random encoding cannot be forwarded as delegation (%s)", (invalidByte) => {
+    let calls = 0;
+    const store = new AssistantActionStore({ randomBytes: (size) => (
+      Buffer.alloc(size, calls++ === 0 ? invalidByte : calls)
+    ) });
+    const created = store.create({ principal: localPrincipal(), delegation, proposal: proposal() });
+    expect(() => AssistantDelegationSchema.parse({ ...delegation, pendingActionId: created.actionId }))
+      .not.toThrow();
+    expect(Buffer.from(created.actionId, "base64url")).toHaveLength(32);
+    expect(store.beginConsume(created.actionId, localPrincipal()).actionId).toBe(created.actionId);
+  });
+
   it("binds immutable exact actions to browser launch, session, actor, and trust epoch", () => {
     const now = 1_800_000_000_000;
     const store = new AssistantActionStore({ now: () => now, randomBytes: deterministicRandom() });
