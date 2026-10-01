@@ -29,7 +29,9 @@ export type RoutePolicyDefinition = {
   readonly synthetic?: "not_found";
 };
 
-const GATEWAY_METHODS = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT", "TRACE"];
+export const GATEWAY_METHODS = Object.freeze([
+  "DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT", "TRACE"
+]);
 
 function inventoryKey(method: string, path: string): string {
   return `${method.toUpperCase()} ${path}`;

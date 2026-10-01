@@ -65,6 +65,25 @@ async function makeApp() {
 }
 
 describe("route policy inventory", () => {
+  it("keeps gateway wildcard methods bounded when Fastify adds QUERY support", async () => {
+    const app = fastify({ logger: false });
+    apps.push(app);
+    app.addHttpMethod("QUERY", { hasBody: true });
+    const registration = installRoutePolicy(app, {
+      manifest: ROUTE_POLICY_MANIFEST.filter((definition) => (
+        definition.path === "/api/llm/*" || definition.synthetic === "not_found"
+      )),
+      browserSecurity: new BrowserSecurity({ listenerHost: "127.0.0.1", port: 3888, mode: "test" })
+    });
+    app.all("/api/llm/*", async () => ({ ok: true }));
+    registration.registerNotFound();
+    expect(() => registration.assertComplete()).not.toThrow();
+    const query = await app.inject({ method: "QUERY" as never, url: "/api/llm/v1/models" });
+    expect(query.statusCode).toBe(404);
+    const models = await app.inject({ method: "GET", url: "/api/llm/v1/models" });
+    expect(models.statusCode).toBe(200);
+  });
+
   it("matches every registered route, automatic HEAD route, gateway wildcard, and not-found policy", async () => {
     const app = await makeApp();
     expect(getRegisteredRoutePolicyInventory(app)).toEqual(EXPECTED_ROUTE_POLICY_INVENTORY);
