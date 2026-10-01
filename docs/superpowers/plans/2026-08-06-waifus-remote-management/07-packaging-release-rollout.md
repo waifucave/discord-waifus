@@ -29,8 +29,9 @@ remove the manifest, signature, immutable-byte, platform, staging/production, or
 No Apple Passwords interaction is part of a user's ordinary remote connection.
 
 The reviewed initial candidate is helper **0.1.0**, sequence **1**, source
-**070581ff0fb267d71071543cdfa70b53f9714b74**, signed release timestamp
-**2026-09-30T21:51:16Z**. Lock the root beta to **1.5.204** and the helper's maximum-exclusive
+**297a1ee744b8299522d064e7dd17af14d284d100**, signed release timestamp
+**2026-10-01T15:49:26Z**. This replacement fixes authenticated profile selection; the first
+unpublished candidate is superseded. Lock the root beta to **1.5.204** and the helper's maximum-exclusive
 compatible app version to **1.6.0** before signing; the root version cut remains the later release
 step after the preceding gates.
 
