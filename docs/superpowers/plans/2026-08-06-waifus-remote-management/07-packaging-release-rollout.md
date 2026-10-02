@@ -449,6 +449,17 @@ promoted together to **latest**. Discord Waifus is still unpublished.
 
 ## Task 8: Pin helpers and harden the Discord Waifus release path
 
+**2026-10-02 implementation checkpoint:** Registry metadata/lock-integrity checks, five-target
+signed-content verification, a shared in-memory/on-disk version transaction, normal-profile
+native launch/cold-restart smoke, and the five-platform pre-publication workflow are implemented.
+The native smoke requires the actual installed app to declare its exact optional helper pin;
+the earlier local validation tarball intentionally fails that packaging gate. Source helper
+pins and their registry lock entries still await publication of the verified helper set.
+No registry/native-platform/production qualification is implied by local fixtures or YAML checks.
+The Linux supervisor now forwards only validated Unix D-Bus addresses for native Secret Service.
+Normal helper shutdown follows its documented parent-loss exit policy (0 or70), with bounded
+termination, no forced kill, disabled supervisor state, and no scheduled restart.
+
 **Public waifucave/discord-waifus files:**
 
 - Modify: **package.json**, **package-lock.json**

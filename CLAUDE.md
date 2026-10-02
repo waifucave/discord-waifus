@@ -12,6 +12,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `npm run dev:frontend` — Vite dashboard on `:5173`, proxies `/api` to `127.0.0.1:3888`. Pair with `npm run waifus -- dev` for end-to-end iteration.
 - `npm run release:beta -- <version> --yes --message "..."` — full release from a clean `main`: validates (tests, build, `check-no-file-deps`), packs, pushes the `v<version>` tag, and the GitHub workflow publishes the tarball to npm (`npm publish <tarball>` runs no lifecycle scripts, so `prepublishOnly` never fires on that path). Deploying to a machine is a separate manual `npm install -g @waifucave/discord-waifus@<version>` + `waifus restart`.
 
+Remote releases additionally require all five exact optional helper pins and matching registry
+integrities/signatures/compatibility before packing. `release:beta --dry-run` checks the proposed
+version in memory without changing tracked version files. The root publish workflow requires
+installed-helper launch/cold-restart checks on every native target before using `NPM_TOKEN`.
+Absent registry helper packages are an expected release blocker until helper publication.
+
 `DC_WAIFUS_HOME=PATH` overrides the default `~/.dc-waifus` data root. Tests should use isolated roots via helpers in `tests/testUtils.ts` and clean up in `afterEach`.
 
 ## Architecture
@@ -55,6 +61,9 @@ hashes, target metadata, and embedded build info before execution. The five V1 t
 ARM64, Windows x64/ARM64, and Linux x64/ARM64. Intel macOS and Linux ARMv7 are later follow-ups
 and must never fall back to the ARM64 helper. ARMv7 was explicitly deferred on 2026-10-02 because
 real-device validation hardware was unavailable; no ARMv7 package ships in this initial set.
+The helper child receives only a validated local Unix D-Bus session address on Linux, so native
+Secret Service works without inheriting the parent's credential environment. The existing
+protected-file fallback remains available when no usable native session bus exists.
 
 ## Conventions
 

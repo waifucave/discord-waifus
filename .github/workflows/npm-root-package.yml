@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Release tag whose root package tarball should be published."
+        description: "Plain vSemVer release tag whose verified root tarball should be published."
         required: true
         type: string
 
@@ -18,57 +18,197 @@ env:
   NPM_CONFIG_PROGRESS: "false"
 
 jobs:
-  publish:
-    name: Publish root package
-    runs-on: ubuntu-latest
+  prepare:
+    name: Verify immutable release asset and all five helpers
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    outputs:
+      release_tag: ${{ steps.validate.outputs.release_tag }}
+      sha256: ${{ steps.asset.outputs.sha256 }}
+      package_name: ${{ steps.asset.outputs.package_name }}
     steps:
+      - name: Validate release tag
+        id: validate
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +x
+          if [[ ! "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::Invalid plain vSemVer release tag."
+            exit 1
+          fi
+          echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.validate.outputs.release_tag }}
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
-          registry-url: https://registry.npmjs.org
+          node-version: 24
 
-      - name: Validate release tag
-        env:
-          RELEASE_TAG: ${{ inputs.release_tag }}
-        shell: bash
-        run: |
-          set +x
-          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
-            echo "::error::Invalid release tag."
-            exit 1
-          fi
-
-      - name: Download root release asset
+      - name: Resolve and download exactly one root release tarball
+        id: asset
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_TAG: ${{ steps.validate.outputs.release_tag }}
         shell: bash
         run: |
+          set -euo pipefail
           set +x
-          version="${RELEASE_TAG#v}"
           mkdir -p artifacts
-          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "*-discord-waifus-${version}.tgz" --dir artifacts
-          shopt -s nullglob
-          assets=(artifacts/*-discord-waifus-"${version}".tgz)
-          if [[ "${#assets[@]}" -ne 1 ]]; then
-            echo "::error::Expected exactly one root package asset, found ${#assets[@]}."
-            printf '%s\n' "${assets[@]}"
-            exit 1
-          fi
-          package_name="$(tar -xOf "${assets[0]}" package/package.json | node -e 'const fs = require("node:fs"); console.log(JSON.parse(fs.readFileSync(0, "utf8")).name);')"
-          echo "ROOT_PACKAGE_ASSET=${assets[0]}" >> "$GITHUB_ENV"
-          echo "ROOT_PACKAGE_NAME=$package_name" >> "$GITHUB_ENV"
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json tagName,assets > "$RUNNER_TEMP/release.json"
+          asset_name="$(node --input-type=module -e '
+            import fs from "node:fs";
+            const release = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+            const tag = process.env.RELEASE_TAG;
+            const names = ["waifucave", "starlight-ai"].map(scope => `${scope}-discord-waifus-${tag.slice(1)}.tgz`);
+            const matches = release.assets.filter(asset => names.includes(asset.name));
+            if (release.tagName !== tag || matches.length !== 1) throw new Error("Expected exactly one root release asset.");
+            process.stdout.write(matches[0].name);
+          ' "$RUNNER_TEMP/release.json")"
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$asset_name" --dir artifacts
+          mv "artifacts/$asset_name" artifacts/root-package.tgz
+          tar -xOf artifacts/root-package.tgz package/package.json > "$RUNNER_TEMP/root-package.json"
+          node --input-type=module -e '
+            import fs from "node:fs";
+            import crypto from "node:crypto";
+            const pkg = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+            if (!["@waifucave/discord-waifus", "@starlight-ai/discord-waifus"].includes(pkg.name)
+              || pkg.version !== process.env.RELEASE_TAG.slice(1)) throw new Error("Root asset identity mismatch.");
+            const digest = crypto.createHash("sha256").update(fs.readFileSync("artifacts/root-package.tgz")).digest("hex");
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `sha256=${digest}\npackage_name=${pkg.name}\n`);
+          ' "$RUNNER_TEMP/root-package.json"
 
+      - name: Install root asset and preflight every published helper
+        env:
+          PACKAGE_NAME: ${{ steps.asset.outputs.package_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --prefix "$RUNNER_TEMP/waifus-install" --include=optional --ignore-scripts --no-package-lock ./artifacts/root-package.tgz
+          node scripts/preflight-remote-helpers.mjs "$RUNNER_TEMP/waifus-install/node_modules/$PACKAGE_NAME" "$GITHUB_WORKSPACE/package-lock.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: verified-root-package
+          path: artifacts/root-package.tgz
+          if-no-files-found: error
+          retention-days: 7
+
+  native-smoke:
+    name: Native installed helper (${{ matrix.platform }}/${{ matrix.arch }})
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Native hosted labels: https://docs.github.com/en/actions/reference/runners/github-hosted-runners
+          - { runner: macos-15, platform: darwin, arch: arm64 }
+          - { runner: windows-2025, platform: win32, arch: x64 }
+          - { runner: windows-11-arm, platform: win32, arch: arm64 }
+          - { runner: ubuntu-24.04, platform: linux, arch: x64 }
+          - { runner: ubuntu-24.04-arm, platform: linux, arch: arm64 }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.release_tag }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          architecture: ${{ matrix.arch }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: verified-root-package
+          path: artifacts
+      - name: Assert native process and pinned root tarball digest
+        env:
+          EXPECTED_PLATFORM: ${{ matrix.platform }}
+          EXPECTED_ARCH: ${{ matrix.arch }}
+          EXPECTED_SHA256: ${{ needs.prepare.outputs.sha256 }}
+        shell: bash
+        run: |
+          node --input-type=module -e '
+            import fs from "node:fs";
+            import crypto from "node:crypto";
+            const digest = crypto.createHash("sha256").update(fs.readFileSync("artifacts/root-package.tgz")).digest("hex");
+            if (process.platform !== process.env.EXPECTED_PLATFORM || process.arch !== process.env.EXPECTED_ARCH
+              || digest !== process.env.EXPECTED_SHA256) throw new Error("Native architecture or release digest mismatch.");
+          '
+      - name: Install verified root tarball with native optional helper
+        shell: bash
+        run: npm install --prefix "$RUNNER_TEMP/waifus-install" --include=optional --ignore-scripts --no-package-lock ./artifacts/root-package.tgz
+      - name: Prepare real Linux Secret Service
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq dbus-x11 gnome-keyring libsecret-tools
+      - name: Launch and cold restart installed helper using native secret storage
+        env:
+          PACKAGE_NAME: ${{ needs.prepare.outputs.package_name }}
+          EXPECTED_PLATFORM: ${{ matrix.platform }}
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +x
+          installed_root="$RUNNER_TEMP/waifus-install/node_modules/$PACKAGE_NAME"
+          if [[ "$EXPECTED_PLATFORM" == "linux" ]]; then
+            # Disposable D-Bus session and real unlocked Secret Service, no fake vault.
+            export XDG_RUNTIME_DIR="$(mktemp -d /tmp/wh-dbus.XXXXXX)"
+            export XDG_DATA_HOME="$(mktemp -d /tmp/wh-keyring.XXXXXX)"
+            trap 'rm -rf "$XDG_RUNTIME_DIR" "$XDG_DATA_HOME"' EXIT
+            dbus-run-session -- bash -euo pipefail -c '
+              eval "$(printf "\n" | gnome-keyring-daemon --unlock --components=secrets)"
+              node scripts/smoke-remote-helper.mjs "$1" "$2" "$3"
+            ' smoke "$installed_root" "$EXPECTED_PLATFORM" "$EXPECTED_ARCH"
+          else
+            node scripts/smoke-remote-helper.mjs "$installed_root" "$EXPECTED_PLATFORM" "$EXPECTED_ARCH"
+          fi
+
+  publish:
+    name: Publish root package after all five native gates
+    needs: [prepare, native-smoke]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.release_tag }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - uses: actions/download-artifact@v4
+        with:
+          name: verified-root-package
+          path: artifacts
+      - name: Recheck pinned digest immediately before publication
+        env:
+          EXPECTED_SHA256: ${{ needs.prepare.outputs.sha256 }}
+        shell: bash
+        run: |
+          node --input-type=module -e '
+            import fs from "node:fs";
+            import crypto from "node:crypto";
+            if (crypto.createHash("sha256").update(fs.readFileSync("artifacts/root-package.tgz")).digest("hex")
+              !== process.env.EXPECTED_SHA256) throw new Error("Root release digest mismatch.");
+          '
       - name: Publish root package to npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+          PACKAGE_NAME: ${{ needs.prepare.outputs.package_name }}
         shell: bash
         run: |
+          set -euo pipefail
           set +x
           version="${RELEASE_TAG#v}"
-          if npm view "$ROOT_PACKAGE_NAME@$version" version --silent >/dev/null 2>&1; then
-            echo "$ROOT_PACKAGE_NAME@$version already published; skipping."
+          if npm view "$PACKAGE_NAME@$version" version --silent >/dev/null 2>&1; then
+            echo "$PACKAGE_NAME@$version already published; skipping."
           else
-            npm publish "./$ROOT_PACKAGE_ASSET" --access public
+            npm publish ./artifacts/root-package.tgz --access public
           fi
