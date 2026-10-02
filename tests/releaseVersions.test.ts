@@ -1,11 +1,12 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import fs from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { beginReleaseVersionUpdate, prepareReleaseVersionFiles } from "../scripts/releaseVersions.mjs";
 
 const roots: string[] = [];
-afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
+afterEach(async () => { vi.restoreAllMocks(); await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
 async function fixture() {
   const root = await mkdtemp(path.join(tmpdir(), "waifus-release-version-"));
   roots.push(root);
@@ -19,6 +20,33 @@ async function fixture() {
 }
 
 describe("release version transaction", () => {
+  it("preserves every original after a partial preparation write", async () => {
+    const { root, originals } = await fixture();
+    const originalWrite = fs.writeFileSync;
+    let writes = 0;
+    vi.spyOn(fs, "writeFileSync").mockImplementation((file, value, options) => {
+      if (++writes === 2) {
+        originalWrite(file, "{");
+        throw Object.assign(new Error("simulated full disk"), { code: "ENOSPC" });
+      }
+      return originalWrite(file, value, options);
+    });
+    expect(() => beginReleaseVersionUpdate(root, "1.5.204")).toThrow("simulated full disk");
+    for (const [name, value] of originals) expect(await readFile(path.join(root, name), "utf8")).toBe(value);
+  });
+
+  it("rolls back completed replacements when a later replacement fails", async () => {
+    const { root, originals } = await fixture();
+    const originalRename = fs.renameSync;
+    let replacements = 0;
+    vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
+      if (++replacements === 2) throw new Error("simulated replacement failure");
+      return originalRename(from, to);
+    });
+    expect(() => beginReleaseVersionUpdate(root, "1.5.204")).toThrow("simulated replacement failure");
+    for (const [name, value] of originals) expect(await readFile(path.join(root, name), "utf8")).toBe(value);
+  });
+
   it.each(["1.5.001", "v1.5.204", "1.5.204-beta", "../bad"])("rejects non-plain version %s before edits", async (version) => {
     const { root, originals } = await fixture();
     expect(() => beginReleaseVersionUpdate(root, version)).toThrow(/plain SemVer/u);

@@ -96,6 +96,7 @@ async function main() {
     restoreVersionEdits();
     throw error;
   }
+  restoreVersionEdits.finish();
 
   stageTrackedReleaseChanges();
   const staged = captureAllowFail("git", ["diff", "--cached", "--stat"]).stdout.trim();

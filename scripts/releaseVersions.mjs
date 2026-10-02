@@ -1,4 +1,5 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import fs from "node:fs";
+import { randomBytes } from "node:crypto";
 import path from "node:path";
 import { rewriteRemoteCompatibilityVersion } from "./releaseCompatibility.mjs";
 
@@ -27,34 +28,65 @@ export function prepareReleaseVersionFiles(originals, version) {
 }
 
 export function beginReleaseVersionUpdate(root, version) {
-  const originals = new Map(RELEASE_VERSION_FILES.map((name) => [name, readFileSync(path.join(root, name), "utf8")]));
+  const originals = new Map(RELEASE_VERSION_FILES.map((name) => [name, fs.readFileSync(path.join(root, name), "utf8")]));
   const prepared = prepareReleaseVersionFiles(originals, version);
-  const restore = () => {
-    const safe = [];
+  const ownedTemps = new Set();
+  const stages = [];
+  const cleanup = () => {
+    for (const file of ownedTemps) fs.rmSync(file, { force: true });
+    ownedTemps.clear();
+  };
+  function stage(name, contents, mode) {
+    const file = path.join(root, `.${name}.waifus-release-${randomBytes(12).toString("hex")}.tmp`);
+    const fd = fs.openSync(file, "wx", mode);
+    ownedTemps.add(file);
+    try { fs.writeFileSync(fd, contents, "utf8"); fs.fsyncSync(fd); }
+    finally { fs.closeSync(fd); }
+    return file;
+  }
+  // Complete every new file and recovery copy before replacing any original.
+  // Renames are atomic per file; this is not a multi-file crash-recovery journal.
+  try {
     for (const name of RELEASE_VERSION_FILES) {
-      const current = readFileSync(path.join(root, name), "utf8");
-      const original = originals.get(name);
-      if (current === original) continue;
-      let value, previous;
-      try { value = JSON.parse(current); previous = JSON.parse(original); }
-      catch { throw new Error(`Cannot safely restore ${name}; its content changed unexpectedly.`); }
-      if (name === "remote-compatibility.json") value.discordWaifusVersion = previous.discordWaifusVersion;
-      else {
-        value.version = previous.version;
-        if (name === "package-lock.json") value.packages[""].version = previous.packages[""].version;
-      }
-      if (JSON.stringify(value) !== JSON.stringify(previous)) {
-        throw new Error(`Cannot safely restore ${name}; non-version content changed during release.`);
-      }
-      safe.push([name, original]);
+      const target = path.join(root, name);
+      const info = fs.lstatSync(target);
+      if (!info.isFile() || info.isSymbolicLink()) throw new Error(`Release metadata must be a regular file: ${name}`);
+      const next = stage(name, prepared.get(name), info.mode & 0o777);
+      const backup = stage(name, originals.get(name), info.mode & 0o777);
+      stages.push({ name, target, next, backup });
     }
-    for (const [name, value] of safe) writeFileSync(path.join(root, name), value);
+  } catch (error) { cleanup(); throw error; }
+
+  let finished = false;
+  const finish = () => { cleanup(); finished = true; };
+  const restore = () => {
+    if (finished) return;
+    const safe = [];
+    for (const entry of stages) {
+      const current = fs.readFileSync(entry.target, "utf8");
+      if (current === originals.get(entry.name)) continue;
+      if (current !== prepared.get(entry.name)) {
+        throw new Error(`Cannot safely restore ${entry.name}; non-version content changed or owned version bytes were replaced. Recovery copies remain beside the originals.`);
+      }
+      safe.push(entry);
+    }
+    for (const entry of safe) {
+      fs.renameSync(entry.backup, entry.target);
+      ownedTemps.delete(entry.backup);
+    }
+    finish();
   };
   try {
-    for (const [name, value] of prepared) writeFileSync(path.join(root, name), value);
+    for (const entry of stages) {
+      if (fs.readFileSync(entry.target, "utf8") !== originals.get(entry.name)) {
+        throw new Error(`Release metadata changed before replacement: ${entry.name}`);
+      }
+      fs.renameSync(entry.next, entry.target);
+      ownedTemps.delete(entry.next);
+    }
   } catch (error) {
     restore();
     throw error;
   }
-  return restore;
+  return Object.assign(restore, { finish });
 }
