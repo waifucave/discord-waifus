@@ -245,6 +245,38 @@ async function settle(): Promise<void> {
 }
 
 describe("role-neutral helper supervisor", () => {
+  it("refreshes the remote activation snapshot after verified completion", async () => {
+    const factory = new FakeProcessFactory();
+    const dataRoot = await makeTempRoot("wpa-");
+    roots.push(dataRoot);
+    const { supervisor } = await makeSupervisor(factory, { role: "remote", dataRoot });
+    let active = false;
+    const started = supervisor.start();
+    await vi.waitFor(() => {
+      if (supervisor.snapshot().state === "failed") throw new Error(supervisor.snapshot().lastErrorCode ?? "unknown_helper_failure");
+      expect(factory.launches).toHaveLength(1);
+    });
+    factory.launches[0]!.resolveAuthenticated(helperClient({
+      currentStatus: () => helperStatus({ activationState: "activation_required", controlState: "inactive" }),
+      identityStatus: async () => ({
+        activationState: active ? "active" : "activation_required",
+        deviceId: "remote-device-01",
+        installationFingerprint: Buffer.alloc(16, 0x71).toString("base64url") as never,
+        secretStorage: "keychain"
+      }),
+      pollActivation: async (operationId) => {
+        active = true;
+        return { operationId, state: "completed", expiresAt: "1786271400" };
+      }
+    }));
+    await started;
+    expect(supervisor.snapshot().runtimeStatus.activationState).toBe("activation_required");
+    await supervisor.pollActivation(Buffer.alloc(32, 0x41).toString("base64url"));
+    expect(supervisor.snapshot().runtimeStatus.activationState).toBe("active");
+    expect(supervisor.identityStatus()?.activationState).toBe("active");
+    await supervisor.close();
+  });
+
   it("constructs the production supervisor with the verified package and protected process seams", async () => {
     const factory = new FakeProcessFactory();
     const dataRoot = await makeTempRoot("wph-");

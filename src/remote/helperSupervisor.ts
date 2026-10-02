@@ -307,7 +307,16 @@ export class HelperSupervisor {
   }
 
   async pollActivation(operationId: string): Promise<HelperActivationPoll> {
-    return this.#readyClient().pollActivation(operationId);
+    const client = this.#readyClient();
+    const result = await client.pollActivation(operationId);
+    if (result.state === "completed" && this.#client === client && !this.#closing) {
+      const identityStatus = parseHelperIdentityStatus(await client.identityStatus());
+      if (this.#client === client && !this.#closing) {
+        this.#identityStatus = identityStatus;
+        this.#update({ runtimeStatus: { ...this.#snapshot.runtimeStatus, activationState: identityStatus.activationState } });
+      }
+    }
+    return result;
   }
 
   async cancelActivation(operationId: string): Promise<HelperActivationCancel> {
