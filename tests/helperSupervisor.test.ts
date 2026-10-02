@@ -5,6 +5,7 @@ import type { Logger } from "../src/backend/logger.js";
 import type { RemoteRequestBridge } from "../src/backend/remoteAccess/requestBridge.js";
 import {
   HelperSupervisor,
+  protectedHelperEnvironment,
   type HelperSupervisorOptions
 } from "../src/remote/helperSupervisor.js";
 import { createProductionHelperSupervisor } from "../src/remote/productionHelper.js";
@@ -31,8 +32,46 @@ const REQUIRED_CAPABILITIES = [
 
 const roots: string[] = [];
 
+describe("protected native helper environment", () => {
+  it("forwards only connectable Unix session buses on Linux", () => {
+    for (const address of [
+      "unix:path=/run/user/1000/bus",
+      "unix:abstract=/tmp/dbus-test,guid=0123456789abcdef0123456789abcdef",
+      "unix:path=/tmp/dbus%20one;unix:abstract=dbus-two"
+    ]) {
+      const environment = protectedHelperEnvironment("linux", {
+        DBUS_SESSION_BUS_ADDRESS: address,
+        OPENAI_API_KEY: "excluded-secret",
+        NODE_OPTIONS: "--require=untrusted.js",
+        PATH: "/untrusted",
+        DBUS_SYSTEM_BUS_ADDRESS: "tcp:host=example.com,port=123"
+      });
+      expect(environment).toEqual({ DBUS_SESSION_BUS_ADDRESS: address });
+      expect(Object.isFrozen(environment)).toBe(true);
+      expect(protectedHelperEnvironment("darwin", { DBUS_SESSION_BUS_ADDRESS: address })).toEqual({});
+      expect(protectedHelperEnvironment("win32", { DBUS_SESSION_BUS_ADDRESS: address })).toEqual({});
+    }
+  });
+
+  it("drops absent, network, executable, mixed, and malformed bus addresses", () => {
+    for (const address of [
+      undefined, "", "tcp:host=localhost,port=123", "nonce-tcp:host=localhost,port=123",
+      "autolaunch:", "unixexec:path=/bin/sh,argv1=evil",
+      "unix:path=/tmp/local;tcp:host=example.com,port=123", "unix:path=/tmp/local;autolaunch:",
+      "unix:path=/tmp/local;", "unix:path=relative", "unix:path=/tmp/a,path=/tmp/b",
+      "unix:path=/tmp/a,abstract=b", "unix:tmpdir=/tmp", "unix:runtime=yes",
+      "unix:path=/tmp/%00bus", "unix:path=/tmp/%0abus", "unix:path=/tmp/%XXbus",
+      "unix:path=/tmp/bus,guid=invalid", "unix:path=/tmp/bus,unknown=value",
+      "unix:path=/tmp/has space", "unix:path=/tmp/bus\n", `unix:path=/${"a".repeat(4096)}`
+    ]) {
+      expect(protectedHelperEnvironment("linux", { DBUS_SESSION_BUS_ADDRESS: address })).toEqual({});
+    }
+  });
+});
+
 afterEach(async () => {
   vi.useRealTimers();
+  vi.unstubAllEnvs();
   await Promise.all(roots.splice(0).map(removeTempRoot));
 });
 
@@ -245,6 +284,22 @@ async function settle(): Promise<void> {
 }
 
 describe("role-neutral helper supervisor", () => {
+  it("uses the protected session-bus environment at the actual process boundary", async () => {
+    vi.stubEnv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/tmp/waifus-test-bus");
+    vi.stubEnv("OPENAI_API_KEY", "excluded-boundary-secret");
+    vi.stubEnv("NODE_OPTIONS", "--require=untrusted.js");
+    const factory = new FakeProcessFactory();
+    const { supervisor } = await makeSupervisor(factory);
+    const started = supervisor.start();
+    await settle();
+    factory.launches[0]!.resolveAuthenticated(helperClient());
+    await started;
+    expect(factory.requests[0]!.environment).toEqual(process.platform === "linux"
+      ? { DBUS_SESSION_BUS_ADDRESS: "unix:path=/tmp/waifus-test-bus" }
+      : {});
+    await supervisor.close();
+  });
+
   it("refreshes the remote activation snapshot after verified completion", async () => {
     const factory = new FakeProcessFactory();
     const dataRoot = await makeTempRoot("wpa-");

@@ -85,6 +85,33 @@ export type HelperSupervisorOptions = {
 
 const FORK_COMMIT_PATTERN = /^[0-9a-f]{40}$/u;
 
+/** The Linux native vault needs the session bus, never the parent's credential environment. */
+export function protectedHelperEnvironment(
+  platform: NodeJS.Platform = process.platform,
+  environment: NodeJS.ProcessEnv = process.env
+): Readonly<Record<string, string>> {
+  const address = environment.DBUS_SESSION_BUS_ADDRESS;
+  if (platform !== "linux" || !address || address.length > 4096) return Object.freeze({});
+  // D-Bus permits fallback addresses. Every entry must be a connectable local Unix socket;
+  // accepting just the first would allow a later TCP or executable transport on failure.
+  for (const entry of address.split(";")) {
+    if (!entry.startsWith("unix:")) return Object.freeze({});
+    const values = new Map<string, string>();
+    for (const parameter of entry.slice(5).split(",")) {
+      const match = /^(path|abstract|guid)=((?:[-0-9A-Za-z_/.\*]|%[0-9A-Fa-f]{2})+)$/u.exec(parameter);
+      if (!match || values.has(match[1]!)) return Object.freeze({});
+      // Decode bytes only to validate local socket names; forward the original spec-encoded address.
+      const value = match[2]!.replace(/%([0-9A-Fa-f]{2})/gu, (_whole, hex: string) => String.fromCharCode(parseInt(hex, 16)));
+      if (/[\x00-\x1f\x7f]/u.test(value)) return Object.freeze({});
+      values.set(match[1]!, value);
+    }
+    if (values.has("path") === values.has("abstract")) return Object.freeze({});
+    if (values.has("path") && !values.get("path")!.startsWith("/")) return Object.freeze({});
+    if (values.has("guid") && !/^[0-9a-f]{32}$/u.test(values.get("guid")!)) return Object.freeze({});
+  }
+  return Object.freeze({ DBUS_SESSION_BUS_ADDRESS: address });
+}
+
 function initialRuntimeStatus(): HelperRuntimeStatus {
   return {
     activationState: "activation_required",
@@ -548,7 +575,7 @@ export class HelperSupervisor {
           dataRoot: this.#options.dataRoot,
           binaryPath: selection.binaryPath,
           argv: Object.freeze(["supervised", "--parent-endpoint", endpoint]),
-          environment: Object.freeze({}),
+          environment: protectedHelperEnvironment(),
           parentEndpoint: endpoint,
           parentCapability: capability,
           parentHello

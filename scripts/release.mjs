@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -9,6 +9,9 @@ import { stdin as input, stdout as output } from "node:process";
 import { spawnSync } from "node:child_process";
 import { auditRootPackageInventory } from "./audit-root-package.mjs";
 import { rewriteRemoteCompatibilityVersion } from "./releaseCompatibility.mjs";
+import { beginReleaseVersionUpdate, isPlainReleaseVersion } from "./releaseVersions.mjs";
+import { validateHelperReleasePins } from "./releaseHelperPackages.mjs";
+import { preflightRemoteHelpers } from "./preflight-remote-helpers.mjs";
 
 const repo = "waifucave/discord-waifus";
 const npmCache = "/tmp/codex-npm-cache";
@@ -72,16 +75,19 @@ async function main() {
     pkg.version,
     version,
   );
+  validateHelperReleasePins(pkg, JSON.parse(readFileSync(join(root, "package-lock.json"), "utf8")));
 
   if (args.dryRun) {
-    console.log(`Dry run passed. ${tag} can be released from ${head}.`);
+    run("npm", ["run", "build:backend"]);
+    await preflightRemoteHelpers({ packageRoot: root, releaseVersion: version });
+    console.log(`Dry run passed for ${tag}: all helper pins, registry bytes and compatibility verified from ${head}. Native release checks still run before publication.`);
     return;
   }
 
   const restoreVersionEdits = bumpVersions(version);
   let tarball;
   try {
-    tarball = validateAndPack(version);
+    tarball = await validateAndPack(version);
     await confirmOrExit(
       `Validation passed. Push main, create ${tag}, and publish npm packages?`,
       args.yes,
@@ -268,65 +274,14 @@ release assets, and smoke-installs from npm.`);
 }
 
 function isSemver(version) {
-  return /^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(version);
+  return isPlainReleaseVersion(version);
 }
 
 function bumpVersions(version) {
-  const paths = ["package.json", "package-lock.json", "remote-compatibility.json"];
-  const originals = new Map(paths.map((filePath) => [filePath, readFileSync(filePath, "utf8")]));
-  const oldPackage = JSON.parse(originals.get("package.json"));
-  const oldLock = JSON.parse(originals.get("package-lock.json"));
-  if (oldPackage.version !== oldLock.version || oldLock.packages?.[""]?.version !== oldPackage.version) {
-    throw new Error("Package and lockfile versions disagree before release.");
-  }
-  const compatibility = rewriteRemoteCompatibilityVersion(
-    originals.get("remote-compatibility.json"),
-    oldPackage.version,
-    version,
-  );
-  const restore = () => {
-    const safeToRestore = [];
-    for (const filePath of paths) {
-      const current = readFileSync(filePath, "utf8");
-      const original = originals.get(filePath);
-      if (current === original) continue;
-      let currentValue;
-      let originalValue;
-      try {
-        currentValue = JSON.parse(current);
-        originalValue = JSON.parse(original);
-      } catch {
-        throw new Error(`Cannot safely restore ${filePath}; its content changed unexpectedly.`);
-      }
-      if (filePath === "package-lock.json") {
-        currentValue.version = originalValue.version;
-        currentValue.packages[""].version = originalValue.packages[""].version;
-      } else if (filePath === "package.json") {
-        currentValue.version = originalValue.version;
-      } else {
-        currentValue.discordWaifusVersion = originalValue.discordWaifusVersion;
-      }
-      if (JSON.stringify(currentValue) !== JSON.stringify(originalValue)) {
-        throw new Error(`Cannot safely restore ${filePath}; non-version content changed during release.`);
-      }
-      safeToRestore.push([filePath, original]);
-    }
-    for (const [filePath, original] of safeToRestore) {
-      writeFileSync(filePath, original);
-    }
-  };
-  try {
-    run("npm", ["version", version, "--no-git-tag-version"]);
-    run("npm", ["install", "--package-lock-only", "--ignore-scripts"]);
-    writeFileSync("remote-compatibility.json", compatibility);
-  } catch (error) {
-    restore();
-    throw error;
-  }
-  return restore;
+  return beginReleaseVersionUpdate(process.cwd(), version);
 }
 
-function validateAndPack(version) {
+async function validateAndPack(version) {
   // The workflow publishes this tarball with `npm publish <tarball>`, which runs
   // no lifecycle scripts — prepublishOnly never fires on this path, so the
   // file:-dependency guard must run here, before the tarball is created.
@@ -334,6 +289,7 @@ function validateAndPack(version) {
   run("npm", ["run", "typecheck"]);
   run("npm", ["test"]);
   run("npm", ["run", "build"]);
+  await preflightRemoteHelpers({ packageRoot: process.cwd() });
   auditRootPackageInventory(JSON.parse(capture(
     "npm",
     ["pack", "--dry-run", "--json"],
@@ -357,6 +313,12 @@ function validateAndPack(version) {
     tarball,
   ], { npmCache: true });
   run(join(prefix, "bin/waifus"), ["help"]);
+  const nativePrefix = mkdtempSync(join(tmpdir(), `waifus-native-smoke-${version}.`));
+  run("npm", ["install", "--prefix", nativePrefix, "--include=optional", "--ignore-scripts", tarball], { npmCache: true });
+  run("node", [
+    "scripts/smoke-remote-helper.mjs", join(nativePrefix, "node_modules", rootPackage),
+    process.platform, process.arch,
+  ]);
   return tarball;
 }
 
