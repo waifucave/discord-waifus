@@ -39,7 +39,7 @@ pipes through the shared helper IPC contract.
   helper state, sockets, PID/runtime files, logs, and process locks. The helper contract must
   enforce concurrent access and role separation.
 - Supported helper targets are exactly macOS ARM64, Windows x64, Windows ARM64, Linux x64,
-  Linux ARM64, and Linux ARMv7. Intel macOS is rejected with an actionable “later follow-up”
+  and Linux ARM64. Intel macOS and Linux ARMv7 are rejected with an actionable “later follow-up”
   message. It is not silently mapped to another package.
 - Published installs and source checkouts resolve the same signed optional binary package. No
   install hook downloads an arbitrary executable and no secret is embedded in the package.
@@ -230,8 +230,8 @@ and maximum-exclusive SemVer, minimum release sequence, supported IPC/direct-ser
 protocol ranges, and sorted required capabilities. Plan 07 updates and release-checks this table;
 runtime never infers an unbounded compatibility range from an npm dependency pin.
 
-- [ ] **Step 1: Write failing table tests** for all six supported targets, Intel macOS, unknown
-  targets, Linux ARMv7 detection, missing optional package, wrong package `os`/`cpu`, checksum
+- [ ] **Step 1: Write failing table tests** for all five supported targets, Intel macOS, unknown
+  targets, deferred Linux ARMv7 rejection, missing optional package, wrong package `os`/`cpu`, checksum
   mismatch, invalid signature, unknown signing key, signed release sequence/`releasedAt` outside the
   key's historical overlap window (without current-wall-clock expiry), missing/wrong
   `workerTrustRingSha256` versus embedded helper metadata, incompatible protocol,
@@ -252,7 +252,7 @@ runtime never infers an unbounded compatibility range from an npm dependency pin
   version within its minimum/maximum-exclusive interval. Error messages name the unsupported/
   missing target without exposing local secret paths beyond the ordinary local CLI boundary.
 - [ ] **Step 4: Keep production dependencies gated.** Use fixture packages until signed package
-  versions are published and verified. Then add all six packages as exact-version optional
+  versions are published and verified. Then add all five packages as exact-version optional
   dependencies and regenerate the lockfile. Do not add semver ranges.
 - [ ] **Step 5: Generate and validate root compatibility metadata.** Reject package-version drift,
   malformed or unbounded ranges, unknown required capabilities, and any helper accepted in only one
@@ -261,7 +261,7 @@ runtime never infers an unbounded compatibility range from an npm dependency pin
 
   Run: `npx vitest run tests/helperBinary.test.ts && node scripts/check-no-file-deps.mjs && npm run typecheck`
 
-  Expected: PASS. Intel macOS reports unsupported; no fallback binary is selected.
+  Expected: PASS. Intel macOS and Linux ARMv7 report unsupported; no fallback binary is selected.
 - [ ] **Step 7: Suggested commits.**
 
   - Before publication: `feat: verify target-specific ts-connect helpers`
@@ -728,8 +728,8 @@ waifus remote stop [--data-root PATH]
   remembered-host ID/name, stale PID cleanup, remote stop only, host stop only, coexistence, and
   distinct logs/runtime files. `waifus status` returns success if either daemon is alive and prints
   separate `host` and `remote` objects; `waifus remote status` succeeds only for the remote daemon.
-- [ ] **Step 3: Write unsupported/missing-helper tests.** Intel macOS and absent/corrupt helper
-  fail before daemon spawn with doctor guidance. `waifus start` remains usable on Intel macOS while
+- [ ] **Step 3: Write unsupported/missing-helper tests.** Intel macOS, Linux ARMv7, and absent/corrupt helper
+  fail before daemon spawn with doctor guidance. `waifus start` remains usable on deferred targets while
   host remote access is disabled.
 - [ ] **Step 4: Run focused tests.**
 
@@ -1172,7 +1172,7 @@ waifus remote stop [--data-root PATH]
   bytes. Include license/third-party notices for the statically linked helper packages.
 - [ ] **Step 3: Update docs.** Document commands, direct-only/offline behavior, both pairing modes,
   remote API/tools, secure confirmations, clean preservation, external-link isolation, version
-  compatibility, unsupported Intel macOS, and the fact that remote v1 cannot stop/restart the host
+  compatibility, deferred Intel macOS/Linux ARMv7, and the fact that remote v1 cannot stop/restart the host
   OS process.
 - [ ] **Step 4: Run focused package checks.**
 
@@ -1218,7 +1218,7 @@ waifus remote stop [--data-root PATH]
   remembered hosts, operations, and audit exactly while deleting ordinary user/config/cache,
   remote-dashboard cache, and transient remote state.
 - [ ] No UI or assistant claims it can stop/restart the host OS process in remote v1.
-- [ ] Intel macOS remains an explicit later follow-up; all six supported targets have install/
+- [ ] Intel macOS and Linux ARMv7 remain explicit later follow-ups; all five supported targets have install/
   launch/pair/direct-connect release smoke ownership.
 
 ## Gate-supplied production inputs — do not guess

@@ -111,6 +111,16 @@ describe("waifus doctor: unresolved models and unstamped schema files", () => {
 });
 
 describe("waifus doctor: remote management", () => {
+  it("reports Linux ARMv7 as unsupported and deferred", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    const arm = await runDoctor(root, { platform: "linux", arch: "arm" });
+    expect(arm.result.remoteAccess).toMatchObject({
+      target: { supported: false, note: expect.stringContaining("later follow-up") },
+      helperPackage: { state: "unsupported", verified: false }
+    });
+  });
+
   it("reports the gated missing helper on supported targets and Intel macOS as a later follow-up", async () => {
     const root = await makeTempRoot();
     roots.push(root);

@@ -44,7 +44,7 @@ The remote gateway fetches and verifies the host's exact dashboard build. Compat
 can therefore connect without requiring identical installations. Management traffic is direct
 peer to peer and has no relay fallback; hard NAT or blocked UDP can leave the host offline.
 `waifus remote status` and `waifus remote stop` manage only the remote gateway. Remote V1 does not
-stop or restart the host OS process. Intel macOS is not supported in V1.
+stop or restart the host OS process. Intel macOS and Linux ARMv7 are not supported in V1.
 
 ## How a conversation works
 

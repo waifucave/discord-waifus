@@ -78,7 +78,7 @@ export function supportedHelperTarget(
   if (platform === "linux" && arch === "x64") return { os: "linux", arch: "x64" };
   if (platform === "linux" && arch === "arm64") return { os: "linux", arch: "arm64" };
   if (platform === "linux" && arch === "arm" && armVersion === 7) {
-    return { os: "linux", arch: "arm", goarm: 7 };
+    throw new HelperSupervisorError("unsupported_platform", "Linux ARMv7 remote mode is a later follow-up.");
   }
   return unsupported(platform, arch);
 }

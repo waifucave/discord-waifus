@@ -55,4 +55,5 @@ the revoked pair.
   build for the current platform; do not bypass signature or compatibility checks.
 - Hard NAT or blocked UDP: there is intentionally no relay fallback.
 
-The V1 target matrix excludes Intel macOS. Intel macOS support is a later follow-up.
+The five V1 targets are macOS ARM64, Windows x64/ARM64, and Linux x64/ARM64. Intel macOS and
+Linux ARMv7 are later follow-ups; neither selects another architecture's binary.

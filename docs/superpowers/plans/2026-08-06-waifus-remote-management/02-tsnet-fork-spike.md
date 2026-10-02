@@ -21,7 +21,7 @@
 - The helper later pins the fork by exact commit, never a branch or floating tag.
 - The fork contains no WaifuCave Worker secret, private coordination encoding, activation credential, or product-wide shared secret.
 - V1 data paths are direct UDP/WireGuard only. DERP, peer relay, TURN, exit nodes, subnet routes, DNS, SSH, Serve/Funnel, LocalAPI, SOCKS/HTTP proxying, and unrelated services are unavailable.
-- Intel macOS is excluded from V1 and tracked as a later **darwin/amd64** follow-up.
+- Intel macOS and Linux ARMv7 are excluded from V1 and tracked as later **darwin/amd64** and **linux/arm/v7** follow-ups.
 
 The injected client has exactly two compiled profile enum values and no string URL setter:
 
@@ -122,7 +122,7 @@ go test .
 
 Expected: all applicable upstream tests pass. Record any reproducible upstream-only failure before changing code; do not hide it with a skip.
 
-- [ ] Add CI for the exact Go version, focused unit/race suites, license tests, Linux feasibility integration, and six-target compilation.
+- [ ] Add CI for the exact Go version, focused unit/race suites, license tests, Linux feasibility integration, and five-target compilation.
 - [ ] Make CI fail if **WAIFUCAVE_UPSTREAM.lock**, the checked-out upstream base, and the declared toolchain disagree.
 
 **Suggested commit:** **ci: lock Go 1.26.5 and the Waifus fork baseline**
@@ -302,11 +302,10 @@ must run the privileged matrix before this gate closes.
 - **windows/arm64**
 - **linux/amd64**
 - **linux/arm64**
-- **linux/arm/v7**
 
 - [ ] Cross-compile the spike/helper-facing packages with Go **1.26.5** and **waifus_direct_only**.
 - [ ] Run real launch/connect/rebind smoke tests on macOS ARM64, Windows x64, representative Windows ARM64, and Linux.
-- [ ] Run Linux x64/ARM64/ARMv7 static-binary tests on representative glibc and musl systems.
+- [ ] Run Linux x64/ARM64 static-binary tests on representative glibc and musl systems.
 - [ ] Record binary size, goroutine/socket surfaces, forbidden-path counters, and fork diffstat.
 - [ ] Run applicable upstream focused and race suites again.
 - [ ] Review the complete fork range against upstream **eb67e5dc...**. Confirm the delta remains bounded and every new public API is documented.
@@ -353,4 +352,4 @@ Plan 03 may consume the fork only when:
 - Arbitrary multi-peer maps and every host forwarding/bridging path remain structurally rejected.
 - The delta is judged maintainable.
 
-Intel macOS remains a tracked follow-up and must not be silently mapped to the ARM64 package.
+Intel macOS and Linux ARMv7 remain tracked follow-ups and must not be silently mapped to the ARM64 package.

@@ -24,8 +24,8 @@ encrypted, direct peer-to-peer path. WaifuCave never relays management traffic.
 8. Expose remote-access management through the host's local API and dashboard assistant.
 9. Support official npm installations and source checkouts through the same signed helper
    binaries.
-10. Ship on supported macOS ARM64, Windows x64/ARM64, and Linux x64/ARM targets. Intel macOS
-    is a documented later follow-up.
+10. Ship on supported macOS ARM64, Windows x64/ARM64, and Linux x64/ARM64 targets. Intel macOS
+    and Linux ARMv7 are documented later follow-ups.
 
 ## Non-goals and invariants
 
@@ -43,7 +43,7 @@ encrypted, direct peer-to-peer path. WaifuCave never relays management traffic.
 - No attempt to prove that a request came from an unmodified open-source client. The
   enforceable boundary is a narrow, authenticated, quota-bound protocol.
 - No mobile client in v1.
-- No Intel macOS binary in v1; keep it in the follow-up matrix.
+- No Intel macOS or Linux ARMv7 binary in v1; keep both in the follow-up matrix.
 
 ## Threat model
 
@@ -200,14 +200,14 @@ The private build publishes target-specific packages such as:
 - `@waifucave/ts-connect-win32-arm64`
 - `@waifucave/ts-connect-linux-x64`
 - `@waifucave/ts-connect-linux-arm64`
-- `@waifucave/ts-connect-linux-armv7`
 
 `@waifucave/discord-waifus` references these as optional platform dependencies so npm and
 source checkouts install one relevant binary rather than every target. No install-time secret
 is provisioned by npm.
 
 The initial target triples are exactly `darwin/arm64`, `windows/amd64`, `windows/arm64`,
-`linux/amd64`, `linux/arm64`, and `linux/arm/v7`. Linux helpers are built with
+`linux/amd64`, and `linux/arm64`. Linux ARMv7 was explicitly deferred on 2026-10-02
+until real-device validation is available, alongside Intel macOS. Linux helpers are built with
 `CGO_ENABLED=0` and smoke-tested on representative glibc and musl distributions. Each package
 declares matching npm `os`/`cpu` metadata, an exact helper version, protocol/capability fields,
 and signed checksums. Unsupported architecture or an unavailable optional package produces an
@@ -1043,13 +1043,14 @@ The feature is ready for beta only when all are true:
 10. The assistant can diagnose and manage remote access through the same host APIs while
     sensitive actions use browser-enforced confirmation.
 11. Source checkouts and npm installations use verified, identical helper binaries.
-12. `darwin/arm64`, `windows/amd64`, `windows/arm64`, `linux/amd64`, `linux/arm64`, and
-    `linux/arm/v7` packages install, verify, launch, pair, and pass direct-connectivity smoke
+12. `darwin/arm64`, `windows/amd64`, `windows/arm64`, `linux/amd64`, and `linux/arm64`
+    packages install, verify, launch, pair, and pass direct-connectivity smoke
     tests (Linux on representative glibc and musl systems).
 
 ## Explicit follow-ups and out of scope
 
 - Intel macOS helper package and validation.
+- Linux ARMv7 helper package and real-device validation (explicitly deferred 2026-10-02).
 - Mobile/iOS/Android remote clients.
 - Relayed fallback of any kind.
 - Multi-user roles or reduced-permission remote administrators.

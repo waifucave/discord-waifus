@@ -44,7 +44,7 @@ change on the fresh state, and PUT with the new `revision`.
   sends management traffic through a relay.
 - Pairing does not appear: confirm that the invitation is still active, use either its full token
   or exact manual code, and compare the safety phrase before the host approves it.
-- Intel macOS: remote mode is intentionally unsupported in V1; ordinary local `waifus start`
+- Intel macOS and Linux ARMv7: remote mode is intentionally deferred beyond V1; ordinary local `waifus start`
   remains available.
 
 `waifus remote status` reports only the remote gateway. Ordinary `waifus status` reports both
