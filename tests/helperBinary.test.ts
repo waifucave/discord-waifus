@@ -207,13 +207,18 @@ function resolverOptions(
 }
 
 describe("ts-connect target selection", () => {
-  it("maps exactly the six supported target shapes", () => {
+  it("maps exactly the five supported target shapes", () => {
     expect(supportedHelperTarget("darwin", "arm64")).toEqual({ os: "darwin", arch: "arm64" });
     expect(supportedHelperTarget("win32", "x64")).toEqual({ os: "win32", arch: "x64" });
     expect(supportedHelperTarget("win32", "arm64")).toEqual({ os: "win32", arch: "arm64" });
     expect(supportedHelperTarget("linux", "x64")).toEqual({ os: "linux", arch: "x64" });
     expect(supportedHelperTarget("linux", "arm64")).toEqual({ os: "linux", arch: "arm64" });
-    expect(supportedHelperTarget("linux", "arm", 7)).toEqual({ os: "linux", arch: "arm", goarm: 7 });
+  });
+
+  it("rejects deferred Linux ARMv7 without selecting an ARM64 fallback", () => {
+    expect(() => supportedHelperTarget("linux", "arm", 7)).toThrowError(
+      "Linux ARMv7 remote mode is a later follow-up."
+    );
   });
 
   it("rejects Intel macOS, ambiguous ARM, and unknown targets without fallback", () => {

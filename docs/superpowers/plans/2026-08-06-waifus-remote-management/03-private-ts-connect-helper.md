@@ -27,7 +27,7 @@
   Both approved public keys are pinned before release and private keys are never shipped.
 - Pair endpoint envelopes: **ChaCha20-Poly1305** with direction-separated keys and monotonic epochs
 - Helper is always built with **waifus_direct_only**.
-- No Intel macOS binary in V1.
+- No Intel macOS or Linux ARMv7 binary in V1.
 
 ## Compiled Control Profiles
 
@@ -445,9 +445,10 @@ payload. It is the exact RFC 8949 deterministic/canonical CBOR map
 | 4 | architecture | exactly `x64`, `arm64`, or `arm`, subject to the supported matrix below |
 | 5 | GOARM | unsigned integer, exactly 7 for `linux/arm`; exactly 0 otherwise |
 
-The only accepted targets are `darwin/arm64`, `win32/x64`, `win32/arm64`, `linux/x64`,
-`linux/arm64`, and `linux/arm` with GOARM 7. In particular, `darwin/x64` remains the explicit
-Intel macOS follow-up and cannot be represented as a supported V1 descriptor. The display name is
+The initial release targets are `darwin/arm64`, `win32/x64`, `win32/arm64`, `linux/x64`,
+and `linux/arm64`. The canonical contract still reserves `linux/arm` with GOARM 7 for a future
+release; recognizing that descriptor does not enable a package or runtime target. Intel macOS
+and Linux ARMv7 remain explicit follow-ups, rejected by the initial release resolver. The display name is
 1–80 UTF-16 code units and at most 256 UTF-8 bytes, has no leading or trailing ECMAScript trim
 character, and rejects C0 controls, DEL, bidi overrides, and bidi isolates. Decoders reject every
 unknown field, noncanonical encoding, unsupported tuple, and descriptor over 512 encoded bytes.
@@ -1225,4 +1226,4 @@ This helper gate permits only plan 04 and helper-local build-info/package-fixtur
 for testing. It does **not** open integrated plan 07 packaging, signing, deployment, or publication;
 plan 07 remains blocked on its own non-circular plans 01–06 entry gate.
 
-Intel macOS remains an explicit tracked follow-up; unsupported architecture detection must be actionable.
+Intel macOS and Linux ARMv7 remain explicit tracked follow-ups; unsupported architecture detection must be actionable.

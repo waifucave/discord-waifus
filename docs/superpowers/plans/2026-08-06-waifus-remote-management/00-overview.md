@@ -401,13 +401,13 @@ Do not advance a real dependency past any failed gate:
    a Worker outage.
 6. **Dashboard gate:** a malicious host bundle cannot cross another remembered host's origin,
    cache, cookies, storage, session, or allowed network destinations.
-7. **Platform gate:** all six v1 targets install, verify, launch, pair, and carry a direct API
-   smoke. Linux ARM targets are tested on real representative hardware and both glibc/musl where
+7. **Platform gate:** all five v1 targets install, verify, launch, pair, and carry a direct API
+   smoke. Linux ARM64 is tested on real representative hardware and both glibc/musl where
    applicable; cross-compilation alone is insufficient.
 8. **Release gate:** current/N-1 component compatibility, roaming/failure simulation, supply
    chain verification, security review, docs, rollback, and independent post-publish checks pass.
 
-Intel macOS is intentionally excluded from the v1 gate and recorded as a later follow-up. Do
+Intel macOS and Linux ARMv7 are intentionally excluded from the v1 gate and recorded as later follow-ups. Do
 not let its absence silently expand to unsupported unlisted targets.
 
 ## Repository workflow and validation discipline

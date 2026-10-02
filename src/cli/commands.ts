@@ -447,9 +447,15 @@ function remoteTargetSupport(
       note: "Intel macOS remote mode is a later follow-up."
     });
   }
+  if (platform === "linux" && arch === "arm") {
+    return Object.freeze({
+      supported: false,
+      note: "Linux ARMv7 remote mode is a later follow-up."
+    });
+  }
   const supported = (platform === "darwin" && arch === "arm64")
     || (platform === "win32" && (arch === "x64" || arch === "arm64"))
-    || (platform === "linux" && (arch === "x64" || arch === "arm64" || arch === "arm"));
+    || (platform === "linux" && (arch === "x64" || arch === "arm64"));
   return Object.freeze({
     supported,
     note: supported ? null : `Remote mode is not supported on ${platform}/${arch}.`

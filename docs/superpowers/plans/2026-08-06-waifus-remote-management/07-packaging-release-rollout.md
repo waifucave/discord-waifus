@@ -8,7 +8,13 @@
 
 **Depends on:** every functional/security/platform gate in plans 01–06
 
-**Goal:** Produce six manifest-signed target-specific helper packages, prove source and npm installs use identical bytes, roll out Worker → helper → Discord Waifus in a reversible order, and independently verify the public result without ever releasing a relay-capable or unverified helper.
+**Goal:** Produce five manifest-signed target-specific helper packages, prove source and npm installs use identical bytes, roll out Worker → helper → Discord Waifus in a reversible order, and independently verify the public result without ever releasing a relay-capable or unverified helper.
+
+**2026-10-02 user decision:** Defer Linux ARMv7 alongside Intel macOS because real ARMv7
+test hardware is unavailable. Ship only the five targets below; build/package/publication/root
+dependency gates all use this same set. Both deferred targets must report unsupported without
+an architecture fallback. Ordinary local `waifus start` remains available. A future ARMv7 release
+requires a signed package and real-device native/network validation, not merely cross-compilation.
 
 **2026-09-23 user decision:** Keep the npm-installed command-line shape. Do not require Apple
 Developer ID/notarization or Windows Authenticode for the native helper. The pinned Ed25519 release
@@ -22,15 +28,19 @@ reported honestly rather than bypassed.
 GitHub continues to build and test the unsigned candidate set; it receives no release private key.
 The signing workspace is owned/mode 0700, the temporary seed is mode 0600, and recovery is saved in
 Apple Passwords and independently read back before signing. Review the public fingerprint, exact
-source/build-run identity, immutable six-binary hashes, public trust diff, and app compatibility
+source/build-run identity, immutable five-binary hashes, public trust diff, and app compatibility
 bounds before use. Local signing replaces the private GitHub Environment signing requirements
 below because the current GitHub plan cannot provide that protected environment. It does not
 remove the manifest, signature, immutable-byte, platform, staging/production, or publication gates.
 No Apple Passwords interaction is part of a user's ordinary remote connection.
 
-The replacement source candidate is helper **0.1.2**, sequence **3**, source
-**5deab110a64130a50ef0b6138f61d8a784014ff0**, intended signed release timestamp
-**2026-10-02T10:06:30Z**. Tagged reproducibility, immutable signing, and real-device
+The replacement candidate is helper **0.1.2**, sequence **3**, final five-target source
+**2027953a7167c7bcf2606a3722bb256779c6c872**, signed release timestamp
+**2026-10-02T15:16:31Z**. The previously proposed
+source **5deab110a64130a50ef0b6138f61d8a784014ff0** / timestamp **2026-10-02T10:06:30Z**
+predates the five-target deferral and must not be tagged or signed as the final candidate.
+The app's trust window must match the final five-target source timestamp before tagging.
+Tagged reproducibility, immutable signing, and real-device
 acceptance remain release gates. It retains the full-size native macOS vault fix and adds
 prepared-pair retries through mailbox retirement/expiry and verified terminal cleanup.
 The unpublished **0.1.1 / sequence-2** candidate fails a real pairing retry after approval;
@@ -46,7 +56,7 @@ step after the preceding gates.
 
 - Helper packages use one independent SemVer as a release set. Initial beta set: **0.1.2**.
 - Discord Waifus pins every helper package to exact **0.1.2**, never a range or dist-tag.
-- The six public binary-only npm packages are exactly:
+- The five public binary-only npm packages are exactly:
 
 | npm package | Go target | npm os | npm cpu | Extra runtime check |
 |---|---|---|---|---|
@@ -55,7 +65,6 @@ step after the preceding gates.
 | **@waifucave/ts-connect-win32-arm64** | windows/arm64 | win32 | arm64 | unsigned OS binary; signed-manifest/hash verification |
 | **@waifucave/ts-connect-linux-x64** | linux/amd64 | linux | x64 | static executable |
 | **@waifucave/ts-connect-linux-arm64** | linux/arm64 | linux | arm64 | static executable |
-| **@waifucave/ts-connect-linux-armv7** | linux/arm/v7 | linux | arm | signed manifest says GOARM 7 |
 
 - Linux builds use **CGO_ENABLED=0**.
 - All builds use Go **1.26.5**, the **waifus_direct_only** tag, exact fork/contract pins, **-trimpath**, and embedded build metadata.
@@ -69,7 +78,7 @@ step after the preceding gates.
   bytes test staging and production.
 - Package tarballs contain no install/postinstall script and no npm **bin** mapping. Discord Waifus resolves the known binary path.
 - Source checkouts and npm installs consume the same public npm package. An unsigned helper override exists only behind an explicit development/test flag with a prominent unsafe warning.
-- Intel macOS is not mapped to ARM64. Ordinary local **waifus start** remains available, while
+- Intel macOS and Linux ARMv7 are not mapped to ARM64. Ordinary local **waifus start** remains available, while
   host remote-access enable and **waifus remote** start fail with an actionable unsupported-target
   result.
 - Never unpublish a helper version. Rollback publishes a new root/app version that pins a previously verified helper.
@@ -84,7 +93,7 @@ Local builds, dry runs, package tarballs, and test signatures do not authorize:
 - Changing npm dist-tags.
 - Deploying staging/production Worker changes.
 - Publishing helper or Discord Waifus packages.
-- Creating the Intel macOS follow-up issue.
+- Creating the Intel macOS and Linux ARMv7 follow-up issues.
 
 At each external step, verify and show the exact authenticated account, repository/package/domain, version/tag, artifact hashes, credentials by nonsecret identifier, and command. Obtain the user's confirmation for that stage.
 
@@ -257,9 +266,9 @@ CI supplies exact GOOS/GOARCH/GOARM and release ldflags through fixed workflow i
 
 - [ ] Rebuild unsigned Linux x64 twice on clean runners and require identical SHA-256.
 - [ ] Run **go version -m**, binary string/source-path audit, static-link audit, forbidden egress/symbol audit, license inventory, and SBOM generation.
-- [ ] Cross-compile all six, but do not treat cross-compilation as the platform gate.
+- [ ] Cross-compile all five, but do not treat cross-compilation as the platform gate.
 
-Expected: six unsigned artifacts and draft manifest metadata exist only as short-lived CI
+Expected: five unsigned artifacts and draft manifest metadata exist only as short-lived CI
 artifacts; no draft manifest is release-signed and no publication occurs.
 
 **Suggested commit:** **build: produce pinned direct-only helper artifacts**
@@ -293,10 +302,10 @@ artifacts; no draft manifest is release-signed and no publication occurs.
   until the reviewed fingerprint and commit SHA match independently.
 - [ ] Restrict signing jobs to protected tags, clean exact commits, approved GitHub Environment, and non-fork events.
 - [ ] Before signing the first helper manifests, lock the exact planned Discord Waifus beta SemVer
-  and reviewed maximum-exclusive compatible app version. Put those exact bounds in all six
+  and reviewed maximum-exclusive compatible app version. Put those exact bounds in all five
   manifests; the later root release must use the already recorded SemVer rather than choosing a new
   one after helpers are immutable.
-- [ ] On all six targets, the detached Ed25519 manifest signature and pinned binary hash are the
+- [ ] On all five targets, the detached Ed25519 manifest signature and pinned binary hash are the
   executable integrity boundary. Verify the ordinary npm-installed helper can run on clean real
   macOS and Windows machines without disabling OS protections; record any Gatekeeper, Smart App
   Control, or managed-policy refusal as a compatibility limitation.
@@ -311,7 +320,7 @@ Expected: detached-manifest verification passes; a one-byte binary/manifest muta
 
 **Suggested commit:** **ci: add approval-gated helper signing**
 
-## Task 4: Assemble and smoke all six npm tarballs
+## Task 4: Assemble and smoke all five npm tarballs
 
 **Private files:**
 
@@ -319,21 +328,21 @@ Expected: detached-manifest verification passes; a one-byte binary/manifest muta
 - Create: **scripts/pack-npm.mjs**
 - Test: tarball inventory and install tests
 
-- [ ] Generate package metadata with exact name/version/os/cpu from the locked table. ARMv7 uses npm cpu **arm** plus signed GOARM 7 verification.
+- [ ] Generate package metadata with exact name/version/os/cpu from the five-target locked table. No ARMv7 package is part of this release.
 - [ ] Set each package repository metadata to the exact private build repository **github.com/waifucave/ts-connect** as required by its npm trusted-publisher binding; do not claim that private source is publicly auditable.
 - [ ] Include no lifecycle scripts, npm bin field, network downloader, JavaScript loader, source file, source map, private repository credential, or extra target binary.
-- [ ] Run **npm pack --json** for all six and audit the exact file list, modes, hashes, license, and unpacked size.
+- [ ] Run **npm pack --json** for all five and audit the exact file list, modes, hashes, license, and unpacked size.
 - [ ] Before the first install smoke, verify the public app checkout is the recorded trust-ring
   commit and **tests/helperReleaseTrust.test.ts** independently matches the manifest signature key;
   a different commit, key, or fingerprint blocks every tarball.
 - [ ] Install each tarball into a clean matching target environment and resolve it through the public Discord Waifus helper resolver.
 - [ ] Install the root package with **--omit=optional** and prove ordinary **waifus help/start** remain usable while remote/doctor report an actionable missing helper.
 - [ ] On a supported normal install, prove npm selects exactly one helper package and source checkout/npm install resolve byte-identical helper hashes.
-- [ ] Verify unsupported darwin/x64 and unknown architectures select none.
+- [ ] Verify unsupported darwin/x64, linux/arm (including ARMv7), and unknown architectures select none.
 
-Expected: six distinct tarballs at helper **0.1.2**, one executable each, and no target ambiguity.
+Expected: five distinct tarballs at helper **0.1.2**, one executable each, and no target ambiguity.
 
-**Suggested commit:** **build: package six signed ts-connect targets**
+**Suggested commit:** **build: package five signed ts-connect targets**
 
 ## Task 5: Establish the real platform release matrix
 
@@ -343,7 +352,7 @@ Expected: six distinct tarballs at helper **0.1.2**, one executable each, and no
 - macOS ARM64: protected real ARM64 macOS runner.
 - Windows x64: protected real x64 Windows runner.
 - Windows ARM64: protected real ARM64 Windows runner.
-- Linux ARM64 and ARMv7: protected representative real hardware; run both glibc and musl where applicable.
+- Linux ARM64: protected representative real hardware; run both glibc and musl where applicable.
 
 Runner provisioning is an explicit external infrastructure action. Cross-compilation or QEMU alone cannot close this gate.
 
@@ -356,11 +365,12 @@ Runner provisioning is an explicit external infrastructure action. Cross-compila
 - [ ] Run current/N-1 compatibility fixtures and previous-helper rollback.
 - [ ] Capture sanitized evidence: target/OS, artifact hashes, versions, direct state, packet classification, and test result. Do not capture endpoint plaintext or keys.
 - [ ] Repeat Linux on representative glibc and musl systems.
-- [ ] Open the Intel macOS follow-up only after explicit approval. Required title: **Remote: add signed darwin/x64 ts-connect target**. Link it from release notes; it does not block the six-target V1 matrix.
+- [ ] Open the Intel macOS follow-up only after explicit approval. Required title: **Remote: add signed darwin/x64 ts-connect target**. Link it from release notes; it does not block the five-target V1 matrix.
+- [ ] Track the deferred Linux ARMv7 package and real-device validation alongside Intel macOS. If approved for GitHub issue creation, use **Remote: add signed Linux ARMv7 target and real-device validation**. Neither follow-up blocks the five-target V1 matrix.
 
-Expected: all six targets install, verify, launch, pair, carry direct management traffic, roam, and revoke on real target environments.
+Expected: all five targets install, verify, launch, pair, carry direct management traffic, roam, and revoke on real target environments.
 
-**Suggested private commit:** **test: gate helper release on six real targets**
+**Suggested private commit:** **test: gate helper release on five real targets**
 
 ## Task 6: Prepare helper publication without publishing
 
@@ -372,16 +382,16 @@ publisher setup remains an external action requiring explicit user approval.
 - Create: **.github/workflows/publish-helper.yml**
 - Create: **scripts/verify-published-packages.mjs**
 
-- [ ] Verify all six package names are still controlled/available under **@waifucave** and the
+- [ ] Verify all five package names are still controlled/available under **@waifucave** and the
   intended authenticated npm owner can perform the later first publication.
 - [ ] Use a GitHub-hosted Node 24/npm 11.5.1-or-newer publish job. Private-source packages may use npm OIDC trusted publishing, but npm provenance is not available for a public package from a private repository; the detached signature remains mandatory.
-- [ ] Build the approval-gated workflow so it accepts only the six exact signed tarballs produced
+- [ ] Build the approval-gated workflow so it accepts only the five exact signed tarballs produced
   by the approved build, never rebuilds, requires the production-Worker gate artifact, and stops
   before **npm publish** in dry-run mode.
 - [ ] Prepare the exact first-publication bootstrap/trusted-publisher procedure and commands, but
   do not create packages, publish, configure a trusted publisher, revoke a credential, or mutate
   a dist-tag yet.
-- [ ] Run local-registry or **npm publish --dry-run** checks for all six. Verify the prospective:
+- [ ] Run local-registry or **npm publish --dry-run** checks for all five. Verify the prospective:
   - name/version/os/cpu/license/dist integrity
   - exact manifest/signature/binary hashes
   - package inventory
@@ -390,7 +400,7 @@ publisher setup remains an external action requiring explicit user approval.
 - [ ] Save one immutable approved artifact-set manifest listing every tarball SHA-256, package
   integrity, helper/source/fork/contract commit, Worker protocol range, and release workflow run.
 
-Expected: the exact six-package **0.1.2** set is ready for publication and dry-run verified, while
+Expected: the exact five-package **0.1.2** set is ready for publication and dry-run verified, while
 registry queries still prove **0.1.2** was not published or dist-tagged by this task.
 
 **Suggested commit before the workflow dry run:** **ci: prepare verified helper publication**
@@ -400,7 +410,7 @@ registry queries still prove **0.1.2** was not published or dist-tagged by this 
 **External Cloudflare and npm actions — separate confirmations required.**
 
 - [ ] Complete plan 04 staging and security gates.
-- [ ] Byte-compare the six immutable manifest-signed 0.1.2 tarballs/binaries with the Task 5 staging-tested
+- [ ] Byte-compare the five immutable manifest-signed 0.1.2 tarballs/binaries with the Task 5 staging-tested
   hashes. Any rebuild, manifest resigning/change, or profile-specific byte change returns
   to Task 5; production testing/publication cannot continue.
 - [ ] Show the exact backward-compatible production Worker deployment, migrations, hash, and rollback.
@@ -409,32 +419,32 @@ registry queries still prove **0.1.2** was not published or dist-tagged by this 
   previous supported coordination major against production synthetic pairs; established direct
   traffic must survive a Worker restart/outage. Prove staging/cross-profile/redirect/third-origin
   egress remains zero.
-- [ ] Reconfirm the immutable six-tarball manifest from Task 6 and show the exact npm identity,
+- [ ] Reconfirm the immutable five-tarball manifest from Task 6 and show the exact npm identity,
   bootstrap/trusted-publisher process, package names, version, hashes, and publication commands.
-- [ ] After separate npm approval, publish all six exact tarballs as **0.1.2** with
+- [ ] After separate npm approval, publish all five exact tarballs as **0.1.2** with
   **--access public --tag next**. Configure each package's trusted publisher to the exact
   **publish-helper.yml** workflow when npm permits it, then revoke the one-time bootstrap
   credential.
 - [ ] Independently query/download every **next** package and verify name/version/os/cpu/license,
   registry integrity, approved tarball hash, inventory, detached manifest signature and binary hash,
   and absence of a **latest** tag.
-- [ ] Re-run the six-target install/activation/pair/direct/roam/revoke smoke against npm downloads,
+- [ ] Re-run the five-target install/activation/pair/direct/roam/revoke smoke against npm downloads,
   not CI-local tarballs.
 - [ ] Complete a default 24-consecutive-hour beta soak against the unchanged production Worker and
   immutable **next** hashes. Record start/end UTC, Worker deployment hash, all tarball hashes, and
-  test runs. Run the full six-target smoke at both boundaries and hourly current/N-1 activation,
+  test runs. Run the full five-target smoke at both boundaries and hourly current/N-1 activation,
   pair, direct JSON/binary/SSE, reconnect, and revoke synthetics on the protected representative
   matrix. Require zero prohibited/relay egress or auth/signature/replay invariant failure, no quota
   saturation, no unexplained failed synthetic, and production Worker 5xx below 1% excluding named
   deliberate outage probes. Any code/config/key/artifact change or gate failure resets the 24-hour
   clock; an external-provider outage invalidates the interval and a fresh interval begins after
   recovery. Save the sanitized evidence artifact before promotion.
-- [ ] After the soak and a separate dist-tag confirmation, move all six **0.1.2** packages from
+- [ ] After the soak and a separate dist-tag confirmation, move all five **0.1.2** packages from
   **next** to **latest** as one release set.
 - [ ] Re-query every dist-tag and tarball hash. If any package differs/fails, stop; do not release Discord Waifus.
 
 Expected: production coordination was deployed and verified before the first public helper byte;
-then all six exact helpers became independently verifiable under **next**, passed soak, and were
+then all five exact helpers became independently verifiable under **next**, passed soak, and were
 promoted together to **latest**. Discord Waifus is still unpublished.
 
 ## Task 8: Pin helpers and harden the Discord Waifus release path
@@ -448,7 +458,7 @@ promoted together to **latest**. Discord Waifus is still unpublished.
 - Create/modify: **.github/workflows/ci.yml**
 - Test: **tests/packageRemoteHelper.test.ts**, **tests/helperBinary.test.ts**, CLI/doctor suites
 
-- [ ] Add all six exact optional dependencies at **0.1.2**. Regenerate the lockfile and prove all six entries retain optional/os/cpu metadata.
+- [ ] Add all five exact optional dependencies at **0.1.2**. Regenerate the lockfile and prove all five entries retain optional/os/cpu metadata.
 - [ ] Update canonical **remote-compatibility.json** so its exact Discord Waifus version equals
   **package.json** and its bounded helper min/max-exclusive SemVer, minimum release sequence,
   protocol ranges, and sorted capabilities match the intended 0.1.2 set. Reject version drift,
@@ -458,14 +468,14 @@ promoted together to **latest**. Discord Waifus is still unpublished.
   exercises the same generated bytes without leaving tracked residue; failure restores only the
   script's own version edits and never unrelated work.
 - [ ] Ensure **scripts/check-no-file-deps.mjs** still checks optional dependencies.
-- [ ] Extend release preflight to query all six exact registry versions and validate their package
+- [ ] Extend release preflight to query all five exact registry versions and validate their package
   metadata, signed manifests, release sequence, capabilities, hashes, and app min/max-exclusive
   bounds before root packing. Every helper must accept this exact root version and the root
   compatibility table must accept that helper; verify both directions.
 - [ ] Keep the current **--omit=optional** tarball smoke for graceful degradation, then add a normal
   current-platform install that loads the packed compatibility file, proves its version equals the
   installed package, verifies both compatibility directions, and launches the signed helper.
-- [ ] Restructure **npm-root-package.yml** so the GitHub release tarball is installed and smoked on the real six-target matrix before the publish job. Publishing depends on every required target.
+- [ ] Restructure **npm-root-package.yml** so the GitHub release tarball is installed and smoked on the real five-target matrix before the publish job. Publishing depends on every required target.
 - [ ] Restrict self-hosted release-matrix jobs to the manually dispatched protected release workflow and verified release asset; never run untrusted pull-request code on those runners.
 - [ ] Public CI consumes published binaries only. It never checks out private helper source or receives a private-repository token.
 - [ ] Private helper CI may check out the public app and test local signed tarballs before publication.
@@ -488,12 +498,12 @@ Expected: app/package tests pass; root tarball includes public contracts/dashboa
 **External release action — use the repository's beta release workflow only after explicit user instruction to publish.**
 
 - [ ] Inspect branch, origin/main, exact version, package/helper/Worker state, npm versions/dist-tags, release tag absence, and dirty/untracked files. Preserve unrelated **new providers.md** and **research/**.
-- [ ] Prepare user-facing notes covering direct-only availability, hard-NAT offline behavior, six targets, Intel macOS follow-up, pairing security, source/npm identical helper, and rollback.
+- [ ] Prepare user-facing notes covering direct-only availability, hard-NAT offline behavior, five targets, Intel macOS and Linux ARMv7 follow-ups, pairing security, source/npm identical helper, and rollback.
 - [ ] Run the non-mutating release dry run first; inspect its packed package/lock/compatibility
   versions and prove all three equal the proposed SemVer with two-way helper bounds still passing.
 - [ ] Show the exact new Discord Waifus SemVer/tag/commit, helper **0.1.2** hashes, Worker version, and release command.
 - [ ] Only after the user explicitly says publish, run the full release script.
-- [ ] Watch the root workflow through the six-target pre-publish matrix and npm publish.
+- [ ] Watch the root workflow through the five-target pre-publish matrix and npm publish.
 - [ ] Independently verify npm version/dist-tags/license, GitHub tag/asset/target commit, fresh
   install, packed root compatibility metadata/package-version equality, two-way helper bounds,
   helper resolution/signature/version, **waifus doctor**, and real direct smoke.
@@ -527,14 +537,14 @@ Existing direct sessions continue through control-plane rollback when their path
 
 - [ ] Contract, security baseline, fork, helper, coordination, host bridge, gateway/dashboard, assistant, and browser-isolation gates all pass.
 - [ ] Direct-only structural and observed proofs show zero DERP/peer-relay routes, connections, and bytes.
-- [ ] Six public packages are manifest-signed, immutable, byte-verified, and tested on real target environments.
-- [ ] Those exact six manifest-verified binary hashes passed staging profile 2 and production/default profile
+- [ ] Five public packages are manifest-signed, immutable, byte-verified, and tested on real target environments.
+- [ ] Those exact five manifest-verified binary hashes passed staging profile 2 and production/default profile
   1 without rebuild, with zero inactive-profile/cross-profile/third-origin egress.
 - [ ] Source and npm installs resolve identical helper bytes.
 - [ ] Worker is deployed first and supports the compatibility window.
 - [ ] Current/N-1 and rollback pass without identity loss.
 - [ ] Security, privacy, crypto, supply-chain, and license reviews pass.
-- [ ] Intel macOS is explicitly linked as a later follow-up, never treated as supported.
+- [ ] Intel macOS and Linux ARMv7 are explicitly linked as later follow-ups, never treated as supported.
 - [ ] Every deployment/publish/tag/issue mutation received its own explicit authorization.
 - [ ] Independent post-publish verification passes.
 
@@ -547,9 +557,9 @@ These are intentional stop points, not implementation guesses:
    **waifucave-pair-certificate-2026-01** and staging key ID
    **waifucave-pair-staging-certificate-2026-01**, plus the two reviewed public Turnstile site keys.
 3. Approved helper binary distribution license text.
-4. Exact protected runner inventory for macOS ARM64, Windows ARM64, Linux ARM64, and Linux ARMv7,
+4. Exact protected runner inventory for macOS ARM64, Windows ARM64, and Linux ARM64,
    including unsigned npm-helper launch tests under default OS security settings.
 5. npm scope ownership/trusted-publisher configuration and one-time first-publication method.
 6. The exact Discord Waifus beta SemVer and helper maximum-exclusive app bound, chosen before Task
    3 helper-manifest signing and reused unchanged by the later root release.
-7. User approval for production Worker deployment, helper publication/promotion, root publication, and Intel macOS follow-up issue creation.
+7. User approval for production Worker deployment, helper publication/promotion, root publication, and deferred-platform follow-up issue creation.

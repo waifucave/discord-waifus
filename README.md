@@ -97,8 +97,8 @@ handles bounded coordination metadata only and never relays management traffic. 
 cannot be established—for example, because both networks block usable UDP—the connection stays
 offline instead of falling back to a relay.
 
-Remote V1 supports Apple-silicon macOS, Windows x64/ARM64, and Linux x64/ARM64/ARMv7. Intel macOS
-is a later follow-up. Remote management cannot stop or restart the host OS process; use the host
+Remote V1 targets Apple-silicon macOS, Windows x64/ARM64, and Linux x64/ARM64. Intel macOS and
+Linux ARMv7 are later follow-ups. Remote management cannot stop or restart the host OS process; use the host
 device for `waifus stop` and `waifus restart`.
 
 <details>

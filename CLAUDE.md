@@ -51,9 +51,10 @@ coordination-origin fallback.
 Production helper launch is fail-closed: `src/remote/helperReleaseTrust.ts` contains only reviewed
 Ed25519 release public keys, `remote-compatibility.json` binds the exact app/helper/protocol window,
 and `src/remote/helperBinary.ts` verifies package inventory, manifest signatures, binary/notices
-hashes, target metadata, and embedded build info before execution. The six V1 targets are macOS
-ARM64, Windows x64/ARM64, and Linux x64/ARM64/ARMv7. Intel macOS is a later follow-up and must never
-fall back to the ARM64 helper.
+hashes, target metadata, and embedded build info before execution. The five V1 targets are macOS
+ARM64, Windows x64/ARM64, and Linux x64/ARM64. Intel macOS and Linux ARMv7 are later follow-ups
+and must never fall back to the ARM64 helper. ARMv7 was explicitly deferred on 2026-10-02 because
+real-device validation hardware was unavailable; no ARMv7 package ships in this initial set.
 
 ## Conventions
 
