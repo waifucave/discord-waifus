@@ -64,6 +64,11 @@ real-device validation hardware was unavailable; no ARMv7 package ships in this 
 The helper child receives only a validated local Unix D-Bus session address on Linux, so native
 Secret Service works without inheriting the parent's credential environment. The existing
 protected-file fallback remains available when no usable native session bus exists.
+Host selection prepares the isolated gateway and sends a bounded, read-only `/api/health` request
+over the helper's authenticated direct path; waiting for direct status before the first request
+would deadlock startup. Its readiness monitor refreshes live helper status, re-registers the same
+unexpired gateway launch after helper restart, and is cancelled before switching hosts or closing.
+The browser still cannot open the selected dashboard until the helper confirms a direct path.
 On Windows, Node-created installation/trust metadata gets a verified private current-user plus
 LocalSystem DACL through built-in Windows PowerShell before any content is written. Unix mode
 bits alone do not provide this guarantee. Existing metadata is not silently re-permissioned.

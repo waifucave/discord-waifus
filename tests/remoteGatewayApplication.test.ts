@@ -1,4 +1,5 @@
 import { request as httpRequest } from "node:http";
+import { Readable } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ensureRemoteOnlyLayout } from "../src/config/layout.js";
 import {
@@ -87,6 +88,7 @@ describe("remote gateway application", () => {
     await hosts.upsert(second);
 
     let directState = "inactive";
+    let reportedState = "inactive";
     const selectedPairs: string[] = [];
     const supervisor = {
       snapshot: () => ({
@@ -99,7 +101,7 @@ describe("remote gateway application", () => {
         runtimeStatus: {
           activationState: "active",
           controlState: "connected",
-          directState,
+          directState: reportedState,
           lastDirectAt: null,
           lastErrorCode: null
         },
@@ -107,13 +109,22 @@ describe("remote gateway application", () => {
       }),
       startRuntime: vi.fn(async (pairId: string) => {
         selectedPairs.push(pairId);
-        directState = "direct";
+        directState = "reconnecting";
       }),
+      runtimeStatus: vi.fn(async () => { reportedState = directState; }),
       stopRuntime: vi.fn(async () => { directState = "inactive"; }),
       requestSignedSelfRevocation: vi.fn(async () => true),
       forgetRememberedHost: vi.fn(async () => undefined),
       registerGatewayLaunch: vi.fn(async () => undefined),
-      request: vi.fn(async () => { throw new Error("Not expected in this test."); })
+      request: vi.fn(async (input) => {
+        expect(input.method).toBe("GET");
+        expect(input.canonicalTarget).toBe("/api/health");
+        expect(supervisor.registerGatewayLaunch).toHaveBeenCalledWith(
+          input.browserContext.gatewayLaunchId, expect.any(String)
+        );
+        directState = "direct";
+        return { statusCode: 200, headers: [], body: Readable.from([Buffer.from("{}")]), cancel: vi.fn() };
+      })
     };
     const application = await startRemoteGatewayApplication({
       dataRoot: root,
@@ -159,18 +170,20 @@ describe("remote gateway application", () => {
     );
 
     expect((await connect(first)).status).toBe(202);
+    await vi.waitFor(() => expect(supervisor.request).toHaveBeenCalledTimes(1));
     const firstOpen = await open(first);
     expect(firstOpen.status).toBe(303);
     const firstFrame = new URL(String(firstOpen.headers.location));
     expect(firstFrame.hostname).not.toBe(application.shell.hostname);
-    expect(supervisor.registerGatewayLaunch).toHaveBeenCalledTimes(1);
+    expect(supervisor.registerGatewayLaunch).toHaveBeenCalledTimes(2);
     const simultaneousOpens = await Promise.all([open(first), open(first)]);
     expect(simultaneousOpens.map((response) => response.status)).toEqual([303, 303]);
     expect(simultaneousOpens.map((response) => new URL(String(response.headers.location)).origin))
       .toEqual([firstFrame.origin, firstFrame.origin]);
-    expect(supervisor.registerGatewayLaunch).toHaveBeenCalledTimes(1);
+    expect(supervisor.registerGatewayLaunch).toHaveBeenCalledTimes(2);
 
     expect((await connect(second)).status).toBe(202);
+    await vi.waitFor(() => expect(supervisor.request).toHaveBeenCalledTimes(2));
     expect(selectedPairs).toEqual([first.helperPairId, second.helperPairId]);
     await expect(request(
       Number(firstFrame.port),
@@ -182,7 +195,7 @@ describe("remote gateway application", () => {
     expect(secondOpen.status).toBe(303);
     const secondFrame = new URL(String(secondOpen.headers.location));
     expect(secondFrame.origin).not.toBe(firstFrame.origin);
-    expect(supervisor.registerGatewayLaunch).toHaveBeenCalledTimes(2);
+    expect(supervisor.registerGatewayLaunch).toHaveBeenCalledTimes(4);
 
     const forgotten = await request(
       application.shell.port,

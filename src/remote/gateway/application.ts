@@ -3,6 +3,7 @@ import { DashboardCache } from "../dashboardCache.js";
 import type { DashboardRemoteClient } from "../dashboardDownloader.js";
 import { RememberedHostStore, type RememberedHostRecordV1 } from "../rememberedHosts.js";
 import { createRemoteHelperBackend } from "./helperBackend.js";
+import { startDirectReadiness } from "./directReadiness.js";
 import { startRemoteDashboardFrameShell } from "./frameShell.js";
 import { RemoteLocalApi, type RemoteGatewayLocalBackend } from "./localApi.js";
 import {
@@ -18,6 +19,7 @@ type SelectedGateway = Readonly<{
   trustEpoch: string;
   dashboard: RunningRemoteGateway;
   frameShell: RunningRemoteGateway;
+  readiness: { close: () => Promise<void> };
 }>;
 
 export type StartRemoteGatewayApplicationOptions = Readonly<{
@@ -81,79 +83,91 @@ export async function startRemoteGatewayApplication(
     const current = selected;
     selected = undefined;
     if (!current) return;
+    await current.readiness.close();
     await Promise.all([current.frameShell.close(), current.dashboard.close()]);
   };
 
-  const openSelected = (host: RememberedHostRecordV1): Promise<string> => serializeSelection(
-    async () => {
-      if (closing) throw new Error("Remote gateway is closing.");
-      if (
-        runtimeHostKey?.hostId !== host.hostId
-        || runtimeHostKey.trustEpoch !== host.trustEpoch
-        || options.supervisor.snapshot().runtimeStatus.directState !== "direct"
-      ) {
-        throw new Error("The selected host does not own the direct helper runtime.");
+  const prepareSelected = async (host: RememberedHostRecordV1): Promise<SelectedGateway> => {
+    if (closing) throw new Error("Remote gateway is closing.");
+    if (
+      runtimeHostKey?.hostId !== host.hostId
+      || runtimeHostKey.trustEpoch !== host.trustEpoch
+    ) {
+      throw new Error("The selected host does not own the direct helper runtime.");
+    }
+    if (selected?.hostId === host.hostId && selected.trustEpoch === host.trustEpoch) {
+      return selected;
+    }
+    await closeSelected();
+    const client = selectedHostClient(options.supervisor);
+    let dashboardHandler: RemoteSelectedHostGateway | undefined;
+    let frameShellOrigin: string | undefined;
+    const dashboard = await startRemoteGatewayRuntime({
+      dataRoot: options.dataRoot,
+      pinnedHostId: host.hostId,
+      hostTrustEpoch: host.trustEpoch,
+      surface: "dashboard",
+      frameAncestorOrigin: () => frameShellOrigin,
+      registerGatewayLaunch: (gatewayLaunchId, expiresAt) => (
+        options.supervisor.registerGatewayLaunch(gatewayLaunchId, expiresAt)
+      ),
+      handleAuthenticatedRequest: (...args) => {
+        if (!dashboardHandler) throw new Error("Selected-host dashboard is not ready.");
+        return dashboardHandler.handle(...args);
       }
-      if (selected?.hostId === host.hostId && selected.trustEpoch === host.trustEpoch) {
-        return selected.frameShell.issueBootstrapUrl();
-      }
-      await closeSelected();
-      const client = selectedHostClient(options.supervisor);
-      let dashboardHandler: RemoteSelectedHostGateway | undefined;
-      let frameShellOrigin: string | undefined;
-      const dashboard = await startRemoteGatewayRuntime({
-        dataRoot: options.dataRoot,
-        pinnedHostId: host.hostId,
-        hostTrustEpoch: host.trustEpoch,
-        surface: "dashboard",
-        frameAncestorOrigin: () => frameShellOrigin,
-        registerGatewayLaunch: (gatewayLaunchId, expiresAt) => (
-          options.supervisor.registerGatewayLaunch(gatewayLaunchId, expiresAt)
-        ),
-        handleAuthenticatedRequest: (...args) => {
-          if (!dashboardHandler) throw new Error("Selected-host dashboard is not ready.");
-          return dashboardHandler.handle(...args);
+    });
+    let frameShell: RunningRemoteGateway | undefined;
+    try {
+      frameShell = await startRemoteDashboardFrameShell({ dashboard });
+      frameShellOrigin = frameShell.origin;
+      dashboardHandler = new RemoteSelectedHostGateway({
+        cache: new DashboardCache({ dataRoot: options.dataRoot }),
+        client,
+        hostKey: { hostId: host.hostId, trustEpoch: host.trustEpoch },
+        remoteGatewayVersion: options.appVersion,
+        connectionShellOrigin: shell.origin,
+        localOrigin: dashboard.origin,
+        connectionState: () => {
+          const state = options.supervisor.snapshot().runtimeStatus.directState;
+          return state === "inactive" ? "direct_unavailable" : state;
         }
       });
-      let frameShell: RunningRemoteGateway | undefined;
-      try {
-        frameShell = await startRemoteDashboardFrameShell({ dashboard });
-        frameShellOrigin = frameShell.origin;
-        dashboardHandler = new RemoteSelectedHostGateway({
-          cache: new DashboardCache({ dataRoot: options.dataRoot }),
-          client,
-          hostKey: { hostId: host.hostId, trustEpoch: host.trustEpoch },
-          remoteGatewayVersion: options.appVersion,
-          connectionShellOrigin: shell.origin,
-          localOrigin: dashboard.origin,
-          connectionState: () => {
-            const state = options.supervisor.snapshot().runtimeStatus.directState;
-            return state === "inactive" ? "direct_unavailable" : state;
-          }
-        });
-      } catch (error) {
-        await Promise.allSettled([frameShell?.close(), dashboard.close()]);
-        throw error;
-      }
-      const result: SelectedGateway = Object.freeze({
-        hostId: host.hostId,
-        trustEpoch: host.trustEpoch,
-        dashboard,
-        frameShell
-      });
-      if (
-        closing
-        || runtimeHostKey?.hostId !== host.hostId
-        || runtimeHostKey.trustEpoch !== host.trustEpoch
-        || options.supervisor.snapshot().runtimeStatus.directState !== "direct"
-      ) {
-        await Promise.allSettled([result.frameShell.close(), result.dashboard.close()]);
-        throw new Error("Selected host changed while opening its dashboard.");
-      }
-      selected = result;
-      return result.frameShell.issueBootstrapUrl();
+    } catch (error) {
+      await Promise.allSettled([frameShell?.close(), dashboard.close()]);
+      throw error;
     }
-  );
+    if (
+      closing
+      || runtimeHostKey?.hostId !== host.hostId
+      || runtimeHostKey.trustEpoch !== host.trustEpoch
+    ) {
+      await Promise.allSettled([frameShell.close(), dashboard.close()]);
+      throw new Error("Selected host changed while opening its dashboard.");
+    }
+    const result: SelectedGateway = Object.freeze({
+      hostId: host.hostId,
+      trustEpoch: host.trustEpoch,
+      dashboard,
+      frameShell,
+      readiness: startDirectReadiness({
+        gatewayLaunchId: dashboard.gatewayLaunchId,
+        expiresAt: dashboard.expiresAt,
+        registerLaunch: () => options.supervisor.registerGatewayLaunch(dashboard.gatewayLaunchId, dashboard.expiresAt),
+        refreshStatus: async () => { await options.supervisor.runtimeStatus(); },
+        isDirect: () => options.supervisor.snapshot().runtimeStatus.directState === "direct",
+        request: (input) => options.supervisor.request(input)
+      })
+    });
+    selected = result;
+    return result;
+  };
+
+  const openSelected = (host: RememberedHostRecordV1): Promise<string> => serializeSelection(async () => {
+    if (options.supervisor.snapshot().runtimeStatus.directState !== "direct") {
+      throw new Error("The selected host does not have a direct path.");
+    }
+    return (await prepareSelected(host)).frameShell.issueBootstrapUrl();
+  });
 
   const backend: RemoteGatewayLocalBackend = {
     ...helperBackend,
@@ -164,6 +178,7 @@ export async function startRemoteGatewayApplication(
         await closeSelected();
         await helperBackend.connectRememberedHost(host);
         runtimeHostKey = { hostId: host.hostId, trustEpoch: host.trustEpoch };
+        await prepareSelected(host);
       });
     },
     disconnectRememberedHost: async (host) => {
