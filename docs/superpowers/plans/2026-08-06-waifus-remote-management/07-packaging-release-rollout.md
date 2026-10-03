@@ -34,12 +34,14 @@ below because the current GitHub plan cannot provide that protected environment.
 remove the manifest, signature, immutable-byte, platform, staging/production, or publication gates.
 No Apple Passwords interaction is part of a user's ordinary remote connection.
 
-The replacement candidate is helper **0.1.2**, sequence **3**, final five-target source
-**2027953a7167c7bcf2606a3722bb256779c6c872**, signed release timestamp
-**2026-10-02T15:16:31Z**. The previously proposed
-source **5deab110a64130a50ef0b6138f61d8a784014ff0** / timestamp **2026-10-02T10:06:30Z**
-predates the five-target deferral and must not be tagged or signed as the final candidate.
-The app's trust window must match the final five-target source timestamp before tagging.
+The replacement candidate is helper **0.1.3**, sequence **4**, five-target source
+**01bc0245fcca08f8968339b52fa984fd1803a6b3**, signed release timestamp
+**2026-10-03T07:40:35Z**. The app's trust window must match that timestamp before tagging.
+The signed but unpublished **0.1.2 / sequence-3** set remains unchanged and unpublishable:
+its HTTP fallback can poll indefinitely at one second and ignore authenticated quota delays.
+Version 0.1.3 backs idle fallback off to 60 seconds, wakes on activity, retries WebSocket
+recovery after five minutes, and shares signed cooldowns across ordinary endpoint coordination.
+Direct management traffic and reserved revocation handling are not routed through that cooldown.
 Tagged reproducibility, immutable signing, and real-device
 acceptance remain release gates. It retains the full-size native macOS vault fix and adds
 prepared-pair retries through mailbox retirement/expiry and verified terminal cleanup.
@@ -54,8 +56,8 @@ step after the preceding gates.
 
 ## Locked Release Model
 
-- Helper packages use one independent SemVer as a release set. Initial beta set: **0.1.2**.
-- Discord Waifus pins every helper package to exact **0.1.2**, never a range or dist-tag.
+- Helper packages use one independent SemVer as a release set. Initial beta set: **0.1.3**.
+- Discord Waifus pins every helper package to exact **0.1.3**, never a range or dist-tag.
 - The five public binary-only npm packages are exactly:
 
 | npm package | Go target | npm os | npm cpu | Extra runtime check |
@@ -340,7 +342,7 @@ Expected: detached-manifest verification passes; a one-byte binary/manifest muta
 - [ ] On a supported normal install, prove npm selects exactly one helper package and source checkout/npm install resolve byte-identical helper hashes.
 - [ ] Verify unsupported darwin/x64, linux/arm (including ARMv7), and unknown architectures select none.
 
-Expected: five distinct tarballs at helper **0.1.2**, one executable each, and no target ambiguity.
+Expected: five distinct tarballs at helper **0.1.3**, one executable each, and no target ambiguity.
 
 **Suggested commit:** **build: package five signed ts-connect targets**
 
@@ -400,8 +402,8 @@ publisher setup remains an external action requiring explicit user approval.
 - [ ] Save one immutable approved artifact-set manifest listing every tarball SHA-256, package
   integrity, helper/source/fork/contract commit, Worker protocol range, and release workflow run.
 
-Expected: the exact five-package **0.1.2** set is ready for publication and dry-run verified, while
-registry queries still prove **0.1.2** was not published or dist-tagged by this task.
+Expected: the exact five-package **0.1.3** set is ready for publication and dry-run verified, while
+registry queries still prove **0.1.3** was not published or dist-tagged by this task.
 
 **Suggested commit before the workflow dry run:** **ci: prepare verified helper publication**
 
@@ -410,7 +412,7 @@ registry queries still prove **0.1.2** was not published or dist-tagged by this 
 **External Cloudflare and npm actions — separate confirmations required.**
 
 - [ ] Complete plan 04 staging and security gates.
-- [ ] Byte-compare the five immutable manifest-signed 0.1.2 tarballs/binaries with the Task 5 staging-tested
+- [ ] Byte-compare the five immutable manifest-signed 0.1.3 tarballs/binaries with the Task 5 staging-tested
   hashes. Any rebuild, manifest resigning/change, or profile-specific byte change returns
   to Task 5; production testing/publication cannot continue.
 - [ ] Show the exact backward-compatible production Worker deployment, migrations, hash, and rollback.
@@ -421,7 +423,7 @@ registry queries still prove **0.1.2** was not published or dist-tagged by this 
   egress remains zero.
 - [ ] Reconfirm the immutable five-tarball manifest from Task 6 and show the exact npm identity,
   bootstrap/trusted-publisher process, package names, version, hashes, and publication commands.
-- [ ] After separate npm approval, publish all five exact tarballs as **0.1.2** with
+- [ ] After separate npm approval, publish all five exact tarballs as **0.1.3** with
   **--access public --tag next**. Configure each package's trusted publisher to the exact
   **publish-helper.yml** workflow when npm permits it, then revoke the one-time bootstrap
   credential.
@@ -439,7 +441,7 @@ registry queries still prove **0.1.2** was not published or dist-tagged by this 
   deliberate outage probes. Any code/config/key/artifact change or gate failure resets the 24-hour
   clock; an external-provider outage invalidates the interval and a fresh interval begins after
   recovery. Save the sanitized evidence artifact before promotion.
-- [ ] After the soak and a separate dist-tag confirmation, move all five **0.1.2** packages from
+- [ ] After the soak and a separate dist-tag confirmation, move all five **0.1.3** packages from
   **next** to **latest** as one release set.
 - [ ] Re-query every dist-tag and tarball hash. If any package differs/fails, stop; do not release Discord Waifus.
 
@@ -469,10 +471,10 @@ termination, no forced kill, disabled supervisor state, and no scheduled restart
 - Create/modify: **.github/workflows/ci.yml**
 - Test: **tests/packageRemoteHelper.test.ts**, **tests/helperBinary.test.ts**, CLI/doctor suites
 
-- [ ] Add all five exact optional dependencies at **0.1.2**. Regenerate the lockfile and prove all five entries retain optional/os/cpu metadata.
+- [ ] Add all five exact optional dependencies at **0.1.3**. Regenerate the lockfile and prove all five entries retain optional/os/cpu metadata.
 - [ ] Update canonical **remote-compatibility.json** so its exact Discord Waifus version equals
   **package.json** and its bounded helper min/max-exclusive SemVer, minimum release sequence,
-  protocol ranges, and sorted capabilities match the intended 0.1.2 set. Reject version drift,
+  protocol ranges, and sorted capabilities match the intended 0.1.3 set. Reject version drift,
   unbounded ranges, and one-way compatibility before packing.
 - [ ] Make the release script's version transaction update **package.json**, **package-lock.json**,
   and the exact-version field in **remote-compatibility.json** atomically before validation. Dry-run
@@ -512,7 +514,7 @@ Expected: app/package tests pass; root tarball includes public contracts/dashboa
 - [ ] Prepare user-facing notes covering direct-only availability, hard-NAT offline behavior, five targets, Intel macOS and Linux ARMv7 follow-ups, pairing security, source/npm identical helper, and rollback.
 - [ ] Run the non-mutating release dry run first; inspect its packed package/lock/compatibility
   versions and prove all three equal the proposed SemVer with two-way helper bounds still passing.
-- [ ] Show the exact new Discord Waifus SemVer/tag/commit, helper **0.1.2** hashes, Worker version, and release command.
+- [ ] Show the exact new Discord Waifus SemVer/tag/commit, helper **0.1.3** hashes, Worker version, and release command.
 - [ ] Only after the user explicitly says publish, run the full release script.
 - [ ] Watch the root workflow through the five-target pre-publish matrix and npm publish.
 - [ ] Independently verify npm version/dist-tags/license, GitHub tag/asset/target commit, fresh
