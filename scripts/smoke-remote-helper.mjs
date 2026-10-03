@@ -15,6 +15,18 @@ function fail() {
   throw new Error("Remote helper native smoke failed.");
 }
 
+export function nativeSmokeDiagnostic(phase, snapshot) {
+  const phases = ["layout", "first_create", "first_start", "first_state", "first_close",
+    "second_create", "second_start", "second_state", "identity", "second_close"];
+  const states = ["disabled", "starting", "ready", "degraded", "stopping"];
+  const codes = ["helper_missing", "helper_unavailable", "helper_incompatible", "helper_signature_invalid", "unsupported_platform"];
+  return {
+    phase: phases.includes(phase) ? phase : "unknown",
+    state: states.includes(snapshot?.state) ? snapshot.state : "unknown",
+    code: snapshot?.lastErrorCode === null ? null : codes.includes(snapshot?.lastErrorCode) ? snapshot.lastErrorCode : "unknown"
+  };
+}
+
 export function assertNativeHelperState(supervisor, platform, arch, expectedHelperVersion) {
   const snapshot = supervisor.snapshot();
   const identity = supervisor.identityStatus();
@@ -85,6 +97,7 @@ export async function smokeInstalledHelper(packageRoot, platform, arch) {
   const dataRoot = await mkdtemp(path.join(platform === "win32" ? os.tmpdir() : "/tmp", "wh-"));
   const logger = Object.freeze({ debug() {}, info() {}, warn() {}, error() {} });
   let supervisor;
+  let phase = "layout";
   const launches = [];
   const nativeFactory = new ProtectedHelperProcessFactory();
   const processFactory = {
@@ -107,17 +120,29 @@ export async function smokeInstalledHelper(packageRoot, platform, arch) {
       role: "remote", dataRoot, appVersion: pkg.version, buildId: "native-release-smoke",
       logger, processFactory, compatibilityFilePath: path.join(root, "remote-compatibility.json")
     });
+    phase = "first_create";
     supervisor = await create();
+    phase = "first_start";
     await supervisor.start();
+    phase = "first_state";
     const first = assertNativeHelperState(supervisor, platform, arch, helperVersion);
+    phase = "first_close";
     await closeNativeHelper(supervisor, launches.at(-1));
+    phase = "second_create";
     supervisor = await create();
+    phase = "second_start";
     await supervisor.start();
+    phase = "second_state";
     const second = assertNativeHelperState(supervisor, platform, arch, helperVersion);
+    phase = "identity";
     assertSameIdentity(first, second);
+    phase = "second_close";
     await closeNativeHelper(supervisor, launches.at(-1));
     if (launches.length !== 2) fail();
     return { version: pkg.version, helperVersion, platform, arch, pass: true };
+  } catch (error) {
+    process.stderr.write(`${JSON.stringify(nativeSmokeDiagnostic(phase, supervisor?.snapshot()))}\n`);
+    throw error;
   } finally {
     await supervisor?.close();
     await rm(dataRoot, { recursive: true, force: true });

@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { assertNativeHelperState, assertSameIdentity, closeNativeHelper } from "../scripts/smoke-remote-helper.mjs";
+import { assertNativeHelperState, assertSameIdentity, closeNativeHelper, nativeSmokeDiagnostic } from "../scripts/smoke-remote-helper.mjs";
 
 afterEach(() => vi.useRealTimers());
 
@@ -14,6 +14,12 @@ function fixture() {
 }
 
 describe("native release helper gate", () => {
+  it("reports only fixed native diagnostic phases and states, never private values", () => {
+    expect(nativeSmokeDiagnostic("first_start", { state: "degraded", lastErrorCode: "helper_unavailable" }))
+      .toEqual({ phase: "first_start", state: "degraded", code: "helper_unavailable" });
+    const report = nativeSmokeDiagnostic("private-path", { state: "private-id", lastErrorCode: "private-token", dataRoot: "private-path" });
+    expect(report).toEqual({ phase: "unknown", state: "unknown", code: "unknown" });
+  });
   it("accepts bounded intentional parent-close 70, while rejecting unrelated or forced exits", async () => {
     const supervisor = { close: async () => {}, snapshot: () => ({ state: "disabled", restartScheduled: false }) };
     const exit = { code: 70, signal: null, intentionalClose: true, closeElapsedMs: 1 };
