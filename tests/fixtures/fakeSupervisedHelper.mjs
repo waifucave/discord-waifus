@@ -273,6 +273,22 @@ async function runRemoteRequestProbe(socket, readFrame, startFrame) {
     }), startFrame.streamId));
     return;
   }
+  if (process.env.FAKE_HELPER_REMOTE_BACKPRESSURE_CHUNKS === "1") {
+    socket.write(frame(RESPONSE_START, canonicalJson({
+      version: 1, statusCode: 200, statusMessage: "OK",
+      headers: [["content-type", "application/octet-stream"]]
+    }), startFrame.streamId));
+    for (let chunk = 0; chunk < 16; chunk++) {
+      socket.write(frame(RESPONSE_CHUNK, Buffer.alloc(65_536, 0x5a), startFrame.streamId));
+      const incoming = await readFrame();
+      if (incoming.streamId !== startFrame.streamId || incoming.type !== WINDOW_UPDATE) {
+        throw new Error("expected response credit after each backpressured chunk");
+      }
+    }
+    socket.write(frame(RESPONSE_END, Buffer.alloc(0), startFrame.streamId));
+    await writeResult(resultPath, result);
+    return;
+  }
   if (process.env.FAKE_HELPER_REMOTE_STREAM_UNTIL_CANCEL === "1") {
     socket.write(frame(RESPONSE_START, canonicalJson({
       version: 1,

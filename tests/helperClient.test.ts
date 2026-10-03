@@ -898,7 +898,49 @@ describe("protected helper process client", () => {
     await launch.exited;
   });
 
-  unixIt("cancels only the remote stream when its response consumer disconnects", async () => {
+  unixIt("does not accumulate close listeners across backpressured response chunks", async () => {
+    const baseRequest = await launchRequest({
+      FAKE_HELPER_RUNTIME: "1",
+      FAKE_HELPER_REMOTE_REQUEST: "1",
+      FAKE_HELPER_REMOTE_BACKPRESSURE_CHUNKS: "1"
+    });
+    const launch = await new ProtectedHelperProcessFactory().launch({
+      ...baseRequest, role: "remote",
+      environment: { ...baseRequest.environment, FAKE_HELPER_RESULT_PATH: path.join(baseRequest.dataRoot, "backpressure-result.json") }
+    });
+    const client = await launch.authenticated;
+    try {
+      await client.identityStatus();
+      await client.startRuntime(Buffer.alloc(16, 0x62).toString("base64url"));
+      const canonicalTarget = "/api/download";
+      const response = await client.request({
+        method: "GET", canonicalTarget, headers: [],
+        browserContext: {
+          version: 1, gatewayLaunchId: Buffer.alloc(32, 0x63).toString("base64url"),
+          browserSessionId: Buffer.alloc(32, 0x64).toString("base64url"),
+          requestNonce: Buffer.alloc(16, 0x6e).toString("base64url"),
+          method: "GET", canonicalTarget, csrfValidated: true
+        }
+      });
+      let size = 0;
+      let maxCloseListeners = 0;
+      for await (const chunk of response.body) {
+        size += chunk.length;
+        maxCloseListeners = Math.max(maxCloseListeners, response.body.listenerCount("close"));
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      expect(size).toBe(16 * 65_536);
+      expect(maxCloseListeners).toBeLessThanOrEqual(4);
+      await expect(client.runtimeStatus()).resolves.toMatchObject({ controlState: "connected" });
+    } finally {
+      await client.close();
+      await launch.closeParentChannel();
+      await launch.forceTerminate();
+      await launch.exited;
+    }
+  });
+
+  unixIt.each([false, true])("cancels only a backpressured remote stream when its consumer disconnects (error=%s)", async (withError) => {
     const baseRequest = await launchRequest({
       FAKE_HELPER_RUNTIME: "1",
       FAKE_HELPER_REMOTE_REQUEST: "1",
@@ -934,7 +976,12 @@ describe("protected helper process client", () => {
           csrfValidated: true
         }
       }), 2_000, "remote streaming response");
-      response.body.destroy();
+      const deadline = Date.now() + 2_000;
+      while (response.body.listenerCount("drain") === 0 && Date.now() < deadline) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      expect(response.body.listenerCount("drain")).toBeGreaterThan(0);
+      response.body.destroy(withError ? new Error("response consumer disconnected") : undefined);
 
       expect(JSON.parse(await readEventually(resultPath))).toMatchObject({
         streamId: "1",

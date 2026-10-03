@@ -638,6 +638,20 @@ function boundedStreamError(code: string, message: string): Buffer {
   return canonicalBytes({ code, message });
 }
 
+async function waitForStreamDrainOrClose(stream: PassThrough): Promise<void> {
+  const controller = new AbortController();
+  try {
+    await Promise.race([
+      once(stream, "drain", { signal: controller.signal }),
+      once(stream, "close", { signal: controller.signal })
+    ]);
+  } finally {
+    // Promise.race does not remove the losing once() listeners. Each drained
+    // chunk must release them rather than retaining them until stream close.
+    controller.abort();
+  }
+}
+
 class ProcessHelperClient implements AuthenticatedHelperClient {
   readonly hello: ComponentHello;
   readonly negotiatedProtocol: ProtocolVersion;
@@ -1053,10 +1067,7 @@ class ProcessHelperClient implements AuthenticatedHelperClient {
     stream.responseWriteTail = stream.responseWriteTail.then(async () => {
       if (stream.closed || stream.body.destroyed || stream.body.writableEnded) return;
       if (!stream.body.write(payload)) {
-        await Promise.race([
-          once(stream.body, "drain"),
-          once(stream.body, "close")
-        ]);
+        await waitForStreamDrainOrClose(stream.body);
       }
       if (stream.closed || stream.body.destroyed) return;
       await this.#sendStreamFrame(
@@ -1064,7 +1075,12 @@ class ProcessHelperClient implements AuthenticatedHelperClient {
         WIPC_FRAME_TYPES.WINDOW_UPDATE,
         encodeWipcWindowUpdate({ direction: "response", creditIncrement: payload.byteLength })
       );
-    }).catch((error) => this.#failConnection(error));
+    }).catch((error) => {
+      // A consumer abort or a peer's stream error can destroy this body while
+      // its drain waiter is pending. That ends this stream, not the shared IPC.
+      if (stream.closed || stream.body.destroyed || stream.controller.signal.aborted) return;
+      this.#failConnection(error);
+    });
   }
 
   #wakeRequestCredit(stream: ActiveRemoteStream): void {
@@ -1093,10 +1109,7 @@ class ProcessHelperClient implements AuthenticatedHelperClient {
     stream.requestWriteTail = stream.requestWriteTail.then(async () => {
       if (stream.closed || stream.body.destroyed || stream.body.writableEnded) return;
       if (!stream.body.write(payload)) {
-        await Promise.race([
-          once(stream.body, "drain"),
-          once(stream.body, "close")
-        ]);
+        await waitForStreamDrainOrClose(stream.body);
       }
       if (stream.closed || stream.body.destroyed) return;
       await this.#sendStreamFrame(
@@ -1104,7 +1117,10 @@ class ProcessHelperClient implements AuthenticatedHelperClient {
         WIPC_FRAME_TYPES.WINDOW_UPDATE,
         encodeWipcWindowUpdate({ direction: "request", creditIncrement: payload.byteLength })
       );
-    }).catch((error) => this.#failConnection(error));
+    }).catch((error) => {
+      if (stream.closed || stream.body.destroyed || stream.controller.signal.aborted) return;
+      this.#failConnection(error);
+    });
   }
 
   async #dispatchHostStream(stream: ActiveHostStream, requestStart: unknown): Promise<void> {
