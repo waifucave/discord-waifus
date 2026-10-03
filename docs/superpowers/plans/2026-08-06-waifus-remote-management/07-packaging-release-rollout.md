@@ -35,8 +35,8 @@ remove the manifest, signature, immutable-byte, platform, staging/production, or
 No Apple Passwords interaction is part of a user's ordinary remote connection.
 
 The replacement candidate is helper **0.1.3**, sequence **4**, five-target source
-**01bc0245fcca08f8968339b52fa984fd1803a6b3**, signed release timestamp
-**2026-10-03T07:40:35Z**. The app's trust window must match that timestamp before tagging.
+**1f6dc8ea8f8410ae4ab9a2f5eae5bfa7e1dd8475**, signed release timestamp
+**2026-10-03T08:02:03Z**. The app's trust window must match that timestamp before tagging.
 The signed but unpublished **0.1.2 / sequence-3** set remains unchanged and unpublishable:
 its HTTP fallback can poll indefinitely at one second and ignore authenticated quota delays.
 Version 0.1.3 backs idle fallback off to 60 seconds, wakes on activity, retries WebSocket
