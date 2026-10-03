@@ -745,6 +745,7 @@ export class RemoteAccessService {
   }
 
   async getStatus(): Promise<RemoteAccessStatusV1> {
+    await this.#refreshRuntimeStatus();
     const state = this.#requireState();
     const identity = await this.#ensureIdentityStatus();
     const summary = this.getRuntimeSummary();
@@ -772,6 +773,7 @@ export class RemoteAccessService {
   }
 
   async diagnostics(): Promise<RemoteAccessDiagnosticsV1> {
+    await this.#refreshRuntimeStatus();
     let identity = this.#options.supervisor.identityStatus();
     let diagnosticErrorCode: RemoteAccessErrorCode | null = null;
     if (!identity) {
@@ -1398,6 +1400,19 @@ export class RemoteAccessService {
       .some((operation) => operation.status.state === "pending");
     if (!hasPendingActivation) {
       await this.#options.supervisor.stop().catch(() => undefined);
+    }
+  }
+
+  async #refreshRuntimeStatus(): Promise<void> {
+    if (this.#closed || !this.#state?.config.enabled || this.#options.supervisor.snapshot().state !== "ready") return;
+    try {
+      // The query updates the supervisor and its subscribed runtime summary.
+      // A cached startup snapshot cannot report a later direct connection.
+      await this.#options.supervisor.runtimeStatus();
+    } catch (error) {
+      if (!this.#closed && this.#state?.config.enabled) {
+        this.#publish(failedSummary(this.#state, lifecycleErrorCode(error)));
+      }
     }
   }
 
