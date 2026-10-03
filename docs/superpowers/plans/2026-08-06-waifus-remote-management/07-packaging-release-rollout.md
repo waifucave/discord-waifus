@@ -50,8 +50,12 @@ The signed but unpublished **0.1.4 / sequence-5** set is unpublishable: its host
 parent stream IDs across independent direct connections, rejecting out-of-order concurrent
 requests and restarted helper numbering. The replacement scopes consumption to the verified
 application session while preserving shared nonce/direct-request/retired-launch protection.
-Contract source **54b56e1fedf8bbe8c651a7610e233b093b9412f1** synchronizes Go and TypeScript
+Contract source **3fe5f8d75fa42ed62e1121e42f365025d84857e8** synchronizes Go and TypeScript
 reference acceptance rules without changing wire fields or cryptographic preimages.
+This is the canonical public-history-rewrite commit; its contract and wordlist trees are
+byte-identical to the pre-rewrite source. Future helper builds use this pin. Already signed
+0.1.5 artifacts retain their original embedded metadata and must never be rebuilt or re-signed
+under the same version; their original provenance and the commit mapping remain private.
 Preserve the 0.1.4 tag, manifests, signatures, and binaries unchanged.
 The signed but unpublished **0.1.3 / sequence-4** set is also unpublishable: the
 production memory-backed tsnet configuration requests ephemeral login, which the
