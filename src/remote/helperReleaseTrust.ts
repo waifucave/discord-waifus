@@ -13,7 +13,7 @@ export const HELPER_RELEASE_TRUST_ROOTS: readonly HelperReleaseTrustEntryV1[] = 
     fingerprint: "6a0fdc6a96cb180a5e823a3e43cdcafe9cd2b65b22298965b42aa965fb82a381",
     sequenceFrom: "4",
     sequenceThrough: "4",
-    releasedAtFrom: "2026-10-03T07:40:35Z",
-    releasedAtThrough: "2026-10-03T07:40:35Z"
+    releasedAtFrom: "2026-10-03T08:02:03Z",
+    releasedAtThrough: "2026-10-03T08:02:03Z"
   })
 ]);
