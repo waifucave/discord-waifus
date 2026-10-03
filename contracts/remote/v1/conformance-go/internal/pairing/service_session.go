@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 const (
@@ -585,10 +586,26 @@ type RemoteBrowserReplayConfig struct {
 }
 
 type RemoteBrowserReplayGuard struct {
+	mu               sync.Mutex
 	config           RemoteBrowserReplayConfig
 	requestNonces    map[string]struct{}
 	directRequestIDs map[string]struct{}
-	parentHighWater  uint64
+}
+
+// RemoteBrowserApplicationSession belongs to one authenticated direct connection.
+// Keep it for that connection's lifetime, not in a historical session-hash map.
+type RemoteBrowserApplicationSession struct {
+	guard    *RemoteBrowserReplayGuard
+	hash     string
+	consumed bool
+}
+
+func (g *RemoteBrowserReplayGuard) NewApplicationSession(hash string) (*RemoteBrowserApplicationSession, error) {
+	decoded, err := DecodeB64(hash)
+	if g == nil || err != nil || len(decoded) != 32 {
+		return nil, serviceFailure("wrong_application_session", "authenticated application-session hash is invalid")
+	}
+	return &RemoteBrowserApplicationSession{guard: g, hash: hash}, nil
 }
 
 func NewRemoteBrowserReplayGuard(config RemoteBrowserReplayConfig) (*RemoteBrowserReplayGuard, error) {
@@ -617,13 +634,19 @@ func NewRemoteBrowserReplayGuard(config RemoteBrowserReplayConfig) (*RemoteBrows
 func (g *RemoteBrowserReplayGuard) VerifyAndConsume(
 	value RemoteBrowserContextEnvelope,
 	key []byte,
-	applicationSessionHash, now, method, canonicalTarget string,
+	session *RemoteBrowserApplicationSession,
+	now, method, canonicalTarget string,
 ) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
 	if err := ValidateRemoteBrowserContextEnvelope(value); err != nil {
 		return serviceFailure("invalid_browser_context", err.Error())
 	}
 	if !VerifyRemoteBrowserContextMAC(key, value) {
 		return serviceFailure("invalid_browser_context_mac", "remote-browser context MAC does not verify")
+	}
+	if session == nil || session.guard != g {
+		return serviceFailure("wrong_application_session", "direct application session belongs to another replay guard")
 	}
 	checks := []struct{ actual, expected, code, detail string }{
 		{value.PairID, g.config.PairID, "wrong_pair", "remote-browser pair ID does not match current trust"},
@@ -631,7 +654,7 @@ func (g *RemoteBrowserReplayGuard) VerifyAndConsume(
 		{value.RemoteInstallationBundleHash, g.config.RemoteInstallationBundleHash, "wrong_remote_bundle", "remote-browser bundle hash does not match current trust"},
 		{value.HostTrustEpoch, g.config.HostTrustEpoch, "wrong_trust_epoch", "remote-browser host trust epoch does not match current trust"},
 		{value.RemoteTrustEpoch, g.config.RemoteTrustEpoch, "wrong_trust_epoch", "remote-browser remote trust epoch does not match current trust"},
-		{value.ApplicationSessionHash, applicationSessionHash, "wrong_application_session", "remote-browser proof is bound to another app session"},
+		{value.ApplicationSessionHash, session.hash, "wrong_application_session", "remote-browser proof is bound to another app session"},
 		{value.BrowserContext.GatewayLaunchID, g.config.GatewayLaunchID, "stale_gateway_launch", "remote-browser gateway launch is not current"},
 		{value.BrowserContext.BrowserSessionID, g.config.BrowserSessionID, "stale_browser_session", "remote-browser session is not current"},
 	}
@@ -657,13 +680,12 @@ func (g *RemoteBrowserReplayGuard) VerifyAndConsume(
 	if _, exists := g.directRequestIDs[value.DirectRequestID]; exists {
 		return serviceFailure("replayed_direct_request_id", "direct request ID was already consumed")
 	}
-	parent, _ := parseServiceUint64(value.RemoteParentStreamID, "remote parent stream ID")
-	if parent <= g.parentHighWater {
-		return serviceFailure("stale_parent_stream", "remote parent stream ID is not above the high-water mark")
+	if session.consumed {
+		return serviceFailure("application_session_consumed", "direct application session already carried its V1 request")
 	}
 	g.requestNonces[value.BrowserContext.RequestNonce] = struct{}{}
 	g.directRequestIDs[value.DirectRequestID] = struct{}{}
-	g.parentHighWater = parent
+	session.consumed = true
 	return nil
 }
 
