@@ -4,24 +4,25 @@ import path from "node:path";
 
 // Windows chmod does not express owner-only access. Set and verify the same
 // protected current-user + LocalSystem DACL required by ts-connect, before
-// writing any bytes. The path is data on stdin, never interpolated into code.
+// writing any bytes. The UTF-8 path is base64 data on stdin, never code. Use
+// Framework APIs directly so stripped-down environments need no cmdlet discovery.
 const WINDOWS_PRIVATE_FILE_SCRIPT = `
 $ErrorActionPreference = 'Stop'
 try {
   [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
-  $file = [Console]::In.ReadToEnd() | ConvertFrom-Json
-  $item = Get-Item -LiteralPath $file -Force
-  if ($item.PSIsContainer -or $item.Length -ne 0 -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { exit 1 }
+  $file = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd()))
+  $item = [IO.FileInfo]::new($file)
+  if (($item.Attributes -band [IO.FileAttributes]::Directory) -or $item.Length -ne 0 -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { exit 1 }
   $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
   $system = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-18')
-  $old = Get-Acl -LiteralPath $file
+  $old = [IO.File]::GetAccessControl($file)
   if ($old.GetOwner([System.Security.Principal.SecurityIdentifier]).Value -ne $sid.Value) { exit 1 }
   $acl = [System.Security.AccessControl.FileSecurity]::new()
   $acl.SetAccessRuleProtection($true, $false)
   $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($sid, 'FullControl', 'Allow'))
   $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($system, 'FullControl', 'Allow'))
-  Set-Acl -LiteralPath $file -AclObject $acl
-  $checked = Get-Acl -LiteralPath $file
+  [IO.File]::SetAccessControl($file, $acl)
+  $checked = [IO.File]::GetAccessControl($file)
   $rules = @($checked.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
   if (!$checked.AreAccessRulesProtected -or $rules.Count -ne 2) { exit 1 }
   $found = @{}
@@ -57,7 +58,7 @@ export async function protectNewPrivateMetadataFile(filePath: string): Promise<v
         else resolve();
       });
       child.stdin?.on("error", () => reject(failure()));
-      child.stdin?.end(JSON.stringify(filePath));
+      child.stdin?.end(Buffer.from(filePath, "utf8").toString("base64"));
     });
   } catch {
     throw failure();
