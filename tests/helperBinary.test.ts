@@ -281,7 +281,7 @@ describe("signed ts-connect package resolution", () => {
     expect(probeBinary).not.toHaveBeenCalled();
   });
 
-  it.each(["0.1.0", "0.1.1", "0.1.2", "0.1.3"])("rejects superseded helper %s before executing its version probe", async (helperVersion) => {
+  it.each(["0.1.0", "0.1.1", "0.1.2", "0.1.3", "0.1.4"])("rejects superseded helper %s before executing its version probe", async (helperVersion) => {
     const fixture = await trustFixture();
     const valid = object(fixture.valid, "valid fixture");
     const root = await makeTempRoot("waifus-superseded-helper-");
@@ -310,7 +310,7 @@ describe("signed ts-connect package resolution", () => {
     const appVersion = await readPackageVersion();
     const compatibility = await loadRemoteCompatibilityV1(appVersion);
     const changed = await signedVariant(fixture, (manifest) => {
-      manifest.helperVersion = "0.1.4";
+      manifest.helperVersion = "0.1.5";
       manifest.workerTrustRingSha256 = compatibility.helper.workerTrustRingSha256;
     });
     await createFixturePackage(packageRoot, valid, {
@@ -333,7 +333,7 @@ describe("signed ts-connect package resolution", () => {
       appVersion
     })).resolves.toMatchObject({
       binaryPath: path.join(packageRoot, "bin", "ts-connect"),
-      helperVersion: "0.1.4",
+      helperVersion: "0.1.5",
       releaseSequence: "42"
     });
     await expect(resolver.resolve({
