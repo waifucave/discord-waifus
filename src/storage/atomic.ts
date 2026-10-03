@@ -1,8 +1,10 @@
 import { mkdir, open, readdir, rename, rm } from "node:fs/promises";
 import path from "node:path";
+import { discardOwnedEmptyMetadataFile, protectNewPrivateMetadataFile } from "./privateMetadataFile.js";
 
 export type AtomicWriteOptions = {
   mode?: number;
+  privateMetadata?: boolean;
 };
 
 export async function atomicWriteJson(
@@ -26,8 +28,12 @@ export async function atomicWriteText(
     `.${base}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`
   );
 
-  const handle = await open(tmpPath, "w", options.mode ?? 0o600);
+  const handle = await open(tmpPath, "wx", options.mode ?? 0o600);
   try {
+    if (options.privateMetadata) {
+      try { await protectNewPrivateMetadataFile(tmpPath); }
+      catch (error) { await discardOwnedEmptyMetadataFile(tmpPath, handle); throw error; }
+    }
     await handle.writeFile(content, "utf8");
     await handle.sync();
   } finally {

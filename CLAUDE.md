@@ -64,6 +64,9 @@ real-device validation hardware was unavailable; no ARMv7 package ships in this 
 The helper child receives only a validated local Unix D-Bus session address on Linux, so native
 Secret Service works without inheriting the parent's credential environment. The existing
 protected-file fallback remains available when no usable native session bus exists.
+On Windows, Node-created installation/trust metadata gets a verified private current-user plus
+LocalSystem DACL through built-in Windows PowerShell before any content is written. Unix mode
+bits alone do not provide this guarantee. Existing metadata is not silently re-permissioned.
 
 ## Conventions
 

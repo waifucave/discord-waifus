@@ -16,6 +16,7 @@ import { RemoteAccessConfigV1Schema } from "../shared/schemas/remoteLifecycle.js
 import { remoteStatePaths } from "../remote/paths.js";
 import { resolveDataPath } from "./paths.js";
 import { PREBUILT_WAIFUS } from "./prebuiltWaifus.js";
+import { discardOwnedEmptyMetadataFile, protectNewPrivateMetadataFile } from "../storage/privateMetadataFile.js";
 
 export const DATA_LAYOUT_DIRS = [
   "app",
@@ -225,7 +226,7 @@ async function ensureRemoteAccessLayout(
       vaultLabel: `waifus.installation.v1.${installationId}`,
       activationReference: null,
       createdAt: Date.now().toString(10)
-    }));
+    }), true);
   }
 
   if (!trustEntries.includes("index.json")) {
@@ -239,7 +240,7 @@ async function ensureRemoteAccessLayout(
       trustEpochHighWater: "0",
       resetTombstone: "0",
       pairs: []
-    }));
+    }), true);
   }
 
   if (!trustEntries.includes("local-deny-v1.json")) {
@@ -277,8 +278,8 @@ export async function readPackageVersion(): Promise<string> {
   }
 }
 
-async function writeJsonIfMissing(filePath: string, content: unknown): Promise<void> {
-  await writeIfMissing(filePath, JSON.stringify(content, null, 2) + "\n");
+async function writeJsonIfMissing(filePath: string, content: unknown, privateMetadata = false): Promise<void> {
+  await writeIfMissing(filePath, JSON.stringify(content, null, 2) + "\n", privateMetadata);
 }
 
 async function seedPrebuiltWaifusOnce(dataRoot: string): Promise<void> {
@@ -312,7 +313,7 @@ async function seedPrebuiltWaifusOnce(dataRoot: string): Promise<void> {
   });
 }
 
-async function writeIfMissing(filePath: string, content: string): Promise<void> {
+async function writeIfMissing(filePath: string, content: string, privateMetadata = false): Promise<void> {
   try {
     await lstat(filePath);
   } catch (error) {
@@ -328,6 +329,10 @@ async function writeIfMissing(filePath: string, content: string): Promise<void> 
       throw openError;
     }
     try {
+      if (privateMetadata) {
+        try { await protectNewPrivateMetadataFile(filePath); }
+        catch (error) { await discardOwnedEmptyMetadataFile(filePath, handle); throw error; }
+      }
       await handle.writeFile(content, "utf8");
       await handle.sync();
     } finally {

@@ -314,7 +314,7 @@ export class IdentityResetState {
           trustEpochHighWater: current.resetTombstone,
           resetTombstone: current.resetTombstone,
           pairs: []
-        }), { mode: 0o600 }),
+        }), { mode: 0o600, privateMetadata: true }),
         atomicWriteJson(this.#paths.localDenyIndex, RemoteAccessLocalDenyIndexV1Schema.parse({
           version: 1,
           trustEpochHighWater: current.resetTombstone,
