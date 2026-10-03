@@ -463,6 +463,68 @@ describe("role-neutral helper supervisor", () => {
     expect(stopRuntime).toHaveBeenCalledTimes(2);
   });
 
+  it("does not schedule a crash retry for an intentional helper replacement", async () => {
+    vi.useFakeTimers();
+    const factory = new FakeProcessFactory();
+    const { supervisor } = await makeSupervisor(factory);
+    const started = supervisor.start();
+    await settle();
+    factory.launches[0]!.resolveAuthenticated(helperClient());
+    await started;
+    const replaced = supervisor.reconnect();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(factory.launches).toHaveLength(2);
+    factory.launches[1]!.resolveAuthenticated(helperClient());
+    await replaced;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(factory.launches).toHaveLength(2);
+    expect(supervisor.snapshot()).toMatchObject({ state: "ready", restartScheduled: false, consecutiveFailures: 0 });
+    await supervisor.close();
+  });
+
+  it("coalesces reconnects during authentication without abandoning the startup attempt", async () => {
+    vi.useFakeTimers();
+    const factory = new FakeProcessFactory();
+    const { supervisor } = await makeSupervisor(factory);
+    const started = supervisor.start();
+    await settle();
+    const firstReconnect = supervisor.reconnect();
+    const secondReconnect = supervisor.reconnect();
+    factory.launches[0]!.resolveAuthenticated(helperClient());
+    await started;
+    await vi.advanceTimersByTimeAsync(0);
+    expect(factory.launches).toHaveLength(2);
+    factory.launches[1]!.resolveAuthenticated(helperClient());
+    await Promise.all([firstReconnect, secondReconnect]);
+    expect(supervisor.snapshot().state).toBe("ready");
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(factory.launches).toHaveLength(2);
+    await supervisor.close();
+  });
+
+  it("waits for failed authentication cleanup before a requested replacement", async () => {
+    vi.useFakeTimers();
+    const factory = new FakeProcessFactory();
+    const { supervisor } = await makeSupervisor(factory);
+    const started = supervisor.start();
+    await settle();
+    const cleanup = deferred<void>();
+    factory.launches[0]!.forceTerminate = async () => { await cleanup.promise; };
+    const firstReconnect = supervisor.reconnect();
+    const secondReconnect = supervisor.reconnect();
+    await vi.advanceTimersByTimeAsync(5_000);
+    cleanup.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    await started;
+    expect(factory.launches).toHaveLength(2);
+    factory.launches[1]!.resolveAuthenticated(helperClient());
+    await Promise.all([firstReconnect, secondReconnect]);
+    expect(supervisor.snapshot().state).toBe("ready");
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(factory.launches).toHaveLength(2);
+    await supervisor.close();
+  });
+
   it("drains the helper and clears runtime restart intent after identity rotation", async () => {
     vi.useFakeTimers();
     const factory = new FakeProcessFactory();

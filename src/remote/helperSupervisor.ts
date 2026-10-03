@@ -262,6 +262,7 @@ export class HelperSupervisor {
   #restartTimer: TimerHandle | undefined;
   #failureTimes: number[] = [];
   #generation = 0;
+  #reconnectPromise: Promise<void> | undefined;
   #closing = false;
 
   constructor(options: HelperSupervisorOptions) {
@@ -309,6 +310,20 @@ export class HelperSupervisor {
   }
 
   async reconnect(): Promise<void> {
+    if (this.#reconnectPromise) return this.#reconnectPromise;
+    const operation = this.#replaceLaunch();
+    this.#reconnectPromise = operation;
+    try {
+      await operation;
+    } finally {
+      if (this.#reconnectPromise === operation) this.#reconnectPromise = undefined;
+    }
+  }
+
+  async #replaceLaunch(): Promise<void> {
+    // Let an authenticating attempt and its cleanup settle before replacing it.
+    // Reusing an invalidated in-flight attempt can strand the supervisor in starting.
+    await this.#attemptPromise;
     if (this.#closing) {
       throw new HelperSupervisorError("helper_unavailable", "Remote helper supervisor is closed.");
     }
@@ -764,6 +779,10 @@ export class HelperSupervisor {
   async #shutdownCurrentLaunch(): Promise<void> {
     const launch = this.#launch;
     const client = this.#client;
+    // Its eventual exit is intentional, even while draining asynchronously.
+    // Otherwise the crash watcher can schedule a second replacement over the
+    // healthy new helper, colliding with its exclusive identity lock.
+    this.#generation += 1;
     this.#launch = undefined;
     this.#client = undefined;
     this.#unsubscribeStatus?.();

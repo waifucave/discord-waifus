@@ -74,6 +74,8 @@ class ManagementSupervisor {
   startRuntimeCalls = 0;
   reconnectRuntimeCalls = 0;
   stopRuntimeCalls = 0;
+  liveRuntimeStatus: HelperSupervisorSnapshot["runtimeStatus"] | undefined;
+  runtimeStatusError: Error | undefined;
   closeCalls = 0;
   startError: Error | undefined;
   stopGate: Promise<void> | undefined;
@@ -150,6 +152,11 @@ class ManagementSupervisor {
   }
 
   async runtimeStatus() {
+    if (this.runtimeStatusError) throw this.runtimeStatusError;
+    if (this.liveRuntimeStatus) {
+      this.#snapshot = { ...this.#snapshot, runtimeStatus: this.liveRuntimeStatus };
+      for (const listener of this.#listeners) listener(this.#snapshot);
+    }
     return this.#snapshot.runtimeStatus;
   }
 
@@ -276,6 +283,28 @@ function remotePrincipal() {
 }
 
 describe("host remote-access management API", () => {
+  it("refreshes live host status instead of returning the startup snapshot", async () => {
+    const harness = await makeHarness();
+    const enabled = await harness.app.inject({
+      method: "PUT", url: "/api/remote-access",
+      headers: { ...browserHeaders(), cookie: harness.browser.cookie, "x-waifus-csrf": harness.browser.csrf },
+      payload: { revision: "0", enabled: true }
+    });
+    expect(enabled.statusCode).toBe(202);
+    harness.supervisor.liveRuntimeStatus = { ...readySnapshot().runtimeStatus,
+      controlState: "connected", directState: "direct", lastDirectAt: "1786270801" as never };
+    const status = await harness.app.inject({ method: "GET", url: "/api/remote-access", headers: browserHeaders() });
+    expect(status.json()).toMatchObject({ directState: "direct", lastDirectAt: "1786270801" });
+    harness.supervisor.liveRuntimeStatus = { ...harness.supervisor.liveRuntimeStatus,
+      directState: "reconnecting" };
+    const diagnostics = await harness.app.inject({ method: "GET", url: "/api/remote-access/diagnostics", headers: browserHeaders() });
+    expect(diagnostics.body).toContain("reconnecting");
+    harness.supervisor.runtimeStatusError = new Error("private upstream details");
+    const failed = await harness.app.inject({ method: "GET", url: "/api/remote-access", headers: browserHeaders() });
+    expect(failed.json()).toMatchObject({ directState: "direct_unavailable", lastErrorCode: "helper_unavailable" });
+    expect(failed.body).not.toContain("private upstream details");
+  });
+
   it("returns redacted status and diagnostics locally and to a trusted remote", async () => {
     const harness = await makeHarness();
     const local = await harness.app.inject({
