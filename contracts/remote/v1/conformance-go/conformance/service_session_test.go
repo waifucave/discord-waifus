@@ -2,6 +2,7 @@ package conformance_test
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"os"
@@ -315,14 +316,18 @@ func TestRemoteBrowserContextReplayAndStateGate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create replay guard: %v", err)
 	}
+	session, err := guard.NewApplicationSession(value.ApplicationSessionHash)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := guard.VerifyAndConsume(
-		value, key, value.ApplicationSessionHash, fixture.RemoteBrowserContext.AcceptedAt,
+		value, key, session, fixture.RemoteBrowserContext.AcceptedAt,
 		value.BrowserContext.Method, value.BrowserContext.CanonicalTarget,
 	); err != nil {
 		t.Fatalf("consume valid browser context: %v", err)
 	}
 	if err := guard.VerifyAndConsume(
-		value, key, value.ApplicationSessionHash, fixture.RemoteBrowserContext.AcceptedAt,
+		value, key, session, fixture.RemoteBrowserContext.AcceptedAt,
 		value.BrowserContext.Method, value.BrowserContext.CanonicalTarget,
 	); err == nil || serviceErrorCode(t, err) != "replayed_request_nonce" {
 		t.Fatalf("replayed browser context returned %v", err)
@@ -338,16 +343,97 @@ func TestRemoteBrowserContextReplayAndStateGate(t *testing.T) {
 	}
 	expired := strconv.FormatUint(serviceUint64(t, fixture.RemoteBrowserContext.GatewayExpiresAt)+1, 10)
 	if err := guard.VerifyAndConsume(
-		fresh, key, fresh.ApplicationSessionHash, expired,
+		fresh, key, session, expired,
 		fresh.BrowserContext.Method, fresh.BrowserContext.CanonicalTarget,
 	); err == nil || serviceErrorCode(t, err) != "gateway_launch_expired" {
 		t.Fatalf("expired gateway launch returned %v", err)
 	}
 	if err := guard.VerifyAndConsume(
-		fresh, key, fresh.ApplicationSessionHash, fixture.RemoteBrowserContext.AcceptedAt,
+		fresh, key, session, fixture.RemoteBrowserContext.AcceptedAt,
 		"GET", fresh.BrowserContext.CanonicalTarget,
 	); err == nil || serviceErrorCode(t, err) != "request_binding_mismatch" {
 		t.Fatalf("request binding substitution returned %v", err)
+	}
+}
+
+func TestRemoteBrowserIndependentConnectionsReorderWithoutClearingReplayState(t *testing.T) {
+	fixture := decodeServiceFixture(t)
+	original := fixture.RemoteBrowserContext.Envelope
+	key := decodeBase64URL(t, fixture.RemoteBrowserContext.BrowserContextKeyB64)
+	guard, err := pairing.NewRemoteBrowserReplayGuard(pairing.RemoteBrowserReplayConfig{
+		PairID: original.PairID, RemoteDeviceID: original.RemoteDeviceID,
+		RemoteInstallationBundleHash: original.RemoteInstallationBundleHash,
+		HostTrustEpoch:               original.HostTrustEpoch, RemoteTrustEpoch: original.RemoteTrustEpoch,
+		GatewayLaunchID:  original.BrowserContext.GatewayLaunchID,
+		BrowserSessionID: original.BrowserContext.BrowserSessionID,
+		GatewayExpiresAt: fixture.RemoteBrowserContext.GatewayExpiresAt,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b64 := func(size int, index uint64) string {
+		b := make([]byte, size)
+		binary.BigEndian.PutUint64(b[size-8:], index)
+		return pairing.B64(b)
+	}
+	makeEnvelope := func(index, parent uint64) pairing.RemoteBrowserContextEnvelope {
+		value := original
+		value.ApplicationSessionHash = b64(32, index)
+		value.DirectRequestID = b64(16, index)
+		value.RemoteParentStreamID = strconv.FormatUint(parent, 10)
+		value.BrowserContext.RequestNonce = b64(16, index)
+		value, err := pairing.SignRemoteBrowserContextEnvelope(key, value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return value
+	}
+	verify := func(value pairing.RemoteBrowserContextEnvelope, session *pairing.RemoteBrowserApplicationSession) error {
+		value, err := pairing.SignRemoteBrowserContextEnvelope(key, value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return guard.VerifyAndConsume(value, key, session, fixture.RemoteBrowserContext.AcceptedAt, value.BrowserContext.Method, value.BrowserContext.CanonicalTarget)
+	}
+	newSession := func(value pairing.RemoteBrowserContextEnvelope) *pairing.RemoteBrowserApplicationSession {
+		s, err := guard.NewApplicationSession(value.ApplicationSessionHash)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	ids := []uint64{4097, 4095}
+	for id := uint64(257); id > 1; id -= 2 {
+		ids = append(ids, id)
+	}
+	ids = append(ids, 1, 1)
+	for index, id := range ids {
+		value := makeEnvelope(uint64(index+1), id)
+		if err := verify(value, newSession(value)); err != nil {
+			t.Fatalf("parent %d: %v", id, err)
+		}
+	}
+	first := makeEnvelope(200, 1)
+	session := newSession(first)
+	if err := verify(first, session); err != nil {
+		t.Fatal(err)
+	}
+	if err := verify(first, newSession(first)); serviceErrorCode(t, err) != "replayed_request_nonce" {
+		t.Fatalf("nonce replay: %v", err)
+	}
+	replayID := makeEnvelope(201, 1)
+	replayID.DirectRequestID = first.DirectRequestID
+	if err := verify(replayID, newSession(replayID)); serviceErrorCode(t, err) != "replayed_direct_request_id" {
+		t.Fatalf("ID replay: %v", err)
+	}
+	second := makeEnvelope(202, 3)
+	second.ApplicationSessionHash = first.ApplicationSessionHash
+	if err := verify(second, session); serviceErrorCode(t, err) != "application_session_consumed" {
+		t.Fatalf("session replay: %v", err)
+	}
+	wrong := newSession(makeEnvelope(999, 1))
+	if err := verify(second, wrong); serviceErrorCode(t, err) != "wrong_application_session" {
+		t.Fatalf("session substitution: %v", err)
 	}
 }
 

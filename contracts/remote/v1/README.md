@@ -106,6 +106,8 @@ standard JSON Schema cannot express by itself. These currently cover:
 - ordered protocol/SemVer fields, derived principal IDs, and distinct old/new identities;
 - approval-expiry/source binding and decoded-CBOR byte ceilings;
 - remote-browser envelope MAC provenance and positive odd parent-stream IDs;
+- independent direct-connection reordering and parent-IPC restart without resetting shared
+  nonce/direct-request replay state; one request per authenticated application-session handle;
 - operation status-URL derivation, status-specific retention, and audit forbidden-content rules;
 - exact event-cursor epoch width and canonical uint64 sequence encoding;
 - activation URL/origin constraints, invitation secret lifetime, and assistant-safe pairing fields;

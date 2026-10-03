@@ -285,10 +285,11 @@ describe("remote service-session V1 public crypto vectors", () => {
       gatewayExpiresAt: text(browser.gatewayExpiresAt)
     });
 
+    const applicationSession = guard.createApplicationSession(envelope.applicationSessionHash);
     guard.verifyAndConsume({
       envelope,
       browserContextKey: key,
-      applicationSessionHash: envelope.applicationSessionHash,
+      applicationSession,
       now: text(browser.acceptedAt),
       method: envelope.browserContext.method,
       canonicalTarget: envelope.browserContext.canonicalTarget
@@ -296,7 +297,7 @@ describe("remote service-session V1 public crypto vectors", () => {
     expect(() => guard.verifyAndConsume({
       envelope,
       browserContextKey: key,
-      applicationSessionHash: envelope.applicationSessionHash,
+      applicationSession,
       now: text(browser.acceptedAt),
       method: envelope.browserContext.method,
       canonicalTarget: envelope.browserContext.canonicalTarget
@@ -310,7 +311,7 @@ describe("remote service-session V1 public crypto vectors", () => {
     expect(() => guard.verifyAndConsume({
       envelope: fresh,
       browserContextKey: key,
-      applicationSessionHash: fresh.applicationSessionHash,
+      applicationSession,
       now: (BigInt(text(browser.gatewayExpiresAt)) + 1n).toString(),
       method: fresh.browserContext.method,
       canonicalTarget: fresh.browserContext.canonicalTarget
@@ -319,11 +320,50 @@ describe("remote service-session V1 public crypto vectors", () => {
     expect(() => guard.verifyAndConsume({
       envelope: fresh,
       browserContextKey: key,
-      applicationSessionHash: fresh.applicationSessionHash,
+      applicationSession,
       now: text(browser.acceptedAt),
       method: "GET",
       canonicalTarget: fresh.browserContext.canonicalTarget
     })).toThrow(/request_binding_mismatch/);
+  });
+
+  it("allows independent connections to reorder and restart without clearing shared replay checks", () => {
+    const browser = record(record(createRemoteServiceSessionV1Fixture()).remoteBrowserContext);
+    const original = browserEnvelope(browser.envelope);
+    const key = bytes(browser.browserContextKeyB64);
+    const guard = new RemoteBrowserContextReplayGuardV1({
+      pairId: original.pairId, remoteDeviceId: original.remoteDeviceId,
+      remoteInstallationBundleHash: original.remoteInstallationBundleHash,
+      hostTrustEpoch: original.hostTrustEpoch, remoteTrustEpoch: original.remoteTrustEpoch,
+      gatewayLaunchId: original.browserContext.gatewayLaunchId,
+      browserSessionId: original.browserContext.browserSessionId, gatewayExpiresAt: text(browser.gatewayExpiresAt)
+    });
+    const b64 = (size: number, index: number) => { const b = Buffer.alloc(size); b.writeUInt32BE(index, size - 4); return b.toString("base64url"); };
+    const envelopeFor = (index: number, parent: number) => {
+      const value = cloneEnvelope(original);
+      Object.assign(value, { applicationSessionHash: b64(32, index), directRequestId: b64(16, index), remoteParentStreamId: String(parent) });
+      Object.assign(value.browserContext, { requestNonce: b64(16, index) });
+      return value;
+    };
+    const verify = (value: typeof original, session = guard.createApplicationSession(value.applicationSessionHash)) => {
+      value.mac = deriveRemoteBrowserContextMacV1(key, value).toString("base64url") as typeof value.mac;
+      return guard.verifyAndConsume({ envelope: value, browserContextKey: key, applicationSession: session,
+        now: text(browser.acceptedAt), method: value.browserContext.method, canonicalTarget: value.browserContext.canonicalTarget });
+    };
+    const ids = [4097, 4095, ...Array.from({ length: 128 }, (_, i) => 257 - i * 2), 1, 1];
+    ids.forEach((id, index) => verify(envelopeFor(index + 1, id)));
+    const value = envelopeFor(200, 1);
+    const session = guard.createApplicationSession(value.applicationSessionHash);
+    verify(value, session);
+    expect(() => verify(value)).toThrow(/replayed_request_nonce/);
+    const replayId = envelopeFor(201, 1);
+    replayId.directRequestId = value.directRequestId;
+    expect(() => verify(replayId)).toThrow(/replayed_direct_request_id/);
+    const second = envelopeFor(202, 3);
+    second.applicationSessionHash = value.applicationSessionHash;
+    expect(() => verify(second, session)).toThrow(/application_session_consumed/);
+    const wrong = guard.createApplicationSession(b64(32, 999));
+    expect(() => verify(second, wrong)).toThrow(/wrong_application_session/);
   });
 
   it("pins canonical local and remote ApprovalReceiptV1 context hashes", () => {

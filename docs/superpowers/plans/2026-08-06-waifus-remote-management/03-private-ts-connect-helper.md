@@ -343,6 +343,19 @@ an immutable authenticated browser context with the derived `remote_device` prin
 parent IPC. It strips/rejects lookalike ordinary HTTP headers and never reconstructs this context
 from them. No REQUEST_DATA reaches Node before verification.
 
+Request-order clarification (2026-10-03): the strict parent-stream high-water is scoped to the
+originating WIPC connection. Independent authenticated direct connections may arrive in any
+order; the host must not compare their parent IDs against a pair-wide or gateway-wide high-water.
+V1 carries exactly one request on direct stream `1` per authenticated application connection.
+Bind single-use consumption to that authenticated session after its hash and MAC are checked,
+and discard that session-local state when the connection closes. Do not retain an unbounded
+historical session-hash map or impose a fixed reordering window. Request nonces, direct request IDs,
+and current/retired gateway launches remain shared replay state across those connections. A helper
+restart may re-register the same unexpired gateway launch and restart its local WIPC numbering;
+neither that registration nor a new application session clears shared replay state or extends expiry.
+The Go and TypeScript reference guards require one session handle per authenticated connection,
+bound to its verified application-session hash and retained for exactly that connection's lifetime.
+
 The public Plan 01 contract and vectors use these exact field names and encodings. Valid and invalid
 Go/TypeScript vectors cover stale `gatewayLaunchId`, expired/browser-session replacement, replayed
 request nonce, different remote device/bundle/trust epoch, other app session, parent/direct stream,

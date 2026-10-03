@@ -59,7 +59,8 @@ export type RemoteServiceCryptoErrorCode =
   | "request_binding_mismatch"
   | "replayed_request_nonce"
   | "replayed_direct_request_id"
-  | "stale_parent_stream";
+  | "stale_parent_stream"
+  | "application_session_consumed";
 
 export class RemoteServiceCryptoError extends Error {
   constructor(
@@ -522,17 +523,26 @@ export interface RemoteBrowserContextReplayGuardConfigV1 {
 export interface VerifyAndConsumeRemoteBrowserContextV1Input {
   envelope: unknown;
   browserContextKey: Uint8Array;
-  applicationSessionHash: string;
+  applicationSession: RemoteBrowserApplicationSessionV1;
   now: string;
   method: HttpMethod;
   canonicalTarget: string;
 }
 
+export type RemoteBrowserApplicationSessionV1 = Readonly<{ applicationSessionHash: string }>;
+
 export class RemoteBrowserContextReplayGuardV1 {
   private readonly expected: RemoteBrowserContextReplayGuardConfigV1;
   private readonly requestNonces = new Set<string>();
   private readonly directRequestIds = new Set<string>();
-  private parentStreamHighWater = 0n;
+  private readonly sessions = new WeakMap<RemoteBrowserApplicationSessionV1, { consumed: boolean }>();
+
+  /** Create once for each authenticated direct connection; discard when it closes. */
+  createApplicationSession(applicationSessionHash: string): RemoteBrowserApplicationSessionV1 {
+    const session = Object.freeze({ applicationSessionHash: Base64Url32BytesSchema.parse(applicationSessionHash) });
+    this.sessions.set(session, { consumed: false });
+    return session;
+  }
 
   constructor(config: RemoteBrowserContextReplayGuardConfigV1) {
     this.expected = {
@@ -573,8 +583,8 @@ export class RemoteBrowserContextReplayGuardV1 {
     ) {
       return fail("wrong_trust_epoch", "remote-browser trust epochs do not match current trust.");
     }
-    const expectedApplicationSessionHash = Base64Url32BytesSchema.parse(input.applicationSessionHash);
-    if (value.applicationSessionHash !== expectedApplicationSessionHash) {
+    const session = this.sessions.get(input.applicationSession);
+    if (!session || value.applicationSessionHash !== input.applicationSession.applicationSessionHash) {
       return fail("wrong_application_session", "remote-browser proof is bound to another app session.");
     }
     if (value.browserContext.gatewayLaunchId !== this.expected.gatewayLaunchId) {
@@ -601,14 +611,13 @@ export class RemoteBrowserContextReplayGuardV1 {
     if (this.directRequestIds.has(value.directRequestId)) {
       return fail("replayed_direct_request_id", "direct request ID was already consumed.");
     }
-    const parentStreamId = BigInt(value.remoteParentStreamId);
-    if (parentStreamId <= this.parentStreamHighWater) {
-      return fail("stale_parent_stream", "remote parent stream ID is not above the high-water mark.");
+    if (session.consumed) {
+      return fail("application_session_consumed", "direct application session already carried its V1 request.");
     }
 
     this.requestNonces.add(value.browserContext.requestNonce);
     this.directRequestIds.add(value.directRequestId);
-    this.parentStreamHighWater = parentStreamId;
+    session.consumed = true;
     return value.browserContext;
   }
 }
