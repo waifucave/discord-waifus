@@ -34,6 +34,15 @@ below because the current GitHub plan cannot provide that protected environment.
 remove the manifest, signature, immutable-byte, platform, staging/production, or publication gates.
 No Apple Passwords interaction is part of a user's ordinary remote connection.
 
+**2026-10-03 user decision:** Continue locally while GitHub Actions is billing-blocked.
+The tagged helper may be built from two clean local checkouts using the locked Go toolchain,
+release flags, source/contract/fork/key-ring pins, and timestamp. Require byte-identical outputs,
+embedded-metadata and private-path audits, notices/SBOM generation, then the same manifest signing
+and independent package verification. Record local provenance explicitly; never label a failed
+Actions run as the producer. Local cross-compilation does not replace native Windows/Linux
+installed-package testing. Keep those final-platform gates pending while completing the two-Mac
+staging checks; no platform support or release gate is silently waived by this workflow change.
+
 The replacement candidate is helper **0.1.5**, sequence **6**, five-target source
 **88ae0e4984178820187a0bbd5064eac6586d51d7**, signed release timestamp
 **2026-10-03T15:49:37Z**. The app's trust window must match that timestamp before tagging.
