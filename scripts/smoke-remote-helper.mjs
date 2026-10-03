@@ -94,7 +94,7 @@ export async function smokeInstalledHelper(packageRoot, platform, arch) {
   ]);
   await loadRemoteCompatibilityV1(pkg.version, path.join(root, "remote-compatibility.json"));
   // A short real Unix path keeps the protected socket below macOS's 103-byte limit.
-  const dataRoot = await mkdtemp(path.join(platform === "win32" ? os.tmpdir() : "/tmp", "wh-"));
+  const dataRoot = await mkdtemp(path.join(platform === "win32" ? os.tmpdir() : "/tmp", platform === "win32" ? "wh-語-" : "wh-"));
   const logger = Object.freeze({ debug() {}, info() {}, warn() {}, error() {} });
   let supervisor;
   let phase = "layout";
