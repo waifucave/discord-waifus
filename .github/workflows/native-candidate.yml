@@ -1,0 +1,175 @@
+name: Native signed candidate validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Unpublished app draft tag, plain vSemVer."
+        required: true
+        type: string
+      helper_version:
+        description: "Exact signed helper candidate version."
+        required: true
+        type: string
+      app_commit:
+        description: "Reviewed full public app commit reachable from main."
+        required: true
+        type: string
+      app_sha256:
+        description: "Reviewed SHA-256 of the app validation tarball."
+        required: true
+        type: string
+      package_set_sha256:
+        description: "Reviewed SHA-256 of package-set.json."
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-signed-candidate
+  cancel-in-progress: false
+
+env:
+  NPM_CONFIG_AUDIT: "false"
+  NPM_CONFIG_FUND: "false"
+  NPM_CONFIG_LOGLEVEL: error
+  NPM_CONFIG_PROGRESS: "false"
+
+jobs:
+  prepare:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.repository == 'waifucave/discord-waifus'
+    name: Verify reviewed draft candidate assets
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # GitHub draft release listing requires push access. No release mutation is
+    # performed; this permission is confined to the main-only preparation job.
+    permissions:
+      contents: write
+    outputs:
+      app_version: ${{ steps.prepare.outputs.app_version }}
+      helper_version: ${{ steps.prepare.outputs.helper_version }}
+      app_commit: ${{ steps.prepare.outputs.app_commit }}
+      manifest_sha256: ${{ steps.prepare.outputs.manifest_sha256 }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+      - name: Bind exactly seven assets to reviewed hashes and public source
+        id: prepare
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          HELPER_VERSION: ${{ inputs.helper_version }}
+          APP_COMMIT: ${{ inputs.app_commit }}
+          APP_SHA256: ${{ inputs.app_sha256 }}
+          PACKAGE_SET_SHA256: ${{ inputs.package_set_sha256 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +x
+          node scripts/prepare-native-candidate.mjs "$RELEASE_TAG" "$HELPER_VERSION" "$APP_COMMIT" \
+            "$APP_SHA256" "$PACKAGE_SET_SHA256" "$RUNNER_TEMP/native-candidate"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: verified-native-candidate
+          path: ${{ runner.temp }}/native-candidate
+          if-no-files-found: error
+          retention-days: 7
+
+  native-smoke:
+    name: Signed installed candidate (${{ matrix.platform }}/${{ matrix.arch }})
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: macos-15, platform: darwin, arch: arm64 }
+          - { runner: windows-2025, platform: win32, arch: x64 }
+          - { runner: windows-11-arm, platform: win32, arch: arm64 }
+          - { runner: ubuntu-24.04, platform: linux, arch: x64 }
+          - { runner: ubuntu-24.04-arm, platform: linux, arch: arm64 }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.prepare.outputs.app_commit }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          architecture: ${{ matrix.arch }}
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: verified-native-candidate
+          path: candidate-assets
+      - name: Recheck native architecture, exact source and every asset hash
+        env:
+          EXPECTED_PLATFORM: ${{ matrix.platform }}
+          EXPECTED_ARCH: ${{ matrix.arch }}
+          APP_COMMIT: ${{ needs.prepare.outputs.app_commit }}
+          APP_VERSION: ${{ needs.prepare.outputs.app_version }}
+          HELPER_VERSION: ${{ needs.prepare.outputs.helper_version }}
+          MANIFEST_SHA256: ${{ needs.prepare.outputs.manifest_sha256 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$APP_COMMIT"
+          node --input-type=module -e '
+            import fs from "node:fs";
+            import crypto from "node:crypto";
+            const hash = bytes => crypto.createHash("sha256").update(bytes).digest("hex");
+            const raw = fs.readFileSync("candidate-assets/native-validation-assets.json");
+            const manifest = JSON.parse(raw);
+            if (hash(raw) !== process.env.MANIFEST_SHA256 || manifest.schemaVersion !== 1
+              || manifest.appCommit !== process.env.APP_COMMIT || manifest.appVersion !== process.env.APP_VERSION
+              || manifest.helperVersion !== process.env.HELPER_VERSION || manifest.files.length !== 7
+              || process.platform !== process.env.EXPECTED_PLATFORM || process.arch !== process.env.EXPECTED_ARCH)
+              throw new Error("Candidate identity mismatch.");
+            for (const file of manifest.files) {
+              if (!/^[a-z0-9][a-z0-9.-]*$/u.test(file.filename)) throw new Error("Invalid candidate filename.");
+              const bytes = fs.readFileSync(`candidate-assets/${file.filename}`);
+              if (bytes.length !== file.byteSize || hash(bytes) !== file.sha256) throw new Error("Candidate hash mismatch.");
+            }
+          '
+      - name: Install reviewed app and native signed helper
+        env:
+          APP_VERSION: ${{ needs.prepare.outputs.app_version }}
+          HELPER_VERSION: ${{ needs.prepare.outputs.helper_version }}
+          EXPECTED_PLATFORM: ${{ matrix.platform }}
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --prefix "$RUNNER_TEMP/waifus-install" --include=optional --ignore-scripts --no-package-lock \
+            "./candidate-assets/waifucave-discord-waifus-${APP_VERSION}-native-validation.tgz" \
+            "./candidate-assets/waifucave-ts-connect-${EXPECTED_PLATFORM}-${EXPECTED_ARCH}-${HELPER_VERSION}.tgz"
+      - name: Prepare real Linux Secret Service
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq dbus-x11 gnome-keyring libsecret-tools
+      - name: Verify installed signatures, native identity and cold restart
+        env:
+          EXPECTED_PLATFORM: ${{ matrix.platform }}
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +x
+          installed_root="$RUNNER_TEMP/waifus-install/node_modules/@waifucave/discord-waifus"
+          if [[ "$EXPECTED_PLATFORM" == "linux" ]]; then
+            export XDG_RUNTIME_DIR="$(mktemp -d /tmp/wh-dbus.XXXXXX)"
+            export XDG_DATA_HOME="$(mktemp -d /tmp/wh-keyring.XXXXXX)"
+            dbus-run-session -- bash -euo pipefail -c '
+              eval "$(printf "\n" | gnome-keyring-daemon --unlock --components=secrets)"
+              node scripts/smoke-remote-helper.mjs "$1" "$2" "$3"
+            ' smoke "$installed_root" "$EXPECTED_PLATFORM" "$EXPECTED_ARCH"
+          else
+            node scripts/smoke-remote-helper.mjs "$installed_root" "$EXPECTED_PLATFORM" "$EXPECTED_ARCH"
+          fi

@@ -56,6 +56,16 @@ This is the canonical public-history-rewrite commit; its contract and wordlist t
 byte-identical to the pre-rewrite source. Future helper builds use this pin. Already signed
 0.1.5 artifacts retain their original embedded metadata and must never be rebuilt or re-signed
 under the same version; their original provenance and the commit mapping remain private.
+
+**2026-10-03 user decision:** Native candidate checks may run in the public app repository's
+working CI while private-repository Actions remains billing-blocked. Stage only the five
+already-signed binary packages, their package-set metadata, and the reviewed app validation
+tarball in the unpublished **v1.5.204** app draft. The manual, main-only Native signed candidate
+validation workflow binds exact app/source/package-set hashes, verifies native process
+architecture, and uses the installed app's signature/vault/cold-restart smoke on all five targets.
+It uploads no private helper source or signing secrets, performs no npm publication, and does
+not waive live-network, production, or soak gates. Keep this validation draft unpublished and
+remove validation-only assets before the normal root release is promoted.
 Preserve the 0.1.4 tag, manifests, signatures, and binaries unchanged.
 The signed but unpublished **0.1.3 / sequence-4** set is also unpublishable: the
 production memory-backed tsnet configuration requests ephemeral login, which the
