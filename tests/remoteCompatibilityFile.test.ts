@@ -26,9 +26,9 @@ describe("shipped remote compatibility table", () => {
       schemaVersion: 1,
       discordWaifusVersion: pkg.version,
       helper: {
-        minimumVersion: "0.1.3",
+        minimumVersion: "0.1.4",
         maximumVersionExclusive: "0.2.0",
-        minimumReleaseSequence: "4",
+        minimumReleaseSequence: "5",
         workerTrustRingSha256: "3e9dbb617de4046dfd73420b6e938e462f45107df31ea674aef7c37160ee418a"
       }
     });
