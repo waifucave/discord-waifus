@@ -3202,11 +3202,13 @@ describe("RuntimeOrchestrator", () => {
         resolveResponded();
       }
     });
-    await Promise.race([
-      responded,
-      new Promise((_, reject) => setTimeout(() => reject(new Error("memories command did not respond")), 1000))
-    ]);
-    await runtime.stop();
+    try {
+      // The listener schedules background work: await its actual response, not a
+      // one-second disk/model speed assumption. Vitest bounds the whole test.
+      await responded;
+    } finally {
+      await runtime.stop();
+    }
 
     expect(responses).toHaveLength(1);
     expect(responses[0]).toContain("Observer + dream pass");
