@@ -281,7 +281,7 @@ describe("signed ts-connect package resolution", () => {
     expect(probeBinary).not.toHaveBeenCalled();
   });
 
-  it.each(["0.1.0", "0.1.1", "0.1.2", "0.1.3", "0.1.4", "0.1.5"])("rejects superseded helper %s before executing its version probe", async (helperVersion) => {
+  it.each(["0.1.0", "0.1.1", "0.1.2", "0.1.3", "0.1.4", "0.1.5", "0.1.6"])("rejects superseded helper %s before executing its version probe", async (helperVersion) => {
     const fixture = await trustFixture();
     const valid = object(fixture.valid, "valid fixture");
     const root = await makeTempRoot("waifus-superseded-helper-");
