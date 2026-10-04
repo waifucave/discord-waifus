@@ -97,6 +97,31 @@ never silently rewrite legacy ACLs, identities, or private records. Lock the roo
 compatible app version to **1.6.0** before signing; the root version cut remains the later release
 step after the preceding gates.
 
+### Post-0.1.6 discovery hardening checkpoint (2026-10-04)
+
+The signed **0.1.6 / sequence-7** artifacts remain immutable, but do not contain
+the subsequent direct-discovery hardening. Fork commit
+**d54b218f15a92d935a54e3c4e4f9ab1916521c78** keeps the existing bounded STUN refresh
+active while eligible direct-only peers are idle and retries authenticated
+peer discovery on that same timer. It adds no relay or coordination messages;
+offline, keyless, homeless, closed, removed, and expired cases stop probing.
+The helper now pins that fork in source. Shipping it requires a new signed
+helper version and repeated exact-artifact/native validation; do not publish
+0.1.6 as though it includes this fix or replace its existing bytes.
+
+Regression and real-UDP rate-limit tests passed, along with the full helper
+normal/direct suites and focused fork race tests on locked **Go 1.26.5**.
+The fork's full CI, native checks, and Linux packet matrix passed in
+[run 37174436325](https://github.com/Winterrks/tsnet/actions/runs/37174436325).
+Both Macs running the non-instrumented Go 1.26.5 source diagnostic passed a
+365-second application-idle interval followed by eight concurrent HTTP 200
+responses, a canonical SSE cursor, and direct/no-error status without re-pairing.
+These are **source diagnostics, not signed-package or production acceptance**.
+Earlier cold attempts still failed before later recovery; neither quota limits
+nor toolchain differences have been established as their cause. Real network
+roaming/revocation, final signed acceptance, production rollout, the 24-hour soak,
+and npm/root publication remain open.
+
 ## Locked Release Model
 
 - Helper packages use one independent SemVer as a release set. Initial beta set: **0.1.6**.
