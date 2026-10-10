@@ -31,8 +31,8 @@ describe("production helper release trust", () => {
       .digest("hex")).toBe("6a0fdc6a96cb180a5e823a3e43cdcafe9cd2b65b22298965b42aa965fb82a381");
     expect(key.fingerprint).toBe("6a0fdc6a96cb180a5e823a3e43cdcafe9cd2b65b22298965b42aa965fb82a381");
     expect(key).toMatchObject({
-      sequenceFrom: "11", sequenceThrough: "11",
-      releasedAtFrom: "2026-10-10T18:38:19Z", releasedAtThrough: "2026-10-10T18:38:19Z"
+      sequenceFrom: "12", sequenceThrough: "12",
+      releasedAtFrom: "2026-10-10T21:43:42Z", releasedAtThrough: "2026-10-10T21:43:42Z"
     });
     expect(Object.isFrozen(HELPER_RELEASE_TRUST_ROOTS)).toBe(true);
     expect(Object.isFrozen(key)).toBe(true);
