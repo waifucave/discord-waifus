@@ -9,6 +9,7 @@ import {
   type HelperSupervisorOptions
 } from "../src/remote/helperSupervisor.js";
 import { createProductionHelperSupervisor } from "../src/remote/productionHelper.js";
+import { HelperCommandError, HelperSupervisorError } from "../src/remote/helperTypes.js";
 import type {
   AuthenticatedHelperClient,
   HelperLaunch,
@@ -462,6 +463,90 @@ describe("role-neutral helper supervisor", () => {
     await supervisor.stop();
     expect(stopRuntime).toHaveBeenCalledTimes(2);
   });
+
+  it("keeps an authenticated remote helper usable when its remembered runtime replay is rejected", async () => {
+    const factory = new FakeProcessFactory();
+    const { supervisor, logs } = await makeSupervisor(factory, {
+      role: "remote",
+      packageResolver: { resolve: async () => ({ ...selection("/tmp/waifus-test-ts-connect.exe"), target: { os: "win32", arch: "x64" } }) }
+    });
+    const oldPair = Buffer.alloc(16, 0x61).toString("base64url");
+    const newPair = Buffer.alloc(16, 0x62).toString("base64url");
+    const started = supervisor.start();
+    await vi.waitFor(() => expect(factory.launches).toHaveLength(1));
+    factory.launches[0]!.resolveAuthenticated(helperClient());
+    await started;
+    await supervisor.startRuntime(oldPair);
+
+    const startRuntime = vi.fn(async (pairId?: string) => {
+      if (pairId === oldPair) throw new HelperSupervisorError("helper_unavailable", "private revoked pair details");
+      return helperStatus({ directState: "reconnecting" });
+    });
+    const stopRuntime = vi.fn(async () => helperStatus({ controlState: "inactive", directState: "inactive" }));
+    const close = vi.fn(async () => {});
+    const operationId = Buffer.alloc(32, 0x63).toString("base64url");
+    const beginPair = vi.fn(async () => ({ operationId, expiresAt: "1786271130" }));
+    const restarted = supervisor.reconnect();
+    await vi.waitFor(() => expect(factory.launches).toHaveLength(2));
+    factory.launches[1]!.resolveAuthenticated(helperClient({ startRuntime, stopRuntime, beginPair, close }));
+    await restarted;
+
+    expect(supervisor.snapshot()).toMatchObject({
+      state: "ready", consecutiveFailures: 0, restartScheduled: false,
+      lastErrorCode: "helper_unavailable",
+      runtimeStatus: { activationState: "active", controlState: "unavailable", directState: "direct_unavailable" }
+    });
+    expect(supervisor.identityStatus()).not.toBeNull();
+    expect(startRuntime).toHaveBeenCalledWith(oldPair);
+    expect(stopRuntime).toHaveBeenCalledTimes(1);
+    expect(close).not.toHaveBeenCalled();
+    expect(factory.launches[1]!.forceCalls).toBe(0);
+    expect(factory.launches[1]!.drainCalls).toBe(0);
+    expect(logs.lines.join("\n")).not.toContain("private revoked pair details");
+    await expect(supervisor.reconnectRuntime()).rejects.toMatchObject({ code: "helper_unavailable" });
+    expect(startRuntime).toHaveBeenCalledTimes(2);
+    expect(supervisor.snapshot()).toMatchObject({ state: "ready", restartScheduled: false });
+    await expect(supervisor.beginPair(operationId, { kind: "short_code", code: "01AB-CDEF" }, {
+      displayName: "Replacement", platform: { os: "darwin", arch: "arm64" }
+    })).resolves.toMatchObject({ operationId });
+    await expect(supervisor.startRuntime(newPair)).resolves.toMatchObject({ directState: "reconnecting" });
+    expect(startRuntime).toHaveBeenLastCalledWith(newPair);
+    await supervisor.close();
+  });
+
+  it.each(["invalid_status", "incompatible", "transport_failure", "cleanup_failure", "cleanup_invalid_status", "cleanup_still_active", "host_rejection"])(
+    "does not keep a remote helper ready after unsafe replay failure: %s", async failure => {
+      const factory = new FakeProcessFactory();
+      const { supervisor } = await makeSupervisor(factory, {
+        role: failure === "host_rejection" ? "host" : "remote",
+        packageResolver: { resolve: async () => ({ ...selection("/tmp/waifus-test-ts-connect.exe"), target: { os: "win32", arch: "x64" } }) }
+      });
+      const started = supervisor.start();
+      await vi.waitFor(() => expect(factory.launches).toHaveLength(1));
+      factory.launches[0]!.resolveAuthenticated(helperClient());
+      await started;
+      await supervisor.startRuntime(failure === "host_rejection" ? undefined : Buffer.alloc(16, 0x64).toString("base64url"));
+      const close = vi.fn(async () => {});
+      const startRuntime = vi.fn(async () => {
+        if (failure === "invalid_status") return { unexpected: true } as never;
+        if (failure === "transport_failure") throw new HelperCommandError("helper_unavailable", "command transport failed");
+        throw new HelperSupervisorError(failure === "incompatible" ? "helper_incompatible" : "helper_unavailable", "runtime failure");
+      });
+      const stopRuntime = vi.fn(async () => {
+        if (failure === "cleanup_failure") throw new HelperSupervisorError("helper_unavailable", "channel closed");
+        if (failure === "cleanup_invalid_status") return { unexpected: true } as never;
+        return helperStatus();
+      });
+      const restarted = supervisor.reconnect();
+      await vi.waitFor(() => expect(factory.launches).toHaveLength(2));
+      factory.launches[1]!.resolveAuthenticated(helperClient({ startRuntime, stopRuntime, close }));
+      await restarted;
+      expect(supervisor.snapshot()).toMatchObject({ state: "degraded", restartScheduled: true });
+      expect(close).toHaveBeenCalled();
+      if (["invalid_status", "incompatible", "transport_failure", "host_rejection"].includes(failure)) expect(stopRuntime).not.toHaveBeenCalled();
+      await supervisor.close();
+    }
+  );
 
   it("does not schedule a crash retry for an intentional helper replacement", async () => {
     vi.useFakeTimers();

@@ -613,11 +613,32 @@ export class HelperSupervisor {
         activationState: identityStatus.activationState
       });
       let runtimeStarted = false;
-      if (this.#desiredRuntime) {
-        runtimeStatus = parseHelperRuntimeStatus(
-          await client.startRuntime(this.#desiredRuntime.selectedPairId)
-        );
-        runtimeStarted = true;
+      const desiredRuntime = this.#desiredRuntime;
+      if (desiredRuntime) {
+        try {
+          runtimeStatus = await client.startRuntime(desiredRuntime.selectedPairId);
+          runtimeStarted = true;
+        } catch (error) {
+          // A remembered remote grant can be denied while the parent stays
+          // alive. An authenticated command rejection is a connection failure,
+          // not a failed helper launch. Transport/protocol failures remain fatal.
+          if (this.#options.role !== "remote" || desiredRuntime.selectedPairId === undefined
+            || !(error instanceof HelperSupervisorError) || error.code !== "helper_unavailable") throw error;
+          const stopped = parseHelperRuntimeStatus(await client.stopRuntime());
+          if (stopped.controlState !== "inactive" || stopped.directState !== "inactive") {
+            throw new HelperSupervisorError("helper_incompatible", "Helper runtime cleanup did not become inactive.");
+          }
+          runtimeStatus = {
+            ...stopped,
+            controlState: "unavailable",
+            directState: "direct_unavailable",
+            lastDirectAt: null,
+            lastErrorCode: error.code
+          };
+          this.#options.logger.warn("Remote helper runtime restoration unavailable", { role: this.#options.role, code: error.code });
+        }
+        // Keep validation outside the recoverable command-rejection catch.
+        runtimeStatus = parseHelperRuntimeStatus(runtimeStatus);
       }
       if (this.#closing || generation !== this.#generation) {
         if (runtimeStarted) await client.stopRuntime().catch(() => undefined);

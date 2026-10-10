@@ -77,6 +77,11 @@ The browser still cannot open the selected dashboard until the helper confirms a
 On Windows, Node-created installation/trust metadata gets a verified private current-user plus
 LocalSystem DACL through built-in Windows PowerShell before any content is written. Unix mode
 bits alone do not provide this guarantee. Existing metadata is not silently re-permissioned.
+After a remote helper restart, a remembered selection may already be revoked. An authenticated
+`helper_unavailable` rejection while restoring that selection is a connection failure, not a
+helper launch failure: a validated inactive runtime stop keeps the helper available for pairing
+and explicit retry. Invalid protocol/status, failed cleanup, transport errors and host-role
+startup failures still fail closed. This does not restore or erase any revoked trust.
 
 ## Conventions
 
