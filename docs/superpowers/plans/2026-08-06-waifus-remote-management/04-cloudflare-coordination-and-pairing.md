@@ -846,8 +846,13 @@ endpoint_generation(3), endpoint_ack(4), presence(5), reconnect(6), revocation(7
 revocation_ack(8), error(9)**. The domain-separated Ed25519 preimage binds protocol, concrete pair
 ID, type byte, full canonical typed-payload SHA-256, side, connection generation, sequence,
 timestamp, and nonce. The Worker verifies the sending pair-side installation key and record
-signature/high-water and plus/minus-60-second timestamp at first ingress on every WS frame or HTTPS
-fallback item; the signed upgrade is never enough. It durably records acceptance. A receiver later
+signature/high-water and plus/minus-60-second timestamp at first ingress on every WS frame or
+ordinary HTTPS fallback item; the signed upgrade is never enough. Dedicated HTTPS `revoke`
+and `revocation/ack` endpoints may accept older immutable inner type `7` and `8` records only
+inside a fresh certificate-authenticated signed HTTP request. Future inner timestamps remain
+bounded by 60 seconds; all pair/side, signature, tuple/nonce and current cutoff checks still apply.
+This durable terminal exception does not apply to ordinary publication or WebSocket frames.
+It durably records acceptance. A receiver later
 polling a stored record verifies the signed timestamp but does not reject it solely for age after
 offline delay/restart; presence alone expires by `validUntil`. Revocation/ack additionally carry
 the exact plan-03 `revocationMac`; Worker enforces the outer signed monotonic cutoff while only the

@@ -1093,9 +1093,15 @@ PairDO's isolated 64-entry replay window per side and per route kind. Retrying t
 record is idempotent; reusing its inner nonce for different bytes or a different tuple fails.
 
 The Worker validates the certificate/trust side, concrete pair, type, complete payload hash,
-signature, timestamp within plus/minus 60 seconds at first ingress, nonce, and
+signature, timestamp within plus/minus 60 seconds at ordinary first ingress, nonce, and
 `(connectionGeneration, sequence)` high-water before durable acceptance. It records that
-disposition before forwarding. The receiving helper verifies the signed timestamp value and
+disposition before forwarding. Dedicated certificate-authenticated HTTPS `revoke` and
+`revocation/ack` requests are the narrow terminal exception: their outer request still has a fresh
+plus/minus-60-second timestamp and valid certificate/signature, while immutable inner type `7`
+and `8` records may be older so durable recovery survives an outage. Inner timestamps more than
+60 seconds in the future remain rejected. This exception does not apply to WebSocket frames or
+ordinary HTTPS publication and does not change tuple/nonce, pair/side, cutoff, or MAC validation.
+The receiving helper verifies the signed timestamp value and
 rejects one still more than 60 seconds in its future, but it does **not** reject a Worker-delivered
 durably accepted endpoint/revocation/capability record solely because it was offline and the record
 is now old; `presence` separately obeys `validUntil`. Sequence, nonce, semantic epoch/hash, and
