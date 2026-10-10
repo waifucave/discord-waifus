@@ -101,6 +101,11 @@ Remote V1 targets Apple-silicon macOS, Windows x64/ARM64, and Linux x64/ARM64. I
 Linux ARMv7 are later follow-ups. Remote management cannot stop or restart the host OS process; use the host
 device for `waifus stop` and `waifus restart`.
 
+Initial beta validation uses native installation, signature, credential-storage, IPC, and
+cold-restart checks on all five targets, with live-network acceptance on two Macs. Windows/Linux
+networking, network switching, and suspend/resume are not yet live-validated and remain follow-up
+testing. Native CI passing does not establish that those network scenarios work on those platforms.
+
 <details>
 <summary>🔁 Migrating from the old <code>@starlight-ai</code> package?</summary>
 

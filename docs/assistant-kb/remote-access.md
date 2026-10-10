@@ -57,3 +57,9 @@ the revoked pair.
 
 The five V1 targets are macOS ARM64, Windows x64/ARM64, and Linux x64/ARM64. Intel macOS and
 Linux ARMv7 are later follow-ups; neither selects another architecture's binary.
+
+Initial beta validation uses native installed-package checks on all five targets and live-network
+acceptance on two Macs. Windows/Linux networking, roaming, and suspend/resume remain untested
+follow-ups. Do not describe their passing installation/signature/vault/IPC/cold-restart CI as
+live-network validation, or claim a release is complete before its remaining acceptance and
+24-hour production soak gates pass.
