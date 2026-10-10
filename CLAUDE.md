@@ -61,6 +61,11 @@ hashes, target metadata, and embedded build info before execution. The five V1 t
 ARM64, Windows x64/ARM64, and Linux x64/ARM64. Intel macOS and Linux ARMv7 are later follow-ups
 and must never fall back to the ARM64 helper. ARMv7 was explicitly deferred on 2026-10-02 because
 real-device validation hardware was unavailable; no ARMv7 package ships in this initial set.
+For the initial remote beta, the user approved five-platform native installed-package CI plus
+two-Mac live-network validation (2026-10-10). Windows/Linux networking and roaming remain
+explicitly untested follow-ups and must be disclosed in release notes. This does not waive
+signature checks, direct-only enforcement, two-Mac acceptance, or the 24-hour production soak
+using independently verified npm `next` packages before promotion/root publication.
 The helper child receives only a validated local Unix D-Bus session address on Linux, so native
 Secret Service works without inheriting the parent's credential environment. The existing
 protected-file fallback remains available when no usable native session bus exists.

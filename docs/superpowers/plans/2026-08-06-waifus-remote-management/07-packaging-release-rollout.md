@@ -8,6 +8,25 @@
 
 **Depends on:** every functional/security/platform gate in plans 01–06
 
+**2026-10-10 user-approved initial beta validation amendment:** Use the five-platform
+native installed-package CI matrix plus real two-Mac live-network validation for
+the initial beta. Windows x64/ARM64 and Linux x64/ARM64 networking, roaming and
+suspend/resume are explicitly **not live-validated** by those native CI checks;
+record these as follow-up validation and disclose this limitation in release notes.
+Do not describe native installation/signature/vault/IPC/cold-restart CI as network
+coverage. The same scope applies to the pre-publication matrix, the repeated smoke
+on independently downloaded npm `next` artifacts, and the soak boundary matrix.
+It supersedes the five-target live-network requirement below for this initial
+beta only; it does not defer shipping any of the five supported helper targets.
+
+All other security and release gates remain: direct-only/no-relay enforcement,
+exact immutable signed bytes, actual two-Mac activation/pair/JSON/binary/SSE/
+reconnect/roam/revoke checks, production compatibility, independently verified
+`next` downloads, and the uninterrupted 24-hour production soak before promoting
+all five helpers to `latest` and publishing the root package. Hourly live
+synthetics run on the available two-Mac representative setup. Unexplained failures
+or changes still invalidate the soak; this amendment does not waive defects.
+
 **Goal:** Produce five manifest-signed target-specific helper packages, prove source and npm installs use identical bytes, roll out Worker → helper → Discord Waifus in a reversible order, and independently verify the public result without ever releasing a relay-capable or unverified helper.
 
 **2026-10-02 user decision:** Defer Linux ARMv7 alongside Intel macOS because real ARMv7
