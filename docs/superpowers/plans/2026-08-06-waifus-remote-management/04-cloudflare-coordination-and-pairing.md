@@ -852,6 +852,9 @@ and `revocation/ack` endpoints may accept older immutable inner type `7` and `8`
 inside a fresh certificate-authenticated signed HTTP request. Future inner timestamps remain
 bounded by 60 seconds; all pair/side, signature, tuple/nonce and current cutoff checks still apply.
 This durable terminal exception does not apply to ordinary publication or WebSocket frames.
+The same dedicated terminal routes may begin an absent or higher generation at any positive
+sequence after lost/rejected ordinary frames; all lower-tuple, conflicting-byte, nonce and semantic
+cutoff checks remain mandatory. Ordinary/WebSocket generation starts remain sequence `1`.
 It durably records acceptance. A receiver later
 polling a stored record verifies the signed timestamp but does not reject it solely for age after
 offline delay/restart; presence alone expires by `validUntil`. Revocation/ack additionally carry

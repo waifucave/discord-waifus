@@ -1014,6 +1014,13 @@ strict type-specific `payload`. The full record adds only `signature`, exactly 8
 unpadded-base64url characters decoding to the sender installation key's 64-byte Ed25519 signature.
 Connection generation and sequence start at `"1"`; a new generation is strictly greater and its
 first sequence is `"1"`; later sequences within that generation strictly increase.
+Dedicated, freshly authenticated HTTPS type `7`/`8` terminal recovery is the sole generation-start
+exception: a persisted revocation or acknowledgement may start an absent or higher generation at
+any positive sequence when earlier ordinary frames were lost or rejected. Lower generations or
+sequences, same-tuple different bytes, reused nonces, wrong pair/side and invalid cutoffs still fail.
+It does not authorize ordinary traffic or a replacement pair. Ordinary HTTPS and WebSocket
+generation starts retain the sequence-1 rule; never reuse a rejected hello tuple, because a lost
+earlier acceptance response makes that reuse ambiguous.
 
 | Type (byte) | Exact payload fields |
 |---|---|

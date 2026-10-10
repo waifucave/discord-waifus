@@ -913,6 +913,8 @@ func NewPairControlIngress(pairID string, hostPublic, remotePublic []byte, snaps
 	return result, nil
 }
 
+// Accept models Worker ingress after the caller authenticates the fresh HTTP
+// request envelope before selecting a dedicated HTTPS transport.
 func (s *PairControlIngress) Accept(payload []byte, transport PairControlTransport, now uint64) (string, error) {
 	if transport == ControlHTTPSPoll {
 		return "", controlFailure("wrong_transport", "HTTPS poll is delivery-only")
@@ -925,9 +927,15 @@ func (s *PairControlIngress) Accept(payload []byte, transport PairControlTranspo
 	if candidate.Side == 2 {
 		public = s.RemotePublicKey
 	}
+	durableTerminal := candidate.Type == 7 && transport == ControlHTTPSRevoke ||
+		candidate.Type == 8 && transport == ControlHTTPSRevokeAck
+	timestampMode := ControlWorkerIngress
+	if durableTerminal {
+		timestampMode = ControlDurableDelivery
+	}
 	value, err := ParseAndVerifyPairControlRecord(payload, PairControlVerifyOptions{
 		InstallationPublicKey: public, ExpectedPairID: s.ExpectedPairID, ExpectedSide: candidate.Side,
-		NowSeconds: now, TimestampMode: ControlWorkerIngress, Transport: transport,
+		NowSeconds: now, TimestampMode: timestampMode, Transport: transport,
 		ExpectedProtocolMajor: s.ProtocolMajor, ExpectedProtocolMinor: s.ProtocolMinor,
 	})
 	if err != nil {
@@ -949,7 +957,7 @@ func (s *PairControlIngress) Accept(payload []byte, transport PairControlTranspo
 	}
 	recordHash := B64(Hash(payload))
 	if current == nil {
-		if generation != 1 || sequence != 1 {
+		if !durableTerminal && (generation != 1 || sequence != 1) {
 			return "", controlFailure("invalid_generation_start", "side must start at generation 1 sequence 1")
 		}
 	} else {
@@ -974,7 +982,7 @@ func (s *PairControlIngress) Accept(payload []byte, transport PairControlTranspo
 				}
 				return "", controlFailure("tuple_conflict", "same tuple has different bytes")
 			}
-		} else if sequence != 1 {
+		} else if !durableTerminal && sequence != 1 {
 			return "", controlFailure("invalid_generation_start", "higher generation must start at sequence 1")
 		}
 	}
