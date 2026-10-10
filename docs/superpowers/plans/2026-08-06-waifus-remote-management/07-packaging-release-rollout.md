@@ -192,7 +192,7 @@ below now target **0.1.9**. The root release stays **1.5.204**.
 
 ## Locked Release Model
 
-**2026-10-10 replacement candidate:** The current set is **0.1.11 / sequence 12**,
+**2026-10-10 previous candidate:** The unpublished set **0.1.11 / sequence 12**,
 source **746342b08faf0072596b878d1c372e2a51a2645d**, signed timestamp
 **2026-10-10T21:43:42Z**. It supersedes the unpublished 0.1.9 and 0.1.10 candidates;
 their tags and signed bytes remain unchanged. This candidate adds authenticated
@@ -202,10 +202,23 @@ terminal records inside freshly authenticated HTTPS requests without relaxing
 ordinary control freshness or local monotonic replay checks. Two clean builds
 reproduced all five binaries; live acceptance, native CI and publication gates
 must still run on these exact bytes. All operational release steps below refer
-to this replacement version, not the historical candidate versions above.
+to the replacement version below, not the historical candidate versions above.
 
-- Helper packages use one independent SemVer as a release set. Initial beta set: **0.1.11**.
-- Discord Waifus pins every helper package to exact **0.1.11**, never a range or dist-tag.
+**Current replacement: 0.1.12 / sequence 13**, source
+**c3701a83721947b3a4adbd65cf010dc00bf1929b**, timestamp **2026-10-10T22:07:21Z**.
+Live diagnosis found that a revoked pair's WebSocket can open successfully before
+ordinary traffic is rejected during HTTPS fallback. Version 0.1.11 handled only
+the initial-connection rejection. The new candidate handles authenticated rejection
+on receive/send/ACK/poll paths, permits one terminal poll per generation, and gives
+pending terminal recovery priority over competing reconnects without bypassing
+cooldown. Tests reproduced both gaps before the fix; full normal/direct helper
+suites, affected race suites and vet passed. A source-only staging probe retrieved
+and authenticated the real missed terminal notice, stopping before local mutation.
+This is not signed-package acceptance. Preserve all older signed sets unchanged;
+repeat native CI and live gates with this new immutable set before publication.
+
+- Helper packages use one independent SemVer as a release set. Initial beta set: **0.1.12**.
+- Discord Waifus pins every helper package to exact **0.1.12**, never a range or dist-tag.
 - The five public binary-only npm packages are exactly:
 
 | npm package | Go target | npm os | npm cpu | Extra runtime check |
@@ -560,7 +573,7 @@ registry queries still prove **0.1.9** was not published or dist-tagged by this 
 **External Cloudflare and npm actions — separate confirmations required.**
 
 - [ ] Complete plan 04 staging and security gates.
-- [ ] Byte-compare the five immutable manifest-signed 0.1.11 tarballs/binaries with the Task 5 staging-tested
+- [ ] Byte-compare the five immutable manifest-signed 0.1.12 tarballs/binaries with the Task 5 staging-tested
   hashes. Any rebuild, manifest resigning/change, or profile-specific byte change returns
   to Task 5; production testing/publication cannot continue.
 - [ ] Show the exact backward-compatible production Worker deployment, migrations, hash, and rollback.
@@ -571,7 +584,7 @@ registry queries still prove **0.1.9** was not published or dist-tagged by this 
   egress remains zero.
 - [ ] Reconfirm the immutable five-tarball manifest from Task 6 and show the exact npm identity,
   bootstrap/trusted-publisher process, package names, version, hashes, and publication commands.
-- [ ] After separate npm approval, publish all five exact tarballs as **0.1.11** with
+- [ ] After separate npm approval, publish all five exact tarballs as **0.1.12** with
   **--access public --tag next**. Configure each package's trusted publisher to the exact
   **publish-helper.yml** workflow when npm permits it, then revoke the one-time bootstrap
   credential.
@@ -589,7 +602,7 @@ registry queries still prove **0.1.9** was not published or dist-tagged by this 
   deliberate outage probes. Any code/config/key/artifact change or gate failure resets the 24-hour
   clock; an external-provider outage invalidates the interval and a fresh interval begins after
   recovery. Save the sanitized evidence artifact before promotion.
-- [ ] After the soak and a separate dist-tag confirmation, move all five **0.1.11** packages from
+- [ ] After the soak and a separate dist-tag confirmation, move all five **0.1.12** packages from
   **next** to **latest** as one release set.
 - [ ] Re-query every dist-tag and tarball hash. If any package differs/fails, stop; do not release Discord Waifus.
 
