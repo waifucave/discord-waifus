@@ -27,6 +27,18 @@ all five helpers to `latest` and publishing the root package. Hourly live
 synthetics run on the available two-Mac representative setup. Unexplained failures
 or changes still invalidate the soak; this amendment does not waive defects.
 
+**2026-10-10 user-approved quota-compatible soak cadence:** Keep the uninterrupted
+24-hour duration and all invariant, availability and immutable-artifact requirements.
+Run fresh activation, pairing and revocation checks at the start and end, within
+the actual production quotas and with attended browser verification when required.
+Hourly checks verify saved activation through fresh certificate-authenticated
+coordination, existing-pair continuity, direct JSON/binary/SSE, reconnect, and
+revoked-access denial. These are continuity checks, not hourly fresh activation or
+pairing cycles. Never reset installations, refund quotas, manufacture identities,
+or bypass verification to satisfy the schedule. Check current and previous protocol
+versions only where a supported predecessor actually exists; initial major 1 has none.
+This replaces the old hourly fresh-lifecycle wording below, not the full-duration gate.
+
 **Goal:** Produce five manifest-signed target-specific helper packages, prove source and npm installs use identical bytes, roll out Worker → helper → Discord Waifus in a reversible order, and independently verify the public result without ever releasing a relay-capable or unverified helper.
 
 **2026-10-02 user decision:** Defer Linux ARMv7 alongside Intel macOS because real ARMv7
@@ -595,9 +607,10 @@ registry queries still prove **0.1.9** was not published or dist-tagged by this 
   not CI-local tarballs.
 - [ ] Complete a default 24-consecutive-hour beta soak against the unchanged production Worker and
   immutable **next** hashes. Record start/end UTC, Worker deployment hash, all tarball hashes, and
-  test runs. Run the full five-target smoke at both boundaries and hourly current/N-1 activation,
-  pair, direct JSON/binary/SSE, reconnect, and revoke synthetics on the protected representative
-  matrix. Require zero prohibited/relay egress or auth/signature/replay invariant failure, no quota
+  test runs. Use the approved native-CI/two-Mac matrix and quota-compatible cadence above:
+  fresh activation/pairing/revocation at both boundaries; hourly authenticated activation and
+  pair continuity, direct JSON/binary/SSE, reconnect and revoked-access denial. Exercise supported
+  current/N-1 versions only where they exist. Require zero prohibited/relay egress or auth/signature/replay invariant failure, no quota
   saturation, no unexplained failed synthetic, and production Worker 5xx below 1% excluding named
   deliberate outage probes. Any code/config/key/artifact change or gate failure resets the 24-hour
   clock; an external-provider outage invalidates the interval and a fresh interval begins after
