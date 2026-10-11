@@ -202,6 +202,7 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
           PACKAGE_NAME: ${{ needs.prepare.outputs.package_name }}
+          EXPECTED_SHA256: ${{ needs.prepare.outputs.sha256 }}
         shell: bash
         run: |
           set -euo pipefail
@@ -210,5 +211,5 @@ jobs:
           if npm view "$PACKAGE_NAME@$version" version --silent >/dev/null 2>&1; then
             echo "$PACKAGE_NAME@$version already published; skipping."
           else
-            npm publish ./artifacts/root-package.tgz --access public
+            node scripts/publish-archive.mjs ./artifacts/root-package.tgz "$EXPECTED_SHA256" "$PACKAGE_NAME" "$version" latest --yes
           fi

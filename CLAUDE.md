@@ -17,6 +17,13 @@ integrities/signatures/compatibility before packing. `release:beta --dry-run` ch
 version in memory without changing tracked version files. The root publish workflow requires
 installed-helper launch/cold-restart checks on every native target before using `NPM_TOKEN`.
 Absent registry helper packages are an expected release blocker until helper publication.
+Always publish reviewed tarballs using `scripts/publish-archive.mjs <archive> <sha256>
+<package-name> <version> <latest|next> --yes` on macOS/Linux, including manual fallbacks.
+It verifies immutable bytes and package identity, then uses a private neutral temporary path:
+npm adds `_from`/`_resolved` hints to registry metadata, so publishing directly from a personally
+named checkout can disclose the local account path even when the archive itself is clean.
+The command does not waive any release gates or authenticate on the user's behalf, and an
+accepted upload still requires independent registry availability/hash/privacy verification.
 
 `DC_WAIFUS_HOME=PATH` overrides the default `~/.dc-waifus` data root. Tests should use isolated roots via helpers in `tests/testUtils.ts` and clean up in `afterEach`.
 
