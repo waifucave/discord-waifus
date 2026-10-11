@@ -391,6 +391,11 @@ describe("waifus remote lifecycle", () => {
     expect(await runCommand(parseCliArgs(["remote", "--data-root", root]), {
       platform: "linux",
       arch: "x64",
+      // Native CI now installs the real optional Linux helper. Missing-package
+      // behavior must not depend on the runner's installed architecture.
+      remotePreflight: async () => {
+        throw Object.assign(new Error("Helper package is unavailable."), { code: "helper_missing" });
+      },
       detachedSpawner
     })).toBe(1);
     expect(console.error).toHaveBeenCalledWith(expect.stringContaining("waifus doctor"));
