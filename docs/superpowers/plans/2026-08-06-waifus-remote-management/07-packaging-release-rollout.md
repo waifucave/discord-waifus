@@ -603,6 +603,13 @@ registry queries still prove **0.1.9** was not published or dist-tagged by this 
 - [ ] Independently query/download every **next** package and verify name/version/os/cpu/license,
   registry integrity, approved tarball hash, inventory, detached manifest signature and binary hash,
   and absence of a **latest** tag.
+  The public `Native signed candidate validation` workflow now accepts
+  `helper_source: npm-next` for this repeat. It keeps the reviewed app/package-set
+  hashes but downloads helper metadata and tarballs directly from the fixed npm
+  registry, requires the exact `next` version and no `latest` tag, checks all three
+  archive digests, and records registry provenance before the five native jobs.
+  The default `draft` mode remains pre-publication validation only; a successful
+  draft run is not evidence that npm downloads were tested.
 - [ ] Re-run the five-target install/activation/pair/direct/roam/revoke smoke against npm downloads,
   not CI-local tarballs.
 - [ ] Complete a default 24-consecutive-hour beta soak against the unchanged production Worker and

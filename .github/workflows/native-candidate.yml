@@ -11,6 +11,14 @@ on:
         description: "Exact signed helper candidate version."
         required: true
         type: string
+      helper_source:
+        description: "Use reviewed draft helpers or independently downloaded npm next helpers."
+        required: true
+        default: draft
+        type: choice
+        options:
+          - draft
+          - npm-next
       app_commit:
         description: "Reviewed full public app commit reachable from main."
         required: true
@@ -50,6 +58,7 @@ jobs:
     outputs:
       app_version: ${{ steps.prepare.outputs.app_version }}
       helper_version: ${{ steps.prepare.outputs.helper_version }}
+      helper_source: ${{ steps.prepare.outputs.helper_source }}
       app_commit: ${{ steps.prepare.outputs.app_commit }}
       manifest_sha256: ${{ steps.prepare.outputs.manifest_sha256 }}
     steps:
@@ -66,6 +75,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
           HELPER_VERSION: ${{ inputs.helper_version }}
+          HELPER_SOURCE: ${{ inputs.helper_source || 'draft' }}
           APP_COMMIT: ${{ inputs.app_commit }}
           APP_SHA256: ${{ inputs.app_sha256 }}
           PACKAGE_SET_SHA256: ${{ inputs.package_set_sha256 }}
@@ -74,7 +84,7 @@ jobs:
           set -euo pipefail
           set +x
           node scripts/prepare-native-candidate.mjs "$RELEASE_TAG" "$HELPER_VERSION" "$APP_COMMIT" \
-            "$APP_SHA256" "$PACKAGE_SET_SHA256" "$RUNNER_TEMP/native-candidate"
+            "$APP_SHA256" "$PACKAGE_SET_SHA256" "$RUNNER_TEMP/native-candidate" "$HELPER_SOURCE"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: verified-native-candidate
@@ -116,6 +126,7 @@ jobs:
           APP_COMMIT: ${{ needs.prepare.outputs.app_commit }}
           APP_VERSION: ${{ needs.prepare.outputs.app_version }}
           HELPER_VERSION: ${{ needs.prepare.outputs.helper_version }}
+          HELPER_SOURCE: ${{ needs.prepare.outputs.helper_source }}
           MANIFEST_SHA256: ${{ needs.prepare.outputs.manifest_sha256 }}
         shell: bash
         run: |
@@ -130,10 +141,16 @@ jobs:
             if (hash(raw) !== process.env.MANIFEST_SHA256 || manifest.schemaVersion !== 1
               || manifest.appCommit !== process.env.APP_COMMIT || manifest.appVersion !== process.env.APP_VERSION
               || manifest.helperVersion !== process.env.HELPER_VERSION || manifest.files.length !== 7
+              || !["draft", "npm-next"].includes(process.env.HELPER_SOURCE) || manifest.helperSource !== process.env.HELPER_SOURCE
               || process.platform !== process.env.EXPECTED_PLATFORM || process.arch !== process.env.EXPECTED_ARCH)
               throw new Error("Candidate identity mismatch.");
             for (const file of manifest.files) {
               if (!/^[a-z0-9][a-z0-9.-]*$/u.test(file.filename)) throw new Error("Invalid candidate filename.");
+              const registryHelper = process.env.HELPER_SOURCE === "npm-next" && file.filename.startsWith("waifucave-ts-connect-");
+              if (file.source?.kind !== (registryHelper ? "npm-next" : "github-draft")
+                || (registryHelper && (file.source.registry !== "https://registry.npmjs.org"
+                  || file.source.next !== process.env.HELPER_VERSION || file.source.latestAbsent !== true)))
+                throw new Error("Candidate download source mismatch.");
               const bytes = fs.readFileSync(`candidate-assets/${file.filename}`);
               if (bytes.length !== file.byteSize || hash(bytes) !== file.sha256) throw new Error("Candidate hash mismatch.");
             }
