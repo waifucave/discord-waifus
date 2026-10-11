@@ -14,12 +14,12 @@ import {
 const bytes = Buffer.from("reviewed candidate bytes");
 const hash = (algorithm: string, encoding: "hex" | "base64" = "hex") => createHash(algorithm).update(bytes).digest(encoding);
 const input = () => nativeCandidateInputs("v1.5.204", "0.1.5", "a".repeat(40), "b".repeat(64), "c".repeat(64));
-const packageSet = () => ({ schemaVersion: 1, packages: INITIAL_HELPER_TARGETS.map(target => ({
-  ...target, version: "0.1.5", byteSize: bytes.length, filename: `waifucave-${target.name.slice("@waifucave/".length)}-0.1.5.tgz`,
+const packageSet = (version = "0.1.5") => ({ schemaVersion: 1, packages: INITIAL_HELPER_TARGETS.map(target => ({
+  ...target, version, byteSize: bytes.length, filename: `waifucave-${target.name.slice("@waifucave/".length)}-${version}.tgz`,
   sha256: hash("sha256"), shasum: hash("sha1"), integrity: `sha512-${hash("sha512", "base64")}`
 })) });
-const draft = () => ({ tag_name: "v1.5.204", draft: true, target_commitish: "a".repeat(40), assets: [
-  "package-set.json", input().appAsset, ...packageSet().packages.map(pkg => pkg.filename)
+const draft = (version = "0.1.5") => ({ tag_name: "v1.5.204", draft: true, target_commitish: "a".repeat(40), assets: [
+  "package-set.json", input().appAsset, ...packageSet(version).packages.map(pkg => pkg.filename)
 ].map((name, index) => ({ name, id: index + 1, state: "uploaded", size: 100 })) });
 const registry = "https://registry.npmjs.org";
 const registryMetadata = (pkg = packageSet().packages[0]!) => ({ name: pkg.name,
@@ -45,6 +45,11 @@ describe("public native candidate preparation", () => {
   it("requires canonical versions, a full source commit and both reviewed hashes", () => {
     expect(input().appVersion).toBe("1.5.204");
     expect(input().helperSource).toBe("draft");
+    expect(input().npmLatestPolicy).toBe("absent");
+    expect(nativeCandidateInputs("v1.5.204", "0.1.12", "a".repeat(40), "b".repeat(64), "c".repeat(64), "npm-next", "initial-0.1.12").npmLatestPolicy).toBe("initial-0.1.12");
+    for (const [version, source, policy] of [["0.1.13", "npm-next", "initial-0.1.12"], ["0.1.12", "draft", "initial-0.1.12"], ["0.1.12", "npm-next", "allow"], ["0.1.12", "npm-next", ""]]) {
+      expect(() => nativeCandidateInputs("v1.5.204", version, "a".repeat(40), "b".repeat(64), "c".repeat(64), source, policy)).toThrow();
+    }
     expect(nativeCandidateInputs("v1.5.204", "0.1.5", "a".repeat(40), "b".repeat(64), "c".repeat(64), "npm-next").helperSource).toBe("npm-next");
     for (const source of ["npm", "latest", "npm-next\n", "", null]) {
       expect(() => nativeCandidateInputs("v1.5.204", "0.1.5", "a".repeat(40), "b".repeat(64), "c".repeat(64), source)).toThrow();
@@ -55,6 +60,21 @@ describe("public native candidate preparation", () => {
     expect(() => nativeCandidateInputs("v1.5.204", "latest", "a".repeat(40), "b".repeat(64), "c".repeat(64))).toThrow();
     expect(() => nativeCandidateInputs("v1.5.204", "0.1.5", "main", "b".repeat(64), "c".repeat(64))).toThrow();
     expect(() => nativeCandidateInputs("v1.5.204", "0.1.5", "a".repeat(40), "bad", "c".repeat(64))).toThrow();
+  });
+
+  it.each(["allowed", "strict", "missing", "other-latest", "other-next", "other-version", "tampered"])("scopes the explicit initial latest exception: %s", async scenario => {
+    const pkg = packageSet(scenario === "other-version" ? "0.1.13" : "0.1.12").packages[0]!;
+    const metadata: any = registryMetadata(pkg);
+    if (scenario !== "missing") metadata["dist-tags"].latest = scenario === "other-latest" ? "0.1.11" : pkg.version;
+    if (scenario === "other-next") metadata["dist-tags"].next = "0.1.11";
+    const fetchRegistry = vi.fn(async (url: string) => response(url, url.endsWith(".tgz")
+      ? (scenario === "tampered" ? Buffer.alloc(bytes.length) : bytes) : JSON.stringify(metadata)));
+    const operation = scenario === "strict" ? downloadNativeRegistryHelper(pkg, fetchRegistry)
+      : downloadNativeRegistryHelper(pkg, fetchRegistry, "initial-0.1.12");
+    if (scenario === "allowed") {
+      expect((await operation).provenance).toMatchObject({ latestPolicy: "initial-0.1.12", latestAbsent: false, latest: "0.1.12", next: "0.1.12" });
+    } else await expect(operation).rejects.toThrow();
+    if (scenario === "other-version") expect(fetchRegistry).not.toHaveBeenCalled();
   });
 
   it("downloads exact next bytes from the fixed registry with bounded, credential-free, nonredirecting requests", async () => {
@@ -109,20 +129,24 @@ describe("public native candidate preparation", () => {
     await expect(downloadNativeRegistryHelper(pkg, fetchRegistry)).rejects.toThrow();
   });
 
-  it.each(["draft", "npm-next"])("preserves pinned draft app/set and records actual helper origin: %s", async helperSource => {
+  it.each([
+    { helperSource: "draft", helperVersion: "0.1.5", latestPolicy: "absent" },
+    { helperSource: "npm-next", helperVersion: "0.1.5", latestPolicy: "absent" },
+    { helperSource: "npm-next", helperVersion: "0.1.12", latestPolicy: "initial-0.1.12" }
+  ])("preserves pinned draft app/set and records origin: $helperSource/$latestPolicy", async ({ helperSource, helperVersion, latestPolicy }) => {
     const root = await mkdtemp(path.join(os.tmpdir(), "waifus-native-candidate-"));
     temporaryRoots.push(root);
     vi.stubEnv("GITHUB_REPOSITORY", "waifucave/discord-waifus");
     vi.stubEnv("GITHUB_OUTPUT", path.join(root, "outputs"));
-    const setBytes = Buffer.from(JSON.stringify(packageSet()));
+    const setBytes = Buffer.from(JSON.stringify(packageSet(helperVersion)));
     const appBytes = Buffer.from("reviewed app archive");
-    const release = draft();
+    const release = draft(helperVersion);
     const assets = new Map(release.assets.map(asset => [asset.id,
       asset.name === "package-set.json" ? setBytes : asset.name === input().appAsset ? appBytes : bytes]));
     release.assets.forEach(asset => { asset.size = assets.get(asset.id)!.length; });
     const execute = vi.fn(async (command: string, args: string[]) => {
       if (command === "tar") return { stdout: JSON.stringify({ name: "@waifucave/discord-waifus", version: "1.5.204",
-        optionalDependencies: Object.fromEntries(INITIAL_HELPER_TARGETS.map(target => [target.name, "0.1.5"])) }) };
+        optionalDependencies: Object.fromEntries(INITIAL_HELPER_TARGETS.map(target => [target.name, helperVersion])) }) };
       expect(command).toBe("gh");
       const endpoint = args[1]!;
       if (endpoint.endsWith("/commits/main")) return { stdout: JSON.stringify({ sha: "a".repeat(40) }) };
@@ -131,24 +155,29 @@ describe("public native candidate preparation", () => {
       return { stdout: assets.get(Number(endpoint.split("/").at(-1))) };
     });
     const fetchRegistry = vi.fn(async (url: string) => {
-      const pkg = packageSet().packages.find(pkg => url === `${registry}/${pkg.name}` || url === registryMetadata(pkg).versions[pkg.version]!.dist.tarball)!;
+      const pkg = packageSet(helperVersion).packages.find(pkg => url === `${registry}/${pkg.name}` || url === registryMetadata(pkg).versions[pkg.version]!.dist.tarball)!;
       expect(pkg).toBeDefined();
-      return response(url, url.endsWith(".tgz") ? bytes : JSON.stringify(registryMetadata(pkg)));
+      const metadata: any = registryMetadata(pkg);
+      if (latestPolicy === "initial-0.1.12") metadata["dist-tags"].latest = helperVersion;
+      return response(url, url.endsWith(".tgz") ? bytes : JSON.stringify(metadata));
     });
-    const args = ["v1.5.204", "0.1.5", "a".repeat(40), createHash("sha256").update(appBytes).digest("hex"),
+    const args = ["v1.5.204", helperVersion, "a".repeat(40), createHash("sha256").update(appBytes).digest("hex"),
       createHash("sha256").update(setBytes).digest("hex"), path.join(root, "candidate")];
     // Existing six-argument callers must keep their draft behavior.
     if (helperSource === "npm-next") args.push(helperSource);
+    if (latestPolicy !== "absent") args.push(latestPolicy);
     const result = await prepareNativeCandidate(args, { execute, fetchRegistry });
     expect(result.verifiedAssets).toBe(7);
     const manifest = JSON.parse(await readFile(path.join(root, "candidate/native-validation-assets.json"), "utf8"));
     expect(manifest.helperSource).toBe(helperSource);
+    expect(manifest.npmLatestPolicy).toBe(latestPolicy);
     expect(manifest.files.filter((file: any) => file.filename.startsWith("waifucave-ts-connect-")).every((file: any) =>
       file.source.kind === (helperSource === "npm-next" ? "npm-next" : "github-draft"))).toBe(true);
     expect(manifest.files.filter((file: any) => !file.filename.startsWith("waifucave-ts-connect-")).every((file: any) => file.source.kind === "github-draft")).toBe(true);
     expect(fetchRegistry).toHaveBeenCalledTimes(helperSource === "npm-next" ? 10 : 0);
     expect(execute.mock.calls.filter(([command, args]) => command === "gh" && args[1]!.includes("/releases/assets/"))).toHaveLength(helperSource === "npm-next" ? 2 : 7);
     expect(await readFile(path.join(root, "outputs"), "utf8")).toContain(`helper_source=${helperSource}\n`);
+    expect(await readFile(path.join(root, "outputs"), "utf8")).toContain(`npm_latest_policy=${latestPolicy}\n`);
   });
 
   it("accepts exactly the five reviewed package identities and checks every digest", () => {

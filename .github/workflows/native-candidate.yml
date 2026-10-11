@@ -19,6 +19,14 @@ on:
         options:
           - draft
           - npm-next
+      npm_latest_policy:
+        description: "Strict by default; approved initial helper 0.1.12 may have latest=next=0.1.12."
+        required: true
+        default: absent
+        type: choice
+        options:
+          - absent
+          - initial-0.1.12
       app_commit:
         description: "Reviewed full public app commit reachable from main."
         required: true
@@ -59,6 +67,7 @@ jobs:
       app_version: ${{ steps.prepare.outputs.app_version }}
       helper_version: ${{ steps.prepare.outputs.helper_version }}
       helper_source: ${{ steps.prepare.outputs.helper_source }}
+      npm_latest_policy: ${{ steps.prepare.outputs.npm_latest_policy }}
       app_commit: ${{ steps.prepare.outputs.app_commit }}
       manifest_sha256: ${{ steps.prepare.outputs.manifest_sha256 }}
     steps:
@@ -76,6 +85,7 @@ jobs:
           RELEASE_TAG: ${{ inputs.release_tag }}
           HELPER_VERSION: ${{ inputs.helper_version }}
           HELPER_SOURCE: ${{ inputs.helper_source || 'draft' }}
+          NPM_LATEST_POLICY: ${{ inputs.npm_latest_policy || 'absent' }}
           APP_COMMIT: ${{ inputs.app_commit }}
           APP_SHA256: ${{ inputs.app_sha256 }}
           PACKAGE_SET_SHA256: ${{ inputs.package_set_sha256 }}
@@ -84,7 +94,7 @@ jobs:
           set -euo pipefail
           set +x
           node scripts/prepare-native-candidate.mjs "$RELEASE_TAG" "$HELPER_VERSION" "$APP_COMMIT" \
-            "$APP_SHA256" "$PACKAGE_SET_SHA256" "$RUNNER_TEMP/native-candidate" "$HELPER_SOURCE"
+            "$APP_SHA256" "$PACKAGE_SET_SHA256" "$RUNNER_TEMP/native-candidate" "$HELPER_SOURCE" "$NPM_LATEST_POLICY"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: verified-native-candidate
@@ -127,6 +137,7 @@ jobs:
           APP_VERSION: ${{ needs.prepare.outputs.app_version }}
           HELPER_VERSION: ${{ needs.prepare.outputs.helper_version }}
           HELPER_SOURCE: ${{ needs.prepare.outputs.helper_source }}
+          NPM_LATEST_POLICY: ${{ needs.prepare.outputs.npm_latest_policy }}
           MANIFEST_SHA256: ${{ needs.prepare.outputs.manifest_sha256 }}
         shell: bash
         run: |
@@ -142,6 +153,8 @@ jobs:
               || manifest.appCommit !== process.env.APP_COMMIT || manifest.appVersion !== process.env.APP_VERSION
               || manifest.helperVersion !== process.env.HELPER_VERSION || manifest.files.length !== 7
               || !["draft", "npm-next"].includes(process.env.HELPER_SOURCE) || manifest.helperSource !== process.env.HELPER_SOURCE
+              || !["absent", "initial-0.1.12"].includes(process.env.NPM_LATEST_POLICY) || manifest.npmLatestPolicy !== process.env.NPM_LATEST_POLICY
+              || (process.env.NPM_LATEST_POLICY === "initial-0.1.12" && (process.env.HELPER_SOURCE !== "npm-next" || process.env.HELPER_VERSION !== "0.1.12"))
               || process.platform !== process.env.EXPECTED_PLATFORM || process.arch !== process.env.EXPECTED_ARCH)
               throw new Error("Candidate identity mismatch.");
             for (const file of manifest.files) {
@@ -149,7 +162,9 @@ jobs:
               const registryHelper = process.env.HELPER_SOURCE === "npm-next" && file.filename.startsWith("waifucave-ts-connect-");
               if (file.source?.kind !== (registryHelper ? "npm-next" : "github-draft")
                 || (registryHelper && (file.source.registry !== "https://registry.npmjs.org"
-                  || file.source.next !== process.env.HELPER_VERSION || file.source.latestAbsent !== true)))
+                  || file.source.next !== process.env.HELPER_VERSION || file.source.latestPolicy !== process.env.NPM_LATEST_POLICY
+                  || (process.env.NPM_LATEST_POLICY === "absent" ? file.source.latestAbsent !== true
+                    : file.source.latestAbsent !== false || file.source.latest !== "0.1.12"))))
                 throw new Error("Candidate download source mismatch.");
               const bytes = fs.readFileSync(`candidate-assets/${file.filename}`);
               if (bytes.length !== file.byteSize || hash(bytes) !== file.sha256) throw new Error("Candidate hash mismatch.");

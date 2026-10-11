@@ -13,14 +13,21 @@ const semver = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/u;
 const digest = (bytes, algorithm = "sha256", encoding = "hex") => createHash(algorithm).update(bytes).digest(encoding);
 const fail = () => { throw new Error("Native candidate validation failed."); };
 
-export function nativeCandidateInputs(tag, helperVersion, appCommit, appSha256, packageSetSha256, helperSource = "draft") {
+export function nativeCandidateInputs(tag, helperVersion, appCommit, appSha256, packageSetSha256, helperSource = "draft", npmLatestPolicy = "absent") {
   if (typeof tag !== "string" || !tag.startsWith("v") || !semver.test(tag.slice(1))
     || typeof helperVersion !== "string" || !semver.test(helperVersion)
     || !/^[a-f0-9]{40}$/u.test(appCommit) || !/^[a-f0-9]{64}$/u.test(appSha256)
     || !/^[a-f0-9]{64}$/u.test(packageSetSha256) || !["draft", "npm-next"].includes(helperSource)) fail();
+  validateLatestPolicy(npmLatestPolicy, helperVersion);
+  if (npmLatestPolicy !== "absent" && helperSource !== "npm-next") fail();
   const appVersion = tag.slice(1);
-  return { tag, appVersion, helperVersion, appCommit, appSha256, packageSetSha256, helperSource,
+  return { tag, appVersion, helperVersion, appCommit, appSha256, packageSetSha256, helperSource, npmLatestPolicy,
     appAsset: `waifucave-discord-waifus-${appVersion}-native-validation.tgz` };
+}
+
+function validateLatestPolicy(policy, version) {
+  if (!["absent", "initial-0.1.12"].includes(policy)
+    || (policy === "initial-0.1.12" && version !== "0.1.12")) fail();
 }
 
 export function nativeCandidatePackages(set, helperVersion) {
@@ -73,15 +80,17 @@ async function registryBytes(url, maximumBytes, timeoutMs, fetchRegistry) {
 }
 
 /** Public registry reads only: no npm credentials, lifecycle scripts or redirect targets. */
-export async function downloadNativeRegistryHelper(pkg, fetchRegistry = globalThis.fetch) {
+export async function downloadNativeRegistryHelper(pkg, fetchRegistry = globalThis.fetch, latestPolicy = "absent") {
+  validateLatestPolicy(latestPolicy, pkg?.version);
   const target = INITIAL_HELPER_TARGETS.find(value => value.name === pkg?.name);
   if (!target || pkg.os !== target.os || pkg.cpu !== target.cpu || !semver.test(pkg.version)
     || !Number.isSafeInteger(pkg.byteSize) || pkg.byteSize < 1 || pkg.byteSize > 256 * 1024 * 1024) fail();
   const metadataUrl = `${registry}/${pkg.name}`;
   const metadataBytes = await registryBytes(metadataUrl, 2 * 1024 * 1024, 30_000, fetchRegistry);
   const metadata = JSON.parse(metadataBytes.toString("utf8"));
-  if (metadata?.name !== pkg.name || metadata["dist-tags"]?.next !== pkg.version
-    || Object.hasOwn(metadata["dist-tags"], "latest")) fail();
+  if (metadata?.name !== pkg.name || metadata["dist-tags"]?.next !== pkg.version) fail();
+  const latestAbsent = !Object.hasOwn(metadata["dist-tags"], "latest");
+  if (latestPolicy === "absent" ? !latestAbsent : metadata["dist-tags"].latest !== "0.1.12") fail();
   const resolved = `${registry}/${pkg.name}/-/${pkg.name.slice("@waifucave/".length)}-${pkg.version}.tgz`;
   const version = metadata.versions?.[pkg.version];
   validateRegistryHelper(version, { ...pkg, resolved });
@@ -90,7 +99,8 @@ export async function downloadNativeRegistryHelper(pkg, fetchRegistry = globalTh
   verifyNativeCandidateBytes(bytes, pkg);
   return { bytes, provenance: {
     kind: "npm-next", registry, metadataUrl, metadataSha256: digest(metadataBytes), tarballUrl: resolved,
-    next: pkg.version, latestAbsent: true, integrity: pkg.integrity, shasum: pkg.shasum,
+    next: pkg.version, latestPolicy, latestAbsent, latest: latestAbsent ? null : metadata["dist-tags"].latest,
+    integrity: pkg.integrity, shasum: pkg.shasum,
     downloadedAt: new Date().toISOString()
   } };
 }
@@ -128,8 +138,8 @@ async function githubJson(endpoint, options, execute) {
 }
 
 export async function prepareNativeCandidate(args, { execute = run, fetchRegistry = globalThis.fetch } = {}) {
-  if (![6, 7].includes(args.length) || process.env.GITHUB_REPOSITORY !== repository || !process.env.GITHUB_OUTPUT) fail();
-  const input = nativeCandidateInputs(...args.slice(0, 5), args[6]);
+  if (![6, 7, 8].includes(args.length) || process.env.GITHUB_REPOSITORY !== repository || !process.env.GITHUB_OUTPUT) fail();
+  const input = nativeCandidateInputs(...args.slice(0, 5), args[6], args[7]);
   const main = await githubJson(`repos/${repository}/commits/main`, [], execute);
   if (!/^[a-f0-9]{40}$/u.test(main.sha)) fail();
   const comparison = await githubJson(`repos/${repository}/compare/${input.appCommit}...${main.sha}`, [], execute);
@@ -159,7 +169,7 @@ export async function prepareNativeCandidate(args, { execute = run, fetchRegistr
     if (input.helperSource === "draft") {
       verifyNativeCandidateBytes(await download(pkg.filename), pkg);
     } else {
-      const { bytes, provenance } = await downloadNativeRegistryHelper(pkg, fetchRegistry);
+      const { bytes, provenance } = await downloadNativeRegistryHelper(pkg, fetchRegistry, input.npmLatestPolicy);
       await writeFile(path.join(output, pkg.filename), bytes, { flag: "wx", mode: 0o600 });
       files.push({ filename: pkg.filename, byteSize: bytes.length, sha256: digest(bytes), source: provenance });
     }
@@ -172,7 +182,7 @@ export async function prepareNativeCandidate(args, { execute = run, fetchRegistr
   const raw = Buffer.from(`${JSON.stringify({ schemaVersion: 1, ...input, publicMainCommit: main.sha,
     files: files.sort((a, b) => a.filename.localeCompare(b.filename, "en")) }, null, 2)}\n`);
   await writeFile(path.join(output, "native-validation-assets.json"), raw, { flag: "wx", mode: 0o600 });
-  await writeFile(process.env.GITHUB_OUTPUT, `app_version=${input.appVersion}\nhelper_version=${input.helperVersion}\nhelper_source=${input.helperSource}\napp_commit=${input.appCommit}\nmanifest_sha256=${digest(raw)}\n`, { flag: "a" });
+  await writeFile(process.env.GITHUB_OUTPUT, `app_version=${input.appVersion}\nhelper_version=${input.helperVersion}\nhelper_source=${input.helperSource}\nnpm_latest_policy=${input.npmLatestPolicy}\napp_commit=${input.appCommit}\nmanifest_sha256=${digest(raw)}\n`, { flag: "a" });
   return { appVersion: input.appVersion, helperVersion: input.helperVersion, verifiedAssets: files.length };
 }
 
