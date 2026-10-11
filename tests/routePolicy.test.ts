@@ -68,7 +68,8 @@ describe("route policy inventory", () => {
   it("keeps gateway wildcard methods bounded when Fastify adds QUERY support", async () => {
     const app = fastify({ logger: false });
     apps.push(app);
-    app.addHttpMethod("QUERY", { hasBody: true });
+    // QUERY is built into current Fastify; send a valid body/content type so
+    // the assertion proves route exclusion, not an earlier parser rejection.
     const registration = installRoutePolicy(app, {
       manifest: ROUTE_POLICY_MANIFEST.filter((definition) => (
         definition.path === "/api/llm/*" || definition.synthetic === "not_found"
@@ -78,7 +79,7 @@ describe("route policy inventory", () => {
     app.all("/api/llm/*", async () => ({ ok: true }));
     registration.registerNotFound();
     expect(() => registration.assertComplete()).not.toThrow();
-    const query = await app.inject({ method: "QUERY" as never, url: "/api/llm/v1/models" });
+    const query = await app.inject({ method: "QUERY" as never, url: "/api/llm/v1/models", payload: {} });
     expect(query.statusCode).toBe(404);
     const models = await app.inject({ method: "GET", url: "/api/llm/v1/models" });
     expect(models.statusCode).toBe(200);

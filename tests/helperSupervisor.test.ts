@@ -1,4 +1,5 @@
 import path from "node:path";
+import { readFile } from "node:fs/promises";
 import { Readable } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Logger } from "../src/backend/logger.js";
@@ -285,6 +286,26 @@ async function settle(): Promise<void> {
 }
 
 describe("role-neutral helper supervisor", () => {
+  it("persists sanitized lifecycle and operation failures without changing rejection", async () => {
+    const factory = new FakeProcessFactory();
+    const dataRoot = await makeTempRoot("wd-");
+    roots.push(dataRoot);
+    const { supervisor } = await makeSupervisor(factory, { role: "remote", dataRoot });
+    const error = new HelperSupervisorError("helper_unavailable", "PRIVATE-EXCEPTION");
+    const started = supervisor.start();
+    await settle();
+    factory.launches[0]!.resolveAuthenticated(helperClient({ beginPair: async () => { throw error; } }));
+    await started;
+    await expect(supervisor.beginPair("PRIVATE-OPERATION", {} as never, {} as never)).rejects.toBe(error);
+    await supervisor.close();
+    const raw = await readFile(path.join(dataRoot, "app/logs/remote-diagnostics/remote.jsonl"), "utf8");
+    expect(raw).not.toContain("PRIVATE");
+    const entries = raw.trim().split("\n").map(line => JSON.parse(line));
+    expect(entries).toContainEqual(expect.objectContaining({ event: "lifecycle", helperState: "ready" }));
+    expect(entries).toContainEqual(expect.objectContaining({ event: "operation_failed", operation: "pair_begin", code: "helper_unavailable" }));
+    expect(entries.at(-1)).toMatchObject({ event: "lifecycle", helperState: "disabled" });
+  });
+
   it("uses the protected session-bus environment at the actual process boundary", async () => {
     vi.stubEnv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/tmp/waifus-test-bus");
     vi.stubEnv("OPENAI_API_KEY", "excluded-boundary-secret");

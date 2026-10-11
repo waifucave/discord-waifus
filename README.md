@@ -105,6 +105,15 @@ Initial beta validation uses native installation, signature, credential-storage,
 cold-restart checks on all five targets, with live-network acceptance on two Macs. Windows/Linux
 networking, network switching, and suspend/resume are not yet live-validated and remain follow-up
 testing. Native CI passing does not establish that those network scenarios work on those platforms.
+The initial beta ships without a completed 24-hour production soak; long-duration reliability
+validation remains a follow-up.
+
+For troubleshooting, host and remote helper lifecycle changes, operation failures and failed
+responses are recorded locally under `~/.dc-waifus/app/logs/remote-diagnostics/` (or your
+`DC_WAIFUS_HOME`). Each role keeps a private 64 KiB JSONL file plus one rotated copy. Entries
+contain only timestamps and allowlisted state/error categories, not keys, pairing codes,
+addresses, request contents or device identifiers. Nothing is uploaded automatically. Repeated
+events are coalesced and logging is best-effort; these files cannot prove every failure was caught.
 
 <details>
 <summary>🔁 Migrating from the old <code>@starlight-ai</code> package?</summary>

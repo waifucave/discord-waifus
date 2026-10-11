@@ -8,6 +8,20 @@
 
 **Depends on:** every functional/security/platform gate in plans 01–06
 
+**2026-10-11 user-approved release amendment (takes precedence over historical gates below):**
+The 24-hour production soak is no longer a prerequisite for the initial beta. Release after
+the remaining immutable npm-artifact verification, five-target native checks, focused live
+acceptance and application release checks, with privacy-safe local failure diagnostics.
+Disclose that no qualifying 24-hour soak was completed; logs are diagnostic evidence, not
+a guarantee of fault detection or a substitute for signature/authentication tests.
+The user also approved the helper-only initial-tag exception: npm automatically assigned
+`latest` alongside `next` to the first 0.1.12 publications and rejected its removal. Both
+tags must select the exact approved 0.1.12 bytes. Use the explicit, version-restricted native
+validation policy rather than weakening the default no-`latest` check. No tag promotion or
+second publication is needed for those immutable helpers. Root publication remains subject
+to all other release checks. Long-duration observation is now a post-release follow-up;
+Windows/Linux live networking remains untested as already approved below.
+
 **2026-10-10 user-approved initial beta validation amendment:** Use the five-platform
 native installed-package CI matrix plus real two-Mac live-network validation for
 the initial beta. Windows x64/ARM64 and Linux x64/ARM64 networking, roaming and

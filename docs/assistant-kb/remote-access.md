@@ -48,6 +48,13 @@ the revoked pair.
 
 ## Troubleshooting
 
+Private local diagnostic files are at `app/logs/remote-diagnostics/host.jsonl` and
+`remote.jsonl` under the configured data root, each with at most one `.1` rotated copy.
+They contain allowlisted lifecycle, operation and failed-response categories only, with
+64 KiB per file and repeated-event suppression. No automatic upload occurs. Request only
+these sanitized entries for remote troubleshooting, never pairing tokens or other runtime files.
+Logging is best-effort, may drop bursts, and cannot establish that no failures occurred.
+
 - `direct_unavailable` or `reconnecting`: use the reconnect action after checking that both devices
   have working UDP connectivity. Network/interface changes are rediscovered automatically.
 - `activation_required`: complete activation from the host's local dashboard first.
@@ -61,5 +68,6 @@ Linux ARMv7 are later follow-ups; neither selects another architecture's binary.
 Initial beta validation uses native installed-package checks on all five targets and live-network
 acceptance on two Macs. Windows/Linux networking, roaming, and suspend/resume remain untested
 follow-ups. Do not describe their passing installation/signature/vault/IPC/cold-restart CI as
-live-network validation, or claim a release is complete before its remaining acceptance and
-24-hour production soak gates pass.
+live-network validation. The initial beta does not include a completed 24-hour production soak:
+the owner explicitly removed that waiting period as a release prerequisite on 2026-10-11.
+Long-duration reliability remains follow-up validation, not a proven property of this release.

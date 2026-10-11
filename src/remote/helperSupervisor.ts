@@ -3,6 +3,7 @@ import path from "node:path";
 import type { Logger } from "../backend/logger.js";
 import type { RemoteRequestBridge } from "../backend/remoteAccess/requestBridge.js";
 import { remoteRolePaths } from "./paths.js";
+import { RemoteDiagnosticLog, remoteDiagnosticCode, type RemoteDiagnosticOperation } from "./diagnosticLog.js";
 import {
   INITIAL_REQUIRED_CAPABILITIES,
   SemVerSchema,
@@ -250,6 +251,7 @@ export class HelperSupervisor {
   readonly #setTimeout: typeof setTimeout;
   readonly #clearTimeout: typeof clearTimeout;
   readonly #listeners = new Set<(snapshot: HelperSupervisorSnapshot) => void>();
+  readonly #diagnostics: RemoteDiagnosticLog;
   #snapshot = initialSnapshot();
   #launch: HelperLaunch | undefined;
   #client: AuthenticatedHelperClient | undefined;
@@ -267,6 +269,7 @@ export class HelperSupervisor {
 
   constructor(options: HelperSupervisorOptions) {
     this.#options = options;
+    this.#diagnostics = new RemoteDiagnosticLog({ dataRoot: options.dataRoot, role: options.role });
     this.#now = options.now ?? Date.now;
     this.#randomBytes = options.randomBytes ?? randomBytes;
     this.#jitter = options.jitter ?? Math.random;
@@ -345,12 +348,13 @@ export class HelperSupervisor {
   }
 
   async beginActivation(operationId: string): Promise<HelperActivationStart> {
-    return this.#readyClient().beginActivation(operationId);
+    return this.#operation("activation_begin", () => this.#readyClient().beginActivation(operationId));
   }
 
   async pollActivation(operationId: string): Promise<HelperActivationPoll> {
     const client = this.#readyClient();
-    const result = await client.pollActivation(operationId);
+    const result = await this.#operation("activation_poll", () => client.pollActivation(operationId));
+    if (result.state === "failed") this.#diagnostics.record({ event: "operation_failed", operation: "activation_poll", code: result.errorCode });
     if (result.state === "completed" && this.#client === client && !this.#closing) {
       const identityStatus = parseHelperIdentityStatus(await client.identityStatus());
       if (this.#client === client && !this.#closing) {
@@ -362,7 +366,7 @@ export class HelperSupervisor {
   }
 
   async cancelActivation(operationId: string): Promise<HelperActivationCancel> {
-    return this.#readyClient().cancelActivation(operationId);
+    return this.#operation("activation_cancel", () => this.#readyClient().cancelActivation(operationId));
   }
 
   async beginPair(
@@ -370,33 +374,35 @@ export class HelperSupervisor {
     input: PairStartInput,
     descriptor: HelperDeviceDescriptor
   ): Promise<HelperPairStart> {
-    return this.#readyClient().beginPair(operationId, input, descriptor);
+    return this.#operation("pair_begin", () => this.#readyClient().beginPair(operationId, input, descriptor));
   }
 
   async pollPair(operationId: string): Promise<HelperPairPoll> {
-    return this.#readyClient().pollPair(operationId);
+    const result = await this.#operation("pair_poll", () => this.#readyClient().pollPair(operationId));
+    if (result.state === "failed") this.#diagnostics.record({ event: "operation_failed", operation: "pair_poll", code: result.errorCode });
+    return result;
   }
 
   async cancelPair(operationId: string): Promise<HelperPairCancel> {
-    return this.#readyClient().cancelPair(operationId);
+    return this.#operation("pair_cancel", () => this.#readyClient().cancelPair(operationId));
   }
 
   async consumeCompletedPair(operationId: string): Promise<HelperCompletedPair> {
-    return this.#readyClient().consumeCompletedPair(operationId);
+    return this.#operation("pair_complete", () => this.#readyClient().consumeCompletedPair(operationId));
   }
 
   async startRuntime(selectedPairId?: string): Promise<HelperRuntimeStatus> {
     this.#desiredRuntime = Object.freeze({
       ...(selectedPairId !== undefined ? { selectedPairId } : {})
     });
-    const status = await this.#readyClient().startRuntime(selectedPairId);
+    const status = await this.#operation("runtime_start", () => this.#readyClient().startRuntime(selectedPairId));
     this.#runtimeActive = true;
     this.#update({ runtimeStatus: status, lastErrorCode: status.lastErrorCode });
     return status;
   }
 
   async runtimeStatus(): Promise<HelperRuntimeStatus> {
-    const status = await this.#readyClient().runtimeStatus();
+    const status = await this.#operation("runtime_status", () => this.#readyClient().runtimeStatus());
     this.#update({ runtimeStatus: status, lastErrorCode: status.lastErrorCode });
     return status;
   }
@@ -404,9 +410,9 @@ export class HelperSupervisor {
   async reconnectRuntime(): Promise<HelperRuntimeStatus> {
     const client = this.#readyClient();
     const desired = this.#desiredRuntime;
-    const status = !this.#runtimeActive && desired
+    const status = await this.#operation("runtime_reconnect", async () => !this.#runtimeActive && desired
       ? await client.startRuntime(desired.selectedPairId)
-      : await client.reconnectRuntime();
+      : await client.reconnectRuntime());
     this.#runtimeActive = true;
     this.#update({ runtimeStatus: status, lastErrorCode: status.lastErrorCode });
     return status;
@@ -414,14 +420,14 @@ export class HelperSupervisor {
 
   async stopRuntime(): Promise<HelperRuntimeStatus> {
     this.#desiredRuntime = undefined;
-    const status = await this.#readyClient().stopRuntime();
+    const status = await this.#operation("runtime_stop", () => this.#readyClient().stopRuntime());
     this.#runtimeActive = false;
     this.#update({ runtimeStatus: status, lastErrorCode: status.lastErrorCode });
     return status;
   }
 
   async registerGatewayLaunch(gatewayLaunchId: string, expiresAt: string): Promise<void> {
-    await this.#readyClient().registerGatewayLaunch(gatewayLaunchId, expiresAt);
+    await this.#operation("gateway_launch", () => this.#readyClient().registerGatewayLaunch(gatewayLaunchId, expiresAt));
   }
 
   async requestSignedSelfRevocation(pairId: string): Promise<boolean> {
@@ -437,7 +443,7 @@ export class HelperSupervisor {
     idempotencyKey: string,
     descriptor: HelperDeviceDescriptor
   ): Promise<PairInvitationV1> {
-    return this.#readyClient().createInvitation(actor, idempotencyKey, descriptor);
+    return this.#operation("invitation_create", () => this.#readyClient().createInvitation(actor, idempotencyKey, descriptor));
   }
 
   async cancelInvitation(
@@ -450,7 +456,7 @@ export class HelperSupervisor {
   async listPairingRequests(
     actor: HelperRequestActor
   ): Promise<PendingPairingRequestListV1> {
-    return this.#readyClient().listPairingRequests(actor);
+    return this.#operation("pairing_requests", () => this.#readyClient().listPairingRequests(actor));
   }
 
   async approvePairingRequest(
@@ -459,14 +465,14 @@ export class HelperSupervisor {
     actor: HelperConfirmedAdminActor,
     requestBinding: HelperPairingApprovalRequestBinding
   ): Promise<void> {
-    await this.#readyClient().approvePairingRequest(requestId, input, actor, requestBinding);
+    await this.#operation("pairing_approve", () => this.#readyClient().approvePairingRequest(requestId, input, actor, requestBinding));
   }
 
   async rejectPairingRequest(
     requestId: string,
     actor: HelperRequestActor
   ): Promise<void> {
-    await this.#readyClient().rejectPairingRequest(requestId, actor);
+    await this.#operation("pairing_reject", () => this.#readyClient().rejectPairingRequest(requestId, actor));
   }
 
   async listDevices(): Promise<TrustedDeviceListV1> {
@@ -485,7 +491,7 @@ export class HelperSupervisor {
     deviceId: string,
     actor: HelperConfirmedAdminActor
   ): Promise<void> {
-    await this.#readyClient().revokeDevice(deviceId, actor);
+    await this.#operation("device_revoke", () => this.#readyClient().revokeDevice(deviceId, actor));
   }
 
   async reconcileDeviceRevocation(
@@ -511,7 +517,18 @@ export class HelperSupervisor {
   }
 
   async request(input: HelperRemoteRequest): Promise<HelperRemoteResponse> {
-    return this.#readyClient().request(input);
+    const response = await this.#operation("request", () => this.#readyClient().request(input));
+    if (response.statusCode >= 400) this.#diagnostics.record({ event: "request_failed", operation: "request", responseClass: response.statusCode >= 500 ? "5xx" : "4xx" });
+    response.body.once("error", () => this.#diagnostics.record({ event: "request_failed", operation: "request", code: "other" }));
+    return response;
+  }
+
+  async #operation<T>(operation: RemoteDiagnosticOperation, action: () => Promise<T>): Promise<T> {
+    try { return await action(); }
+    catch (error) {
+      this.#diagnostics.record({ event: "operation_failed", operation, code: remoteDiagnosticCode(error) });
+      throw error;
+    }
   }
 
   async close(): Promise<void> {
@@ -525,6 +542,7 @@ export class HelperSupervisor {
       ...initialSnapshot(),
       consecutiveFailures: this.#snapshot.consecutiveFailures
     });
+    await this.#diagnostics.flush();
   }
 
   async #runAttempt(): Promise<void> {
@@ -635,6 +653,7 @@ export class HelperSupervisor {
             lastDirectAt: null,
             lastErrorCode: error.code
           };
+          this.#diagnostics.record({ event: "runtime_restore_failed", code: error.code });
           this.#options.logger.warn("Remote helper runtime restoration unavailable", { role: this.#options.role, code: error.code });
         }
         // Keep validation outside the recoverable command-rejection catch.
@@ -841,6 +860,17 @@ export class HelperSupervisor {
         ...(patch.runtimeStatus ?? {})
       })
     });
+    const previous = this.#snapshot;
+    if (previous.state !== next.state || previous.lastErrorCode !== next.lastErrorCode
+      || previous.runtimeStatus.activationState !== next.runtimeStatus.activationState
+      || previous.runtimeStatus.controlState !== next.runtimeStatus.controlState
+      || previous.runtimeStatus.directState !== next.runtimeStatus.directState
+      || previous.runtimeStatus.lastErrorCode !== next.runtimeStatus.lastErrorCode) {
+      this.#diagnostics.record({ event: "lifecycle", helperState: next.state,
+        activationState: next.runtimeStatus.activationState, controlState: next.runtimeStatus.controlState,
+        directState: next.runtimeStatus.directState,
+        ...((next.lastErrorCode ?? next.runtimeStatus.lastErrorCode) === null ? {} : { code: next.lastErrorCode ?? next.runtimeStatus.lastErrorCode! }) });
+    }
     this.#snapshot = next;
     for (const listener of this.#listeners) listener(next);
   }

@@ -64,8 +64,12 @@ real-device validation hardware was unavailable; no ARMv7 package ships in this 
 For the initial remote beta, the user approved five-platform native installed-package CI plus
 two-Mac live-network validation (2026-10-10). Windows/Linux networking and roaming remain
 explicitly untested follow-ups and must be disclosed in release notes. This does not waive
-signature checks, direct-only enforcement, two-Mac acceptance, or the 24-hour production soak
-using independently verified npm `next` packages before promotion/root publication.
+signature checks, direct-only enforcement, two-Mac acceptance, or independent npm download
+verification. On 2026-10-11 the user explicitly removed the 24-hour production soak as a
+release prerequisite, accepting initial-beta risk with privacy-safe failure diagnostics.
+No completed 24-hour soak may be claimed. The user also approved npm's automatic initial
+`latest` tag for helper 0.1.12 only; both `next` and `latest` must resolve to those exact
+reviewed bytes. This exception does not relax native checks, signatures or compatibility.
 The helper child receives only a validated local Unix D-Bus session address on Linux, so native
 Secret Service works without inheriting the parent's credential environment. The existing
 protected-file fallback remains available when no usable native session bus exists.
@@ -82,6 +86,13 @@ After a remote helper restart, a remembered selection may already be revoked. An
 helper launch failure: a validated inactive runtime stop keeps the helper available for pairing
 and explicit retry. Invalid protocol/status, failed cleanup, transport errors and host-role
 startup failures still fail closed. This does not restore or erase any revoked trust.
+`src/remote/diagnosticLog.ts` records best-effort local helper lifecycle changes and failures
+under `app/logs/remote-diagnostics/{host,remote}.jsonl`. Only closed enum fields and timestamps
+are accepted, with 64 KiB plus one rotated copy per role, a bounded queue and duplicate suppression.
+Files use the private metadata writer (including Windows ACLs). Logging never uploads, stores
+request contents/identifiers, changes authority, or turns a failed operation into success.
+A storage failure disables that writer until the next process start; absence of entries is not
+evidence of uninterrupted health.
 
 ## Conventions
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { execFile } from "node:child_process";
-import { readFile, mkdtemp } from "node:fs/promises";
+import { readFile, mkdtemp, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -16,6 +16,12 @@ const buildInfoFields = [
   "directOnlyBuildTag", "protocols", "capabilities"
 ];
 const readJson = async (file) => JSON.parse(await readFile(file, "utf8"));
+
+export async function createHelperPreflightRoot(temporaryRoot = tmpdir()) {
+  // npm can key its lockfile relative to the physical prefix when tmpdir uses
+  // an alias (notably /var -> /private/var on macOS). Keep strict lock lookup.
+  return realpath(await mkdtemp(path.join(temporaryRoot, "waifus-helper-preflight-")));
+}
 
 async function npm(args) {
   const cli = process.env.npm_execpath;
@@ -97,7 +103,7 @@ export async function preflightRemoteHelpers({ packageRoot, lockfile = path.join
   }));
   const results = [];
   for (const pin of pins) {
-    const installRoot = await mkdtemp(path.join(tmpdir(), "waifus-helper-preflight-"));
+    const installRoot = await createHelperPreflightRoot();
     // npm still skips foreign optional packages under --force. Select each target
     // explicitly in its own inspection prefix; lifecycle scripts remain disabled.
     await runNpm([
