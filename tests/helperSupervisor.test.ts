@@ -483,6 +483,9 @@ describe("role-neutral helper supervisor", () => {
 
     await supervisor.stop();
     expect(stopRuntime).toHaveBeenCalledTimes(2);
+    // Stop keeps the reusable supervisor alive; close flushes diagnostics before
+    // afterEach removes its temporary data root.
+    await supervisor.close();
   });
 
   it("keeps an authenticated remote helper usable when its remembered runtime replay is rejected", async () => {
