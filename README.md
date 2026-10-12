@@ -115,6 +115,11 @@ For later connections, run `waifus remote` and select the remembered host. No ne
 separate Tailscale installation is needed. The host must stay running and awake. Use the host's
 **Trusted devices** controls to revoke a device you no longer want to trust.
 
+An open remote dashboard keeps its outer browser session alive with authenticated local
+heartbeats. Sessions still have an eight-hour maximum lifetime; after expiry (or a long browser
+suspension), reopen using `waifus remote`. Your saved pairing is not removed by browser-session
+expiry.
+
 `waifus start` and `waifus remote` can coexist: the local host and remote gateway are separate
 processes. `waifus remote stop` stops only the gateway. Pairings belong to their data root;
 an isolated test installation does not grant access to your normal installation.

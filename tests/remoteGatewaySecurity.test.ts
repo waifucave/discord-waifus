@@ -1,5 +1,6 @@
 import { request as httpRequest } from "node:http";
 import { createServer, type AddressInfo, type Server } from "node:net";
+import { runInNewContext } from "node:vm";
 import { afterEach, describe, expect, it } from "vitest";
 import { ensureRemoteOnlyLayout } from "../src/config/layout.js";
 import { createRemoteBrowserContext } from "../src/remote/gateway/browserContext.js";
@@ -24,6 +25,7 @@ import {
 } from "../src/remote/gateway/server.js";
 import { RemoteOriginStore } from "../src/remote/gateway/originStore.js";
 import { startRemoteGatewayRuntime } from "../src/remote/gateway/runtime.js";
+import { startRemoteDashboardFrameShell } from "../src/remote/gateway/frameShell.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
 
 const gateways: RunningRemoteGateway[] = [];
@@ -422,6 +424,67 @@ describe("remote gateway response policy", () => {
 });
 
 describe("remote gateway listener", () => {
+  it("keeps the static dashboard frame alive without extending absolute expiry or accepting cross-site requests", async () => {
+    let now = 1_000_000;
+    const hostname = `waifus-${"a".repeat(52)}.localhost`;
+    const frame = await startRemoteDashboardFrameShell({
+      now: () => now,
+      dashboard: { hostname, origin: `http://${hostname}:12345`, issueBootstrapUrl: () => {
+        throw new Error("Keepalive must not mint dashboard credentials");
+      } }
+    });
+    gateways.push(frame);
+    const host = `${hostname}:${frame.port}`;
+    const boot = await rawRequest({ port: frame.port, path: new URL(frame.bootstrapUrl).pathname, headers: { host } });
+    const cookieValue = String(boot.headers["set-cookie"]).split(";", 1)[0];
+    const headers = { host, cookie: cookieValue, "sec-fetch-site": "same-origin" };
+    const request = (path: string, extra = {}) => rawRequest({ port: frame.port, path, headers: { ...headers, ...extra } });
+    const page = await request("/");
+    expect(page.body).toContain('src="/_waifus_remote/frame-session.js"');
+    const script = await request("/_waifus_remote/frame-session.js");
+    expect(script.statusCode).toBe(200);
+    expect(script.body).toContain("setInterval(refresh, 60000)");
+    expect(script.body).toContain("response.status === 403");
+    let tick: (() => Promise<void>) | undefined;
+    let responseStatus = 204;
+    let stopped = false;
+    const body = { textContent: "dashboard" };
+    runInNewContext(script.body, {
+      fetch: async (url: string, options: { credentials: string }) => {
+        expect(url).toBe("/_waifus_remote/frame-keepalive");
+        expect(options.credentials).toBe("same-origin");
+        return { status: responseStatus };
+      },
+      AbortSignal,
+      setInterval: (callback: () => Promise<void>, ms: number) => {
+        expect(ms).toBe(60_000);
+        tick = callback;
+        return 1;
+      },
+      clearInterval: () => { stopped = true; },
+      window: { addEventListener: () => {} },
+      document: { body, addEventListener: () => {} }
+    });
+    await tick!();
+    expect(body.textContent).toBe("dashboard");
+    responseStatus = 403;
+    await tick!();
+    expect(stopped).toBe(true);
+    expect(body.textContent).toContain("No new pairing is needed");
+    expect((await rawRequest({ port: frame.port, path: "/_waifus_remote/frame-keepalive", headers: { host } })).statusCode).toBe(403);
+    expect((await request("/_waifus_remote/frame-keepalive", { "sec-fetch-site": "cross-site" })).statusCode).toBe(403);
+    for (let minutes = 20; minutes < 480; minutes += 20) {
+      now = 1_000_000 + minutes * 60_000;
+      const heartbeat = await request("/_waifus_remote/frame-keepalive");
+      expect(heartbeat.statusCode).toBe(204);
+      expect(heartbeat.headers["set-cookie"]).toBeDefined();
+    }
+    expect((await request("/")).statusCode).toBe(200);
+    now = 1_000_000 + REMOTE_SESSION_ABSOLUTE_MS;
+    expect((await request("/_waifus_remote/frame-keepalive")).statusCode).toBe(403);
+    expect((await request("/")).statusCode).toBe(403);
+  });
+
   it("binds loopback, consumes bootstrap once, redirects token-free, and protects all other routes", async () => {
     let capturedContext: unknown;
     const gateway = await startRemoteGateway({
