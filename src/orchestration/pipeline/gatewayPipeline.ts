@@ -117,19 +117,41 @@ export class GatewayModelPipeline implements ModelPipeline {
     signal?: AbortSignal;
   }): Promise<ChatResponse> {
     const { providerId, modelId } = this.options;
+    // Some models (including Muse Spark) allow automatic tools but not named
+    // tool choice. Decisions can use the SAME schema as structured output;
+    // never silently downgrade a required decision to optional tool calling.
+    const choice = request.toolChoice;
+    const schemaTool = typeof choice === "object"
+      && !this.model.features.tools.toolChoice?.includes("named")
+      && this.model.features.structuredOutput.jsonSchema
+      ? request.tools?.find((tool) => tool.name === choice.name)
+      : undefined;
     const conformed = preconformRequest(this.gateway, providerId, modelId, {
       params: buildUnifiedParams(request.sampling),
-      toolChoice: request.toolChoice
+      toolChoice: schemaTool ? undefined : request.toolChoice
     });
-    return this.gateway.chat({
+    const response = await this.gateway.chat({
       provider: providerId,
       model: modelId,
-      messages: sanitizeChatMessages(request.messages),
-      tools: request.tools,
+      messages: sanitizeChatMessages(schemaTool ? [
+        ...request.messages,
+        { role: "system", content: `Return the arguments for ${schemaTool.name} as JSON matching the provided response schema. Do not call a tool.` }
+      ] : request.messages),
+      tools: schemaTool ? undefined : request.tools,
       toolChoice: conformed.toolChoice,
+      responseFormat: schemaTool ? { type: "json_schema", name: schemaTool.name, schema: schemaTool.parameters } : undefined,
       params: conformed.params,
       signal: combinedSignal(request.signal)
     });
+    if (!schemaTool) return response;
+    if (response.finishReason !== "stop") {
+      throw new GatewayPipelineError(`Structured decision did not complete: ${response.finishReason}`);
+    }
+    // Existing decision parsers still validate both JSON syntax and semantics.
+    return { ...response, content: [{ type: "toolCall", id: `structured-${response.id}`,
+      name: schemaTool.name, arguments: response.content
+        .filter((block): block is TextBlock => block.type === "text")
+        .map((block) => block.text).join("") }] };
   }
 
   protected get model() {

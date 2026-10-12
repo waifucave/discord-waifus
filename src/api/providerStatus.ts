@@ -19,6 +19,7 @@ const DOCS_URLS: Record<string, string> = {
   deepseek: "https://api-docs.deepseek.com/api/create-chat-completion",
   anthropic: "https://platform.claude.com/docs/en/about-claude/models/overview",
   openai: "https://developers.openai.com/api/docs/models",
+  meta: "https://dev.meta.ai/docs/models",
   zai: "https://docs.z.ai/guides/overview/migrate-to-glm-new",
   "google-ai-studio": "https://ai.google.dev/gemini-api/docs"
 };

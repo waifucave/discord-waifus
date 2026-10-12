@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { PROVIDERS, Registry } from "@waifucave/gateway";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -1648,8 +1649,8 @@ describe("LLM gateway mount (/api/llm)", () => {
       const models = await app.inject({ method: "GET", url: "/api/llm/v1/models" });
       expect(models.statusCode).toBe(200);
       const body = models.json() as { models: Array<Record<string, unknown>> };
-      // 141 since gateway 0.3.0's August 2026 catalog refresh (20 new families incl. OR-only providers).
-      expect(body.models).toHaveLength(141);
+      // The mount must expose every route from the installed gateway catalog.
+      expect(body.models).toHaveLength(Registry.load().listModels().length);
       expect(
         body.models.find((m) => m.providerId === "deepseek" && m.modelId === "deepseek-v4-pro")
       ).toEqual({
@@ -1696,7 +1697,7 @@ describe("LLM gateway mount (/api/llm)", () => {
       const beforeBody = before.json() as {
         providers: Array<{ id: string; credentialConfigured: boolean }>;
       };
-      expect(beforeBody.providers).toHaveLength(14);
+      expect(beforeBody.providers).toHaveLength(PROVIDERS.length);
       expect(beforeBody.providers.every((p) => p.credentialConfigured === false)).toBe(true);
 
       const put = await app.inject({
@@ -1876,7 +1877,7 @@ describe("Gateway registry proxy (/api/providers); /api/models deleted (Gateway 
     }
   });
 
-  it("exposes credential status for the full 14-provider gateway registry on /api/providers, plus gatewayProviders", async () => {
+  it("exposes credential status for the full gateway registry on /api/providers, plus gatewayProviders", async () => {
     const { app } = await makeApp();
     try {
       const providers = await app.inject({ method: "GET", url: "/api/providers" });
@@ -1887,8 +1888,8 @@ describe("Gateway registry proxy (/api/providers); /api/models deleted (Gateway 
         providers: Array<{ id: string; displayName: string; docsUrl?: string; credentials: { configured: boolean } }>;
         gatewayProviders: Array<{ id: string; credentialConfigured: boolean }>;
       };
-      // providers now covers the full registry (14), not just the legacy 6-id enum.
-      expect(body.providers).toHaveLength(14);
+      // Covers the full installed registry, not just the legacy 6-id enum.
+      expect(body.providers).toHaveLength(PROVIDERS.length);
       expect(body.providers.map((p) => p.id)).toContain("openrouter");
       expect(body.providers.every((p) => p.credentials.configured === false)).toBe(true);
       // native provider carries a docsUrl from the static map.
@@ -1896,7 +1897,7 @@ describe("Gateway registry proxy (/api/providers); /api/models deleted (Gateway 
         "https://developers.openai.com/api/docs/models"
       );
 
-      expect(body.gatewayProviders).toHaveLength(14);
+      expect(body.gatewayProviders).toHaveLength(PROVIDERS.length);
       expect(body.gatewayProviders.map((p) => p.id)).toContain("openrouter");
       expect(body.gatewayProviders.every((p) => p.credentialConfigured === false)).toBe(true);
 

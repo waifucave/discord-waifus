@@ -232,6 +232,24 @@ describe("decideOrchestrator (gateway)", () => {
 });
 
 describe("decideReviewer (gateway)", () => {
+  it.each([
+    ['{"hallucination":true}', "stop", true],
+    ['{"hallucination":"invalid"}', "stop", false],
+    ['not json', "stop", false],
+    ['{"hallucination":true}', "length", false]
+  ])("uses validated structured decisions when named tools are unsupported (%s, %s)", async (content, finishReason, valid) => {
+    const fetchImpl = okFetch({ id: "schema", choices: [{ message: { content }, finish_reason: finishReason }], usage: {} });
+    // The existing Muse OpenRouter route also has JSON schema but no forced tools.
+    const gateway = createGateway({ credentials: { openrouter: "TEST_KEY" }, fetchImpl: fetchImpl as unknown as typeof fetch });
+    const pipeline = createGatewayModelPipeline({ providerId: "openrouter", modelId: "meta/muse-spark-1.1", queryRole: "reviewer", gateway });
+    const result = pipeline.decideReviewer!({ modelId: "meta/muse-spark-1.1", messages: [msg({})], message: "suspect text" });
+    if (valid) await expect(result).resolves.toEqual({ hallucination: true });
+    else await expect(result).rejects.toThrow(GatewayPipelineError);
+    const body = JSON.parse((fetchImpl.mock.calls[0]![1] as RequestInit).body as string);
+    expect(body.tools).toBeUndefined();
+    expect(body.tool_choice).toBeUndefined();
+    expect(body.response_format).toMatchObject({ type: "json_schema", json_schema: { name: "review_message", schema: { type: "object" } } });
+  });
   it("forces review_message and parses the verdict", async () => {
     const fetchImpl = okFetch({
       id: "r1",
