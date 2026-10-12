@@ -4,8 +4,9 @@ import {
   type Base64Url32Bytes
 } from "../../shared/schemas/remoteProtocol.js";
 
-export const REMOTE_SESSION_IDLE_MS = 30 * 60 * 1_000;
-export const REMOTE_SESSION_ABSOLUTE_MS = 8 * 60 * 60 * 1_000;
+// The v1 wire contract requires numeric deadlines. Use a far-future sentinel;
+// actual browser authority lives only in this process and ends on invalidation.
+export const REMOTE_SESSION_LIFETIME_SENTINEL_MS = Number.MAX_SAFE_INTEGER;
 export const REMOTE_BOOTSTRAP_TOKEN_MS = 5 * 60 * 1_000;
 const DEFAULT_MAX_SESSIONS = 1_024;
 const DEFAULT_MAX_BOOTSTRAP_TOKENS = 32;
@@ -137,8 +138,8 @@ export class RemoteBrowserSessionStore {
       browserSessionId,
       csrfToken,
       createdAt,
-      idleExpiresAt: createdAt + REMOTE_SESSION_IDLE_MS,
-      absoluteExpiresAt: createdAt + REMOTE_SESSION_ABSOLUTE_MS
+      idleExpiresAt: REMOTE_SESSION_LIFETIME_SENTINEL_MS,
+      absoluteExpiresAt: REMOTE_SESSION_LIFETIME_SENTINEL_MS
     };
     this.#sessions.set(browserSessionId, session);
     return snapshot(session);
@@ -172,10 +173,6 @@ export class RemoteBrowserSessionStore {
     ) {
       return undefined;
     }
-    session.idleExpiresAt = Math.min(
-      this.#now() + REMOTE_SESSION_IDLE_MS,
-      session.absoluteExpiresAt
-    );
     return snapshot(session);
   }
 
@@ -184,11 +181,7 @@ export class RemoteBrowserSessionStore {
     if (!session || !safeTokenEqual(session.csrfToken, sessionValue.csrfToken)) {
       throw new TypeError("Remote browser session is missing or expired.");
     }
-    const remainingSeconds = Math.max(
-      1,
-      Math.floor((Math.min(session.idleExpiresAt, session.absoluteExpiresAt) - this.#now()) / 1_000)
-    );
-    return `${this.sessionCookieName}=${session.browserSessionId}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${remainingSeconds}`;
+    return `${this.sessionCookieName}=${session.browserSessionId}; Path=/; HttpOnly; SameSite=Strict`;
   }
 
   sessionCookieHeaderIfActive(sessionValue: RemoteBrowserSession): string | undefined {
@@ -210,14 +203,7 @@ export class RemoteBrowserSessionStore {
   }
 
   #activeSession(browserSessionId: string): MutableRemoteBrowserSession | undefined {
-    const session = this.#sessions.get(browserSessionId);
-    if (!session) return undefined;
-    const now = this.#now();
-    if (now >= session.idleExpiresAt || now >= session.absoluteExpiresAt) {
-      this.#sessions.delete(browserSessionId);
-      return undefined;
-    }
-    return session;
+    return this.#closed ? undefined : this.#sessions.get(browserSessionId);
   }
 
   #prune(): void {
@@ -225,7 +211,6 @@ export class RemoteBrowserSessionStore {
     for (const [token, expiresAt] of this.#bootstrapTokens) {
       if (now >= expiresAt) this.#bootstrapTokens.delete(token);
     }
-    for (const id of this.#sessions.keys()) this.#activeSession(id);
   }
 
   #uniqueToken(

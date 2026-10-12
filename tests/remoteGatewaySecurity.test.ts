@@ -14,8 +14,7 @@ import {
   validateRemoteBrowserRequest
 } from "../src/remote/gateway/security.js";
 import {
-  REMOTE_SESSION_ABSOLUTE_MS,
-  REMOTE_SESSION_IDLE_MS,
+  REMOTE_SESSION_LIFETIME_SENTINEL_MS,
   RemoteBrowserSessionStore
 } from "../src/remote/gateway/session.js";
 import {
@@ -115,6 +114,13 @@ async function listenBlocker(): Promise<{ server: Server; port: number }> {
 }
 
 describe("remote browser sessions", () => {
+  it("still expires unused bootstrap links after five minutes", () => {
+    let now = 1_000_000;
+    const store = new RemoteBrowserSessionStore({ now: () => now });
+    const token = store.issueBootstrapToken();
+    now += 5 * 60 * 1_000;
+    expect(store.consumeBootstrapToken(token)).toBeUndefined();
+  });
   it("uses one-use bootstrap tokens and per-launch 32-byte session and CSRF secrets", () => {
     const first = new RemoteBrowserSessionStore({ randomBytes: deterministicRandom() });
     const bootstrapToken = first.issueBootstrapToken();
@@ -141,7 +147,7 @@ describe("remote browser sessions", () => {
     expect(second.sessionFromCookie(cookieHeader)).toBeUndefined();
   });
 
-  it("enforces 30-minute idle and eight-hour absolute expiry without extending the latter", () => {
+  it("retains idle sessions for the gateway lifetime but respects invalidation and shutdown", () => {
     let now = 1_800_000_000_000;
     const store = new RemoteBrowserSessionStore({
       now: () => now,
@@ -150,13 +156,18 @@ describe("remote browser sessions", () => {
     const session = browserSession(store);
     const cookieHeader = cookie(store, session);
 
-    now += REMOTE_SESSION_IDLE_MS - 1;
+    expect(store.sessionCookieHeader(session)).not.toMatch(/Max-Age|Expires=/iu);
+    expect(session.absoluteExpiresAt).toBe(REMOTE_SESSION_LIFETIME_SENTINEL_MS);
+    now += 10 * 365 * 24 * 60 * 60 * 1_000;
     expect(store.sessionFromCookie(cookieHeader)).toBeDefined();
     expect(store.commitValidated(session)).toBeDefined();
-    now += REMOTE_SESSION_IDLE_MS - 1;
-    expect(store.sessionFromCookie(cookieHeader)).toBeDefined();
-    now = session.createdAt + REMOTE_SESSION_ABSOLUTE_MS;
+    store.invalidate(session.browserSessionId);
     expect(store.sessionFromCookie(cookieHeader)).toBeUndefined();
+    const next = browserSession(store);
+    const nextCookie = cookie(store, next);
+    store.close();
+    expect(store.sessionFromCookie(nextCookie)).toBeUndefined();
+    expect(store.commitValidated(next)).toBeUndefined();
   });
 
   it("rejects duplicate session cookies and invalid random-source lengths", () => {
@@ -424,7 +435,7 @@ describe("remote gateway response policy", () => {
 });
 
 describe("remote gateway listener", () => {
-  it("keeps the static dashboard frame alive without extending absolute expiry or accepting cross-site requests", async () => {
+  it("keeps the static dashboard frame alive across long idle periods without accepting cross-site requests", async () => {
     let now = 1_000_000;
     const hostname = `waifus-${"a".repeat(52)}.localhost`;
     const frame = await startRemoteDashboardFrameShell({
@@ -480,9 +491,9 @@ describe("remote gateway listener", () => {
       expect(heartbeat.headers["set-cookie"]).toBeDefined();
     }
     expect((await request("/")).statusCode).toBe(200);
-    now = 1_000_000 + REMOTE_SESSION_ABSOLUTE_MS;
-    expect((await request("/_waifus_remote/frame-keepalive")).statusCode).toBe(403);
-    expect((await request("/")).statusCode).toBe(403);
+    now += 10 * 365 * 24 * 60 * 60 * 1_000;
+    expect((await request("/_waifus_remote/frame-keepalive")).statusCode).toBe(204);
+    expect((await request("/")).statusCode).toBe(200);
   });
 
   it("binds loopback, consumes bootstrap once, redirects token-free, and protects all other routes", async () => {
@@ -725,7 +736,7 @@ describe("remote gateway origin runtime", () => {
       hostTrustEpoch: "5",
       registerGatewayLaunch: async (gatewayLaunchId, expiresAt) => {
         expect(Buffer.from(gatewayLaunchId, "base64url")).toHaveLength(32);
-        expect(BigInt(expiresAt)).toBeGreaterThan(0n);
+        expect(expiresAt).toBe(BigInt(Math.floor(REMOTE_SESSION_LIFETIME_SENTINEL_MS / 1_000)).toString());
         registered = true;
       }
     });

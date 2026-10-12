@@ -22,7 +22,7 @@ const KEEPALIVE_SCRIPT = `(() => {
       if (response.status === 403) {
         expired = true;
         clearInterval(timer);
-        document.body.textContent = "This browser session expired. Run waifus remote again to reopen your saved host. No new pairing is needed.";
+        document.body.textContent = "This browser session is no longer valid. Run waifus remote again to reopen your saved host. No new pairing is needed.";
       }
     } catch { /* Retry transient network failures on the next tick. */ }
     finally { pending = false; }

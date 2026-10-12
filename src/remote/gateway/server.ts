@@ -17,6 +17,7 @@ import {
 } from "./security.js";
 import {
   RemoteBrowserSessionStore,
+  REMOTE_SESSION_LIFETIME_SENTINEL_MS,
   type RemoteBrowserSession,
   type RemoteBrowserSessionStoreOptions
 } from "./session.js";
@@ -282,7 +283,7 @@ export async function startRemoteGateway(
   const origin = `http://${expectedAuthority}`;
   securityOptions = { expectedAuthority, expectedOrigin: origin };
   const expiresAt = BigInt(Math.floor(
-    ((options.now?.() ?? Date.now()) + 8 * 60 * 60 * 1_000) / 1_000
+    REMOTE_SESSION_LIFETIME_SENTINEL_MS / 1_000
   )).toString();
   let bootstrapToken: string;
   try {
