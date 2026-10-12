@@ -23,6 +23,10 @@ describe.skipIf(process.platform === "win32")("neutral-path immutable publicatio
   it("requires exact identity, reviewed digest, supported tag and explicit confirmation", async () => {
     const args = await input();
     expect(publicationInputs(args).sha256).toBe(sha);
+    const gatewayArgs = [...args];
+    gatewayArgs[2] = "@waifucave/gateway";
+    gatewayArgs[3] = "0.3.1";
+    expect(publicationInputs(gatewayArgs).name).toBe("@waifucave/gateway");
     for (const [index, replacement] of [[1, "bad"], [2, "@unrelated/package"], [3, "01.2.3"], [4, "arbitrary"], [5, "yes"]] as const) {
       const invalid = [...args]; invalid[index] = replacement;
       expect(() => publicationInputs(invalid)).toThrow();

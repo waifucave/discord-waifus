@@ -8,7 +8,7 @@ import { promisify } from "node:util";
 import { INITIAL_HELPER_TARGETS } from "./releaseHelperPackages.mjs";
 
 const execute = promisify(execFile);
-const names = new Set(["@waifucave/discord-waifus", "@starlight-ai/discord-waifus", ...INITIAL_HELPER_TARGETS.map(item => item.name)]);
+const names = new Set(["@waifucave/gateway", "@waifucave/discord-waifus", "@starlight-ai/discord-waifus", ...INITIAL_HELPER_TARGETS.map(item => item.name)]);
 const semver = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/u;
 const hash = bytes => createHash("sha256").update(bytes).digest("hex");
 const fail = () => { throw new Error("Verified archive publication failed."); };
