@@ -79,16 +79,65 @@ That's it. 🖼️ Image-text reading (OCR) works **out of the box on every plat
 
 ### Remote management
 
-Enable **Settings → Remote Access** on the host, create a short-lived invitation, then run this on
-the other device:
+The **host** is the computer already running your waifus and rooms. The **remote** is the
+computer you want to manage it from. Install the current package on both computers:
+
+```sh
+npm install -g @waifucave/discord-waifus@latest
+```
+
+#### First-time pairing
+
+1. On the host, run `waifus start` (or `waifus restart` after an update), then open
+   `http://127.0.0.1:3888` using its configured port if different.
+2. Open **Settings → Remote Access → Start activation**, then **Open activation page**.
+   Complete the browser verification and return to the dashboard. Activation registers this
+   installation with the coordinator; it does not yet trust another device.
+3. Click **Enable remote access**, wait for the helper to be ready, then **Create invitation**.
+   Keep the invitation private and copy its full token or manual short code.
+4. On the remote computer, run:
 
 ```sh
 waifus remote
 ```
 
-The protected local connection window accepts either the full invitation token/QR flow or the
-manual short code. Compare the safety phrase on both devices before approving the request on the
-host. Later connections remember the approved device.
+5. In its connection window, choose **Prepare activation → Continue activation in a new tab**
+   if this installation is not active. Complete verification, then return.
+6. Paste the host's invitation in **Full token**, or choose **Short code** and enter the manual
+   code. Click **Begin pairing**.
+7. Compare the safety phrase and host identity shown on both dashboards. Approve the pending
+   request on the host only if they match. This grants the remote device management access to
+   that host's data and settings.
+8. On the remote, choose the remembered host and click **Connect**. Its dashboard shows the
+   host's existing waifus and rooms—not the remote computer's local data.
+
+For later connections, run `waifus remote` and select the remembered host. No new invitation or
+separate Tailscale installation is needed. The host must stay running and awake. Use the host's
+**Trusted devices** controls to revoke a device you no longer want to trust.
+
+`waifus start` and `waifus remote` can coexist: the local host and remote gateway are separate
+processes. `waifus remote stop` stops only the gateway. Pairings belong to their data root;
+an isolated test installation does not grant access to your normal installation.
+
+#### Setting up a host you cannot physically access
+
+If you already have SSH access, temporarily forward the host's loopback dashboard to the same
+free port on your remote computer (the example uses the default port):
+
+```sh
+ssh -N -L 127.0.0.1:3888:127.0.0.1:3888 user@host
+```
+
+Keep that Terminal open and visit `http://127.0.0.1:3888` on the remote computer to perform the
+host-side steps above. That page is the SSH-forwarded host, not a local Waifus instance. Port
+3888 must be free locally; do not stop an unrelated server just to make room. SSH is only a
+setup aid, not the normal remote-management transport. Close the tunnel with Ctrl-C after pairing.
+
+On macOS, a locked host login keychain can prevent the helper from starting. Unlock it locally,
+or run `ssh -t user@host 'security unlock-keychain'` and enter the host's keychain password
+interactively. Never put the password in a command, chat, or config file. Refresh Remote Access
+afterward; an SSH-launched process may require restarting from the unlocked session. This is
+the host's login keychain password, not a Waifus release-signing or Worker key.
 
 The remote device downloads and verifies the host's exact dashboard build, so different app
 versions can work when their signed protocols are compatible. Dashboard, API, assistant, upload,
