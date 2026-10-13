@@ -143,6 +143,30 @@ test("automatically hands one direct remembered host to its isolated verified da
   expect(harness.ledger.attemptedEgress.filter((entry) => entry.kind === "browser")).toEqual([]);
 });
 
+test("opens an already-direct explicitly selected host when Connect leaves bootstrap unchanged", async ({ page }) => {
+  harness = await createRemoteHarness({ rememberedHosts: "one", explicitSelectedHost: "a" });
+  await harness.guardBrowserEgress(page);
+  await harness.openShell(page);
+  await expect(page.getByRole("heading", { name: "Connect to your Waifus host." })).toBeVisible();
+  await page.getByRole("button", { name: "Connect", exact: true }).click();
+  await expect(dashboard(page).getByTestId("host-build")).toContainText("Host A · 1.5.250");
+  expect(harness.ledger.gatewayLaunches).toHaveLength(1);
+  expect(harness.ledger.proxyRequests.every(request => request.hostId === harness!.hosts.a.record.hostId)).toBe(true);
+});
+
+test("does not open an already-direct host when its explicit Connect request fails", async ({ page }) => {
+  harness = await createRemoteHarness({ rememberedHosts: "one", explicitSelectedHost: "a" });
+  await harness.guardBrowserEgress(page);
+  await page.route("**/_waifus_remote/v1/hosts/*/connect", route => route.fulfill({
+    status: 503, contentType: "application/json", body: JSON.stringify({ error: "RemoteUnavailable" })
+  }));
+  await harness.openShell(page);
+  await page.getByRole("button", { name: "Connect", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("RemoteUnavailable");
+  expect(new URL(page.url()).origin).toBe(harness.shell.origin);
+  expect(harness.ledger.gatewayLaunches).toEqual([]);
+});
+
 test("keeps multiple hosts in the shell until the user chooses one", async ({ page }) => {
   harness = await createRemoteHarness({ rememberedHosts: "two" });
   await harness.guardBrowserEgress(page);

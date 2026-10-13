@@ -1,6 +1,6 @@
 {
   "name": "@waifucave/discord-waifus",
-  "version": "1.5.207",
+  "version": "2.111.0",
   "description": "Local Discord waifu orchestrator backend, web UI, and CLI.",
   "type": "module",
   "private": false,
@@ -68,11 +68,11 @@
   },
   "license": "MIT",
   "optionalDependencies": {
-    "@waifucave/ts-connect-darwin-arm64": "0.1.12",
-    "@waifucave/ts-connect-win32-x64": "0.1.12",
-    "@waifucave/ts-connect-win32-arm64": "0.1.12",
-    "@waifucave/ts-connect-linux-x64": "0.1.12",
-    "@waifucave/ts-connect-linux-arm64": "0.1.12"
+    "@waifucave/ts-connect-darwin-arm64": "0.1.13",
+    "@waifucave/ts-connect-win32-x64": "0.1.13",
+    "@waifucave/ts-connect-win32-arm64": "0.1.13",
+    "@waifucave/ts-connect-linux-x64": "0.1.13",
+    "@waifucave/ts-connect-linux-arm64": "0.1.13"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",

@@ -70,7 +70,7 @@ Recent history mixes imperative summaries (`Fix channel creation flow`) with Con
 
 ## Release & Publishing Workflow
 
-Use the beta release script for normal version cuts. A short user request such as `next` or `next version` in the release flow means cut the next patch version unless the user names a specific valid SemVer version. Version names must be plain SemVer in `package.json` and `package-lock.json` such as `1.5.153`; GitHub tags and releases must be named `v<version>` such as `v1.5.153`. Do not use npm-invalid leading zero segments such as `1.5.001`.
+Use the beta release script for normal version cuts. Starting with `2.111.1`, the app uses **major.feature.bugfix** numbering (`#.###.#`): increment the third segment for bugfixes, increment the middle segment and reset bugfix to zero for new feature releases, and increment the first segment for major releases. A short user request such as `next` or `next version` means the next bugfix version unless the user specifies otherwise. Keep canonical numeric SemVer in `package.json` and `package-lock.json`; the three-digit feature notation is not permission to add leading zeroes. GitHub tags/releases are `v<version>` (for example `v2.111.1`). The `1.5.x` series is historical. The `2.111.1` transition requires a one-time manual install on existing 1.x installations; idle updates remain limited to bugfixes within the same major/feature series. Do not weaken that boundary to migrate versions automatically.
 
 Before releasing, inspect the current state:
 

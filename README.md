@@ -326,6 +326,12 @@ Common flags: `--host 127.0.0.1`, `--port 3888`, `--data-root PATH`.
 
 `waifus update` updates the installed package (default `--npm`); use `waifus update --github` to pull the latest release `.tgz`. Set `DC_WAIFUS_HOME=PATH` to override the default `~/.dc-waifus` data root.
 
+### Version numbering
+
+Starting with **2.111.1**, Waifus uses **major.feature.bugfix** numbering (`#.###.#`). Bugfix releases increment the last number (for example, `2.111.2`); feature releases increment the middle number and reset the bugfix counter (for example, `2.112.0`); major releases increment the first number. npm packages and GitHub tags use the same canonical numeric version, without leading zeroes (`v2.111.1` on GitHub).
+
+The transition from the historical `1.5.x` series to `2.111.1` requires one manual `waifus update` followed by restarting your running host/remote processes. Existing data, device pairings and automatic-update preferences are retained. Automatic updates do not cross a major or feature boundary.
+
 ### Automatic updates while idle
 
 Automatic updates are **opt-in**. On a global npm installation, enable them in **Settings → App → Idle-only updates**, or use:

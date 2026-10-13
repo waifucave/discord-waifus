@@ -129,6 +129,13 @@ evidence of uninterrupted health.
 
 ## Conventions
 
+App versions use major.feature.bugfix numbering from `2.111.1`: bugfixes increment the third
+segment, feature releases increment the middle segment and reset bugfix to zero, and major
+releases increment the first segment. Store canonical npm SemVer without leading zeroes and
+use matching `v<version>` GitHub tags. The `#.###.#` notation describes the counters, not padded
+wire versions. Upgrading from historical 1.x to 2.x is manual; subsequent idle updates only
+accept bugfixes in the same major/feature series. Gateway/helper package versions are independent.
+
 **Idle updates** (`src/backend/updates/`): opt-in `[updates]` config, hourly npm-latest checks and
 five-minute quiet default. Only plain newer patch releases within the current major/minor are
 eligible. Global npm runtimes register private capability-authenticated loopback control servers;

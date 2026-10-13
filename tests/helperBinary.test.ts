@@ -312,6 +312,9 @@ describe("signed ts-connect package resolution", () => {
     const changed = await signedVariant(fixture, (manifest) => {
       manifest.helperVersion = compatibility.helper.minimumVersion;
       manifest.workerTrustRingSha256 = compatibility.helper.workerTrustRingSha256;
+      manifest.minimumDiscordWaifusVersion = appVersion;
+      const [major, feature] = appVersion.split(".").map(Number);
+      manifest.maximumDiscordWaifusVersionExclusive = `${major}.${feature + 1}.0`;
     });
     await createFixturePackage(packageRoot, valid, {
       manifestBytes: changed.manifestBytes,

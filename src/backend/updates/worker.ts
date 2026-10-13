@@ -20,6 +20,13 @@ export const UpdateStatusSchema = z.object({
   reason: z.enum(["none", "busy", "disabled", "credentials_locked", "check_failed", "update_failed", "restart_failed", "source_checkout"])
 }).strict();
 export type UpdateStatus = z.infer<typeof UpdateStatusSchema>;
+/** A manual install supersedes this in-memory worker; a new runtime must launch new code. */
+export async function workerVersionIsCurrent(root: string, expectedVersion: string): Promise<boolean> {
+  try {
+    const pkg = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
+    return pkg.name === PACKAGE_NAME && pkg.version === expectedVersion && !pkg.private;
+  } catch { return false; }
+}
 export async function automaticUpdateStatus(dataRoot?: string): Promise<UpdateStatus> {
   const pkg = JSON.parse(await readFile(path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../package.json"), "utf8"));
   const installation = await updateInstallation();
@@ -111,6 +118,7 @@ export async function runUpdateWorker(installation: UpdateInstallation): Promise
     };
     try {
       while (true) {
+        if (!(await workerVersionIsCurrent(installation.root, pkg.version))) return;
         const roles = await readUpdateLeases(installation);
         if (!roles.length) return;
         const configs = await Promise.all(roles.map(r => loadAppConfig(r.dataRoot)));

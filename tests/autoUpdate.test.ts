@@ -6,7 +6,7 @@ import { UpdateActivity, installUpdateActivity, passiveUpdateRequest } from "../
 import { callUpdateControl, installationLock, readUpdateLeases, startUpdateControl,
   type UpdateInstallation, type UpdateLease } from "../src/backend/updates/control.js";
 import { applyIdleUpdate, newerPatch } from "../src/backend/updates/runner.js";
-import { UpdateStatusSchema } from "../src/backend/updates/worker.js";
+import { UpdateStatusSchema, workerVersionIsCurrent } from "../src/backend/updates/worker.js";
 import { ensureDataLayout } from "../src/config/layout.js";
 import { loadAppConfig, mergeAppConfigPatch, updateAppConfig } from "../src/config/appConfig.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
@@ -183,10 +183,22 @@ describe("automatic update control and configuration", () => {
 });
 
 describe("coordinated installation", () => {
+  it("retires old worker code after a manual version transition", async () => {
+    const { installation } = await fixture();
+    const pkg = path.join(installation.root, "package.json");
+    await writeFile(pkg, JSON.stringify({ name: "@waifucave/discord-waifus", version: "2.111.1" }));
+    expect(await workerVersionIsCurrent(installation.root, "2.111.1")).toBe(true);
+    expect(await workerVersionIsCurrent(installation.root, "1.5.207")).toBe(false);
+    await writeFile(pkg, "incomplete install");
+    expect(await workerVersionIsCurrent(installation.root, "2.111.1")).toBe(false);
+  });
   it.each([
     ["1.5.206", "1.5.207", true], ["1.5.206", "1.5.206", false], ["1.5.206", "1.5.205", false],
     ["1.5.206", "1.6.0", false], ["1.5.206", "2.0.0", false], ["1.5.206", "1.5.207-beta.1", false],
-    ["1.5.206", "1.5.0207", false]
+    ["1.5.206", "1.5.0207", false],
+    ["1.5.207", "2.111.1", false], ["2.111.1", "2.111.2", true],
+    ["2.111.1", "2.112.0", false], ["2.111.1", "3.0.0", false],
+    ["2.111.1", "2.111.01", false]
   ])("selects only newer plain patch versions: %s → %s", (a, b, expected) => expect(newerPatch(a, b)).toBe(expected));
 
   async function setup() {

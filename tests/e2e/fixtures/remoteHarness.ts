@@ -154,6 +154,7 @@ type HostRuntime = {
 
 export type RemoteHarnessOptions = Readonly<{
   rememberedHosts?: "none" | "one" | "two";
+  explicitSelectedHost?: "a" | "b";
   fullDashboard?: boolean;
   initialConnection?: MutableConnectionState;
   assistantPipeline?: ModelPipeline;
@@ -883,6 +884,9 @@ export async function createRemoteHarness(
     connectionState: "offline",
     lastDirectAt: null
   });
+  if (options.explicitSelectedHost) {
+    await rememberedHosts.select(records[options.explicitSelectedHost].hostId);
+  }
 
   const desiredConnections = new Map<string, MutableConnectionState>([
     [records.a.hostId, options.initialConnection ?? "direct"],

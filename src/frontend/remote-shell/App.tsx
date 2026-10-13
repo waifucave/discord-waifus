@@ -33,7 +33,7 @@ export function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const openingHost = useRef<string | undefined>(undefined);
-  const requestedHost = useRef<string | undefined>(undefined);
+  const [requestedHost, setRequestedHost] = useState<{ hostId: string }>();
 
   const refresh = useCallback(async () => {
     const [nextBootstrap, nextHosts] = await Promise.all([
@@ -51,7 +51,7 @@ export function App() {
   useEffect(() => {
     const selectedHostId = bootstrap?.selectedHostId;
     const shouldOpen = bootstrap?.selectionState === "automatic_single"
-      || requestedHost.current === selectedHostId;
+      || requestedHost?.hostId === selectedHostId;
     if (bootstrap?.directState !== "direct" || !selectedHostId || !shouldOpen) {
       openingHost.current = undefined;
       return;
@@ -59,7 +59,7 @@ export function App() {
     if (openingHost.current === selectedHostId) return;
     openingHost.current = selectedHostId;
     window.location.assign(`/_waifus_remote/open/${encodeURIComponent(selectedHostId)}`);
-  }, [bootstrap?.directState, bootstrap?.selectedHostId, bootstrap?.selectionState]);
+  }, [bootstrap?.directState, bootstrap?.selectedHostId, bootstrap?.selectionState, requestedHost]);
 
   useEffect(() => {
     if (!bootstrap?.selectedHostId || bootstrap.directState === "direct") return;
@@ -130,13 +130,14 @@ export function App() {
     }
   };
 
-  const hostAction = async (task: () => Promise<unknown>) => {
+  const hostAction = async (task: () => Promise<unknown>, onSuccess?: () => void) => {
     setBusy(true);
     setError(undefined);
     try {
       await task();
       setOfflineForget(undefined);
       await refresh();
+      onSuccess?.();
     } catch (value) {
       if (
         value instanceof RemoteShellApiError
@@ -245,8 +246,13 @@ export function App() {
             </div>
             <div className="actions">
               <button disabled={busy} onClick={() => {
-                requestedHost.current = host.hostId;
-                void hostAction(() => shellApi.connect(host.hostId));
+                // A direct, explicitly selected host may leave every bootstrap field unchanged.
+                // Commit a new navigation intent only after Connect and its fresh status succeed.
+                openingHost.current = undefined;
+                setRequestedHost(undefined);
+                void hostAction(() => shellApi.connect(host.hostId), () => {
+                  setRequestedHost({ hostId: host.hostId });
+                });
               }}>Connect</button>
               <button disabled={busy} onClick={() => void hostAction(() => shellApi.disconnect(host.hostId))}>Disconnect</button>
               <button className="danger" disabled={busy} onClick={() => {
