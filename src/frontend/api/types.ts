@@ -471,7 +471,8 @@ export type ServerConfig = Revisioned & {
   guildId: string;
   name?: string;
   enabled: boolean;
-  orchestratorMode?: "model" | "deterministic";
+  orchestratorMode?: "model" | "deterministic" | "one-shot";
+  oneShot?: { target: string };
   stageManagerEnabled?: boolean;
   paused?: boolean;
   contextWindows: {

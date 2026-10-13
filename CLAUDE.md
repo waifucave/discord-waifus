@@ -2,12 +2,17 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+Read alongside `AGENTS.md` for repository/release guidelines and the README's Remote management
+section for setup instructions. Keep all three synchronized with current behavior; historical
+specs and plans describe earlier checkpoints and do not establish present release readiness.
+
 ## Commands
 
 - `npm run build` — backend (`tsc -p tsconfig.json` → `dist/`) + frontend (`vite build` → `dist-frontend/`).
 - `npm run build:backend` — backend only. Run this when you change `src/**/*.ts` and want the shipped CLI to pick the change up, since `bin/waifus.mjs` prefers `dist/cli/main.js` over the `tsx` fallback.
 - `npm run typecheck` — type-checks backend and frontend configs separately, no emit.
 - `npm run test` / `npm run test:watch` — Vitest, Node environment, `tests/**/*.test.ts`. Run one file with `npx vitest run tests/<name>.test.ts`; one test with `npx vitest run -t "<name pattern>"`.
+- `npm run benchmark:decisions` — preview bounded orchestrator judgments without inference; `-- --live` runs the benchmark using saved provider settings. Local Laya uses a separate Python environment. See `docs/decision-api-benchmark.md`; this tooling does not enable decision APIs in the production orchestrator.
 - `npm run waifus -- <cmd>` — invoke the CLI through the local bin (`start`, `dev`, `stop`, `restart`, `status`, `remote`, `doctor`, `clean`, `update`). `remote status` and `remote stop` target only the remote gateway daemon.
 - `npm run dev:frontend` — Vite dashboard on `:5173`, proxies `/api` to `127.0.0.1:3888`. Pair with `npm run waifus -- dev` for end-to-end iteration.
 - `npm run release:beta -- <version> --yes --message "..."` — full release from a clean `main`: validates (tests, build, `check-no-file-deps`), packs, pushes the `v<version>` tag, and the GitHub workflow publishes the tarball to npm (`npm publish <tarball>` runs no lifecycle scripts, so `prepublishOnly` never fires on that path). Deploying to a machine is a separate manual `npm install -g @waifucave/discord-waifus@<version>` + `waifus restart`.
@@ -36,7 +41,7 @@ Discord runtime and supervises its own remote-role helper child.
 
 **Startup pipeline** (`src/backend/server.ts:startBackend`): `runMigrations` → `loadAppConfig` → instantiate `StorageService` (per-resource locking JSON store rooted at the data root) → optional Discord connect (`maybeConnectDiscord`, gated by `runtime.autoConnectDiscord`) → build `RuntimeOrchestrator` → mount API via `createApiServer`. Runtime state is persisted to `~/.dc-waifus/runtime.json` so `waifus status`/`stop` can find the live process.
 
-**Per-channel orchestration loop** (`src/orchestration/runtime.ts`): a Discord message event drives one async run per channel, gated by `AbortController`s in `activeRuns`. The flow per turn is: build context (`discord/contextBuilder.ts` + `orchestration/context.ts`) → orchestrator decision returns one of `{ waifus | stage_manager | reviewer | no_reply }` → for each selected waifu, the model pipeline generates the reply → `messageSplit.ts` chunks it with `typingDelayMs` to simulate typing → optional reviewer pass can delete a flagged message. `stage_manager` and `no_reply` schedule an idle trigger via `idleTriggerTimers`. Two per-server switches on `ServerConfig` gate this: `orchestratorMode` (`"model"` uses the orchestrator model; `"deterministic"` — also forced when no orchestrator model is configured — uses `deterministicOrchestrator.ts`, structural speaker selection with zero API spend) and `stageManagerEnabled` (false short-circuits stage-manager and dream passes).
+**Per-channel orchestration loop** (`src/orchestration/runtime.ts`): Discord activity drives an abortable channel run. Each pass fetches fresh context, plans a `reply` or `no_reply`, records history, and executes responders through their own gateway pipelines. `messageSplit.ts` handles chunks and typing delays; reviewer and idle stage-manager work remain separate. Per-server `orchestratorMode` selects LLM (`model`), free structural (`deterministic`), or native choice (`one-shot`). Missing global director LLM falls back to deterministic only outside One shot; One shot has its own independent target. Its speaker/pause choice is indivisible, steering is bounded, message ages and optional OCR text are preserved, and failures use safe codes. `stageManagerEnabled: false` independently disables stage-manager/dream work.
 
 **Restart resume** (`src/orchestration/restartResume.ts`): at boot, a planner inspects each channel's persisted decisions and timers and schedules catch-up wakes. A human message that arrived while the process was down outranks any restored timer (the executor fetches fresh context best-effort to detect this), so deploy-window messages get a prompt reply instead of waiting out an old idle schedule.
 
@@ -60,6 +65,27 @@ authentication, the gateway downloads, hashes, and serves the host's exact bundl
 its verified manifest. Browser origin/session/CSRF checks and the route policy remain enforced at
 the gateway and host bridge. There is deliberately no DERP, TURN, peer-relay, or arbitrary
 coordination-origin fallback.
+
+**Pairing and operations:** activate each installation, create a host invitation, compare the
+safety phrase/identity on both devices, and approve on the host before connecting. Saved pairing
+is scoped to the data root and reused on subsequent connections. Ordinary host and remote gateway
+processes can coexist. `src/api/remoteAccess.ts` exposes lifecycle/status under
+`/api/remote-access`, including `POST /api/remote-access/reconnect` and
+`GET /api/remote-access/diagnostics`; assistant tools dispatch through the same API and policy.
+Identity reset is local-only. Remote management cannot stop/restart the host OS process.
+Coordinator or direct-path failures require diagnosis/retry, not automatic trust deletion or
+re-pairing. On macOS, a locked login keychain can block helper startup; unlock interactively
+and consult the README for SSH-assisted setup without exposing credentials.
+
+**Browser session lifetime** (`src/remote/gateway/session.ts`): sessions have no idle timeout or
+eight-hour cutoff. Authority is held in the gateway process and survives browser suspension while
+that process remains alive and the cookie is retained. The numeric wire deadlines use
+`REMOTE_SESSION_LIFETIME_SENTINEL_MS`, not a periodic renewal. The cookie is HttpOnly,
+SameSite=Strict, Path=/ with no Max-Age/Expires. Explicit invalidation or gateway stop/restart
+ends browser authority; cookie loss also requires reopening the connection window. Saved device
+pairing persists independently, and revocation/origin/CSRF checks remain enforced. Bootstrap
+tokens are still single-use and expire after five minutes. The dashboard frame's periodic health
+check stays local to the gateway; it does not renew activation through the coordinator.
 
 Production helper launch is fail-closed: `src/remote/helperReleaseTrust.ts` contains only reviewed
 Ed25519 release public keys, `remote-compatibility.json` binds the exact app/helper/protocol window,
@@ -112,7 +138,11 @@ evidence of uninterrupted health.
 
 - `@waifucave/gateway` is a pinned registry dependency (see `package.json`) installed normally from npm — the migration-era `file:` symlink to the sibling repo is gone. All chat traffic, capability data, and write-side param validation go through it.
 - The gateway is the single source of truth for models/providers/param capabilities (declarative registry + constraint rules). There is no in-app model catalog. `resolveModelTarget` (`src/orchestration/pipeline/resolveTarget.ts`) resolves `(providerId?, modelId)` pairs incl. legacy-id remaps; writes normalize legacy ids to the resolved pair.
+- Meta Muse Spark and contributor variants are supplied by the gateway's `meta` provider. Contributor variants enable training and must remain an explicit user choice. Use registry capabilities instead of assuming every variant supports the same reasoning or tool parameters. Keep the current gateway; replacing it with another SDK requires a separate migration.
+- Mandatory decision calls in `gatewayPipeline.ts` use the same argument schema as JSON-schema structured output when the model lacks named tool choice but supports JSON schema. Never silently downgrade a required decision to automatic tool calling. Preserve semantic validation and rejection of incomplete responses.
 - The gateway HTTP API is mounted at `/api/llm/*` (`src/api/server.ts`); the SPA reads models/capability docs/validation from it (`src/frontend/api/llm.ts` — TYPE-ONLY imports from the package in frontend code; value imports are forbidden client-side because the Registry touches `node:fs`). Provider keys are read live per request from `user/providers.json` by `src/api/llmGatewayCredentials.ts` — the gateway never stores keys. `/api/providers` serves credentials-status (redacted key hints) over the full registry plus `gatewayProviders`; there is no `/api/models`.
 - Configs store gateway-native dotted `params` (`temperature`, `reasoning.enabled`, …). Write endpoints validate resolved stored state via `gateway.validate()` → 400 `unsupported_parameter` naming the violated rule; the chat path pre-conforms leniently (`src/orchestration/pipeline/params.ts`). PATCH bodies must never let zod manufacture `.default()` values into merges — defaulted fields are re-declared truly-optional in the body schemas (see the comments in `src/api/server.ts`).
 - To develop against a local gateway checkout: `npm link ../waifucave-gateway` (build it first: `npm run build` there), and unlink/`npm ci` before committing lock changes. `scripts/check-no-file-deps.mjs` blocks `file:` deps from ever reaching a release (runs in `release:beta`'s validate-and-pack and `prepublishOnly`).
 - The gateway repo has CI (test + live drift check + publish-freshness guard): if you change gateway `data/`/`src/` without bumping its version while that version is already published, CI fails — bump and republish.
+- Experimental per-server `one-shot` mode is implemented in `src/orchestration/oneShot/`. It makes one native-choice request per pass, bounds candidates linearly, combines speaker/pause into one choice, and guards steering before normal waifu generation. The global director LLM config and current gateway stay unchanged. Discovery is a separate upstream decision-only modality catalog at `GET /api/orchestrator/one-shot/models`, not a duplicate chat model catalog. Local Laya uses optional host-only Python configuration and the packaged `assets/laya/worker.py`; never accept executable paths through the API. Existing server files default to LLM mode; unrelated PUTs must preserve mode/target. Include the model-list route in the remote policy manifest and assistant capabilities. Native choices only; no yes/no ranking workarounds. Private benchmarks stay ignored; their results are not guarantees of real-room routing or loop breaking.
+- `benchmark:decisions -- --suite=loops` separately measures blind semantic repetition/scene stagnation against healthy progression. Its wire names are not production speaker/timer semantics. Preserve real-chat message ages and strip runtime loop hints/old decisions; good synthetic detection does not establish real-room reliability or successful loop breaking.

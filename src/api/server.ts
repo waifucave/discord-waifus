@@ -7,6 +7,8 @@ import { z } from "zod";
 import { createGatewayHandler, type GatewayHandlerOptions, type ProviderDef } from "@waifucave/gateway";
 import gatewayPlugin from "@waifucave/gateway/fastify";
 import { createProviderCredentialsLookup } from "./llmGatewayCredentials.js";
+import { oneShotCatalog } from "../orchestration/oneShot/catalog.js";
+import { OneShotConfigSchema } from "../shared/schemas/oneShot.js";
 import { loadAppConfig, updateAppConfig } from "../config/appConfig.js";
 import { resolveDataPath, userDataPath } from "../config/paths.js";
 import { Logger, createLogger, type LogEntry } from "../backend/logger.js";
@@ -184,7 +186,8 @@ const ServerConfigBodySchema = ServerConfigSchema.partial().extend({
   // values for absent keys, which would reset stored state on unrelated PUTs
   // (live-caught 2026-08-05: a PUT sending only `enabled` flipped orchestratorMode back
   // to "model" and re-enabled the stage manager).
-  orchestratorMode: z.enum(["model", "deterministic"]).optional(),
+  orchestratorMode: z.enum(["model", "deterministic", "one-shot"]).optional(),
+  oneShot: OneShotConfigSchema.unwrap().optional(),
   stageManagerEnabled: z.boolean().optional(),
   paused: z.boolean().optional(),
   contextWindows: ServerConfigSchema.shape.contextWindows.unwrap().optional(),
@@ -531,6 +534,11 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     return sanitizeDiscordBots(saved);
   });
 
+  app.get("/api/orchestrator/one-shot/models", async () => {
+    const result = await oneShotCatalog.list();
+    const credentials = createProviderCredentialsLookup(options.dataRoot);
+    return { ...result, models: result.models.map((m) => ({ ...m, configured: m.local ? Boolean(process.env.DC_WAIFUS_LAYA_PYTHON) : Boolean(credentials(m.provider)) })) };
+  });
   app.get("/api/orchestrator/config", async () => readAgentConfig(storage, "orchestrator"));
   app.put("/api/orchestrator/config", async (request) => {
     const body = AgentConfigBodySchema.parse(request.body);

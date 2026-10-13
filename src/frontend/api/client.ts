@@ -441,6 +441,7 @@ export const api = {
     }),
 
   // Servers
+  oneShotModels: (signal?: AbortSignal) => request<{ unavailable: boolean; models: Array<{ target: string; label: string; provider: string; local: boolean; configured: boolean; contextLength?: number }> }>("GET", "/api/orchestrator/one-shot/models", { signal }),
   servers: (signal?: AbortSignal) => request<ServersResponse>("GET", "/api/servers", { signal }),
   server: (guildId: string, signal?: AbortSignal) =>
     request<ServerConfig>("GET", `/api/servers/${encodeURIComponent(guildId)}`, { signal }),

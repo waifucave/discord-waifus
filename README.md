@@ -46,6 +46,7 @@ It runs **entirely on your own machine**, configured through a clean **web dashb
 
 - 🎭 **Multiple waifus** — each with a unique persona, avatar, Discord bot, and AI model.
 - 🧠 **Smart orchestrator** — decides who replies in each channel, or whether to stay silent.
+- 🎯 **Three orchestrator modes** — LLM, free deterministic, or native decision APIs with One shot.
 - 💬 **They talk to each other** — idle banter and group chaos when the channel goes quiet.
 - ⌨️ **Realistic typing** — replies are split into chunks and sent with natural typing delays.
 - 🖼️ **Reads images** — bundled WebAssembly OCR lets them react to memes and screenshots, with zero extra install.
@@ -76,6 +77,53 @@ http://127.0.0.1:3888
 ```
 
 That's it. 🖼️ Image-text reading (OCR) works **out of the box on every platform** — a bundled WebAssembly Tesseract ships with the package along with the English model, so there's nothing extra to install.
+
+### Orchestrator modes
+
+Open **Rooms → your server → Orchestration for this server**:
+
+- **LLM** uses the global director model and prompt from Direction, with generated reasoning and goals.
+- **Deterministic** picks speakers structurally without an orchestration API call.
+- **One shot** uses one native-choice decision request per turn to choose one speaker or a pause,
+  identify repetition/scene stagnation, and select steering. The characters still generate their
+  replies with their own LLMs. The global LLM settings remain saved and unchanged.
+
+In One shot, pick a model from the additional **One shot model** selector. Save the corresponding
+OpenRouter or OpenAI key in **Settings → Providers** on the host. The live OpenRouter decision
+catalog includes Jev, Clef/Flash/Omni, Mercury Decide, Perplexity Decider, Microsoft Decision,
+Liquid d1, Drex, Tev, Kev, Solar Decide/Flash, and routed OpenAI Decisions, including available
+aliases/free variants. Direct OpenAI Decisions is also available. Yes/no-only models are excluded;
+these models are not offered as character text-generation models.
+
+One shot is experimental: detecting a loop does not guarantee breaking it. It has fixed pause
+buckets (100, 600, 3600 seconds, with timer-wake backoff), short template steering goals, and no
+generated wake-plan prose. At most 17 eligible characters are offered per pass; larger casts use
+addressing plus rotation to shortlist candidates. Automatic provider/validation failures use the
+existing deterministic fallback and record a safe error code. Required manual passes use the
+existing runtime error path instead. Existing pacing, pause, cancellation and directive guards
+remain active. Switching modes does not alter your waifu, stage-manager or reviewer models.
+
+**Optional local Laya:** English, multilingual and typed-decisions checkpoints are included as
+experimental choices, but Python and weights are not bundled. On the host, create a separate
+environment (Python 3.10+), then install the runtime:
+
+```sh
+python3 -m venv /absolute/path/to/waifus-laya-env
+/absolute/path/to/waifus-laya-env/bin/python -m pip install "laya==0.3.20" "torch==2.14.1" "transformers==5.19.0"
+DC_WAIFUS_LAYA_PYTHON=/absolute/path/to/waifus-laya-env/bin/python waifus restart
+```
+
+On Windows, use the environment's `Scripts/python.exe` and set `DC_WAIFUS_LAYA_PYTHON` before
+starting Waifus. This is host-local environment configuration; it cannot be changed through
+remote settings. The first local call downloads public weights at a pinned revision; subsequent
+calls reuse supervised workers. A slow first download can time out and retry on a later call.
+Local calls serialize per checkpoint with bounded queues; shutdown cancels them. Laya offers
+at most seven candidates per pass. English/specialist contexts are short, and detected context
+clipping fails safely rather than producing a decision from incomplete input. The benchmark
+found substantial Laya false positives; don't mistake local/free operation for reliable routing.
+
+The same settings and model catalog work from the paired remote dashboard and assistant. The
+assistant can use `list_one_shot_models` and `update_server` without accessing provider secrets.
 
 ### Remote management
 

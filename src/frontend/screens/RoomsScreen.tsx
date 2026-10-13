@@ -102,13 +102,15 @@ function GuildScreen({ guildId, onNavigate }: { guildId: string; onNavigate: (vi
     }
   };
   const mode = server.data?.orchestratorMode ?? "model";
+  const oneShotModels = useApi((s) => mode === "one-shot" ? api.oneShotModels(s) : Promise.resolve({ models: [], unavailable: false }), [mode]);
+  const selectedOneShot = server.data?.oneShot?.target ?? "openrouter:cloudflare/clef";
   const stageManagerOn = server.data?.stageManagerEnabled ?? true;
   const serverPaused = server.data?.paused ?? false;
 
   return (
     <div className="screen">
       <HeadRow onBack={() => onNavigate("rooms")} title={server.data?.name ?? guildId} sub="toggle who may speak, per channel" />
-      <div className="fgrid" style={{ flex: "none", gridTemplateColumns: "1fr 1fr 1fr" }}>
+      <div className="fgrid" style={{ flex: "none", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 240px), 1fr))", maxHeight: "65vh", overflow: "auto" }}>
         <div className="fcell">
           <label className="field-label">Server</label>
           <label className="checkbox-chip">
@@ -125,19 +127,32 @@ function GuildScreen({ guildId, onNavigate }: { guildId: string; onNavigate: (vi
           </span>
         </div>
         <div className="fcell">
-          <label className="field-label">Orchestration for this server</label>
+          <label className="field-label" htmlFor="orchestrator-mode">Orchestration for this server</label>
           <select
+            id="orchestrator-mode"
             className="select"
             value={mode}
             onChange={(e) => void saveServerField({ orchestratorMode: e.target.value })}
           >
-            <option value="model">AI model (global orchestrator)</option>
+            <option value="model">LLM (global orchestrator)</option>
             <option value="deterministic">Deterministic (free, structural)</option>
+            <option value="one-shot">One shot (native decision API)</option>
           </select>
           <span className="field-hint">
-            Deterministic picks speakers from reply-targets, addressing, rotation, and availability — zero
-            orchestration API spend, no directives or topic pivots.
+            {mode === "one-shot" ? "One native decision request per turn; speaker, pause and steering are checked by code." :
+              mode === "deterministic" ? "Picks speakers from reply-targets, addressing, rotation and availability — zero orchestration API spend, no topic pivots." :
+                "Uses the global orchestrator model and prompt configured in Direction."}
           </span>
+          {mode === "one-shot" && <>
+            <label className="field-label" htmlFor="one-shot-model">One shot model</label>
+            <select id="one-shot-model" className="select" value={selectedOneShot} onChange={(e) => void saveServerField({ oneShot: { target: e.target.value } })}>
+              {!oneShotModels.data?.models.some((m) => m.target === selectedOneShot) && <option value={selectedOneShot}>{selectedOneShot}</option>}
+              {oneShotModels.data?.models.map((m) => <option key={m.target} value={m.target}>{m.label}{!m.configured ? " — setup needed" : ""}</option>)}
+            </select>
+            <span className="field-hint">Waifu replies keep their own LLMs. Native choices only; yes/no-only models are excluded.</span>
+            {oneShotModels.data?.models.find((m) => m.target === selectedOneShot)?.configured === false && <Notice tone="warn">{selectedOneShot.startsWith("laya:") ? "Local Laya needs the optional Python setup on the host; see the README. Experimental: accuracy and context limits vary." : "Save this provider’s API key in Settings → Providers. Automatic failures use deterministic fallback."}</Notice>}
+            {(oneShotModels.error || oneShotModels.data?.unavailable) && <Notice tone="warn">The live decision catalog is unavailable. Your saved model is retained; retry later.</Notice>}
+          </>}
         </div>
         <div className="fcell">
           <label className="field-label">Stage manager</label>

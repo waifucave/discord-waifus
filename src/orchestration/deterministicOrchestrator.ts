@@ -126,7 +126,7 @@ export function decideDeterministically(input: DeterministicDecisionInput): Orch
 }
 
 /** Is she awake and not busy right now? Server-local time, like the schedule prompt blocks. */
-function isAvailable(availability: WaifuAvailability, now: Date): boolean {
+export function isAvailable(availability: WaifuAvailability, now: Date): boolean {
   const minutes = now.getHours() * 60 + now.getMinutes();
   if (availability.sleep.enabled && dailyIntervalContains(minutes, availability.sleep)) return false;
   for (const interval of availability.busy) {

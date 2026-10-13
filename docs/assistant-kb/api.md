@@ -55,6 +55,7 @@ does goes through these endpoints, so any agent can drive the app with plain HTT
 | PUT | /api/discord-bots | Replace orchestrator + waifus bot entries (revisioned). |
 | GET/PUT | /api/orchestrator/config | Director model/prompt/params (revisioned). |
 | GET | /api/orchestrator/history | Recent decisions, newest first. |
+| GET | /api/orchestrator/one-shot/models | Native-choice decision catalog and credential/local-setup presence; no secrets or inference. |
 | GET/PUT | /api/stage-manager/config | Observer/librarian agent config. |
 | GET | /api/stage-manager/history | Observer history. |
 | GET/PUT | /api/reviewer/config · GET /api/reviewer/history | Reviewer. |

@@ -88,6 +88,7 @@ import {
   RETRIGGER_MIN_SECONDS
 } from "./decisions.js";
 import { assessCastCadence, assessLoop } from "./loopDetector.js";
+import { OneShotDecider, type OneShotInput, type OneShotResult } from "./oneShot/decider.js";
 
 // Hour of the day (local time, 0-23) at which the nightly dream pass fires. Exported so
 // msUntilNextDreamRun can reference it without the class bracket-access backdoor.
@@ -101,6 +102,7 @@ export type RuntimeOrchestratorOptions = {
   isPaused?: () => boolean;
   onActiveRunsChange?: (activeRuns: number) => void;
   createPipeline?: (target: { providerId: string; modelId: string; queryRole: QueryRole }) => ModelPipeline;
+  decideOneShot?: (input: OneShotInput) => Promise<OneShotResult>;
   ocr?: {
     enrichMessages(messages: ContextMessage[], options?: { signal?: AbortSignal }): Promise<ContextMessage[]>;
     dispose?(): Promise<void>;
@@ -214,8 +216,10 @@ export class RuntimeOrchestrator {
   private static readonly DREAM_MAX_DEFERS = 8;
   private static readonly ACTIVE_CHAT_PARTICIPANT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
   private unsubscribes: Array<() => void> = [];
+  private readonly oneShot: OneShotDecider;
 
   constructor(private readonly options: RuntimeOrchestratorOptions) {
+    this.oneShot = new OneShotDecider(options.storage.dataRoot);
     this.maxAutomaticTurns = options.maxAutomaticTurns ?? 8;
     this.createPipeline =
       options.createPipeline ??
@@ -382,6 +386,7 @@ export class RuntimeOrchestrator {
     }
     this.unsubscribes = [];
     await this.pause();
+    this.oneShot.close();
     await this.options.ocr?.dispose?.();
   }
 
@@ -1182,7 +1187,8 @@ export class RuntimeOrchestrator {
       const orchestrator = await this.readAgentConfig("orchestrator", 40);
       // Deterministic when: no global model configured (free mode), or this guild explicitly
       // opted its channels into the model-free structural decider.
-      const deterministicMode = !orchestrator.modelId || server.orchestratorMode === "deterministic";
+      const oneShotMode = server.orchestratorMode === "one-shot";
+      const deterministicMode = server.orchestratorMode === "deterministic" || (!oneShotMode && !orchestrator.modelId);
       let messages = await this.options.discord.fetchFreshContext({
         guildId,
         channelId,
@@ -1190,18 +1196,19 @@ export class RuntimeOrchestrator {
         signal
       });
       await this.noteActiveChatParticipantsFromContext(guildId, channelId, messages);
-      if (!deterministicMode && orchestrator.modelId) {
+      if (!deterministicMode && !oneShotMode && orchestrator.modelId) {
         messages = await this.messagesForModel(
           messages,
           { providerId: orchestrator.providerId, modelId: orchestrator.modelId },
           signal
         );
       }
+      if (oneShotMode && this.options.ocr) messages = await this.options.ocr.enrichMessages(messages, { signal });
       this.options.logger.info("Fetched Discord context for orchestrator", {
         guildId,
         channelId,
         messageCount: messages.length,
-        modelId: orchestrator.modelId
+        modelId: oneShotMode ? server.oneShot.target : orchestrator.modelId
       });
       // Cast-only beat budget: a timer wake must not milk a beat the cast already covered.
       // When the humans are silent and several unanswered waifu messages already trail the
@@ -1219,7 +1226,7 @@ export class RuntimeOrchestrator {
           return;
         }
       }
-      const pipeline = deterministicMode
+      const pipeline = deterministicMode || oneShotMode
         ? undefined
         : this.pipelineFor({ providerId: orchestrator.providerId, modelId: orchestrator.modelId! }, "orchestrator");
       if (pipeline && !pipeline.decideOrchestrator) {
@@ -1275,7 +1282,26 @@ export class RuntimeOrchestrator {
       // No typing scope for orchestrator decisions: the orchestrator bot showing "typing…" while it
       // deliberates leaks the machinery's presence into the room. Only the waifu send path types.
       let decision: OrchestratorDecision;
-      if (!pipeline || !pipeline.decideOrchestrator) {
+      let semanticLoopDetected = false;
+      if (oneShotMode) {
+        try {
+          const before = performance.now();
+          const result = await (this.options.decideOneShot ?? ((input) => this.oneShot.decide(input)))({
+            target: server.oneShot.target, messages, cast: deterministicCast, waifus: availableWaifus, now: new Date(),
+            replyRequired: requireReply, directiveBudgetOpen, loopSuspected: loop.suspected, timerWakeSeconds,
+            policy: orchestrator.prompt, signal
+          });
+          decision = result.decision;
+          semanticLoopDetected = result.loopDetected;
+          this.options.logger.info("One shot decision completed", { guildId, channelId, target: server.oneShot.target,
+            action: decision.action, loopDetected: semanticLoopDetected, durationMs: Math.round(performance.now() - before) });
+        } catch (error) {
+          if (requireReply || signal.aborted) throw error;
+          decision = decideDeterministically({ messages, cast: deterministicCast, now: new Date() });
+          const code = error instanceof Error && /^one_shot_[a-z0-9_]+$/.test(error.message) ? error.message : "one_shot_failed";
+          this.options.logger.warn("One shot failed; deterministic fallback decision used", { guildId, channelId, code, action: decision.action });
+        }
+      } else if (!pipeline || !pipeline.decideOrchestrator) {
         decision = decideDeterministically({ messages, cast: deterministicCast, now: new Date() });
         this.options.logger.info("Deterministic orchestrator decision (no model configured)", {
           guildId,
@@ -1318,6 +1344,7 @@ export class RuntimeOrchestrator {
       let wakePlanEnforced = false;
       if (
         !deterministicMode &&
+        !oneShotMode &&
         !requireReply &&
         timerWakeSeconds &&
         lastNoReply?.wakePlan &&
@@ -1386,7 +1413,7 @@ export class RuntimeOrchestrator {
         decision,
         directiveCooldown: orchestrator.directiveCooldown,
         // wake-plan enforcement exists to fire a directive — it must not be budget-stripped
-        loopSuspected: loop.suspected || wakePlanEnforced
+        loopSuspected: loop.suspected || semanticLoopDetected || wakePlanEnforced
       });
       const responderOutcomes = await this.recordOrchestratorDecision({
         guildId,

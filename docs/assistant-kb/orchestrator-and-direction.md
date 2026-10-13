@@ -4,7 +4,8 @@ The director layer: orchestrator decisions, directives, stage-manager, reviewer,
 
 ## Orchestrator
 
-On every relevant channel event the orchestrator makes one decision via a forced tool call:
+In LLM mode, each relevant channel event makes a decision through a forced tool call or the
+gateway's required JSON-schema path:
 
 - `reply` — names one or more waifus (optionally with per-waifu delays) to respond now.
 - `no_reply` — stays silent and sets `retriggerAfterSeconds` plus a `wakePlan` describing what
@@ -54,3 +55,24 @@ addressing, references, thread participation, rotation, sleep/busy schedules) wi
 The same decider runs automatically as a fallback whenever the model orchestrator call fails
 (provider outage or content block), so a failed call never silences a channel. Limitations: one
 speaker per pass, no directives or topic pivots, no content judgment.
+
+## One shot orchestrator mode
+
+`PUT /api/servers/:guildId` accepts `orchestratorMode: "one-shot"` and
+`oneShot: {target: "openrouter:cloudflare/clef"}`. This is per-server and does not change the
+global director LLM config. Discover available targets and setup status with
+`GET /api/orchestrator/one-shot/models` or `list_one_shot_models`; use `update_server` to select
+one. OpenAI/OpenRouter use the existing host provider credentials. Yes/no-only models are excluded.
+
+One native-choice inference per pass chooses exactly one available speaker OR a pause, diagnoses
+loops, and selects bounded steering. Code prevents contradictory fields, respects availability and
+directive budgets, backs off timer wakes, and provides short template goals, not invented model
+reasoning or generated wake plans. Character generation still goes through the current gateway.
+Automatic failures use deterministic fallback with safe error codes; required manual failures
+use the ordinary runtime error path. Existing pacing/cancellation/pause guards still apply.
+
+Laya English/multilingual/typed-decisions are experimental local options requiring the host-local
+`DC_WAIFUS_LAYA_PYTHON` setup described in the README. You cannot configure an executable or
+download location through this API. No weights or Python are bundled. Clipped contexts fail safe.
+The benchmark found false positives and missed real scene stagnation across candidates; a successful
+API call is not proof of good orchestration. Never silently switch the user's mode or model.

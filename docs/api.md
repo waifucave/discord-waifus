@@ -163,6 +163,14 @@ device must be activated and paired again.
 - `GET /api/orchestrator/config`
 - `PUT /api/orchestrator/config`
 - `GET /api/orchestrator/history`
+- `GET /api/orchestrator/one-shot/models` — native-choice model catalog, provider/local setup status,
+  and upstream availability. Safe read, available to authorized paired remotes; never returns keys.
+
+`PUT /api/servers/:guildId` also accepts `orchestratorMode: "model" | "deterministic" | "one-shot"`
+and `oneShot: {target: string}`. Targets come from the model catalog above. These fields preserve
+their saved values on unrelated updates and do not change the global director LLM configuration.
+Old server files remain compatible: mode defaults to `model`, and the independent One shot target
+defaults to `openrouter:cloudflare/clef` without enabling it. Local executable paths are never accepted.
 - `GET /api/stage-manager/config`
 - `PUT /api/stage-manager/config`
 - `GET /api/stage-manager/history`

@@ -1,5 +1,6 @@
 import fastify from "fastify";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { oneShotCatalog } from "../src/orchestration/oneShot/catalog.js";
 import { createApiServer } from "../src/api/server.js";
 import { BrowserSecurity } from "../src/api/browserSecurity.js";
 import { dispatchInternal } from "../src/api/internalDispatch.js";
@@ -22,6 +23,7 @@ const apps: Array<{ close: () => Promise<unknown> }> = [];
 const bytes16 = (value: number) => Buffer.alloc(16, value).toString("base64url");
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(apps.map((app) => app.close()));
   apps.length = 0;
   await Promise.all(roots.map(removeTempRoot));
@@ -108,6 +110,18 @@ describe("route policy inventory", () => {
 });
 
 describe("remote route authorization", () => {
+  it("allows authorized remotes to discover and save One shot settings without credentials or executable inputs", async () => {
+    vi.spyOn(oneShotCatalog, "list").mockResolvedValue({ unavailable: false, models: [{ target: "openai:gpt-6-luna", label: "OpenAI Decisions", provider: "openai", local: false }] });
+    const app = await makeApp(); const actor = remote();
+    const catalog = await dispatchInternal(app, actor, undefined, { method: "GET", url: "/api/orchestrator/one-shot/models" });
+    expect(catalog.statusCode).toBe(200);
+    expect(catalog.json().models[0].configured).toBe(false);
+    const selected = await dispatchInternal(app, actor, undefined, { method: "PUT", url: "/api/servers/one-shot", headers: { "idempotency-key": Buffer.alloc(32, 0x31).toString("base64url") }, payload: { revision: 0, orchestratorMode: "one-shot", oneShot: { target: "openai:gpt-6-luna" } } });
+    expect(selected.statusCode).toBe(200);
+    expect(selected.json().orchestratorMode).toBe("one-shot");
+    const invalid = await dispatchInternal(app, actor, undefined, { method: "PUT", url: "/api/servers/one-shot", headers: { "idempotency-key": Buffer.alloc(32, 0x32).toString("base64url") }, payload: { oneShot: { target: "laya:/tmp/executable" } } });
+    expect(invalid.statusCode).toBe(400);
+  });
   it("allows reviewed APIs but denies local static routes and never-proxy client context", async () => {
     const app = await makeApp();
     const actor = remote();

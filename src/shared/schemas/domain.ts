@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { OneShotConfigSchema } from "./oneShot.js";
 import { CURRENT_SCHEMA_VERSION, IsoDateStringSchema, RevisionedRecordSchema } from "./common.js";
 
 // Gateway P4 Task 4: widened from the legacy 6-value enum to any id the gateway registry
@@ -279,7 +280,8 @@ export const ServerConfigSchema = RevisionedRecordSchema.extend({
   memoryInjectionLimit: z.number().int().min(1).max(50).default(12),
   // "model" uses the globally configured orchestrator model; "deterministic" forces the
   // model-free structural decider for every channel of this guild (zero orchestration spend).
-  orchestratorMode: z.enum(["model", "deterministic"]).default("model"),
+  orchestratorMode: z.enum(["model", "deterministic", "one-shot"]).default("model"),
+  oneShot: OneShotConfigSchema,
   // Per-guild kill switch for the stage manager's automatic work (idle observers + dreams).
   stageManagerEnabled: z.boolean().default(true),
   // Temporary per-guild mute: messages are observed (sessions stay warm) but nothing runs

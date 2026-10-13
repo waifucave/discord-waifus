@@ -144,6 +144,7 @@ export const ROUTE_POLICY_MANIFEST: readonly RoutePolicyDefinition[] = Object.fr
   safe("/api/discord-bots"),
   mutation("PUT", "/api/discord-bots", "reconciled", "discord_bots.update"),
   safe("/api/orchestrator/config"),
+  safe("/api/orchestrator/one-shot/models"),
   mutation("PUT", "/api/orchestrator/config", "transactional", "orchestrator.config.update"),
   safe("/api/orchestrator/history"),
   safe("/api/stage-manager/config"),

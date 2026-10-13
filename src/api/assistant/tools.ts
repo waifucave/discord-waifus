@@ -658,7 +658,8 @@ export const ASSISTANT_TOOLS: AssistantTool[] = [
     name: "update_server",
     description:
       "Update server-level settings for a guild: enabled, contextWindows {orchestrator,waifu,stageManager}, " +
-      "memoryInjectionLimit, tools {pickNextWaifu, shortTermMemory}. For per-channel toggles use update_channel.",
+      "memoryInjectionLimit, tools {pickNextWaifu, shortTermMemory}, orchestratorMode (model, deterministic, one-shot), " +
+      "oneShot {target} from list_one_shot_models. One shot does not change the global LLM config. For per-channel toggles use update_channel.",
     parameters: {
       type: "object",
       properties: {
@@ -672,6 +673,15 @@ export const ASSISTANT_TOOLS: AssistantTool[] = [
       revisionedPut(ctx, `/api/servers/${encodeURIComponent(String(args.guildId))}`, () => ({
         ...(args.changes as Record<string, unknown>)
       }))
+  },
+  {
+    name: "list_one_shot_models",
+    description: "List native-choice One shot orchestrator models and credential/setup status. Includes OpenAI, OpenRouter decision models and experimental local Laya. Yes/no-only models are excluded. Does not change configuration or run inference.",
+    parameters: NO_ARGS,
+    execute: async (ctx) => {
+      const result = await inject(ctx, { method: "GET", url: "/api/orchestrator/one-shot/models" });
+      return result.body;
+    }
   },
   {
     name: "get_remote_access_status",

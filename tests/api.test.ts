@@ -9,12 +9,14 @@ import { createRuntimeState } from "../src/backend/runtime.js";
 import { ensureDataLayout } from "../src/config/layout.js";
 import { CURRENT_SCHEMA_VERSION } from "../src/shared/schemas/common.js";
 import { defaultWaifuPromptLayout } from "../src/shared/schemas/domain.js";
+import { oneShotCatalog } from "../src/orchestration/oneShot/catalog.js";
 import { StorageService } from "../src/storage/storageService.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
 
 let roots: string[] = [];
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(roots.map(removeTempRoot));
   roots = [];
 });
@@ -53,6 +55,30 @@ async function makeApp(extra: { llmFetch?: typeof fetch; runtimeOrchestrator?: u
 }
 
 describe("Backend API", () => {
+  it("persists One shot independently of the global LLM and preserves it on unrelated server updates", async () => {
+    const { app } = await makeApp();
+    try {
+      const before = (await app.inject({ method: "GET", url: "/api/orchestrator/config" })).json();
+      const selected = await app.inject({ method: "PUT", url: "/api/servers/one-shot", payload: { orchestratorMode: "one-shot", oneShot: { target: "openrouter:typesafe/jev-1.13" } } });
+      expect(selected.statusCode).toBe(200);
+      expect(selected.json().orchestratorMode).toBe("one-shot");
+      const updated = await app.inject({ method: "PUT", url: "/api/servers/one-shot", payload: { name: "renamed" } });
+      expect(updated.json()).toMatchObject({ orchestratorMode: "one-shot", oneShot: { target: "openrouter:typesafe/jev-1.13" } });
+      expect((await app.inject({ method: "GET", url: "/api/orchestrator/config" })).json()).toEqual(before);
+      expect((await app.inject({ method: "PUT", url: "/api/servers/one-shot", payload: { oneShot: { target: "openrouter:respan/span-01" } } })).statusCode).toBe(400);
+    } finally { await app.close(); }
+  });
+  it("lists decision models and credential presence without exposing credentials", async () => {
+    vi.spyOn(oneShotCatalog, "list").mockResolvedValue({ unavailable: false, models: [{ target: "openai:gpt-6-luna", label: "OpenAI Decisions", provider: "openai", local: false }] });
+    const { app } = await makeApp();
+    try {
+      await app.inject({ method: "PUT", url: "/api/providers/openai/credentials", payload: { apiKey: "fixture-secret" } });
+      const response = await app.inject({ method: "GET", url: "/api/orchestrator/one-shot/models" });
+      expect(response.statusCode).toBe(200);
+      expect(response.json().models[0]).toMatchObject({ configured: true, target: "openai:gpt-6-luna" });
+      expect(response.body).not.toContain("fixture-secret");
+    } finally { await app.close(); }
+  });
   it("serves health, status, and provider credential-status endpoints; /api/models is gone (Gateway P6 Task 3)", async () => {
     const { app } = await makeApp();
     try {

@@ -441,6 +441,49 @@ class FakePipeline implements ModelPipeline {
 }
 
 describe("RuntimeOrchestrator", () => {
+  describe("One shot mode", () => {
+    async function setup() {
+      const root = await makeTempRoot(); roots.push(root); await ensureDataLayout(root);
+      const storage = new StorageService(root); await seedRuntimeConfig(storage, { modelId: null });
+      const server = await storage.readJson("user/servers/guild-1/server.json", ServerConfigSchema);
+      await storage.writeJson("server:guild-1", "user/servers/guild-1/server.json", ServerConfigSchema, { ...server, orchestratorMode: "one-shot", stageManagerEnabled: false });
+      const discord = new FakeDiscord(); const pipeline = new FakePipeline();
+      const generate = vi.fn(async () => ({ content: "one shot response" }));
+      pipeline.generateWaifu = generate;
+      const native = vi.fn(async () => ({ decision: { action: "reply" as const, respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }], reasoning: "one_shot: fixture" }, loopDetected: false }));
+      const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+      const runtime = new RuntimeOrchestrator({ storage, discord, logger, maxAutomaticTurns: 1, sleep: async () => undefined,
+        createPipeline: (target) => { expect(target.queryRole).not.toBe("orchestrator"); return pipeline; }, decideOneShot: native });
+      return { runtime, discord, native, storage, logger, generate };
+    }
+    it("runs the third mode even without a global LLM model, then uses the waifu's own generation", async () => {
+      const s = await setup();
+      try {
+        await s.runtime.triggerChannel("guild-1", "channel-1");
+        expect(s.native).toHaveBeenCalledTimes(1);
+        expect(s.native.mock.calls[0][0]).toMatchObject({ target: "openrouter:cloudflare/clef" });
+        expect(s.discord.sent).toHaveLength(1); expect(s.generate).toHaveBeenCalledTimes(1);
+        const history = await s.storage.readJson("user/orchestrator/history.json", OrchestratorHistoryFileSchema);
+        expect(history.decisions[0].reasoning).toBe("one_shot: fixture");
+      } finally { await s.runtime.stop(); }
+    });
+    it("uses the existing deterministic fallback automatically without logging unrestricted errors", async () => {
+      const s = await setup(); s.native.mockRejectedValue(new Error("private provider payload"));
+      try {
+        await s.runtime.triggerChannel("guild-1", "channel-1");
+        expect(s.logger.warn).toHaveBeenCalledWith("One shot failed; deterministic fallback decision used", expect.objectContaining({ code: "one_shot_failed" }));
+        expect(JSON.stringify(s.logger.warn.mock.calls)).not.toContain("private provider payload");
+      } finally { await s.runtime.stop(); }
+    });
+    it("surfaces a required manual pass failure instead of silently falling back", async () => {
+      const s = await setup(); s.native.mockRejectedValue(new Error("one_shot_http_400"));
+      try {
+        await s.runtime.triggerChannel("guild-1", "channel-1", "manual", { firstOrchestratorMustReply: true });
+        expect(s.logger.error).toHaveBeenCalledWith("Channel runtime loop failed", expect.objectContaining({ message: "one_shot_http_400" }));
+        expect(s.generate).not.toHaveBeenCalled();
+      } finally { await s.runtime.stop(); }
+    });
+  });
   describe("currentlyDoingForWaifu", () => {
     const baseWaifu = {
       availability: {
