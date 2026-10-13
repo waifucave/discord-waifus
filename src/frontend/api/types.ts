@@ -205,6 +205,7 @@ export type AppConfig = {
   http: { host: string; port: number };
   runtime: { autoConnectDiscord: boolean; paused: boolean };
   frontend: { staticDir?: string };
+  updates: { enabled: boolean; checkIntervalMinutes: number; idleMinutes: number };
   ocr: {
     enabled: boolean;
     engine: "auto" | "apple-vision" | "bundled-tesseract" | "system-tesseract";
@@ -214,6 +215,12 @@ export type AppConfig = {
     maxImagesPerModelCall: number;
     maxTextCharsPerImage: number;
   };
+};
+
+export type AutoUpdateStatus = {
+  state: "disabled" | "unsupported" | "checking" | "current" | "waiting_idle" | "installing" | "updated" | "rolled_back" | "failed";
+  currentVersion: string; candidateVersion: string | null; lastCheckAt: string | null;
+  reason: "none" | "busy" | "disabled" | "credentials_locked" | "check_failed" | "update_failed" | "restart_failed" | "source_checkout";
 };
 
 export type DiscordBotConfig = {

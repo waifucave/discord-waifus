@@ -139,6 +139,7 @@ export const ROUTE_POLICY_MANIFEST: readonly RoutePolicyDefinition[] = Object.fr
   safe("/api/remote-access/dashboard-manifest"),
   safe("/api/remote-access/dashboard-assets/:buildId/*"),
   safe("/api/config", "full_admin", "app_config"),
+  safe("/api/updates"),
   mutation("PUT", "/api/config", "reconciled", "config.update", "app_config"),
   mutation("POST", "/api/cache/ocr/clear", "reconciled", "cache.ocr.clear"),
   safe("/api/discord-bots"),

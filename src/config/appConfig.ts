@@ -51,7 +51,8 @@ export function mergeAppConfigPatch(
     http: { ...current.http, ...patch.http },
     runtime: { ...current.runtime, ...patch.runtime },
     frontend,
-    ocr: { ...current.ocr, ...patch.ocr }
+    ocr: { ...current.ocr, ...patch.ocr },
+    updates: { ...current.updates, ...patch.updates }
   });
 }
 

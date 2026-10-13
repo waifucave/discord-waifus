@@ -51,7 +51,12 @@ export const AppConfigSchema = z.object({
   http: HttpConfigSchema,
   runtime: RuntimeConfigSchema,
   frontend: FrontendConfigSchema,
-  ocr: OcrConfigSchema
+  ocr: OcrConfigSchema,
+  updates: z.object({
+    enabled: z.boolean().default(false),
+    checkIntervalMinutes: z.number().int().min(15).max(1440).default(60),
+    idleMinutes: z.number().int().min(1).max(120).default(5)
+  }).default({ enabled: false, checkIntervalMinutes: 60, idleMinutes: 5 })
 });
 
 // App config writes are partial updates. Re-declare every defaulted field without its default so
@@ -68,6 +73,11 @@ export const UpdateAppConfigBodySchema = z.object({
   }).strict().optional(),
   frontend: z.object({
     staticDir: z.string().min(1).nullable().optional()
+  }).strict().optional(),
+  updates: z.object({
+    enabled: z.boolean().optional(),
+    checkIntervalMinutes: z.number().int().min(15).max(1440).optional(),
+    idleMinutes: z.number().int().min(1).max(120).optional()
   }).strict().optional(),
   ocr: z.object({
     enabled: z.boolean().optional(),

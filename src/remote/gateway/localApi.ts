@@ -162,6 +162,13 @@ function eventBytes(record: LocalEventRecord): string {
 }
 
 export class RemoteLocalApi {
+  hasUpdateBlockers(): boolean {
+    const now = this.#now();
+    return [...this.#activationOperations.values()].some(operation =>
+      BigInt(operation.expiresAt) * 1000n > BigInt(now) && (!operation.status || operation.status.state === "pending"))
+      || [...this.#pairOperations.values()].some(operation =>
+        BigInt(operation.expiresAt) * 1000n > BigInt(now) && LIVE_PAIR_STATES.has(operation.status.state));
+  }
   readonly #backend: RemoteGatewayLocalBackend;
   readonly #rememberedHosts: RememberedHostStore;
   readonly #origins: RemoteOriginStore;

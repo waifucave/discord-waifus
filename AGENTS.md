@@ -32,6 +32,20 @@ Remote management lives in `src/remote/` (local gateway, helper verification, tr
 - Supported remote targets are macOS ARM64, Windows x64/ARM64, and Linux x64/ARM64. Intel macOS and Linux ARMv7 are deferred; never substitute an incompatible helper. Initial beta coverage is five-platform native CI plus two-Mac live testing. Windows/Linux roaming and long-duration reliability remain follow-ups; do not claim a completed 24-hour soak.
 - Helper installation/pair keys use native OS credential storage, with the existing protected-file fallback where applicable. A locked macOS login keychain can block launch; unlock interactively, never embed its password. Local failure diagnostics are bounded, private, allowlisted files under `app/logs/remote-diagnostics/`; they upload nothing and are best-effort.
 
+## Idle-only updates
+
+`src/backend/updates/` owns opt-in global-npm patch updates, private local control capabilities,
+shared installation/worker locks, staging/signature checks, crash journal and bounded diagnostics.
+`UpdateActivity` is a synchronous admission gate shared by API requests and runtime background work.
+Passively open streams/status polls are not active conversations; finite calls/transfers, assistant
+turns, reloads and live pairing/activation operations block preparation. Host and remote registrations
+must coordinate all roles/data roots before replacement; never infer an unregistered sibling is idle.
+Only local config changes may toggle `updates`; `GET /api/updates` is sanitized and remote-readable.
+Development/test/source runtimes must not auto-update. macOS native-keychain status is probed without
+unlocking or reading secrets; locked credentials postpone restart. An automatic gateway restart ends
+browser sessions, not device pairing. Keep manual updater transaction locking and document rollback
+limits. Test the race/failure paths without updating live global packages or using real credentials.
+
 ## Model Gateway
 
 `@waifucave/gateway` is a pinned npm dependency and the source of model/provider capabilities and parameter validation. Keep model definitions in the gateway rather than duplicating a catalog in this app. Provider credentials are resolved per request; the gateway does not store them. Meta Muse Spark and contributor variants are supported through this gateway; contributor variants enable training and must remain an explicit user choice. For mandatory decisions on models without named tool choice, use the existing JSON-schema response path when supported; do not silently weaken a required decision to automatic tools. The current gateway remains in use; changing to another SDK is a separate migration.

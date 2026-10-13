@@ -361,6 +361,11 @@ function canonicalHost(value: string): string {
 }
 
 export class RemoteAccessService {
+  hasUpdateBlockers(): boolean {
+    return Boolean(this.#updatePairingBusyUntil > this.#now() || this.#identityResetPromise || this.#revocationRecovery || this.#revocationFinalizers.size
+      || [...this.#activationOperations.values()].some(operation =>
+        operation.status.state === "pending" && operation.expiresAt > BigInt(this.#now())));
+  }
   readonly #options: RemoteAccessServiceOptions;
   readonly #stateStore: RemoteAccessStateStore;
   readonly #identityReset: IdentityResetState;
@@ -381,6 +386,7 @@ export class RemoteAccessService {
   #requestBridge: RemoteRequestBridge | undefined;
   #started = false;
   #closed = false;
+  #updatePairingBusyUntil = 0;
 
   constructor(options: RemoteAccessServiceOptions) {
     this.#options = options;
@@ -519,9 +525,11 @@ export class RemoteAccessService {
       displayName: state.config.displayName,
       platform: target
     });
-    return PairInvitationV1Schema.parse(
+    const invitation = PairInvitationV1Schema.parse(
       await method.call(this.#options.supervisor, actor, idempotencyKey, descriptor)
     );
+    this.#updatePairingBusyUntil = Math.max(this.#updatePairingBusyUntil, Number(invitation.expiresAt));
+    return invitation;
   }
 
   async cancelInvitation(

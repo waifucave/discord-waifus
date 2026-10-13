@@ -9,6 +9,7 @@ import { ensureRemoteOnlyLayout } from "../src/config/layout.js";
 import { remoteRolePaths, remoteStatePaths } from "../src/remote/paths.js";
 import { createRemoteDaemonState } from "../src/shared/schemas/remoteRuntime.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
+import { atomicWriteJson } from "../src/storage/atomic.js";
 
 const roots: string[] = [];
 const hostId = Buffer.alloc(32, 0x51).toString("base64url");
@@ -234,9 +235,8 @@ describe("waifus remote lifecycle", () => {
           await mkdir(paths.runtimeRoot, { recursive: true, mode: 0o700 });
           await writeFile(paths.runtimePid, `${JSON.stringify(runtime)}\n`, { mode: 0o600 });
           await writeFile(paths.runtimeState, `${JSON.stringify(runtime)}\n`, { mode: 0o600 });
-          await writeFile(paths.startupHandoff, `${JSON.stringify({ runtime, bootstrapUrl })}\n`, {
-            mode: 0o600
-          });
+          // Match the production handoff: readers must never observe an empty/partial file.
+          await atomicWriteJson(paths.startupHandoff, { runtime, bootstrapUrl }, { mode: 0o600 });
         })();
         return { pid: process.pid, unref: vi.fn() };
       },

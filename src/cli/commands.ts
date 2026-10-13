@@ -146,6 +146,7 @@ Usage:
   waifus doctor [--data-root PATH]
   waifus clean [--force] [--include-logs] [--data-root PATH]
   waifus update [--npm | --github]
+  waifus update --auto on|off|status [--data-root PATH]
   waifus remote [--foreground] [--no-open] [--host ID_OR_NAME] [--port PORT] [--data-root PATH]
   waifus remote status [--data-root PATH]
   waifus remote stop [--data-root PATH]
@@ -796,6 +797,26 @@ async function assertOptionalOwnedDirectory(directory: string): Promise<void> {
 }
 
 async function updateCommand(parsed: ParsedCli, options: CliRuntimeOptions): Promise<number> {
+  if (parsed.flags.auto !== undefined) {
+    const { automaticUpdateStatus } = await import("../backend/updates/worker.js");
+    const { updateInstallation, launchUpdateWorker } = await import("../backend/updates/control.js");
+    const { updateAppConfig } = await import("../config/appConfig.js");
+    const root = resolveCliDataRoot(parsed, options.env ?? process.env);
+    const action = flagString(parsed.flags, "auto") ?? "on";
+    if (action === "status") { console.log(JSON.stringify(await automaticUpdateStatus(root), null, 2)); return 0; }
+    if (action !== "on" && action !== "off") { console.error("Use --auto on, off or status."); return 1; }
+    const installation = await updateInstallation();
+    if (action === "on" && !installation) {
+      console.error("Automatic updates require a global npm installation; source checkouts are never replaced."); return 1;
+    }
+    await ensureDataLayout(root);
+    await updateAppConfig(root, { updates: { enabled: action === "on" } });
+    if (action === "on" && installation) launchUpdateWorker(installation);
+    console.log(action === "on"
+      ? "Idle updates enabled. Restart any older host/remote gateway once to register idle tracking."
+      : "Idle updates disabled. Manual waifus update remains available.");
+    return 0;
+  }
   const runner = options.processRunner ?? defaultProcessRunner;
   const forceNpm = flagBoolean(parsed.flags, "npm") || flagBoolean(parsed.flags, "global");
   const forceGithub = flagBoolean(parsed.flags, "github") || flagBoolean(parsed.flags, "release");
@@ -812,10 +833,10 @@ async function updateCommand(parsed: ParsedCli, options: CliRuntimeOptions): Pro
     return 1;
   }
 
-  if (forceGithub) {
-    return updateGithubReleasePackage(runner, options);
-  }
-  return updateGlobalNpmPackage(runner, options);
+  const { updateInstallation, installationLock } = await import("../backend/updates/control.js");
+  const installation = await updateInstallation();
+  const update = () => forceGithub ? updateGithubReleasePackage(runner, options) : updateGlobalNpmPackage(runner, options);
+  return installation ? installationLock(installation.stateDir, "transaction", update) : update();
 }
 
 async function updateGlobalNpmPackage(runner: CliProcessRunner, options: CliRuntimeOptions): Promise<number> {

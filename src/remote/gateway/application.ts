@@ -23,6 +23,7 @@ type SelectedGateway = Readonly<{
 }>;
 
 export type StartRemoteGatewayApplicationOptions = Readonly<{
+  updateActivity?: import("../../backend/updates/activity.js").UpdateActivity;
   dataRoot: string;
   appVersion: string;
   deviceDisplayName: string;
@@ -31,6 +32,7 @@ export type StartRemoteGatewayApplicationOptions = Readonly<{
 }>;
 
 export type RunningRemoteGatewayApplication = Readonly<{
+  hasUpdateBlockers: () => boolean;
   shell: RunningRemoteGateway;
   rememberedHosts: RememberedHostStore;
   connectRememberedHost: (host: RememberedHostRecordV1) => Promise<void>;
@@ -69,12 +71,14 @@ export async function startRemoteGatewayApplication(
   let localApi!: RemoteLocalApi;
   let selected: SelectedGateway | undefined;
   let selectionTail: Promise<void> = Promise.resolve();
+  let pendingSelections = 0;
   let runtimeHostKey: Readonly<{ hostId: string; trustEpoch: string }> | undefined;
   let closing = false;
   let closePromise: Promise<void> | undefined;
 
   const serializeSelection = <T>(operation: () => Promise<T>): Promise<T> => {
-    const result = selectionTail.then(operation);
+    pendingSelections++;
+    const result = selectionTail.then(operation).finally(() => { pendingSelections--; });
     selectionTail = result.then(() => undefined, () => undefined);
     return result;
   };
@@ -103,6 +107,7 @@ export async function startRemoteGatewayApplication(
     let dashboardHandler: RemoteSelectedHostGateway | undefined;
     let frameShellOrigin: string | undefined;
     const dashboard = await startRemoteGatewayRuntime({
+      updateActivity: options.updateActivity,
       dataRoot: options.dataRoot,
       pinnedHostId: host.hostId,
       hostTrustEpoch: host.trustEpoch,
@@ -118,7 +123,7 @@ export async function startRemoteGatewayApplication(
     });
     let frameShell: RunningRemoteGateway | undefined;
     try {
-      frameShell = await startRemoteDashboardFrameShell({ dashboard });
+      frameShell = await startRemoteDashboardFrameShell({ dashboard, updateActivity: options.updateActivity });
       frameShellOrigin = frameShell.origin;
       dashboardHandler = new RemoteSelectedHostGateway({
         cache: new DashboardCache({ dataRoot: options.dataRoot }),
@@ -208,6 +213,7 @@ export async function startRemoteGatewayApplication(
   };
 
   shell = await startRemoteGateway({
+    updateActivity: options.updateActivity,
     hostname,
     port: options.port ?? 0,
     surface: "shell",
@@ -224,6 +230,7 @@ export async function startRemoteGatewayApplication(
   });
 
   return Object.freeze({
+    hasUpdateBlockers: () => pendingSelections > 0 || localApi.hasUpdateBlockers(),
     shell,
     rememberedHosts,
     connectRememberedHost: async (host: RememberedHostRecordV1) => {

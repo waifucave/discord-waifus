@@ -4,6 +4,7 @@ import fastify, {
   type FastifyRequest
 } from "fastify";
 import type { RemoteBrowserContextV1 } from "../../shared/schemas/remoteProtocol.js";
+import { installUpdateActivity, type UpdateActivity } from "../../backend/updates/activity.js";
 import { createRemoteBrowserContext } from "./browserContext.js";
 import {
   DASHBOARD_SECURITY_HEADERS,
@@ -45,6 +46,7 @@ type RemoteGatewayOriginSelection =
     };
 
 export type StartRemoteGatewayOptions = RemoteBrowserSessionStoreOptions & RemoteGatewayOriginSelection & {
+  readonly updateActivity?: UpdateActivity;
   readonly port: number;
   readonly surface?: RemoteGatewaySurface;
   readonly frameAncestorOrigin?: string | (() => string | undefined);
@@ -128,6 +130,7 @@ export async function startRemoteGateway(
 
   const sessions = new RemoteBrowserSessionStore(options);
   const app = fastify({ logger: false, forceCloseConnections: true });
+  if (options.updateActivity) installUpdateActivity(app, options.updateActivity);
   if (options.surface === undefined || options.surface === "dashboard") {
     app.removeAllContentTypeParsers();
     app.addContentTypeParser("*", (_request, payload, done) => done(null, payload));

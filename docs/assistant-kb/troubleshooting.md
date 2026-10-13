@@ -1,5 +1,14 @@
 # Troubleshooting
 
+Idle-only updates are opt-in under Settings → App or `waifus update --auto on`.
+Use `GET /api/updates` or `waifus update --auto status` for sanitized state; `--auto off`
+disables automatic checks without changing manual updates. A busy or older/unregistered sibling,
+different data root without opt-in, or locked macOS keychain can postpone an update. Never unlock
+a keychain by asking for its password in assistant chat. Automatic updates preserve data/pairings,
+but a restarted remote gateway needs a new browser session. Remote users cannot change automatic
+update settings or use this feature to restart the host process. Source/development installations
+are not auto-updated. Native updater-cycle validation is separate from passing fixture tests.
+
 Common failures, what they look like, and where to look.
 
 ## Nothing replies in Discord

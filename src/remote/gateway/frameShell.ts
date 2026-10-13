@@ -57,6 +57,7 @@ type DashboardFrameTarget = Readonly<{
 }>;
 
 export type StartRemoteDashboardFrameShellOptions = RemoteBrowserSessionStoreOptions & Readonly<{
+  updateActivity?: import("../../backend/updates/activity.js").UpdateActivity;
   dashboard: DashboardFrameTarget;
   port?: number;
 }>;
@@ -117,6 +118,7 @@ export async function startRemoteDashboardFrameShell(
   options: StartRemoteDashboardFrameShellOptions
 ): Promise<RunningRemoteGateway> {
   return startRemoteGateway({
+    updateActivity: options.updateActivity,
     hostname: options.dashboard.hostname,
     port: options.port ?? 0,
     surface: "frame_shell",

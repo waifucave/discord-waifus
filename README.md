@@ -326,6 +326,24 @@ Common flags: `--host 127.0.0.1`, `--port 3888`, `--data-root PATH`.
 
 `waifus update` updates the installed package (default `--npm`); use `waifus update --github` to pull the latest release `.tgz`. Set `DC_WAIFUS_HOME=PATH` to override the default `~/.dc-waifus` data root.
 
+### Automatic updates while idle
+
+Automatic updates are **opt-in**. On a global npm installation, enable them in **Settings → App → Idle-only updates**, or use:
+
+```bash
+waifus update --auto on
+waifus update --auto status
+waifus update --auto off
+```
+
+The default is an hourly npm `latest` check and five minutes without active work. Only newer plain patch versions in your current major/minor series are eligible; major/minor upgrades, prereleases and deprecated app releases require a manual update. Source checkouts and development/test runtimes are never automatically replaced. Start both ordinary and remote processes once with an updater-aware version before enabling it; an old sibling that cannot report idle blocks updating.
+
+The updater coordinates every registered host and remote gateway using that global installation, including different data roots. All must opt in and be quiet. It waits for channel/background jobs, assistant turns, API/file transfers, runtime reloads and active pairing/activation work. Passive status polling and event subscriptions do not extend the quiet window. Packages and the current platform's signed helper are staged/verified first; it then reserves a short maintenance window, stops the idle processes, installs the exact staged release and restarts the same roles/data roots. If replacement or verification fails, it attempts to restore the previous package before restarting. Manual and automatic installs share a transaction lock. Configuration, provider credentials, characters, rooms and saved pairings are never cleared by the updater.
+
+On macOS, remote-enabled hosts/gateways postpone restart while the login keychain is locked. The status probe is read-only and never shows a password prompt. A remote-gateway restart ends its browser sessions; reopen it with `waifus remote stop` followed by `waifus remote` (no new device pairing is needed). Remote users may read update status but cannot enable/schedule host process restarts.
+
+`GET /api/updates` and `waifus update --auto status` show sanitized status. Bounded private history and a crash-recovery journal live under the normal data root's `app/updates/` installation-specific directory; no provider keys or child-process output are recorded or uploaded. Recovery does not roll back user-data migrations. If a crash, lost permissions or failed package restore leaves the CLI unusable, reinstall with `npm install -g @waifucave/discord-waifus` and start your roles again. An isolated native macOS replacement/restart cycle is verified; native Windows/Linux updater cycles remain untested. Fixture tests are not that proof.
+
 ---
 
 ## ⭐ Star History

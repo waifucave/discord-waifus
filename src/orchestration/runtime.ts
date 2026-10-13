@@ -95,6 +95,7 @@ import { OneShotDecider, type OneShotInput, type OneShotResult } from "./oneShot
 export const DREAM_HOUR_LOCAL = 5;
 
 export type RuntimeOrchestratorOptions = {
+  updateActivity?: import("../backend/updates/activity.js").UpdateActivity;
   storage: StorageService;
   discord: DiscordGatewayFacade;
   logger: Logger;
@@ -216,6 +217,7 @@ export class RuntimeOrchestrator {
   private static readonly DREAM_MAX_DEFERS = 8;
   private static readonly ACTIVE_CHAT_PARTICIPANT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
   private unsubscribes: Array<() => void> = [];
+  private stopping = false;
   private readonly oneShot: OneShotDecider;
 
   constructor(private readonly options: RuntimeOrchestratorOptions) {
@@ -381,6 +383,7 @@ export class RuntimeOrchestrator {
   }
 
   async stop(): Promise<void> {
+    this.stopping = true;
     for (const unsubscribe of this.unsubscribes) {
       unsubscribe();
     }
@@ -412,14 +415,17 @@ export class RuntimeOrchestrator {
     context: Record<string, unknown>,
     task: () => void | Promise<unknown>
   ): void {
+    if (this.stopping) return;
+    const release = this.options.updateActivity?.begin();
+    if (this.options.updateActivity && !release) return;
     void Promise.resolve()
-      .then(task)
+      .then(() => this.stopping ? undefined : task())
       .catch((error) => {
         this.options.logger.error(label, {
           ...context,
           message: error instanceof Error ? error.message : String(error)
         });
-      });
+      }).finally(() => release?.());
   }
 
   private startChannelRunBackground(

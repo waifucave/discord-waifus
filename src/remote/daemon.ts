@@ -12,6 +12,8 @@ import { publishRemoteDaemonStartup, publishRemoteDaemonState } from "./daemonSt
 import type { HelperSupervisor } from "./helperSupervisor.js";
 import { remoteRolePaths } from "./paths.js";
 import type { RememberedHostRecordV1, RememberedHostStateV1 } from "./rememberedHosts.js";
+import { UpdateActivity } from "../backend/updates/activity.js";
+import { registerAutomaticUpdates } from "../backend/updates/control.js";
 
 const DEFAULT_STATUS_REFRESH_MS = 1_000;
 
@@ -92,6 +94,15 @@ export async function startRemoteGatewayDaemon(
   let refreshTail: Promise<void> = Promise.resolve();
   let runtime: RemoteDaemonState | undefined;
   let initialConnectionPending = true;
+  const updateActivity = new UpdateActivity();
+  const updater = await registerAutomaticUpdates({
+    activity: updateActivity, dataRoot, role: "remote", version: appVersion,
+    args: ["remote", "--no-open", "--data-root", dataRoot,
+      ...(options.port ? ["--port", String(options.port)] : []),
+      ...(options.host ? ["--host", options.host] : [])],
+    busy: () => !published || closing || (application?.hasUpdateBlockers() ?? true),
+    requiresCredentials: () => true
+  });
   const startedAt = new Date().toISOString();
 
   const buildRuntimeState = async (running: RunningRemoteGatewayApplication): Promise<RemoteDaemonState> => {
@@ -158,6 +169,7 @@ export async function startRemoteGatewayDaemon(
     if (interval) clearInterval(interval);
     unsubscribe?.();
     closePromise = (async () => {
+      await updater?.close();
       await refreshTail;
       const results = await Promise.allSettled([
         application?.close(),
@@ -179,6 +191,7 @@ export async function startRemoteGatewayDaemon(
   try {
     await options.supervisor.start();
     application = await startRemoteGatewayApplication({
+      updateActivity,
       dataRoot,
       appVersion,
       deviceDisplayName: options.deviceDisplayName,

@@ -129,6 +129,20 @@ evidence of uninterrupted health.
 
 ## Conventions
 
+**Idle updates** (`src/backend/updates/`): opt-in `[updates]` config, hourly npm-latest checks and
+five-minute quiet default. Only plain newer patch releases within the current major/minor are
+eligible. Global npm runtimes register private capability-authenticated loopback control servers;
+one installation-wide worker stages exact candidate/rollback packages, verifies helper signatures
+and compatibility, prepares all opted-in roles, then installs/restarts. Admission is synchronous
+in API/background work; passive polls/streams alone do not prevent maintenance. Locks serialize
+manual and automatic installations and block new registrations during replacement. Never signal
+an uncooperative/busy/unknown sibling or clear user data/trust to force progress. The macOS JXA
+Security-framework status probe only checks keychain lock state, never reads secrets or unlocks.
+`GET /api/updates` is sanitized; changing automatic-update config is local-only. Status/history
+contain closed enums/version/timestamps, not tokens, paths or installer output. Journal recovery
+can restore package/processes but not reverse migrations; an unusable CLI needs manual reinstall.
+Fixture coverage is separate from native Windows/Linux updater-cycle validation.
+
 - ESM with `moduleResolution: NodeNext`. Local imports in `.ts` files must use `.js` extensions (e.g., `import { foo } from "./bar.js"`). This is enforced by the compiler.
 - `dist/` and `dist-frontend/` are generated artifacts; never edit them. After backend changes, rerun `npm run build:backend` if you need the shipped CLI to use new code (otherwise `bin/waifus.mjs` falls back to `tsx` against `src/`).
 - Backend tsconfig excludes `tests/` and `src/frontend/`; frontend has its own `src/frontend/tsconfig.json`.

@@ -36,6 +36,8 @@ import { RemoteRequestBridge } from "./remoteAccess/requestBridge.js";
 import { createProductionHelperSupervisor } from "../remote/productionHelper.js";
 import { remoteRolePaths } from "../remote/paths.js";
 import { DashboardBuild } from "./remoteAccess/dashboardBuild.js";
+import { UpdateActivity } from "./updates/activity.js";
+import { registerAutomaticUpdates } from "./updates/control.js";
 
 export type StartBackendOptions = {
   dataRoot: string;
@@ -63,133 +65,180 @@ export type RunningBackend = {
 const DEFAULT_DISCORD_RETRY_DELAYS_MS = [5_000, 15_000, 30_000, 60_000, 120_000] as const;
 
 export async function startBackend(options: StartBackendOptions): Promise<RunningBackend> {
-  await runMigrations(options.dataRoot);
-  const config = await loadAppConfig(options.dataRoot);
-  const packageVersion = await readPackageVersion();
-  const port = options.port ?? config.http.port;
-  const host = options.host ?? config.http.host;
-  const logger = options.logger ?? createLogger({ dataRoot: options.dataRoot });
-  const storage = new StorageService(options.dataRoot, {
-    onLockWait: (resourceKey, waitMs) => logger.warn("Storage lock wait exceeded threshold", { resourceKey, waitMs })
+  const updateActivity = new UpdateActivity();
+  let updateReady = false;
+  let updateClosing = false;
+  let updateReloads = 0;
+  let updateBusy: () => boolean = () => true;
+  let updateNeedsCredentials: () => boolean = () => true;
+  const updater = await registerAutomaticUpdates({
+    activity: updateActivity, dataRoot: options.dataRoot, role: "host",
+    version: await readPackageVersion(),
+    args: ["start", "--data-root", options.dataRoot,
+      ...(options.port ? ["--port", String(options.port)] : []),
+      ...(options.host ? ["--host", options.host] : [])],
+    busy: () => (options.mode !== undefined && options.mode !== "start") || !updateReady || updateClosing || updateReloads > 0 || updateBusy(),
+    requiresCredentials: () => updateNeedsCredentials()
   });
-  const runtime = createRuntimeState({
-    pid: process.pid,
-    startedAt: new Date().toISOString(),
-    packageVersion,
-    port,
-    dataRoot: options.dataRoot,
-    mode: options.mode ?? "start",
-    paused: config.runtime.paused,
-    discord: offlineDiscordStatus(),
-    queues: {
-      active: 0,
-      configuredGuilds: await countConfiguredGuilds(storage)
-    }
-  });
-  const dashboardResolution = options.remoteAccess?.dashboard
-    ? {
-        dashboard: options.remoteAccess.dashboard,
-        ...(options.remoteAccess.dashboardBuild
-          ? { build: options.remoteAccess.dashboardBuild }
-          : {})
+  try {
+    await runMigrations(options.dataRoot);
+    const config = await loadAppConfig(options.dataRoot);
+    const packageVersion = await readPackageVersion();
+    const port = options.port ?? config.http.port;
+    const host = options.host ?? config.http.host;
+    const logger = options.logger ?? createLogger({ dataRoot: options.dataRoot });
+    const storage = new StorageService(options.dataRoot, {
+      onLockWait: (resourceKey, waitMs) => logger.warn("Storage lock wait exceeded threshold", { resourceKey, waitMs })
+    });
+    const runtime = createRuntimeState({
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      packageVersion,
+      port,
+      dataRoot: options.dataRoot,
+      mode: options.mode ?? "start",
+      paused: config.runtime.paused,
+      discord: offlineDiscordStatus(),
+      queues: {
+        active: 0,
+        configuredGuilds: await countConfiguredGuilds(storage)
       }
-    : await resolveRemoteDashboard(config.frontend.staticDir, logger);
-  const dashboard = dashboardResolution.dashboard;
-  const helperSupervisor = options.remoteAccess?.supervisor
-    ?? await createProductionHelperSupervisor({
-      role: "host",
+    });
+    const dashboardResolution = options.remoteAccess?.dashboard
+      ? {
+          dashboard: options.remoteAccess.dashboard,
+          ...(options.remoteAccess.dashboardBuild
+            ? { build: options.remoteAccess.dashboardBuild }
+            : {})
+        }
+      : await resolveRemoteDashboard(config.frontend.staticDir, logger);
+    const dashboard = dashboardResolution.dashboard;
+    const helperSupervisor = options.remoteAccess?.supervisor
+      ?? await createProductionHelperSupervisor({
+        role: "host",
+        dataRoot: options.dataRoot,
+        appVersion: packageVersion,
+        buildId: dashboard.buildId,
+        logger: createLogger({ logFile: remoteRolePaths(options.dataRoot, "host").log })
+      });
+    const remoteAccess = new RemoteAccessService({
       dataRoot: options.dataRoot,
-      appVersion: packageVersion,
-      buildId: dashboard.buildId,
-      logger: createLogger({ logFile: remoteRolePaths(options.dataRoot, "host").log })
+      runtime,
+      effectiveHost: host,
+      dashboard,
+      supervisor: helperSupervisor
     });
-  const remoteAccess = new RemoteAccessService({
-    dataRoot: options.dataRoot,
-    runtime,
-    effectiveHost: host,
-    dashboard,
-    supervisor: helperSupervisor
-  });
 
-  const createDiscordGateway =
-    options.createDiscordGateway ??
-    ((gatewayOptions: DiscordJsGatewayOptions) => new DiscordJsGateway(gatewayOptions));
-  const discordRetryDelaysMs = options.discordRetryDelaysMs?.length
-    ? options.discordRetryDelaysMs
-    : [...DEFAULT_DISCORD_RETRY_DELAYS_MS];
+    const createDiscordGateway =
+      options.createDiscordGateway ??
+      ((gatewayOptions: DiscordJsGatewayOptions) => new DiscordJsGateway(gatewayOptions));
+    const discordRetryDelaysMs = options.discordRetryDelaysMs?.length
+      ? options.discordRetryDelaysMs
+      : [...DEFAULT_DISCORD_RETRY_DELAYS_MS];
 
-  let gateway: DiscordGatewayFacade | undefined;
-  let runtimeOrchestrator: RuntimeOrchestrator | undefined;
-  let discordRetryTimer: NodeJS.Timeout | undefined;
-  let discordRetryAttempt = 0;
-  let discordRecoveryInProgress = false;
-  let pendingLiveDiscordErrorMessage: string | undefined;
-  let closing = false;
-  let enqueueReloadRuntime: (reason: string, retryOptions?: { scheduledRetry?: boolean }) => Promise<void>;
+    let gateway: DiscordGatewayFacade | undefined;
+    let runtimeOrchestrator: RuntimeOrchestrator | undefined;
+    let discordRetryTimer: NodeJS.Timeout | undefined;
+    let discordRetryAttempt = 0;
+    let discordRecoveryInProgress = false;
+    let pendingLiveDiscordErrorMessage: string | undefined;
+    let closing = false;
+    let enqueueReloadRuntime: (reason: string, retryOptions?: { scheduledRetry?: boolean }) => Promise<void>;
 
-  const cleanupOcr = async (currentConfig = config) => {
-    const ocr = new ImageOcrService({
-      dataRoot: options.dataRoot,
-      config: currentConfig.ocr,
-      logger
-    });
-    await ocr.cleanupExpired().catch((error) => {
-      logger.warn("OCR cleanup failed", { message: error instanceof Error ? error.message : String(error) });
-    });
-  };
+    const cleanupOcr = async (currentConfig = config) => {
+      const ocr = new ImageOcrService({
+        dataRoot: options.dataRoot,
+        config: currentConfig.ocr,
+        logger
+      });
+      await ocr.cleanupExpired().catch((error) => {
+        logger.warn("OCR cleanup failed", { message: error instanceof Error ? error.message : String(error) });
+      });
+    };
 
-  const makeRuntimeOrchestrator = (nextGateway: DiscordGatewayFacade, currentConfig = config) => {
-    const ocr = new ImageOcrService({
-      dataRoot: options.dataRoot,
-      config: currentConfig.ocr,
-      logger
-    });
-    return new RuntimeOrchestrator({
-      storage,
-      discord: nextGateway,
-      logger,
-      ocr,
-      isPaused: () => runtime.paused,
-      onActiveRunsChange: (activeRuns) => {
-        runtime.queues.active = activeRuns;
+    const makeRuntimeOrchestrator = (nextGateway: DiscordGatewayFacade, currentConfig = config) => {
+      const ocr = new ImageOcrService({
+        dataRoot: options.dataRoot,
+        config: currentConfig.ocr,
+        logger
+      });
+      return new RuntimeOrchestrator({
+        storage,
+        discord: nextGateway,
+        logger,
+        ocr,
+        updateActivity,
+        isPaused: () => runtime.paused || closing,
+        onActiveRunsChange: (activeRuns) => {
+          runtime.queues.active = activeRuns;
+          runtime.updatedAt = new Date().toISOString();
+        }
+      });
+    };
+
+    const clearDiscordRetry = () => {
+      if (discordRetryTimer) {
+        clearTimeout(discordRetryTimer);
+        discordRetryTimer = undefined;
+      }
+    };
+
+    const nextDiscordRetryDelayMs = (attempt: number) =>
+      discordRetryDelaysMs[Math.min(attempt - 1, discordRetryDelaysMs.length - 1)] ??
+      DEFAULT_DISCORD_RETRY_DELAYS_MS[0];
+
+    const scheduleDiscordRetry = async (
+      message: string,
+      retryOptions: {
+        preserveExistingTimer?: boolean;
+        failureLabel?: string;
+        logReason?: string;
+      } = {}
+    ) => {
+      if (closing) return;
+      const failureLabel = retryOptions.failureLabel ?? "Discord auto-connect failed";
+      if (retryOptions.preserveExistingTimer && discordRetryTimer) {
+        const lastErrorAt = new Date().toISOString();
+        const attempt = Math.max(discordRetryAttempt, 1);
+        const nextRetryAt = runtime.discord.nextRetryAt ??
+          new Date(Date.now() + nextDiscordRetryDelayMs(attempt)).toISOString();
+        runtime.discord = {
+          ...withoutDiscordConnecting(runtime.discord),
+          connected: false,
+          orchestratorConnected: false,
+          waifuBotCount: 0,
+          retrying: true,
+          retryAttempt: attempt,
+          nextRetryAt,
+          lastError: message,
+          lastErrorAt,
+          warnings: [
+            `${failureLabel}: ${message}`,
+            `Discord auto-connect will retry automatically at ${nextRetryAt}.`
+          ]
+        };
         runtime.updatedAt = new Date().toISOString();
+        await writeRuntimeFiles(options.dataRoot, runtime);
+        logger.warn("Discord auto-connect retry already pending; updated latest error", {
+          attempt: runtime.discord.retryAttempt,
+          nextRetryAt,
+          message,
+          reason: retryOptions.logReason
+        });
+        return;
       }
-    });
-  };
-
-  const clearDiscordRetry = () => {
-    if (discordRetryTimer) {
-      clearTimeout(discordRetryTimer);
-      discordRetryTimer = undefined;
-    }
-  };
-
-  const nextDiscordRetryDelayMs = (attempt: number) =>
-    discordRetryDelaysMs[Math.min(attempt - 1, discordRetryDelaysMs.length - 1)] ??
-    DEFAULT_DISCORD_RETRY_DELAYS_MS[0];
-
-  const scheduleDiscordRetry = async (
-    message: string,
-    retryOptions: {
-      preserveExistingTimer?: boolean;
-      failureLabel?: string;
-      logReason?: string;
-    } = {}
-  ) => {
-    if (closing) return;
-    const failureLabel = retryOptions.failureLabel ?? "Discord auto-connect failed";
-    if (retryOptions.preserveExistingTimer && discordRetryTimer) {
+      clearDiscordRetry();
+      discordRetryAttempt += 1;
       const lastErrorAt = new Date().toISOString();
-      const attempt = Math.max(discordRetryAttempt, 1);
-      const nextRetryAt = runtime.discord.nextRetryAt ??
-        new Date(Date.now() + nextDiscordRetryDelayMs(attempt)).toISOString();
+      const delayMs = nextDiscordRetryDelayMs(discordRetryAttempt);
+      const nextRetryAt = new Date(Date.now() + delayMs).toISOString();
       runtime.discord = {
         ...withoutDiscordConnecting(runtime.discord),
         connected: false,
         orchestratorConnected: false,
         waifuBotCount: 0,
         retrying: true,
-        retryAttempt: attempt,
+        retryAttempt: discordRetryAttempt,
         nextRetryAt,
         lastError: message,
         lastErrorAt,
@@ -200,246 +249,231 @@ export async function startBackend(options: StartBackendOptions): Promise<Runnin
       };
       runtime.updatedAt = new Date().toISOString();
       await writeRuntimeFiles(options.dataRoot, runtime);
-      logger.warn("Discord auto-connect retry already pending; updated latest error", {
-        attempt: runtime.discord.retryAttempt,
+      logger.warn("Discord auto-connect retry scheduled", {
+        attempt: discordRetryAttempt,
         nextRetryAt,
+        delayMs,
         message,
         reason: retryOptions.logReason
       });
-      return;
-    }
-    clearDiscordRetry();
-    discordRetryAttempt += 1;
-    const lastErrorAt = new Date().toISOString();
-    const delayMs = nextDiscordRetryDelayMs(discordRetryAttempt);
-    const nextRetryAt = new Date(Date.now() + delayMs).toISOString();
-    runtime.discord = {
-      ...withoutDiscordConnecting(runtime.discord),
-      connected: false,
-      orchestratorConnected: false,
-      waifuBotCount: 0,
-      retrying: true,
-      retryAttempt: discordRetryAttempt,
-      nextRetryAt,
-      lastError: message,
-      lastErrorAt,
-      warnings: [
-        `${failureLabel}: ${message}`,
-        `Discord auto-connect will retry automatically at ${nextRetryAt}.`
-      ]
+      discordRetryTimer = setTimeout(() => {
+        discordRetryTimer = undefined;
+        void enqueueReloadRuntime("discord-auto-retry", { scheduledRetry: true }).catch((error) => {
+          const retryMessage = error instanceof Error ? error.message : String(error);
+          logger.error("Discord auto-connect retry failed outside gateway connection", { message: retryMessage });
+        });
+      }, delayMs);
     };
-    runtime.updatedAt = new Date().toISOString();
-    await writeRuntimeFiles(options.dataRoot, runtime);
-    logger.warn("Discord auto-connect retry scheduled", {
-      attempt: discordRetryAttempt,
-      nextRetryAt,
-      delayMs,
-      message,
-      reason: retryOptions.logReason
-    });
-    discordRetryTimer = setTimeout(() => {
-      discordRetryTimer = undefined;
-      void enqueueReloadRuntime("discord-auto-retry", { scheduledRetry: true }).catch((error) => {
-        const retryMessage = error instanceof Error ? error.message : String(error);
-        logger.error("Discord auto-connect retry failed outside gateway connection", { message: retryMessage });
-      });
-    }, delayMs);
-  };
 
-  const handleDiscordRuntimeIssue = async (issue: DiscordRuntimeIssue) => {
-    if (closing) return;
-    const message = issue.message || "Discord runtime issue.";
-    if (!isRetryableDiscordRuntimeIssue(issue)) {
-      logger.warn("Discord runtime issue did not trigger reconnect", discordRuntimeIssueLogContext(issue));
-      return;
-    }
+    const handleDiscordRuntimeIssue = async (issue: DiscordRuntimeIssue) => {
+      if (closing) return;
+      if (updateActivity.snapshot().prepared || updateActivity.snapshot().stopping) return;
+      const message = issue.message || "Discord runtime issue.";
+      if (!isRetryableDiscordRuntimeIssue(issue)) {
+        logger.warn("Discord runtime issue did not trigger reconnect", discordRuntimeIssueLogContext(issue));
+        return;
+      }
 
-    pendingLiveDiscordErrorMessage = message;
-    if (discordRetryTimer) {
-      await scheduleDiscordRetry(message, {
-        preserveExistingTimer: true,
-        failureLabel: "Discord connection lost",
-        logReason: issue.source
-      });
-      return;
-    }
-    if (discordRecoveryInProgress) {
-      return;
-    }
+      pendingLiveDiscordErrorMessage = message;
+      if (discordRetryTimer) {
+        await scheduleDiscordRetry(message, {
+          preserveExistingTimer: true,
+          failureLabel: "Discord connection lost",
+          logReason: issue.source
+        });
+        return;
+      }
+      if (discordRecoveryInProgress) {
+        return;
+      }
 
-    discordRecoveryInProgress = true;
-    try {
-      logger.warn("Discord runtime issue triggered reconnect", discordRuntimeIssueLogContext(issue));
+      discordRecoveryInProgress = true;
+      try {
+        logger.warn("Discord runtime issue triggered reconnect", discordRuntimeIssueLogContext(issue));
+        await runtimeOrchestrator?.stop();
+        await gateway?.disconnect();
+        runtimeOrchestrator = undefined;
+        gateway = undefined;
+        runtime.queues.active = 0;
+        await scheduleDiscordRetry(pendingLiveDiscordErrorMessage ?? message, {
+          preserveExistingTimer: true,
+          failureLabel: "Discord connection lost",
+          logReason: issue.source
+        });
+      } finally {
+        discordRecoveryInProgress = false;
+        pendingLiveDiscordErrorMessage = undefined;
+      }
+    };
+
+    const reloadRuntime = async (reason: string, retryOptions: { scheduledRetry?: boolean } = {}) => {
+      if (closing) return;
+      if (!retryOptions.scheduledRetry) {
+        clearDiscordRetry();
+        discordRetryAttempt = 0;
+      }
+      logger.info("Reloading runtime", { reason });
       await runtimeOrchestrator?.stop();
       await gateway?.disconnect();
       runtimeOrchestrator = undefined;
       gateway = undefined;
       runtime.queues.active = 0;
-      await scheduleDiscordRetry(pendingLiveDiscordErrorMessage ?? message, {
-        preserveExistingTimer: true,
-        failureLabel: "Discord connection lost",
-        logReason: issue.source
-      });
-    } finally {
-      discordRecoveryInProgress = false;
-      pendingLiveDiscordErrorMessage = undefined;
-    }
-  };
 
-  const reloadRuntime = async (reason: string, retryOptions: { scheduledRetry?: boolean } = {}) => {
-    if (closing) return;
-    if (!retryOptions.scheduledRetry) {
-      clearDiscordRetry();
-      discordRetryAttempt = 0;
-    }
-    logger.info("Reloading runtime", { reason });
-    await runtimeOrchestrator?.stop();
-    await gateway?.disconnect();
-    runtimeOrchestrator = undefined;
-    gateway = undefined;
-    runtime.queues.active = 0;
-
-    const currentConfig = await loadAppConfig(options.dataRoot);
-    await cleanupOcr(currentConfig);
-    if (closing) return;
-    runtime.paused = currentConfig.runtime.paused;
-    runtime.queues.configuredGuilds = await countConfiguredGuilds(storage);
-    if (currentConfig.runtime.autoConnectDiscord) {
-      runtime.discord = connectingDiscordStatus();
+      const currentConfig = await loadAppConfig(options.dataRoot);
+      await cleanupOcr(currentConfig);
+      if (closing) return;
+      runtime.paused = currentConfig.runtime.paused;
+      runtime.queues.configuredGuilds = await countConfiguredGuilds(storage);
+      if (currentConfig.runtime.autoConnectDiscord) {
+        runtime.discord = connectingDiscordStatus();
+        runtime.updatedAt = new Date().toISOString();
+        await writeRuntimeFiles(options.dataRoot, runtime);
+      }
+      const connected = await maybeConnectDiscord(
+        storage,
+        currentConfig.runtime.autoConnectDiscord,
+        logger,
+        createDiscordGateway,
+        handleDiscordRuntimeIssue
+      );
+      if (closing) {
+        await connected.gateway?.disconnect();
+        return;
+      }
+      runtime.discord = connected.status;
+      gateway = connected.gateway;
+      if (gateway) {
+        clearDiscordRetry();
+        discordRetryAttempt = 0;
+        runtimeOrchestrator = makeRuntimeOrchestrator(gateway, currentConfig);
+        await runtimeOrchestrator.start();
+      } else if (connected.retryableFailure) {
+        await scheduleDiscordRetry(connected.retryableFailure.message);
+      }
+      if (closing) {
+        await runtimeOrchestrator?.stop();
+        await gateway?.disconnect();
+        runtimeOrchestrator = undefined;
+        gateway = undefined;
+        return;
+      }
+      runtime.queues.configuredGuilds = await countConfiguredGuilds(storage);
       runtime.updatedAt = new Date().toISOString();
       await writeRuntimeFiles(options.dataRoot, runtime);
-    }
-    const connected = await maybeConnectDiscord(
-      storage,
-      currentConfig.runtime.autoConnectDiscord,
-      logger,
-      createDiscordGateway,
-      handleDiscordRuntimeIssue
-    );
-    if (closing) {
-      await connected.gateway?.disconnect();
-      return;
-    }
-    runtime.discord = connected.status;
-    gateway = connected.gateway;
-    if (gateway) {
-      clearDiscordRetry();
-      discordRetryAttempt = 0;
-      runtimeOrchestrator = makeRuntimeOrchestrator(gateway, currentConfig);
-      await runtimeOrchestrator.start();
-    } else if (connected.retryableFailure) {
-      await scheduleDiscordRetry(connected.retryableFailure.message);
-    }
-    if (closing) {
-      await runtimeOrchestrator?.stop();
-      await gateway?.disconnect();
-      runtimeOrchestrator = undefined;
-      gateway = undefined;
-      return;
-    }
+    };
+
+    let reloadQueue: Promise<void> = Promise.resolve();
+    enqueueReloadRuntime = (reason: string, retryOptions: { scheduledRetry?: boolean } = {}) => {
+      const release = updateActivity.begin();
+      if (!release) return Promise.reject(new Error("Update in progress; runtime reload deferred."));
+      updateReloads++;
+      const run = () => reloadRuntime(reason, retryOptions).finally(() => { updateReloads--; release(); });
+      const next = reloadQueue.then(run, run);
+      reloadQueue = next.catch(() => undefined);
+      return next;
+    };
+
     runtime.queues.configuredGuilds = await countConfiguredGuilds(storage);
-    runtime.updatedAt = new Date().toISOString();
-    await writeRuntimeFiles(options.dataRoot, runtime);
-  };
-
-  let reloadQueue: Promise<void> = Promise.resolve();
-  enqueueReloadRuntime = (reason: string, retryOptions: { scheduledRetry?: boolean } = {}) => {
-    const run = () => reloadRuntime(reason, retryOptions);
-    const next = reloadQueue.then(run, run);
-    reloadQueue = next.catch(() => undefined);
-    return next;
-  };
-
-  runtime.queues.configuredGuilds = await countConfiguredGuilds(storage);
-  const app = await createApiServer({
-    dataRoot: options.dataRoot,
-    storage,
-    runtime,
-    runtimeControl: {
-      getOrchestrator: () => runtimeOrchestrator,
-      pause: async () => {
-        runtime.paused = true;
-        await runtimeOrchestrator?.pause();
-        runtime.updatedAt = new Date().toISOString();
-        await writeRuntimeFiles(options.dataRoot, runtime);
+    const app = await createApiServer({
+      dataRoot: options.dataRoot,
+      storage,
+      runtime,
+      updateActivity,
+      runtimeControl: {
+        getOrchestrator: () => runtimeOrchestrator,
+        pause: async () => {
+          runtime.paused = true;
+          await runtimeOrchestrator?.pause();
+          runtime.updatedAt = new Date().toISOString();
+          await writeRuntimeFiles(options.dataRoot, runtime);
+        },
+        resume: async () => {
+          runtime.paused = false;
+          runtime.updatedAt = new Date().toISOString();
+          await writeRuntimeFiles(options.dataRoot, runtime);
+        },
+        reload: enqueueReloadRuntime
       },
-      resume: async () => {
-        runtime.paused = false;
-        runtime.updatedAt = new Date().toISOString();
-        await writeRuntimeFiles(options.dataRoot, runtime);
+      logger,
+      browserSecurity: {
+        listenerHost: host,
+        port,
+        mode: options.mode ?? "start"
       },
-      reload: enqueueReloadRuntime
-    },
-    logger,
-    browserSecurity: {
-      listenerHost: host,
-      port,
-      mode: options.mode ?? "start"
-    },
-    remoteTrust: {
-      isAuthorized: (principal) => remoteAccess.isAuthorized(principal)
-    },
-    remoteAccess,
-    ...(dashboardResolution.build ? { dashboardBuild: dashboardResolution.build } : {})
-  });
-  const remoteRequestBridge = new RemoteRequestBridge(app);
-  remoteAccess.attachRequestBridge(remoteRequestBridge);
-  let remoteRuntimeWriteQueue: Promise<void> = Promise.resolve();
-  const unsubscribeRemoteAccess = remoteAccess.subscribe(() => {
-    remoteRuntimeWriteQueue = remoteRuntimeWriteQueue
-      .then(() => writeRuntimeFiles(options.dataRoot, runtime))
-      .catch((error) => {
-        logger.warn("Remote runtime status persistence failed", {
-          message: error instanceof Error ? error.message : String(error)
+      remoteTrust: {
+        isAuthorized: (principal) => remoteAccess.isAuthorized(principal)
+      },
+      remoteAccess,
+      ...(dashboardResolution.build ? { dashboardBuild: dashboardResolution.build } : {})
+    });
+    const remoteRequestBridge = new RemoteRequestBridge(app);
+    remoteAccess.attachRequestBridge(remoteRequestBridge);
+    let remoteRuntimeWriteQueue: Promise<void> = Promise.resolve();
+    const unsubscribeRemoteAccess = remoteAccess.subscribe(() => {
+      remoteRuntimeWriteQueue = remoteRuntimeWriteQueue
+        .then(() => writeRuntimeFiles(options.dataRoot, runtime))
+        .catch((error) => {
+          logger.warn("Remote runtime status persistence failed", {
+            message: error instanceof Error ? error.message : String(error)
+          });
         });
-      });
-  });
+    });
 
-  await app.listen({ host, port });
-  await remoteAccess.start();
-  await writeRuntimeFiles(options.dataRoot, runtime);
-  logger.info("Backend started", { url: `http://${host}:${port}`, dataRoot: options.dataRoot });
-  void enqueueReloadRuntime("startup").catch((error) => {
-    const message = error instanceof Error ? error.message : String(error);
-    logger.error("Startup runtime reload failed", { message });
-  });
+    await app.listen({ host, port });
+    await remoteAccess.start();
+    await writeRuntimeFiles(options.dataRoot, runtime);
+    logger.info("Backend started", { url: `http://${host}:${port}`, dataRoot: options.dataRoot });
+    void enqueueReloadRuntime("startup").catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.error("Startup runtime reload failed", { message });
+    });
+    updateBusy = () => runtime.queues.active > 0 || discordRecoveryInProgress || remoteAccess.hasUpdateBlockers();
+    updateNeedsCredentials = () => runtime.remoteAccess?.enabled === true;
+    updateReady = true;
 
-  return {
-    url: `http://${host}:${port}`,
-    runtime,
-    remoteAccess,
-    close: async () => {
-      closing = true;
-      clearDiscordRetry();
-      const shutdownStartedAt = Date.now();
-      logger.info("Shutdown step start", { step: "remoteAccess.close" });
-      let stepStartedAt = Date.now();
-      await remoteAccess.close();
-      unsubscribeRemoteAccess();
-      await remoteRuntimeWriteQueue;
-      logger.info("Shutdown step done", { step: "remoteAccess.close", ms: Date.now() - stepStartedAt });
+    return {
+      url: `http://${host}:${port}`,
+      runtime,
+      remoteAccess,
+      close: async () => {
+        updateClosing = true;
+        await updater?.close();
+        closing = true;
+        clearDiscordRetry();
+        await reloadQueue;
+        const shutdownStartedAt = Date.now();
+        logger.info("Shutdown step start", { step: "remoteAccess.close" });
+        let stepStartedAt = Date.now();
+        await remoteAccess.close();
+        unsubscribeRemoteAccess();
+        await remoteRuntimeWriteQueue;
+        logger.info("Shutdown step done", { step: "remoteAccess.close", ms: Date.now() - stepStartedAt });
 
-      logger.info("Shutdown step start", { step: "orchestrator.stop" });
-      stepStartedAt = Date.now();
-      await runtimeOrchestrator?.stop();
-      logger.info("Shutdown step done", { step: "orchestrator.stop", ms: Date.now() - stepStartedAt });
+        logger.info("Shutdown step start", { step: "orchestrator.stop" });
+        stepStartedAt = Date.now();
+        await runtimeOrchestrator?.stop();
+        logger.info("Shutdown step done", { step: "orchestrator.stop", ms: Date.now() - stepStartedAt });
 
-      logger.info("Shutdown step start", { step: "discord.disconnect" });
-      stepStartedAt = Date.now();
-      await gateway?.disconnect();
-      logger.info("Shutdown step done", { step: "discord.disconnect", ms: Date.now() - stepStartedAt });
+        logger.info("Shutdown step start", { step: "discord.disconnect" });
+        stepStartedAt = Date.now();
+        await gateway?.disconnect();
+        logger.info("Shutdown step done", { step: "discord.disconnect", ms: Date.now() - stepStartedAt });
 
-      logger.info("Shutdown step start", { step: "fastify.close" });
-      stepStartedAt = Date.now();
-      await app.close();
-      logger.info("Shutdown step done", { step: "fastify.close", ms: Date.now() - stepStartedAt });
+        logger.info("Shutdown step start", { step: "fastify.close" });
+        stepStartedAt = Date.now();
+        await app.close();
+        logger.info("Shutdown step done", { step: "fastify.close", ms: Date.now() - stepStartedAt });
 
-      await rm(appDataPath(options.dataRoot, "pid.json"), { force: true });
-      runtime.updatedAt = new Date().toISOString();
-      await atomicWriteJson(appDataPath(options.dataRoot, "runtime.json"), runtime);
-      logger.info("Backend stopped", { dataRoot: options.dataRoot, totalMs: Date.now() - shutdownStartedAt });
-    }
-  };
+        await rm(appDataPath(options.dataRoot, "pid.json"), { force: true });
+        runtime.updatedAt = new Date().toISOString();
+        await atomicWriteJson(appDataPath(options.dataRoot, "runtime.json"), runtime);
+        logger.info("Backend stopped", { dataRoot: options.dataRoot, totalMs: Date.now() - shutdownStartedAt });
+      }
+    };
+  } catch (error) {
+    await updater?.close();
+    throw error;
+  }
 }
 
 async function resolveRemoteDashboard(

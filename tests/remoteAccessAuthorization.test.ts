@@ -198,6 +198,26 @@ async function makeApp(
 }
 
 describe("remote-access route authorization", () => {
+  it("allows sanitized update status but forbids remote scheduling of process restarts", async () => {
+    const app = await makeApp();
+    const status = await dispatchInternal(app, principal(), undefined, { method: "GET", url: "/api/updates" });
+    expect(status.statusCode).toBe(200);
+    expect(status.json()).not.toHaveProperty("token");
+    expect(status.json()).not.toHaveProperty("dataRoot");
+    const context = await dispatchInternal(app, principal(), undefined, { method: "GET", url: "/api/config" });
+    expect(context.json().updates.enabled).toBe(false);
+    const forbidden = await dispatchInternal(app, principal(), undefined, {
+      method: "PUT", url: "/api/config", headers: { "idempotency-key": bytes32(0x57) }, payload: { updates: { enabled: true } }
+    });
+    expect(forbidden.statusCode).toBe(403);
+    expect(forbidden.json().error).toBe("RemoteConfigFieldForbidden");
+    const unrelated = await dispatchInternal(app, principal(), undefined, {
+      method: "PUT", url: "/api/config", headers: { "idempotency-key": bytes32(0x58) },
+      payload: { updates: context.json().updates, ocr: { enabled: false } }
+    });
+    expect(unrelated.statusCode).toBe(200);
+    expect(unrelated.json().updates.enabled).toBe(false);
+  });
   it.each([
     ["/api/remote-access", "GET"],
     ["/api/remote-access/diagnostics", "GET"]

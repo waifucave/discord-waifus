@@ -17,6 +17,7 @@ const DYNAMIC_PORT_START = 49_152;
 const DYNAMIC_PORT_COUNT = 16_384;
 
 export type StartRemoteGatewayRuntimeOptions = RemoteBrowserSessionStoreOptions & {
+  readonly updateActivity?: import("../../backend/updates/activity.js").UpdateActivity;
   readonly dataRoot: string;
   readonly pinnedHostId: string;
   readonly hostTrustEpoch: string;
@@ -66,6 +67,7 @@ export async function startRemoteGatewayRuntime(
   if (state.preferredPort === null) throw new Error("Remote gateway preferred port was not persisted.");
   let binding = await origins.allocateOrReuse(options.pinnedHostId, options.hostTrustEpoch);
   const common = {
+    updateActivity: options.updateActivity,
     surface: options.surface,
     frameAncestorOrigin: options.frameAncestorOrigin,
     bootstrapRedirectPath: options.bootstrapRedirectPath,

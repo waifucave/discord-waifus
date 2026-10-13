@@ -4,7 +4,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { createApiServer, resolveStaticDir } from "../src/api/server.js";
+import { createApiServer, resolveStaticDir, type ApiServerOptions } from "../src/api/server.js";
 import { createRuntimeState } from "../src/backend/runtime.js";
 import { ensureDataLayout } from "../src/config/layout.js";
 import { CURRENT_SCHEMA_VERSION } from "../src/shared/schemas/common.js";
@@ -21,7 +21,7 @@ afterEach(async () => {
   roots = [];
 });
 
-async function makeApp(extra: { llmFetch?: typeof fetch; runtimeOrchestrator?: unknown } = {}) {
+async function makeApp(extra: { llmFetch?: typeof fetch; runtimeOrchestrator?: unknown; runtimeControl?: ApiServerOptions["runtimeControl"] } = {}) {
   const root = await makeTempRoot();
   roots.push(root);
   await ensureDataLayout(root);
@@ -49,12 +49,29 @@ async function makeApp(extra: { llmFetch?: typeof fetch; runtimeOrchestrator?: u
     runtime,
     storage: new StorageService(root),
     ...(extra.llmFetch ? { llmGateway: { fetchImpl: extra.llmFetch } } : {}),
+    ...(extra.runtimeControl ? { runtimeControl: extra.runtimeControl } : {}),
     ...(extra.runtimeOrchestrator ? { runtimeOrchestrator: extra.runtimeOrchestrator as never } : {})
   });
   return { app, root };
 }
 
 describe("Backend API", () => {
+  it("persists idle-update settings without reloading or interrupting the runtime", async () => {
+    const reload = vi.fn(async () => undefined);
+    const { app } = await makeApp({ runtimeControl: { getOrchestrator: () => undefined,
+      pause: async () => undefined, resume: async () => undefined, reload } });
+    try {
+      const current = (await app.inject({ method: "GET", url: "/api/config" })).json();
+      const saved = await app.inject({ method: "PUT", url: "/api/config", payload: { updates: { enabled: true, idleMinutes: 7 } } });
+      expect(saved.statusCode).toBe(200);
+      expect(saved.json().updates).toEqual({ enabled: true, idleMinutes: 7, checkIntervalMinutes: 60 });
+      expect(saved.json().runtime).toEqual(current.runtime);
+      expect(reload).not.toHaveBeenCalled();
+      const unrelated = await app.inject({ method: "PUT", url: "/api/config", payload: { ocr: { enabled: false } } });
+      expect(unrelated.json().updates).toEqual(saved.json().updates);
+      expect(reload).toHaveBeenCalledExactlyOnceWith("config-updated");
+    } finally { await app.close(); }
+  });
   it("persists One shot independently of the global LLM and preserves it on unrelated server updates", async () => {
     const { app } = await makeApp();
     try {

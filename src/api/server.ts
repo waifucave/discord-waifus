@@ -95,8 +95,11 @@ import {
 } from "../shared/schemas/adminOperations.js";
 import { EventStream, serializeSseEvent } from "./eventStream.js";
 import type { CapturedQuery, CapturedReply } from "../shared/queryLog.js";
+import { installUpdateActivity, type UpdateActivity } from "../backend/updates/activity.js";
+import { automaticUpdateStatus } from "../backend/updates/worker.js";
 
 export type ApiServerOptions = {
+  updateActivity?: UpdateActivity;
   dataRoot: string;
   storage?: StorageService;
   runtime: RuntimeState;
@@ -322,6 +325,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   });
   const logger = options.logger ?? createLogger({ dataRoot: options.dataRoot });
   const app = fastify({ logger: false });
+  if (options.updateActivity) installUpdateActivity(app, options.updateActivity);
   const globalEvents = new EventStream<unknown>();
   const publishGlobalEvent = (event: string, data: unknown): void => {
     try {
@@ -476,29 +480,42 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   registerAdminOperationRoutes(app, operationStore);
   registerRemoteAccessRoutes(app, options.remoteAccess, options.dashboardBuild);
 
+  app.get("/api/updates", async () => automaticUpdateStatus(options.dataRoot));
   app.get("/api/config", async (request) => {
     const config = await loadAppConfig(options.dataRoot);
     return request.principal.kind === "remote_device" ? remoteAppConfig(config) : config;
   });
   app.put("/api/config", async (request) => {
     const patch = UpdateAppConfigBodySchema.parse(request.body);
+    const currentConfig = await loadAppConfig(options.dataRoot);
     if (
       request.principal.kind === "remote_device"
       && (
         hasOwn(patch.http, "host")
         || hasOwn(patch.frontend, "staticDir")
+        || (patch.updates !== undefined && Object.entries(patch.updates).some(([key, value]) =>
+          value !== currentConfig.updates[key as keyof typeof currentConfig.updates]))
       )
     ) {
       throw new ApiError(
         403,
-        "Host bind and filesystem-serving fields are local-only.",
+        "Host bind, filesystem-serving and automatic-update controls are local-only.",
         undefined,
         "RemoteConfigFieldForbidden"
       );
     }
     const saved = await updateAppConfig(options.dataRoot, patch);
     options.runtime.paused = saved.runtime.paused;
-    await options.runtimeControl?.reload("config-updated");
+    const { updates: _beforeUpdates, ...beforeRuntimeConfig } = currentConfig;
+    const { updates: _afterUpdates, ...afterRuntimeConfig } = saved;
+    // Enabling idle updates must not itself abort a live conversation via runtime reload.
+    const onlyUpdatesPatch = Object.keys(patch).every(key => key === "updates" || key === "schemaVersion");
+    const updatesChanged = patch.updates && JSON.stringify(currentConfig.updates) !== JSON.stringify(saved.updates);
+    const updaterOnlyChange = patch.updates && (onlyUpdatesPatch || (updatesChanged
+      && JSON.stringify(beforeRuntimeConfig) === JSON.stringify(afterRuntimeConfig)));
+    if (!updaterOnlyChange) {
+      await options.runtimeControl?.reload("config-updated");
+    }
     publishGlobalEvent("runtime", structuredClone(options.runtime));
     return request.principal.kind === "remote_device" ? remoteAppConfig(saved) : saved;
   });
@@ -1259,7 +1276,8 @@ function remoteAppConfig(config: AppConfig) {
     http: { port: config.http.port },
     runtime: config.runtime,
     frontend: {},
-    ocr: config.ocr
+    ocr: config.ocr,
+    updates: config.updates
   };
 }
 

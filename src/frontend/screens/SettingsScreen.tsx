@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { api } from "../api/client";
 import { useApi } from "../api/useApi";
-import type { AppConfig, DiscordBotConfig, DiscordBotsFile, ProvidersResponse, WaifusResponse } from "../api/types";
+import type { AppConfig, AutoUpdateStatus, DiscordBotConfig, DiscordBotsFile, ProvidersResponse, WaifusResponse } from "../api/types";
+import { useClientContext } from "../state/clientContext";
 import type { ViewId } from "../nav";
 import { FootRow, HeadRow, TabCells } from "./scaffold";
 import { Notice } from "../components/Notice";
@@ -168,10 +169,56 @@ function AppTab() {
         </div>
       </div>
 
+      {config.data && <UpdatesSection config={config} onResult={(ok, text) => { setTone(ok ? "ok" : "err"); setMessage(text); }} />}
       {config.data && <OcrSection config={config} onResult={(ok, text) => { setTone(ok ? "ok" : "err"); setMessage(text); }} />}
       <div className="cell growcell" />
     </div>
   );
+}
+
+function UpdatesSection({ config, onResult }: {
+  config: ReturnType<typeof useApi<AppConfig>>; onResult: (ok: boolean, text: string) => void;
+}) {
+  const context = useClientContext();
+  const status = useApi<AutoUpdateStatus>(signal => api.updates(signal), []);
+  const [draft, setDraft] = useState(config.data?.updates);
+  const [saving, setSaving] = useState(false);
+  const enabled = config.data?.updates.enabled;
+  const interval = config.data?.updates.checkIntervalMinutes;
+  const idle = config.data?.updates.idleMinutes;
+  useEffect(() => {
+    if (enabled !== undefined && interval !== undefined && idle !== undefined) {
+      setDraft({ enabled, checkIntervalMinutes: interval, idleMinutes: idle });
+    }
+  }, [enabled, interval, idle]);
+  useEffect(() => {
+    const timer = setInterval(status.reload, 15000);
+    return () => clearInterval(timer);
+  }, [status.reload]);
+  if (!draft) return null;
+  const disabled = context?.mode === "remote" || !status.data || status.data.state === "unsupported";
+  const valid = Number.isInteger(draft.checkIntervalMinutes) && draft.checkIntervalMinutes >= 15 && draft.checkIntervalMinutes <= 1440
+    && Number.isInteger(draft.idleMinutes) && draft.idleMinutes >= 1 && draft.idleMinutes <= 120;
+  return <section className="cell" style={{ padding: "18px 26px", flex: "none" }} aria-label="Automatic updates">
+    <h3 className="t-title">Idle-only updates</h3>
+    <p className="t-mute t-small">Stage and verify newer patch releases, then restart this machine only after all managed hosts and remote gateways are quiet. Active conversations, assistant work and transfers are never interrupted.</p>
+    <p className="t-micro">{status.error ? "Update status unavailable" : status.data ? `${status.data.currentVersion} · ${status.data.state.replaceAll("_", " ")}${status.data.candidateVersion ? ` · available ${status.data.candidateVersion}` : ""}${status.data.reason !== "none" ? ` · ${status.data.reason.replaceAll("_", " ")}` : ""}` : "Checking update support…"}</p>
+    <fieldset disabled={disabled} style={{ border: 0, padding: 0, display: "flex", flexWrap: "wrap", gap: 16 }}>
+      <label className="checkbox-chip"><input type="checkbox" checked={draft.enabled} onChange={e => setDraft({ ...draft, enabled: e.target.checked })} />Enable automatic updates</label>
+      <label className="field">Check every (minutes)<input className="input" type="number" min={15} max={1440} value={draft.checkIntervalMinutes} onChange={e => setDraft({ ...draft, checkIntervalMinutes: Number(e.target.value) })} /></label>
+      <label className="field">Quiet window (minutes)<input className="input" type="number" min={1} max={120} value={draft.idleMinutes} onChange={e => setDraft({ ...draft, idleMinutes: Number(e.target.value) })} /></label>
+      <button className="btn primary" disabled={!valid || saving} onClick={async () => {
+        setSaving(true);
+        try {
+          const saved = await api.putUpdateSettings(draft);
+          config.setData(saved); status.reload(); onResult(true, "Automatic-update settings saved.");
+        } catch (error) { onResult(false, (error as Error).message); }
+        finally { setSaving(false); }
+      }}>{saving ? "Saving…" : "Save update settings"}</button>
+    </fieldset>
+    <p className="t-mute t-small">Local control only. Global npm installs only; source checkouts are not modified. On macOS, remote-enabled processes wait for an unlocked keychain without asking for a password. A restarted remote gateway ends its browser sessions, but preserves saved pairing.</p>
+    {context?.mode === "remote" && <Notice>Change these settings on the host locally; remote management cannot schedule host process restarts.</Notice>}
+  </section>;
 }
 
 function OcrSection({

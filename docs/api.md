@@ -183,6 +183,7 @@ Config is backed by `config.toml` under the data root. Default config:
   "http": { "host": "127.0.0.1", "port": 3888 },
   "runtime": { "autoConnectDiscord": true, "paused": false },
   "frontend": {},
+  "updates": { "enabled": false, "checkIntervalMinutes": 60, "idleMinutes": 5 },
   "ocr": {
     "enabled": true,
     "engine": "auto",
@@ -199,6 +200,14 @@ Config is backed by `config.toml` under the data root. Default config:
 configuration is validated before it is saved. Send `{"frontend":{"staticDir":null}}` to clear an
 explicit static directory. A remotely authenticated device receives a redacted config and cannot
 read or write the host bind address or frontend filesystem path; those settings remain local-only.
+Changes to `updates` are also local-only because they authorize future process restarts. A remote
+client may resend unchanged update settings with an unrelated config edit. Updates default off;
+check intervals accept 15–1440 minutes and quiet windows accept 1–120 minutes. Omitted nested
+fields retain their values. `GET /api/updates` is a full-admin read-only endpoint returning
+`state`, `currentVersion`, `candidateVersion`, `lastCheckAt` and a closed diagnostic `reason`;
+it never exposes local control ports, capabilities, filesystem paths or installer output.
+See the README's automatic-update section for installation eligibility, maintenance admission,
+rollback limits and browser-session behavior. It is not an API for starting arbitrary commands.
 
 OCR is used only as a fallback for models that are not marked as vision-capable. `engine = "auto"` tries native OS OCR first where supported (Apple Vision on macOS), then the bundled WebAssembly Tesseract (`tesseract.js`, shipped with the package and working offline on every platform), then an explicit system Tesseract fallback. Valid engine values are `auto`, `apple-vision`, `bundled-tesseract`, and `system-tesseract`; legacy `tesseract` configs load as `system-tesseract`. Temporary image downloads live under `app/tmp/ocr`; cached text results live under `app/cache/ocr` and expire by `cacheTtlHours`. `POST /api/cache/ocr/clear` removes OCR cache and temporary OCR files.
 

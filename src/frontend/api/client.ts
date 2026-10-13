@@ -3,6 +3,7 @@ import type {
   AssistantActionDetail,
   AssistantStoredMessage,
   AppConfig,
+  AutoUpdateStatus,
   ActivationStartResult,
   ActivationStatus,
   ApprovePairingInput,
@@ -359,6 +360,8 @@ export const api = {
 
   // Config
   getConfig: (signal?: AbortSignal) => request<AppConfig>("GET", "/api/config", { signal }),
+  updates: (signal?: AbortSignal) => request<AutoUpdateStatus>("GET", "/api/updates", { signal }),
+  putUpdateSettings: (updates: AppConfig["updates"]) => request<AppConfig>("PUT", "/api/config", { body: { updates } }),
   putConfig: (config: AppConfig) => request<AppConfig>("PUT", "/api/config", { body: config }),
   clearOcrCache: () =>
     request<{ accepted: boolean; message: string }>("POST", "/api/cache/ocr/clear"),
