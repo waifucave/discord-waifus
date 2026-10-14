@@ -5,7 +5,6 @@ import {
 } from "./fixtures/remoteHarness.js";
 
 let harness: RemoteHarness | undefined;
-const DASHBOARD_FRAME = 'iframe[title="Waifus host dashboard"]';
 
 test.afterEach(async () => {
   await harness?.close();
@@ -22,15 +21,14 @@ async function openFullDashboard(page: Page): Promise<RemoteHarness> {
   await current.guardBrowserEgress(page);
   await current.openShell(page);
   await expect(
-    page.frameLocator(DASHBOARD_FRAME).getByText("Discord Waifus", { exact: true })
+    page.frameLocator('iframe[title="Waifus host dashboard"]').getByText("Discord Waifus", { exact: true })
   ).toBeVisible();
   return current;
 }
 
 async function dashboardFrame(page: Page): Promise<Frame> {
-  const handle = await page.locator(DASHBOARD_FRAME).elementHandle();
-  const frame = await handle?.contentFrame();
-  if (!frame) throw new Error("The trusted dashboard frame was not available.");
+  const frame = await (await page.locator('iframe[title="Waifus host dashboard"]').elementHandle())?.contentFrame();
+  if (!frame) throw new Error("Isolated dashboard was not available.");
   return frame;
 }
 
@@ -92,7 +90,7 @@ test("manages invitations, attended approvals, and revocation through the remote
   const dashboard = await dashboardFrame(page);
   await openSettings(dashboard, "Remote Access");
 
-  await expect(dashboard.getByText("Connected directly", { exact: true })).toBeVisible();
+  await expect(dashboard.getByText("Connected directly", { exact: true })).not.toBeVisible();
   await expect(dashboard.getByText("Studio Host", { exact: true }).first()).toBeVisible();
   await expect(dashboard.getByText("1.5.250", { exact: true })).toBeVisible();
   await expect(dashboard.getByRole("button", { name: "Reset identity" })).toBeDisabled();

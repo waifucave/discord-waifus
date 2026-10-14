@@ -60,7 +60,8 @@ use the same signed `ts-connect` helper package resolver and authenticated WIPC 
 helper owns installation/pair keys in the native OS vault, performs bounded coordination through
 the compiled `pair.waifucave.com` profile, and carries dashboard/API traffic only over an
 authenticated direct peer path. Fastify is never exposed as a network listener. The remote browser
-first sees the isolated connection shell in `src/frontend/remote-shell/`; after pairing and direct
+normally opens its remembered host's dashboard without a visible connection screen/banner;
+`waifus remote --setup` opens the isolated setup UI in `src/frontend/remote-shell/`. After pairing and direct
 authentication, the gateway downloads, hashes, and serves the host's exact bundled dashboard from
 its verified manifest. Browser origin/session/CSRF checks and the route policy remain enforced at
 the gateway and host bridge. There is deliberately no DERP, TURN, peer-relay, or arbitrary
@@ -77,15 +78,23 @@ Coordinator or direct-path failures require diagnosis/retry, not automatic trust
 re-pairing. On macOS, a locked login keychain can block helper startup; unlock interactively
 and consult the README for SSH-assisted setup without exposing credentials.
 
-**Browser session lifetime** (`src/remote/gateway/session.ts`): sessions have no idle timeout or
-eight-hour cutoff. Authority is held in the gateway process and survives browser suspension while
-that process remains alive and the cookie is retained. The numeric wire deadlines use
+**Browser session lifetime** (`src/remote/gateway/session.ts`, `browserPersistence.ts`): sessions
+have no idle timeout or eight-hour cutoff. Owner-only files store only public browser reconnect
+keys for the exact host/trust/origin binding. The trusted frame stores a non-exportable P-256
+WebCrypto key in IndexedDB; bounded 30-second single-use challenges prove ownership and obtain
+fresh cookies/CSRF and gateway/helper launch authority. Old cookies are rejected after restart;
+private keys, cookies, CSRF, helper launches and bootstrap links are never saved by the gateway.
+Recovery requires WebCrypto and IndexedDB. The numeric wire deadlines use
 `REMOTE_SESSION_LIFETIME_SENTINEL_MS`, not a periodic renewal. The cookie is HttpOnly,
-SameSite=Strict, Path=/ with no Max-Age/Expires. Explicit invalidation or gateway stop/restart
-ends browser authority; cookie loss also requires reopening the connection window. Saved device
+SameSite=Strict, Path=/ with no Max-Age/Expires. Disconnect/forget invalidates saved browser
+authority; trust/origin changes never migrate it. Browser-key loss needs a fresh CLI bootstrap.
+Re-running `waifus remote` reopens the window without a daemon restart through an owner-private
+launcher; browser-origin requests cannot use that capability. Saved device
 pairing persists independently, and revocation/origin/CSRF checks remain enforced. Bootstrap
-tokens are still single-use and expire after five minutes. The dashboard frame's periodic health
-check stays local to the gateway; it does not renew activation through the coordinator.
+tokens are still single-use and expire after five minutes. The invisible frame remains a security
+boundary against host-controlled top-level navigation. Its stable private endpoint and local
+passive health check restore the child after restart without another connection window. No
+recovery polling renews activation through the coordinator or resets the update quiet window.
 
 Production helper launch is fail-closed: `src/remote/helperReleaseTrust.ts` contains only reviewed
 Ed25519 release public keys, `remote-compatibility.json` binds the exact app/helper/protocol window,

@@ -338,6 +338,17 @@ export function validateRemoteBootstrapRequest(
   });
 }
 
+/** Proof recovery has no cookie yet; it still requires the exact local request envelope. */
+export function validateRemoteBrowserRecoveryRequest(
+  request: RemoteBrowserRequest,
+  options: RemoteBrowserSecurityOptions
+): void {
+  const validated = validateEnvelope(request, options);
+  if (validated.method !== "GET" && validated.method !== "POST") {
+    fail("browser_request_invalid", "Browser recovery accepts only GET or POST.");
+  }
+}
+
 export function validateRemoteBrowserRequest(
   request: RemoteBrowserRequest,
   session: RemoteBrowserSession,

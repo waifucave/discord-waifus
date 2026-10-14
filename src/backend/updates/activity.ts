@@ -52,7 +52,7 @@ export function passiveUpdateRequest(method: string, url: string): boolean {
   const target = url.split("?", 1)[0];
   return /^\/api\/(?:health|status|runtime|updates|logs|queries|replies|events|operations(?:\/[^/]+)?|remote-access(?:\/diagnostics)?|client-context)$/.test(target)
     || /^\/api\/assistant\/conversations\/[^/]+\/stream$/.test(target)
-    || /^\/_waifus_remote\/(?:frame-keepalive|v1\/(?:bootstrap|events))$/.test(target);
+    || /^\/_waifus_remote\/(?:resume-state|frame-keepalive|v1\/(?:bootstrap|events))$/.test(target);
 }
 
 export function installUpdateActivity(app: FastifyInstance, activity: UpdateActivity): void {

@@ -159,15 +159,24 @@ waifus remote
 8. On the remote, choose the remembered host and click **Connect**. Its dashboard shows the
    host's existing waifus and rooms—not the remote computer's local data.
 
-For later connections, run `waifus remote` and select the remembered host. No new invitation or
-separate Tailscale installation is needed. The host must stay running and awake. Use the host's
+For later connections, run `waifus remote`: it connects to the last selected host (or the only
+remembered host) and opens its dashboard without showing a connection screen or connection banner.
+Running it again reopens a browser window without stopping the gateway.
+Use `waifus remote --setup` for activation, pairing, or choosing another host.
+No new invitation or separate Tailscale installation is needed. The host must stay running and awake. Use the host's
 **Trusted devices** controls to revoke a device you no longer want to trust.
 
-Remote browser sessions have no idle timeout or eight-hour cutoff. They remain valid while
-the gateway is running and the browser retains its session cookie, including after a long
-browser suspension. Stopping/restarting the gateway invalidates its browser sessions; clearing
-cookies or ending the browser session may also require reopening with `waifus remote`.
-Your saved pairing remains intact. Device revocation and origin/CSRF checks still apply.
+Remote browser sessions have no idle timeout or eight-hour cutoff. A non-exportable browser key
+in the trusted local page's IndexedDB proves ownership after restart; owner-only gateway files
+store only its public key, scoped to the paired host, trust epoch and exact isolated origin.
+Cookies remain HttpOnly and SameSite=Strict. Old cookies are invalid after restart. An open
+dashboard tab retries locally and obtains a fresh session through a short-lived, single-use
+challenge, using fresh helper launch authority. This needs browser WebCrypto/IndexedDB support.
+These polls never go to the coordinator; bootstrap links remain single-use and are not saved.
+An invisible isolation frame still prevents host pages from navigating your tab or accessing
+the local setup UI. Clearing browser site data, disconnecting/forgetting a host, trust/origin changes,
+or conflicting local ports can require reopening with `waifus remote`. Device pairing is separate;
+revocation and origin/CSRF checks still apply. This does not bypass a locked macOS Keychain.
 
 `waifus start` and `waifus remote` can coexist: the local host and remote gateway are separate
 processes. `waifus remote stop` stops only the gateway. Pairings belong to their data root;
@@ -318,6 +327,7 @@ Everything is also drivable from the terminal via the global `waifus` command:
 | `waifus remote`    | Open the local remote-management gateway and dashboard. |
 | `waifus remote status` | Show only the remote gateway daemon.               |
 | `waifus remote stop` | Stop only the remote gateway daemon.                 |
+| `waifus remote --setup` | Open activation, pairing and remembered-host settings. |
 | `waifus doctor`    | Health check (incl. whether bundled OCR is usable).     |
 | `waifus clean`     | Delete saved user data (use intentionally!).            |
 | `waifus update`    | Update the installed package.                           |
@@ -346,7 +356,7 @@ The default is an hourly npm `latest` check and five minutes without active work
 
 The updater coordinates every registered host and remote gateway using that global installation, including different data roots. All must opt in and be quiet. It waits for channel/background jobs, assistant turns, API/file transfers, runtime reloads and active pairing/activation work. Passive status polling and event subscriptions do not extend the quiet window. Packages and the current platform's signed helper are staged/verified first; it then reserves a short maintenance window, stops the idle processes, installs the exact staged release and restarts the same roles/data roots. If replacement or verification fails, it attempts to restore the previous package before restarting. Manual and automatic installs share a transaction lock. Configuration, provider credentials, characters, rooms and saved pairings are never cleared by the updater.
 
-On macOS, remote-enabled hosts/gateways postpone restart while the login keychain is locked. The status probe is read-only and never shows a password prompt. A remote-gateway restart ends its browser sessions; reopen it with `waifus remote stop` followed by `waifus remote` (no new device pairing is needed). Remote users may read update status but cannot enable/schedule host process restarts.
+On macOS, remote-enabled hosts/gateways postpone restart while the login keychain is locked. The status probe is read-only and never shows a password prompt. An open dashboard tab recovers after a gateway restart using its browser-key proof, without another connection window or pairing. Remote users may read update status but cannot enable/schedule host process restarts.
 
 `GET /api/updates` and `waifus update --auto status` show sanitized status. Bounded private history and a crash-recovery journal live under the normal data root's `app/updates/` installation-specific directory; no provider keys or child-process output are recorded or uploaded. Recovery does not roll back user-data migrations. If a crash, lost permissions or failed package restore leaves the CLI unusable, reinstall with `npm install -g @waifucave/discord-waifus` and start your roles again. An isolated native macOS replacement/restart cycle is verified; native Windows/Linux updater cycles remain untested. Fixture tests are not that proof.
 

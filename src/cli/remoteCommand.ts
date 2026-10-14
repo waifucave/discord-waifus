@@ -20,6 +20,7 @@ import {
 import { RemoteDaemonStartupHandoffSchema } from "../remote/daemonState.js";
 import { flagBoolean, flagString, type ParsedCli } from "./parser.js";
 import { openBrowser } from "./openBrowser.js";
+import { reopenRemoteBrowser } from "../remote/browserLauncher.js";
 import {
   processIsAlive,
   readProcessState,
@@ -67,6 +68,7 @@ export type RemoteCliOptions = {
     dataRoot: string;
     port?: number;
     host?: string;
+    setup?: boolean;
   }>) => Promise<RunningRemoteCliDaemon>;
   readonly remoteStartWaiter?: (
     dataRoot: string,
@@ -137,6 +139,7 @@ async function defaultForegroundStarter(input: Readonly<{
   dataRoot: string;
   port?: number;
   host?: string;
+  setup?: boolean;
 }>): Promise<RunningRemoteCliDaemon> {
   const appVersion = await readPackageVersion();
   const paths = remoteRolePaths(input.dataRoot, "remote");
@@ -167,6 +170,7 @@ function remoteChildArgs(parsed: ParsedCli, dataRoot: string): string[] {
   const port = flagString(parsed.flags, "port");
   if (host) args.push("--host", host);
   if (port) args.push("--port", port);
+  if (flagBoolean(parsed.flags, "setup")) args.push("--setup");
   return args;
 }
 
@@ -242,6 +246,10 @@ async function remoteDetached(
   const existing = await readProcessState(paths.runtimePid, RemoteDaemonStateReadSchema);
   if (existing && isAlive(existing.pid)) {
     console.log(`waifus remote gateway already running at ${existing.connectionShellOrigin}`);
+    if (!flagBoolean(parsed.flags, "noOpen")) {
+      const url = await reopenRemoteBrowser(dataRoot, existing, flagBoolean(parsed.flags, "setup"));
+      if (url) { await (options.browserOpener ?? openBrowser)(url); return 0; }
+    }
     console.log("Use `waifus remote stop` before restarting if a new browser session is needed.");
     return 0;
   }
@@ -298,6 +306,7 @@ async function remoteForeground(
   const running = await starter({
     dataRoot,
     port: parsePort(parsed),
+    ...(flagBoolean(parsed.flags, "setup") ? { setup: true } : {}),
     ...(flagString(parsed.flags, "host") ? { host: flagString(parsed.flags, "host") } : {})
   });
   const ready = validateHandoff({

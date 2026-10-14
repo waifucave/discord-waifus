@@ -37,6 +37,53 @@ try {
 } catch { exit 1 }
 `;
 
+const WINDOWS_PRIVATE_FILE_CHECK_SCRIPT = `
+$ErrorActionPreference = 'Stop'
+try {
+  [Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
+  $file = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd()))
+  $item = [IO.FileInfo]::new($file)
+  if (($item.Attributes -band [IO.FileAttributes]::Directory) -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { exit 1 }
+  $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+  $system = [Security.Principal.SecurityIdentifier]::new('S-1-5-18')
+  $acl = [IO.File]::GetAccessControl($file)
+  if ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $sid.Value -or !$acl.AreAccessRulesProtected) { exit 1 }
+  $rules = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
+  if ($rules.Count -ne 2) { exit 1 }
+  $found = @{}
+  foreach ($rule in $rules) {
+    $id = $rule.IdentityReference.Value
+    if ($rule.IsInherited -or $rule.AccessControlType -ne 'Allow' -or $rule.FileSystemRights -ne 'FullControl') { exit 1 }
+    if ($id -ne $sid.Value -and $id -ne $system.Value) { exit 1 }
+    $found[$id] = $true
+  }
+  if (!$found[$sid.Value] -or !$found[$system.Value]) { exit 1 }
+  [Console]::Out.Write('protected')
+} catch { exit 1 }
+`;
+
+/** Read-only validation: never repair an existing credential's permissions silently. */
+export async function validatePrivateMetadataFile(filePath: string, maximumBytes: number): Promise<void> {
+  const info = await lstat(filePath);
+  if (!path.isAbsolute(filePath) || !info.isFile() || info.isSymbolicLink() || info.size > maximumBytes) {
+    throw new Error("Untrusted private metadata file.");
+  }
+  if (process.platform !== "win32") {
+    if (info.uid !== process.getuid?.() || (info.mode & 0o077) !== 0) throw new Error("Untrusted private metadata file.");
+    return;
+  }
+  const windowsRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT;
+  if (!windowsRoot || !/^[A-Za-z]:\\/u.test(windowsRoot) || windowsRoot.includes("\0")) throw new Error("Private metadata verification unavailable.");
+  await new Promise<void>((resolve, reject) => {
+    const child = execFile(path.win32.join(windowsRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+      ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(WINDOWS_PRIVATE_FILE_CHECK_SCRIPT, "utf16le").toString("base64")],
+      { encoding: "utf8", windowsHide: true, timeout: 15_000, maxBuffer: 4096, env: { SystemRoot: windowsRoot, WINDIR: windowsRoot } },
+      (error, output) => error || output !== "protected" ? reject(new Error("Untrusted private metadata file.")) : resolve());
+    child.stdin?.on("error", reject);
+    child.stdin?.end(Buffer.from(filePath, "utf8").toString("base64"));
+  });
+}
+
 /** Only for a newly created, still-empty file owned by the current writer. */
 export async function protectNewPrivateMetadataFile(filePath: string): Promise<void> {
   const failure = () => new Error("Private metadata file protection failed.");

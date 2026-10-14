@@ -71,14 +71,10 @@ test("requires the short-code comparison before a completed pair can open its ho
   expect(new URL(page.url()).origin).toBe(harness.shell.origin);
 
   harness.setPairOutcome("completed");
-  const dashboardElement = page.locator('iframe[title="Waifus host dashboard"]');
   await expect(dashboard(page).getByTestId("host-build")).toContainText("Host A · 1.5.250");
-  await expect(dashboardElement).toHaveAttribute(
-    "sandbox",
-    "allow-scripts allow-forms allow-same-origin allow-downloads"
-  );
-  await expect(dashboardElement).toHaveAttribute("src", "/_waifus_remote/frame");
-  await expect(dashboardElement).toHaveAttribute("referrerpolicy", "no-referrer");
+  await expect(page.locator("iframe")).toHaveCount(1);
+  const policy = (await page.request.get(page.url())).headers()["content-security-policy"];
+  expect(policy).toContain("frame-ancestors 'none'");
   expect(page.url()).not.toContain("01AB-CDEF");
   expect(await browserSecretSurfaces(page)).not.toContain("01AB-CDEF");
   expect(harness.ledger.pairSubmissions).toEqual([
@@ -119,17 +115,12 @@ test("automatically hands one direct remembered host to its isolated verified da
   await harness.openShell(page);
 
   await expect(dashboard(page).getByTestId("host-build")).toContainText("Host A · 1.5.250");
-  const wrapperUrl = new URL(page.url());
-  const dashboardFrame = page.frames().find((frame) => frame !== page.mainFrame());
-  expect(dashboardFrame).toBeDefined();
-  const dashboardUrl = new URL(dashboardFrame!.url());
-  expect(wrapperUrl.origin).not.toBe(harness.shell.origin);
-  expect(wrapperUrl.hostname).toBe(dashboardUrl.hostname);
-  expect(wrapperUrl.port).not.toBe(dashboardUrl.port);
-  expect(wrapperUrl.pathname).toBe("/");
+  const dashboardUrl = new URL(page.url());
+  expect(dashboardUrl.origin).not.toBe(harness.shell.origin);
+  expect(dashboardUrl.hostname).not.toBe(harness.shell.hostname);
+  expect(page.frames()).toHaveLength(2);
   expect(dashboardUrl.pathname).toBe("/");
   expect(page.url()).not.toContain("/_waifus_remote/bootstrap/");
-  expect(dashboardFrame!.url()).not.toContain("/_waifus_remote/bootstrap/");
   const dashboardSession = (await page.context().cookies(dashboardUrl.origin)).find(
     (cookie) => cookie.httpOnly
   );
@@ -146,7 +137,7 @@ test("automatically hands one direct remembered host to its isolated verified da
 test("opens an already-direct explicitly selected host when Connect leaves bootstrap unchanged", async ({ page }) => {
   harness = await createRemoteHarness({ rememberedHosts: "one", explicitSelectedHost: "a" });
   await harness.guardBrowserEgress(page);
-  await harness.openShell(page);
+  await harness.openShell(page, true);
   await expect(page.getByRole("heading", { name: "Connect to your Waifus host." })).toBeVisible();
   await page.getByRole("button", { name: "Connect", exact: true }).click();
   await expect(dashboard(page).getByTestId("host-build")).toContainText("Host A · 1.5.250");
@@ -160,11 +151,46 @@ test("does not open an already-direct host when its explicit Connect request fai
   await page.route("**/_waifus_remote/v1/hosts/*/connect", route => route.fulfill({
     status: 503, contentType: "application/json", body: JSON.stringify({ error: "RemoteUnavailable" })
   }));
-  await harness.openShell(page);
+  await harness.openShell(page, true);
   await page.getByRole("button", { name: "Connect", exact: true }).click();
   await expect(page.getByRole("alert")).toContainText("RemoteUnavailable");
   expect(new URL(page.url()).origin).toBe(harness.shell.origin);
   expect(harness.ledger.gatewayLaunches).toEqual([]);
+});
+
+test("opens the saved explicit host without setup and recovers the same tab after a gateway restart", async ({ page }) => {
+  harness = await createRemoteHarness({ rememberedHosts: "one", explicitSelectedHost: "a" });
+  await harness.guardBrowserEgress(page);
+  const registered = page.waitForResponse(response => response.url().endsWith("/_waifus_remote/browser-register") && response.status() === 200);
+  await harness.openShell(page);
+  await expect(dashboard(page).getByTestId("host-build")).toContainText("Host A · 1.5.250");
+  const before = page.url();
+  const loaded = await page.frames().find(frame => frame !== page.mainFrame())!.evaluate(() => performance.timeOrigin);
+  await registered;
+  expect(await page.evaluate(async () => {
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const open = indexedDB.open("waifus-browser-recovery", 1);
+      open.onsuccess = () => resolve(open.result); open.onerror = () => reject(open.error);
+    });
+    try {
+      const record = await new Promise<{ privateKey: CryptoKey }>((resolve, reject) => {
+        const get = db.transaction("keys").objectStore("keys").get("dashboard");
+        get.onsuccess = () => resolve(get.result); get.onerror = () => reject(get.error);
+      });
+      try { await crypto.subtle.exportKey("jwk", record.privateKey); return true; }
+      catch { return record.privateKey.extractable; }
+    } finally { db.close(); }
+  })).toBe(false);
+  await harness.restartDashboard();
+  await expect.poll(() => page.frames().find(frame => frame !== page.mainFrame())!.evaluate(() => performance.timeOrigin)).not.toBe(loaded);
+  expect(page.url()).toBe(before);
+  await expect(dashboard(page).getByTestId("host-build")).toContainText("Host A · 1.5.250");
+  await expect(page.getByRole("heading", { name: "Connect to your Waifus host." })).toHaveCount(0);
+  expect(harness.ledger.gatewayLaunches).toHaveLength(2);
+  await page.context().clearCookies();
+  await page.reload();
+  await expect(dashboard(page).getByTestId("host-build")).toContainText("Host A · 1.5.250");
+  expect(page.url()).toBe(before);
 });
 
 test("keeps multiple hosts in the shell until the user chooses one", async ({ page }) => {

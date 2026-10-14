@@ -5,7 +5,6 @@ import {
   type RemoteHarness
 } from "./fixtures/remoteHarness.js";
 
-const DASHBOARD_FRAME = 'iframe[title="Waifus host dashboard"]';
 const bytes32 = (value: number): string => Buffer.alloc(32, value).toString("base64url");
 
 let harness: RemoteHarness | undefined;
@@ -17,11 +16,10 @@ test.afterEach(async () => {
 
 async function dashboardFrame(page: Page): Promise<Frame> {
   await expect(
-    page.frameLocator(DASHBOARD_FRAME).getByText("Discord Waifus", { exact: true })
+    page.frameLocator('iframe[title="Waifus host dashboard"]').getByText("Discord Waifus", { exact: true })
   ).toBeVisible();
-  const handle = await page.locator(DASHBOARD_FRAME).elementHandle();
-  const frame = await handle?.contentFrame();
-  if (!frame) throw new Error("The trusted dashboard frame was not available.");
+  const frame = await (await page.locator('iframe[title="Waifus host dashboard"]').elementHandle())?.contentFrame();
+  if (!frame) throw new Error("Isolated dashboard was not available.");
   return frame;
 }
 

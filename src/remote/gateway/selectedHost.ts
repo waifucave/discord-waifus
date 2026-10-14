@@ -16,6 +16,7 @@ import {
 } from "../dashboardDownloader.js";
 import { RemoteSelectedHostProxy } from "./proxy.js";
 import type { RemoteGatewayHandlerSecurity } from "./server.js";
+import { BROWSER_RECOVERY_SCRIPT, recoveryTag, waitingDashboard } from "./browserRecovery.js";
 
 const IMMUTABLE_CACHE_CONTROL = "public, max-age=31536000, immutable";
 
@@ -69,6 +70,17 @@ export class RemoteSelectedHostGateway {
     security: RemoteGatewayHandlerSecurity
   ): Promise<unknown> {
     const target = browserContext.canonicalTarget;
+    if (browserContext.method === "GET" && target === "/_waifus_remote/resume-state") {
+      return reply.header("cache-control", "no-store").send({ launch: browserContext.gatewayLaunchId,
+        direct: this.#options.connectionState() === "direct" });
+    }
+    if (browserContext.method === "GET" && target === "/_waifus_remote/resume.js") {
+      return reply.header("cache-control", "no-store").header("content-type", "application/javascript; charset=utf-8").send(BROWSER_RECOVERY_SCRIPT);
+    }
+    if (browserContext.method === "GET" && target === "/_waifus_remote/resume.css") {
+      return reply.header("cache-control", "no-store").header("content-type", "text/css; charset=utf-8")
+        .send('.remote-connection-banner[data-tone="ok"]{display:none}.waifus-recovery-notice{position:fixed;bottom:12px;right:12px;padding:10px;background:#fff;color:#111;border:1px solid #999;z-index:2147483647;font:14px system-ui}');
+    }
     if (target === "/api" || target.startsWith("/api/") || target.startsWith("/api?")) {
       return this.#proxy.handle(request, reply, browserContext, security);
     }
@@ -87,6 +99,10 @@ export class RemoteSelectedHostGateway {
     try {
       build = await this.#ensureBuild(browserContext);
     } catch {
+      if (acceptsHtml(request) && isSpaRoute(pathname) && browserContext.method === "GET") {
+        return reply.header("cache-control", "no-store").header("content-type", "text/html; charset=utf-8")
+          .send(waitingDashboard(browserContext.gatewayLaunchId));
+      }
       return reply.code(503).send({ error: "DirectUnavailable" });
     }
     const assetPath = build.manifest.assets.some((asset) => asset.path === requestedAssetPath)
@@ -115,6 +131,12 @@ export class RemoteSelectedHostGateway {
       reply.header("etag", `"${verified.asset.sha256}"`);
     }
     if (browserContext.method === "HEAD") return reply.send();
+    if (verified.asset.path === "index.html") {
+      reply.removeHeader("content-length");
+      const html = verified.body.toString("utf8");
+      const tag = recoveryTag(browserContext.gatewayLaunchId);
+      return reply.send(/<\/head>/i.test(html) ? html.replace(/<\/head>/i, `${tag}</head>`) : tag + html);
+    }
     return reply.send(verified.body);
   }
 

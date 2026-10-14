@@ -196,6 +196,8 @@ export class RemoteBrowserSessionStore {
     this.#sessions.delete(browserSessionId);
   }
 
+  invalidateAll(): void { this.#sessions.clear(); }
+
   close(): void {
     this.#closed = true;
     this.#bootstrapTokens.clear();

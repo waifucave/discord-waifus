@@ -14,6 +14,7 @@ import { remoteRolePaths } from "./paths.js";
 import type { RememberedHostRecordV1, RememberedHostStateV1 } from "./rememberedHosts.js";
 import { UpdateActivity } from "../backend/updates/activity.js";
 import { registerAutomaticUpdates } from "../backend/updates/control.js";
+import { publishBrowserLauncher } from "./browserLauncher.js";
 
 const DEFAULT_STATUS_REFRESH_MS = 1_000;
 
@@ -24,6 +25,7 @@ export type StartRemoteGatewayDaemonOptions = Readonly<{
   supervisor: HelperSupervisor;
   port?: number;
   host?: string;
+  setup?: boolean;
   statusRefreshMs?: number;
   onStatusError?: (error: unknown) => void;
 }>;
@@ -215,9 +217,10 @@ export async function startRemoteGatewayDaemon(
       await application.connectRememberedHost(selected).catch(() => undefined);
     }
     runtime = await buildRuntimeState(application);
-    const bootstrapUrl = application.shell.bootstrapUrl;
+    const bootstrapUrl = options.setup ? application.shell.issueBootstrapUrl("/#setup") : application.shell.bootstrapUrl;
     published = true;
     await publishRemoteDaemonStartup({ dataRoot, runtime, bootstrapUrl });
+    await publishBrowserLauncher(dataRoot, runtime, application.launcherToken);
     unsubscribe = options.supervisor.subscribe(() => {
       void queueRefresh().catch((error) => options.onStatusError?.(error));
     });

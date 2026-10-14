@@ -156,6 +156,17 @@ describe("remote gateway application", () => {
     );
     expect(context.status).toBe(200);
     const csrf = String(context.headers["x-waifus-csrf"]);
+    expect((await request(application.shell.port, "/_waifus_remote/launcher",
+      { host: shellAuthority }, { setup: false })).status).toBe(403);
+    expect((await request(application.shell.port, "/_waifus_remote/launcher",
+      { ...headers, "x-waifus-launcher": application.launcherToken }, { setup: false })).status).toBe(403);
+    const reopened = await request(application.shell.port, "/_waifus_remote/launcher",
+      { host: shellAuthority, "x-waifus-launcher": application.launcherToken }, { setup: true });
+    expect(reopened.status).toBe(200);
+    const setupToken = new URL(JSON.parse(reopened.body).url);
+    const setupOpen = await request(application.shell.port, setupToken.pathname,
+      { host: shellAuthority, "sec-fetch-site": "none" });
+    expect(setupOpen.headers.location).toBe("/#setup");
 
     const connect = async (record: RememberedHostRecordV1) => request(
       application.shell.port,
@@ -176,6 +187,9 @@ describe("remote gateway application", () => {
     const firstFrame = new URL(String(firstOpen.headers.location));
     expect(firstFrame.hostname).not.toBe(application.shell.hostname);
     expect(supervisor.registerGatewayLaunch).toHaveBeenCalledTimes(2);
+    const launch = await request(application.shell.port, "/_waifus_remote/launch", headers);
+    expect(launch.status).toBe(303);
+    expect(new URL(String(launch.headers.location)).origin).toBe(firstFrame.origin);
     const simultaneousOpens = await Promise.all([open(first), open(first)]);
     expect(simultaneousOpens.map((response) => response.status)).toEqual([303, 303]);
     expect(simultaneousOpens.map((response) => new URL(String(response.headers.location)).origin))
@@ -185,11 +199,11 @@ describe("remote gateway application", () => {
     expect((await connect(second)).status).toBe(202);
     await vi.waitFor(() => expect(supervisor.request).toHaveBeenCalledTimes(2));
     expect(selectedPairs).toEqual([first.helperPairId, second.helperPairId]);
-    await expect(request(
-      Number(firstFrame.port),
-      "/_waifus_remote/session-ready",
-      { host: firstFrame.host, "sec-fetch-site": "none" }
-    )).rejects.toThrow();
+    try {
+      const old = await request(Number(firstFrame.port), "/_waifus_remote/session-ready",
+        { host: firstFrame.host, "sec-fetch-site": "none" });
+      expect(old.status).toBe(403);
+    } catch (error) { expect((error as NodeJS.ErrnoException).code).toBe("ECONNREFUSED"); }
 
     const secondOpen = await open(second);
     expect(secondOpen.status).toBe(303);

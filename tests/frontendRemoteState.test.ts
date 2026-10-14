@@ -83,17 +83,21 @@ describe("frontend client context", () => {
     });
   });
 
-  it("renders the shell origin as copy-only text with recovery guidance", () => {
+  it("shows only concise recovery guidance while reconnecting", () => {
     const html = renderToStaticMarkup(createElement(RemoteConnectionBanner, {
       context: remoteContext("reconnecting")
     }));
 
     expect(html).toContain("Reconnecting");
-    expect(html).toContain(connectionShellOrigin);
-    expect(html).toContain("browser Back");
-    expect(html).toContain("waifus remote");
+    expect(html).not.toContain(connectionShellOrigin);
+    expect(html).toContain("reconnect automatically");
+    expect(html).toContain("waifus remote --setup");
     expect(html).not.toContain("href=");
     expect(html).not.toContain("bootstrap");
+  });
+
+  it("does not show a connection banner during normal direct use", () => {
+    expect(renderToStaticMarkup(createElement(RemoteConnectionBanner, { context: remoteContext("direct") }))).toBe("");
   });
 
   it("renders no remote banner in host mode", () => {

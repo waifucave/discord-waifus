@@ -147,7 +147,7 @@ Usage:
   waifus clean [--force] [--include-logs] [--data-root PATH]
   waifus update [--npm | --github]
   waifus update --auto on|off|status [--data-root PATH]
-  waifus remote [--foreground] [--no-open] [--host ID_OR_NAME] [--port PORT] [--data-root PATH]
+  waifus remote [--setup] [--foreground] [--no-open] [--host ID_OR_NAME] [--port PORT] [--data-root PATH]
   waifus remote status [--data-root PATH]
   waifus remote stop [--data-root PATH]
 

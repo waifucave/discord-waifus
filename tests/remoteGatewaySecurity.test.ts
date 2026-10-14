@@ -454,7 +454,7 @@ describe("remote gateway listener", () => {
     expect(page.body).toContain('src="/_waifus_remote/frame-session.js"');
     const script = await request("/_waifus_remote/frame-session.js");
     expect(script.statusCode).toBe(200);
-    expect(script.body).toContain("setInterval(refresh, 60000)");
+    expect(script.body).toContain("setInterval(refresh, 2000)");
     expect(script.body).toContain("response.status === 403");
     let tick: (() => Promise<void>) | undefined;
     let responseStatus = 204;
@@ -468,13 +468,13 @@ describe("remote gateway listener", () => {
       },
       AbortSignal,
       setInterval: (callback: () => Promise<void>, ms: number) => {
-        expect(ms).toBe(60_000);
+        expect(ms).toBe(2_000);
         tick = callback;
         return 1;
       },
       clearInterval: () => { stopped = true; },
       window: { addEventListener: () => {} },
-      document: { body, addEventListener: () => {} }
+      document: { currentScript: { dataset: { launch: "first" } }, body, addEventListener: () => {} }
     });
     await tick!();
     expect(body.textContent).toBe("dashboard");

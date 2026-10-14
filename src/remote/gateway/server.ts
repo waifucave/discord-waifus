@@ -1,4 +1,9 @@
 import type { AddressInfo } from "node:net";
+import { timingSafeEqual } from "node:crypto";
+import type { BrowserPersistence } from "./browserPersistence.js";
+import { BrowserProofStore, BrowserPublicKeySchema } from "./browserProof.js";
+import { ResourceLockManager } from "../../storage/locks.js";
+import { z } from "zod";
 import fastify, {
   type FastifyReply,
   type FastifyRequest
@@ -14,6 +19,7 @@ import {
   frameShellSecurityHeaders,
   validateRemoteBootstrapRequest,
   validateRemoteBrowserRequest,
+  validateRemoteBrowserRecoveryRequest,
   type RemoteBrowserRequest
 } from "./security.js";
 import {
@@ -52,6 +58,10 @@ export type StartRemoteGatewayOptions = RemoteBrowserSessionStoreOptions & Remot
   readonly frameAncestorOrigin?: string | (() => string | undefined);
   readonly frameChildOrigin?: string;
   readonly bootstrapRedirectPath?: string;
+  readonly browserPersistence?: BrowserPersistence;
+  /** Static trusted frame HTML/JS only; never host data or credentials. */
+  readonly handlePublicFrameRequest?: (target: string) => Readonly<{ type: string; body: string }>;
+  readonly launcher?: Readonly<{ token: string; open: (setup: boolean) => string }>;
   readonly beforeExpose?: (launch: Readonly<{
     hostname: string;
     port: number;
@@ -74,7 +84,8 @@ export type RunningRemoteGateway = Readonly<{
   gatewayLaunchId: string;
   expiresAt: string;
   address: AddressInfo;
-  issueBootstrapUrl: () => string;
+  issueBootstrapUrl: (redirectPath?: string) => string;
+  invalidateBrowserSessions: () => Promise<void>;
   close: () => Promise<void>;
 }>;
 
@@ -129,6 +140,9 @@ export async function startRemoteGateway(
   }
 
   const sessions = new RemoteBrowserSessionStore(options);
+  const proofs = new BrowserProofStore(options.now);
+  const proofLock = new ResourceLockManager();
+  const bootstrapRedirects = new Map<string, { path: string; expires: number }>();
   const app = fastify({ logger: false, forceCloseConnections: true });
   if (options.updateActivity) installUpdateActivity(app, options.updateActivity);
   if (options.surface === undefined || options.surface === "dashboard") {
@@ -172,6 +186,20 @@ export async function startRemoteGateway(
   });
 
   const bootstrapPrefix = "/_waifus_remote/bootstrap/";
+  if (options.launcher && options.surface === "shell") app.post("/_waifus_remote/launcher", async (request, reply) => {
+    const token = request.headers["x-waifus-launcher"];
+    const expected = Buffer.from(options.launcher!.token);
+    const supplied = typeof token === "string" ? Buffer.from(token) : Buffer.alloc(0);
+    if (!securityOptions || request.headers.host !== securityOptions.expectedAuthority
+      || request.headers.origin !== undefined || request.headers.referer !== undefined
+      || request.headers["sec-fetch-site"] !== undefined || supplied.length !== expected.length
+      || !timingSafeEqual(supplied, expected)) return reply.code(403).send({ error: "Forbidden" });
+    const body = request.body as { setup?: unknown } | null;
+    if (!body || Object.keys(body).join(",") !== "setup" || typeof body.setup !== "boolean") {
+      return reply.code(400).send({ error: "InvalidRequest" });
+    }
+    return reply.header("cache-control", "no-store").send({ url: options.launcher!.open(body.setup) });
+  });
   app.get(`${bootstrapPrefix}:token`, async (request, reply) => {
     reply.header("cache-control", "no-store");
     if (!securityOptions) return reply.code(503).send({ error: "Unavailable" });
@@ -184,8 +212,41 @@ export async function startRemoteGateway(
     const session = sessions.consumeBootstrapToken(token);
     if (!session) return reply.code(404).send({ error: "Not Found" });
     reply.header("set-cookie", sessions.sessionCookieHeader(session));
-    return reply.code(303).header("location", redirectPath).send();
+    const destination = bootstrapRedirects.get(token)?.path ?? redirectPath;
+    bootstrapRedirects.delete(token);
+    return reply.code(303).header("location", destination).send();
   });
+
+  if (options.browserPersistence) {
+    app.get("/_waifus_remote/browser-challenge/:keyId", async (request, reply) => {
+      if (!securityOptions) return reply.code(503).send({ error: "Unavailable" });
+      try { validateRemoteBrowserRecoveryRequest(browserRequest(request), securityOptions); }
+      catch { return reply.code(403).send({ error: "Forbidden" }); }
+      const keyId = (request.params as { keyId: string }).keyId;
+      const challenge = /^[a-f0-9]{64}$/u.test(keyId) ? proofs.challenge(keyId) : undefined;
+      return challenge ? reply.send({ challenge }) : reply.code(403).send({ error: "Forbidden" });
+    });
+    app.post("/_waifus_remote/browser-resume", async (request, reply) => {
+      if (!securityOptions) return reply.code(503).send({ error: "Unavailable" });
+      try { validateRemoteBrowserRecoveryRequest(browserRequest(request), securityOptions); }
+      catch { return reply.code(403).send({ error: "Forbidden" }); }
+      if (!proofs.consume(request.body)) return reply.code(403).send({ error: "Forbidden" });
+      const session = sessions.consumeBootstrapToken(sessions.issueBootstrapToken());
+      if (!session) return reply.code(503).send({ error: "Unavailable" });
+      return reply.header("set-cookie", sessions.sessionCookieHeader(session)).code(204).send();
+    });
+  }
+  if (options.surface === "frame_shell" && options.handlePublicFrameRequest) {
+    for (const target of ["/", "/_waifus_remote/frame-session.js"]) app.get(target, async (request, reply) => {
+      if (!securityOptions) return reply.code(503).send({ error: "Unavailable" });
+      try {
+        if (target === "/") validateRemoteBootstrapRequest(browserRequest(request), securityOptions);
+        else validateRemoteBrowserRecoveryRequest(browserRequest(request), securityOptions);
+      } catch { return reply.code(403).send({ error: "Forbidden" }); }
+      const staticContent = options.handlePublicFrameRequest!(target);
+      return reply.type(staticContent.type).send(staticContent.body);
+    });
+  }
 
   app.get(REMOTE_SESSION_READY_PATH, async (request, reply) => {
     if (!securityOptions) return reply.code(503).send({ error: "Unavailable" });
@@ -239,6 +300,22 @@ export async function startRemoteGateway(
             reply.header("x-waifus-csrf", refreshed.csrfToken);
           }
         });
+        if (options.browserPersistence && request.method === "POST" && request.url === "/_waifus_remote/browser-register") {
+          const parsed = z.object({ publicKey: BrowserPublicKeySchema }).strict().safeParse(request.body);
+          if (!parsed.success) return reply.code(400).send({ error: "InvalidRequest" });
+          return proofLock.withLock("browser-keys", async () => {
+            if (!sessions.sessionCookieHeaderIfActive(refreshed)) return reply.code(403).send({ error: "Forbidden" });
+            const previous = proofs.snapshot();
+            try {
+              const keyId = proofs.register(parsed.data.publicKey);
+              await options.browserPersistence!.save(securityOptions!.expectedOrigin, proofs.snapshot());
+              return reply.send({ keyId });
+            } catch {
+              proofs.restore(previous);
+              return reply.code(503).send({ error: "Unavailable" });
+            }
+          });
+        }
         const refreshedCookie = sessions.sessionCookieHeaderIfActive(refreshed);
         if (refreshedCookie) reply.header("set-cookie", refreshedCookie);
         const result = options.handleAuthenticatedRequest
@@ -290,6 +367,8 @@ export async function startRemoteGateway(
   )).toString();
   let bootstrapToken: string;
   try {
+    const saved = await options.browserPersistence?.load(origin);
+    if (saved) proofs.restore(saved);
     await options.beforeExpose?.({
       hostname,
       port,
@@ -314,9 +393,23 @@ export async function startRemoteGateway(
     gatewayLaunchId: sessions.gatewayLaunchId,
     expiresAt,
     address: Object.freeze({ ...address }),
-    issueBootstrapUrl: () => {
+    issueBootstrapUrl: (destination = redirectPath) => {
       if (closed) throw new Error("Remote gateway is closed.");
-      return `${origin}${bootstrapPrefix}${sessions.issueBootstrapToken()}`;
+      if (destination !== redirectPath && destination !== "/#setup" && destination !== "/_waifus_remote/launch") {
+        throw new TypeError("Unsupported browser launch destination.");
+      }
+      const now = (options.now ?? Date.now)();
+      for (const [key, value] of bootstrapRedirects) if (value.expires <= now) bootstrapRedirects.delete(key);
+      const token = sessions.issueBootstrapToken();
+      bootstrapRedirects.set(token, { path: destination, expires: now + 5 * 60_000 });
+      return `${origin}${bootstrapPrefix}${token}`;
+    },
+    invalidateBrowserSessions: async () => {
+      await proofLock.withLock("browser-keys", async () => {
+        sessions.invalidateAll();
+        proofs.clear();
+        await options.browserPersistence?.clear(origin);
+      });
     },
     close: async () => {
       if (closed) return;

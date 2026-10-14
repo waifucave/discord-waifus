@@ -10,6 +10,9 @@ import { remoteRolePaths, remoteStatePaths } from "../src/remote/paths.js";
 import { createRemoteDaemonState } from "../src/shared/schemas/remoteRuntime.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
 import { atomicWriteJson } from "../src/storage/atomic.js";
+import { startRemoteGateway } from "../src/remote/gateway/server.js";
+import { publishBrowserLauncher, reopenRemoteBrowser } from "../src/remote/browserLauncher.js";
+import { randomBytes } from "node:crypto";
 
 const roots: string[] = [];
 const hostId = Buffer.alloc(32, 0x51).toString("base64url");
@@ -146,13 +149,42 @@ describe("waifus remote parser", () => {
     expect(await runCommand(parseCliArgs(["help"]))).toBe(0);
 
     const help = logs.join("\n");
-    expect(help).toContain("waifus remote [--foreground] [--no-open]");
+    expect(help).toContain("waifus remote [--setup] [--foreground] [--no-open]");
     expect(help).toContain("waifus remote status [--data-root PATH]");
     expect(help).toContain("waifus remote stop [--data-root PATH]");
   });
 });
 
 describe("waifus remote lifecycle", () => {
+  it("reopens a running gateway through private CLI authority without spawning or stopping it", async () => {
+    const root = await makeTempRoot("waifus-remote-cli-reopen-");
+    roots.push(root); await ensureRemoteOnlyLayout(root); silence();
+    const token = randomBytes(32).toString("base64url");
+    const gateway = await startRemoteGateway({ hostname: new URL(shellOrigin).hostname, port: 0, surface: "shell",
+      bootstrapRedirectPath: "/_waifus_remote/launch",
+      launcher: { token, open: setup => gateway.issueBootstrapUrl(setup ? "/#setup" : "/_waifus_remote/launch") } });
+    try {
+      const runtime = { ...state(process.pid, root), port: gateway.port, connectionShellOrigin: gateway.origin };
+      await atomicWriteJson(remoteRolePaths(root, "remote").runtimePid, runtime, { privateMetadata: true });
+      await publishBrowserLauncher(root, runtime, token);
+      const browserOpener = vi.fn(); const detachedSpawner = vi.fn(); const remotePreflight = vi.fn();
+      for (const setup of [false, true]) {
+        const code = await runCommand(parseCliArgs(["remote", ...(setup ? ["--setup"] : []), "--data-root", root]), {
+          processAlive: () => true, browserOpener, detachedSpawner, remotePreflight
+        });
+        expect(console.error).not.toHaveBeenCalled();
+        expect(code).toBe(0);
+        const url = browserOpener.mock.calls.at(-1)![0];
+        expect(new URL(url).origin).toBe(gateway.origin);
+        expect(new URL(url).pathname).toMatch(/^\/_waifus_remote\/bootstrap\/[A-Za-z0-9_-]{43}$/u);
+      }
+      expect(browserOpener).toHaveBeenCalledTimes(2);
+      expect(detachedSpawner).not.toHaveBeenCalled();
+      expect(remotePreflight).toHaveBeenCalledTimes(2);
+      await expect(reopenRemoteBrowser(root, { ...runtime, pid: runtime.pid + 1 }, false)).rejects.toThrow("different daemon");
+      expect(JSON.stringify(vi.mocked(console.log).mock.calls)).not.toContain(token);
+    } finally { await gateway.close(); }
+  });
   it("preflights, starts detached, waits for a healthy tokenized URL, then opens the browser", async () => {
     const root = await makeTempRoot("waifus-remote-cli-detached-");
     roots.push(root);
@@ -293,6 +325,7 @@ describe("waifus remote lifecycle", () => {
       "remote",
       "--foreground",
       "--no-open",
+      "--setup",
       "--host",
       hostId,
       "--data-root",
@@ -301,7 +334,7 @@ describe("waifus remote lifecycle", () => {
       remotePreflight: async () => { order.push("preflight"); },
       remoteForegroundStarter: async (input) => {
         order.push("start");
-        expect(input).toMatchObject({ dataRoot: root, host: hostId });
+        expect(input).toMatchObject({ dataRoot: root, host: hostId, setup: true });
         return { runtime: state(process.pid), bootstrapUrl, close };
       },
       remoteHoldOpen: async () => { order.push("hold"); },

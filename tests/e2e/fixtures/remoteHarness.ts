@@ -20,8 +20,8 @@ import type { ModelPipeline } from "../../../src/providers/types.js";
 import { DashboardCache } from "../../../src/remote/dashboardCache.js";
 import type { DashboardRemoteClient } from "../../../src/remote/dashboardDownloader.js";
 import { writeDashboardManifest } from "../../../src/remote/dashboardManifest.js";
-import { startRemoteDashboardFrameShell } from "../../../src/remote/gateway/frameShell.js";
 import { RemoteLocalApi } from "../../../src/remote/gateway/localApi.js";
+import { startRemoteDashboardFrameShell } from "../../../src/remote/gateway/frameShell.js";
 import { RemoteOriginStore, derivePinnedHostId } from "../../../src/remote/gateway/originStore.js";
 import { startRemoteGatewayRuntime } from "../../../src/remote/gateway/runtime.js";
 import { RemoteSelectedHostGateway } from "../../../src/remote/gateway/selectedHost.js";
@@ -165,7 +165,8 @@ export type RemoteHarness = Readonly<{
   shell: RunningRemoteGateway;
   hosts: Readonly<{ a: HarnessHost; b: HarnessHost }>;
   ledger: RemoteHarnessLedger;
-  openShell: (page: Page) => Promise<void>;
+  openShell: (page: Page, setup?: boolean) => Promise<void>;
+  restartDashboard: () => Promise<void>;
   guardBrowserEgress: (page: Page) => Promise<void>;
   setConnection: (hostId: string, state: MutableConnectionState) => Promise<void>;
   setPairOutcome: (state: PairOutcome, errorCode?: string) => void;
@@ -240,7 +241,9 @@ async function createDashboardBundle(
       "..",
       ".."
     );
-    await cp(path.join(repositoryRoot, "dist-frontend"), bundleDirectory, { recursive: true });
+    await cp(path.join(repositoryRoot, "dist-frontend"), bundleDirectory, {
+      recursive: true, filter: source => path.basename(source) !== ".DS_Store"
+    });
     const indexPath = path.join(bundleDirectory, "index.html");
     const index = await readFile(indexPath, "utf8");
     await writeFile(
@@ -1041,12 +1044,10 @@ export async function createRemoteHarness(
     });
     let frameShell: RunningRemoteGateway;
     try {
-      frameShell = await startRemoteDashboardFrameShell({ dashboard: gateway });
+      frameShell = await startRemoteDashboardFrameShell({ dataRoot, dashboard: gateway,
+        isDirect: () => desiredConnections.get(record.hostId) === "direct" });
       frameShellOrigin = frameShell.origin;
-    } catch (error) {
-      await gateway.close();
-      throw error;
-    }
+    } catch (error) { await gateway.close(); throw error; }
     selected = new RemoteSelectedHostGateway({
       cache: new DashboardCache({ dataRoot }),
       client: host.client,
@@ -1087,8 +1088,16 @@ export async function createRemoteHarness(
     shell,
     hosts: Object.freeze({ a: hostA.public, b: hostB.public }),
     ledger,
-    openShell: async (page: Page) => {
-      await page.goto(shell.issueBootstrapUrl(), { waitUntil: "domcontentloaded" });
+    openShell: async (page: Page, setup = false) => {
+      await page.goto(shell.issueBootstrapUrl(setup ? "/#setup" : undefined), { waitUntil: "domcontentloaded" });
+    },
+    restartDashboard: async () => {
+      if (!activeDashboard) throw new Error("No selected dashboard.");
+      const hostId = activeDashboard.hostId;
+      await activeDashboard.frameShell.close();
+      await activeDashboard.gateway.close();
+      activeDashboard = undefined;
+      await issueSelectedHostBootstrap(hostRuntimes.get(hostId)!.public.record);
     },
     guardBrowserEgress: async (page: Page) => {
       await page.route("**/*", async (route) => {

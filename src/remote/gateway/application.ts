@@ -1,4 +1,5 @@
 import type { HelperSupervisor } from "../helperSupervisor.js";
+import { randomBytes } from "node:crypto";
 import { DashboardCache } from "../dashboardCache.js";
 import type { DashboardRemoteClient } from "../dashboardDownloader.js";
 import { RememberedHostStore, type RememberedHostRecordV1 } from "../rememberedHosts.js";
@@ -35,6 +36,7 @@ export type RunningRemoteGatewayApplication = Readonly<{
   hasUpdateBlockers: () => boolean;
   shell: RunningRemoteGateway;
   rememberedHosts: RememberedHostStore;
+  launcherToken: string;
   connectRememberedHost: (host: RememberedHostRecordV1) => Promise<void>;
   close: () => Promise<void>;
 }>;
@@ -83,12 +85,13 @@ export async function startRemoteGatewayApplication(
     return result;
   };
 
-  const closeSelected = async (): Promise<void> => {
+  const closeSelected = async (invalidate = false): Promise<void> => {
     const current = selected;
     selected = undefined;
     if (!current) return;
     await current.readiness.close();
-    await Promise.all([current.frameShell.close(), current.dashboard.close()]);
+    try { if (invalidate) await Promise.all([current.dashboard.invalidateBrowserSessions(), current.frameShell.invalidateBrowserSessions()]); }
+    finally { await Promise.all([current.dashboard.close(), current.frameShell.close()]); }
   };
 
   const prepareSelected = async (host: RememberedHostRecordV1): Promise<SelectedGateway> => {
@@ -123,7 +126,8 @@ export async function startRemoteGatewayApplication(
     });
     let frameShell: RunningRemoteGateway | undefined;
     try {
-      frameShell = await startRemoteDashboardFrameShell({ dashboard, updateActivity: options.updateActivity });
+      frameShell = await startRemoteDashboardFrameShell({ dataRoot: options.dataRoot, dashboard,
+        updateActivity: options.updateActivity, isDirect: () => options.supervisor.snapshot().runtimeStatus.directState === "direct" });
       frameShellOrigin = frameShell.origin;
       dashboardHandler = new RemoteSelectedHostGateway({
         cache: new DashboardCache({ dataRoot: options.dataRoot }),
@@ -138,7 +142,7 @@ export async function startRemoteGatewayApplication(
         }
       });
     } catch (error) {
-      await Promise.allSettled([frameShell?.close(), dashboard.close()]);
+      await Promise.allSettled([dashboard.close(), frameShell?.close()]);
       throw error;
     }
     if (
@@ -146,7 +150,7 @@ export async function startRemoteGatewayApplication(
       || runtimeHostKey?.hostId !== host.hostId
       || runtimeHostKey.trustEpoch !== host.trustEpoch
     ) {
-      await Promise.allSettled([frameShell.close(), dashboard.close()]);
+      await Promise.all([dashboard.close(), frameShell.close()]);
       throw new Error("Selected host changed while opening its dashboard.");
     }
     const result: SelectedGateway = Object.freeze({
@@ -190,7 +194,7 @@ export async function startRemoteGatewayApplication(
       if (closing) throw new Error("Remote gateway is closing.");
       if (runtimeHostKey?.hostId === host.hostId) runtimeHostKey = undefined;
       await serializeSelection(async () => {
-        if (selected?.hostId === host.hostId) await closeSelected();
+        if (selected?.hostId === host.hostId) await closeSelected(true);
         await helperBackend.disconnectRememberedHost(host);
       });
     },
@@ -198,7 +202,7 @@ export async function startRemoteGatewayApplication(
       if (closing) throw new Error("Remote gateway is closing.");
       if (runtimeHostKey?.hostId === host.hostId) runtimeHostKey = undefined;
       return serializeSelection(async () => {
-        if (selected?.hostId === host.hostId) await closeSelected();
+        if (selected?.hostId === host.hostId) await closeSelected(true);
         return helperBackend.requestSignedSelfRevocation(host);
       });
     },
@@ -206,19 +210,26 @@ export async function startRemoteGatewayApplication(
       if (closing) throw new Error("Remote gateway is closing.");
       if (runtimeHostKey?.hostId === host.hostId) runtimeHostKey = undefined;
       await serializeSelection(async () => {
-        if (selected?.hostId === host.hostId) await closeSelected();
+        if (selected?.hostId === host.hostId) await closeSelected(true);
         await helperBackend.forgetRememberedHost(host);
       });
     }
   };
 
+  const launcherToken = randomBytes(32).toString("base64url");
   shell = await startRemoteGateway({
     updateActivity: options.updateActivity,
     hostname,
     port: options.port ?? 0,
     surface: "shell",
+    bootstrapRedirectPath: "/_waifus_remote/launch",
+    launcher: { token: launcherToken, open: setup => shell.issueBootstrapUrl(setup ? "/#setup" : "/_waifus_remote/launch") },
     handleAuthenticatedRequest: (...args) => {
       if (!localApi) throw new Error("Remote connection shell is not ready.");
+      const [request, reply] = args;
+      if (request.method === "GET" && request.url === "/_waifus_remote/launch") {
+        return reply.code(303).header("location", selected ? selected.frameShell.issueBootstrapUrl() : "/#setup").send();
+      }
       return localApi.handle(...args);
     }
   });
@@ -233,6 +244,7 @@ export async function startRemoteGatewayApplication(
     hasUpdateBlockers: () => pendingSelections > 0 || localApi.hasUpdateBlockers(),
     shell,
     rememberedHosts,
+    launcherToken,
     connectRememberedHost: async (host: RememberedHostRecordV1) => {
       if (closing) throw new Error("Remote gateway is closing.");
       await backend.connectRememberedHost(host);

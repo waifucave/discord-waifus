@@ -9,7 +9,6 @@ import {
 const bytes32 = (value: number): string => Buffer.alloc(32, value).toString("base64url");
 
 let harness: RemoteHarness | undefined;
-const DASHBOARD_FRAME = 'iframe[title="Waifus host dashboard"]';
 
 test.afterEach(async () => {
   await harness?.close();
@@ -17,13 +16,12 @@ test.afterEach(async () => {
 });
 
 function dashboardLocator(page: Page) {
-  return page.frameLocator(DASHBOARD_FRAME);
+  return page.frameLocator('iframe[title="Waifus host dashboard"]');
 }
 
 async function dashboardFrame(page: Page): Promise<Frame> {
-  const handle = await page.locator(DASHBOARD_FRAME).elementHandle();
-  const frame = await handle?.contentFrame();
-  if (!frame) throw new Error("The trusted dashboard frame was not available.");
+  const frame = await (await page.locator('iframe[title="Waifus host dashboard"]').elementHandle())?.contentFrame();
+  if (!frame) throw new Error("Isolated dashboard was not available.");
   return frame;
 }
 
@@ -32,7 +30,7 @@ async function selectHost(
   current: RemoteHarness,
   key: "a" | "b"
 ): Promise<void> {
-  await current.openShell(page);
+  await current.openShell(page, true);
   const host = current.hosts[key];
   const card = page.locator("article.host").filter({ hasText: host.record.displayName });
   await card.getByRole("button", { name: "Connect", exact: true }).click();

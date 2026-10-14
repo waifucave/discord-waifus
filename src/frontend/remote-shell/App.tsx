@@ -50,8 +50,8 @@ export function App() {
 
   useEffect(() => {
     const selectedHostId = bootstrap?.selectedHostId;
-    const shouldOpen = bootstrap?.selectionState === "automatic_single"
-      || requestedHost?.hostId === selectedHostId;
+    const shouldOpen = requestedHost?.hostId === selectedHostId || (window.location.hash !== "#setup"
+      && (bootstrap?.selectionState === "automatic_single" || bootstrap?.selectionState === "explicit"));
     if (bootstrap?.directState !== "direct" || !selectedHostId || !shouldOpen) {
       openingHost.current = undefined;
       return;
