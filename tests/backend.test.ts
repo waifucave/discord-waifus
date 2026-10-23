@@ -3,6 +3,7 @@ import path from "node:path";
 import { readFile, writeFile } from "node:fs/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { startBackend, type RunningBackend } from "../src/backend/server.js";
+import { RuntimeOrchestrator } from "../src/orchestration/runtime.js";
 import { createRuntimeState, RuntimeStateSchema } from "../src/backend/runtime.js";
 import type { Logger } from "../src/backend/logger.js";
 import { ensureDataLayout } from "../src/config/layout.js";
@@ -485,6 +486,22 @@ describe("backend Discord auto-connect retry", () => {
     expect(gateway.disconnectCalls).toBe(0);
     expect(backend.runtime.discord.connected).toBe(true);
     expect(backend.runtime.discord.retrying).toBeUndefined();
+  });
+});
+
+describe("backend runtime pause/resume", () => {
+  it("resuming the runtime asks the orchestrator to re-arm what the pause cleared", async () => {
+    const resumeAfterPause = vi.spyOn(RuntimeOrchestrator.prototype, "resumeAfterPause");
+    const root = await initializedRootWithOrchestrator();
+    const gateway = new FakeDiscordGateway([connectedStatus()]);
+    const backend = await startTestBackend(root, gateway, [5_000]);
+    await waitForConnectCalls(gateway, 1);
+    await vi.waitFor(() => expect(backend.runtime.discord.connected).toBe(true));
+
+    expect((await fetch(`${backend.url}/api/runtime/pause`, { method: "POST" })).status).toBe(200);
+    expect(resumeAfterPause).not.toHaveBeenCalled();
+    expect((await fetch(`${backend.url}/api/runtime/resume`, { method: "POST" })).status).toBe(200);
+    expect(resumeAfterPause).toHaveBeenCalledTimes(1);
   });
 });
 
