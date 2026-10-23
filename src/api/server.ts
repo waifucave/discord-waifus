@@ -1122,27 +1122,36 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   });
 
   // B2: pause used to live only in memory, so the next config save/reload (which re-reads
-  // `runtime.paused` from config.toml) or a restart silently unpaused. Persist it first through
-  // the same writer as PUT /api/config, then mirror it in memory.
-  const persistRuntimePaused = (paused: boolean) =>
-    storage.withLocks([APP_CONFIG_LOCK], () =>
-      updateAppConfig(options.dataRoot, { runtime: { paused } }));
-  app.post("/api/runtime/pause", async (request) => {
-    await persistRuntimePaused(true);
-    options.runtime.paused = true;
-    await (options.runtimeControl?.pause() ?? options.runtimeOrchestrator?.pause());
+  // `runtime.paused` from config.toml) or a restart silently unpaused. Pause is the emergency
+  // control, so the in-memory switch always happens first; persisting through the same writer
+  // as PUT /api/config is best-effort, and a failure (unreadable/invalid/read-only config.toml)
+  // returns a warning instead of failing the request.
+  const persistRuntimePaused = async (paused: boolean): Promise<string | undefined> => {
+    try {
+      await storage.withLocks([APP_CONFIG_LOCK], () =>
+        updateAppConfig(options.dataRoot, { runtime: { paused } }));
+      return undefined;
+    } catch (error) {
+      logger.warn("Runtime pause state could not be persisted", {
+        paused,
+        message: error instanceof Error ? error.message : String(error)
+      });
+      return `Runtime ${paused ? "paused" : "resumed"}, but config.toml could not be updated; ` +
+        "this will not survive a reload or restart.";
+    }
+  };
+  const setRuntimePaused = async (request: FastifyRequest, paused: boolean) => {
+    options.runtime.paused = paused;
+    if (paused) await (options.runtimeControl?.pause() ?? options.runtimeOrchestrator?.pause());
+    else await options.runtimeControl?.resume();
     options.runtime.updatedAt = nowIso();
+    const warning = await persistRuntimePaused(paused);
     publishGlobalEvent("runtime", structuredClone(options.runtime));
-    return runtimeResponse(options.runtime, request.principal, options.dataRoot);
-  });
-  app.post("/api/runtime/resume", async (request) => {
-    await persistRuntimePaused(false);
-    options.runtime.paused = false;
-    await options.runtimeControl?.resume();
-    options.runtime.updatedAt = nowIso();
-    publishGlobalEvent("runtime", structuredClone(options.runtime));
-    return runtimeResponse(options.runtime, request.principal, options.dataRoot);
-  });
+    const body = runtimeResponse(options.runtime, request.principal, options.dataRoot);
+    return warning ? { ...body, warning } : body;
+  };
+  app.post("/api/runtime/pause", async (request) => setRuntimePaused(request, true));
+  app.post("/api/runtime/resume", async (request) => setRuntimePaused(request, false));
   app.post("/api/runtime/reload", async () => {
     await options.runtimeControl?.reload("manual-api");
     publishGlobalEvent("runtime", structuredClone(options.runtime));
