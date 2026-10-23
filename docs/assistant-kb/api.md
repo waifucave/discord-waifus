@@ -36,7 +36,7 @@ does goes through these endpoints, so any agent can drive the app with plain HTT
 | GET | /api/status | Runtime + Discord connection state. |
 | GET | /api/runtime | Runtime state incl. pause state and queues; host paths/process fields are local-only. |
 | GET | /api/admin/operations/:operationId | Principal-scoped mutation recovery status; no response body/result. |
-| POST | /api/runtime/pause · /resume | Pause/resume all orchestration. |
+| POST | /api/runtime/pause · /resume | Pause/resume all orchestration (persisted as `runtime.paused` in config.toml, survives reloads/restarts). |
 | POST | /api/runtime/reload | Reload configs into the running orchestrator. |
 | POST | /api/runtime/trigger/orchestrator | Body `{guildId, channelId}` — run a decision pass now. |
 | POST | /api/runtime/trigger/stage-manager | Body `{guildId, channelId}` — run an observer pass now. |

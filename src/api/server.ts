@@ -133,6 +133,9 @@ export type ApiServerOptions = {
   };
 };
 
+// Serializes config.toml read-modify-write between PUT /api/config and runtime pause/resume.
+const APP_CONFIG_LOCK = "app-config";
+
 const ProviderCredentialsBodySchema = z.object({
   apiKey: z.string().min(1),
   label: z.string().optional(),
@@ -547,7 +550,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
         "RemoteConfigFieldForbidden"
       );
     }
-    const saved = await updateAppConfig(options.dataRoot, patch);
+    const saved = await storage.withLocks([APP_CONFIG_LOCK], () => updateAppConfig(options.dataRoot, patch));
     options.runtime.paused = saved.runtime.paused;
     const { updates: _beforeUpdates, ...beforeRuntimeConfig } = currentConfig;
     const { updates: _afterUpdates, ...afterRuntimeConfig } = saved;
@@ -1118,7 +1121,14 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     });
   });
 
+  // B2: pause used to live only in memory, so the next config save/reload (which re-reads
+  // `runtime.paused` from config.toml) or a restart silently unpaused. Persist it first through
+  // the same writer as PUT /api/config, then mirror it in memory.
+  const persistRuntimePaused = (paused: boolean) =>
+    storage.withLocks([APP_CONFIG_LOCK], () =>
+      updateAppConfig(options.dataRoot, { runtime: { paused } }));
   app.post("/api/runtime/pause", async (request) => {
+    await persistRuntimePaused(true);
     options.runtime.paused = true;
     await (options.runtimeControl?.pause() ?? options.runtimeOrchestrator?.pause());
     options.runtime.updatedAt = nowIso();
@@ -1126,6 +1136,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     return runtimeResponse(options.runtime, request.principal, options.dataRoot);
   });
   app.post("/api/runtime/resume", async (request) => {
+    await persistRuntimePaused(false);
     options.runtime.paused = false;
     await options.runtimeControl?.resume();
     options.runtime.updatedAt = nowIso();
