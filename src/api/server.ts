@@ -77,7 +77,9 @@ import {
   notFound,
   preconditionRequired
 } from "./errors.js";
+import { DiscordAPIError, HTTPError } from "discord.js";
 import { mergeConfiguredBotsIntoMembers } from "../discord/memberCache.js";
+import { discordRestForToken, discordRestGet } from "../discord/rest.js";
 import { assertKnownProvider, assertModelWriteValid } from "./writeValidation.js";
 import { BrowserSecurity, type BrowserSecurityOptions } from "./browserSecurity.js";
 import { installRoutePolicy } from "./routePolicy.js";
@@ -247,11 +249,6 @@ const DiscordBotsBodySchema = DiscordBotsFileSchema.partial().extend({
   revision: z.number().int().nonnegative().optional(),
   orchestrator: DiscordBotBodySchema.nullable().optional(),
   waifus: z.array(DiscordBotBodySchema).optional()
-});
-
-const DiscordApiErrorSchema = z.object({
-  message: z.string().optional(),
-  code: z.number().optional()
 });
 
 const RuntimeTriggerBodySchema = z.object({
@@ -1877,21 +1874,16 @@ async function readDiscordBotToken(storage: StorageService): Promise<string | un
     : bots.orchestrator?.token ?? bots.waifus.find((bot) => bot.enabled && bot.token)?.token;
 }
 
+// discord.js REST client: per-bucket queueing, 429 backoff and a compliant User-Agent.
 async function discordApiFetch(token: string, pathAndQuery: string): Promise<unknown> {
-  const response = await fetch(`https://discord.com/api/v10${pathAndQuery}`, {
-    headers: {
-      authorization: token.startsWith("Bot ") ? token : `Bot ${token}`,
-      "user-agent": "Discord-Waifus/0.1"
+  try {
+    return await discordRestGet(discordRestForToken(token), pathAndQuery);
+  } catch (error) {
+    if (error instanceof DiscordAPIError || error instanceof HTTPError) {
+      throw badRequest(`Discord API request failed (${error.status}): ${error.message || "unknown error"}`);
     }
-  });
-  const text = await response.text();
-  const parsed = text ? JSON.parse(text) : undefined;
-  if (!response.ok) {
-    const body = DiscordApiErrorSchema.safeParse(parsed);
-    const message = body.success ? body.data.message : response.statusText;
-    throw badRequest(`Discord API request failed (${response.status}): ${message ?? "unknown error"}`);
+    throw error;
   }
-  return parsed;
 }
 
 async function diagnosticBundle(

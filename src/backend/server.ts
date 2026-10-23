@@ -6,6 +6,7 @@ import { readPackageVersion } from "../config/layout.js";
 import { atomicWriteJson } from "../storage/atomic.js";
 import { StorageService } from "../storage/storageService.js";
 import {
+  DiscordConnectError,
   DiscordGatewayFacade,
   DiscordJsGateway,
   DiscordJsGatewayOptions,
@@ -13,6 +14,12 @@ import {
   DiscordRuntimeStatus
 } from "../discord/client.js";
 import { mergeConfiguredBotsIntoMembers } from "../discord/memberCache.js";
+import {
+  discordRestForToken,
+  fetchAllDiscordGuildMembers,
+  fetchDiscordGuildRoles,
+  type DiscordGuildRolePayload
+} from "../discord/rest.js";
 import { RuntimeOrchestrator } from "../orchestration/runtime.js";
 import { ImageOcrService } from "../orchestration/ocr.js";
 import {
@@ -308,6 +315,14 @@ export async function startBackend(options: StartBackendOptions): Promise<Runnin
       }
     };
 
+    // Live per-bot changes after connect (a waifu re-logged in, a token was revoked mid-session).
+    const handleDiscordStatusChange = async (status: DiscordRuntimeStatus) => {
+      if (closing) return;
+      runtime.discord = status;
+      runtime.updatedAt = new Date().toISOString();
+      await writeRuntimeFiles(options.dataRoot, runtime);
+    };
+
     const reloadRuntime = async (reason: string, retryOptions: { scheduledRetry?: boolean } = {}) => {
       if (closing) return;
       if (!retryOptions.scheduledRetry) {
@@ -336,7 +351,8 @@ export async function startBackend(options: StartBackendOptions): Promise<Runnin
         currentConfig.runtime.autoConnectDiscord,
         logger,
         createDiscordGateway,
-        handleDiscordRuntimeIssue
+        handleDiscordRuntimeIssue,
+        handleDiscordStatusChange
       );
       if (closing) {
         await connected.gateway?.disconnect();
@@ -558,7 +574,8 @@ async function maybeConnectDiscord(
   autoConnect: boolean,
   logger: Logger,
   createDiscordGateway: (options: DiscordJsGatewayOptions) => DiscordGatewayFacade,
-  onRuntimeIssue?: (issue: DiscordRuntimeIssue) => void | Promise<void>
+  onRuntimeIssue?: (issue: DiscordRuntimeIssue) => void | Promise<void>,
+  onStatusChange?: (status: DiscordRuntimeStatus) => void | Promise<void>
 ): Promise<{
   status: DiscordRuntimeStatus;
   gateway?: DiscordGatewayFacade;
@@ -577,6 +594,10 @@ async function maybeConnectDiscord(
   );
   if (!bots.orchestrator?.token) {
     return { status: offline };
+  }
+  if (bots.orchestrator.enabled === false) {
+    // Waifu bots only speak when the orchestrator casts them, so nothing logs in without it.
+    return { status: offlineDiscordStatus(["Discord auto-connect is enabled but the orchestrator bot is disabled."]) };
   }
   const gateway = createDiscordGateway({
     orchestrator: bots.orchestrator,
@@ -618,7 +639,8 @@ async function maybeConnectDiscord(
         roles: roles.roles
       };
     },
-    onRuntimeIssue
+    onRuntimeIssue,
+    onStatusChange
   });
   try {
     const status = await gateway.connect();
@@ -633,7 +655,10 @@ async function maybeConnectDiscord(
         connected: false,
         orchestratorConnected: false,
         waifuBotCount: 0,
-        warnings: [`Discord auto-connect failed: ${message}`]
+        warnings: [`Discord auto-connect failed: ${message}`],
+        lastError: message,
+        lastErrorAt: new Date().toISOString(),
+        ...(error instanceof DiscordConnectError && error.status.bots ? { bots: error.status.bots } : {})
       },
       retryableFailure: retryable ? { message } : undefined
     };
@@ -667,8 +692,6 @@ const RETRYABLE_DISCORD_MESSAGE_PATTERNS = [
   /\bunreachable\b/i
 ];
 
-const RETRYABLE_DISCORD_CLOSE_CODES = new Set([1001, 1006, 1011, 1012, 1013, 4000]);
-
 function isRetryableDiscordAutoConnectError(error: unknown): boolean {
   const code = errorCode(error);
   if (code && RETRYABLE_DISCORD_ERROR_CODES.has(code)) {
@@ -679,16 +702,16 @@ function isRetryableDiscordAutoConnectError(error: unknown): boolean {
 }
 
 function isRetryableDiscordRuntimeIssue(issue: DiscordRuntimeIssue): boolean {
-  if (isRetryableDiscordAutoConnectError(issue.error ?? issue) || isRetryableDiscordAutoConnectError(issue)) {
-    return true;
+  // discord.js resumes/re-identifies by itself after shard errors and recoverable closes, and only
+  // emits ShardDisconnect for close codes it gives up on (bad token, disallowed intents, ...): a
+  // reconnect cannot fix those, so the gateway marks that bot errored instead (see client.ts).
+  if (issue.source === "shard-error" || issue.source === "shard-disconnect" || issue.source === "warn") {
+    return false;
   }
   if (issue.source === "invalidated") {
     return true;
   }
-  if (issue.source === "shard-disconnect" && issue.wasClean === false && typeof issue.code === "number") {
-    return RETRYABLE_DISCORD_CLOSE_CODES.has(issue.code);
-  }
-  return false;
+  return isRetryableDiscordAutoConnectError(issue.error ?? issue) || isRetryableDiscordAutoConnectError(issue);
 }
 
 function discordRuntimeIssueLogContext(issue: DiscordRuntimeIssue): Record<string, unknown> {
@@ -720,7 +743,7 @@ async function refreshDiscordMembersForRuntime(storage: StorageService, guildId:
       GuildMembersFileSchema.parse(createEmptyRevisionedFile({ guildId, members: [] }))
     );
   }
-  const rawMembers = await fetchAllDiscordGuildMembers(token, guildId);
+  const rawMembers = await fetchAllDiscordGuildMembers(discordRestForToken(token), guildId);
   const now = new Date().toISOString();
   const members = rawMembers.map((member) => ({
     userId: member.user.id,
@@ -744,28 +767,6 @@ async function refreshDiscordMembersForRuntime(storage: StorageService, guildId:
   });
 }
 
-async function fetchAllDiscordGuildMembers(token: string, guildId: string) {
-  const members: Array<{
-    nick?: string | null;
-    user: {
-      id: string;
-      username?: string;
-      global_name?: string | null;
-      bot?: boolean;
-    };
-  }> = [];
-  let after = "0";
-  for (;;) {
-    const response = await discordApiFetch(token, `/guilds/${guildId}/members?limit=1000&after=${encodeURIComponent(after)}`);
-    const page = response as typeof members;
-    members.push(...page);
-    if (page.length < 1000) {
-      return members;
-    }
-    after = page[page.length - 1]?.user.id ?? after;
-  }
-}
-
 async function refreshDiscordRolesForRuntime(storage: StorageService, guildId: string) {
   const token = await readDiscordBotToken(storage);
   if (!token) {
@@ -775,7 +776,7 @@ async function refreshDiscordRolesForRuntime(storage: StorageService, guildId: s
       GuildRolesFileSchema.parse(createEmptyRevisionedFile({ guildId, roles: [] }))
     );
   }
-  const rawRoles = await fetchAllDiscordGuildRoles(token, guildId);
+  const rawRoles = await fetchDiscordGuildRoles(discordRestForToken(token), guildId);
   const roles = mapDiscordRoles(rawRoles);
   return storage.updateRevisionedJson({
     resourceKey: `roles:${guildId}`,
@@ -790,19 +791,7 @@ async function refreshDiscordRolesForRuntime(storage: StorageService, guildId: s
   });
 }
 
-async function fetchAllDiscordGuildRoles(token: string, guildId: string) {
-  const response = await discordApiFetch(token, `/guilds/${guildId}/roles`);
-  return response as Array<{
-    id: string;
-    name: string;
-    color?: number;
-    hoist?: boolean;
-    mentionable?: boolean;
-    managed?: boolean;
-  }>;
-}
-
-function mapDiscordRoles(rawRoles: Awaited<ReturnType<typeof fetchAllDiscordGuildRoles>>): GuildRoleCacheEntry[] {
+function mapDiscordRoles(rawRoles: DiscordGuildRolePayload[]): GuildRoleCacheEntry[] {
   const now = new Date().toISOString();
   return rawRoles
     .filter((role) => role.name !== "@everyone")
@@ -826,24 +815,6 @@ async function readDiscordBotToken(storage: StorageService): Promise<string | un
   return bots.orchestrator?.enabled === false
     ? bots.waifus.find((bot) => bot.enabled && bot.token)?.token
     : bots.orchestrator?.token ?? bots.waifus.find((bot) => bot.enabled && bot.token)?.token;
-}
-
-async function discordApiFetch(token: string, pathAndQuery: string): Promise<unknown> {
-  const response = await fetch(`https://discord.com/api/v10${pathAndQuery}`, {
-    headers: {
-      authorization: token.startsWith("Bot ") ? token : `Bot ${token}`,
-      "user-agent": "Discord-Waifus/0.1"
-    }
-  });
-  const text = await response.text();
-  const parsed = text ? JSON.parse(text) : undefined;
-  if (!response.ok) {
-    const message = typeof parsed === "object" && parsed && "message" in parsed
-      ? String((parsed as { message?: unknown }).message)
-      : response.statusText;
-    throw new Error(`Discord API request failed (${response.status}): ${message}`);
-  }
-  return parsed;
 }
 
 async function countConfiguredGuilds(storage: StorageService): Promise<number> {
