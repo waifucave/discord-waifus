@@ -5,6 +5,9 @@ import { z } from "zod";
 import { createRequire } from "node:module";
 import { createProductionHelperPackageResolver, HELPER_RELEASE_TRUST_ROOTS } from "../../remote/productionHelper.js";
 import { loadRemoteCompatibilityV1 } from "../../remote/componentCompatibility.js";
+import { supportedHelperTarget } from "../../remote/helperBinary.js";
+import { remoteStatePaths } from "../../remote/paths.js";
+import { RemoteAccessConfigV1Schema } from "../../shared/schemas/remoteLifecycle.js";
 import { atomicWriteJson } from "../../storage/atomic.js";
 import { processIsAlive } from "../../cli/processState.js";
 import { callUpdateControl, installationLock, LeaseSchema, readUpdateLeases, liveGlobalRuntimePids,
@@ -18,22 +21,70 @@ export function newerPatch(current: string, next: string): boolean {
   return a[0] === b[0] && a[1] === b[1] && b[2] > a[2];
 }
 
-export async function verifyStagedUpdate(root: string, version: string): Promise<void> {
+export type StagedUpdateVerification = Readonly<{
+  /** Verify the exact helper pins, compatibility table and signed helper package too. */
+  helper: boolean;
+}>;
+
+export type HelperPlatform = Readonly<{ platform: NodeJS.Platform; arch: NodeJS.Architecture }>;
+
+/** A missing config means Remote Access was never set up; anything unreadable fails closed. */
+async function hostRemoteAccessEnabled(dataRoot: string): Promise<boolean> {
+  let raw: string;
+  try {
+    raw = await readFile(remoteStatePaths(dataRoot).hostConfig, "utf8");
+  } catch (error) {
+    return (error as NodeJS.ErrnoException | undefined)?.code !== "ENOENT";
+  }
+  try {
+    return RemoteAccessConfigV1Schema.parse(JSON.parse(raw)).enabled;
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Helper packages only gate an update when a registered role actually uses Remote Access
+ * on a platform that has a helper package. Remote gateways always use their helper.
+ * Elsewhere Remote Access cannot run either way, so it must not block bot fixes.
+ */
+export async function helperVerificationRequired(
+  roles: readonly Pick<UpdateLease, "role" | "dataRoot">[],
+  target: HelperPlatform = { platform: process.platform, arch: process.arch }
+): Promise<boolean> {
+  try {
+    supportedHelperTarget(target.platform, target.arch);
+  } catch {
+    return false;
+  }
+  for (const role of roles) {
+    if (role.role === "remote" || await hostRemoteAccessEnabled(role.dataRoot)) return true;
+  }
+  return false;
+}
+
+export async function verifyStagedUpdate(
+  root: string,
+  version: string,
+  options: StagedUpdateVerification
+): Promise<void> {
   const pkg = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
   if (pkg.name !== PACKAGE_NAME || pkg.version !== version || pkg.private
     || !versionPattern.test(version)) throw new Error("candidate_invalid");
-  for (const target of ["darwin-arm64", "win32-x64", "win32-arm64", "linux-x64", "linux-arm64"]) {
-    if (!versionPattern.test(pkg.optionalDependencies?.[`@waifucave/ts-connect-${target}`] ?? "")) {
-      throw new Error("candidate_invalid");
+  if (options.helper) {
+    for (const target of ["darwin-arm64", "win32-x64", "win32-arm64", "linux-x64", "linux-arm64"]) {
+      if (!versionPattern.test(pkg.optionalDependencies?.[`@waifucave/ts-connect-${target}`] ?? "")) {
+        throw new Error("candidate_invalid");
+      }
     }
+    const compatibility = await loadRemoteCompatibilityV1(version, path.join(root, "remote-compatibility.json"));
+    const require = createRequire(path.join(root, "package.json"));
+    const resolver = await createProductionHelperPackageResolver({
+      appVersion: version, trustRoots: HELPER_RELEASE_TRUST_ROOTS, compatibility,
+      resolvePackageJson: name => require.resolve(`${name}/package.json`)
+    });
+    await resolver.resolve({ role: "host", dataRoot: root, appVersion: version });
   }
-  const compatibility = await loadRemoteCompatibilityV1(version, path.join(root, "remote-compatibility.json"));
-  const require = createRequire(path.join(root, "package.json"));
-  const resolver = await createProductionHelperPackageResolver({
-    appVersion: version, trustRoots: HELPER_RELEASE_TRUST_ROOTS, compatibility,
-    resolvePackageJson: name => require.resolve(`${name}/package.json`)
-  });
-  await resolver.resolve({ role: "host", dataRoot: root, appVersion: version });
   for (const required of ["bin/waifus.mjs", "dist/cli/main.js", "dist-frontend/index.html", "dist-remote-shell/index.html"]) {
     if (!(await readFile(path.join(root, required))).length) throw new Error("candidate_invalid");
   }

@@ -10,7 +10,7 @@ import { loadAppConfig } from "../../config/appConfig.js";
 import { processIsAlive } from "../../cli/processState.js";
 import { PACKAGE_NAME, callUpdateControl, installationLock, npm, readUpdateLeases,
   updateInstallation, type UpdateLease, type UpdateInstallation } from "./control.js";
-import { applyIdleUpdate, JournalSchema, newerPatch, verifyStagedUpdate } from "./runner.js";
+import { applyIdleUpdate, helperVerificationRequired, JournalSchema, newerPatch, verifyStagedUpdate } from "./runner.js";
 
 const execute = promisify(execFile);
 export const UpdateStatusSchema = z.object({
@@ -63,17 +63,18 @@ async function recover(installation: UpdateInstallation): Promise<void> {
   if (!raw) return;
   const journal = JournalSchema.parse(JSON.parse(raw));
   await installationLock(installation.stateDir, "transaction", async () => {
+    const helper = await helperVerificationRequired(journal.roles);
     // A crash during replacement leaves an unverified package. Restore before any launch.
     if (journal.phase === "installing") {
       const registered = await readUpdateLeases(installation);
       if (registered.length || journal.roles.some(role => processIsAlive(role.pid))) throw new Error("recovery_busy");
       await npm(["install", "--global", "--prefix", installation.prefix,
         `${PACKAGE_NAME}@${journal.previous}`, "--ignore-scripts"], 180_000);
-      await verifyStagedUpdate(installation.root, journal.previous);
+      await verifyStagedUpdate(installation.root, journal.previous, { helper });
       await atomicWriteJson(file, { ...journal, phase: "rolled_back" }, { privateMetadata: true });
     } else {
       const current = JSON.parse(await readFile(path.join(installation.root, "package.json"), "utf8"));
-      await verifyStagedUpdate(installation.root, current.version);
+      await verifyStagedUpdate(installation.root, current.version, { helper });
     }
   });
   for (const role of journal.roles) {
@@ -159,7 +160,9 @@ export async function runUpdateWorker(installation: UpdateInstallation): Promise
                   staged.archives.set(version, archive);
                   const prefix = path.join(dir, version);
                   await npm(["install", "--global=false", "--prefix", prefix, archive, "--ignore-scripts"]);
-                  await verifyStagedUpdate(path.join(prefix, "node_modules", PACKAGE_NAME), version);
+                  await verifyStagedUpdate(path.join(prefix, "node_modules", PACKAGE_NAME), version, {
+                    helper: await helperVerificationRequired(roles)
+                  });
                 }
               }
               status.state = "installing"; status.reason = "none"; await save();
@@ -173,7 +176,9 @@ export async function runUpdateWorker(installation: UpdateInstallation): Promise
                   await npm(["install", "--global", "--prefix", installation.prefix, archive,
                     "--offline", "--ignore-scripts"], 180_000);
                 },
-                verify: version => verifyStagedUpdate(installation.root, version),
+                verify: async version => verifyStagedUpdate(installation.root, version, {
+                  helper: await helperVerificationRequired(roles)
+                }),
                 restart: async role => {
                   try { await restart(installation, role); }
                   catch { throw new Error("restart_failed"); }

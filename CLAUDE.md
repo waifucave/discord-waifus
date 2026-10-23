@@ -149,7 +149,10 @@ accept bugfixes in the same major/feature series. Gateway/helper package version
 five-minute quiet default. Only plain newer patch releases within the current major/minor are
 eligible. Global npm runtimes register private capability-authenticated loopback control servers;
 one installation-wide worker stages exact candidate/rollback packages, verifies helper signatures
-and compatibility, prepares all opted-in roles, then installs/restarts. Admission is synchronous
+and compatibility, prepares all opted-in roles, then installs/restarts. Helper pins/signatures/
+compatibility are verified strictly whenever a registered remote gateway or Remote-Access-enabled
+host (unreadable config counts as enabled) runs on a supported helper platform; otherwise only the
+app package is verified, so absent optional helpers never block bot fixes (`helperVerificationRequired`). Admission is synchronous
 in API/background work; passive polls/streams alone do not prevent maintenance. Locks serialize
 manual and automatic installations and block new registrations during replacement. Never signal
 an uncooperative/busy/unknown sibling or clear user data/trust to force progress. The macOS JXA
