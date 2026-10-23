@@ -320,8 +320,8 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
     execute: async (ctx, args) =>
       revisionedPut(ctx, `/api/waifus/${encodeURIComponent(String(args.id))}`, (current) => {
         const changes = { ...(args.changes as Record<string, unknown>) };
-        // params replace wholesale server-side; merge here so "set the temperature"
-        // does not silently erase the rest of her sampling/reasoning config
+        // The PUT route already merges params server-side (an explicit null unsets a key), so
+        // this pre-merge is redundant belt-and-braces: "set the temperature" keeps the rest.
         if (changes.params && typeof changes.params === "object") {
           changes.params = { ...(current.params as Record<string, unknown>), ...(changes.params as Record<string, unknown>) };
         }
@@ -497,7 +497,7 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
       if (!url) return `Unknown agent: ${args.agent}`;
       return revisionedPut(ctx, url, (current) => {
         const changes = { ...(args.changes as Record<string, unknown>) };
-        // params replace wholesale server-side; merge so "set the temperature" keeps the rest
+        // Redundant with the server-side params merge (null unsets a key); kept as belt-and-braces.
         if (changes.params && typeof changes.params === "object") {
           changes.params = { ...(current.params as Record<string, unknown>), ...(changes.params as Record<string, unknown>) };
         }

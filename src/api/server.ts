@@ -285,10 +285,10 @@ const AgentConfigBodySchema = AgentConfigSchema.partial().extend({
   promptSections: partialWithoutDefaults(OrchestratorPromptSectionsSchema).optional()
 });
 
-// Gateway P6 Task 4: `enabled` is required (not defaulted) in write bodies — every real client
-// (WaifusView, OrchestratorView) sends it explicitly, so a missing `enabled` is a malformed
-// request, not an implicit "disabled". DiscordBotConfigSchema itself keeps its `.default(false)`
-// for reads/migrations; only the write path tightens this.
+// Gateway P6 Task 4: `enabled` is required (not defaulted) in write bodies — the dashboard sends
+// it explicitly, so a missing `enabled` is a malformed request. DiscordBotConfigSchema itself
+// defaults a missing flag to `true` on reads (a stored bot without the key stays enabled); only
+// the write path tightens this.
 const DiscordBotBodySchema = DiscordBotConfigSchema.extend({ enabled: z.boolean() });
 
 const DiscordBotsBodySchema = DiscordBotsFileSchema.partial().extend({
