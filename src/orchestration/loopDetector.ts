@@ -7,7 +7,7 @@ export type LoopAssessment = {
 };
 
 /** The fields the detector reads (a ContextMessage or an adapted ledger entry). */
-export type LoopMessage = Pick<ContextMessage, "authorKind" | "authorId" | "content">;
+export type LoopMessage = Pick<ContextMessage, "authorKind" | "authorId" | "content"> & { authorBot?: boolean };
 
 const WINDOW = 8;                 // waifu messages considered
 const TAIL_PAIRS = 4;             // newest pairs (of each kind) examined for repetition
@@ -21,10 +21,18 @@ const MIN_REPETITIVE_PAIRS = 2;   // soft-threshold pairs in the tail that const
 // - adjacent pairs: consecutive waifu messages restating each other (A ≈ B);
 // - same-author pairs (I7): each message against that author's previous one in the window, so an
 //   alternating A/B/A/B volley where each waifu repeats herself is caught even when A and B differ.
+//   Only an uninterrupted cast volley counts: with a human message between the two she is
+//   answering a person (a terse waifu's "haha yes" to two different jokes is not a loop).
 // Gives a flash-lite-class orchestrator an external loop signal instead of asking it to
 // self-diagnose from raw chat.
 export function assessLoop(messages: readonly LoopMessage[]): LoopAssessment {
-  const waifuMessages = messages.filter((message) => message.authorKind === "waifu").slice(-WINDOW);
+  const indexed = messages.map((message, index) => ({ message, index }));
+  const waifuEntries = indexed.filter((entry) => entry.message.authorKind === "waifu").slice(-WINDOW);
+  const waifuMessages = waifuEntries.map((entry) => entry.message);
+  const humanIndexes = indexed
+    .filter((entry) => entry.message.authorKind === "user" && entry.message.authorBot !== true)
+    .map((entry) => entry.index);
+  const humanBetween = (from: number, to: number) => humanIndexes.some((index) => index > from && index < to);
   if (waifuMessages.length < 2) return { suspected: false };
   const tokens = waifuMessages.map((message) => tokenSet(message.content));
   const adjacent: number[] = [];
@@ -36,7 +44,9 @@ export function assessLoop(messages: readonly LoopMessage[]): LoopAssessment {
     for (let j = i - 1; j >= 0; j -= 1) {
       if (waifuMessages[j].authorId !== waifuMessages[i].authorId) continue;
       // Directly consecutive messages of one author are already an adjacent pair.
-      if (j !== i - 1) sameAuthor.push(jaccard(tokens[j], tokens[i]));
+      if (j !== i - 1 && !humanBetween(waifuEntries[j].index, waifuEntries[i].index)) {
+        sameAuthor.push(jaccard(tokens[j], tokens[i]));
+      }
       break;
     }
   }

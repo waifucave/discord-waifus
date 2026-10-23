@@ -94,6 +94,35 @@ describe("assessLoop", () => {
     expect(adjacentOnly.suspected).toBe(false);
   });
 
+  // T5 review I3: same-speaker pairs only count inside an uninterrupted cast volley.
+  it("does not fire on human-led chat where terse waifus answer each human turn alike", () => {
+    const result = assessLoop([
+      msg("a", "user", "kevin", "I finally beat the boss after twenty tries"),
+      msg("b", "waifu", "aria", "haha yes amazing work kevin"),
+      msg("c", "waifu", "riko", "nice one honestly"),
+      msg("d", "user", "kevin", "and then I dropped my phone in the soup"),
+      msg("e", "waifu", "aria", "haha yes amazing kevin"),
+      msg("f", "waifu", "riko", "nice one honestly lol"),
+      msg("g", "user", "mia", "the soup survived though"),
+      msg("h", "waifu", "aria", "haha yes amazing work"),
+      msg("i", "waifu", "riko", "honestly nice one")
+    ]);
+    expect(result.suspected).toBe(false);
+  });
+
+  it("still fires when the same volley runs with no human in between", () => {
+    const result = assessLoop([
+      msg("a", "user", "kevin", "I finally beat the boss after twenty tries"),
+      msg("b", "waifu", "aria", "haha yes amazing work kevin"),
+      msg("c", "waifu", "riko", "nice one honestly"),
+      msg("e", "waifu", "aria", "haha yes amazing kevin"),
+      msg("f", "waifu", "riko", "nice one honestly lol"),
+      msg("h", "waifu", "aria", "haha yes amazing work"),
+      msg("i", "waifu", "riko", "honestly nice one")
+    ]);
+    expect(result.suspected).toBe(true);
+  });
+
   it("does not fire when each waifu moves on from her own previous message", () => {
     const result = assessLoop([
       msg("a", "waifu", "aria", "volcano cake recipe needs molten chocolate"),
