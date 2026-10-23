@@ -282,12 +282,12 @@ Status: **revised with owner input 2026-10-23** (reply target = waifu; layout ed
 [user] epoch header ── cache breakpoint B: frozen for the whole epoch
   <conversation_summary>   this waifu's own summary of earlier conversation here (if any)
   <memories>               memory snapshot for the people in this conversation at epoch start
-  <place>                  server/channel name or "DM with Kevin"; server emoji list
+  <place>                  server/channel name or "Private chat with Kevin"; server emoji list
 [transcript]  append-only since the epoch cursor ── rolling cache breakpoint C at the last message
   user turns       consecutive non-own messages merged into ONE turn:
                      `[14:02 #k3] Kevin: body` (time HH:MM, local; #ref = short stable message ref;
                      reply context shown as `[14:03 #k4 ↩#a1] Riko: body`)
-                   images inline only for the newest N, OCR text for older ones
+                   image mode (inline vs OCR text) frozen at first render (§8.4)
   assistant turns  this waifu's own messages, raw text
   inline notes     appended where they happen and persisted (never moved):
                      "— 3 hours later —" gap markers (derived from absolute times)
@@ -369,13 +369,13 @@ Status: **revised with owner input 2026-10-23** (reply target = waifu; layout ed
 - **Context key** = `(agent, conversation)` where agent ∈ waifu id | orchestrator | stage-manager
   and conversation = guild channel or DM. Stored in
   `user/conversations/<conversationKey>/contexts/<agent>.json`:
-  `{ epoch, cursorMessageId, summary, memorySnapshotIds, notes[] (anchored to message ids),
-  refCounter, tokenCalibration, updatedAt, revision }`.
+  `{ epoch, cursorSeq, summary, memorySnapshotIds, notes[] (anchored to ledger entries),
+  tokenCalibration, updatedAt, revision }`; refs live per conversation (§8.1).
 - **Token budget**: estimate prompt tokens (chars/3.5 heuristic, calibrated per model by returned
   `usage.inputTokens` vs estimate, persisted); limit from the gateway registry `contextTokens`;
   budget = `contextTokens × compaction.triggerRatio` (default 0.7) − max output tokens.
 - **Trigger** (checked before building a prompt): estimate > budget, or transcript since cursor >
-  `compaction.maxMessages` (default 150), or a gateway `context_overflow` error (new kind, §5) →
+  `compaction.maxMessages` (default 150; `contextWindow` is only the backfill cap, §8.9), or a gateway `context_overflow` error (new kind, §5) →
   compact, then retry once.
 - **Compaction call** = the *same* request prefix (system A + epoch header B + transcript up to C,
   identical tool definitions with `tool_choice: none`) + a final instruction: "Summarize the
@@ -425,8 +425,8 @@ Status: **revised with owner input 2026-10-23** (reply target = waifu; layout ed
   `g_<guild>_<channel>` and `dm_<user>_<waifu>`; `user/dms/` holds DM-only state (rate limits).
 - **B29**: `ServerConfig.contextWindows.*` become optional overrides (precedence: explicit server
   override > agent/waifu value); a migration drops server keys equal to the old defaults
-  (20/50/80). `contextWindow` max raised to 200; effective compaction trigger =
-  `min(compaction.maxMessages, cap)`, `keepRecent` clamped to `floor(cap × 0.6)`.
+  (20/50/80). `contextWindow` max raised to 200. After the consistency review, `contextWindow` is only the
+  backfill cap (§8.9); compaction triggers on tokens or `compaction.maxMessages`.
 - **Stage manager** keeps only an observer cursor (no compaction — it is a batch job).
 - **One-shot** production state uses absolute `HH:MM` times + `now`; the decision benchmark keeps
   its documented age rendering.
@@ -480,6 +480,28 @@ Design rationale is §6 (incl. §6.8). This section fixes the contracts, modules
 
 ### 8.1 Shared contracts
 
+Folder naming: the new engine lives in `src/orchestration/context/`; the existing
+`src/orchestration/context.ts` is renamed `contextMessages.ts` in T1 to avoid an import clash. New
+migration step bodies live in `src/backend/migrationSteps/` (beside `migrations.ts`).
+
+`src/shared/schemas/discordMessage.ts` — the raw input to the ledger: **one record per Discord
+message, never merged** (the old 30 s chunk coalescing of `ContextMessage` does not apply here; the
+renderer merges consecutive self messages into one assistant turn, one text block per message).
+```ts
+ImageRefSchema = object({ key: string, attachmentId?: string, url: string, filename?: string,
+  contentType?: string, bytes?: int, width?: int, height?: int });
+RawDiscordMessageSchema = object({
+  id, channelId, guildId?: string, authorId, authorName, authorIsBot: boolean, createdAt: iso, editedAt?: iso,
+  type: int /* Discord message type */, content: string,
+  attachments: array(object({ id, url, filename, contentType?, size: int, width?, height?, durationSecs?, isVoice?: boolean })),
+  embeds: array(object({ type?, title?, description?, url?, providerName?, thumbnailUrl? })),
+  stickers: array(object({ name })), poll?: object({ question, answers: string[] }),
+  snapshots: array(object({ content, attachments })) /* forwards */,
+  referenceMessageId?: string,
+  mentions: object({ users: record(id -> name), roles: record(id -> name), channels: record(id -> name) })
+});
+```
+
 `src/orchestration/context/keys.ts`
 ```ts
 export type ConversationRef =
@@ -499,20 +521,28 @@ export function compareSnowflakes(a: string, b: string): number;  // BigInt comp
 
 `src/shared/schemas/context.ts` (persisted; resource keys `context:<key>:<agentId>`, `refs:<key>`, `ledger:<key>`)
 ```ts
+// Every note is anchored to the NEWEST ledger entry at the moment it is created (anchorSeq, never
+// null) and renders after that entry ordered by seq — so notes only ever append.
 ContextNoteSchema = discriminatedUnion("kind", [
-  { kind: "memory",    id, anchorMessageId: string|null, seq, memoryIds: string[], text },   // text frozen
-  { kind: "direction", id, anchorMessageId, seq, text },
-  { kind: "presence",  id, anchorMessageId, seq, text },                                     // "Mina joined"
-  { kind: "tool",      id, anchorMessageId, seq, placement: "with-own-message" | "standalone",
-                       callId, name, arguments: string, result: string },
+  { kind: "memory",    id, anchorSeq: int, seq, memoryIds: string[], text },   // text frozen
+  { kind: "direction", id, anchorSeq, seq, text },                             // directive for the turn being built
+  { kind: "tool",      id, anchorSeq, seq, callId, name, arguments: string, result: string },
+  { kind: "decision",  id, anchorSeq, seq, decisionId, call: string /* serialized decision args */,
+                       outcome: string /* final-state outcome text */ },        // orchestrator only; written
+                                                                                // once the decision is final
 ]);
+// Presence changes are tail-only (never stored).
 ContextStateSchema = RevisionedRecordSchema.extend({
-  conversationKey, agentId, epoch: int, epochStartedAt: iso,
-  cursorMessageId: string | null,          // transcript = ledger entries with id > cursor
+  conversationKey, agentId, epoch: int, epochStartedAt: iso, lastUsedAt: iso,
+  cursorSeq: int | null,                   // transcript = ledger entries with seq > cursorSeq
+  cursorMessageId: string | null,          // display only
+  timeZone: string,                        // IANA zone frozen per epoch (host zone at epoch start)
+  lastBreakpointSeq: int | null,           // ledger seq of the previous request's breakpoint C (§8.3)
   summary: string | null,
   headerText: string | null,               // rendered breakpoint-B text, frozen per epoch
   memorySnapshotIds: string[], memoryNoteCount: int,
-  imageModes: record(messageId -> "inline" | "text"), inlineImageCount: int,
+  imageModes: record(imageKey -> { mode: "inline" } | { mode: "text"; text: string /* frozen "[image]" or "[image: <ocr>]" */ }),
+  inlineImageCount: int,                   // both reset when a new epoch starts
   notes: ContextNote[], noteSeq: int,
   tokenCalibration: record("provider:model" -> { ratio, samples, updatedAt }),
   lastCompaction?: { at, trigger: "tokens" | "messages" | "overflow" | "manual", ok: boolean, error?: string },
@@ -520,17 +550,21 @@ ContextStateSchema = RevisionedRecordSchema.extend({
 ConversationRefsSchema = RevisionedRecordSchema.extend({ conversationKey, counter: int /*starts 360 → "a0"*/, refs: record(messageId -> ref) });
 
 // Conversation ledger: frozen, rendered message bodies shared by every agent of the conversation.
-LedgerEntrySchema = object({ id, seq: int, authorId, authorName /* frozen */, at: iso,
-  kind: enum(["default","system"]), body: string /* frozen rendered text */, images: ImageRef[],
-  replyToId?: string, state: enum(["live","edited","deleted"]), sealed: boolean });
+LedgerEntrySchema = object({ id, seq: int, authorId, authorName /* frozen */, authorIsBot: boolean, at: iso,
+  editedAt?: iso, kind: enum(["default","system"]), body: string /* frozen rendered text */,
+  images: ImageRef[] /* url refreshed in place when re-signed */, replyToId?: string,
+  state: enum(["live","edited","deleted"]), sealed: boolean });
 ConversationEventSchema = discriminatedUnion("kind", [                      // populated in Phase 5 (§9.5)
   { kind: "edit",   seq, at, messageId, anchorMessageId, authorId, text: string.max(500), sealed },
   { kind: "delete", seq, at, messageId, anchorMessageId, sealed } ]);
 ConversationLedgerSchema = RevisionedRecordSchema.extend({ conversationKey, nextSeq: int,
   entries: record(id -> LedgerEntry), events: ConversationEvent[] /* [] until Phase 5 */ });
 ```
-The ledger replaces the per-context `authorNames` map from the earlier draft: names (and mention
-names inside bodies) are frozen at first render, so renames never bust caches.
+The ledger freezes author and mention names at first render, so renames never bust caches.
+**Pruning (Phase 4):** refs and ledger entries are pruned below the minimum `cursorSeq` of *active*
+contexts (`lastUsedAt` within 7 days); a context idle longer is excluded from that minimum and, when
+used again, starts a new epoch with a fresh backfill. Ledger cap 2000 entries; nothing at or above an
+active context's cursor is ever pruned.
 
 `src/orchestration/context/types.ts`
 ```ts
@@ -542,11 +576,20 @@ export type BuiltPrompt = {
   estimatedTokens: number; transcriptCount: number; cursorMessageId: string | null;
   debug: { system: string; header: string; transcript: string; tail: string };   // /print, inspector
 };
+export type MessageRenderer = { render(m: RawDiscordMessage, dir: GuildDirectoryView, tz: string): { body: string; images: ImageRef[]; kind: "default" | "system" } | null /* null = dropped system msg */ };
+export type FrozenImages = { blocksFor(entry: LedgerEntry, state: ContextState): Promise<Array<TextBlock | ImageBlock>> };
+export type NewContextNote = Omit<ContextNote, "id" | "seq" | "anchorSeq">;
+export type PreparedContext = { conversation: ConversationRef; agent: ContextAgent; key: ConversationKey;
+  state: ContextState; prompt: BuiltPrompt; transcript: LedgerEntry[]; modelKey: string; startedAt: Date };
+export type MemoryOrigin = { guildId?: string; channelId?: string; dm?: true };
+export type MemorySubject = { discordUserId?: string; waifuId?: string; name: string };
+export type CandidateMemory = { waifuId: string; kind: MemoryKind; content: string; subjects: MemorySubject[];
+  origin: MemoryOrigin; importance?: number; source: MemorySource };
 export interface ContextStore {
   load(k: ConversationKey, a: ContextAgent): Promise<ContextState>;
   update(k: ConversationKey, a: ContextAgent, fn: (s: ContextState) => ContextState): Promise<ContextState>;
   assignRefs(k: ConversationKey, messageIds: string[]): Promise<Map<string, string>>;
-  reconcileLedger(k: ConversationKey, fetched: ContextMessage[], render: MessageRenderer): Promise<LedgerEntry[]>;
+  reconcileLedger(k: ConversationKey, fetched: RawDiscordMessage[], render: MessageRenderer): Promise<LedgerEntry[]>;
   sealLedger(k: ConversationKey, ids: string[], eventSeqs: number[]): Promise<void>;
   deleteConversation(k: ConversationKey): Promise<void>;
 }
@@ -614,12 +657,27 @@ results gain `finishReason?` and `usage?: Usage`.
 - `PendingObservation`: `subjects`, `origin`, `conversationKey`.
 - `AppConfig`: `compaction` (default `{ enabled: true, triggerRatio: 0.7, maxMessages: 150,
   keepRecent: 30, waitTimeoutMs: 6000 }`), `memory` (default `{ dreamHourLocal: 5,
-  maxPinnedInjected: 6, maxMemoryNotesPerEpoch: 6, maxInlineImagesPerEpoch: 8 }`).
+  maxPinnedInjected: 6, maxMemoryNotesPerEpoch: 6, maxInlineImagesPerEpoch: 8,
+  dmInjectionLimit: 12 }`), `discord.images` (§8.4 defaults). Phase 5's `discord.*` keys are added
+  to the same `discord` section.
+- `WaifuConfig.dm` (§9.1) is added by T1 with defaults; nothing reads it until Phase 5.
 - Every new defaulted field is re-declared truly-optional in its PUT body schema (B17 pattern).
 
-Migration steps (all once): `waifu-drop-prompt-layout-v1`, `server-context-windows-explicit-v1`,
-`memories-global-origin-subjects-v1`, `memories-cross-guild-dedupe-v1`,
-`pending-observations-global-v1`, `dream-cursor-global-v1`.
+Migration steps, in order, all before the schema-version stamp:
+| Step | Frequency | Content |
+|---|---|---|
+| `waifu-params-gateway-040-v1` | once per app version, after `configs-to-gateway-params` | drop stored params the 0.4.0 catalog rejects |
+| `waifu-drop-prompt-layout-v1` | once | §8.6 |
+| `server-context-windows-explicit-v1` | once | §8.7 |
+| `memories-global-origin-subjects-v1` | once | §8.8 |
+| `memories-cross-guild-dedupe-v1` | once, **guarded by a marker file** `user/.memories-dedupe-v1.json` so ledger loss never re-runs it | §8.8 |
+| `pending-observations-global-v1` | once | `guildId`/`channelId` → `origin`; resolvable `entities` → `subjects`; `conversationKey` from guild+channel |
+| `dream-cursor-global-v1` | once | Phase 1's dream cursor → one global waifu round-robin cursor |
+| `ocr-cache-url-keys-cleanup-v1` | once | §8.4 |
+`MigrationStep` gains the `pending` flag in T1. The legacy steps `memory-store-v2` and
+`memories-to-guild-scope` change to keep guild-less/unresolvable records with `origin: {}` instead
+of dropping/archiving them. A downgrade to a pre-Phase-4 build cannot read migrated memories
+(documented; idle updates never downgrade).
 
 ### 8.3 Context engine (`src/orchestration/context/`)
 
@@ -643,10 +701,13 @@ are byte-identical across restarts. Phase 5 adds edit/delete events on top (§9.
 - Images: `[image]` / `[image: <ocr>]` text, or an inline image block when the frozen mode is
   `inline`.
 - Gap ≥ 30 min inserts its own block `— 3 hours later —`; a day change appends `· Tue 24 Oct`.
-- Notes render after their anchor ordered by `seq`: `<memory_note>…</memory_note>`,
-  `<direction>…</direction>`, presence lines, tool call + tool result turns. Phase 5 events
-  (`<edit>…</edit>`, `<deleted>…</deleted>`) interleave by `(anchor, at, seq)`.
-- `extraTurns` hook for the orchestrator's past decisions (anchored by timestamp).
+- Notes render after their anchor entry ordered by `seq`: `<memory_note>…</memory_note>`,
+  `<direction>…</direction>`, tool call + tool result turns, and (orchestrator) decision notes as
+  compact tool-call turns. Phase 5 events (`<edit>…</edit>`) interleave by `(anchorSeq, seq)`.
+- If `fetchSince` returns `reachedCursor: false` (more than the backfill cap was missed, e.g. after
+  downtime), the transcript gets one `— earlier messages not loaded —` block and the epoch continues
+  from the oldest fetched message (logged).
+- Times render in the context's frozen `timeZone`.
 
 **Builder.**
 ```ts
@@ -654,25 +715,34 @@ export type BuildInput = {
   conversation: ConversationRef; agent: ContextAgent; model: ResolvedModel; state: ContextState;
   systemText: string; headerText: string; transcript: LedgerEntry[]; events: ConversationEvent[];
   selfAuthorIds: string[]; refs: ReadonlyMap<string, string>;
-  extraTurns?: Array<{ at: string; afterMessageId?: string; turns: ChatMessage[] }>;
-  tail: string; tools: ToolDef[]; timeZone?: string;
+  tail: string; tools: ToolDef[]; renderToolTurnsAsText?: boolean /* orchestrator JSON-schema path */;
 };
 export function buildContext(i: BuildInput, images: FrozenImages): Promise<BuiltPrompt>;
 ```
-Breakpoints: A = system message, B = epoch header user message, C = last transcript block (all
-`cacheControl: { type: "ephemeral" }`, 5-minute TTL); the tail is never marked and is never stored.
-The tail is the final block of the last user turn when the transcript ends with a user turn,
-otherwise a new user turn.
+**Breakpoints** (Anthropic allows 4 and looks back only ~20 blocks from each, so a busy room needs
+an extra one): A = system, B = epoch header, **C_prev** = the text block of ledger seq
+`state.lastBreakpointSeq` (the previous request's C, which is exactly where the last cache write
+ended), C = the **last transcript `TextBlock`** (`TextBlock.cacheControl`; message-level
+`cacheControl` would land on the tail). `ImageBlock`s carry no breakpoints; every message renders a
+header text block before its images, so a text block is always available. All `ephemeral` with the
+5-minute TTL. After each call `commit` stores the new C as `lastBreakpointSeq`. The tail is a
+separate final text block (same user turn when the transcript ends with a user turn, otherwise a new
+user turn); it is never marked and never stored. When the orchestrator's JSON-schema fallback sends
+no tools, decision notes render as text lines (`[decision 14:02] reply → Aria · sent`) instead of
+tool-call turns.
 
 **Runtime seam.**
 ```ts
 class ContextRuntime {
   constructor(d: { store: ContextStore; snapshots: MemorySnapshotProvider; compaction: CompactionService;
     messages: ConversationMessageSource; images: ImageFetcher; settings: (server?: ServerConfig) => CompactionSettings; logger: Logger });
-  prepare(i: { conversation; agent; model; cap: number; selfAuthorIds; render: RoleRenderer; signal }): Promise<PreparedContext>;
-  // load state → fetch since cursor (≤ cap) → reconcile ledger → assign refs → epoch start if headerText null
-  // (memory snapshot, freeze header) → propose memory notes → compaction.check (join inFlight ≤ waitTimeoutMs,
-  // else one-off hard truncation) → build → seal
+  prepare(i: { conversation; agent; model; backfillCap: number; selfAuthorIds; render: RoleRenderer;
+    pendingNotes?: NewContextNote[] /* e.g. this turn's direction */; signal }): Promise<PreparedContext>;
+  // load state → fetch since cursor (first fetch of an epoch bounded by backfillCap) → reconcile ledger →
+  // assign refs → epoch start if headerText null (freeze timeZone, memory snapshot, header; reset image
+  // counters) → propose memory notes → BUILD → compaction.check → (join inFlight ≤ waitTimeoutMs or
+  // compact; rebuild; on timeout one-off hard truncation) → in ONE write: seal rendered entries, persist
+  // pendingNotes + memory notes, update lastUsedAt
   call<T>(p: PreparedContext, fn: (prompt: BuiltPrompt) => Promise<T>): Promise<T>; // context_overflow → forced compact + rebuild + retry once
   commit(p: PreparedContext, o: { notes?: NewContextNote[]; usage?: Usage; modelKey: string }): Promise<void>;
 }
@@ -688,8 +758,9 @@ signal })` paging `before` in batches of 100; fakes without it fall back to `fet
 cursor filter.
 
 **Acceptance (prefix-stability property).** Build turn N, append one message and one note, build
-N+1: every block through the previous C is deep-equal, and there is exactly one `role:"system"`
-message. Holds for 20 scripted turns; two builds over the same input are byte-identical.
+N+1: with cache markers stripped, every block through the previous C is deep-equal, and there is
+exactly one `role:"system"` message. Holds for 20 scripted turns; two builds over the same input are
+byte-identical.
 
 ### 8.4 Image fetching (I6, moved from Phase 5)
 
@@ -713,8 +784,11 @@ export interface ImageFetcher {
   rebuilds, restarts and signed-URL expiry. An expired URL (403/404 with past `ex`) triggers one
   URL refresh via a single-message refetch.
 - **Freeze rule:** at first render in a context an image is `inline` iff the model accepts images,
-  `inlineImageCount < maxInlineImagesPerEpoch`, and the fetch is ok; `too_large`, `unsupported_type`,
-  `http_error`, `timeout`, `network`, `blocked_host` freeze it to text; `aborted` never freezes.
+  `inlineImageCount < maxInlineImagesPerEpoch`, and the fetch is ok; otherwise it freezes to text —
+  `[image: <ocr>]` when OCR text is available at that moment, else `[image]` — and that exact text is
+  stored in `imageModes` (OCR finishing later never rewrites it). `too_large`, `unsupported_type`,
+  `http_error`, `timeout`, `network`, `blocked_host` freeze to text; `aborted` never freezes. A new
+  epoch resets `inlineImageCount` and drops `imageModes` for entries before the cursor.
   A frozen-inline image that later becomes unobtainable renders `[image unavailable]` (rare, logged).
 - OCR uses the same fetcher (`purpose: "ocr"`), keeps the newest-N budget and the abort signal; OCR
   cache keys become `attachmentKey` (fixes cache misses on re-signed URLs; results move to
@@ -731,7 +805,9 @@ export interface ImageFetcher {
 - **Header (B):** `<conversation_summary>`, `<memories>` (snapshot), `<place>` (server › channel or
   "Private chat with Kevin"; people present; server emoji list).
 - **Tail:** now (local time), her current activity (busy/sleepy/awake), presence changes since epoch
-  start, recent reactions (Phase 5), retry note when retrying, and the turn instruction.
+  start, recent reactions (Phase 5), retry note when retrying, and the turn instruction. This turn's
+  orchestrator directive is passed as a `pendingNote` (`direction`), so it is in the transcript of
+  the very call it steers and stays there afterwards.
 
 The harness transcript paragraph (must match the renderer): "Messages from others arrive as
 `[14:02 #k3] Kevin: text` — the local time, a short message ref, and the sender. `↩#a1` in a header
@@ -792,9 +868,10 @@ schedule in the prompt" (full UI polish in Phase 7, §11.3).
   `runtime_notice`, wake marker with the recorded scheduling decision (B8), reply-required and
   directive-budget state, "Call orchestrator_decision."
 - Tool schema stable per channel config (`orchestratorToolParameters(availableWaifuIds)`);
-  reply-required / budget enforced in code. Past decisions after the cursor are `extraTurns`
-  (compact tool-call turns, final-state outcomes only). `pipeline/timeline.ts` shrinks to the
-  decision serializers; `[Ns]` ages, `[now]`, `[12m pass]` are gone.
+  reply-required / budget enforced in code. Past decisions become `decision` notes written once the
+  decision is final (anchored to the newest entry at that moment, frozen), so they only ever append;
+  pending decisions are not rendered. `pipeline/timeline.ts` shrinks to the decision serializers;
+  `[Ns]` ages, `[now]`, `[12m pass]` are gone.
 - One-shot state uses `time: "HH:MM"`, `date`, `now` (no ages); the decision benchmark keeps its
   documented age rendering. Deterministic mode consumes the cursor-bounded transcript.
 - Reviewer: system + one message. Stage-manager custom prompt honoured (B28). Stage manager keeps
@@ -835,41 +912,64 @@ export function admitMemoryWrite(store: MemoryRecord[], c: CandidateMemory,
 - **Dream:** one timer at `memory.dreamHourLocal`; waifus round-robin from a persisted cursor;
   budget 8 chunks/night; allowed owners include observation owners (B12); ignores per-server
   `stageManagerEnabled` (which gates observers only).
-- **Per-record revision:** every write path bumps `record.revision`. `PUT`/`DELETE
+- **Per-record revision:** every content write bumps `record.revision` (API, observer ops, dream,
+  waifu tool, archival); retrieval statistics (`lastRetrievedAt`) never bump it.
+- **Status:** `status: active | archived` plus `archivedReason?: merged | expired | deduped | user |
+  unknown_waifu` and `mergedInto?: memoryId`; observer `merge` archives the source with `mergedInto`,
+  `expire` archives with `expired`; Restore sets `active`. `PUT`/`DELETE
   /api/memories/:memoryId` accept `recordRevision` (preferred) or the legacy store-wide `revision`
   (one required → 428); mismatch → 409 `{ error: "Conflict", latest: { revision }, record }`.
   Responses stay the full store for compatibility.
 - **Migrations:** `memories-global-origin-subjects-v1` (`guildId`/`channelId` → `origin`; `entities` →
-  `subjects` by unique exact match against that guild's member names or waifu names, else
-  name-only); `memories-cross-guild-dedupe-v1` (same waifu + kind, normalized equality or jaccard ≥
-  0.92; keep pinned > strongest > oldest; archive the rest; audit to
-  `app/logs/migrations/memories-dedupe-v1.json`); `pending-observations-global-v1`;
+  `subjects` **only** where a name uniquely matches that guild's member names or a waifu name —
+  unresolvable entities are dropped, they were capitalized words, not people);
+  `memories-cross-guild-dedupe-v1` (same waifu + kind + overlapping subjects (or both empty with
+  normalized-equal text), and normalized equality or jaccard ≥ 0.92; keep pinned > strongest >
+  oldest; archive the rest with `archivedReason: deduped`; audit to
+  `app/logs/migrations/memories-dedupe-v1.json`; marker file prevents re-runs); `pending-observations-global-v1`;
   `dream-cursor-global-v1`.
 - **API:** `GET /api/memories?guildId=` filters `origin.guildId`, plus `origin=dm` and
   `subjectUserId=`; `POST /api/memories` takes optional `guildId` (→ origin) and `subjects`;
-  `POST /api/memories/forget-user { discordUserId, confirm: true, dryRun? }` → counts (Phase 5
-  extends it to DM state). Assistant `forget_user` uses a two-step confirmation token until Phase 7
-  replaces it with a confirmation card. `MemoryScreen` loses its guild picker (B15).
+  `POST /api/memories/forget-user { discordUserId, confirm: true, dryRun? }` (policy
+  `transactional`, audit `memory.forget_user`) → counts; it also replaces that user's message bodies
+  in every conversation ledger with `(removed)` (a one-off cache miss; summaries keep them until the
+  next compaction — documented); Phase 5 extends it to DM state. The assistant `forget_user` tool
+  uses the existing confirmation cards (`actions.propose`, `exact_http`). `MemoryScreen` loses its
+  guild picker (B15).
+- **Slash commands:** `/print memories` filters by waifu (not guild) and **never prints DM-origin
+  memories into a guild channel**; `/print system_prompt` reads the conversation-keyed
+  `BuiltPrompt.debug`; `/memories` triggers the channel's observer plus a global dream run for the
+  waifus enabled there.
 
 ### 8.9 Compaction
 
 `context/compaction.ts` implements `CompactionService`; `ContextRuntime` calibrates on commit and
 schedules a post-reply background check.
-- **Triggers:** estimate > budget; transcript count > `min(compaction.maxMessages, cap)`
-  (`keepRecent` clamped to `floor(cap × 0.6)`); gateway `context_overflow` → compact, rebuild,
-  retry once (a second overflow surfaces the error); manual (§10.4, §11.6).
+- **Triggers:** estimate > budget; transcript count > `compaction.maxMessages` (150; `keepRecent`
+  clamped to `floor(maxMessages × 0.6)`); gateway `context_overflow` → compact, rebuild, retry once
+  (a second overflow surfaces the error); manual (§10.4, §11.6). The agent/waifu `contextWindow` (and
+  its server override, B29) is **only the backfill cap** — how many messages an epoch fetches when it
+  starts or after downtime — never a compaction trigger, so default caps (orchestrator 20) don't
+  cause constant compaction.
 - **Calibration:** EMA α = 0.3 of `usage.inputTokens / estimate`, clamped [0.5, 2.5], per
   `provider:model`, stored in the context state.
-- **Request:** the exact `BuiltPrompt` messages through C plus the same wire tools (mirroring
-  whether the real call sent tools at all); `tool_choice: "none"` where supported, else `"auto"`
-  with calls ignored; max 1500 output tokens; a role-specific final instruction naming the
-  keep-from ref ("messages from #k9 on stay verbatim"). Waifu instruction: summarize from her own
+- **Request (waifus):** the exact `BuiltPrompt` messages through C plus the **same tools, tool choice
+  (`auto`) and params** as her reply call (changing tool choice or thinking params invalidates
+  Anthropic's message cache); any tool calls in the output are ignored; if no text comes back, one
+  retry with the instruction repeated in the tail. Max output `max(1500, thinkingBudget + 1500)`
+  with params otherwise unchanged. The final instruction names the keep-from ref ("messages from #k9
+  on stay verbatim") and lists refs of messages deleted by their authors to leave out (§9.5).
+- **Request (orchestrator):** its reply call forces `orchestrator_decision`, so compaction must use
+  a different tool choice (`none` where the model supports it, else `auto`); this is billed mostly as
+  fresh input (system + tools may still cache). Accepted: the director's transcript is short and
+  compacts rarely. Waifu instruction: summarize from her own
   perspective for her future self (people, ongoing threads, promises, running jokes, how she feels
   about each person, unresolved questions). Director variant: room state, open threads, who has
   spoken, pacing.
-- **On success** (one revisioned update): `epoch+1`, `summary`, `cursorMessageId` = the message
-  before the newest `keepRecent`, `headerText: null` (re-frozen next prepare, memory snapshot
-  re-selected), notes before the cursor dropped, `memoryNoteCount: 0`, `lastCompaction`. Discarded if
+- **On success** (one revisioned update): `epoch+1`, `summary`, `cursorSeq` = the entry before the
+  newest `keepRecent`, `headerText: null` (re-frozen next prepare: time zone, memory snapshot),
+  notes before the cursor dropped, `memoryNoteCount: 0`, `inlineImageCount: 0`, `imageModes` pruned,
+  `lastBreakpointSeq: null`, `lastCompaction`. Discarded if
   the epoch changed meanwhile. Observer handoff via `requestObserveThrough(newCursor)`.
 - **Concurrency:** single-flight per context in memory; no storage lock held during the LLM call; a
   waiting reply that times out (`waitTimeoutMs`) builds a one-off hard-truncated prompt (newest
@@ -878,8 +978,10 @@ schedules a post-reply background check.
 
 ### 8.10 Gateway 0.4.0 adoption (app side of Phase 3)
 
-- `usageLedger.ts`: append-only `user/usage/YYYY-MM-DD.jsonl` (one line per model call, in-process
-  queue, safe under the host lock) with `ModelCallAttribution`.
+- `usageLedger.ts`: append-only `user/usage/YYYY-MM-DD.jsonl` (file date = UTC day; one line per
+  model call, in-process queue, safe under the host lock) with `ModelCallAttribution`. Every call
+  writes exactly one line: `status: ok | aborted | failed`, and when the provider returned no usage
+  (aborted/failed streams) token fields are 0 with `usageKnown: false`.
 - `providerAlerts.ts`: per-provider quota (10 min) / billing (30 min) cooldowns; during a cooldown
   calls fail fast with `provider_quota` / `provider_billing`; surfaced in `/api/runtime.providerAlerts`.
 - `gatewayPipeline.ts`: pass `promptCacheKey`; record usage per call (drop `flatUsage` /
@@ -892,8 +994,12 @@ schedules a post-reply background check.
 
 ### 8.11 Evaluation and docs
 
-- `tests/eval/cacheHit.test.ts` (offline cache-hit simulation, §6.7, ≥ 0.8 for waifus and the
-  orchestrator); live eval scenarios (`WAIFUS_EVAL_LIVE=1`): reply-marker correctness, verbosity
+- `tests/eval/cacheHit.test.ts` (offline cache-hit simulation, §6.7): the fake transport models
+  Anthropic's rules — ≤ 4 breakpoints, a hit only when a breakpoint's prefix matches a cached entry
+  found within 20 blocks back, 5-minute TTL — and runs with **default** settings. Scenarios: quiet
+  room, busy room (30+ messages between a waifu's turns), DM, a compaction, a deletion. Target ≥ 0.8
+  cache-read ratio for waifus in quiet/busy rooms and DMs; the orchestrator target is ≥ 0.8 excluding
+  its compaction calls; live eval scenarios (`WAIFUS_EVAL_LIVE=1`): reply-marker correctness, verbosity
   adherence, no name-prefix/header leaks, memory subject correctness, cross-server recall,
   compaction continuity.
 - Goldens: waifu (guild first epoch, with summary/notes/tool, retry tail, DM key, schedule
@@ -909,9 +1015,10 @@ schedules a post-reply background check.
 - No `replying to >` and no `promptLayout` under `src/`.
 - Prefix-stability property and cache-hit simulation pass; exactly one system message everywhere.
 - A memory learned in server A is retrieved in server B; re-running every migration is a no-op.
-- A scripted 200-message conversation compacts with a correct cursor and summary; the compaction
-  request is byte-identical to the preceding reply prefix through C.
-- Every model call writes exactly one usage-ledger line.
+- A scripted 200-message conversation compacts with a correct cursor and summary; for waifus the
+  compaction request's messages through C equal the prompt handed to compaction (markers stripped)
+  and its tools, tool choice and params equal her reply call's.
+- Every model call writes exactly one usage-ledger line, including aborted and failed calls.
 - Typecheck + full suite green on the bumped 0.4.0 pin; owner has seen the goldens.
 
 ## 9. Phase 5 — Discord features (detailed design)
@@ -949,14 +1056,17 @@ export const DmRunRecordSchema = z.object({
 });
 export const DmStateSchema = RevisionedRecordSchema.extend({
   waifuId, userId, botId, dmChannelId?: string,
-  replyTimestamps: iso[] (max 1000), limitNoticeSentAt?: iso,
   lastInboundMessageId?, lastInboundAt?, lastRepliedMessageId?, lastReplyAt?,
   pendingTriggerMessageId?, pendingSince?, undeliverableSince?,
   recentRuns: DmRunRecord[] (max 50)
 });
+export const DmLimitStateSchema = RevisionedRecordSchema.extend({
+  waifuId, userId, replyTimestamps: iso[] (max 1000), limitNoticeSentAt?: iso });
 ```
-Paths: DM state `user/dms/<userId>/<waifuId>.json` (resource `dm:<userId>:<waifuId>`; user-first so
-per-user deletion is one directory). Contexts, refs and ledger use the Phase 4 key
+Paths: DM state `user/dms/<userId>/<waifuId>.json` (resource `dm:<userId>:<waifuId>`) and rate-limit
+counters `user/dms/<userId>/<waifuId>.limit.json` (resource `dm-limit:<userId>:<waifuId>`), kept
+separate so user-initiated forgetting can never reset the limiter. User-first layout makes
+owner-initiated per-user deletion one directory. Contexts, refs and ledger use the Phase 4 key
 `dm_<userId>_<waifuId>` under `user/conversations/`.
 
 **Intents and eligibility.** Waifu bots with at least one DM-eligible waifu log in with
@@ -979,17 +1089,18 @@ idle|generating|sending, rerunRequested }` per conversation.
 2. Fire: take a global semaphore slot (`discord.dm.maxConcurrentRuns`, 4); re-check eligibility;
    stop if `undeliverableSince` is set with no newer inbound; **rate-limit gate** (§9.1.1, no model
    call when limited); write `pending*`.
-3. `ContextRuntime.prepare({ conversation: { kind: "dm", … }, agent: { kind: "waifu", … }, cap:
+3. `ContextRuntime.prepare({ conversation: { kind: "dm", … }, agent: { kind: "waifu", … }, backfillCap:
    resolveContextCap("waifu", undefined, waifu), render: waifuHarness(...) })` — same harness, model,
-   global memories and app-level compaction as servers; `<place>` = "Private chat with Kevin";
-   participants `[the user]`; same-origin boost for `origin.dm`.
+   global memories and app-level compaction as servers; snapshot size `memory.dmInjectionLimit`;
+   `<place>` = "Private chat with Kevin"; participants `[the user]`; same-origin boost for
+   `origin.dm`.
 4. Tools: `add_memory` iff `tools.toolUse` (memories get `origin: { dm: true }`, `subjects: [user]`);
    never `PickNextWaifu`.
 5. Typing, then the same `generateValidatedWaifuReply` loop (marker → Discord reply works in DMs).
 6. Sending: once the first chunk is out the reply is never aborted; `rerunRequested` triggers one
    follow-up run (debounced).
-7. Commit: `ContextRuntime.commit`; under the `dm:` lock append one `replyTimestamps` entry (only if
-   ≥ 1 chunk was sent), set `lastReplied*`, clear `pending*`, push a run record. Usage attributed
+7. Commit: `ContextRuntime.commit`; under the `dm-limit:` lock append one `replyTimestamps` entry
+   (only if ≥ 1 chunk was sent); under the `dm:` lock set `lastReplied*`, clear `pending*`, push a run record. Usage attributed
    `{ purpose: "waifu_reply", waifuId, conversationKey }`.
 8. Observer: `memoryJobs.noteActivity(conversationRef)`; DM observers ignore per-server flags.
 
@@ -1032,10 +1143,11 @@ as "DMs".
 
 #### 9.1.4 Deletion
 `dmForget({ userId, waifuId?, scope: "conversation" | "all", dryRun })`: `conversation` deletes
-`user/conversations/dm_<user>_<waifu>/` and `recentRuns` but keeps the rate-limit timestamps (the
-limiter can't be reset by forgetting); `all` also deletes the DM state file, that waifu's memories
-whose subjects include the user, the user's pending observations for her, and image-cache entries
-tagged with the conversation. Phase 4 `forget-user` calls `dmForget(scope: "all")` for every waifu,
+`user/conversations/dm_<user>_<waifu>/` and `recentRuns`; `all` also deletes the DM state file, that
+waifu's memories whose subjects include the user, the user's pending observations for her, and
+image-cache entries tagged with the conversation. **Neither scope touches the `.limit.json`
+counters** (users can't reset the limiter). Only the owner's `forget-user` deletes everything under
+`user/dms/<userId>/`, counters included. Phase 4 `forget-user` calls `dmForget(scope: "all")` for every waifu,
 deletes `user/dms/<userId>/`, and returns `{ memories, observations, dmContexts, dmStates, ledgers,
 cachedImages }`. The usage ledger is left unchanged (O5: no anonymization).
 
@@ -1043,7 +1155,9 @@ cachedImages }`. The usage ledger is left unchanged (O5: no anonymization).
 Orchestrator commands get `contexts: [Guild]`. DM-eligible waifu bots register one global
 `/forget what:<conversation|everything>` command (`contexts: [BotDM]`), answered ephemerally with a
 30-second Confirm button; `everything` = `dmForget(scope: "all")` for that waifu and user (O3).
-Unknown/early commands get the not-ready reply (B23).
+Unknown/early commands get the not-ready reply (B23). Assistant tools: read-only `list_dms`, and
+`forget_dm({ waifuId, userId, scope })` which proposes a confirmation card for
+`POST /api/dms/:waifuId/:userId/forget`.
 
 ### 9.2 I2 — debounce
 
@@ -1110,8 +1224,9 @@ The duplicate refresh paths in `api/server.ts` and `backend/server.ts` collapse 
 
 **Edits and deletes** extend the Phase 4 ledger:
 - An edit of a **sealed** entry keeps the original body and appends an `edit` event anchored to the
-  newest message (coalesced while unsealed, ≤ 3 per message), rendered `<edit>Kevin edited #k3: new
-  text</edit>`. Edits during downtime are detected on reconcile.
+  newest entry (coalesced while unsealed, ≤ 3 per message), rendered `<edit>Kevin edited #k3: new
+  text</edit>`. Edits are detected only from Discord's `editedTimestamp` (event or on reconcile after
+  downtime), never by diffing re-rendered text (frozen names would cause false edits).
 - Deletes (event, cache tombstone, or a gap in a contiguous REST page) use the owner's **hybrid
   rule** (O1): if the message is unsealed, or among the newest `discord.deletedMessages.redactRecent`
   transcript messages (default 20) of a context, its body becomes `(message deleted)`, images are
@@ -1120,7 +1235,7 @@ The duplicate refresh paths in `api/server.ts` and `backend/server.ts` collapse 
   `state: "deleted"`; the next compaction's final instruction lists those refs ("leave out messages
   #k3, #k7 — their authors deleted them") so the summary omits them, and they leave the context when
   the cursor passes them (ledger text purged at pruning). Either way the message never triggers runs.
-- Pruning follows refs pruning (below the minimum cursor; cap 1000 entries).
+- Pruning follows the Phase 4 rule (§8.1: active contexts only, cap 2000).
 - Triggers: edits never start runs, except an edit that adds a waifu mention to the newest human
   message within 2 minutes (treated as a new message, debounced). Deleting the newest human message
   while that channel's run is pre-send aborts it (`trigger_deleted`). `/clear everything` deletes the
@@ -1181,9 +1296,9 @@ Routes (all in `ROUTE_POLICY_MANIFEST`; `waifuId` via `assertSafeId`, user/guild
 
 | Method / path | Request | Response | Policy |
 |---|---|---|---|
-| `GET /api/dms` | `?waifuId&userId&limit≤200` | `{ conversations: [{ conversationKey, waifuId, userId, userDisplayName?, lastInboundAt?, lastReplyAt?, rateLimit: { used, max, windowMinutes, limited, freesAt? } \| null, lastRun?, context?: { epoch, lastCompaction? } }] }` | safe |
+| `GET /api/dms` (policy safe) | `?waifuId&userId&limit≤200` | `{ conversations: [{ conversationKey, waifuId, userId, userDisplayName?, lastInboundAt?, lastReplyAt?, rateLimit: { used, max, windowMinutes, limited, freesAt? } \| null, lastRun?, context?: { epoch, lastCompaction? } }] }` | safe |
 | `GET /api/dms/:waifuId/:userId` | — | `{ state, rateLimit, context? }` (no message bodies) | safe |
-| `POST /api/dms/:waifuId/:userId/forget` | `{ confirm: true, scope, dryRun? }` | `{ dryRun, deleted: {...} }` | mutation |
+| `POST /api/dms/:waifuId/:userId/forget` | `{ confirm: true, scope, dryRun? }` | `{ dryRun, deleted: {...} }` | `transactional`, audit `dm.forget` |
 | `GET /api/servers/:guildId/threads` | — | `threads.json` | safe |
 | `GET /api/orchestrator/history` | unchanged | per-guild merge | safe |
 
@@ -1211,11 +1326,13 @@ Acceptance:
    `freesAt`; a restart does not reset the counter.
 4. Restart mid-DM → the reply arrives after boot; pause → nothing until resume, then catch-up within
    the window.
-5. With `serverMs = 1200`, ≤ 1 orchestrator call per human burst.
+5. With `serverMs = 1200`, ≤ 1 orchestrator call per human burst (a burst = consecutive human
+   messages with gaps < `serverMs` and total span < `serverMaxWaitMs`).
 6. A pass with two responders makes ≤ 1 Discord message fetch and 0 reaction-user fetches when
    trusted.
-7. Edits/reactions on rendered messages keep the prefix byte-identical through C; cache-hit eval
-   stays ≥ 0.8 with edits mixed in.
+7. Edits and reactions on rendered messages keep the prefix byte-identical through C; deleting an
+   old (non-recent) message keeps it byte-identical too; deleting a recent message changes bytes only
+   from that message onward. The cache-hit eval stays ≥ 0.8 with edits and old deletions mixed in.
 8. A thread under an enabled channel gets the parent's cast with its own key; `"off"` silences it.
 9. Two guilds write decisions concurrently without contention, each keeping 300.
 10. Typecheck + suite green; KB and CLAUDE.md updated.
@@ -1283,8 +1400,9 @@ export type SettingGroup = {
 };
 export type ResourceTopic = { id: string; title: string; description: string; routes: RouteRef[]; cli: string[] };
 ```
-- Descriptions live on the schemas: every user-facing field gets `.meta({ description, examples? })`
-  as its last call; `introspect.describe()` walks default → optional → nullable → pipe/transform and
+- Descriptions live on the schemas: every user-facing field gets `.meta({ description, examples? })`;
+  `partialWithoutDefaults` copies metadata onto the rebuilt fields (a registry test asserts every
+  write-schema leaf still has its description); `introspect.describe()` walks default → optional → nullable → pipe/transform and
   takes the first metadata found.
 - Leaves: non-object schemas, records (`params`), or objects flagged `leaf`. `params.<gatewayKey>`
   is an open sub-key form; dotted gateway keys stay flat.
@@ -1298,7 +1416,7 @@ export type ResourceTopic = { id: string; title: string; description: string; ro
 **`app`** — `config.toml`, `GET`/`PUT /api/config`, revision `none`, offline-writable by the CLI.
 `applies` is `reload` unless marked live/restart; `PUT /api/config` skips the Discord reload when
 the patch only touches live keys (`ocr`, `compaction`, `memory`, `discord.debounce`,
-`discord.images`, `discord.dm`, `discord.deletedMessages`) (O9).
+`discord.images`, `discord.dm`, `discord.deletedMessages`, `discord.memberListRefreshHours`) (O9).
 
 | Key | Type / range | Default | Flags |
 |---|---|---|---|
@@ -1321,8 +1439,8 @@ the patch only touches live keys (`ocr`, `compaction`, `memory`, `discord.deboun
 **`agent:<orchestrator|stage-manager|reviewer|assistant>`** — `user/<agent>/config.json`, revision
 `optional`: `enabled`, `providerId`/`modelId` (nullUnset), `contextWindow` (1–200; 20, stage-manager
 80), `prompt`, `directiveCooldown` (0–20, orchestrator), `params`/`params.<key>` (params merge),
-`promptSections.pausePlanning`, `promptSections.messageStructure` (deprecated), `turnLimits.*`
-(assistant, §11.8).
+`promptSections.pausePlanning`, `promptSections.messageStructure` (deprecated). `turnLimits.*`
+(assistant) is added to the registry by Phase 7 (§11.10), not Phase 6.
 
 **`waifu:<waifuId>`** — `user/waifus/:waifuId/waifu.json`, revision `required`, create/remove routes:
 `id` (readOnly), `name`, `displayName`, `enabled`, `persona`, `providerId`/`modelId`/`botId`
@@ -1392,7 +1510,9 @@ HelpTopicV1 = discriminatedUnion("kind", [
 KeyHelp = { path, id, type, description, default, examples, enum?, min?, max?, maxLength?, nullable,
   flags, cli: string[], body: unknown }
 ```
-Keys are arrays (not maps keyed by field names) and paths are relative. Topic resolution: group id →
+Keys are arrays (not maps keyed by field names) and paths are relative. Route `remote` tags use the
+manifest's exact values (`full_admin | local_only | never_proxy`). An `environment` resource topic
+documents env-only settings (`DC_WAIFUS_HOME`, `DC_WAIFUS_LAYA_PYTHON`, `WAIFUS_GATEWAY_DIR`). Topic resolution: group id →
 longest group-prefix + key/subtree → resource → `cli.<command>`; else 404 with `suggestions`.
 `?format=md` (or `Accept: text/markdown`) returns the shared renderer's markdown. Remote devices may
 read help (static code metadata; each route tagged `remote: available | local_only | never_proxy`).
@@ -1425,7 +1545,8 @@ lastCompaction, summaryChars }] }`; state GET returns the context minus `tokenCa
 summary, memory snapshot lines, note counts by kind, `inlineImageCount`, and
 `estimatedTokens`/`budgetTokens` for the agent's current model; `compact` runs
 `CompactionService.compact(trigger: "manual")` (202 + operation if still running after
-`waitTimeoutMs`; completion published as a `context` event); `reset` = epoch+1, `summary: null`,
+`waitTimeoutMs`; completion published as a `context` event `{ conversationKey, agentId, epoch,
+lastCompaction }`, which Phase 6 adds to the event stream); `reset` = epoch+1, `summary: null`,
 cursor = latest message, `headerText: null`, notes cleared. Keys validated with
 `parseConversationKey` before any path is built.
 
@@ -1446,7 +1567,7 @@ waifus config set TARGET KEY VALUE | TARGET KEY=VALUE...   [--stdin | --file PAT
 waifus config unset TARGET KEY...
 waifus config schema TARGET [KEY] [--io read|write]
 
-waifus waifu list | get ID [KEY] | set ID KEY VALUE|K=V... | unset ID KEY | create ID --name N [--display-name D] [--persona-file F] [--model PROVIDER:MODEL] | delete ID | link-bot ID [--application-id X] | digest ID | export ID [--format png|json] [--out PATH] | import PATH
+waifus waifu list | get ID [KEY] | set ID KEY VALUE|K=V... | unset ID KEY | create ID --name N [--display-name D] [--persona-file F] [--model PROVIDER:MODEL] | delete ID | link-bot ID [--application-id X] | digest ID | export ID [--format png|json] [--out PATH] | import PATH   # export/import land with Phase 7
 waifus server list | get G [KEY] | set G … | unset G KEY | delete G | refresh G members|emojis|roles
 waifus channel list G | get G/C | set G/C KEY VALUE | add-waifu G/C WAIFU | remove-waifu G/C WAIFU | delete G/C
 waifus agent list | get AGENT [KEY] | set AGENT … | unset AGENT KEY
@@ -1457,7 +1578,7 @@ waifus runtime status | pause | resume | reload | stop G/C | trigger orchestrato
 waifus usage [--from D] [--to D] [--by K[,K]] [--waifu W] [--server G] [--tz Z]
 waifus dm list [--waifu W] | show WAIFU USER | forget WAIFU USER [--all] [--dry-run]
 waifus context list [--guild G] [--waifu W] | get KEY AGENT | compact KEY AGENT | reset KEY AGENT
-waifus why G/C [--waifu W] | why dm WAIFU USER          # reply-check (§11.7)
+waifus why G/C [--waifu W] | why dm WAIFU USER          # reply-check (§11.8); lands with Phase 7
 waifus debug-route list | set SRC_G/SRC_C DST_G/DST_C | unset SRC_C
 waifus remote-access status | enable | disable | rename NAME | reconnect | diagnostics | devices
 waifus logs [--limit N]
@@ -1588,9 +1709,8 @@ Phase 6 help, usage and context routes, I17 types.
   `useRuntime()`, `useBotStatus(botId)`, `useProviderAlert(providerId)`. Backend: one
   `currentRuntimeView()` feeds `GET /api/runtime`, the `/api/events` snapshot and every `runtime`
   event; all `runtime.discord = …` assignments go through `setDiscordStatus()`, which publishes;
-  alerts and permission warnings publish on change. New lightweight invalidation events `decision`
-  `{ id, guildId, channelId, status, createdAt }` and `context` `{ conversationKey, agentId, epoch,
-  lastCompaction }`.
+  alerts and permission warnings publish on change. New lightweight invalidation event `decision`
+  `{ id, guildId, channelId, status, createdAt }`; the `context` event comes from Phase 6.
 - **`useRevisionedDraft<T>` (B20)** (`src/frontend/state/revisionedDraft.ts`, pure reducer + hook):
   `base`, `draft`, `incoming?`, `dirtyKeys`. A new server snapshot is adopted when clean, held as
   `incoming` when dirty (butter notice "Changed elsewhere (rev N). Your unsaved edits are kept.
@@ -1729,10 +1849,10 @@ Rooms.
 
 ### 11.10 Assistant (B18, B19)
 
-- **Confirmation cards (B18):** `delete_waifu`, `delete_memory`, `clear_provider_key`,
-  `forget_user`, `forget_dm`, `context reset`, and `update_discord_bots` patches that remove a bot or
-  null the director now call `actions.propose` with an `exact_http` operation built from freshly read
-  state (revisions included) — replacing the interim two-step tokens. Summaries are composed
+- **Confirmation cards (B18):** `delete_waifu`, `delete_memory`, `clear_provider_key`, `context
+  reset`, and `update_discord_bots` patches that remove a bot or null the director now call
+  `actions.propose` with an `exact_http` operation built from freshly read state (revisions included),
+  like `forget_user` (Phase 4) and `forget_dm` (Phase 5) already do. Summaries are composed
   server-side from stored data; `GET /api/assistant/actions/:id` adds `preview: { title, lines[] }`
   (≤ 2 KB). Revision drift → 409 → "It changed since Norma asked; ask again." Destructive cards use
   the danger hue, a verb label, and focus Cancel. The system prompt rule becomes "Deletions create
@@ -1772,12 +1892,14 @@ mirrored types, KB mentions, and any `messageStructure` toggle. Acceptance grep:
 | Route / schema | Change |
 |---|---|
 | `GET /api/runtime`, events snapshot, `runtime` event | one `currentRuntimeView()`; adds `discord.permissionWarnings[]`; published on every change |
-| `decision`, `context` events | new invalidation events |
+| `decision` event | new invalidation event |
 | `GET /api/diagnostics/reply-check` | new, safe |
 | `GET /api/servers/:guildId/channels/discover` | new, safe |
-| `GET /api/waifus/:id/card` | new, safe |
-| `GET`/`DELETE /api/waifus/:id/assets/:kind`, `POST …/assets/sync` | new |
-| `POST /api/assistant/conversations/:id/cancel` | new mutation |
+| `GET /api/waifus/:waifuId/card` | new, safe |
+| `GET /api/waifus/:waifuId/assets/:kind` | new, safe |
+| `DELETE /api/waifus/:waifuId/assets/:kind` | new, `transactional`, audit `waifu.asset.delete` |
+| `POST /api/waifus/:waifuId/assets/sync` | new, `non_replayable` (Discord rate-limits avatar changes), audit `waifu.asset.sync` |
+| `POST /api/assistant/conversations/:conversationId/cancel` | new, `transactional` (idempotent), audit `assistant.cancel` |
 | `AgentConfig.turnLimits` | new, optional |
 
 Every new route is added to `ROUTE_POLICY_MANIFEST`, `ROUTE_HELP` and the KB.
@@ -1796,7 +1918,8 @@ runtime/Discord facade and scripted assistant): live status updates, Cast draft 
 memory filters + forget-user, card import/export, assistant destructive card + Stop, Rooms inherit /
 discover / bulk.
 
-Acceptance: no screen polls runtime state on its own (a bot reconnect shows on Home within 1 s);
+Acceptance: no screen polls runtime state on its own (a fake `runtime` event with a bot reconnect
+updates Home without a refetch);
 unsaved character edits survive digest regeneration, assistant edits and reloads; memory edits never
 conflict unless they touch the same record; no guild input in the memory UI; bot save links the waifu
 and orphans can be fixed; each settings section changes only itself; every assistant deletion needs
@@ -1825,8 +1948,8 @@ Decisions made while merging the phase designs (they override anything contrary 
    …/compact`, `POST …/reset`; consumed by the Phase 7 inspector and the CLI.
 7. **Usage route** (Phase 6) supports one or two `groupBy` keys and `tz`; `unpricedCalls` in totals;
    `cacheHitRatio()` shared.
-8. **Destructive assistant tools**: Phases 4–5 ship interim two-step confirmation tokens
-   (`forget_user`, `forget_dm`); Phase 7 replaces them with confirmation cards.
+8. **Destructive assistant tools** use the existing confirmation cards from the start (`forget_user`
+   in Phase 4, `forget_dm` in Phase 5); Phase 7 converts the remaining destructive tools.
 9. **`PUT /api/config` live keys** skip the Discord reload (Phase 6 implements via `applies`; Phase 7
    relies on it).
 10. **`forget-user`** spans memories, observations, DM state/contexts/ledgers and cached images (the
@@ -1836,6 +1959,15 @@ Decisions made while merging the phase designs (they override anything contrary 
     command table as Phase-7-gated).
 12. **Gateway param migration** `waifu-params-gateway-040-v1` (Phase 4) drops stored params the 0.4.0
     catalog rejects.
+13. **`contextWindow` = backfill cap** (consistency review): compaction triggers on tokens or
+    `compaction.maxMessages` only.
+14. **Server deletion** (`DELETE /api/servers/:guildId`, Phase 4) also deletes
+    `user/conversations/g_<guildId>_*` and that guild's thread state; `/clear everything` deletes the
+    channel's contexts and ledger; `/memories` runs the channel observer plus a global dream for the
+    waifus enabled there.
+15. **D1 doc cleanup** (remove any webhook-persona text) is part of Phase 4 T8.
+16. **Phase-gated registry entries:** `turnLimits.*`, `waifus why`, `waifus waifu import/export`
+    are registered when Phase 7 lands; Phase 6's round-trip test covers only what exists.
 
 ## 13. Implementation order and model assignment
 
