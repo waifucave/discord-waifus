@@ -624,22 +624,30 @@ export const MEMORY_KINDS: MemoryKind[] = ["fact", "preference", "relationship",
 export type MemorySource = "waifu_tool" | "stage_manager" | "dream" | "user";
 export const MEMORY_SOURCES: MemorySource[] = ["waifu_tool", "stage_manager", "dream", "user"];
 
+// Memories are global per waifu (spec 8.8): `origin` is provenance only.
+export type MemoryOrigin = { guildId?: string; channelId?: string; dm?: true };
+export type MemorySubject = { discordUserId?: string; waifuId?: string; name: string };
+export type MemoryArchivedReason = "merged" | "expired" | "deduped" | "user" | "unknown_waifu";
+
 export type MemoryRecord = {
   id: string;
-  guildId: string;
-  channelId?: string;
   waifuId: string;
   content: string;
   kind: MemoryKind;
   source: MemorySource;
   pinned: boolean;
   strength: number;
-  entities: string[];
+  origin: MemoryOrigin;
+  subjects: MemorySubject[];
+  /** Per-record revision: send it back as `recordRevision` on PUT/DELETE. */
+  revision: number;
   expiresAt?: string;
   createdAt: string;
   updatedAt: string;
   lastRetrievedAt?: string;
   status: MemoryStatus;
+  archivedReason?: MemoryArchivedReason;
+  mergedInto?: string;
 };
 
 export type MemoryStore = Revisioned & {
@@ -649,16 +657,38 @@ export type MemoryStore = Revisioned & {
 export type CreateMemoryBody = {
   revision?: number;
   waifuId: string;
-  guildId: string;
+  guildId?: string;
+  channelId?: string;
   content: string;
   strength?: number;
   pinned?: boolean;
   kind?: MemoryKind;
+  subjects?: MemorySubject[];
 };
 
-export type UpdateMemoryBody = Partial<CreateMemoryBody> & {
-  revision: number;
+/** POST /api/memories answers the full store, plus `duplicateOf` when the write looked like one. */
+export type CreateMemoryResponse = MemoryStore & { duplicateOf?: string };
+
+export type UpdateMemoryBody = {
+  /** Preferred: the record's own revision. */
+  recordRevision?: number;
+  /** Legacy store-wide revision. */
+  revision?: number;
+  content?: string;
+  strength?: number;
+  pinned?: boolean;
+  kind?: MemoryKind;
+  subjects?: MemorySubject[];
   status?: MemoryStatus;
+};
+
+export type ForgetUserResult = {
+  discordUserId: string;
+  dryRun: boolean;
+  memories: number;
+  observations: number;
+  ledgers: number;
+  ledgerEntries: number;
 };
 
 export type ProviderCredentialsBody = {
