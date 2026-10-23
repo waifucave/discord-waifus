@@ -1462,29 +1462,6 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   }
 }
 
-export class DiscordGatewayNotConfigured implements DiscordGatewayFacade {
-  async connect(): Promise<DiscordRuntimeStatus> {
-    return {
-      connected: false,
-      orchestratorConnected: false,
-      waifuBotCount: 0,
-      warnings: ["Discord tokens are not configured yet."]
-    };
-  }
-
-  async disconnect(): Promise<void> {}
-
-  async fetchFreshContext(): Promise<ContextMessage[]> {
-    return [];
-  }
-
-  async sendWaifuMessage(): Promise<{ messageId: string }> {
-    throw new Error("Discord sending is not configured yet.");
-  }
-
-  async sendTyping(): Promise<void> {}
-}
-
 /**
  * The orchestrator reads every channel (messages, reactions, content) and owns slash commands.
  * Waifu clients never listen: they only fetch a channel, send, type and delete their own messages,
@@ -1783,7 +1760,8 @@ function sanitizeRunString(value: string | null): string | undefined {
 }
 
 function parseDebugCommandType(value: string | null): DiscordDebugCommandType | undefined {
-  return value === "set" || value === "unset" || value === "print" ? value : undefined;
+  // /console only registers set/unset choices; Discord rejects anything else.
+  return value === "set" || value === "unset" ? value : undefined;
 }
 
 function parsePrintCommandType(value: string | null): DiscordPrintCommandType | undefined {
