@@ -115,6 +115,35 @@ type DiskMeta = { schemaVersion: number; key: string; mimeType: string; bytes: n
 
 export type ImageCacheConfig = DiscordConfig["images"];
 
+/**
+ * The shared fetcher's limits (spec 8.4: OCR and inline images use one fetcher). Before Phase 4
+ * the OCR service fetched with `ocr.maxImageBytes` / `ocr.timeoutMs`; take the max of those and
+ * `discord.images` so nobody loses headroom, and log once when a customised legacy OCR value is
+ * what raised the limit (those keys are deprecated for fetching).
+ */
+export function sharedImageFetcherConfig(
+  app: { discord: { images: ImageCacheConfig }; ocr: { maxImageBytes: number; timeoutMs: number } },
+  logger?: Pick<Logger, "warn">
+): ImageCacheConfig {
+  const images = app.discord.images;
+  const legacyBytes = app.ocr.maxImageBytes;
+  const legacyTimeout = Math.max(500, app.ocr.timeoutMs);
+  const defaults = DEFAULT_APP_CONFIG.ocr;
+  const raised: string[] = [];
+  if (legacyBytes > images.maxBytes && legacyBytes !== defaults.maxImageBytes) raised.push("ocr.maxImageBytes");
+  if (legacyTimeout > images.fetchTimeoutMs && app.ocr.timeoutMs !== defaults.timeoutMs) raised.push("ocr.timeoutMs");
+  if (raised.length > 0) {
+    logger?.warn(
+      `Deprecated: ${raised.join(" and ")} still raise the shared image fetch limits; set discord.images.maxBytes / fetchTimeoutMs instead.`
+    );
+  }
+  return {
+    ...images,
+    maxBytes: Math.max(images.maxBytes, legacyBytes),
+    fetchTimeoutMs: Math.max(images.fetchTimeoutMs, legacyTimeout)
+  };
+}
+
 export type DiscordImageFetcherOptions = {
   dataRoot: string;
   config?: Partial<ImageCacheConfig>;

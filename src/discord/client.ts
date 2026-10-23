@@ -21,7 +21,7 @@ import type { RawDiscordMessage } from "../shared/schemas/discordMessage.js";
 import { buildNormalizedDiscordContext } from "./contextBuilder.js";
 import { unresolvedMentionIdsByType } from "./memberCache.js";
 import { denormalizeModelContentForDiscord } from "./normalization.js";
-import { pageMessagesSince, toRawDiscordMessage, type DiscordMessageLike } from "./rawMessage.js";
+import { pageMessagesSince, toRawDiscordMessage, withoutAuthors, type DiscordMessageLike } from "./rawMessage.js";
 
 export type DiscordRuntimeStatus = {
   connected: boolean;
@@ -202,6 +202,8 @@ export type DiscordMemoriesCommandEvent = DiscordSlashCommandEvent;
 export type DiscordPrintCommandEvent = DiscordSlashCommandEvent & {
   type?: DiscordPrintCommandType;
   waifuId?: string;
+  /** Ephemeral follow-up visible only to the invoker (prompt prints never post publicly). */
+  followUp?: (content: string) => Promise<void>;
 };
 export type DiscordPrintWaifuAutocompleteEvent = {
   guildId?: string;
@@ -776,9 +778,11 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
       async (before) => (await channel.messages.fetch(before ? { limit: 100, before } : { limit: 100 })).values(),
       { afterMessageId: input.afterMessageId, maxMessages: input.maxMessages, signal: input.signal }
     );
+    // The orchestrator bot's own posts (debug logs, /print fallbacks) are never conversation.
+    const orchestratorIds = [...botAuthorIds(this.options.orchestrator ? [this.options.orchestrator] : []), client.user?.id];
     return {
-      messages: result.messages.map((message) =>
-        toRawDiscordMessage(message as unknown as DiscordMessageLike, input.guildId)
+      messages: withoutAuthors(result.messages as unknown as DiscordMessageLike[], orchestratorIds).map((message) =>
+        toRawDiscordMessage(message, input.guildId)
       ),
       reachedCursor: result.reachedCursor
     };
@@ -1445,6 +1449,9 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
       waifuId: sanitizeRunString(interaction.options.getString(PRINT_WAIFU_OPTION_NAME)),
       respond: async (content) => {
         await interaction.editReply(content);
+      },
+      followUp: async (content) => {
+        await interaction.followUp({ content, flags: MessageFlags.Ephemeral });
       }
     };
     for (const listener of this.printListeners) {

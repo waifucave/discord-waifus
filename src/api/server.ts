@@ -158,10 +158,9 @@ const CreateWaifuBodySchema = WaifuConfigSchema.omit({
   schemaVersion: true,
   revision: true,
   updatedAt: true,
-  personaDigest: true,
-  // Clients can no longer set a prompt layout (spec 8.6); a stray `promptLayout` key is stripped
-  // by zod and the stored value comes from the schema default. See noteIgnoredPromptLayout.
-  promptLayout: true
+  // Clients can no longer set a prompt layout (spec 8.6): `promptLayout` is not in the schema, so
+  // a stray key is stripped by zod. See noteIgnoredPromptLayout.
+  personaDigest: true
 })
   .partial({ id: true, enabled: true, persona: true, contextWindow: true })
   .required({ name: true, displayName: true });
@@ -225,8 +224,7 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 // personaDigest is server-managed; clients cannot set it via PUT.
 //
 // P5 Task 4 review fix: every WaifuConfigSchema field below carries a `.default(...)` (either
-// directly, like contextWindow, or baked into a shared sub-schema, like availability/tools/
-// promptLayout). `.partial()` does not suppress those defaults — zod still fills in the default
+// directly, like contextWindow, or baked into a shared sub-schema, like availability/tools). `.partial()` does not suppress those defaults — zod still fills in the default
 // when the field is absent from the request body, even though "absent" should mean "leave it
 // alone" for a PATCH-style update. Re-declared here without a default (same validation, via
 // `.unwrap()` on the sub-schemas that bundle their `.default()` internally) so an omitted field

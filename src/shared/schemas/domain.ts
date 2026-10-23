@@ -114,66 +114,6 @@ export const WaifuToolSettingsSchema = z
   });
 export type WaifuToolSettings = z.infer<typeof WaifuToolSettingsSchema>;
 
-// Prompt layout: an ordered tree describing which prompt blocks live in each of the three
-// model-message slots (top system prompt / mid system block / trailing system block), in what
-// order, and how they are grouped inside named XML wrappers. Block *wording* is fixed in code
-// (see src/orchestration/promptBlocks.ts); this only controls placement, order, grouping and
-// enable/disable. Replaces the former flat boolean WaifuPromptSectionsSchema.
-export const PromptLayoutBlockNodeSchema = z.object({
-  kind: z.literal("block"),
-  blockId: z.string().min(1),
-  enabled: z.boolean().default(true)
-});
-export type PromptLayoutBlockNode = z.infer<typeof PromptLayoutBlockNodeSchema>;
-
-export const PromptLayoutGroupNodeSchema = z.object({
-  kind: z.literal("group"),
-  id: z.string().min(1),
-  // XML wrapper tag. May contain the `{name}` token, substituted with the waifu tag at render.
-  tag: z.string().min(1),
-  enabled: z.boolean().default(true),
-  children: z.array(PromptLayoutBlockNodeSchema).default([])
-});
-export type PromptLayoutGroupNode = z.infer<typeof PromptLayoutGroupNodeSchema>;
-
-export const PromptLayoutNodeSchema = z.discriminatedUnion("kind", [
-  PromptLayoutBlockNodeSchema,
-  PromptLayoutGroupNodeSchema
-]);
-export type PromptLayoutNode = z.infer<typeof PromptLayoutNodeSchema>;
-
-export const WaifuPromptLayoutSchema = z
-  .object({
-    top: z.array(PromptLayoutNodeSchema),
-    mid: z.array(PromptLayoutNodeSchema),
-    trailing: z.array(PromptLayoutNodeSchema)
-  })
-  .default(() => defaultWaifuPromptLayout());
-export type WaifuPromptLayout = z.infer<typeof WaifuPromptLayoutSchema>;
-
-// The default arrangement for new waifus: identity, persona, schedule, ioFormat, tools, and
-// outputContract in the top slot; roomInfo and relevantMemories in mid (10 messages deep);
-// anchor, currentlyDoing, and directorNote in trailing.
-export function defaultWaifuPromptLayout(): WaifuPromptLayout {
-  const block = (blockId: string): PromptLayoutBlockNode => ({ kind: "block", blockId, enabled: true });
-  return {
-    top: [
-      block("identity"),
-      block("persona"),
-      block("schedule"),
-      block("ioFormat"),
-      block("tools"),
-      block("outputContract")
-    ],
-    mid: [block("roomInfo"), block("relevantMemories")],
-    trailing: [
-      block("anchor"),
-      block("currentlyDoing"),
-      block("directorNote")
-    ]
-  };
-}
-
 export const ServerToolSettingsSchema = z
   .object({
     pickNextWaifu: z.boolean().default(false),
@@ -261,8 +201,7 @@ export const WaifuConfigSchema = RevisionedRecordSchema.extend({
   params: z.record(z.string(), z.unknown()).default({}),
   availability: WaifuAvailabilitySchema,
   tools: WaifuToolSettingsSchema,
-  promptLayout: WaifuPromptLayoutSchema,
-  // Phase 4 prompt settings (spec 8.2). Nothing reads these until the waifu harness lands (T3).
+  // Phase 4 prompt settings (spec 8.2), read by the waifu harness (waifuHarness.ts).
   verbosity: z.enum(WAIFU_VERBOSITIES).default("terse"),
   customInstructions: z.string().max(4000).default(""),
   scheduleInPrompt: z.boolean().default(true),

@@ -1,37 +1,38 @@
-// Executes an orchestrator decision's responders: per-waifu availability checks, delays, prompt
-// assembly, the generate -> clean -> validate -> retry loop, chunked sending, tool handling
-// (add_memory notes, PickNextWaifu handoffs) and responder-outcome bookkeeping.
+// Executes an orchestrator decision's responders: per-waifu availability checks, delays, the
+// context-engine prompt (ContextRuntime.prepare/call/commit with the waifu harness), the generate
+// -> clean -> validate -> retry loop, chunked sending, tool handling (add_memory notes,
+// PickNextWaifu handoffs, `tool` context notes) and responder-outcome bookkeeping.
 
 import { randomUUID } from "node:crypto";
+import path from "node:path";
 import { Logger } from "../backend/logger.js";
 import { DiscordGatewayFacade } from "../discord/client.js";
-import { dedupeNames, stripLeakedContextHeader } from "../discord/normalization.js";
-import { splitWaifuReply, typingDelayMs } from "./messageSplit.js";
-import { waifuBlockTags } from "./promptBlocks.js";
-import {
-  SOFT_VALIDATOR_CHECKS,
-  type ValidationContext,
-  type Violation,
-  correctiveRetryMessage,
-  validateWaifuOutput
-} from "./outputValidator.js";
-import { type ReplyQuoteExtraction, extractReplyQuote } from "./replyQuote.js";
-import { WaifuGenerationResult } from "../providers/types.js";
+import { loadGuildDirectoryView } from "../discord/directoryView.js";
+import { dedupeNames, modelVisibleEmojiToken, stripLeakedContextHeader } from "../discord/normalization.js";
+import type { ModelPipeline, WaifuGenerationResult } from "../providers/types.js";
 import { PermissionWarningTracker } from "./permissionWarnings.js";
 import {
-  ActiveChatParticipant,
+  GuildEmojisFileSchema,
+  GuildMembersFileSchema,
   OrchestratorDecisionStatus,
   OrchestratorResponderOutcome,
   OrchestratorRespondingWaifu,
   ServerConfig,
-  WaifuConfig
+  WaifuConfig,
+  createEmptyRevisionedFile
 } from "../shared/schemas/domain.js";
+import type { LedgerEntry } from "../shared/schemas/context.js";
 import { resolveBotAuthorIds } from "../shared/botIdentity.js";
-import type { ContextMessage } from "./contextMessages.js";
+import { contextSummarizer } from "./context/compaction.js";
+import { conversationKey, type ConversationKey, type ConversationRef } from "./context/keys.js";
+import { isGapEntry } from "./context/ledger.js";
+import { parseReplyMarker, stripLeadingTranscriptHeader, type ParsedReplyMarker } from "./context/replyMarker.js";
+import type { BuiltPrompt, NewContextNote, PreparedContext } from "./context/types.js";
+import { resolveContextCap } from "./contextWindows.js";
 import type { OrchestratorDecision } from "./decisions.js";
 import { ModelAccess } from "./modelAccess.js";
-import { buildWaifuPromptParts, directiveTextForWaifu } from "./promptBuilders.js";
-import { type RuntimeServices, decrementActive, incrementActive, runKey, throwIfAborted, timerKey } from "./runtimeShared.js";
+import { directiveTextForWaifu } from "./promptBuilders.js";
+import { type RuntimeContextServices, decrementActive, incrementActive, runKey, throwIfAborted, timerKey } from "./runtimeShared.js";
 import { readDiscordBotsFile, readWaifu } from "./stores/config.js";
 import {
   finalizeOrchestratorDecisionAfterError,
@@ -41,10 +42,25 @@ import {
   updateOrchestratorDecisionStatus,
   updateOrchestratorResponderOutcome
 } from "./stores/decisionHistory.js";
-import { recordWaifuNotes } from "./stores/memories.js";
-import { noteActiveChatParticipantsFromContext, readActiveChatParticipants } from "./stores/participants.js";
+import { NOTE_MAX_PER_REPLY, recordWaifuNotes } from "./stores/memories.js";
+import type { GateDecision } from "./memoryWriteGate.js";
+import { readActiveChatParticipants } from "./stores/participants.js";
 import { setActivePipeline } from "./stores/sessions.js";
-import { legacyServerContextWindow } from "./contextWindows.js";
+import { PICK_NEXT_WAIFU_TOOL_NAME, SHORT_TERM_MEMORY_TOOL_NAME } from "./tools.js";
+import { GatewayPipelineError } from "./pipeline/params.js";
+import {
+  CUT_OFF_RETRY_NOTE,
+  type ValidationContext,
+  type VerbosityProfile,
+  type Violation,
+  cutToCompleteSentence,
+  retryNote,
+  splitWaifuReply,
+  typingDelayMs,
+  validateWaifuOutput,
+  verbosityProfile
+} from "./verbosity.js";
+import { WAIFU_HARNESS_TAGS, createWaifuHarness, waifuTools, type WaifuHarness, type WaifuPerson } from "./waifuHarness.js";
 
 export type ResponderExecutionResult = {
   /** Responders that reached generation (enabled, linked, modeled). */
@@ -73,22 +89,23 @@ type ResponderQueueEntry = {
 };
 
 export class ResponderExecutor {
-  // Exact prompt parts sent with each waifu's most recent generation, for /print system_prompt.
+  // The exact prompt (BuiltPrompt.debug) of each waifu's most recent generation per conversation,
+  // keyed by waifuPromptCaptureKey(conversationKey, waifuId), for /print system_prompt.
   readonly lastSentWaifuPrompts = new Map<
     string,
-    { systemPrompt: string; midSystemBlock: string; trailingSystemBlock: string; at: string; channelId: string }
+    { debug: BuiltPrompt["debug"]; at: string; channelId: string; conversationKey: string }
   >();
   private readonly recentSelfSentIds = new Map<string, number>();
   readonly activeWaifuSendChannels = new Set<string>();
   readonly activeWaifuQueries = new Map<string, number>();
-  // One-shot: when a waifu in this channel just emitted a tool-only reply
-  // (add_memory call with no Discord text), drop the memory tool from the
-  // next decision so the chain doesn't loop on silent memory-tool turns.
+  // One-shot: when a waifu in this channel just emitted a tool-only reply (add_memory call with no
+  // Discord text), the next decision IGNORES add_memory calls (tool result "ignored") so the chain
+  // doesn't loop on silent memory-tool turns. The tool stays listed (breakpoint A is stable).
   private readonly suppressMemoryToolOnce = new Set<string>();
   private static readonly SELF_SENT_TTL_MS = 60_000;
 
   constructor(
-    private readonly options: RuntimeServices,
+    private readonly options: RuntimeContextServices,
     private readonly models: ModelAccess,
     private readonly permissionWarnings: PermissionWarningTracker,
     private readonly sleep: (ms: number, signal?: AbortSignal) => Promise<void>,
@@ -216,135 +233,121 @@ export class ResponderExecutor {
         await setActivePipeline(this.options.storage, input.guildId, input.channelId, "waifu");
         const waifuModelId = waifu.modelId;
         let responderLanded = false;
-        let waifuMessages = await this.options.discord.fetchFreshContext({
-          guildId: input.guildId,
-          channelId: input.channelId,
-          limit: waifu.contextWindow || legacyServerContextWindow("waifu", input.server),
-          signal: input.signal
-        });
-        await noteActiveChatParticipantsFromContext(this.options.storage, input.guildId, input.channelId, waifuMessages);
-        const activeChatParticipants = await readActiveChatParticipants(this.options.storage, input.guildId, input.channelId);
-        waifuMessages = await this.models.messagesForModel(
-          waifuMessages,
-          { providerId: waifu.providerId, modelId: waifuModelId },
-          input.signal
-        );
         const waifuPipeline = this.models.pipelineFor(
           { providerId: waifu.providerId, modelId: waifuModelId },
           "waifu"
         );
+        const directionText = directiveTextForWaifu(responder.directive);
+        const turn = await this.prepareWaifuTurn({
+          guildId: input.guildId,
+          channelId: input.channelId,
+          server: input.server,
+          waifu: { ...waifu, botId: waifu.botId, modelId: waifuModelId },
+          availableWaifus: input.availableWaifus,
+          directiveText: directionText,
+          pipeline: waifuPipeline,
+          signal: input.signal
+        });
+        const { prepared, harness } = turn;
+        this.lastSentWaifuPrompts.set(waifuPromptCaptureKey(prepared.key, waifu.id), {
+          debug: prepared.prompt.debug,
+          at: new Date().toISOString(),
+          channelId: input.channelId,
+          conversationKey: prepared.key
+        });
         this.options.logger.info("Generating waifu reply", {
           guildId: input.guildId,
           channelId: input.channelId,
           waifuId: waifu.id,
           modelId: waifu.modelId,
-          messageCount: waifuMessages.length
+          transcriptCount: prepared.prompt.transcriptCount
         });
         const waifuTyping = startTypingScope(this.options.discord, {
           guildId: input.guildId,
           channelId: input.channelId,
           senderBotId: waifu.botId
         });
+        // The prompt actually sent by the latest call that returned, with its usage: commit
+        // calibrates against it (a retry differs from prepared.prompt in its tail).
+        let lastCall: { prompt: BuiltPrompt; result: WaifuGenerationResult } | undefined;
+        let committed = false;
         try {
-          const nextWaifuIds = input.availableWaifus
-            .filter((candidate) => candidate.id !== waifu.id && candidate.botId && candidate.modelId)
-            .map((candidate) => candidate.id);
           const waifuQueryKey = runKey(input.guildId);
-          const participantDisplayNames = waifuParticipantDisplayNames(
-            waifu,
-            input.availableWaifus,
-            waifuMessages,
-            activeChatParticipants
-          );
-          const waifuStopSequences = participantDisplayNames.map((name) => `\n${name}:`);
-          // waifu.botId is the discord-bots ENTRY id; context authorIds carry the bot user
-          // snowflake. Resolve both, or the waifu never recognizes her own prior messages.
-          const selfAuthorIds = resolveBotAuthorIds(waifu.botId, await readDiscordBotsFile(this.options.storage));
-          const selfDisplayNames = dedupeNames([
-            waifu.displayName,
-            waifu.name,
-            ...waifuMessages
-              .filter((message) => selfAuthorIds.includes(message.authorId))
-              .flatMap((message) => [message.displayName, message.name])
-          ]);
-          const directiveText = directiveTextForWaifu(responder.directive);
-          const effectiveShortTermMemory = input.server.tools.shortTermMemory && !suppressMemoryToolThisDecision;
-          const { systemPrompt, midSystemBlock, trailingSystemBlock, selfGuildNickname } = await buildWaifuPromptParts(
-            this.options,
-            input.guildId,
-            waifu,
-            input.availableWaifus,
-            {
-              channelId: input.channelId,
-              directorNote: directiveText,
-              pickNextWaifuToolOverride: input.server.tools.pickNextWaifu,
-              shortTermMemoryToolOverride: effectiveShortTermMemory,
-              contextMessages: waifuMessages,
-              memoryInjectionLimit: input.server.memoryInjectionLimit
-            }
-          );
-          this.lastSentWaifuPrompts.set(`${input.guildId}:${waifu.id}`, {
-            systemPrompt,
-            midSystemBlock,
-            trailingSystemBlock,
-            at: new Date().toISOString(),
-            channelId: input.channelId
-          });
-          const allSelfDisplayNames = selfGuildNickname
-            ? dedupeNames([...selfDisplayNames, selfGuildNickname])
-            : selfDisplayNames;
-          const activeAuthorIds = waifuMessages.map((message) => message.authorId);
+          const profile = verbosityProfile(waifu.verbosity);
           const validatorDirective =
             responder.directive && responder.directive.intent !== "manual"
               ? { intent: responder.directive.intent, goal: responder.directive.goal ?? "" }
               : undefined;
-          const validatorBlockTags = waifuBlockTags(waifu);
-          const validatorToolNames = [
-            "add_memory",
-            "PickNextWaifu",
-            "orchestrator_decision",
-            "dream_memories",
-            "set_persona_digest"
-          ];
-          const { result, quoteExtraction, chunks, attemptsRun, blockedViolations } = await generateValidatedWaifuReply({
-            generate: async (retryUserMessage) => {
+          const { result, marker, chunks, attemptsRun, blockedViolations } = await generateValidatedWaifuReply({
+            generate: async (retry) => {
               incrementActive(this.activeWaifuQueries, waifuQueryKey);
               try {
-                return await waifuPipeline.generateWaifu({
-                  modelId: waifuModelId,
-                  messages: waifuMessages,
-                  systemPrompt,
-                  midSystemBlock,
-                  trailingSystemBlock,
-                  retryUserMessage,
-                  selfAuthorIds,
-                  availableWaifuIds: nextWaifuIds,
-                  pickNextWaifuToolEnabled: input.server.tools.pickNextWaifu,
-                  shortTermMemoryToolEnabled: effectiveShortTermMemory,
-                  params: waifu.params,
-                  stopSequences: waifuStopSequences,
-                  signal: input.signal
+                return await this.options.contexts.call(prepared, async (prompt) => {
+                  const sent = retry
+                    ? promptWithTail(prompt, harness.tail(prepared.state, prepared.startedAt, { retryNote: retry }))
+                    : prompt;
+                  if (retry) {
+                    this.lastSentWaifuPrompts.set(waifuPromptCaptureKey(prepared.key, waifu.id), {
+                      debug: sent.debug,
+                      at: new Date().toISOString(),
+                      channelId: input.channelId,
+                      conversationKey: prepared.key
+                    });
+                  }
+                  const generated = await waifuPipeline.generateWaifu({
+                    modelId: waifuModelId,
+                    prompt: sent,
+                    transcript: prepared.transcript,
+                    availableWaifuIds: turn.pickNextWaifuIds,
+                    params: waifu.params,
+                    stopSequences: waifuStopSequences(waifu, turn.serverNickname),
+                    attribution: {
+                      purpose: retry ? "waifu_retry" : "waifu_reply",
+                      agentId: `waifu-${waifu.id}`,
+                      waifuId: waifu.id,
+                      guildId: input.guildId,
+                      channelId: input.channelId,
+                      conversationKey: prepared.key
+                    },
+                    signal: input.signal
+                  });
+                  lastCall = { prompt: sent, result: generated };
+                  return generated;
                 });
               } finally {
                 decrementActive(this.activeWaifuQueries, waifuQueryKey);
               }
             },
-            displayName: waifu.displayName,
-            contextMessages: waifuMessages,
-            selfDisplayNames: allSelfDisplayNames,
-            participantDisplayNames,
-            selfAuthorIds,
+            refToMessageId: prepared.prompt.refToMessageId,
+            selfDisplayNames: turn.selfDisplayNames,
+            participantDisplayNames: turn.participantDisplayNames,
+            profile,
             validator: {
               directive: validatorDirective,
-              blockTags: validatorBlockTags,
-              toolNames: validatorToolNames
+              blockTags: [...WAIFU_HARNESS_TAGS],
+              toolNames: WAIFU_VALIDATOR_TOOL_NAMES,
+              recentSelfMessages: prepared.transcript
+                .filter((entry) => turn.selfAuthorIds.includes(entry.authorId))
+                .slice(-5)
+                .map((entry) => entry.body)
             },
             logger: this.options.logger,
             logContext: { guildId: input.guildId, channelId: input.channelId, waifuId: waifu.id }
           });
-          const usedToolWithoutVisibleMessage =
-            Boolean(result.shortTermMemoryEntries?.length && effectiveShortTermMemory) ||
-            Boolean(result.pickedNextWaifuId);
+          // add_memory runs only when listed for this conversation and not suppressed; otherwise
+          // the call is answered "ignored" (spec 8.5: the tool stays listed).
+          const memoryToolListed = harness.tools().some((tool) => tool.name === SHORT_TERM_MEMORY_TOOL_NAME);
+          const memorySuppressed = suppressMemoryToolThisDecision || !memoryToolListed;
+          const memoryCalls = planMemoryCalls(result, memorySuppressed);
+          if (suppressMemoryToolThisDecision && (result.shortTermMemoryEntries?.length || memoryCalls.length)) {
+            this.options.logger.info("Ignoring add_memory call (suppressed after a tool-only turn)", {
+              guildId: input.guildId,
+              channelId: input.channelId,
+              waifuId: waifu.id
+            });
+          }
+          const memoryEntries = memoryCalls.flatMap((call) => (call.entry !== undefined ? [call.entry] : []));
+          const usedToolWithoutVisibleMessage = memoryEntries.length > 0 || Boolean(result.pickedNextWaifuId);
           if (chunks.length === 0 && !usedToolWithoutVisibleMessage) {
             this.options.logger.warn("Waifu reply was empty after cleaning; nothing sent", {
               guildId: input.guildId,
@@ -354,16 +357,22 @@ export class ResponderExecutor {
               lastOriginalPreview: result.content.slice(0, 120)
             });
           }
-          const chosenReplyTarget = quoteExtraction.replyToMessageId ?? responder.replyToMessageId;
-          const replyToMessageId = replyTargetForFreshContext(chosenReplyTarget, waifuMessages);
-          if (chosenReplyTarget && !replyToMessageId) {
-            this.options.logger.info("Omitting reply target because it is unavailable or the latest context message", {
+          if (marker.unknownRef || marker.strippedTarget) {
+            this.options.logger.info("Waifu reply marker did not name a known ref; sending unthreaded", {
               guildId: input.guildId,
               channelId: input.channelId,
               waifuId: waifu.id,
-              replyToMessageId: chosenReplyTarget
+              ref: marker.unknownRef ?? marker.strippedTarget
             });
           }
+          // The waifu owns her reply target (↩#ref). Without a marker the triggering message is
+          // used only when it is not the latest one (today's default); a marker that did not
+          // resolve (unknown ref, a copied ↩you/↩Name) sends unthreaded.
+          const replyToMessageId = marker.replyToMessageId
+            ? marker.replyToMessageId
+            : marker.unknownRef || marker.strippedTarget
+              ? undefined
+              : replyTargetForTranscript(responder.replyToMessageId, prepared.transcript);
           const sentMessageIds = await this.sendWaifuChunks({
             guildId: input.guildId,
             channelId: input.channelId,
@@ -371,7 +380,7 @@ export class ResponderExecutor {
             senderBotId: waifu.botId,
             chunks,
             replyToMessageId,
-            allowedUserMentionIds: activeAuthorIds,
+            allowedUserMentionIds: [...new Set(prepared.transcript.map((entry) => entry.authorId))],
             orchestratorDecisionId: input.decisionId,
             responderOutcomeId: outcomeId,
             signal: input.signal
@@ -385,16 +394,17 @@ export class ResponderExecutor {
           // Empty or blocked output is NOT an executed turn (tool-only memory turns are; they
           // have their own add_memory suppression against silent loops).
           responderLanded = sentMessageIds.length > 0 || (usedToolWithoutVisibleMessage && !blockedViolations);
-          if (result.shortTermMemoryEntries?.length && effectiveShortTermMemory) {
-            await recordWaifuNotes(this.options.storage, {
+          if (memoryEntries.length > 0) {
+            const decisions = await recordWaifuNotes(this.options.storage, {
               guildId: input.guildId,
               channelId: input.channelId,
               waifuId: waifu.id,
-              entries: result.shortTermMemoryEntries
+              entries: memoryEntries
             });
+            applyMemoryDecisions(memoryCalls, decisions);
             if (chunks.length === 0) {
               this.suppressMemoryToolOnce.add(channelKey);
-              this.options.logger.info("Waifu tool-only reply detected; suppressing add_memory tool on next decision", {
+              this.options.logger.info("Waifu tool-only reply detected; ignoring add_memory on the next decision", {
                 guildId: input.guildId,
                 channelId: input.channelId,
                 waifuId: waifu.id
@@ -418,6 +428,7 @@ export class ResponderExecutor {
             }
             currentOutcomeFinalized = true;
           }
+          let handoff: "accepted" | "limit" | undefined;
           if (result.rejectedPickNextWaifu) {
             this.options.logger.warn("Ignoring invalid PickNextWaifu call from waifu", {
               guildId: input.guildId,
@@ -428,6 +439,7 @@ export class ResponderExecutor {
               reason: result.rejectedPickNextWaifu.reason
             });
           } else if (result.pickedNextWaifuId && directHandoffCount < this.maxAutomaticTurns) {
+            handoff = "accepted";
             directHandoffCount += 1;
             this.options.logger.info("Waifu picked next waifu; skipping orchestrator for direct handoff", {
               guildId: input.guildId,
@@ -476,6 +488,7 @@ export class ResponderExecutor {
               });
             }
           } else if (result.pickedNextWaifuId) {
+            handoff = "limit";
             this.options.logger.warn("Ignoring PickNextWaifu handoff because the automatic handoff limit was reached", {
               guildId: input.guildId,
               channelId: input.channelId,
@@ -484,6 +497,23 @@ export class ResponderExecutor {
               maxAutomaticTurns: this.maxAutomaticTurns
             });
           }
+          // One write: this turn's direction (only when her turn landed — a direction whose
+          // reply never reached the room is not history) and her tool calls with their outcomes.
+          const pickedName = result.pickedNextWaifuId
+            ? input.availableWaifus.find((candidate) => candidate.id === result.pickedNextWaifuId)?.displayName ??
+              result.pickedNextWaifuId
+            : undefined;
+          const notes: NewContextNote[] = [
+            ...(responderLanded && directionText ? [{ kind: "direction" as const, text: directionText }] : []),
+            ...toolNotes(result, memoryCalls, { handoff, pickedName })
+          ];
+          committed = true;
+          await this.commitWaifuTurn(prepared, { notes, call: lastCall });
+        } catch (error) {
+          // Failure / abort: keep calibration, breakpoint and the background check, but never a
+          // direction or reply that was not sent.
+          if (!committed) await this.commitWaifuTurn(prepared, { notes: [], call: lastCall });
+          throw error;
         } finally {
           waifuTyping.stop();
         }
@@ -526,6 +556,203 @@ export class ResponderExecutor {
       throw error;
     }
     return { attemptedCount, executedCount };
+  }
+
+  /**
+   * Builds her harness for this conversation and prepares the cache-stable context (spec 8.5).
+   * This turn's orchestrator directive rides in the tail of the call it steers; it becomes a
+   * `direction` note only when the turn is committed (commitWaifuTurn).
+   */
+  private async prepareWaifuTurn(input: {
+    guildId: string;
+    channelId: string;
+    server: ServerConfig;
+    waifu: WaifuConfig & { botId: string; modelId: string };
+    availableWaifus: WaifuConfig[];
+    directiveText: string | undefined;
+    pipeline: ModelPipeline;
+    signal: AbortSignal;
+  }): Promise<PreparedWaifuTurn> {
+    const { waifu, server } = input;
+    const built = await this.buildWaifuHarness({ ...input, ...(input.directiveText ? { direction: input.directiveText } : {}) });
+    const { harness, conversation, model, selfAuthorIds, serverNickname, roster, people, pickNextWaifuIds, waifuByAuthorId } = built;
+    const directory = await loadGuildDirectoryView(this.options.storage, input.guildId, {
+      channelName: (id) => server.channels[id]?.name
+    });
+    // Same tool choice / params / attribution as her reply call, so compaction reuses the cached
+    // prefix (spec 8.9). Without a summarizer nothing compacts.
+    const summarize = input.pipeline.summarizeContext
+      ? contextSummarizer(input.pipeline, {
+          toolChoice: "auto",
+          params: waifu.params,
+          attribution: {
+            agentId: `waifu-${waifu.id}`,
+            waifuId: waifu.id,
+            guildId: input.guildId,
+            channelId: input.channelId,
+            conversationKey: conversationKey(conversation)
+          }
+        })
+      : undefined;
+    const prepared = await this.options.contexts.prepare({
+      conversation,
+      agent: { kind: "waifu", waifuId: waifu.id },
+      model,
+      backfillCap: resolveContextCap("waifu", server, waifu),
+      selfAuthorIds,
+      render: harness,
+      // Tool notes render as user-role text lines: an assistant tool_use without the provider's
+      // thinking block is rejected by Claude with thinking on (spec 8.5, T3 review C1).
+      renderToolTurnsAsText: true,
+      participantIds: people.flatMap((person) => (person.userId ? [person.userId] : [])),
+      signal: input.signal,
+      params: waifu.params,
+      server,
+      directory,
+      ...(summarize ? { summarize } : {}),
+      waifuIdForAuthor: (authorId) => waifuByAuthorId.get(authorId),
+      memoryLimit: server.memoryInjectionLimit
+    });
+    const transcriptNames = prepared.transcript.map((entry) => entry.authorName);
+    const selfDisplayNames = dedupeNames([
+      waifu.displayName,
+      waifu.name,
+      serverNickname,
+      ...prepared.transcript.filter((entry) => selfAuthorIds.includes(entry.authorId)).map((entry) => entry.authorName)
+    ]);
+    const participantDisplayNames = dedupeNames([
+      ...selfDisplayNames,
+      ...input.availableWaifus.map((candidate) => candidate.displayName),
+      ...roster,
+      ...people.map((person) => person.name),
+      ...transcriptNames
+    ]);
+    return { prepared, harness, selfAuthorIds, selfDisplayNames, participantDisplayNames, pickNextWaifuIds, serverNickname };
+  }
+
+  /** Her static system prompt for this channel, as her next reply would send it (/print fallback). */
+  async renderWaifuSystemPrompt(input: {
+    guildId: string;
+    channelId: string;
+    server: ServerConfig;
+    waifu: WaifuConfig & { modelId: string };
+    availableWaifus: WaifuConfig[];
+  }): Promise<string> {
+    return (await this.buildWaifuHarness(input)).harness.system();
+  }
+
+  private async buildWaifuHarness(input: {
+    guildId: string;
+    channelId: string;
+    server: ServerConfig;
+    waifu: WaifuConfig & { modelId: string };
+    availableWaifus: WaifuConfig[];
+    direction?: string;
+  }) {
+    const { waifu, server } = input;
+    const conversation: ConversationRef = { kind: "guild", guildId: input.guildId, channelId: input.channelId };
+    const [bots, members, emojis, participants] = await Promise.all([
+      readDiscordBotsFile(this.options.storage),
+      this.options.storage.readJson(
+        path.join("user", "servers", input.guildId, "members.json"),
+        GuildMembersFileSchema,
+        GuildMembersFileSchema.parse(createEmptyRevisionedFile({ guildId: input.guildId, members: [] }))
+      ),
+      this.options.storage.readJson(
+        path.join("user", "servers", input.guildId, "emojis.json"),
+        GuildEmojisFileSchema,
+        GuildEmojisFileSchema.parse(createEmptyRevisionedFile({ guildId: input.guildId, emojis: [] }))
+      ),
+      readActiveChatParticipants(this.options.storage, input.guildId, input.channelId)
+    ]);
+    // waifu.botId is the discord-bots ENTRY id; transcript authorIds carry the bot user
+    // snowflake. Resolve both, or the waifu never recognizes her own prior messages.
+    const selfAuthorIds = resolveBotAuthorIds(waifu.botId, bots);
+    const guildNameByUserId = new Map(
+      members.members
+        .filter((member) => member.guildDisplayName)
+        .map((member) => [member.userId, member.guildDisplayName as string])
+    );
+    const guildNameFor = (botIdRef: string | undefined) =>
+      resolveBotAuthorIds(botIdRef, bots)
+        .map((id) => guildNameByUserId.get(id))
+        .find(Boolean);
+    const name = waifu.displayName || waifu.name || waifu.id;
+    const nickname = guildNameFor(waifu.botId);
+    const serverNickname = nickname && nickname !== name ? nickname : undefined;
+    const others = input.availableWaifus.filter((candidate) => candidate.id !== waifu.id && candidate.botId);
+    const roster = others.map((candidate) => {
+      const configured = candidate.displayName || candidate.name;
+      const guildName = guildNameFor(candidate.botId);
+      return guildName && guildName !== configured ? `${guildName} (${configured})` : configured;
+    });
+    // Humans present; a participant named like a character is that character (roster/identity).
+    const characterNames = new Set(
+      [waifu.displayName, waifu.name, nickname, ...others.flatMap((candidate) => [candidate.displayName, candidate.name])]
+        .filter((value): value is string => Boolean(value))
+        .map((value) => value.trim().toLowerCase())
+    );
+    const seenNames = new Set<string>();
+    const people: WaifuPerson[] = participants
+      .map((participant) => ({ userId: participant.userId, name: participant.displayName.trim() }))
+      .filter((person) => {
+        const key = person.name.toLowerCase();
+        if (!person.name || characterNames.has(key) || seenNames.has(key)) return false;
+        seenNames.add(key);
+        return true;
+      })
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+    const model = this.models.resolvedModel({ providerId: waifu.providerId, modelId: waifu.modelId });
+    if (!model) throw new GatewayPipelineError(`Unknown model ${waifu.providerId ?? "?"}:${waifu.modelId}`);
+    const toolsUsable = waifu.tools.toolUse && model.features.tools.supported;
+    const pickNextWaifuIds =
+      toolsUsable && server.tools.pickNextWaifu
+        ? others.filter((candidate) => candidate.modelId).map((candidate) => candidate.id)
+        : [];
+    const harness = createWaifuHarness({
+      waifu,
+      conversation,
+      roster,
+      ...(serverNickname ? { serverNickname } : {}),
+      place: {
+        kind: "guild",
+        ...(server.name ? { serverName: server.name } : {}),
+        ...(server.channels[input.channelId]?.name ? { channelName: server.channels[input.channelId]!.name } : {})
+      },
+      people,
+      emojis: emojis.emojis.filter((emoji) => emoji.available).map(modelVisibleEmojiToken),
+      tools: waifuTools({ addMemory: toolsUsable && server.tools.shortTermMemory, pickNextWaifuIds }),
+      ...(input.direction ? { direction: input.direction } : {})
+    });
+    const waifuByAuthorId = new Map<string, string>();
+    for (const candidate of input.availableWaifus) {
+      for (const id of resolveBotAuthorIds(candidate.botId, bots)) waifuByAuthorId.set(id, candidate.id);
+    }
+    return { harness, conversation, model, selfAuthorIds, serverNickname, roster, people, pickNextWaifuIds, waifuByAuthorId };
+  }
+
+  /**
+   * Commits the turn (spec 8.5/8.9): stores the request's breakpoint, calibrates against the
+   * prompt actually sent with its usage, and appends this turn's notes in one write. Failure and
+   * abort paths commit too, with no notes.
+   */
+  private async commitWaifuTurn(
+    prepared: PreparedContext,
+    o: { notes: NewContextNote[]; call: { prompt: BuiltPrompt; result: WaifuGenerationResult } | undefined }
+  ): Promise<void> {
+    try {
+      await this.options.contexts.commit(prepared, {
+        notes: o.notes,
+        ...(o.call?.result.usage ? { usage: o.call.result.usage } : {}),
+        ...(o.call ? { sentPrompt: o.call.prompt } : {}),
+        modelKey: prepared.modelKey
+      });
+    } catch (error) {
+      this.options.logger.warn("Failed to commit waifu context", {
+        conversationKey: prepared.key,
+        message: error instanceof Error ? error.message : String(error)
+      });
+    }
   }
 
   private async sendWaifuChunks(input: {
@@ -615,16 +842,127 @@ export class ResponderExecutor {
   }
 }
 
+type PreparedWaifuTurn = {
+  prepared: PreparedContext;
+  harness: WaifuHarness;
+  selfAuthorIds: string[];
+  selfDisplayNames: string[];
+  participantDisplayNames: string[];
+  pickNextWaifuIds: string[];
+  serverNickname: string | undefined;
+};
+
+/** Tool names the validator flags when they leak into visible text. */
+const WAIFU_VALIDATOR_TOOL_NAMES = [
+  SHORT_TERM_MEMORY_TOOL_NAME,
+  PICK_NEXT_WAIFU_TOOL_NAME,
+  "orchestrator_decision",
+  "dream_memories",
+  "set_persona_digest"
+];
+
+/** `/print system_prompt` capture key: conversation + waifu (spec 8.8). */
+export function waifuPromptCaptureKey(key: ConversationKey | string, waifuId: string): string {
+  return `${key}|${waifuId}`;
+}
+
+/** Spec 8.5: the header guard plus her own name (and her server nickname when it differs). */
+export function waifuStopSequences(waifu: Pick<WaifuConfig, "displayName" | "name">, serverNickname?: string): string[] {
+  const name = waifu.displayName || waifu.name;
+  return ["\n[", `\n${name}:`, ...(serverNickname && serverNickname !== name ? [`\n${serverNickname}:`] : [])];
+}
+
+/** Replace the prompt's ephemeral tail block (a retry note is tail-only: never cached, never stored). */
+export function promptWithTail(prompt: BuiltPrompt, tail: string): BuiltPrompt {
+  const messages = prompt.messages.slice();
+  const last = messages[messages.length - 1];
+  if (last && last.role === "user" && Array.isArray(last.content)) {
+    const blocks = last.content.slice();
+    const final = blocks[blocks.length - 1];
+    if (final && final.type === "text" && final.text === prompt.debug.tail) {
+      blocks[blocks.length - 1] = { type: "text", text: tail };
+      messages[messages.length - 1] = { ...last, content: blocks };
+      return { ...prompt, messages, debug: { ...prompt.debug, tail } };
+    }
+  }
+  messages.push({ role: "user", content: [{ type: "text", text: tail }] });
+  return { ...prompt, messages, debug: { ...prompt.debug, tail } };
+}
+
+/** One add_memory call of her reply and what happened to it (its tool note result). */
+export type MemoryCall = { callId?: string; entry?: string; outcome: string };
+
+/**
+ * Plans her add_memory calls: suppressed/unlisted → `ignored`, unparsable or empty content →
+ * `invalid arguments`, beyond the per-reply cap → `over limit`; the rest are recorded and get
+ * `saved` / `duplicate — not saved` from the write gate (applyMemoryDecisions).
+ */
+export function planMemoryCalls(result: WaifuGenerationResult, suppressed: boolean): MemoryCall[] {
+  const calls = (result.toolCalls ?? []).filter((call) => call.name === SHORT_TERM_MEMORY_TOOL_NAME);
+  if (calls.length === 0) {
+    // A result without call ids (fakes, older pipelines): entries only, no tool notes.
+    if (suppressed) return [];
+    return (result.shortTermMemoryEntries ?? [])
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+      .slice(0, NOTE_MAX_PER_REPLY)
+      .map((entry) => ({ entry, outcome: "saved" }));
+  }
+  let valid = 0;
+  return calls.map((call): MemoryCall => {
+    if (suppressed) return { callId: call.id, outcome: "ignored" };
+    let content: unknown;
+    try {
+      content = (JSON.parse(call.arguments) as { content?: unknown } | null)?.content;
+    } catch {
+      content = undefined;
+    }
+    if (typeof content !== "string" || !content.trim()) return { callId: call.id, outcome: "invalid arguments" };
+    valid += 1;
+    if (valid > NOTE_MAX_PER_REPLY) return { callId: call.id, outcome: "over limit" };
+    return { callId: call.id, entry: content.trim(), outcome: "saved" };
+  });
+}
+
+/** Write-gate decisions (in entry order) → tool note results. */
+export function applyMemoryDecisions(calls: MemoryCall[], decisions: GateDecision[]): void {
+  let index = 0;
+  for (const call of calls) {
+    if (call.entry === undefined) continue;
+    const decision = decisions[index];
+    index += 1;
+    call.outcome = !decision || decision.action === "insert" ? "saved" : "duplicate — not saved";
+  }
+}
+
+export function toolNotes(
+  result: WaifuGenerationResult,
+  memoryCalls: MemoryCall[],
+  o: { handoff: "accepted" | "limit" | undefined; pickedName: string | undefined }
+): NewContextNote[] {
+  return (result.toolCalls ?? []).map((call) => {
+    let outcome = "ignored";
+    if (call.name === SHORT_TERM_MEMORY_TOOL_NAME) {
+      outcome = memoryCalls.find((planned) => planned.callId === call.id)?.outcome ?? "ignored";
+    } else if (call.name === PICK_NEXT_WAIFU_TOOL_NAME) {
+      if (result.rejectedPickNextWaifu) outcome = result.rejectedPickNextWaifu.reason === "malformed" ? "invalid arguments" : "ignored — not available";
+      else if (o.handoff === "accepted" && o.pickedName) outcome = `handing over to ${o.pickedName}`;
+      else if (o.handoff === "limit") outcome = "ignored — handoff limit reached";
+    }
+    return { kind: "tool" as const, callId: call.id, name: call.name, arguments: call.arguments, result: outcome };
+  });
+}
+
 export type WaifuReplyAttemptInput = {
-  /** One model call; retryUserMessage is set only on the corrective second attempt. */
-  generate(retryUserMessage: string | undefined): Promise<WaifuGenerationResult>;
-  displayName: string;
-  contextMessages: ContextMessage[];
+  /** One model call; `retryNote` is set only on the corrective second attempt (tail-only). */
+  generate(retryNote: string | undefined): Promise<WaifuGenerationResult>;
+  /** The prompt's ref table (↩#ref markers resolve against it). */
+  refToMessageId: ReadonlyMap<string, string>;
   /** Every self alias (display name, configured name, guild nickname, names on own messages). */
   selfDisplayNames: string[];
   participantDisplayNames: string[];
-  selfAuthorIds: string[];
-  validator: Pick<ValidationContext, "directive" | "blockTags" | "toolNames">;
+  profile: VerbosityProfile;
+  validator: Pick<ValidationContext, "directive" | "blockTags" | "toolNames" | "recentSelfMessages">;
   logger: Logger;
   /** Leading fields of every log entry (guildId, channelId, waifuId). */
   logContext: Record<string, unknown>;
@@ -633,7 +971,7 @@ export type WaifuReplyAttemptInput = {
 export type WaifuReplyAttemptResult = {
   /** The last raw generation (tool calls included). */
   result: WaifuGenerationResult;
-  quoteExtraction: ReplyQuoteExtraction;
+  marker: ParsedReplyMarker;
   /** Chunks to send; empty when the reply was blocked or cleaned away. */
   chunks: string[];
   attemptsRun: number;
@@ -641,130 +979,116 @@ export type WaifuReplyAttemptResult = {
   blockedViolations: Violation[] | undefined;
 };
 
+const EMPTY_AFTER_CLEANING_NOTE =
+  "Your last draft was rejected: nothing was left after removing names, headers and notes. Write only your own message.";
+
 /**
- * The generate -> clean -> validate -> retry loop for one waifu turn: strips leaked context
- * headers and impersonation, extracts a leading reply quote, splits into chunks, runs the
- * deterministic output validator, and regenerates at most once (validator retry, or a reply that
- * was entirely removed during cleaning).
+ * One waifu turn (spec 8.5), at most two model calls. Processing order per attempt: I5 length
+ * cut → strip leaked header → parse ↩#ref marker → strip impersonation → validate (pass / trim /
+ * retry / block) → split. Retries carry a short user-role note in the ephemeral tail, never a
+ * turn written as the waifu.
  */
 export async function generateValidatedWaifuReply(input: WaifuReplyAttemptInput): Promise<WaifuReplyAttemptResult> {
-  const {
-    displayName,
-    contextMessages: waifuMessages,
-    selfDisplayNames: allSelfDisplayNames,
-    participantDisplayNames,
-    selfAuthorIds
-  } = input;
   const MAX_GENERATE_ATTEMPTS = 2;
+  const { selfDisplayNames, participantDisplayNames, profile } = input;
   let result: WaifuGenerationResult = { content: "" };
-  let strippedContent = "";
-  let quoteExtraction: ReplyQuoteExtraction = {
-    replyToMessageId: undefined,
-    cleanedContent: ""
-  };
+  let marker: ParsedReplyMarker = { content: "" };
   let chunks: string[] = [];
   let attemptsRun = 0;
-  // Corrective message fed to the next attempt. The cleaning-empty path keeps the bare
-  // `${displayName}:` nudge; the validator's retry path overwrites it to name the violations.
-  let retryUserMessage = `${displayName}:`;
-  // Set when the reply is rejected with no usable retry left (validator block, or a retry
-  // that survives the final attempt). When set, chunks are forced empty and nothing is sent.
+  let note: string | undefined;
   let blockedViolations: Violation[] | undefined;
   for (let attempt = 1; attempt <= MAX_GENERATE_ATTEMPTS; attempt += 1) {
     attemptsRun = attempt;
-    result = await input.generate(attempt === 2 ? retryUserMessage : undefined);
-    const metadataStrippedContent = stripLeakedContextHeader(result.content, {
-      selfDisplayNames: allSelfDisplayNames,
-      participantDisplayNames,
-      stripImpersonation: false
-    });
-    const metadataStripped = metadataStrippedContent !== result.content;
-    quoteExtraction = extractReplyQuote(metadataStrippedContent, waifuMessages);
-    const replyQuoteExtracted = quoteExtraction.cleanedContent !== metadataStrippedContent;
-    strippedContent = stripLeakedContextHeader(quoteExtraction.cleanedContent, {
-      selfDisplayNames: allSelfDisplayNames,
-      participantDisplayNames
-    });
-    const impersonationStripped = strippedContent !== quoteExtraction.cleanedContent;
-    const strippedLeakedContent = metadataStripped || impersonationStripped;
-    if (strippedLeakedContent) {
-      input.logger.warn("Stripped leaked context header from waifu reply", {
+    const finalAttempt = attempt === MAX_GENERATE_ATTEMPTS;
+    result = await input.generate(attempt === 1 ? undefined : note);
+    chunks = [];
+    let raw = result.content;
+    const hasToolCall = Boolean(result.toolCalls?.length || result.shortTermMemoryEntries?.length || result.pickedNextWaifuId);
+    if (result.finishReason === "length") {
+      // I5: keep the complete sentences of a reply cut off by the output limit.
+      raw = cutToCompleteSentence(raw);
+      input.logger.warn("Waifu reply hit the output limit; trimmed to complete sentences", {
         ...input.logContext,
         attempt,
         before: result.content.slice(0, 80),
-        after: strippedContent.slice(0, 80)
+        after: raw.slice(0, 80)
       });
-    }
-    if (replyQuoteExtracted) {
-      input.logger.info("Extracted leading reply quote from waifu reply", {
-        ...input.logContext,
-        attempt,
-        matchedMessageId: quoteExtraction.replyToMessageId ?? null,
-        quotePreview: metadataStrippedContent.slice(0, 120)
-      });
-    }
-    chunks = splitWaifuReply(strippedContent);
-    // Deterministic leak validator on the finalized candidate, before it can be sent. Its
-    // only powers are send-as-is (pass), regenerate once (retry on attempt 1), or send
-    // nothing (block, or a retry that survives the final attempt). It never truncates.
-    const validation = validateWaifuOutput(strippedContent, {
-      selfNames: allSelfDisplayNames,
-      participantNames: participantDisplayNames,
-      directive: input.validator.directive,
-      blockTags: input.validator.blockTags,
-      toolNames: input.validator.toolNames,
-      recentSelfMessages: waifuMessages
-        .filter((message) => message.authorKind === "waifu" && selfAuthorIds.includes(message.authorId))
-        .slice(-5)
-        .map((message) => message.content)
-    });
-    if (validation.verdict !== "pass") {
-      const checks = validation.violations.map((entry) => entry.check).join(", ");
-      if (validation.verdict === "retry" && attempt < MAX_GENERATE_ATTEMPTS) {
-        input.logger.warn("Output validator rejected waifu reply; regenerating once", {
-          ...input.logContext,
-          attempt,
-          violations: checks
-        });
-        retryUserMessage = correctiveRetryMessage(displayName, validation.violations);
+      if (!raw && !hasToolCall) {
+        if (finalAttempt) break;
+        note = CUT_OFF_RETRY_NOTE;
         continue;
       }
-      const softOnly =
-        validation.verdict === "retry" &&
-        validation.violations.every((entry) => SOFT_VALIDATOR_CHECKS.has(entry.check));
-      if (softOnly) {
-        // Soft checks never withhold content: the retry already had its shot, send as-is.
-        input.logger.info("Soft validator violations survived retry; sending anyway", {
-          ...input.logContext,
-          violations: checks
-        });
-      } else {
-        // Final-attempt retry, or a block on any attempt: send nothing.
-        input.logger.warn("Output validator blocked waifu reply; nothing sent", {
-          ...input.logContext,
-          attempt,
-          verdict: validation.verdict,
-          violations: checks
-        });
-        blockedViolations = validation.violations;
-        chunks = [];
-        break;
-      }
     }
-    const becameEmptyDueToCleaning =
-      chunks.length === 0 &&
-      result.content.trim().length > 0 &&
-      (metadataStripped || replyQuoteExtracted || impersonationStripped);
-    if (!becameEmptyDueToCleaning || attempt === MAX_GENERATE_ATTEMPTS) break;
-    input.logger.warn("Waifu reply was entirely removed during cleaning; retrying once", {
-      ...input.logContext,
-      metadataStripped,
-      replyQuoteExtracted,
-      impersonationStripped,
-      originalPreview: result.content.slice(0, 120)
+    // 1. strip a leaked transcript header (and a leading self-name prefix)
+    const headerStripped = stripLeakedContextHeader(stripLeadingTranscriptHeader(raw), {
+      selfDisplayNames,
+      participantDisplayNames,
+      stripImpersonation: false
     });
+    // 2. the ↩#ref marker
+    marker = parseReplyMarker(headerStripped, input.refToMessageId);
+    // 3. impersonation lines
+    const text = stripLeakedContextHeader(marker.content, { selfDisplayNames, participantDisplayNames });
+    if (text !== raw.trim()) {
+      input.logger.info("Cleaned waifu reply before validation", {
+        ...input.logContext,
+        attempt,
+        before: raw.slice(0, 80),
+        after: text.slice(0, 80),
+        replyRef: marker.ref ?? marker.unknownRef ?? null
+      });
+    }
+    if (!text) {
+      if (raw.trim() && !finalAttempt) {
+        input.logger.warn("Waifu reply was entirely removed during cleaning; retrying once", {
+          ...input.logContext,
+          originalPreview: raw.slice(0, 120)
+        });
+        note = EMPTY_AFTER_CLEANING_NOTE;
+        continue;
+      }
+      break;
+    }
+    // 4. validate
+    const validation = validateWaifuOutput(text, {
+      ...input.validator,
+      selfNames: selfDisplayNames,
+      participantNames: participantDisplayNames,
+      profile,
+      finalAttempt
+    });
+    const checks = validation.violations.map((entry) => entry.check).join(", ");
+    if (validation.verdict === "retry" && !finalAttempt) {
+      input.logger.warn("Output validator rejected waifu reply; regenerating once", { ...input.logContext, attempt, violations: checks });
+      note = retryNote(validation.violations, profile);
+      continue;
+    }
+    if (validation.verdict === "retry" || validation.verdict === "block") {
+      input.logger.warn("Output validator blocked waifu reply; nothing sent", {
+        ...input.logContext,
+        attempt,
+        verdict: validation.verdict,
+        violations: checks
+      });
+      blockedViolations = validation.violations;
+      break;
+    }
+    let final = text;
+    if (validation.verdict === "trim" && validation.trimmed !== undefined) {
+      input.logger.info("Trimmed waifu reply to her verbosity limits", {
+        ...input.logContext,
+        attempt,
+        violations: checks,
+        before: text.length,
+        after: validation.trimmed.length
+      });
+      final = validation.trimmed;
+    }
+    // 5. split
+    chunks = splitWaifuReply(final, profile);
+    break;
   }
-  return { result, quoteExtraction, chunks, attemptsRun, blockedViolations };
+  return { result, marker, chunks, attemptsRun, blockedViolations };
 }
 
 function waitMsBeforeWaifuReply(input: {
@@ -783,48 +1107,15 @@ function waitMsBeforeWaifuReply(input: {
   return Math.max(0, input.decisionDelayBaseMs + delayMs - Date.now());
 }
 
-function replyTargetForFreshContext(
-  replyToMessageId: string | undefined,
-  messages: Array<{ id: string; sourceMessageIds?: string[] }>
-): string | undefined {
+/** The triggering message as the default reply target, unless it is unknown or the latest entry. */
+function replyTargetForTranscript(replyToMessageId: string | undefined, transcript: LedgerEntry[]): string | undefined {
   if (!replyToMessageId) return undefined;
-  const latestMessage = messages.at(-1);
-  const target = messages.find((message) =>
-    message.id === replyToMessageId || message.sourceMessageIds?.includes(replyToMessageId)
-  );
-  if (!target || target === latestMessage) return undefined;
+  const messages = transcript.filter((entry) => !isGapEntry(entry));
+  const latest = messages.at(-1);
+  const target = messages.find((entry) => entry.id === replyToMessageId);
+  if (!target || target === latest) return undefined;
   return replyToMessageId;
 }
-
-function waifuParticipantDisplayNames(
-  self: WaifuConfig,
-  availableWaifus: WaifuConfig[],
-  messages: ContextMessage[] = [],
-  activeParticipants: ActiveChatParticipant[] = []
-): string[] {
-  const names: string[] = [];
-  const seen = new Set<string>();
-  const addName = (name: string | undefined) => {
-    const trimmed = name?.trim();
-    if (!trimmed) return;
-    const key = trimmed.toLowerCase();
-    if (seen.has(key)) return;
-    seen.add(key);
-    names.push(trimmed);
-  };
-  for (const candidate of [self, ...availableWaifus]) {
-    addName(candidate.displayName);
-  }
-  for (const message of messages) {
-    addName(message.displayName);
-    addName(message.name);
-  }
-  for (const participant of activeParticipants) {
-    addName(participant.displayName);
-  }
-  return names;
-}
-
 const TYPING_REFRESH_MS = 8000;
 
 type TypingScope = { stop: () => void };

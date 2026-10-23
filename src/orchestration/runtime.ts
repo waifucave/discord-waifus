@@ -66,8 +66,24 @@ export class RuntimeOrchestrator {
         ...(options.imageConfig ? { imageConfig: options.imageConfig } : {}),
         ...(options.compaction ? { compactionSettings: options.compaction } : {}),
         ...(options.memory ? { memory: options.memory } : {}),
-        ...(ocr?.cachedText ? { ocr: { cachedText: (ref) => ocr.cachedText!(ref) } } : {}),
-        ...(options.contextCompaction ? { compaction: options.contextCompaction } : {})
+        ...(ocr?.cachedText
+          ? {
+              ocr: {
+                cachedText: (ref) => ocr.cachedText!(ref),
+                // Text-only waifus and directors get bounded OCR before an image freezes (spec 8.4).
+                ...(ocr.textFor ? { textFor: (ref, o) => ocr.textFor!(ref, o) } : {})
+              }
+            }
+          : {}),
+        ...(options.contextCompaction ? { compaction: options.contextCompaction } : {}),
+        // Late-bound: memoryJobs is constructed below. Fire-and-forget observer handoff (spec 8.9).
+        observeThrough: (conversation, seq) => {
+          void this.memoryJobs?.requestObserveThrough(conversation, seq).catch((error: unknown) => {
+            options.logger.warn("Observer handoff after compaction failed", {
+              message: error instanceof Error ? error.message : String(error)
+            });
+          });
+        }
       });
     const services: RuntimeCollaboratorOptions = { ...options, contexts: this.contexts };
     const hooks: RuntimeHooks = {
@@ -123,7 +139,8 @@ export class RuntimeOrchestrator {
       stopChannel: (guildId, channelId, reason) => this.stopChannel(guildId, channelId, reason),
       triggerStageManager: (guildId, channelId) => this.triggerStageManager(guildId, channelId),
       runReviewer: (input) => this.reviewer.runReviewer(input),
-      lastSentWaifuPrompts: this.executor.lastSentWaifuPrompts
+      lastSentWaifuPrompts: this.executor.lastSentWaifuPrompts,
+      renderWaifuSystemPrompt: (input) => this.executor.renderWaifuSystemPrompt(input)
     });
   }
 

@@ -14,7 +14,9 @@ import { FileContextStore } from "./contextStore.js";
 import { DiscordConversationSource } from "./fetchTranscript.js";
 import type { OcrTextLookup } from "./images.js";
 import { ContextRuntime, type CalibrationHook } from "./runtime.js";
-import { NoopCompaction, type CompactionService } from "./types.js";
+import { createCompactionService, emaTokenCalibration } from "./compaction.js";
+import type { ConversationRef } from "./keys.js";
+import type { CompactionService } from "./types.js";
 
 export type AppContextRuntimeOptions = {
   storage: StorageService;
@@ -31,9 +33,12 @@ export type AppContextRuntimeOptions = {
   memory?: Partial<MemoryConfig>;
   /** Cached OCR text lookup (ImageOcrService.cachedText) for the image freeze rule. */
   ocr?: OcrTextLookup;
-  /** T7b swaps in the real service; NoopCompaction until then. */
+  /** Defaults to the real per-context compaction service over the same store. */
   compaction?: CompactionService;
+  /** Defaults to the per-model EMA calibration (spec 8.9). */
   calibrate?: CalibrationHook;
+  /** Observer handoff after a compaction (MemoryJobs.requestObserveThrough); may be late-bound. */
+  observeThrough?: (conversation: ConversationRef, seq: number) => void;
   /** Test seams. */
   now?: () => Date;
   timeZone?: () => string;
@@ -59,25 +64,34 @@ export function createAppContextRuntime(o: AppContextRuntimeOptions): ContextRun
       logger: o.logger,
       ...(o.imageConfig ? { config: o.imageConfig } : {})
     });
-  return new ContextRuntime({
-    store: new FileContextStore(o.storage, {
+  const store = new FileContextStore(o.storage, {
+    ...(o.now ? { now: o.now } : {}),
+    ...(o.timeZone ? { timeZone: o.timeZone } : {})
+  });
+  const compaction =
+    o.compaction ??
+    createCompactionService({
+      store,
+      logger: o.logger,
       ...(o.now ? { now: o.now } : {}),
-      ...(o.timeZone ? { timeZone: o.timeZone } : {})
-    }),
+      ...(o.observeThrough ? { observeThrough: o.observeThrough } : {})
+    });
+  return new ContextRuntime({
+    store,
     snapshots: createStorageMemorySnapshotProvider(o.storage, {
       onStampError: (error) =>
         o.logger.warn("Failed to stamp memory retrieval", {
           message: error instanceof Error ? error.message : String(error)
         })
     }),
-    compaction: o.compaction ?? NoopCompaction,
+    compaction,
     messages: new DiscordConversationSource(o.discord),
     images,
     settings: (server) => resolveCompactionSettings(o.compactionSettings, server),
     logger: o.logger,
     memory: () => memory,
     ...(o.ocr ? { ocr: o.ocr } : {}),
-    ...(o.calibrate ? { calibrate: o.calibrate } : {}),
+    calibrate: o.calibrate ?? emaTokenCalibration,
     ...(o.now ? { now: o.now } : {}),
     ...(o.timeZone ? { timeZone: o.timeZone } : {})
   });

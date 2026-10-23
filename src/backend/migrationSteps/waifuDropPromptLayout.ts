@@ -54,12 +54,6 @@ function inspectLayout(layout: unknown): LayoutFacts {
   return facts;
 }
 
-// True when a (raw, untrusted) legacy layout has its schedule block disabled. The older layout
-// migrations in ../migrations.ts use this so they never discard the flag before this step runs.
-export function layoutHasScheduleDisabled(layout: unknown): boolean {
-  return inspectLayout(layout).scheduleDisabled;
-}
-
 async function readJson(filePath: string): Promise<unknown | undefined> {
   let content: string;
   try {

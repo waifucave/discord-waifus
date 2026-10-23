@@ -235,17 +235,27 @@ function normalizeForRepeat(text: string): string {
 }
 
 /**
- * length-register: SOFT check — the room register is fast casual chat, and live data
- * showed prompt wording alone does not hold the register on every model. Over the soft
- * limit → one corrective retry; if the retry is still long it is SENT ANYWAY (soft
- * violations never withhold content — see SOFT_VALIDATOR_CHECKS).
+ * header-leak: a transcript header (`[14:02 #k3]`) at the start of any line. The leading one is
+ * stripped before validation; one that survives means the model wrote transcript lines.
  */
-const LENGTH_SOFT_LIMIT_CHARS = 90;
+const HEADER_LEAK_RE = /^\[\d{1,2}:\d{2} #/m;
 
-function checkLengthRegister(text: string, _ctx: ValidationContext): Violation | undefined {
-  const visible = Array.from(text.trim()).length;
-  if (visible > LENGTH_SOFT_LIMIT_CHARS) {
-    return { check: "length-register", detail: `${visible} chars (soft limit ${LENGTH_SOFT_LIMIT_CHARS})` };
+function checkHeaderLeak(text: string, _ctx: ValidationContext): Violation | undefined {
+  if (HEADER_LEAK_RE.test(text)) {
+    return { check: "header-leak", detail: "found a transcript header [HH:MM #ref]" };
+  }
+  return undefined;
+}
+
+/**
+ * stray-reply-marker: a `↩#ref` marker anywhere after the start (the leading one is consumed by
+ * parseReplyMarker before validation, so any marker left is mid-text).
+ */
+const STRAY_REPLY_MARKER_RE = /↩\uFE0F?\s?#[0-9a-z]{2,6}/i;
+
+function checkStrayReplyMarker(text: string, _ctx: ValidationContext): Violation | undefined {
+  if (STRAY_REPLY_MARKER_RE.test(text)) {
+    return { check: "stray-reply-marker", detail: "found a ↩#ref marker mid-text" };
   }
   return undefined;
 }
@@ -264,7 +274,7 @@ function checkMassPing(text: string, _ctx: ValidationContext): Violation | undef
 }
 
 // ---------------------------------------------------------------------------
-// Exported validator
+// Exported leak validator (length and register live in verbosity.ts)
 // ---------------------------------------------------------------------------
 
 const BLOCK_CHECKS = [checkMassPing] as const;
@@ -275,42 +285,20 @@ const RETRY_CHECKS = [
   checkTranscriptShape,
   checkDirectiveEcho,
   checkSelfTalk,
-  checkLengthRegister,
   checkSelfRepeat,
+  checkHeaderLeak,
+  checkStrayReplyMarker,
 ] as const;
 
-// Checks whose violations trigger a corrective retry but must NEVER withhold content:
-// if they survive the final attempt, the reply is sent as-is.
-export const SOFT_VALIDATOR_CHECKS: ReadonlySet<string> = new Set(["length-register"]);
-
-// Violation-specific corrective retry lines. The generic "contained X" wording is useless
-// for register violations — cheap models need the concrete instruction.
-const CORRECTIVE_HINTS: Record<string, string> = {
-  "length-register": "that was too long for this chat — send one short line, under 12 words",
-  "self-repeat": "you already sent that — say something new, or just react in a couple words"
-};
-
-export function correctiveRetryMessage(displayName: string, violations: Violation[]): string {
-  const hints = violations
-    .map((violation) => CORRECTIVE_HINTS[violation.check])
-    .filter((hint): hint is string => Boolean(hint));
-  const generic = violations
-    .filter((violation) => !CORRECTIVE_HINTS[violation.check])
-    .map((violation) => violation.check);
-  const parts = [...hints];
-  if (generic.length > 0) {
-    parts.push(`your previous draft was rejected: contained ${generic.join(", ")}; write only the plain chat message`);
-  }
-  return `${displayName}: (${parts.join("; ")})`;
-}
-
-export function validateWaifuOutput(
+/**
+ * Leak checks only: `block` for a surviving mass ping, `retry` for any other leak, else `pass`.
+ * The full waifu verdict (incl. length trim) is `validateWaifuOutput` in verbosity.ts.
+ */
+export function validateLeaks(
   text: string,
   ctx: ValidationContext
 ): { verdict: ValidationVerdict; violations: Violation[] } {
   const violations: Violation[] = [];
-
-  // Run all checks — violations accumulate
   for (const check of BLOCK_CHECKS) {
     const v = check(text, ctx);
     if (v) violations.push(v);
@@ -319,8 +307,6 @@ export function validateWaifuOutput(
     const v = check(text, ctx);
     if (v) violations.push(v);
   }
-
-  // Verdict precedence: block > retry > pass
   if (violations.some((v) => v.check === "mass-ping")) {
     return { verdict: "block", violations };
   }

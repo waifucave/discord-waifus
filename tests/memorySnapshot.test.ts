@@ -117,6 +117,12 @@ describe("renderMemoryLine", () => {
     );
   });
 
+  it("names the person a DM memory was learned with (O4)", () => {
+    expect(
+      renderMemoryLine(memory({ id: "a", content: "Kevin is moving to Osaka", subjects: [KEVIN], origin: { dm: true }, createdAt: ago(5) }), ctx)
+    ).toBe("- Kevin is moving to Osaka (fact · learned in a private chat with Kevin · 5 days ago)");
+  });
+
   it("matches subject names on word boundaries (Ed is not mentioned by Edited)", () => {
     const ed = { discordUserId: "444", name: "Ed" };
     expect(renderMemoryLine(memory({ id: "a", content: "Edited the club video", subjects: [ed], createdAt: ago(1) }), ctx)).toBe(
@@ -252,6 +258,38 @@ describe("inline memory notes", () => {
       window: [], epochStartedAt: ago(0.5), now: NOW, budget: 0
     });
     expect(capped).toEqual([]);
+  });
+
+  it("decision 11: a memory written mid-epoch about someone present becomes a note; her own tool writes do not", () => {
+    const epochStartedAt = ago(0.5);
+    const records = [
+      // Written by the stage manager after the epoch began, about Kevin (present): no lexical hit needed.
+      memory({ id: "fresh", content: "Kevin got the job offer", subjects: [KEVIN], createdAt: ago(0.1), updatedAt: ago(0.1) }),
+      // Her own add_memory since the epoch began: already in her transcript as a tool note.
+      memory({ id: "own", content: "Kevin starts Monday", subjects: [KEVIN], source: "waifu_tool", createdAt: ago(0.2), updatedAt: ago(0.2) }),
+      // Mid-epoch, but about someone not present.
+      memory({ id: "absent", content: "Rui adopted a dog", subjects: [{ discordUserId: "333", name: "Rui" }], createdAt: ago(0.1) }),
+      // Before the epoch: only via newcomer/lexical rules (none apply here).
+      memory({ id: "old", content: "Kevin owns a cat", subjects: [KEVIN], createdAt: ago(2) })
+    ];
+    const notes = proposeInlineNoteRecords(records, {
+      waifuId: "yuki",
+      conversation: guildA,
+      participants: [kevin, mia],
+      newParticipants: [],
+      excludeIds: [],
+      window: [entry(1, "nothing relevant here")],
+      epochStartedAt,
+      now: NOW,
+      budget: 6
+    });
+    expect(notes.map((group) => group.map((r) => r.id))).toEqual([["fresh"]]);
+    // A waifu_tool record from before the epoch is not excluded (it is not in this transcript).
+    const before = proposeInlineNoteRecords(
+      [memory({ id: "own-old", content: "Kevin starts Monday", subjects: [KEVIN], source: "waifu_tool", createdAt: ago(2) })],
+      { waifuId: "yuki", conversation: guildA, participants: [kevin], newParticipants: [kevin], excludeIds: [], window: [], epochStartedAt, now: NOW, budget: 6 }
+    );
+    expect(before.flat().map((r) => r.id)).toEqual(["own-old"]);
   });
 
   it("the provider renders notes and throttles markRetrieved", async () => {

@@ -8,7 +8,6 @@ import { createApiServer, resolveStaticDir, type ApiServerOptions } from "../src
 import { createRuntimeState } from "../src/backend/runtime.js";
 import { ensureDataLayout } from "../src/config/layout.js";
 import { CURRENT_SCHEMA_VERSION } from "../src/shared/schemas/common.js";
-import { defaultWaifuPromptLayout } from "../src/shared/schemas/domain.js";
 import { oneShotCatalog } from "../src/orchestration/oneShot/catalog.js";
 import { StorageService } from "../src/storage/storageService.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
@@ -640,7 +639,7 @@ describe("Backend API", () => {
         expect(seeded.statusCode).toBe(200);
         expect(seeded.json().contextWindow).toBe(77);
         expect(seeded.json().tools).toEqual({ toolUse: false });
-        expect(seeded.json().promptLayout).toEqual(defaultWaifuPromptLayout());
+        expect(seeded.json()).not.toHaveProperty("promptLayout");
 
         const renamed = await app.inject({
           method: "PUT",
@@ -651,13 +650,13 @@ describe("Backend API", () => {
         expect(renamed.json().displayName).toBe("New Display Name");
         expect(renamed.json().contextWindow).toBe(77);
         expect(renamed.json().tools).toEqual({ toolUse: false });
-        expect(renamed.json().promptLayout).toEqual(defaultWaifuPromptLayout());
+        expect(renamed.json()).not.toHaveProperty("promptLayout");
 
         const get = await app.inject({ method: "GET", url: "/api/waifus/patch-true" });
         expect(get.statusCode).toBe(200);
         expect(get.json().contextWindow).toBe(77);
         expect(get.json().tools).toEqual({ toolUse: false });
-        expect(get.json().promptLayout).toEqual(defaultWaifuPromptLayout());
+        expect(get.json()).not.toHaveProperty("promptLayout");
       } finally {
         await app.close();
       }
@@ -702,7 +701,7 @@ describe("Backend API", () => {
         expect(created.persona).toBe("");
         expect(created.contextWindow).toBe(50);
         expect(created.tools).toEqual({ toolUse: true });
-        expect(created.promptLayout).toEqual(defaultWaifuPromptLayout());
+        expect(created).not.toHaveProperty("promptLayout");
       } finally {
         await app.close();
       }

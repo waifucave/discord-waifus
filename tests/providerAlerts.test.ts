@@ -8,6 +8,7 @@ import { createRuntimeState } from "../src/backend/runtime.js";
 import { ensureDataLayout } from "../src/config/layout.js";
 import { StorageService } from "../src/storage/storageService.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
+import { testPrompt } from "./contextFixtures.js";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -65,7 +66,7 @@ describe("quota/billing through the pipeline", () => {
       providerId: "deepseek", modelId: "deepseek-v4-flash", queryRole: "waifu", providerAlerts: alerts,
       gateway: createGateway({ credentials: { deepseek: "k" }, fetchImpl: fetchImpl as unknown as typeof fetch, retryBaseDelayMs: 1 })
     });
-    const request = { modelId: "deepseek-v4-flash", systemPrompt: "S", messages: [] };
+    const request = { modelId: "deepseek-v4-flash", prompt: testPrompt(), messages: [] };
 
     await expect(pipeline.generateWaifu(request)).rejects.toMatchObject({ kind: "quota" });
     expect(fetchImpl).toHaveBeenCalledTimes(1); // quota is not retryable
@@ -87,9 +88,9 @@ describe("quota/billing through the pipeline", () => {
       providerId: "deepseek", modelId: "deepseek-v4-flash", queryRole: "waifu", providerAlerts: alerts,
       gateway: createGateway({ credentials: { deepseek: "k" }, fetchImpl: fetchImpl as unknown as typeof fetch })
     });
-    await expect(pipeline.generateWaifu({ modelId: "deepseek-v4-flash", systemPrompt: "S", messages: [] })).rejects.toMatchObject({ kind: "billing" });
+    await expect(pipeline.generateWaifu({ modelId: "deepseek-v4-flash", prompt: testPrompt(), messages: [] })).rejects.toMatchObject({ kind: "billing" });
     expect(alerts.snapshot()).toMatchObject([{ providerId: "deepseek", kind: "billing", until: "2026-10-23T12:30:00.000Z" }]);
-    await expect(pipeline.generateWaifu({ modelId: "deepseek-v4-flash", systemPrompt: "S", messages: [] })).rejects.toMatchObject({ code: "provider_billing" });
+    await expect(pipeline.generateWaifu({ modelId: "deepseek-v4-flash", prompt: testPrompt(), messages: [] })).rejects.toMatchObject({ code: "provider_billing" });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
@@ -102,9 +103,9 @@ describe("quota/billing through the pipeline", () => {
       providerAlerts: new ProviderAlerts(),
       gateway: createGateway({ credentials: { deepseek: "k" }, fetchImpl: quotaFetch("insufficient_quota") as unknown as typeof fetch })
     });
-    await expect(pipeline.generateWaifu({ modelId: "deepseek-v4-flash", systemPrompt: "S", messages: [] })).rejects.toThrow();
+    await expect(pipeline.generateWaifu({ modelId: "deepseek-v4-flash", prompt: testPrompt(), messages: [] })).rejects.toThrow();
     // a cooldown fail-fast is not a model call: still exactly one line
-    await expect(pipeline.generateWaifu({ modelId: "deepseek-v4-flash", systemPrompt: "S", messages: [] })).rejects.toThrow();
+    await expect(pipeline.generateWaifu({ modelId: "deepseek-v4-flash", prompt: testPrompt(), messages: [] })).rejects.toThrow();
     await ledger.flush();
     const day = new Date().toISOString().slice(0, 10);
     const lines = (await readFile(path.join(root, "user", "usage", `${day}.jsonl`), "utf8")).trim().split("\n").map((l) => JSON.parse(l));

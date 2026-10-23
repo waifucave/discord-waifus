@@ -15,6 +15,8 @@ import {
 import { ConversationLedgerSchema } from "../src/shared/schemas/context.js";
 import { orderedEntries } from "../src/orchestration/context/ledger.js";
 import { ContextRuntime, type ContextRuntimeDeps } from "../src/orchestration/context/runtime.js";
+import { estimateTokens } from "../src/orchestration/context/tokens.js";
+import { promptWithTail } from "../src/orchestration/responderExecutor.js";
 import {
   NoopCompaction,
   type CompactionService,
@@ -560,5 +562,33 @@ describe("ContextRuntime compaction seam", () => {
     expect(state.notes.at(-1)).toMatchObject({ kind: "tool", anchorSeq: 2 });
     expect(hook).toEqual([{ input: 500, rawEstimate: p.prompt.estimatedTokens, modelKey: "anthropic:claude-test" }]);
     expect(state.tokenCalibration["anthropic:claude-test"]!.ratio).toBeCloseTo(500 / p.prompt.estimatedTokens);
+  });
+
+  it("commit calibrates against the prompt actually sent (a retry's tail), not the prepared one", async () => {
+    const hook: number[] = [];
+    const h = await harness({
+      calibrate: ({ rawEstimate, prompt }) => {
+        hook.push(rawEstimate, prompt.debug.tail.length);
+        return undefined;
+      }
+    });
+    h.channel.post({ content: "x" });
+    const p = await prepare(h);
+    const sent = promptWithTail(p.prompt, `${p.prompt.debug.tail}\n${"Your last draft was rejected: too long. ".repeat(40)}`);
+    await h.runtime.commit(p, { modelKey: p.modelKey, usage: { inputTokens: 900, outputTokens: 10 }, sentPrompt: sent });
+    expect(hook[0]).toBe(estimateTokens(sent.messages, sent.tools));
+    expect(hook[0]).toBeGreaterThan(p.prompt.estimatedTokens);
+    expect(hook[1]).toBe(sent.debug.tail.length);
+  });
+
+  it("freezes the epoch's participant user ids (window authors plus the caller's) in state", async () => {
+    const h = await harness();
+    h.channel.post({ authorId: "kevin", authorName: "Kevin", content: "hi" });
+    const p = await prepare(h, { participantIds: ["mina"] });
+    expect([...p.state.epochParticipantIds].sort()).toEqual(["kevin", "mina"]);
+    // A later prepare in the same epoch does not refreeze.
+    h.channel.post({ authorId: "rui", authorName: "Rui", content: "yo" });
+    const p2 = await prepare(h, { participantIds: ["mina", "rui"] });
+    expect([...p2.state.epochParticipantIds].sort()).toEqual(["kevin", "mina"]);
   });
 });

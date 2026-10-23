@@ -6,15 +6,13 @@ import { ensureDataLayout } from "../src/config/layout.js";
 import { loadAppConfig } from "../src/config/appConfig.js";
 import { RuntimeStateSchema } from "../src/backend/runtime.js";
 import { CURRENT_SCHEMA_VERSION } from "../src/shared/schemas/common.js";
-import type { PromptLayoutNode as LayoutNode } from "../src/shared/schemas/domain.js";
 import {
   AgentConfigSchema,
   DiscordBotsFileSchema,
   MemoryStoreSchema,
   ProviderCredentialsFileSchema,
   ServerConfigSchema,
-  WaifuConfigSchema,
-  defaultWaifuPromptLayout
+  WaifuConfigSchema
 } from "../src/shared/schemas/domain.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
 import {
@@ -222,10 +220,12 @@ describe("runMigrations", () => {
     expect(session).not.toHaveProperty("cachedWaifuContinuation");
   });
 
-  it("converts legacy waifu prompt-section booleans into the new default prompt layout", async () => {
+  // The legacy layout steps (waifu-prompt-sections-to-layout, waifu-prompt-layout-w2,
+  // waifu-memories-to-mid) are gone (spec 8.6); waifu-drop-prompt-layout-v1 takes every legacy
+  // shape straight to the final one.
+  it("drops legacy flat prompt-section toggles, keeping a disabled schedule as scheduleInPrompt: false", async () => {
     const root = await makeTempRoot();
     roots.push(root);
-
     await writeJson(root, "user/waifus/yuki/waifu.json", {
       schemaVersion: 1,
       revision: 0,
@@ -234,92 +234,21 @@ describe("runMigrations", () => {
       name: "Yuki",
       displayName: "Yuki",
       persona: "kind",
-      promptSections: {
-        directorNotes: true,
-        hardRules: false,
-        mentionPolicy: true,
-        replyTargeting: true,
-        environmentInstructions: true,
-        inputFormat: false,
-        styleConstraints: true,
-        personality: false
-      }
+      promptSections: { directorNotes: true, hardRules: false, schedule: false, personality: false }
     });
 
     const result = await runMigrations(root);
-    expect(result.applied).toContain("migrate-waifu-prompt-layout-1");
-
-    const config = await readJson<{
-      promptSections?: unknown;
-      promptLayout: { top: LayoutNode[]; mid: LayoutNode[]; trailing: LayoutNode[] };
-    }>(root, "user/waifus/yuki/waifu.json");
-    expect(config).not.toHaveProperty("promptSections");
-
-    const enabledById = new Map<string, boolean>();
-    const collect = (nodes: LayoutNode[]) => {
-      for (const node of nodes) {
-        if (node.kind === "block") enabledById.set(node.blockId, node.enabled);
-        else for (const child of node.children) enabledById.set(child.blockId, child.enabled);
-      }
-    };
-    collect(config.promptLayout.top);
-    collect(config.promptLayout.mid);
-    collect(config.promptLayout.trailing);
-
-    // The legacy promptSections migration now produces the W2 default layout (new block IDs).
-    // The old toggle booleans have no matching blocks in the new registry, so they are silently
-    // ignored — the result is simply the new default with all blocks enabled.
-    expect(enabledById.get("identity")).toBe(true);
-    expect(enabledById.get("persona")).toBe(true);
-    expect(enabledById.get("ioFormat")).toBe(true);
-    expect(enabledById.get("outputContract")).toBe(true);
-    expect(enabledById.get("roomInfo")).toBe(true);
-    expect(enabledById.get("anchor")).toBe(true);
-    expect(enabledById.get("directorNote")).toBe(true);
-    // Old block IDs are not in the new layout.
-    expect(enabledById.get("hardRules")).toBeUndefined();
-    expect(enabledById.get("personalityReminder")).toBeUndefined();
+    expect(result.applied).toContain("waifu-drop-prompt-layout-1");
+    const raw = await readJson<Record<string, unknown>>(root, "user/waifus/yuki/waifu.json");
+    expect(raw).not.toHaveProperty("promptSections");
+    expect(raw).not.toHaveProperty("promptLayout");
+    expect(raw.scheduleInPrompt).toBe(false);
+    expect(WaifuConfigSchema.parse(raw).scheduleInPrompt).toBe(false);
   });
 
-  it("resets a waifu whose promptLayout contains W1 block IDs to the W2 default", async () => {
+  it("drops a W1 layout tree; a schedule disabled inside a group survives as scheduleInPrompt: false", async () => {
     const root = await makeTempRoot();
     roots.push(root);
-
-    // Seed a waifu with the old (W1) default layout — inline to avoid coupling to deleted code.
-    const oldLayout = {
-      top: [
-        { kind: "block", blockId: "identity", enabled: true },
-        {
-          kind: "group",
-          id: "behavior",
-          tag: "{name}_behavior",
-          enabled: true,
-          children: [
-            { kind: "block", blockId: "personality", enabled: true },
-            { kind: "block", blockId: "schedule", enabled: true },
-            { kind: "block", blockId: "contextStructure", enabled: true },
-            { kind: "block", blockId: "environment", enabled: true },
-            { kind: "block", blockId: "replyTargeting", enabled: true },
-            { kind: "block", blockId: "mentionPolicy", enabled: true },
-            { kind: "block", blockId: "styleConstraints", enabled: false },
-            { kind: "block", blockId: "hardRules", enabled: true },
-            { kind: "block", blockId: "toolUse", enabled: true }
-          ]
-        }
-      ],
-      mid: [
-        { kind: "block", blockId: "directorNotes", enabled: true },
-        { kind: "block", blockId: "activeParticipants", enabled: true },
-        { kind: "block", blockId: "serverEmojis", enabled: true }
-      ],
-      trailing: [
-        { kind: "block", blockId: "relevantMemories", enabled: true },
-        { kind: "block", blockId: "personalityReminder", enabled: false },
-        { kind: "block", blockId: "currentlyDoing", enabled: true },
-        { kind: "block", blockId: "sceneDirection", enabled: true }
-      ]
-    };
-
     await writeJson(root, "user/waifus/yuki/waifu.json", {
       schemaVersion: 1,
       revision: 0,
@@ -328,43 +257,33 @@ describe("runMigrations", () => {
       name: "Yuki",
       displayName: "Yuki",
       persona: "kind",
-      promptLayout: oldLayout
+      promptLayout: {
+        top: [
+          { kind: "block", blockId: "identity", enabled: true },
+          {
+            kind: "group",
+            id: "behavior",
+            tag: "{name}_behavior",
+            enabled: true,
+            children: [
+              { kind: "block", blockId: "personality", enabled: true },
+              { kind: "block", blockId: "schedule", enabled: false },
+              { kind: "block", blockId: "hardRules", enabled: true }
+            ]
+          }
+        ],
+        mid: [{ kind: "block", blockId: "activeParticipants", enabled: true }],
+        trailing: [{ kind: "block", blockId: "relevantMemories", enabled: true }]
+      }
     });
 
-    const result = await runMigrations(root);
-    expect(result.applied).toContain("migrate-waifu-prompt-layout-w2-1");
-
-    const config = await readJson<{
-      promptLayout: { top: LayoutNode[]; mid: LayoutNode[]; trailing: LayoutNode[] };
-    }>(root, "user/waifus/yuki/waifu.json");
-
-    const enabledById = new Map<string, boolean>();
-    const collect = (nodes: LayoutNode[]) => {
-      for (const node of nodes) {
-        if (node.kind === "block") enabledById.set(node.blockId, node.enabled);
-        else for (const child of node.children) enabledById.set(child.blockId, child.enabled);
-      }
-    };
-    collect(config.promptLayout.top);
-    collect(config.promptLayout.mid);
-    collect(config.promptLayout.trailing);
-
-    // After W2 migration the layout is the new default — new blocks enabled, old ones gone.
-    expect(enabledById.get("identity")).toBe(true);
-    expect(enabledById.get("persona")).toBe(true);
-    expect(enabledById.get("ioFormat")).toBe(true);
-    expect(enabledById.get("outputContract")).toBe(true);
-    expect(enabledById.get("roomInfo")).toBe(true);
-    expect(enabledById.get("anchor")).toBe(true);
-    expect(enabledById.get("directorNote")).toBe(true);
-    // Old IDs should no longer be present.
-    expect(enabledById.get("personality")).toBeUndefined();
-    expect(enabledById.get("hardRules")).toBeUndefined();
-    expect(enabledById.get("sceneDirection")).toBeUndefined();
-    expect(enabledById.get("directorNotes")).toBeUndefined();
+    await runMigrations(root);
+    const raw = await readJson<Record<string, unknown>>(root, "user/waifus/yuki/waifu.json");
+    expect(raw).not.toHaveProperty("promptLayout");
+    expect(raw.scheduleInPrompt).toBe(false);
   });
 
-  it("moves a stored relevantMemories block from trailing to mid", async () => {
+  it("drops a W2 layout with everything enabled and leaves scheduleInPrompt at its default", async () => {
     const root = await makeTempRoot();
     roots.push(root);
     await writeJson(root, "user/waifus/yuki/waifu.json", {
@@ -377,66 +296,22 @@ describe("runMigrations", () => {
       enabled: true,
       persona: "kind",
       promptLayout: {
-        top: [{ kind: "block", blockId: "identity", enabled: true }],
+        top: [{ kind: "block", blockId: "identity", enabled: true }, { kind: "block", blockId: "schedule", enabled: true }],
         mid: [{ kind: "block", blockId: "roomInfo", enabled: true }],
-        trailing: [
-          { kind: "block", blockId: "relevantMemories", enabled: false },
-          { kind: "block", blockId: "anchor", enabled: true }
-        ]
+        trailing: [{ kind: "block", blockId: "relevantMemories", enabled: false }]
       }
     });
 
     const first = await runMigrations(root);
-    expect(first.applied).toContain("migrate-waifu-memories-to-mid-1");
+    expect(first.applied).toContain("waifu-drop-prompt-layout-1");
+    const raw = await readJson<Record<string, unknown>>(root, "user/waifus/yuki/waifu.json");
+    expect(raw).not.toHaveProperty("promptLayout");
+    expect(raw).not.toHaveProperty("scheduleInPrompt");
+    expect(WaifuConfigSchema.parse(raw).scheduleInPrompt).toBe(true);
 
-    const raw = await readJson<{
-      promptLayout: { mid: LayoutNode[]; trailing: LayoutNode[] };
-    }>(root, "user/waifus/yuki/waifu.json");
-    expect(raw.promptLayout.mid).toEqual([
-      { kind: "block", blockId: "roomInfo", enabled: true },
-      { kind: "block", blockId: "relevantMemories", enabled: false }
-    ]);
-    expect(raw.promptLayout.trailing).toEqual([{ kind: "block", blockId: "anchor", enabled: true }]);
-
-    // Idempotent: a second run finds nothing to move.
+    // Idempotent: a second run finds nothing to drop.
     const second = await runMigrations(root);
-    expect(second.applied.filter((tag) => tag.startsWith("migrate-waifu-memories-to-mid"))).toEqual([]);
-  });
-
-  it("leaves relevantMemories alone when the user moved it into a custom group", async () => {
-    const root = await makeTempRoot();
-    roots.push(root);
-    const layout = {
-      top: [{ kind: "block", blockId: "identity", enabled: true }],
-      mid: [{ kind: "block", blockId: "roomInfo", enabled: true }],
-      trailing: [
-        {
-          kind: "group",
-          id: "g1",
-          tag: "{name}_extras",
-          enabled: true,
-          children: [{ kind: "block", blockId: "relevantMemories", enabled: true }]
-        }
-      ]
-    };
-    await writeJson(root, "user/waifus/yuki/waifu.json", {
-      schemaVersion: CURRENT_SCHEMA_VERSION,
-      revision: 3,
-      updatedAt: "2026-07-01T12:00:00.000Z",
-      id: "yuki",
-      name: "Yuki",
-      displayName: "Yuki",
-      enabled: true,
-      persona: "kind",
-      promptLayout: layout
-    });
-
-    const result = await runMigrations(root);
-    expect(result.applied.filter((tag) => tag.startsWith("migrate-waifu-memories-to-mid"))).toEqual([]);
-    const raw = await readJson<{
-      promptLayout: { trailing: LayoutNode[] };
-    }>(root, "user/waifus/yuki/waifu.json");
-    expect(raw.promptLayout.trailing).toEqual(layout.trailing);
+    expect(second.applied.filter((tag) => tag.startsWith("waifu-drop-prompt-layout"))).toEqual([]);
   });
 
   it("assigns legacy memories to guilds from stage-manager history", async () => {
@@ -804,31 +679,6 @@ describe("runMigrations", () => {
     expect(second.applied).not.toContain("remove-guild-wide-active-participants-1");
   });
 
-  it("leaves a waifu whose promptLayout is already the W2 default unchanged", async () => {
-    const root = await makeTempRoot();
-    roots.push(root);
-
-    const layout = defaultWaifuPromptLayout();
-    await writeJson(root, "user/waifus/yuki/waifu.json", {
-      schemaVersion: 1,
-      revision: 0,
-      updatedAt: "2026-05-16T12:00:00.000Z",
-      id: "yuki",
-      name: "Yuki",
-      displayName: "Yuki",
-      persona: "kind",
-      promptLayout: layout
-    });
-
-    const before = await readJson<{ promptLayout: unknown }>(root, "user/waifus/yuki/waifu.json");
-    const result = await runMigrations(root);
-    const after = await readJson<{ promptLayout: unknown }>(root, "user/waifus/yuki/waifu.json");
-
-    // The W2 migration must not have fired (no legacy block IDs present).
-    expect(result.applied).not.toContain("migrate-waifu-prompt-layout-w2-1");
-    // The stored layout must be byte-for-byte identical (deep equal).
-    expect(after.promptLayout).toEqual(before.promptLayout);
-  });
 });
 
 describe("schema v2 migration (§7.3)", () => {
@@ -1173,6 +1023,25 @@ describe("migration ledger", () => {
     expect(await exists(root, LEGACY_PARTICIPANTS)).toBe(true);
   });
 
+  it("keeps ids of removed steps (the legacy prompt-layout steps) as history and boots normally", async () => {
+    const root = await freshRoot();
+    const removed = ["waifu-prompt-sections-to-layout", "waifu-prompt-layout-w2", "waifu-memories-to-mid"];
+    await writeJson(root, LEDGER, {
+      ledgerVersion: 1,
+      appVersion: "2.200.0",
+      updatedAt: "2026-10-01T00:00:00.000Z",
+      steps: Object.fromEntries(removed.map((id) => [id, { appliedAt: "2026-10-01T00:00:00.000Z", appVersion: "2.200.0" }]))
+    });
+    expect(MIGRATION_STEPS.some((step) => removed.includes(step.id))).toBe(false);
+
+    await runMigrations(root, { appVersion: "2.200.0" });
+    const ledger = await readJson<Ledger>(root, LEDGER);
+    for (const id of removed) expect(ledger.steps[id], id).toBeDefined();
+    expect(ledger.steps["waifu-drop-prompt-layout-v1"]).toBeDefined();
+    // Re-running every migration is a no-op.
+    expect((await runMigrations(root, { appVersion: "2.200.0" })).applied).toEqual([]);
+  });
+
   it("keeps running every-boot steps when the ledger is complete", async () => {
     const root = await freshRoot();
     await runMigrations(root, { appVersion: "2.200.0" });
@@ -1203,6 +1072,7 @@ describe("migration ledger", () => {
     ];
     // Steps whose owning task has landed (flag removed, real body).
     const LANDED_STEP_IDS = new Set([
+      "waifu-drop-prompt-layout-v1",
       "server-context-windows-explicit-v1",
       "memories-global-origin-subjects-v1",
       "memories-cross-guild-dedupe-v1",
@@ -1276,9 +1146,7 @@ describe("migration ledger", () => {
     });
 
     it("pending stub bodies throw if ever invoked, and the real boot never invokes them", async () => {
-      // Steps whose body has landed (still registered pending until their runtime half lands).
-      const IMPLEMENTED = new Set(["waifu-drop-prompt-layout-v1"]);
-      for (const id of STILL_PENDING_IDS.filter((stepId) => !IMPLEMENTED.has(stepId))) {
+      for (const id of STILL_PENDING_IDS) {
         const step = MIGRATION_STEPS.find((candidate) => candidate.id === id)!;
         await expect(step.run("/nonexistent"), id).rejects.toThrow(/pending/);
       }

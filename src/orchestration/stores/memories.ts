@@ -183,7 +183,7 @@ function clampStrength(value: number): number {
 // Waifu notes (formerly the short-term store) survive a weekend so a Friday plan is still around
 // Monday; the dream pass promotes the keepers.
 export const NOTE_LIFESPAN_MS = 72 * 60 * 60 * 1000;
-const NOTE_MAX_PER_REPLY = 5;
+export const NOTE_MAX_PER_REPLY = 5;
 
 /** The waifu `add_memory` tool writer: short-lived `context` notes through the gate. */
 export async function recordWaifuNotes(storage: StorageService, input: {

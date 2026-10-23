@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { MemoryRecord } from "../src/shared/schemas/domain.js";
-import { relativeAge, retrieveMemories, scoreMemory } from "../src/orchestration/memoryRetrieval.js";
+import { relativeAge, scoreMemory } from "../src/orchestration/memoryRetrieval.js";
 import { ContextMessage } from "../src/orchestration/contextMessages.js";
 
 // The legacy prompt path's entry point: now global (D2), scored by the snapshot provider.
@@ -42,60 +42,7 @@ function makeMessage(content: string, authorId = "user-1"): ContextMessage {
 
 const base = { guildId: "guild-1", channelId: "channel-1", waifuId: "yuki", now: NOW, limit: 12 };
 
-describe("retrieveMemories (legacy entry point, global)", () => {
-  it("ranks lexically relevant memories above irrelevant ones", () => {
-    const snow = makeMemory({ id: "snow", content: "Yuki loves snow and gets excited during a snowstorm" });
-    const tacos = makeMemory({ id: "tacos", content: "Yuki prefers chicken tacos over beef tacos" });
-    const window = [makeMessage("there was a huge snowstorm last night, so much snow")];
-    const result = retrieveMemories({ ...base, records: [tacos, snow], window, limit: 1 });
-    expect(result.selected.map((r) => r.id)).toEqual(["snow"]);
-  });
-
-  it("selects memories learned in another guild (memories are global)", () => {
-    const elsewhere = makeMemory({
-      id: "elsewhere",
-      content: "Kevin is allergic to peanuts",
-      origin: { guildId: "guild-2", channelId: "channel-9" }
-    });
-    const result = retrieveMemories({ ...base, records: [elsewhere], window: [makeMessage("peanuts?")] });
-    expect(result.selected.map((r) => r.id)).toEqual(["elsewhere"]);
-  });
-
-  it("excludes expired, archived and other waifus' records", () => {
-    const records = [
-      makeMemory({ id: "ok", content: "Kevin owns a cat" }),
-      makeMemory({ id: "expired", content: "Kevin is at the dentist", expiresAt: "2026-06-12T17:00:00.000Z" }),
-      makeMemory({ id: "archived", content: "Kevin owns a dog", status: "archived" }),
-      makeMemory({ id: "other", content: "Kevin owns a bird", waifuId: "mika" })
-    ];
-    expect(retrieveMemories({ ...base, records, window: [] }).selected.map((r) => r.id)).toEqual(["ok"]);
-  });
-
-  it("counts pinned records against the limit and caps them at maxPinned", () => {
-    const records = [
-      ...Array.from({ length: 5 }, (_, i) => makeMemory({ id: `pin-${i}`, content: `Canon fact number ${i}`, pinned: true })),
-      ...Array.from({ length: 5 }, (_, i) => makeMemory({ id: `fact-${i}`, content: `Ordinary fact number ${i}` }))
-    ];
-    const result = retrieveMemories({ ...base, records, window: [], limit: 6, maxPinned: 2 });
-    expect(result.selected).toHaveLength(6);
-    expect(result.selected.filter((r) => r.pinned)).toHaveLength(2);
-    expect(result.selected.slice(0, 2).every((r) => r.pinned)).toBe(true);
-  });
-
-  it("renders legacy kind labels, pinned → durable → notes", () => {
-    const records = [
-      makeMemory({ id: "note", content: "Kevin is baking right now", kind: "context", source: "waifu_tool", expiresAt: "2026-06-14T00:00:00.000Z", createdAt: "2026-06-12T16:00:00.000Z" }),
-      makeMemory({ id: "fact", content: "Kevin owns a cat" }),
-      makeMemory({ id: "pin", content: "Kevin is Yuki's brother", pinned: true, kind: "relationship" })
-    ];
-    const result = retrieveMemories({ ...base, records, window: [] });
-    expect(result.lines).toEqual([
-      "- (relationship) Kevin is Yuki's brother",
-      "- (fact) Kevin owns a cat",
-      "- (note, 2h ago) Kevin is baking right now"
-    ]);
-  });
-
+describe("legacy memory scoring adapters", () => {
   it("scoreMemory favours recent, strong, same-channel records", () => {
     const recent = makeMemory({ id: "recent", content: "x fact", strength: 3 });
     const old = makeMemory({ id: "old", content: "x fact", strength: 3, updatedAt: TEN_DAYS_AGO });

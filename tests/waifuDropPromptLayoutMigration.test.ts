@@ -6,7 +6,7 @@ import {
   dropPromptLayoutFromWaifus,
   migrateWaifuDropPromptLayout
 } from "../src/backend/migrationSteps/waifuDropPromptLayout.js";
-import { WaifuConfigSchema, defaultWaifuPromptLayout } from "../src/shared/schemas/domain.js";
+import { WaifuConfigSchema } from "../src/shared/schemas/domain.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
 
 const roots: string[] = [];
@@ -44,6 +44,16 @@ async function readWaifu(root: string, id: string): Promise<Record<string, unkno
 
 type Layout = { top: unknown[]; mid: unknown[]; trailing: unknown[] };
 
+// The last stored default layout (W2), inline: the schema and its default were removed (spec 8.6).
+function defaultWaifuPromptLayout(): Layout {
+  const block = (blockId: string) => ({ kind: "block", blockId, enabled: true });
+  return {
+    top: ["identity", "persona", "schedule", "ioFormat", "tools", "outputContract"].map(block),
+    mid: ["roomInfo", "relevantMemories"].map(block),
+    trailing: ["anchor", "currentlyDoing", "directorNote"].map(block)
+  };
+}
+
 function layoutWith(mutate: (layout: Layout) => void): Layout {
   const layout = JSON.parse(JSON.stringify(defaultWaifuPromptLayout())) as Layout;
   mutate(layout);
@@ -59,9 +69,9 @@ function disableBlock(layout: Layout, blockId: string): void {
 }
 
 describe("waifu-drop-prompt-layout-v1", () => {
-  it("is registered and still pending (the runtime reads layouts until the prompt builder is replaced)", () => {
+  it("is registered live (the waifu harness no longer reads layouts)", () => {
     const step = MIGRATION_STEPS.find((candidate) => candidate.id === "waifu-drop-prompt-layout-v1")!;
-    expect(step.pending).toBe(true);
+    expect(step.pending).toBeUndefined();
     expect(step.run).toBe(migrateWaifuDropPromptLayout);
   });
 
@@ -225,10 +235,9 @@ describe("waifu-drop-prompt-layout-v1", () => {
     expect([await readWaifu(root, "a"), await readWaifu(root, "b")]).toEqual(afterFirst);
   });
 
-  it("keeps the schedule choice through the older layout migrations when run in boot order", async () => {
+  it("keeps the schedule choice for every legacy shape through the real boot order", async () => {
     const root = await freshRoot();
-    // W1 layout (legacy block ids) with schedule off: the W2 migration resets the tree to the default
-    // and must not lose the choice before this step reads it.
+    // W1 layout (legacy block ids) with schedule off.
     await writeWaifu(root, "w1", {
       promptLayout: {
         top: [
@@ -239,11 +248,9 @@ describe("waifu-drop-prompt-layout-v1", () => {
         trailing: []
       }
     });
-    // Flat promptSections predate the layout tree; the first legacy step turns them into a layout.
+    // Flat promptSections predate the layout tree.
     await writeWaifu(root, "flat", { promptSections: { hardRules: true, schedule: false } });
-    const steps = MIGRATION_STEPS.map((step) =>
-      step.id === "waifu-drop-prompt-layout-v1" ? { ...step, pending: false } : step
-    ).filter((step) => !step.pending);
+    const steps = MIGRATION_STEPS.filter((step) => !step.pending);
 
     await runMigrations(root, { appVersion: "2.200.0", steps });
 

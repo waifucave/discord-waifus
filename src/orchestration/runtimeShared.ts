@@ -33,6 +33,8 @@ export type RuntimeOrchestratorOptions = {
     enrichMessages(messages: ContextMessage[], options?: { signal?: AbortSignal }): Promise<ContextMessage[]>;
     /** Cached OCR text without running OCR (ImageOcrService.cachedText); feeds the image freeze rule. */
     cachedText?(ref: ImageRef): Promise<string | undefined>;
+    /** Bounded OCR (ImageOcrService.textFor): text-only contexts wait for it before an image freezes. */
+    textFor?(ref: ImageRef, o: { timeoutMs: number; signal?: AbortSignal }): Promise<string | undefined>;
     dispose?(): Promise<void>;
   };
   /** Shared Discord image fetcher (the OCR service's, spec 8.4); built over the data root when omitted. */

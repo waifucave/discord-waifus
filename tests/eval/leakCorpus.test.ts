@@ -6,7 +6,7 @@
 // - Every CLEAN_CORPUS entry produces verdict "pass" with ZERO violations.
 
 import { describe, expect, it } from "vitest";
-import { validateWaifuOutput } from "../../src/orchestration/outputValidator.js";
+import { validateLeaks as validateWaifuOutput } from "../../src/orchestration/outputValidator.js";
 import { CLEAN_CORPUS, LEAK_CORPUS, defaultCtx } from "./fixtures/synthetic/corpus.js";
 
 describe("leak corpus — tier 1", () => {

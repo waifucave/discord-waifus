@@ -24,7 +24,7 @@ import {
 } from "../discord/rest.js";
 import { RuntimeOrchestrator } from "../orchestration/runtime.js";
 import { ImageOcrService } from "../orchestration/ocr.js";
-import { DiscordImageFetcher } from "../discord/attachments.js";
+import { DiscordImageFetcher, sharedImageFetcherConfig } from "../discord/attachments.js";
 import {
   DiscordBotsFileSchema,
   GuildEmojisFileSchema,
@@ -196,7 +196,7 @@ async function startLockedBackend(options: StartBackendOptions): Promise<Running
       const images = new DiscordImageFetcher({
         dataRoot: options.dataRoot,
         logger,
-        config: currentConfig.discord.images
+        config: sharedImageFetcherConfig(currentConfig, logger)
       });
       const ocr = new ImageOcrService({
         dataRoot: options.dataRoot,

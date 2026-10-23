@@ -12,7 +12,6 @@ import { compactionMaxOutputTokens, compactionMessages, compactionToolChoice } f
 import type { Logger } from "../../backend/logger.js";
 import { NoopUsageLedger, sharedUsageLedger, usageFields, type UsageLedger } from "../usageLedger.js";
 import { sharedProviderAlerts, type ProviderAlerts } from "../providerAlerts.js";
-import { buildWaifuMessages } from "./messages.js";
 import { OrchestratorDecision } from "../decisions.js";
 import { DreamOp, ObserverOp } from "../stageManager.js";
 
@@ -78,7 +77,7 @@ type CallMeta = {
   structuredLabel?: string;
 };
 
-function callMeta(request: ProviderRequest, purpose: UsagePurpose, structuredLabel?: string): CallMeta {
+function callMeta(request: Pick<ProviderRequest, "attribution" | "prompt">, purpose: UsagePurpose, structuredLabel?: string): CallMeta {
   return {
     purpose: request.attribution?.purpose ?? purpose,
     attribution: request.attribution,
@@ -351,23 +350,20 @@ class GatewayModelPipeline implements ModelPipeline {
   }
 
   async generateWaifu(request: WaifuGenerationRequest): Promise<WaifuGenerationResult> {
-    const tools: ToolDef[] = [];
-    if (request.shortTermMemoryToolEnabled) {
-      tools.push({ name: SHORT_TERM_MEMORY_TOOL_NAME, parameters: shortTermMemoryToolParameters() as Record<string, unknown> });
-    }
-    if (request.pickNextWaifuToolEnabled && request.availableWaifuIds?.length) {
-      tools.push({ name: PICK_NEXT_WAIFU_TOOL_NAME, parameters: pickNextWaifuToolParameters(request.availableWaifuIds) as Record<string, unknown> });
-    }
+    // Spec 8.5: the waifu prompt is the context engine's BuiltPrompt, sent verbatim (its tool list
+    // is fixed per config so breakpoint A never changes; suppression is the caller ignoring a call).
+    const prompt = request.prompt;
+    if (!prompt) throw new GatewayPipelineError("generateWaifu requires a context-engine prompt");
     const response = await this.chat({
-      messages: await buildWaifuMessages(this.model, { ...request, systemPrompt: request.systemPrompt ?? "" }),
-      tools: tools.length ? tools : undefined,
-      toolChoice: tools.length ? "auto" : undefined,
+      messages: prompt.messages,
+      tools: prompt.tools.length ? prompt.tools : undefined,
+      toolChoice: prompt.tools.length ? "auto" : undefined,
       sampling: {
         temperature: request.temperature, topP: request.topP, maxOutputTokens: request.maxOutputTokens,
         params: request.params, stopSequences: request.stopSequences
       },
       signal: request.signal,
-      meta: callMeta(request, request.retryUserMessage ? "waifu_retry" : "waifu_reply")
+      meta: callMeta(request, "waifu_reply")
     });
 
     // Legacy parity (postJsonAndExtractText, legacy pipelines.ts:837-840): a record extract
@@ -386,6 +382,9 @@ class GatewayModelPipeline implements ModelPipeline {
       .map((parsed) => (typeof parsed?.content === "string" && parsed.content.trim() ? parsed.content.trim() : undefined))
       .filter((entry): entry is string => entry !== undefined);
     if (memoryEntries.length) result.shortTermMemoryEntries = memoryEntries;
+
+    const calls = response.content.filter((block): block is ToolCallBlock => block.type === "toolCall");
+    if (calls.length) result.toolCalls = calls.map((call) => ({ id: call.id, name: call.name, arguments: call.arguments }));
 
     const pick = toolCalls(response, PICK_NEXT_WAIFU_TOOL_NAME)[0];
     if (pick) {

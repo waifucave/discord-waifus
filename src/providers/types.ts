@@ -34,19 +34,11 @@ export type ProviderRequest = {
   onUsage?: (usage: Usage) => void;
 };
 
-export type WaifuGenerationRequest = ProviderRequest & {
-  // Optional once `prompt` carries the system message; legacy callers still set it.
-  systemPrompt?: string;
-  midSystemBlock?: string;
-  trailingSystemBlock?: string;
-  retryUserMessage?: string;
-  pickNextWaifuToolEnabled?: boolean;
-  shortTermMemoryToolEnabled?: boolean;
+// Spec 8.5: the waifu call sends `prompt` (the context engine's BuiltPrompt) verbatim; its tools
+// are listed in `prompt.tools`. `availableWaifuIds` validates a PickNextWaifu call.
+export type WaifuGenerationRequest = Omit<ProviderRequest, "messages"> & {
+  messages?: ContextMessage[];
   stopSequences?: string[];
-  // Discord author ids that are THIS waifu. In practice the bot user id only —
-  // Discord's message.author.id is always the user id, never the application id.
-  // Only these messages become assistant turns; everything else is a user turn.
-  selfAuthorIds?: string[];
 };
 
 // One memory record presented to the dream pass. memoryIndex is 1-based WITHIN the current
@@ -87,6 +79,8 @@ export type WaifuGenerationResult = {
     waifuId?: string;
   };
   shortTermMemoryEntries?: string[];
+  // Every tool call of the response (recorded as `tool` context notes).
+  toolCalls?: Array<{ id: string; name: string; arguments: string }>;
   // Gateway 0.4.0 usage convention (inputTokens includes cache reads/writes; see Usage).
   usage?: Usage;
   finishReason?: FinishReason;

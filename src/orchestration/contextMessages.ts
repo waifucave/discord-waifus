@@ -1,5 +1,4 @@
 import { z } from "zod";
-import { clipSurrogateSafe } from "../shared/text.js";
 
 const ReactionSummarySchema = z.object({
   emoji: z.string(),
@@ -102,63 +101,6 @@ export function buildContextMessages(
 
 export function formatTimestamp(then: Date): string {
   return then.toISOString().replace(/\.\d{3}Z$/, "Z");
-}
-
-const COMPACT_REPLY_PREVIEW_LIMIT = 80;
-
-function clipReplyPreview(preview: string): string {
-  return preview.length > COMPACT_REPLY_PREVIEW_LIMIT
-    ? `${clipSurrogateSafe(preview, COMPACT_REPLY_PREVIEW_LIMIT - 1)}…`
-    : preview;
-}
-
-function replyQuoteLine(message: ContextMessage): string | null {
-  if (!message.replyTo) return null;
-  const authorName = message.replyTo.authorName?.trim();
-  const preview = message.replyTo.contentPreview?.trim();
-  if (authorName && preview) {
-    return `replying to > ${authorName}: ${clipReplyPreview(preview)}`;
-  }
-  if (authorName) {
-    return `replying to > ${authorName}`;
-  }
-  if (preview) {
-    return `replying to > ${clipReplyPreview(preview)}`;
-  }
-  return null;
-}
-
-// The waifu's own history is rendered as raw message bodies: no name prefix, no reply-quote
-// line, no attachment/image tags — replyTo and images are intentionally omitted for self turns. The context itself then demonstrates the output contract —
-// "my turns are plain message text" — which holds format on far smaller models than rules do.
-export function formatSelfWaifuContent(message: ContextMessage): string {
-  return message.content;
-}
-
-export function formatWaifuContextBlock(message: ContextMessage): string {
-  const lines: string[] = [];
-  const quote = replyQuoteLine(message);
-  if (quote) lines.push(quote);
-  lines.push(senderPrefixedContent(message.displayName, message.content));
-  const imageCount = message.images?.length ?? 0;
-  if (imageCount > 0) {
-    lines.push(`[attachments: ${imageCount}x image]`);
-    appendImageTextLines(lines, message.images);
-  }
-  return lines.join("\n");
-}
-
-function senderPrefixedContent(displayName: string, content: string): string {
-  return content.length > 0 ? `${displayName}: ${content}` : `${displayName}:`;
-}
-
-function appendImageTextLines(lines: string[], images: AttachmentImage[] | undefined): void {
-  for (const image of images ?? []) {
-    const ocr = image.ocrText?.replace(/\s+/g, " ").trim();
-    if (ocr) {
-      lines.push(`[image_text: ${ocr}]`);
-    }
-  }
 }
 
 function coalesceAdjacentChunks(

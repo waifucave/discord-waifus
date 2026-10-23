@@ -109,6 +109,8 @@ export type PrepareInput = {
   waifuIdForAuthor?: (authorId: string) => string | undefined;
   memoryLimit?: number; // snapshot size (memoryInjectionLimit), default 12
   recentReactions?: string[];
+  /** Additive (T3): user ids the caller considers present; frozen with the epoch alongside the window's authors. */
+  participantIds?: string[];
   renderToolTurnsAsText?: boolean; // default: true when render.tools() is empty
   /**
    * Entries kept when a context WITHOUT a summarizer outgrows its limits (durable truncation;
@@ -293,9 +295,17 @@ export class ContextRuntime {
     }
   }
 
-  async commit(p: PreparedContext, o: { notes?: NewContextNote[]; usage?: Usage; modelKey: string }): Promise<void> {
+  /**
+   * `sentPrompt` (additive, T3): the prompt actually sent when it differs from `p.prompt` only in
+   * its ephemeral tail (a retry note); calibration measures against it.
+   */
+  async commit(
+    p: PreparedContext,
+    o: { notes?: NewContextNote[]; usage?: Usage; modelKey: string; sentPrompt?: BuiltPrompt }
+  ): Promise<void> {
+    const sent = o.sentPrompt ?? p.prompt;
     const now = this.now();
-    const rawEstimate = estimateTokens(p.prompt.messages, p.prompt.tools);
+    const rawEstimate = estimateTokens(sent.messages, sent.tools);
     const internal = this.internals.get(p);
     const builtEpoch = internal?.builtEpoch ?? p.state.epoch;
     const builtCursorSeq = internal ? internal.builtCursorSeq : p.state.cursorSeq;
@@ -318,7 +328,7 @@ export class ContextRuntime {
       if (o.usage && this.d.calibrate) {
         const calibration = this.d.calibrate({
           state: next,
-          prompt: p.prompt,
+          prompt: sent,
           rawEstimate,
           usage: o.usage,
           modelKey: o.modelKey,
@@ -727,6 +737,12 @@ export class ContextRuntime {
     next.imageModes = Object.fromEntries(Object.entries(next.imageModes).filter(([imageKey]) => keptKeys.has(imageKey)));
 
     let lines: string[] = [];
+    next.epochParticipantIds = [
+      ...new Set([
+        ...participantsOf(transcript, o.i.selfAuthorIds, o.i.waifuIdForAuthor).flatMap((p) => (p.discordUserId ? [p.discordUserId] : [])),
+        ...(o.i.participantIds ?? [])
+      ])
+    ];
     next.memorySnapshotIds = [];
     if (o.i.agent.kind === "waifu") {
       const memory = this.d.memory?.() ?? DEFAULT_APP_CONFIG.memory;

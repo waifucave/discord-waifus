@@ -4,6 +4,11 @@ import { createGatewayModelPipeline } from "../src/orchestration/pipeline/gatewa
 import { GatewayPipelineError } from "../src/orchestration/pipeline/params.js";
 import { ContextMessage } from "../src/orchestration/contextMessages.js";
 import type { ProviderRequest } from "../src/providers/types.js";
+import { waifuTools } from "../src/orchestration/waifuHarness.js";
+import { testPrompt } from "./contextFixtures.js";
+
+const memoryTools = waifuTools({ addMemory: true, pickNextWaifuIds: [] });
+const allTools = waifuTools({ addMemory: true, pickNextWaifuIds: ["riko"] });
 import type { BuiltPrompt } from "../src/orchestration/context/types.js";
 import { orchestratorTools } from "../src/orchestration/orchestratorHarness.js";
 
@@ -41,9 +46,13 @@ const makePipeline = (fetchImpl: typeof fetch, providerId = "deepseek", modelId 
 describe("generateWaifu (gateway)", () => {
   const baseRequest = {
     modelId: "deepseek-v4-flash",
-    systemPrompt: "SYS",
-    messages: [msg({}), msg({ id: "m2", authorKind: "waifu" as const, authorId: "bot-1", content: "yo" })],
-    selfAuthorIds: ["bot-1"],
+    prompt: testPrompt({
+      messages: [
+        { role: "user", content: [{ type: "text", text: "[10:00 #a0] Ann: hello\n" }] },
+        { role: "assistant", content: [{ type: "text", text: "yo\n" }] },
+        { role: "user", content: [{ type: "text", text: "Write the next message." }] }
+      ]
+    }),
     temperature: 0.7,
     params: { "reasoning.enabled": false }
   };
@@ -82,7 +91,7 @@ describe("generateWaifu (gateway)", () => {
       usage: {}
     });
     const result = await makePipeline(fetchImpl as unknown as typeof fetch).generateWaifu({
-      ...baseRequest, shortTermMemoryToolEnabled: true
+      ...baseRequest, prompt: { ...baseRequest.prompt, tools: memoryTools }
     });
     expect(result.content).toBe("");
     expect(result.shortTermMemoryEntries).toEqual(["Ann likes tea"]);
@@ -104,7 +113,7 @@ describe("generateWaifu (gateway)", () => {
       usage: { prompt_tokens: 1, completion_tokens: 1 }
     });
     const result = await makePipeline(fetchImpl as unknown as typeof fetch).generateWaifu({
-      ...baseRequest, shortTermMemoryToolEnabled: true, pickNextWaifuToolEnabled: true, availableWaifuIds: ["riko"]
+      ...baseRequest, prompt: { ...baseRequest.prompt, tools: allTools }, availableWaifuIds: ["riko"]
     });
     expect(result.content).toBe("answer text");
     expect(result.shortTermMemoryEntries).toEqual(["Ann likes tea"]);
@@ -118,16 +127,16 @@ describe("generateWaifu (gateway)", () => {
       usage: {}
     });
     const result = await makePipeline(fetchImpl as unknown as typeof fetch).generateWaifu({
-      ...baseRequest, pickNextWaifuToolEnabled: true, availableWaifuIds: ["riko"]
+      ...baseRequest, prompt: { ...baseRequest.prompt, tools: allTools }, availableWaifuIds: ["riko"]
     });
     expect(result.pickedNextWaifuId).toBeUndefined();
     expect(result.rejectedPickNextWaifu).toEqual({ reason: "unavailable_waifu", waifuId: "ghost" });
   });
 
-  it("sends tools only when enabled, with auto toolChoice (wire golden)", async () => {
+  it("sends the prompt's tools with auto toolChoice (wire golden)", async () => {
     const fetchImpl = okFetch({ id: "r1", choices: [{ message: { content: "x" }, finish_reason: "stop" }], usage: {} });
     await makePipeline(fetchImpl as unknown as typeof fetch).generateWaifu({
-      ...baseRequest, shortTermMemoryToolEnabled: true
+      ...baseRequest, prompt: { ...baseRequest.prompt, tools: memoryTools }
     });
     const body = JSON.parse((fetchImpl.mock.calls[0]![1] as RequestInit).body as string);
     expect(body.tools).toHaveLength(1);
@@ -135,6 +144,18 @@ describe("generateWaifu (gateway)", () => {
     expect(body.tool_choice === undefined || body.tool_choice === "auto").toBe(true);
     expect(body.temperature).toBe(0.7);
     expect(body.thinking).toEqual({ type: "disabled" });
+  });
+
+  it("returns every tool call for tool notes and requires a context-engine prompt", async () => {
+    const fetchImpl = okFetch({
+      id: "r1",
+      choices: [{ message: { content: "hi", tool_calls: [{ id: "c9", type: "function", function: { name: "add_memory", arguments: "{\"content\":\"x\"}" } }] }, finish_reason: "stop" }],
+      usage: {}
+    });
+    const pipeline = makePipeline(fetchImpl as unknown as typeof fetch);
+    const result = await pipeline.generateWaifu({ ...baseRequest, prompt: { ...baseRequest.prompt, tools: memoryTools } });
+    expect(result.toolCalls).toEqual([{ id: "c9", name: "add_memory", arguments: "{\"content\":\"x\"}" }]);
+    await expect(pipeline.generateWaifu({ modelId: "deepseek-v4-flash" })).rejects.toThrow("context-engine prompt");
   });
 });
 
@@ -538,7 +559,7 @@ describe("cross-wire goldens", () => {
   //    The anthropic codec joins all top-level {role:"system"} turns into
   //    body.system as a plain string.
   // -------------------------------------------------------------------------
-  it("anthropic generateWaifu: correct URL, headers, system, system_note turns, max_tokens, content, usage", async () => {
+  it("anthropic generateWaifu: correct URL, headers, one system prompt, cache markers, max_tokens, content, usage", async () => {
     const payload = {
       id: "m1",
       content: [{ type: "text", text: "hello!" }],
@@ -546,50 +567,39 @@ describe("cross-wire goldens", () => {
       usage: { input_tokens: 5, output_tokens: 2 }
     };
     const fetchImpl = okFetch(payload);
+    const prompt = testPrompt({
+      messages: [
+        { role: "user", content: [{ type: "text", text: "HEADER", cacheControl: { type: "ephemeral", ttl: "5m" } }] },
+        { role: "user", content: [{ type: "text", text: "[10:00 #a0] Ann: hello\n", cacheControl: { type: "ephemeral", ttl: "5m" } }] },
+        { role: "assistant", content: [{ type: "text", text: "yo\n" }] },
+        { role: "user", content: [{ type: "text", text: "TAIL" }] }
+      ]
+    });
 
     const result = await makePipeline(fetchImpl as unknown as typeof fetch, "anthropic", "claude-haiku-4-5-20251001").generateWaifu({
       modelId: "claude-haiku-4-5-20251001",
-      systemPrompt: "SYS",
-      midSystemBlock: "MID",
-      trailingSystemBlock: "TRAIL",
-      messages: [
-        msg({}),
-        msg({ id: "m2", authorKind: "waifu" as const, authorId: "bot-1", content: "yo" })
-      ],
-      selfAuthorIds: ["bot-1"],
+      prompt,
       temperature: 0.7,
       maxOutputTokens: 300,
       params: { "reasoning.enabled": false }
     });
 
-    // URL and auth header
     const [url, init] = fetchImpl.mock.calls[0]!;
     expect(url).toBe("https://api.anthropic.com/v1/messages");
     const headers = (init as RequestInit).headers as Record<string, string>;
     expect(headers["x-api-key"]).toBe("sk-a");
 
-    // Wire body
     const body = JSON.parse((init as RequestInit).body as string);
-
-    // Top-level system is the plain systemPrompt string (anthropic codec joins system turns)
-    expect(body.system).toBe("SYS");
-
-    // MID injected as a user turn (haiku: multipleSystemMessages:false → <system_note>)
-    // Note: JSON.stringify encodes newlines as \n (two chars), so we search the
-    // serialised form. Actual wire text is <system_note>\nMID\n</system_note>.
+    // The one system message is the top-level system; header/transcript/tail stay in messages.
+    expect(JSON.stringify(body.system)).toContain("SYS");
     const messagesJson = JSON.stringify(body.messages);
-    expect(messagesJson).toContain("<system_note>\\nMID\\n</system_note>");
-    // TRAIL appended as a user turn
-    expect(messagesJson).toContain("<system_note>\\nTRAIL\\n</system_note>");
-
-    // Self-waifu message ("yo") → assistant turn
-    const assistantTurns: Array<{ role: string }> = body.messages.filter((m: { role: string }) => m.role === "assistant");
-    expect(assistantTurns.length).toBeGreaterThanOrEqual(1);
-
-    // max_tokens
+    expect(messagesJson).toContain("HEADER");
+    expect(messagesJson).toContain("TAIL");
+    expect(messagesJson).not.toContain("system_note");
+    expect(messagesJson).toContain("cache_control");
+    expect(body.messages.filter((m: { role: string }) => m.role === "assistant")).toHaveLength(1);
     expect(body.max_tokens).toBe(300);
 
-    // Result
     expect(result.content).toBe("hello!");
     expect(result.usage).toMatchObject({ inputTokens: 5, outputTokens: 2 });
   });
@@ -727,9 +737,7 @@ describe("cross-wire goldens", () => {
 
     await makePipeline(fetchImpl as unknown as typeof fetch).generateWaifu({
       modelId: "deepseek-v4-flash",
-      systemPrompt: "SYS",
-      messages: [msg({})],
-      selfAuthorIds: [],
+      prompt: testPrompt(),
       temperature: 0.7,
       params: { "reasoning.enabled": true }
     });

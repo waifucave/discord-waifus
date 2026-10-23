@@ -152,7 +152,7 @@ describe("removed promptLayout in waifu bodies", () => {
         payload: { id: "stale", name: "Stale", displayName: "Stale", promptLayout: staleLayout }
       });
       expect(created.statusCode).toBe(201);
-      expect(created.json().promptLayout).not.toEqual(staleLayout);
+      expect(created.json()).not.toHaveProperty("promptLayout");
 
       const put = await app.inject({
         method: "PUT",
@@ -161,7 +161,7 @@ describe("removed promptLayout in waifu bodies", () => {
       });
       expect(put.statusCode).toBe(200);
       expect(put.json().displayName).toBe("Still Stale");
-      expect(put.json().promptLayout).not.toEqual(staleLayout);
+      expect(put.json()).not.toHaveProperty("promptLayout");
 
       // Garbage is tolerated too: the key is ignored, not validated.
       const garbage = await app.inject({
