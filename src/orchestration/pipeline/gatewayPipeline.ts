@@ -105,7 +105,7 @@ function parseForcedCall<T>(response: ChatResponse, toolName: string, parse: (ra
   }
 }
 
-export class GatewayModelPipeline implements ModelPipeline {
+class GatewayModelPipeline implements ModelPipeline {
   constructor(private readonly options: GatewayPipelineOptions, private readonly gateway: Gateway) {}
 
   protected async chat(request: {
@@ -355,6 +355,6 @@ export class GatewayModelPipeline implements ModelPipeline {
   }
 }
 
-export function createGatewayModelPipeline(options: GatewayPipelineOptions): GatewayModelPipeline {
+export function createGatewayModelPipeline(options: GatewayPipelineOptions): ModelPipeline {
   return new GatewayModelPipeline(options, resolveGateway(options));
 }

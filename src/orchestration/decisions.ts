@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const ORCHESTRATOR_ACTION_VALUES = ["reply", "no_reply"] as const;
+const ORCHESTRATOR_ACTION_VALUES = ["reply", "no_reply"] as const;
 export type OrchestratorAction = (typeof ORCHESTRATOR_ACTION_VALUES)[number];
 export const OrchestratorActionSchema = z.enum(ORCHESTRATOR_ACTION_VALUES);
 

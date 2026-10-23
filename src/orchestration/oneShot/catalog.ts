@@ -3,7 +3,7 @@ import { OneShotTargetSchema } from "../../shared/schemas/oneShot.js";
 export { OneShotTargetSchema } from "../../shared/schemas/oneShot.js";
 import { readDecisionJson } from "./protocol.js";
 export type OneShotModel = { target: string; label: string; provider: "openai" | "openrouter" | "laya"; local: boolean; contextLength?: number };
-export const BUILTIN_DECISION_MODELS: OneShotModel[] = [
+const BUILTIN_DECISION_MODELS: OneShotModel[] = [
   { target: "openai:gpt-6-luna", label: "OpenAI GPT-6 Luna Decisions (direct)", provider: "openai", local: false },
   ...["english", "multilingual", "typed-decisions"].map((model): OneShotModel => ({ target: `laya:${model}`, label: `Laya ${model} (local, experimental)`, provider: "laya", local: true }))
 ];
