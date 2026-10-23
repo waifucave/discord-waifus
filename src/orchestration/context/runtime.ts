@@ -81,6 +81,8 @@ export type ContextRuntimeDeps = {
   renderer?: MessageRenderer;
   memory?: () => MemoryConfig;
   ocr?: OcrTextLookup;
+  /** Max wait for OCR of a not-yet-frozen image when the model cannot take images (default 4 s). */
+  ocrTimeoutMs?: number;
   now?: () => Date;
   timeZone?: () => string;
   /** T7b plugs per-model calibration (EMA, spec 8.9) in here; default: none. */
@@ -691,6 +693,7 @@ export class ContextRuntime {
       acceptsImages: i.model.modalities.input.includes("image"),
       maxInlinePerEpoch: memory.maxInlineImagesPerEpoch,
       ocr: this.d.ocr,
+      ...(this.d.ocrTimeoutMs !== undefined ? { ocrTimeoutMs: this.d.ocrTimeoutMs } : {}),
       signal: i.signal,
       logger: this.d.logger,
       ...(refresh ? { refreshUrl: (entry: LedgerEntry, ref: ImageRef) => refresh(i.conversation, entry, ref) } : {})

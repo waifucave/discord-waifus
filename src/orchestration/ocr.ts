@@ -108,6 +108,29 @@ export class ImageOcrService {
     return text ? clipOcrText(text, this.options.config.maxTextCharsPerImage) : undefined;
   }
 
+  /**
+   * OCR text for an image, running OCR when it is not cached yet (bounded by `timeoutMs`; the
+   * OCR itself keeps running and caches its result). For contexts whose model cannot take images
+   * (spec 8.4 freeze rule: the text frozen at first render is what every later build shows).
+   */
+  async textFor(
+    ref: Pick<ImageRef, "url"> & { key?: string; contentType?: string },
+    o: { timeoutMs: number; signal?: AbortSignal }
+  ): Promise<string | undefined> {
+    if (!this.options.config.enabled) return undefined;
+    const job = this.extractImageText({ url: ref.url, ...(ref.contentType ? { contentType: ref.contentType } : {}) }, { signal: o.signal });
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<undefined>((resolve) => {
+      timer = setTimeout(() => resolve(undefined), Math.max(0, o.timeoutMs));
+    });
+    try {
+      const text = await Promise.race([job.catch(() => undefined), timeout]);
+      return text ? clipOcrText(text, this.options.config.maxTextCharsPerImage) : undefined;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
   /** Terminate the reused tesseract.js worker (if any). Call on shutdown. */
   async dispose(): Promise<void> {
     await this.disposeTesseractWorker();
