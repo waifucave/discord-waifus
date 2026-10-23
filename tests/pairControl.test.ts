@@ -13,11 +13,11 @@ import {
   verifyPairRevocationAckMacV1,
   verifyPairRevocationMacV1,
   type PairControlTransportV1
-} from "../src/shared/pairControl.js";
+} from "../scripts/remote-contracts/pairControl.js";
 import {
   createPairControlFixtureSet,
   serializePairControlFixture
-} from "../src/shared/pairControlContract.js";
+} from "../scripts/remote-contracts/pairControlContract.js";
 
 type JsonObject = Record<string, unknown>;
 

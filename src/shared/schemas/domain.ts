@@ -8,7 +8,7 @@ import { CURRENT_SCHEMA_VERSION, IsoDateStringSchema, RevisionedRecordSchema } f
 export const ProviderIdSchema = z.string().min(1);
 export type ProviderId = z.infer<typeof ProviderIdSchema>;
 
-export const TimeOfDaySchema = z
+const TimeOfDaySchema = z
   .string()
   .regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Use 24-hour HH:mm time.");
 export type TimeOfDay = z.infer<typeof TimeOfDaySchema>;
@@ -36,7 +36,7 @@ function dailyIntervalsOverlap(a: DailyInterval, b: DailyInterval): boolean {
   );
 }
 
-export const WaifuSleepScheduleSchema = z
+const WaifuSleepScheduleSchema = z
   .object({
     enabled: z.boolean().default(false),
     start: TimeOfDaySchema.default("23:00"),
@@ -58,7 +58,7 @@ export const WaifuSleepScheduleSchema = z
   });
 export type WaifuSleepSchedule = z.infer<typeof WaifuSleepScheduleSchema>;
 
-export const WaifuBusyIntervalSchema = z
+const WaifuBusyIntervalSchema = z
   .object({
     start: TimeOfDaySchema,
     end: TimeOfDaySchema,
@@ -183,7 +183,7 @@ export const ServerToolSettingsSchema = z
   });
 export type ServerToolSettings = z.infer<typeof ServerToolSettingsSchema>;
 
-export const ProviderCredentialsSchema = z.object({
+const ProviderCredentialsSchema = z.object({
   providerId: ProviderIdSchema,
   apiKey: z.string().min(1),
   label: z.string().optional(),
@@ -420,7 +420,7 @@ export const PendingObservationsFileSchema = RevisionedRecordSchema.extend({
 });
 export type PendingObservationsFile = z.infer<typeof PendingObservationsFileSchema>;
 
-export const OrchestratorDirectiveSchema = z.object({
+const OrchestratorDirectiveSchema = z.object({
   intent: z.string().min(1),
   // goal is stored in history for the dashboard; it is omitted from few-shot replay.
   goal: z.string().optional()
@@ -435,15 +435,15 @@ export const OrchestratorRespondingWaifuSchema = z.object({
 });
 export type OrchestratorRespondingWaifu = z.infer<typeof OrchestratorRespondingWaifuSchema>;
 
-export const OrchestratorActionLogSchema = z.enum(["reply", "no_reply"]);
+const OrchestratorActionLogSchema = z.enum(["reply", "no_reply"]);
 
 export const OrchestratorDecisionStatusSchema = z.enum(["pending", "completed", "interrupted", "failed"]);
 export type OrchestratorDecisionStatus = z.infer<typeof OrchestratorDecisionStatusSchema>;
 
-export const OrchestratorResponderOutcomeSourceSchema = z.enum(["orchestrator", "handoff"]);
+const OrchestratorResponderOutcomeSourceSchema = z.enum(["orchestrator", "handoff"]);
 export type OrchestratorResponderOutcomeSource = z.infer<typeof OrchestratorResponderOutcomeSourceSchema>;
 
-export const OrchestratorResponderOutcomeStatusSchema = z.enum([
+const OrchestratorResponderOutcomeStatusSchema = z.enum([
   "pending",
   "sent",
   "tool_only",
@@ -489,7 +489,7 @@ export const OrchestratorHistoryFileSchema = RevisionedRecordSchema.extend({
 });
 export type OrchestratorHistoryFile = z.infer<typeof OrchestratorHistoryFileSchema>;
 
-export const OrchestratorDebugRouteSchema = z.object({
+const OrchestratorDebugRouteSchema = z.object({
   sourceGuildId: z.string().min(1).optional(),
   sourceChannelId: z.string().min(1),
   destinationGuildId: z.string().min(1).optional(),
@@ -505,7 +505,7 @@ export const OrchestratorDebugConfigFileSchema = RevisionedRecordSchema.extend({
 });
 export type OrchestratorDebugConfigFile = z.infer<typeof OrchestratorDebugConfigFileSchema>;
 
-export const StageManagerEditHistoryEntrySchema = z.object({
+const StageManagerEditHistoryEntrySchema = z.object({
   id: z.string().min(1),
   guildId: z.string().optional(),
   channelId: z.string().optional(),
@@ -522,7 +522,7 @@ export const StageManagerHistoryFileSchema = RevisionedRecordSchema.extend({
 });
 export type StageManagerHistoryFile = z.infer<typeof StageManagerHistoryFileSchema>;
 
-export const ReviewerHistoryEntrySchema = z.object({
+const ReviewerHistoryEntrySchema = z.object({
   id: z.string().min(1),
   guildId: z.string().optional(),
   channelId: z.string().optional(),

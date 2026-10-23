@@ -1106,6 +1106,156 @@ describe("discord bot enabled upgrade", () => {
   });
 });
 
+describe("migration ledger", () => {
+  const LEDGER = "app/migrations.json";
+  const LEGACY_PARTICIPANTS = "user/servers/guild-1/active-chat-participants.json";
+
+  type Ledger = { ledgerVersion: number; appVersion: string; steps: Record<string, { appVersion: string }> };
+
+  async function writeLegacyParticipants(root: string): Promise<void> {
+    await writeJson(root, LEGACY_PARTICIPANTS, { schemaVersion: CURRENT_SCHEMA_VERSION, guildId: "guild-1" });
+  }
+
+  async function exists(root: string, relativePath: string): Promise<boolean> {
+    return stat(path.join(root, relativePath)).then(() => true, () => false);
+  }
+
+  async function freshRoot(): Promise<string> {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    return root;
+  }
+
+  it("records completed steps with the app version and skips them on later boots", async () => {
+    const root = await freshRoot();
+    await runMigrations(root, { appVersion: "2.200.0" });
+
+    const ledger = await readJson<Ledger>(root, LEDGER);
+    expect(ledger).toMatchObject({ ledgerVersion: 1, appVersion: "2.200.0" });
+    expect(Object.keys(ledger.steps)).toEqual(expect.arrayContaining([
+      "remove-guild-wide-active-participants",
+      "memory-store-v2",
+      "configs-to-gateway-params",
+      `stamp-schema-version-${CURRENT_SCHEMA_VERSION}`
+    ]));
+    // Every-boot checks/housekeeping are never recorded.
+    expect(ledger.steps["harden-remote-access-state-v1"]).toBeUndefined();
+    expect(ledger.steps["archive-memories-with-unknown-waifus"]).toBeUndefined();
+    expect(ledger.steps["enable-discord-bots-v1"]).toBeUndefined();
+
+    // Legacy data that appears after the step was recorded is no longer scanned for.
+    await writeLegacyParticipants(root);
+    const second = await runMigrations(root, { appVersion: "2.200.0" });
+    expect(second.applied).toEqual([]);
+    expect(await exists(root, LEGACY_PARTICIPANTS)).toBe(true);
+  });
+
+  it("keeps running every-boot steps when the ledger is complete", async () => {
+    const root = await freshRoot();
+    await runMigrations(root, { appVersion: "2.200.0" });
+    await writeJson(root, "user/memories.json", {
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      revision: 0,
+      updatedAt: "2026-10-01T00:00:00.000Z",
+      memories: [{ id: "orphan", waifuId: "deleted-waifu", status: "active" }]
+    });
+
+    const result = await runMigrations(root, { appVersion: "2.200.0" });
+
+    expect(result.applied).toEqual(["archive-memories-with-unknown-waifus"]);
+    const store = await readJson<{ memories: Array<Record<string, unknown>> }>(root, "user/memories.json");
+    expect(store.memories[0]).toMatchObject({ status: "archived" });
+  });
+
+  it("runs a step missing from the ledger and records it, leaving recorded steps skipped", async () => {
+    const root = await freshRoot();
+    await runMigrations(root, { appVersion: "2.200.0" });
+    const ledger = await readJson<Ledger>(root, LEDGER);
+    delete ledger.steps["remove-guild-wide-active-participants"];
+    await writeJson(root, LEDGER, ledger);
+    await writeLegacyParticipants(root);
+    // A legacy session file belongs to a step that is still recorded, so it must stay untouched.
+    const sessionPath = "user/servers/guild-1/sessions/channel-1.json";
+    await writeJson(root, sessionPath, { scheduledIdleTriggerAt: "2026-10-01T00:00:00.000Z" });
+
+    const result = await runMigrations(root, { appVersion: "2.200.0" });
+
+    expect(result.applied).toEqual(["remove-guild-wide-active-participants-1"]);
+    expect(await exists(root, LEGACY_PARTICIPANTS)).toBe(false);
+    expect(await readJson<Record<string, unknown>>(root, sessionPath)).toHaveProperty("scheduledIdleTriggerAt");
+    expect((await readJson<Ledger>(root, LEDGER)).steps["remove-guild-wide-active-participants"]).toMatchObject({
+      appVersion: "2.200.0"
+    });
+  });
+
+  it.each([
+    ["unparseable JSON", "{not json"],
+    ["an unknown shape", JSON.stringify({ ledgerVersion: 99, steps: [] })]
+  ])("re-runs every step when the ledger is %s", async (_label, contents) => {
+    const root = await freshRoot();
+    await runMigrations(root, { appVersion: "2.200.0" });
+    await writeFile(path.join(root, LEDGER), contents, "utf8");
+    await writeLegacyParticipants(root);
+
+    const result = await runMigrations(root, { appVersion: "2.200.0" });
+
+    expect(result.applied).toContain("remove-guild-wide-active-participants-1");
+    expect(await exists(root, LEGACY_PARTICIPANTS)).toBe(false);
+    expect(await readJson<Ledger>(root, LEDGER)).toMatchObject({ ledgerVersion: 1, appVersion: "2.200.0" });
+  });
+
+  it("re-runs every step when a different app version ran the host after the ledger was written", async () => {
+    const root = await freshRoot();
+    await runMigrations(root, { appVersion: "2.200.0" });
+    // A ledger-unaware older build booted in between (it rewrites app/runtime.json, not the ledger).
+    await writeJson(root, "app/runtime.json", { schemaVersion: CURRENT_SCHEMA_VERSION, packageVersion: "2.111.2" });
+    await writeLegacyParticipants(root);
+
+    const result = await runMigrations(root, { appVersion: "2.200.0" });
+
+    expect(result.applied).toContain("remove-guild-wide-active-participants-1");
+    expect(await exists(root, LEGACY_PARTICIPANTS)).toBe(false);
+  });
+
+  it("re-runs once-per-app-version steps only after the app version changes", async () => {
+    const root = await freshRoot();
+    await runMigrations(root, { appVersion: "2.200.0" });
+    const legacyWaifu = {
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      revision: 0,
+      updatedAt: "2026-10-01T00:00:00.000Z",
+      id: "haru",
+      generation: { temperature: 1.2 }
+    };
+    await writeJson(root, "user/waifus/haru/waifu.json", legacyWaifu);
+
+    const sameVersion = await runMigrations(root, { appVersion: "2.200.0" });
+    expect(sameVersion.applied).not.toContain("migrate-configs-to-gateway-params");
+    expect(await readJson<Record<string, unknown>>(root, "user/waifus/haru/waifu.json")).toHaveProperty("generation");
+
+    const upgraded = await runMigrations(root, { appVersion: "2.200.1" });
+    expect(upgraded.applied).toEqual(["migrate-configs-to-gateway-params"]);
+    const waifu = await readJson<Record<string, unknown>>(root, "user/waifus/haru/waifu.json");
+    expect(waifu).not.toHaveProperty("generation");
+    expect(waifu.params).toMatchObject({ temperature: 1.2 });
+    const ledger = await readJson<Ledger>(root, LEDGER);
+    expect(ledger.appVersion).toBe("2.200.1");
+    expect(ledger.steps["configs-to-gateway-params"].appVersion).toBe("2.200.1");
+    // Once-only steps keep their original record.
+    expect(ledger.steps["memory-store-v2"].appVersion).toBe("2.200.0");
+  });
+
+  it("records the steps that finished before a failing step", async () => {
+    const root = await freshRoot();
+    // An invalid trust index fails the first (every-boot) step closed; nothing else may run.
+    await writeFile(remoteStatePaths(root).trustIndex, "{}", "utf8");
+    await expect(runMigrations(root, { appVersion: "2.200.0" })).rejects.toThrow();
+    const ledger = await readJson<Ledger>(root, LEDGER);
+    expect(ledger.steps).toEqual({});
+  });
+});
+
 async function writeJson(root: string, relativePath: string, value: unknown): Promise<void> {
   const filePath = path.join(root, relativePath);
   await mkdir(path.dirname(filePath), { recursive: true });

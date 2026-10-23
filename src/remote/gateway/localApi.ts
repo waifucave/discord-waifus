@@ -833,8 +833,3 @@ export class RemoteLocalApi {
     reply.raw.once("close", () => this.#eventSubscribers.delete(subscriber));
   }
 }
-
-export function isRemoteLocalApiTarget(canonicalTarget: string): boolean {
-  const { pathname } = localPath(canonicalTarget);
-  return pathname.startsWith("/_waifus_remote/v1/");
-}

@@ -61,6 +61,7 @@ return the same `404`. The status resource reports prepared, completed, reconcil
 - `POST /api/runtime/pause`
 - `POST /api/runtime/resume`
 - `POST /api/runtime/reload`
+- `POST /api/runtime/stop`
 - `POST /api/runtime/trigger/orchestrator`
 - `POST /api/runtime/trigger/stage-manager`
 - `GET /api/diagnostics/bundle`
@@ -88,7 +89,7 @@ When Discord auto-connect is enabled and an orchestrator token is saved, the bac
 6. `no_reply` decisions schedule bounded retriggers.
 7. Stage-manager runs are background tasks and write memory/history through the shared memory lock.
 
-`POST /api/runtime/trigger/orchestrator` and `POST /api/runtime/trigger/stage-manager` accept optional JSON bodies with `guildId` and `channelId` to run the real channel pipeline manually. Without a target channel they only record a manual history entry.
+`POST /api/runtime/trigger/orchestrator` and `POST /api/runtime/trigger/stage-manager` accept optional JSON bodies with `guildId` and `channelId` to run the real channel pipeline manually. Without both ids, or without a live runtime, nothing runs and nothing is recorded: the response is `200` with `accepted: false` and an explanatory `message`.
 
 Normal configuration changes apply at runtime. `PUT /api/config`, `PUT /api/discord-bots`, and `POST /api/runtime/reload` rebuild Discord clients and the runtime orchestrator in-process without restarting HTTP. Only HTTP host/port changes require the next process start.
 
@@ -243,6 +244,8 @@ Discord bot config responses never include raw bot tokens. They include `tokenCo
 - `GET /api/waifus/:waifuId`
 - `PUT /api/waifus/:waifuId`
 - `DELETE /api/waifus/:waifuId`
+- `POST /api/waifus/:waifuId/link-bot`
+- `POST /api/waifus/:waifuId/digest`
 - `POST /api/waifus/:waifuId/assets/pfp`
 - `POST /api/waifus/:waifuId/assets/banner`
 
@@ -250,17 +253,24 @@ Discord bot config responses never include raw bot tokens. They include `tokenCo
 return `409 Conflict` with only the latest revision metadata; callers re-read the resource before
 merging and retrying.
 
-Asset uploads accept raw `image/png`, `image/jpeg`, `image/webp`, or `image/gif` request bodies up to 8 MB. Files are stored in `user/waifus/<waifu-id>/`.
+Asset uploads accept raw `image/png`, `image/jpeg`, `image/webp`, or `image/gif` request bodies up to 8 MB. Files are stored in `user/waifus/<waifu-id>/`. Nothing reads them yet: they are not applied to the Discord bot's avatar/banner and the dashboard neither uploads nor displays them.
 
 ## Servers
 
 - `GET /api/servers`
+- `GET /api/servers/:guildId`
 - `PUT /api/servers/:guildId`
+- `DELETE /api/servers/:guildId`
 - `GET /api/servers/:guildId/members`
 - `POST /api/servers/:guildId/members/refresh`
 - `GET /api/servers/:guildId/emojis`
 - `POST /api/servers/:guildId/emojis/refresh`
+- `GET /api/servers/:guildId/roles`
+- `POST /api/servers/:guildId/roles/refresh`
 - `PUT /api/servers/:guildId/channels/:channelId`
+- `DELETE /api/servers/:guildId/channels/:channelId`
+
+`:guildId` and `:channelId` must be Discord snowflakes (17–20 digits). A channel is active when its `enabledWaifuIds` list is non-empty; the stored channel `enabled` flag is not read by the runtime, and the server `enabled` flag only gates restart catch-up. Use the server's `paused` flag to silence a whole guild.
 
 Member and emoji refresh endpoints use the configured orchestrator bot token. Member refresh requires Discord permissions/intents that allow member listing. Emoji refresh caches guild custom emojis in `user/servers/<guild-id>/emojis.json`.
 

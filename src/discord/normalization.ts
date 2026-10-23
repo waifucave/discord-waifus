@@ -322,7 +322,7 @@ function stripLeakedModelAnalysis(content: string): string {
   return "";
 }
 
-export function modelVisibleMemberName(member: GuildMemberCacheEntry): string {
+function modelVisibleMemberName(member: GuildMemberCacheEntry): string {
   return member.guildDisplayName ?? member.globalDisplayName ?? member.username ?? "unknown-user";
 }
 

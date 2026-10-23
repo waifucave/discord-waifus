@@ -12,7 +12,7 @@ Everything configurable on a character: persona, model, params, schedule, tools,
 - `enabled` — master switch.
 - `providerId` / `modelId` — her model. `params` — dotted gateway params (temperature etc.).
 - `contextWindow` — how many recent channel messages she sees (default 50, max 100).
-- `botId` — which Discord bot entry (from Settings → Discord bots) she speaks through.
+- `botId` — which Discord bot entry (Settings → App → Discord bots) she speaks through.
 - `availability` — optional sleep window and busy blocks; the orchestrator treats these as
   soft signals, not hard rules.
 - `tools.toolUse` — whether she can call tools (memory notes, pick-next-waifu).

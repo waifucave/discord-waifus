@@ -6,8 +6,8 @@ import {
   signEd25519,
   verifyEd25519,
   type CanonicalCborValue
-} from "./remotePairing.js";
-import { UINT64_MAX } from "./schemas/remoteProtocol.js";
+} from "../../src/shared/remotePairing.js";
+import { UINT64_MAX } from "../../src/shared/schemas/remoteProtocol.js";
 
 export const ACTIVATION_CERTIFICATE_MAX_BYTES = 384;
 export const CONTROL_AUTH_HEADER_VALUES_MAX_BYTES = 1_024;

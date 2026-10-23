@@ -7,19 +7,19 @@ import {
   type PairControlRecordV1,
   type PairControlTypeV1,
   type PairControlUnsignedRecordV1
-} from "./schemas/remoteAccess.js";
+} from "../../src/shared/schemas/remoteAccess.js";
 import {
   Base64Url16BytesSchema,
   Base64Url32BytesSchema
-} from "./schemas/remoteProtocol.js";
+} from "../../src/shared/schemas/remoteProtocol.js";
 import {
   signEd25519,
   verifyEd25519
-} from "./remotePairing.js";
+} from "../../src/shared/remotePairing.js";
 import {
   serializeCanonicalContractJson,
   type ContractJson
-} from "./schemas/remoteProtocolContract.js";
+} from "../../src/shared/schemas/remoteProtocolContract.js";
 
 export const PAIR_CONTROL_RECORD_MAX_BYTES = 2_048;
 export const PAIR_CONTROL_TIMESTAMP_SKEW_SECONDS = 60n;

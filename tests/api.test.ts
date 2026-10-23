@@ -776,10 +776,22 @@ describe("Backend API", () => {
     });
 
     it("history endpoints accept guildId/channelId/limit filters", async () => {
-      const { app } = await makeApp();
+      const { app, root } = await makeApp();
       try {
-        await app.inject({ method: "POST", url: "/api/runtime/trigger/orchestrator" });
-        await app.inject({ method: "POST", url: "/api/runtime/trigger/orchestrator" });
+        const decision = (id: string) => ({
+          id,
+          action: "no_reply",
+          respondingWaifus: [],
+          reasoning: "seeded",
+          status: "completed",
+          waifuMessageIds: [],
+          responderOutcomes: [],
+          createdAt: new Date().toISOString()
+        });
+        await writeFile(
+          path.join(root, "user", "orchestrator", "history.json"),
+          JSON.stringify({ schemaVersion: CURRENT_SCHEMA_VERSION, revision: 1, updatedAt: new Date().toISOString(), decisions: [decision("d2"), decision("d1")] })
+        );
         const all = JSON.parse((await app.inject({ method: "GET", url: "/api/orchestrator/history" })).body) as { decisions: unknown[] };
         expect(all.decisions.length).toBe(2);
         const limited = JSON.parse((await app.inject({ method: "GET", url: "/api/orchestrator/history?limit=1" })).body) as { decisions: unknown[] };
@@ -1051,7 +1063,7 @@ describe("Backend API", () => {
     }
   });
 
-  it("persists agent config and records trigger histories", async () => {
+  it("persists agent config and does not record fake history for untargeted triggers", async () => {
     const { app } = await makeApp();
     try {
       const config = await app.inject({
@@ -1072,20 +1084,25 @@ describe("Backend API", () => {
       expect(config.json().prompt).toBe("choose carefully");
       expect(config.json().directiveCooldown).toBe(5);
 
-      const trigger = await app.inject({ method: "POST", url: "/api/runtime/trigger/orchestrator" });
-      expect(trigger.statusCode).toBe(200);
-      expect(trigger.json().history.decisions).toHaveLength(1);
+      // Without a live runtime or a target channel nothing runs, so nothing is recorded.
+      for (const url of ["/api/runtime/trigger/orchestrator", "/api/runtime/trigger/stage-manager"]) {
+        const trigger = await app.inject({ method: "POST", url });
+        expect(trigger.statusCode).toBe(200);
+        expect(trigger.json()).toMatchObject({ accepted: false });
+        expect(trigger.json().history).toBeUndefined();
+      }
+      const targeted = await app.inject({
+        method: "POST",
+        url: "/api/runtime/trigger/orchestrator",
+        payload: { guildId: "100000000000000011", channelId: "100000000000000012" }
+      });
+      expect(targeted.json()).toMatchObject({ accepted: false });
 
       const history = await app.inject({ method: "GET", url: "/api/orchestrator/history" });
       expect(history.statusCode).toBe(200);
-      expect(history.json().decisions[0]).toMatchObject({
-        action: "no_reply",
-        respondingWaifus: [],
-        retriggerAfterSeconds: 180,
-        status: "completed",
-        waifuMessageIds: [],
-        responderOutcomes: []
-      });
+      expect(history.json().decisions).toEqual([]);
+      const stageHistory = await app.inject({ method: "GET", url: "/api/stage-manager/history" });
+      expect(stageHistory.json().edits).toEqual([]);
     } finally {
       await app.close();
     }

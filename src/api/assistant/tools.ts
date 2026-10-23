@@ -56,6 +56,20 @@ async function inject(
   return { status: response.statusCode, body: response.body };
 }
 
+// Trigger routes answer 200 with `accepted: false` when nothing ran (no live runtime / no target).
+function triggerResultText(result: { status: number; body: string }, success: string): string {
+  if (result.status !== 200) return result.body;
+  try {
+    const parsed = JSON.parse(result.body) as { accepted?: unknown; message?: unknown };
+    if (parsed.accepted === false) {
+      return typeof parsed.message === "string" ? parsed.message : "Nothing was triggered.";
+    }
+  } catch {
+    // Non-JSON 200 bodies fall through to the success text.
+  }
+  return success;
+}
+
 // Read-modify-write for revisioned resources: GET → merge → PUT with the fresh revision;
 // one retry when a concurrent writer bumps the revision between our read and write (409).
 async function revisionedPut(
@@ -106,7 +120,7 @@ function helperTargetLabel(target: { os: string; arch: string; goarm?: number })
   return `${target.os} ${architecture}`;
 }
 
-export const ASSISTANT_TOOLS: AssistantTool[] = [
+const ASSISTANT_TOOLS: AssistantTool[] = [
   {
     name: "get_runtime_status",
     description:
@@ -306,8 +320,8 @@ export const ASSISTANT_TOOLS: AssistantTool[] = [
     execute: async (ctx, args) =>
       revisionedPut(ctx, `/api/waifus/${encodeURIComponent(String(args.id))}`, (current) => {
         const changes = { ...(args.changes as Record<string, unknown>) };
-        // params replace wholesale server-side; merge here so "set the temperature"
-        // does not silently erase the rest of her sampling/reasoning config
+        // The PUT route already merges params server-side (an explicit null unsets a key), so
+        // this pre-merge is redundant belt-and-braces: "set the temperature" keeps the rest.
         if (changes.params && typeof changes.params === "object") {
           changes.params = { ...(current.params as Record<string, unknown>), ...(changes.params as Record<string, unknown>) };
         }
@@ -483,7 +497,7 @@ export const ASSISTANT_TOOLS: AssistantTool[] = [
       if (!url) return `Unknown agent: ${args.agent}`;
       return revisionedPut(ctx, url, (current) => {
         const changes = { ...(args.changes as Record<string, unknown>) };
-        // params replace wholesale server-side; merge so "set the temperature" keeps the rest
+        // Redundant with the server-side params merge (null unsets a key); kept as belt-and-braces.
         if (changes.params && typeof changes.params === "object") {
           changes.params = { ...(current.params as Record<string, unknown>), ...(changes.params as Record<string, unknown>) };
         }
@@ -601,7 +615,7 @@ export const ASSISTANT_TOOLS: AssistantTool[] = [
     },
     execute: async (ctx, args) => {
       const result = await inject(ctx, { method: "POST", url: "/api/runtime/trigger/orchestrator", payload: args });
-      return result.status === 200 ? "Orchestrator pass triggered." : result.body;
+      return triggerResultText(result, "Orchestrator pass triggered.");
     }
   },
   {
@@ -615,7 +629,7 @@ export const ASSISTANT_TOOLS: AssistantTool[] = [
     },
     execute: async (ctx, args) => {
       const result = await inject(ctx, { method: "POST", url: "/api/runtime/trigger/stage-manager", payload: args });
-      return result.status === 200 ? "Stage-manager pass triggered." : result.body;
+      return triggerResultText(result, "Stage-manager pass triggered.");
     }
   },
   {

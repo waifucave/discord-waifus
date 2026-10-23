@@ -29,7 +29,7 @@ const RemoteComponentProtocolsV1Schema = z.object({
   dashboardManifest: ProtocolRangeSchema
 }).strict();
 
-export const RemoteCompatibilityV1Schema = z.object({
+const RemoteCompatibilityV1Schema = z.object({
   schemaVersion: z.literal(1),
   discordWaifusVersion: SemVerSchema,
   helper: z.object({

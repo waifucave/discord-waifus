@@ -5,7 +5,7 @@ import {
   type PairControlRecordV1,
   type PairControlTypeV1,
   type PairControlUnsignedRecordV1
-} from "./schemas/remoteAccess.js";
+} from "../../src/shared/schemas/remoteAccess.js";
 import {
   createPairControlRecordV1,
   derivePairRevocationAckMacV1,
@@ -21,12 +21,12 @@ import {
 import {
   deriveEd25519PublicKey,
   signEd25519
-} from "./remotePairing.js";
+} from "../../src/shared/remotePairing.js";
 import { createRemotePairingV1Fixture } from "./remotePairingContract.js";
 import {
   serializeCanonicalContractJson,
   type ContractJson
-} from "./schemas/remoteProtocolContract.js";
+} from "../../src/shared/schemas/remoteProtocolContract.js";
 
 type ContractObject = { [key: string]: ContractJson };
 

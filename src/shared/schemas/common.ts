@@ -10,8 +10,6 @@ export const RevisionedRecordSchema = z.object({
   updatedAt: IsoDateStringSchema
 });
 
-export const EmptyRevisionedRecordSchema = RevisionedRecordSchema.extend({});
-
 export type RevisionedRecord = z.infer<typeof RevisionedRecordSchema>;
 
 export type JsonPrimitive = string | number | boolean | null;

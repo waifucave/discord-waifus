@@ -1,21 +1,21 @@
 import { z } from "zod";
 import { CURRENT_SCHEMA_VERSION } from "./common.js";
 
-export const HttpConfigSchema = z
+const HttpConfigSchema = z
   .object({
     host: z.string().min(1).default("127.0.0.1"),
     port: z.number().int().min(1).max(65_535).default(3888)
   })
   .default({ host: "127.0.0.1", port: 3888 });
 
-export const RuntimeConfigSchema = z
+const RuntimeConfigSchema = z
   .object({
     autoConnectDiscord: z.boolean().default(true),
     paused: z.boolean().default(false)
   })
   .default({ autoConnectDiscord: true, paused: false });
 
-export const FrontendConfigSchema = z
+const FrontendConfigSchema = z
   .object({
     staticDir: z.string().optional()
   })

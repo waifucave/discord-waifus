@@ -2,7 +2,7 @@
 // Numeric values verified against https://docs.discord.com/developers/topics/permissions
 // and https://docs.discord.com/developers/events/gateway (intents).
 
-export const PERMISSIONS = {
+const PERMISSIONS = {
   ADMINISTRATOR: 8,
   VIEW_CHANNEL: 1024,
   SEND_MESSAGES: 2048,
@@ -14,17 +14,9 @@ export const PERMISSIONS = {
   USE_APPLICATION_COMMANDS: 2147483648
 } as const;
 
-export const INTENTS = {
-  GUILDS: 1,
-  GUILD_MEMBERS: 2, // privileged
-  GUILD_MESSAGES: 512,
-  GUILD_MESSAGE_REACTIONS: 1024,
-  MESSAGE_CONTENT: 32768 // privileged
-} as const;
-
 export type BotKind = "orchestrator" | "waifu";
 
-export function permissionBitsFor(kind: BotKind): number {
+function permissionBitsFor(kind: BotKind): number {
   if (kind === "orchestrator") {
     return Number(BigInt(PERMISSIONS.ADMINISTRATOR) | BigInt(PERMISSIONS.USE_APPLICATION_COMMANDS));
   }

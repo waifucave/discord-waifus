@@ -168,6 +168,19 @@ describe("assistant tools", () => {
     }
   });
 
+  it("trigger tools report when nothing ran instead of claiming success", async () => {
+    const { app } = await makeApp();
+    try {
+      const target = JSON.stringify({ guildId: "100000000000000011", channelId: "100000000000000012" });
+      for (const tool of ["trigger_orchestrator", "trigger_stage_manager"]) {
+        const result = await executeAssistantTool(localToolContext(app), tool, target);
+        expect(result).toBe("No live runtime; nothing was triggered.");
+      }
+    } finally {
+      await app.close();
+    }
+  });
+
   it("link_waifu_bot wires bot entry, applicationId, and waifu.botId in one call", async () => {
     const { app } = await makeApp();
     try {

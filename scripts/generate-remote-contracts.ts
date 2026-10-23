@@ -13,18 +13,18 @@ import {
   createHelperManifestJsonSchema,
   createRemoteAccessFixtureSet,
   createRemoteAccessJsonSchema
-} from "../src/shared/schemas/remoteAccessContract.js";
-import { createWipcFixtureSet } from "../src/shared/wipcContract.js";
-import { createRemotePairingFixtureSet } from "../src/shared/remotePairingContract.js";
-import { createPairConfirmationFixtureSet } from "../src/shared/pairConfirmationContract.js";
-import { createPairControlFixtureSet } from "../src/shared/pairControlContract.js";
-import { createRemoteServiceSessionFixtureSet } from "../src/shared/remoteServiceContract.js";
-import { createEndpointEnvelopeFixtureSet } from "../src/shared/endpointEnvelopeContract.js";
-import { createHttpAuthEnvelopeFixtureSet } from "../src/shared/controlAuthContract.js";
+} from "./remote-contracts/remoteAccessContract.js";
+import { createWipcFixtureSet } from "./remote-contracts/wipcContract.js";
+import { createRemotePairingFixtureSet } from "./remote-contracts/remotePairingContract.js";
+import { createPairConfirmationFixtureSet } from "./remote-contracts/pairConfirmationContract.js";
+import { createPairControlFixtureSet } from "./remote-contracts/pairControlContract.js";
+import { createRemoteServiceSessionFixtureSet } from "./remote-contracts/remoteServiceContract.js";
+import { createEndpointEnvelopeFixtureSet } from "./remote-contracts/endpointEnvelopeContract.js";
+import { createHttpAuthEnvelopeFixtureSet } from "./remote-contracts/controlAuthContract.js";
 import {
   createHelperManifestTrustFixtureSet,
   serializeHelperManifestTrustFixture
-} from "../src/shared/helperManifestTrustContract.js";
+} from "./remote-contracts/helperManifestTrustContract.js";
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(scriptDirectory, "..");

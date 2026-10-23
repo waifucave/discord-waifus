@@ -556,7 +556,7 @@ export type PairControlTypeV1 = z.infer<typeof PairControlTypeV1Schema>;
 
 const Uint16Schema = z.number().int().min(0).max(65_535);
 
-export const PairControlEndpointCiphertextSchema = z
+const PairControlEndpointCiphertextSchema = z
   .string()
   .min(2)
   .max(1_600)

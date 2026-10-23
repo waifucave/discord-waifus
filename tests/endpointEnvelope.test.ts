@@ -17,11 +17,11 @@ import {
   type EndpointDirectionKeysV1,
   type EndpointEnvelopeContextV1,
   type EndpointGenerationV1
-} from "../src/shared/endpointEnvelope.js";
+} from "../scripts/remote-contracts/endpointEnvelope.js";
 import {
   createEndpointEnvelopeV1Fixture,
   serializeEndpointEnvelopeFixture
-} from "../src/shared/endpointEnvelopeContract.js";
+} from "../scripts/remote-contracts/endpointEnvelopeContract.js";
 
 type JsonRecord = Record<string, unknown>;
 

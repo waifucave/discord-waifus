@@ -2,8 +2,8 @@ import { z } from "zod";
 
 export const REMOTE_PROTOCOL_VERSION = Object.freeze({ major: 1, minor: 0 });
 export const UINT64_MAX = 18_446_744_073_709_551_615n;
-export const MAX_CAPABILITIES_PER_SET = 128;
-export const MAX_CANONICAL_TARGET_BYTES = 2_048;
+const MAX_CAPABILITIES_PER_SET = 128;
+const MAX_CANONICAL_TARGET_BYTES = 2_048;
 
 function decimalRangePattern(maximum: bigint): RegExp {
   const maximumText = maximum.toString(10);
@@ -311,7 +311,7 @@ export function negotiateComponentCompatibility(
   });
 }
 
-export function isCanonicalOriginFormTarget(value: string): boolean {
+function isCanonicalOriginFormTarget(value: string): boolean {
   if (
     value.length < 1
     || value.length > MAX_CANONICAL_TARGET_BYTES

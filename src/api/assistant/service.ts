@@ -39,7 +39,7 @@ async function getJson(
  * The assistant runs on its own configured model when set, otherwise it borrows the
  * orchestrator's. Params always come from the config that supplied the model.
  */
-export async function resolveAssistantTarget(
+async function resolveAssistantTarget(
   app: FastifyInstance,
   dataRoot: string,
   principal: RequestPrincipal,
@@ -66,7 +66,7 @@ export async function resolveAssistantTarget(
   return { ok: true, ...target, params: (source.params as Record<string, unknown>) ?? {} };
 }
 
-export function assistantSystemPrompt(snapshot: {
+function assistantSystemPrompt(snapshot: {
   waifuCount: number;
   serverCount: number;
   providerIds: string[];

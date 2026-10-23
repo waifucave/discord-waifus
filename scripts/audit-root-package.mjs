@@ -5,11 +5,6 @@ import { pathToFileURL } from "node:url";
 
 const REQUIRED_FILES = Object.freeze([
   "bin/waifus.mjs",
-  "contracts/remote/v1/capabilities.json",
-  "contracts/remote/v1/fixtures/crypto/helper-manifest-trust-v1.json",
-  "contracts/remote/v1/helper-manifest.schema.json",
-  "contracts/remote/v1/protocol.schema.json",
-  "contracts/remote/v1/remote-access.schema.json",
   "dist-frontend/index.html",
   "dist-frontend/waifus-dashboard-manifest.json",
   "dist-remote-shell/index.html",

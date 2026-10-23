@@ -6,6 +6,12 @@ The checked-in JSON files are generated from the strict Zod schemas in
 `src/shared/schemas/adminOperations.ts`, and `src/shared/schemas/remoteLifecycle.ts`; edit those
 TypeScript authorities, not the generated files.
 
+Vector/fixture builders and the reference TypeScript implementations that exist only to produce
+or cross-check vectors (control auth, endpoint envelopes, pair control/confirmation, remote
+service crypto) live in `scripts/remote-contracts/` and are driven by
+`scripts/generate-remote-contracts.ts`. They are dev-only tooling: neither they nor this directory
+ship in the npm package, and nothing in the runtime reads these files.
+
 Current foundation:
 
 - `protocol.schema.json` defines canonical JSON uint64 values, protocol/capability negotiation,

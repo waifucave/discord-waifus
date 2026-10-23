@@ -128,7 +128,7 @@ describe("frontend browser security bootstrap", () => {
     const { LogicalMutationOutcomeUnknownError } = await import(
       "../src/frontend/api/logicalMutation.js"
     );
-    await expect(api.triggerOrchestrator({ guildId: "1", channelId: "2" }))
+    await expect(api.regeneratePersonaDigest("akari"))
       .rejects.toBeInstanceOf(LogicalMutationOutcomeUnknownError);
     expect(mutationCount).toBe(1);
   });

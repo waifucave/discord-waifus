@@ -8,8 +8,8 @@ import {
   decodeCanonicalCbor,
   encodeCanonicalCbor,
   type CanonicalCborValue
-} from "./remotePairing.js";
-import { UINT64_MAX } from "./schemas/remoteProtocol.js";
+} from "../../src/shared/remotePairing.js";
+import { UINT64_MAX } from "../../src/shared/schemas/remoteProtocol.js";
 
 export const ENDPOINT_PLAINTEXT_MAX_BYTES = 1_184;
 export const ENDPOINT_CIPHERTEXT_MAX_BYTES = 1_200;

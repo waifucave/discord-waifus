@@ -24,7 +24,7 @@ export async function loadAppConfig(dataRoot: string): Promise<AppConfig> {
   }
 }
 
-export async function saveAppConfig(dataRoot: string, config: AppConfig): Promise<AppConfig> {
+async function saveAppConfig(dataRoot: string, config: AppConfig): Promise<AppConfig> {
   const parsed = AppConfigSchema.parse(config);
   await atomicWriteText(resolveDataPath(dataRoot, "config.toml"), stringify(parsed) + "\n", {
     mode: 0o600

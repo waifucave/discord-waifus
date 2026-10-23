@@ -16,11 +16,11 @@ import {
   verifyApplicationSessionProofsV1,
   verifyRemoteBrowserContextMacV1,
   type ApplicationSessionContextV1
-} from "../src/shared/remoteServiceCrypto.js";
+} from "../scripts/remote-contracts/remoteServiceCrypto.js";
 import {
   createRemoteServiceSessionV1Fixture,
   serializeRemoteServiceSessionFixture
-} from "../src/shared/remoteServiceContract.js";
+} from "../scripts/remote-contracts/remoteServiceContract.js";
 import {
   RemoteBrowserContextEnvelopeV1Schema,
   type RemoteBrowserContextEnvelopeV1

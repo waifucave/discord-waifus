@@ -15,11 +15,11 @@ import {
   encodeCanonicalCbor,
   signEd25519,
   type CanonicalCborValue
-} from "./remotePairing.js";
+} from "../../src/shared/remotePairing.js";
 import {
   serializeCanonicalContractJson,
   type ContractJson
-} from "./schemas/remoteProtocolContract.js";
+} from "../../src/shared/schemas/remoteProtocolContract.js";
 
 type ContractObject = { [key: string]: ContractJson };
 
