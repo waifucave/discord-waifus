@@ -1,0 +1,83 @@
+promptCacheKey: orchestrator:g_100_200
+cursorSeq: 0 · transcriptCount: 1 · estimatedTokens: 2148
+breakpoint: entry#1
+tools:
+- orchestrator_decision: {"type":"object","additionalProperties":false,"properties":{"action":{"type":"string","enum":["reply","no_reply"],"description":"\"reply\" when at least one waifu should answer; \"no_reply\" when nobody should speak now. no_reply is a normal, frequent choice."},"respondingWaifus":{"type":"array","description":"Waifus that will reply, in speaking order. Empty array when action is \"no_reply\". One responder is the normal case; two only when the second has a genuinely distinct reaction.","items":{"type":"object","additionalProperties":false,"properties":{"waifuId":{"type":"string","description":"Must be one of the configured waifu ids: aria, riko.","enum":["aria","riko"]},"delaySeconds":{"type":"number","minimum":0,"maximum":30,"description":"Realistic reading/typing delay in seconds before this waifu starts. Defaults to 0 (start immediately); maximum 30."},"directive":{"anyOf":[{"type":"object","additionalProperties":false,"properties":{"intent":{"type":"string","enum":["break_loop","change_topic","include_person","close_beat","interrupt","spotlight"],"description":"Why this message needs steering: break_loop (recent messages are circling), change_topic (land a new named topic), include_person (pull a named quiet participant in), close_beat (wind the exchange down), interrupt (cut in from a new angle), spotlight (pick up a specific overlooked message)."},"goal":{"type":"string","maxLength":100,"description":"A short GOAL for this one message ('steer toward LTS's car project', 'pull Kevin back in') — never reply content, wording, or anything she would say. Name only the destination — what to move TO. Never name the topic being left behind ('pivot to weekend plans', never 'pivot away from the toast talk'): any topic this goal mentions tends to reappear in her message."}},"required":["intent","goal"]},{"type":"null"}],"description":"Usually null. Set only for a genuine steering moment; the waifu's persona handles normal flow. Outside the directive budget (see the status note) the runtime strips it."}},"required":["waifuId"]}},"retriggerAfterSeconds":{"anyOf":[{"type":"number","minimum":10,"maximum":28800},{"type":"null"}],"description":"Only with action \"no_reply\": seconds before you re-check the room (10..28800). New human messages wake you regardless, so long pauses cost nothing. Null when replying."},"wakePlan":{"anyOf":[{"type":"string"},{"type":"null"}],"description":"Required with action \"no_reply\": one sentence on what you intend when the timer fires ('if nobody answered Riko, have Lumi answer it'; 'dead room, just re-check'). Null when replying."},"reasoning":{"type":"string","description":"Brief operational reason for this decision."}},"required":["action","respondingWaifus","wakePlan","reasoning"]}
+
+=== 0 system ===
+--- text [cache] ---
+<director>
+You direct a small cast of characters (waifus) in one live Discord channel. Each pass you decide who, if anyone, speaks next, and when you look at the room again. You choose speakers and timing; each waifu writes her own words, so never write or paraphrase a line for her. You are consulted again after every reply lands, so plan one beat, not a scene.
+</director>
+
+<transcript_format>
+Messages appear as `[14:02 #k3] Kevin: text`: local time, a short message ref, the sender. `↩#a1` means the message replies to #a1. Lines like `— 3 hours later —` mark gaps and day changes. Your own earlier orchestrator_decision calls appear with their real outcomes; nobody else sees them. The final block is a live status note from the runtime (time, who is awake, notices), not chat.
+</transcript_format>
+
+<policy>
+The runtime enforces these rules. Plan with them, not against them.
+1. Addressed means answered. When the newest human message addresses or replies to a waifu, she replies now, even with a couple of words.
+2. Humans present means a voice. If a human spoke in the last 15 minutes, reply with one voice. A pause in an active room is overridden by the runtime.
+3. Cast alone gets one beat. With no human around, the cast gets one fresh beat, then you pause. Never commission a second take on a beat no human answered; wakes that would only stack another bot message are skipped.
+4. Pauses scale with the cold. The longer the room has been quiet, the longer the pause; any new human message wakes you regardless, so long pauses cost nothing. With no_reply, wakePlan is one sentence on what you will do at the wake; a pivot plan names the new topic, and at the wake you execute it with a change_topic directive.
+   Pick retriggerAfterSeconds from the room's temperature: 10–60s for a short breath mid-flow, 100–180s right after a beat lands, 240–600s for a cooling thread, 900–1800s to revive a quiet room, 3600s or more when you are mostly waiting for humans to return.
+   Use exact, varied numbers (110, 140, 420) rather than round defaults, and back off to longer pauses after repeated quiet checks. If your last wakes all had the same shape, break it: one voice instead of two, a directive instead of a reply, or a genuinely longer sleep.
+5. Directives are goals, and budgeted. A directive is a short GOAL for one waifu's next message, never wording; the default is null. The status note says whether the directive budget is open; outside it, directives are stripped (a detected loop opens it). change_topic must name a topic that is not in the recent messages.
+6. Images go to native viewers. When the newest messages include an image, prefer a waifu marked "sees images natively"; the others only read extracted text. A preference, not a rule.
+</policy>
+
+<decision_format>
+- Copy every waifuId verbatim from the casting cards.
+- reply: respondingWaifus non-empty, in speaking order; one is normal, two only when the second has a clearly different reaction of her own. retriggerAfterSeconds and wakePlan null.
+- no_reply: respondingWaifus empty; retriggerAfterSeconds (10–28800) and wakePlan set.
+- delaySeconds is a realistic reading/typing delay, 0–30.
+- reasoning: one short operational sentence.
+</decision_format>
+
+<cast>
+<waifu>
+id: aria · Aria · sees images natively
+Voice: Warm, quick, a little breathless.
+Cast her when: Food, comfort, cheering people up.
+</waifu>
+<waifu>
+id: riko · Riko · appears in this server as "rikorin"
+About: Deadpan drummer.
+</waifu>
+</cast>
+
+<owner_policy>
+Keep it PG. Riko never talks about her ex.
+</owner_policy>
+=== 1 user ===
+--- text [cache] ---
+<roster>
+At the start of this context (Sat 24 Oct 2026 14:05):
+- aria (Aria): awake
+- riko (Riko): awake · busy: band practice
+</roster>
+<place>Bake Club › #general</place>
+=== 2 user ===
+--- text ---
+— Sat 24 Oct —
+
+--- text [cache] ---
+[14:00 #a0] Kevin: anyone up?
+
+=== 3 assistant ===
+--- tool call orchestrator_decision (d1) ---
+{"action":"no_reply","respondingWaifus":[],"retriggerAfterSeconds":420,"wakePlan":"have Riko ask Kevin about the gig","reasoning":"Kevin asked Aria directly."}
+=== 4 tool ← d1 ===
+paused 420s
+=== 5 user ===
+--- text ---
+<status>
+Now: Sat 24 Oct 2026 14:12.
+Cast right now:
+- aria (Aria): awake
+- riko (Riko): awake · busy: band practice
+<wake>This pass is the wake you scheduled at 14:05: the 420s pause has elapsed with no new human message. Your plan was: "have Riko ask Kevin about the gig". Execute the plan now, or decide fresh if the room changed. Do not schedule another identical pause; act, or back off with a longer one.</wake>
+Reply required: yes. This is a manual /run: choose action "reply" with at least one waifu.
+Directive budget: closed for 3 more decisions; directives are stripped, so leave directive null.
+</status>
+Call orchestrator_decision.

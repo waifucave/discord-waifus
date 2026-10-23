@@ -1,5 +1,5 @@
-import { MemoryKind, OrchestratorDecisionHistoryEntry, PendingObservation } from "../shared/schemas/domain.js";
-import { ContextMessage, OrchestratorWakeMarker } from "../orchestration/contextMessages.js";
+import { MemoryKind, PendingObservation } from "../shared/schemas/domain.js";
+import { ContextMessage } from "../orchestration/contextMessages.js";
 import { OrchestratorDecision } from "../orchestration/decisions.js";
 import { DreamOp, ObserverOp, StageManagerObservation } from "../orchestration/stageManager.js";
 import type { ReviewerDecision } from "../orchestration/tools.js";
@@ -12,9 +12,6 @@ export type ModelRole = "orchestrator" | "waifu" | "stage_manager" | "reviewer";
 export type ProviderRequest = {
   modelId: string;
   messages: ContextMessage[];
-  decisionMarkers?: OrchestratorWakeMarker[];
-  pastDecisions?: OrchestratorDecisionHistoryEntry[];
-  trailingPrompt?: string;
   systemPrompt?: string;
   availableWaifuIds?: string[];
   replyRequired?: boolean;
@@ -25,12 +22,16 @@ export type ProviderRequest = {
   params?: Record<string, unknown>;
   signal?: AbortSignal;
   // Phase 4 context engine (spec 8.1). When set, `prompt` is sent verbatim instead of the legacy
-  // assembly from `messages`/`systemPrompt`; nothing sets it until the engine is wired (T3/T5).
+  // assembly from `messages`/`systemPrompt`. decideOrchestrator requires it (T5); `messages` then
+  // carries the same transcript adapted for fakes and heuristics.
   prompt?: BuiltPrompt;
   // Who the call is billed to in the usage ledger (spec 8.10).
   attribution?: ModelCallAttribution;
   // Ledger entries behind `prompt`, for fakes and the deterministic fallback.
   transcript?: LedgerEntry[];
+  // Called with the provider-reported usage of a successful decision call (decisions return only
+  // the decision; the caller commits usage to its context for calibration, spec 8.9).
+  onUsage?: (usage: Usage) => void;
 };
 
 export type WaifuGenerationRequest = ProviderRequest & {
@@ -121,7 +122,7 @@ export interface ModelPipeline {
   // Legacy observations (no `op`) are still accepted and normalized into `add` ops.
   decideStageManagerObservations?(request: StageManagerObserveRequest): Promise<Array<ObserverOp | StageManagerObservation>>;
   decideDream?(request: DreamRequest): Promise<DreamOp[]>;
-  decideReviewer?(request: ProviderRequest & { message: string }): Promise<ReviewerDecision>;
+  decideReviewer?(request: ProviderRequest & { message: string; authorName?: string }): Promise<ReviewerDecision>;
   generatePersonaDigest?(request: PersonaDigestRequest): Promise<PersonaDigest>;
   generateAssistantTurn?(request: AssistantTurnRequest): Promise<AssistantTurnResult>;
 }

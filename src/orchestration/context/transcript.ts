@@ -21,6 +21,7 @@
 
 import type { ChatMessage, ImageBlock, TextBlock, ToolCallBlock } from "@waifucave/gateway";
 import type { ContextNote, ContextState, LedgerEntry } from "../../shared/schemas/context.js";
+import { formatDecisionCallText } from "../pipeline/timeline.js";
 import { IMAGE_PLACEHOLDER } from "./images.js";
 import { isGapEntry } from "./ledger.js";
 import { formatClock, transitionMarker } from "./timeFormat.js";
@@ -114,7 +115,7 @@ function noteText(note: ContextNote, i: TranscriptInput, anchor: LedgerEntry | u
     case "decision": {
       if (!i.renderToolTurnsAsText) return undefined;
       const time = anchor ? ` ${formatClock(anchor.at, i.timeZone)}` : "";
-      return `[decision${time}] ${note.call} · ${note.outcome}`;
+      return `[decision${time}] ${formatDecisionCallText(note.call)} · ${note.outcome}`;
     }
   }
 }

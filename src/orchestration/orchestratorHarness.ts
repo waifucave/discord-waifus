@@ -1,0 +1,396 @@
+// The orchestrator (director) RoleRenderer (spec 6.4, 8.7). Same shape as every context:
+//   system (A)  director rules for the six policies the runtime enforces, static casting cards,
+//               the owner's custom orchestrator.prompt as <owner_policy> (model mode, B28)
+//   header (B)  frozen per epoch: <conversation_summary>, a roster availability snapshot, <place>
+//   transcript  append-only `[HH:MM #ref] Name: body` entries plus the director's own final past
+//               decisions as orchestrator_decision tool-call turns (`decision` notes)
+//   tail        ephemeral: now, current availability, <runtime_notice>, the wake marker with the
+//               recorded scheduling decision (B8), reply-required and directive-budget state
+// The tool schema is fixed per channel config (orchestratorToolParameters(availableWaifuIds));
+// reply-required and the directive budget live in the tail and are enforced in code.
+
+import type { ToolDef } from "@waifucave/gateway";
+import type { ContextState, LedgerEntry } from "../shared/schemas/context.js";
+import type { WaifuAvailability, WaifuConfig } from "../shared/schemas/domain.js";
+import { formatClock, formatFullDate } from "./context/timeFormat.js";
+import { isGapEntry } from "./context/ledger.js";
+import type { RoleRenderer } from "./context/types.js";
+import type { ContextMessage } from "./contextMessages.js";
+import { WAIFU_CHUNK_COALESCE_WINDOW_MS } from "./contextMessages.js";
+import { MAX_WAIFU_DELAY_SECONDS, RETRIGGER_MAX_SECONDS, RETRIGGER_MIN_SECONDS } from "./decisions.js";
+import { assessCastCadence, assessLoop, type LoopAssessment } from "./loopDetector.js";
+import { resolveModelTarget, sharedRegistry } from "./pipeline/resolveTarget.js";
+import { dailyIntervalContains } from "./timeOfDay.js";
+import { ORCHESTRATOR_TOOL_NAME, orchestratorToolParameters } from "./tools.js";
+
+export type OrchestratorMode = "model" | "deterministic" | "one-shot";
+
+/** A human spoke within this window → the room is active (policy 2, cadence override). */
+export const HUMAN_RECENT_WINDOW_MS = 15 * 60 * 1000;
+
+/** Static casting card: changes only when the waifu or channel config changes. */
+export type CastCard = {
+  waifuId: string;
+  displayName: string;
+  /** Server nickname when it differs from the display name. */
+  nickname?: string;
+  seesImages: boolean;
+  voice?: string;
+  role?: string;
+  /** Persona preview, only when there is no persona digest. */
+  about?: string;
+  availability: WaifuAvailability;
+};
+
+// A waifu on a vision model can look at posted images directly; the rest get OCR text only.
+export function waifuSeesImages(waifu: WaifuConfig): boolean {
+  if (!waifu.modelId) return false;
+  try {
+    const target = resolveModelTarget({ providerId: waifu.providerId, modelId: waifu.modelId });
+    return sharedRegistry().resolve(target.providerId, target.modelId)?.modalities.input.includes("image") ?? false;
+  } catch {
+    // A card marker must never kill the decision pass — unresolvable model just means no marker.
+    return false;
+  }
+}
+
+export function buildCastCards(
+  waifus: readonly WaifuConfig[],
+  nicknames: ReadonlyMap<string, string> = new Map(),
+  seesImages: (waifu: WaifuConfig) => boolean = waifuSeesImages
+): CastCard[] {
+  return waifus.map((waifu) => {
+    const displayName = waifu.displayName || waifu.name;
+    const nickname = nicknames.get(waifu.id);
+    const card: CastCard = {
+      waifuId: waifu.id,
+      displayName,
+      ...(nickname && nickname !== displayName ? { nickname } : {}),
+      seesImages: seesImages(waifu),
+      availability: waifu.availability
+    };
+    if (waifu.personaDigest) {
+      card.voice = waifu.personaDigest.voice;
+      card.role = waifu.personaDigest.role;
+    } else {
+      // The trailing replace drops a lone high surrogate left when the cap splits an emoji pair.
+      card.about = waifu.persona.trim().replace(/\s+/g, " ").slice(0, 200).replace(/[\uD800-\uDBFF]$/, "") || "(no persona configured)";
+    }
+    return card;
+  });
+}
+
+function castingCard(card: CastCard): string {
+  const facts = [`id: ${card.waifuId}`, card.displayName];
+  if (card.nickname) facts.push(`appears in this server as "${card.nickname}"`);
+  if (card.seesImages) facts.push("sees images natively");
+  const lines = [`<waifu>`, facts.join(" · ")];
+  if (card.voice) lines.push(`Voice: ${card.voice}`);
+  if (card.role) lines.push(`Cast her when: ${card.role}`);
+  if (card.about) lines.push(`About: ${card.about}`);
+  lines.push(`</waifu>`);
+  return lines.join("\n");
+}
+
+const PAUSE_DETAIL = [
+  "   Pick retriggerAfterSeconds from the room's temperature: 10–60s for a short breath mid-flow, 100–180s right after a beat lands, 240–600s for a cooling thread, 900–1800s to revive a quiet room, 3600s or more when you are mostly waiting for humans to return.",
+  "   Use exact, varied numbers (110, 140, 420) rather than round defaults, and back off to longer pauses after repeated quiet checks. If your last wakes all had the same shape, break it: one voice instead of two, a directive instead of a reply, or a genuinely longer sleep."
+].join("\n");
+
+/** Director rules: the six policies the runtime enforces (spec 8.7), stated once. */
+export function directorRules(o: { pausePlanning: boolean }): string {
+  return [
+    "<director>",
+    "You direct a small cast of characters (waifus) in one live Discord channel. Each pass you decide who, if anyone, speaks next, and when you look at the room again. You choose speakers and timing; each waifu writes her own words, so never write or paraphrase a line for her. You are consulted again after every reply lands, so plan one beat, not a scene.",
+    "</director>",
+    "",
+    "<transcript_format>",
+    "Messages appear as `[14:02 #k3] Kevin: text`: local time, a short message ref, the sender. `↩#a1` means the message replies to #a1. Lines like `— 3 hours later —` mark gaps and day changes. Your own earlier orchestrator_decision calls appear with their real outcomes; nobody else sees them. The final block is a live status note from the runtime (time, who is awake, notices), not chat.",
+    "</transcript_format>",
+    "",
+    "<policy>",
+    "The runtime enforces these rules. Plan with them, not against them.",
+    "1. Addressed means answered. When the newest human message addresses or replies to a waifu, she replies now, even with a couple of words.",
+    "2. Humans present means a voice. If a human spoke in the last 15 minutes, reply with one voice. A pause in an active room is overridden by the runtime.",
+    "3. Cast alone gets one beat. With no human around, the cast gets one fresh beat, then you pause. Never commission a second take on a beat no human answered; wakes that would only stack another bot message are skipped.",
+    "4. Pauses scale with the cold. The longer the room has been quiet, the longer the pause; any new human message wakes you regardless, so long pauses cost nothing. With no_reply, wakePlan is one sentence on what you will do at the wake; a pivot plan names the new topic, and at the wake you execute it with a change_topic directive.",
+    ...(o.pausePlanning ? [PAUSE_DETAIL] : []),
+    "5. Directives are goals, and budgeted. A directive is a short GOAL for one waifu's next message, never wording; the default is null. The status note says whether the directive budget is open; outside it, directives are stripped (a detected loop opens it). change_topic must name a topic that is not in the recent messages.",
+    "6. Images go to native viewers. When the newest messages include an image, prefer a waifu marked \"sees images natively\"; the others only read extracted text. A preference, not a rule.",
+    "</policy>",
+    "",
+    "<decision_format>",
+    "- Copy every waifuId verbatim from the casting cards.",
+    "- reply: respondingWaifus non-empty, in speaking order; one is normal, two only when the second has a clearly different reaction of her own. retriggerAfterSeconds and wakePlan null.",
+    `- no_reply: respondingWaifus empty; retriggerAfterSeconds (${RETRIGGER_MIN_SECONDS}–${RETRIGGER_MAX_SECONDS}) and wakePlan set.`,
+    `- delaySeconds is a realistic reading/typing delay, 0–${MAX_WAIFU_DELAY_SECONDS}.`,
+    "- reasoning: one short operational sentence.",
+    "</decision_format>"
+  ].join("\n");
+}
+
+export function orchestratorSystemPrompt(i: {
+  cast: readonly CastCard[];
+  pausePlanning: boolean;
+  /** The owner's custom orchestrator.prompt; rendered in model mode only (B28). */
+  ownerPolicy?: string;
+}): string {
+  const cards = i.cast.length ? i.cast.map(castingCard).join("\n") : "No waifus are enabled for this channel.";
+  const policy = i.ownerPolicy?.trim();
+  return [
+    directorRules({ pausePlanning: i.pausePlanning }),
+    "",
+    `<cast>\n${cards}\n</cast>`,
+    ...(policy ? ["", `<owner_policy>\n${policy}\n</owner_policy>`] : [])
+  ].join("\n");
+}
+
+function minutesInZone(at: Date, timeZone: string): number {
+  const [hours = "0", minutes = "0"] = formatClock(at, timeZone).split(":");
+  return Number(hours) * 60 + Number(minutes);
+}
+
+/** "awake" / "likely asleep (sleep 23:00–07:00)" / "awake · busy: work", in the context's zone. */
+export function availabilityLine(availability: WaifuAvailability, at: Date, timeZone: string): string {
+  const minutes = minutesInZone(at, timeZone);
+  const parts: string[] = [];
+  const sleep = availability.sleep;
+  if (sleep.enabled && dailyIntervalContains(minutes, sleep)) parts.push(`likely asleep (sleep ${sleep.start}–${sleep.end})`);
+  else parts.push("awake");
+  for (const interval of availability.busy) {
+    if (dailyIntervalContains(minutes, interval)) parts.push(`busy: ${interval.reason}`);
+  }
+  return parts.join(" · ");
+}
+
+function rosterLines(cast: readonly CastCard[], at: Date, timeZone: string): string[] {
+  return cast.map((card) => `- ${card.waifuId} (${card.displayName}): ${availabilityLine(card.availability, at, timeZone)}`);
+}
+
+/** Epoch header (B): frozen at epoch start, re-rendered after a compaction. */
+export function orchestratorHeader(i: { cast: readonly CastCard[]; place: string }, state: ContextState): string {
+  const at = new Date(state.epochStartedAt);
+  const sections: string[] = [];
+  if (state.summary?.trim()) sections.push(`<conversation_summary>\n${state.summary.trim()}\n</conversation_summary>`);
+  const roster = rosterLines(i.cast, at, state.timeZone);
+  sections.push(
+    `<roster>\nAt the start of this context (${formatFullDate(at, state.timeZone)} ${formatClock(at, state.timeZone)}):\n${
+      roster.join("\n") || "(no waifus)"
+    }\n</roster>`
+  );
+  sections.push(`<place>${i.place}</place>`);
+  return sections.join("\n");
+}
+
+/** "Bake Club › #general". */
+export function orchestratorPlace(serverName: string | undefined, channelName: string | undefined, channelId: string): string {
+  return `${serverName?.trim() || "Discord server"} › #${channelName?.trim() || channelId}`;
+}
+
+export function orchestratorTools(availableWaifuIds: readonly string[]): ToolDef[] {
+  return [
+    {
+      name: ORCHESTRATOR_TOOL_NAME,
+      description: "Record who (if anyone) speaks next in the channel, or pause until the next check.",
+      parameters: orchestratorToolParameters([...availableWaifuIds]) as Record<string, unknown>
+    }
+  ];
+}
+
+// ---------------------------------------------------------------------------
+// Transcript → heuristics. The cursor-bounded ledger transcript is the only context source: the
+// deterministic decider, one-shot state, loop/cadence detectors and cast-wake suppression read it
+// through this adapter (one ContextMessage per logical message: a waifu's quick consecutive
+// chunks are joined, as the old Discord fetch did).
+// ---------------------------------------------------------------------------
+
+/** Waifu authorship for ledger entries: known bot author ids, or a bot whose name is a cast name. */
+export function waifuAuthorMatcher(o: { authorIds: Iterable<string>; names: Iterable<string> }): (entry: LedgerEntry) => boolean {
+  const ids = new Set(o.authorIds);
+  const names = new Set([...o.names].map((name) => name.trim().toLowerCase()).filter(Boolean));
+  return (entry) => ids.has(entry.authorId) || (entry.authorIsBot && names.has(entry.authorName.trim().toLowerCase()));
+}
+
+export function ledgerToContextMessages(
+  entries: readonly LedgerEntry[],
+  o: { guildId?: string; channelId: string; isWaifu: (entry: LedgerEntry) => boolean }
+): ContextMessage[] {
+  const byId = new Map(entries.map((entry) => [entry.id, entry]));
+  const out: ContextMessage[] = [];
+  let previous: { entry: LedgerEntry; message: ContextMessage } | undefined;
+  for (const entry of entries) {
+    if (isGapEntry(entry) || entry.state === "deleted") continue;
+    const waifu = o.isWaifu(entry);
+    const target = entry.replyToId ? byId.get(entry.replyToId) : undefined;
+    if (
+      previous &&
+      waifu &&
+      previous.message.authorKind === "waifu" &&
+      previous.entry.authorId === entry.authorId &&
+      !entry.replyToId &&
+      Date.parse(entry.at) - Date.parse(previous.entry.at) <= WAIFU_CHUNK_COALESCE_WINDOW_MS
+    ) {
+      previous.message.content = [previous.message.content, entry.body].filter(Boolean).join("\n");
+      previous.message.sourceMessageIds = [...(previous.message.sourceMessageIds ?? [previous.entry.id]), entry.id];
+      if (entry.images.length) {
+        previous.message.images = [...(previous.message.images ?? []), ...entry.images.map((image) => ({ url: image.url, ...(image.contentType ? { contentType: image.contentType } : {}) }))];
+      }
+      previous = { entry, message: previous.message };
+      continue;
+    }
+    const message: ContextMessage = {
+      id: entry.id,
+      channelId: o.channelId,
+      ...(o.guildId ? { guildId: o.guildId } : {}),
+      authorKind: waifu ? "waifu" : "user",
+      authorId: entry.authorId,
+      ...(entry.authorIsBot ? { authorBot: true } : {}),
+      name: entry.authorName,
+      displayName: entry.authorName,
+      content: entry.body,
+      timestamp: entry.at,
+      ...(entry.images.length
+        ? { images: entry.images.map((image) => ({ url: image.url, ...(image.contentType ? { contentType: image.contentType } : {}) })) }
+        : {}),
+      ...(entry.replyToId
+        ? {
+            replyTo: {
+              messageId: entry.replyToId,
+              ...(target ? { authorName: target.authorName, contentPreview: target.body.slice(0, 120) } : {})
+            }
+          }
+        : {}),
+      reactions: []
+    };
+    out.push(message);
+    previous = { entry, message };
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Per-pass state (tail) and its assessment
+// ---------------------------------------------------------------------------
+
+export type OrchestratorTurn = {
+  /** Manual /run: at least one waifu must reply (enforced in code). */
+  replyRequired: boolean;
+  /** Decisions since a directive was last honoured, and the cooldown that reopens the budget. */
+  directiveCount: number;
+  directiveCooldown: number;
+  /** Completed decisions for the channel, newest first (cast-cadence detector). */
+  pastDecisions: ReadonlyArray<{ action: string }>;
+  /** This pass is the timer wake a no_reply decision scheduled (B8: the recorded decision). */
+  wake?: { scheduledSeconds: number; wakePlan?: string; decidedAt: string };
+};
+
+export type OrchestratorAssessment = {
+  messages: ContextMessage[];
+  loop: LoopAssessment;
+  cadence: LoopAssessment;
+  humanActiveNow: boolean;
+  newestHumanAt?: string;
+  /** What the runtime guardrail enforces this pass: a detected loop or an elapsed cooldown. */
+  directiveBudgetOpen: boolean;
+  runtimeNotice?: string;
+};
+
+export function assessOrchestratorTurn(
+  messages: ContextMessage[],
+  turn: Pick<OrchestratorTurn, "directiveCount" | "directiveCooldown" | "pastDecisions">,
+  now: Date
+): OrchestratorAssessment {
+  const loop = assessLoop(messages);
+  const newestHumanAt = messages.reduce<string | undefined>(
+    (acc, message) =>
+      message.authorKind === "user" && message.authorBot !== true && (!acc || message.timestamp > acc) ? message.timestamp : acc,
+    undefined
+  );
+  const humanActiveNow = newestHumanAt !== undefined && now.getTime() - Date.parse(newestHumanAt) < HUMAN_RECENT_WINDOW_MS;
+  // Only nag about early cast retirement while humans are actually around — in a dead room the
+  // reply→pause rhythm is correct behavior, not a rut.
+  const cadence = humanActiveNow ? assessCastCadence([...turn.pastDecisions]) : { suspected: false as const };
+  const runtimeNotice = [loop.notice, cadence.notice].filter(Boolean).join("\n") || undefined;
+  return {
+    messages,
+    loop,
+    cadence,
+    humanActiveNow,
+    ...(newestHumanAt ? { newestHumanAt } : {}),
+    directiveBudgetOpen: loop.suspected || turn.directiveCount >= turn.directiveCooldown,
+    ...(runtimeNotice ? { runtimeNotice } : {})
+  };
+}
+
+export function orchestratorTail(i: {
+  cast: readonly CastCard[];
+  turn: OrchestratorTurn;
+  assessment: OrchestratorAssessment;
+  now: Date;
+  timeZone: string;
+}): string {
+  const { turn, assessment, now, timeZone } = i;
+  const lines = [`Now: ${formatFullDate(now, timeZone)} ${formatClock(now, timeZone)}.`];
+  if (i.cast.length) {
+    lines.push("Cast right now:", ...rosterLines(i.cast, now, timeZone));
+  }
+  if (assessment.runtimeNotice) lines.push(`<runtime_notice>\n${assessment.runtimeNotice}\n</runtime_notice>`);
+  if (turn.wake) {
+    const plan = turn.wake.wakePlan ? ` Your plan was: "${turn.wake.wakePlan}".` : "";
+    lines.push(
+      `<wake>This pass is the wake you scheduled at ${formatClock(turn.wake.decidedAt, timeZone)}: the ${turn.wake.scheduledSeconds}s pause has elapsed with no new human message.${plan} Execute the plan now, or decide fresh if the room changed. Do not schedule another identical pause; act, or back off with a longer one.</wake>`
+    );
+  }
+  lines.push(
+    turn.replyRequired
+      ? 'Reply required: yes. This is a manual /run: choose action "reply" with at least one waifu.'
+      : "Reply required: no."
+  );
+  if (assessment.directiveBudgetOpen) {
+    lines.push(
+      assessment.loop.suspected
+        ? "Directive budget: open (a loop is forming; a directive with a concrete new goal is the strongest move)."
+        : "Directive budget: open."
+    );
+  } else {
+    const remaining = Math.max(1, turn.directiveCooldown - turn.directiveCount);
+    lines.push(`Directive budget: closed for ${remaining} more decision${remaining === 1 ? "" : "s"}; directives are stripped, so leave directive null.`);
+  }
+  return `<status>\n${lines.join("\n")}\n</status>\nCall ${ORCHESTRATOR_TOOL_NAME}.`;
+}
+
+export type OrchestratorRenderer = RoleRenderer & {
+  /** The assessment behind the most recent tail (same transcript the prompt renders). */
+  assessment(): OrchestratorAssessment | undefined;
+};
+
+export function createOrchestratorRenderer(i: {
+  mode: OrchestratorMode;
+  cast: readonly CastCard[];
+  availableWaifuIds: readonly string[];
+  place: string;
+  pausePlanning: boolean;
+  ownerPolicy?: string;
+  turn: OrchestratorTurn;
+  conversation: { guildId?: string; channelId: string };
+  isWaifu: (entry: LedgerEntry) => boolean;
+}): OrchestratorRenderer {
+  const system = orchestratorSystemPrompt({
+    cast: i.cast,
+    pausePlanning: i.pausePlanning,
+    ...(i.mode === "model" && i.ownerPolicy ? { ownerPolicy: i.ownerPolicy } : {})
+  });
+  const tools = orchestratorTools(i.availableWaifuIds);
+  let last: OrchestratorAssessment | undefined;
+  return {
+    system: () => system,
+    header: (_snapshot, state) => orchestratorHeader({ cast: i.cast, place: i.place }, state),
+    tail: (state, now, extras) => {
+      const messages = ledgerToContextMessages(extras.transcript ?? [], { ...i.conversation, isWaifu: i.isWaifu });
+      last = assessOrchestratorTurn(messages, i.turn, now);
+      return orchestratorTail({ cast: i.cast, turn: i.turn, assessment: last, now, timeZone: state.timeZone });
+    },
+    tools: () => tools,
+    assessment: () => last
+  };
+}

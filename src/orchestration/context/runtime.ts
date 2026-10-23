@@ -365,7 +365,7 @@ export class ContextRuntime {
             events: currentView.events,
             selfAuthorIds: i.selfAuthorIds,
             refs: currentView.refs,
-            tail: i.render.tail(s, startedAt, { recentReactions: i.recentReactions }),
+            tail: i.render.tail(s, startedAt, { recentReactions: i.recentReactions, transcript: entries }),
             tools,
             renderToolTurnsAsText: i.renderToolTurnsAsText ?? tools.length === 0,
             lookup: currentView.lookup

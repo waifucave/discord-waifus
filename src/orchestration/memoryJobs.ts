@@ -38,7 +38,7 @@ import {
   updatePendingObservations
 } from "./stores/memories.js";
 import { ensureChannelSession } from "./stores/sessions.js";
-import { legacyServerContextWindow } from "./contextWindows.js";
+import { resolveContextCap } from "./contextWindows.js";
 import { type ConversationRef, conversationKey } from "./context/keys.js";
 import { loadSubjectDirectory, subjectNameResolver } from "./memorySubjects.js";
 import {
@@ -243,7 +243,7 @@ export class MemoryJobs {
     const transcript = await this.loadObserverTranscript(
       conversation,
       cursor,
-      legacyServerContextWindow("stageManager", server),
+      resolveContextCap("stageManager", server, config),
       { providerId: config.providerId, modelId: config.modelId }
     );
 
@@ -514,6 +514,8 @@ export class MemoryJobs {
             memories: chunk.inputs,
             observations: chunk.observations,
             availableWaifuIds: allowedWaifuIds,
+            // B28: the stage manager's custom prompt reaches the dream as <owner_policy> too.
+            ...(config.prompt.trim() ? { systemPrompt: config.prompt } : {}),
             params: config.params
           });
           const now = new Date();

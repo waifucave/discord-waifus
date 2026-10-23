@@ -154,7 +154,9 @@ export type ModelCallAttribution = {
 export type RoleRenderer = {
   system(): string;
   header(snapshot: { lines: string[] }, state: ContextState): string;
-  tail(state: ContextState, now: Date, extras: { recentReactions?: string[] }): string;
+  // `transcript`: the entries this build renders (additive; the orchestrator derives its runtime
+  // notices from them). The tail is never cached or stored, so it may depend on anything.
+  tail(state: ContextState, now: Date, extras: { recentReactions?: string[]; transcript?: readonly LedgerEntry[] }): string;
   tools(): ToolDef[];
 };
 
