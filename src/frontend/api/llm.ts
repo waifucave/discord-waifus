@@ -6,8 +6,7 @@ import {
 } from "./client";
 
 // Re-export so callers only ever touch "@waifucave/gateway" through this module
-// (type-only — see docs/superpowers/plans/2026-07-02-gateway-p5-frontend.md Global Constraints:
-// value imports of the package are forbidden in frontend code, it touches node:fs).
+// (type-only: value imports of the package are forbidden in frontend code, it touches node:fs).
 export type { ConstraintRule, ParamDescriptor, ResolvedModel };
 
 /** Mirrors the gateway's `ModelSummary` (server/handler.ts) — not re-exported by the package's public entry. */
