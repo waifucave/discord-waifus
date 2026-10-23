@@ -75,6 +75,12 @@ async function setup(script: Script, extra: Partial<Parameters<typeof createGate
 }
 
 const base = { modelId: "deepseek-v4-flash", messages: [msg()] };
+// The director sends a context-engine prompt verbatim (spec 8.7).
+const orchestratorPrompt = {
+  messages: [{ role: "system", content: "director" }, { role: "user", content: "Call orchestrator_decision." }],
+  tools: [{ name: ORCHESTRATOR_TOOL_NAME, parameters: { type: "object" } }],
+  promptCacheKey: "orchestrator:g_1_2"
+} as never;
 
 describe("usage ledger coverage per call path", () => {
   it("writes exactly one attributed line per purpose", async () => {
@@ -89,9 +95,9 @@ describe("usage ledger coverage per call path", () => {
     ]);
     await pipeline.generateWaifu({ ...base, systemPrompt: "S" });
     await pipeline.generateWaifu({ ...base, systemPrompt: "S", retryUserMessage: "try again" });
-    await pipeline.decideOrchestrator!({ ...base, availableWaifuIds: ["a"], replyRequired: false }).catch(() => undefined);
+    await pipeline.decideOrchestrator!({ ...base, prompt: orchestratorPrompt, availableWaifuIds: ["a"], replyRequired: false }).catch(() => undefined);
     await pipeline.decideReviewer!({ ...base, message: "x" }).catch(() => undefined);
-    await pipeline.decideStageManagerObservations!({ ...base, availableWaifuIds: ["a"] }).catch(() => undefined);
+    await pipeline.decideStageManagerObservations!({ ...base, availableWaifuIds: ["a"], observerInput: "Transcript:" }).catch(() => undefined);
     await pipeline.decideDream!({ ...base, memories: [], observations: [], availableWaifuIds: ["a"] }).catch(() => undefined);
     await pipeline.generatePersonaDigest!({ ...base, personaText: "p" }).catch(() => undefined);
 
@@ -191,7 +197,7 @@ describe("truncated structured decisions", () => {
     // channelRunner wraps decideOrchestrator in try/catch and falls back to decideDeterministically
     // for any error unless the run was aborted or a reply is required (see its catch block).
     const { pipeline } = await setup([response([toolCall(ORCHESTRATOR_TOOL_NAME, { action: "no_re" })], "length")]);
-    await expect(pipeline.decideOrchestrator!({ ...base, availableWaifuIds: ["a"], replyRequired: false }))
+    await expect(pipeline.decideOrchestrator!({ ...base, prompt: orchestratorPrompt, availableWaifuIds: ["a"], replyRequired: false }))
       .rejects.toBeInstanceOf(TruncatedOutputError);
   });
 

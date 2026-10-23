@@ -21,16 +21,16 @@ describe("orchestration/tools", () => {
   });
 
   it("the pre-built orchestrator schema const matches a fresh build (single source)", () => {
-    expect(ORCHESTRATOR_TOOL_PARAMETERS).toEqual(orchestratorToolParameters(undefined, false, true));
+    expect(ORCHESTRATOR_TOOL_PARAMETERS).toEqual(orchestratorToolParameters(undefined));
   });
 
   it("directive goal description demands destination-only phrasing", () => {
-    const schema = JSON.stringify(orchestratorToolParameters(undefined, false, true));
+    const schema = JSON.stringify(orchestratorToolParameters(undefined));
     expect(schema).toContain("Never name the topic being left behind");
   });
 
   it("schema builders produce stable shapes", () => {
-    const orch = orchestratorToolParameters(["yuki", "riko"], true, false);
+    const orch = orchestratorToolParameters(["yuki", "riko"]);
     expect(orch.properties).toHaveProperty("respondingWaifus");
     expect(JSON.stringify(orch)).toContain("yuki");
     expect(pickNextWaifuToolParameters(["a"]).properties).toBeDefined();

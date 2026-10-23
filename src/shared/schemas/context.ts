@@ -32,7 +32,8 @@ export const ContextNoteSchema = z.discriminatedUnion("kind", [
     ...NoteBase,
     decisionId: z.string(),
     call: z.string(), // serialized decision args
-    outcome: z.string() // final-state outcome text
+    outcome: z.string(), // final-state outcome text
+    at: IsoDateStringSchema.optional() // when the decision was made (frozen; the text fallback shows it)
   }),
   // A ledger `edit` event (Phase 5) as this context first saw it: numbered from the context's
   // noteSeq and anchored to the newest entry at that moment, so edits share the notes' single

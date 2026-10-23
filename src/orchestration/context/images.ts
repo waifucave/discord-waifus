@@ -20,14 +20,25 @@ import type { FrozenImages } from "./types.js";
 export const IMAGE_PLACEHOLDER = "[image]";
 export const IMAGE_UNAVAILABLE = "[image unavailable]";
 
-/** Cached OCR text for an image, without running OCR (ImageOcrService.cachedText). */
-export type OcrTextLookup = { cachedText(ref: ImageRef): Promise<string | undefined> };
+/**
+ * OCR text lookups (ImageOcrService): `cachedText` never runs OCR; the optional `textFor` runs it
+ * (bounded by a timeout) for an image that is not cached yet.
+ */
+export type OcrTextLookup = {
+  cachedText(ref: ImageRef): Promise<string | undefined>;
+  textFor?(ref: ImageRef, o: { timeoutMs: number; signal?: AbortSignal }): Promise<string | undefined>;
+};
+
+/** Default wait for OCR of a not-yet-frozen image when the model cannot take images. */
+export const DEFAULT_OCR_FREEZE_TIMEOUT_MS = 4_000;
 
 export type FrozenImagesOptions = {
   fetcher: ImageFetcher;
   acceptsImages: boolean;
   maxInlinePerEpoch: number;
   ocr?: OcrTextLookup;
+  /** Wait for `ocr.textFor` before freezing an image to text (text-only models only). */
+  ocrTimeoutMs?: number;
   signal?: AbortSignal;
   logger?: Logger;
   refreshUrl?: (entry: LedgerEntry, ref: ImageRef) => Promise<string | undefined>;
@@ -76,11 +87,29 @@ export class FrozenImageRenderer implements FrozenImages {
           continue;
         }
       }
-      const text = imageTextFor(await this.o.ocr?.cachedText(ref).catch(() => undefined));
+      const text = imageTextFor(await this.ocrText(ref));
       this.pending.set(ref.key, { mode: "text", text });
       blocks.push({ type: "text", text });
     }
     return blocks;
+  }
+
+  /**
+   * The text an image freezes to. A model that cannot take images only ever sees this text, so
+   * for it OCR runs now (bounded) when nothing is cached; otherwise the cached text, if any.
+   * Freezing happens once, at first render, so a slow OCR never rewrites the prefix later.
+   */
+  private async ocrText(ref: ImageRef): Promise<string | undefined> {
+    const ocr = this.o.ocr;
+    if (!ocr) return undefined;
+    const cached = await ocr.cachedText(ref).catch(() => undefined);
+    if (cached || this.o.acceptsImages || !ocr.textFor) return cached;
+    const text = await ocr
+      .textFor(ref, { timeoutMs: this.o.ocrTimeoutMs ?? DEFAULT_OCR_FREEZE_TIMEOUT_MS, ...(this.o.signal ? { signal: this.o.signal } : {}) })
+      .catch(() => undefined);
+    // An abort while OCR ran must not freeze "[image]" for good.
+    if (this.o.signal?.aborted) throw new ImageBuildAbortedError("Image OCR aborted; nothing frozen.");
+    return text;
   }
 
   /** Modes decided during this build (to persist) and how many of them are inline. */

@@ -24,6 +24,7 @@ import {
 } from "../discord/rest.js";
 import { RuntimeOrchestrator } from "../orchestration/runtime.js";
 import { ImageOcrService } from "../orchestration/ocr.js";
+import { DiscordImageFetcher } from "../discord/attachments.js";
 import {
   DiscordBotsFileSchema,
   GuildEmojisFileSchema,
@@ -191,21 +192,27 @@ async function startLockedBackend(options: StartBackendOptions): Promise<Running
     };
 
     const makeRuntimeOrchestrator = (nextGateway: DiscordGatewayFacade, currentConfig = config) => {
+      // One image fetcher shared by OCR and the context engine's inline images (spec 8.4).
+      const images = new DiscordImageFetcher({
+        dataRoot: options.dataRoot,
+        logger,
+        config: currentConfig.discord.images
+      });
       const ocr = new ImageOcrService({
         dataRoot: options.dataRoot,
         config: currentConfig.ocr,
-        logger
+        logger,
+        fetcher: images
       });
       return new RuntimeOrchestrator({
         storage,
         discord: nextGateway,
         logger,
         ocr,
+        images,
+        compaction: currentConfig.compaction,
         updateActivity,
-        memory: {
-          dreamHourLocal: currentConfig.memory.dreamHourLocal,
-          maxPinnedInjected: currentConfig.memory.maxPinnedInjected
-        },
+        memory: { ...currentConfig.memory },
         isPaused: () => runtime.paused || closing,
         onActiveRunsChange: (activeRuns) => {
           runtime.queues.active = activeRuns;

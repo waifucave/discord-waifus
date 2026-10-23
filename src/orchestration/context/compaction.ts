@@ -346,8 +346,43 @@ function waitFor<T>(job: Promise<T>, signal: AbortSignal | undefined): Promise<T
 const normalize = (r: string | SummaryResult): SummaryResult => (typeof r === "string" ? { text: r } : r);
 
 /** Rough token size of one ledger entry as rendered (header + body, images at the flat rate). */
-function entryTokens(entry: LedgerEntry, ratio: number): number {
+export function entryTokens(entry: LedgerEntry, ratio: number): number {
   return Math.ceil(((entry.body.length + entry.authorName.length + 24) / 3.5) * ratio) + entry.images.length * IMAGE_TOKENS;
+}
+
+/**
+ * The next epoch after a cut at `cut.cursorSeq` (spec 8.9 "On success"): the given summary (null
+ * for a summary-less durable truncation), the new cursor, header re-frozen by the next prepare,
+ * notes before the cursor dropped, per-epoch counters reset, image modes pruned to the kept
+ * entries, no stored breakpoint, and `lastCompaction`.
+ */
+export function nextEpochState(
+  s: ContextState,
+  cut: { cursorSeq: number; cursorMessageId: string | null },
+  summary: string | null,
+  trigger: CompactionTrigger,
+  at: Date,
+  all: LedgerEntry[]
+): ContextState {
+  const keptImageKeys = new Set(all.filter((e) => e.seq > cut.cursorSeq).flatMap((e) => e.images.map((image) => image.key)));
+  const iso = at.toISOString();
+  return {
+    ...s,
+    epoch: s.epoch + 1,
+    epochStartedAt: iso,
+    lastUsedAt: iso,
+    summary,
+    cursorSeq: cut.cursorSeq,
+    cursorMessageId: cut.cursorMessageId,
+    headerText: null,
+    memorySnapshotIds: [],
+    memoryNoteCount: 0,
+    inlineImageCount: 0,
+    imageModes: Object.fromEntries(Object.entries(s.imageModes).filter(([imageKey]) => keptImageKeys.has(imageKey))),
+    notes: s.notes.filter((note) => note.anchorSeq > cut.cursorSeq),
+    lastBreakpoint: null,
+    lastCompaction: { at: iso, trigger, ok: true }
+  };
 }
 
 /**
@@ -543,25 +578,7 @@ export class ContextCompactionService implements CompactionService {
     at: Date,
     all: LedgerEntry[]
   ): ContextState {
-    const keptImageKeys = new Set(all.filter((e) => e.seq > plan.cursorSeq).flatMap((e) => e.images.map((image) => image.key)));
-    const iso = at.toISOString();
-    return {
-      ...s,
-      epoch: s.epoch + 1,
-      epochStartedAt: iso,
-      lastUsedAt: iso,
-      summary,
-      cursorSeq: plan.cursorSeq,
-      cursorMessageId: plan.cursorMessageId,
-      headerText: null,
-      memorySnapshotIds: [],
-      memoryNoteCount: 0,
-      inlineImageCount: 0,
-      imageModes: Object.fromEntries(Object.entries(s.imageModes).filter(([imageKey]) => keptImageKeys.has(imageKey))),
-      notes: s.notes.filter((note) => note.anchorSeq > plan.cursorSeq),
-      lastBreakpoint: null,
-      lastCompaction: { at: iso, trigger, ok: true }
-    };
+    return nextEpochState(s, plan, summary, trigger, at, all);
   }
 
   private async recordFailure(key: ConversationKey, i: CompactInput, base: ContextState, startedAt: Date, message: string): Promise<void> {
