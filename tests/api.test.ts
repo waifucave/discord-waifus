@@ -612,7 +612,7 @@ describe("Backend API", () => {
       }
     });
 
-    it("PUT waifu with only {revision, displayName} leaves contextWindow/tools/promptLayout untouched", async () => {
+    it("PUT waifu with only {revision, displayName} leaves contextWindow/tools untouched and ignores a client-sent promptLayout", async () => {
       const { app } = await makeApp();
       try {
         await app.inject({
@@ -621,7 +621,8 @@ describe("Backend API", () => {
           payload: { id: "patch-true", name: "PatchTrue", displayName: "PatchTrue" }
         });
 
-        const customLayout = {
+        // Spec 8.6: the layout editor is gone; a stale client may still send one. It is ignored.
+        const staleLayout = {
           top: [{ kind: "block", blockId: "identity", enabled: false }],
           mid: [],
           trailing: []
@@ -633,13 +634,13 @@ describe("Backend API", () => {
             revision: 0,
             contextWindow: 77,
             tools: { toolUse: false },
-            promptLayout: customLayout
+            promptLayout: staleLayout
           }
         });
         expect(seeded.statusCode).toBe(200);
         expect(seeded.json().contextWindow).toBe(77);
         expect(seeded.json().tools).toEqual({ toolUse: false });
-        expect(seeded.json().promptLayout).toEqual(customLayout);
+        expect(seeded.json().promptLayout).toEqual(defaultWaifuPromptLayout());
 
         const renamed = await app.inject({
           method: "PUT",
@@ -650,13 +651,13 @@ describe("Backend API", () => {
         expect(renamed.json().displayName).toBe("New Display Name");
         expect(renamed.json().contextWindow).toBe(77);
         expect(renamed.json().tools).toEqual({ toolUse: false });
-        expect(renamed.json().promptLayout).toEqual(customLayout);
+        expect(renamed.json().promptLayout).toEqual(defaultWaifuPromptLayout());
 
         const get = await app.inject({ method: "GET", url: "/api/waifus/patch-true" });
         expect(get.statusCode).toBe(200);
         expect(get.json().contextWindow).toBe(77);
         expect(get.json().tools).toEqual({ toolUse: false });
-        expect(get.json().promptLayout).toEqual(customLayout);
+        expect(get.json().promptLayout).toEqual(defaultWaifuPromptLayout());
       } finally {
         await app.close();
       }
