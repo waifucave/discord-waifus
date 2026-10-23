@@ -81,7 +81,9 @@ authenticates or reconnect/stop/reset/close clears the circuit (`HELPER_CIRCUIT_
 and consult the README for SSH-assisted setup without exposing credentials.
 
 **Browser session lifetime** (`src/remote/gateway/session.ts`, `browserPersistence.ts`): sessions
-have no idle timeout or eight-hour cutoff. Owner-only files store only public browser reconnect
+have no idle timeout or eight-hour cutoff. The in-memory cap (1,024 per gateway launch) evicts the
+least-recently-used session (recency = authenticated use) so CLI reopens/resumes can never be
+locked out; an evicted browser recovers through key proof or a fresh CLI bootstrap. Owner-only files store only public browser reconnect
 keys for the exact host/trust/origin binding. The trusted frame stores a non-exportable P-256
 WebCrypto key in IndexedDB; bounded 30-second single-use challenges prove ownership and obtain
 fresh cookies/CSRF and gateway/helper launch authority. Old cookies are rejected after restart;

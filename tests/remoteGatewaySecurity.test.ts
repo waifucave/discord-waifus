@@ -179,6 +179,33 @@ describe("remote browser sessions", () => {
       randomBytes: (size) => Buffer.alloc(size - 1)
     })).toThrow(/exactly/iu);
   });
+
+  it("evicts the least-recently-used session at capacity instead of locking users out", () => {
+    const store = new RemoteBrowserSessionStore({ maxSessions: 3 });
+    const first = browserSession(store);
+    const second = browserSession(store);
+    const third = browserSession(store);
+    const [firstCookie, secondCookie, thirdCookie] = [first, second, third].map((session) => cookie(store, session));
+
+    // Using the oldest session makes the second one least recently used.
+    expect(store.sessionFromCookie(firstCookie)).toBeDefined();
+    const fourth = browserSession(store);
+    expect(store.sessionFromCookie(secondCookie)).toBeUndefined();
+    expect(store.commitValidated(second)).toBeUndefined();
+    for (const active of [firstCookie, thirdCookie, cookie(store, fourth)]) {
+      expect(store.sessionFromCookie(active)).toBeDefined();
+    }
+
+    // Each further reopen/resume keeps working however many times it happens.
+    expect(store.commitValidated(third)).toBeDefined();
+    for (let reopen = 0; reopen < 50; reopen += 1) browserSession(store);
+    expect(store.sessionFromCookie(firstCookie)).toBeUndefined();
+    expect(store.sessionFromCookie(thirdCookie)).toBeUndefined();
+    const latest = browserSession(store);
+    expect(store.sessionFromCookie(cookie(store, latest))).toBeDefined();
+    expect(latest.absoluteExpiresAt).toBe(REMOTE_SESSION_LIFETIME_SENTINEL_MS);
+    expect(latest.idleExpiresAt).toBe(REMOTE_SESSION_LIFETIME_SENTINEL_MS);
+  });
 });
 
 describe("remote browser request validation", () => {
