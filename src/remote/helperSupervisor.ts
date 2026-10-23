@@ -561,6 +561,8 @@ export class HelperSupervisor {
   }
 
   async #attempt(): Promise<void> {
+    // This attempt supersedes any armed restart/recovery timer.
+    this.#cancelRestart();
     const generation = ++this.#generation;
     this.#update({ state: "starting", restartScheduled: false, lastErrorCode: null });
     let launch: HelperLaunch | undefined;
@@ -671,6 +673,9 @@ export class HelperSupervisor {
       this.#runtimeActive = runtimeStarted;
       this.#client = client;
       this.#identityStatus = identityStatus;
+      // An explicit start can win while a restart/recovery timer is armed. A stale
+      // timer must never launch a second helper over this one's identity lock.
+      this.#cancelRestart();
       this.#resetFailureCircuit();
       this.#unsubscribeStatus = client.subscribeStatus((value) => {
         if (this.#client !== client || this.#closing) return;
@@ -820,7 +825,7 @@ export class HelperSupervisor {
     const delay = Math.max(0, Math.round(baseDelay * (1 + boundedJitter * 0.1)));
     this.#restartTimer = this.#setTimeout(() => {
       this.#restartTimer = undefined;
-      if (this.#closing) return;
+      if (this.#closing || this.#snapshot.state === "ready" || this.#attemptPromise) return;
       // The fast-failure window restarts per recovery attempt; the open circuit
       // still routes another failure back to the slow recovery cadence.
       if (recovery) this.#failureTimes = [];

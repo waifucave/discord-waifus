@@ -958,6 +958,59 @@ describe("role-neutral helper supervisor", () => {
     await supervisor.close();
   });
 
+  it("cancels a pending slow recovery once an explicit start succeeds", async () => {
+    vi.useFakeTimers();
+    const factory = new FakeProcessFactory();
+    factory.launchError = Object.assign(new Error("launch failed"), { code: "helper_unavailable" });
+    const { supervisor } = await makeSupervisor(factory);
+    await supervisor.start();
+    for (const delay of [1_000, 2_000, 5_000, 10_000, 30_000, 30_000, 30_000, 30_000, 30_000]) {
+      await vi.advanceTimersByTimeAsync(delay);
+      await settle();
+    }
+    expect(factory.requests).toHaveLength(10);
+    expect(supervisor.snapshot()).toMatchObject({ state: "degraded", restartScheduled: true });
+
+    // Enabling remote access or activation calls start() while the recovery timer is armed.
+    factory.launchError = undefined;
+    const started = supervisor.start();
+    await settle();
+    expect(factory.requests).toHaveLength(11);
+    const launch = factory.launches.at(-1)!;
+    launch.resolveAuthenticated(helperClient());
+    await started;
+    expect(supervisor.snapshot()).toMatchObject({ state: "ready", restartScheduled: false });
+
+    await vi.advanceTimersByTimeAsync(60 * 60_000);
+    await settle();
+    expect(factory.requests).toHaveLength(11);
+    expect(supervisor.snapshot().state).toBe("ready");
+    expect(launch.drainCalls).toBe(0);
+    await supervisor.close();
+  });
+
+  it("never runs a stale fast restart over a helper that became ready", async () => {
+    vi.useFakeTimers();
+    const factory = new FakeProcessFactory();
+    factory.launchError = Object.assign(new Error("launch failed"), { code: "helper_unavailable" });
+    const { supervisor } = await makeSupervisor(factory);
+    await supervisor.start();
+    expect(supervisor.snapshot()).toMatchObject({ state: "degraded", restartScheduled: true });
+
+    factory.launchError = undefined;
+    const started = supervisor.start();
+    await settle();
+    factory.launches.at(-1)!.resolveAuthenticated(helperClient());
+    await started;
+    expect(factory.requests).toHaveLength(2);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    await settle();
+    expect(factory.requests).toHaveLength(2);
+    expect(supervisor.snapshot().state).toBe("ready");
+    await supervisor.close();
+  });
+
   it("cancels circuit recovery on stop and close", async () => {
     vi.useFakeTimers();
     const factory = new FakeProcessFactory();
