@@ -377,17 +377,13 @@ Status: **revised with owner input 2026-10-23** (reply target = waifu; layout ed
 - **Trigger** (checked before building a prompt): estimate > budget, or transcript since cursor >
   `compaction.maxMessages` (default 150; `contextWindow` is only the backfill cap, §8.9), or a gateway `context_overflow` error (new kind, §5) →
   compact, then retry once.
-- **Compaction call** = the *same* request prefix (system A + epoch header B + transcript up to C,
-  identical tool definitions with `tool_choice: none`) + a final instruction: "Summarize the
-  conversation so far from your own perspective for your future self: people, ongoing threads,
-  promises, running jokes, how you feel about each person, unresolved questions. Keep the last
-  `keepRecent` messages out of the summary." → mostly cache reads on providers with caching.
-  Output replaces the summary; cursor advances to keep the newest `compaction.keepRecent`
-  messages (default 30) verbatim; the memory snapshot is re-selected; notes before the cursor are
-  dropped. Facts worth long-term memory are passed to the observer queue, not only the summary.
-- **Window semantics**: transcript starts at the cursor and only grows until the next compaction —
-  this is what makes breakpoint C cacheable. Discord fetches page back to the cursor (bounded by
-  `maxMessages`); the old message-count `contextWindow`s become hard caps.
+- **Compaction call**: see §8.9 — waifus reuse the exact prefix with the same tools, tool choice and
+  params (mostly cache reads); the orchestrator needs a different tool choice and pays mostly fresh
+  input. The summary replaces the old one, the cursor advances keeping the newest `keepRecent`
+  messages verbatim, the memory snapshot is re-selected, and long-term facts go to the observer.
+- **Window semantics**: the transcript starts at the cursor and only grows until the next
+  compaction (this is what makes breakpoint C cacheable). `contextWindow` is only the backfill cap
+  (§8.9).
 - **Concurrency**: single-flight per context under its resource lock; a reply never waits longer
   than a timeout — on timeout it proceeds with hard truncation and compaction completes in the
   background.
@@ -537,7 +533,7 @@ ContextStateSchema = RevisionedRecordSchema.extend({
   cursorSeq: int | null,                   // transcript = ledger entries with seq > cursorSeq
   cursorMessageId: string | null,          // display only
   timeZone: string,                        // IANA zone frozen per epoch (host zone at epoch start)
-  lastBreakpointSeq: int | null,           // ledger seq of the previous request's breakpoint C (§8.3)
+  lastBreakpoint: { kind: "entry" | "note" | "event"; seq: int } | null,  // block that carried the previous request's C (§8.3)
   summary: string | null,
   headerText: string | null,               // rendered breakpoint-B text, frozen per epoch
   memorySnapshotIds: string[], memoryNoteCount: int,
@@ -555,8 +551,8 @@ LedgerEntrySchema = object({ id, seq: int, authorId, authorName /* frozen */, au
   images: ImageRef[] /* url refreshed in place when re-signed */, replyToId?: string,
   state: enum(["live","edited","deleted"]), sealed: boolean });
 ConversationEventSchema = discriminatedUnion("kind", [                      // populated in Phase 5 (§9.5)
-  { kind: "edit",   seq, at, messageId, anchorMessageId, authorId, text: string.max(500), sealed },
-  { kind: "delete", seq, at, messageId, anchorMessageId, sealed } ]);
+  { kind: "edit",   seq, at, messageId, anchorSeq: int, authorId, text: string.max(500), sealed },
+  { kind: "delete", seq, at, messageId, anchorSeq: int } /* audit only, never rendered */ ]);
 ConversationLedgerSchema = RevisionedRecordSchema.extend({ conversationKey, nextSeq: int,
   entries: record(id -> LedgerEntry), events: ConversationEvent[] /* [] until Phase 5 */ });
 ```
@@ -573,9 +569,13 @@ export type BuiltPrompt = {
   tools: ToolDef[];                       // stable per agent + conversation config
   promptCacheKey: string;
   refToMessageId: ReadonlyMap<string, string>; messageIdToRef: ReadonlyMap<string, string>;
-  estimatedTokens: number; transcriptCount: number; cursorMessageId: string | null;
+  estimatedTokens: number; transcriptCount: number; cursorSeq: number | null;
+  breakpoint: { kind: "entry" | "note" | "event"; seq: number } | null;   // block that carries C
   debug: { system: string; header: string; transcript: string; tail: string };   // /print, inspector
 };
+export type GuildDirectoryView = { memberName(userId: string): string | undefined; roleName(id: string): string | undefined;
+  channelName(id: string): string | undefined; emoji(id: string): string | undefined };
+// Phase 4: implemented over members/emojis/roles.json + the discord.js channel cache; Phase 5: GuildDirectory (§9.4)
 export type MessageRenderer = { render(m: RawDiscordMessage, dir: GuildDirectoryView, tz: string): { body: string; images: ImageRef[]; kind: "default" | "system" } | null /* null = dropped system msg */ };
 export type FrozenImages = { blocksFor(entry: LedgerEntry, state: ContextState): Promise<Array<TextBlock | ImageBlock>> };
 export type NewContextNote = Omit<ContextNote, "id" | "seq" | "anchorSeq">;
@@ -634,8 +634,9 @@ export function resolveContextCap(kind: "orchestrator" | "waifu" | "stageManager
 `src/shared/schemas/usage.ts`
 ```ts
 UsageLedgerEntrySchema = object({ at, purpose, agentId?, waifuId?, guildId?, channelId?, conversationKey?,
-  providerId, modelId, inputTokens, outputTokens, cacheReadTokens?, cacheWriteTokens?, reasoningTokens?,
-  costUsd?, finishReason, estimatedInputTokens?, durationMs });
+  providerId, modelId, status: enum(["ok","aborted","failed"]), usageKnown: boolean,
+  inputTokens, outputTokens, cacheReadTokens?, cacheWriteTokens?, reasoningTokens?,
+  costUsd?, finishReason?, errorKind?, estimatedInputTokens?, durationMs });
 ```
 
 `src/providers/types.ts`: `ProviderRequest` gains optional `prompt?: BuiltPrompt` (sent verbatim
@@ -704,9 +705,9 @@ are byte-identical across restarts. Phase 5 adds edit/delete events on top (§9.
 - Notes render after their anchor entry ordered by `seq`: `<memory_note>…</memory_note>`,
   `<direction>…</direction>`, tool call + tool result turns, and (orchestrator) decision notes as
   compact tool-call turns. Phase 5 events (`<edit>…</edit>`) interleave by `(anchorSeq, seq)`.
-- If `fetchSince` returns `reachedCursor: false` (more than the backfill cap was missed, e.g. after
-  downtime), the transcript gets one `— earlier messages not loaded —` block and the epoch continues
-  from the oldest fetched message (logged).
+- If `fetchSince` returns `reachedCursor: false` (more new messages than the backfill cap, e.g. after
+  downtime), the cursor is unchanged, one `— earlier messages not loaded —` entry is appended after
+  the last known entry, and the fetched messages follow it (logged). Nothing already rendered moves.
 - Times render in the context's frozen `timeZone`.
 
 **Builder.**
@@ -720,12 +721,16 @@ export type BuildInput = {
 export function buildContext(i: BuildInput, images: FrozenImages): Promise<BuiltPrompt>;
 ```
 **Breakpoints** (Anthropic allows 4 and looks back only ~20 blocks from each, so a busy room needs
-an extra one): A = system, B = epoch header, **C_prev** = the text block of ledger seq
-`state.lastBreakpointSeq` (the previous request's C, which is exactly where the last cache write
-ended), C = the **last transcript `TextBlock`** (`TextBlock.cacheControl`; message-level
-`cacheControl` would land on the tail). `ImageBlock`s carry no breakpoints; every message renders a
-header text block before its images, so a text block is always available. All `ephemeral` with the
-5-minute TTL. After each call `commit` stores the new C as `lastBreakpointSeq`. The tail is a
+an extra one): A = system, B = epoch header, **C_prev** = the exact block addressed by
+`state.lastBreakpoint` (the previous request's C — an entry, a note or an event — i.e. exactly where
+the last cache write ended), C = the **last transcript `TextBlock`** (`TextBlock.cacheControl`;
+message-level `cacheControl` would land on the tail). C is placed on the last *text* block of the
+transcript: `ImageBlock`s and tool-result messages (string content) never carry it — when the
+transcript ends with a tool result, C goes on the latest text block before it. Every entry renders
+a header text block before its images, and every note renders as text, so a text block always
+exists. The builder returns the address of the block it marked (`BuiltPrompt.breakpoint`); `commit`
+stores it as `lastBreakpoint`. If C_prev's block no longer exists or equals C, it is omitted. All
+`ephemeral` with the 5-minute TTL. The tail is a
 separate final text block (same user turn when the transcript ends with a user turn, otherwise a new
 user turn); it is never marked and never stored. When the orchestrator's JSON-schema fallback sends
 no tools, decision notes render as text lines (`[decision 14:02] reply → Aria · sent`) instead of
@@ -750,7 +755,9 @@ export type RoleRenderer = { system(): string; header(snapshot: { lines: string[
   tail(state: ContextState, now: Date, extras: { recentReactions?: string[] }): string; tools(): ToolDef[] };
 export interface ConversationMessageSource {   // Phase 4: thin REST adapter; Phase 5: ConversationMessageCache (§9.4)
   fetchSince(i: { conversation: ConversationRef; afterMessageId: string | null; maxMessages: number; signal?: AbortSignal }):
-    Promise<{ messages: ContextMessage[]; reachedCursor: boolean }>;
+    Promise<{ messages: RawDiscordMessage[]; reachedCursor: boolean }>;
+  // afterMessageId = id of the NEWEST ledger entry (null on an empty ledger), not the cursor, so a pass
+  // only downloads what is new; the backfill (bounded by backfillCap) runs only at epoch start.
 }
 ```
 `src/discord/client.ts` gains `fetchContextSince({ guildId, channelId, afterMessageId, maxMessages,
@@ -849,8 +856,9 @@ export function retryNote(violations: Violation[], profile: VerbosityProfile): s
 Deleted: `PromptLayoutEditor.tsx`, `src/frontend/utils/promptLayout.ts`, their tests, the
 `PromptLayout*` schemas, `defaultWaifuPromptLayout`, the `promptLayout` field and the three legacy
 layout migrations. Migration `waifu-drop-prompt-layout-v1`: a disabled `schedule` block (or one
-inside a disabled group) → `scheduleInPrompt: false`; delete `promptLayout` and legacy
-`promptSections`; a disabled persona block is logged and ignored; idempotent, tolerant of every
+inside a disabled group), **or a legacy `promptSections.schedule === false`** → `scheduleInPrompt:
+false`; delete `promptLayout` and legacy `promptSections`; the waifu PUT body accepts and ignores
+`promptLayout` for one release (logged); a disabled persona block is logged and ignored; idempotent, tolerant of every
 legacy shape. Cast gets verbosity, custom instructions (4000-char counter) and "Mention her
 schedule in the prompt" (full UI polish in Phase 7, §11.3).
 
@@ -907,7 +915,7 @@ export function admitMemoryWrite(store: MemoryRecord[], c: CandidateMemory,
 - **Observer:** sees participants as handles plus existing memories `m1..mN`, reads the same
   renderer from its per-conversation cursor; emits `add | update | merge | expire`; update / merge /
   expire and adds with importance ≥ 4 apply immediately through the gate, lower adds queue for the
-  dream; exposes `requestObserveThrough(conversation, messageId)` for the compaction handoff; keyed
+  dream; exposes `requestObserveThrough(conversation, seq)` for the compaction handoff; keyed
   by `ConversationRef` (DM observers in Phase 5).
 - **Dream:** one timer at `memory.dreamHourLocal`; waifus round-robin from a persisted cursor;
   budget 8 chunks/night; allowed owners include observation owners (B12); ignores per-server
@@ -962,15 +970,16 @@ schedules a post-reply background check.
 - **Request (orchestrator):** its reply call forces `orchestrator_decision`, so compaction must use
   a different tool choice (`none` where the model supports it, else `auto`); this is billed mostly as
   fresh input (system + tools may still cache). Accepted: the director's transcript is short and
-  compacts rarely. Waifu instruction: summarize from her own
+  compacts rarely. As for waifus, tool calls in the output are ignored and an empty text result gets
+  one retry with the instruction repeated. Waifu instruction: summarize from her own
   perspective for her future self (people, ongoing threads, promises, running jokes, how she feels
   about each person, unresolved questions). Director variant: room state, open threads, who has
   spoken, pacing.
 - **On success** (one revisioned update): `epoch+1`, `summary`, `cursorSeq` = the entry before the
   newest `keepRecent`, `headerText: null` (re-frozen next prepare: time zone, memory snapshot),
   notes before the cursor dropped, `memoryNoteCount: 0`, `inlineImageCount: 0`, `imageModes` pruned,
-  `lastBreakpointSeq: null`, `lastCompaction`. Discarded if
-  the epoch changed meanwhile. Observer handoff via `requestObserveThrough(newCursor)`.
+  `lastBreakpoint: null`, `lastCompaction`. Discarded if
+  the epoch changed meanwhile. Observer handoff via `requestObserveThrough(conversation, newCursorSeq)`.
 - **Concurrency:** single-flight per context in memory; no storage lock held during the LLM call; a
   waiting reply that times out (`waitTimeoutMs`) builds a one-off hard-truncated prompt (newest
   `keepRecent`) while compaction finishes in the background.
@@ -1064,7 +1073,7 @@ export const DmLimitStateSchema = RevisionedRecordSchema.extend({
   waifuId, userId, replyTimestamps: iso[] (max 1000), limitNoticeSentAt?: iso });
 ```
 Paths: DM state `user/dms/<userId>/<waifuId>.json` (resource `dm:<userId>:<waifuId>`) and rate-limit
-counters `user/dms/<userId>/<waifuId>.limit.json` (resource `dm-limit:<userId>:<waifuId>`), kept
+counters `user/dms/<userId>/limits/<waifuId>.json` (resource `dm-limit:<userId>:<waifuId>`), kept
 separate so user-initiated forgetting can never reset the limiter. User-first layout makes
 owner-initiated per-user deletion one directory. Contexts, refs and ledger use the Phase 4 key
 `dm_<userId>_<waifuId>` under `user/conversations/`.
@@ -1128,7 +1137,8 @@ minutes!". Sent as her own message (appears in her transcript).
 
 #### 9.1.2 Restart, pause, shutdown
 - Shutdown: abort slots, keep `pending*`; flush pending debounces into `pending*`.
-- Boot / resume-after-pause (never while paused): scan `user/dms/*/*.json` with `lastInboundAt` in the
+- Boot / resume-after-pause (never while paused): scan `user/dms/*/*.json` (state files only; the
+  `limits/` subdirectory is not matched) with `lastInboundAt` in the
   last 24 h (≤ 50, staggered 2 s); a conversation is due when `pending*` is set or a 5-message tail
   check shows a human message newer than `lastRepliedMessageId`; inside
   `discord.dm.resumeWindowMinutes` (60) it gets a debounced run, otherwise it is cleared.
@@ -1145,7 +1155,7 @@ as "DMs".
 `dmForget({ userId, waifuId?, scope: "conversation" | "all", dryRun })`: `conversation` deletes
 `user/conversations/dm_<user>_<waifu>/` and `recentRuns`; `all` also deletes the DM state file, that
 waifu's memories whose subjects include the user, the user's pending observations for her, and
-image-cache entries tagged with the conversation. **Neither scope touches the `.limit.json`
+image-cache entries tagged with the conversation. **Neither scope touches the `limits/`
 counters** (users can't reset the limiter). Only the owner's `forget-user` deletes everything under
 `user/dms/<userId>/`, counters included. Phase 4 `forget-user` calls `dmForget(scope: "all")` for every waifu,
 deletes `user/dms/<userId>/`, and returns `{ memories, observations, dmContexts, dmStates, ledgers,
@@ -1194,7 +1204,7 @@ first, up to `limit` (200). Migration `orchestrator-history-per-guild-v1` splits
 ### 9.4 I10 — one fetch per pass, reactions, guild directory
 
 **`ConversationMessageCache`** implements Phase 4's `ConversationMessageSource`. Per conversation it
-holds normalized raw messages in id order (bounded to the minimum cursor of all contexts or the
+holds `RawDiscordMessage` records in id order (bounded to the minimum cursor of all contexts or the
 newest 400; LRU of 200 conversations), fed by REST pages, orchestrator gateway events
 (`messageCreate/Update/Delete/DeleteBulk`, reaction events), DM events, and our own sends (inserted
 before `sendWaifuMessage` returns). A conversation is **trusted** after a REST sync while its client
@@ -1229,12 +1239,14 @@ The duplicate refresh paths in `api/server.ts` and `backend/server.ts` collapse 
   downtime), never by diffing re-rendered text (frozen names would cause false edits).
 - Deletes (event, cache tombstone, or a gap in a contiguous REST page) use the owner's **hybrid
   rule** (O1): if the message is unsealed, or among the newest `discord.deletedMessages.redactRecent`
-  transcript messages (default 20) of a context, its body becomes `(message deleted)`, images are
+  entries (default 20) of the conversation ledger, its body becomes `(message deleted)`, images are
   dropped and its cached images purged — a small cache miss confined to the tail. If it is older,
   the rendered transcript is left untouched (no note, cache intact) but the ledger entry is marked
   `state: "deleted"`; the next compaction's final instruction lists those refs ("leave out messages
-  #k3, #k7 — their authors deleted them") so the summary omits them, and they leave the context when
-  the cursor passes them (ledger text purged at pruning). Either way the message never triggers runs.
+  #k3, #k7 — their authors deleted them") so the summary omits them; at the next epoch start (which
+  rebuilds anyway) `state: "deleted"` entries still inside the kept window render as `(message
+  deleted)`, and ledger text is purged at pruning. The `delete` event is audit-only. Either way the
+  message never triggers runs.
 - Pruning follows the Phase 4 rule (§8.1: active contexts only, cap 2000).
 - Triggers: edits never start runs, except an edit that adds a waifu mention to the newest human
   message within 2 minutes (treated as a new message, debounced). Deleting the newest human message
@@ -1428,7 +1440,7 @@ the patch only touches live keys (`ocr`, `compaction`, `memory`, `discord.deboun
 | `ocr.enabled` / `engine` / `cacheTtlHours` / `timeoutMs` / `maxImageBytes` / `maxImagesPerModelCall` / `maxTextCharsPerImage` | as today (cacheTtlHours default 168) | | live |
 | `updates.enabled` / `checkIntervalMinutes` / `idleMinutes` | bool / 15–1440 / 1–120 | false / 60 / 5 | localOnlyWrite |
 | `compaction.enabled` / `triggerRatio` / `maxMessages` / `keepRecent` / `waitTimeoutMs` | bool / 0.3–0.95 / 20–200 / 5–120 / 0–30000 | true / 0.7 / 150 / 30 / 6000 | live |
-| `memory.dreamHourLocal` / `maxPinnedInjected` / `maxMemoryNotesPerEpoch` / `maxInlineImagesPerEpoch` | 0–23 / 0–20 / 0–20 / 0–32 | 5 / 6 / 6 / 8 | live |
+| `memory.dreamHourLocal` / `maxPinnedInjected` / `maxMemoryNotesPerEpoch` / `maxInlineImagesPerEpoch` / `dmInjectionLimit` | 0–23 / 0–20 / 0–20 / 0–32 / 1–50 | 5 / 6 / 6 / 8 / 12 | live |
 | `discord.debounce.serverMs` / `serverMaxWaitMs` / `dmMs` / `dmMaxWaitMs` | 0–10000 / 0–30000 / 0–15000 / 0–30000 | 1200 / 4000 / 1500 / 8000 | live |
 | `discord.dm.maxConcurrentRuns` / `resumeWindowMinutes` | 1–32 / 0–1440 | 4 / 60 | live |
 | `discord.images.maxBytes` / `fetchTimeoutMs` / `memoryCacheMb` / `diskCacheMb` / `diskCacheTtlHours` | 64 KiB–20 MiB / 500–30000 / 0–512 / 0–2048 / 1–720 | 5 MiB / 5000 / 64 / 256 / 168 | live |
@@ -1732,8 +1744,7 @@ across every server". Skeleton loading; "Unreachable / Retrying…" when the bac
 ### 11.3 Cast (character editor)
 
 Sections: Identity; Persona & style (persona, `verbosity` select with examples, `customInstructions`
-with `n / 4000` counter); Model (pickers, context window ≤ 200 with "hard cap; compaction keeps the
-active context smaller", params); Schedule (availability + "Mention her schedule in the prompt");
+with `n / 4000` counter); Model (pickers, context window ≤ 200 labelled "messages loaded when a conversation (re)starts", params); Schedule (availability + "Mention her schedule in the prompt");
 Tools ("Can save memories while chatting"); Direct messages (`allowDms`, rate limit with "Unlimited"
 → `null`, `notifyWhenLimited`, `limitNotice` template with token hints; DM conversation list from
 `GET /api/dms?waifuId=` with rate-limit state, context status and "Forget this user's DMs"); Discord
