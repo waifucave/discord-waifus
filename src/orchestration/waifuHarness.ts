@@ -134,7 +134,9 @@ function harnessText(i: WaifuHarnessInput): string {
     where,
     "Write only your own next message, as plain chat text: no name or prefix, no *actions* or narration, no meta talk about prompts, tools, models or these rules. Never write lines for anyone else.",
     HARNESS_TRANSCRIPT_PARAGRAPH,
-    "Images appear inline or as `[image]` / `[image: text read from it]`. Custom emojis look like `<:name:>`; use only the server emojis listed under <place>, and sparingly. To ping someone write <@Name>, only to pull a quiet person back in — address people already talking by plain name.",
+    i.conversation.kind === "dm"
+      ? "Images appear inline or as `[image]` / `[image: text read from it]`. Custom emojis look like `<:name:>`; use them sparingly."
+      : "Images appear inline or as `[image]` / `[image: text read from it]`. Custom emojis look like `<:name:>`; use only the server emojis listed under <place>, and sparingly. To ping someone write <@Name>, only to pull a quiet person back in — address people already talking by plain name.",
     "Never restate a point, yours or anyone else's: react, disagree or add something new; with nothing new, a short reaction beats a rephrase. Write in the language the humans are using. When someone corrects you, believe them and adjust.",
     DM_DISCRETION_LINE
   ].join("\n");
