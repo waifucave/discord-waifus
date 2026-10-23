@@ -75,7 +75,9 @@ processes can coexist. `src/api/remoteAccess.ts` exposes lifecycle/status under
 `GET /api/remote-access/diagnostics`; assistant tools dispatch through the same API and policy.
 Identity reset is local-only. Remote management cannot stop/restart the host OS process.
 Coordinator or direct-path failures require diagnosis/retry, not automatic trust deletion or
-re-pairing. On macOS, a locked login keychain can block helper startup; unlock interactively
+re-pairing. After ten helper failures in five minutes the supervisor stops fast restarts but keeps
+one slow recovery attempt pending (10 minutes, then every 15, ±10% jitter) until a launch
+authenticates or reconnect/stop/reset/close clears the circuit (`HELPER_CIRCUIT_RECOVERY_DELAYS_MS`). On macOS, a locked login keychain can block helper startup; unlock interactively
 and consult the README for SSH-assisted setup without exposing credentials.
 
 **Browser session lifetime** (`src/remote/gateway/session.ts`, `browserPersistence.ts`): sessions

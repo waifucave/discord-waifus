@@ -65,6 +65,13 @@ export const HELPER_GRACEFUL_DRAIN_MS = 20_000;
 export const HELPER_FAILURE_WINDOW_MS = 5 * 60_000;
 export const HELPER_FAILURE_LIMIT = 10;
 export const HELPER_RESTART_DELAYS_MS = Object.freeze([1_000, 2_000, 5_000, 10_000, 30_000]);
+/**
+ * Once HELPER_FAILURE_LIMIT failures land inside HELPER_FAILURE_WINDOW_MS the fast-restart
+ * circuit opens. Recovery then keeps trying slowly (one attempt per delay, last one repeating)
+ * so remote users are not cut off until someone is at the host, without hammering the
+ * coordinator. Explicit reconnect/stop/reset/close clears the circuit.
+ */
+export const HELPER_CIRCUIT_RECOVERY_DELAYS_MS = Object.freeze([10 * 60_000, 15 * 60_000]);
 
 export const HelperRoleSchema = z.enum(["host", "remote"]);
 export type HelperRole = z.infer<typeof HelperRoleSchema>;
