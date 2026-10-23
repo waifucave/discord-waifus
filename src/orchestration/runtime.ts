@@ -67,7 +67,15 @@ import {
 } from "../shared/schemas/domain.js";
 import { resolveBotAuthorIds } from "../shared/botIdentity.js";
 import { extractEntities, WAIFU_NOTE_STRENGTH } from "./memoryEntities.js";
-import { applyDreamOps, guildHash, selectDreamInput } from "./dream.js";
+import {
+  DREAM_CURSOR_RELATIVE_PATH,
+  DreamCursorFileSchema,
+  applyDreamOps,
+  dreamChunkWaifuIds,
+  guildHash,
+  orderDreamChunks,
+  selectDreamInput
+} from "./dream.js";
 import { relativeAge, retrieveMemories } from "./memoryRetrieval.js";
 import { createRevisionedBase, nowIso } from "../shared/schemas/common.js";
 import { StorageService } from "../storage/storageService.js";
@@ -2579,9 +2587,11 @@ export class RuntimeOrchestrator {
   // The nightly (or manually triggered) consolidation pass. Reads the store and pending queue,
   // chunks the active records, and runs decideDream → applyDreamOps per chunk SEQUENTIALLY,
   // re-reading the store between chunks so per-chunk indices stay valid (max 5 iterations).
-  // Each iteration re-selects chunks from the freshest store, then picks the first chunk whose
-  // stable key has not yet been processed — so mutations from prior iterations cannot shift the
-  // nth position into a chunk we already handled.
+  // Each iteration re-selects chunks from the freshest store, rotates them past the persisted
+  // per-guild cursor (so the 5-chunk cap round-robins across nights instead of always dreaming
+  // the same first waifus), then picks the first chunk whose stable key has not yet been
+  // processed — so mutations from prior iterations cannot shift the nth position into a chunk
+  // we already handled.
   private async runDreamPass(guildId: string): Promise<DreamPassResult> {
     const server = await this.ensureServer(guildId);
     if (!server.stageManagerEnabled || server.paused) {
@@ -2595,9 +2605,10 @@ export class RuntimeOrchestrator {
       { providerId: config.providerId, modelId: config.modelId },
       "dream"
     );
-    // Configured waifus guild-wide: dream "add" ops are re-validated against this set so a
-    // hallucinated owner (possible in the enum-less orphan-observation chunk) never lands.
-    const allowedWaifuIds = (await this.listWaifus()).map((waifu) => waifu.id);
+    // Configured waifus: each chunk's owners are intersected with this set so a hallucinated or
+    // deleted owner never lands.
+    const configuredWaifuIds = new Set((await this.listWaifus()).map((waifu) => waifu.id));
+    const startCursor = (await this.readDreamCursors()).cursors[guildId];
 
     let totalApplied = 0;
     let totalSkipped = 0;
@@ -2611,7 +2622,7 @@ export class RuntimeOrchestrator {
         const pending = await this.readPendingObservations();
         const guildMemories = store.memories.filter((memory) => memory.guildId === guildId);
         const guildObservations = pending.observations.filter((observation) => observation.guildId === guildId);
-        const chunks = selectDreamInput(guildMemories, guildObservations, new Date());
+        const chunks = orderDreamChunks(selectDreamInput(guildMemories, guildObservations, new Date()), startCursor);
         const chunk = chunks.find((c) => !processedKeys.has(c.key));
         if (!chunk) break;
 
@@ -2620,6 +2631,9 @@ export class RuntimeOrchestrator {
           throw new Error(`Model ${config.modelId} does not implement dream decisions.`);
         }
         const decideDream = pipeline.decideDream.bind(pipeline);
+        // Per-chunk ownership: "add" ops may only target the waifus this chunk is about (its
+        // records' and observations' owners), not any waifu in the guild.
+        const allowedWaifuIds = dreamChunkWaifuIds(chunk).filter((waifuId) => configuredWaifuIds.has(waifuId));
 
         this.options.logger.info("Dream pass chunk started", {
           guildId,
@@ -2633,7 +2647,7 @@ export class RuntimeOrchestrator {
           messages: [],
           memories: chunk.inputs,
           observations: chunk.observations,
-          availableWaifuIds: [...new Set(chunk.inputs.map((input) => input.waifuId))],
+          availableWaifuIds: allowedWaifuIds,
           params: config.params
         });
         const now = new Date();
@@ -2677,6 +2691,7 @@ export class RuntimeOrchestrator {
         void this.sendDreamDebugLog({ guildId, entries: result.historyEntries });
 
         processedKeys.add(chunk.key);
+        await this.writeDreamCursor(guildId, chunk.key);
         totalApplied += result.applied;
         totalSkipped += result.skipped;
         chunksProcessed += 1;
@@ -2709,6 +2724,24 @@ export class RuntimeOrchestrator {
       skipped: totalSkipped,
       chunks: chunksProcessed
     };
+  }
+
+  private async readDreamCursors() {
+    return this.options.storage.readJson(
+      DREAM_CURSOR_RELATIVE_PATH,
+      DreamCursorFileSchema,
+      DreamCursorFileSchema.parse(createEmptyRevisionedFile({ cursors: {} }))
+    );
+  }
+
+  private async writeDreamCursor(guildId: string, key: string): Promise<void> {
+    await this.options.storage.updateRevisionedJson({
+      resourceKey: "memory:dream-cursor",
+      relativePath: DREAM_CURSOR_RELATIVE_PATH,
+      schema: DreamCursorFileSchema,
+      fallback: DreamCursorFileSchema.parse(createEmptyRevisionedFile({ cursors: {} })),
+      transform: (current) => ({ ...current, cursors: { ...current.cursors, [guildId]: key } })
+    });
   }
 
   private async readPendingObservations(): Promise<{ observations: PendingObservation[] }> {

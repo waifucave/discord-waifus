@@ -2676,6 +2676,169 @@ describe("RuntimeOrchestrator", () => {
     expect(history.edits.some((edit) => edit.summary.includes("[dream:add]"))).toBe(true);
   });
 
+  it("dream passes rotate through every chunk (incl. orphan observations) across nights", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    const now = new Date().toISOString();
+    await seedRuntimeConfig(storage);
+    const waifuIds = ["a", "b", "c", "d", "e", "f", "g"];
+    await storage.writeJson(
+      "memories:global",
+      "user/memories.json",
+      MemoryStoreSchema,
+      MemoryStoreSchema.parse(
+        createEmptyRevisionedFile({
+          memories: waifuIds.flatMap((waifuId) =>
+            Array.from({ length: 13 }, (_, index) => ({
+              id: `${waifuId}-${index}`, waifuId, guildId: "guild-1", content: `${waifuId} fact ${index}`, strength: 3, createdAt: now, updatedAt: now, status: "active"
+            }))
+          )
+        })
+      )
+    );
+    await storage.writeJson(
+      "memory:pending",
+      "user/memory/pending-observations.json",
+      PendingObservationsFileSchema,
+      PendingObservationsFileSchema.parse(
+        createEmptyRevisionedFile({
+          observations: [
+            { id: "obs-zed", guildId: "guild-1", channelId: "channel-1", waifuId: "zed", content: "Kevin met zed.", kind: "fact", importance: 3, entities: [], createdAt: now }
+          ]
+        })
+      )
+    );
+    const seen: string[] = [];
+    const pipeline: ModelPipeline = {
+      async generateWaifu() {
+        return { content: "unused" };
+      },
+      async decideDream(request) {
+        seen.push(request.memories[0]?.waifuId ?? "orphan");
+        return [];
+      }
+    };
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    await runtime.runDreamPassForTest("guild-1");
+    expect(seen).toEqual(["a", "b", "c", "d", "e"]);
+    seen.length = 0;
+    await runtime.runDreamPassForTest("guild-1");
+    expect(seen).toEqual(["f", "g", "orphan", "a", "b"]);
+  });
+
+  it("dream ops may only assign memories to waifus the chunk is about", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    const now = new Date().toISOString();
+    await seedRuntimeConfig(storage);
+    await seedWaifu(storage, "mika", "Mika", "mika-bot", "direct");
+    await storage.writeJson(
+      "memories:global",
+      "user/memories.json",
+      MemoryStoreSchema,
+      MemoryStoreSchema.parse(
+        createEmptyRevisionedFile({
+          memories: ["yuki", "mika"].flatMap((waifuId) =>
+            Array.from({ length: 50 }, (_, index) => ({
+              id: `${waifuId}-${index}`, waifuId, guildId: "guild-1", content: `${waifuId} fact ${index}`, strength: 3, createdAt: now, updatedAt: now, status: "active"
+            }))
+          )
+        })
+      )
+    );
+    const availableIds: string[][] = [];
+    const pipeline: ModelPipeline = {
+      async generateWaifu() {
+        return { content: "unused" };
+      },
+      async decideDream(request) {
+        availableIds.push(request.availableWaifuIds ?? []);
+        if (request.memories[0]?.waifuId !== "yuki") return [];
+        return [{ op: "add", memory: { waifuId: "mika", content: "Misattributed to mika.", kind: "fact", strength: 3, entities: [] } }];
+      }
+    };
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    await runtime.runDreamPassForTest("guild-1");
+    expect(availableIds).toEqual([["mika"], ["yuki"]]);
+    const memories = await storage.readJson("user/memories.json", MemoryStoreSchema);
+    expect(memories.memories.some((memory) => memory.content === "Misattributed to mika.")).toBe(false);
+  });
+
+  it("offers a waifu with observations but no memories yet as a dream owner", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    const now = new Date().toISOString();
+    await seedRuntimeConfig(storage);
+    await seedWaifu(storage, "mika", "Mika", "mika-bot", "direct");
+    await storage.writeJson(
+      "memories:global",
+      "user/memories.json",
+      MemoryStoreSchema,
+      MemoryStoreSchema.parse(
+        createEmptyRevisionedFile({
+          memories: [{ id: "yuki-1", waifuId: "yuki", guildId: "guild-1", content: "Kevin likes tea.", strength: 3, createdAt: now, updatedAt: now, status: "active" }]
+        })
+      )
+    );
+    await storage.writeJson(
+      "memory:pending",
+      "user/memory/pending-observations.json",
+      PendingObservationsFileSchema,
+      PendingObservationsFileSchema.parse(
+        createEmptyRevisionedFile({
+          observations: [
+            { id: "obs-mika", guildId: "guild-1", channelId: "channel-1", waifuId: "mika", content: "Kevin told Mika he paints.", kind: "fact", importance: 3, entities: [], createdAt: now }
+          ]
+        })
+      )
+    );
+    let offered: string[] | undefined;
+    const pipeline: ModelPipeline = {
+      async generateWaifu() {
+        return { content: "unused" };
+      },
+      async decideDream(request) {
+        offered = request.availableWaifuIds;
+        return [{ op: "add", memory: { waifuId: "mika", content: "Kevin paints.", kind: "fact", strength: 3, entities: [] } }];
+      }
+    };
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    await runtime.runDreamPassForTest("guild-1");
+    expect(offered).toEqual(["mika", "yuki"]);
+    const memories = await storage.readJson("user/memories.json", MemoryStoreSchema);
+    expect(memories.memories.find((memory) => memory.content === "Kevin paints.")?.waifuId).toBe("mika");
+  });
+
   it("dream pass leaves pinned records untouched", async () => {
     const root = await makeTempRoot();
     roots.push(root);
