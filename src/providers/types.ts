@@ -15,15 +15,15 @@ export type ProviderRequest = {
   systemPrompt?: string;
   availableWaifuIds?: string[];
   replyRequired?: boolean;
-  directiveBudgetOpen?: boolean;
   temperature?: number;
   topP?: number;
   maxOutputTokens?: number;
   params?: Record<string, unknown>;
   signal?: AbortSignal;
-  // Phase 4 context engine (spec 8.1). When set, `prompt` is sent verbatim instead of the legacy
-  // assembly from `messages`/`systemPrompt`. decideOrchestrator requires it (T5); `messages` then
-  // carries the same transcript adapted for fakes and heuristics.
+  // Phase 4 context engine (spec 8.1). `prompt` is sent verbatim by generateWaifu, decideOrchestrator
+  // and summarizeContext; `messages` then carries the same transcript adapted for fakes and
+  // heuristics. Reviewer, observer, dream and digest calls still assemble from `messages` and the
+  // custom `systemPrompt`.
   prompt?: BuiltPrompt;
   // Who the call is billed to in the usage ledger (spec 8.10).
   attribution?: ModelCallAttribution;
@@ -64,7 +64,7 @@ export type DreamRequest = ProviderRequest & {
 export type StageManagerObserveRequest = ProviderRequest & {
   availableWaifuIds?: string[];
   // Rendered observer input (participants, existing memories m1..mN, transcript since the
-  // per-conversation cursor). When absent the legacy `messages` window is formatted instead.
+  // per-conversation cursor). Required by the gateway pipeline.
   observerInput?: string;
 };
 

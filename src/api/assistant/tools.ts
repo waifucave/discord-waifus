@@ -327,7 +327,7 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
       "Update fields on an existing waifu. Pass only the fields to change under `changes`. " +
       "Style fields: `verbosity` (terse | chatty | expressive, how long her messages are), " +
       "`customInstructions` (extra prompt text, max 4000 chars) and `scheduleInPrompt` (boolean, whether her " +
-      "schedule is mentioned in the prompt). The old `promptLayout` no longer exists; do not send it.",
+      "schedule is mentioned in the prompt). The prompt layout editor no longer exists; there is nothing to send for it.",
     parameters: {
       type: "object",
       properties: { id: { type: "string" }, changes: { type: "object" } },

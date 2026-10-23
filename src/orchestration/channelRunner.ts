@@ -679,7 +679,6 @@ export class ChannelRunner {
               transcript: prepared.transcript,
               availableWaifuIds: availableWaifus.map((waifu) => waifu.id),
               replyRequired: requireReply,
-              directiveBudgetOpen,
               temperature: ORCHESTRATOR_TEMPERATURE,
               params: orchestrator.params,
               signal,
