@@ -74,6 +74,44 @@ describe("assessLoop", () => {
     ]);
     expect(result.suspected).toBe(false);
   });
+
+  // I7: per-author history. Each waifu restates herself while the two never restate each other,
+  // so every adjacent pair is dissimilar and only the same-speaker comparison sees the loop.
+  it("fires on an A/B/A/B volley where each waifu repeats her own previous message", () => {
+    const messages = [
+      msg("a", "waifu", "aria", "volcano cake recipe needs molten chocolate centre"),
+      msg("b", "waifu", "riko", "garage band rehearsal moved to thursday evening"),
+      msg("c", "waifu", "aria", "molten chocolate centre makes volcano cake recipe"),
+      msg("d", "waifu", "riko", "thursday evening garage band rehearsal moved"),
+      msg("e", "waifu", "aria", "volcano cake recipe with molten chocolate centre"),
+      msg("f", "waifu", "riko", "rehearsal for garage band moved thursday evening")
+    ];
+    const result = assessLoop(messages);
+    expect(result.suspected).toBe(true);
+    expect(result.notice).toContain("same-speaker pairs");
+    // The adjacent-only view alone would have missed it: no consecutive pair overlaps at all.
+    const adjacentOnly = assessLoop(messages.map((m, i) => ({ ...m, authorId: `speaker-${i}` })));
+    expect(adjacentOnly.suspected).toBe(false);
+  });
+
+  it("does not fire when each waifu moves on from her own previous message", () => {
+    const result = assessLoop([
+      msg("a", "waifu", "aria", "volcano cake recipe needs molten chocolate"),
+      msg("b", "waifu", "riko", "garage band rehearsal moved to thursday"),
+      msg("c", "waifu", "aria", "anyway the bakery opened a second branch downtown"),
+      msg("d", "waifu", "riko", "my drummer finally bought new cymbals")
+    ]);
+    expect(result.suspected).toBe(false);
+  });
+
+  it("accepts the minimal message shape (adapted ledger entries)", () => {
+    expect(
+      assessLoop([
+        { authorKind: "waifu", authorId: "aria", content: "the broth defines the entire ramen experience honestly" },
+        { authorKind: "waifu", authorId: "aria", content: "honestly the broth defines the entire ramen experience" }
+      ]).suspected
+    ).toBe(true);
+  });
 });
 
 import { assessCastCadence } from "../src/orchestration/loopDetector.js";
