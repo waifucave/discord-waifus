@@ -11,7 +11,6 @@ import { ResponderExecutor } from "./responderExecutor.js";
 import { ReviewerRunner } from "./reviewerRunner.js";
 import {
   type ChannelRunOptions,
-  type DreamPassResult,
   type RuntimeHooks,
   type RuntimeOrchestratorOptions,
   type StageManagerRunResult,
@@ -28,14 +27,17 @@ export { currentlyDoingForWaifu } from "./promptBuilders.js";
 
 export class RuntimeOrchestrator {
   readonly permissionWarnings = new PermissionWarningTracker();
-  private readonly models: ModelAccess;
   // Set by pause() and by a paused start(); resumeAfterPause() is a no-op unless it is set, so a
   // redundant Resume can never replan (and duplicate) live runs.
   private wasPaused = false;
   private unsubscribes: Array<() => void> = [];
   private stopping = false;
   private readonly oneShot: OneShotDecider;
-  private readonly memoryJobs: MemoryJobs;
+  /**
+   * @internal Observer/dream scheduler. Exposed only so tests can run one memory job directly
+   * (memoryJobs.startStageManagerRun / startDreamRun); production callers use triggerStageManager.
+   */
+  readonly memoryJobs: MemoryJobs;
   private readonly executor: ResponderExecutor;
   private readonly runner: ChannelRunner;
   private readonly reviewer: ReviewerRunner;
@@ -48,14 +50,14 @@ export class RuntimeOrchestrator {
     };
     const maxAutomaticTurns = options.maxAutomaticTurns ?? 8;
     this.oneShot = new OneShotDecider(options.storage.dataRoot);
-    this.models = new ModelAccess(
+    const models = new ModelAccess(
       options,
       options.createPipeline ??
         ((target) => createGatewayModelPipeline({ ...target, dataRoot: options.storage.dataRoot }))
     );
     this.executor = new ResponderExecutor(
       options,
-      this.models,
+      models,
       this.permissionWarnings,
       options.sleep ?? defaultSleep,
       maxAutomaticTurns
@@ -63,16 +65,16 @@ export class RuntimeOrchestrator {
     this.runner = new ChannelRunner(
       options,
       hooks,
-      this.models,
+      models,
       this.executor,
       this.oneShot,
       this.permissionWarnings,
       maxAutomaticTurns
     );
-    this.reviewer = new ReviewerRunner(options, this.models, this.runner);
+    this.reviewer = new ReviewerRunner(options, models, this.runner);
     this.memoryJobs = new MemoryJobs(
       options,
-      this.models,
+      models,
       { ...hooks, isGuildRunActive: (guildId) => this.runner.isGuildRunActive(guildId) },
       options.stageManagerIdleDelayMs
     );
@@ -369,17 +371,6 @@ export class RuntimeOrchestrator {
     return this.memoryJobs.triggerStageManager(guildId, channelId);
   }
 
-  // Test/ops hook: run only the dream consolidation pass for a guild (no observer).
-  // Goes through startDreamRun so the per-guild reentrancy guard is exercised.
-  async runDreamPassForTest(guildId: string): Promise<DreamPassResult> {
-    return this.memoryJobs.startDreamRun(guildId);
-  }
-
-  // Test hook: run only the observer (queue + fast-track), without the dream pass.
-  async runObserverForTest(guildId: string, channelId: string): Promise<StageManagerRunResult> {
-    return this.memoryJobs.startStageManagerRun(guildId, channelId);
-  }
-
   async triggerReviewer(guildId: string, channelId: string, userId?: string): Promise<{
     hallucination: boolean;
     deleted: boolean;
@@ -404,7 +395,6 @@ export class RuntimeOrchestrator {
     }
     return undefined;
   }
-
 }
 
 function discordMessageLogContext(event: DiscordMessageEvent): Record<string, unknown> {
