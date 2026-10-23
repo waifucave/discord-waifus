@@ -1,3 +1,4 @@
+import { sharedUsageLedger } from "../orchestration/usageLedger.js";
 import { readdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { loadAppConfig } from "../config/appConfig.js";
@@ -507,6 +508,10 @@ async function startLockedBackend(options: StartBackendOptions): Promise<Running
         stepStartedAt = Date.now();
         await app.close();
         logger.info("Shutdown step done", { step: "fastify.close", ms: Date.now() - stepStartedAt });
+
+        // Usage lines from calls outside the orchestrator (assistant, persona digest) and any still
+        // queued must reach disk before the host lock is released and the process may exit.
+        await sharedUsageLedger(options.dataRoot).flush();
 
         await rm(appDataPath(options.dataRoot, "pid.json"), { force: true });
         runtime.updatedAt = new Date().toISOString();

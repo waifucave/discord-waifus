@@ -1,12 +1,25 @@
 import type { Gateway, ToolChoice } from "@waifucave/gateway";
 
 export class GatewayPipelineError extends Error {
+  /** Machine-readable cause for callers that branch on it (e.g. `truncated`, `provider_quota`). */
+  readonly code: string | undefined = undefined;
+
   constructor(
     message: string,
     readonly details?: unknown
   ) {
     super(message);
     this.name = "GatewayPipelineError";
+  }
+}
+
+/** A structured decision (forced tool / JSON schema) ended with finishReason `length`. */
+export class TruncatedOutputError extends GatewayPipelineError {
+  override readonly code = "truncated";
+
+  constructor(label: string) {
+    super(`${label}: output was truncated (finish reason length)`);
+    this.name = "TruncatedOutputError";
   }
 }
 

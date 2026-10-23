@@ -20,6 +20,7 @@ import { extractEntities } from "../orchestration/memoryEntities.js";
 import { providerStatuses, keyHint } from "./providerStatus.js";
 import type { ModelPipeline } from "../providers/types.js";
 import { createGatewayModelPipeline } from "../orchestration/pipeline/gatewayPipeline.js";
+import { sharedProviderAlerts } from "../orchestration/providerAlerts.js";
 import { resolveModelTarget } from "../orchestration/pipeline/resolveTarget.js";
 import {
   AgentConfig,
@@ -559,7 +560,9 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
           ...options.runtime,
           discord: { ...options.runtime.discord, warnings: [...options.runtime.discord.warnings, ...live] }
         };
-    return runtimeResponse(runtime, request.principal, options.dataRoot);
+    // Active quota/billing cooldowns (spec 8.10); empty when every provider is available.
+    const providerAlerts = (orchestrator?.providerAlerts ?? sharedProviderAlerts(options.dataRoot)).snapshot();
+    return { ...runtimeResponse(runtime, request.principal, options.dataRoot), providerAlerts };
   });
 
   registerAdminOperationRoutes(app, operationStore);
@@ -725,6 +728,12 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     };
   });
 
+  // A saved/removed key (or topped-up account) must not stay blocked by a stale quota/billing cooldown.
+  const clearProviderCooldown = (providerId: string) => {
+    sharedProviderAlerts(options.dataRoot).clear(providerId);
+    (options.runtimeControl?.getOrchestrator?.() ?? options.runtimeOrchestrator)?.providerAlerts?.clear(providerId);
+  };
+
   app.put("/api/providers/:providerId/credentials", async (request) => {
     const { providerId } = z.object({ providerId: ProviderIdSchema }).parse(request.params);
     assertKnownProvider(providerId);
@@ -750,6 +759,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
         }
       })
     });
+    clearProviderCooldown(providerId);
     return providerCredentialsResponse(updated, providerId);
   });
 
@@ -766,6 +776,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
         return { ...current, providers: rest };
       }
     });
+    clearProviderCooldown(providerId);
     return providerCredentialsResponse(updated, providerId);
   });
 

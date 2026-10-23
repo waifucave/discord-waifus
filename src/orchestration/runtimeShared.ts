@@ -16,6 +16,9 @@ export type RuntimeOrchestratorOptions = {
   discord: DiscordGatewayFacade;
   logger: Logger;
   maxAutomaticTurns?: number;
+  /** Defaults to the shared per-data-root instances. */
+  usageLedger?: import("./usageLedger.js").UsageLedger;
+  providerAlerts?: import("./providerAlerts.js").ProviderAlerts;
   isPaused?: () => boolean;
   onActiveRunsChange?: (activeRuns: number) => void;
   createPipeline?: (target: { providerId: string; modelId: string; queryRole: QueryRole }) => ModelPipeline;

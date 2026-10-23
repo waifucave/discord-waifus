@@ -1,12 +1,17 @@
 import { sanitizeChatMessages } from "../../shared/text.js";
-import { createGateway, Gateway, type ChatResponse, type TextBlock, type ToolCallBlock, type ToolDef } from "@waifucave/gateway";
+import { createGateway, GatewayError, Gateway, type ChatMessage, type ChatResponse, type TextBlock, type ToolCallBlock, type ToolDef } from "@waifucave/gateway";
 import { z } from "zod";
 import { createProviderCredentialsLookup } from "../../api/llmGatewayCredentials.js";
 import { QueryRole, recordProviderQuery, recordProviderReply } from "../../shared/queryLog.js";
 import type { AssistantTurnRequest, AssistantTurnResult, ModelPipeline, ProviderRequest, WaifuGenerationRequest, WaifuGenerationResult, StageManagerObserveRequest, DreamRequest, PersonaDigestRequest, PersonaDigest } from "../../providers/types.js";
 import { ORCHESTRATOR_TOOL_NAME, PICK_NEXT_WAIFU_TOOL_NAME, REVIEWER_TOOL_NAME, SHORT_TERM_MEMORY_TOOL_NAME, OBSERVER_TOOL_NAME, DREAM_TOOL_NAME, PERSONA_DIGEST_TOOL_NAME, DREAM_PROMPT, PERSONA_DIGEST_PROMPT, ReviewerDecision, ReviewerDecisionSchema, orchestratorToolParameters, pickNextWaifuToolParameters, reviewerSystemPrompt, reviewerToolParameters, shortTermMemoryToolParameters, observerSystemPrompt, observerToolParameters, dreamToolParameters, flatDreamToolParameters, personaDigestToolParameters, dreamMessages, normalizeDreamOps, normalizeOrchestratorDecision, parseRawStageManagerObservations } from "../tools.js";
 import { formatObserverContext } from "../contextMessages.js";
-import { GatewayPipelineError, buildUnifiedParams, preconformRequest } from "./params.js";
+import { GatewayPipelineError, TruncatedOutputError, buildUnifiedParams, preconformRequest } from "./params.js";
+import { estimateTokens } from "../context/tokens.js";
+import type { ModelCallAttribution, UsagePurpose } from "../context/types.js";
+import type { Logger } from "../../backend/logger.js";
+import { NoopUsageLedger, sharedUsageLedger, usageFields, type UsageLedger } from "../usageLedger.js";
+import { sharedProviderAlerts, type ProviderAlerts } from "../providerAlerts.js";
 import { buildWaifuMessages } from "./messages.js";
 import { buildOrchestratorChatMessages } from "./timeline.js";
 import { OrchestratorDecision } from "../decisions.js";
@@ -22,6 +27,11 @@ export type GatewayPipelineOptions = {
   queryRole: QueryRole;
   dataRoot?: string;        // production: live credentials from user/providers.json
   gateway?: Gateway;        // tests: inject directly
+  /** One line per model call (spec 8.10). Defaults to the shared ledger for `dataRoot`, else none. */
+  usageLedger?: UsageLedger;
+  /** Quota/billing cooldowns. Defaults to the shared instance for `dataRoot`, else none. */
+  providerAlerts?: ProviderAlerts;
+  logger?: Pick<Logger, "warn">;
 };
 
 const gatewayCache = new Map<string, Gateway>();
@@ -57,14 +67,49 @@ function combinedSignal(signal: AbortSignal | undefined): AbortSignal {
   return signal ? AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]) : AbortSignal.timeout(REQUEST_TIMEOUT_MS);
 }
 
-function flatUsage(response: ChatResponse): Record<string, number> | undefined {
-  const { inputTokens, outputTokens, reasoningTokens, cachedInputTokens } = response.usage;
-  const entries: [string, number][] = [];
-  if (typeof inputTokens === "number") entries.push(["inputTokens", inputTokens]);
-  if (typeof outputTokens === "number") entries.push(["outputTokens", outputTokens]);
-  if (typeof reasoningTokens === "number") entries.push(["reasoningTokens", reasoningTokens]);
-  if (typeof cachedInputTokens === "number") entries.push(["cachedInputTokens", cachedInputTokens]);
-  return entries.length ? Object.fromEntries(entries) : undefined;
+// content_dropped / cache_ignored warnings repeat on every call of an affected model; log each
+// (provider, model, code) once per process.
+const loggedWarnings = new Set<string>();
+
+type CallMeta = {
+  purpose: UsagePurpose;
+  attribution?: ModelCallAttribution;
+  promptCacheKey?: string;
+  /** Set for structured decisions: a `length` finish throws TruncatedOutputError with this label. */
+  structuredLabel?: string;
+};
+
+function callMeta(request: ProviderRequest, purpose: UsagePurpose, structuredLabel?: string): CallMeta {
+  return {
+    purpose: request.attribution?.purpose ?? purpose,
+    attribution: request.attribution,
+    promptCacheKey: request.prompt?.promptCacheKey,
+    structuredLabel
+  };
+}
+
+/**
+ * Spec 8.0: only messages[0] may be role "system" (Anthropic/Google codecs hoist every system
+ * message into the top-level system prompt, which would move mid-conversation notes out of place).
+ * Any later system message becomes a user-role `<system_note>`.
+ */
+function demoteLateSystemMessages(messages: ChatMessage[]): ChatMessage[] {
+  return messages.map((message, index) => {
+    if (index === 0 || message.role !== "system") return message;
+    const text = typeof message.content === "string" ? message.content : message.content.map((block) => block.text).join("\n\n");
+    return { role: "user", content: `<system_note>\n${text}\n</system_note>`, ...(message.cacheControl ? { cacheControl: message.cacheControl } : {}) };
+  });
+}
+
+function isAbort(error: unknown, signal: AbortSignal | undefined): boolean {
+  return signal?.aborted === true || (error instanceof Error && error.name === "AbortError");
+}
+
+function errorKindOf(error: unknown): string {
+  if (error instanceof GatewayError) return error.kind;
+  if (error instanceof Error && error.name === "TimeoutError") return "timeout";
+  if (error instanceof Error && error.name === "AbortError") return "aborted";
+  return "error";
 }
 
 function textContent(response: ChatResponse): string {
@@ -106,7 +151,28 @@ function parseForcedCall<T>(response: ChatResponse, toolName: string, parse: (ra
 }
 
 class GatewayModelPipeline implements ModelPipeline {
-  constructor(private readonly options: GatewayPipelineOptions, private readonly gateway: Gateway) {}
+  private readonly ledger: UsageLedger;
+  private readonly alerts: ProviderAlerts | undefined;
+
+  constructor(private readonly options: GatewayPipelineOptions, private readonly gateway: Gateway) {
+    const dataRoot = options.dataRoot;
+    this.ledger = options.usageLedger ?? (dataRoot ? sharedUsageLedger(dataRoot) : NoopUsageLedger);
+    this.alerts = options.providerAlerts ?? (dataRoot ? sharedProviderAlerts(dataRoot) : undefined);
+  }
+
+  private logCallWarnings(response: ChatResponse): void {
+    const { providerId, modelId } = this.options;
+    for (const warning of response.warnings) {
+      if (warning.code !== "content_dropped" && warning.code !== "cache_ignored") continue;
+      const key = `${providerId}:${modelId}:${warning.code}`;
+      if (loggedWarnings.has(key)) continue;
+      loggedWarnings.add(key);
+      const message = `Gateway warning ${warning.code} for ${providerId}:${modelId}`;
+      const context = { param: warning.param, message: warning.message };
+      if (this.options.logger) this.options.logger.warn(message, context);
+      else console.warn(message, context);
+    }
+  }
 
   protected async chat(request: {
     messages: Parameters<Gateway["chat"]>[0]["messages"];
@@ -114,8 +180,11 @@ class GatewayModelPipeline implements ModelPipeline {
     toolChoice?: Parameters<Gateway["chat"]>[0]["toolChoice"];
     sampling: Parameters<typeof buildUnifiedParams>[0];
     signal?: AbortSignal;
+    meta: CallMeta;
   }): Promise<ChatResponse> {
     const { providerId, modelId } = this.options;
+    // Fail fast (no network, no ledger line) while a quota/billing cooldown is open.
+    this.alerts?.assertAvailable(providerId);
     // Some models (including Muse Spark) allow automatic tools but not named
     // tool choice. Decisions can use the SAME schema as structured output;
     // never silently downgrade a required decision to optional tool calling.
@@ -129,19 +198,54 @@ class GatewayModelPipeline implements ModelPipeline {
       params: buildUnifiedParams(request.sampling),
       toolChoice: schemaTool ? undefined : request.toolChoice
     });
-    const response = await this.gateway.chat({
-      provider: providerId,
-      model: modelId,
-      messages: sanitizeChatMessages(schemaTool ? [
-        ...request.messages,
-        { role: "system", content: `Return the arguments for ${schemaTool.name} as JSON matching the provided response schema. Do not call a tool.` }
-      ] : request.messages),
-      tools: schemaTool ? undefined : request.tools,
-      toolChoice: conformed.toolChoice,
-      responseFormat: schemaTool ? { type: "json_schema", name: schemaTool.name, schema: schemaTool.parameters } : undefined,
-      params: conformed.params,
-      signal: combinedSignal(request.signal)
+    // Only messages[0] may be a system message (spec 8.0): the JSON nudge is a final user turn.
+    const messages = demoteLateSystemMessages(sanitizeChatMessages(schemaTool ? [
+      ...request.messages,
+      { role: "user" as const, content: `Return the arguments for ${schemaTool.name} as JSON matching the provided response schema. Do not call a tool.` }
+    ] : request.messages));
+    const { meta } = request;
+    const startedMs = Date.now();
+    const entryBase = {
+      at: new Date(startedMs).toISOString(),
+      ...(meta.attribution ?? {}),
+      purpose: meta.purpose,
+      providerId,
+      modelId,
+      estimatedInputTokens: estimateTokens(messages, schemaTool ? undefined : request.tools)
+    };
+    let response: ChatResponse;
+    try {
+      response = await this.gateway.chat({
+        provider: providerId,
+        model: modelId,
+        messages,
+        tools: schemaTool ? undefined : request.tools,
+        toolChoice: conformed.toolChoice,
+        responseFormat: schemaTool ? { type: "json_schema", name: schemaTool.name, schema: schemaTool.parameters } : undefined,
+        params: conformed.params,
+        promptCacheKey: meta.promptCacheKey,
+        signal: combinedSignal(request.signal)
+      });
+    } catch (error) {
+      this.alerts?.report(providerId, error);
+      void this.ledger.record({
+        ...entryBase,
+        status: isAbort(error, request.signal) ? "aborted" : "failed",
+        ...usageFields(undefined),
+        errorKind: errorKindOf(error),
+        durationMs: Date.now() - startedMs
+      });
+      throw error;
+    }
+    void this.ledger.record({
+      ...entryBase,
+      status: "ok",
+      ...usageFields(response.usage),
+      finishReason: response.finishReason,
+      durationMs: Date.now() - startedMs
     });
+    this.logCallWarnings(response);
+    if (meta.structuredLabel && response.finishReason === "length") throw new TruncatedOutputError(meta.structuredLabel);
     if (!schemaTool) return response;
     if (response.finishReason !== "stop") {
       throw new GatewayPipelineError(`Structured decision did not complete: ${response.finishReason}`);
@@ -172,7 +276,8 @@ class GatewayModelPipeline implements ModelPipeline {
       tools: [{ name: ORCHESTRATOR_TOOL_NAME, parameters: orchestratorToolParameters(request.availableWaifuIds, request.replyRequired, request.directiveBudgetOpen ?? true) as Record<string, unknown> }],
       toolChoice: { name: ORCHESTRATOR_TOOL_NAME },
       sampling: { temperature: request.temperature ?? 0.2, maxOutputTokens: request.maxOutputTokens, params: request.params },
-      signal: request.signal
+      signal: request.signal,
+      meta: callMeta(request, "orchestrator", "decideOrchestrator")
     });
     // normalizeOrchestratorDecision owns the replyRequired gate (parity with legacy
     // parseDecision): lenient Raw parse -> replyRequired check -> strict schema mapping.
@@ -194,7 +299,8 @@ class GatewayModelPipeline implements ModelPipeline {
       tools: [{ name: REVIEWER_TOOL_NAME, parameters: reviewerToolParameters() as Record<string, unknown> }],
       toolChoice: { name: REVIEWER_TOOL_NAME },
       sampling: { temperature: request.temperature ?? 0, maxOutputTokens: request.maxOutputTokens ?? 64, params: request.params },
-      signal: request.signal
+      signal: request.signal,
+      meta: callMeta(request, "reviewer", "decideReviewer")
     });
     return parseForcedCall(response, REVIEWER_TOOL_NAME, (raw) => ReviewerDecisionSchema.parse(raw), "decideReviewer");
   }
@@ -208,7 +314,8 @@ class GatewayModelPipeline implements ModelPipeline {
         messages: transcript,
         tools: request.tools,
         sampling: { params: request.params },
-        signal: request.signal
+        signal: request.signal,
+        meta: { purpose: "assistant" }
       });
       const toolCalls = response.content.filter((block): block is ToolCallBlock => block.type === "toolCall");
       const text = response.content
@@ -219,7 +326,9 @@ class GatewayModelPipeline implements ModelPipeline {
         transcript.push({ role: "assistant", content: text });
         return { content: text, messages: transcript };
       }
-      transcript.push({ role: "assistant", content: response.content.filter((block) => block.type !== "reasoning") });
+      // Reasoning blocks go back unchanged (signatures / redacted data / `replay` must round-trip
+      // byte-exact on the next round); they are never displayed, only `text` blocks are.
+      transcript.push({ role: "assistant", content: response.content });
       for (const call of toolCalls) {
         if (executedCalls >= limit) {
           transcript.push({ role: "tool", toolCallId: call.id, content: "Tool call limit reached for this turn." });
@@ -263,7 +372,8 @@ class GatewayModelPipeline implements ModelPipeline {
         temperature: request.temperature, topP: request.topP, maxOutputTokens: request.maxOutputTokens,
         params: request.params, stopSequences: request.stopSequences
       },
-      signal: request.signal
+      signal: request.signal,
+      meta: callMeta(request, request.retryUserMessage ? "waifu_retry" : "waifu_reply")
     });
 
     // Legacy parity (postJsonAndExtractText, legacy pipelines.ts:837-840): a record extract
@@ -274,8 +384,8 @@ class GatewayModelPipeline implements ModelPipeline {
     const content = textContent(response);
 
     const result: WaifuGenerationResult = { content };
-    const usage = flatUsage(response);
-    if (usage) result.usage = usage;
+    result.usage = response.usage;
+    result.finishReason = response.finishReason;
 
     const memoryEntries = toolCalls(response, SHORT_TERM_MEMORY_TOOL_NAME)
       .map((call) => { try { return JSON.parse(call.arguments) as { content?: unknown }; } catch { return undefined; } })
@@ -307,7 +417,8 @@ class GatewayModelPipeline implements ModelPipeline {
       tools: [{ name: OBSERVER_TOOL_NAME, parameters: observerToolParameters(request.availableWaifuIds) as Record<string, unknown> }],
       toolChoice: { name: OBSERVER_TOOL_NAME },
       sampling: { temperature: request.temperature ?? 0.2, maxOutputTokens: request.maxOutputTokens, params: request.params },
-      signal: request.signal
+      signal: request.signal,
+      meta: callMeta(request, "observer", "decideStageManagerObservations")
     });
     return parseForcedCall(response, OBSERVER_TOOL_NAME, (raw) => {
       const obj = raw as { observations?: unknown[] };
@@ -326,7 +437,8 @@ class GatewayModelPipeline implements ModelPipeline {
       tools: [{ name: DREAM_TOOL_NAME, parameters: (isFlat ? flatDreamToolParameters(request.availableWaifuIds) : dreamToolParameters(request.availableWaifuIds)) as Record<string, unknown> }],
       toolChoice: { name: DREAM_TOOL_NAME },
       sampling: { temperature: request.temperature ?? 0.2, maxOutputTokens: request.maxOutputTokens, params: request.params },
-      signal: request.signal
+      signal: request.signal,
+      meta: callMeta(request, "dream", "decideDream")
     });
     return parseForcedCall(response, DREAM_TOOL_NAME, (raw) => {
       const obj = raw as { ops?: unknown[] };
@@ -349,7 +461,8 @@ class GatewayModelPipeline implements ModelPipeline {
       tools: [{ name: PERSONA_DIGEST_TOOL_NAME, parameters: personaDigestToolParameters() as Record<string, unknown> }],
       toolChoice: { name: PERSONA_DIGEST_TOOL_NAME },
       sampling: { temperature: request.temperature ?? 0.2, maxOutputTokens: request.maxOutputTokens, params: request.params },
-      signal: request.signal
+      signal: request.signal,
+      meta: callMeta(request, "persona_digest", "generatePersonaDigest")
     });
     return parseForcedCall(response, PERSONA_DIGEST_TOOL_NAME, (raw) => PersonaDigestResultSchema.parse(raw), "generatePersonaDigest");
   }
