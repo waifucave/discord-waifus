@@ -37,7 +37,7 @@ import {
   type ChannelRunOptions,
   type RetriggerWakeInput,
   type RuntimeHooks,
-  type RuntimeOrchestratorOptions,
+  type RuntimeCollaboratorOptions,
   isHumanUserMessage,
   runKey,
   summarizeProviderPipelineDetails,
@@ -64,8 +64,16 @@ export type ActiveChannelRun = {
 };
 
 type ChannelRunnerOptions = Pick<
-  RuntimeOrchestratorOptions,
-  "storage" | "discord" | "logger" | "isPaused" | "ocr" | "decideOneShot" | "restartResumeDelayMs" | "onActiveRunsChange"
+  RuntimeCollaboratorOptions,
+  | "storage"
+  | "discord"
+  | "logger"
+  | "isPaused"
+  | "ocr"
+  | "decideOneShot"
+  | "restartResumeDelayMs"
+  | "onActiveRunsChange"
+  | "contexts"
 >;
 
 export class ChannelRunner {

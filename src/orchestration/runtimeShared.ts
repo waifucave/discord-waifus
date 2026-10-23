@@ -9,6 +9,12 @@ import { StorageService } from "../storage/storageService.js";
 import type { RetriggerSource } from "./session.js";
 import type { ContextMessage } from "./contextMessages.js";
 import type { OneShotInput, OneShotResult } from "./oneShot/decider.js";
+import type { ImageCacheConfig, ImageFetcher } from "../discord/attachments.js";
+import type { ImageRef } from "../shared/schemas/discordMessage.js";
+import type { CompactionSettings } from "../shared/schemas/compaction.js";
+import type { MemoryConfig } from "../shared/schemas/config.js";
+import type { ContextRuntime } from "./context/runtime.js";
+import type { CompactionService } from "./context/types.js";
 
 export type RuntimeOrchestratorOptions = {
   updateActivity?: import("../backend/updates/activity.js").UpdateActivity;
@@ -25,18 +31,39 @@ export type RuntimeOrchestratorOptions = {
   decideOneShot?: (input: OneShotInput) => Promise<OneShotResult>;
   ocr?: {
     enrichMessages(messages: ContextMessage[], options?: { signal?: AbortSignal }): Promise<ContextMessage[]>;
+    /** Cached OCR text without running OCR (ImageOcrService.cachedText); feeds the image freeze rule. */
+    cachedText?(ref: ImageRef): Promise<string | undefined>;
     dispose?(): Promise<void>;
   };
+  /** Shared Discord image fetcher (the OCR service's, spec 8.4); built over the data root when omitted. */
+  images?: ImageFetcher;
+  /** `AppConfig.discord.images`, used only when `images` is omitted. */
+  imageConfig?: Partial<ImageCacheConfig>;
+  /** `AppConfig.compaction`; `ServerConfig.compaction` overrides per key. */
+  compaction?: CompactionSettings;
+  /** Context compaction service (T7b); NoopCompaction when omitted. */
+  contextCompaction?: CompactionService;
+  /** Prebuilt context runtime (tests); otherwise createAppContextRuntime builds one. */
+  contexts?: ContextRuntime;
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   stageManagerIdleDelayMs?: number;
   /** Delay before boot catch-up runs (lets Discord bots finish connecting). Default 5000. */
   restartResumeDelayMs?: number;
   /** AppConfig `memory` section (dream hour, pinned cap) plus a test hook for the nightly budget. */
-  memory?: { dreamHourLocal?: number; maxPinnedInjected?: number; dreamChunksPerNight?: number };
+  memory?: Partial<MemoryConfig> & { dreamChunksPerNight?: number };
 };
+
+/**
+ * Collaborator deps: the orchestrator options plus the one ContextRuntime the facade builds
+ * (spec 8.3). Every collaborator (ResponderExecutor, ChannelRunner, ...) reads `options.contexts`.
+ */
+export type RuntimeCollaboratorOptions = RuntimeOrchestratorOptions & { contexts: ContextRuntime };
 
 /** The narrow I/O services most runtime collaborators need. */
 export type RuntimeServices = Pick<RuntimeOrchestratorOptions, "storage" | "discord" | "logger" | "isPaused" | "memory">;
+
+/** RuntimeServices plus the shared context engine (reply path, orchestrator). */
+export type RuntimeContextServices = RuntimeServices & Pick<RuntimeCollaboratorOptions, "contexts">;
 
 /** Facade-owned lifecycle hooks shared with the collaborators. */
 export type RuntimeHooks = {

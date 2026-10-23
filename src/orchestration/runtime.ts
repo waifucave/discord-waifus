@@ -11,8 +11,11 @@ import { MemoryJobs } from "./memoryJobs.js";
 import { ModelAccess } from "./modelAccess.js";
 import { ResponderExecutor } from "./responderExecutor.js";
 import { ReviewerRunner } from "./reviewerRunner.js";
+import { createAppContextRuntime } from "./context/appRuntime.js";
+import type { ContextRuntime } from "./context/runtime.js";
 import {
   type ChannelRunOptions,
+  type RuntimeCollaboratorOptions,
   type RuntimeHooks,
   type RuntimeOrchestratorOptions,
   type StageManagerRunResult,
@@ -48,8 +51,25 @@ export class RuntimeOrchestrator {
   private readonly runner: ChannelRunner;
   private readonly reviewer: ReviewerRunner;
   private readonly commands: RuntimeCommands;
+  /** The one context engine for this runtime (spec 8.3); collaborators get it as `options.contexts`. */
+  readonly contexts: ContextRuntime;
 
   constructor(private readonly options: RuntimeOrchestratorOptions) {
+    const ocr = options.ocr;
+    this.contexts =
+      options.contexts ??
+      createAppContextRuntime({
+        storage: options.storage,
+        discord: () => this.options.discord,
+        logger: options.logger,
+        ...(options.images ? { images: options.images } : {}),
+        ...(options.imageConfig ? { imageConfig: options.imageConfig } : {}),
+        ...(options.compaction ? { compactionSettings: options.compaction } : {}),
+        ...(options.memory ? { memory: options.memory } : {}),
+        ...(ocr?.cachedText ? { ocr: { cachedText: (ref) => ocr.cachedText!(ref) } } : {}),
+        ...(options.contextCompaction ? { compaction: options.contextCompaction } : {})
+      });
+    const services: RuntimeCollaboratorOptions = { ...options, contexts: this.contexts };
     const hooks: RuntimeHooks = {
       runBackground: (label, context, task) => this.runBackground(label, context, task),
       isStopping: () => this.stopping
@@ -70,14 +90,14 @@ export class RuntimeOrchestrator {
         }))
     );
     this.executor = new ResponderExecutor(
-      options,
+      services,
       models,
       this.permissionWarnings,
       options.sleep ?? defaultSleep,
       maxAutomaticTurns
     );
     this.runner = new ChannelRunner(
-      options,
+      services,
       hooks,
       models,
       this.executor,
@@ -85,9 +105,9 @@ export class RuntimeOrchestrator {
       this.permissionWarnings,
       maxAutomaticTurns
     );
-    this.reviewer = new ReviewerRunner(options, models, this.runner);
+    this.reviewer = new ReviewerRunner(services, models, this.runner);
     this.memoryJobs = new MemoryJobs(
-      options,
+      services,
       models,
       {
         ...hooks,
@@ -96,7 +116,7 @@ export class RuntimeOrchestrator {
       },
       options.stageManagerIdleDelayMs
     );
-    this.commands = new RuntimeCommands(options, {
+    this.commands = new RuntimeCommands(services, {
       runtimeBusyReason: (guildId, channelId) => this.runtimeBusyReason(guildId, channelId),
       startChannelRunBackground: (guildId, channelId, reason, runOptions) =>
         this.runner.startChannelRunBackground(guildId, channelId, reason, runOptions),
