@@ -256,7 +256,7 @@ class GatewayModelPipeline implements ModelPipeline {
       tools.push({ name: PICK_NEXT_WAIFU_TOOL_NAME, parameters: pickNextWaifuToolParameters(request.availableWaifuIds) as Record<string, unknown> });
     }
     const response = await this.chat({
-      messages: await buildWaifuMessages(this.model, request),
+      messages: await buildWaifuMessages(this.model, { ...request, systemPrompt: request.systemPrompt ?? "" }),
       tools: tools.length ? tools : undefined,
       toolChoice: tools.length ? "auto" : undefined,
       sampling: {
