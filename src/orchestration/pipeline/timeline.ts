@@ -1,8 +1,9 @@
 // Orchestrator decision serializers (spec 8.7). A past decision reaches the director's context as
 // a `decision` ContextNote written once the decision is final: `call` is the (lossy) serialized
-// tool-call arguments, `outcome` the final-state result text. The transcript renders the note as
-// an orchestrator_decision tool-call turn, or — on the JSON-schema fallback, which sends no tools —
-// as a text line `[decision 14:02] reply → aria · sent`. No relative ages anywhere.
+// tool-call arguments, `outcome` the final-state result text, `at` the decision time. The
+// director renders it as a text line `[decision 14:02] reply → aria · sent → #a4` (never as an
+// assistant tool_use turn: thinking models reject those without a thinking block, and the
+// JSON-schema fallback sends no tools). No relative ages anywhere.
 
 import type { OrchestratorDecisionHistoryEntry } from "../../shared/schemas/domain.js";
 import type { NewContextNote } from "../context/types.js";

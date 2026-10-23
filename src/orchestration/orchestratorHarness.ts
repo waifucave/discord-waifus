@@ -1,9 +1,9 @@
 // The orchestrator (director) RoleRenderer (spec 6.4, 8.7). Same shape as every context:
 //   system (A)  director rules for the six policies the runtime enforces, static casting cards,
 //               the owner's custom orchestrator.prompt as <owner_policy> (model mode, B28)
-//   header (B)  frozen per epoch: <conversation_summary>, a roster availability snapshot, <place>
+//   header (B)  frozen per epoch: <conversation_summary>, <place>
 //   transcript  append-only `[HH:MM #ref] Name: body` entries plus the director's own final past
-//               decisions as orchestrator_decision tool-call turns (`decision` notes)
+//               decisions as `[decision HH:MM] …` text lines (`decision` notes)
 //   tail        ephemeral: now, current availability, <runtime_notice>, the wake marker with the
 //               recorded scheduling decision (B8), reply-required and directive-budget state
 // The tool schema is fixed per channel config (orchestratorToolParameters(availableWaifuIds));
@@ -93,7 +93,7 @@ function castingCard(card: CastCard): string {
 }
 
 const PAUSE_DETAIL =
-  "   Roughly: 10–60s mid-flow, 100–180s after a beat lands, 240–600s for a cooling thread, 900–1800s to revive a quiet room, 3600s+ while waiting for humans. Use exact, varied numbers (110, 140, 420), back off after repeated quiet checks, and break any wake rhythm that keeps the same shape.";
+  "   Roughly: 10–60s mid-flow, 100–180s after a beat lands, 240–600s for a cooling thread, 900–1800s to revive a quiet room, 3600s+ while waiting for humans. Use exact, varied numbers (110, 140, 420), back off after repeated quiet checks, and break repetitive wake rhythms.";
 
 /**
  * Director rules (spec 8.7). Every "enforced" line is something the runtime really does
@@ -107,7 +107,7 @@ export function directorRules(o: { pausePlanning: boolean }): string {
     "</director>",
     "",
     "<transcript_format>",
-    "`[14:02 #k3] Kevin: text` is local time, message ref, sender. `↩#a1` replies to #a1; `↩Name` to an older message by Name. `[image: …]` is text read from an image; `[image]` an unreadable one. `— 3 hours later —` marks gaps and days. Your past orchestrator_decision calls show their outcomes (`sent → #a4` names the messages they produced); nobody else sees them. The final block is the runtime's live status, not chat.",
+    "`[14:02 #k3] Kevin: text` is local time, message ref, sender. `↩#a1` replies to #a1; `↩Name` to an older message by Name. `[image: …]` is an image's text; `[image]` unreadable. `— 3 hours later —` marks gaps and days. `[decision 14:02] reply → aria · sent → #a4` lines are your own past decisions and outcomes (`#a4`: the message produced), seen by nobody else. The final block is the runtime's live status, not chat.",
     "</transcript_format>",
     "",
     "<policy>",

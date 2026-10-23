@@ -2083,7 +2083,9 @@ describe("RuntimeOrchestrator", () => {
     expect(sleepCalls).toEqual([3000, 4000]);
   });
 
-  it("replays the director's own final decisions as frozen tool-call turns on later passes", async () => {
+  // Decisions replay as text lines, never assistant tool_use turns: with thinking on, Anthropic
+  // rejects (400) a replayed tool_use that has no thinking block (T3 review).
+  it("replays the director's own final decisions as frozen text lines, even for a thinking model", async () => {
     const root = await makeTempRoot();
     roots.push(root);
     await ensureDataLayout(root);
@@ -2105,6 +2107,11 @@ describe("RuntimeOrchestrator", () => {
     };
 
     await seedRuntimeConfig(storage);
+    const orchestratorConfig = await storage.readJson("user/orchestrator/config.json", AgentConfigSchema);
+    await storage.writeJson("orchestrator", "user/orchestrator/config.json", AgentConfigSchema, {
+      ...orchestratorConfig,
+      params: { ...orchestratorConfig.params, "reasoning.enabled": true, "reasoning.budgetTokens": 2048 }
+    });
     // A stale history entry that predates this context never leaks into the prompt.
     await storage.writeJson(
       "orchestrator:history",
@@ -2141,22 +2148,18 @@ describe("RuntimeOrchestrator", () => {
     await runtime.stop();
 
     expect(prompts).toHaveLength(2);
-    expect(JSON.stringify(prompts[0]!.messages)).not.toContain("orchestrator_decision\"");
+    expect(prompts[0]!.debug.transcript).not.toContain("[decision");
     expect(JSON.stringify(prompts[0]!.messages)).not.toContain("from before the context existed");
-    const calls = prompts[1]!.messages.flatMap((message) =>
-      message.role === "assistant" && Array.isArray(message.content)
-        ? message.content.filter((block) => block.type === "toolCall")
-        : []
-    );
-    expect(calls).toHaveLength(1);
-    expect(calls[0]).toMatchObject({ name: "orchestrator_decision" });
-    expect(JSON.parse((calls[0] as { arguments: string }).arguments)).toMatchObject({ action: "no_reply", retriggerAfterSeconds: 180 });
-    const result = prompts[1]!.messages.find((message) => message.role === "tool");
-    expect(result).toMatchObject({ content: "paused 180s" });
+    // No assistant tool_use (nor tool result) can reach a thinking model's request.
+    for (const prompt of prompts) {
+      expect(prompt.messages.some((message) => message.role === "assistant" || message.role === "tool")).toBe(false);
+    }
     // Append-only: the decision renders after the message it answered and before the new one.
     const transcript = prompts[1]!.debug.transcript;
-    expect(transcript.indexOf("anyone around?")).toBeLessThan(transcript.indexOf("[tool call orchestrator_decision]"));
-    expect(transcript.indexOf("[tool call orchestrator_decision]")).toBeLessThan(transcript.indexOf("hello??"));
+    const line = transcript.match(/\[decision \d\d:\d\d\] no_reply 180s · plan: "re-check" · paused 180s/);
+    expect(line).not.toBeNull();
+    expect(transcript.indexOf("anyone around?")).toBeLessThan(transcript.indexOf(line![0]));
+    expect(transcript.indexOf(line![0])).toBeLessThan(transcript.indexOf("hello??"));
   });
 
   it("heals leftover pending decisions to interrupted on startup", async () => {

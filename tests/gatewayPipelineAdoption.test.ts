@@ -97,7 +97,7 @@ describe("usage ledger coverage per call path", () => {
     await pipeline.generateWaifu({ ...base, systemPrompt: "S", retryUserMessage: "try again" });
     await pipeline.decideOrchestrator!({ ...base, prompt: orchestratorPrompt, availableWaifuIds: ["a"], replyRequired: false }).catch(() => undefined);
     await pipeline.decideReviewer!({ ...base, message: "x" }).catch(() => undefined);
-    await pipeline.decideStageManagerObservations!({ ...base, availableWaifuIds: ["a"] }).catch(() => undefined);
+    await pipeline.decideStageManagerObservations!({ ...base, availableWaifuIds: ["a"], observerInput: "Transcript:" }).catch(() => undefined);
     await pipeline.decideDream!({ ...base, memories: [], observations: [], availableWaifuIds: ["a"] }).catch(() => undefined);
     await pipeline.generatePersonaDigest!({ ...base, personaText: "p" }).catch(() => undefined);
 

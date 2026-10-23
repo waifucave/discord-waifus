@@ -357,9 +357,17 @@ describe("decideStageManagerObservations (gateway)", () => {
   it("normalizes legacy observations into add ops and coerces stringified importance (I1 fix)", async () => {
     const observations = [{ waifuId: "yuki", content: "Ann works remotely", importance: "3", kind: "fact", entities: ["Ann"] }];
     const out = await makePipeline(toolResponse({ observations }) as unknown as typeof fetch).decideStageManagerObservations!({
-      modelId: "deepseek-v4-flash", messages: [msg({})], availableWaifuIds: ["yuki"]
+      modelId: "deepseek-v4-flash", messages: [msg({})], availableWaifuIds: ["yuki"], observerInput: "Transcript:\n[10:00] Ann (p1): I work remotely"
     });
     expect(out).toEqual([{ op: "add", waifuId: "yuki", content: "Ann works remotely", importance: 3, kind: "fact", subjects: ["Ann"] }]);
+  });
+
+  it("requires the rendered observer input (no legacy window formatting)", async () => {
+    const fetchImpl = vi.fn();
+    await expect(
+      makePipeline(fetchImpl as unknown as typeof fetch).decideStageManagerObservations!({ modelId: "deepseek-v4-flash", messages: [msg({})], availableWaifuIds: ["yuki"] })
+    ).rejects.toThrow(/observerInput is required/);
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 });
 

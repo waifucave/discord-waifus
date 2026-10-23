@@ -25,7 +25,6 @@ import {
   orchestratorPlace,
   waifuAuthorMatcher
 } from "./orchestratorHarness.js";
-import { usesJsonSchemaDecisions } from "./pipeline/gatewayPipeline.js";
 import { decisionNoteFor } from "./pipeline/timeline.js";
 import { ORCHESTRATOR_TOOL_NAME } from "./tools.js";
 import { planRestartResume } from "./restartResume.js";
@@ -532,8 +531,6 @@ export class ChannelRunner {
       // mode — the model reads it as a prompt, deterministic and one-shot read the same entries.
       const resolvedModel = modelConfig ? this.models.resolvedModel(modelConfig) : undefined;
       const model = resolvedModel ?? structuralModel(mode, modelConfig?.modelId ?? server.oneShot.target);
-      // The JSON-schema fallback sends no tools, so past decisions render as text lines there.
-      const textDecisions = resolvedModel ? usesJsonSchemaDecisions(resolvedModel) : mode !== "model";
       const isWaifu = await this.waifuAuthorMatcher(deterministicCast);
       const backfillCap = resolveContextCap("orchestrator", server, orchestrator);
       const renderer = createOrchestratorRenderer({
@@ -594,7 +591,11 @@ export class ChannelRunner {
           : {}),
         // One-shot reads a small window (its old ~20 messages); deterministic keeps keepRecent.
         ...(oneShotMode ? { truncateKeep: backfillCap } : {}),
-        renderToolTurnsAsText: textDecisions
+        // Past decisions always render as text lines, never as assistant tool_use turns: a Claude
+        // model with thinking on rejects (400) a replayed tool_use that has no thinking block, the
+        // JSON-schema fallback sends no tools at all, and one fixed rendering keeps the prefix stable
+        // when the model or its reasoning params change.
+        renderToolTurnsAsText: true
       });
       const assessment =
         renderer.assessment() ??

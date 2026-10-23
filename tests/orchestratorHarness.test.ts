@@ -110,7 +110,8 @@ async function harness() {
       backfillCap: 20,
       selfAuthorIds: [],
       render: renderer({ turn: o.turn }),
-      ...(o.text ? { renderToolTurnsAsText: true } : {})
+      // As ChannelRunner: decisions always render as text lines (never assistant tool_use turns).
+      renderToolTurnsAsText: o.text ?? true
     });
   return { runtime, channel, clock, prepare };
 }
@@ -186,8 +187,8 @@ describe("orchestrator system prompt (A)", () => {
     expect(judgement).toContain("7. Availability is a soft signal: a sleeping or busy waifu can still answer when addressed.");
     // The transcript conventions the renderer really uses are explained.
     expect(model).toContain("`↩Name` to an older message by Name");
-    expect(model).toContain("`[image: …]` is text read from an image");
-    expect(model).toContain("`sent → #a4` names the messages they produced");
+    expect(model).toContain("`[image: …]` is an image's text");
+    expect(model).toContain("`[decision 14:02] reply → aria · sent → #a4` lines are your own past decisions and outcomes");
     expect(model).toContain("<waifu>\nid: aria · Aria · sees images natively\nVoice: Warm, quick, a little breathless.\nCast her when: Food, comfort, cheering people up.\n</waifu>");
     expect(model).toContain('id: riko · Riko · appears in this server as "rikorin"\nAbout: Deadpan drummer.');
     // B28: the owner's custom orchestrator.prompt reaches model mode as <owner_policy>.
@@ -367,20 +368,19 @@ describe("director context through ContextRuntime", () => {
     await commitFinal(h.runtime, p1, decision("d1", { status: "pending" }));
     h.channel.post({ authorId: "aria-bot", authorName: "Aria", authorIsBot: true, content: "here!" });
     const p2 = await h.prepare();
-    expect(p2.prompt.debug.transcript).not.toContain("orchestrator_decision");
+    expect(p2.prompt.debug.transcript).not.toContain("[decision");
     // Final now: the note anchors to the newest ledger entry (Aria's reply) and stays frozen.
     await commitFinal(h.runtime, p2, decision("d1"));
     h.channel.post({ authorId: "kevin", authorName: "Kevin", content: "yay" });
     const p3 = await h.prepare();
     const transcript = p3.prompt.debug.transcript;
-    expect(transcript.indexOf("here!")).toBeLessThan(transcript.indexOf("[tool call orchestrator_decision]"));
-    expect(transcript.indexOf("[tool result] sent")).toBeLessThan(transcript.indexOf("yay"));
-    expect(transcript).toContain("[tool result] sent");
+    expect(transcript.indexOf("here!")).toBeLessThan(transcript.indexOf("[decision 14:00] reply → aria · sent"));
+    expect(transcript.indexOf("[decision 14:00]")).toBeLessThan(transcript.indexOf("yay"));
     expect(p3.state.notes.filter((note) => note.kind === "decision")).toHaveLength(1);
     expectPrefix(p2.prompt, p3.prompt);
   });
 
-  it("renders decisions as text lines on the JSON-schema fallback (no tool turns)", async () => {
+  it("renders decisions as text lines, never as tool turns (thinking-safe, JSON-schema-safe)", async () => {
     const h = await harness();
     h.channel.post({ authorId: "kevin", authorName: "Kevin", content: "Aria, cake?" });
     const p1 = await h.prepare({ text: true });

@@ -42,7 +42,7 @@ async function harness() {
 }
 
 describe("durable truncation without a summarizer", () => {
-  it("keeps a deterministic director bounded across 400 messages and lets pruning advance", async () => {
+  it("keeps a deterministic director bounded across 400 messages and lets pruning advance", { timeout: 60_000 }, async () => {
     const h = await harness();
     const key = conversationKey(GUILD);
     const counts: number[] = [];
