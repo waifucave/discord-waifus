@@ -36,6 +36,7 @@ import {
   ACTIVE_CONTEXT_MS,
   entryRenderHash,
   isGapEntry,
+  newestSeq,
   orderedEntries,
   pruneLedgerEntries,
   reconcileEntries,
@@ -88,6 +89,11 @@ export interface ContextEngineStore extends ContextStore {
   commitPrepare(k: ConversationKey, a: ContextAgent, i: CommitPrepareInput): Promise<CommitPrepareResult>;
   /** Prune ledger entries and refs below the minimum cursor of active contexts (spec 8.1). */
   pruneConversation(k: ConversationKey): Promise<{ removed: number }>;
+  /**
+   * State update given the newest ledger seq, read under the ledger and context locks together
+   * (note anchors: nothing can be reconciled between reading the anchor and writing the note).
+   */
+  updateAnchored?(k: ConversationKey, a: ContextAgent, fn: (s: ContextState, newestSeq: number) => ContextState): Promise<ContextState>;
 }
 
 export type FileContextStoreOptions = {
@@ -158,6 +164,18 @@ export class FileContextStore implements ContextEngineStore {
     return this.storage.locks.withLock(contextResourceKey(k, a), async () => {
       const current = await this.readState(k, a);
       return this.writeRecord(contextStatePath(k, a), ContextStateSchema, fn(structuredClone(current)));
+    });
+  }
+
+  async updateAnchored(
+    k: ConversationKey,
+    a: ContextAgent,
+    fn: (s: ContextState, newestSeq: number) => ContextState
+  ): Promise<ContextState> {
+    return this.storage.withLocks([ledgerResourceKey(k), contextResourceKey(k, a)], async () => {
+      const ledger = await this.loadLedger(k);
+      const current = await this.readState(k, a);
+      return this.writeRecord(contextStatePath(k, a), ContextStateSchema, fn(structuredClone(current), newestSeq(ledger)));
     });
   }
 
