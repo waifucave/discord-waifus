@@ -4,7 +4,7 @@ import { OrchestratorDecision } from "../orchestration/decisions.js";
 import { DreamOp, StageManagerObservation } from "../orchestration/stageManager.js";
 import type { ReviewerDecision } from "../orchestration/tools.js";
 import type { BuiltPrompt, ModelCallAttribution } from "../orchestration/context/types.js";
-import type { FinishReason } from "@waifucave/gateway";
+import type { FinishReason, Usage } from "@waifucave/gateway";
 import type { LedgerEntry } from "../shared/schemas/context.js";
 
 export type ModelRole = "orchestrator" | "waifu" | "stage_manager" | "reviewer";
@@ -82,8 +82,8 @@ export type WaifuGenerationResult = {
     waifuId?: string;
   };
   shortTermMemoryEntries?: string[];
-  // `usage` stays the flat legacy shape until T7a replaces flatUsage with the gateway `Usage`.
-  usage?: Record<string, number>;
+  // Gateway 0.4.0 usage convention (inputTokens includes cache reads/writes; see Usage).
+  usage?: Usage;
   finishReason?: FinishReason;
 };
 

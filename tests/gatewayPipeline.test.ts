@@ -29,11 +29,12 @@ describe("generateWaifu (gateway)", () => {
     params: { "reasoning.enabled": false }
   };
 
-  it("returns trimmed text content and flat usage", async () => {
+  it("returns trimmed text content, gateway usage and finishReason", async () => {
     const fetchImpl = okFetch({ id: "r1", choices: [{ message: { content: "  hey there  " }, finish_reason: "stop" }], usage: { prompt_tokens: 9, completion_tokens: 3 } });
     const result = await makePipeline(fetchImpl as unknown as typeof fetch).generateWaifu(baseRequest);
     expect(result.content).toBe("hey there");
-    expect(result.usage).toEqual({ inputTokens: 9, outputTokens: 3 });
+    expect(result.usage).toMatchObject({ inputTokens: 9, outputTokens: 3 });
+    expect(result.finishReason).toBe("stop");
   });
 
   // Legacy parity pin (postJsonAndExtractText, legacy pipelines.ts:837-840): a record extract
@@ -515,7 +516,7 @@ describe("cross-wire goldens", () => {
 
     // Result
     expect(result.content).toBe("hello!");
-    expect(result.usage).toEqual({ inputTokens: 5, outputTokens: 2 });
+    expect(result.usage).toMatchObject({ inputTokens: 5, outputTokens: 2 });
   });
 
   // -------------------------------------------------------------------------
