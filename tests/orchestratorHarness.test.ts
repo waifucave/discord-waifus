@@ -341,6 +341,17 @@ describe("director context through ContextRuntime", () => {
     await expect(serializePrompt(p2.prompt)).toMatchFileSnapshot("./golden/__snapshots__/orchestrator-wake.txt");
   });
 
+  it("golden: reply-required pass (manual /run)", async () => {
+    const h = await harness();
+    h.channel.post({ authorId: "kevin", authorName: "Kevin", content: "anyone up for a bake-off?" });
+    h.channel.post({ authorId: "aria-bot", authorName: "Aria", authorIsBot: true, content: "always!!" }, BASE_TIME + 60_000);
+    h.clock.now = BASE_TIME + 3 * 60_000;
+    const p = await h.prepare({ turn: turn({ replyRequired: true, directiveCount: 0 }) });
+    expect(p.prompt.messages.filter((m) => m.role === "system")).toHaveLength(1);
+    expect(p.prompt.debug.tail).toContain('Reply required: yes. This is a manual /run: choose action "reply" with at least one waifu.');
+    await expect(serializePrompt(p.prompt)).toMatchFileSnapshot("./golden/__snapshots__/orchestrator-reply-required.txt");
+  });
+
   it("stays prefix-stable over 20 turns as messages and decision notes append", { timeout: 30_000 }, async () => {
     const h = await harness();
     let previous: BuiltPrompt | undefined;
