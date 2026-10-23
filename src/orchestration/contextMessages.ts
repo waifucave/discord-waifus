@@ -228,26 +228,6 @@ export function formatOrchestratorMessageBlock(message: ContextMessage, now?: Da
   return lines.join("\n");
 }
 
-// The waifu's own history is rendered as raw message bodies: no name prefix, no reply-quote
-// line, no attachment/image tags — replyTo and images are intentionally omitted for self turns. The context itself then demonstrates the output contract —
-// "my turns are plain message text" — which holds format on far smaller models than rules do.
-export function formatSelfWaifuContent(message: ContextMessage): string {
-  return message.content;
-}
-
-export function formatWaifuContextBlock(message: ContextMessage): string {
-  const lines: string[] = [];
-  const quote = replyQuoteLine(message);
-  if (quote) lines.push(quote);
-  lines.push(senderPrefixedContent(message.displayName, message.content));
-  const imageCount = message.images?.length ?? 0;
-  if (imageCount > 0) {
-    lines.push(`[attachments: ${imageCount}x image]`);
-    appendImageTextLines(lines, message.images);
-  }
-  return lines.join("\n");
-}
-
 function senderPrefixedContent(displayName: string, content: string): string {
   return content.length > 0 ? `${displayName}: ${content}` : `${displayName}:`;
 }

@@ -4,7 +4,7 @@ import { OrchestratorDecision } from "../orchestration/decisions.js";
 import { DreamOp, ObserverOp, StageManagerObservation } from "../orchestration/stageManager.js";
 import type { ReviewerDecision } from "../orchestration/tools.js";
 import type { BuiltPrompt, ModelCallAttribution } from "../orchestration/context/types.js";
-import type { FinishReason, Usage } from "@waifucave/gateway";
+import type { FinishReason, ToolChoice, Usage } from "@waifucave/gateway";
 import type { LedgerEntry } from "../shared/schemas/context.js";
 
 export type ModelRole = "orchestrator" | "waifu" | "stage_manager" | "reviewer";
@@ -33,19 +33,11 @@ export type ProviderRequest = {
   transcript?: LedgerEntry[];
 };
 
-export type WaifuGenerationRequest = ProviderRequest & {
-  // Optional once `prompt` carries the system message; legacy callers still set it.
-  systemPrompt?: string;
-  midSystemBlock?: string;
-  trailingSystemBlock?: string;
-  retryUserMessage?: string;
-  pickNextWaifuToolEnabled?: boolean;
-  shortTermMemoryToolEnabled?: boolean;
+// Spec 8.5: the waifu call sends `prompt` (the context engine's BuiltPrompt) verbatim; its tools
+// are listed in `prompt.tools`. `availableWaifuIds` validates a PickNextWaifu call.
+export type WaifuGenerationRequest = Omit<ProviderRequest, "messages"> & {
+  messages?: ContextMessage[];
   stopSequences?: string[];
-  // Discord author ids that are THIS waifu. In practice the bot user id only —
-  // Discord's message.author.id is always the user id, never the application id.
-  // Only these messages become assistant turns; everything else is a user turn.
-  selfAuthorIds?: string[];
 };
 
 // One memory record presented to the dream pass. memoryIndex is 1-based WITHIN the current
@@ -86,6 +78,8 @@ export type WaifuGenerationResult = {
     waifuId?: string;
   };
   shortTermMemoryEntries?: string[];
+  // Every tool call of the response (recorded as `tool` context notes).
+  toolCalls?: Array<{ id: string; name: string; arguments: string }>;
   // Gateway 0.4.0 usage convention (inputTokens includes cache reads/writes; see Usage).
   usage?: Usage;
   finishReason?: FinishReason;
@@ -124,4 +118,27 @@ export interface ModelPipeline {
   decideReviewer?(request: ProviderRequest & { message: string }): Promise<ReviewerDecision>;
   generatePersonaDigest?(request: PersonaDigestRequest): Promise<PersonaDigest>;
   generateAssistantTurn?(request: AssistantTurnRequest): Promise<AssistantTurnResult>;
+  /** Own-model context compaction (spec 8.9); returns the summary text, tool calls ignored. */
+  summarizeContext?(request: SummarizeContextRequest): Promise<string>;
 }
+
+/**
+ * A context's summarize call (spec 8.9). `prompt` is sent through breakpoint C with its tools, and
+ * the instruction replaces the ephemeral tail. Everything else mirrors the agent's REPLY call so
+ * the provider's prompt cache hits: same `toolChoice` (waifus `auto`; a forced tool such as the
+ * orchestrator's becomes `none` where supported, else `auto`), same params/sampling. Only the
+ * output cap differs (max(1500, thinkingBudget + 1500)); stop sequences are not sent.
+ * (Contract shared with T7b, which implements it in gatewayPipeline.)
+ */
+export type SummarizeContextRequest = {
+  prompt: BuiltPrompt;
+  instruction: string;
+  /** The reply call's tool choice (default `auto` when the prompt has tools). */
+  toolChoice?: ToolChoice;
+  temperature?: number;
+  topP?: number;
+  params?: Record<string, unknown>;
+  /** Attribution of the reply call; the ledger purpose is always `compaction`. */
+  attribution?: Omit<ModelCallAttribution, "purpose">;
+  signal?: AbortSignal;
+};

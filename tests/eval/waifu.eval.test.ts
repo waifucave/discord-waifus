@@ -7,7 +7,7 @@
 //
 // Prompt building reuses the RuntimeOrchestrator path (same as runtime.test.ts):
 //   the real gateway pipeline (createGatewayModelPipeline) is passed as createPipeline,
-//   so buildWaifuPromptParts assembles the W2 harness blocks through the normal code path.
+//   so the waifu harness + context engine build the prompt through the normal code path.
 
 import { afterEach, describe, expect, it } from "vitest";
 import { createGateway } from "@waifucave/gateway";
@@ -21,7 +21,7 @@ import type {
 import type { OrchestratorDecision } from "../../src/orchestration/decisions.js";
 import { resolveModelTarget } from "../../src/orchestration/pipeline/resolveTarget.js";
 import { createGatewayModelPipeline } from "../../src/orchestration/pipeline/gatewayPipeline.js";
-import { validateWaifuOutput } from "../../src/orchestration/outputValidator.js";
+import { validateLeaks as validateWaifuOutput } from "../../src/orchestration/outputValidator.js";
 import { ensureDataLayout } from "../../src/config/layout.js";
 import { StorageService } from "../../src/storage/storageService.js";
 import {

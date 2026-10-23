@@ -10,9 +10,7 @@ export type StageManagerDebugEntry = {
 
 export type WaifuPromptDebugParts = {
   waifuDisplayName: string;
-  systemPrompt: string;
-  midSystemBlock: string;
-  trailingSystemBlock: string;
+  debug: { system: string; header: string; transcript: string; tail: string };
 };
 
 export function formatOrchestratorDebugLog(input: {
@@ -115,11 +113,13 @@ function clipDebugText(value: string, maxLength = 700): string {
   return `${normalized.slice(0, maxLength - 1)}…`;
 }
 
+/** /print system_prompt: the four parts of a BuiltPrompt (spec 8.8 — reads BuiltPrompt.debug). */
 export function formatWaifuPromptDebugMessages(input: WaifuPromptDebugParts): string[] {
   return [
-    ...formatPrintDebugBlock(`System prompt block 1 (${input.waifuDisplayName})`, input.systemPrompt),
-    ...formatPrintDebugBlock(`System prompt block 2 (${input.waifuDisplayName})`, input.midSystemBlock),
-    ...formatPrintDebugBlock(`System prompt block 3 (${input.waifuDisplayName})`, input.trailingSystemBlock)
+    ...formatPrintDebugBlock(`System prompt (${input.waifuDisplayName})`, input.debug.system),
+    ...formatPrintDebugBlock(`Epoch header (${input.waifuDisplayName})`, input.debug.header),
+    ...formatPrintDebugBlock(`Transcript (${input.waifuDisplayName})`, input.debug.transcript),
+    ...formatPrintDebugBlock(`Tail (${input.waifuDisplayName})`, input.debug.tail)
   ];
 }
 

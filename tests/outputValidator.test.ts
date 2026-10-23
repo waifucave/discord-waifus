@@ -1,8 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  SOFT_VALIDATOR_CHECKS,
-  correctiveRetryMessage,
-  validateWaifuOutput,
+  validateLeaks as validateWaifuOutput,
   type ValidationContext,
   type ValidationVerdict,
 } from "../src/orchestration/outputValidator.js";
@@ -416,46 +414,38 @@ describe("hardening additions", () => {
   });
 });
 
-describe("length-register soft check", () => {
-  const ctx = {
-    selfNames: ["Yuki"],
-    participantNames: ["Yuki", "Kevin"],
-    blockTags: [],
-    toolNames: []
-  };
+describe("header-leak check", () => {
+  const ctx = { selfNames: ["Yuki"], participantNames: ["Yuki", "Kevin"], blockTags: [], toolNames: [] };
 
-  it("passes messages at or under the soft limit", () => {
-    const result = validateWaifuOutput("a".repeat(90), ctx);
-    expect(result.verdict).toBe("pass");
-  });
-
-  it("flags messages over the soft limit as retry", () => {
-    const result = validateWaifuOutput("word ".repeat(50).trim(), ctx);
+  it("flags a transcript header at the start of a line", () => {
+    const result = validateWaifuOutput("sure\n[14:02 #k3] Kevin: me too", ctx);
     expect(result.verdict).toBe("retry");
-    expect(result.violations.map((v) => v.check)).toContain("length-register");
+    expect(result.violations.map((v) => v.check)).toContain("header-leak");
   });
 
-  it("marks length-register as a soft check", () => {
-    expect(SOFT_VALIDATOR_CHECKS.has("length-register")).toBe(true);
-    expect(SOFT_VALIDATOR_CHECKS.has("harness-tag")).toBe(false);
+  it("passes a bracketed time that is not a header", () => {
+    expect(validateWaifuOutput("meet at [14:02] ok?", ctx).verdict).toBe("pass");
   });
 });
 
-describe("correctiveRetryMessage", () => {
-  it("uses the concrete length hint for length-register", () => {
-    const msg = correctiveRetryMessage("Yuki", [{ check: "length-register", detail: "300 chars" }]);
-    expect(msg).toContain("Yuki: (");
-    expect(msg).toContain("under 12 words");
-    expect(msg).not.toContain("contained");
+describe("stray-reply-marker check", () => {
+  const ctx = { selfNames: ["Yuki"], participantNames: ["Yuki", "Kevin"], blockTags: [], toolNames: [] };
+
+  it("flags a ↩#ref marker mid-text", () => {
+    const result = validateWaifuOutput("lol ↩#a3 same", ctx);
+    expect(result.verdict).toBe("retry");
+    expect(result.violations.map((v) => v.check)).toContain("stray-reply-marker");
   });
 
-  it("keeps the generic wording for structural checks and mixes with hints", () => {
-    const msg = correctiveRetryMessage("Yuki", [
-      { check: "harness-tag", detail: "t" },
-      { check: "length-register", detail: "l" }
-    ]);
-    expect(msg).toContain("under 12 words");
-    expect(msg).toContain("contained harness-tag");
+  it("passes plain hashtags", () => {
+    expect(validateWaifuOutput("#teamtea forever", ctx).verdict).toBe("pass");
+  });
+});
+
+describe("length is not a leak check", () => {
+  it("passes long text (length lives in verbosity.ts)", () => {
+    const ctx = { selfNames: ["Yuki"], participantNames: ["Yuki"], blockTags: [], toolNames: [] };
+    expect(validateWaifuOutput("word ".repeat(80).trim(), ctx).verdict).toBe("pass");
   });
 });
 
@@ -490,9 +480,5 @@ describe("self-repeat check", () => {
   it("passes short reactions even when repeated", () => {
     const shortCtx = { ...ctx, recentSelfMessages: ["lmao"] };
     expect(validateWaifuOutput("lmaooo", shortCtx).verdict).toBe("pass");
-  });
-
-  it("is not soft — survives to block, unlike length-register", () => {
-    expect(SOFT_VALIDATOR_CHECKS.has("self-repeat")).toBe(false);
   });
 });

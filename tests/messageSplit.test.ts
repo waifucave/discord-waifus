@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { splitWaifuReply, typingDelayMs } from "../src/orchestration/messageSplit.js";
+import { VERBOSITY_PROFILES, splitWaifuReply as splitWithProfile, typingDelayMs } from "../src/orchestration/verbosity.js";
+
+// The terse profile keeps the historical 280-char chunk.
+const splitWaifuReply = (content: string) => splitWithProfile(content, VERBOSITY_PROFILES.terse);
 
 describe("splitWaifuReply", () => {
   it("keeps a register-compliant multi-sentence reply as ONE message", () => {

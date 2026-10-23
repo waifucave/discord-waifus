@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   buildContextMessages,
   formatObserverContext,
-  formatWaifuContextBlock,
   formatTimestamp,
   WAIFU_CHUNK_COALESCE_WINDOW_MS,
   MessageLikeForContext,
@@ -27,26 +26,6 @@ function msg(overrides: Partial<MessageLikeForContext> & {
 describe("formatTimestamp", () => {
   it("renders ISO-8601 UTC without milliseconds", () => {
     expect(formatTimestamp(new Date("2026-05-16T12:33:14.123Z"))).toBe("2026-05-16T12:33:14Z");
-  });
-});
-
-describe("formatWaifuContextBlock", () => {
-  it("renders Discord reply context with the model-facing reply control prefix", () => {
-    expect(
-      formatWaifuContextBlock({
-        id: "reply",
-        channelId: "c1",
-        guildId: "g1",
-        authorKind: "user",
-        authorId: "u1",
-        name: "K",
-        displayName: "K",
-        content: "shall i mute you?",
-        timestamp: "2026-06-05T17:34:00Z",
-        reactions: [],
-        replyTo: { messageId: "m1", authorName: "Aria", contentPreview: "Muting this chat until the pizza arrives." }
-      })
-    ).toBe("replying to > Aria: Muting this chat until the pizza arrives.\nK: shall i mute you?");
   });
 });
 

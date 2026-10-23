@@ -19,8 +19,8 @@ import { loadPlaceResolver, renderMemoryLine } from "./memorySnapshot.js";
 import { loadSubjectDirectory, subjectNameResolver } from "./memorySubjects.js";
 import type { ContextMessage } from "./contextMessages.js";
 import { formatPrintDebugBlock, formatWaifuPromptDebugMessages } from "./debugFormat.js";
-import { buildWaifuPromptParts } from "./promptBuilders.js";
-import { ResponderExecutor } from "./responderExecutor.js";
+import { conversationKey } from "./context/keys.js";
+import { ResponderExecutor, waifuPromptCaptureKey } from "./responderExecutor.js";
 import { ReviewerRunner } from "./reviewerRunner.js";
 import { type ChannelRunOptions, type RuntimeServices, type StageManagerRunResult, isHumanUserMessage } from "./runtimeShared.js";
 import {
@@ -46,6 +46,7 @@ export type CommandHost = {
   triggerStageManager(guildId: string, channelId: string): Promise<StageManagerRunResult>;
   runReviewer: ReviewerRunner["runReviewer"];
   lastSentWaifuPrompts: ResponderExecutor["lastSentWaifuPrompts"];
+  renderWaifuSystemPrompt: ResponderExecutor["renderWaifuSystemPrompt"];
 };
 
 export class RuntimeCommands {
@@ -349,40 +350,27 @@ export class RuntimeCommands {
     type: Exclude<DiscordPrintCommandEvent["type"], undefined>;
   }): Promise<string[]> {
     if (input.type === "system_prompt") {
-      const captured = this.host.lastSentWaifuPrompts.get(`${input.guildId}:${input.waifu.id}`);
+      const key = conversationKey({ kind: "guild", guildId: input.guildId, channelId: input.channelId });
+      const captured = this.host.lastSentWaifuPrompts.get(waifuPromptCaptureKey(key, input.waifu.id));
       if (captured) {
         return [
           `Captured from ${input.waifu.displayName}'s last reply at ${captured.at} in <#${captured.channelId}> — exactly what the model received.`,
-          ...formatWaifuPromptDebugMessages({
-            waifuDisplayName: input.waifu.displayName,
-            systemPrompt: captured.systemPrompt,
-            midSystemBlock: captured.midSystemBlock,
-            trailingSystemBlock: captured.trailingSystemBlock
-          })
+          ...formatWaifuPromptDebugMessages({ waifuDisplayName: input.waifu.displayName, debug: captured.debug })
         ];
       }
-      const { systemPrompt, midSystemBlock, trailingSystemBlock } = await buildWaifuPromptParts(
-        this.options,
-        input.guildId,
-        input.waifu,
-        input.availableWaifus,
-        {
-          channelId: input.channelId,
-          pickNextWaifuToolOverride: input.server.tools.pickNextWaifu,
-          shortTermMemoryToolOverride: input.server.tools.shortTermMemory,
-          // No generation since backend start: fresh render; no live window, scores on recency+strength.
-          contextMessages: undefined,
-          memoryInjectionLimit: input.server.memoryInjectionLimit
-        }
-      );
+      if (!input.waifu.modelId) {
+        return [`${input.waifu.displayName} has no model configured, so she has no prompt yet.`];
+      }
+      const system = await this.host.renderWaifuSystemPrompt({
+        guildId: input.guildId,
+        channelId: input.channelId,
+        server: input.server,
+        waifu: { ...input.waifu, modelId: input.waifu.modelId },
+        availableWaifus: input.availableWaifus
+      });
       return [
-        `${input.waifu.displayName} has not replied since the backend started — showing a freshly rendered prompt, not one from a live turn.`,
-        ...formatWaifuPromptDebugMessages({
-          waifuDisplayName: input.waifu.displayName,
-          systemPrompt,
-          midSystemBlock,
-          trailingSystemBlock
-        })
+        `${input.waifu.displayName} has not replied in this channel since the backend started — showing her static system prompt; the epoch header, transcript and tail are built on her next reply.`,
+        ...formatPrintDebugBlock(`System prompt (${input.waifu.displayName})`, system)
       ];
     }
     if (input.type === "memories") {
@@ -392,14 +380,14 @@ export class RuntimeCommands {
     const digest = input.waifu.personaDigest;
     const digestText = digest
       ? `Voice: ${digest.voice}\nDrives: ${digest.role}`
-      : "(no digest generated yet — the trailing anchor falls back to a 200-char persona slice)";
+      : "(no digest generated yet — her style block uses only the verbosity rule)";
     return [
       ...formatPrintDebugBlock(
         `Personality block 1 — raw persona (${input.waifu.displayName})`,
         input.waifu.persona.trim() || "(no personality configured)"
       ),
       ...formatPrintDebugBlock(
-        `Personality block 2 — trailing-anchor summary (${input.waifu.displayName})`,
+        `Personality block 2 — persona digest (${input.waifu.displayName})`,
         digestText
       )
     ];

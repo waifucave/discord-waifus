@@ -10,6 +10,7 @@ import { ProviderAlerts } from "../src/orchestration/providerAlerts.js";
 import type { ContextMessage } from "../src/orchestration/contextMessages.js";
 import { ORCHESTRATOR_TOOL_NAME, REVIEWER_TOOL_NAME, OBSERVER_TOOL_NAME, DREAM_TOOL_NAME, PERSONA_DIGEST_TOOL_NAME } from "../src/orchestration/tools.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
+import { testPrompt } from "./contextFixtures.js";
 
 const roots: string[] = [];
 const ledgers: Array<{ flush(): Promise<void> }> = [];
@@ -87,8 +88,8 @@ describe("usage ledger coverage per call path", () => {
       response([toolCall(DREAM_TOOL_NAME, { ops: [] })], "tool_calls"),
       response([toolCall(PERSONA_DIGEST_TOOL_NAME, { voice: "v", role: "r" })], "tool_calls")
     ]);
-    await pipeline.generateWaifu({ ...base, systemPrompt: "S" });
-    await pipeline.generateWaifu({ ...base, systemPrompt: "S", retryUserMessage: "try again" });
+    await pipeline.generateWaifu({ ...base, prompt: testPrompt() });
+    await pipeline.generateWaifu({ ...base, prompt: testPrompt(), attribution: { purpose: "waifu_retry" } });
     await pipeline.decideOrchestrator!({ ...base, availableWaifuIds: ["a"], replyRequired: false }).catch(() => undefined);
     await pipeline.decideReviewer!({ ...base, message: "x" }).catch(() => undefined);
     await pipeline.decideStageManagerObservations!({ ...base, availableWaifuIds: ["a"] }).catch(() => undefined);
@@ -123,7 +124,7 @@ describe("usage ledger coverage per call path", () => {
   it("prefers ProviderRequest.attribution and carries its ids", async () => {
     const { pipeline, lines } = await setup([response([{ type: "text", text: "summary" }])]);
     await pipeline.generateWaifu({
-      ...base, systemPrompt: "S",
+      ...base, prompt: testPrompt(),
       attribution: { purpose: "compaction", agentId: "ag", waifuId: "w1", guildId: "g1", channelId: "c1", conversationKey: "g_g1_c1" }
     });
     expect((await lines())[0]).toMatchObject({ purpose: "compaction", agentId: "ag", waifuId: "w1", guildId: "g1", channelId: "c1", conversationKey: "g_g1_c1" });
@@ -134,7 +135,7 @@ describe("usage ledger coverage per call path", () => {
     const { pipeline, lines } = await setup([
       (request) => { controller.abort(); throw request.signal?.reason ?? new DOMException("aborted", "AbortError"); }
     ]);
-    await expect(pipeline.generateWaifu({ ...base, systemPrompt: "S", signal: controller.signal })).rejects.toBeDefined();
+    await expect(pipeline.generateWaifu({ ...base, prompt: testPrompt(), signal: controller.signal })).rejects.toBeDefined();
     expect((await lines())[0]).toMatchObject({ status: "aborted", usageKnown: false, inputTokens: 0, outputTokens: 0, purpose: "waifu_reply" });
   });
 
@@ -144,7 +145,7 @@ describe("usage ledger coverage per call path", () => {
       new GatewayError("server", "boom"),
       Object.assign(new Error("timed out"), { name: "TimeoutError" })
     ]);
-    await expect(pipeline.generateWaifu({ ...base, systemPrompt: "S" })).rejects.toThrow("boom");
+    await expect(pipeline.generateWaifu({ ...base, prompt: testPrompt() })).rejects.toThrow("boom");
     await expect(pipeline.decideReviewer!({ ...base, message: "x" })).rejects.toThrow("timed out");
     const got = await lines();
     expect(got[0]).toMatchObject({ status: "failed", errorKind: "server", usageKnown: false, inputTokens: 0 });
@@ -154,7 +155,7 @@ describe("usage ledger coverage per call path", () => {
   it("records cache, reasoning and cost fields and surfaces finishReason/usage on the result", async () => {
     const usage = { inputTokens: 1000, outputTokens: 50, cacheReadTokens: 800, cacheWriteTokens: 100, reasoningTokens: 20, costUsd: 0.0042 };
     const { pipeline, lines } = await setup([response([{ type: "text", text: "hey" }], "length", usage)]);
-    const result = await pipeline.generateWaifu({ ...base, systemPrompt: "S" });
+    const result = await pipeline.generateWaifu({ ...base, prompt: testPrompt() });
     expect(result.usage).toEqual(usage);
     expect(result.finishReason).toBe("length");
     expect((await lines())[0]).toMatchObject({ ...usage, finishReason: "length", usageKnown: true });
@@ -164,9 +165,9 @@ describe("usage ledger coverage per call path", () => {
 describe("promptCacheKey", () => {
   it("passes ProviderRequest.prompt.promptCacheKey through to the gateway", async () => {
     const { pipeline, calls } = await setup([response([{ type: "text", text: "hey" }]), response([{ type: "text", text: "hey" }])]);
-    const prompt = { promptCacheKey: "waifu:w1:g_1_2" } as never;
-    await pipeline.generateWaifu({ ...base, systemPrompt: "S", prompt });
-    await pipeline.generateWaifu({ ...base, systemPrompt: "S" });
+    const prompt = testPrompt({ promptCacheKey: "waifu:w1:g_1_2" });
+    await pipeline.generateWaifu({ ...base, prompt });
+    await pipeline.decideReviewer!({ ...base, message: "x" }).catch(() => undefined);
     expect(calls[0]!.promptCacheKey).toBe("waifu:w1:g_1_2");
     expect(calls[1]!.promptCacheKey).toBeUndefined();
   });
@@ -197,7 +198,7 @@ describe("truncated structured decisions", () => {
 
   it("does not throw for plain waifu replies that hit length", async () => {
     const { pipeline } = await setup([response([{ type: "text", text: "cut off" }], "length")]);
-    await expect(pipeline.generateWaifu({ ...base, systemPrompt: "S" })).resolves.toMatchObject({ content: "cut off", finishReason: "length" });
+    await expect(pipeline.generateWaifu({ ...base, prompt: testPrompt() })).resolves.toMatchObject({ content: "cut off", finishReason: "length" });
   });
 });
 
@@ -222,18 +223,18 @@ describe("single system message", () => {
     expect(JSON.stringify(last.content)).toContain("Return the arguments for review_message as JSON");
   });
 
-  it("demotes mid/trailing blocks on multipleSystemMessages models to user notes", async () => {
+  it("sends the waifu BuiltPrompt verbatim with its single system message", async () => {
     const { pipeline, calls } = await setup([response([{ type: "text", text: "hey" }])], { providerId: "xai", modelId: "grok-4.3" });
-    await pipeline.generateWaifu({
-      modelId: "grok-4.3", systemPrompt: "S", messages: [msg(), msg({ id: "m2" })],
-      midSystemBlock: "MID", trailingSystemBlock: "TRAIL"
+    const prompt = testPrompt({
+      messages: [
+        { role: "user", content: [{ type: "text", text: "HEADER" }] },
+        { role: "user", content: [{ type: "text", text: "TAIL" }] }
+      ]
     });
+    await pipeline.generateWaifu({ modelId: "grok-4.3", prompt });
     assertOnlyFirstSystem(calls);
-    const text = JSON.stringify(calls[0]!.messages);
-    expect(text).toContain("<system_note>");
-    expect(text).toContain("MID");
-    expect(text).toContain("TRAIL");
-    expect(calls[0]!.messages[0]!.role).toBe("system");
+    expect(calls[0]!.messages).toEqual(prompt.messages);
+    expect(JSON.stringify(calls[0]!.messages)).not.toContain("<system_note>");
   });
 
   it("keeps the assistant transcript's single system message across rounds", async () => {
@@ -290,7 +291,7 @@ describe("content_dropped / cache_ignored warnings", () => {
       [0, 1, 2].map(() => response([{ type: "text", text: "x" }], "stop", { inputTokens: 1, outputTokens: 1 }, [warning, dropped])),
       { providerId: "deepseek", modelId: "deepseek-v4-pro", logger }
     );
-    for (let i = 0; i < 3; i++) await pipeline.generateWaifu({ modelId: "deepseek-v4-pro", systemPrompt: "S", messages: [] });
+    for (let i = 0; i < 3; i++) await pipeline.generateWaifu({ modelId: "deepseek-v4-pro", prompt: testPrompt(), messages: [] });
     const codes = logger.warn.mock.calls.map((c) => c[0]);
     expect(codes.filter((m) => String(m).includes("cache_ignored"))).toHaveLength(1);
     expect(codes.filter((m) => String(m).includes("content_dropped"))).toHaveLength(1);
@@ -300,7 +301,7 @@ describe("content_dropped / cache_ignored warnings", () => {
 describe("alerts default", () => {
   it("does nothing special without a dataRoot or alerts", async () => {
     const { pipeline } = await setup([response([{ type: "text", text: "x" }])]);
-    await expect(pipeline.generateWaifu({ ...base, systemPrompt: "S" })).resolves.toMatchObject({ content: "x" });
+    await expect(pipeline.generateWaifu({ ...base, prompt: testPrompt() })).resolves.toMatchObject({ content: "x" });
     expect(new ProviderAlerts().snapshot()).toEqual([]);
   });
 });

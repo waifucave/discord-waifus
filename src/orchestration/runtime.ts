@@ -123,7 +123,8 @@ export class RuntimeOrchestrator {
       stopChannel: (guildId, channelId, reason) => this.stopChannel(guildId, channelId, reason),
       triggerStageManager: (guildId, channelId) => this.triggerStageManager(guildId, channelId),
       runReviewer: (input) => this.reviewer.runReviewer(input),
-      lastSentWaifuPrompts: this.executor.lastSentWaifuPrompts
+      lastSentWaifuPrompts: this.executor.lastSentWaifuPrompts,
+      renderWaifuSystemPrompt: (input) => this.executor.renderWaifuSystemPrompt(input)
     });
   }
 

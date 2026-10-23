@@ -1,10 +1,11 @@
 // Shared fakes for the context-engine tests (not a test file itself).
 
-import type { ResolvedModel, ToolDef } from "@waifucave/gateway";
+import type { ChatMessage, ResolvedModel, ToolDef } from "@waifucave/gateway";
 import type { ImageFetcher, ImageFetchResult } from "../src/discord/attachments.js";
 import type { ContextState } from "../src/shared/schemas/context.js";
 import type { ImageRef, RawDiscordMessage } from "../src/shared/schemas/discordMessage.js";
 import type {
+  BuiltPrompt,
   ConversationMessageSource,
   MemorySnapshotProvider,
   RoleRenderer
@@ -120,4 +121,25 @@ export class FakeImageFetcher implements ImageFetcher {
 
 export function quietLogger() {
   return { debug: () => undefined, info: () => undefined, warn: () => undefined, error: () => undefined };
+}
+
+/** A minimal BuiltPrompt for pipeline tests (one system message, one user turn, optional tools). */
+export function testPrompt(o: { system?: string; messages?: ChatMessage[]; tools?: ToolDef[]; promptCacheKey?: string } = {}): BuiltPrompt {
+  const system = o.system ?? "SYS";
+  const messages: ChatMessage[] = [
+    { role: "system", content: [{ type: "text", text: system }] },
+    ...(o.messages ?? [{ role: "user", content: [{ type: "text", text: "[10:00 #a0] Ann: hello\n" }] }])
+  ];
+  return {
+    messages,
+    tools: o.tools ?? [],
+    promptCacheKey: o.promptCacheKey ?? "waifu:test:g_1_2",
+    refToMessageId: new Map(),
+    messageIdToRef: new Map(),
+    estimatedTokens: 0,
+    transcriptCount: 1,
+    cursorSeq: null,
+    breakpoint: null,
+    debug: { system, header: "", transcript: "", tail: "" }
+  };
 }
