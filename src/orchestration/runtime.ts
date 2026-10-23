@@ -1250,7 +1250,7 @@ export class RuntimeOrchestrator {
       // Only nag about early cast retirement while humans are actually around — in a dead room
       // the reply→pause rhythm is correct behavior, not a rut.
       const newestHumanTs = messages.reduce<string | undefined>(
-        (acc, message) => (message.authorKind === "user" && (!acc || message.timestamp > acc) ? message.timestamp : acc),
+        (acc, message) => (isHumanUserMessage(message) && (!acc || message.timestamp > acc) ? message.timestamp : acc),
         undefined
       );
       const humanActiveNow =
@@ -4379,7 +4379,8 @@ function shouldSuppressCastWake(
 }
 
 function hasRecentUserMessage(messages: ContextMessage[], count: number): boolean {
-  return messages.slice(-count).some((message) => message.authorKind === "user");
+  // Other (non-waifu) bots are authorKind "user" too; only real humans count here.
+  return messages.slice(-count).some(isHumanUserMessage);
 }
 
 function waitMsBeforeWaifuReply(input: {

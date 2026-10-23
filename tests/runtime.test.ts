@@ -2014,6 +2014,59 @@ describe("RuntimeOrchestrator", () => {
     expect(discord.sent.map((entry) => entry.content)).toEqual(["one", "two"]);
   });
 
+  it("does not treat another (non-waifu) bot's message as a recent human for delay pacing", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.contexts = [
+      [
+        contextMessage("waifu-1", "waifu", "Yuki", "one"),
+        contextMessage("waifu-2", "waifu", "Mika", "two"),
+        contextMessage("waifu-3", "waifu", "Yuki", "three"),
+        contextMessage("bot-1", "user", "MEE6", "GG, you reached level 5", undefined, { authorBot: true, authorId: "mee6" })
+      ]
+    ];
+    const sleepCalls: number[] = [];
+
+    await seedRuntimeConfig(storage);
+    await seedWaifu(storage, "mika", "Mika", "mika-bot", "direct");
+    await enableWaifus(storage, ["yuki", "mika"]);
+
+    const pipeline: ModelPipeline = {
+      async decideOrchestrator() {
+        return {
+          action: "reply" as const,
+          respondingWaifus: [
+            { waifuId: "yuki", delaySeconds: 3 },
+            { waifuId: "mika", delaySeconds: 4 }
+          ],
+          reasoning: "Only a bot spoke; use chained pacing."
+        };
+      },
+      async generateWaifu(request: WaifuGenerationRequest) {
+        return { content: request.systemPrompt.includes("You are Yuki") ? "first line" : "second line" };
+      }
+    };
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async (ms) => {
+        sleepCalls.push(ms);
+      },
+      storage,
+      discord,
+      maxAutomaticTurns: 1,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    expect(sleepCalls).toEqual([3000, 4000]);
+  });
+
   it("passes completed past orchestrator decisions to the pipeline", async () => {
     const root = await makeTempRoot();
     roots.push(root);

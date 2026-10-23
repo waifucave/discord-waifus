@@ -42,7 +42,7 @@ const PARTICIPATION_WINDOW = 10;  // messages scanned for thread participation
 export function decideDeterministically(input: DeterministicDecisionInput): OrchestratorDecision {
   const { messages, now } = input;
   const latest = messages[messages.length - 1];
-  const newestHumanTs = [...messages].reverse().find((m) => m.authorKind === "user")?.timestamp;
+  const newestHumanTs = [...messages].reverse().find(isHumanMessage)?.timestamp;
   const humanAgeSeconds =
     newestHumanTs !== undefined ? Math.max(0, (now.getTime() - Date.parse(newestHumanTs)) / 1000) : Infinity;
 
@@ -55,7 +55,7 @@ export function decideDeterministically(input: DeterministicDecisionInput): Orch
   });
 
   if (candidates.length === 0) return quiet("no enabled, awake, unbusy waifu is available");
-  if (!latest || latest.authorKind !== "user") {
+  if (!latest || !isHumanMessage(latest)) {
     return quiet("latest message is not from a human; cast-only pacing");
   }
 
@@ -123,6 +123,11 @@ export function decideDeterministically(input: DeterministicDecisionInput): Orch
     respondingWaifus: [{ waifuId: winner.member.waifuId, delaySeconds }],
     reasoning: `deterministic: ${winner.member.waifuId} picked (${winner.reasons.join(", ") || "rotation"}; score ${winner.score})`
   };
+}
+
+/** Non-cast bots are tagged authorKind "user" with authorBot; they are not humans to answer. */
+function isHumanMessage(message: ContextMessage): boolean {
+  return message.authorKind === "user" && message.authorBot !== true;
 }
 
 /** Is she awake and not busy right now? Server-local time, like the schedule prompt blocks. */
