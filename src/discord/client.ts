@@ -785,7 +785,9 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
     const sent = await channel.send({
       content: denormalized.content,
       allowedMentions: denormalized.allowedMentions,
-      reply: replyToMessageId ? { messageReference: replyToMessageId } : undefined
+      // The user may delete their message while the waifu is generating; send as a normal message
+      // then instead of letting Discord reject the whole reply.
+      reply: replyToMessageId ? { messageReference: replyToMessageId, failIfNotExists: false } : undefined
     });
     return { messageId: sent.id };
   }

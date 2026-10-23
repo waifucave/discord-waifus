@@ -230,6 +230,36 @@ describe("DiscordJsGateway per-bot connection", () => {
   });
 });
 
+describe("DiscordJsGateway replies", () => {
+  it("still sends a waifu reply when the message it replies to was deleted mid-generation", async () => {
+    const sent: Array<Record<string, unknown>> = [];
+    const gateway = makeGateway({ orchestrator: bot("orchestrator"), waifus: [bot("waifu-a")] });
+    (gateway as unknown as { clients: Map<string, unknown> }).clients.set("waifu-a", {
+      channels: {
+        async fetch() {
+          return {
+            async send(payload: Record<string, unknown>) {
+              sent.push(payload);
+              return { id: "sent-1" };
+            }
+          };
+        }
+      }
+    });
+
+    await gateway.sendWaifuMessage({
+      guildId: "guild-1",
+      channelId: "channel-1",
+      content: "hello",
+      senderBotId: "waifu-a",
+      replyToMessageId: "123456789012345678",
+      allowedUserMentionIds: []
+    });
+
+    expect(sent[0]?.reply).toEqual({ messageReference: "123456789012345678", failIfNotExists: false });
+  });
+});
+
 function quietLogger() {
   return {
     debug: () => undefined,
