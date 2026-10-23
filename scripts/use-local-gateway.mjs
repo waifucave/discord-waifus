@@ -7,7 +7,7 @@
 // Gateway lookup: $WAIFUS_GATEWAY_DIR, else walk up from this script's real path looking for a
 // `discord-waifus/gateway` or sibling `gateway` directory whose package.json is @waifucave/gateway
 // (git worktrees live at app/.claude/worktrees/<name>, so the sibling is several levels up).
-import { cpSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, unlinkSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -49,8 +49,22 @@ function main() {
   if (!existsSync(path.join(source, "dist", "index.js"))) {
     throw new Error(`${source}/dist is missing: run "npm run build" in the gateway first.`);
   }
-  const target = path.join(appRoot, "node_modules", "@waifucave", "gateway");
+  const nodeModules = path.join(appRoot, "node_modules");
+  const target = path.join(nodeModules, "@waifucave", "gateway");
+  // `npm link ../gateway` leaves a symlink here; rm/cp through it would delete the gateway
+  // checkout's own dist/ and data/. Drop the link itself and install a real directory instead.
+  if (lstatSync(target, { throwIfNoEntry: false })?.isSymbolicLink()) {
+    unlinkSync(target);
+    console.log(`Replaced the npm link at ${target} with a real directory.`);
+  }
   mkdirSync(target, { recursive: true });
+  // Belt and braces before any rm: the destination must be a real path inside this app's
+  // node_modules and must never be the gateway checkout itself.
+  const realTarget = realpathSync(target);
+  const realNodeModules = realpathSync(nodeModules);
+  if (!realTarget.startsWith(realNodeModules + path.sep) || realTarget === realpathSync(source)) {
+    throw new Error(`Refusing to overwrite ${realTarget}: not a private copy inside ${realNodeModules}.`);
+  }
   for (const entry of ["dist", "data"]) {
     rmSync(path.join(target, entry), { recursive: true, force: true });
     if (existsSync(path.join(source, entry))) {

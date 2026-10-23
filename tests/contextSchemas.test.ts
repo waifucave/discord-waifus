@@ -68,6 +68,7 @@ describe("RawDiscordMessageSchema", () => {
 
   it("ImageRef requires a key and url", () => {
     expect(ImageRefSchema.parse({ key: "att:1", url: "https://cdn.discordapp.com/a.png" }).key).toBe("att:1");
+    expect(ImageRefSchema.parse({ key: "att:1", url: "u", conversationKey: "g_1_2" }).conversationKey).toBe("g_1_2");
     expect(() => ImageRefSchema.parse({ url: "https://cdn.discordapp.com/a.png" })).toThrow();
     expect(() => ImageRefSchema.parse({ key: "att:1", url: "u", bytes: -1 })).toThrow();
   });

@@ -12,7 +12,8 @@ export const ImageRefSchema = z.object({
   contentType: z.string().optional(),
   bytes: z.number().int().nonnegative().optional(),
   width: z.number().int().nonnegative().optional(),
-  height: z.number().int().nonnegative().optional()
+  height: z.number().int().nonnegative().optional(),
+  conversationKey: z.string().optional()
 });
 export type ImageRef = z.infer<typeof ImageRefSchema>;
 
