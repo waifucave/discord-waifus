@@ -213,6 +213,88 @@ describe("memories-cross-guild-dedupe-v1", () => {
   });
 });
 
+describe("memories-cross-guild-dedupe-v1 review fixes", () => {
+  const rec = (id: string, guildId: string, subjects: Array<{ discordUserId: string; name: string }>, overrides: Record<string, unknown> = {}) => ({
+    id, waifuId: "yuki", content: "Allergic to peanuts.", kind: "fact", source: "stage_manager", pinned: false, strength: 3,
+    origin: { guildId }, subjects, revision: 0, createdAt: T, updatedAt: T, status: "active", ...overrides
+  });
+
+  it("never archives through a chain: A(Kevin) ~ B(Kevin+Sam) ~ C(Sam) archives only what duplicates the kept record", async () => {
+    const dir = await root();
+    const kevin = { discordUserId: "111", name: "Kevin" };
+    const sam = { discordUserId: "333", name: "Sam" };
+    await writeStore(dir, [
+      rec("a", "guild-a", [kevin], { strength: 5 }),
+      rec("b", "guild-b", [kevin, sam]),
+      rec("c", "guild-c", [sam])
+    ]);
+    expect(await migrateMemoriesCrossGuildDedupe(dir)).toBe("memories-cross-guild-dedupe-1");
+    const store = MemoryStoreSchema.parse(await readJson(dir, "user/memories.json"));
+    const status = Object.fromEntries(store.memories.map((m) => [m.id, m.status]));
+    // a is kept (strongest); b overlaps a (Kevin) → archived; c shares no subject with a → kept.
+    expect(status).toEqual({ a: "active", b: "archived", c: "active" });
+  });
+
+  it("never merges same-guild records through a cross-guild chain", async () => {
+    const dir = await root();
+    const kevin = { discordUserId: "111", name: "Kevin" };
+    await writeStore(dir, [
+      rec("keep", "guild-a", [kevin], { strength: 5 }),
+      rec("same-guild", "guild-a", [kevin]),
+      rec("bridge", "guild-b", [kevin])
+    ]);
+    await migrateMemoriesCrossGuildDedupe(dir);
+    const store = MemoryStoreSchema.parse(await readJson(dir, "user/memories.json"));
+    const status = Object.fromEntries(store.memories.map((m) => [m.id, m.status]));
+    expect(status).toEqual({ keep: "active", "same-guild": "active", bridge: "archived" });
+  });
+
+  it("an unparseable store is left untouched and unmarked, so the dedupe runs once it is repaired", async () => {
+    const dir = await root();
+    await mkdir(path.join(dir, "user"), { recursive: true });
+    await writeFile(path.join(dir, "user/memories.json"), "{ not json", "utf8");
+    expect(await migrateMemoriesCrossGuildDedupe(dir)).toBeUndefined();
+    expect(await readFile(path.join(dir, "user/memories.json"), "utf8")).toBe("{ not json");
+    await expect(readFile(path.join(dir, MEMORIES_DEDUPE_MARKER), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    // Valid JSON but not a store: also untouched and unmarked.
+    await writeJson(dir, "user/memories.json", { memories: "nope" });
+    expect(await migrateMemoriesCrossGuildDedupe(dir)).toBeUndefined();
+    await expect(readFile(path.join(dir, MEMORIES_DEDUPE_MARKER), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    const kevin = { discordUserId: "111", name: "Kevin" };
+    await writeStore(dir, [rec("x", "guild-a", [kevin], { strength: 5 }), rec("y", "guild-b", [kevin])]);
+    expect(await migrateMemoriesCrossGuildDedupe(dir)).toBe("memories-cross-guild-dedupe-1");
+  });
+
+  it("a missing store writes the marker (nothing to dedupe, ever)", async () => {
+    const dir = await root();
+    expect(await migrateMemoriesCrossGuildDedupe(dir)).toBeUndefined();
+    expect(await readJson(dir, MEMORIES_DEDUPE_MARKER)).toMatchObject({ archived: 0 });
+  });
+});
+
+describe("memories-global-origin-subjects-v1 on an unreadable store", () => {
+  it("throws so the ledger never records it, and converts after the repair", async () => {
+    const dir = await root();
+    await mkdir(path.join(dir, "user"), { recursive: true });
+    await writeFile(path.join(dir, "user/memories.json"), "{ broken", "utf8");
+    await expect(migrateMemoriesGlobalOriginSubjects(dir)).rejects.toThrow(/not a readable memory store/);
+    // (Earlier legacy memory steps already refuse a corrupt store; either way the boot fails.)
+    await expect(runMigrations(dir, { appVersion: "2.200.0" })).rejects.toThrow();
+    const ledger = await readJson<{ steps: Record<string, unknown> }>(dir, "app/migrations.json");
+    expect(ledger.steps["memories-global-origin-subjects-v1"]).toBeUndefined();
+    expect(await readFile(path.join(dir, "user/memories.json"), "utf8")).toBe("{ broken");
+
+    await writeStore(dir, [legacyMemory("m1")]);
+    const repaired = await runMigrations(dir, { appVersion: "2.200.0" });
+    expect(repaired.applied).toContain("migrate-memories-global-origin-subjects-1");
+    expect(MemoryStoreSchema.parse(await readJson(dir, "user/memories.json")).memories[0]!.origin).toEqual({ guildId: "guild-a", channelId: "chan-1" });
+  });
+
+  it("a missing store is a no-op", async () => {
+    expect(await migrateMemoriesGlobalOriginSubjects(await root())).toBeUndefined();
+  });
+});
+
 describe("full boot", () => {
   it("migrates a legacy guild-scoped store end to end; re-running every migration is a no-op", async () => {
     const dir = await root();

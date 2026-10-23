@@ -1,6 +1,6 @@
 import path from "node:path";
 import { atomicWriteJson } from "../../storage/atomic.js";
-import { entitiesToSubjects, isObject, legacyGuildId, migrationDirectories, nonEmptyString, readJsonOrUndefined } from "./memorySupport.js";
+import { entitiesToSubjects, isObject, legacyGuildId, migrationDirectories, nonEmptyString, readJsonFile } from "./memorySupport.js";
 
 // Step `memories-global-origin-subjects-v1` (spec 8.2, 8.8): memories become global per waifu.
 // Each record's `guildId`/`channelId` move into provenance `origin`; display-name `entities` become
@@ -9,8 +9,14 @@ import { entitiesToSubjects, isObject, legacyGuildId, migrationDirectories, nonE
 // gains a per-record `revision` (0). Idempotent: records already in the new shape are untouched.
 export async function migrateMemoriesGlobalOriginSubjects(dataRoot: string): Promise<string | undefined> {
   const filePath = path.join(dataRoot, "user", "memories.json");
-  const data = await readJsonOrUndefined(filePath);
-  if (!isObject(data) || !Array.isArray(data.memories)) return undefined;
+  const read = await readJsonFile(filePath);
+  if (read.kind === "missing") return undefined;
+  // Fail the boot rather than let the ledger record this one-shot step as applied over a store it
+  // could not read: after the user repairs the file it must still convert.
+  if (read.kind === "invalid" || !isObject(read.value) || !Array.isArray(read.value.memories)) {
+    throw new Error("user/memories.json is not a readable memory store; repair it to finish migrating memories.");
+  }
+  const data = read.value as Record<string, unknown> & { memories: unknown[] };
   const directoryFor = migrationDirectories(dataRoot);
 
   let changed = 0;

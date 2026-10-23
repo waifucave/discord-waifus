@@ -21,6 +21,28 @@ export async function readJsonOrUndefined(filePath: string): Promise<unknown | u
   }
 }
 
+export type JsonFileRead =
+  | { kind: "missing" }
+  | { kind: "invalid"; error: unknown }
+  | { kind: "ok"; value: unknown };
+
+/** Distinguishes a missing file from one that exists but does not parse (never conflated). */
+export async function readJsonFile(filePath: string): Promise<JsonFileRead> {
+  let text: string;
+  try {
+    text = await readFile(filePath, "utf8");
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") return { kind: "missing" };
+    throw error;
+  }
+  try {
+    return { kind: "ok", value: JSON.parse(text) };
+  } catch (error) {
+    return { kind: "invalid", error };
+  }
+}
+
 export function nonEmptyString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }

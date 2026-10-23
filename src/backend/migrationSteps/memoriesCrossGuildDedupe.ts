@@ -4,7 +4,7 @@ import { MemoryRecordSchema, type MemoryRecord } from "../../shared/schemas/doma
 import { subjectsOverlap } from "../../orchestration/memorySubjects.js";
 import { dedupeTokenSet, jaccard, normalizeForDedupe } from "../../orchestration/text.js";
 import { atomicWriteJson } from "../../storage/atomic.js";
-import { isObject, readJsonOrUndefined } from "./memorySupport.js";
+import { isObject, readJsonFile } from "./memorySupport.js";
 
 export const MEMORIES_DEDUPE_MARKER = path.join("user", ".memories-dedupe-v1.json");
 export const MEMORIES_DEDUPE_AUDIT = path.join("app", "logs", "migrations", "memories-dedupe-v1.json");
@@ -50,10 +50,19 @@ export async function migrateMemoriesCrossGuildDedupe(dataRoot: string): Promise
   const markerPath = path.join(dataRoot, MEMORIES_DEDUPE_MARKER);
   if (await exists(markerPath)) return undefined;
   const filePath = path.join(dataRoot, "user", "memories.json");
-  const data = await readJsonOrUndefined(filePath);
+  const read = await readJsonFile(filePath);
   const now = new Date().toISOString();
+  if (read.kind === "missing") {
+    // Nothing to dedupe now; memories written later are never cross-guild legacy duplicates.
+    await atomicWriteJson(markerPath, { appliedAt: now, archived: 0 });
+    return undefined;
+  }
+  // An unreadable or malformed store is left untouched and unmarked, never treated as empty. In a
+  // full boot the earlier memories-global-origin-subjects-v1 step already refuses such a store.
+  if (read.kind === "invalid" || !isObject(read.value) || !Array.isArray(read.value.memories)) return undefined;
+  const data = read.value;
 
-  const raw = isObject(data) && Array.isArray(data.memories) ? (data.memories as unknown[]) : [];
+  const raw = data.memories as unknown[];
   const parsed: Array<{ raw: Record<string, unknown>; record: MemoryRecord }> = [];
   for (const item of raw) {
     if (!isObject(item)) continue;
@@ -93,6 +102,9 @@ export async function migrateMemoriesCrossGuildDedupe(dataRoot: string): Promise
     for (const index of ordered.slice(1)) {
       const item = parsed[index]!;
       if (item.record.pinned) continue;
+      // Union-find chains transitively (A~B~C); only a record that is itself a duplicate of the
+      // kept one is archived, so non-overlapping subjects and same-guild pairs never merge.
+      if (!isDuplicatePair(keep, item.record)) continue;
       item.raw.status = "archived";
       item.raw.archivedReason = "deduped";
       item.raw.mergedInto = keep.id;
