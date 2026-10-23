@@ -156,7 +156,7 @@ export const MIGRATION_STEPS: readonly MigrationStep[] = [
   // before the schema-version stamp and keep this relative order.
   // Implemented (T4) but kept pending until T3 stops reading layouts at runtime; T4 part 2 removes the flag.
   { id: "waifu-drop-prompt-layout-v1", frequency: "once", pending: true, run: migrateWaifuDropPromptLayout },
-  { id: "server-context-windows-explicit-v1", frequency: "once", pending: true, run: migrateServerContextWindowsExplicit }, // T5
+  { id: "server-context-windows-explicit-v1", frequency: "once", run: migrateServerContextWindowsExplicit }, // T5
   { id: "memories-global-origin-subjects-v1", frequency: "once", run: migrateMemoriesGlobalOriginSubjects }, // T6
   // Guarded by its own marker file (user/.memories-dedupe-v1.json) so ledger loss never re-runs it.
   { id: "memories-cross-guild-dedupe-v1", frequency: "once", run: migrateMemoriesCrossGuildDedupe }, // T6
