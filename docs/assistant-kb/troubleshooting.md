@@ -14,9 +14,9 @@ Common failures, what they look like, and where to look.
 ## Nothing replies in Discord
 
 Check in order: `GET /api/status` — is `discord.connected` true and `waifuBotCount` > 0?
-Is the channel enabled with at least one waifu (Rooms)? Does the orchestrator have a model and
-its provider a key? Then read `GET /api/orchestrator/history` — if decisions exist but say
-`no_reply`, the director is choosing silence (read its reasoning); if there are no decisions,
+Does the channel list at least one waifu (Rooms), and is the server not `paused`? Does the
+orchestrator have a model and its provider a key? Then read `GET /api/orchestrator/history` —
+if decisions exist but say `no_reply`, the director is choosing silence (read its reasoning); if there are no decisions,
 the message never reached the runtime (bot lacks channel access or intents).
 
 ## Provider/model 400s
@@ -32,8 +32,9 @@ the message never reached the runtime (bot lacks channel access or intents).
 
 ## Bot connects but a waifu never speaks
 
-Her `botId` must match a Discord bot entry, the bot must be invited to the guild with Message
-Content intent, she must be `enabled`, and she must be in the channel's `enabledWaifuIds`.
+Her `botId` must match a Discord bot entry whose `enabled` is not false, the bot must be invited
+to the guild with Message Content intent, she must be `enabled`, and she must be in the channel's
+`enabledWaifuIds`.
 
 ## Revision conflicts (HTTP 409)
 

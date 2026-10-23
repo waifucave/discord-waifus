@@ -30,10 +30,10 @@ self-repeat validator on every outgoing waifu message.
 
 ## Stage-manager
 
-Watches enabled channels and records observations as memories (forced tool call, so reasoning
+Watches active channels (those with at least one waifu) and records observations as memories (forced tool call, so reasoning
 params buy nothing here). Also generates persona digests and runs the nightly per-guild dream
 pass (memory consolidation) around 05:00 local. Manual trigger:
-`POST /api/runtime/trigger/stage-manager`.
+`POST /api/runtime/trigger/stage-manager {"guildId","channelId"}`.
 
 ## Reviewer
 
