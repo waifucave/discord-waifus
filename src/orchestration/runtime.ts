@@ -1080,10 +1080,6 @@ export class RuntimeOrchestrator {
         await event.respond("Debug type is required. Choose set or unset.");
         return;
       }
-      if (event.type === "print") {
-        await event.respond("/console print is deprecated. Use /print instead.");
-        return;
-      }
       const sourceChannelId = event.sourceChannelId?.trim();
       if (!sourceChannelId) {
         await event.respond("Source channel ID is required for set and unset.");

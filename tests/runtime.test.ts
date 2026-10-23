@@ -4095,45 +4095,6 @@ describe("RuntimeOrchestrator", () => {
     ]);
   });
 
-  it("reports that stale /console print is deprecated", async () => {
-    const root = await makeTempRoot();
-    roots.push(root);
-    await ensureDataLayout(root);
-    const storage = new StorageService(root);
-    const discord = new FakeDiscord();
-
-    await seedRuntimeConfig(storage);
-
-    const runtime = new RuntimeOrchestrator({
-      sleep: async () => undefined,
-      storage,
-      discord,
-      createPipeline: () => ({
-        async generateWaifu() {
-          return { content: "unused" };
-        }
-      }),
-      logger: quietLogger()
-    });
-    await runtime.start();
-
-    const responses: string[] = [];
-    await discord.emitDebugCommand({
-      guildId: "guild-b",
-      channelId: "print-channel",
-      userId: "admin-user",
-      type: "print",
-      respond: async (content) => {
-        responses.push(content);
-      }
-    });
-    await waitFor(() => responses.length === 1, "debug print empty response");
-    await runtime.stop();
-
-    expect(responses).toEqual(["/console print is deprecated. Use /print instead."]);
-    expect(discord.debugMessages).toEqual([]);
-  });
-
   it("prints a fresh selected waifu system prompt for the current guild", async () => {
     const root = await makeTempRoot();
     roots.push(root);
