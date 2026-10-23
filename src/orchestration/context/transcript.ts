@@ -114,7 +114,9 @@ function noteText(note: ContextNote, i: TranscriptInput, anchor: LedgerEntry | u
       return i.renderToolTurnsAsText ? `[tool ${note.name}] ${note.arguments} → ${note.result}` : undefined;
     case "decision": {
       if (!i.renderToolTurnsAsText) return undefined;
-      const time = anchor ? ` ${formatClock(anchor.at, i.timeZone)}` : "";
+      // The frozen decision time; older notes without one fall back to their anchor entry.
+      const at = note.at ?? anchor?.at;
+      const time = at ? ` ${formatClock(at, i.timeZone)}` : "";
       return `[decision${time}] ${formatDecisionCallText(note.call)} · ${note.outcome}`;
     }
   }

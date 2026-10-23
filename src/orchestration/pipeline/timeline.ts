@@ -28,10 +28,23 @@ export function serializeOrchestratorDecisionArguments(decision: OrchestratorDec
   };
 }
 
-export function formatDecisionOutcome(decision: OrchestratorDecisionHistoryEntry): string {
+/**
+ * Final-state outcome text. With `refFor`, the refs of the messages the decision produced are
+ * named (`sent → #a3, #a4`), so the note reads correctly wherever it sits in the transcript.
+ */
+export function formatDecisionOutcome(
+  decision: OrchestratorDecisionHistoryEntry,
+  refFor: (messageId: string) => string | undefined = () => undefined
+): string {
   if (decision.action === "no_reply") {
     return `paused ${decision.retriggerAfterSeconds ?? "?"}s`;
   }
+  const sentRefs = decision.responderOutcomes
+    .filter((outcome) => outcome.status === "sent")
+    .flatMap((outcome) => outcome.messageIds)
+    .map(refFor)
+    .filter((ref): ref is string => Boolean(ref))
+    .map((ref) => `#${ref}`);
   const deviations = decision.responderOutcomes
     // "pending" means the chain was cut before this responder fired — the interrupted arm covers it
     .filter((outcome) => outcome.status !== "sent" && outcome.status !== "pending")
@@ -41,7 +54,8 @@ export function formatDecisionOutcome(decision: OrchestratorDecisionHistoryEntry
   } else if (decision.status === "failed") {
     deviations.push("failed");
   }
-  return deviations.length ? deviations.join("; ") : "sent";
+  const sent = sentRefs.length ? `sent → ${sentRefs.join(", ")}` : deviations.length ? undefined : "sent";
+  return [sent, ...deviations].filter(Boolean).join("; ");
 }
 
 /** True once nothing about the decision's outcome can change any more. */
@@ -50,13 +64,17 @@ export function isDecisionFinal(decision: Pick<OrchestratorDecisionHistoryEntry,
 }
 
 /** The frozen `decision` note for a final decision; undefined while it is still pending. */
-export function decisionNoteFor(decision: OrchestratorDecisionHistoryEntry): NewContextNote | undefined {
+export function decisionNoteFor(
+  decision: OrchestratorDecisionHistoryEntry,
+  refFor?: (messageId: string) => string | undefined
+): NewContextNote | undefined {
   if (!isDecisionFinal(decision)) return undefined;
   return {
     kind: "decision",
     decisionId: decision.id,
     call: JSON.stringify(serializeOrchestratorDecisionArguments(decision)),
-    outcome: formatDecisionOutcome(decision)
+    outcome: formatDecisionOutcome(decision, refFor),
+    at: decision.createdAt
   };
 }
 

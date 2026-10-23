@@ -58,6 +58,11 @@ describe("orchestrator decision serializers (spec 8.7)", () => {
     expect(formatDecisionOutcome(pause)).toBe("paused 600s");
     expect(formatDecisionOutcome({ ...reply, status: "completed" })).toBe("sent");
     expect(formatDecisionOutcome({ ...reply, status: "interrupted" })).toBe("interrupted by new activity");
+    // With refs, the produced messages are named (the note reads right wherever it sits).
+    const refs = new Map([["m1", "a4"]]);
+    expect(formatDecisionOutcome({ ...reply, status: "completed" }, (id) => refs.get(id))).toBe("sent → #a4");
+    expect(formatDecisionOutcome({ ...reply, status: "interrupted" }, (id) => refs.get(id))).toBe("sent → #a4; interrupted by new activity");
+    expect(decisionNoteFor({ ...reply, status: "completed" }, (id) => refs.get(id))).toMatchObject({ outcome: "sent → #a4", at: reply.createdAt });
     expect(
       formatDecisionOutcome({
         ...reply,
@@ -75,7 +80,8 @@ describe("orchestrator decision serializers (spec 8.7)", () => {
       kind: "decision",
       decisionId: "d2",
       call: JSON.stringify(serializeOrchestratorDecisionArguments(reply)),
-      outcome: "sent"
+      outcome: "sent",
+      at: reply.createdAt
     });
     expect(decisionNoteFor(pause)).toMatchObject({ kind: "decision", decisionId: "d1", outcome: "paused 600s" });
   });

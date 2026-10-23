@@ -1,3 +1,5 @@
+import { readFile, rm } from "node:fs/promises";
+import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RuntimeOrchestrator, currentlyDoingForWaifu, DreamPassResult } from "../src/orchestration/runtime.js";
 import { ContextMessage } from "../src/orchestration/contextMessages.js";
@@ -420,7 +422,9 @@ class FakePipeline implements ModelPipeline {
     expect(prompt.debug.system).toMatch(/<cast>\n<waifu>\nid: yuki · Yuki · sees images natively\nAbout: kind\n<\/waifu>\n<\/cast>/);
     // Static: no clock, no availability, no per-pass state in the system prompt.
     expect(prompt.debug.system).not.toMatch(/Now:|Reply required|Directive budget/);
-    expect(prompt.debug.header).toMatch(/<roster>[\s\S]*- yuki \(Yuki\): [\s\S]*<\/roster>\n<place>/);
+    // Availability lives only in the tail (it changes mid-epoch); the header is the place.
+    expect(prompt.debug.header).toMatch(/^<place>.*<\/place>$/);
+    expect(prompt.debug.tail).toMatch(/Cast right now:\n- yuki \(Yuki\): /);
     expect(prompt.debug.transcript).toMatch(/\[\d\d:\d\d #a0\] Kevin: hello/);
     expect(prompt.debug.tail).toMatch(/^<status>\nNow: [\s\S]*Reply required: no\.[\s\S]*Directive budget: [\s\S]*<\/status>\nCall orchestrator_decision\.$/);
     expect(prompt.tools.map((tool) => tool.name)).toEqual(["orchestrator_decision"]);
@@ -456,6 +460,23 @@ describe("RuntimeOrchestrator", () => {
         expect(s.discord.sent).toHaveLength(1); expect(s.generate).toHaveBeenCalledTimes(1);
         const history = await s.storage.readJson("user/orchestrator/history.json", OrchestratorHistoryFileSchema);
         expect(history.decisions[0].reasoning).toBe("one_shot: fixture");
+      } finally { await s.runtime.stop(); }
+    });
+    // T5 review C1: one-shot keeps its old input size even though the transcript may be longer.
+    it("hands one-shot only the newest window of the transcript", async () => {
+      const s = await setup();
+      s.discord.contexts = [
+        Array.from({ length: 30 }, (_, i) => ({
+          ...contextMessage(`m${i}`, "user", "Kevin", `message ${i}`),
+          timestamp: new Date(Date.parse("2026-05-16T12:00:00Z") + i * 60_000).toISOString()
+        }))
+      ];
+      try {
+        await s.runtime.triggerChannel("guild-1", "channel-1");
+        const input = s.native.mock.calls[0][0] as { messages: Array<{ content: string }>; timeZone?: string };
+        expect(input.messages.length).toBeLessThanOrEqual(20);
+        expect(input.messages.at(-1)?.content).toBe("message 29");
+        expect(input.timeZone).toBeDefined();
       } finally { await s.runtime.stop(); }
     });
     it("uses the existing deterministic fallback automatically without logging unrestricted errors", async () => {
@@ -4985,6 +5006,178 @@ describe("RuntimeOrchestrator", () => {
     const forced = history.decisions.find((entry) => entry.action === "reply");
     expect(forced?.respondingWaifus.map((responder) => responder.waifuId)).toEqual(["yuki"]);
     expect(forced?.reasoning).toContain("reply required");
+  });
+
+  // T7b call-site contract: the director's summarizer mirrors its decision call.
+  it("gives the director's context its own-model summarizer (forced tool choice, attribution with conversationKey)", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.contexts = [[contextMessage("m1", "user", "Kevin", "hello")]];
+    const summarizeRequests: unknown[] = [];
+    const pipeline: ModelPipeline = {
+      async generateWaifu() {
+        return { content: "unused" };
+      },
+      async decideOrchestrator() {
+        return { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 300, wakePlan: "wait", reasoning: "quiet" };
+      },
+      async summarizeContext(request) {
+        summarizeRequests.push(request);
+        return { text: "summary" };
+      }
+    };
+    await seedRuntimeConfig(storage);
+    const runtime = new RuntimeOrchestrator({ sleep: async () => undefined, storage, discord, maxAutomaticTurns: 1, createPipeline: () => pipeline, logger: quietLogger() });
+    const prepare = vi.spyOn(runtime.contexts, "prepare");
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+    const input = prepare.mock.calls[0]![0];
+    expect(input.summarize).toBeDefined();
+    expect(input.truncateKeep).toBeUndefined();
+    await input.summarize!({ promptCacheKey: "k" } as never, "summarize please");
+    expect(summarizeRequests[0]).toMatchObject({
+      instruction: "summarize please",
+      toolChoice: { name: "orchestrator_decision" },
+      temperature: 0.2,
+      attribution: { agentId: "orchestrator", guildId: "guild-1", channelId: "channel-1", conversationKey: "g_guild-1_channel-1" }
+    });
+  });
+
+  // T5 review M6: an unusable decision on /run still produces the promised reply.
+  it("replies on a reply-required /run when the decision cannot be parsed", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.contexts = [[contextMessage("m1", "user", "Kevin", "hello")]];
+    let calls = 0;
+    const pipeline: ModelPipeline = {
+      async generateWaifu() {
+        return { content: "still here" };
+      },
+      async decideOrchestrator() {
+        calls += 1;
+        if (calls === 1) throw new GatewayPipelineError("decideOrchestrator: malformed orchestrator_decision arguments");
+        return { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 300, wakePlan: "wait", reasoning: "done" };
+      }
+    };
+    await seedRuntimeConfig(storage);
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const runtime = new RuntimeOrchestrator({ sleep: async () => undefined, storage, discord, maxAutomaticTurns: 2, createPipeline: () => pipeline, logger });
+    await runtime.triggerChannel("guild-1", "channel-1", "manual", { firstOrchestratorMustReply: true });
+    await runtime.stop();
+    expect(logger.error).not.toHaveBeenCalledWith("Channel runtime loop failed", expect.anything());
+    expect(discord.sent.map((message) => message.content)).toEqual(["still here"]);
+  });
+
+  it("still surfaces a provider failure on a reply-required /run", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.contexts = [[contextMessage("m1", "user", "Kevin", "hello")]];
+    const pipeline: ModelPipeline = {
+      async generateWaifu() {
+        return { content: "unused" };
+      },
+      async decideOrchestrator() {
+        throw new Error("network down");
+      }
+    };
+    await seedRuntimeConfig(storage);
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const runtime = new RuntimeOrchestrator({ sleep: async () => undefined, storage, discord, maxAutomaticTurns: 1, createPipeline: () => pipeline, logger });
+    await runtime.triggerChannel("guild-1", "channel-1", "manual", { firstOrchestratorMustReply: true });
+    await runtime.stop();
+    expect(logger.error).toHaveBeenCalledWith("Channel runtime loop failed", expect.objectContaining({ message: "network down" }));
+    expect(discord.sent).toEqual([]);
+  });
+
+  // T5 review I2: policy 2 is enforced as the prompt states it, with no cadence precondition.
+  it("overrides a pause on a waiting human's fresh message, without any cadence signal", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    const fresh = new Date(Date.now() - 2 * 60_000).toISOString();
+    discord.contexts = [[{ ...contextMessage("m1", "user", "Kevin", "Yuki, you around?"), timestamp: fresh }]];
+    const pipeline: ModelPipeline = {
+      async generateWaifu() {
+        return { content: "yep!" };
+      },
+      async decideOrchestrator() {
+        return { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 300, wakePlan: "wait", reasoning: "let it breathe" };
+      }
+    };
+    await seedRuntimeConfig(storage);
+    // Always available, whatever the host clock says (the structural decider reads her schedule).
+    const yuki = await storage.readJson("user/waifus/yuki/waifu.json", WaifuConfigSchema);
+    await storage.writeJson("waifu:yuki", "user/waifus/yuki/waifu.json", WaifuConfigSchema, {
+      ...yuki,
+      availability: { sleep: { enabled: false, start: "00:00", end: "00:00" }, busy: [] }
+    });
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const runtime = new RuntimeOrchestrator({ sleep: async () => undefined, storage, discord, maxAutomaticTurns: 1, createPipeline: () => pipeline, logger });
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+    expect(logger.warn).toHaveBeenCalledWith(
+      "Waiting-human override: the model paused on a human's message; deterministic reply used",
+      expect.anything()
+    );
+    expect(discord.sent.map((message) => message.content)).toEqual(["yep!"]);
+  });
+
+  it("leaves a pause alone when the human's message is older than 15 minutes", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    const stale = new Date(Date.now() - 40 * 60_000).toISOString();
+    discord.contexts = [[{ ...contextMessage("m1", "user", "Kevin", "Yuki, you around?"), timestamp: stale }]];
+    const pipeline: ModelPipeline = {
+      async generateWaifu() {
+        return { content: "unused" };
+      },
+      async decideOrchestrator() {
+        return { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 300, wakePlan: "wait", reasoning: "quiet" };
+      }
+    };
+    await seedRuntimeConfig(storage);
+    const runtime = new RuntimeOrchestrator({ sleep: async () => undefined, storage, discord, maxAutomaticTurns: 1, createPipeline: () => pipeline, logger: quietLogger() });
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+    expect(discord.sent).toEqual([]);
+  });
+
+  // T5 review M5: without a config file the director backfills 20 messages (the API default).
+  it("backfills the API's default 20 messages when the orchestrator has no config file", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.contexts = [
+      Array.from({ length: 30 }, (_, i) => ({
+        ...contextMessage(`m${i}`, "user", "Kevin", `message ${i}`),
+        timestamp: new Date(Date.parse("2026-05-16T12:00:00Z") + i * 60_000).toISOString()
+      }))
+    ];
+    await seedRuntimeConfig(storage);
+    await rm(path.join(root, "user", "orchestrator", "config.json"), { force: true });
+    const runtime = new RuntimeOrchestrator({ sleep: async () => undefined, storage, discord, maxAutomaticTurns: 1, createPipeline: () => new FakePipeline(), logger: quietLogger() });
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+    const state = JSON.parse(
+      await readFile(path.join(root, "user", "conversations", "g_guild-1_channel-1", "contexts", "orchestrator.json"), "utf8")
+    ) as { cursorSeq: number };
+    expect(state.cursorSeq).toBe(10);
   });
 
   it("runs a selected waifu first from /run, preserves scene direction and handoffs, then resumes orchestration", async () => {

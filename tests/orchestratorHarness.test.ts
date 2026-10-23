@@ -15,6 +15,7 @@ import {
   buildCastCards,
   createOrchestratorRenderer,
   ledgerToContextMessages,
+  directorRules,
   orchestratorHeader,
   orchestratorPlace,
   orchestratorSystemPrompt,
@@ -130,8 +131,11 @@ function decision(id: string, o: Partial<OrchestratorDecisionHistoryEntry> = {})
   };
 }
 
+/** As ChannelRunner.commitDecision: refs of the produced messages, then the frozen note. */
 async function commitFinal(runtime: ContextRuntime, p: PreparedContext, entry: OrchestratorDecisionHistoryEntry) {
-  const note = decisionNoteFor(entry);
+  const produced = entry.responderOutcomes.filter((o) => o.status === "sent").flatMap((o) => o.messageIds);
+  const refs = await runtime.assignRefs(p.conversation, produced);
+  const note = decisionNoteFor(entry, (id) => refs.get(id));
   await runtime.commit(p, { notes: note ? [note] : [], modelKey: p.modelKey });
 }
 
@@ -167,11 +171,23 @@ function expectPrefix(before: BuiltPrompt, after: BuiltPrompt): void {
 }
 
 describe("orchestrator system prompt (A)", () => {
-  it("states the six enforced policies, static casting cards, and the owner policy in model mode only", () => {
+  it("separates what the runtime enforces from the director's judgement, with static cards and the owner policy", () => {
     const model = renderer({ mode: "model" }).system();
-    for (const rule of ["1. Addressed means answered", "2. Humans present means a voice", "3. Cast alone gets one beat", "4. Pauses scale with the cold", "5. Directives are goals, and budgeted", "6. Images go to native viewers"]) {
-      expect(model).toContain(rule);
-    }
+    // Only rules the code really enforces are listed as enforced (T5 review I2).
+    const enforced = model.slice(model.indexOf("Enforced by the runtime:"), model.indexOf("Your judgement:"));
+    expect(enforced).toContain("A waiting human gets a voice: if the newest message is from a human who wrote in the last 15 minutes, a pause becomes a reply");
+    expect(enforced).toContain("Directives are stripped while the status shows the budget closed");
+    expect(enforced).toContain("A timer wake is skipped while four or more cast messages sit unanswered");
+    expect(enforced).toContain("A manual /run must reply");
+    expect(enforced).not.toMatch(/addresses|sees images/);
+    const judgement = model.slice(model.indexOf("Your judgement:"));
+    expect(judgement).toContain("1. A human addressing or replying to a waifu should hear from her");
+    expect(judgement).toContain("2. One voice is normal; a second only for a clearly different reaction");
+    expect(judgement).toContain("7. Availability is a soft signal: a sleeping or busy waifu can still answer when addressed.");
+    // The transcript conventions the renderer really uses are explained.
+    expect(model).toContain("`↩Name` to an older message by Name");
+    expect(model).toContain("`[image: …]` is text read from an image");
+    expect(model).toContain("`sent → #a4` names the messages they produced");
     expect(model).toContain("<waifu>\nid: aria · Aria · sees images natively\nVoice: Warm, quick, a little breathless.\nCast her when: Food, comfort, cheering people up.\n</waifu>");
     expect(model).toContain('id: riko · Riko · appears in this server as "rikorin"\nAbout: Deadpan drummer.');
     // B28: the owner's custom orchestrator.prompt reaches model mode as <owner_policy>.
@@ -185,9 +201,15 @@ describe("orchestrator system prompt (A)", () => {
   it("gates the pause-length detail on promptSections.pausePlanning", () => {
     const withDetail = orchestratorSystemPrompt({ cast: CAST, pausePlanning: true });
     const without = orchestratorSystemPrompt({ cast: CAST, pausePlanning: false });
-    expect(withDetail).toContain("3600s or more");
-    expect(without).not.toContain("3600s or more");
-    expect(without).toContain("4. Pauses scale with the cold.");
+    expect(withDetail).toContain("3600s+ while waiting for humans");
+    expect(without).not.toContain("3600s+");
+    expect(without).toContain("4. Pause longer the colder the room");
+  });
+
+  it("keeps the director rules near 350 words", () => {
+    const words = (text: string) => text.split(/\s+/).filter(Boolean).length;
+    expect(words(directorRules({ pausePlanning: false }))).toBeLessThanOrEqual(375);
+    expect(words(directorRules({ pausePlanning: true }))).toBeLessThanOrEqual(420);
   });
 
   it("keeps the tool schema identical whatever the per-pass state", () => {
@@ -206,16 +228,11 @@ describe("orchestrator header (B) and tail", () => {
     summary: "Kevin and Aria planned a bake sale."
   } as ContextState;
 
-  it("renders the summary, a roster availability snapshot at epoch start, and the place", () => {
-    expect(orchestratorHeader({ cast: CAST, place: orchestratorPlace("Bake Club", "general", "200") }, state)).toBe(
-      [
-        "<conversation_summary>\nKevin and Aria planned a bake sale.\n</conversation_summary>",
-        "<roster>\nAt the start of this context (Sat 24 Oct 2026 14:00):",
-        "- aria (Aria): awake",
-        "- riko (Riko): awake · busy: band practice\n</roster>",
-        "<place>Bake Club › #general</place>"
-      ].join("\n")
+  it("renders the summary and the place; availability is tail-only (it changes mid-epoch)", () => {
+    expect(orchestratorHeader({ place: orchestratorPlace("Bake Club", "general", "200") }, state)).toBe(
+      ["<conversation_summary>\nKevin and Aria planned a bake sale.\n</conversation_summary>", "<place>Bake Club › #general</place>"].join("\n")
     );
+    expect(orchestratorHeader({ place: "X › #y" }, { ...state, summary: null })).toBe("<place>X › #y</place>");
   });
 
   it("states reply-required, the wake (B8) and an open/closed directive budget; ends with the call", () => {
@@ -286,9 +303,12 @@ describe("director context through ContextRuntime", () => {
   it("golden: model mode with a past decision, a gap and new messages", async () => {
     const h = await harness();
     h.channel.post({ authorId: "kevin", authorName: "Kevin", content: "Aria, what are you baking today?" });
-    h.channel.post({ authorId: "aria-bot", authorName: "Aria", authorIsBot: true, content: "lemon tarts!! want the recipe?" });
     const p1 = await h.prepare();
-    await commitFinal(h.runtime, p1, decision("d1"));
+    // Aria's reply lands; the decision is final once she sent it (its outcome names her message).
+    const reply = h.channel.post({ authorId: "aria-bot", authorName: "Aria", authorIsBot: true, content: "lemon tarts!! want the recipe?" });
+    await commitFinal(h.runtime, p1, decision("d1", {
+      responderOutcomes: [{ id: "o1", waifuId: "aria", source: "orchestrator", status: "sent", messageIds: [reply.id] }]
+    }));
     h.channel.post({ authorId: "kevin", authorName: "Kevin", content: "later maybe, gotta run" }, BASE_TIME + 4 * 60_000);
     h.channel.post({ authorId: "riko-bot", authorName: "Riko", authorIsBot: true, content: "bye kevin" }, BASE_TIME + 3 * 3_600_000);
     h.clock.now = BASE_TIME + 3 * 3_600_000 + 60_000;
@@ -297,7 +317,7 @@ describe("director context through ContextRuntime", () => {
     await expect(serializePrompt(p2.prompt)).toMatchFileSnapshot("./golden/__snapshots__/orchestrator-model.txt");
   });
 
-  it("golden: reply-required wake pass", async () => {
+  it("golden: timer wake pass", async () => {
     const h = await harness();
     h.channel.post({ authorId: "kevin", authorName: "Kevin", content: "anyone up?" });
     const p1 = await h.prepare();
@@ -312,7 +332,6 @@ describe("director context through ContextRuntime", () => {
     h.clock.now = BASE_TIME + 5 * 60_000 + 420_000;
     const p2 = await h.prepare({
       turn: turn({
-        replyRequired: true,
         directiveCount: 0,
         pastDecisions: [{ action: "no_reply" }],
         wake: { scheduledSeconds: 420, wakePlan: "have Riko ask Kevin about the gig", decidedAt: new Date(BASE_TIME + 5 * 60_000).toISOString() }
@@ -321,7 +340,7 @@ describe("director context through ContextRuntime", () => {
     await expect(serializePrompt(p2.prompt)).toMatchFileSnapshot("./golden/__snapshots__/orchestrator-wake.txt");
   });
 
-  it("stays prefix-stable over 20 turns as messages and decision notes append", async () => {
+  it("stays prefix-stable over 20 turns as messages and decision notes append", { timeout: 30_000 }, async () => {
     const h = await harness();
     let previous: BuiltPrompt | undefined;
     for (let i = 0; i < 20; i += 1) {
@@ -356,6 +375,7 @@ describe("director context through ContextRuntime", () => {
     const transcript = p3.prompt.debug.transcript;
     expect(transcript.indexOf("here!")).toBeLessThan(transcript.indexOf("[tool call orchestrator_decision]"));
     expect(transcript.indexOf("[tool result] sent")).toBeLessThan(transcript.indexOf("yay"));
+    expect(transcript).toContain("[tool result] sent");
     expect(p3.state.notes.filter((note) => note.kind === "decision")).toHaveLength(1);
     expectPrefix(p2.prompt, p3.prompt);
   });
@@ -372,6 +392,23 @@ describe("director context through ContextRuntime", () => {
     expect(p2.prompt.messages.some((m) => m.role === "tool" || m.role === "assistant")).toBe(false);
     expect(p2.prompt.debug.transcript).toContain("[decision 14:00] reply → aria (spotlight) · sent");
     expect(p2.prompt.debug.transcript).not.toContain("answer Kevin");
+  });
+
+  // T5 review M3: the line shows when the decision was MADE, not its anchor entry's time.
+  it("shows the frozen decision time on the text fallback, not the anchor's", async () => {
+    const h = await harness();
+    h.channel.post({ authorId: "kevin", authorName: "Kevin", content: "Aria?" }, BASE_TIME);
+    const p1 = await h.prepare({ text: true });
+    const reply = h.channel.post({ authorId: "aria-bot", authorName: "Aria", authorIsBot: true, content: "here" }, BASE_TIME + 40 * 60_000);
+    await commitFinal(h.runtime, p1, decision("d1", {
+      createdAt: new Date(BASE_TIME + 2 * 60_000).toISOString(),
+      responderOutcomes: [{ id: "o1", waifuId: "aria", source: "orchestrator", status: "sent", messageIds: [reply.id] }]
+    }));
+    h.clock.now = BASE_TIME + 41 * 60_000;
+    const p2 = await h.prepare({ text: true });
+    const refOfReply = p2.prompt.messageIdToRef.get(reply.id);
+    expect(refOfReply).toBeDefined();
+    expect(p2.prompt.debug.transcript).toContain(`[decision 14:02] reply → aria · sent → #${refOfReply}`);
   });
 });
 

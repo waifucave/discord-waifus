@@ -13,8 +13,8 @@ import {
 } from "./deterministicOrchestrator.js";
 import type { LedgerEntry } from "../shared/schemas/context.js";
 import { resolveBotAuthorIds } from "../shared/botIdentity.js";
-import type { ContextAgent } from "./context/keys.js";
-import type { PrepareInput } from "./context/runtime.js";
+import { contextSummarizer } from "./context/compaction.js";
+import { conversationKey, type ContextAgent } from "./context/keys.js";
 import type { ModelCallAttribution, PreparedContext } from "./context/types.js";
 import {
   type OrchestratorMode,
@@ -28,9 +28,8 @@ import {
 import { usesJsonSchemaDecisions } from "./pipeline/gatewayPipeline.js";
 import { decisionNoteFor } from "./pipeline/timeline.js";
 import { ORCHESTRATOR_TOOL_NAME } from "./tools.js";
-import type { ModelPipeline } from "../providers/types.js";
 import { planRestartResume } from "./restartResume.js";
-import { GatewayPipelineError } from "./pipeline/params.js";
+import { GatewayPipelineError, TruncatedOutputError } from "./pipeline/params.js";
 import {
   OrchestratorDecisionHistoryEntry,
   OrchestratorDecisionStatus,
@@ -496,7 +495,7 @@ export class ChannelRunner {
         return;
       }
 
-      const orchestrator = await readAgentConfig(this.options.storage, "orchestrator", 40);
+      const orchestrator = await readAgentConfig(this.options.storage, "orchestrator", ORCHESTRATOR_DEFAULT_WINDOW);
       // Deterministic when: no global model configured (free mode), or this guild explicitly
       // opted its channels into the model-free structural decider.
       const oneShotMode = server.orchestratorMode === "one-shot";
@@ -535,6 +534,8 @@ export class ChannelRunner {
       const model = resolvedModel ?? structuralModel(mode, modelConfig?.modelId ?? server.oneShot.target);
       // The JSON-schema fallback sends no tools, so past decisions render as text lines there.
       const textDecisions = resolvedModel ? usesJsonSchemaDecisions(resolvedModel) : mode !== "model";
+      const isWaifu = await this.waifuAuthorMatcher(deterministicCast);
+      const backfillCap = resolveContextCap("orchestrator", server, orchestrator);
       const renderer = createOrchestratorRenderer({
         mode,
         cast: buildCastCards(availableWaifus, guildNicknames),
@@ -558,36 +559,56 @@ export class ChannelRunner {
             : {})
         },
         conversation: { guildId, channelId },
-        isWaifu: await this.waifuAuthorMatcher(deterministicCast)
+        isWaifu
       });
-      const attribution: ModelCallAttribution = { purpose: "orchestrator", agentId: "orchestrator", guildId, channelId };
+      const conversation = { kind: "guild" as const, guildId, channelId };
+      const attribution: ModelCallAttribution = {
+        purpose: "orchestrator",
+        agentId: "orchestrator",
+        guildId,
+        channelId,
+        conversationKey: conversationKey(conversation)
+      };
       const prepared = await this.options.contexts.prepare({
-        conversation: { kind: "guild", guildId, channelId },
+        conversation,
         agent: ORCHESTRATOR_AGENT,
         model,
-        backfillCap: resolveContextCap("orchestrator", server, orchestrator),
+        backfillCap,
         selfAuthorIds: [],
         render: renderer,
         signal,
         params: orchestrator.params,
         server,
-        summarize: orchestratorSummarizer(pipeline, {
-          toolChoice: { name: ORCHESTRATOR_TOOL_NAME },
-          params: orchestrator.params,
-          attribution
-        }),
+        // Own-model compaction mirrors the decision call (T7b contract): forced tool choice (mapped
+        // to none/auto for summarizing), same sampling, params and attribution. Deterministic and
+        // one-shot passes have no summarizer: their context truncates durably instead.
+        ...(pipeline?.summarizeContext
+          ? {
+              summarize: contextSummarizer(pipeline, {
+                toolChoice: { name: ORCHESTRATOR_TOOL_NAME },
+                temperature: ORCHESTRATOR_TEMPERATURE,
+                params: orchestrator.params,
+                attribution
+              })
+            }
+          : {}),
+        // One-shot reads a small window (its old ~20 messages); deterministic keeps keepRecent.
+        ...(oneShotMode ? { truncateKeep: backfillCap } : {}),
         renderToolTurnsAsText: textDecisions
       });
       const assessment =
         renderer.assessment() ??
         assessOrchestratorTurn(
-          ledgerToContextMessages(prepared.transcript, { guildId, channelId, isWaifu: () => false }),
+          ledgerToContextMessages(prepared.transcript, { guildId, channelId, isWaifu }),
           { directiveCount, directiveCooldown: orchestrator.directiveCooldown, pastDecisions },
           prepared.startedAt
         );
-      let messages = assessment.messages;
+      const messages = assessment.messages;
       await noteActiveChatParticipantsFromContext(this.options.storage, guildId, channelId, messages);
-      if (oneShotMode && this.options.ocr) messages = await this.options.ocr.enrichMessages(messages, { signal });
+      // Structural deciders (deterministic, one-shot, fallbacks, overrides) read the newest window
+      // only, the same size they always had; the transcript itself may be longer.
+      let recent = messages.slice(-backfillCap);
+      if (oneShotMode && this.options.ocr) recent = await this.options.ocr.enrichMessages(recent, { signal });
       this.options.logger.info("Prepared orchestrator context", {
         guildId,
         channelId,
@@ -613,7 +634,7 @@ export class ChannelRunner {
         }
       }
 
-      const { loop, cadence, humanActiveNow, directiveBudgetOpen } = assessment;
+      const { loop, humanActiveNow, directiveBudgetOpen } = assessment;
       // No typing scope for orchestrator decisions: the orchestrator bot showing "typing…" while it
       // deliberates leaks the machinery's presence into the room. Only the waifu send path types.
       let decision: OrchestratorDecision;
@@ -623,7 +644,7 @@ export class ChannelRunner {
         try {
           const before = performance.now();
           const result = await (this.options.decideOneShot ?? ((input) => this.oneShot.decide(input)))({
-            target: server.oneShot.target, messages, cast: deterministicCast, waifus: availableWaifus, now: new Date(),
+            target: server.oneShot.target, messages: recent, cast: deterministicCast, waifus: availableWaifus, now: new Date(),
             timeZone: prepared.state.timeZone,
             replyRequired: requireReply, directiveBudgetOpen, loopSuspected: loop.suspected, timerWakeSeconds,
             policy: orchestrator.prompt, signal
@@ -634,12 +655,12 @@ export class ChannelRunner {
             action: decision.action, loopDetected: semanticLoopDetected, durationMs: Math.round(performance.now() - before) });
         } catch (error) {
           if (requireReply || signal.aborted) throw error;
-          decision = decideDeterministically({ messages, cast: deterministicCast, now: new Date() });
+          decision = decideDeterministically({ messages: recent, cast: deterministicCast, now: new Date() });
           const code = error instanceof Error && /^one_shot_[a-z0-9_]+$/.test(error.message) ? error.message : "one_shot_failed";
           this.options.logger.warn("One shot failed; deterministic fallback decision used", { guildId, channelId, code, action: decision.action });
         }
       } else if (!pipeline || !pipeline.decideOrchestrator) {
-        decision = decideDeterministically({ messages, cast: deterministicCast, now: new Date() });
+        decision = decideDeterministically({ messages: recent, cast: deterministicCast, now: new Date() });
         this.options.logger.info("Deterministic orchestrator decision (no model configured)", {
           guildId,
           channelId,
@@ -658,6 +679,7 @@ export class ChannelRunner {
               availableWaifuIds: availableWaifus.map((waifu) => waifu.id),
               replyRequired: requireReply,
               directiveBudgetOpen,
+              temperature: ORCHESTRATOR_TEMPERATURE,
               params: orchestrator.params,
               signal,
               attribution: { ...attribution, conversationKey: prepared.key },
@@ -667,9 +689,12 @@ export class ChannelRunner {
             })
           );
         } catch (error) {
-          // Manual /run promised the user a reply from the model — surface its failure instead.
-          if (requireReply || signal.aborted) throw error;
-          decision = decideDeterministically({ messages, cast: deterministicCast, now: new Date() });
+          if (signal.aborted) throw error;
+          // Manual /run promised the user a reply: a decision that came back unusable (unparsable,
+          // invalid or truncated) becomes the enforced structural reply below; a provider failure
+          // (network, quota, …) still surfaces.
+          if (requireReply && !isDecisionShapeError(error)) throw error;
+          decision = decideDeterministically({ messages: recent, cast: deterministicCast, now: new Date() });
           this.options.logger.warn("Model orchestrator failed; deterministic fallback decision used", {
             guildId,
             channelId,
@@ -682,7 +707,7 @@ export class ChannelRunner {
       // Reply-required is enforced in code (the tool schema is stable per channel config): a
       // manual /run that came back with a pause still gets a voice.
       if (requireReply && decision.action !== "reply") {
-        const forced = forceReplyDecision({ messages, cast: deterministicCast, now: new Date() });
+        const forced = forceReplyDecision({ messages: recent, cast: deterministicCast, now: new Date() });
         if (forced) {
           this.options.logger.warn("Reply required: the decision paused; a deterministic reply is used", {
             guildId,
@@ -710,7 +735,7 @@ export class ChannelRunner {
         const enforced = enforceWakePlan({
           plan: wakeDecision.wakePlan,
           cast: deterministicCast,
-          messages,
+          messages: recent,
           now: new Date()
         });
         if (enforced) {
@@ -725,15 +750,15 @@ export class ChannelRunner {
           wakePlanEnforced = true;
         }
       }
-      // Enforcement tier for the retire-early rut: the cadence notice is advisory, and
-      // flash-lite-class models demonstrably acknowledge an active room and pause anyway
-      // (live 2026-07-06 06:07: "conversation is still very active, but…" → no_reply 45).
-      // When the detector fired, humans are around, and the model still pauses, a
-      // deterministic reply keeps the room alive; the model resumes control next pass.
-      if (!deterministicMode && !requireReply && cadence.suspected && humanActiveNow && decision.action === "no_reply") {
-        const override = decideDeterministically({ messages, cast: deterministicCast, now: new Date() });
+      // Waiting-human rule (spec 8.7 policy 2, enforced as the director prompt states it): a human
+      // wrote in the last 15 minutes and the model pauses anyway (live 2026-07-06 06:07: "the
+      // conversation is still very active, but…" → no_reply 45). The structural decider replies
+      // when the newest message is that human's and someone is available; the model resumes
+      // control next pass.
+      if (!deterministicMode && !requireReply && humanActiveNow && decision.action === "no_reply") {
+        const override = decideDeterministically({ messages: recent, cast: deterministicCast, now: new Date() });
         if (override.action === "reply") {
-          this.options.logger.warn("Cadence override: model retired an active room again; deterministic reply used", {
+          this.options.logger.warn("Waiting-human override: the model paused on a human's message; deterministic reply used", {
             guildId,
             channelId,
             modelReasoning: decision.reasoning.slice(0, 160),
@@ -902,7 +927,12 @@ export class ChannelRunner {
   private async commitDecision(prepared: PreparedContext, decisionId: string, usage: Usage | undefined): Promise<void> {
     try {
       const entry = await readOrchestratorDecision(this.options.storage, decisionId);
-      const note = entry ? decisionNoteFor(entry) : undefined;
+      // Name the messages the decision produced by their refs (assigned now if they have not
+      // reached the ledger yet; refs are stable per conversation), so the note's place in the
+      // transcript does not matter.
+      const produced = (entry?.responderOutcomes ?? []).filter((outcome) => outcome.status === "sent").flatMap((outcome) => outcome.messageIds);
+      const refs = produced.length ? await this.options.contexts.assignRefs(prepared.conversation, produced) : new Map<string, string>();
+      const note = entry ? decisionNoteFor(entry, (messageId) => refs.get(messageId)) : undefined;
       await this.options.contexts.commit(prepared, {
         notes: note ? [note] : [],
         ...(usage ? { usage } : {}),
@@ -1082,10 +1112,19 @@ const HUMAN_RECENT_WINDOW_MS = 15 * 60 * 1000;
 
 const ORCHESTRATOR_AGENT: ContextAgent = { kind: "orchestrator" };
 
+/** The orchestrator agent's default backfill window when no config file exists (same as the API). */
+const ORCHESTRATOR_DEFAULT_WINDOW = 20;
+
+/** Decision-call temperature; the summarizer mirrors it so compaction reuses the same request shape. */
+const ORCHESTRATOR_TEMPERATURE = 0.2;
+
 /**
  * Capability stand-in for passes that make no chat-model call (deterministic, one-shot) or whose
  * model the gateway registry cannot resolve: text-only (images freeze to their OCR text), and a
- * context window large enough that only compaction's message cap applies.
+ * context window large enough that only compaction's message cap applies. It deliberately has no
+ * `features`/`params`: only the context engine's budget (limits) and image rule (modalities) read
+ * it; compaction never sees it (summary-less contexts truncate, and a summarizer always uses its
+ * pipeline's own gateway model).
  */
 function structuralModel(mode: OrchestratorMode, modelId: string): ResolvedModel {
   return {
@@ -1097,25 +1136,13 @@ function structuralModel(mode: OrchestratorMode, modelId: string): ResolvedModel
 }
 
 /**
- * T7b SEAM (compaction): the orchestrator's own-model summarizer for ContextRuntime.prepare.
- * T7b's call-site contract is `contextSummarizer(pipeline, { toolChoice: { name:
- * "orchestrator_decision" }, temperature, topP, params, attribution })` from
- * context/compaction.ts — the pipeline maps the forced tool choice to `none`/`auto` for the
- * summarizing call. That helper is not on this base, so this returns undefined (no compaction;
- * NoopCompaction never triggers anyway). Replace the body with the contextSummarizer call at merge.
+ * A decision call that came back but is unusable (unparsable / invalid arguments, a structured
+ * decision that did not complete, or one truncated by the output cap), as opposed to a provider
+ * failure. On a reply-required /run these become the enforced structural reply.
  */
-function orchestratorSummarizer(
-  pipeline: ModelPipeline | undefined,
-  _options: {
-    toolChoice: { name: string };
-    temperature?: number;
-    topP?: number;
-    params?: Record<string, unknown>;
-    attribution: ModelCallAttribution;
-  }
-): PrepareInput["summarize"] {
-  if (!pipeline) return undefined; // deterministic / one-shot passes have no chat model to summarize with
-  return undefined;
+function isDecisionShapeError(error: unknown): boolean {
+  if (error instanceof TruncatedOutputError) return true;
+  return error instanceof GatewayPipelineError && /^(decideOrchestrator:|Structured decision did not complete)/.test(error.message);
 }
 
 const RECOVERY_RETRIGGER_SECONDS = 180;

@@ -92,39 +92,45 @@ function castingCard(card: CastCard): string {
   return lines.join("\n");
 }
 
-const PAUSE_DETAIL = [
-  "   Pick retriggerAfterSeconds from the room's temperature: 10–60s for a short breath mid-flow, 100–180s right after a beat lands, 240–600s for a cooling thread, 900–1800s to revive a quiet room, 3600s or more when you are mostly waiting for humans to return.",
-  "   Use exact, varied numbers (110, 140, 420) rather than round defaults, and back off to longer pauses after repeated quiet checks. If your last wakes all had the same shape, break it: one voice instead of two, a directive instead of a reply, or a genuinely longer sleep."
-].join("\n");
+const PAUSE_DETAIL =
+  "   Roughly: 10–60s mid-flow, 100–180s after a beat lands, 240–600s for a cooling thread, 900–1800s to revive a quiet room, 3600s+ while waiting for humans. Use exact, varied numbers (110, 140, 420), back off after repeated quiet checks, and break any wake rhythm that keeps the same shape.";
 
-/** Director rules: the six policies the runtime enforces (spec 8.7), stated once. */
+/**
+ * Director rules (spec 8.7). Every "enforced" line is something the runtime really does
+ * (ChannelRunner: waiting-human override, directive guardrail, cast-wake suppression, forced reply
+ * on /run); everything else is stated as the director's judgement.
+ */
 export function directorRules(o: { pausePlanning: boolean }): string {
   return [
     "<director>",
-    "You direct a small cast of characters (waifus) in one live Discord channel. Each pass you decide who, if anyone, speaks next, and when you look at the room again. You choose speakers and timing; each waifu writes her own words, so never write or paraphrase a line for her. You are consulted again after every reply lands, so plan one beat, not a scene.",
+    "You direct a cast of characters (waifus) in one Discord channel. Each pass, decide who speaks next, if anyone, and when to look again. Each waifu writes her own words; never script her lines. Plan one beat at a time.",
     "</director>",
     "",
     "<transcript_format>",
-    "Messages appear as `[14:02 #k3] Kevin: text`: local time, a short message ref, the sender. `↩#a1` means the message replies to #a1. Lines like `— 3 hours later —` mark gaps and day changes. Your own earlier orchestrator_decision calls appear with their real outcomes; nobody else sees them. The final block is a live status note from the runtime (time, who is awake, notices), not chat.",
+    "`[14:02 #k3] Kevin: text` is local time, message ref, sender. `↩#a1` replies to #a1; `↩Name` to an older message by Name. `[image: …]` is text read from an image; `[image]` an unreadable one. `— 3 hours later —` marks gaps and days. Your past orchestrator_decision calls show their outcomes (`sent → #a4` names the messages they produced); nobody else sees them. The final block is the runtime's live status, not chat.",
     "</transcript_format>",
     "",
     "<policy>",
-    "The runtime enforces these rules. Plan with them, not against them.",
-    "1. Addressed means answered. When the newest human message addresses or replies to a waifu, she replies now, even with a couple of words.",
-    "2. Humans present means a voice. If a human spoke in the last 15 minutes, reply with one voice. A pause in an active room is overridden by the runtime.",
-    "3. Cast alone gets one beat. With no human around, the cast gets one fresh beat, then you pause. Never commission a second take on a beat no human answered; wakes that would only stack another bot message are skipped.",
-    "4. Pauses scale with the cold. The longer the room has been quiet, the longer the pause; any new human message wakes you regardless, so long pauses cost nothing. With no_reply, wakePlan is one sentence on what you will do at the wake; a pivot plan names the new topic, and at the wake you execute it with a change_topic directive.",
+    "Enforced by the runtime:",
+    "- A waiting human gets a voice: if the newest message is from a human who wrote in the last 15 minutes, a pause becomes a reply from an available waifu.",
+    "- Directives are stripped while the status shows the budget closed; a detected loop reopens it.",
+    "- A timer wake is skipped while four or more cast messages sit unanswered and no human wrote in 30 minutes.",
+    "- A manual /run must reply.",
+    "Your judgement:",
+    "1. A human addressing or replying to a waifu should hear from her, even briefly.",
+    "2. One voice is normal; a second only for a clearly different reaction.",
+    "3. With no human around, the cast gets one fresh beat, then pause; never a second take on an unanswered beat.",
+    "4. Pause longer the colder the room; human messages wake you anyway. With no_reply, wakePlan says what you will do at the wake; a pivot plan names its topic and is carried out with a change_topic directive.",
     ...(o.pausePlanning ? [PAUSE_DETAIL] : []),
-    "5. Directives are goals, and budgeted. A directive is a short GOAL for one waifu's next message, never wording; the default is null. The status note says whether the directive budget is open; outside it, directives are stripped (a detected loop opens it). change_topic must name a topic that is not in the recent messages.",
-    "6. Images go to native viewers. When the newest messages include an image, prefer a waifu marked \"sees images natively\"; the others only read extracted text. A preference, not a rule.",
+    "5. A directive is a short goal for one message, never wording; default null. change_topic names a topic absent from recent messages.",
+    '6. For new images prefer a waifu marked "sees images natively"; the others only get their text.',
+    "7. Availability is a soft signal: a sleeping or busy waifu can still answer when addressed.",
     "</policy>",
     "",
     "<decision_format>",
-    "- Copy every waifuId verbatim from the casting cards.",
-    "- reply: respondingWaifus non-empty, in speaking order; one is normal, two only when the second has a clearly different reaction of her own. retriggerAfterSeconds and wakePlan null.",
-    `- no_reply: respondingWaifus empty; retriggerAfterSeconds (${RETRIGGER_MIN_SECONDS}–${RETRIGGER_MAX_SECONDS}) and wakePlan set.`,
-    `- delaySeconds is a realistic reading/typing delay, 0–${MAX_WAIFU_DELAY_SECONDS}.`,
-    "- reasoning: one short operational sentence.",
+    "- waifuIds verbatim from the cast cards; respondingWaifus in speaking order.",
+    `- reply: retriggerAfterSeconds and wakePlan null. no_reply: no respondingWaifus; retriggerAfterSeconds (${RETRIGGER_MIN_SECONDS}–${RETRIGGER_MAX_SECONDS}) and wakePlan set.`,
+    `- delaySeconds 0–${MAX_WAIFU_DELAY_SECONDS} (reading/typing); reasoning one short sentence.`,
     "</decision_format>"
   ].join("\n");
 }
@@ -167,17 +173,13 @@ function rosterLines(cast: readonly CastCard[], at: Date, timeZone: string): str
   return cast.map((card) => `- ${card.waifuId} (${card.displayName}): ${availabilityLine(card.availability, at, timeZone)}`);
 }
 
-/** Epoch header (B): frozen at epoch start, re-rendered after a compaction. */
-export function orchestratorHeader(i: { cast: readonly CastCard[]; place: string }, state: ContextState): string {
-  const at = new Date(state.epochStartedAt);
+/**
+ * Epoch header (B): frozen at epoch start, re-rendered after a compaction. Availability is NOT
+ * here: it changes mid-epoch (and with the cast), so it lives only in the tail.
+ */
+export function orchestratorHeader(i: { place: string }, state: ContextState): string {
   const sections: string[] = [];
   if (state.summary?.trim()) sections.push(`<conversation_summary>\n${state.summary.trim()}\n</conversation_summary>`);
-  const roster = rosterLines(i.cast, at, state.timeZone);
-  sections.push(
-    `<roster>\nAt the start of this context (${formatFullDate(at, state.timeZone)} ${formatClock(at, state.timeZone)}):\n${
-      roster.join("\n") || "(no waifus)"
-    }\n</roster>`
-  );
   sections.push(`<place>${i.place}</place>`);
   return sections.join("\n");
 }
@@ -384,7 +386,7 @@ export function createOrchestratorRenderer(i: {
   let last: OrchestratorAssessment | undefined;
   return {
     system: () => system,
-    header: (_snapshot, state) => orchestratorHeader({ cast: i.cast, place: i.place }, state),
+    header: (_snapshot, state) => orchestratorHeader({ place: i.place }, state),
     tail: (state, now, extras) => {
       const messages = ledgerToContextMessages(extras.transcript ?? [], { ...i.conversation, isWaifu: i.isWaifu });
       last = assessOrchestratorTurn(messages, i.turn, now);
