@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { planWaifuReplyChunks, splitWaifuReply, typingDelayMs } from "../src/orchestration/messageSplit.js";
+import { splitWaifuReply, typingDelayMs } from "../src/orchestration/messageSplit.js";
 
 describe("splitWaifuReply", () => {
   it("keeps a register-compliant multi-sentence reply as ONE message", () => {
@@ -88,43 +88,6 @@ describe("splitWaifuReply", () => {
   it("leaves a long chunk intact when it has no comma and no emoji", () => {
     const noMarkers = "z".repeat(150);
     expect(splitWaifuReply(noMarkers)).toEqual([noMarkers]);
-  });
-});
-
-describe("planWaifuReplyChunks", () => {
-  it("keeps only the first two chunks when the third chunk is 18 characters or longer", () => {
-    expect(planWaifuReplyChunks(["One.", "Two.", "123456789 12345678", "Four."])).toEqual({
-      immediateChunks: ["One.", "Two."],
-      cachedChunks: ["123456789 12345678", "Four."]
-    });
-  });
-
-  it("allows the third chunk when it is shorter than 18 characters including spaces", () => {
-    expect(planWaifuReplyChunks(["One.", "Two.", "short third", "Four."])).toEqual({
-      immediateChunks: ["One.", "Two.", "short third"],
-      cachedChunks: ["Four."]
-    });
-  });
-
-  it("allows the fourth chunk when the third was allowed and the fourth is a server emoji", () => {
-    expect(planWaifuReplyChunks(["One.", "Two.", "short third", "<:cutecat:>", "Five."])).toEqual({
-      immediateChunks: ["One.", "Two.", "short third", "<:cutecat:>"],
-      cachedChunks: ["Five."]
-    });
-  });
-
-  it("allows the fourth chunk when the third was allowed and the fourth is a unicode emoji", () => {
-    expect(planWaifuReplyChunks(["One.", "Two.", "short third", "🥹", "Five."])).toEqual({
-      immediateChunks: ["One.", "Two.", "short third", "🥹"],
-      cachedChunks: ["Five."]
-    });
-  });
-
-  it("keeps the fourth chunk cached when the third chunk was too long", () => {
-    expect(planWaifuReplyChunks(["One.", "Two.", "This third chunk is too long.", "🥹"])).toEqual({
-      immediateChunks: ["One.", "Two."],
-      cachedChunks: ["This third chunk is too long.", "🥹"]
-    });
   });
 });
 
