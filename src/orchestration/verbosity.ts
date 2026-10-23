@@ -131,14 +131,30 @@ export function cutToCompleteSentence(text: string): string {
   return trimmed.slice(0, end).trimEnd();
 }
 
-/** Cut `text` to at most `max` chars at the last word boundary (exactly at `max` without one). */
+const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+function graphemes(value: string): string[] {
+  return Array.from(graphemeSegmenter.segment(value), (segment) => segment.segment);
+}
+
+/**
+ * Cut `text` to at most `max` characters at the last word boundary (exactly at `max` without
+ * one). Counts and cuts by grapheme, so an emoji sequence or a combining mark is never split.
+ */
 export function trimAtWord(text: string, max: number): string {
   const trimmed = text.trim();
-  if (chars(trimmed) <= max) return trimmed;
-  const head = sliceChars(trimmed, max + 1);
-  const cut = Math.max(head.lastIndexOf(" "), head.lastIndexOf("\n"));
-  const result = cut > head.length / 2 ? head.slice(0, cut) : sliceChars(trimmed, max);
-  return result.replace(/[\s,;:–—-]+$/u, "").trimEnd();
+  const units = graphemes(trimmed);
+  if (units.length <= max) return trimmed;
+  const head = units.slice(0, max + 1);
+  let cut = -1;
+  for (let index = head.length - 1; index >= 0; index -= 1) {
+    if (/^\s+$/u.test(head[index]!)) {
+      cut = index;
+      break;
+    }
+  }
+  const kept = cut > head.length / 2 ? head.slice(0, cut) : units.slice(0, max);
+  return kept.join("").replace(/[\s,;:–—-]+$/u, "").trimEnd();
 }
 
 function lengthViolations(text: string, profile: VerbosityProfile): Violation[] {

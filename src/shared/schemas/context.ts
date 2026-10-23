@@ -77,6 +77,9 @@ export const ContextStateSchema = RevisionedRecordSchema.extend({
   summary: z.string().nullable().default(null),
   headerText: z.string().nullable().default(null), // rendered breakpoint-B text, frozen per epoch
   memorySnapshotIds: z.array(z.string()).default([]),
+  // Discord user ids present when the epoch started (frozen with the header): the tail reports
+  // arrivals by id against it. Additive (T3 review).
+  epochParticipantIds: z.array(z.string()).default([]),
   memoryNoteCount: z.number().int().nonnegative().default(0),
   imageModes: z.record(z.string(), ImageModeSchema).default({}),
   inlineImageCount: z.number().int().nonnegative().default(0), // imageModes/inlineImageCount reset each epoch

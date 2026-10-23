@@ -66,7 +66,10 @@ export function renderMemoryLine(r: MemoryRecord, c: MemoryLineContext): string 
   const prefix = missing.length > 0 ? `${missing.join(" & ")}: ` : "";
   const content = r.content.trim().replace(/[.。]+$/u, "");
   const kind = r.expiresAt && r.kind === "context" ? "note" : r.kind;
-  const place = r.origin.dm ? "a private chat" : c.placeFor(r.origin);
+  // O4: DM provenance names the person the private chat was with (the record's human subject).
+  const dmWith = r.subjects.find((subject) => subject.discordUserId && !subject.waifuId);
+  const dmName = dmWith ? c.nameFor(dmWith) : undefined;
+  const place = r.origin.dm ? (dmName ? `a private chat with ${dmName}` : "a private chat") : c.placeFor(r.origin);
   const meta = [kind, place ? `learned in ${place}` : undefined, humanAge(r.createdAt, c.now)].filter(Boolean);
   return `- ${prefix}${content} (${meta.join(" · ")})`;
 }
@@ -233,7 +236,12 @@ export function proposeInlineNoteRecords(
 ): MemoryRecord[][] {
   if (i.budget <= 0) return [];
   const excluded = new Set(i.excludeIds);
-  const eligible = records.filter((record) => isRetrievable(record, i.waifuId, i.now) && !excluded.has(record.id));
+  // Her own add_memory writes since the epoch began are already in her transcript as tool notes.
+  const ownToolWriteThisEpoch = (record: MemoryRecord) =>
+    record.source === "waifu_tool" && record.createdAt >= i.epochStartedAt;
+  const eligible = records.filter(
+    (record) => isRetrievable(record, i.waifuId, i.now) && !excluded.has(record.id) && !ownToolWriteThisEpoch(record)
+  );
   const sinceEpoch = i.window.filter((entry) => entry.at >= i.epochStartedAt);
   const context: ScoreContext = {
     participants: i.participants,
@@ -254,6 +262,16 @@ export function proposeInlineNoteRecords(
     if (about.length === 0) continue;
     about.forEach((record) => used.add(record.id));
     notes.push(about);
+  }
+  // Spec 6.3: a memory written mid-epoch about people present becomes a note (within budget),
+  // not only on a lexical match.
+  const writtenThisEpoch = eligible
+    .filter((record) => !used.has(record.id) && record.createdAt >= i.epochStartedAt && subjectMatch(record, i.participants) > 0)
+    .sort(byCreatedAt);
+  for (const record of writtenThisEpoch) {
+    if (notes.length >= i.budget) break;
+    used.add(record.id);
+    notes.push([record]);
   }
   const humanOnly: QueryTokens = { human: context.query.human, other: new Set() };
   const lexicalHits = eligible

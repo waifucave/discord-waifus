@@ -112,6 +112,16 @@ describe("trim helpers", () => {
     expect(trimAtWord("alpha beta gamma delta", 12)).toBe("alpha beta");
   });
 
+  it("trimAtWord counts and cuts by grapheme, never splitting an emoji sequence", () => {
+    const family = "👨‍👩‍👧‍👦";
+    // Seven code points, one grapheme: fits a 5-character budget whole.
+    expect(trimAtWord(`hi ${family}`, 5)).toBe(`hi ${family}`);
+    // No boundary in the first half: a hard cut that keeps whole graphemes only.
+    const flags = "🇯🇵🇫🇷🇩🇪🇮🇹";
+    expect(trimAtWord(flags, 2)).toBe("🇯🇵🇫🇷");
+    expect(trimAtWord(`ok ${"e\u0301".repeat(6)}`, 5)).toBe(`ok ${"e\u0301".repeat(2)}`);
+  });
+
   it("cutToCompleteSentence drops a cut-off tail", () => {
     expect(cutToCompleteSentence("I loved it! Then we went to the")).toBe("I loved it!");
     expect(cutToCompleteSentence("first line\nsecond line cut")).toBe("first line");

@@ -310,23 +310,26 @@ export class RuntimeCommands {
         await event.respond(resolved);
         return;
       }
-      if (!this.options.discord.sendDebugMessage) {
+      if (!event.followUp && !this.options.discord.sendDebugMessage) {
         throw new Error("Discord debug message sending is not available.");
       }
 
+      // The roster of the prompt is the channel's cast (not every waifu enabled in the guild).
+      const channelCast = server.channels[event.channelId]
+        ? await listAvailableWaifusForChannel(this.options.storage, server.channels[event.channelId]!)
+        : [];
       const messages = await this.formatPrintCommandMessages({
         guildId: event.guildId,
         channelId: event.channelId,
         server,
         waifu: resolved,
-        availableWaifus,
+        availableWaifus: channelCast.length > 0 ? channelCast : availableWaifus,
         type: event.type
       });
+      // Prefer the invoker-only (ephemeral) follow-up: prompts are not for the whole channel.
       for (const content of messages) {
-        await this.options.discord.sendDebugMessage({
-          channelId: event.channelId,
-          content
-        });
+        if (event.followUp) await event.followUp(content);
+        else await this.options.discord.sendDebugMessage!({ channelId: event.channelId, content });
       }
       await event.respond(printCommandConfirmation(event.type, resolved.displayName));
     } catch (error) {
@@ -355,7 +358,7 @@ export class RuntimeCommands {
       if (captured) {
         return [
           `Captured from ${input.waifu.displayName}'s last reply at ${captured.at} in <#${captured.channelId}> — exactly what the model received.`,
-          ...formatWaifuPromptDebugMessages({ waifuDisplayName: input.waifu.displayName, debug: captured.debug })
+          ...formatWaifuPromptDebugMessages({ waifuDisplayName: input.waifu.displayName, debug: redactPrivateMemories(captured.debug) })
         ];
       }
       if (!input.waifu.modelId) {
@@ -647,3 +650,19 @@ function clearMessageLabel(type: DiscordClearType, count: number): string {
 }
 
 const MAX_CLEAR_COUNT = 100;
+
+const PRIVATE_MEMORY_RE = /learned in a private chat/;
+const PRIVATE_MEMORY_PLACEHOLDER = "- (a memory from a private chat — not shown here)";
+
+/**
+ * O4: a printed prompt never shows what someone said in a private chat. Lines carrying DM
+ * provenance (header memories, inline memory notes) are replaced by a placeholder.
+ */
+export function redactPrivateMemories<T extends { header: string; transcript: string }>(debug: T): T {
+  const redact = (text: string) =>
+    text
+      .split("\n")
+      .map((line) => (PRIVATE_MEMORY_RE.test(line) ? PRIVATE_MEMORY_PLACEHOLDER : line))
+      .join("\n");
+  return { ...debug, header: redact(debug.header), transcript: redact(debug.transcript) };
+}

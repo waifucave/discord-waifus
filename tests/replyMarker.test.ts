@@ -48,4 +48,19 @@ describe("stripLeadingTranscriptHeader", () => {
     expect(stripLeadingTranscriptHeader("↩#k3 hi")).toBe("↩#k3 hi");
     expect(stripLeadingTranscriptHeader("[citation needed] lol")).toBe("[citation needed] lol");
   });
+
+  it("I3: tolerates `:`/`,` after the ref and matches refs case-insensitively", () => {
+    expect(parseReplyMarker("↩#k3: yeah", refs)).toEqual({ ref: "k3", content: "yeah", replyToMessageId: "1001" });
+    expect(parseReplyMarker("↩#K3, yes", refs)).toEqual({ ref: "k3", content: "yes", replyToMessageId: "1001" });
+    expect(parseReplyMarker("↩#K3", refs)).toMatchObject({ ref: "k3" });
+  });
+
+  it("I3: strips a leading ↩you / ↩Name header target and leaves it unthreaded", () => {
+    const you = parseReplyMarker("↩you hi", refs);
+    expect(you.ref).toBeUndefined();
+    expect(you).toMatchObject({ content: "hi", strippedTarget: "you" });
+    const kevin = parseReplyMarker("↩Kevin: sure thing", refs);
+    expect(kevin.ref).toBeUndefined();
+    expect(kevin).toMatchObject({ content: "sure thing", strippedTarget: "Kevin" });
+  });
 });

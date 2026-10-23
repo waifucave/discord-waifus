@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RuntimeOrchestrator, currentlyDoingForWaifu, DreamPassResult } from "../src/orchestration/runtime.js";
+import { redactPrivateMemories } from "../src/orchestration/commands.js";
 import { ContextMessage } from "../src/orchestration/contextMessages.js";
 import { OrchestratorDecision, RETRIGGER_MAX_SECONDS } from "../src/orchestration/decisions.js";
 import {
@@ -373,7 +374,9 @@ class FakePipeline implements ModelPipeline {
     expect(prompt.debug.header).toContain("<memories>\n- Yuki remembers Kevin likes tea (fact");
     expect(prompt.debug.header).toContain("<place>");
     expect(prompt.debug.transcript).toMatch(/\[\d\d:\d\d #a0\] Kevin: hello/);
-    expect(prompt.debug.transcript).toContain("<direction>(spotlight) answer Kevin, then pull in Mira</direction>");
+    // This turn's direction rides in the tail of the call it steers (persisted only at commit).
+    expect(prompt.debug.tail).toContain("<direction>(spotlight) answer Kevin, then pull in Mira</direction>");
+    expect(prompt.debug.transcript).not.toContain("<direction>(spotlight)");
     expect(prompt.debug.tail).toMatch(/Write Yuki's next message\.$/);
     expect(request.stopSequences).toEqual(["\n[", "\nYuki:"]);
     return { content: "hello <@Kevin> <:cutecat:>" };
@@ -1641,7 +1644,7 @@ describe("RuntimeOrchestrator", () => {
     // Humans present (characters are in her identity roster; a human named like a character is
     // folded into the character, as before).
     expect(header).toContain("People here: Kevin, Mira\n");
-    expect(system).toContain("The other characters here are Mika;");
+    expect(system).toContain("The other character here is Mika, who writes their own messages; you write only yours.");
     expect(header).not.toContain("Old User");
     expect(header).not.toContain("Other Channel User");
   });
@@ -4188,10 +4191,84 @@ describe("RuntimeOrchestrator", () => {
     expect(printed).toContain("## System prompt (Yuki)");
     expect(printed).not.toContain("(continued");
     expect(printed).not.toMatch(/`{3,}xml/);
-    expect(printed).toContain("<identity>\nYou are Yuki.");
+    // The longer harness pushes the chunk split right after `<identity>`; check both pieces.
+    expect(printed).toContain("<identity>");
+    expect(printed).toContain("You are Yuki.\n</identity>");
     expect(printed).toContain("<persona>\nkind\nlong detail line");
     expect(printed).not.toContain("<scene_direction>");
     expect(printed).not.toContain("\\n");
+  });
+
+  it("/print system_prompt replies ephemerally when it can, with the channel's cast as the roster", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    await seedRuntimeConfig(storage);
+    await seedWaifu(storage, "yuki", "Yuki", "yuki-bot", "kind");
+    await seedWaifu(storage, "mika", "Mika", "mika-bot", "sharp");
+    const server = await storage.readJson("user/servers/guild-1/server.json", ServerConfigSchema);
+    await storage.writeJson("server:guild-1", "user/servers/guild-1/server.json", ServerConfigSchema, {
+      ...server,
+      channels: {
+        ...server.channels,
+        "channel-2": { ...server.channels["channel-1"]!, channelId: "channel-2", enabledWaifuIds: ["yuki", "mika"] }
+      }
+    });
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      createPipeline: () => ({ async generateWaifu() { return { content: "unused" }; } }),
+      logger: quietLogger()
+    });
+    await runtime.start();
+
+    const printed: Record<string, string[]> = { "channel-1": [], "channel-2": [] };
+    for (const channelId of ["channel-1", "channel-2"] as const) {
+      await discord.emitPrintCommand({
+        guildId: "guild-1",
+        channelId,
+        userId: "admin-user",
+        type: "system_prompt",
+        waifuId: "yuki",
+        followUp: async (content) => {
+          printed[channelId]!.push(content);
+        }
+      });
+    }
+    await waitFor(() => printed["channel-2"]!.length > 0, "ephemeral print");
+    await runtime.stop();
+
+    // Invoker-only follow-ups: nothing is posted to the channel (where the ledger would pick it up).
+    expect(discord.debugMessages).toEqual([]);
+    const one = printed["channel-1"]!.join("\n");
+    const two = printed["channel-2"]!.join("\n");
+    expect(one).toContain("You are Yuki.");
+    expect(one).not.toContain("Mika");
+    expect(two).toContain("The other character here is Mika, who writes their own messages; you write only yours.");
+  });
+
+  it("redacts DM-origin memory lines from a printed prompt", () => {
+    const debug = {
+      system: "<harness>…</harness>",
+      header: [
+        "<memories>",
+        "- Kevin: allergic to peanuts (fact · learned in Bake Club #general · 3 weeks ago)",
+        "- Kevin is moving to Osaka (fact · learned in a private chat with Kevin · 5 days ago)",
+        "</memories>"
+      ].join("\n"),
+      transcript: "[14:02 #a0] Mina: hi\n<memory_note>Mina is pregnant (fact · learned in a private chat with Mina · 2 days ago)</memory_note>",
+      tail: "Now: …"
+    };
+    const redacted = redactPrivateMemories(debug);
+    expect(redacted.header).toContain("allergic to peanuts");
+    expect(redacted.header).not.toContain("Osaka");
+    expect(redacted.transcript).not.toContain("pregnant");
+    expect(redacted.header).toContain("- (a memory from a private chat — not shown here)");
+    expect(redacted.system).toBe(debug.system);
+    expect(redacted.tail).toBe(debug.tail);
   });
 
   it("prints model-visible memories for the selected waifu in the current guild and channel", async () => {
@@ -6900,18 +6977,19 @@ describe("RuntimeOrchestrator", () => {
         capturedTrailingBlocks.push(promptText(request));
         waifuRun += 1;
         if (waifuRun === 1) {
+          const entries = [
+            "Kevin is heading out at 5pm.",
+            "Kevin prefers green tea today.",
+            "extra 3",
+            "extra 4",
+            "extra 5",
+            "extra 6 should be dropped",
+            "extra 7 should be dropped"
+          ];
           return {
             content: "noted",
-            toolCalls: [{ id: "call_mem_1", name: "add_memory", arguments: '{"content":"Kevin is heading out at 5pm."}' }],
-            shortTermMemoryEntries: [
-              "Kevin is heading out at 5pm.",
-              "Kevin prefers green tea today.",
-              "extra 3",
-              "extra 4",
-              "extra 5",
-              "extra 6 should be dropped",
-              "extra 7 should be dropped"
-            ]
+            toolCalls: entries.map((content, index) => ({ id: `call_mem_${index + 1}`, name: "add_memory", arguments: JSON.stringify({ content }) })),
+            shortTermMemoryEntries: entries
           };
         }
         return { content: "ok" };
@@ -6956,8 +7034,9 @@ describe("RuntimeOrchestrator", () => {
     expect(secondPrompt).toBe(capturedSystemPrompts[0]);
     expect(secondPrompt).not.toContain("Kevin is heading out");
     expect(capturedMidBlocks[1]).toBe(capturedMidBlocks[0]);
-    expect(capturedTrailingBlocks[1]).toContain('[tool call add_memory] {"content":"Kevin is heading out at 5pm."}');
-    expect(capturedTrailingBlocks[1]).toContain("[tool result] saved");
+    // Tool notes render as user-role text lines (no tool_use/tool_result blocks), with accurate results.
+    expect(capturedTrailingBlocks[1]).toContain('[tool add_memory] {"content":"Kevin is heading out at 5pm."} → saved');
+    expect(capturedTrailingBlocks[1]).toContain('[tool add_memory] {"content":"extra 6 should be dropped"} → over limit');
   });
 
   it("does not expose or persist add_memory when the server toggle is disabled", async () => {
@@ -7211,7 +7290,7 @@ describe("RuntimeOrchestrator", () => {
         return decision;
       },
       async generateWaifu(request) {
-        waifuTrailingBlocks.push(promptOf(request).debug.transcript);
+        waifuTrailingBlocks.push(directionView(request));
         return { content: "ok" };
       }
     } as ModelPipeline & { decisions: OrchestratorDecision[] };
@@ -7266,7 +7345,7 @@ describe("RuntimeOrchestrator", () => {
         };
       },
       async generateWaifu(request) {
-        waifuTrailing = promptOf(request).debug.transcript;
+        waifuTrailing = directionView(request);
         return { content: "ok" };
       }
     };
@@ -7307,7 +7386,7 @@ describe("RuntimeOrchestrator", () => {
     });
     const pipeline: ModelPipeline = {
       async generateWaifu(request) {
-        waifuTrailing = promptOf(request).debug.transcript;
+        waifuTrailing = directionView(request);
         resolveGenerated();
         return { content: "ok" };
       },
@@ -8453,7 +8532,7 @@ describe("RuntimeOrchestrator", () => {
         return decision;
       },
       async generateWaifu(request) {
-        waifuTrailingBlocks.push(promptOf(request).debug.transcript);
+        waifuTrailingBlocks.push(directionView(request));
         return { content: "ok" };
       }
     } as ModelPipeline & { decisions: OrchestratorDecision[] };
@@ -9235,7 +9314,12 @@ function retryNoteOf(request: WaifuGenerationRequest): string | undefined {
     .find((line) => line.startsWith("Your last"));
 }
 
-/** The newest `direction` note in her transcript (this turn's directive, if any). */
+/** Her transcript plus the tail: where earlier directions (notes) and this turn's (tail) appear. */
+function directionView(request: WaifuGenerationRequest): string {
+  return `${promptOf(request).debug.transcript}\n${promptOf(request).debug.tail}`;
+}
+
+/** This turn's direction (in the tail), if any. */
 function latestDirection(request: WaifuGenerationRequest): string | undefined {
-  return [...promptOf(request).debug.transcript.matchAll(/<direction>([^<]*)<\/direction>/g)].at(-1)?.[1];
+  return [...promptOf(request).debug.tail.matchAll(/<direction>([^<]*)<\/direction>/g)].at(-1)?.[1];
 }

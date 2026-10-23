@@ -139,6 +139,7 @@ describe("ContextStateSchema", () => {
       summary: "They talked about tea.",
       headerText: "<header/>",
       memorySnapshotIds: ["m1"],
+      epochParticipantIds: ["kevin"],
       memoryNoteCount: 1,
       imageModes: { "att:1": { mode: "inline" }, "att:2": { mode: "text", text: "[image: a cat]" } },
       inlineImageCount: 1,

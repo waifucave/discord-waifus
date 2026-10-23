@@ -12,6 +12,7 @@ import type { BuiltPrompt } from "../src/orchestration/context/types.js";
 import type { ContextMessage } from "../src/orchestration/contextMessages.js";
 import type { OrchestratorDecision } from "../src/orchestration/decisions.js";
 import { RuntimeOrchestrator } from "../src/orchestration/runtime.js";
+import { applyMemoryDecisions, planMemoryCalls, toolNotes, waifuStopSequences } from "../src/orchestration/responderExecutor.js";
 import { CUT_OFF_RETRY_NOTE } from "../src/orchestration/verbosity.js";
 import type { ModelPipeline, WaifuGenerationRequest, WaifuGenerationResult } from "../src/providers/types.js";
 import { createRevisionedBase } from "../src/shared/schemas/common.js";
@@ -224,9 +225,15 @@ describe("waifu reply path on the context engine", () => {
     await runtime.stop();
 
     const direction = "<direction>(change topic) bring up the bake sale</direction>";
-    expect(pipeline.prompts[0]!.debug.transcript).toContain(direction);
-    expect(pipeline.prompts[1]!.debug.transcript).toContain(direction);
-    expect(pipeline.prompts[1]!.debug.transcript.match(/<direction>/g)).toHaveLength(1);
+    // The call it steers carries it in the ephemeral tail; it is not yet history.
+    expect(pipeline.prompts[0]!.debug.tail).toContain(direction);
+    expect(pipeline.prompts[0]!.debug.transcript).not.toContain("<direction>");
+    // Committed with her turn, anchored before her reply, exactly once.
+    const later = pipeline.prompts[1]!.debug.transcript;
+    expect(later).toContain(direction);
+    expect(later.match(/<direction>/g)).toHaveLength(1);
+    expect(later.indexOf(direction)).toBeLessThan(later.indexOf("(you) ok"));
+    expect(pipeline.prompts[1]!.debug.tail).not.toContain("<direction>");
     // The direction is user-role content, never a mid-transcript system message.
     expect(pipeline.prompts[0]!.messages.slice(1).every((m) => m.role !== "system")).toBe(true);
     const state = await contextState(storage);
@@ -271,11 +278,132 @@ describe("waifu reply path on the context engine", () => {
       ["call_2", "ignored"]
     ]);
     const transcript = pipeline.prompts[2]!.debug.transcript;
-    expect(transcript).toContain('[tool call add_memory] {"content":"Kevin goes to Tokyo next week."}');
-    expect(transcript).toContain("[tool result] ignored");
+    expect(transcript).toContain('[tool add_memory] {"content":"Kevin goes to Tokyo next week."} → saved');
+    expect(transcript).toContain('[tool add_memory] {"content":"Kevin wants Tokyo tips."} → ignored');
+    // C1: after the tool-only turn, the waifu request carries no tool_use / tool_result blocks.
+    for (const prompt of pipeline.prompts.slice(1)) {
+      expect(prompt.messages.some((m) => m.role === "tool")).toBe(false);
+      expect(
+        prompt.messages.some((m) => Array.isArray(m.content) && m.content.some((b) => (b as { type: string }).type === "toolCall"))
+      ).toBe(false);
+    }
 
     const memories = await storage.readJson("user/memories.json", MemoryStoreSchema);
     expect(memories.memories.map((m) => m.content)).toEqual(["Kevin goes to Tokyo next week."]);
+  });
+
+  it("never persists a direction whose turn did not land", async () => {
+    const { storage, discord, pipeline, runtime } = await setup();
+    discord.post("kevin", "Kevin", "anyone up?");
+    pipeline.decisions.push(reply({ intent: "change_topic", goal: "bring up the bake sale" }));
+    pipeline.replies.push({ content: "" }); // nothing to send
+    await runtime.triggerChannel(GUILD, CHANNEL);
+    await runtime.stop();
+    expect(discord.sent).toEqual([]);
+    const state = await contextState(storage);
+    expect(state.notes.filter((n) => n.kind === "direction")).toEqual([]);
+  });
+
+  it("commits on the failure path too (breakpoint kept), with no direction", async () => {
+    const { storage, discord, pipeline, runtime } = await setup();
+    discord.post("kevin", "Kevin", "anyone up?");
+    pipeline.decisions.push(reply({ intent: "change_topic", goal: "bring up the bake sale" }));
+    pipeline.generateWaifu = async (request) => {
+      pipeline.prompts.push(request.prompt!);
+      throw new Error("provider down");
+    };
+    await runtime.triggerChannel(GUILD, CHANNEL).catch(() => undefined);
+    await runtime.stop();
+    expect(discord.sent).toEqual([]);
+    const state = await contextState(storage);
+    expect(state.lastBreakpoint).toEqual(pipeline.prompts[0]!.breakpoint);
+    expect(state.lastUsedAt).toBeTruthy();
+    expect(state.notes.filter((n) => n.kind === "direction")).toEqual([]);
+  });
+
+  it("I3: accepts `↩#REF:` / `↩#ref,` variants and sends a leading ↩you / ↩Name unthreaded", async () => {
+    const { discord, pipeline, runtime } = await setup();
+    const first = discord.post("kevin", "Kevin", "who wants cake");
+    pipeline.decisions.push(reply());
+    pipeline.replies.push({ content: "↩#A0: always me" });
+    await runtime.triggerChannel(GUILD, CHANNEL);
+    discord.post("kevin", "Kevin", "ok");
+    pipeline.decisions.push(reply());
+    pipeline.replies.push({ content: "↩#a0, still me" });
+    await runtime.triggerChannel(GUILD, CHANNEL);
+    discord.post("kevin", "Kevin", "fine");
+    pipeline.decisions.push(reply());
+    pipeline.replies.push({ content: "↩you deal" });
+    await runtime.triggerChannel(GUILD, CHANNEL);
+    discord.post("kevin", "Kevin", "really");
+    pipeline.decisions.push(reply());
+    pipeline.replies.push({ content: "↩Kevin yes really" });
+    await runtime.triggerChannel(GUILD, CHANNEL);
+    await runtime.stop();
+
+    expect(discord.sent).toEqual([
+      { content: "always me", replyToMessageId: first.id },
+      { content: "still me", replyToMessageId: first.id },
+      { content: "deal" },
+      { content: "yes really" }
+    ]);
+  });
+
+  it("stop sequences add her server nickname when it differs from her display name", () => {
+    expect(waifuStopSequences({ displayName: "Aria", name: "aria" })).toEqual(["\n[", "\nAria:"]);
+    expect(waifuStopSequences({ displayName: "Aria", name: "aria" }, "Aria")).toEqual(["\n[", "\nAria:"]);
+    expect(waifuStopSequences({ displayName: "Aria", name: "aria" }, "Aria✨")).toEqual(["\n[", "\nAria:", "\nAria✨:"]);
+  });
+
+  it("tool note results: saved / duplicate — not saved / over limit / invalid arguments / ignored; handover names the display name", () => {
+    const call = (id: string, args: string, name = "add_memory") => ({ id, name, arguments: args });
+    const result = {
+      content: "hi",
+      toolCalls: [
+        call("c1", '{"content":"Kevin likes tea."}'),
+        call("c2", '{"content":"Kevin likes tea."}'),
+        call("c3", "{not json"),
+        call("c4", '{"content":"  "}'),
+        ...[5, 6, 7, 8, 9].map((n) => call(`c${n}`, JSON.stringify({ content: `fact ${n}` }))),
+        call("p1", '{"waifuId":"riko"}', "PickNextWaifu")
+      ]
+    };
+    const calls = planMemoryCalls(result, false);
+    expect(calls.map((c) => c.outcome)).toEqual([
+      "saved", "saved", "invalid arguments", "invalid arguments", "saved", "saved", "saved", "over limit", "over limit"
+    ]);
+    applyMemoryDecisions(calls, [
+      { action: "insert" },
+      { action: "skip", duplicateOf: "m1" },
+      { action: "insert" },
+      { action: "insert" },
+      { action: "insert" }
+    ]);
+    const notes = toolNotes(result, calls, { handoff: "accepted", pickedName: "Riko✨" });
+    expect(notes.map((n) => n.kind === "tool" && `${n.callId}:${n.result}`)).toEqual([
+      "c1:saved",
+      "c2:duplicate — not saved",
+      "c3:invalid arguments",
+      "c4:invalid arguments",
+      "c5:saved",
+      "c6:saved",
+      "c7:saved",
+      "c8:over limit",
+      "c9:over limit",
+      "p1:handing over to Riko✨"
+    ]);
+    // Suppressed: every add_memory is `ignored`; a refused / limited handoff says why.
+    expect(planMemoryCalls(result, true).every((c) => c.outcome === "ignored")).toBe(true);
+    expect(toolNotes({ ...result, toolCalls: [call("p1", "{}", "PickNextWaifu")] }, [], { handoff: "limit", pickedName: "Riko" })[0]).toMatchObject({
+      result: "ignored — handoff limit reached"
+    });
+    expect(
+      toolNotes(
+        { ...result, toolCalls: [call("p1", "{}", "PickNextWaifu")], rejectedPickNextWaifu: { reason: "malformed" } as never },
+        [],
+        { handoff: undefined, pickedName: undefined }
+      )[0]
+    ).toMatchObject({ result: "invalid arguments" });
   });
 
   it("threads to a ↩#ref target and sends an unknown ref unthreaded", async () => {

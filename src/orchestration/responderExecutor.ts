@@ -42,7 +42,8 @@ import {
   updateOrchestratorDecisionStatus,
   updateOrchestratorResponderOutcome
 } from "./stores/decisionHistory.js";
-import { recordWaifuNotes } from "./stores/memories.js";
+import { NOTE_MAX_PER_REPLY, recordWaifuNotes } from "./stores/memories.js";
+import type { GateDecision } from "./memoryWriteGate.js";
 import { readActiveChatParticipants } from "./stores/participants.js";
 import { setActivePipeline } from "./stores/sessions.js";
 import { PICK_NEXT_WAIFU_TOOL_NAME, SHORT_TERM_MEMORY_TOOL_NAME } from "./tools.js";
@@ -58,7 +59,7 @@ import {
   validateWaifuOutput,
   verbosityProfile
 } from "./verbosity.js";
-import { WAIFU_HARNESS_TAGS, createWaifuHarness, waifuTools, type WaifuHarness } from "./waifuHarness.js";
+import { WAIFU_HARNESS_TAGS, createWaifuHarness, waifuTools, type WaifuHarness, type WaifuPerson } from "./waifuHarness.js";
 
 export type ResponderExecutionResult = {
   /** Responders that reached generation (enabled, linked, modeled). */
@@ -235,13 +236,14 @@ export class ResponderExecutor {
           { providerId: waifu.providerId, modelId: waifuModelId },
           "waifu"
         );
+        const directionText = directiveTextForWaifu(responder.directive);
         const turn = await this.prepareWaifuTurn({
           guildId: input.guildId,
           channelId: input.channelId,
           server: input.server,
           waifu: { ...waifu, botId: waifu.botId, modelId: waifuModelId },
           availableWaifus: input.availableWaifus,
-          directiveText: directiveTextForWaifu(responder.directive),
+          directiveText: directionText,
           pipeline: waifuPipeline,
           signal: input.signal
         });
@@ -264,6 +266,10 @@ export class ResponderExecutor {
           channelId: input.channelId,
           senderBotId: waifu.botId
         });
+        // The prompt actually sent by the latest call that returned, with its usage: commit
+        // calibrates against it (a retry differs from prepared.prompt in its tail).
+        let lastCall: { prompt: BuiltPrompt; result: WaifuGenerationResult } | undefined;
+        let committed = false;
         try {
           const waifuQueryKey = runKey(input.guildId);
           const profile = verbosityProfile(waifu.verbosity);
@@ -275,7 +281,7 @@ export class ResponderExecutor {
             generate: async (retry) => {
               incrementActive(this.activeWaifuQueries, waifuQueryKey);
               try {
-                return await this.options.contexts.call(prepared, (prompt) => {
+                return await this.options.contexts.call(prepared, async (prompt) => {
                   const sent = retry
                     ? promptWithTail(prompt, harness.tail(prepared.state, prepared.startedAt, { retryNote: retry }))
                     : prompt;
@@ -287,13 +293,13 @@ export class ResponderExecutor {
                       conversationKey: prepared.key
                     });
                   }
-                  return waifuPipeline.generateWaifu({
+                  const generated = await waifuPipeline.generateWaifu({
                     modelId: waifuModelId,
                     prompt: sent,
                     transcript: prepared.transcript,
                     availableWaifuIds: turn.pickNextWaifuIds,
                     params: waifu.params,
-                    stopSequences: waifuStopSequences(waifu),
+                    stopSequences: waifuStopSequences(waifu, turn.serverNickname),
                     attribution: {
                       purpose: retry ? "waifu_retry" : "waifu_reply",
                       agentId: `waifu-${waifu.id}`,
@@ -304,6 +310,8 @@ export class ResponderExecutor {
                     },
                     signal: input.signal
                   });
+                  lastCall = { prompt: sent, result: generated };
+                  return generated;
                 });
               } finally {
                 decrementActive(this.activeWaifuQueries, waifuQueryKey);
@@ -326,17 +334,18 @@ export class ResponderExecutor {
             logContext: { guildId: input.guildId, channelId: input.channelId, waifuId: waifu.id }
           });
           // add_memory runs only when listed for this conversation and not suppressed; otherwise
-          // the call is answered "ignored" (spec 8.5).
+          // the call is answered "ignored" (spec 8.5: the tool stays listed).
           const memoryToolListed = harness.tools().some((tool) => tool.name === SHORT_TERM_MEMORY_TOOL_NAME);
           const memorySuppressed = suppressMemoryToolThisDecision || !memoryToolListed;
-          const memoryEntries = memorySuppressed ? [] : (result.shortTermMemoryEntries ?? []);
-          if (suppressMemoryToolThisDecision && result.shortTermMemoryEntries?.length) {
+          const memoryCalls = planMemoryCalls(result, memorySuppressed);
+          if (suppressMemoryToolThisDecision && (result.shortTermMemoryEntries?.length || memoryCalls.length)) {
             this.options.logger.info("Ignoring add_memory call (suppressed after a tool-only turn)", {
               guildId: input.guildId,
               channelId: input.channelId,
               waifuId: waifu.id
             });
           }
+          const memoryEntries = memoryCalls.flatMap((call) => (call.entry !== undefined ? [call.entry] : []));
           const usedToolWithoutVisibleMessage = memoryEntries.length > 0 || Boolean(result.pickedNextWaifuId);
           if (chunks.length === 0 && !usedToolWithoutVisibleMessage) {
             this.options.logger.warn("Waifu reply was empty after cleaning; nothing sent", {
@@ -347,19 +356,20 @@ export class ResponderExecutor {
               lastOriginalPreview: result.content.slice(0, 120)
             });
           }
-          if (marker.unknownRef) {
-            this.options.logger.info("Waifu reply marker named an unknown ref; sending unthreaded", {
+          if (marker.unknownRef || marker.strippedTarget) {
+            this.options.logger.info("Waifu reply marker did not name a known ref; sending unthreaded", {
               guildId: input.guildId,
               channelId: input.channelId,
               waifuId: waifu.id,
-              ref: marker.unknownRef
+              ref: marker.unknownRef ?? marker.strippedTarget
             });
           }
-          // The waifu owns her reply target (↩#ref). Without a marker (or with an unknown one) the
-          // triggering message is used only when it is not the latest one (today's default).
+          // The waifu owns her reply target (↩#ref). Without a marker the triggering message is
+          // used only when it is not the latest one (today's default); a marker that did not
+          // resolve (unknown ref, a copied ↩you/↩Name) sends unthreaded.
           const replyToMessageId = marker.replyToMessageId
             ? marker.replyToMessageId
-            : marker.unknownRef
+            : marker.unknownRef || marker.strippedTarget
               ? undefined
               : replyTargetForTranscript(responder.replyToMessageId, prepared.transcript);
           const sentMessageIds = await this.sendWaifuChunks({
@@ -384,12 +394,13 @@ export class ResponderExecutor {
           // have their own add_memory suppression against silent loops).
           responderLanded = sentMessageIds.length > 0 || (usedToolWithoutVisibleMessage && !blockedViolations);
           if (memoryEntries.length > 0) {
-            await recordWaifuNotes(this.options.storage, {
+            const decisions = await recordWaifuNotes(this.options.storage, {
               guildId: input.guildId,
               channelId: input.channelId,
               waifuId: waifu.id,
               entries: memoryEntries
             });
+            applyMemoryDecisions(memoryCalls, decisions);
             if (chunks.length === 0) {
               this.suppressMemoryToolOnce.add(channelKey);
               this.options.logger.info("Waifu tool-only reply detected; ignoring add_memory on the next decision", {
@@ -485,10 +496,23 @@ export class ResponderExecutor {
               maxAutomaticTurns: this.maxAutomaticTurns
             });
           }
-          await this.commitWaifuTurn(prepared, result, {
-            memorySuppressed,
-            handoff
-          });
+          // One write: this turn's direction (only when her turn landed — a direction whose
+          // reply never reached the room is not history) and her tool calls with their outcomes.
+          const pickedName = result.pickedNextWaifuId
+            ? input.availableWaifus.find((candidate) => candidate.id === result.pickedNextWaifuId)?.displayName ??
+              result.pickedNextWaifuId
+            : undefined;
+          const notes: NewContextNote[] = [
+            ...(responderLanded && directionText ? [{ kind: "direction" as const, text: directionText }] : []),
+            ...toolNotes(result, memoryCalls, { handoff, pickedName })
+          ];
+          committed = true;
+          await this.commitWaifuTurn(prepared, { notes, call: lastCall });
+        } catch (error) {
+          // Failure / abort: keep calibration, breakpoint and the background check, but never a
+          // direction or reply that was not sent.
+          if (!committed) await this.commitWaifuTurn(prepared, { notes: [], call: lastCall });
+          throw error;
         } finally {
           waifuTyping.stop();
         }
@@ -534,9 +558,9 @@ export class ResponderExecutor {
   }
 
   /**
-   * Builds her harness for this conversation and prepares the cache-stable context (spec 8.5):
-   * this turn's orchestrator directive is a `direction` pending note, so it lands in the
-   * transcript of the very call it steers and stays there afterwards.
+   * Builds her harness for this conversation and prepares the cache-stable context (spec 8.5).
+   * This turn's orchestrator directive rides in the tail of the call it steers; it becomes a
+   * `direction` note only when the turn is committed (commitWaifuTurn).
    */
   private async prepareWaifuTurn(input: {
     guildId: string;
@@ -549,7 +573,7 @@ export class ResponderExecutor {
     signal: AbortSignal;
   }): Promise<PreparedWaifuTurn> {
     const { waifu, server } = input;
-    const built = await this.buildWaifuHarness(input);
+    const built = await this.buildWaifuHarness({ ...input, ...(input.directiveText ? { direction: input.directiveText } : {}) });
     const { harness, conversation, model, selfAuthorIds, serverNickname, roster, people, pickNextWaifuIds, waifuByAuthorId } = built;
     const directory = await loadGuildDirectoryView(this.options.storage, input.guildId, {
       channelName: (id) => server.channels[id]?.name
@@ -576,7 +600,10 @@ export class ResponderExecutor {
       backfillCap: resolveContextCap("waifu", server, waifu),
       selfAuthorIds,
       render: harness,
-      pendingNotes: input.directiveText ? [{ kind: "direction", text: input.directiveText }] : [],
+      // Tool notes render as user-role text lines: an assistant tool_use without the provider's
+      // thinking block is rejected by Claude with thinking on (spec 8.5, T3 review C1).
+      renderToolTurnsAsText: true,
+      participantIds: people.flatMap((person) => (person.userId ? [person.userId] : [])),
       signal: input.signal,
       params: waifu.params,
       server,
@@ -596,10 +623,10 @@ export class ResponderExecutor {
       ...selfDisplayNames,
       ...input.availableWaifus.map((candidate) => candidate.displayName),
       ...roster,
-      ...people,
+      ...people.map((person) => person.name),
       ...transcriptNames
     ]);
-    return { prepared, harness, selfAuthorIds, selfDisplayNames, participantDisplayNames, pickNextWaifuIds };
+    return { prepared, harness, selfAuthorIds, selfDisplayNames, participantDisplayNames, pickNextWaifuIds, serverNickname };
   }
 
   /** Her static system prompt for this channel, as her next reply would send it (/print fallback). */
@@ -619,6 +646,7 @@ export class ResponderExecutor {
     server: ServerConfig;
     waifu: WaifuConfig & { modelId: string };
     availableWaifus: WaifuConfig[];
+    direction?: string;
   }) {
     const { waifu, server } = input;
     const conversation: ConversationRef = { kind: "guild", guildId: input.guildId, channelId: input.channelId };
@@ -663,13 +691,16 @@ export class ResponderExecutor {
         .filter((value): value is string => Boolean(value))
         .map((value) => value.trim().toLowerCase())
     );
-    const people = [
-      ...new Set(
-        participants
-          .map((participant) => participant.displayName.trim())
-          .filter((value) => value && !characterNames.has(value.toLowerCase()))
-      )
-    ].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+    const seenNames = new Set<string>();
+    const people: WaifuPerson[] = participants
+      .map((participant) => ({ userId: participant.userId, name: participant.displayName.trim() }))
+      .filter((person) => {
+        const key = person.name.toLowerCase();
+        if (!person.name || characterNames.has(key) || seenNames.has(key)) return false;
+        seenNames.add(key);
+        return true;
+      })
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
     const model = this.models.resolvedModel({ providerId: waifu.providerId, modelId: waifu.modelId });
     const toolsUsable = waifu.tools.toolUse && model.features.tools.supported;
     const pickNextWaifuIds =
@@ -688,7 +719,8 @@ export class ResponderExecutor {
       },
       people,
       emojis: emojis.emojis.filter((emoji) => emoji.available).map(modelVisibleEmojiToken),
-      tools: waifuTools({ addMemory: toolsUsable && server.tools.shortTermMemory, pickNextWaifuIds })
+      tools: waifuTools({ addMemory: toolsUsable && server.tools.shortTermMemory, pickNextWaifuIds }),
+      ...(input.direction ? { direction: input.direction } : {})
     });
     const waifuByAuthorId = new Map<string, string>();
     for (const candidate of input.availableWaifus) {
@@ -698,26 +730,19 @@ export class ResponderExecutor {
   }
 
   /**
-   * Stores the request's breakpoint and usage and records every tool call of the final reply as
-   * a `tool` note with its outcome. Suppressed calls are answered `ignored` (spec 8.5: the tool
-   * stays listed so breakpoint A never changes).
+   * Commits the turn (spec 8.5/8.9): stores the request's breakpoint, calibrates against the
+   * prompt actually sent with its usage, and appends this turn's notes in one write. Failure and
+   * abort paths commit too, with no notes.
    */
   private async commitWaifuTurn(
     prepared: PreparedContext,
-    result: WaifuGenerationResult,
-    o: { memorySuppressed: boolean; handoff: "accepted" | "limit" | undefined }
+    o: { notes: NewContextNote[]; call: { prompt: BuiltPrompt; result: WaifuGenerationResult } | undefined }
   ): Promise<void> {
-    const notes: NewContextNote[] = (result.toolCalls ?? []).map((call) => ({
-      kind: "tool",
-      callId: call.id,
-      name: call.name,
-      arguments: call.arguments,
-      result: toolNoteResult(call, result, o)
-    }));
     try {
       await this.options.contexts.commit(prepared, {
-        notes,
-        ...(result.usage ? { usage: result.usage } : {}),
+        notes: o.notes,
+        ...(o.call?.result.usage ? { usage: o.call.result.usage } : {}),
+        ...(o.call ? { sentPrompt: o.call.prompt } : {}),
         modelKey: prepared.modelKey
       });
     } catch (error) {
@@ -727,6 +752,7 @@ export class ResponderExecutor {
       });
     }
   }
+
   private async sendWaifuChunks(input: {
     guildId: string;
     channelId: string;
@@ -821,6 +847,7 @@ type PreparedWaifuTurn = {
   selfDisplayNames: string[];
   participantDisplayNames: string[];
   pickNextWaifuIds: string[];
+  serverNickname: string | undefined;
 };
 
 /** Tool names the validator flags when they leak into visible text. */
@@ -837,9 +864,10 @@ export function waifuPromptCaptureKey(key: ConversationKey | string, waifuId: st
   return `${key}|${waifuId}`;
 }
 
-/** Spec 8.5: the header guard plus her own name. */
-export function waifuStopSequences(waifu: Pick<WaifuConfig, "displayName" | "name">): string[] {
-  return ["\n[", `\n${waifu.displayName || waifu.name}:`];
+/** Spec 8.5: the header guard plus her own name (and her server nickname when it differs). */
+export function waifuStopSequences(waifu: Pick<WaifuConfig, "displayName" | "name">, serverNickname?: string): string[] {
+  const name = waifu.displayName || waifu.name;
+  return ["\n[", `\n${name}:`, ...(serverNickname && serverNickname !== name ? [`\n${serverNickname}:`] : [])];
 }
 
 /** Replace the prompt's ephemeral tail block (a retry note is tail-only: never cached, never stored). */
@@ -859,18 +887,68 @@ export function promptWithTail(prompt: BuiltPrompt, tail: string): BuiltPrompt {
   return { ...prompt, messages, debug: { ...prompt.debug, tail } };
 }
 
-function toolNoteResult(
-  call: { name: string },
-  result: WaifuGenerationResult,
-  o: { memorySuppressed: boolean; handoff: "accepted" | "limit" | undefined }
-): string {
-  if (call.name === SHORT_TERM_MEMORY_TOOL_NAME) return o.memorySuppressed ? "ignored" : "saved";
-  if (call.name === PICK_NEXT_WAIFU_TOOL_NAME) {
-    if (result.rejectedPickNextWaifu) return "ignored";
-    if (o.handoff === "accepted" && result.pickedNextWaifuId) return `handing over to ${result.pickedNextWaifuId}`;
-    return "ignored";
+/** One add_memory call of her reply and what happened to it (its tool note result). */
+export type MemoryCall = { callId?: string; entry?: string; outcome: string };
+
+/**
+ * Plans her add_memory calls: suppressed/unlisted → `ignored`, unparsable or empty content →
+ * `invalid arguments`, beyond the per-reply cap → `over limit`; the rest are recorded and get
+ * `saved` / `duplicate — not saved` from the write gate (applyMemoryDecisions).
+ */
+export function planMemoryCalls(result: WaifuGenerationResult, suppressed: boolean): MemoryCall[] {
+  const calls = (result.toolCalls ?? []).filter((call) => call.name === SHORT_TERM_MEMORY_TOOL_NAME);
+  if (calls.length === 0) {
+    // A result without call ids (fakes, older pipelines): entries only, no tool notes.
+    if (suppressed) return [];
+    return (result.shortTermMemoryEntries ?? [])
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+      .slice(0, NOTE_MAX_PER_REPLY)
+      .map((entry) => ({ entry, outcome: "saved" }));
   }
-  return "ignored";
+  let valid = 0;
+  return calls.map((call): MemoryCall => {
+    if (suppressed) return { callId: call.id, outcome: "ignored" };
+    let content: unknown;
+    try {
+      content = (JSON.parse(call.arguments) as { content?: unknown } | null)?.content;
+    } catch {
+      content = undefined;
+    }
+    if (typeof content !== "string" || !content.trim()) return { callId: call.id, outcome: "invalid arguments" };
+    valid += 1;
+    if (valid > NOTE_MAX_PER_REPLY) return { callId: call.id, outcome: "over limit" };
+    return { callId: call.id, entry: content.trim(), outcome: "saved" };
+  });
+}
+
+/** Write-gate decisions (in entry order) → tool note results. */
+export function applyMemoryDecisions(calls: MemoryCall[], decisions: GateDecision[]): void {
+  let index = 0;
+  for (const call of calls) {
+    if (call.entry === undefined) continue;
+    const decision = decisions[index];
+    index += 1;
+    call.outcome = !decision || decision.action === "insert" ? "saved" : "duplicate — not saved";
+  }
+}
+
+export function toolNotes(
+  result: WaifuGenerationResult,
+  memoryCalls: MemoryCall[],
+  o: { handoff: "accepted" | "limit" | undefined; pickedName: string | undefined }
+): NewContextNote[] {
+  return (result.toolCalls ?? []).map((call) => {
+    let outcome = "ignored";
+    if (call.name === SHORT_TERM_MEMORY_TOOL_NAME) {
+      outcome = memoryCalls.find((planned) => planned.callId === call.id)?.outcome ?? "ignored";
+    } else if (call.name === PICK_NEXT_WAIFU_TOOL_NAME) {
+      if (result.rejectedPickNextWaifu) outcome = result.rejectedPickNextWaifu.reason === "malformed" ? "invalid arguments" : "ignored — not available";
+      else if (o.handoff === "accepted" && o.pickedName) outcome = `handing over to ${o.pickedName}`;
+      else if (o.handoff === "limit") outcome = "ignored — handoff limit reached";
+    }
+    return { kind: "tool" as const, callId: call.id, name: call.name, arguments: call.arguments, result: outcome };
+  });
 }
 
 export type WaifuReplyAttemptInput = {

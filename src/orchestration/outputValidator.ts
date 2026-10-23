@@ -251,7 +251,7 @@ function checkHeaderLeak(text: string, _ctx: ValidationContext): Violation | und
  * stray-reply-marker: a `↩#ref` marker anywhere after the start (the leading one is consumed by
  * parseReplyMarker before validation, so any marker left is mid-text).
  */
-const STRAY_REPLY_MARKER_RE = /↩\uFE0F?\s?#[0-9a-z]{2,6}/;
+const STRAY_REPLY_MARKER_RE = /↩\uFE0F?\s?#[0-9a-z]{2,6}/i;
 
 function checkStrayReplyMarker(text: string, _ctx: ValidationContext): Violation | undefined {
   if (STRAY_REPLY_MARKER_RE.test(text)) {

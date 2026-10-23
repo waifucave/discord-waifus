@@ -190,3 +190,16 @@ export async function pageMessagesSince<T extends { id: string }>(
   }
   return { messages: collected.reverse(), reachedCursor };
 }
+
+/**
+ * Drops the orchestrator bot's own posts (debug logs, `/print` fallbacks): they are never
+ * conversation and must not reach any ledger.
+ */
+export function withoutAuthors<T extends { author?: { id?: string } | null }>(
+  messages: T[],
+  authorIds: Iterable<string | undefined | null>
+): T[] {
+  const ids = new Set([...authorIds].filter((id): id is string => Boolean(id)));
+  if (ids.size === 0) return messages;
+  return messages.filter((message) => !message.author?.id || !ids.has(message.author.id));
+}

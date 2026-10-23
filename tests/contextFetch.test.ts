@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { DiscordGatewayFacade } from "../src/discord/client.js";
 import { loadGuildDirectoryView } from "../src/discord/directoryView.js";
-import { pageMessagesSince, toRawDiscordMessage, type DiscordMessageLike } from "../src/discord/rawMessage.js";
+import { pageMessagesSince, toRawDiscordMessage, withoutAuthors, type DiscordMessageLike } from "../src/discord/rawMessage.js";
 import { DiscordConversationSource, filterSinceCursor } from "../src/orchestration/context/fetchTranscript.js";
 import type { ContextMessage } from "../src/orchestration/contextMessages.js";
 import { RawDiscordMessageSchema } from "../src/shared/schemas/discordMessage.js";
@@ -188,5 +188,18 @@ describe("loadGuildDirectoryView", () => {
     expect(view.memberName("1")).toBe("Kevin");
     expect(view.channelName("9")).toBe("general");
     expect(view.roleName("x")).toBeUndefined();
+  });
+});
+
+describe("withoutAuthors (orchestrator posts never reach the ledger)", () => {
+  it("drops messages by the orchestrator bot (user or application id) and keeps the rest", () => {
+    const messages = [
+      { id: "1", author: { id: "kevin" } },
+      { id: "2", author: { id: "orch-bot" } },
+      { id: "3", author: { id: "aria-bot" } },
+      { id: "4", author: { id: "orch-app" } }
+    ];
+    expect(withoutAuthors(messages, ["orch-bot", "orch-app", undefined]).map((m) => m.id)).toEqual(["1", "3"]);
+    expect(withoutAuthors(messages, [undefined, null])).toBe(messages);
   });
 });

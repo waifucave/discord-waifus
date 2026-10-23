@@ -7,6 +7,8 @@ import {
   type DiscordImageFetcherOptions
 } from "../src/discord/attachments.js";
 import { appDataPath } from "../src/config/paths.js";
+import { sharedImageFetcherConfig } from "../src/discord/attachments.js";
+import { DEFAULT_APP_CONFIG } from "../src/shared/schemas/config.js";
 import { FrozenImageRenderer } from "../src/orchestration/context/images.js";
 import { ContextStateSchema, type LedgerEntry } from "../src/shared/schemas/context.js";
 import type { ImageRef } from "../src/shared/schemas/discordMessage.js";
@@ -316,5 +318,34 @@ describe("FrozenImageRenderer freeze rule", () => {
       { type: "text", text: "[image unavailable]" }
     ]);
     expect(r.decisions().imageModes).toEqual({});
+  });
+});
+
+describe("sharedImageFetcherConfig", () => {
+  const images = DEFAULT_APP_CONFIG.discord.images;
+  const ocr = DEFAULT_APP_CONFIG.ocr;
+
+  it("takes the max of discord.images and the legacy ocr limits", () => {
+    const warnings: string[] = [];
+    const logger = { warn: (message: string) => warnings.push(message) };
+    const config = sharedImageFetcherConfig(
+      { discord: { images: { ...images, maxBytes: 1_000, fetchTimeoutMs: 1_000 } }, ocr: { ...ocr, maxImageBytes: 9_000_000, timeoutMs: 20_000 } },
+      logger
+    );
+    expect(config.maxBytes).toBe(9_000_000);
+    expect(config.fetchTimeoutMs).toBe(20_000);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("ocr.maxImageBytes and ocr.timeoutMs");
+  });
+
+  it("keeps discord.images when it is larger, and does not warn for default ocr values", () => {
+    const warnings: string[] = [];
+    const config = sharedImageFetcherConfig(
+      { discord: { images: { ...images, maxBytes: 50_000_000, fetchTimeoutMs: 60_000 } }, ocr },
+      { warn: (message: string) => warnings.push(message) }
+    );
+    expect(config.maxBytes).toBe(50_000_000);
+    expect(config.fetchTimeoutMs).toBe(60_000);
+    expect(warnings).toEqual([]);
   });
 });
