@@ -4,7 +4,8 @@ import path from "node:path";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 import { ensureDataLayout, readPackageVersion } from "../config/layout.js";
 import { RETRIGGER_MAX_SECONDS, RETRIGGER_MIN_SECONDS } from "../orchestration/decisions.js";
-import { extractEntities, WAIFU_NOTE_STRENGTH } from "../orchestration/memoryEntities.js";
+import { WAIFU_NOTE_STRENGTH } from "../orchestration/memorySubjects.js";
+import { extractLegacyEntities as extractEntities } from "./migrationSteps/memorySupport.js";
 import { resolveModelTarget } from "../orchestration/pipeline/resolveTarget.js";
 import { MEMORY_KINDS } from "../shared/schemas/domain.js";
 import {
@@ -156,11 +157,11 @@ export const MIGRATION_STEPS: readonly MigrationStep[] = [
   // Implemented (T4) but kept pending until T3 stops reading layouts at runtime; T4 part 2 removes the flag.
   { id: "waifu-drop-prompt-layout-v1", frequency: "once", pending: true, run: migrateWaifuDropPromptLayout },
   { id: "server-context-windows-explicit-v1", frequency: "once", pending: true, run: migrateServerContextWindowsExplicit }, // T5
-  { id: "memories-global-origin-subjects-v1", frequency: "once", pending: true, run: migrateMemoriesGlobalOriginSubjects }, // T6
+  { id: "memories-global-origin-subjects-v1", frequency: "once", run: migrateMemoriesGlobalOriginSubjects }, // T6
   // Guarded by its own marker file (user/.memories-dedupe-v1.json) so ledger loss never re-runs it.
-  { id: "memories-cross-guild-dedupe-v1", frequency: "once", pending: true, run: migrateMemoriesCrossGuildDedupe }, // T6
-  { id: "pending-observations-global-v1", frequency: "once", pending: true, run: migratePendingObservationsGlobal }, // T6
-  { id: "dream-cursor-global-v1", frequency: "once", pending: true, run: migrateDreamCursorGlobal }, // T6
+  { id: "memories-cross-guild-dedupe-v1", frequency: "once", run: migrateMemoriesCrossGuildDedupe }, // T6
+  { id: "pending-observations-global-v1", frequency: "once", run: migratePendingObservationsGlobal }, // T6
+  { id: "dream-cursor-global-v1", frequency: "once", run: migrateDreamCursorGlobal }, // T6
   { id: "ocr-cache-url-keys-cleanup-v1", frequency: "once", run: migrateOcrCacheUrlKeysCleanup }, // T2
   {
     // Runs LAST: every step above may still leave a file's schemaVersion at 1 even once its shape
@@ -654,13 +655,10 @@ async function migrateLegacyMemories(dataRoot: string): Promise<boolean> {
     const historyGuildId = memoryId ? singleValue(historyGuilds.get(memoryId)) : undefined;
     const guildId = existingGuildId ?? historyGuildId ?? onlyConfiguredGuildId;
 
-    if (guildId) {
-      if (memory.guildId !== guildId) {
-        memory.guildId = guildId;
-        changed = true;
-      }
-    } else if (memory.status !== "archived") {
-      memory.status = "archived";
+    // Phase 4: memories are global, so a record whose guild cannot be recovered stays active
+    // without one (memories-global-origin-subjects-v1 gives it `origin: {}`).
+    if (guildId && memory.guildId !== guildId) {
+      memory.guildId = guildId;
       changed = true;
     }
   }
@@ -683,6 +681,9 @@ async function archiveMemoriesWithUnknownWaifus(dataRoot: string): Promise<boole
     const waifuId = typeof memory.waifuId === "string" ? memory.waifuId : undefined;
     if (memory.status === "active" && (!waifuId || !configuredWaifuIds.has(waifuId))) {
       memory.status = "archived";
+      memory.archivedReason = "unknown_waifu";
+      // Before memories-global-origin-subjects-v1 has run a record has no revision yet.
+      if (typeof memory.revision === "number") memory.revision += 1;
       memory.updatedAt = now;
       changed = true;
     }
@@ -750,13 +751,12 @@ async function migrateMemoryStoreV2(dataRoot: string): Promise<boolean> {
     const guildId = typeof raw.guildId === "string" ? raw.guildId : "";
     const waifuId = typeof raw.waifuId === "string" ? raw.waifuId : "";
     const kind = typeof raw.kind === "string" && VALID_MEMORY_KINDS.has(raw.kind) ? raw.kind : "fact";
-    // The new schema requires non-empty guildId/waifuId/content for every record (the old schema
-    // tolerated guildId-less archived memories). Drop orphans rather than emit a record that would
-    // fail MemoryStoreSchema parse on the next read.
-    if (!guildId || !waifuId || !content) continue;
+    // waifuId/content are required; a guild-less record is kept (Phase 4: memories are global and
+    // memories-global-origin-subjects-v1 gives it `origin: {}`).
+    if (!waifuId || !content) continue;
     const next: Record<string, unknown> = {
       id: typeof raw.id === "string" && raw.id.length > 0 ? raw.id : randomUUID(),
-      guildId,
+      ...(guildId ? { guildId } : {}),
       waifuId,
       content,
       kind,
@@ -784,10 +784,10 @@ async function migrateMemoryStoreV2(dataRoot: string): Promise<boolean> {
       const content = typeof raw.content === "string" ? raw.content : "";
       const guildId = typeof raw.guildId === "string" ? raw.guildId : "";
       const waifuId = typeof raw.waifuId === "string" ? raw.waifuId : "";
-      if (!content || !guildId || !waifuId) continue;
+      if (!content || !waifuId) continue;
       const note: Record<string, unknown> = {
         id: typeof raw.id === "string" && raw.id.length > 0 ? raw.id : randomUUID(),
-        guildId,
+        ...(guildId ? { guildId } : {}),
         waifuId,
         content,
         kind: "context",

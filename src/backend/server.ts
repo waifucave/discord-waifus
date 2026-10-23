@@ -202,6 +202,10 @@ async function startLockedBackend(options: StartBackendOptions): Promise<Running
         logger,
         ocr,
         updateActivity,
+        memory: {
+          dreamHourLocal: currentConfig.memory.dreamHourLocal,
+          maxPinnedInjected: currentConfig.memory.maxPinnedInjected
+        },
         isPaused: () => runtime.paused || closing,
         onActiveRunsChange: (activeRuns) => {
           runtime.queues.active = activeRuns;

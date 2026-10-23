@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { api } from "../api/client";
 import { useApi } from "../api/useApi";
-import type { MemoryRecord, MemoryStore, WaifusResponse } from "../api/types";
+import type { MemoryRecord, MemoryStore, ServersResponse, WaifusResponse } from "../api/types";
 import type { ViewId } from "../nav";
 import { FootRow, HeadRow } from "./scaffold";
 import { Notice } from "../components/Notice";
@@ -18,14 +18,17 @@ const KIND_HUES: Record<string, string> = {
 export function MemoryScreen({ onNavigate }: { onNavigate: (view: ViewId, tab?: string, id?: string) => void }) {
   const store = useApi<MemoryStore>((s) => api.memories(s), []);
   const waifus = useApi<WaifusResponse>((s) => api.waifus(s), []);
+  const servers = useApi<ServersResponse>((s) => api.servers(s), []);
   const [waifuFilter, setWaifuFilter] = useState("");
+  // Provenance filter (memories are global; this only narrows by where they were learned):
+  // "" = everywhere, "dm" = private chats, otherwise a guild id.
+  const [originFilter, setOriginFilter] = useState("");
   const [kindFilter, setKindFilter] = useState("");
   const [query, setQuery] = useState("");
   const [message, setMessage] = useState<string | undefined>(undefined);
   const [adding, setAdding] = useState(false);
   const [newContent, setNewContent] = useState("");
   const [newWaifuId, setNewWaifuId] = useState("");
-  const [newGuildId, setNewGuildId] = useState("");
   const [editingId, setEditingId] = useState<string | undefined>(undefined);
   const [editContent, setEditContent] = useState("");
 
@@ -35,10 +38,13 @@ export function MemoryScreen({ onNavigate }: { onNavigate: (view: ViewId, tab?: 
     return all
       .filter((m) => (waifuFilter ? m.waifuId === waifuFilter : true))
       .filter((m) => (kindFilter ? m.kind === kindFilter : true))
+      .filter((m) =>
+        originFilter === "" ? true : originFilter === "dm" ? m.origin?.dm === true : m.origin?.guildId === originFilter
+      )
       .filter((m) => (q ? m.content.toLowerCase().includes(q) : true))
       .sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""))
       .slice(0, 200);
-  }, [store.data, waifuFilter, kindFilter, query]);
+  }, [store.data, waifuFilter, kindFilter, originFilter, query]);
 
   const act = async (fn: () => Promise<unknown>) => {
     try {
@@ -50,22 +56,37 @@ export function MemoryScreen({ onNavigate }: { onNavigate: (view: ViewId, tab?: 
     }
   };
 
+  // Per-record revisions: edits to different memories never conflict with each other.
   const togglePin = (record: MemoryRecord) =>
-    act(() => api.updateMemory(record.id, { revision: store.data!.revision, pinned: !record.pinned }));
-  const remove = (record: MemoryRecord) => act(() => api.deleteMemory(record.id, store.data!.revision));
+    act(() => api.updateMemory(record.id, { recordRevision: record.revision ?? 0, pinned: !record.pinned }));
+  const remove = (record: MemoryRecord) => act(() => api.deleteMemory(record.id, record.revision ?? 0));
   const saveEdit = (record: MemoryRecord) =>
     act(async () => {
-      await api.updateMemory(record.id, { revision: store.data!.revision, content: editContent });
+      await api.updateMemory(record.id, { recordRevision: record.revision ?? 0, content: editContent });
       setEditingId(undefined);
     });
   const add = () =>
     act(async () => {
-      await api.createMemory({ waifuId: newWaifuId, guildId: newGuildId || "global", content: newContent, pinned: true });
+      await api.createMemory({ waifuId: newWaifuId, content: newContent, pinned: true });
       setAdding(false);
       setNewContent("");
     });
 
   const cast = waifus.data?.waifus ?? [];
+  const serverName = (guildId: string) =>
+    servers.data?.servers.find((server) => server.guildId === guildId)?.name ?? guildId;
+  const placeLabel = (record: MemoryRecord): string | undefined => {
+    if (record.origin?.dm) return "private chat";
+    const guildId = record.origin?.guildId;
+    if (!guildId) return undefined;
+    const channel = record.origin?.channelId
+      ? servers.data?.servers.find((server) => server.guildId === guildId)?.channels[record.origin.channelId]?.name
+      : undefined;
+    return channel ? `${serverName(guildId)} #${channel}` : serverName(guildId);
+  };
+  const originGuildIds = [
+    ...new Set((store.data?.memories ?? []).map((m) => m.origin?.guildId).filter((id): id is string => Boolean(id)))
+  ];
 
   return (
     <div className="screen">
@@ -79,7 +100,7 @@ export function MemoryScreen({ onNavigate }: { onNavigate: (view: ViewId, tab?: 
           </button>
         }
       />
-      <div style={{ display: "grid", gridTemplateColumns: "220px 200px 1fr", gap: "var(--line)", background: "var(--ink)", flex: "none" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "220px 200px 220px 1fr", gap: "var(--line)", background: "var(--ink)", flex: "none" }}>
         <select className="cell select" style={{ border: "none", height: 56 }} value={waifuFilter} onChange={(e) => setWaifuFilter(e.target.value)}>
           <option value="">All characters</option>
           {cast.map((w) => (
@@ -93,6 +114,15 @@ export function MemoryScreen({ onNavigate }: { onNavigate: (view: ViewId, tab?: 
           {Object.keys(KIND_HUES).map((kind) => (
             <option key={kind} value={kind}>
               {kind}
+            </option>
+          ))}
+        </select>
+        <select className="cell select" style={{ border: "none", height: 56 }} value={originFilter} onChange={(e) => setOriginFilter(e.target.value)}>
+          <option value="">Learned anywhere</option>
+          <option value="dm">Private chats</option>
+          {originGuildIds.map((guildId) => (
+            <option key={guildId} value={guildId}>
+              {serverName(guildId)}
             </option>
           ))}
         </select>
@@ -111,7 +141,7 @@ export function MemoryScreen({ onNavigate }: { onNavigate: (view: ViewId, tab?: 
           </div>
         )}
         {adding && (
-          <div className="fgrid" style={{ flex: "none", gridTemplateColumns: "220px 220px 1fr 200px" }}>
+          <div className="fgrid" style={{ flex: "none", gridTemplateColumns: "220px 1fr 200px" }}>
               <div className="fcell">
                 <label className="field-label">Character</label>
                 <select className="select" value={newWaifuId} onChange={(e) => setNewWaifuId(e.target.value)}>
@@ -122,10 +152,6 @@ export function MemoryScreen({ onNavigate }: { onNavigate: (view: ViewId, tab?: 
                     </option>
                   ))}
                 </select>
-              </div>
-              <div className="fcell">
-                <label className="field-label">Server ID</label>
-                <input className="input" value={newGuildId} onChange={(e) => setNewGuildId(e.target.value)} placeholder="from Rooms" />
               </div>
               <div className="fcell">
                 <label className="field-label">Content</label>
@@ -146,6 +172,17 @@ export function MemoryScreen({ onNavigate }: { onNavigate: (view: ViewId, tab?: 
             <div className="t-micro" style={{ marginBottom: 5 }}>
               {record.waifuId} · <span className={"chip " + (KIND_HUES[record.kind] ?? "butter")}>{record.kind}</span>
               {record.pinned && <span className="chip butter" style={{ marginLeft: 6 }}>pinned</span>}
+              {(record.subjects ?? []).map((subject) => (
+                <span
+                  className="chip sky"
+                  style={{ marginLeft: 6 }}
+                  key={subject.discordUserId ?? subject.waifuId ?? subject.name}
+                  title={subject.discordUserId ? `Discord user ${subject.discordUserId}` : subject.waifuId ? `Character ${subject.waifuId}` : undefined}
+                >
+                  {subject.name}
+                </span>
+              ))}
+              {placeLabel(record) && <span className="t-mute" style={{ marginLeft: 8 }}>learned in {placeLabel(record)}</span>}
               <span style={{ float: "right" }}>
                 <button className="icon-btn t-micro" onClick={() => togglePin(record)}>{record.pinned ? "Unpin" : "Pin"}</button>
                 <button

@@ -31,10 +31,12 @@ export type RuntimeOrchestratorOptions = {
   stageManagerIdleDelayMs?: number;
   /** Delay before boot catch-up runs (lets Discord bots finish connecting). Default 5000. */
   restartResumeDelayMs?: number;
+  /** AppConfig `memory` section (dream hour, pinned cap) plus a test hook for the nightly budget. */
+  memory?: { dreamHourLocal?: number; maxPinnedInjected?: number; dreamChunksPerNight?: number };
 };
 
 /** The narrow I/O services most runtime collaborators need. */
-export type RuntimeServices = Pick<RuntimeOrchestratorOptions, "storage" | "discord" | "logger" | "isPaused">;
+export type RuntimeServices = Pick<RuntimeOrchestratorOptions, "storage" | "discord" | "logger" | "isPaused" | "memory">;
 
 /** Facade-owned lifecycle hooks shared with the collaborators. */
 export type RuntimeHooks = {

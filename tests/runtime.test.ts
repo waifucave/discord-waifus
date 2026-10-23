@@ -2236,8 +2236,10 @@ describe("RuntimeOrchestrator", () => {
         return { content: "unused" };
       },
       async decideStageManagerObservations(request: StageManagerObserveRequest) {
-        expect(request.systemPrompt).toBeUndefined();
+        // B28: the stage manager's custom prompt reaches the observer.
+        expect(request.systemPrompt).toBe("memories");
         expect(request.availableWaifuIds).toEqual(["yuki"]);
+        expect(request.observerInput).toContain("Transcript:");
         return [
           { waifuId: "yuki", content: "Kevin likes tea.", importance: 3, kind: "preference" as const }
         ];
@@ -2275,7 +2277,7 @@ describe("RuntimeOrchestrator", () => {
     const memories = await storage.readJson("user/memories.json", MemoryStoreSchema);
     expect(memories.memories[0].content).toBe("Kevin likes tea.");
     expect(memories.memories[0]).toMatchObject({
-      guildId: "guild-1",
+      origin: { guildId: "guild-1", channelId: "channel-1" },
       pinned: false,
       source: "dream",
       kind: "preference",
@@ -2294,6 +2296,136 @@ describe("RuntimeOrchestrator", () => {
     // Most recent entry is the dream add (mapped onto add_memory); the observer's queue summary is older.
     expect(history.edits[0].tool).toBe("add_memory");
     expect(history.edits[0].summary).toContain("[dream:add]");
+  });
+
+  it("observer cursor never re-reads: an unchanged window costs no model call, new messages are read once", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    await seedRuntimeConfig(storage);
+    discord.contexts = [
+      [contextMessage("m1", "user", "Kevin", "I adopted a cat"), contextMessage("m2", "user", "Kevin", "her name is Miso")],
+      [contextMessage("m1", "user", "Kevin", "I adopted a cat"), contextMessage("m2", "user", "Kevin", "her name is Miso")],
+      [contextMessage("m1", "user", "Kevin", "I adopted a cat"), contextMessage("m2", "user", "Kevin", "her name is Miso"), contextMessage("m3", "user", "Kevin", "she is two")]
+    ];
+    const seen: string[][] = [];
+    const pipeline: ModelPipeline = {
+      async generateWaifu() {
+        return { content: "unused" };
+      },
+      async decideStageManagerObservations(request: StageManagerObserveRequest) {
+        seen.push(request.messages.map((message) => message.content));
+        return [];
+      }
+    };
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    expect((await runtime.memoryJobs.startStageManagerRun("guild-1", "channel-1")).status).toBe("no_change");
+    expect((await runtime.memoryJobs.startStageManagerRun("guild-1", "channel-1")).status).toBe("no_change");
+    await runtime.memoryJobs.startStageManagerRun("guild-1", "channel-1");
+    expect(seen).toEqual([["I adopted a cat", "her name is Miso"], ["she is two"]]);
+    const state = await storage.readJson(
+      "user/conversations/g_guild-1_channel-1/contexts/stage-manager.json",
+      (await import("../src/shared/schemas/context.js")).ContextStateSchema
+    );
+    expect(state).toMatchObject({ agentId: "stage-manager", cursorSeq: null, cursorMessageId: "m3" });
+  });
+
+  it("requestObserveThrough reads the ledger through a seq in cursor-bounded batches (compaction handoff)", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    await seedRuntimeConfig(storage);
+    const server = await storage.readJson("user/servers/guild-1/server.json", ServerConfigSchema);
+    await storage.writeJson("server:guild-1", "user/servers/guild-1/server.json", ServerConfigSchema, {
+      ...server,
+      contextWindows: { ...server.contextWindows, stageManager: 2 }
+    });
+    const { ConversationLedgerSchema } = await import("../src/shared/schemas/context.js");
+    const entries = Object.fromEntries([1, 2, 3, 4, 5].map((seq) => [`10${seq}`, {
+      id: `10${seq}`, seq, authorId: "u1", authorName: "Kevin", authorIsBot: false, at: "2026-10-23T11:00:00.000Z",
+      kind: "default", body: `line ${seq}`, images: [], state: "live", sealed: false
+    }]));
+    await storage.writeJson("ledger:g_guild-1_channel-1", "user/conversations/g_guild-1_channel-1/ledger.json", ConversationLedgerSchema,
+      ConversationLedgerSchema.parse(createEmptyRevisionedFile({ conversationKey: "g_guild-1_channel-1", nextSeq: 6, entries, events: [] })));
+    const reads: string[] = [];
+    const pipeline: ModelPipeline = {
+      async generateWaifu() {
+        return { content: "unused" };
+      },
+      async decideStageManagerObservations(request: StageManagerObserveRequest) {
+        reads.push((request.observerInput ?? "").split("\n").filter((line) => line.includes("line ")).map((line) => line.replace(/.*: /, "")).join(","));
+        expect(request.messages).toEqual([]);
+        return [];
+      }
+    };
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    await runtime.memoryJobs.requestObserveThrough({ kind: "guild", guildId: "guild-1", channelId: "channel-1" }, 4);
+    expect(reads).toEqual(["line 1,line 2", "line 3,line 4"]);
+    // Already through 4: nothing to do.
+    await runtime.memoryJobs.requestObserveThrough({ kind: "guild", guildId: "guild-1", channelId: "channel-1" }, 3);
+    expect(reads).toHaveLength(2);
+    // DM observers arrive in Phase 5: resolves immediately.
+    await runtime.memoryJobs.requestObserveThrough({ kind: "dm", waifuId: "yuki", userId: "u1" }, 99);
+    await runtime.memoryJobs.startStageManagerRun("guild-1", "channel-1");
+    expect(reads).toEqual(["line 1,line 2", "line 3,line 4", "line 5"]);
+  });
+
+  it("an observer response with no valid op fails the run and keeps the cursor, so the messages are re-read", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    await seedRuntimeConfig(storage);
+    const window = [contextMessage("m1", "user", "Kevin", "I am allergic to peanuts")];
+    discord.contexts = [window, window];
+    const reads: number[] = [];
+    let call = 0;
+    const pipeline: ModelPipeline = {
+      async generateWaifu() {
+        return { content: "unused" };
+      },
+      async decideStageManagerObservations(request: StageManagerObserveRequest) {
+        reads.push(request.messages.length);
+        call += 1;
+        // First response is entirely malformed; the second is valid.
+        return call === 1
+          ? ([{ op: "update" }, { garbage: true }] as never)
+          : [{ op: "add" as const, waifuId: "yuki", content: "Kevin is allergic to peanuts.", kind: "fact" as const, importance: 5 as const, subjects: ["p1"] }];
+      }
+    };
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    expect((await runtime.memoryJobs.startStageManagerRun("guild-1", "channel-1")).status).toBe("failed");
+    expect((await runtime.memoryJobs.startStageManagerRun("guild-1", "channel-1")).status).toBe("updated");
+    // The same message was offered again after the failed parse.
+    expect(reads).toEqual([1, 1]);
+    const memories = await storage.readJson("user/memories.json", MemoryStoreSchema);
+    expect(memories.memories.map((memory) => memory.content)).toEqual(["Kevin is allergic to peanuts."]);
   });
 
   it("ignores a stale persisted stage-manager running flag left by a crash", async () => {
@@ -2404,8 +2536,9 @@ describe("RuntimeOrchestrator", () => {
 
     const pending = await storage.readJson("user/memory/pending-observations.json", PendingObservationsFileSchema);
     expect(pending.observations).toHaveLength(2);
-    expect(pending.observations.every((obs) => obs.guildId === "guild-1")).toBe(true);
-    expect(pending.observations.every((obs) => obs.channelId === "channel-1")).toBe(true);
+    expect(pending.observations.every((obs) => obs.origin.guildId === "guild-1")).toBe(true);
+    expect(pending.observations.every((obs) => obs.origin.channelId === "channel-1")).toBe(true);
+    expect(pending.observations.every((obs) => obs.conversationKey === "g_guild-1_channel-1")).toBe(true);
     expect(pending.observations.map((obs) => obs.content).sort()).toEqual(
       ["Kevin drinks tea.", "Kevin owns a cat."].sort()
     );
@@ -2594,7 +2727,7 @@ describe("RuntimeOrchestrator", () => {
     expect(history.edits[0].summary).toContain("Dropped 1 observation");
   });
 
-  it("dream pass on a seeded store: rewrites, archives, and adds within the current guild only", async () => {
+  it("dream pass is global: one waifu chunk spans memories from every guild", async () => {
     const root = await makeTempRoot();
     roots.push(root);
     await ensureDataLayout(root);
@@ -2610,13 +2743,12 @@ describe("RuntimeOrchestrator", () => {
       MemoryStoreSchema.parse(
         createEmptyRevisionedFile({
           memories: [
-            { id: "same-guild", waifuId: "yuki", guildId: "guild-1", content: "Kevin likes tea.", strength: 3, createdAt: now, updatedAt: now, status: "active" },
-            { id: "other-guild", waifuId: "yuki", guildId: "guild-2", content: "Other guild secret.", strength: 3, createdAt: now, updatedAt: now, status: "active" }
+            { id: "guild-1-memory", waifuId: "yuki", origin: { guildId: "guild-1" }, content: "Kevin likes tea.", strength: 3, createdAt: now, updatedAt: now, status: "active" },
+            { id: "guild-2-memory", waifuId: "yuki", origin: { guildId: "guild-2" }, content: "Alice likes coffee.", strength: 3, createdAt: now, updatedAt: now, status: "active" }
           ]
         })
       )
     );
-    // Seed a queued observation so the dream pass has work to do.
     await storage.writeJson(
       "memory:pending",
       "user/memory/pending-observations.json",
@@ -2624,7 +2756,7 @@ describe("RuntimeOrchestrator", () => {
       PendingObservationsFileSchema.parse(
         createEmptyRevisionedFile({
           observations: [
-            { id: "obs-1", guildId: "guild-1", channelId: "channel-1", waifuId: "yuki", content: "Kevin enjoys tea regularly.", kind: "preference", importance: 3, entities: ["Kevin"], createdAt: now }
+            { id: "obs-1", origin: { guildId: "guild-3", channelId: "channel-9" }, waifuId: "yuki", content: "Kevin enjoys tea regularly.", kind: "preference", importance: 3, createdAt: now }
           ]
         })
       )
@@ -2634,18 +2766,12 @@ describe("RuntimeOrchestrator", () => {
       async generateWaifu() {
         return { content: "unused" };
       },
-      async decideStageManagerObservations() {
-        return [];
-      },
       async decideDream(request) {
-        // Only guild-1's single non-pinned record is in the chunk (other-guild is excluded).
-        expect(request.memories).toEqual([
-          { memoryIndex: 1, waifuId: "yuki", content: "Kevin likes tea.", kind: "fact", strength: 3, ageDays: 0, daysSinceRetrieved: 0 }
-        ]);
+        expect(request.memories.map((memory) => memory.content)).toEqual(["Kevin likes tea.", "Alice likes coffee."]);
         expect(request.observations.map((observation) => observation.content)).toEqual(["Kevin enjoys tea regularly."]);
         return [
           { op: "rewrite", memoryIndex: 1, content: "Kevin enjoys tea regularly, especially in the mornings.", entities: ["Kevin"] },
-          { op: "add", memory: { waifuId: "yuki", content: "Kevin enjoys tea regularly.", kind: "preference", strength: 3, entities: ["Kevin"] } }
+          { op: "add", memory: { waifuId: "yuki", content: "Alice drinks espresso.", kind: "preference", strength: 3, entities: [] } }
         ];
       }
     };
@@ -2658,25 +2784,23 @@ describe("RuntimeOrchestrator", () => {
       logger: quietLogger()
     });
 
-    await runtime.memoryJobs.startDreamRun("guild-1");
+    await runtime.memoryJobs.startDreamRun();
 
     const memories = await storage.readJson("user/memories.json", MemoryStoreSchema);
-    // Other-guild record is untouched.
-    expect(memories.memories.find((memory) => memory.id === "other-guild")).toMatchObject({ content: "Other guild secret.", status: "active" });
-    // The rewrite landed on the same-guild record.
-    expect(memories.memories.find((memory) => memory.id === "same-guild")?.content).toContain("especially in the mornings");
-    // The add produced a new dream-sourced record.
-    expect(memories.memories.find((memory) => memory.source === "dream" && memory.content === "Kevin enjoys tea regularly.")).toBeDefined();
-    // The queue is drained.
+    expect(memories.memories.find((memory) => memory.id === "guild-1-memory")).toMatchObject({
+      content: "Kevin enjoys tea regularly, especially in the mornings.",
+      revision: 1
+    });
+    expect(memories.memories.find((memory) => memory.id === "guild-2-memory")?.content).toBe("Alice likes coffee.");
+    expect(memories.memories.find((memory) => memory.source === "dream" && memory.content === "Alice drinks espresso.")).toBeDefined();
     const pending = await storage.readJson("user/memory/pending-observations.json", PendingObservationsFileSchema);
     expect(pending.observations).toEqual([]);
-    // History records the dream ops.
     const history = await storage.readJson("user/stage-manager/history.json", StageManagerHistoryFileSchema);
     expect(history.edits.some((edit) => edit.summary.includes("[dream:rewrite]"))).toBe(true);
     expect(history.edits.some((edit) => edit.summary.includes("[dream:add]"))).toBe(true);
   });
 
-  it("dream passes rotate through every chunk (incl. orphan observations) across nights", async () => {
+  it("dream round-robin over 3 nights reaches every waifu (budget per night, persisted cursor)", async () => {
     const root = await makeTempRoot();
     roots.push(root);
     await ensureDataLayout(root);
@@ -2684,56 +2808,100 @@ describe("RuntimeOrchestrator", () => {
     const discord = new FakeDiscord();
     const now = new Date().toISOString();
     await seedRuntimeConfig(storage);
-    const waifuIds = ["a", "b", "c", "d", "e", "f", "g"];
+    const cast = ["ann", "bea", "cyd", "dot", "eve"];
+    for (const id of cast) await seedWaifu(storage, id, id.toUpperCase(), `${id}-bot`, "direct");
     await storage.writeJson(
       "memories:global",
       "user/memories.json",
       MemoryStoreSchema,
       MemoryStoreSchema.parse(
         createEmptyRevisionedFile({
-          memories: waifuIds.flatMap((waifuId) =>
-            Array.from({ length: 13 }, (_, index) => ({
-              id: `${waifuId}-${index}`, waifuId, guildId: "guild-1", content: `${waifuId} fact ${index}`, strength: 3, createdAt: now, updatedAt: now, status: "active"
-            }))
-          )
+          memories: cast.map((waifuId) => ({
+            id: `${waifuId}-1`, waifuId, origin: { guildId: "guild-1" }, content: `${waifuId} fact`, strength: 3, createdAt: now, updatedAt: now, status: "active"
+          }))
         })
       )
     );
-    await storage.writeJson(
-      "memory:pending",
-      "user/memory/pending-observations.json",
-      PendingObservationsFileSchema,
-      PendingObservationsFileSchema.parse(
-        createEmptyRevisionedFile({
-          observations: [
-            { id: "obs-zed", guildId: "guild-1", channelId: "channel-1", waifuId: "zed", content: "Kevin met zed.", kind: "fact", importance: 3, entities: [], createdAt: now }
-          ]
-        })
-      )
-    );
-    const seen: string[] = [];
+    const nights: string[][] = [];
     const pipeline: ModelPipeline = {
       async generateWaifu() {
         return { content: "unused" };
       },
       async decideDream(request) {
-        seen.push(request.memories[0]?.waifuId ?? "orphan");
-        return [];
+        nights.at(-1)!.push(request.memories[0]!.waifuId);
+        return [{ op: "none" as const }];
       }
     };
-    const runtime = new RuntimeOrchestrator({
+    const makeRuntime = () => new RuntimeOrchestrator({
       sleep: async () => undefined,
       storage,
       discord,
       createPipeline: () => pipeline,
-      logger: quietLogger()
+      logger: quietLogger(),
+      memory: { dreamChunksPerNight: 2 }
     });
 
-    await runtime.memoryJobs.startDreamRun("guild-1");
-    expect(seen).toEqual(["a", "b", "c", "d", "e"]);
-    seen.length = 0;
-    await runtime.memoryJobs.startDreamRun("guild-1");
-    expect(seen).toEqual(["f", "g", "orphan", "a", "b"]);
+    for (let night = 0; night < 3; night += 1) {
+      nights.push([]);
+      // A fresh runtime each night: the cursor is persisted, not in memory.
+      await makeRuntime().memoryJobs.startDreamRun();
+    }
+    expect(nights).toEqual([["ann", "bea"], ["cyd", "dot"], ["eve", "ann"]]);
+    expect(new Set(nights.flat())).toEqual(new Set(cast));
+    // yuki (seeded by the runtime config) has no memories, so she costs no call.
+  });
+
+  it("a waifu needing more chunks than one night's budget resumes mid-waifu instead of blocking the cast", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    const base = Date.parse("2026-10-01T00:00:00.000Z");
+    await seedRuntimeConfig(storage);
+    await seedWaifu(storage, "ann", "ANN", "ann-bot", "direct");
+    await seedWaifu(storage, "bea", "BEA", "bea-bot", "direct");
+    // ann: 170 memories = 3 chunks of 80; bea: 1 memory. Budget 2 chunks a night.
+    const memories = [
+      ...Array.from({ length: 170 }, (_, index) => {
+        const at = new Date(base + index * 60_000).toISOString();
+        return { id: `ann-${index}`, waifuId: "ann", origin: {}, content: `ann fact ${index}`, strength: 3, createdAt: at, updatedAt: at, status: "active" };
+      }),
+      { id: "bea-1", waifuId: "bea", origin: {}, content: "bea fact", strength: 3, createdAt: new Date(base).toISOString(), updatedAt: new Date(base).toISOString(), status: "active" }
+    ];
+    await storage.writeJson("memories:global", "user/memories.json", MemoryStoreSchema, MemoryStoreSchema.parse(createEmptyRevisionedFile({ memories })));
+    const nights: string[][] = [];
+    const pipeline: ModelPipeline = {
+      async generateWaifu() {
+        return { content: "unused" };
+      },
+      async decideDream(request) {
+        nights.at(-1)!.push(`${request.memories[0]!.waifuId}:${request.memories[0]!.content}`);
+        return [{ op: "none" as const }];
+      }
+    };
+    for (let night = 0; night < 3; night += 1) {
+      nights.push([]);
+      await new RuntimeOrchestrator({
+        sleep: async () => undefined,
+        storage,
+        discord,
+        createPipeline: () => pipeline,
+        logger: quietLogger(),
+        memory: { dreamChunksPerNight: 2 }
+      }).memoryJobs.startDreamRun();
+    }
+    expect(nights).toEqual([
+      ["ann:ann fact 0", "ann:ann fact 80"],
+      ["ann:ann fact 160", "bea:bea fact"],
+      ["ann:ann fact 0", "ann:ann fact 80"]
+    ]);
+    const { DreamCursorFileSchema } = await import("../src/orchestration/dream.js");
+    expect(await storage.readJson("user/memory/dream-cursor.json", DreamCursorFileSchema)).toMatchObject({
+      // Night 3 passed yuki (no memories, no call) before re-entering ann.
+      cursor: "yuki",
+      resume: { waifuId: "ann", chunkIndex: 2 }
+    });
   });
 
   it("dream ops may only assign memories to waifus the chunk is about", async () => {
@@ -2778,7 +2946,7 @@ describe("RuntimeOrchestrator", () => {
       logger: quietLogger()
     });
 
-    await runtime.memoryJobs.startDreamRun("guild-1");
+    await runtime.memoryJobs.startDreamRun();
     expect(availableIds).toEqual([["mika"], ["yuki"]]);
     const memories = await storage.readJson("user/memories.json", MemoryStoreSchema);
     expect(memories.memories.some((memory) => memory.content === "Misattributed to mika.")).toBe(false);
@@ -2815,13 +2983,13 @@ describe("RuntimeOrchestrator", () => {
         })
       )
     );
-    let offered: string[] | undefined;
+    const offered: string[][] = [];
     const pipeline: ModelPipeline = {
       async generateWaifu() {
         return { content: "unused" };
       },
       async decideDream(request) {
-        offered = request.availableWaifuIds;
+        offered.push(request.availableWaifuIds ?? []);
         return [{ op: "add", memory: { waifuId: "mika", content: "Kevin paints.", kind: "fact", strength: 3, entities: [] } }];
       }
     };
@@ -2833,8 +3001,9 @@ describe("RuntimeOrchestrator", () => {
       logger: quietLogger()
     });
 
-    await runtime.memoryJobs.startDreamRun("guild-1");
-    expect(offered).toEqual(["mika", "yuki"]);
+    await runtime.memoryJobs.startDreamRun();
+    // Per-waifu chunks: mika (observation only) gets her own call, owned by her alone.
+    expect(offered).toEqual([["mika"], ["yuki"]]);
     const memories = await storage.readJson("user/memories.json", MemoryStoreSchema);
     expect(memories.memories.find((memory) => memory.content === "Kevin paints.")?.waifuId).toBe("mika");
   });
@@ -2896,7 +3065,7 @@ describe("RuntimeOrchestrator", () => {
       logger: quietLogger()
     });
 
-    await runtime.memoryJobs.startDreamRun("guild-1");
+    await runtime.memoryJobs.startDreamRun();
 
     const memories = await storage.readJson("user/memories.json", MemoryStoreSchema);
     expect(memories.memories.find((memory) => memory.id === "pinned-1")).toMatchObject({ status: "active", pinned: true });
@@ -3002,11 +3171,11 @@ describe("RuntimeOrchestrator", () => {
 
     // Fire first run without awaiting. dreamingGuilds.add("guild-1") fires synchronously
     // inside startDreamRun before any async work begins.
-    const firstRun = runtime.memoryJobs.startDreamRun("guild-1");
+    const firstRun = runtime.memoryJobs.startDreamRun();
 
     // Second call: the guard is already set synchronously, so this returns immediately
     // with already_running without touching runDreamPass at all.
-    const secondResult = await runtime.memoryJobs.startDreamRun("guild-1");
+    const secondResult = await runtime.memoryJobs.startDreamRun();
     expect(secondResult.status).toBe("already_running");
 
     // Release the first run and let it complete.
@@ -3019,7 +3188,7 @@ describe("RuntimeOrchestrator", () => {
     expect(decideDreamCalls).toBe(1);
   });
 
-  it("dream pass reentrancy: two DIFFERENT guilds can dream concurrently — decideDream called once per guild", async () => {
+  it("dream pass is one global single flight: a concurrent run returns already_running", async () => {
     const root = await makeTempRoot();
     roots.push(root);
     await ensureDataLayout(root);
@@ -3028,7 +3197,6 @@ describe("RuntimeOrchestrator", () => {
     const now = new Date().toISOString();
 
     await seedRuntimeConfig(storage);
-    // Seed memories for two distinct guilds.
     await storage.writeJson(
       "memories:global",
       "user/memories.json",
@@ -3036,28 +3204,22 @@ describe("RuntimeOrchestrator", () => {
       MemoryStoreSchema.parse(
         createEmptyRevisionedFile({
           memories: [
-            { id: "mem-g1", waifuId: "yuki", guildId: "guild-1", content: "Kevin likes tea.", strength: 3, createdAt: now, updatedAt: now, status: "active" },
-            { id: "mem-g2", waifuId: "yuki", guildId: "guild-2", content: "Alice likes coffee.", strength: 3, createdAt: now, updatedAt: now, status: "active" }
+            { id: "mem-g1", waifuId: "yuki", origin: { guildId: "guild-1" }, content: "Kevin likes tea.", strength: 3, createdAt: now, updatedAt: now, status: "active" },
+            { id: "mem-g2", waifuId: "yuki", origin: { guildId: "guild-2" }, content: "Alice likes coffee.", strength: 3, createdAt: now, updatedAt: now, status: "active" }
           ]
         })
       )
     );
-
     let decideDreamCalls = 0;
-
     const pipeline: ModelPipeline = {
       async generateWaifu() {
         return { content: "unused" };
-      },
-      async decideStageManagerObservations() {
-        return [];
       },
       async decideDream() {
         decideDreamCalls += 1;
         return [{ op: "none" as const }];
       }
     };
-
     const runtime = new RuntimeOrchestrator({
       sleep: async () => undefined,
       storage,
@@ -3066,21 +3228,14 @@ describe("RuntimeOrchestrator", () => {
       logger: quietLogger()
     });
 
-    // Launch both guilds concurrently. Different guild IDs: guard allows both.
-    const [result1, result2] = await Promise.all([
-      runtime.memoryJobs.startDreamRun("guild-1"),
-      runtime.memoryJobs.startDreamRun("guild-2")
-    ]);
-
-    // Both runs completed (no_change: each guild had one memory and no pending ops).
+    const [result1, result2] = await Promise.all([runtime.memoryJobs.startDreamRun(), runtime.memoryJobs.startDreamRun()]);
     expect(result1.status, JSON.stringify(result1)).toBe("no_change");
-    expect(result2.status, JSON.stringify(result2)).toBe("no_change");
-
-    // decideDream was called once per guild — two total, no deduplication across guilds.
-    expect(decideDreamCalls).toBe(2);
+    expect(result2.status).toBe("already_running");
+    // One waifu chunk covering both guilds' memories.
+    expect(decideDreamCalls).toBe(1);
   });
 
-  it("hides cross-guild memories from waifu prompts", async () => {
+  it("a memory learned in guild A is retrieved for the same waifu in guild B (global memory)", async () => {
     const root = await makeTempRoot();
     roots.push(root);
     await ensureDataLayout(root);
@@ -3096,31 +3251,14 @@ describe("RuntimeOrchestrator", () => {
       MemoryStoreSchema.parse(
         createEmptyRevisionedFile({
           memories: [
-            {
-              id: "same",
-              waifuId: "yuki",
-              guildId: "guild-1",
-              content: "Kevin likes tea.",
-              strength: 3,
-              createdAt: now,
-              updatedAt: now,
-              status: "active"
-            },
-            {
-              id: "cross",
-              waifuId: "yuki",
-              guildId: "guild-2",
-              content: "Kevin hates tea.",
-              strength: 3,
-              createdAt: now,
-              updatedAt: now,
-              status: "active"
-            }
+            { id: "learned-in-a", waifuId: "yuki", origin: { guildId: "guild-a", channelId: "chan-a" }, content: "Kevin is allergic to peanuts.", strength: 4, createdAt: now, updatedAt: now, status: "active" },
+            { id: "other-waifu", waifuId: "mika", origin: { guildId: "guild-1" }, content: "Mika-only secret.", strength: 3, createdAt: now, updatedAt: now, status: "active" }
           ]
         })
       )
     );
 
+    const trailing: string[] = [];
     const pipeline: ModelPipeline = {
       async decideOrchestrator() {
         return {
@@ -3130,9 +3268,7 @@ describe("RuntimeOrchestrator", () => {
         };
       },
       async generateWaifu(request: WaifuGenerationRequest) {
-        expect(request.systemPrompt).not.toContain("Kevin likes tea.");
-        expect(request.trailingSystemBlock).toContain("Kevin likes tea.");
-        expect(request.trailingSystemBlock).not.toContain("Kevin hates tea.");
+        trailing.push([request.systemPrompt, request.midSystemBlock, request.trailingSystemBlock].join("\n"));
         return { content: "noted" };
       }
     };
@@ -3143,16 +3279,15 @@ describe("RuntimeOrchestrator", () => {
       discord,
       maxAutomaticTurns: 1,
       createPipeline: () => pipeline,
-      logger: {
-        debug: () => undefined,
-        info: () => undefined,
-        warn: () => undefined,
-        error: () => undefined
-      }
+      logger: quietLogger()
     });
 
+    // guild-1 is "guild B": the memory was learned in guild-a.
     await runtime.triggerChannel("guild-1", "channel-1");
     await runtime.stop();
+    expect(trailing).toHaveLength(1);
+    expect(trailing[0]).toContain("Kevin is allergic to peanuts.");
+    expect(trailing[0]).not.toContain("Mika-only secret.");
   });
 
   it("schedules stage-manager runs after activity and once after silence", async () => {
@@ -4200,9 +4335,19 @@ describe("RuntimeOrchestrator", () => {
             {
               id: "other-guild",
               waifuId: "yuki",
-              guildId: "guild-2",
+              origin: { guildId: "guild-2" },
               content: "Other guild memory.",
               strength: 2,
+              createdAt,
+              updatedAt: createdAt,
+              status: "active"
+            },
+            {
+              id: "private-chat",
+              waifuId: "yuki",
+              origin: { dm: true },
+              content: "Secret told in a DM.",
+              strength: 3,
               createdAt,
               updatedAt: createdAt,
               status: "active"
@@ -4297,22 +4442,23 @@ describe("RuntimeOrchestrator", () => {
     expect(responses).toEqual(["Printed memories for Yuki."]);
     const printed = discord.debugMessages.map((message) => message.content).join("\n");
     expect(printed).toContain("## Memories (Yuki)");
-    // Full listing with status/kind flags — active AND archived, same guild only.
-    expect(printed).toContain("- [fact|active|s3]");
-    expect(printed).toContain("Yuki knows Kevin likes green tea.");
-    expect(printed).toContain("Yuki always remembers Kevin is allergic to peanuts.");
+    // Full listing with status flags — active AND archived, every guild (memories are global).
+    expect(printed).toContain("[active|s3] Yuki knows Kevin likes green tea (fact · just now)");
+    expect(printed).toContain("Yuki always remembers Kevin is allergic to peanuts");
     expect(printed).toContain("pinned");
-    expect(printed).toContain("Kevin is leaving at 5pm.");
-    expect(printed).toContain("Other channel short-term memory.");
+    expect(printed).toContain("Kevin is leaving at 5pm (note");
+    expect(printed).toContain("Other channel short-term memory");
     // Archived records in the SAME guild now appear, flagged as archived.
-    expect(printed).toContain("Archived current guild memory.");
-    expect(printed).toContain("[fact|archived|s2]");
+    expect(printed).toContain("Archived current guild memory");
+    expect(printed).toContain("[archived|s2]");
     // Expired notes appear too, flagged — this is the everything view.
-    expect(printed).toContain("Expired short-term memory.");
-    expect(printed).toMatch(/\[context\|active\|expired[^\]]*\]/);
-    // Other guilds stay invisible.
-    expect(printed).not.toContain("Other guild memory.");
-    expect(printed).not.toContain("Mika-only memory.");
+    expect(printed).toContain("Expired short-term memory");
+    expect(printed).toMatch(/\[active\|expired[^\]]*\]/);
+    // Other guilds are visible; DM-origin memories never print into a guild channel.
+    expect(printed).toContain("Other guild memory");
+    expect(printed).not.toContain("Secret told in a DM");
+    expect(printed).toContain("(1 memory from private chats not shown)");
+    expect(printed).not.toContain("Mika-only memory");
   });
 
   it("prints the selected waifu raw personality", async () => {
@@ -4461,8 +4607,8 @@ describe("RuntimeOrchestrator", () => {
 
     const joined = discord.debugMessages.map((m) => m.content).join("\n");
     expect(joined).toContain("2 total (1 active, 1 archived)");
-    expect(joined).toContain("Kevin likes tea.");
-    expect(joined).toContain("Old trivia about socks.");
+    expect(joined).toContain("Kevin likes tea");
+    expect(joined).toContain("Old trivia about socks");
     expect(joined).toContain("archived");
   });
 
@@ -7245,8 +7391,7 @@ describe("RuntimeOrchestrator", () => {
       "extra 5"
     ]);
     expect(notes[0]).toMatchObject({
-      guildId: "guild-1",
-      channelId: "channel-1",
+      origin: { guildId: "guild-1", channelId: "channel-1" },
       waifuId: "yuki",
       kind: "context",
       source: "waifu_tool",

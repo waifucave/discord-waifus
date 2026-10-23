@@ -394,22 +394,47 @@ export const MEMORY_SOURCES = ["waifu_tool", "stage_manager", "dream", "user"] a
 export const MemorySourceSchema = z.enum(MEMORY_SOURCES);
 export type MemorySource = z.infer<typeof MemorySourceSchema>;
 
+// Phase 4 (spec 8.8, D2): memories are global per waifu. Where a memory was learned is provenance
+// only (`origin`), never a retrieval filter. Subjects are the people/waifus the memory is about,
+// keyed by stable ids; `name` is the last-known display name (refreshed at render time).
+export const MemoryOriginSchema = z.object({
+  guildId: z.string().min(1).optional(),
+  channelId: z.string().min(1).optional(),
+  dm: z.literal(true).optional()
+});
+export type MemoryOrigin = z.infer<typeof MemoryOriginSchema>;
+
+export const MemorySubjectSchema = z.object({
+  discordUserId: z.string().min(1).optional(),
+  waifuId: z.string().min(1).optional(),
+  name: z.string().min(1)
+});
+export type MemorySubject = z.infer<typeof MemorySubjectSchema>;
+
+export const MEMORY_ARCHIVED_REASONS = ["merged", "expired", "deduped", "user", "unknown_waifu"] as const;
+export const MemoryArchivedReasonSchema = z.enum(MEMORY_ARCHIVED_REASONS);
+export type MemoryArchivedReason = z.infer<typeof MemoryArchivedReasonSchema>;
+
 export const MemoryRecordSchema = z.object({
   id: z.string().min(1),
-  guildId: z.string().min(1),
-  channelId: z.string().optional(), // origin channel; retrieval boost, NOT a visibility filter
   waifuId: z.string().min(1),
   content: z.string().min(1),
   kind: MemoryKindSchema.default("fact"),
   source: MemorySourceSchema.default("stage_manager"),
   pinned: z.boolean().default(false), // user-managed; never auto-edited, always injected
   strength: z.number().min(0).max(5).default(3),
-  entities: z.array(z.string()).default([]),
+  origin: MemoryOriginSchema.default({}),
+  subjects: z.array(MemorySubjectSchema).default([]),
+  // Per-record optimistic-concurrency counter: every content write bumps it (API, observer ops,
+  // dream, waifu tool, archival); retrieval statistics (lastRetrievedAt) never do.
+  revision: z.number().int().nonnegative().default(0),
   expiresAt: IsoDateStringSchema.optional(), // hard TTL (waifu notes); absent = durable
   createdAt: IsoDateStringSchema,
   updatedAt: IsoDateStringSchema,
   lastRetrievedAt: IsoDateStringSchema.optional(),
-  status: z.enum(["active", "archived"]).default("active")
+  status: z.enum(["active", "archived"]).default("active"),
+  archivedReason: MemoryArchivedReasonSchema.optional(),
+  mergedInto: z.string().min(1).optional()
 });
 export type MemoryRecord = z.infer<typeof MemoryRecordSchema>;
 
@@ -420,13 +445,14 @@ export type MemoryStore = z.infer<typeof MemoryStoreSchema>;
 
 export const PendingObservationSchema = z.object({
   id: z.string().min(1),
-  guildId: z.string().min(1),
-  channelId: z.string().min(1),
   waifuId: z.string().min(1),
   content: z.string().min(1),
   kind: MemoryKindSchema,
   importance: z.number().int().min(1).max(5),
-  entities: z.array(z.string()).default([]),
+  subjects: z.array(MemorySubjectSchema).default([]),
+  origin: MemoryOriginSchema.default({}),
+  // The conversation the observer read (`g_<guild>_<channel>` | `dm_<user>_<waifu>`).
+  conversationKey: z.string().min(1).optional(),
   createdAt: IsoDateStringSchema
 });
 export type PendingObservation = z.infer<typeof PendingObservationSchema>;

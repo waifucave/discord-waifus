@@ -1012,9 +1012,11 @@ describe("Backend API", () => {
         strength: 5,
         kind: "fact"
       });
-      expect(createdMemory.entities).toContain("Kevin");
+      // Memories are global: the guild is provenance only.
+      expect(createdMemory).toMatchObject({ origin: { guildId: "guild-1" }, subjects: [], revision: 0 });
+      expect(createdMemory).not.toHaveProperty("guildId");
 
-      // Editing the content keeps the pinned state and re-derives entities.
+      // Editing the content keeps the pinned state and bumps the record revision.
       const edited = await app.inject({
         method: "PUT",
         url: `/api/memories/${createdMemory.id}`,
@@ -1029,7 +1031,7 @@ describe("Backend API", () => {
         content: "Riko owes Ali tacos since Thursday.",
         pinned: true
       });
-      expect(editedMemory.entities).toEqual(expect.arrayContaining(["Ali", "Thursday"]));
+      expect(editedMemory.revision).toBe(1);
     } finally {
       await app.close();
     }

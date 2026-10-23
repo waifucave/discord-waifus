@@ -89,7 +89,11 @@ export class RuntimeOrchestrator {
     this.memoryJobs = new MemoryJobs(
       options,
       models,
-      { ...hooks, isGuildRunActive: (guildId) => this.runner.isGuildRunActive(guildId) },
+      {
+        ...hooks,
+        isGuildRunActive: (guildId) => this.runner.isGuildRunActive(guildId),
+        isAnyRunActive: () => this.runner.activeRuns.size > 0
+      },
       options.stageManagerIdleDelayMs
     );
     this.commands = new RuntimeCommands(options, {
@@ -306,10 +310,6 @@ export class RuntimeOrchestrator {
       });
       await ensureChannelSession(this.options.storage, event.guildId, event.channelId);
       return;
-    }
-    // Arm a dream timer for guilds that joined after startup (cheap check — no-op for existing guilds).
-    if (!this.memoryJobs.dreamTimers.has(event.guildId) && !this.options.isPaused?.()) {
-      this.memoryJobs.armDreamTimer(event.guildId);
     }
     const serverWithChannel = await ensureChannelConfig(this.options, server, event.channelId);
     const channel = serverWithChannel.channels[event.channelId];

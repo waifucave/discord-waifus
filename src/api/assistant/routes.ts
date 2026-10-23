@@ -382,6 +382,7 @@ function actionReceiptMessage(category: string): string {
   if (category === "remote_pairing_approval") return "The pairing request was approved.";
   if (category === "remote_invitation_cancel") return "The pairing invitation was cancelled.";
   if (category === "remote_device_revoke") return "The trusted remote device was revoked.";
+  if (category === "memory_forget_user") return "The user was forgotten.";
   return "The confirmed assistant action completed.";
 }
 

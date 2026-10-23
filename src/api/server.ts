@@ -16,7 +16,9 @@ import { RuntimeState } from "../backend/runtime.js";
 import { redactRemoteHostDetails, redactSecrets } from "../backend/redaction.js";
 import { RuntimeOrchestrator } from "../orchestration/runtime.js";
 import { clearOcrArtifacts } from "../orchestration/ocr.js";
-import { extractEntities } from "../orchestration/memoryEntities.js";
+import { forgetUser } from "../orchestration/memoryForget.js";
+import { loadSubjectDirectory, resolveSubjectsInText } from "../orchestration/memorySubjects.js";
+import { applyMemoryCandidate, bumpMemoryRecord, emptyMemoryStore, readMemoryStore, updateMemoryStore } from "../orchestration/stores/memories.js";
 import { providerStatuses, keyHint } from "./providerStatus.js";
 import type { ModelPipeline } from "../providers/types.js";
 import { createGatewayModelPipeline } from "../orchestration/pipeline/gatewayPipeline.js";
@@ -41,6 +43,7 @@ import {
   MemoryStore,
   MemoryStoreSchema,
   MemoryKindSchema,
+  MemorySubjectSchema,
   OrchestratorHistoryFile,
   OrchestratorHistoryFileSchema,
   OrchestratorPromptSectionsSchema,
@@ -66,6 +69,7 @@ import { CompactionOverrideBodySchema } from "../shared/schemas/compaction.js";
 import { UpdateAppConfigBodySchema, type AppConfig } from "../shared/schemas/config.js";
 import { createRevisionedBase, nowIso } from "../shared/schemas/common.js";
 import { StorageConflictError } from "../storage/errors.js";
+import { MemoryRecordConflictError } from "./errors.js";
 import { StorageService } from "../storage/storageService.js";
 import { AuditStore } from "../storage/auditStore.js";
 import { OperationStore } from "../storage/operationStore.js";
@@ -289,20 +293,44 @@ const ChannelConfigBodySchema = z.object({
   enabledWaifuIds: z.array(z.string()).optional()
 });
 
+// Memories are global per waifu (spec 8.8): guildId/channelId are optional provenance only.
 const CreateMemoryBodySchema = z.object({
   revision: z.number().int().nonnegative().optional(),
   waifuId: z.string().min(1),
-  guildId: z.string().min(1),
+  guildId: z.string().min(1).optional(),
+  channelId: z.string().min(1).optional(),
   content: z.string().min(1),
   // User-created memories are pinned by default (per design), but the dashboard can override.
   strength: z.number().min(0).max(5).optional(),
   pinned: z.boolean().optional(),
-  kind: MemoryKindSchema.optional()
+  kind: MemoryKindSchema.optional(),
+  subjects: z.array(MemorySubjectSchema).max(20).optional()
 });
 
-const UpdateMemoryBodySchema = CreateMemoryBodySchema.partial().extend({
+// PUT/DELETE accept the per-record `recordRevision` (preferred) or the legacy store-wide
+// `revision` / If-Match; one is required (428).
+const UpdateMemoryBodySchema = z.object({
   revision: z.number().int().nonnegative().optional(),
+  recordRevision: z.number().int().nonnegative().optional(),
+  content: z.string().min(1).optional(),
+  strength: z.number().min(0).max(5).optional(),
+  pinned: z.boolean().optional(),
+  kind: MemoryKindSchema.optional(),
+  subjects: z.array(MemorySubjectSchema).max(20).optional(),
   status: z.enum(["active", "archived"]).optional()
+});
+
+const DeleteMemoryBodySchema = z
+  .object({
+    revision: z.number().int().nonnegative().optional(),
+    recordRevision: z.number().int().nonnegative().optional()
+  })
+  .optional();
+
+const ForgetUserBodySchema = z.object({
+  discordUserId: z.string().min(1),
+  confirm: z.literal(true),
+  dryRun: z.boolean().optional()
 });
 
 // P5 Task 4 review fix: same `.partial()`-does-not-suppress-`.default()` gotcha as
@@ -478,6 +506,14 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
         message: "Record has changed since it was read.",
         latest: error.latestVersion
       });
+      return;
+    }
+    if (error instanceof MemoryRecordConflictError) {
+      void reply.status(409).send(redactApiPayload(
+        request.principal,
+        { error: "Conflict", message: error.message, latest: error.latest, record: error.record ?? null },
+        options.dataRoot
+      ));
       return;
     }
     if (error instanceof ApiError) {
@@ -1096,7 +1132,10 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   app.get("/api/memories", async (request) => {
     const query = z
       .object({
+        // Provenance filters: where a memory was learned (never a visibility rule).
         guildId: z.string().optional(),
+        origin: z.enum(["dm"]).optional(),
+        subjectUserId: z.string().optional(),
         waifuId: z.string().optional(),
         q: z.string().optional(),
         status: z.string().optional(),
@@ -1104,10 +1143,14 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
       })
       .parse(request.query ?? {});
     const store = await readMemoryStore(storage);
-    if (!query.guildId && !query.waifuId && !query.q && !query.status && !query.limit) return store;
+    if (Object.values(query).every((value) => value === undefined)) return store;
     const q = query.q?.toLowerCase();
     const memories = store.memories
-      .filter((memory) => (query.guildId ? memory.guildId === query.guildId : true))
+      .filter((memory) => (query.guildId ? memory.origin.guildId === query.guildId : true))
+      .filter((memory) => (query.origin === "dm" ? memory.origin.dm === true : true))
+      .filter((memory) =>
+        query.subjectUserId ? memory.subjects.some((subject) => subject.discordUserId === query.subjectUserId) : true
+      )
       .filter((memory) => (query.waifuId ? memory.waifuId === query.waifuId : true))
       .filter((memory) => (query.status ? memory.status === query.status : true))
       .filter((memory) => (q ? memory.content.toLowerCase().includes(q) : true))
@@ -1116,70 +1159,79 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   });
   app.post("/api/memories", async (request, reply) => {
     const body = CreateMemoryBodySchema.parse(request.body);
-    const now = nowIso();
-    const updated = await storage.updateRevisionedJson({
-      resourceKey: "memories:global",
-      relativePath: "user/memories.json",
-      schema: MemoryStoreSchema,
-      fallback: emptyMemoryStore(),
-      expectedRevision: expectedRevision(request, body),
-      transform: (current) => ({
-        ...current,
-        memories: [
-          ...current.memories,
+    const now = new Date();
+    // "global" was the dashboard's placeholder guild before memories became global.
+    const guildId = body.guildId && body.guildId !== "global" ? body.guildId : undefined;
+    const origin = {
+      ...(guildId ? { guildId } : {}),
+      ...(guildId && body.channelId ? { channelId: body.channelId } : {})
+    };
+    const subjects = body.subjects ?? resolveSubjectsInText(body.content, await loadSubjectDirectory(storage, guildId));
+    let duplicateOf: string | undefined;
+    const updated = await updateMemoryStore(
+      storage,
+      (current) => {
+        // The dedupe gate is report-only for user writes: it never blocks, it reports duplicateOf.
+        const result = applyMemoryCandidate(
+          current.memories,
           {
-            id: randomUUID(),
             waifuId: body.waifuId,
-            guildId: body.guildId,
-            content: body.content,
             kind: body.kind ?? "fact",
-            source: "user" as const,
-            // User-created memories are pinned by default (only the user manages them).
-            pinned: body.pinned ?? true,
-            strength: body.strength ?? 5,
-            entities: extractEntities(body.content),
-            createdAt: now,
-            updatedAt: now,
-            status: "active" as const
-          }
-        ]
-      })
-    });
-    return reply.status(201).send(updated);
+            content: body.content,
+            subjects,
+            origin,
+            source: "user"
+          },
+          // User-created memories are pinned by default (only the user manages them).
+          { writer: "user", now, pinned: body.pinned ?? true, strength: body.strength ?? 5 }
+        );
+        duplicateOf = result.duplicateOf;
+        return { ...current, memories: result.memories };
+      },
+      expectedRevision(request, body)
+    );
+    return reply.status(201).send(duplicateOf ? { ...updated, duplicateOf } : updated);
   });
 
   app.put("/api/memories/:memoryId", async (request) => {
     const { memoryId } = parseIdParam(request.params, "memoryId");
     const body = UpdateMemoryBodySchema.parse(request.body);
-    requireRevision(request, body);
-    return storage.updateRevisionedJson({
-      resourceKey: "memories:global",
-      relativePath: "user/memories.json",
-      schema: MemoryStoreSchema,
-      fallback: emptyMemoryStore(),
-      expectedRevision: expectedRevision(request, body),
-      transform: (current) => updateMemoryOrThrow(current, memoryId, body)
-    });
+    const storeRevision = body.recordRevision === undefined ? expectedRevision(request, body) : undefined;
+    if (body.recordRevision === undefined && storeRevision === undefined) {
+      throw preconditionRequired("PUT /api/memories/:memoryId requires recordRevision, revision or If-Match.");
+    }
+    return withMemoryConflicts(memoryId, () =>
+      updateMemoryStore(storage, (current) => updateMemoryOrThrow(current, memoryId, body), storeRevision)
+    );
   });
 
   app.delete("/api/memories/:memoryId", async (request) => {
     const { memoryId } = parseIdParam(request.params, "memoryId");
-    const body = z.object({ revision: z.number().int().nonnegative().optional() }).optional().parse(request.body);
-    const revision = expectedRevision(request, body);
-    if (revision === undefined) {
-      throw preconditionRequired("DELETE /api/memories/:memoryId requires revision or If-Match.");
+    const body = DeleteMemoryBodySchema.parse(request.body);
+    const storeRevision = body?.recordRevision === undefined ? expectedRevision(request, body) : undefined;
+    if (body?.recordRevision === undefined && storeRevision === undefined) {
+      throw preconditionRequired("DELETE /api/memories/:memoryId requires recordRevision, revision or If-Match.");
     }
-    return storage.updateRevisionedJson({
-      resourceKey: "memories:global",
-      relativePath: "user/memories.json",
-      schema: MemoryStoreSchema,
-      fallback: emptyMemoryStore(),
-      expectedRevision: revision,
-      transform: (current) => ({
-        ...current,
-        memories: current.memories.filter((memory) => memory.id !== memoryId)
-      })
-    });
+    return withMemoryConflicts(memoryId, () =>
+      updateMemoryStore(
+        storage,
+        (current) => {
+          const record = current.memories.find((memory) => memory.id === memoryId);
+          if (record && body?.recordRevision !== undefined && record.revision !== body.recordRevision) {
+            throw new MemoryRecordConflictError(current, record);
+          }
+          return { ...current, memories: current.memories.filter((memory) => memory.id !== memoryId) };
+        },
+        storeRevision
+      )
+    );
+  });
+
+  // Owner privacy affordance (spec 8.8): forget one Discord user everywhere memory reaches.
+  app.post("/api/memories/forget-user", async (request) => {
+    const body = ForgetUserBodySchema.parse(request.body);
+    assertSnowflakeId(body.discordUserId);
+    return forgetUser(storage, { discordUserId: body.discordUserId, dryRun: body.dryRun === true });
   });
 
   // B2: pause used to live only in memory, so the next config save/reload (which re-reads
@@ -1676,12 +1728,17 @@ async function readRoles(storage: StorageService, guildId: string): Promise<Guil
   );
 }
 
-async function readMemoryStore(storage: StorageService): Promise<MemoryStore> {
-  return storage.readJson("user/memories.json", MemoryStoreSchema, emptyMemoryStore());
-}
-
-function emptyMemoryStore(): MemoryStore {
-  return MemoryStoreSchema.parse(createEmptyRevisionedFile({ memories: [] }));
+// A store-wide (legacy `revision`) conflict on a memory route still answers with the record.
+async function withMemoryConflicts<T>(memoryId: string, run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (error) {
+    if (error instanceof StorageConflictError) {
+      const latest = error.latest as MemoryStore;
+      throw new MemoryRecordConflictError(latest, latest.memories.find((memory) => memory.id === memoryId));
+    }
+    throw error;
+  }
 }
 
 function updateMemoryOrThrow(
@@ -1689,30 +1746,25 @@ function updateMemoryOrThrow(
   memoryId: string,
   patch: z.infer<typeof UpdateMemoryBodySchema>
 ): MemoryStore {
-  let found = false;
-  const now = nowIso();
-  const memories = current.memories.map((memory): MemoryRecord => {
-    if (memory.id !== memoryId) {
-      return memory;
-    }
-    found = true;
-    const { revision: _revision, ...editable } = patch;
-    const next: MemoryRecord = {
-      ...memory,
-      ...editable,
-      updatedAt: now
-    };
-    if (editable.content !== undefined) {
-      next.entities = extractEntities(editable.content);
-    }
-    return next;
-  });
-  if (!found) {
+  const existing = current.memories.find((memory) => memory.id === memoryId);
+  if (!existing) {
     throw notFound(`Memory ${memoryId} was not found.`);
+  }
+  if (patch.recordRevision !== undefined && existing.revision !== patch.recordRevision) {
+    throw new MemoryRecordConflictError(current, existing);
+  }
+  const { revision: _revision, recordRevision: _recordRevision, status, ...editable } = patch;
+  let next: MemoryRecord = bumpMemoryRecord(existing, editable, nowIso());
+  if (status === "active" && existing.status !== "active") {
+    // Restore: back to active, provenance of the archival dropped.
+    const { archivedReason: _reason, mergedInto: _mergedInto, ...rest } = next;
+    next = { ...rest, status: "active" };
+  } else if (status === "archived" && existing.status !== "archived") {
+    next = { ...next, status: "archived", archivedReason: "user" };
   }
   return {
     ...current,
-    memories
+    memories: current.memories.map((memory) => (memory.id === memoryId ? next : memory))
   };
 }
 

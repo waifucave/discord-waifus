@@ -12,6 +12,8 @@ import type {
   ChannelBody,
   ClientContext,
   CreateMemoryBody,
+  CreateMemoryResponse,
+  ForgetUserResult,
   CreateWaifuBody,
   DiscordBotsFile,
   MemoryStore,
@@ -434,13 +436,15 @@ export const api = {
   // Memories
   memories: (signal?: AbortSignal) => request<MemoryStore>("GET", "/api/memories", { signal }),
   createMemory: (body: CreateMemoryBody) =>
-    request<MemoryStore>("POST", "/api/memories", { body }),
+    request<CreateMemoryResponse>("POST", "/api/memories", { body }),
   updateMemory: (id: string, body: UpdateMemoryBody) =>
     request<MemoryStore>("PUT", `/api/memories/${encodeURIComponent(id)}`, { body }),
-  deleteMemory: (id: string, revision: number) =>
+  deleteMemory: (id: string, recordRevision: number) =>
     request<MemoryStore>("DELETE", `/api/memories/${encodeURIComponent(id)}`, {
-      body: { revision }
-    })
+      body: { recordRevision }
+    }),
+  forgetUser: (discordUserId: string, dryRun = false) =>
+    request<ForgetUserResult>("POST", "/api/memories/forget-user", { body: { discordUserId, confirm: true, dryRun } })
 };
 
 export type EventFeedOptions = Omit<

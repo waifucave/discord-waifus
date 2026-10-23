@@ -15,7 +15,8 @@ import {
   DiscordStopCommandEvent
 } from "../discord/client.js";
 import { ServerConfig, WaifuConfig } from "../shared/schemas/domain.js";
-import { relativeAge } from "./memoryRetrieval.js";
+import { loadPlaceResolver, renderMemoryLine } from "./memorySnapshot.js";
+import { loadSubjectDirectory, subjectNameResolver } from "./memorySubjects.js";
 import type { ContextMessage } from "./contextMessages.js";
 import { formatPrintDebugBlock, formatWaifuPromptDebugMessages } from "./debugFormat.js";
 import { buildWaifuPromptParts } from "./promptBuilders.js";
@@ -404,23 +405,35 @@ export class RuntimeCommands {
     ];
   }
 
-  /** Every memory for this waifu+guild — active AND archived — newest first, with flags. */
+  /**
+   * Every memory of this waifu — active AND archived — newest first, with flags and provenance.
+   * Memories are global (spec 8.8), so this is not filtered by guild; it is printed into a guild
+   * channel, so DM-origin memories are never included (only counted).
+   */
   private async allMemoriesBlockForPrint(guildId: string, waifu: WaifuConfig): Promise<string> {
     const now = new Date();
     const store = await readMemoryStore(this.options.storage);
-    const records = store.memories
-      .filter((record) => record.guildId === guildId && record.waifuId === waifu.id)
+    const own = store.memories.filter((record) => record.waifuId === waifu.id);
+    const privateCount = own.filter((record) => record.origin.dm).length;
+    const records = own
+      .filter((record) => !record.origin.dm)
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-    if (records.length === 0) return "(none)";
+    const privateNote = privateCount > 0 ? `\n(${privateCount} memor${privateCount === 1 ? "y" : "ies"} from private chats not shown)` : "";
+    if (records.length === 0) return `(none)${privateNote}`;
+    const [directory, placeFor] = await Promise.all([
+      loadSubjectDirectory(this.options.storage, guildId),
+      loadPlaceResolver(this.options.storage, records.map((record) => record.origin.guildId).filter((id): id is string => Boolean(id)))
+    ]);
+    const nameFor = subjectNameResolver([directory]);
     const active = records.filter((record) => record.status === "active").length;
     const lines = records.map((record) => {
       const expired = record.expiresAt !== undefined && Date.parse(record.expiresAt) <= now.getTime();
-      const flags = [record.kind, record.status, expired ? "expired" : undefined, record.pinned ? "pinned" : undefined, `s${record.strength}`]
+      const flags = [record.status, record.archivedReason, expired ? "expired" : undefined, record.pinned ? "pinned" : undefined, `s${record.strength}`]
         .filter(Boolean)
         .join("|");
-      return `- [${flags}] (${relativeAge(record.createdAt, now)}) ${record.content}`;
+      return `[${flags}] ${renderMemoryLine(record, { now, nameFor, placeFor }).replace(/^- /, "")}`;
     });
-    return `${records.length} total (${active} active, ${records.length - active} archived)\n${lines.join("\n")}`;
+    return `${records.length} total (${active} active, ${records.length - active} archived)\n${lines.join("\n")}${privateNote}`;
   }
 
   async handleDebugCommand(event: DiscordDebugCommandEvent): Promise<void> {
