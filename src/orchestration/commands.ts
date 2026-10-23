@@ -359,7 +359,8 @@ export class RuntimeCommands {
           })
         ];
       }
-      const { systemPrompt, midSystemBlock, trailingSystemBlock } = await buildWaifuPromptParts(this.options, 
+      const { systemPrompt, midSystemBlock, trailingSystemBlock } = await buildWaifuPromptParts(
+        this.options,
         input.guildId,
         input.waifu,
         input.availableWaifus,

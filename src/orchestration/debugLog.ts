@@ -18,7 +18,8 @@ export async function sendOrchestratorDebugLog(services: RuntimeServices, input:
   decision: OrchestratorDecision;
   availableWaifus: WaifuConfig[];
 }): Promise<void> {
-  await sendDebugLogForChannel(services, 
+  await sendDebugLogForChannel(
+    services,
     input.guildId,
     input.channelId,
     formatOrchestratorDebugLog(input)
@@ -31,7 +32,8 @@ export async function sendStageManagerDebugLog(services: RuntimeServices, input:
   entries: StageManagerDebugEntry[];
   observationCount: number;
 }): Promise<void> {
-  await sendDebugLogForChannel(services, 
+  await sendDebugLogForChannel(
+    services,
     input.guildId,
     input.channelId,
     formatStageManagerDebugLog(input)
@@ -44,7 +46,8 @@ export async function sendDreamDebugLog(services: RuntimeServices, input: {
 }): Promise<void> {
   const route = await readDebugRouteForGuild(services.storage, input.guildId);
   if (!route) return;
-  await sendDebugLogForChannel(services, 
+  await sendDebugLogForChannel(
+    services,
     input.guildId,
     route.sourceChannelId,
     formatDreamDebugLog(input)

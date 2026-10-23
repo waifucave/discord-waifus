@@ -504,7 +504,8 @@ export class ChannelRunner {
         throw new Error(`Model ${orchestrator.modelId} does not implement orchestrator decisions.`);
       }
       const availableWaifus = await listAvailableWaifusForChannel(this.options.storage, channel);
-      const { cast: deterministicCast, nicknames: guildNicknames } = await buildDeterministicCast(this.options.storage, 
+      const { cast: deterministicCast, nicknames: guildNicknames } = await buildDeterministicCast(
+        this.options.storage,
         guildId,
         availableWaifus
       );

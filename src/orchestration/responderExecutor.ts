@@ -3,11 +3,18 @@
 // (add_memory notes, PickNextWaifu handoffs) and responder-outcome bookkeeping.
 
 import { randomUUID } from "node:crypto";
+import { Logger } from "../backend/logger.js";
 import { DiscordGatewayFacade } from "../discord/client.js";
 import { dedupeNames, stripLeakedContextHeader } from "../discord/normalization.js";
 import { splitWaifuReply, typingDelayMs } from "./messageSplit.js";
 import { waifuBlockTags } from "./promptBlocks.js";
-import { SOFT_VALIDATOR_CHECKS, type Violation, correctiveRetryMessage, validateWaifuOutput } from "./outputValidator.js";
+import {
+  SOFT_VALIDATOR_CHECKS,
+  type ValidationContext,
+  type Violation,
+  correctiveRetryMessage,
+  validateWaifuOutput
+} from "./outputValidator.js";
 import { type ReplyQuoteExtraction, extractReplyQuote } from "./replyQuote.js";
 import { WaifuGenerationResult } from "../providers/types.js";
 import { PermissionWarningTracker } from "./permissionWarnings.js";
@@ -261,7 +268,8 @@ export class ResponderExecutor {
           ]);
           const directiveText = directiveTextForWaifu(responder.directive);
           const effectiveShortTermMemory = input.server.tools.shortTermMemory && !suppressMemoryToolThisDecision;
-          const { systemPrompt, midSystemBlock, trailingSystemBlock, selfGuildNickname } = await buildWaifuPromptParts(this.options, 
+          const { systemPrompt, midSystemBlock, trailingSystemBlock, selfGuildNickname } = await buildWaifuPromptParts(
+            this.options,
             input.guildId,
             waifu,
             input.availableWaifus,
@@ -297,25 +305,9 @@ export class ResponderExecutor {
             "dream_memories",
             "set_persona_digest"
           ];
-          const MAX_GENERATE_ATTEMPTS = 2;
-          let result: WaifuGenerationResult = { content: "" };
-          let strippedContent = "";
-          let quoteExtraction: ReplyQuoteExtraction = {
-            replyToMessageId: undefined,
-            cleanedContent: ""
-          };
-          let chunks: string[] = [];
-          let attemptsRun = 0;
-          // Corrective message fed to the next attempt. The cleaning-empty path keeps the bare
-          // `${displayName}:` nudge; the validator's retry path overwrites it to name the violations.
-          let retryUserMessage = `${waifu.displayName}:`;
-          // Set when the reply is rejected with no usable retry left (validator block, or a retry
-          // that survives the final attempt). When set, chunks are forced empty and nothing is sent.
-          let blockedViolations: Violation[] | undefined;
-          for (let attempt = 1; attempt <= MAX_GENERATE_ATTEMPTS; attempt += 1) {
-            attemptsRun = attempt;
-            incrementActive(this.activeWaifuQueries, waifuQueryKey);
-            result = await (async () => {
+          const { result, quoteExtraction, chunks, attemptsRun, blockedViolations } = await generateValidatedWaifuReply({
+            generate: async (retryUserMessage) => {
+              incrementActive(this.activeWaifuQueries, waifuQueryKey);
               try {
                 return await waifuPipeline.generateWaifu({
                   modelId: waifuModelId,
@@ -323,7 +315,7 @@ export class ResponderExecutor {
                   systemPrompt,
                   midSystemBlock,
                   trailingSystemBlock,
-                  retryUserMessage: attempt === 2 ? retryUserMessage : undefined,
+                  retryUserMessage,
                   selfAuthorIds,
                   availableWaifuIds: nextWaifuIds,
                   pickNextWaifuToolEnabled: input.server.tools.pickNextWaifu,
@@ -335,110 +327,20 @@ export class ResponderExecutor {
               } finally {
                 decrementActive(this.activeWaifuQueries, waifuQueryKey);
               }
-            })();
-            const metadataStrippedContent = stripLeakedContextHeader(result.content, {
-              selfDisplayNames: allSelfDisplayNames,
-              participantDisplayNames,
-              stripImpersonation: false
-            });
-            const metadataStripped = metadataStrippedContent !== result.content;
-            quoteExtraction = extractReplyQuote(metadataStrippedContent, waifuMessages);
-            const replyQuoteExtracted = quoteExtraction.cleanedContent !== metadataStrippedContent;
-            strippedContent = stripLeakedContextHeader(quoteExtraction.cleanedContent, {
-              selfDisplayNames: allSelfDisplayNames,
-              participantDisplayNames
-            });
-            const impersonationStripped = strippedContent !== quoteExtraction.cleanedContent;
-            const strippedLeakedContent = metadataStripped || impersonationStripped;
-            if (strippedLeakedContent) {
-              this.options.logger.warn("Stripped leaked context header from waifu reply", {
-                guildId: input.guildId,
-                channelId: input.channelId,
-                waifuId: waifu.id,
-                attempt,
-                before: result.content.slice(0, 80),
-                after: strippedContent.slice(0, 80)
-              });
-            }
-            if (replyQuoteExtracted) {
-              this.options.logger.info("Extracted leading reply quote from waifu reply", {
-                guildId: input.guildId,
-                channelId: input.channelId,
-                waifuId: waifu.id,
-                attempt,
-                matchedMessageId: quoteExtraction.replyToMessageId ?? null,
-                quotePreview: metadataStrippedContent.slice(0, 120)
-              });
-            }
-            chunks = splitWaifuReply(strippedContent);
-            // Deterministic leak validator on the finalized candidate, before it can be sent. Its
-            // only powers are send-as-is (pass), regenerate once (retry on attempt 1), or send
-            // nothing (block, or a retry that survives the final attempt). It never truncates.
-            const validation = validateWaifuOutput(strippedContent, {
-              selfNames: allSelfDisplayNames,
-              participantNames: participantDisplayNames,
+            },
+            displayName: waifu.displayName,
+            contextMessages: waifuMessages,
+            selfDisplayNames: allSelfDisplayNames,
+            participantDisplayNames,
+            selfAuthorIds,
+            validator: {
               directive: validatorDirective,
               blockTags: validatorBlockTags,
-              toolNames: validatorToolNames,
-              recentSelfMessages: waifuMessages
-                .filter((message) => message.authorKind === "waifu" && selfAuthorIds.includes(message.authorId))
-                .slice(-5)
-                .map((message) => message.content)
-            });
-            if (validation.verdict !== "pass") {
-              const checks = validation.violations.map((entry) => entry.check).join(", ");
-              if (validation.verdict === "retry" && attempt < MAX_GENERATE_ATTEMPTS) {
-                this.options.logger.warn("Output validator rejected waifu reply; regenerating once", {
-                  guildId: input.guildId,
-                  channelId: input.channelId,
-                  waifuId: waifu.id,
-                  attempt,
-                  violations: checks
-                });
-                retryUserMessage = correctiveRetryMessage(waifu.displayName, validation.violations);
-                continue;
-              }
-              const softOnly =
-                validation.verdict === "retry" &&
-                validation.violations.every((entry) => SOFT_VALIDATOR_CHECKS.has(entry.check));
-              if (softOnly) {
-                // Soft checks never withhold content: the retry already had its shot, send as-is.
-                this.options.logger.info("Soft validator violations survived retry; sending anyway", {
-                  guildId: input.guildId,
-                  channelId: input.channelId,
-                  waifuId: waifu.id,
-                  violations: checks
-                });
-              } else {
-                // Final-attempt retry, or a block on any attempt: send nothing.
-                this.options.logger.warn("Output validator blocked waifu reply; nothing sent", {
-                  guildId: input.guildId,
-                  channelId: input.channelId,
-                  waifuId: waifu.id,
-                  attempt,
-                  verdict: validation.verdict,
-                  violations: checks
-                });
-                blockedViolations = validation.violations;
-                chunks = [];
-                break;
-              }
-            }
-            const becameEmptyDueToCleaning =
-              chunks.length === 0 &&
-              result.content.trim().length > 0 &&
-              (metadataStripped || replyQuoteExtracted || impersonationStripped);
-            if (!becameEmptyDueToCleaning || attempt === MAX_GENERATE_ATTEMPTS) break;
-            this.options.logger.warn("Waifu reply was entirely removed during cleaning; retrying once", {
-              guildId: input.guildId,
-              channelId: input.channelId,
-              waifuId: waifu.id,
-              metadataStripped,
-              replyQuoteExtracted,
-              impersonationStripped,
-              originalPreview: result.content.slice(0, 120)
-            });
-          }
+              toolNames: validatorToolNames
+            },
+            logger: this.options.logger,
+            logContext: { guildId: input.guildId, channelId: input.channelId, waifuId: waifu.id }
+          });
           const usedToolWithoutVisibleMessage =
             Boolean(result.shortTermMemoryEntries?.length && effectiveShortTermMemory) ||
             Boolean(result.pickedNextWaifuId);
@@ -542,7 +444,8 @@ export class ResponderExecutor {
                 delaySeconds: 0
               };
               responderQueue.unshift(existingQueueEntry);
-              await moveOrchestratorResponderOutcomeAfter(this.options.storage, 
+              await moveOrchestratorResponderOutcomeAfter(
+                this.options.storage,
                 input.decisionId,
                 outcomeId,
                 existingQueueEntry.outcomeId,
@@ -557,7 +460,8 @@ export class ResponderExecutor {
                 status: "pending",
                 messageIds: []
               };
-              await insertOrchestratorResponderOutcomeAfter(this.options.storage, 
+              await insertOrchestratorResponderOutcomeAfter(
+                this.options.storage,
                 input.decisionId,
                 outcomeId,
                 handoffOutcome
@@ -667,7 +571,8 @@ export class ResponderExecutor {
         this.rememberSelfSent(sentResult.messageId);
         messageIds.push(sentResult.messageId);
         if (input.orchestratorDecisionId) {
-          await recordOrchestratorDecisionWaifuMessage(this.options.storage, 
+          await recordOrchestratorDecisionWaifuMessage(
+            this.options.storage,
             input.orchestratorDecisionId,
             input.responderOutcomeId,
             sentResult.messageId
@@ -707,6 +612,158 @@ export class ResponderExecutor {
     }
     return true;
   }
+}
+
+export type WaifuReplyAttemptInput = {
+  /** One model call; retryUserMessage is set only on the corrective second attempt. */
+  generate(retryUserMessage: string | undefined): Promise<WaifuGenerationResult>;
+  displayName: string;
+  contextMessages: ContextMessage[];
+  /** Every self alias (display name, configured name, guild nickname, names on own messages). */
+  selfDisplayNames: string[];
+  participantDisplayNames: string[];
+  selfAuthorIds: string[];
+  validator: Pick<ValidationContext, "directive" | "blockTags" | "toolNames">;
+  logger: Logger;
+  /** Leading fields of every log entry (guildId, channelId, waifuId). */
+  logContext: Record<string, unknown>;
+};
+
+export type WaifuReplyAttemptResult = {
+  /** The last raw generation (tool calls included). */
+  result: WaifuGenerationResult;
+  quoteExtraction: ReplyQuoteExtraction;
+  /** Chunks to send; empty when the reply was blocked or cleaned away. */
+  chunks: string[];
+  attemptsRun: number;
+  /** Set when the validator rejected the reply with no usable retry left. */
+  blockedViolations: Violation[] | undefined;
+};
+
+/**
+ * The generate -> clean -> validate -> retry loop for one waifu turn: strips leaked context
+ * headers and impersonation, extracts a leading reply quote, splits into chunks, runs the
+ * deterministic output validator, and regenerates at most once (validator retry, or a reply that
+ * was entirely removed during cleaning).
+ */
+export async function generateValidatedWaifuReply(input: WaifuReplyAttemptInput): Promise<WaifuReplyAttemptResult> {
+  const {
+    displayName,
+    contextMessages: waifuMessages,
+    selfDisplayNames: allSelfDisplayNames,
+    participantDisplayNames,
+    selfAuthorIds
+  } = input;
+  const MAX_GENERATE_ATTEMPTS = 2;
+  let result: WaifuGenerationResult = { content: "" };
+  let strippedContent = "";
+  let quoteExtraction: ReplyQuoteExtraction = {
+    replyToMessageId: undefined,
+    cleanedContent: ""
+  };
+  let chunks: string[] = [];
+  let attemptsRun = 0;
+  // Corrective message fed to the next attempt. The cleaning-empty path keeps the bare
+  // `${displayName}:` nudge; the validator's retry path overwrites it to name the violations.
+  let retryUserMessage = `${displayName}:`;
+  // Set when the reply is rejected with no usable retry left (validator block, or a retry
+  // that survives the final attempt). When set, chunks are forced empty and nothing is sent.
+  let blockedViolations: Violation[] | undefined;
+  for (let attempt = 1; attempt <= MAX_GENERATE_ATTEMPTS; attempt += 1) {
+    attemptsRun = attempt;
+    result = await input.generate(attempt === 2 ? retryUserMessage : undefined);
+    const metadataStrippedContent = stripLeakedContextHeader(result.content, {
+      selfDisplayNames: allSelfDisplayNames,
+      participantDisplayNames,
+      stripImpersonation: false
+    });
+    const metadataStripped = metadataStrippedContent !== result.content;
+    quoteExtraction = extractReplyQuote(metadataStrippedContent, waifuMessages);
+    const replyQuoteExtracted = quoteExtraction.cleanedContent !== metadataStrippedContent;
+    strippedContent = stripLeakedContextHeader(quoteExtraction.cleanedContent, {
+      selfDisplayNames: allSelfDisplayNames,
+      participantDisplayNames
+    });
+    const impersonationStripped = strippedContent !== quoteExtraction.cleanedContent;
+    const strippedLeakedContent = metadataStripped || impersonationStripped;
+    if (strippedLeakedContent) {
+      input.logger.warn("Stripped leaked context header from waifu reply", {
+        ...input.logContext,
+        attempt,
+        before: result.content.slice(0, 80),
+        after: strippedContent.slice(0, 80)
+      });
+    }
+    if (replyQuoteExtracted) {
+      input.logger.info("Extracted leading reply quote from waifu reply", {
+        ...input.logContext,
+        attempt,
+        matchedMessageId: quoteExtraction.replyToMessageId ?? null,
+        quotePreview: metadataStrippedContent.slice(0, 120)
+      });
+    }
+    chunks = splitWaifuReply(strippedContent);
+    // Deterministic leak validator on the finalized candidate, before it can be sent. Its
+    // only powers are send-as-is (pass), regenerate once (retry on attempt 1), or send
+    // nothing (block, or a retry that survives the final attempt). It never truncates.
+    const validation = validateWaifuOutput(strippedContent, {
+      selfNames: allSelfDisplayNames,
+      participantNames: participantDisplayNames,
+      directive: input.validator.directive,
+      blockTags: input.validator.blockTags,
+      toolNames: input.validator.toolNames,
+      recentSelfMessages: waifuMessages
+        .filter((message) => message.authorKind === "waifu" && selfAuthorIds.includes(message.authorId))
+        .slice(-5)
+        .map((message) => message.content)
+    });
+    if (validation.verdict !== "pass") {
+      const checks = validation.violations.map((entry) => entry.check).join(", ");
+      if (validation.verdict === "retry" && attempt < MAX_GENERATE_ATTEMPTS) {
+        input.logger.warn("Output validator rejected waifu reply; regenerating once", {
+          ...input.logContext,
+          attempt,
+          violations: checks
+        });
+        retryUserMessage = correctiveRetryMessage(displayName, validation.violations);
+        continue;
+      }
+      const softOnly =
+        validation.verdict === "retry" &&
+        validation.violations.every((entry) => SOFT_VALIDATOR_CHECKS.has(entry.check));
+      if (softOnly) {
+        // Soft checks never withhold content: the retry already had its shot, send as-is.
+        input.logger.info("Soft validator violations survived retry; sending anyway", {
+          ...input.logContext,
+          violations: checks
+        });
+      } else {
+        // Final-attempt retry, or a block on any attempt: send nothing.
+        input.logger.warn("Output validator blocked waifu reply; nothing sent", {
+          ...input.logContext,
+          attempt,
+          verdict: validation.verdict,
+          violations: checks
+        });
+        blockedViolations = validation.violations;
+        chunks = [];
+        break;
+      }
+    }
+    const becameEmptyDueToCleaning =
+      chunks.length === 0 &&
+      result.content.trim().length > 0 &&
+      (metadataStripped || replyQuoteExtracted || impersonationStripped);
+    if (!becameEmptyDueToCleaning || attempt === MAX_GENERATE_ATTEMPTS) break;
+    input.logger.warn("Waifu reply was entirely removed during cleaning; retrying once", {
+      ...input.logContext,
+      metadataStripped,
+      replyQuoteExtracted,
+      impersonationStripped,
+      originalPreview: result.content.slice(0, 120)
+    });
+  }
+  return { result, quoteExtraction, chunks, attemptsRun, blockedViolations };
 }
 
 function waitMsBeforeWaifuReply(input: {
