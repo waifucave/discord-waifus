@@ -13,7 +13,8 @@ import {
   contextSummarizer,
   effectiveKeepRecent,
   createCompactionService,
-  emaTokenCalibration
+  emaTokenCalibration,
+  reducedCompactionPrompt
 } from "../src/orchestration/context/compaction.js";
 import { FileContextStore } from "../src/orchestration/context/contextStore.js";
 import { ContextRuntime, type ContextRuntimeDeps } from "../src/orchestration/context/runtime.js";
@@ -69,11 +70,21 @@ type Harness = {
   logs: string[];
 };
 
-async function harness(o: { settings?: Partial<CompactionSettings>; deps?: Partial<ContextRuntimeDeps> } = {}): Promise<Harness> {
+type StoreOptions = ConstructorParameters<typeof FileContextStore>[1];
+
+async function harness(
+  o: {
+    settings?: Partial<CompactionSettings>;
+    deps?: Partial<ContextRuntimeDeps>;
+    makeStore?: (storage: StorageService, options: StoreOptions) => FileContextStore;
+  } = {}
+): Promise<Harness> {
   const root = await makeTempRoot();
   roots.push(root);
   const clock = { now: BASE_TIME + 5 * 3_600_000 };
-  const store = new FileContextStore(new StorageService(root), { now: () => new Date(clock.now), timeZone: () => "UTC" });
+  const storeOptions: StoreOptions = { now: () => new Date(clock.now), timeZone: () => "UTC" };
+  const storage = new StorageService(root);
+  const store = o.makeStore ? o.makeStore(storage, storeOptions) : new FileContextStore(storage, storeOptions);
   const channel = new FakeChannel();
   const observed: Array<[ConversationRef, number]> = [];
   const logs: string[] = [];
@@ -173,11 +184,31 @@ describe("compaction settings and helpers", () => {
     expect(effectiveKeepRecent({ keepRecent: 30, maxMessages: 20 })).toBe(12);
   });
 
-  it("caps the output at max(1500, thinking budget + 1500) within the model limit", () => {
+  it("caps the output at max(1500, reply cap) when no thinking can run", () => {
+    const plain = { limits: { contextTokens: 100_000, maxOutputTokens: 16_000 }, params: {}, features: {} } as never;
     expect(compactionMaxOutputTokens(undefined)).toBe(1500);
     expect(compactionMaxOutputTokens({ maxOutputTokens: 200 })).toBe(1500);
-    expect(compactionMaxOutputTokens({ "reasoning.budgetTokens": 4000 })).toBe(5500);
+    expect(compactionMaxOutputTokens({}, plain, 3000)).toBe(3000);
     expect(compactionMaxOutputTokens({ "reasoning.enabled": false, "reasoning.budgetTokens": 4000 })).toBe(1500);
+    expect(compactionMaxOutputTokens({ "reasoning.effort": "none" }, { limits: { contextTokens: 1, maxOutputTokens: 64_000 }, params: { "reasoning.effort": {} } } as never)).toBe(1500);
+  });
+
+  // C1: a 1500 cap leaves nothing for the answer once thinking eats it.
+  it("C1: thinking models (budget, effort, adaptive, always-on, default-on) get max(reply or model default, budget + 1500, 4000)", () => {
+    const limits = { contextTokens: 200_000, maxOutputTokens: 64_000 };
+    expect(compactionMaxOutputTokens({ "reasoning.budgetTokens": 4000 })).toBe(8192); // no model: 8192 default
+    expect(compactionMaxOutputTokens({ "reasoning.budgetTokens": 10_000 }, { limits })).toBe(11_500);
+    // budget-style enabled without a budget (codec default 1024): not 1500 any more
+    expect(compactionMaxOutputTokens({ "reasoning.enabled": true, maxOutputTokens: 300 }, { limits, features: { thinkingStyle: "budget" } } as never)).toBe(4000);
+    // effort (GPT-5.x) — reply cap wins when larger
+    expect(compactionMaxOutputTokens({ "reasoning.effort": "high" }, { limits, params: { "reasoning.effort": {} } } as never, 12_000)).toBe(12_000);
+    // effort param absent but the model reasons by default (provider default-on)
+    expect(compactionMaxOutputTokens({}, { limits, params: { "reasoning.enabled": { default: true } } } as never)).toBe(8192);
+    // adaptive (Sonnet/Opus 4.6+)
+    expect(compactionMaxOutputTokens({}, { limits, features: { thinkingStyle: "adaptive" } } as never, 500)).toBe(4000);
+    // always-on (Fable) even when the params say off
+    expect(compactionMaxOutputTokens({ "reasoning.enabled": false }, { limits, features: { thinkingStyle: "always-on" } } as never)).toBe(8192);
+    // clamped to the model limit
     expect(compactionMaxOutputTokens({ "reasoning.budgetTokens": 30_000 }, { limits: { contextTokens: 1, maxOutputTokens: 8192 } })).toBe(8192);
   });
 
@@ -324,8 +355,8 @@ describe("gatewayPipeline.summarizeContext", () => {
       attribution: { waifuId: "aria", agentId: "waifu-aria", conversationKey: KEY, guildId: "100", channelId: "200" }
     });
     const instruction = compactionInstruction({ agent: ARIA, keepFromRef: "a3", keepCount: 1, deletedRefs: ["a1"], hasPreviousSummary: false });
-    const text = await summarize(p.prompt, instruction);
-    expect(text).toBe("Riko bakes tarts."); // tool calls ignored
+    const result = await summarize(p.prompt, instruction);
+    expect(result).toEqual({ text: "Riko bakes tarts.", finishReason: "stop" }); // tool calls ignored
 
     const request = calls[0]!;
     expect(request.messages).toEqual(compactionMessages(p.prompt, instruction));
@@ -334,7 +365,8 @@ describe("gatewayPipeline.summarizeContext", () => {
     expect(request.messages.filter((m) => m.role === "system")).toHaveLength(1);
     expect(request.tools).toEqual(p.prompt.tools);
     expect(request.toolChoice).toBe("auto");
-    expect(request.params).toEqual({ temperature: 0.8, maxOutputTokens: 1500 }); // stop sequences dropped
+    // Stop sequences dropped; deepseek-v4-flash reasons by default → thinking-aware cap (C1).
+    expect(request.params).toEqual({ temperature: 0.8, maxOutputTokens: 8192 });
     expect(request.promptCacheKey).toBe(p.prompt.promptCacheKey);
 
     const [line] = await lines();
@@ -360,6 +392,25 @@ describe("gatewayPipeline.summarizeContext", () => {
     const supported = real.getCapabilities("deepseek", "deepseek-v4-flash")!.features.tools.toolChoice;
     expect(calls[0]!.toolChoice).toBe(supported?.includes("none") ? "none" : "auto");
     expect(calls[0]!.tools).toEqual(p.prompt.tools);
+  });
+
+  it("C1: a cut-off summary is retried once with a doubled cap; the finish reason is returned", async () => {
+    const h = await harness();
+    post(h, 3);
+    const p = await prepare(h);
+    const cut = (): ChatResponse => ({ ...reply([{ type: "text", text: "partial" }]), finishReason: "length" });
+    const noThinking = { "reasoning.enabled": false };
+    const first = await pipelineHarness([cut(), reply([{ type: "text", text: "full" }])]);
+    const ok = await first.pipeline.summarizeContext!({ prompt: p.prompt, instruction: "x", toolChoice: "auto", params: noThinking });
+    expect(ok).toEqual({ text: "full", finishReason: "stop" });
+    expect(first.calls.map((c) => c.params?.maxOutputTokens)).toEqual([1500, 3000]);
+    const twice = await pipelineHarness([cut(), cut()]);
+    const still = await twice.pipeline.summarizeContext!({ prompt: p.prompt, instruction: "x", toolChoice: "auto", params: noThinking });
+    expect(still).toEqual({ text: "partial", finishReason: "length" });
+    // default-on reasoning model: the cap is thinking-aware, the reply's own cap honoured when larger
+    const thinking = await pipelineHarness([reply([{ type: "text", text: "s" }])]);
+    await thinking.pipeline.summarizeContext!({ prompt: p.prompt, instruction: "x", toolChoice: "auto", maxOutputTokens: 20_000 });
+    expect(thinking.calls[0]!.params?.maxOutputTokens).toBe(20_000);
   });
 
   it("a 200-message conversation compacts end to end with a correct cursor and summary", async () => {
@@ -432,7 +483,10 @@ describe("ContextCompactionService triggers", () => {
     const p = await prepare(h, { summarize: s.fn, model, params: { maxOutputTokens: 100 } });
     expect(s.calls).toHaveLength(1);
     expect(p.state.lastCompaction).toMatchObject({ trigger: "tokens", ok: true });
-    expect(p.transcript).toHaveLength(5);
+    // At most half the transcript, shrunk until the kept window fits ~half the budget (I3).
+    expect(p.transcript.length).toBeGreaterThanOrEqual(1);
+    expect(p.transcript.length).toBeLessThanOrEqual(5);
+    expect(p.prompt.estimatedTokens).toBeLessThan(1_300);
   });
 
   it("does not trigger under both limits, when disabled, or with nothing to summarize", async () => {
@@ -468,13 +522,21 @@ describe("ContextCompactionService triggers", () => {
     await expect(h.engine.runtime.call(p, async () => { throw again; })).rejects.toBe(again);
   });
 
-  it("overflow: a failed compaction surfaces the original overflow error", async () => {
-    const h = await harness();
-    post(h, 6);
+  it("overflow: a failed compaction retries once with a hard-truncated prompt; a second overflow surfaces", async () => {
+    const h = await harness({ settings: SMALL });
+    post(h, 12);
     const p = await prepare(h, { summarize: async () => { throw new Error("summarizer down"); } });
+    const seen: number[] = [];
+    const sent = await h.engine.runtime.call(p, async (prompt) => {
+      seen.push(prompt.transcriptCount);
+      if (seen.length === 1) throw new GatewayError("context_overflow", "prompt too long");
+      return "sent";
+    });
+    expect(sent).toBe("sent");
+    expect(seen).toEqual([12, 5]); // effective keepRecent
+    expect((await h.store.load(KEY, ARIA)).lastCompaction).toMatchObject({ trigger: "overflow", ok: false, error: "summarizer down" });
     const overflow = new GatewayError("context_overflow", "prompt too long");
     await expect(h.engine.runtime.call(p, async () => { throw overflow; })).rejects.toBe(overflow);
-    expect((await h.store.load(KEY, ARIA)).lastCompaction).toMatchObject({ trigger: "overflow", ok: false, error: "summarizer down" });
   });
 
   it("manual: compactNow compacts on demand", async () => {
@@ -702,5 +764,268 @@ describe("ContextCompactionService outcomes", () => {
     await h.engine.compaction.compact({ conversation: GUILD, agent: ARIA, prompt: truncated, trigger: "overflow", summarize: s.fn, settings: { ...DEFAULT_COMPACTION_SETTINGS } });
     expect(s.calls).toHaveLength(0);
     expect((await h.store.load(KEY, ARIA)).epoch).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Review fixes (T7b review). None of these were caught by the first 31 tests.
+
+class HookedStore extends FileContextStore {
+  beforeCommit: (() => Promise<void>) | undefined;
+  override async commitPrepare(...args: Parameters<FileContextStore["commitPrepare"]>) {
+    const hook = this.beforeCommit;
+    this.beforeCommit = undefined;
+    if (hook) await hook();
+    return super.commitPrepare(...args);
+  }
+}
+
+const manualInput = (h: Harness, s: { fn: (p: BuiltPrompt, instruction: string) => Promise<string> }, extra: Record<string, unknown> = {}) => ({
+  conversation: GUILD,
+  agent: ARIA,
+  model: fakeModel(),
+  backfillCap: 200,
+  selfAuthorIds: SELF,
+  render: fakeRoleRenderer(),
+  summarize: s.fn,
+  ...extra
+});
+
+const textOf = (prompt: BuiltPrompt) => JSON.stringify(prompt.messages);
+
+describe("review fixes: C1 truncated summaries", () => {
+  it("a summary cut off by the output limit is never stored", async () => {
+    const h = await harness();
+    post(h, 6);
+    const p = await prepare(h);
+    await h.engine.runtime.commit(p, { modelKey: p.modelKey });
+    const cut = async () => ({ text: "half a summ", finishReason: "length" as const });
+    await expect(
+      h.engine.compaction.compact({ conversation: GUILD, agent: ARIA, prompt: p.prompt, trigger: "manual", summarize: cut, settings: { ...DEFAULT_COMPACTION_SETTINGS } })
+    ).rejects.toThrow(/cut off/);
+    const state = await h.store.load(KEY, ARIA);
+    expect(state).toMatchObject({ epoch: 0, summary: null });
+    expect(state.lastCompaction).toMatchObject({ ok: false, error: "The summary was cut off by the output limit." });
+  });
+});
+
+describe("review fixes: I1 overflow never re-sends the prompt that overflowed", () => {
+  it("an overflow compaction summarizes a reduced prompt: through the keep boundary, no tail", async () => {
+    const h = await harness();
+    post(h, 6);
+    const s = summarizer();
+    const p = await prepare(h, { summarize: s.fn });
+    const original = p.prompt;
+    let calls = 0;
+    await h.engine.runtime.call(p, async () => {
+      calls += 1;
+      if (calls === 1) throw new GatewayError("context_overflow", "too long");
+      return "ok";
+    });
+    const handed = s.calls[0]!.prompt;
+    expect(handed).not.toBe(original);
+    expect(handed.debug.tail).toBe("");
+    expect(handed.messages[0]).toEqual(original.messages[0]); // system unchanged
+    expect(textOf(handed)).toContain("Kevin: m3");
+    expect(textOf(handed)).not.toContain("Kevin: m4"); // kept window (m4..m6) is not summarized
+    expect(textOf(handed)).not.toContain(original.debug.tail);
+  });
+
+  it("the reduced prompt is trimmed from the front until it fits the target", async () => {
+    const h = await harness();
+    for (let i = 1; i <= 10; i += 1) h.channel.post({ content: `m${i} ${"blah ".repeat(120)}` });
+    const p = await prepare(h);
+    const entries = p.transcript;
+    const keepFromRef = p.prompt.messageIdToRef.get(entries[7]!.id)!; // m8
+    const reduced = reducedCompactionPrompt(p.prompt, { keepFromRef, targetTokens: 500 });
+    expect(reduced.estimatedTokens).toBeLessThanOrEqual(500);
+    expect(reduced.messages.slice(0, 2)).toEqual(p.prompt.messages.slice(0, 2)); // system + header
+    const text = textOf(reduced);
+    expect(text).toContain("m7 blah");
+    expect(text).not.toContain("m8 blah");
+    expect(text).not.toContain("m1 blah");
+    expect(reduced.messages.every((m, index) => index < 2 || m.role !== "tool")).toBe(true);
+  });
+
+  it("a summarize call that itself overflows is retried once on the reduced prompt", async () => {
+    const h = await harness();
+    post(h, 8);
+    const s = summarizer(async (_call, index) => {
+      if (index === 0) throw new GatewayError("context_overflow", "summary prompt too long");
+      return "from the reduced prompt";
+    });
+    const outcome = await h.engine.runtime.compactNow(manualInput(h, s));
+    expect(outcome).toMatchObject({ status: "compacted", trigger: "manual" });
+    expect(s.calls).toHaveLength(2);
+    expect(s.calls[0]!.prompt.debug.tail).not.toBe("");
+    expect(s.calls[1]!.prompt.debug.tail).toBe("");
+    expect(s.calls[1]!.prompt.messages.length).toBeLessThanOrEqual(s.calls[0]!.prompt.messages.length);
+    expect((await h.store.load(KEY, ARIA)).summary).toBe("from the reduced prompt");
+  });
+
+  it("call() waits at most waitTimeoutMs, then retries on a hard-truncated rebuild; compaction lands later", async () => {
+    const h = await harness({ settings: { ...SMALL, waitTimeoutMs: 30 } });
+    post(h, 12);
+    const gate = deferred<string>();
+    const s = summarizer(() => gate.promise);
+    const p = await prepare(h, { summarize: s.fn });
+    const seen: number[] = [];
+    const started = Date.now();
+    const result = await h.engine.runtime.call(p, async (prompt) => {
+      seen.push(prompt.transcriptCount);
+      if (seen.length === 1) throw new GatewayError("context_overflow", "too long");
+      return "sent";
+    });
+    expect(result).toBe("sent");
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(seen).toEqual([12, 5]);
+    expect(p.state.epoch).toBe(0);
+    gate.resolve("late");
+    await settle(h);
+    expect(await h.store.load(KEY, ARIA)).toMatchObject({ epoch: 1, summary: "late" });
+  });
+});
+
+describe("review fixes: I2 a compaction landing during prepare", () => {
+  it("commit, the post-reply check and call() go by the epoch/cursor the prompt was built on", async () => {
+    let hooked!: HookedStore;
+    const h = await harness({ makeStore: (storage, options) => (hooked = new HookedStore(storage, options)) });
+    post(h, 8);
+    const p0 = await prepare(h);
+    await h.engine.runtime.commit(p0, { modelKey: p0.modelKey });
+    post(h, 1, 8);
+    // Another compaction lands between this prepare's build and its write (the merge branch).
+    hooked.beforeCommit = async () => {
+      await h.store.update(KEY, ARIA, (st) => ({ ...st, epoch: st.epoch + 1, cursorSeq: 6, headerText: null, summary: "landed", lastBreakpoint: null }));
+    };
+    const s = summarizer();
+    const p = await prepare(h, { summarize: s.fn });
+    expect(p.state.epoch).toBe(1); // stored state: new epoch
+    expect(p.prompt.cursorSeq).toBe(0); // prompt: built on the old one
+    expect(h.logs).toContain("Context compacted during prepare; keeping only this turn's notes");
+
+    // Huge reported usage would trigger a background compaction off the stale prompt.
+    await h.engine.runtime.commit(p, { modelKey: p.modelKey, usage: { inputTokens: 10_000_000, outputTokens: 1 } });
+    expect(h.engine.compaction.inFlight(KEY, ARIA)).toBeUndefined();
+    expect(s.calls).toHaveLength(0);
+    const stored = await h.store.load(KEY, ARIA);
+    expect(stored.lastBreakpoint).toBeNull(); // the old prompt's C address is not written into the new epoch
+    expect(stored.summary).toBe("landed");
+
+    // An overflow on the stale prompt rebuilds on the new epoch without compacting again.
+    const seen: BuiltPrompt[] = [];
+    await h.engine.runtime.call(p, async (prompt) => {
+      seen.push(prompt);
+      if (seen.length === 1) throw new GatewayError("context_overflow", "too long");
+      return "ok";
+    });
+    expect(s.calls).toHaveLength(0);
+    expect(seen[1]!.cursorSeq).toBe(6);
+    expect(seen[1]!.debug.header).toContain("landed");
+  });
+});
+
+describe("review fixes: I3 an oversized kept window", () => {
+  it("shrinks the kept window to fit half the budget, so the next turn does not compact again", async () => {
+    const h = await harness();
+    for (let i = 1; i <= 30; i += 1) h.channel.post({ content: `m${i} ${"lorem ".repeat(330)}` });
+    const s = summarizer();
+    const model = fakeModel({ contextTokens: 8_000 });
+    const params = { maxOutputTokens: 100 }; // budget 5,500
+    const p1 = await prepare(h, { summarize: s.fn, model, params });
+    expect(s.calls).toHaveLength(1);
+    expect(p1.state.lastCompaction).toMatchObject({ trigger: "tokens", ok: true });
+    expect(p1.transcript.length).toBeLessThan(15);
+    expect(p1.prompt.estimatedTokens).toBeLessThan(5_500);
+    await h.engine.runtime.commit(p1, { modelKey: p1.modelKey });
+    h.channel.post({ content: "short one" });
+    await prepare(h, { summarize: s.fn, model, params });
+    expect(s.calls).toHaveLength(1);
+  });
+});
+
+describe("review fixes: minor", () => {
+  it("the keep-from ref skips the waifu's own messages (they show no ref)", async () => {
+    const h = await harness();
+    post(h, 3);
+    h.channel.post({ authorId: "aria-bot", authorName: "Aria", authorIsBot: true, content: "mine" });
+    post(h, 2, 3);
+    const s = summarizer();
+    await h.engine.runtime.compactNow(manualInput(h, s)); // 6 entries → keep 3: mine, m4, m5
+    const entries = orderedEntries(await h.store.loadLedger(KEY));
+    const refs = s.calls[0]!.prompt.messageIdToRef;
+    const own = refs.get(entries[3]!.id)!;
+    const next = refs.get(entries[4]!.id)!;
+    expect(s.calls[0]!.instruction).toContain(`Messages from #${next} on stay verbatim`);
+    expect(s.calls[0]!.instruction).not.toContain(`#${own}`);
+  });
+
+  it("calibration is fitted on text only (the flat image estimate is subtracted)", () => {
+    const prompt = {
+      messages: [{ role: "user", content: [{ type: "text", text: "x" }, { type: "image", mimeType: "image/png", data: "" }, { type: "image", mimeType: "image/png", data: "" }] }]
+    } as BuiltPrompt;
+    const out = emaTokenCalibration({
+      state: { tokenCalibration: {} } as ContextState,
+      prompt,
+      rawEstimate: 3_000, // 1,000 text + 2 × 1,000 images
+      usage: { inputTokens: 4_000, outputTokens: 1 },
+      modelKey: "p:m",
+      now: new Date(BASE_TIME)
+    })!;
+    expect(out["p:m"]!.ratio).toBe(2); // (4000 − 2000) / (3000 − 2000), not 4000 / 3000
+  });
+
+  it("warns once per (agent, conversation) when prepare runs without summarize", async () => {
+    const h = await harness();
+    post(h, 2);
+    await prepare(h);
+    await prepare(h);
+    await prepare(h, { agent: { kind: "orchestrator" } });
+    expect(h.logs.filter((m) => m === "Context prepared without a summarize function; it can never compact")).toHaveLength(2);
+  });
+
+  it("compactNow reports compacted / skipped / discarded", async () => {
+    const h = await harness();
+    post(h, 1);
+    const s = summarizer();
+    expect(await h.engine.runtime.compactNow(manualInput(h, s))).toEqual({ status: "skipped", reason: "fewer than two messages since the cursor" });
+    post(h, 5, 1);
+    expect(await h.engine.runtime.compactNow(manualInput(h, s))).toEqual({ status: "compacted", trigger: "manual", epoch: 1, cursorSeq: 3 });
+    post(h, 6, 6);
+    const racing = summarizer(async () => {
+      await h.store.update(KEY, ARIA, (st) => ({ ...st, epoch: st.epoch + 1 }));
+      return "too late";
+    });
+    expect(await h.engine.runtime.compactNow(manualInput(h, racing))).toEqual({ status: "discarded", reason: "the context changed epoch meanwhile" });
+  });
+
+  it("timeout hard truncation uses the effective (clamped) keepRecent", async () => {
+    const h = await harness({ settings: { maxMessages: 20, keepRecent: 30, waitTimeoutMs: 20 } });
+    post(h, 25);
+    const gate = deferred<string>();
+    const s = summarizer(() => gate.promise);
+    const p = await prepare(h, { summarize: s.fn });
+    expect(p.transcript).toHaveLength(12); // floor(20 × 0.6), not 30
+    gate.resolve("S");
+    await settle(h);
+  });
+
+  it("memories already shown by kept memory notes are excluded from the new epoch's snapshot", async () => {
+    const snapshots = {
+      ...noSnapshots,
+      selectSnapshot: async () => ({ ids: ["mem1", "mem2"], lines: ["- L1 tea", "- L2 cake"] })
+    };
+    const h = await harness({ deps: { snapshots } });
+    post(h, 6);
+    const p0 = await prepare(h, { pendingNotes: [{ kind: "memory", memoryIds: ["mem1"], text: "Kevin likes tea" }] });
+    expect(p0.prompt.debug.header).toContain("- L1 tea");
+    await h.engine.runtime.commit(p0, { modelKey: p0.modelKey });
+    post(h, 1, 6);
+    expect(await h.engine.runtime.compactNow(manualInput(h, summarizer()))).toMatchObject({ status: "compacted", cursorSeq: 4 });
+    const p1 = await prepare(h);
+    expect(p1.prompt.debug.transcript).toContain("<memory_note>Kevin likes tea</memory_note>");
+    expect(p1.prompt.debug.header).not.toContain("- L1 tea");
+    expect(p1.prompt.debug.header).toContain("- L2 cake");
+    expect(p1.state.memorySnapshotIds).toEqual(["mem2"]);
   });
 });

@@ -1,5 +1,5 @@
 toolChoice: "auto"
-params: {"temperature":0.8,"maxOutputTokens":1500}
+params: {"temperature":0.8,"maxOutputTokens":8192}
 tools:
 - add_memory: {"type":"object","properties":{"content":{"type":"string"}},"required":["content"]}
 
