@@ -5,11 +5,13 @@ import type { ChatMessage, ImageBlock, TextBlock, ToolDef } from "@waifucave/gat
 import type { CompactionSettings } from "../../shared/schemas/compaction.js";
 import type { ContextNote, ContextState, LedgerEntry } from "../../shared/schemas/context.js";
 import type { ImageRef, RawDiscordMessage } from "../../shared/schemas/discordMessage.js";
-import type { MemoryKind, MemorySource } from "../../shared/schemas/domain.js";
+import type { MemoryKind, MemoryOrigin, MemorySource, MemorySubject } from "../../shared/schemas/domain.js";
 import type { UsagePurpose } from "../../shared/schemas/usage.js";
 import type { ContextAgent, ConversationKey, ConversationRef } from "./keys.js";
 
 export type { CompactionSettings, UsagePurpose };
+// One source of truth: the persisted zod schemas in shared/schemas/domain.ts (spec 8.2).
+export type { MemoryOrigin, MemorySubject };
 
 export type BuiltPrompt = {
   messages: ChatMessage[]; // cacheControl on A (system), B (header), C (last transcript block)
@@ -60,8 +62,6 @@ export type PreparedContext = {
   startedAt: Date;
 };
 
-export type MemoryOrigin = { guildId?: string; channelId?: string; dm?: true };
-export type MemorySubject = { discordUserId?: string; waifuId?: string; name: string };
 export type CandidateMemory = {
   waifuId: string;
   kind: MemoryKind;
