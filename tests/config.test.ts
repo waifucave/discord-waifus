@@ -19,8 +19,7 @@ import {
 } from "../src/remote/paths.js";
 import {
   ServerConfigSchema,
-  WaifuConfigSchema,
-  defaultWaifuPromptLayout
+  WaifuConfigSchema
 } from "../src/shared/schemas/domain.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
 
@@ -246,7 +245,7 @@ describe("data root and config", () => {
     expect(seeded.availability.sleep.enabled).toBe(true);
     expect(seeded.availability.busy.length).toBeGreaterThan(0);
     expect(seeded.tools).toEqual({ toolUse: true });
-    expect(seeded.promptLayout).toEqual(defaultWaifuPromptLayout());
+    expect(seeded).not.toHaveProperty("promptLayout");
     expect(seeded.modelId).toBeUndefined();
     expect(seeded.botId).toBeUndefined();
 
@@ -293,7 +292,7 @@ describe("data root and config", () => {
       }
     });
     expect(waifu.tools).toEqual({ toolUse: false });
-    expect(waifu.promptLayout).toEqual(defaultWaifuPromptLayout());
+    expect(waifu).not.toHaveProperty("promptLayout");
   });
 
   it("rejects overlapping busy intervals in waifu availability", () => {

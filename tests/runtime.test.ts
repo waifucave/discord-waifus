@@ -50,8 +50,7 @@ import {
   StageManagerHistoryFileSchema,
   WaifuConfig,
   WaifuConfigSchema,
-  createEmptyRevisionedFile,
-  defaultWaifuPromptLayout
+  createEmptyRevisionedFile
 } from "../src/shared/schemas/domain.js";
 import { createRevisionedBase } from "../src/shared/schemas/common.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
@@ -8892,42 +8891,6 @@ async function setWaifuToolUse(storage: StorageService, waifuId: string, toolUse
     WaifuConfigSchema.parse({
       ...config,
       tools: { ...config.tools, toolUse }
-    })
-  );
-}
-
-// Helper to disable specific W2 block IDs in a waifu's stored prompt layout.
-async function setWaifuBlocksEnabled(
-  storage: StorageService,
-  waifuId: string,
-  blockEnabled: Record<string, boolean>
-) {
-  const filePath = `user/waifus/${waifuId}/waifu.json`;
-  const config = await storage.readJson(filePath, WaifuConfigSchema);
-  const layout = defaultWaifuPromptLayout();
-  const setEnabled = (blockId: string, enabled: boolean) => {
-    for (const section of [layout.top, layout.mid, layout.trailing]) {
-      for (const node of section) {
-        if (node.kind === "block") {
-          if (node.blockId === blockId) node.enabled = enabled;
-        } else {
-          for (const child of node.children) {
-            if (child.blockId === blockId) child.enabled = enabled;
-          }
-        }
-      }
-    }
-  };
-  for (const [blockId, enabled] of Object.entries(blockEnabled)) {
-    setEnabled(blockId, enabled);
-  }
-  await storage.writeJson(
-    `waifu:${waifuId}`,
-    filePath,
-    WaifuConfigSchema,
-    WaifuConfigSchema.parse({
-      ...config,
-      promptLayout: layout
     })
   );
 }
