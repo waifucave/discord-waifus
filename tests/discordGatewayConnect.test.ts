@@ -333,6 +333,37 @@ describe("DiscordJsGateway unrecoverable gateway closes", () => {
     expect(botStatus(statusChanges[0]!, "waifu-a")).toMatchObject({ errorCode: "orchestrator_unavailable" });
   });
 
+  it("does not adopt a waifu retry login that finishes after the orchestrator session was lost", async () => {
+    const networkError = Object.assign(new Error("getaddrinfo ENOTFOUND discord.com"), { code: "ENOTFOUND" });
+    const retryLogin = deferred();
+    const clients = fakeClients({ "waifu-a": [networkError, retryLogin] });
+    const statusChanges: DiscordRuntimeStatus[] = [];
+    const gateway = makeGateway({
+      orchestrator: bot("orchestrator"),
+      waifus: [bot("waifu-a")],
+      createClient: clients.factory,
+      botRetryDelaysMs: [5],
+      onStatusChange: (status) => {
+        statusChanges.push(status);
+      }
+    });
+    await gateway.connect();
+    const orchestratorClient = clients.created.get("orchestrator")!;
+    await vi.waitFor(() => expect(clients.loginAttempts.get("waifu-a")).toBe(2));
+
+    orchestratorClient.emit(Events.ShardDisconnect, { code: 4004, reason: "", wasClean: true } as never, 0);
+    retryLogin.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(connectedBotIds(gateway)).toEqual([]);
+    // Both waifu clients (failed first attempt, abandoned retry) were destroyed.
+    expect(clients.destroyed.filter((id) => id === "waifu-a")).toHaveLength(2);
+    const latest = statusChanges.at(-1)!;
+    expect(latest).toMatchObject({ connected: false, orchestratorConnected: false, waifuBotCount: 0 });
+    expect(botStatus(latest, "waifu-a")).toMatchObject({ state: "error", errorCode: "orchestrator_unavailable" });
+    expect(botStatus(latest, "waifu-a")?.nextRetryAt).toBeUndefined();
+  });
+
   it("leaves resumable shard errors to discord.js", async () => {
     const clients = fakeClients({});
     const statusChanges: DiscordRuntimeStatus[] = [];

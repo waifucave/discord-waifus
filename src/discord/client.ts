@@ -1130,7 +1130,6 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
     if (this.clients.get(botId) !== client) return;
     const entry = this.configuredBots().find((candidate) => candidate.bot.id === botId);
     if (!entry) return;
-    const generation = this.generation;
     this.clients.delete(botId);
     void destroyClientQuietly(client);
     this.setBotStatus(entry.bot, entry.kind, {
@@ -1140,25 +1139,33 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
       ...(closeCode === undefined ? {} : { closeCode })
     });
     if (entry.kind === "orchestrator") {
-      // Same policy as connect(): waifus cannot be cast without the orchestrator.
+      // Same policy as connect(): waifus cannot be cast without the orchestrator. End this session
+      // like a disconnect (new generation, aborted logins, no retries) so an in-flight waifu retry
+      // is destroyed instead of adopted, but keep the statuses for the status API.
+      this.generation += 1;
+      this.connectAbort.abort();
+      this.connectAbort = new AbortController();
       for (const timer of this.botRetryTimers.values()) clearTimeout(timer);
       this.botRetryTimers.clear();
+      this.botRetryAttempts.clear();
       for (const [waifuBotId, waifuClient] of [...this.clients]) {
         this.clients.delete(waifuBotId);
         void destroyClientQuietly(waifuClient);
-        const status = this.botStatuses.get(waifuBotId);
-        if (status) {
-          this.botStatuses.set(waifuBotId, {
-            ...status,
-            state: "error",
-            errorCode: "orchestrator_unavailable",
-            error: "Disconnected because the orchestrator bot is offline.",
-            updatedAt: new Date().toISOString()
-          });
-        }
+      }
+      for (const [waifuBotId, status] of this.botStatuses) {
+        const wasActive = status.state === "connected" || status.state === "connecting" || status.nextRetryAt !== undefined;
+        if (waifuBotId === botId || !wasActive) continue;
+        const { nextRetryAt: _cancelled, ...rest } = status;
+        this.botStatuses.set(waifuBotId, {
+          ...rest,
+          state: "error",
+          errorCode: "orchestrator_unavailable",
+          error: "Disconnected because the orchestrator bot is offline.",
+          updatedAt: new Date().toISOString()
+        });
       }
     }
-    this.emitStatusChange(generation);
+    this.emitStatusChange(this.generation);
   }
 
   private reportRuntimeIssue(issue: DiscordRuntimeIssue): void {
