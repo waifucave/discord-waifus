@@ -186,6 +186,8 @@ export class RuntimeOrchestrator {
   private readonly retriggerTimers = new Map<string, NodeJS.Timeout>();
   private readonly stageManagerSchedules = new Map<string, StageManagerSchedule>();
   private readonly activeStageManagerRuns = new Set<Promise<StageManagerRunResult>>();
+  // guildId:channelId of observer runs in flight (in-memory so a crash can never leave it stuck).
+  private readonly activeStageManagerChannels = new Set<string>();
   // Per-guild daily dream-pass timers (next-run setTimeout, re-armed after each run) and any
   // pending defer timers for runs deferred because a channel run was active.
   private readonly dreamTimers = new Map<string, NodeJS.Timeout>();
@@ -2126,14 +2128,14 @@ export class RuntimeOrchestrator {
         return { status: "disabled", message: "Server is paused." };
       }
     }
-    const state = await this.ensureChannelSession(guildId, channelId);
-    if (state.stageManager.active) {
+    await this.ensureChannelSession(guildId, channelId);
+    // Reentrancy is guarded in memory: the persisted session.stageManager flag used to survive a
+    // crash as `active: true` and answer "already_running" forever. It is no longer consulted.
+    const stageKey = timerKey(guildId, channelId);
+    if (this.activeStageManagerChannels.has(stageKey)) {
       return { status: "already_running" };
     }
-    await this.updateSession(guildId, channelId, (current) => ({
-      ...current,
-      stageManager: { active: true, startedAt: nowIso() }
-    }));
+    this.activeStageManagerChannels.add(stageKey);
     try {
       const server = await this.ensureServer(guildId);
       const config = await this.readAgentConfig("stage-manager", 80);
@@ -2293,10 +2295,7 @@ export class RuntimeOrchestrator {
         message: error instanceof Error ? error.message : "Stage manager failed."
       };
     } finally {
-      await this.updateSession(guildId, channelId, (current) => ({
-        ...current,
-        stageManager: { active: false }
-      }));
+      this.activeStageManagerChannels.delete(stageKey);
     }
   }
 

@@ -2296,6 +2296,81 @@ describe("RuntimeOrchestrator", () => {
     expect(history.edits[0].summary).toContain("[dream:add]");
   });
 
+  it("ignores a stale persisted stage-manager running flag left by a crash", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    const { ChannelSessionStateSchema, createEmptyChannelSessionState } = await import("../src/orchestration/session.js");
+    await seedRuntimeConfig(storage);
+    await storage.writeJson(
+      "session:guild-1:channel-1",
+      "user/servers/guild-1/sessions/channel-1.json",
+      ChannelSessionStateSchema,
+      {
+        ...createEmptyChannelSessionState("guild-1", "channel-1"),
+        stageManager: { active: true, startedAt: "2026-05-16T12:00:00.000Z" }
+      }
+    );
+    let observerCalls = 0;
+    const pipeline: ModelPipeline = {
+      async generateWaifu() {
+        return { content: "unused" };
+      },
+      async decideStageManagerObservations() {
+        observerCalls += 1;
+        return [];
+      }
+    };
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    const result = await runtime.runObserverForTest("guild-1", "channel-1");
+    expect(result.status).not.toBe("already_running");
+    expect(observerCalls).toBe(1);
+  });
+
+  it("still rejects a concurrent stage-manager run for the same channel in-process", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    await seedRuntimeConfig(storage);
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const pipeline: ModelPipeline = {
+      async generateWaifu() {
+        return { content: "unused" };
+      },
+      async decideStageManagerObservations() {
+        await gate;
+        return [];
+      }
+    };
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    const first = runtime.runObserverForTest("guild-1", "channel-1");
+    const second = await runtime.runObserverForTest("guild-1", "channel-1");
+    release();
+    expect(second.status).toBe("already_running");
+    expect((await first).status).toBe("no_change");
+  });
+
   it("appends low-importance observations (< 4) to the pending queue file", async () => {
     const root = await makeTempRoot();
     roots.push(root);
