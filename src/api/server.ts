@@ -151,6 +151,46 @@ const CreateWaifuBodySchema = WaifuConfigSchema.omit({
   .partial({ id: true, enabled: true, persona: true, contextWindow: true })
   .required({ name: true, displayName: true });
 
+// B17: `.unwrap().optional()` only strips a sub-schema's outer default — zod still fills the
+// inner field defaults, so `{tools:{pickNextWaifu:true}}` used to reset `shortTermMemory` and a
+// lone `{availability:{sleep:{enabled:true}}}` wiped busy intervals. Nested settings objects are
+// therefore declared through this deep partial without defaults (and without refinements: the
+// merged record is re-validated by the full schema in updateRevisionedJson), then deep-merged
+// into stored state by mergeNestedPatch. Arrays and non-object leaves replace wholesale.
+type DeepPartial<T> = T extends readonly unknown[]
+  ? T
+  : T extends Record<string, unknown>
+    ? { [K in keyof T]?: DeepPartial<T[K]> }
+    : T;
+
+function partialWithoutDefaults<T extends z.ZodType>(schema: T): z.ZodType<DeepPartial<z.output<T>>> {
+  let inner: z.ZodType = schema;
+  while (inner instanceof z.ZodDefault || inner instanceof z.ZodOptional) {
+    inner = inner.unwrap() as z.ZodType;
+  }
+  if (!(inner instanceof z.ZodObject)) return inner as never;
+  const shape: Record<string, z.ZodType> = {};
+  for (const [key, field] of Object.entries(inner.shape as Record<string, z.ZodType>)) {
+    shape[key] = partialWithoutDefaults(field).optional();
+  }
+  return z.object(shape) as never;
+}
+
+function mergeNestedPatch<T>(current: T, patch: NoInfer<DeepPartial<T>> | undefined): T {
+  if (patch === undefined) return current;
+  if (!isPlainRecord(current) || !isPlainRecord(patch)) return patch as T;
+  const merged: Record<string, unknown> = { ...current };
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === undefined) continue;
+    merged[key] = mergeNestedPatch(current[key], value as never);
+  }
+  return merged as T;
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 // personaDigest is server-managed; clients cannot set it via PUT.
 //
 // P5 Task 4 review fix: every WaifuConfigSchema field below carries a `.default(...)` (either
@@ -169,8 +209,9 @@ const UpdateWaifuBodySchema = WaifuConfigSchema.omit({ personaDigest: true }).pa
   enabled: z.boolean().optional(),
   persona: z.string().optional(),
   contextWindow: z.number().int().min(1).max(100).optional(),
-  availability: WaifuAvailabilitySchema.unwrap().optional(),
-  tools: WaifuToolSettingsSchema.unwrap().optional(),
+  availability: partialWithoutDefaults(WaifuAvailabilitySchema).optional(),
+  tools: partialWithoutDefaults(WaifuToolSettingsSchema).optional(),
+  // promptLayout is a documented wholesale replace (the editor always sends the full tree).
   promptLayout: WaifuPromptLayoutSchema.unwrap().optional()
 });
 
@@ -193,16 +234,18 @@ const ServerConfigBodySchema = ServerConfigSchema.partial().extend({
   oneShot: OneShotConfigSchema.unwrap().optional(),
   stageManagerEnabled: z.boolean().optional(),
   paused: z.boolean().optional(),
-  contextWindows: ServerConfigSchema.shape.contextWindows.unwrap().optional(),
+  contextWindows: partialWithoutDefaults(ServerConfigSchema.shape.contextWindows).optional(),
   memoryInjectionLimit: z.number().int().min(1).max(50).optional(),
-  tools: ServerToolSettingsSchema.unwrap().optional(),
+  tools: partialWithoutDefaults(ServerToolSettingsSchema).optional(),
+  // channels is a documented wholesale replace; per-channel edits use the channel route.
   channels: ServerConfigSchema.shape.channels.unwrap().optional()
 });
 
 const ChannelConfigBodySchema = z.object({
   revision: z.number().int().nonnegative().optional(),
   name: z.string().optional(),
-  enabled: z.boolean().default(true),
+  // Omitted keeps the stored flag; only a channel first created through this route defaults on.
+  enabled: z.boolean().optional(),
   enabledWaifuIds: z.array(z.string()).optional()
 });
 
@@ -234,7 +277,7 @@ const AgentConfigBodySchema = AgentConfigSchema.partial().extend({
   contextWindow: z.number().int().min(1).max(100).optional(),
   prompt: z.string().optional(),
   directiveCooldown: z.number().int().min(0).max(20).optional(),
-  promptSections: OrchestratorPromptSectionsSchema.unwrap().optional()
+  promptSections: partialWithoutDefaults(OrchestratorPromptSectionsSchema).optional()
 });
 
 // Gateway P6 Task 4: `enabled` is required (not defaulted) in write bodies — every real client
@@ -730,6 +773,8 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
           ...current,
           ...patch,
           params: mergeParamsPatch(current.params, patch.params) ?? current.params,
+          availability: mergeNestedPatch(current.availability, patch.availability),
+          tools: mergeNestedPatch(current.tools, patch.tools),
           id: current.id,
           // personaDigest is server-managed; always carry it forward from current.
           personaDigest: current.personaDigest
@@ -886,6 +931,8 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
         return {
           ...current,
           ...patch,
+          contextWindows: mergeNestedPatch(current.contextWindows, patch.contextWindows),
+          tools: mergeNestedPatch(current.tools, patch.tools),
           guildId
         };
       }
@@ -974,7 +1021,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
           [channelId]: {
             channelId,
             name: body.name ?? current.channels[channelId]?.name,
-            enabled: body.enabled,
+            enabled: body.enabled ?? current.channels[channelId]?.enabled ?? true,
             enabledWaifuIds: body.enabledWaifuIds ?? current.channels[channelId]?.enabledWaifuIds ?? []
           }
         }
@@ -1390,7 +1437,12 @@ async function updateAgentConfig(
     expectedRevision: expectedRevision(request, body),
     transform: (current) => {
       const { revision: _revision, schemaVersion: _schemaVersion, updatedAt: _updatedAt, ...patch } = body;
-      const next = pruneUndefined({ ...current, ...patch, params: mergeParamsPatch(current.params, patch.params) ?? current.params });
+      const next = pruneUndefined({
+        ...current,
+        ...patch,
+        params: mergeParamsPatch(current.params, patch.params) ?? current.params,
+        promptSections: mergeNestedPatch(current.promptSections, patch.promptSections)
+      });
       const target = assertModelWriteValid(next.providerId, next.modelId, next.params);
       if (target) {
         // Gateway P6 Task 4: persist the resolved pair (supersedes P4's store-literal

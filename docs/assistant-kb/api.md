@@ -106,6 +106,10 @@ curl -s -X PUT http://127.0.0.1:3888/api/waifus/riko \
   an optional revision; omitting it is last-writer-wins.
 - **`params` merge**: config `params` MERGE with the stored object on write; send a key with
   value `null` to unset it. A partial params write never wipes the rest.
+- **Nested settings merge**: waifu `availability`/`tools`, server `contextWindows`/`tools` and
+  agent `promptSections` deep-merge, so `{"tools": {"pickNextWaifu": true}}` changes only that
+  flag. Arrays (e.g. `availability.busy`), server `channels` and waifu `promptLayout` replace
+  wholesale. A channel PUT that omits `enabled` keeps the current value.
 - **Unlink a bot**: `PUT /api/waifus/:id` with `"botId": null`.
 - **Link a bot**: `POST /api/waifus/:id/link-bot {applicationId?}` — one call ensures the
   discord-bots entry, sets the application id, and links the waifu's botId.
