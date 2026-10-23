@@ -507,11 +507,11 @@ describe("runMigrations", () => {
     expect(result.applied).toContain("migrate-memories-to-guild-scope");
     expect(result.applied).toContain("migrate-memory-store-v2");
     const store = await readJson<{ memories: Array<Record<string, unknown>> }>(root, "user/memories.json");
-    // The guild-resolvable memory survives into the new unified shape.
-    expect(store.memories).toHaveLength(1);
+    // The guild-resolvable memory survives into the new unified (Phase 4: global) shape.
+    expect(store.memories).toHaveLength(2);
     expect(store.memories[0]).toMatchObject({
       id: "memory-1",
-      guildId: "guild-2",
+      origin: { guildId: "guild-2" },
       waifuId: "yuki",
       source: "stage_manager",
       pinned: false,
@@ -521,9 +521,10 @@ describe("runMigrations", () => {
     expect(store.memories[0]).not.toHaveProperty("scope");
     expect(store.memories[0]).not.toHaveProperty("importance");
     expect(store.memories[0]).not.toHaveProperty("permanent");
-    // memory-2 had no resolvable guild → legacy step archived it without a guildId, so the V2
-    // step drops it (the new schema requires a non-empty guildId).
-    expect(store.memories.find((memory) => memory.id === "memory-2")).toBeUndefined();
+    // memory-2 had no resolvable guild: Phase 4 keeps it active with an empty origin (memories
+    // are global; the guild was provenance only).
+    expect(store.memories.find((memory) => memory.id === "memory-2")).toMatchObject({ status: "active", origin: {} });
+    expect(store.memories[0]).not.toHaveProperty("guildId");
   });
 
   it("assigns legacy memories to the only configured guild when history cannot infer one", async () => {
@@ -560,7 +561,7 @@ describe("runMigrations", () => {
 
     const store = await readJson<{ memories: Array<Record<string, unknown>> }>(root, "user/memories.json");
     expect(store.memories[0]).toMatchObject({
-      guildId: "guild-1",
+      origin: { guildId: "guild-1" },
       waifuId: "yuki",
       source: "stage_manager",
       pinned: false,
@@ -613,6 +614,21 @@ describe("runMigrations", () => {
     const store = await readJson<{ memories: Array<Record<string, unknown>> }>(root, "user/memories.json");
     expect(store.memories.find((memory) => memory.id === "valid")).toMatchObject({ status: "active" });
     expect(store.memories.find((memory) => memory.id === "invalid-user")).toMatchObject({ status: "archived" });
+
+    // A Phase 4 record of a deleted waifu is archived with a reason and a revision bump.
+    const phase4 = await readJson<{ memories: Array<Record<string, unknown>> }>(root, "user/memories.json");
+    phase4.memories.push({
+      id: "gone", waifuId: "deleted-waifu", content: "x", kind: "fact", source: "user", pinned: false, strength: 3,
+      origin: {}, subjects: [], revision: 2, createdAt: "2026-05-16T12:00:00.000Z", updatedAt: "2026-05-16T12:00:00.000Z", status: "active"
+    });
+    await writeJson(root, "user/memories.json", phase4);
+    await runMigrations(root);
+    const after = await readJson<{ memories: Array<Record<string, unknown>> }>(root, "user/memories.json");
+    expect(after.memories.find((memory) => memory.id === "gone")).toMatchObject({
+      status: "archived",
+      archivedReason: "unknown_waifu",
+      revision: 3
+    });
   });
 
   it("migrates the two-store memory model into one unified MemoryRecord store (W3)", async () => {
@@ -694,8 +710,9 @@ describe("runMigrations", () => {
     expect(perm).not.toHaveProperty("permanent");
     expect(perm).not.toHaveProperty("scope");
     expect(perm).not.toHaveProperty("sourceMessageIds");
-    expect(Array.isArray(perm?.entities)).toBe(true);
-    expect(perm?.entities).toContain("Kevin");
+    // Legacy entities became subjects only where they resolve; none of these names do.
+    expect(perm).not.toHaveProperty("entities");
+    expect(perm?.subjects).toEqual([]);
 
     const lib = store.memories.find((memory) => memory.id === "lib-1");
     expect(lib).toMatchObject({ pinned: false, strength: 3, source: "stage_manager" });
@@ -706,7 +723,7 @@ describe("runMigrations", () => {
       kind: "context",
       strength: 2,
       pinned: false,
-      channelId: "channel-1",
+      origin: { guildId: "guild-1", channelId: "channel-1" },
       expiresAt: "2026-05-17T12:00:00.000Z"
     });
 
@@ -736,14 +753,15 @@ describe("runMigrations", () => {
       memories: [
         {
           id: "new-1",
-          guildId: "guild-1",
           waifuId: "yuki",
           content: "Kevin enjoys green tea.",
           kind: "preference",
           source: "stage_manager",
           pinned: false,
           strength: 3,
-          entities: ["Kevin"],
+          origin: { guildId: "guild-1" },
+          subjects: [{ discordUserId: "111", name: "Kevin" }],
+          revision: 0,
           createdAt: "2026-06-12T12:00:00.000Z",
           updatedAt: "2026-06-12T12:00:00.000Z",
           status: "active"
@@ -917,7 +935,11 @@ describe("schema v2 migration (§7.3)", () => {
     });
 
     const result = await runMigrations(root);
-    expect(result.applied).toEqual(["migrate-configs-to-gateway-params", "stamp-schema-version-2"]);
+    expect(result.applied).toEqual([
+      "migrate-configs-to-gateway-params",
+      "migrate-memories-global-origin-subjects-1",
+      "stamp-schema-version-2"
+    ]);
 
     const orchestratorConfig = await readJson<Record<string, unknown>>(root, "user/orchestrator/config.json");
     expect(orchestratorConfig.params).toEqual({ "reasoning.effort": "medium" });
@@ -1179,6 +1201,14 @@ describe("migration ledger", () => {
       "dream-cursor-global-v1",
       "ocr-cache-url-keys-cleanup-v1"
     ];
+    // Landed (T6, global memory): no longer pending.
+    const LANDED_PHASE4_STEP_IDS = new Set([
+      "memories-global-origin-subjects-v1",
+      "memories-cross-guild-dedupe-v1",
+      "pending-observations-global-v1",
+      "dream-cursor-global-v1"
+    ]);
+    const PENDING_PHASE4_STEP_IDS = PHASE4_STEP_IDS.filter((id) => !LANDED_PHASE4_STEP_IDS.has(id));
 
     function recordingStep(id: string, runs: string[], extra: Partial<MigrationStep> = {}): MigrationStep {
       return {
@@ -1226,7 +1256,7 @@ describe("migration ledger", () => {
       expect((await readJson<Ledger>(root, LEDGER)).steps).toEqual({});
     });
 
-    it("registers the Phase 4 steps in spec order, pending, before the schema-version stamp", () => {
+    it("registers the Phase 4 steps in spec order, pending until landed, before the schema-version stamp", () => {
       const ids = MIGRATION_STEPS.map((step) => step.id);
       const positions = PHASE4_STEP_IDS.map((id) => ids.indexOf(id));
       expect(positions.every((index) => index >= 0)).toBe(true);
@@ -1235,7 +1265,7 @@ describe("migration ledger", () => {
       expect(positions[positions.length - 1]).toBeLessThan(ids.indexOf(`stamp-schema-version-${CURRENT_SCHEMA_VERSION}`));
       for (const id of PHASE4_STEP_IDS) {
         const step = MIGRATION_STEPS.find((candidate) => candidate.id === id)!;
-        expect(step.pending, id).toBe(true);
+        expect(step.pending === true, id).toBe(!LANDED_PHASE4_STEP_IDS.has(id));
       }
       expect(MIGRATION_STEPS.find((step) => step.id === "waifu-params-gateway-040-v1")!.frequency).toBe(
         "once-per-app-version"
@@ -1243,14 +1273,15 @@ describe("migration ledger", () => {
     });
 
     it("pending stub bodies throw if ever invoked, and the real boot never invokes them", async () => {
-      for (const id of PHASE4_STEP_IDS) {
+      for (const id of PENDING_PHASE4_STEP_IDS) {
         const step = MIGRATION_STEPS.find((candidate) => candidate.id === id)!;
         await expect(step.run("/nonexistent"), id).rejects.toThrow(/pending/);
       }
       const root = await freshRoot();
       await expect(runMigrations(root, { appVersion: "2.200.0" })).resolves.toBeDefined();
       const ledger = await readJson<Ledger>(root, LEDGER);
-      for (const id of PHASE4_STEP_IDS) expect(ledger.steps[id], id).toBeUndefined();
+      for (const id of PENDING_PHASE4_STEP_IDS) expect(ledger.steps[id], id).toBeUndefined();
+      for (const id of LANDED_PHASE4_STEP_IDS) expect(ledger.steps[id], id).toBeDefined();
       expect(ledger.steps["configs-to-gateway-params"]).toBeDefined();
       expect(ledger.steps[`stamp-schema-version-${CURRENT_SCHEMA_VERSION}`]).toBeDefined();
     });
