@@ -85,6 +85,10 @@ export async function runMigrations(dataRoot: string): Promise<MigrationResult> 
     applied.push("migrate-configs-to-gateway-params");
   }
 
+  if (await enableDiscordBotsForUpgrade(dataRoot)) {
+    applied.push("enable-discord-bots-v1");
+  }
+
   // Runs LAST: every step above may still leave a file's schemaVersion at 1 even once its shape
   // is current. Stamping here — after all shape conversions — is what lets the next boot's schema
   // parses (z.literal(CURRENT_SCHEMA_VERSION)) succeed instead of throwing.
@@ -93,6 +97,34 @@ export async function runMigrations(dataRoot: string): Promise<MigrationResult> 
   }
 
   return { applied };
+}
+
+// The runtime used to log in every bot with a token and ignore `enabled`, which earlier writes
+// persisted as `false` (schema default / pre-P6 PUTs). Now that `enabled: false` keeps a bot
+// offline, carry those bots over as enabled exactly once (marker file), so a later explicit disable
+// sticks. A missing key always means enabled.
+async function enableDiscordBotsForUpgrade(dataRoot: string): Promise<boolean> {
+  const filePath = path.join(dataRoot, "user", "discord-bots.json");
+  const markerPath = path.join(dataRoot, "user", ".discord-bots-enabled-v1.json");
+  const firstPass = (await readJsonOrUndefined(markerPath)) === undefined;
+  const data = await readJsonOrUndefined(filePath);
+  let changed = false;
+  if (isObject(data)) {
+    const entries = [data.orchestrator, ...(Array.isArray(data.waifus) ? data.waifus : [])];
+    for (const entry of entries) {
+      if (!isObject(entry)) continue;
+      const hasToken = typeof entry.token === "string" && entry.token.length > 0;
+      if (!("enabled" in entry) || (firstPass && hasToken && entry.enabled === false)) {
+        entry.enabled = true;
+        changed = true;
+      }
+    }
+    if (changed) await atomicWriteJson(filePath, data);
+  }
+  if (firstPass) {
+    await atomicWriteJson(markerPath, { schemaVersion: CURRENT_SCHEMA_VERSION, appliedAt: new Date().toISOString() });
+  }
+  return changed;
 }
 
 async function validateAndHardenRemoteAccessState(dataRoot: string): Promise<boolean> {

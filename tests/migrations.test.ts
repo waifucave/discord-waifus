@@ -1035,6 +1035,77 @@ describe("schema v2 migration (§7.3)", () => {
   });
 });
 
+describe("discord bot enabled upgrade", () => {
+  function botsFile(orchestrator: Record<string, unknown> | null, waifus: Array<Record<string, unknown>>) {
+    return {
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      revision: 3,
+      updatedAt: "2026-10-01T00:00:00.000Z",
+      orchestrator,
+      waifus
+    };
+  }
+
+  it("defaults a bot without an enabled key to enabled", () => {
+    const parsed = DiscordBotsFileSchema.parse(botsFile({ id: "orchestrator", displayName: "O", token: "t" }, []));
+    expect(parsed.orchestrator?.enabled).toBe(true);
+  });
+
+  it("enables bots the old runtime logged in regardless of the flag, once", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    await writeJson(root, "user/discord-bots.json", botsFile(
+      { id: "orchestrator", displayName: "O", token: "orchestrator-token", enabled: false },
+      [
+        { id: "aria", displayName: "Aria", token: "aria-token" },
+        { id: "riko", displayName: "Riko", token: "riko-token", enabled: false },
+        { id: "nox", displayName: "Nox", enabled: false }
+      ]
+    ));
+
+    const first = await runMigrations(root);
+
+    expect(first.applied).toContain("enable-discord-bots-v1");
+    const migrated = await readJson<ReturnType<typeof botsFile>>(root, "user/discord-bots.json");
+    expect(migrated.orchestrator).toMatchObject({ enabled: true, token: "orchestrator-token" });
+    expect(migrated.waifus.map((bot) => [bot.id, bot.enabled])).toEqual([
+      ["aria", true],
+      ["riko", true],
+      // No token: the old runtime never logged it in either, so the explicit flag stays.
+      ["nox", false]
+    ]);
+    expect(() => DiscordBotsFileSchema.parse(migrated)).not.toThrow();
+
+    // A later explicit disable sticks: the one-time pass does not run again.
+    await writeJson(root, "user/discord-bots.json", {
+      ...migrated,
+      waifus: migrated.waifus.map((bot) => (bot.id === "riko" ? { ...bot, enabled: false } : bot))
+    });
+    const second = await runMigrations(root);
+
+    expect(second.applied).not.toContain("enable-discord-bots-v1");
+    const after = await readJson<ReturnType<typeof botsFile>>(root, "user/discord-bots.json");
+    expect(after.waifus.find((bot) => bot.id === "riko")?.enabled).toBe(false);
+  });
+
+  it("still fills a missing enabled key after the one-time pass", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    await runMigrations(root);
+    await writeJson(root, "user/discord-bots.json", botsFile(null, [
+      { id: "aria", displayName: "Aria", token: "aria-token" },
+      { id: "riko", displayName: "Riko", token: "riko-token", enabled: false }
+    ]));
+
+    await runMigrations(root);
+
+    const after = await readJson<ReturnType<typeof botsFile>>(root, "user/discord-bots.json");
+    expect(after.waifus.map((bot) => [bot.id, bot.enabled])).toEqual([["aria", true], ["riko", false]]);
+  });
+});
+
 async function writeJson(root: string, relativePath: string, value: unknown): Promise<void> {
   const filePath = path.join(root, relativePath);
   await mkdir(path.dirname(filePath), { recursive: true });

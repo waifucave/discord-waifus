@@ -540,6 +540,8 @@ describe("backend Discord auto-connect retry", () => {
 describe("backend Discord per-bot status", () => {
   it("does not log in a disabled orchestrator bot", async () => {
     const root = await initializedRootWithOrchestrator(false);
+    // An explicit disable made after the one-time upgrade pass (which re-enables tokened bots).
+    await writeFile(path.join(root, "user", ".discord-bots-enabled-v1.json"), "{}\n");
     const gateway = new FakeDiscordGateway([connectedStatus()]);
     const backend = await startTestBackend(root, gateway, [5_000]);
 
