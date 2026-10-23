@@ -717,6 +717,12 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     };
   });
 
+  // A saved/removed key (or topped-up account) must not stay blocked by a stale quota/billing cooldown.
+  const clearProviderCooldown = (providerId: string) => {
+    sharedProviderAlerts(options.dataRoot).clear(providerId);
+    (options.runtimeControl?.getOrchestrator?.() ?? options.runtimeOrchestrator)?.providerAlerts?.clear(providerId);
+  };
+
   app.put("/api/providers/:providerId/credentials", async (request) => {
     const { providerId } = z.object({ providerId: ProviderIdSchema }).parse(request.params);
     assertKnownProvider(providerId);
@@ -742,6 +748,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
         }
       })
     });
+    clearProviderCooldown(providerId);
     return providerCredentialsResponse(updated, providerId);
   });
 
@@ -758,6 +765,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
         return { ...current, providers: rest };
       }
     });
+    clearProviderCooldown(providerId);
     return providerCredentialsResponse(updated, providerId);
   });
 

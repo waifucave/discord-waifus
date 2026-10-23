@@ -11,7 +11,7 @@ import { atomicWriteJson } from "../../storage/atomic.js";
 // param the gateway's own `validate()` rejects for the config's model. It runs through the live
 // registry, so it is idempotent: a second run finds nothing left to drop.
 
-const AGENT_DIRS = ["orchestrator", "stage-manager", "reviewer"];
+const AGENT_DIRS = ["orchestrator", "stage-manager", "reviewer", "assistant"];
 const MAX_PASSES = 8;
 
 function isObject(value: unknown): value is Record<string, unknown> {

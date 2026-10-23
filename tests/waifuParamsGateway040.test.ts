@@ -60,6 +60,16 @@ describe("waifu-params-gateway-040-v1", () => {
     expect(await readFile(path.join(root, "user/waifus/yuki/waifu.json"), "utf8")).toBe(before);
   });
 
+  it("also cleans the dashboard assistant's config (PUT /api/assistant/config validates it)", async () => {
+    const root = await freshRoot();
+    await writeJson(root, "user/assistant/config.json", {
+      providerId: "anthropic", modelId: "claude-opus-4-7", params: { temperature: 0.4, maxOutputTokens: 800 }
+    });
+    expect(await migrateWaifuParamsGateway040(root)).toBe("waifu-params-gateway-040-1");
+    expect((await readJson(root, "user/assistant/config.json")).params).toEqual({ maxOutputTokens: 800 });
+    expect(await migrateWaifuParamsGateway040(root)).toBeUndefined();
+  });
+
   it("leaves configs without a model, with unknown models, or without params untouched", async () => {
     const root = await freshRoot();
     await writeJson(root, "user/waifus/a/waifu.json", { id: "a", params: { temperature: 1 } });

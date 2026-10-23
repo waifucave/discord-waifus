@@ -203,6 +203,9 @@ export class RuntimeOrchestrator {
     await this.haltRuntime(RUNTIME_SHUTDOWN_INTERRUPT_REASON);
     this.oneShot.close();
     await this.options.ocr?.dispose?.();
+    // Calls aborted by the halt above queue their `aborted` ledger lines fire-and-forget; wait for
+    // them so a following process exit cannot lose them.
+    await this.usageLedger.flush();
   }
 
   /** Explicit user pause: interrupted replies are never resumed later (see restartResume.ts). */
