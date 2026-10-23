@@ -88,7 +88,7 @@ When Discord auto-connect is enabled and an orchestrator token is saved, the bac
 6. `no_reply` decisions schedule bounded retriggers.
 7. Stage-manager runs are background tasks and write memory/history through the shared memory lock.
 
-`POST /api/runtime/trigger/orchestrator` and `POST /api/runtime/trigger/stage-manager` accept optional JSON bodies with `guildId` and `channelId` to run the real channel pipeline manually. Without a target channel they only record a manual history entry.
+`POST /api/runtime/trigger/orchestrator` and `POST /api/runtime/trigger/stage-manager` accept optional JSON bodies with `guildId` and `channelId` to run the real channel pipeline manually. Without both ids, or without a live runtime, nothing runs and nothing is recorded: the response is `200` with `accepted: false` and an explanatory `message`.
 
 Normal configuration changes apply at runtime. `PUT /api/config`, `PUT /api/discord-bots`, and `POST /api/runtime/reload` rebuild Discord clients and the runtime orchestrator in-process without restarting HTTP. Only HTTP host/port changes require the next process start.
 

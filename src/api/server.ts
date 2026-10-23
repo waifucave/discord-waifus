@@ -1193,21 +1193,11 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
         message: "Orchestrator trigger accepted for the requested channel."
       };
     }
-    const history = await appendOrchestratorHistory(storage, {
-      id: randomUUID(),
-      action: "no_reply",
-      respondingWaifus: [],
-      retriggerAfterSeconds: 180,
-      reasoning: "Manual trigger accepted without a target guild/channel.",
-      status: "completed",
-      waifuMessageIds: [],
-      responderOutcomes: [],
-      createdAt: nowIso()
-    });
     return {
-      accepted: true,
-      message: "Orchestrator trigger accepted and recorded in history.",
-      history
+      accepted: false,
+      message: runtimeOrchestrator
+        ? "Nothing was triggered: provide both guildId and channelId."
+        : "No live runtime; nothing was triggered."
     };
   });
   app.post("/api/runtime/trigger/stage-manager", async (request) => {
@@ -1222,17 +1212,11 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
         message: "Stage-manager trigger accepted for the requested channel."
       };
     }
-    const history = await appendStageManagerHistory(storage, {
-      id: randomUUID(),
-      tool: "no_change",
-      affectedMemoryIds: [],
-      summary: "Manual trigger accepted without a target guild/channel.",
-      createdAt: nowIso()
-    });
     return {
-      accepted: true,
-      message: "Stage-manager trigger accepted and recorded in history.",
-      history
+      accepted: false,
+      message: runtimeOrchestrator
+        ? "Nothing was triggered: provide both guildId and channelId."
+        : "No live runtime; nothing was triggered."
     };
   });
   app.get("/api/diagnostics/bundle", async (request) => diagnosticBundle(
@@ -1480,44 +1464,12 @@ function emptyOrchestratorHistory(): OrchestratorHistoryFile {
   return OrchestratorHistoryFileSchema.parse(createEmptyRevisionedFile({ decisions: [] }));
 }
 
-async function appendOrchestratorHistory(
-  storage: StorageService,
-  entry: OrchestratorHistoryFile["decisions"][number]
-): Promise<OrchestratorHistoryFile> {
-  return storage.updateRevisionedJson({
-    resourceKey: "orchestrator:history",
-    relativePath: "user/orchestrator/history.json",
-    schema: OrchestratorHistoryFileSchema,
-    fallback: emptyOrchestratorHistory(),
-    transform: (current) => ({
-      ...current,
-      decisions: [entry, ...current.decisions].slice(0, 200)
-    })
-  });
-}
-
 async function readStageManagerHistory(storage: StorageService): Promise<StageManagerHistoryFile> {
   return storage.readJson("user/stage-manager/history.json", StageManagerHistoryFileSchema, emptyStageManagerHistory());
 }
 
 function emptyStageManagerHistory(): StageManagerHistoryFile {
   return StageManagerHistoryFileSchema.parse(createEmptyRevisionedFile({ edits: [] }));
-}
-
-async function appendStageManagerHistory(
-  storage: StorageService,
-  entry: StageManagerHistoryFile["edits"][number]
-): Promise<StageManagerHistoryFile> {
-  return storage.updateRevisionedJson({
-    resourceKey: "stage-manager:history",
-    relativePath: "user/stage-manager/history.json",
-    schema: StageManagerHistoryFileSchema,
-    fallback: emptyStageManagerHistory(),
-    transform: (current) => ({
-      ...current,
-      edits: [entry, ...current.edits].slice(0, 200)
-    })
-  });
 }
 
 async function readReviewerHistory(storage: StorageService): Promise<ReviewerHistoryFile> {

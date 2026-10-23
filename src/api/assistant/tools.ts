@@ -56,6 +56,20 @@ async function inject(
   return { status: response.statusCode, body: response.body };
 }
 
+// Trigger routes answer 200 with `accepted: false` when nothing ran (no live runtime / no target).
+function triggerResultText(result: { status: number; body: string }, success: string): string {
+  if (result.status !== 200) return result.body;
+  try {
+    const parsed = JSON.parse(result.body) as { accepted?: unknown; message?: unknown };
+    if (parsed.accepted === false) {
+      return typeof parsed.message === "string" ? parsed.message : "Nothing was triggered.";
+    }
+  } catch {
+    // Non-JSON 200 bodies fall through to the success text.
+  }
+  return success;
+}
+
 // Read-modify-write for revisioned resources: GET → merge → PUT with the fresh revision;
 // one retry when a concurrent writer bumps the revision between our read and write (409).
 async function revisionedPut(
@@ -601,7 +615,7 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
     },
     execute: async (ctx, args) => {
       const result = await inject(ctx, { method: "POST", url: "/api/runtime/trigger/orchestrator", payload: args });
-      return result.status === 200 ? "Orchestrator pass triggered." : result.body;
+      return triggerResultText(result, "Orchestrator pass triggered.");
     }
   },
   {
@@ -615,7 +629,7 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
     },
     execute: async (ctx, args) => {
       const result = await inject(ctx, { method: "POST", url: "/api/runtime/trigger/stage-manager", payload: args });
-      return result.status === 200 ? "Stage-manager pass triggered." : result.body;
+      return triggerResultText(result, "Stage-manager pass triggered.");
     }
   },
   {
