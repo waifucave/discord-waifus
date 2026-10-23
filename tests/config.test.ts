@@ -43,7 +43,7 @@ describe("data root and config", () => {
 
     await expect(access(path.join(root, "app", "logs"))).resolves.toBeUndefined();
     await expect(access(path.join(root, "app", "cache"))).resolves.toBeUndefined();
-    await expect(access(path.join(root, "app", "cache", "ocr", "results"))).resolves.toBeUndefined();
+    await expect(access(path.join(root, "app", "cache", "ocr", "results-v2"))).resolves.toBeUndefined();
     await expect(access(path.join(root, "app", "tmp", "ocr"))).resolves.toBeUndefined();
     await expect(access(path.join(root, "user", "waifus"))).resolves.toBeUndefined();
     await expect(access(path.join(root, "user", "servers"))).resolves.toBeUndefined();
@@ -92,7 +92,7 @@ describe("data root and config", () => {
     expect(config.ocr).toMatchObject({
       enabled: true,
       engine: "auto",
-      cacheTtlHours: 24,
+      cacheTtlHours: 168,
       timeoutMs: 1500,
       maxImageBytes: 8 * 1024 * 1024,
       maxImagesPerModelCall: 4,

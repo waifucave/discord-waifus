@@ -24,7 +24,7 @@ const DATA_LAYOUT_DIRS = [
   "app/cache",
   "app/cache/ocr",
   "app/cache/ocr/bin",
-  "app/cache/ocr/results",
+  "app/cache/ocr/results-v2",
   "app/cache/remote-dashboard",
   "app/tmp",
   "app/tmp/ocr",
