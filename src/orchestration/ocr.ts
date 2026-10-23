@@ -8,7 +8,7 @@ import type { Worker as TesseractWorker } from "tesseract.js";
 import { Logger } from "../backend/logger.js";
 import { appDataPath } from "../config/paths.js";
 import { OcrConfig } from "../shared/schemas/config.js";
-import { AttachmentImage, ContextMessage } from "./context.js";
+import { AttachmentImage, ContextMessage } from "./contextMessages.js";
 import { BUNDLED_OCR_LANGUAGE, bundledOcrLangPath } from "./ocrPackages.js";
 
 const execFileAsync = promisify(execFile);

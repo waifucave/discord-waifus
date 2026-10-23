@@ -9,7 +9,7 @@ import {
   createEmptyRevisionedFile
 } from "../../shared/schemas/domain.js";
 import { StorageService } from "../../storage/storageService.js";
-import type { ContextMessage } from "../context.js";
+import type { ContextMessage } from "../contextMessages.js";
 
 const ACTIVE_CHAT_PARTICIPANT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 

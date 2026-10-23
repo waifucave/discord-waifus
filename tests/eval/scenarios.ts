@@ -3,7 +3,7 @@
 // All casts are INVENTED (Yuki / Mika / Riko / Kevin). No real chat content.
 // Each scenario has a compact synthetic context (4-8 messages) and an expectation record.
 
-import type { ContextMessage } from "../../src/orchestration/context.js";
+import type { ContextMessage } from "../../src/orchestration/contextMessages.js";
 
 // ---------------------------------------------------------------------------
 // Roster entry

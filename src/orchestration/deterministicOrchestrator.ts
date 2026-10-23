@@ -8,7 +8,7 @@
 // Pure module: no side effects, no imports from runtime. Interval helpers come from the shared
 // timeOfDay.ts. Schedules are server-local time, same convention as currentlyDoingForWaifu.
 
-import type { ContextMessage } from "./context.js";
+import type { ContextMessage } from "./contextMessages.js";
 import { DIRECTIVE_GOAL_MAX_CHARS, type OrchestratorDecision } from "./decisions.js";
 import type { WaifuAvailability } from "../shared/schemas/domain.js";
 import { dailyIntervalContains, localTimeOfDayMinutes } from "./timeOfDay.js";

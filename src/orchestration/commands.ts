@@ -16,7 +16,7 @@ import {
 } from "../discord/client.js";
 import { ServerConfig, WaifuConfig } from "../shared/schemas/domain.js";
 import { relativeAge } from "./memoryRetrieval.js";
-import type { ContextMessage } from "./context.js";
+import type { ContextMessage } from "./contextMessages.js";
 import { formatPrintDebugBlock, formatWaifuPromptDebugMessages } from "./debugFormat.js";
 import { buildWaifuPromptParts } from "./promptBuilders.js";
 import { ResponderExecutor } from "./responderExecutor.js";

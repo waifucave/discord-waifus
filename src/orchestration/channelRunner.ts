@@ -17,7 +17,7 @@ import {
 } from "../shared/schemas/domain.js";
 import { nowIso } from "../shared/schemas/common.js";
 import { ChannelSessionStateSchema, type RetriggerWake, createEmptyChannelSessionState } from "./session.js";
-import { type ContextMessage, type OrchestratorWakeMarker, formatTimestamp } from "./context.js";
+import { type ContextMessage, type OrchestratorWakeMarker, formatTimestamp } from "./contextMessages.js";
 import {
   DIRECTIVE_GOAL_MAX_CHARS,
   type DirectiveIntent,

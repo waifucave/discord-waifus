@@ -5,7 +5,7 @@ import {
   ContextMessage,
   formatSelfWaifuContent,
   formatWaifuContextBlock,
-} from "../src/orchestration/context.js";
+} from "../src/orchestration/contextMessages.js";
 
 const gateway = createGateway({});
 

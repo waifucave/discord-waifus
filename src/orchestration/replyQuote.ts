@@ -1,4 +1,4 @@
-import type { ContextMessage } from "./context.js";
+import type { ContextMessage } from "./contextMessages.js";
 import { jaccard } from "./text.js";
 
 export type ReplyQuoteExtraction = {

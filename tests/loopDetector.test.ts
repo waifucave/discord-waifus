@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { assessLoop } from "../src/orchestration/loopDetector.js";
-import { ContextMessage } from "../src/orchestration/context.js";
+import { ContextMessage } from "../src/orchestration/contextMessages.js";
 
 function msg(id: string, authorKind: "user" | "waifu", authorId: string, content: string): ContextMessage {
   return {

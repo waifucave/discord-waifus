@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { buildOrchestratorChatMessages, formatDecisionOutcome, serializeOrchestratorDecisionArguments } from "../src/orchestration/pipeline/timeline.js";
 import { ORCHESTRATOR_TOOL_NAME } from "../src/orchestration/tools.js";
-import { ContextMessage } from "../src/orchestration/context.js";
+import { ContextMessage } from "../src/orchestration/contextMessages.js";
 
 const msg = (id: string, ts: string, content: string): ContextMessage => ({
   id, channelId: "c", authorKind: "user", authorId: "u", name: "ann", displayName: "Ann",
@@ -57,7 +57,7 @@ describe("buildOrchestratorChatMessages", () => {
   });
 });
 
-import { formatAge } from "../src/orchestration/context.js";
+import { formatAge } from "../src/orchestration/contextMessages.js";
 
 describe("orchestrator time awareness", () => {
   it("formatAge renders compact relative ages", () => {

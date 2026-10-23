@@ -15,7 +15,7 @@ import type {
   DiscordRuntimeIssue,
   DiscordRuntimeStatus
 } from "../src/discord/client.js";
-import type { ContextMessage } from "../src/orchestration/context.js";
+import type { ContextMessage } from "../src/orchestration/contextMessages.js";
 import { createRevisionedBase } from "../src/shared/schemas/common.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
 import { remoteStatePaths } from "../src/remote/paths.js";

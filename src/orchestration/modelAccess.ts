@@ -4,7 +4,7 @@
 import { ModelPipeline } from "../providers/types.js";
 import { resolveModelTarget, sharedRegistry } from "./pipeline/resolveTarget.js";
 import { QueryRole } from "../shared/queryLog.js";
-import type { ContextMessage } from "./context.js";
+import type { ContextMessage } from "./contextMessages.js";
 import type { RuntimeOrchestratorOptions } from "./runtimeShared.js";
 
 type CreatePipeline = (target: { providerId: string; modelId: string; queryRole: QueryRole }) => ModelPipeline;

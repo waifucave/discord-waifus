@@ -1,5 +1,5 @@
 import type { ChatMessage } from "@waifucave/gateway";
-import { ContextMessage, formatOrchestratorMessageBlock, formatTimestamp, OrchestratorWakeMarker } from "../context.js";
+import { ContextMessage, formatOrchestratorMessageBlock, formatTimestamp, OrchestratorWakeMarker } from "../contextMessages.js";
 import { OrchestratorDecisionHistoryEntry } from "../../shared/schemas/domain.js";
 import { ORCHESTRATOR_TOOL_NAME } from "../tools.js";
 

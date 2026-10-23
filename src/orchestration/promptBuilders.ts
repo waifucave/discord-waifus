@@ -19,7 +19,7 @@ import {
 import { resolveBotAuthorIds } from "../shared/botIdentity.js";
 import { retrieveMemories } from "./memoryRetrieval.js";
 import { StorageService } from "../storage/storageService.js";
-import type { ContextMessage } from "./context.js";
+import type { ContextMessage } from "./contextMessages.js";
 import { MAX_WAIFU_DELAY_SECONDS } from "./decisions.js";
 import type { RuntimeServices } from "./runtimeShared.js";
 import { readDiscordBotsFile } from "./stores/config.js";

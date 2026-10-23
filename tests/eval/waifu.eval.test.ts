@@ -33,7 +33,7 @@ import {
 } from "../../src/shared/schemas/domain.js";
 import { createRevisionedBase } from "../../src/shared/schemas/common.js";
 import { makeTempRoot, removeTempRoot } from "../testUtils.js";
-import type { ContextMessage } from "../../src/orchestration/context.js";
+import type { ContextMessage } from "../../src/orchestration/contextMessages.js";
 import { EVAL_SCENARIOS } from "./scenarios.js";
 
 // ---------------------------------------------------------------------------

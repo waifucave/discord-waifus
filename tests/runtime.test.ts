@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RuntimeOrchestrator, currentlyDoingForWaifu, DreamPassResult } from "../src/orchestration/runtime.js";
-import { ContextMessage } from "../src/orchestration/context.js";
+import { ContextMessage } from "../src/orchestration/contextMessages.js";
 import { OrchestratorDecision, RETRIGGER_MAX_SECONDS } from "../src/orchestration/decisions.js";
 import {
   DiscordGatewayFacade,

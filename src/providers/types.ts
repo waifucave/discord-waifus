@@ -1,5 +1,5 @@
 import { MemoryKind, OrchestratorDecisionHistoryEntry, PendingObservation } from "../shared/schemas/domain.js";
-import { ContextMessage, OrchestratorWakeMarker } from "../orchestration/context.js";
+import { ContextMessage, OrchestratorWakeMarker } from "../orchestration/contextMessages.js";
 import { OrchestratorDecision } from "../orchestration/decisions.js";
 import { DreamOp, StageManagerObservation } from "../orchestration/stageManager.js";
 import type { ReviewerDecision } from "../orchestration/tools.js";

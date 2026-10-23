@@ -27,7 +27,7 @@ import {
   WaifuConfig
 } from "../shared/schemas/domain.js";
 import { resolveBotAuthorIds } from "../shared/botIdentity.js";
-import type { ContextMessage } from "./context.js";
+import type { ContextMessage } from "./contextMessages.js";
 import type { OrchestratorDecision } from "./decisions.js";
 import { ModelAccess } from "./modelAccess.js";
 import { buildWaifuPromptParts, directiveTextForWaifu } from "./promptBuilders.js";

@@ -1,4 +1,4 @@
-import { ContextMessage } from "./context.js";
+import { ContextMessage } from "./contextMessages.js";
 import { jaccard, tokenSet } from "./text.js";
 
 export type LoopAssessment = {

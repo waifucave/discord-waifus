@@ -1,5 +1,5 @@
 import { MemoryRecord } from "../shared/schemas/domain.js";
-import { ContextMessage } from "./context.js";
+import { ContextMessage } from "./contextMessages.js";
 import { tokenSet } from "./text.js";
 
 export type RetrievalInput = {
