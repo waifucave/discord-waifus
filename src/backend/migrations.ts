@@ -2,7 +2,7 @@ import { chmod, lstat, readFile, readdir, rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
-import { ensureDataLayout } from "../config/layout.js";
+import { ensureDataLayout, readPackageVersion } from "../config/layout.js";
 import { RETRIGGER_MAX_SECONDS, RETRIGGER_MIN_SECONDS } from "../orchestration/decisions.js";
 import { extractEntities, WAIFU_NOTE_STRENGTH } from "../orchestration/memoryEntities.js";
 import { resolveModelTarget } from "../orchestration/pipeline/resolveTarget.js";
@@ -22,77 +22,170 @@ import {
 } from "../shared/schemas/remoteAccess.js";
 import { RemoteAccessConfigV1Schema } from "../shared/schemas/remoteLifecycle.js";
 import { remoteStatePaths } from "../remote/paths.js";
+import {
+  emptyMigrationLedger,
+  readTrustedMigrationLedger,
+  writeMigrationLedger,
+  type MigrationLedger
+} from "./migrationLedger.js";
 
 export type MigrationResult = {
   applied: string[];
 };
 
-export async function runMigrations(dataRoot: string): Promise<MigrationResult> {
+// How often a boot step runs (see the ledger in ./migrationLedger.ts):
+// - "every-boot": invariant checks / housekeeping whose semantics depend on current state; never
+//   recorded in the ledger.
+// - "once": legacy shape conversions; recorded after a successful run and skipped afterwards.
+// - "once-per-app-version": recorded with the app version and re-run when that changes, for
+//   steps whose outcome depends on code shipped with the app (e.g. the gateway model registry).
+type MigrationStepFrequency = "every-boot" | "once" | "once-per-app-version";
+
+type MigrationStep = {
+  id: string;
+  frequency: MigrationStepFrequency;
+  // Returns the label reported in MigrationResult.applied when the step changed anything.
+  run: (dataRoot: string) => Promise<string | undefined>;
+};
+
+const label = (changed: boolean, value: string) => (changed ? value : undefined);
+const countLabel = (count: number, prefix: string) => (count > 0 ? `${prefix}-${count}` : undefined);
+
+// Order matters and is the historical boot order. Every step is idempotent, so re-running all of
+// them (missing/corrupt ledger, 1.x → 2.x manual upgrades) is always safe.
+const MIGRATION_STEPS: readonly MigrationStep[] = [
+  {
+    id: "harden-remote-access-state-v1",
+    frequency: "every-boot",
+    run: async (dataRoot) =>
+      label(await validateAndHardenRemoteAccessState(dataRoot), "harden-remote-access-state-v1")
+  },
+  {
+    id: "orchestrator-history-responding-waifus",
+    frequency: "once",
+    run: async (dataRoot) =>
+      label(await migrateOrchestratorHistory(dataRoot), "migrate-orchestrator-history-to-responding-waifus")
+  },
+  {
+    id: "agent-config-retrigger-pacing",
+    frequency: "once",
+    run: async (dataRoot) => countLabel(await migrateAgentConfigs(dataRoot), "migrate-retrigger-pacing")
+  },
+  {
+    id: "session-scheduled-retrigger-at",
+    frequency: "once",
+    run: async (dataRoot) => countLabel(await migrateSessionFiles(dataRoot), "migrate-scheduled-retrigger-at")
+  },
+  {
+    id: "remove-guild-wide-active-participants",
+    frequency: "once",
+    run: async (dataRoot) =>
+      countLabel(await removeGuildWideActiveParticipantCaches(dataRoot), "remove-guild-wide-active-participants")
+  },
+  {
+    id: "memories-to-guild-scope",
+    frequency: "once",
+    run: async (dataRoot) => label(await migrateLegacyMemories(dataRoot), "migrate-memories-to-guild-scope")
+  },
+  {
+    // Housekeeping, not a shape change: deleting a waifu does not touch its memories, so this is
+    // what archives them on the next boot.
+    id: "archive-memories-with-unknown-waifus",
+    frequency: "every-boot",
+    run: async (dataRoot) =>
+      label(await archiveMemoriesWithUnknownWaifus(dataRoot), "archive-memories-with-unknown-waifus")
+  },
+  {
+    id: "waifu-prompt-sections-to-layout",
+    frequency: "once",
+    run: async (dataRoot) => countLabel(await migrateWaifuPromptSections(dataRoot), "migrate-waifu-prompt-layout")
+  },
+  {
+    id: "waifu-prompt-layout-w2",
+    frequency: "once",
+    run: async (dataRoot) => countLabel(await migrateWaifuPromptLayoutW2(dataRoot), "migrate-waifu-prompt-layout-w2")
+  },
+  {
+    id: "waifu-memories-to-mid",
+    frequency: "once",
+    run: async (dataRoot) => countLabel(await migrateWaifuPromptMemoriesToMid(dataRoot), "migrate-waifu-memories-to-mid")
+  },
+  {
+    // W3: collapse the two-store memory model into one unified MemoryRecord store. This MUST run
+    // after the legacy memory steps above (they mutate the old shape) and before any read, because
+    // the new schema strips importance/permanent and would silently default strength/pinned —
+    // losing user-managed permanent memories — if an old-shape file were parsed without migrating.
+    id: "memory-store-v2",
+    frequency: "once",
+    run: async (dataRoot) => label(await migrateMemoryStoreV2(dataRoot), "migrate-memory-store-v2")
+  },
+  {
+    // §7.3: convert stored reasoning/generation into unified gateway params and remap retired
+    // model ids. Must run after the shape migrations above (which may still be touching agent
+    // config.json / waifu.json) and before the version stamp below. The remap table ships with the
+    // app/gateway, so it re-runs whenever the app version changes.
+    id: "configs-to-gateway-params",
+    frequency: "once-per-app-version",
+    run: async (dataRoot) => label(await migrateConfigsToGatewayParams(dataRoot), "migrate-configs-to-gateway-params")
+  },
+  {
+    // Has its own one-time marker; the cheap missing-`enabled` fill keeps running every boot.
+    id: "enable-discord-bots-v1",
+    frequency: "every-boot",
+    run: async (dataRoot) => label(await enableDiscordBotsForUpgrade(dataRoot), "enable-discord-bots-v1")
+  },
+  {
+    // Runs LAST: every step above may still leave a file's schemaVersion at 1 even once its shape
+    // is current. Stamping here — after all shape conversions — is what lets the next boot's
+    // schema parses (z.literal(CURRENT_SCHEMA_VERSION)) succeed instead of throwing.
+    id: `stamp-schema-version-${CURRENT_SCHEMA_VERSION}`,
+    frequency: "once",
+    run: async (dataRoot) => label(await stampSchemaVersion2(dataRoot), "stamp-schema-version-2")
+  }
+];
+
+function stepIsRecorded(step: MigrationStep, ledger: MigrationLedger, appVersion: string): boolean {
+  if (step.frequency === "every-boot") return false;
+  const entry = ledger.steps[step.id];
+  if (!entry) return false;
+  return step.frequency === "once" || entry.appVersion === appVersion;
+}
+
+export async function runMigrations(
+  dataRoot: string,
+  options: { appVersion?: string } = {}
+): Promise<MigrationResult> {
   await ensureDataLayout(dataRoot);
+  const appVersion = options.appVersion ?? (await readPackageVersion());
+  const trusted = await readTrustedMigrationLedger(dataRoot);
+  const ledger = trusted ?? emptyMigrationLedger(appVersion);
+  let ledgerDirty = trusted === undefined || trusted.appVersion !== appVersion;
   const applied: string[] = [];
 
-  if (await validateAndHardenRemoteAccessState(dataRoot)) {
-    applied.push("harden-remote-access-state-v1");
-  }
+  const persistLedger = async () => {
+    if (!ledgerDirty) return;
+    ledger.appVersion = appVersion;
+    ledger.updatedAt = new Date().toISOString();
+    await writeMigrationLedger(dataRoot, ledger);
+  };
 
-  if (await migrateOrchestratorHistory(dataRoot)) {
-    applied.push("migrate-orchestrator-history-to-responding-waifus");
+  try {
+    for (const step of MIGRATION_STEPS) {
+      if (stepIsRecorded(step, ledger, appVersion)) continue;
+      const result = await step.run(dataRoot);
+      if (result) applied.push(result);
+      if (step.frequency !== "every-boot") {
+        ledger.steps[step.id] = { appliedAt: new Date().toISOString(), appVersion };
+        ledgerDirty = true;
+      }
+    }
+  } catch (error) {
+    // Record the steps that completed before the failure so the next boot resumes at the failed
+    // step; a ledger write failure must not mask the original error.
+    await persistLedger().catch(() => undefined);
+    throw error;
   }
-  const configsRenamed = await migrateAgentConfigs(dataRoot);
-  if (configsRenamed > 0) {
-    applied.push(`migrate-retrigger-pacing-${configsRenamed}`);
-  }
-  const sessionsRenamed = await migrateSessionFiles(dataRoot);
-  if (sessionsRenamed > 0) {
-    applied.push(`migrate-scheduled-retrigger-at-${sessionsRenamed}`);
-  }
-  const participantCachesRemoved = await removeGuildWideActiveParticipantCaches(dataRoot);
-  if (participantCachesRemoved > 0) {
-    applied.push(`remove-guild-wide-active-participants-${participantCachesRemoved}`);
-  }
-  if (await migrateLegacyMemories(dataRoot)) {
-    applied.push("migrate-memories-to-guild-scope");
-  }
-  if (await archiveMemoriesWithUnknownWaifus(dataRoot)) {
-    applied.push("archive-memories-with-unknown-waifus");
-  }
-  const layoutsMigrated = await migrateWaifuPromptSections(dataRoot);
-  if (layoutsMigrated > 0) {
-    applied.push(`migrate-waifu-prompt-layout-${layoutsMigrated}`);
-  }
-  const w2LayoutsMigrated = await migrateWaifuPromptLayoutW2(dataRoot);
-  if (w2LayoutsMigrated > 0) {
-    applied.push(`migrate-waifu-prompt-layout-w2-${w2LayoutsMigrated}`);
-  }
-  const memoriesMoved = await migrateWaifuPromptMemoriesToMid(dataRoot);
-  if (memoriesMoved > 0) {
-    applied.push(`migrate-waifu-memories-to-mid-${memoriesMoved}`);
-  }
-  // W3: collapse the two-store memory model into one unified MemoryRecord store. This MUST run
-  // after the legacy memory steps above (they mutate the old shape) and before any read, because
-  // the new schema strips importance/permanent and would silently default strength/pinned — losing
-  // user-managed permanent memories — if an old-shape file were parsed without migrating first.
-  if (await migrateMemoryStoreV2(dataRoot)) {
-    applied.push("migrate-memory-store-v2");
-  }
-
-  // §7.3: convert stored reasoning/generation into unified gateway params and remap retired
-  // model ids. Must run after the shape migrations above (which may still be touching agent
-  // config.json / waifu.json) and before the version stamp below.
-  if (await migrateConfigsToGatewayParams(dataRoot)) {
-    applied.push("migrate-configs-to-gateway-params");
-  }
-
-  if (await enableDiscordBotsForUpgrade(dataRoot)) {
-    applied.push("enable-discord-bots-v1");
-  }
-
-  // Runs LAST: every step above may still leave a file's schemaVersion at 1 even once its shape
-  // is current. Stamping here — after all shape conversions — is what lets the next boot's schema
-  // parses (z.literal(CURRENT_SCHEMA_VERSION)) succeed instead of throwing.
-  if (await stampSchemaVersion2(dataRoot)) {
-    applied.push("stamp-schema-version-2");
-  }
+  await persistLedger();
 
   return { applied };
 }
