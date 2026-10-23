@@ -1,7 +1,7 @@
 import { chmod, mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { runMigrations } from "../src/backend/migrations.js";
+import { MIGRATION_STEPS, runMigrations, type MigrationStep } from "../src/backend/migrations.js";
 import { ensureDataLayout } from "../src/config/layout.js";
 import { loadAppConfig } from "../src/config/appConfig.js";
 import { RuntimeStateSchema } from "../src/backend/runtime.js";
@@ -1166,6 +1166,94 @@ describe("migration ledger", () => {
     expect(result.applied).toEqual(["archive-memories-with-unknown-waifus"]);
     const store = await readJson<{ memories: Array<Record<string, unknown>> }>(root, "user/memories.json");
     expect(store.memories[0]).toMatchObject({ status: "archived" });
+  });
+
+  describe("pending steps", () => {
+    const PHASE4_STEP_IDS = [
+      "waifu-params-gateway-040-v1",
+      "waifu-drop-prompt-layout-v1",
+      "server-context-windows-explicit-v1",
+      "memories-global-origin-subjects-v1",
+      "memories-cross-guild-dedupe-v1",
+      "pending-observations-global-v1",
+      "dream-cursor-global-v1",
+      "ocr-cache-url-keys-cleanup-v1"
+    ];
+
+    function recordingStep(id: string, runs: string[], extra: Partial<MigrationStep> = {}): MigrationStep {
+      return {
+        id,
+        frequency: "once",
+        run: async () => {
+          runs.push(id);
+          return id;
+        },
+        ...extra
+      };
+    }
+
+    it("skips a pending step without running or recording it, then runs it once the flag is gone", async () => {
+      const root = await freshRoot();
+      const runs: string[] = [];
+      const pending = recordingStep("future-step", runs, { pending: true });
+      const live = recordingStep("live-step", runs);
+
+      const first = await runMigrations(root, { appVersion: "2.200.0", steps: [live, pending] });
+
+      expect(runs).toEqual(["live-step"]);
+      expect(first.applied).toEqual(["live-step"]);
+      const ledger = await readJson<Ledger>(root, LEDGER);
+      expect(Object.keys(ledger.steps)).toEqual(["live-step"]);
+
+      // Landing the implementation = dropping the flag: the step then runs and is recorded.
+      const landed = recordingStep("future-step", runs);
+      const second = await runMigrations(root, { appVersion: "2.200.0", steps: [live, landed] });
+      expect(runs).toEqual(["live-step", "future-step"]);
+      expect(second.applied).toEqual(["future-step"]);
+      expect(Object.keys((await readJson<Ledger>(root, LEDGER)).steps).sort()).toEqual(["future-step", "live-step"]);
+    });
+
+    it("skips pending steps of every frequency", async () => {
+      const root = await freshRoot();
+      const runs: string[] = [];
+      await runMigrations(root, {
+        appVersion: "2.200.0",
+        steps: (["every-boot", "once", "once-per-app-version"] as const).map((frequency) =>
+          recordingStep(`pending-${frequency}`, runs, { frequency, pending: true })
+        )
+      });
+      expect(runs).toEqual([]);
+      expect((await readJson<Ledger>(root, LEDGER)).steps).toEqual({});
+    });
+
+    it("registers the Phase 4 steps in spec order, pending, before the schema-version stamp", () => {
+      const ids = MIGRATION_STEPS.map((step) => step.id);
+      const positions = PHASE4_STEP_IDS.map((id) => ids.indexOf(id));
+      expect(positions.every((index) => index >= 0)).toBe(true);
+      expect([...positions].sort((a, b) => a - b)).toEqual(positions);
+      expect(positions[0]).toBe(ids.indexOf("configs-to-gateway-params") + 1);
+      expect(positions[positions.length - 1]).toBeLessThan(ids.indexOf(`stamp-schema-version-${CURRENT_SCHEMA_VERSION}`));
+      for (const id of PHASE4_STEP_IDS) {
+        const step = MIGRATION_STEPS.find((candidate) => candidate.id === id)!;
+        expect(step.pending, id).toBe(true);
+      }
+      expect(MIGRATION_STEPS.find((step) => step.id === "waifu-params-gateway-040-v1")!.frequency).toBe(
+        "once-per-app-version"
+      );
+    });
+
+    it("pending stub bodies throw if ever invoked, and the real boot never invokes them", async () => {
+      for (const id of PHASE4_STEP_IDS) {
+        const step = MIGRATION_STEPS.find((candidate) => candidate.id === id)!;
+        await expect(step.run("/nonexistent"), id).rejects.toThrow(/pending/);
+      }
+      const root = await freshRoot();
+      await expect(runMigrations(root, { appVersion: "2.200.0" })).resolves.toBeDefined();
+      const ledger = await readJson<Ledger>(root, LEDGER);
+      for (const id of PHASE4_STEP_IDS) expect(ledger.steps[id], id).toBeUndefined();
+      expect(ledger.steps["configs-to-gateway-params"]).toBeDefined();
+      expect(ledger.steps[`stamp-schema-version-${CURRENT_SCHEMA_VERSION}`]).toBeDefined();
+    });
   });
 
   it("runs a step missing from the ledger and records it, leaving recorded steps skipped", async () => {
