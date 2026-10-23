@@ -143,6 +143,13 @@ type ChannelRunOptions = {
 
 type RetriggerWakeInput = { source: RetriggerSource; seconds?: number; decisionId?: string };
 
+type ResponderExecutionResult = {
+  /** Responders that reached generation (enabled, linked, modeled). */
+  attemptedCount: number;
+  /** Responders whose turn actually landed: visible message sent, or a tool-only turn. */
+  executedCount: number;
+};
+
 type ExecuteResponderDecisionInput = {
   guildId: string;
   channelId: string;
@@ -1293,7 +1300,7 @@ export class RuntimeOrchestrator {
         decision,
         status: "pending"
       });
-      const executedCount = await this.executeResponderDecision({
+      const { attemptedCount } = await this.executeResponderDecision({
         guildId,
         channelId,
         server,
@@ -1306,7 +1313,9 @@ export class RuntimeOrchestrator {
         availableWaifus,
         signal
       });
-      if (executedCount === 0) {
+      // A directed turn that produced nothing still hands over to the orchestrator: it has not
+      // judged this context yet, so this is not a re-decision loop.
+      if (attemptedCount === 0) {
         this.options.logger.info("Directed channel run stopped because no responders were executed", {
           guildId,
           channelId
@@ -1316,6 +1325,7 @@ export class RuntimeOrchestrator {
     }
 
     await this.setActivePipeline(guildId, channelId, "orchestrator");
+    let nothingSent = false;
     while (turns < this.maxAutomaticTurns) {
       throwIfAborted(signal);
       turns += 1;
@@ -1599,7 +1609,7 @@ export class RuntimeOrchestrator {
         return;
       }
 
-      const executedCount = await this.executeResponderDecision({
+      const { attemptedCount, executedCount } = await this.executeResponderDecision({
         guildId,
         channelId,
         server,
@@ -1612,12 +1622,24 @@ export class RuntimeOrchestrator {
         availableWaifus,
         signal
       });
-      if (executedCount === 0) {
+      if (attemptedCount === 0) {
         this.options.logger.info("Channel runtime loop stopped because no responders were executed", {
           guildId,
           channelId
         });
         return;
+      }
+      if (executedCount === 0) {
+        // Every responder came back empty/blocked: nothing changed in the room, so another pass
+        // would re-decide on the same context (up to maxAutomaticTurns times). End the burst and
+        // fall through to the normal cooldown wake instead.
+        this.options.logger.warn("No responder sent anything; ending pass loop until the cooldown wake", {
+          guildId,
+          channelId,
+          turns
+        });
+        nothingSent = true;
+        break;
       }
       await this.setActivePipeline(guildId, channelId, "orchestrator");
     }
@@ -1628,14 +1650,18 @@ export class RuntimeOrchestrator {
       lastHumanMessageTs !== undefined &&
       Date.now() - Date.parse(lastHumanMessageTs) < HUMAN_RECENT_WINDOW_MS;
     const cooldownSeconds = humanRecent ? RETRIGGER_DEFAULT_SECONDS : CAST_ONLY_COOLDOWN_SECONDS;
-    this.options.logger.warn("Automatic turn limit reached; scheduling cooldown", {
-      guildId,
-      channelId,
-      maxAutomaticTurns: this.maxAutomaticTurns,
-      humanRecent,
-      cooldownSeconds
+    if (!nothingSent) {
+      this.options.logger.warn("Automatic turn limit reached; scheduling cooldown", {
+        guildId,
+        channelId,
+        maxAutomaticTurns: this.maxAutomaticTurns,
+        humanRecent,
+        cooldownSeconds
+      });
+    }
+    await this.scheduleRetrigger(guildId, channelId, cooldownSeconds, {
+      source: nothingSent ? "nothing_sent" : "turn_limit"
     });
-    await this.scheduleRetrigger(guildId, channelId, cooldownSeconds, { source: "turn_limit" });
   }
 
   private applyDirectiveGuardrails(input: {
@@ -1714,7 +1740,8 @@ export class RuntimeOrchestrator {
     return responderOutcomes;
   }
 
-  private async executeResponderDecision(input: ExecuteResponderDecisionInput): Promise<number> {
+  private async executeResponderDecision(input: ExecuteResponderDecisionInput): Promise<ResponderExecutionResult> {
+    let attemptedCount = 0;
     let executedCount = 0;
     let directHandoffCount = 0;
     const allowedWaifus = new Set(input.channel.enabledWaifuIds ?? []);
@@ -1833,6 +1860,7 @@ export class RuntimeOrchestrator {
         }
         await this.setActivePipeline(input.guildId, input.channelId, "waifu");
         const waifuModelId = waifu.modelId;
+        let responderLanded = false;
         let waifuMessages = await this.options.discord.fetchFreshContext({
           guildId: input.guildId,
           channelId: input.channelId,
@@ -2104,6 +2132,9 @@ export class RuntimeOrchestrator {
             });
             currentOutcomeFinalized = true;
           }
+          // Empty or blocked output is NOT an executed turn (tool-only memory turns are; they
+          // have their own add_memory suppression against silent loops).
+          responderLanded = sentMessageIds.length > 0 || (usedToolWithoutVisibleMessage && !blockedViolations);
           if (result.shortTermMemoryEntries?.length && effectiveShortTermMemory) {
             await this.recordWaifuNotes({
               guildId: input.guildId,
@@ -2204,7 +2235,8 @@ export class RuntimeOrchestrator {
         } finally {
           waifuTyping.stop();
         }
-        executedCount += 1;
+        attemptedCount += 1;
+        if (responderLanded) executedCount += 1;
         currentOutcomeId = undefined;
         currentOutcomeFinalized = false;
       }
@@ -2241,7 +2273,7 @@ export class RuntimeOrchestrator {
       }
       throw error;
     }
-    return executedCount;
+    return { attemptedCount, executedCount };
   }
 
   private noteStageManagerActivity(guildId: string, channelId: string): void {

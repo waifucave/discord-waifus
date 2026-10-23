@@ -8347,6 +8347,36 @@ describe("RuntimeOrchestrator", () => {
       }
     });
 
+    it("I9: an all-empty reply ends the pass loop instead of re-deciding on the same context", async () => {
+      const root = await makeTempRoot();
+      roots.push(root);
+      await ensureDataLayout(root);
+      const storage = new StorageService(root);
+      const discord = new FakeDiscord();
+      discord.fetchFreshContext = async () => [contextMessage("m1", "user", "Kevin", "hello")];
+      await seedRuntimeConfig(storage);
+      let decisions = 0;
+      const runtime = new RuntimeOrchestrator({
+        sleep: async () => undefined,
+        storage,
+        discord,
+        maxAutomaticTurns: 8,
+        createPipeline: () => ({
+          decideOrchestrator: async () => {
+            decisions += 1;
+            return { action: "reply", respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }], reasoning: "reply" };
+          },
+          generateWaifu: async () => ({ content: "" })
+        }),
+        logger: quietLogger()
+      });
+      await runtime.triggerChannel("guild-1", "channel-1");
+      await runtime.stop();
+      expect(decisions).toBe(1);
+      expect(discord.sent).toEqual([]);
+      const session = await readSession(storage);
+      expect(session.scheduledRetrigger?.source).toBe("nothing_sent");
+    });
   });
 
   it("loop notice reaches the trailing prompt and unlocks the budget", async () => {
