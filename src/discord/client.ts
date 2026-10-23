@@ -376,7 +376,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   status(): DiscordRuntimeStatus {
     const bots = [...this.botStatuses.values()].map((status) => ({ ...status }));
     const warnings: string[] = [];
-    if (this.clients.size === 0) {
+    if (this.clients.size === 0 && !bots.some((status) => status.state === "error" || status.state === "connecting")) {
       warnings.push("No enabled Discord bot tokens are configured.");
     }
     for (const status of bots) {
@@ -1141,6 +1141,8 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
     });
     if (entry.kind === "orchestrator") {
       // Same policy as connect(): waifus cannot be cast without the orchestrator.
+      for (const timer of this.botRetryTimers.values()) clearTimeout(timer);
+      this.botRetryTimers.clear();
       for (const [waifuBotId, waifuClient] of [...this.clients]) {
         this.clients.delete(waifuBotId);
         void destroyClientQuietly(waifuClient);
