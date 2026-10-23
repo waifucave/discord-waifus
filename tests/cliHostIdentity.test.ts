@@ -84,6 +84,13 @@ describe("B21b: CLI verifies host identity before reporting or signalling", () =
     expect(options.killProcess).toHaveBeenCalledWith(HOLDER, "SIGTERM");
   });
 
+  it("stop still signals the host when its observed start time drifted by ~1s", async () => {
+    const root = await setup();
+    const options = cliOptions(STARTED_AT - 500 + 1_000);
+    expect(await runCommand(parseCliArgs(["stop", "--data-root", root]), options)).toBe(0);
+    expect(options.killProcess).toHaveBeenCalledWith(HOLDER, "SIGTERM");
+  });
+
   it("without a lock, a process that started after the recorded backend start is stale", async () => {
     const root = await setup({ withLock: false });
     const reused = cliOptions(STARTED_AT + 60_000);

@@ -66,6 +66,16 @@ export async function processStartTime(
   }
 }
 
+// `ps -o lstart` is second-resolution and the reported start can shift by about a second (NTP
+// step, VM suspend/resume, procps deriving it from boot time). An exact comparison would judge a
+// live holder stale and let a second host break its lock, so allow this much drift. A reused pid
+// belongs to a process started after the holder crashed, typically far outside this window.
+export const PROCESS_START_TIME_SLACK_MS = 2_000;
+
+export function startTimesMatch(observed: number, recorded: number): boolean {
+  return Math.abs(observed - recorded) <= PROCESS_START_TIME_SLACK_MS;
+}
+
 export class InstanceLockHeldError extends Error {
   constructor(
     readonly dataRoot: string,
@@ -203,7 +213,7 @@ async function holderLiveness(
   // An alive pid whose start time cannot be read is treated as the holder: refusing a second
   // instance is the safe direction.
   if (current === null) return "unverified";
-  return current === record.processStartTime ? "verified" : "stale";
+  return startTimesMatch(current, record.processStartTime) ? "verified" : "stale";
 }
 
 async function readLock(lockPath: string): Promise<LockRead> {

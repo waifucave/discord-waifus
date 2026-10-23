@@ -42,6 +42,7 @@ import {
 import {
   clearStaleHostInstanceLock,
   hostInstanceState,
+  PROCESS_START_TIME_SLACK_MS,
   processStartTime,
   type ProcessIdentityProbe
 } from "../storage/instanceLock.js";
@@ -144,10 +145,6 @@ function hostProbe(options: CliRuntimeOptions): ProcessIdentityProbe {
   };
 }
 
-// ps reports start times truncated to whole seconds and the backend records `startedAt` after
-// booting, so the genuine host always started at or before it; allow a little clock slack.
-const HOST_START_TIME_SLACK_MS = 2_000;
-
 /**
  * B21b: a live pid from pid.json is only the host if its identity checks out. The host lock
  * records the OS start time of its process; without a lock (a pre-lock host), a process that
@@ -165,7 +162,9 @@ async function hostPidIsGenuine(
   if (lock.state === "stale" && lock.record?.pid === state.pid) return false;
   const started = await probe.startTime(state.pid);
   const recorded = Date.parse(state.startedAt);
-  return started === null || !Number.isFinite(recorded) || started <= recorded + HOST_START_TIME_SLACK_MS;
+  // The backend records `startedAt` after booting, so the genuine host started at or before it;
+  // the shared slack absorbs ps second-resolution and clock drift.
+  return started === null || !Number.isFinite(recorded) || started <= recorded + PROCESS_START_TIME_SLACK_MS;
 }
 
 async function hostPortFor(dataRoot: string, pid: number): Promise<number | undefined> {

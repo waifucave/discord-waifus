@@ -98,15 +98,27 @@ describe("B21: exclusive host instance lock", () => {
   it("replaces a lock whose pid was reused by a different process (start-time mismatch)", async () => {
     const dataRoot = await root();
     await writeLock(dataRoot, { pid: 4242, processStartTime: 1_000 });
-    const probe = fixedProbe({ 4242: 2_000, [process.pid]: 5_000 }, [4242, process.pid]);
+    const probe = fixedProbe({ 4242: 60_000, [process.pid]: 5_000 }, [4242, process.pid]);
     expect(await hostInstanceState(dataRoot, probe)).toMatchObject({ state: "stale" });
     const lock = await acquireHostInstanceLock(dataRoot, { probe });
     expect(lock.record).toMatchObject({ pid: process.pid, processStartTime: 5_000 });
     await lock.release();
 
-    await writeLock(dataRoot, { pid: 4242, processStartTime: 2_000 });
+    await writeLock(dataRoot, { pid: 4242, processStartTime: 60_000 });
     expect(await hostInstanceState(dataRoot, probe)).toMatchObject({ state: "running", pid: 4242 });
     await expect(acquireHostInstanceLock(dataRoot, { probe })).rejects.toBeInstanceOf(InstanceLockHeldError);
+  });
+
+  it("tolerates a ~1s start-time skew from ps second resolution, NTP steps or VM resume", async () => {
+    const dataRoot = await root();
+    await writeLock(dataRoot, { pid: 4242, processStartTime: 10_000 });
+    for (const observed of [9_000, 11_000, 12_000]) {
+      const probe = fixedProbe({ 4242: observed, [process.pid]: 50_000 }, [4242, process.pid]);
+      expect(await hostInstanceState(dataRoot, probe), String(observed)).toMatchObject({ state: "running", pid: 4242 });
+      await expect(acquireHostInstanceLock(dataRoot, { probe })).rejects.toBeInstanceOf(InstanceLockHeldError);
+    }
+    const reused = fixedProbe({ 4242: 13_000 }, [4242]);
+    expect(await hostInstanceState(dataRoot, reused)).toMatchObject({ state: "stale" });
   });
 
   it("treats an old unreadable lock as stale but a fresh one as held", async () => {
