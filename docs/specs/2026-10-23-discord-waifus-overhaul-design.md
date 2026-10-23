@@ -1,6 +1,6 @@
 # Discord Waifus overhaul — design spec
 
-Status: **full spec (Phases 1–7), pending owner decisions §14.2** · Date: 2026-10-23 · Scope: `discord-waifus/app` (+ `discord-waifus/gateway`)
+Status: **full spec (Phases 1–7)** · Date: 2026-10-23 · Scope: `discord-waifus/app` (+ `discord-waifus/gateway`)
 
 ## 1. Request
 
@@ -1036,9 +1036,8 @@ as "DMs".
 limiter can't be reset by forgetting); `all` also deletes the DM state file, that waifu's memories
 whose subjects include the user, the user's pending observations for her, and image-cache entries
 tagged with the conversation. Phase 4 `forget-user` calls `dmForget(scope: "all")` for every waifu,
-deletes `user/dms/<userId>/`, anonymizes usage-ledger lines whose `conversationKey` contains the user
-(→ `dm_forgotten_<waifu>`, O5), and returns
-`{ memories, observations, dmContexts, dmStates, ledgers, cachedImages, usageLines }`.
+deletes `user/dms/<userId>/`, and returns `{ memories, observations, dmContexts, dmStates, ledgers,
+cachedImages }`. The usage ledger is left unchanged (O5: no anonymization).
 
 #### 9.1.5 Slash commands
 Orchestrator commands get `contexts: [Guild]`. DM-eligible waifu bots register one global
@@ -1113,10 +1112,14 @@ The duplicate refresh paths in `api/server.ts` and `backend/server.ts` collapse 
 - An edit of a **sealed** entry keeps the original body and appends an `edit` event anchored to the
   newest message (coalesced while unsealed, ≤ 3 per message), rendered `<edit>Kevin edited #k3: new
   text</edit>`. Edits during downtime are detected on reconcile.
-- Deletes (event, cache tombstone, or a gap in a contiguous REST page): `discord.deletedMessages =
-  "redact"` (default, O1) replaces the body with `(message deleted)`, drops images and purges stored
-  text and cached images (a one-time cache miss from that message on); `"keep"` keeps the body and
-  appends `<deleted>Kevin deleted #k3</deleted>`.
+- Deletes (event, cache tombstone, or a gap in a contiguous REST page) use the owner's **hybrid
+  rule** (O1): if the message is unsealed, or among the newest `discord.deletedMessages.redactRecent`
+  transcript messages (default 20) of a context, its body becomes `(message deleted)`, images are
+  dropped and its cached images purged — a small cache miss confined to the tail. If it is older,
+  the rendered transcript is left untouched (no note, cache intact) but the ledger entry is marked
+  `state: "deleted"`; the next compaction's final instruction lists those refs ("leave out messages
+  #k3, #k7 — their authors deleted them") so the summary omits them, and they leave the context when
+  the cursor passes them (ledger text purged at pruning). Either way the message never triggers runs.
 - Pruning follows refs pruning (below the minimum cursor; cap 1000 entries).
 - Triggers: edits never start runs, except an edit that adds a waifu mention to the newest human
   message within 2 minutes (treated as a new message, debounced). Deleting the newest human message
@@ -1170,7 +1173,7 @@ resumes after restart.
 Settings (registered in §10.3): `dm.allowDms`, `dm.rateLimit`, `dm.notifyWhenLimited`,
 `dm.limitNotice`; `channel.threads`; `discord.debounce.{serverMs 1200, serverMaxWaitMs 4000, dmMs
 1500, dmMaxWaitMs 8000}`; `discord.dm.{maxConcurrentRuns 4, resumeWindowMinutes 60}`;
-`discord.deletedMessages "redact"`; `discord.guildMembersIntent false`;
+`discord.deletedMessages.redactRecent 20`; `discord.guildMembersIntent false`;
 `discord.memberListRefreshHours 24` (the `discord.images.*` keys come from Phase 4).
 
 Routes (all in `ROUTE_POLICY_MANIFEST`; `waifuId` via `assertSafeId`, user/guild/thread ids via
@@ -1311,7 +1314,7 @@ the patch only touches live keys (`ocr`, `compaction`, `memory`, `discord.deboun
 | `discord.debounce.serverMs` / `serverMaxWaitMs` / `dmMs` / `dmMaxWaitMs` | 0–10000 / 0–30000 / 0–15000 / 0–30000 | 1200 / 4000 / 1500 / 8000 | live |
 | `discord.dm.maxConcurrentRuns` / `resumeWindowMinutes` | 1–32 / 0–1440 | 4 / 60 | live |
 | `discord.images.maxBytes` / `fetchTimeoutMs` / `memoryCacheMb` / `diskCacheMb` / `diskCacheTtlHours` | 64 KiB–20 MiB / 500–30000 / 0–512 / 0–2048 / 1–720 | 5 MiB / 5000 / 64 / 256 / 168 | live |
-| `discord.deletedMessages` | `redact` \| `keep` | redact | live |
+| `discord.deletedMessages.redactRecent` | int 0–200 (0 = never redact in place) | 20 | live |
 | `discord.guildMembersIntent` | bool | false | reload (re-logs the orchestrator) |
 | `discord.memberListRefreshHours` | 0–168 | 24 | live |
 
@@ -1826,8 +1829,8 @@ Decisions made while merging the phase designs (they override anything contrary 
    (`forget_user`, `forget_dm`); Phase 7 replaces them with confirmation cards.
 9. **`PUT /api/config` live keys** skip the Discord reload (Phase 6 implements via `applies`; Phase 7
    relies on it).
-10. **`forget-user`** spans memories, observations, DM state/contexts/ledgers, cached images and
-    (anonymized) usage lines.
+10. **`forget-user`** spans memories, observations, DM state/contexts/ledgers and cached images (the
+    usage ledger is not rewritten, O5).
 11. **Character card CLI** (`waifus waifu import/export`) reuses the shared codec from Phase 7; the
     codec lands with Phase 7 and the CLI commands follow it (they are registered in the Phase 6
     command table as Phase-7-gated).
@@ -1872,28 +1875,37 @@ verified by branch name and test count.
 - Spec-first before parallel implementation (D7); model split (D8).
 - Phase 4 implementation decisions (§6.8) adopted.
 
-### 14.2 Decisions needed (recommendation in bold)
+### 14.2 Decisions (2026-10-23)
 
-| # | Question | Recommendation |
-|---|---|---|
-| O1 | Deleted Discord messages in contexts: redact in place, or keep with a "deleted" note? | **Redact** |
-| O2 | Threads inherit the parent channel's cast for existing channels after upgrade? | **Inherit** (release note) |
-| O3 | DM users may run `/forget everything` (deletes that waifu's memories about them)? | **Yes**, with a confirm button |
-| O4 | Waifus shouldn't reveal DM-learned things in servers unless the person brings it up (harness line + "learned in a private chat")? | **Yes** |
-| O5 | `forget-user` anonymizes that user's usage-ledger lines? | **Yes** |
-| O6 | DM rate-limit notice is a fixed per-waifu template (no model call)? | **Yes** |
-| O7 | Privileged `GuildMembers` intent stays opt-in? | **Yes** |
-| O8 | Remove the server/channel `enabled` flags (`paused` is the switch; fixes servers that never resume)? | **Yes** |
-| O9 | Config saves that only touch live keys skip the Discord reload? | **Yes** |
-| O10 | CLI always sends revisions, even where optional? | **Yes** |
-| O11 | Generic registry-driven assistant `set_setting` tool? | **Defer** until confirmation cards exist |
-| O12 | Avatar/banner uploads: keep with preview + explicit "Apply to Discord", or delete the routes? | **Keep + explicit sync** |
-| O13 | Character card `first_mes` unused (no greeting turn), lorebook import opt-in? | **Yes** |
-| O14 | Context inspector with Compact now / Reset context? | **Yes** |
-| O15 | Assistant per-turn limits $0.50 / 24 tool calls / 400k input tokens (editable)? | **Yes** |
-| O16 | CLI reads of `user/*` settings while the host is down? | **No** (exit 3 with a hint) |
-| O17 | Unknown CLI command exits 2 instead of printing help with exit 0? | **Yes** |
-| O18 | Remote Access CLI limited to status/enable/disable/rename/reconnect/diagnostics/devices (pairing stays in the dashboard)? | **Yes** |
-| O19 | Include the `waifus api METHOD PATH` raw escape hatch? | **Yes** |
-| O20 | Usage day boundaries in the host's local time zone (with `tz` override)? | **Yes** |
-| O21 | Activity keeps Logs as its default tab? | **Yes** |
+Owner answers:
+- **O1 deleted messages** → hybrid: redact in place when recent (newest `redactRecent`, default 20,
+  or unsealed); older deletions leave the cached transcript untouched, are marked deleted in the
+  ledger, and are left out of the next compaction summary (§9.5).
+- **O3** DM `/forget` command → yes (with a confirm button; never resets the rate limit).
+- **O4** DM discretion line + "learned in a private chat" provenance → yes.
+- **O5** anonymize usage-ledger lines on forget-user → **no** (not selected).
+- **O8** remove server/channel `enabled` flags → yes (§9.7).
+- **O12** avatar/banner → keep, with preview and an explicit "Apply to Discord" sync (§11.5).
+- DM transport clarified: DMs are pushed by Discord to the waifu's own bot (the orchestrator bot
+  cannot see other bots' DMs); history backfill uses that bot's REST token; the Phase 5 message cache
+  makes most turns fetch-free.
+
+Adopted as recommended (owner may still override):
+
+| # | Decision |
+|---|---|
+| O2 | Threads inherit the parent channel's cast after upgrade (release note) |
+| O6 | DM rate-limit notice is a fixed per-waifu template |
+| O7 | Privileged `GuildMembers` intent stays opt-in |
+| O9 | Config saves touching only live keys skip the Discord reload |
+| O10 | CLI always sends revisions |
+| O11 | Generic assistant `set_setting` tool deferred |
+| O13 | Character card `first_mes` unused; lorebook import opt-in |
+| O14 | Context inspector with Compact now / Reset context |
+| O15 | Assistant per-turn limits $0.50 / 24 tool calls / 400k input tokens (editable) |
+| O16 | No CLI reads of `user/*` while the host is down (exit 3) |
+| O17 | Unknown CLI command exits 2 |
+| O18 | Remote Access CLI limited to status/enable/disable/rename/reconnect/diagnostics/devices |
+| O19 | `waifus api METHOD PATH` escape hatch included |
+| O20 | Usage day boundaries in the host's local time zone (`tz` override) |
+| O21 | Activity keeps Logs as its default tab |
