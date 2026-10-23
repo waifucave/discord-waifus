@@ -2388,6 +2388,46 @@ describe("RuntimeOrchestrator", () => {
     expect(reads).toEqual(["line 1,line 2", "line 3,line 4", "line 5"]);
   });
 
+  it("an observer response with no valid op fails the run and keeps the cursor, so the messages are re-read", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    await seedRuntimeConfig(storage);
+    const window = [contextMessage("m1", "user", "Kevin", "I am allergic to peanuts")];
+    discord.contexts = [window, window];
+    const reads: number[] = [];
+    let call = 0;
+    const pipeline: ModelPipeline = {
+      async generateWaifu() {
+        return { content: "unused" };
+      },
+      async decideStageManagerObservations(request: StageManagerObserveRequest) {
+        reads.push(request.messages.length);
+        call += 1;
+        // First response is entirely malformed; the second is valid.
+        return call === 1
+          ? ([{ op: "update" }, { garbage: true }] as never)
+          : [{ op: "add" as const, waifuId: "yuki", content: "Kevin is allergic to peanuts.", kind: "fact" as const, importance: 5 as const, subjects: ["p1"] }];
+      }
+    };
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    expect((await runtime.memoryJobs.startStageManagerRun("guild-1", "channel-1")).status).toBe("failed");
+    expect((await runtime.memoryJobs.startStageManagerRun("guild-1", "channel-1")).status).toBe("updated");
+    // The same message was offered again after the failed parse.
+    expect(reads).toEqual([1, 1]);
+    const memories = await storage.readJson("user/memories.json", MemoryStoreSchema);
+    expect(memories.memories.map((memory) => memory.content)).toEqual(["Kevin is allergic to peanuts."]);
+  });
+
   it("ignores a stale persisted stage-manager running flag left by a crash", async () => {
     const root = await makeTempRoot();
     roots.push(root);
@@ -2809,6 +2849,59 @@ describe("RuntimeOrchestrator", () => {
     expect(nights).toEqual([["ann", "bea"], ["cyd", "dot"], ["eve", "ann"]]);
     expect(new Set(nights.flat())).toEqual(new Set(cast));
     // yuki (seeded by the runtime config) has no memories, so she costs no call.
+  });
+
+  it("a waifu needing more chunks than one night's budget resumes mid-waifu instead of blocking the cast", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    const base = Date.parse("2026-10-01T00:00:00.000Z");
+    await seedRuntimeConfig(storage);
+    await seedWaifu(storage, "ann", "ANN", "ann-bot", "direct");
+    await seedWaifu(storage, "bea", "BEA", "bea-bot", "direct");
+    // ann: 170 memories = 3 chunks of 80; bea: 1 memory. Budget 2 chunks a night.
+    const memories = [
+      ...Array.from({ length: 170 }, (_, index) => {
+        const at = new Date(base + index * 60_000).toISOString();
+        return { id: `ann-${index}`, waifuId: "ann", origin: {}, content: `ann fact ${index}`, strength: 3, createdAt: at, updatedAt: at, status: "active" };
+      }),
+      { id: "bea-1", waifuId: "bea", origin: {}, content: "bea fact", strength: 3, createdAt: new Date(base).toISOString(), updatedAt: new Date(base).toISOString(), status: "active" }
+    ];
+    await storage.writeJson("memories:global", "user/memories.json", MemoryStoreSchema, MemoryStoreSchema.parse(createEmptyRevisionedFile({ memories })));
+    const nights: string[][] = [];
+    const pipeline: ModelPipeline = {
+      async generateWaifu() {
+        return { content: "unused" };
+      },
+      async decideDream(request) {
+        nights.at(-1)!.push(`${request.memories[0]!.waifuId}:${request.memories[0]!.content}`);
+        return [{ op: "none" as const }];
+      }
+    };
+    for (let night = 0; night < 3; night += 1) {
+      nights.push([]);
+      await new RuntimeOrchestrator({
+        sleep: async () => undefined,
+        storage,
+        discord,
+        createPipeline: () => pipeline,
+        logger: quietLogger(),
+        memory: { dreamChunksPerNight: 2 }
+      }).memoryJobs.startDreamRun();
+    }
+    expect(nights).toEqual([
+      ["ann:ann fact 0", "ann:ann fact 80"],
+      ["ann:ann fact 160", "bea:bea fact"],
+      ["ann:ann fact 0", "ann:ann fact 80"]
+    ]);
+    const { DreamCursorFileSchema } = await import("../src/orchestration/dream.js");
+    expect(await storage.readJson("user/memory/dream-cursor.json", DreamCursorFileSchema)).toMatchObject({
+      // Night 3 passed yuki (no memories, no call) before re-entering ann.
+      cursor: "yuki",
+      resume: { waifuId: "ann", chunkIndex: 2 }
+    });
   });
 
   it("dream ops may only assign memories to waifus the chunk is about", async () => {

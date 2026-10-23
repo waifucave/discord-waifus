@@ -98,7 +98,8 @@ export function resolveSubjectNames(names: string[], directory: SubjectDirectory
   );
 }
 
-function wordBoundaryIncludes(text: string, name: string): boolean {
+/** True when `name` occurs in `text` as a whole word (any occurrence for CJK names); NFKC, case-folded. */
+export function wordBoundaryIncludes(text: string, name: string): boolean {
   const normalizedName = normalizeName(name);
   if (normalizedName.length < 2) return false;
   const haystack = normalizeName(text);

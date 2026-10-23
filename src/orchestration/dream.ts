@@ -4,7 +4,7 @@ import { RevisionedRecordSchema } from "../shared/schemas/common.js";
 import type { MemoryOrigin, MemoryRecord, MemorySubject, PendingObservation } from "../shared/schemas/domain.js";
 import { DreamMemoryInput } from "../providers/types.js";
 import { DreamOp } from "./stageManager.js";
-import { dedupeSubjects, normalizeName } from "./memorySubjects.js";
+import { dedupeSubjects, normalizeName, wordBoundaryIncludes } from "./memorySubjects.js";
 import { applyMemoryCandidate, archiveMemoryRecord, bumpMemoryRecord } from "./stores/memories.js";
 import { dedupeTokenSet, jaccard, normalizeForDedupe } from "./text.js";
 
@@ -88,9 +88,12 @@ export function buildWaifuDreamChunks(
 
 // Persisted global round-robin cursor: the last waifu whose chunks a nightly pass completed. A
 // night is capped at DREAM_CHUNKS_PER_NIGHT, so without rotation the alphabetically-first
-// waifus would be dreamed every night and later ones never.
+// waifus would be dreamed every night and later ones never. `resume` is the chunk-level resume
+// point of a waifu whose store needs more chunks than one night's budget: the next night
+// continues at that chunk instead of restarting her (which would starve everyone after her).
 export const DreamCursorFileSchema = RevisionedRecordSchema.extend({
-  cursor: z.string().min(1).nullable().default(null)
+  cursor: z.string().min(1).nullable().default(null),
+  resume: z.object({ waifuId: z.string().min(1), chunkIndex: z.number().int().min(1) }).nullable().default(null)
 });
 export type DreamCursorFile = z.infer<typeof DreamCursorFileSchema>;
 export const DREAM_CURSOR_RELATIVE_PATH = "user/memory/dream-cursor.json";
@@ -154,11 +157,10 @@ function poolSubject(name: string, pool: MemorySubject[]): MemorySubject | undef
  */
 export function resolveDreamSubjects(names: string[], content: string, pool: MemorySubject[]): MemorySubject[] {
   const fromNames = names.map((name) => poolSubject(name, pool)).filter((s): s is MemorySubject => s !== undefined);
-  const haystack = normalizeName(content);
-  const named = dedupeSubjects(pool).filter((subject) => {
-    const key = normalizeName(subject.name);
-    return key.length >= 2 && haystack.includes(key) && poolSubject(subject.name, pool) !== undefined;
-  });
+  // Whole-word match: a known "Al" is not named by "Alice".
+  const named = dedupeSubjects(pool).filter(
+    (subject) => wordBoundaryIncludes(content, subject.name) && poolSubject(subject.name, pool) !== undefined
+  );
   return dedupeSubjects([...fromNames, ...named]);
 }
 

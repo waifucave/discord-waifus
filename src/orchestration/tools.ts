@@ -781,15 +781,23 @@ export function normalizeObserverOp(item: unknown): ObserverOp {
   return ObserverOpSchema.parse(stripUndefinedNormalizer({ ...raw }));
 }
 
-/** Per-op tolerant parse: malformed ops are dropped instead of failing the whole run. */
+/**
+ * Per-op tolerant parse: a malformed op is dropped instead of failing the whole run, but a
+ * non-empty response in which NO op parses throws (parity with normalizeDreamOps). Returning []
+ * there would let the observer advance its cursor past messages it never actually read.
+ */
 export function parseRawObserverOps(items: unknown[]): ObserverOp[] {
   const ops: ObserverOp[] = [];
-  for (const item of items) {
+  const invalid: string[] = [];
+  items.forEach((item, index) => {
     try {
       ops.push(normalizeObserverOp(item));
-    } catch {
-      // A single malformed op never discards the rest.
+    } catch (error) {
+      invalid.push(`#${index + 1}: ${error instanceof Error ? error.message : String(error)}`);
     }
+  });
+  if (items.length > 0 && ops.length === 0) {
+    throw new Error(`No valid observer ops. Invalid ops: ${invalid.join("; ")}`);
   }
   return ops;
 }

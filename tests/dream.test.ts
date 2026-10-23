@@ -236,5 +236,9 @@ describe("resolveDreamSubjects", () => {
     const pool = [KEVIN, ALI, { discordUserId: "333", name: "Sam" }, { discordUserId: "444", name: "Sam" }];
     expect(resolveDreamSubjects(["Kevin", "Sam", "Thursday"], "Kevin and Sam went out", pool)).toEqual([KEVIN]);
     expect(resolveDreamSubjects([], "Ali owes Kevin tacos", pool)).toEqual([KEVIN, ALI]);
+    // Whole words only: a known "Al" is not named by "Alice", nor "Ed" by "Edited".
+    const shortNames = [{ discordUserId: "555", name: "Al" }, { discordUserId: "666", name: "Ed" }];
+    expect(resolveDreamSubjects([], "Alice edited the video", shortNames)).toEqual([]);
+    expect(resolveDreamSubjects([], "Al and Ed edited it", shortNames)).toEqual(shortNames);
   });
 });

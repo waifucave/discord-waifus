@@ -467,10 +467,16 @@ export class MemoryJobs {
     const waifus = await listWaifus(this.options.storage);
     const configuredWaifuIds = new Set(waifus.map((waifu) => waifu.id));
     const nightly = scope.waifuIds === undefined;
-    const startCursor = nightly ? (await this.readDreamCursor()).cursor : null;
-    const order = nightly
-      ? dreamWaifuOrder(configuredWaifuIds, startCursor)
+    const cursorFile = nightly ? await this.readDreamCursor() : undefined;
+    const resume = cursorFile?.resume && configuredWaifuIds.has(cursorFile.resume.waifuId) ? cursorFile.resume : null;
+    let order = nightly
+      ? dreamWaifuOrder(configuredWaifuIds, cursorFile?.cursor)
       : [...new Set(scope.waifuIds)].filter((waifuId) => configuredWaifuIds.has(waifuId));
+    if (resume) {
+      // Continue the waifu the last night stopped inside, then the round-robin after her.
+      const at = order.indexOf(resume.waifuId);
+      order = [...order.slice(at), ...order.slice(0, at)];
+    }
     const directory = await loadSubjectDirectory(this.options.storage);
     const nameFor = subjectNameResolver([directory]);
 
@@ -484,8 +490,10 @@ export class MemoryJobs {
           readMemoryStore(this.options.storage),
           readPendingObservations(this.options.storage)
         ]);
-        const chunks = buildWaifuDreamChunks(waifuId, store.memories, pending.observations, new Date(), { nameFor });
-        for (const chunk of chunks) {
+        const allChunks = buildWaifuDreamChunks(waifuId, store.memories, pending.observations, new Date(), { nameFor });
+        const firstChunk = resume && resume.waifuId === waifuId ? resume.chunkIndex : 0;
+        const chunks = allChunks.slice(firstChunk);
+        for (const [offset, chunk] of chunks.entries()) {
           if (chunksProcessed >= this.dreamChunkBudget) break waifuLoop;
           // Only require the dream capability once there is real work; an empty cast needs no call.
           if (!pipeline.decideDream) {
@@ -543,9 +551,12 @@ export class MemoryJobs {
           totalSkipped += skipped;
           chunksProcessed += 1;
           this.options.logger.info("Dream pass chunk finished", { waifuId, chunkKey: chunk.key, applied, skipped });
+          const nextChunk = firstChunk + offset + 1;
+          // Persist progress inside a large waifu so a spent budget (or a failure) resumes here.
+          if (nightly && nextChunk < allChunks.length) await this.writeDreamCursor({ resume: { waifuId, chunkIndex: nextChunk } });
         }
         // Every chunk of this waifu is done: the next night starts after her.
-        if (nightly) await this.writeDreamCursor(waifuId);
+        if (nightly) await this.writeDreamCursor({ cursor: waifuId, resume: null });
       }
     } catch (error) {
       this.options.logger.error("Dream pass failed", {
@@ -577,13 +588,13 @@ export class MemoryJobs {
     );
   }
 
-  private async writeDreamCursor(waifuId: string): Promise<void> {
+  private async writeDreamCursor(patch: { cursor?: string; resume: { waifuId: string; chunkIndex: number } | null }): Promise<void> {
     await this.options.storage.updateRevisionedJson({
       resourceKey: "memory:dream-cursor",
       relativePath: DREAM_CURSOR_RELATIVE_PATH,
       schema: DreamCursorFileSchema,
       fallback: DreamCursorFileSchema.parse(createEmptyRevisionedFile({ cursor: null })),
-      transform: (current) => ({ ...current, cursor: waifuId })
+      transform: (current) => ({ ...current, ...patch })
     });
   }
 

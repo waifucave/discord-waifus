@@ -10,6 +10,7 @@ import {
   windowMessagesAfterCursor
 } from "../src/orchestration/observer.js";
 import type { ContextMessage } from "../src/orchestration/contextMessages.js";
+import { parseRawObserverOps } from "../src/orchestration/tools.js";
 
 const NOW = new Date("2026-10-23T12:00:00.000Z");
 const KEVIN = { discordUserId: "111", name: "Kevin" };
@@ -142,6 +143,14 @@ describe("applyObserverOps", () => {
     expect(byId.get("d")).toMatchObject({ content: "Kevin is vegan.", revision: 0 });
     expect(result.applied).toBe(3);
     expect(result.skipped).toBe(2);
+  });
+});
+
+describe("parseRawObserverOps", () => {
+  it("drops individually malformed ops but throws when a non-empty response has no valid op", () => {
+    expect(parseRawObserverOps([])).toEqual([]);
+    expect(parseRawObserverOps([{ op: "expire", memory: "m1" }, { op: "bogus" }])).toEqual([{ op: "expire", memory: "m1" }]);
+    expect(() => parseRawObserverOps([{ op: "update" }, { nonsense: true }])).toThrow(/No valid observer ops/);
   });
 });
 

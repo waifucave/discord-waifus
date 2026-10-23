@@ -117,6 +117,16 @@ describe("renderMemoryLine", () => {
     );
   });
 
+  it("matches subject names on word boundaries (Ed is not mentioned by Edited)", () => {
+    const ed = { discordUserId: "444", name: "Ed" };
+    expect(renderMemoryLine(memory({ id: "a", content: "Edited the club video", subjects: [ed], createdAt: ago(1) }), ctx)).toBe(
+      "- Ed: Edited the club video (fact · yesterday)"
+    );
+    expect(renderMemoryLine(memory({ id: "b", content: "Ed edited the club video", subjects: [ed], createdAt: ago(1) }), ctx)).toBe(
+      "- Ed edited the club video (fact · yesterday)"
+    );
+  });
+
   it("refreshes subject names at render time and labels waifu notes", () => {
     const line = renderMemoryLine(
       memory({ id: "a", content: "baking tonight", kind: "context", expiresAt: ago(-2), subjects: [KEVIN], createdAt: ago(0) }),

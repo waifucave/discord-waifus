@@ -28,7 +28,7 @@ import { readActiveChatParticipants } from "./stores/participants.js";
 import { dailyIntervalContains, localTimeOfDayMinutes } from "./timeOfDay.js";
 
 export async function buildWaifuPromptParts(
-  services: Pick<RuntimeServices, "storage" | "logger">,
+  services: Pick<RuntimeServices, "storage" | "logger" | "memory">,
   guildId: string,
   waifu: WaifuConfig,
   availableWaifus: WaifuConfig[],
@@ -67,7 +67,8 @@ export async function buildWaifuPromptParts(
     waifuId: waifu.id,
     channelId: options.channelId,
     now,
-    limit: options.memoryInjectionLimit
+    limit: options.memoryInjectionLimit,
+    ...(services.memory?.maxPinnedInjected !== undefined ? { maxPinned: services.memory.maxPinnedInjected } : {})
   });
   const memoryLines = retrieval.lines;
   // Stamp lastRetrievedAt on selected non-pinned records, best-effort, fire-and-forget.

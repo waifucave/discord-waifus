@@ -13,7 +13,7 @@ import {
 import type { StorageService } from "../storage/storageService.js";
 import type { ConversationRef } from "./context/keys.js";
 import type { MemorySnapshotProvider, Participant } from "./context/types.js";
-import { type SubjectDirectory, loadSubjectDirectory, normalizeName, sameSubject, subjectNameResolver } from "./memorySubjects.js";
+import { type SubjectDirectory, loadSubjectDirectory, sameSubject, subjectNameResolver, wordBoundaryIncludes } from "./memorySubjects.js";
 import { markMemoriesRetrieved, readMemoryStore } from "./stores/memories.js";
 import { tokenSet } from "./text.js";
 
@@ -49,9 +49,9 @@ export function humanAge(fromIso: string, now: Date): string {
   return plural(Math.round(days / 365), "year");
 }
 
+// Whole-word match, so a subject "Ed" is not "mentioned" by "Edited".
 function mentions(content: string, name: string): boolean {
-  const key = normalizeName(name);
-  return key.length > 0 && normalizeName(content).includes(key);
+  return wordBoundaryIncludes(content, name);
 }
 
 /**
