@@ -64,7 +64,7 @@ export const __testables = { IO_FORMAT, OUTPUT_CONTRACT };
 
 // --- Block registry ----------------------------------------------------------------------------
 
-export const WAIFU_PROMPT_BLOCKS: WaifuPromptBlockDef[] = [
+const WAIFU_PROMPT_BLOCKS: WaifuPromptBlockDef[] = [
   {
     id: "identity",
     defaultSection: "top",

@@ -1,5 +1,6 @@
 import { MemoryRecord } from "../shared/schemas/domain.js";
 import { ContextMessage } from "./context.js";
+import { tokenSet } from "./text.js";
 
 export type RetrievalInput = {
   records: MemoryRecord[];         // pre-filtered: guild+waifu+active; this module re-checks expiry
@@ -19,27 +20,6 @@ export type RetrievalResult = {
 const WINDOW_MESSAGES = 12;
 const RECENCY_HALF_LIFE_DAYS = 7;
 const FRESH_NOTE_HOURS = 48;
-
-// Copied verbatim from loopDetector.ts — modules stay decoupled per W1 precedent.
-const STOPWORDS = new Set([
-  "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
-  "and", "or", "but", "if", "of", "to", "in", "on", "for", "with", "at", "by", "from",
-  "that", "this", "these", "those", "it", "its", "as", "into", "about",
-  "i", "you", "he", "she", "they", "we", "them", "his", "her", "their",
-  "do", "does", "did", "have", "has", "had", "will", "would", "should", "could", "can",
-  "not", "no", "yes", "so", "than", "then", "very", "just", "also", "too"
-]);
-
-// Copied verbatim from loopDetector.ts — modules stay decoupled per W1 precedent.
-export function tokenSet(text: string): Set<string> {
-  return new Set(
-    text
-      .toLowerCase()
-      .replace(/[^a-z0-9\s]/g, " ")
-      .split(/\s+/)
-      .filter((token) => token.length >= 3 && !STOPWORDS.has(token))
-  );
-}
 
 function overlap(memoryTokens: Set<string>, windowTokens: Set<string>): number {
   if (memoryTokens.size === 0 || windowTokens.size === 0) return 0;

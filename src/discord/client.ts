@@ -212,7 +212,7 @@ export type DiscordPrintWaifuAutocompleteListener = (
 export type DiscordDebugCommandListener = (event: DiscordDebugCommandEvent) => void | Promise<void>;
 
 export type DiscordClearType = "waifus" | "users" | "both" | "everything";
-export type DiscordDebugCommandType = "set" | "unset" | "print";
+export type DiscordDebugCommandType = "set" | "unset";
 export type DiscordPrintCommandType = "system_prompt" | "memories" | "personality";
 
 export type DiscordDeleteMessagesResult = {

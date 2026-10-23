@@ -7,7 +7,7 @@ import { CURRENT_SCHEMA_VERSION, IsoDateStringSchema, RevisionedRecordSchema } f
 // - crash_recovery: the run threw; cast_wake_suppressed: a wake was skipped as over budget
 // - preempted: another channel's run in the same guild took over this channel's turn
 // - shutdown: a planned runtime stop interrupted the run; restart_resume: boot catch-up
-export const RETRIGGER_SOURCES = [
+const RETRIGGER_SOURCES = [
   "no_reply",
   "turn_limit",
   "nothing_sent",
@@ -18,10 +18,11 @@ export const RETRIGGER_SOURCES = [
   "restart_resume"
 ] as const;
 
-export const ChannelSessionStateSchema =RevisionedRecordSchema.extend({
+// Retired never-read fields (`paused`, `pendingMessageIds`) are simply stripped by z.object when
+// an older session file is parsed, so those files keep loading.
+export const ChannelSessionStateSchema = RevisionedRecordSchema.extend({
   guildId: z.string().min(1),
   channelId: z.string().min(1),
-  paused: z.boolean().default(false),
   activePipeline: z
     .object({
       kind: z.enum(["orchestrator", "waifu"]),
@@ -45,26 +46,12 @@ export const ChannelSessionStateSchema =RevisionedRecordSchema.extend({
       seconds: z.number().nonnegative(),
       decisionId: z.string().min(1).optional()
     })
-    .optional(),
-  pendingMessageIds: z.array(z.string()).default([])
+    .optional()
 });
 
 export type ChannelSessionState = z.infer<typeof ChannelSessionStateSchema>;
 export type RetriggerWake = NonNullable<ChannelSessionState["scheduledRetrigger"]>;
 export type RetriggerSource = RetriggerWake["source"];
-
-export interface CancellationHandle {
-  readonly signal: AbortSignal;
-  cancel(reason: string): void;
-}
-
-export function createCancellationHandle(): CancellationHandle {
-  const controller = new AbortController();
-  return {
-    signal: controller.signal,
-    cancel: (reason: string) => controller.abort(new Error(reason))
-  };
-}
 
 export function createEmptyChannelSessionState(guildId: string, channelId: string): ChannelSessionState {
   const now = new Date().toISOString();

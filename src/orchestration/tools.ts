@@ -27,6 +27,16 @@ export const PERSONA_DIGEST_TOOL_NAME = "set_persona_digest";
 export const REVIEWER_TOOL_NAME = "review_message";
 
 // ---------------------------------------------------------------------------
+// Reviewer decision schema
+// ---------------------------------------------------------------------------
+
+export const ReviewerDecisionSchema = z.object({
+  hallucination: z.boolean()
+});
+
+export type ReviewerDecision = z.infer<typeof ReviewerDecisionSchema>;
+
+// ---------------------------------------------------------------------------
 // Prompts
 // ---------------------------------------------------------------------------
 
@@ -470,8 +480,6 @@ export function reviewerToolParameters(): object {
   };
 }
 
-export const REVIEWER_TOOL_PARAMETERS = reviewerToolParameters();
-
 export function personaDigestToolParameters(): object {
   return {
     type: "object",
@@ -484,14 +492,10 @@ export function personaDigestToolParameters(): object {
   };
 }
 
-export const PERSONA_DIGEST_TOOL_PARAMETERS = personaDigestToolParameters();
-
 // ---------------------------------------------------------------------------
 // Pre-built parameter consts (used by pipelines.ts as re-exports)
 // ---------------------------------------------------------------------------
 
-export const DREAM_TOOL_PARAMETERS = dreamToolParameters();
-export const OBSERVER_TOOL_PARAMETERS = observerToolParameters();
 export const ORCHESTRATOR_TOOL_PARAMETERS = orchestratorToolParameters();
 
 // ---------------------------------------------------------------------------
@@ -572,7 +576,7 @@ const ImportanceSchema = z.union([
   z.literal(4),
   z.literal(5)
 ]);
-export const RawImportanceSchema = z.preprocess((value) => {
+const RawImportanceSchema = z.preprocess((value) => {
   if (typeof value === "string" && /^[1-5]$/.test(value)) {
     return Number(value);
   }
@@ -595,7 +599,7 @@ export const RawStageManagerObservationSchema = z.object({
 // `memory`/`patch` sub-objects) or the flattened Google shape (`waifuId`/`content`/`strength`
 // hoisted to the op level). This lenient schema accepts both and normalizeDreamOp below folds the
 // flat form into the canonical DreamOp.
-export const RawDreamOpSchema = z.object({
+const RawDreamOpSchema = z.object({
   op: z.enum(["add", "promote", "rewrite", "merge", "decay", "archive", "none"]),
   memory: z
     .object({
@@ -728,12 +732,12 @@ export function parseRawStageManagerObservations(items: unknown[]): StageManager
 // onto the strict OrchestratorDecisionSchema the rest of the runtime expects.
 // ---------------------------------------------------------------------------
 
-export const RawDirectiveSchema = z.object({
+const RawDirectiveSchema = z.object({
   intent: z.string().min(1),
   goal: z.string().min(1)
 });
 
-export const RawRespondingWaifuSchema = z.object({
+const RawRespondingWaifuSchema = z.object({
   waifuId: z.string().min(1),
   delaySeconds: z.number().min(0).nullish(),
   directive: RawDirectiveSchema.nullish().catch(null)

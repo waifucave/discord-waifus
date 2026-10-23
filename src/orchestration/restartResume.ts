@@ -16,7 +16,7 @@ import type { RetriggerSource, RetriggerWake } from "./session.js";
 // by a planned stop of the runtime (restart, update, config reload). Interruptions with other
 // reasons were superseded by real messages, /stop, or an explicit user pause BEFORE the restart
 // and must stay dead.
-export const RUNTIME_RESTARTED_INTERRUPT_REASON = "runtime_restarted";
+const RUNTIME_RESTARTED_INTERRUPT_REASON = "runtime_restarted";
 export const RUNTIME_SHUTDOWN_INTERRUPT_REASON = "runtime_shutdown";
 const RESUMABLE_INTERRUPT_REASONS = new Set([RUNTIME_RESTARTED_INTERRUPT_REASON, RUNTIME_SHUTDOWN_INTERRUPT_REASON]);
 /** Interrupted decisions older than this get a fresh pass instead of a zombie reply. */
