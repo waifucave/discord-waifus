@@ -266,32 +266,38 @@ describe("decideReviewer (gateway)", () => {
 });
 
 describe("decideStageManagerObservations (gateway)", () => {
-  it("forces record_observations and parses observations; model-provided entities survive", async () => {
-    // RawStageManagerObservationSchema now carries entities through (the model's own list is the
-    // only source for caseless names the app-side fallback can't extract); shared with legacy.
-    const observations = [{ waifuId: "yuki", content: "Ann prefers tea", importance: 3, kind: "preference", entities: ["Ann"] }];
-    const fetchImpl = okFetch({
-      id: "r1",
-      choices: [{ message: { content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "record_observations", arguments: JSON.stringify({ observations }) } }] }, finish_reason: "tool_calls" }],
-      usage: {}
-    });
-    const out = await makePipeline(fetchImpl as unknown as typeof fetch).decideStageManagerObservations!({
-      modelId: "deepseek-v4-flash", messages: [msg({})], availableWaifuIds: ["yuki"]
-    });
-    expect(out).toEqual([{ waifuId: "yuki", content: "Ann prefers tea", importance: 3, kind: "preference", entities: ["Ann"] }]);
+  const toolResponse = (args: unknown) => okFetch({
+    id: "r1",
+    choices: [{ message: { content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "record_observations", arguments: JSON.stringify(args) } }] }, finish_reason: "tool_calls" }],
+    usage: {}
   });
 
-  it("coerces stringified importance ('3') to integer 3 (I1 fix)", async () => {
-    const observations = [{ waifuId: "yuki", content: "Ann works remotely", importance: "3", kind: "fact" }];
-    const fetchImpl = okFetch({
-      id: "r1",
-      choices: [{ message: { content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "record_observations", arguments: JSON.stringify({ observations }) } }] }, finish_reason: "tool_calls" }],
-      usage: {}
-    });
+  it("forces record_observations with the rendered observer input and parses ops", async () => {
+    const ops = [
+      { op: "add", waifuId: "yuki", content: "Ann prefers tea", importance: 3, kind: "preference", subjects: ["p1"] },
+      { op: "update", memory: "m2", content: "Ann prefers green tea" },
+      { op: "merge", into: "m1", from: ["m3"], content: "Ann has two cats" },
+      { op: "expire", memory: "m4", reason: "she moved" },
+      { op: "update", content: "missing memory handle" }
+    ];
+    const fetchImpl = toolResponse({ ops });
     const out = await makePipeline(fetchImpl as unknown as typeof fetch).decideStageManagerObservations!({
+      modelId: "deepseek-v4-flash", messages: [msg({})], availableWaifuIds: ["yuki"], observerInput: "Participants:\n- p1 = Ann",
+      systemPrompt: "Owner policy: never remember addresses."
+    });
+    expect(out).toEqual(ops.slice(0, 4));
+    const body = JSON.parse((fetchImpl.mock.calls[0]![1] as RequestInit).body as string);
+    expect(body.tool_choice).toEqual({ type: "function", function: { name: "record_observations" } });
+    expect(body.messages[0].content).toMatch(/^Owner policy: never remember addresses\./);
+    expect(body.messages[1].content).toBe("Participants:\n- p1 = Ann");
+  });
+
+  it("normalizes legacy observations into add ops and coerces stringified importance (I1 fix)", async () => {
+    const observations = [{ waifuId: "yuki", content: "Ann works remotely", importance: "3", kind: "fact", entities: ["Ann"] }];
+    const out = await makePipeline(toolResponse({ observations }) as unknown as typeof fetch).decideStageManagerObservations!({
       modelId: "deepseek-v4-flash", messages: [msg({})], availableWaifuIds: ["yuki"]
     });
-    expect(out).toEqual([{ waifuId: "yuki", content: "Ann works remotely", importance: 3, kind: "fact", entities: [] }]);
+    expect(out).toEqual([{ op: "add", waifuId: "yuki", content: "Ann works remotely", importance: 3, kind: "fact", subjects: ["Ann"] }]);
   });
 });
 

@@ -10,7 +10,7 @@ import {
   OrchestratorDecisionSchema,
   Directive
 } from "./decisions.js";
-import { OBSERVATION_KINDS, DreamOp, DreamOpSchema, StageManagerObservation, StageManagerObservationSchema } from "./stageManager.js";
+import { OBSERVATION_KINDS, DreamOp, DreamOpSchema, ObserverOp, ObserverOpSchema, StageManagerObservation, StageManagerObservationSchema } from "./stageManager.js";
 import { MEMORY_KINDS, MemoryKindSchema } from "../shared/schemas/domain.js";
 import type { DreamRequest } from "../providers/types.js";
 
@@ -46,48 +46,52 @@ export function observerSystemPrompt(customPrompt?: string, availableWaifuIds?: 
 
 function observerInstruction(availableWaifuIds?: string[]): string {
   const waifuInstruction = availableWaifuIds?.length
-    ? `Allowed waifuId values: ${availableWaifuIds.join(", ")}. waifuId is the waifu who should remember this observation; it is never a human user name from chat.`
-    : "No waifus are available in this channel; return an empty observations array.";
-  return `You are extracting durable memories from a Discord chat window.
+    ? `Allowed waifuId values: ${availableWaifuIds.join(", ")}. waifuId is the waifu who should carry the memory; it is never a human.`
+    : "No waifus are available in this channel; return an empty ops array.";
+  return `You maintain the long-term memories of a cast of Discord characters (waifus). Each waifu has one memory that follows her across every server and private chat.
 
-The context window begins with a header line: Window: <date+time range> UTC (today: YYYY-MM-DD). Each message that follows is formatted as "DisplayName: body", optionally preceded by a "replying to > Author" line, and optionally followed by "[image_text: ...]" lines for any attached images. A "[— next day: YYYY-MM-DD —]" marker appears between messages that cross midnight.
+The user message has three parts:
+- Participants: everyone in this chat, as handles. Humans are p1, p2, …; waifus are w:<waifuId>.
+- Existing memories: what the waifus already remember about these participants, as m1, m2, … with owner, kind and strength. Pinned memories are user-managed and read-only.
+- Transcript: the messages since your last read, "[HH:MM] Name (handle): text". You never see a message twice.
 
-Your only job: scan the window and produce a small list of atomic, durable observations worth remembering. Then call ${OBSERVER_TOOL_NAME} exactly once with an observations array. Do not write normal assistant text. An empty array is allowed and is the correct answer when nothing durable was disclosed.
+Call ${OBSERVER_TOOL_NAME} exactly once with an ops array. No assistant text. An empty array is the correct answer when nothing durable was said.
 
-What counts as a durable observation (test before emitting): "Would this still be useful to know in a week, with zero memory of this conversation?" If no, drop it.
+Ops:
+- add: a new durable memory. waifuId = the owner. ${waifuInstruction} content = one standalone sentence with names spelled out. kind = fact | preference | relationship | event | commitment. importance 1-5. subjects = handles of the people (or waifus) it is about.
+- update: an existing memory (memory: "m3") is now more precise or has changed: give the full corrected sentence. Use this instead of adding a near-duplicate.
+- merge: two or more existing memories of the same owner say the same thing: into = the one to keep, from = the others, content = one clean combined sentence.
+- expire: an existing memory is now false or resolved (a plan that happened, a preference that changed). Give a short reason.
 
-Each observation must be:
-- A single atomic fact, stated independently of the chat. Phrase it as a standalone sentence about a named person, not as a recap of what happened.
-- Owned by one waifu via waifuId — the waifu who should carry this memory in her prompt going forward. ${waifuInstruction}
-- Classified by kind: "fact" (stable attribute), "preference" (likes/dislikes), "relationship" (between two named people), "event" (a dated thing that happened), or "commitment" (a promise or future plan).
-- Scored 1–5 for importance: 1 = trivial flavor, 3 = useful when the waifu next talks to this person, 5 = central to who this person is.
-- If a fact is time-bound, state the absolute resolution date and what becomes true after it ('K plans to release the update on 2026-06-12'), never bare 'tomorrow'/'tonight'.
+The durability test for add and update: "Would this still be useful to know in a week, with zero memory of this conversation?" If no, drop it.
 
-Do NOT emit narration. Reject strings shaped like:
+Each memory must be a single atomic fact about named people, never a recap of the chat. If a fact is time-bound, state the absolute date ('Kevin plans to release the update on 2026-06-12'), never bare 'tomorrow' or 'tonight'.
+
+Do NOT write narration such as:
 - "Kevin and Mia were talking about cooking." (recap, not a fact)
 - "The user mentioned a movie." (no specific content)
 - "Yuki greeted Kevin warmly." (chat event with no durable substance)
-- "Kevin asked about Yuki's day." (small talk, not a fact about anyone)
 
-Do emit things like:
-- "Kevin is allergic to peanuts." (fact)
+Do write things like:
+- "Kevin is allergic to peanuts." (fact, subjects [p1])
 - "Mia prefers green tea over black tea." (preference)
-- "Kevin and Mia are siblings." (relationship)
-- "Kevin promised to share his cookbook on Friday." (commitment)
+- "Kevin and Mia are siblings." (relationship, subjects [p1, p2])
+- "Kevin promised Yuki to share his cookbook on 2026-10-30." (commitment, subjects [p1, w:yuki])
 
-Importance heuristic: a one-off mention is a 2; a stated preference is a 3; an allergy / hard constraint / family relation is a 4–5. Emotional intensity alone is not importance.
+Importance: a one-off mention is a 2; a stated preference is a 3; an allergy, hard constraint or family relation is a 4-5. Emotional intensity alone is not importance.
 
-If the entire window is small talk, banter, or roleplay with no durable facts, return an empty array. That is normal.`;
+Roleplay, banter and small talk are normal; most windows produce no ops at all.`;
 }
 
 export const DREAM_PROMPT = `You are the nightly memory-consolidation pass for a cast of Discord personas. You receive JSON in user messages:
 - memories: active records — memoryIndex, waifuId, content, kind, strength (0-5), ageDays, daysSinceRetrieved, expiresInHours (notes only).
-- observations: new durable observations from recent chat — waifuId, content, kind, importance, entities.
+- observations: new durable observations from recent chat — waifuId, content, kind, importance, subjects (names).
+Memory items also carry subjects: the names of the people each memory is about.
 
 Call dream_memories exactly once with an ops array. No assistant text.
 
 Policy:
-- add: an observation that is genuinely new. Carry its waifuId, content, kind; strength = its importance.
+- add: an observation that is genuinely new. Carry its waifuId, content, kind; strength = its importance; entities = its subjects.
 - If an observation restates an existing memory, do nothing for it; if it strictly refines one, rewrite that memory.
 - rewrite and merge produce ONE clean sentence or two — the result must read as a single well-written memory, never a concatenation. Preserve every DISTINCT fact; drop redundant phrasings.
 - promote: a note (expiring record) whose fact will still matter in a month gets promoted — give it a proper kind and strength; promotion clears its expiry.
@@ -250,13 +254,16 @@ export function pickNextWaifuToolParameters(availableWaifuIds?: string[]): objec
   };
 }
 
+// Ops are a discriminated union by `op`; like the dream grammar it is presented as one flat item
+// object with a required `op` enum and per-op requirements in the descriptions (no nested objects,
+// so the same schema works for Gemini's ANY-mode forcing).
 export function observerToolParameters(availableWaifuIds?: string[]): object {
   const waifuIds = [...new Set((availableWaifuIds ?? []).filter(Boolean))];
   const waifuIdSchema: Record<string, unknown> = {
     type: "string",
     description: waifuIds.length
-      ? `Must be one of the configured waifu ids: ${waifuIds.join(", ")}. This is the memory owner, not a human user.`
-      : "Configured waifu id."
+      ? `Required for add. Must be one of the configured waifu ids: ${waifuIds.join(", ")}. The memory owner, never a human.`
+      : "Required for add. Configured waifu id."
   };
   if (waifuIds.length) {
     waifuIdSchema.enum = waifuIds;
@@ -265,28 +272,44 @@ export function observerToolParameters(availableWaifuIds?: string[]): object {
     type: "object",
     additionalProperties: false,
     properties: {
-      observations: {
+      ops: {
         type: "array",
-        description: "Durable observations to record. Empty array is valid and means nothing durable was disclosed.",
+        description: "Memory operations. An empty array is valid and means nothing durable was said.",
         items: {
           type: "object",
           additionalProperties: false,
-          required: ["waifuId", "content", "importance", "kind"],
+          required: ["op"],
           properties: {
+            op: {
+              type: "string",
+              enum: ["add", "update", "merge", "expire"],
+              description: "add: new memory. update: correct an existing memory. merge: combine duplicates. expire: retire a false or resolved memory."
+            },
             waifuId: waifuIdSchema,
-            content: { type: "string", description: "Atomic standalone fact, not a recap of chat events." },
-            importance: { type: "integer", enum: [1, 2, 3, 4, 5] },
-            kind: { type: "string", enum: [...OBSERVATION_KINDS] },
-            entities: {
+            content: {
+              type: "string",
+              description: "Required for add, update and merge: one atomic standalone sentence, not a recap of chat events."
+            },
+            kind: { type: "string", enum: [...OBSERVATION_KINDS], description: "Required for add; optional for update." },
+            importance: { type: "integer", enum: [1, 2, 3, 4, 5], description: "Required for add; optional for update." },
+            subjects: {
               type: "array",
               items: { type: "string" },
-              description: "Display names of every person this observation is about."
-            }
+              description: "Participant handles (p1, w:<waifuId>) of everyone the memory is about."
+            },
+            memory: { type: "string", description: "Required for update and expire: the existing memory id (m1, m2, ...)." },
+            into: { type: "string", description: "Required for merge: the memory id to keep." },
+            from: {
+              type: "array",
+              items: { type: "string" },
+              description: "Required for merge: the memory ids folded into `into`."
+            },
+            reason: { type: "string", description: "Optional for expire: why it no longer holds." }
           }
         }
       }
     },
-    required: ["observations"]
+    required: ["ops"]
   };
 }
 
@@ -502,11 +525,19 @@ export const ORCHESTRATOR_TOOL_PARAMETERS = orchestratorToolParameters();
 // Dream message builder (shared by pipelines.ts and gatewayPipeline.ts)
 // ---------------------------------------------------------------------------
 
-// The dream pass reads two JSON user blocks: the active memory chunk and the pending observations.
+// The dream pass reads two JSON user blocks: the active memory chunk and the pending observations
+// (model-facing fields only: provenance and ids stay app-side).
 export function dreamMessages(request: DreamRequest): Array<{ role: "user"; content: string }> {
+  const observations = request.observations.map((observation) => ({
+    waifuId: observation.waifuId,
+    content: observation.content,
+    kind: observation.kind,
+    importance: observation.importance,
+    subjects: (observation.subjects ?? []).map((subject) => subject.name)
+  }));
   return [
     { role: "user", content: `memories: ${JSON.stringify(request.memories)}` },
-    { role: "user", content: `observations: ${JSON.stringify(request.observations)}` }
+    { role: "user", content: `observations: ${JSON.stringify(observations)}` }
   ];
 }
 
@@ -718,6 +749,49 @@ export function normalizeDreamOps(raw: unknown[]): DreamOp[] {
 // Parse an array of raw observation items using the coercing Raw schema.
 export function parseRawStageManagerObservations(items: unknown[]): StageManagerObservation[] {
   return items.map((item) => StageManagerObservationSchema.parse(RawStageManagerObservationSchema.parse(item)));
+}
+
+const RawObserverOpSchema = z.object({
+  op: z.enum(["add", "update", "merge", "expire"]),
+  waifuId: z.string().min(1).optional(),
+  content: z.string().min(1).optional(),
+  kind: z.enum(OBSERVATION_KINDS).optional(),
+  importance: RawImportanceSchema.optional(),
+  subjects: z.array(z.string()).optional().catch(undefined),
+  memory: z.string().min(1).optional(),
+  into: z.string().min(1).optional(),
+  from: z.array(z.string()).optional(),
+  reason: z.string().optional()
+});
+
+/** One observer op from the wire; a legacy observation (no `op`) becomes an add. */
+export function normalizeObserverOp(item: unknown): ObserverOp {
+  if (isRecord(item) && item.op === undefined && typeof item.content === "string") {
+    const legacy = RawStageManagerObservationSchema.parse(item);
+    return ObserverOpSchema.parse({
+      op: "add",
+      waifuId: legacy.waifuId,
+      content: legacy.content,
+      kind: legacy.kind,
+      importance: legacy.importance,
+      subjects: legacy.entities
+    });
+  }
+  const raw = RawObserverOpSchema.parse(item);
+  return ObserverOpSchema.parse(stripUndefinedNormalizer({ ...raw }));
+}
+
+/** Per-op tolerant parse: malformed ops are dropped instead of failing the whole run. */
+export function parseRawObserverOps(items: unknown[]): ObserverOp[] {
+  const ops: ObserverOp[] = [];
+  for (const item of items) {
+    try {
+      ops.push(normalizeObserverOp(item));
+    } catch {
+      // A single malformed op never discards the rest.
+    }
+  }
+  return ops;
 }
 
 // ---------------------------------------------------------------------------

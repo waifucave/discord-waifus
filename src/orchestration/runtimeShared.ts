@@ -28,6 +28,8 @@ export type RuntimeOrchestratorOptions = {
   stageManagerIdleDelayMs?: number;
   /** Delay before boot catch-up runs (lets Discord bots finish connecting). Default 5000. */
   restartResumeDelayMs?: number;
+  /** AppConfig `memory` section (global dream hour) plus a test hook for the nightly budget. */
+  memory?: { dreamHourLocal?: number; dreamChunksPerNight?: number };
 };
 
 /** The narrow I/O services most runtime collaborators need. */

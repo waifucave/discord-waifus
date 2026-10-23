@@ -1,7 +1,7 @@
 import { MemoryKind, OrchestratorDecisionHistoryEntry, PendingObservation } from "../shared/schemas/domain.js";
 import { ContextMessage, OrchestratorWakeMarker } from "../orchestration/contextMessages.js";
 import { OrchestratorDecision } from "../orchestration/decisions.js";
-import { DreamOp, StageManagerObservation } from "../orchestration/stageManager.js";
+import { DreamOp, ObserverOp, StageManagerObservation } from "../orchestration/stageManager.js";
 import type { ReviewerDecision } from "../orchestration/tools.js";
 import type { BuiltPrompt, ModelCallAttribution } from "../orchestration/context/types.js";
 import type { FinishReason } from "@waifucave/gateway";
@@ -59,6 +59,7 @@ export type DreamMemoryInput = {
   ageDays: number;
   daysSinceRetrieved: number;
   expiresInHours?: number; // notes only
+  subjects?: string[]; // current names of the people the memory is about
 };
 
 export type DreamRequest = ProviderRequest & {
@@ -69,6 +70,9 @@ export type DreamRequest = ProviderRequest & {
 
 export type StageManagerObserveRequest = ProviderRequest & {
   availableWaifuIds?: string[];
+  // Rendered observer input (participants, existing memories m1..mN, transcript since the
+  // per-conversation cursor). When absent the legacy `messages` window is formatted instead.
+  observerInput?: string;
 };
 
 export type PersonaDigest = { voice: string; role: string };
@@ -114,7 +118,8 @@ export type AssistantTurnResult = {
 export interface ModelPipeline {
   generateWaifu(request: WaifuGenerationRequest): Promise<WaifuGenerationResult>;
   decideOrchestrator?(request: ProviderRequest): Promise<OrchestratorDecision>;
-  decideStageManagerObservations?(request: StageManagerObserveRequest): Promise<StageManagerObservation[]>;
+  // Legacy observations (no `op`) are still accepted and normalized into `add` ops.
+  decideStageManagerObservations?(request: StageManagerObserveRequest): Promise<Array<ObserverOp | StageManagerObservation>>;
   decideDream?(request: DreamRequest): Promise<DreamOp[]>;
   decideReviewer?(request: ProviderRequest & { message: string }): Promise<ReviewerDecision>;
   generatePersonaDigest?(request: PersonaDigestRequest): Promise<PersonaDigest>;

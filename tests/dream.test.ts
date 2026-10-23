@@ -1,42 +1,48 @@
 import { describe, expect, it } from "vitest";
-import { applyDreamOps, dreamChunkWaifuIds, guildHash, orderDreamChunks, selectDreamInput } from "../src/orchestration/dream.js";
+import {
+  applyDreamOps,
+  buildWaifuDreamChunks,
+  dreamChunkWaifuIds,
+  dreamWaifuOrder,
+  resolveDreamSubjects
+} from "../src/orchestration/dream.js";
 import { DreamOp } from "../src/orchestration/stageManager.js";
 import { MemoryRecord, PendingObservation } from "../src/shared/schemas/domain.js";
 
 const NOW = new Date("2026-06-12T05:00:00.000Z");
+const KEVIN = { discordUserId: "111", name: "Kevin" };
+const ALI = { discordUserId: "222", name: "Ali" };
 
 function record(overrides: Partial<MemoryRecord> & { id: string }): MemoryRecord {
   const created = overrides.createdAt ?? "2026-06-10T05:00:00.000Z";
   return {
-    id: overrides.id,
-    guildId: overrides.guildId ?? "guild-1",
-    waifuId: overrides.waifuId ?? "yuki",
-    content: overrides.content ?? "Kevin likes tea.",
-    kind: overrides.kind ?? "fact",
-    source: overrides.source ?? "stage_manager",
-    pinned: overrides.pinned ?? false,
-    strength: overrides.strength ?? 3,
-    entities: overrides.entities ?? [],
-    expiresAt: overrides.expiresAt,
+    waifuId: "yuki",
+    content: "Kevin likes tea.",
+    kind: "fact",
+    source: "stage_manager",
+    pinned: false,
+    strength: 3,
+    origin: { guildId: "guild-1" },
+    subjects: [],
+    revision: 0,
     createdAt: created,
-    updatedAt: overrides.updatedAt ?? created,
-    lastRetrievedAt: overrides.lastRetrievedAt,
-    status: overrides.status ?? "active",
-    channelId: overrides.channelId
+    updatedAt: created,
+    status: "active",
+    ...overrides
   };
 }
 
 function observation(overrides: Partial<PendingObservation> & { id: string }): PendingObservation {
   return {
-    id: overrides.id,
-    guildId: overrides.guildId ?? "guild-1",
-    channelId: overrides.channelId ?? "channel-1",
-    waifuId: overrides.waifuId ?? "yuki",
-    content: overrides.content ?? "Kevin likes tea.",
-    kind: overrides.kind ?? "fact",
-    importance: overrides.importance ?? 3,
-    entities: overrides.entities ?? [],
-    createdAt: overrides.createdAt ?? "2026-06-12T04:00:00.000Z"
+    waifuId: "yuki",
+    content: "Kevin likes tea.",
+    kind: "fact",
+    importance: 3,
+    subjects: [],
+    origin: { guildId: "guild-1", channelId: "channel-1" },
+    conversationKey: "g_guild-1_channel-1",
+    createdAt: "2026-06-12T04:00:00.000Z",
+    ...overrides
   };
 }
 
@@ -46,282 +52,189 @@ function indexMapFor(records: MemoryRecord[]): Map<number, string> {
   return map;
 }
 
-describe("selectDreamInput", () => {
-  it("returns one chunk under budget with all records and observations", () => {
-    const records = [record({ id: "a" }), record({ id: "b", waifuId: "mika" })];
-    const observations = [observation({ id: "o1" })];
-    const chunks = selectDreamInput(records, observations, NOW);
-    expect(chunks).toHaveLength(1);
-    expect(chunks[0].key).toBe("all");
-    expect(chunks[0].inputs.map((input) => input.memoryIndex)).toEqual([1, 2]);
-    expect(chunks[0].observations).toEqual(observations);
-    expect(chunks[0].indexMap.get(1)).toBe("a");
-    expect(chunks[0].indexMap.get(2)).toBe("b");
-  });
-
-  it("excludes pinned and archived records", () => {
+describe("buildWaifuDreamChunks", () => {
+  it("returns one chunk with the waifu's dreamable records and observations", () => {
     const records = [
-      record({ id: "active" }),
+      record({ id: "a" }),
+      record({ id: "b", waifuId: "mika" }),
       record({ id: "pinned", pinned: true }),
       record({ id: "archived", status: "archived" })
     ];
-    const chunks = selectDreamInput(records, [], NOW);
-    expect(chunks[0].inputs.map((input) => input.memoryIndex)).toEqual([1]);
-    expect(chunks[0].indexMap.get(1)).toBe("active");
+    const chunks = buildWaifuDreamChunks("yuki", records, [observation({ id: "o1" }), observation({ id: "o2", waifuId: "mika" })], NOW);
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0].key).toBe("yuki");
+    expect(chunks[0].indexMap.get(1)).toBe("a");
+    expect(chunks[0].inputs).toHaveLength(1);
+    expect(chunks[0].observations.map((o) => o.id)).toEqual(["o1"]);
   });
 
-  it("computes ageDays, daysSinceRetrieved, and expiresInHours", () => {
+  it("computes ages, expiry and current subject names", () => {
     const records = [
       record({
         id: "note",
         source: "waifu_tool",
         kind: "context",
+        subjects: [KEVIN],
         createdAt: "2026-06-10T05:00:00.000Z",
         lastRetrievedAt: "2026-06-11T05:00:00.000Z",
         expiresAt: "2026-06-12T17:00:00.000Z"
       })
     ];
-    const chunks = selectDreamInput(records, [], NOW);
-    const input = chunks[0].inputs[0];
-    expect(input.ageDays).toBe(2);
-    expect(input.daysSinceRetrieved).toBe(1);
-    expect(input.expiresInHours).toBe(12);
+    const [chunk] = buildWaifuDreamChunks("yuki", records, [], NOW, { nameFor: () => "Kev" });
+    expect(chunk.inputs[0]).toMatchObject({ ageDays: 2, daysSinceRetrieved: 1, expiresInHours: 12, subjects: ["Kev"] });
   });
 
-  it("falls back to createdAt when lastRetrievedAt is absent", () => {
-    const records = [record({ id: "a", createdAt: "2026-06-09T05:00:00.000Z" })];
-    const chunks = selectDreamInput(records, [], NOW);
-    expect(chunks[0].inputs[0].daysSinceRetrieved).toBe(3);
+  it("returns no chunks for a waifu with nothing to dream", () => {
+    expect(buildWaifuDreamChunks("yuki", [record({ id: "x", waifuId: "mika" })], [], NOW)).toEqual([]);
   });
 
-  it("returns no chunks when there are no records and no observations", () => {
-    expect(selectDreamInput([], [], NOW)).toEqual([]);
+  it("offers a waifu with observations but no memories (B12)", () => {
+    const chunks = buildWaifuDreamChunks("aria", [], [observation({ id: "o-aria", waifuId: "aria" })], NOW);
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0].inputs).toEqual([]);
+    expect(dreamChunkWaifuIds(chunks[0])).toEqual(["aria"]);
   });
 
-  it("chunks by waifu when over budget, routing observations to the owning chunk", () => {
-    const records: MemoryRecord[] = [];
-    for (let i = 0; i < 60; i += 1) records.push(record({ id: `yuki-${i}`, waifuId: "yuki" }));
-    for (let i = 0; i < 60; i += 1) records.push(record({ id: `mika-${i}`, waifuId: "mika" }));
-    const observations = [
-      observation({ id: "o-yuki", waifuId: "yuki" }),
-      observation({ id: "o-mika", waifuId: "mika" })
-    ];
-    const chunks = selectDreamInput(records, observations, NOW, 80);
-    expect(chunks).toHaveLength(2);
-    // Deterministic order: mika sorts before yuki; keys match the waifu id.
-    expect(chunks[0].key).toBe("mika");
-    expect(chunks[0].inputs.every((input) => input.waifuId === "mika")).toBe(true);
-    expect(chunks[0].observations.map((o) => o.id)).toEqual(["o-mika"]);
-    expect(chunks[1].key).toBe("yuki");
-    expect(chunks[1].inputs.every((input) => input.waifuId === "yuki")).toBe(true);
-    expect(chunks[1].observations.map((o) => o.id)).toEqual(["o-yuki"]);
-    // Each chunk's memoryIndex restarts at 1.
-    expect(chunks[0].inputs[0].memoryIndex).toBe(1);
+  it("splits a large store into slices; observations ride the first; indices restart at 1", () => {
+    const records = Array.from({ length: 170 }, (_, i) => record({ id: `y-${String(i).padStart(3, "0")}`, createdAt: new Date(NOW.getTime() - (200 - i) * 60_000).toISOString() }));
+    const chunks = buildWaifuDreamChunks("yuki", records, [observation({ id: "o1" })], NOW, { chunkSize: 80 });
+    expect(chunks.map((c) => c.key)).toEqual(["yuki", "yuki#2", "yuki#3"]);
+    expect(chunks.map((c) => c.inputs.length)).toEqual([80, 80, 10]);
+    expect(chunks[0].observations).toHaveLength(1);
+    expect(chunks[1].observations).toHaveLength(0);
     expect(chunks[1].inputs[0].memoryIndex).toBe(1);
   });
+});
 
-  it("gives observations whose waifu has no active records their own chunk when over budget", () => {
-    const records: MemoryRecord[] = [];
-    for (let i = 0; i < 90; i += 1) records.push(record({ id: `yuki-${i}`, waifuId: "yuki" }));
-    const observations = [observation({ id: "o-aria", waifuId: "aria" })];
-    const chunks = selectDreamInput(records, observations, NOW, 80);
-    expect(chunks).toHaveLength(2);
-    const orphan = chunks[chunks.length - 1];
-    expect(orphan.key).toBe("orphan");
-    expect(orphan.inputs).toEqual([]);
-    expect(orphan.observations.map((o) => o.id)).toEqual(["o-aria"]);
+describe("dreamWaifuOrder", () => {
+  it("starts after the cursor and wraps around", () => {
+    expect(dreamWaifuOrder(["yuki", "aria", "mika"], null)).toEqual(["aria", "mika", "yuki"]);
+    expect(dreamWaifuOrder(["yuki", "aria", "mika"], "mika")).toEqual(["yuki", "aria", "mika"]);
+    expect(dreamWaifuOrder(["yuki", "aria", "mika"], "yuki")).toEqual(["aria", "mika", "yuki"]);
+    // A cursor whose waifu vanished still orders by position.
+    expect(dreamWaifuOrder(["yuki", "aria", "mika"], "lumi")).toEqual(["mika", "yuki", "aria"]);
   });
 });
 
 describe("applyDreamOps", () => {
-  const guildId = "guild-1";
-  const apply = (memories: MemoryRecord[], ops: DreamOp[], indexMap = indexMapFor(memories), maxOps?: number) =>
-    applyDreamOps(memories, ops, indexMap, { guildId, now: NOW, maxOps });
+  const apply = (memories: MemoryRecord[], ops: DreamOp[], indexMap = indexMapFor(memories), extra: { maxOps?: number; observations?: PendingObservation[] } = {}) =>
+    applyDreamOps(memories, ops, indexMap, { now: NOW, ...extra });
 
-  it("add creates a dream-sourced record with extracted entities when none given", () => {
+  it("add creates a dream record carrying the matching observation's subjects and origin", () => {
+    const obs = observation({ id: "o1", content: "Kevin loves Aria's cooking.", subjects: [KEVIN] });
     const result = apply([], [
       { op: "add", memory: { waifuId: "yuki", content: "Kevin loves Aria's cooking.", kind: "preference", strength: 4, entities: [] } }
-    ], new Map());
+    ], new Map(), { observations: [obs] });
     expect(result.applied).toBe(1);
-    expect(result.memories).toHaveLength(1);
-    expect(result.memories[0]).toMatchObject({ source: "dream", waifuId: "yuki", strength: 4, kind: "preference", status: "active" });
-    // extractEntities keeps mid-sentence capitalized tokens (sentence-initial "Kevin" is dropped).
-    expect(result.memories[0].entities).toContain("Aria's");
-    expect(result.historyEntries[0].tool).toBe("add_memory");
+    expect(result.memories[0]).toMatchObject({
+      source: "dream",
+      waifuId: "yuki",
+      strength: 4,
+      kind: "preference",
+      status: "active",
+      revision: 0,
+      subjects: [KEVIN],
+      origin: { guildId: "guild-1", channelId: "channel-1" }
+    });
     expect(result.historyEntries[0].summary).toContain("[dream:add]");
   });
 
-  it("promote clears expiry and applies the patch", () => {
+  it("add goes through the write gate: a duplicate is skipped, a stronger one reinforces", () => {
+    const existing = record({ id: "tea", content: "Kevin likes green tea.", subjects: [KEVIN], strength: 3 });
+    const skipped = apply([existing], [
+      { op: "add", memory: { waifuId: "yuki", content: "Kevin likes green tea", kind: "fact", strength: 2, entities: ["Kevin"] } }
+    ]);
+    expect(skipped.memories).toHaveLength(1);
+    expect(skipped.skipped).toBe(1);
+    const reinforced = apply([existing], [
+      { op: "add", memory: { waifuId: "yuki", content: "Kevin likes green tea", kind: "fact", strength: 5, entities: ["Kevin"] } }
+    ]);
+    expect(reinforced.memories).toHaveLength(1);
+    expect(reinforced.memories[0]).toMatchObject({ id: "tea", strength: 5, revision: 1 });
+  });
+
+  it("promote clears expiry, applies the patch and bumps the revision", () => {
     const memories = [record({ id: "note", source: "waifu_tool", kind: "context", strength: 2, expiresAt: "2026-06-13T05:00:00.000Z" })];
     const result = apply(memories, [
       { op: "promote", memoryIndex: 1, patch: { kind: "fact", strength: 4, content: "Kevin owns a 1998 Mercedes." } }
     ]);
-    expect(result.applied).toBe(1);
     const promoted = result.memories[0];
     expect(promoted.expiresAt).toBeUndefined();
-    expect(promoted.kind).toBe("fact");
-    expect(promoted.strength).toBe(4);
-    expect(promoted.content).toBe("Kevin owns a 1998 Mercedes.");
-    expect(promoted.entities).toContain("Mercedes");
+    expect(promoted).toMatchObject({ kind: "fact", strength: 4, content: "Kevin owns a 1998 Mercedes.", revision: 1 });
   });
 
-  it("rewrite replaces content and re-extracts entities", () => {
-    const memories = [record({ id: "a", content: "she owes him tacos" })];
+  it("rewrite keeps subjects and adds entities resolvable from the chunk", () => {
+    const memories = [record({ id: "a", content: "she owes him tacos", subjects: [KEVIN] }), record({ id: "b", subjects: [ALI] })];
     const result = apply(memories, [
-      { op: "rewrite", memoryIndex: 1, content: "Riko owes Ali tacos since Thursday.", entities: ["Riko", "Ali"] }
+      { op: "rewrite", memoryIndex: 1, content: "Kevin owes Ali tacos since Thursday.", entities: ["Ali", "Thursday"] }
     ]);
-    expect(result.applied).toBe(1);
-    expect(result.memories[0].content).toBe("Riko owes Ali tacos since Thursday.");
-    expect(result.memories[0].entities).toEqual(["Riko", "Ali"]);
+    expect(result.memories[0].content).toBe("Kevin owes Ali tacos since Thursday.");
+    expect(result.memories[0].subjects).toEqual([KEVIN, ALI]);
+    expect(result.memories[0].revision).toBe(1);
   });
 
-  it("merge archives all sources and adds one consolidated record carrying op entities", () => {
+  it("merge archives sources with mergedInto and adds one consolidated record with their subjects", () => {
     const memories = [
-      record({ id: "a", content: "Kevin likes tea.", strength: 3 }),
-      record({ id: "b", content: "Kevin likes green tea.", strength: 4 })
+      record({ id: "a", content: "Kevin likes tea.", strength: 3, subjects: [KEVIN] }),
+      record({ id: "b", content: "Kevin likes green tea.", strength: 4, subjects: [KEVIN] })
     ];
     const result = apply(memories, [
       { op: "merge", memoryIndices: [1, 2], content: "Kevin likes tea, especially green tea.", entities: ["Kevin"] }
     ]);
-    expect(result.applied).toBe(1);
-    expect(result.memories.find((m) => m.id === "a")?.status).toBe("archived");
-    expect(result.memories.find((m) => m.id === "b")?.status).toBe("archived");
-    const merged = result.memories.find((m) => m.status === "active" && m.source === "dream");
-    expect(merged?.content).toBe("Kevin likes tea, especially green tea.");
-    expect(merged?.strength).toBe(4);
-    expect(merged?.entities).toEqual(["Kevin"]);
+    const merged = result.memories.find((m) => m.status === "active" && m.source === "dream")!;
+    expect(merged).toMatchObject({ content: "Kevin likes tea, especially green tea.", strength: 4, subjects: [KEVIN] });
+    for (const id of ["a", "b"]) {
+      expect(result.memories.find((m) => m.id === id)).toMatchObject({ status: "archived", archivedReason: "merged", mergedInto: merged.id, revision: 1 });
+    }
   });
 
-  it("decay sets the new strength without archiving", () => {
-    const memories = [record({ id: "a", strength: 2 })];
-    const result = apply(memories, [{ op: "decay", memoryIndex: 1, strength: 0.5 }]);
-    expect(result.applied).toBe(1);
-    expect(result.memories[0].strength).toBe(0.5);
-    expect(result.memories[0].status).toBe("active");
-  });
-
-  it("archive marks the record archived and records the reason", () => {
-    const memories = [record({ id: "a", content: "The update ships tomorrow." })];
-    const result = apply(memories, [{ op: "archive", memoryIndex: 1, reason: "already shipped" }]);
-    expect(result.applied).toBe(1);
-    expect(result.memories[0].status).toBe("archived");
-    expect(result.historyEntries[0].summary).toContain("already shipped");
-  });
-
-  it("none writes a history note and changes nothing", () => {
+  it("decay and archive bump revisions; none changes nothing", () => {
+    const decayed = apply([record({ id: "a", strength: 2 })], [{ op: "decay", memoryIndex: 1, strength: 0.5 }]);
+    expect(decayed.memories[0]).toMatchObject({ strength: 0.5, status: "active", revision: 1 });
+    const archived = apply([record({ id: "a", content: "The update ships tomorrow." })], [{ op: "archive", memoryIndex: 1, reason: "already shipped" }]);
+    expect(archived.memories[0]).toMatchObject({ status: "archived", revision: 1 });
+    expect(archived.historyEntries[0].summary).toContain("already shipped");
     const memories = [record({ id: "a" })];
-    const result = apply(memories, [{ op: "none" }]);
-    expect(result.applied).toBe(0);
-    expect(result.memories).toEqual(memories);
-    expect(result.historyEntries[0].tool).toBe("no_change");
+    const none = apply(memories, [{ op: "none" }]);
+    expect(none.memories).toEqual(memories);
+    expect(none.historyEntries[0].tool).toBe("no_change");
   });
 
-  it("skips pinned records for every targeting op, recording the skip", () => {
-    const memories = [record({ id: "pinned", pinned: true })];
-    const result = apply(memories, [{ op: "archive", memoryIndex: 1, reason: "x" }]);
-    expect(result.applied).toBe(0);
-    expect(result.skipped).toBe(1);
-    expect(result.memories[0].status).toBe("active");
-    expect(result.historyEntries[0].summary).toContain("pinned");
-  });
-
-  it("skips unknown indices", () => {
-    const result = apply([record({ id: "a" })], [{ op: "decay", memoryIndex: 9, strength: 1 }]);
-    expect(result.applied).toBe(0);
-    expect(result.skipped).toBe(1);
-    expect(result.historyEntries[0].summary).toContain("unknown memory index");
-  });
-
-  it("skips records outside the guild", () => {
-    const memories = [record({ id: "foreign", guildId: "guild-2" })];
-    const result = apply(memories, [{ op: "decay", memoryIndex: 1, strength: 1 }]);
-    expect(result.applied).toBe(0);
-    expect(result.skipped).toBe(1);
-    expect(result.memories[0].strength).toBe(3);
-  });
-
-  it("skips a merge that contains a pinned source", () => {
-    const memories = [record({ id: "a" }), record({ id: "pinned", pinned: true })];
-    const result = apply(memories, [
-      { op: "merge", memoryIndices: [1, 2], content: "merged", entities: [] }
-    ]);
-    expect(result.applied).toBe(0);
-    expect(result.skipped).toBe(1);
-    expect(result.memories.every((m) => m.status === "active")).toBe(true);
-  });
-
-  it("drops ops beyond maxOps and counts them as skipped", () => {
+  it("skips pinned targets, unknown indices, pinned merge sources and ops beyond maxOps", () => {
+    const pinned = apply([record({ id: "pinned", pinned: true })], [{ op: "archive", memoryIndex: 1, reason: "x" }]);
+    expect(pinned.skipped).toBe(1);
+    expect(pinned.historyEntries[0].summary).toContain("pinned");
+    const unknown = apply([record({ id: "a" })], [{ op: "decay", memoryIndex: 9, strength: 1 }]);
+    expect(unknown.historyEntries[0].summary).toContain("unknown memory index");
+    const merge = apply([record({ id: "a" }), record({ id: "p", pinned: true })], [{ op: "merge", memoryIndices: [1, 2], content: "m", entities: [] }]);
+    expect(merge.applied).toBe(0);
     const memories = [record({ id: "a" }), record({ id: "b" })];
-    const ops: DreamOp[] = [
-      { op: "decay", memoryIndex: 1, strength: 1 },
-      { op: "decay", memoryIndex: 2, strength: 1 }
-    ];
-    const result = apply(memories, ops, indexMapFor(memories), 1);
+    const capped = apply(memories, [{ op: "decay", memoryIndex: 1, strength: 1 }, { op: "decay", memoryIndex: 2, strength: 1 }], indexMapFor(memories), { maxOps: 1 });
+    expect([capped.applied, capped.skipped]).toEqual([1, 1]);
+  });
+
+  it("a record from any guild is dreamable (no guild scope)", () => {
+    const result = apply([record({ id: "foreign", origin: { guildId: "guild-2" } })], [{ op: "decay", memoryIndex: 1, strength: 1 }]);
     expect(result.applied).toBe(1);
-    expect(result.skipped).toBe(1);
-    expect(result.memories.find((m) => m.id === "a")?.strength).toBe(1);
-    expect(result.memories.find((m) => m.id === "b")?.strength).toBe(3);
   });
-});
 
-describe("guildHash", () => {
-  it("is deterministic and sums char codes", () => {
-    expect(guildHash("ab")).toBe("a".charCodeAt(0) + "b".charCodeAt(0));
-    expect(guildHash("guild-1")).toBe(guildHash("guild-1"));
-  });
-});
-
-describe("applyDreamOps waifu validation", () => {
-  it("skips an add whose waifuId is not a configured waifu", () => {
-    const { memories, applied, skipped, historyEntries } = applyDreamOps(
+  it("skips an add whose waifuId is not allowed", () => {
+    const { memories, skipped, historyEntries } = applyDreamOps(
       [],
       [{ op: "add", memory: { waifuId: "kevin", content: "Kevin likes tea.", kind: "preference", strength: 3, entities: [] } }],
       new Map(),
-      { guildId: "g1", now: new Date("2026-06-12T18:00:00Z"), allowedWaifuIds: ["aria", "riko"] }
+      { now: NOW, allowedWaifuIds: ["aria", "riko"] }
     );
     expect(memories).toHaveLength(0);
-    expect(applied).toBe(0);
     expect(skipped).toBe(1);
     expect(historyEntries[0].summary).toContain("unknown waifu id kevin");
   });
-
-  it("accepts an add for a configured waifu", () => {
-    const { memories, applied } = applyDreamOps(
-      [],
-      [{ op: "add", memory: { waifuId: "aria", content: "Aria hates mornings.", kind: "preference", strength: 3, entities: [] } }],
-      new Map(),
-      { guildId: "g1", now: new Date("2026-06-12T18:00:00Z"), allowedWaifuIds: ["aria", "riko"] }
-    );
-    expect(memories).toHaveLength(1);
-    expect(applied).toBe(1);
-  });
 });
 
-describe("orderDreamChunks / dreamChunkWaifuIds", () => {
-  const overBudget = () => {
-    const records: MemoryRecord[] = [];
-    for (const waifuId of ["aria", "mika", "yuki"]) {
-      for (let i = 0; i < 30; i += 1) records.push(record({ id: `${waifuId}-${i}`, waifuId }));
-    }
-    return selectDreamInput(records, [observation({ id: "o-zed", waifuId: "zed" })], NOW, 80);
-  };
-
-  it("starts after the cursor and wraps around, orphan chunk included", () => {
-    const chunks = overBudget();
-    expect(orderDreamChunks(chunks, undefined).map((chunk) => chunk.key)).toEqual(["aria", "mika", "yuki", "orphan"]);
-    expect(orderDreamChunks(chunks, "mika").map((chunk) => chunk.key)).toEqual(["yuki", "orphan", "aria", "mika"]);
-    expect(orderDreamChunks(chunks, "orphan").map((chunk) => chunk.key)).toEqual(["aria", "mika", "yuki", "orphan"]);
-    // a cursor whose waifu vanished still orders by position
-    expect(orderDreamChunks(chunks, "lumi").map((chunk) => chunk.key)).toEqual(["mika", "yuki", "orphan", "aria"]);
-  });
-
-  it("lists record AND observation owners as the chunk's waifus", () => {
-    const [chunk] = selectDreamInput(
-      [record({ id: "r1", waifuId: "yuki" })],
-      [observation({ id: "o1", waifuId: "mika" })],
-      NOW
-    );
-    expect(dreamChunkWaifuIds(chunk)).toEqual(["mika", "yuki"]);
-    expect(dreamChunkWaifuIds(overBudget().at(-1)!)).toEqual(["zed"]);
+describe("resolveDreamSubjects", () => {
+  it("resolves names against the chunk's known subjects only (unique matches)", () => {
+    const pool = [KEVIN, ALI, { discordUserId: "333", name: "Sam" }, { discordUserId: "444", name: "Sam" }];
+    expect(resolveDreamSubjects(["Kevin", "Sam", "Thursday"], "Kevin and Sam went out", pool)).toEqual([KEVIN]);
+    expect(resolveDreamSubjects([], "Ali owes Kevin tacos", pool)).toEqual([KEVIN, ALI]);
   });
 });

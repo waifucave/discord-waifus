@@ -4,13 +4,13 @@ import { z } from "zod";
 import { createProviderCredentialsLookup } from "../../api/llmGatewayCredentials.js";
 import { QueryRole, recordProviderQuery, recordProviderReply } from "../../shared/queryLog.js";
 import type { AssistantTurnRequest, AssistantTurnResult, ModelPipeline, ProviderRequest, WaifuGenerationRequest, WaifuGenerationResult, StageManagerObserveRequest, DreamRequest, PersonaDigestRequest, PersonaDigest } from "../../providers/types.js";
-import { ORCHESTRATOR_TOOL_NAME, PICK_NEXT_WAIFU_TOOL_NAME, REVIEWER_TOOL_NAME, SHORT_TERM_MEMORY_TOOL_NAME, OBSERVER_TOOL_NAME, DREAM_TOOL_NAME, PERSONA_DIGEST_TOOL_NAME, DREAM_PROMPT, PERSONA_DIGEST_PROMPT, ReviewerDecision, ReviewerDecisionSchema, orchestratorToolParameters, pickNextWaifuToolParameters, reviewerSystemPrompt, reviewerToolParameters, shortTermMemoryToolParameters, observerSystemPrompt, observerToolParameters, dreamToolParameters, flatDreamToolParameters, personaDigestToolParameters, dreamMessages, normalizeDreamOps, normalizeOrchestratorDecision, parseRawStageManagerObservations } from "../tools.js";
+import { ORCHESTRATOR_TOOL_NAME, PICK_NEXT_WAIFU_TOOL_NAME, REVIEWER_TOOL_NAME, SHORT_TERM_MEMORY_TOOL_NAME, OBSERVER_TOOL_NAME, DREAM_TOOL_NAME, PERSONA_DIGEST_TOOL_NAME, DREAM_PROMPT, PERSONA_DIGEST_PROMPT, ReviewerDecision, ReviewerDecisionSchema, orchestratorToolParameters, pickNextWaifuToolParameters, reviewerSystemPrompt, reviewerToolParameters, shortTermMemoryToolParameters, observerSystemPrompt, observerToolParameters, dreamToolParameters, flatDreamToolParameters, personaDigestToolParameters, dreamMessages, normalizeDreamOps, normalizeOrchestratorDecision, parseRawObserverOps } from "../tools.js";
 import { formatObserverContext } from "../contextMessages.js";
 import { GatewayPipelineError, buildUnifiedParams, preconformRequest } from "./params.js";
 import { buildWaifuMessages } from "./messages.js";
 import { buildOrchestratorChatMessages } from "./timeline.js";
 import { OrchestratorDecision } from "../decisions.js";
-import { DreamOp, StageManagerObservation } from "../stageManager.js";
+import { DreamOp, ObserverOp } from "../stageManager.js";
 
 const PersonaDigestResultSchema = z.object({ voice: z.string().min(1), role: z.string().min(1) });
 
@@ -298,11 +298,11 @@ class GatewayModelPipeline implements ModelPipeline {
     return result;
   }
 
-  async decideStageManagerObservations(request: StageManagerObserveRequest): Promise<StageManagerObservation[]> {
+  async decideStageManagerObservations(request: StageManagerObserveRequest): Promise<ObserverOp[]> {
     const response = await this.chat({
       messages: [
         { role: "system", content: observerSystemPrompt(request.systemPrompt, request.availableWaifuIds) },
-        { role: "user", content: formatObserverContext(request.messages, new Date()) }
+        { role: "user", content: request.observerInput ?? formatObserverContext(request.messages, new Date()) }
       ],
       tools: [{ name: OBSERVER_TOOL_NAME, parameters: observerToolParameters(request.availableWaifuIds) as Record<string, unknown> }],
       toolChoice: { name: OBSERVER_TOOL_NAME },
@@ -310,9 +310,9 @@ class GatewayModelPipeline implements ModelPipeline {
       signal: request.signal
     });
     return parseForcedCall(response, OBSERVER_TOOL_NAME, (raw) => {
-      const obj = raw as { observations?: unknown[] };
-      const arr = Array.isArray(obj) ? obj : (obj.observations ?? []);
-      return parseRawStageManagerObservations(arr as unknown[]);
+      const obj = raw as { ops?: unknown[]; observations?: unknown[] };
+      const arr = Array.isArray(obj) ? obj : (obj.ops ?? obj.observations ?? []);
+      return parseRawObserverOps(arr as unknown[]);
     }, "decideStageManagerObservations");
   }
 

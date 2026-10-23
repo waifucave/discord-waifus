@@ -36,7 +36,7 @@ describe("orchestration/tools", () => {
     expect(pickNextWaifuToolParameters(["a"]).properties).toBeDefined();
     expect(dreamToolParameters().properties).toHaveProperty("ops");
     expect(flatDreamToolParameters()).not.toEqual(dreamToolParameters());
-    expect(observerToolParameters(undefined).properties).toHaveProperty("observations");
+    expect(observerToolParameters(undefined).properties).toHaveProperty("ops");
     expect(shortTermMemoryToolParameters().properties).toBeDefined();
     expect(personaDigestToolParameters().properties).toHaveProperty("voice");
     expect(reviewerToolParameters().properties).toHaveProperty("hallucination");
