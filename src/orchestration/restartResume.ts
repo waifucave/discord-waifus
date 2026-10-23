@@ -10,9 +10,14 @@ import type {
   OrchestratorRespondingWaifu
 } from "../shared/schemas/domain.js";
 
-// Only two outcome shapes mean "the restart ate her line": still pending (resume ran before
-// the boot heal) or interrupted with the heal's runtime_restarted marker. Interruptions with
-// other reasons were superseded by real messages BEFORE the restart and must stay dead.
+// Only these outcome shapes mean "the restart ate her line": still pending (resume ran before
+// the boot heal), interrupted with the heal's runtime_restarted marker (crash/kill), or interrupted
+// by a planned stop of the runtime (restart, update, config reload). Interruptions with other
+// reasons were superseded by real messages, /stop, or an explicit user pause BEFORE the restart
+// and must stay dead.
+export const RUNTIME_RESTARTED_INTERRUPT_REASON = "runtime_restarted";
+export const RUNTIME_SHUTDOWN_INTERRUPT_REASON = "runtime_shutdown";
+const RESUMABLE_INTERRUPT_REASONS = new Set([RUNTIME_RESTARTED_INTERRUPT_REASON, RUNTIME_SHUTDOWN_INTERRUPT_REASON]);
 /** Interrupted decisions older than this get a fresh pass instead of a zombie reply. */
 const RESUME_DECISION_WINDOW_MS = 15 * 60 * 1000;
 /** Elapsed timers and stale work fire shortly after boot (clamped upward by scheduleRetrigger). */
@@ -43,14 +48,30 @@ export type ResumeAction =
   | { kind: "restore-timer"; guildId: string; channelId: string; seconds: number; reason: string }
   | { kind: "none" };
 
+// Outcomes are matched to planned responders by waifu id + occurrence, never by array index:
+// PickNextWaifu handoffs insert outcomes and move planned ones forward. Results follow the
+// outcome order (= execution order), and an unsent handoff resumes as a plain responder.
 export function unsentResponders(entry: OrchestratorDecisionHistoryEntry): OrchestratorRespondingWaifu[] {
-  return entry.respondingWaifus.filter((responder, index) => {
-    const outcome = entry.responderOutcomes[index];
-    if (!outcome || outcome.waifuId !== responder.waifuId) return false;
-    if (outcome.messageIds.length > 0) return false;
-    if (outcome.status === "pending") return true;
-    return outcome.status === "interrupted" && outcome.reason === "runtime_restarted";
-  });
+  const plannedOccurrences = new Map<string, number>();
+  const unsent: OrchestratorRespondingWaifu[] = [];
+  for (const outcome of entry.responderOutcomes) {
+    let responder: OrchestratorRespondingWaifu | undefined;
+    if (outcome.source === "handoff") {
+      responder = { waifuId: outcome.waifuId, delaySeconds: 0 };
+    } else {
+      const occurrence = plannedOccurrences.get(outcome.waifuId) ?? 0;
+      plannedOccurrences.set(outcome.waifuId, occurrence + 1);
+      responder = entry.respondingWaifus.filter((planned) => planned.waifuId === outcome.waifuId)[occurrence];
+    }
+    if (!responder || outcome.messageIds.length > 0) continue;
+    const resumable =
+      outcome.status === "pending" ||
+      (outcome.status === "interrupted" &&
+        outcome.reason !== undefined &&
+        RESUMABLE_INTERRUPT_REASONS.has(outcome.reason));
+    if (resumable) unsent.push(responder);
+  }
+  return unsent;
 }
 
 export function planRestartResume(input: ResumeChannelInput, now: Date): ResumeAction {
