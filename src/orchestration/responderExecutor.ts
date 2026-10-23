@@ -9,7 +9,7 @@ import { Logger } from "../backend/logger.js";
 import { DiscordGatewayFacade } from "../discord/client.js";
 import { loadGuildDirectoryView } from "../discord/directoryView.js";
 import { dedupeNames, modelVisibleEmojiToken, stripLeakedContextHeader } from "../discord/normalization.js";
-import type { ModelPipeline, SummarizeContextRequest, WaifuGenerationResult } from "../providers/types.js";
+import type { ModelPipeline, WaifuGenerationResult } from "../providers/types.js";
 import { PermissionWarningTracker } from "./permissionWarnings.js";
 import {
   GuildEmojisFileSchema,
@@ -23,6 +23,7 @@ import {
 } from "../shared/schemas/domain.js";
 import type { LedgerEntry } from "../shared/schemas/context.js";
 import { resolveBotAuthorIds } from "../shared/botIdentity.js";
+import { contextSummarizer } from "./context/compaction.js";
 import { conversationKey, type ConversationKey, type ConversationRef } from "./context/keys.js";
 import { isGapEntry } from "./context/ledger.js";
 import { parseReplyMarker, stripLeadingTranscriptHeader, type ParsedReplyMarker } from "./context/replyMarker.js";
@@ -555,17 +556,19 @@ export class ResponderExecutor {
     });
     // Same tool choice / params / attribution as her reply call, so compaction reuses the cached
     // prefix (spec 8.9). Without a summarizer nothing compacts.
-    const summarize = waifuContextSummarizer(input.pipeline, {
-      ...(harness.tools().length > 0 ? { toolChoice: "auto" as const } : {}),
-      params: waifu.params,
-      attribution: {
-        agentId: `waifu-${waifu.id}`,
-        waifuId: waifu.id,
-        guildId: input.guildId,
-        channelId: input.channelId,
-        conversationKey: conversationKey(conversation)
-      }
-    });
+    const summarize = input.pipeline.summarizeContext
+      ? contextSummarizer(input.pipeline, {
+          toolChoice: "auto",
+          params: waifu.params,
+          attribution: {
+            agentId: `waifu-${waifu.id}`,
+            waifuId: waifu.id,
+            guildId: input.guildId,
+            channelId: input.channelId,
+            conversationKey: conversationKey(conversation)
+          }
+        })
+      : undefined;
     const prepared = await this.options.contexts.prepare({
       conversation,
       agent: { kind: "waifu", waifuId: waifu.id },
@@ -828,20 +831,6 @@ const WAIFU_VALIDATOR_TOOL_NAMES = [
   "dream_memories",
   "set_persona_digest"
 ];
-
-/**
- * SEAM for T7b's `contextSummarizer(pipeline, reply)` (context/compaction.ts on its branch): the
- * same shape, but undefined when the pipeline cannot summarize. Replace with contextSummarizer at
- * merge.
- */
-export function waifuContextSummarizer(
-  pipeline: Pick<ModelPipeline, "summarizeContext">,
-  reply: Omit<SummarizeContextRequest, "prompt" | "instruction" | "signal">
-): ((prompt: BuiltPrompt, instruction: string) => Promise<string>) | undefined {
-  const summarizeContext = pipeline.summarizeContext?.bind(pipeline);
-  if (!summarizeContext) return undefined;
-  return (prompt, instruction) => summarizeContext({ ...reply, prompt, instruction });
-}
 
 /** `/print system_prompt` capture key: conversation + waifu (spec 8.8). */
 export function waifuPromptCaptureKey(key: ConversationKey | string, waifuId: string): string {

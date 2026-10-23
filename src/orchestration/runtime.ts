@@ -67,7 +67,15 @@ export class RuntimeOrchestrator {
         ...(options.compaction ? { compactionSettings: options.compaction } : {}),
         ...(options.memory ? { memory: options.memory } : {}),
         ...(ocr?.cachedText ? { ocr: { cachedText: (ref) => ocr.cachedText!(ref) } } : {}),
-        ...(options.contextCompaction ? { compaction: options.contextCompaction } : {})
+        ...(options.contextCompaction ? { compaction: options.contextCompaction } : {}),
+        // Late-bound: memoryJobs is constructed below. Fire-and-forget observer handoff (spec 8.9).
+        observeThrough: (conversation, seq) => {
+          void this.memoryJobs?.requestObserveThrough(conversation, seq).catch((error: unknown) => {
+            options.logger.warn("Observer handoff after compaction failed", {
+              message: error instanceof Error ? error.message : String(error)
+            });
+          });
+        }
       });
     const services: RuntimeCollaboratorOptions = { ...options, contexts: this.contexts };
     const hooks: RuntimeHooks = {

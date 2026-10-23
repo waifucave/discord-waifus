@@ -1,0 +1,39 @@
+toolChoice: "auto"
+params: {"temperature":0.8,"maxOutputTokens":8192}
+tools:
+- add_memory: {"type":"object","properties":{"content":{"type":"string"}},"required":["content"]}
+
+=== 0 system ===
+--- text [cache] ---
+You are Aria. Static harness text.
+=== 1 user ===
+--- text [cache] ---
+<memories>
+(none)
+</memories>
+<place>Bake Club › #general</place>
+=== 2 user ===
+--- text ---
+— Sat 24 Oct —
+
+--- text ---
+[14:00 #a0] Kevin: hi Aria
+
+--- text ---
+[14:01 #a1] Riko: I baked a lemon tart
+
+=== 3 assistant ===
+--- text ---
+ooh share it
+
+=== 4 user ===
+--- text [cache] ---
+[14:03 #a3] Kevin: she never shares
+
+--- text ---
+<compaction_request>
+This conversation is getting long and is being compacted. Messages from #a3 on stay verbatim after your summary, so summarize everything before #a3.
+Write it from your own perspective, in first person, as notes for your future self: the people here and how you feel about each of them, ongoing threads and plans, promises made, running jokes, and unresolved questions. Keep names and concrete details; skip small talk.
+Leave out messages #a1 — their authors deleted them.
+Reply with the summary text only: no preamble, no chat message, no tool calls.
+</compaction_request>
