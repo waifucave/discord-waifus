@@ -31,6 +31,7 @@ import {
 } from "./stores/config.js";
 import { setDebugRoute, unsetDebugRoute } from "./stores/debugRoutes.js";
 import { readMemoryStore } from "./stores/memories.js";
+import { legacyServerContextWindow } from "./contextWindows.js";
 
 /** What the command handlers need from the runtime facade. */
 export type CommandHost = {
@@ -479,7 +480,7 @@ export class RuntimeCommands {
     const messages = await this.options.discord.fetchFreshContext({
       guildId,
       channelId,
-      limit: Math.max(server.contextWindows.waifu, clearCount)
+      limit: Math.max(legacyServerContextWindow("waifu", server), clearCount)
     });
     const targets = [...messages]
       .reverse()

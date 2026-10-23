@@ -58,8 +58,11 @@ import {
   WaifuConfigSchema,
   WaifuPromptLayoutSchema,
   WaifuToolSettingsSchema,
+  WAIFU_VERBOSITIES,
   createEmptyRevisionedFile
 } from "../shared/schemas/domain.js";
+import { WaifuDmSettingsSchema } from "../shared/schemas/dm.js";
+import { CompactionOverrideBodySchema } from "../shared/schemas/compaction.js";
 import { UpdateAppConfigBodySchema, type AppConfig } from "../shared/schemas/config.js";
 import { createRevisionedBase, nowIso } from "../shared/schemas/common.js";
 import { StorageConflictError } from "../storage/errors.js";
@@ -192,6 +195,22 @@ function mergeNestedPatch<T>(current: T, patch: NoInfer<DeepPartial<T>> | undefi
   return merged as T;
 }
 
+// Optional-override maps (ServerConfig.contextWindows/compaction): a number/boolean sets the key,
+// an explicit `null` unsets it (= inherit), an omitted key is kept. An emptied map is dropped.
+function mergeOverridePatch<T extends Record<string, unknown>>(
+  current: T | undefined,
+  patch: { [K in keyof T]?: T[K] | null } | undefined
+): T | undefined {
+  if (patch === undefined) return current;
+  const merged: Record<string, unknown> = { ...(current ?? {}) };
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === undefined) continue;
+    if (value === null) delete merged[key];
+    else merged[key] = value;
+  }
+  return Object.keys(merged).length > 0 ? (merged as T) : undefined;
+}
+
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -213,9 +232,15 @@ const UpdateWaifuBodySchema = WaifuConfigSchema.omit({ personaDigest: true }).pa
   params: z.record(z.string(), z.unknown()).optional(),
   enabled: z.boolean().optional(),
   persona: z.string().optional(),
-  contextWindow: z.number().int().min(1).max(100).optional(),
+  contextWindow: z.number().int().min(1).max(200).optional(),
   availability: partialWithoutDefaults(WaifuAvailabilitySchema).optional(),
   tools: partialWithoutDefaults(WaifuToolSettingsSchema).optional(),
+  // Phase 4/5 additions: truly optional so a partial PUT never resets a stored value.
+  // dm.rateLimit is a leaf whose `null` (unlimited) is a real value, replaced wholesale.
+  verbosity: z.enum(WAIFU_VERBOSITIES).optional(),
+  customInstructions: z.string().max(4000).optional(),
+  scheduleInPrompt: z.boolean().optional(),
+  dm: partialWithoutDefaults(WaifuDmSettingsSchema).optional(),
   // promptLayout is a documented wholesale replace (the editor always sends the full tree).
   promptLayout: WaifuPromptLayoutSchema.unwrap().optional()
 });
@@ -239,7 +264,13 @@ const ServerConfigBodySchema = ServerConfigSchema.partial().extend({
   oneShot: OneShotConfigSchema.unwrap().optional(),
   stageManagerEnabled: z.boolean().optional(),
   paused: z.boolean().optional(),
-  contextWindows: partialWithoutDefaults(ServerConfigSchema.shape.contextWindows).optional(),
+  // B29: `null` per key = inherit (unset the stored override); omitted keys are kept.
+  contextWindows: z.object({
+    orchestrator: z.number().int().min(1).max(200).nullable().optional(),
+    waifu: z.number().int().min(1).max(200).nullable().optional(),
+    stageManager: z.number().int().min(1).max(200).nullable().optional()
+  }).optional(),
+  compaction: CompactionOverrideBodySchema.optional(),
   memoryInjectionLimit: z.number().int().min(1).max(50).optional(),
   tools: partialWithoutDefaults(ServerToolSettingsSchema).optional(),
   // channels is a documented wholesale replace; per-channel edits use the channel route.
@@ -279,7 +310,7 @@ const AgentConfigBodySchema = AgentConfigSchema.partial().extend({
   revision: z.number().int().nonnegative().optional(),
   params: z.record(z.string(), z.unknown()).optional(),
   enabled: z.boolean().optional(),
-  contextWindow: z.number().int().min(1).max(100).optional(),
+  contextWindow: z.number().int().min(1).max(200).optional(),
   prompt: z.string().optional(),
   directiveCooldown: z.number().int().min(0).max(20).optional(),
   promptSections: partialWithoutDefaults(OrchestratorPromptSectionsSchema).optional()
@@ -775,6 +806,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
           params: mergeParamsPatch(current.params, patch.params) ?? current.params,
           availability: mergeNestedPatch(current.availability, patch.availability),
           tools: mergeNestedPatch(current.tools, patch.tools),
+          dm: mergeNestedPatch(current.dm, patch.dm),
           id: current.id,
           // personaDigest is server-managed; always carry it forward from current.
           personaDigest: current.personaDigest
@@ -931,7 +963,8 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
         return {
           ...current,
           ...patch,
-          contextWindows: mergeNestedPatch(current.contextWindows, patch.contextWindows),
+          contextWindows: mergeOverridePatch(current.contextWindows, patch.contextWindows) ?? {},
+          compaction: mergeOverridePatch(current.compaction, patch.compaction),
           tools: mergeNestedPatch(current.tools, patch.tools),
           guildId
         };
@@ -1327,6 +1360,9 @@ function remoteAppConfig(config: AppConfig) {
     runtime: config.runtime,
     frontend: {},
     ocr: config.ocr,
+    compaction: config.compaction,
+    memory: config.memory,
+    discord: config.discord,
     updates: config.updates
   };
 }

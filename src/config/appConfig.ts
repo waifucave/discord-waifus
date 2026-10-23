@@ -52,6 +52,9 @@ export function mergeAppConfigPatch(
     runtime: { ...current.runtime, ...patch.runtime },
     frontend,
     ocr: { ...current.ocr, ...patch.ocr },
+    compaction: { ...current.compaction, ...patch.compaction },
+    memory: { ...current.memory, ...patch.memory },
+    discord: { ...current.discord, images: { ...current.discord.images, ...patch.discord?.images } },
     updates: { ...current.updates, ...patch.updates }
   });
 }

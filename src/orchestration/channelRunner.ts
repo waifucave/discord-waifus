@@ -52,6 +52,7 @@ import {
 } from "./stores/decisionHistory.js";
 import { noteActiveChatParticipantsFromContext } from "./stores/participants.js";
 import { consumeScheduledRetrigger, markSessionIdle, sessionRelativePath, setActivePipeline, updateSession } from "./stores/sessions.js";
+import { legacyServerContextWindow } from "./contextWindows.js";
 
 export type ActiveChannelRun = {
   guildId: string;
@@ -463,7 +464,7 @@ export class ChannelRunner {
       let messages = await this.options.discord.fetchFreshContext({
         guildId,
         channelId,
-        limit: server.contextWindows.orchestrator ?? orchestrator.contextWindow,
+        limit: legacyServerContextWindow("orchestrator", server),
         signal
       });
       await noteActiveChatParticipantsFromContext(this.options.storage, guildId, channelId, messages);

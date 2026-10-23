@@ -35,6 +35,7 @@ import { ensureServer, listAvailableWaifusForChannel, listKnownGuildIds, listWai
 import { appendStageManagerHistory } from "./stores/decisionHistory.js";
 import { emptyMemoryStore, readMemoryStore } from "./stores/memories.js";
 import { ensureChannelSession } from "./stores/sessions.js";
+import { legacyServerContextWindow } from "./contextWindows.js";
 
 // Hour of the day (local time, 0-23) at which the nightly dream pass fires.
 const DREAM_HOUR_LOCAL = 5;
@@ -156,7 +157,7 @@ export class MemoryJobs {
       let messages = await this.options.discord.fetchFreshContext({
         guildId,
         channelId,
-        limit: server.contextWindows.stageManager ?? config.contextWindow
+        limit: legacyServerContextWindow("stageManager", server)
       });
       messages = await this.models.messagesForModel(messages, { providerId: config.providerId, modelId: config.modelId });
 

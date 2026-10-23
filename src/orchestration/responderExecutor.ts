@@ -44,6 +44,7 @@ import {
 import { recordWaifuNotes } from "./stores/memories.js";
 import { noteActiveChatParticipantsFromContext, readActiveChatParticipants } from "./stores/participants.js";
 import { setActivePipeline } from "./stores/sessions.js";
+import { legacyServerContextWindow } from "./contextWindows.js";
 
 export type ResponderExecutionResult = {
   /** Responders that reached generation (enabled, linked, modeled). */
@@ -218,7 +219,7 @@ export class ResponderExecutor {
         let waifuMessages = await this.options.discord.fetchFreshContext({
           guildId: input.guildId,
           channelId: input.channelId,
-          limit: waifu.contextWindow || input.server.contextWindows.waifu,
+          limit: waifu.contextWindow || legacyServerContextWindow("waifu", input.server),
           signal: input.signal
         });
         await noteActiveChatParticipantsFromContext(this.options.storage, input.guildId, input.channelId, waifuMessages);
