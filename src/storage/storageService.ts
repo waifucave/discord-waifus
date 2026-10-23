@@ -16,6 +16,26 @@ export type UpdateRevisionedJsonOptions<T extends RevisionedRecord> = {
   transform: (current: T) => Promise<T> | T;
 };
 
+// Crash leftovers can only predate this process (our own temps are never removed and a live
+// writer's temps must not be), so scanning a file's directory once per process is enough.
+// Scanning on every read cost a readdir per read on hot paths (sessions, memories).
+const tempRecovery = new Map<string, Promise<void>>();
+
+function recoverTempsOnce(filePath: string): Promise<void> {
+  let pending = tempRecovery.get(filePath);
+  if (!pending) {
+    pending = recoverAtomicWriteTemps(filePath).then(
+      () => undefined,
+      (error: unknown) => {
+        tempRecovery.delete(filePath);
+        throw error;
+      }
+    );
+    tempRecovery.set(filePath, pending);
+  }
+  return pending;
+}
+
 export class StorageService {
   readonly locks: ResourceLockManager;
 
@@ -38,7 +58,7 @@ export class StorageService {
     fallback?: T
   ): Promise<T> {
     const filePath = resolveDataPath(this.dataRoot, relativePath);
-    await recoverAtomicWriteTemps(filePath);
+    await recoverTempsOnce(filePath);
     try {
       const raw = await readFile(filePath, "utf8");
       const parsed = JSON.parse(raw);

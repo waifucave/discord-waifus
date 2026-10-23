@@ -51,11 +51,16 @@ export async function stopDaemonProcess<T extends ProcessState>(options: {
   readonly waitForExit?: (pid: number, timeoutMs: number) => Promise<boolean>;
   readonly beforeTerminate?: (pid: number) => void | Promise<void>;
   readonly beforeEscalate?: (pid: number) => void | Promise<void>;
+  /**
+   * Confirms the live pid is still the daemon that wrote the pid file. After a crash the pid can
+   * be reused by an unrelated process, which must never be signalled; false is treated as stale.
+   */
+  readonly verifyIdentity?: (state: T) => Promise<boolean>;
 }): Promise<StopDaemonResult> {
   const processState = await readProcessState(options.pidFile, options.schema);
   if (!processState) return Object.freeze({ state: "absent" });
   const isAlive = options.isAlive ?? processIsAlive;
-  if (!isAlive(processState.pid)) {
+  if (!isAlive(processState.pid) || (options.verifyIdentity && !(await options.verifyIdentity(processState)))) {
     await rm(options.pidFile, { force: true });
     return Object.freeze({ state: "stale_removed", pid: processState.pid });
   }

@@ -17,6 +17,8 @@ export type ParsedCli = {
   flags: Record<string, string | boolean>;
   positional: string[];
   remoteAction?: RemoteCliAction;
+  /** `--help`/`-h` anywhere before `--`: print the command's help and do nothing else. */
+  helpRequested?: true;
 };
 
 const COMMANDS = new Set<CliCommand>([
@@ -32,7 +34,16 @@ const COMMANDS = new Set<CliCommand>([
   "remote"
 ]);
 
-export function parseCliArgs(argv: string[]): ParsedCli {
+export function parseCliArgs(rawArgv: string[]): ParsedCli {
+  // Strip help switches up front: as ordinary flags they were ignored (`waifus start --help`
+  // started the app) or swallowed the next argument as their value.
+  const separator = rawArgv.indexOf("--");
+  const beforeSeparator = separator >= 0 ? rawArgv.slice(0, separator) : rawArgv;
+  const isHelpSwitch = (arg: string) => arg === "--help" || arg === "-h";
+  const helpRequested = beforeSeparator.some(isHelpSwitch);
+  const argv = helpRequested
+    ? [...beforeSeparator.filter((arg) => !isHelpSwitch(arg)), ...(separator >= 0 ? rawArgv.slice(separator) : [])]
+    : rawArgv;
   const [first, ...rest] = argv;
   const command = COMMANDS.has(first as CliCommand) ? (first as CliCommand) : "help";
   const commandArgs = command === "help" && first && !first.startsWith("-") && first !== "help"
@@ -75,7 +86,13 @@ export function parseCliArgs(argv: string[]): ParsedCli {
     }
   }
 
-  return { command, flags, positional, ...(remoteAction ? { remoteAction } : {}) };
+  return {
+    command,
+    flags,
+    positional,
+    ...(remoteAction ? { remoteAction } : {}),
+    ...(helpRequested ? { helpRequested: true as const } : {})
+  };
 }
 
 export function flagString(flags: Record<string, string | boolean>, key: string): string | undefined {

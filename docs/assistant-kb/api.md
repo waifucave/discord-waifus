@@ -11,6 +11,8 @@ does goes through these endpoints, so any agent can drive the app with plain HTT
   and `updatedAt`, never the current resource body.
 - Validation failures return **400** with a message (zod field errors, or
   `unsupported_parameter` naming a violated gateway rule).
+- `:guildId`/`:channelId` (and `guildId`/`channelId` in runtime stop/trigger bodies) must be
+  Discord snowflakes (17–20 digits); other ids reject dot-only values such as `.`/`..`.
 - Model params are gateway-native dotted keys inside `params`
   (e.g. `{"temperature": 0.9, "reasoning.enabled": false}`).
 - Assistant tool calls inherit the person or paired device that initiated the conversation. Never
@@ -34,7 +36,7 @@ does goes through these endpoints, so any agent can drive the app with plain HTT
 | GET | /api/status | Runtime + Discord connection state. |
 | GET | /api/runtime | Runtime state incl. pause state and queues; host paths/process fields are local-only. |
 | GET | /api/admin/operations/:operationId | Principal-scoped mutation recovery status; no response body/result. |
-| POST | /api/runtime/pause · /resume | Pause/resume all orchestration. |
+| POST | /api/runtime/pause · /resume | Pause/resume all orchestration (takes effect in memory immediately, then persisted as `runtime.paused` in config.toml so it survives reloads/restarts; if that write fails the response carries a `warning`). |
 | POST | /api/runtime/reload | Reload configs into the running orchestrator. |
 | POST | /api/runtime/trigger/orchestrator | Body `{guildId, channelId}` — run a decision pass now. |
 | POST | /api/runtime/trigger/stage-manager | Body `{guildId, channelId}` — run an observer pass now. |
@@ -104,6 +106,10 @@ curl -s -X PUT http://127.0.0.1:3888/api/waifus/riko \
   an optional revision; omitting it is last-writer-wins.
 - **`params` merge**: config `params` MERGE with the stored object on write; send a key with
   value `null` to unset it. A partial params write never wipes the rest.
+- **Nested settings merge**: waifu `availability`/`tools`, server `contextWindows`/`tools` and
+  agent `promptSections` deep-merge, so `{"tools": {"pickNextWaifu": true}}` changes only that
+  flag. Arrays (e.g. `availability.busy`), server `channels` and waifu `promptLayout` replace
+  wholesale. A channel PUT that omits `enabled` keeps the current value.
 - **Unlink a bot**: `PUT /api/waifus/:id` with `"botId": null`.
 - **Link a bot**: `POST /api/waifus/:id/link-bot {applicationId?}` — one call ensures the
   discord-bots entry, sets the application id, and links the waifu's botId.
