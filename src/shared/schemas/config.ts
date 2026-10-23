@@ -31,7 +31,7 @@ export const OcrConfigSchema = z
         z.enum(["auto", "apple-vision", "bundled-tesseract", "system-tesseract"])
       )
       .default("auto"),
-    cacheTtlHours: z.number().int().min(1).max(24 * 30).default(24),
+    cacheTtlHours: z.number().int().min(1).max(24 * 30).default(168),
     timeoutMs: z.number().int().min(250).max(30_000).default(1_500),
     maxImageBytes: z.number().int().min(1024).max(32 * 1024 * 1024).default(8 * 1024 * 1024),
     maxImagesPerModelCall: z.number().int().min(0).max(20).default(4),
@@ -40,7 +40,7 @@ export const OcrConfigSchema = z
   .default({
     enabled: true,
     engine: "auto",
-    cacheTtlHours: 24,
+    cacheTtlHours: 168,
     timeoutMs: 1_500,
     maxImageBytes: 8 * 1024 * 1024,
     maxImagesPerModelCall: 4,

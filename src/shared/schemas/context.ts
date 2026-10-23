@@ -33,6 +33,17 @@ export const ContextNoteSchema = z.discriminatedUnion("kind", [
     decisionId: z.string(),
     call: z.string(), // serialized decision args
     outcome: z.string() // final-state outcome text
+  }),
+  // A ledger `edit` event (Phase 5) as this context first saw it: numbered from the context's
+  // noteSeq and anchored to the newest entry at that moment, so edits share the notes' single
+  // append-only order. Author name frozen at conversion.
+  z.object({
+    kind: z.literal("edit"),
+    ...NoteBase,
+    eventSeq: z.number().int().nonnegative(),
+    messageId: z.string().min(1),
+    authorName: z.string(),
+    text: z.string().max(500)
   })
 ]);
 export type ContextNote = z.infer<typeof ContextNoteSchema>;

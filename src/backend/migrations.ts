@@ -161,7 +161,7 @@ export const MIGRATION_STEPS: readonly MigrationStep[] = [
   { id: "memories-cross-guild-dedupe-v1", frequency: "once", pending: true, run: migrateMemoriesCrossGuildDedupe }, // T6
   { id: "pending-observations-global-v1", frequency: "once", pending: true, run: migratePendingObservationsGlobal }, // T6
   { id: "dream-cursor-global-v1", frequency: "once", pending: true, run: migrateDreamCursorGlobal }, // T6
-  { id: "ocr-cache-url-keys-cleanup-v1", frequency: "once", pending: true, run: migrateOcrCacheUrlKeysCleanup }, // T2
+  { id: "ocr-cache-url-keys-cleanup-v1", frequency: "once", run: migrateOcrCacheUrlKeysCleanup }, // T2
   {
     // Runs LAST: every step above may still leave a file's schemaVersion at 1 even once its shape
     // is current. Stamping here — after all shape conversions — is what lets the next boot's

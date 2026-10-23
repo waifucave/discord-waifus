@@ -1179,6 +1179,9 @@ describe("migration ledger", () => {
       "dream-cursor-global-v1",
       "ocr-cache-url-keys-cleanup-v1"
     ];
+    // Steps whose owning task has landed (flag removed, real body).
+    const LANDED_STEP_IDS = new Set(["ocr-cache-url-keys-cleanup-v1"]);
+    const STILL_PENDING_IDS = PHASE4_STEP_IDS.filter((id) => !LANDED_STEP_IDS.has(id));
 
     function recordingStep(id: string, runs: string[], extra: Partial<MigrationStep> = {}): MigrationStep {
       return {
@@ -1236,7 +1239,7 @@ describe("migration ledger", () => {
       expect(positions[positions.length - 1]).toBeLessThan(ids.indexOf(`stamp-schema-version-${CURRENT_SCHEMA_VERSION}`));
       for (const id of PHASE4_STEP_IDS) {
         const step = MIGRATION_STEPS.find((candidate) => candidate.id === id)!;
-        expect(step.pending, id).toBe(true);
+        expect(step.pending, id).toBe(LANDED_STEP_IDS.has(id) ? undefined : true);
       }
       expect(MIGRATION_STEPS.find((step) => step.id === "waifu-params-gateway-040-v1")!.frequency).toBe(
         "once-per-app-version"
@@ -1246,17 +1249,31 @@ describe("migration ledger", () => {
     it("pending stub bodies throw if ever invoked, and the real boot never invokes them", async () => {
       // Steps whose body has landed (still registered pending until their runtime half lands).
       const IMPLEMENTED = new Set(["waifu-drop-prompt-layout-v1"]);
-      for (const id of PHASE4_STEP_IDS.filter((stepId) => !IMPLEMENTED.has(stepId))) {
+      for (const id of STILL_PENDING_IDS.filter((stepId) => !IMPLEMENTED.has(stepId))) {
         const step = MIGRATION_STEPS.find((candidate) => candidate.id === id)!;
         await expect(step.run("/nonexistent"), id).rejects.toThrow(/pending/);
       }
       const root = await freshRoot();
       await expect(runMigrations(root, { appVersion: "2.200.0" })).resolves.toBeDefined();
       const ledger = await readJson<Ledger>(root, LEDGER);
-      for (const id of PHASE4_STEP_IDS) expect(ledger.steps[id], id).toBeUndefined();
+      for (const id of STILL_PENDING_IDS) expect(ledger.steps[id], id).toBeUndefined();
+      for (const id of LANDED_STEP_IDS) expect(ledger.steps[id], id).toBeDefined();
       expect(ledger.steps["configs-to-gateway-params"]).toBeDefined();
       expect(ledger.steps[`stamp-schema-version-${CURRENT_SCHEMA_VERSION}`]).toBeDefined();
     });
+  });
+
+  it("ocr-cache-url-keys-cleanup-v1 removes the URL-keyed OCR results and keeps results-v2", async () => {
+    const root = await freshRoot();
+    await writeJson(root, "app/cache/ocr/results/abc.json", { schemaVersion: 1, text: "old" });
+    await writeJson(root, "app/cache/ocr/results-v2/def.json", { schemaVersion: 1, text: "new" });
+    const step = MIGRATION_STEPS.find((candidate) => candidate.id === "ocr-cache-url-keys-cleanup-v1")!;
+
+    expect(await step.run(root)).toBe("ocr-cache-url-keys-cleanup-v1");
+    expect(await exists(root, "app/cache/ocr/results")).toBe(false);
+    expect(await exists(root, "app/cache/ocr/results-v2/def.json")).toBe(true);
+    // Idempotent: nothing left to remove.
+    expect(await step.run(root)).toBeUndefined();
   });
 
   it("runs a step missing from the ledger and records it, leaving recorded steps skipped", async () => {

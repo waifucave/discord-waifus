@@ -17,9 +17,11 @@ import {
   GuildMemberCacheEntry,
   GuildRoleCacheEntry
 } from "../shared/schemas/domain.js";
+import type { RawDiscordMessage } from "../shared/schemas/discordMessage.js";
 import { buildNormalizedDiscordContext } from "./contextBuilder.js";
 import { unresolvedMentionIdsByType } from "./memberCache.js";
 import { denormalizeModelContentForDiscord } from "./normalization.js";
+import { pageMessagesSince, toRawDiscordMessage, type DiscordMessageLike } from "./rawMessage.js";
 
 export type DiscordRuntimeStatus = {
   connected: boolean;
@@ -110,6 +112,18 @@ export interface DiscordGatewayFacade {
     limit: number;
     signal?: AbortSignal;
   }): Promise<ContextMessage[]>;
+  /**
+   * Phase 4 context engine (spec 8.3): raw messages newer than `afterMessageId` (null = newest
+   * `maxMessages`), one record per Discord message, oldest-first; pages `before` in batches of
+   * 100. Fakes without it fall back to fetchFreshContext + cursor filter (fetchTranscript.ts).
+   */
+  fetchContextSince?(input: {
+    guildId: string;
+    channelId: string;
+    afterMessageId: string | null;
+    maxMessages: number;
+    signal?: AbortSignal;
+  }): Promise<{ messages: RawDiscordMessage[]; reachedCursor: boolean }>;
   sendWaifuMessage(input: {
     guildId: string;
     channelId: string;
@@ -743,6 +757,31 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
         waifuAuthorIds: botAuthorIds(this.options.waifus ?? [])
       }
     ).messages;
+  }
+
+  async fetchContextSince(input: {
+    guildId: string;
+    channelId: string;
+    afterMessageId: string | null;
+    maxMessages: number;
+    signal?: AbortSignal;
+  }): Promise<{ messages: RawDiscordMessage[]; reachedCursor: boolean }> {
+    throwIfAborted(input.signal);
+    const client = this.orchestratorClient();
+    const channel = await client.channels.fetch(input.channelId);
+    if (!channel || !("messages" in channel)) {
+      return { messages: [], reachedCursor: true };
+    }
+    const result = await pageMessagesSince(
+      async (before) => (await channel.messages.fetch(before ? { limit: 100, before } : { limit: 100 })).values(),
+      { afterMessageId: input.afterMessageId, maxMessages: input.maxMessages, signal: input.signal }
+    );
+    return {
+      messages: result.messages.map((message) =>
+        toRawDiscordMessage(message as unknown as DiscordMessageLike, input.guildId)
+      ),
+      reachedCursor: result.reachedCursor
+    };
   }
 
   async sendWaifuMessage(input: {

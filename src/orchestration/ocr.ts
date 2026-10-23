@@ -7,6 +7,8 @@ import { createWorker, OEM, PSM } from "tesseract.js";
 import type { Worker as TesseractWorker } from "tesseract.js";
 import { Logger } from "../backend/logger.js";
 import { appDataPath } from "../config/paths.js";
+import { attachmentKey, DiscordImageFetcher, type ImageFetcher } from "../discord/attachments.js";
+import type { ImageRef } from "../shared/schemas/discordMessage.js";
 import { OcrConfig } from "../shared/schemas/config.js";
 import { AttachmentImage, ContextMessage } from "./contextMessages.js";
 import { BUNDLED_OCR_LANGUAGE, bundledOcrLangPath } from "./ocrPackages.js";
@@ -60,6 +62,11 @@ export type ImageOcrServiceOptions = {
   dataRoot: string;
   config: OcrConfig;
   logger: Logger;
+  /**
+   * Shared Discord image fetcher (spec 8.4: OCR uses the same fetcher, purpose "ocr"). When
+   * omitted the service builds its own over the shared disk cache, sized by this OCR config.
+   */
+  fetcher?: ImageFetcher;
 };
 
 type OcrCacheEntry = {
@@ -76,8 +83,30 @@ export class ImageOcrService {
   private helperPathPromise?: Promise<string>;
   private tesseractWorkerPromise?: Promise<TesseractWorker>;
   private lastCleanupAt = 0;
+  private readonly fetcher: ImageFetcher;
 
-  constructor(private readonly options: ImageOcrServiceOptions) {}
+  constructor(private readonly options: ImageOcrServiceOptions) {
+    this.fetcher =
+      options.fetcher ??
+      new DiscordImageFetcher({
+        dataRoot: options.dataRoot,
+        logger: options.logger,
+        config: {
+          maxBytes: options.config.maxImageBytes,
+          fetchTimeoutMs: Math.max(500, options.config.timeoutMs)
+        }
+      });
+  }
+
+  /**
+   * Cached OCR text for an image without running OCR (the inline-image freeze rule reads it "at
+   * that moment", spec 8.4). Undefined when OCR is disabled, not cached, expired or empty.
+   */
+  async cachedText(ref: Pick<ImageRef, "url"> & { key?: string }): Promise<string | undefined> {
+    if (!this.options.config.enabled) return undefined;
+    const text = await this.readCache(ocrCacheKey(ref.key ?? attachmentKey(ref.url)));
+    return text ? clipOcrText(text, this.options.config.maxTextCharsPerImage) : undefined;
+  }
 
   /** Terminate the reused tesseract.js worker (if any). Call on shutdown. */
   async dispose(): Promise<void> {
@@ -139,13 +168,14 @@ export class ImageOcrService {
   }
 
   private async extractImageText(image: AttachmentImage, options: { signal?: AbortSignal }): Promise<string | undefined> {
-    const key = cacheKeyForImage(image);
+    const imageKey = attachmentKey(image.url);
+    const key = ocrCacheKey(imageKey);
     const cached = await this.readCache(key);
     if (cached !== undefined) {
       return cached || undefined;
     }
 
-    const tempPath = await this.downloadImage(image, key, options.signal).catch((error) => {
+    const tempPath = await this.downloadImage(image, imageKey, key, options.signal).catch((error) => {
       this.options.logger.warn("OCR image download failed", { message: errorMessage(error) });
       return undefined;
     });
@@ -329,31 +359,34 @@ export class ImageOcrService {
 
   private async downloadImage(
     image: AttachmentImage,
+    imageKey: string,
     key: string,
     signal: AbortSignal | undefined
-  ): Promise<string> {
-    await mkdir(this.tmpOcrDir(), { recursive: true });
+  ): Promise<string | undefined> {
     const contentLength = Number(image.contentLengthBytes ?? 0);
     if (contentLength > this.options.config.maxImageBytes) {
       throw new Error("Image exceeds OCR size limit.");
     }
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(new Error("OCR image download timed out.")), this.options.config.timeoutMs);
-    const onAbort = () => controller.abort(signal?.reason);
-    signal?.addEventListener("abort", onAbort, { once: true });
-    try {
-      const response = await fetch(image.url, { signal: controller.signal });
-      if (!response.ok) {
-        throw new Error(`Image download returned HTTP ${response.status}.`);
-      }
-      const buffer = await readLimitedResponse(response, this.options.config.maxImageBytes);
-      const tempPath = path.join(this.tmpOcrDir(), `${key}-${randomUUID()}${extensionForImage(image, response)}`);
-      await writeFile(tempPath, buffer, { mode: 0o600 });
-      return tempPath;
-    } finally {
-      clearTimeout(timer);
-      signal?.removeEventListener("abort", onAbort);
+    const result = await this.fetcher.get(
+      {
+        key: imageKey,
+        url: image.url,
+        ...(image.contentType ? { contentType: image.contentType } : {}),
+        ...(image.contentLengthBytes !== undefined ? { bytes: image.contentLengthBytes } : {})
+      },
+      { signal, purpose: "ocr" }
+    );
+    if (!result.ok) {
+      if (result.reason === "aborted") return undefined;
+      throw new Error(`Image download failed: ${result.reason}.`);
     }
+    if (result.data.byteLength > this.options.config.maxImageBytes) {
+      throw new Error("Image exceeds OCR size limit.");
+    }
+    await mkdir(this.tmpOcrDir(), { recursive: true });
+    const tempPath = path.join(this.tmpOcrDir(), `${key}-${randomUUID()}${extensionForMime(result.mimeType)}`);
+    await writeFile(tempPath, result.data, { mode: 0o600 });
+    return tempPath;
   }
 
   private async readCache(key: string): Promise<string | undefined> {
@@ -406,7 +439,7 @@ export class ImageOcrService {
   }
 
   private cacheResultsDir(): string {
-    return appDataPath(this.options.dataRoot, "cache", "ocr", "results");
+    return appDataPath(this.options.dataRoot, "cache", "ocr", OCR_RESULTS_DIR);
   }
 
   private cachePath(key: string): string {
@@ -429,15 +462,23 @@ export async function clearOcrArtifacts(dataRoot: string): Promise<{ cleared: tr
   ]);
   await Promise.all([
     mkdir(appDataPath(dataRoot, "cache", "ocr", "bin"), { recursive: true }),
-    mkdir(appDataPath(dataRoot, "cache", "ocr", "results"), { recursive: true }),
+    mkdir(appDataPath(dataRoot, "cache", "ocr", OCR_RESULTS_DIR), { recursive: true }),
     mkdir(appDataPath(dataRoot, "tmp", "ocr"), { recursive: true })
   ]);
   return { cleared: true };
 }
 
-function cacheKeyForImage(image: AttachmentImage): string {
-  return createHash("sha256").update(image.url).digest("hex");
+/**
+ * OCR result file name: sha256 of the image's attachmentKey (spec 8.4), so a re-signed Discord URL
+ * still hits the cache. Results live in results-v2/; the URL-keyed results/ directory is removed
+ * by migration ocr-cache-url-keys-cleanup-v1.
+ */
+export function ocrCacheKey(imageKey: string): string {
+  return createHash("sha256").update(imageKey).digest("hex");
 }
+
+export const OCR_RESULTS_DIR = "results-v2";
+export const LEGACY_OCR_RESULTS_DIR = "results";
 
 function clipOcrText(text: string, maxChars: number): string {
   return text.length > maxChars ? text.slice(0, maxChars) : text;
@@ -455,36 +496,12 @@ function sanitizeOcrText(text: string, maxChars: number): string {
     .trim();
 }
 
-async function readLimitedResponse(response: Response, maxBytes: number): Promise<Buffer> {
-  if (!response.body) {
-    const buffer = Buffer.from(await response.arrayBuffer());
-    if (buffer.byteLength > maxBytes) throw new Error("Image exceeds OCR size limit.");
-    return buffer;
-  }
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    if (total > maxBytes) {
-      await reader.cancel();
-      throw new Error("Image exceeds OCR size limit.");
-    }
-    chunks.push(value);
-  }
-  return Buffer.concat(chunks);
-}
-
-function extensionForImage(image: AttachmentImage, response: Response): string {
-  const contentType = (image.contentType ?? response.headers.get("content-type") ?? "").toLowerCase();
-  if (contentType.includes("png")) return ".png";
-  if (contentType.includes("jpeg") || contentType.includes("jpg")) return ".jpg";
-  if (contentType.includes("webp")) return ".webp";
-  if (contentType.includes("gif")) return ".gif";
-  const match = new URL(image.url).pathname.match(/\.(png|jpe?g|webp|gif)$/iu);
-  return match ? match[0].toLowerCase() : ".png";
+function extensionForMime(mimeType: string): string {
+  if (mimeType.includes("png")) return ".png";
+  if (mimeType.includes("jpeg") || mimeType.includes("jpg")) return ".jpg";
+  if (mimeType.includes("webp")) return ".webp";
+  if (mimeType.includes("gif")) return ".gif";
+  return ".png";
 }
 
 async function ensureCommandAvailable(command: string): Promise<void> {
