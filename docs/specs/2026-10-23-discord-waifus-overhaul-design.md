@@ -174,8 +174,8 @@ orchestrator.
   stays silent (optionally one in-character "talk later" notice per window — configurable flag
   `dm.notifyWhenLimited`, default `true`) and resumes when the window frees up.
 - Requires the `DirectMessages` intent + `Partials.Channel` on that waifu's client only.
-- DM sessions/history stored under `user/dms/<waifuId>/<userId>/…`; covered by GDPR-style
-  per-user deletion via CLI/HTTP.
+- DM contexts live under `user/conversations/dm_<userId>_<waifuId>/` (same engine as channels);
+  DM-only state (rate-limit counters) under `user/dms/`; covered by per-user deletion via CLI/HTTP.
 - Exposed through the settings registry (§7), dashboard Cast editor, CLI, HTTP and help.
 
 ## 5. LLM layer: gateway vs winter-agent-sdk
@@ -400,6 +400,53 @@ Status: **revised with owner input 2026-10-23** (reply target = waifu; layout ed
   20-turn conversation (fake provider reports cache reads).
 - Offline golden tests snapshot the rendered prompts for each layout/mode so prompt changes are
   reviewable diffs.
+- Offline cache-hit simulation: a fake transport reports `cacheReadTokens` as the longest common
+  block prefix with the previous request of the same `promptCacheKey`; a scripted 20-turn
+  conversation must reach ≥ 0.8 cache-read ratio for waifus and the orchestrator.
+
+### 6.8 Implementation decisions (2026-10-23, from code-reality review)
+
+- **Single system message.** The Anthropic/Google codecs hoist every `role:"system"` message into
+  the top-level system prompt, so only `messages[0]` may be system. Retry notes, the JSON nudge for
+  schema tools, and all notes are user-role content (otherwise they silently rewrite breakpoint A).
+- **Images**: each message's image mode (inline vs OCR text) is frozen the first time it renders
+  (`maxInlineImagesPerEpoch`, default 8; a failed fetch freezes to text), so aging never rewrites
+  the prefix.
+- **Merged user turns**: one text block per Discord message inside a merged user turn, so appending
+  never changes earlier blocks; the ephemeral tail is an uncached final block.
+- **Stable tool schemas**: the orchestrator tool schema is fixed per channel config; "reply
+  required" and "directive budget" move to the tail and stay enforced in code. `add_memory` and
+  `PickNextWaifu` stay listed; suppression ignores a call instead of removing the tool.
+- **Refs**: one ref table per conversation (`user/conversations/<key>/refs.json`) shared by all
+  agents; refs are base-36 starting at `a0`.
+- **Storage keys**: contexts live in `user/conversations/<key>/contexts/<agent>.json` with keys
+  `g_<guild>_<channel>` and `dm_<user>_<waifu>`; `user/dms/` holds DM-only state (rate limits).
+- **B29**: `ServerConfig.contextWindows.*` become optional overrides (precedence: explicit server
+  override > agent/waifu value); a migration drops server keys equal to the old defaults
+  (20/50/80). `contextWindow` max raised to 200; effective compaction trigger =
+  `min(compaction.maxMessages, cap)`, `keepRecent` clamped to `floor(cap × 0.6)`.
+- **Stage manager** keeps only an observer cursor (no compaction — it is a batch job).
+- **One-shot** production state uses absolute `HH:MM` times + `now`; the decision benchmark keeps
+  its documented age rendering.
+- **Defaults**: `verbosity: "terse"` (matches today's tuning); cache TTL 5m at A/B/C (1h for A/B
+  later if cost data supports it); dream hour 5, `maxPinnedInjected` 6,
+  `maxMemoryNotesPerEpoch` 6.
+- **Observer ops**: update/merge/expire and importance ≥4 adds apply immediately through the dedupe
+  gate; lower adds queue for the dream. The dream ignores per-server `stageManagerEnabled` (that
+  flag gates observers only).
+- **Dedupe gate** is report-only for user-created memories (returns `duplicateOf`, never blocks).
+- **forget-user** deletes memories whose subjects include the user (multi-subject memories
+  included), their pending observations and DM contexts; guild context summaries keep the user
+  until the next compaction (documented limitation). The assistant's `forget_user` tool uses a
+  two-step confirmation token until B18's confirmation cards land.
+- **Orchestrator `promptSections`**: `pausePlanning` kept; `messageStructure` deprecated/ignored.
+- **Layout removal migration**: a disabled `schedule` block → `scheduleInPrompt: false` (new waifu
+  field); a disabled persona block is ignored; legacy layout migrations are removed.
+- **Usage ledger**: every model call appends one line to `user/usage/YYYY-MM-DD.jsonl` with
+  attribution (purpose, waifu/agent, conversation), tokens incl. cache, cost — the data source for
+  I3. Quota/billing errors open a per-provider cooldown surfaced in `/api/runtime`.
+- **Gateway pin**: Phase 4 develops against the local gateway build (`npm run gateway:local`);
+  the phase merges to `main` only after `@waifucave/gateway@0.4.0` is on npm and the pin is bumped.
 
 ## 7. Settings registry, CLI, HTTP, and help
 
