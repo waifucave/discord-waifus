@@ -39,6 +39,29 @@ export const RemoteAccessRuntimeSummarySchema = z.object({
 
 export type RemoteAccessRuntimeSummary = z.infer<typeof RemoteAccessRuntimeSummarySchema>;
 
+// Mirrors `DiscordBotConnectionStatus` in src/discord/client.ts (assignment there is type-checked).
+const DiscordBotConnectionStatusSchema = z.object({
+  botId: z.string(),
+  displayName: z.string(),
+  kind: z.enum(["orchestrator", "waifu"]),
+  state: z.enum(["connected", "connecting", "error", "disabled", "missing_token"]),
+  errorCode: z
+    .enum([
+      "invalid_token",
+      "disallowed_intents",
+      "invalid_intents",
+      "gateway_rejected",
+      "network",
+      "orchestrator_unavailable",
+      "unknown"
+    ])
+    .optional(),
+  error: z.string().optional(),
+  closeCode: z.number().int().optional(),
+  nextRetryAt: IsoDateStringSchema.optional(),
+  updatedAt: IsoDateStringSchema
+});
+
 export const RuntimeStateSchema = z.object({
   schemaVersion: z.literal(CURRENT_SCHEMA_VERSION),
   pid: z.number().int().positive(),
@@ -60,7 +83,8 @@ export const RuntimeStateSchema = z.object({
       retryAttempt: z.number().int().positive().optional(),
       nextRetryAt: IsoDateStringSchema.optional(),
       lastError: z.string().optional(),
-      lastErrorAt: IsoDateStringSchema.optional()
+      lastErrorAt: IsoDateStringSchema.optional(),
+      bots: z.array(DiscordBotConnectionStatusSchema).optional()
     })
     .default({
       connected: false,

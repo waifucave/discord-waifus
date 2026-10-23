@@ -6,6 +6,7 @@ import { readPackageVersion } from "../config/layout.js";
 import { atomicWriteJson } from "../storage/atomic.js";
 import { StorageService } from "../storage/storageService.js";
 import {
+  DiscordConnectError,
   DiscordGatewayFacade,
   DiscordJsGateway,
   DiscordJsGatewayOptions,
@@ -306,6 +307,14 @@ export async function startBackend(options: StartBackendOptions): Promise<Runnin
       }
     };
 
+    // Live per-bot changes after connect (a waifu re-logged in, a token was revoked mid-session).
+    const handleDiscordStatusChange = async (status: DiscordRuntimeStatus) => {
+      if (closing) return;
+      runtime.discord = status;
+      runtime.updatedAt = new Date().toISOString();
+      await writeRuntimeFiles(options.dataRoot, runtime);
+    };
+
     const reloadRuntime = async (reason: string, retryOptions: { scheduledRetry?: boolean } = {}) => {
       if (closing) return;
       if (!retryOptions.scheduledRetry) {
@@ -334,7 +343,8 @@ export async function startBackend(options: StartBackendOptions): Promise<Runnin
         currentConfig.runtime.autoConnectDiscord,
         logger,
         createDiscordGateway,
-        handleDiscordRuntimeIssue
+        handleDiscordRuntimeIssue,
+        handleDiscordStatusChange
       );
       if (closing) {
         await connected.gateway?.disconnect();
@@ -556,7 +566,8 @@ async function maybeConnectDiscord(
   autoConnect: boolean,
   logger: Logger,
   createDiscordGateway: (options: DiscordJsGatewayOptions) => DiscordGatewayFacade,
-  onRuntimeIssue?: (issue: DiscordRuntimeIssue) => void | Promise<void>
+  onRuntimeIssue?: (issue: DiscordRuntimeIssue) => void | Promise<void>,
+  onStatusChange?: (status: DiscordRuntimeStatus) => void | Promise<void>
 ): Promise<{
   status: DiscordRuntimeStatus;
   gateway?: DiscordGatewayFacade;
@@ -575,6 +586,10 @@ async function maybeConnectDiscord(
   );
   if (!bots.orchestrator?.token) {
     return { status: offline };
+  }
+  if (bots.orchestrator.enabled === false) {
+    // Waifu bots only speak when the orchestrator casts them, so nothing logs in without it.
+    return { status: offlineDiscordStatus(["Discord auto-connect is enabled but the orchestrator bot is disabled."]) };
   }
   const gateway = createDiscordGateway({
     orchestrator: bots.orchestrator,
@@ -616,7 +631,8 @@ async function maybeConnectDiscord(
         roles: roles.roles
       };
     },
-    onRuntimeIssue
+    onRuntimeIssue,
+    onStatusChange
   });
   try {
     const status = await gateway.connect();
@@ -631,7 +647,10 @@ async function maybeConnectDiscord(
         connected: false,
         orchestratorConnected: false,
         waifuBotCount: 0,
-        warnings: [`Discord auto-connect failed: ${message}`]
+        warnings: [`Discord auto-connect failed: ${message}`],
+        lastError: message,
+        lastErrorAt: new Date().toISOString(),
+        ...(error instanceof DiscordConnectError && error.status.bots ? { bots: error.status.bots } : {})
       },
       retryableFailure: retryable ? { message } : undefined
     };

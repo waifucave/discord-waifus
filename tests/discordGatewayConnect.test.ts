@@ -1,0 +1,240 @@
+import { Client, Events } from "discord.js";
+import type { ClientOptions } from "discord.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { DiscordJsGateway } from "../src/discord/client.js";
+import type {
+  DiscordBotConnectionStatus,
+  DiscordJsGatewayOptions,
+  DiscordRuntimeStatus
+} from "../src/discord/client.js";
+import type { DiscordBotConfig } from "../src/shared/schemas/domain.js";
+
+// Login outcomes for the fake client factory: "ok" emits ClientReady, an Error rejects login, and a
+// Deferred holds login open until the test settles it.
+type LoginOutcome = "ok" | Error | Deferred;
+
+type Deferred = {
+  promise: Promise<void>;
+  resolve: () => void;
+  reject: (error: Error) => void;
+};
+
+function deferred(): Deferred {
+  let resolve!: () => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<void>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+type FakeClients = {
+  factory: NonNullable<DiscordJsGatewayOptions["createClient"]>;
+  created: Map<string, Client>;
+  createdOptions: Map<string, ClientOptions>;
+  destroyed: string[];
+  loginAttempts: Map<string, number>;
+};
+
+function fakeClients(outcomes: Record<string, LoginOutcome | LoginOutcome[]>): FakeClients {
+  const created = new Map<string, Client>();
+  const createdOptions = new Map<string, ClientOptions>();
+  const destroyed: string[] = [];
+  const loginAttempts = new Map<string, number>();
+  const factory: FakeClients["factory"] = ({ bot, options }) => {
+    const client = new Client(options);
+    created.set(bot.id, client);
+    createdOptions.set(bot.id, options);
+    const mutable = client as unknown as {
+      login: (token?: string) => Promise<string>;
+      destroy: () => Promise<void>;
+    };
+    mutable.login = async (token = "") => {
+      const attempt = loginAttempts.get(bot.id) ?? 0;
+      loginAttempts.set(bot.id, attempt + 1);
+      const configured = outcomes[bot.id] ?? "ok";
+      const outcome = Array.isArray(configured)
+        ? configured[Math.min(attempt, configured.length - 1)]
+        : configured;
+      if (outcome instanceof Error) throw outcome;
+      if (outcome !== "ok") await outcome.promise;
+      queueMicrotask(() => client.emit(Events.ClientReady, client as Client<true>));
+      return token;
+    };
+    const realDestroy = client.destroy.bind(client);
+    mutable.destroy = async () => {
+      destroyed.push(bot.id);
+      await realDestroy();
+    };
+    return client;
+  };
+  return { factory, created, createdOptions, destroyed, loginAttempts };
+}
+
+function bot(id: string, overrides: Partial<DiscordBotConfig> = {}): DiscordBotConfig {
+  return { id, displayName: id, token: `${id}-token`, enabled: true, ...overrides };
+}
+
+function invalidTokenError(): Error {
+  return Object.assign(new Error("An invalid token was provided."), { code: "TokenInvalid" });
+}
+
+function botStatus(status: DiscordRuntimeStatus, botId: string): DiscordBotConnectionStatus | undefined {
+  return status.bots?.find((entry) => entry.botId === botId);
+}
+
+function connectedBotIds(gateway: DiscordJsGateway): string[] {
+  return [...(gateway as unknown as { clients: Map<string, Client> }).clients.keys()].sort();
+}
+
+const gateways: DiscordJsGateway[] = [];
+
+afterEach(async () => {
+  await Promise.all(gateways.splice(0).map((gateway) => gateway.disconnect()));
+});
+
+function makeGateway(options: Omit<DiscordJsGatewayOptions, "logger">): DiscordJsGateway {
+  const gateway = new DiscordJsGateway({ ...options, logger: quietLogger() });
+  gateways.push(gateway);
+  return gateway;
+}
+
+describe("DiscordJsGateway per-bot connection", () => {
+  it("keeps healthy bots online when one waifu token is invalid and destroys the failed client", async () => {
+    const clients = fakeClients({ "waifu-bad": invalidTokenError() });
+    const gateway = makeGateway({
+      orchestrator: bot("orchestrator"),
+      waifus: [bot("waifu-good"), bot("waifu-bad")],
+      createClient: clients.factory
+    });
+
+    const status = await gateway.connect();
+
+    expect(status).toMatchObject({ connected: true, orchestratorConnected: true, waifuBotCount: 1 });
+    expect(connectedBotIds(gateway)).toEqual(["orchestrator", "waifu-good"]);
+    expect(clients.destroyed).toEqual(["waifu-bad"]);
+    expect(botStatus(status, "waifu-bad")).toMatchObject({
+      kind: "waifu",
+      state: "error",
+      errorCode: "invalid_token",
+      error: "An invalid token was provided."
+    });
+    expect(botStatus(status, "waifu-good")).toMatchObject({ kind: "waifu", state: "connected" });
+    expect(botStatus(status, "orchestrator")).toMatchObject({ kind: "orchestrator", state: "connected" });
+    expect(status.warnings.some((warning) => warning.includes("waifu-bad"))).toBe(true);
+  });
+
+  it("never logs in bots that are disabled or have no token", async () => {
+    const clients = fakeClients({});
+    const gateway = makeGateway({
+      orchestrator: bot("orchestrator"),
+      waifus: [bot("waifu-off", { enabled: false }), bot("waifu-tokenless", { token: undefined })],
+      createClient: clients.factory
+    });
+
+    const status = await gateway.connect();
+
+    expect([...clients.created.keys()]).toEqual(["orchestrator"]);
+    expect(status.waifuBotCount).toBe(0);
+    expect(botStatus(status, "waifu-off")).toMatchObject({ state: "disabled" });
+    expect(botStatus(status, "waifu-tokenless")).toMatchObject({ state: "missing_token" });
+  });
+
+  it("fails the whole connect when the orchestrator cannot log in and leaves no client online", async () => {
+    const clients = fakeClients({ orchestrator: invalidTokenError() });
+    const gateway = makeGateway({
+      orchestrator: bot("orchestrator"),
+      waifus: [bot("waifu-a")],
+      createClient: clients.factory
+    });
+
+    const failure = await gateway.connect().then(
+      () => undefined,
+      (error: unknown) => error as Error & { status?: DiscordRuntimeStatus; code?: string }
+    );
+
+    expect(failure?.message).toBe("An invalid token was provided.");
+    expect(failure?.code).toBe("TokenInvalid");
+    expect(failure?.status && botStatus(failure.status, "orchestrator")).toMatchObject({
+      state: "error",
+      errorCode: "invalid_token"
+    });
+    expect(connectedBotIds(gateway)).toEqual([]);
+    expect(clients.destroyed.sort()).toEqual(["orchestrator", "waifu-a"]);
+  });
+
+  it("destroys clients that are still logging in when disconnect runs, instead of adopting them later", async () => {
+    const pending = deferred();
+    const clients = fakeClients({ "waifu-slow": pending });
+    const gateway = makeGateway({
+      orchestrator: bot("orchestrator"),
+      waifus: [bot("waifu-slow")],
+      createClient: clients.factory
+    });
+
+    const connecting = gateway.connect().catch((error: unknown) => error);
+    await vi.waitFor(() => expect(clients.loginAttempts.get("waifu-slow")).toBe(1));
+    await gateway.disconnect();
+    pending.resolve();
+    await connecting;
+    // Let any late ready/adoption callbacks run.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(connectedBotIds(gateway)).toEqual([]);
+    expect(clients.destroyed).toContain("waifu-slow");
+    expect(clients.destroyed).toContain("orchestrator");
+  });
+
+  it("retries a waifu whose login failed on a network error and reports the recovery", async () => {
+    const networkError = Object.assign(new Error("getaddrinfo ENOTFOUND discord.com"), { code: "ENOTFOUND" });
+    const clients = fakeClients({ "waifu-a": [networkError, "ok"] });
+    const statusChanges: DiscordRuntimeStatus[] = [];
+    const gateway = makeGateway({
+      orchestrator: bot("orchestrator"),
+      waifus: [bot("waifu-a")],
+      createClient: clients.factory,
+      botRetryDelaysMs: [5],
+      onStatusChange: (status) => {
+        statusChanges.push(status);
+      }
+    });
+
+    const initial = await gateway.connect();
+    expect(botStatus(initial, "waifu-a")).toMatchObject({ state: "error", errorCode: "network" });
+    expect(botStatus(initial, "waifu-a")?.nextRetryAt).toBeDefined();
+
+    await vi.waitFor(() => expect(connectedBotIds(gateway)).toEqual(["orchestrator", "waifu-a"]));
+    const latest = statusChanges.at(-1);
+    expect(latest).toMatchObject({ connected: true, waifuBotCount: 1 });
+    expect(latest && botStatus(latest, "waifu-a")).toMatchObject({ state: "connected" });
+    // Only the client from the failed first attempt was destroyed; the retry's client is live.
+    expect(clients.destroyed).toEqual(["waifu-a"]);
+    expect(clients.loginAttempts.get("waifu-a")).toBe(2);
+  });
+
+  it("does not retry waifu logins that failed for a permanent reason", async () => {
+    const clients = fakeClients({ "waifu-a": invalidTokenError() });
+    const gateway = makeGateway({
+      orchestrator: bot("orchestrator"),
+      waifus: [bot("waifu-a")],
+      createClient: clients.factory,
+      botRetryDelaysMs: [5]
+    });
+
+    const status = await gateway.connect();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    expect(botStatus(status, "waifu-a")?.nextRetryAt).toBeUndefined();
+    expect(clients.loginAttempts.get("waifu-a")).toBe(1);
+  });
+});
+
+function quietLogger() {
+  return {
+    debug: () => undefined,
+    info: () => undefined,
+    warn: () => undefined,
+    error: () => undefined
+  };
+}

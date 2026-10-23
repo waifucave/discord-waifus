@@ -159,6 +159,26 @@ export type DiscordRuntime = {
   nextRetryAt?: string;
   lastError?: string;
   lastErrorAt?: string;
+  bots?: DiscordBotConnectionStatus[];
+};
+
+export type DiscordBotConnectionStatus = {
+  botId: string;
+  displayName: string;
+  kind: "orchestrator" | "waifu";
+  state: "connected" | "connecting" | "error" | "disabled" | "missing_token";
+  errorCode?:
+    | "invalid_token"
+    | "disallowed_intents"
+    | "invalid_intents"
+    | "gateway_rejected"
+    | "network"
+    | "orchestrator_unavailable"
+    | "unknown";
+  error?: string;
+  closeCode?: number;
+  nextRetryAt?: string;
+  updatedAt: string;
 };
 
 export type QueueRuntime = {
