@@ -1,0 +1,77 @@
+## plain text
+default: hello there
+
+## embed
+default: look
+[link: Best brownies — A fudgy recipe. A fudgy recipe. A fudgy recipe. A fudgy recipe. A fudgy recipe. A fudgy recipe. A fudgy recipe. A fudgy recipe. A fudgy recipe. A fudgy recipe. A fudgy recipe. A fudgy recipe. A fudgy… (Example Eats)]
+
+## embed without provider uses host
+default: [link: Docs (docs.example.org)]
+
+## gif embed
+default: [gif: Tenor]
+
+## tenor provider with title
+default: [gif: Happy dance]
+
+## sticker
+default: [sticker: Wave]
+
+## poll
+default: [poll: "Cake or pie?" — Cake / Pie / Both]
+
+## poll result
+system: [poll ended: "Cake or pie?" — winner: Cake]
+
+## forward
+default: [forwarded] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…
+[file: menu.pdf · 1.2 MB]
+
+## file
+default: [file: menu.pdf · 1.2 MB]
+
+## video
+default: [video: clip.mp4]
+
+## voice message
+default: [voice message · 0:12]
+
+## image attachment goes to images, not body
+default: my cake
+
+## join
+system: [joined the server]
+
+## pin
+system: [pinned a message]
+
+## thread created
+system: [started a thread: Best brownies]
+
+## slash command use
+system: [used /roll]
+You rolled 4
+
+## other system messages are dropped
+(dropped)
+
+## channel mention
+default: see #recipes and #unknown-channel
+
+## channel mention from message mentions
+default: #general
+
+## role mention
+default: @Bakers and @unknown-role
+
+## command mention
+default: try /bake or /bake now
+
+## timestamp tokens are absolute
+default: at 14:02, Sat 24 Oct 2026 14:02, Sat 24 Oct 2026 14:02
+
+## user mention (frozen name)
+default: hi <@Kevin> <@Riko> @unknown-user
+
+## custom emoji
+default: <:cookie:> :party: :gone:

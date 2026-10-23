@@ -55,6 +55,8 @@ export const RawDiscordMessageSchema = z.object({
   poll: z.object({ question: z.string(), answers: z.array(z.string()) }).optional(),
   snapshots: z.array(z.object({ content: z.string(), attachments: z.array(RawAttachmentSchema) })), // forwards
   referenceMessageId: z.string().min(1).optional(),
+  // Slash/context-menu command name for interaction responses (types 20/23), rendered "[used /cmd]".
+  commandName: z.string().min(1).optional(),
   mentions: z.object({
     users: z.record(z.string(), z.string()),
     roles: z.record(z.string(), z.string()),
