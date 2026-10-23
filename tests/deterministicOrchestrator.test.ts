@@ -141,6 +141,32 @@ describe("decideDeterministically", () => {
     const decision = decideDeterministically({ messages: [msg({ content: "hello?" })], cast: [], now: NOW });
     expect(decision.action).toBe("no_reply");
   });
+
+  it("a non-cast bot's message is not a human turn to answer", () => {
+    const decision = decideDeterministically({
+      messages: [
+        msg({ content: "!rank", timestamp: "2026-07-06T11:59:00.000Z" }),
+        { ...msg({ authorId: "mee6", displayName: "MEE6", content: "Riko, you reached level 5!" }), authorBot: true }
+      ],
+      cast,
+      now: NOW
+    });
+    expect(decision.action).toBe("no_reply");
+  });
+
+  it("paces cast-only rooms by the newest HUMAN message, ignoring other bots", () => {
+    const decision = decideDeterministically({
+      messages: [
+        msg({ content: "night all", timestamp: "2026-07-06T09:00:00.000Z" }),
+        { ...msg({ authorId: "mee6", displayName: "MEE6", content: "daily reminder", timestamp: "2026-07-06T11:59:50.000Z" }), authorBot: true },
+        msg({ authorKind: "waifu", authorId: "bot-riko", displayName: "Riko", content: "quiet in here", timestamp: "2026-07-06T11:59:55.000Z" })
+      ],
+      cast,
+      now: NOW
+    });
+    expect(decision.action).toBe("no_reply");
+    expect(decision.retriggerAfterSeconds).toBe(3600);
+  });
 });
 
 import { enforceWakePlan } from "../src/orchestration/deterministicOrchestrator.js";

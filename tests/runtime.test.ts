@@ -2014,6 +2014,59 @@ describe("RuntimeOrchestrator", () => {
     expect(discord.sent.map((entry) => entry.content)).toEqual(["one", "two"]);
   });
 
+  it("does not treat another (non-waifu) bot's message as a recent human for delay pacing", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.contexts = [
+      [
+        contextMessage("waifu-1", "waifu", "Yuki", "one"),
+        contextMessage("waifu-2", "waifu", "Mika", "two"),
+        contextMessage("waifu-3", "waifu", "Yuki", "three"),
+        contextMessage("bot-1", "user", "MEE6", "GG, you reached level 5", undefined, { authorBot: true, authorId: "mee6" })
+      ]
+    ];
+    const sleepCalls: number[] = [];
+
+    await seedRuntimeConfig(storage);
+    await seedWaifu(storage, "mika", "Mika", "mika-bot", "direct");
+    await enableWaifus(storage, ["yuki", "mika"]);
+
+    const pipeline: ModelPipeline = {
+      async decideOrchestrator() {
+        return {
+          action: "reply" as const,
+          respondingWaifus: [
+            { waifuId: "yuki", delaySeconds: 3 },
+            { waifuId: "mika", delaySeconds: 4 }
+          ],
+          reasoning: "Only a bot spoke; use chained pacing."
+        };
+      },
+      async generateWaifu(request: WaifuGenerationRequest) {
+        return { content: request.systemPrompt.includes("You are Yuki") ? "first line" : "second line" };
+      }
+    };
+
+    const runtime = new RuntimeOrchestrator({
+      sleep: async (ms) => {
+        sleepCalls.push(ms);
+      },
+      storage,
+      discord,
+      maxAutomaticTurns: 1,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    expect(sleepCalls).toEqual([3000, 4000]);
+  });
+
   it("passes completed past orchestrator decisions to the pipeline", async () => {
     const root = await makeTempRoot();
     roots.push(root);
@@ -2241,6 +2294,81 @@ describe("RuntimeOrchestrator", () => {
     // Most recent entry is the dream add (mapped onto add_memory); the observer's queue summary is older.
     expect(history.edits[0].tool).toBe("add_memory");
     expect(history.edits[0].summary).toContain("[dream:add]");
+  });
+
+  it("ignores a stale persisted stage-manager running flag left by a crash", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    const { ChannelSessionStateSchema, createEmptyChannelSessionState } = await import("../src/orchestration/session.js");
+    await seedRuntimeConfig(storage);
+    await storage.writeJson(
+      "session:guild-1:channel-1",
+      "user/servers/guild-1/sessions/channel-1.json",
+      ChannelSessionStateSchema,
+      {
+        ...createEmptyChannelSessionState("guild-1", "channel-1"),
+        stageManager: { active: true, startedAt: "2026-05-16T12:00:00.000Z" }
+      }
+    );
+    let observerCalls = 0;
+    const pipeline: ModelPipeline = {
+      async generateWaifu() {
+        return { content: "unused" };
+      },
+      async decideStageManagerObservations() {
+        observerCalls += 1;
+        return [];
+      }
+    };
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    const result = await runtime.runObserverForTest("guild-1", "channel-1");
+    expect(result.status).not.toBe("already_running");
+    expect(observerCalls).toBe(1);
+  });
+
+  it("still rejects a concurrent stage-manager run for the same channel in-process", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    await seedRuntimeConfig(storage);
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const pipeline: ModelPipeline = {
+      async generateWaifu() {
+        return { content: "unused" };
+      },
+      async decideStageManagerObservations() {
+        await gate;
+        return [];
+      }
+    };
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    const first = runtime.runObserverForTest("guild-1", "channel-1");
+    const second = await runtime.runObserverForTest("guild-1", "channel-1");
+    release();
+    expect(second.status).toBe("already_running");
+    expect((await first).status).toBe("no_change");
   });
 
   it("appends low-importance observations (< 4) to the pending queue file", async () => {
@@ -2546,6 +2674,169 @@ describe("RuntimeOrchestrator", () => {
     const history = await storage.readJson("user/stage-manager/history.json", StageManagerHistoryFileSchema);
     expect(history.edits.some((edit) => edit.summary.includes("[dream:rewrite]"))).toBe(true);
     expect(history.edits.some((edit) => edit.summary.includes("[dream:add]"))).toBe(true);
+  });
+
+  it("dream passes rotate through every chunk (incl. orphan observations) across nights", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    const now = new Date().toISOString();
+    await seedRuntimeConfig(storage);
+    const waifuIds = ["a", "b", "c", "d", "e", "f", "g"];
+    await storage.writeJson(
+      "memories:global",
+      "user/memories.json",
+      MemoryStoreSchema,
+      MemoryStoreSchema.parse(
+        createEmptyRevisionedFile({
+          memories: waifuIds.flatMap((waifuId) =>
+            Array.from({ length: 13 }, (_, index) => ({
+              id: `${waifuId}-${index}`, waifuId, guildId: "guild-1", content: `${waifuId} fact ${index}`, strength: 3, createdAt: now, updatedAt: now, status: "active"
+            }))
+          )
+        })
+      )
+    );
+    await storage.writeJson(
+      "memory:pending",
+      "user/memory/pending-observations.json",
+      PendingObservationsFileSchema,
+      PendingObservationsFileSchema.parse(
+        createEmptyRevisionedFile({
+          observations: [
+            { id: "obs-zed", guildId: "guild-1", channelId: "channel-1", waifuId: "zed", content: "Kevin met zed.", kind: "fact", importance: 3, entities: [], createdAt: now }
+          ]
+        })
+      )
+    );
+    const seen: string[] = [];
+    const pipeline: ModelPipeline = {
+      async generateWaifu() {
+        return { content: "unused" };
+      },
+      async decideDream(request) {
+        seen.push(request.memories[0]?.waifuId ?? "orphan");
+        return [];
+      }
+    };
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    await runtime.runDreamPassForTest("guild-1");
+    expect(seen).toEqual(["a", "b", "c", "d", "e"]);
+    seen.length = 0;
+    await runtime.runDreamPassForTest("guild-1");
+    expect(seen).toEqual(["f", "g", "orphan", "a", "b"]);
+  });
+
+  it("dream ops may only assign memories to waifus the chunk is about", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    const now = new Date().toISOString();
+    await seedRuntimeConfig(storage);
+    await seedWaifu(storage, "mika", "Mika", "mika-bot", "direct");
+    await storage.writeJson(
+      "memories:global",
+      "user/memories.json",
+      MemoryStoreSchema,
+      MemoryStoreSchema.parse(
+        createEmptyRevisionedFile({
+          memories: ["yuki", "mika"].flatMap((waifuId) =>
+            Array.from({ length: 50 }, (_, index) => ({
+              id: `${waifuId}-${index}`, waifuId, guildId: "guild-1", content: `${waifuId} fact ${index}`, strength: 3, createdAt: now, updatedAt: now, status: "active"
+            }))
+          )
+        })
+      )
+    );
+    const availableIds: string[][] = [];
+    const pipeline: ModelPipeline = {
+      async generateWaifu() {
+        return { content: "unused" };
+      },
+      async decideDream(request) {
+        availableIds.push(request.availableWaifuIds ?? []);
+        if (request.memories[0]?.waifuId !== "yuki") return [];
+        return [{ op: "add", memory: { waifuId: "mika", content: "Misattributed to mika.", kind: "fact", strength: 3, entities: [] } }];
+      }
+    };
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    await runtime.runDreamPassForTest("guild-1");
+    expect(availableIds).toEqual([["mika"], ["yuki"]]);
+    const memories = await storage.readJson("user/memories.json", MemoryStoreSchema);
+    expect(memories.memories.some((memory) => memory.content === "Misattributed to mika.")).toBe(false);
+  });
+
+  it("offers a waifu with observations but no memories yet as a dream owner", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    const now = new Date().toISOString();
+    await seedRuntimeConfig(storage);
+    await seedWaifu(storage, "mika", "Mika", "mika-bot", "direct");
+    await storage.writeJson(
+      "memories:global",
+      "user/memories.json",
+      MemoryStoreSchema,
+      MemoryStoreSchema.parse(
+        createEmptyRevisionedFile({
+          memories: [{ id: "yuki-1", waifuId: "yuki", guildId: "guild-1", content: "Kevin likes tea.", strength: 3, createdAt: now, updatedAt: now, status: "active" }]
+        })
+      )
+    );
+    await storage.writeJson(
+      "memory:pending",
+      "user/memory/pending-observations.json",
+      PendingObservationsFileSchema,
+      PendingObservationsFileSchema.parse(
+        createEmptyRevisionedFile({
+          observations: [
+            { id: "obs-mika", guildId: "guild-1", channelId: "channel-1", waifuId: "mika", content: "Kevin told Mika he paints.", kind: "fact", importance: 3, entities: [], createdAt: now }
+          ]
+        })
+      )
+    );
+    let offered: string[] | undefined;
+    const pipeline: ModelPipeline = {
+      async generateWaifu() {
+        return { content: "unused" };
+      },
+      async decideDream(request) {
+        offered = request.availableWaifuIds;
+        return [{ op: "add", memory: { waifuId: "mika", content: "Kevin paints.", kind: "fact", strength: 3, entities: [] } }];
+      }
+    };
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    await runtime.runDreamPassForTest("guild-1");
+    expect(offered).toEqual(["mika", "yuki"]);
+    const memories = await storage.readJson("user/memories.json", MemoryStoreSchema);
+    expect(memories.memories.find((memory) => memory.content === "Kevin paints.")?.waifuId).toBe("mika");
   });
 
   it("dream pass leaves pinned records untouched", async () => {
@@ -7695,6 +7986,768 @@ describe("RuntimeOrchestrator", () => {
     expect(session.scheduledRetriggerAt).toBeDefined();
     const scheduledInSeconds = (Date.parse(session.scheduledRetriggerAt!) - before) / 1000;
     expect(scheduledInSeconds).toBeGreaterThanOrEqual(900);
+  });
+
+  describe("runtime lifecycle correctness (phase 1)", () => {
+    const sessionPath = (channelId = "channel-1") => `user/servers/guild-1/sessions/${channelId}.json`;
+    const readSession = async (storage: StorageService, channelId = "channel-1") =>
+      storage.readJson(
+        sessionPath(channelId),
+        (await import("../src/orchestration/session.js")).ChannelSessionStateSchema
+      );
+    const until = async (predicate: () => boolean | Promise<boolean>, label: string) => {
+      for (let attempt = 0; attempt < 300; attempt += 1) {
+        if (await predicate()) return;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      throw new Error(`Timed out waiting for ${label}`);
+    };
+    const blockingWaifu = (onStart: () => void) =>
+      (request: WaifuGenerationRequest) =>
+        new Promise<{ content: string }>((_, reject) => {
+          onStart();
+          request.signal?.addEventListener("abort", () => reject(request.signal?.reason), { once: true });
+        });
+    const replyOnce = (): ModelPipeline["decideOrchestrator"] => {
+      let calls = 0;
+      return async () => {
+        calls += 1;
+        return calls === 1
+          ? { action: "reply", respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }], reasoning: "answer Kevin" }
+          : { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 600, reasoning: "quiet" };
+      };
+    };
+
+    async function interruptMidReply(halt: (runtime: RuntimeOrchestrator) => Promise<void>) {
+      const root = await makeTempRoot();
+      roots.push(root);
+      await ensureDataLayout(root);
+      const storage = new StorageService(root);
+      await seedRuntimeConfig(storage);
+      let started = false;
+      const runtime = new RuntimeOrchestrator({
+        sleep: async () => undefined,
+        storage,
+        discord: new FakeDiscord(),
+        maxAutomaticTurns: 1,
+        createPipeline: () => ({ decideOrchestrator: replyOnce(), generateWaifu: blockingWaifu(() => (started = true)) }),
+        logger: quietLogger()
+      });
+      const run = runtime.triggerChannel("guild-1", "channel-1");
+      await until(() => started, "waifu generation to start");
+      await halt(runtime);
+      await run;
+      const history = await storage.readJson("user/orchestrator/history.json", OrchestratorHistoryFileSchema);
+      return { storage, decision: history.decisions[0] };
+    }
+
+    async function bootAgain(storage: StorageService, options: { isPaused?: () => boolean } = {}) {
+      const discord = new FakeDiscord();
+      const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+      const runtime = new RuntimeOrchestrator({
+        sleep: async () => undefined,
+        storage,
+        discord,
+        maxAutomaticTurns: 1,
+        restartResumeDelayMs: 0,
+        isPaused: options.isPaused,
+        createPipeline: () => ({
+          decideOrchestrator: async () => ({ action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 600, reasoning: "quiet" }),
+          generateWaifu: async () => ({ content: "sorry, where was I" })
+        }),
+        logger
+      });
+      await runtime.start();
+      return { runtime, discord, logger };
+    }
+
+    it("B6: resumes a reply interrupted by a planned stop (restart/update/reload) on the next start", async () => {
+      const { storage, decision } = await interruptMidReply((runtime) => runtime.stop());
+      expect(decision.status).toBe("interrupted");
+      expect(decision.responderOutcomes[0]).toMatchObject({ status: "interrupted", reason: "runtime_shutdown" });
+
+      const next = await bootAgain(storage);
+      try {
+        await until(() => next.discord.sent.length === 1, "resumed reply");
+        expect(next.discord.sent[0].content).toBe("sorry, where was I");
+      } finally {
+        await next.runtime.stop();
+      }
+    });
+
+    it("B6: never resumes a reply interrupted by an explicit user pause", async () => {
+      const { storage, decision } = await interruptMidReply((runtime) => runtime.pause());
+      expect(decision.responderOutcomes[0]).toMatchObject({ status: "interrupted", reason: "runtime paused" });
+
+      const next = await bootAgain(storage);
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        expect(next.discord.sent).toEqual([]);
+      } finally {
+        await next.runtime.stop();
+      }
+    });
+
+    it("B2: a runtime that boots paused runs no restart resume and starts no channel runs", async () => {
+      const { storage } = await interruptMidReply((runtime) => runtime.stop());
+      const next = await bootAgain(storage, { isPaused: () => true });
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        expect(next.discord.sent).toEqual([]);
+        expect(next.logger.info).toHaveBeenCalledWith("Restart resume skipped because runtime is paused");
+      } finally {
+        await next.runtime.stop();
+      }
+      // the interrupted reply is still resumable once the runtime is unpaused
+      const resumed = await bootAgain(storage);
+      try {
+        await until(() => resumed.discord.sent.length === 1, "resumed reply after unpause");
+      } finally {
+        await resumed.runtime.stop();
+      }
+    });
+
+    it("B6: leaves a shutdown wake for a run cut down before any reply was planned", async () => {
+      const root = await makeTempRoot();
+      roots.push(root);
+      await ensureDataLayout(root);
+      const storage = new StorageService(root);
+      await seedRuntimeConfig(storage);
+      let started = false;
+      const runtime = new RuntimeOrchestrator({
+        sleep: async () => undefined,
+        storage,
+        discord: new FakeDiscord(),
+        createPipeline: () => ({
+          decideOrchestrator: (request) =>
+            new Promise((_, reject) => {
+              started = true;
+              request.signal?.addEventListener("abort", () => reject(request.signal?.reason), { once: true });
+            }),
+          generateWaifu: async () => ({ content: "unused" })
+        }),
+        logger: quietLogger()
+      });
+      const run = runtime.triggerChannel("guild-1", "channel-1");
+      await until(() => started, "orchestrator decision to start");
+      await runtime.stop();
+      await run;
+      const session = await readSession(storage);
+      expect(session.scheduledRetriggerAt).toBeDefined();
+      expect(session.scheduledRetrigger?.source).toBe("shutdown");
+    });
+
+    it("B7: a run consumes the persisted wake so the next boot fires no spurious catch-up", async () => {
+      const root = await makeTempRoot();
+      roots.push(root);
+      await ensureDataLayout(root);
+      const storage = new StorageService(root);
+      const { ChannelSessionStateSchema, createEmptyChannelSessionState } = await import("../src/orchestration/session.js");
+      await seedRuntimeConfig(storage);
+      await storage.writeJson("session:guild-1:channel-1", sessionPath(), ChannelSessionStateSchema, {
+        ...createEmptyChannelSessionState("guild-1", "channel-1"),
+        scheduledRetriggerAt: new Date(Date.now() - 60_000).toISOString(),
+        scheduledRetrigger: { source: "turn_limit", seconds: 900 }
+      });
+      const runtime = new RuntimeOrchestrator({
+        sleep: async () => undefined,
+        storage,
+        discord: new FakeDiscord(),
+        createPipeline: () => ({
+          // the chosen waifu is not enabled here, so the run ends without arming a new wake
+          decideOrchestrator: async () => ({ action: "reply", respondingWaifus: [{ waifuId: "ghost", delaySeconds: 0 }], reasoning: "x" }),
+          generateWaifu: async () => ({ content: "unused" })
+        }),
+        logger: quietLogger()
+      });
+      await runtime.triggerChannel("guild-1", "channel-1", "scheduled-retrigger", {
+        trigger: "retrigger",
+        wake: { source: "turn_limit", seconds: 900 }
+      });
+      await runtime.stop();
+      const session = await readSession(storage);
+      expect(session.scheduledRetriggerAt).toBeUndefined();
+      expect(session.scheduledRetrigger).toBeUndefined();
+    });
+
+    it("B8: a turn-limit cooldown wake gets no stale no_reply plan and no inherited backoff", async () => {
+      const root = await makeTempRoot();
+      roots.push(root);
+      await ensureDataLayout(root);
+      const storage = new StorageService(root);
+      const discord = new FakeDiscord();
+      discord.contexts = [[contextMessage("m1", "user", "Kevin", "hello there")]];
+      await seedRuntimeConfig(storage);
+      await seedOrchestratorHistory(storage, [
+        {
+          id: "recent-reply", guildId: "guild-1", channelId: "channel-1", action: "reply",
+          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }], reasoning: "talk", status: "completed",
+          waifuMessageIds: ["x"], responderOutcomes: [], createdAt: new Date().toISOString()
+        },
+        {
+          id: "old-no-reply", guildId: "guild-1", channelId: "channel-1", action: "no_reply", respondingWaifus: [],
+          retriggerAfterSeconds: 600, wakePlan: "have yuki ask about the stale thing", reasoning: "quiet",
+          status: "completed", waifuMessageIds: [], responderOutcomes: [], createdAt: new Date(Date.now() - 3_600_000).toISOString()
+        }
+      ]);
+      let capturedMarkers: ProviderRequest["decisionMarkers"] = [];
+      const runtime = new RuntimeOrchestrator({
+        sleep: async () => undefined,
+        storage,
+        discord,
+        maxAutomaticTurns: 1,
+        createPipeline: () => ({
+          async decideOrchestrator(request) {
+            capturedMarkers = request.decisionMarkers;
+            return { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 200, reasoning: "still quiet" };
+          },
+          generateWaifu: async () => ({ content: "unused" })
+        }),
+        logger: quietLogger()
+      });
+      const before = Date.now();
+      await runtime.triggerChannel("guild-1", "channel-1", "scheduled-retrigger", {
+        trigger: "retrigger",
+        wake: { source: "turn_limit", seconds: 900 }
+      });
+      await runtime.stop();
+      expect(capturedMarkers).toBeUndefined();
+      const session = await readSession(storage);
+      expect((Date.parse(session.scheduledRetriggerAt!) - before) / 1000).toBeLessThan(300);
+      const history = await storage.readJson("user/orchestrator/history.json", OrchestratorHistoryFileSchema);
+      expect(session.scheduledRetrigger).toEqual({ source: "no_reply", seconds: 200, decisionId: history.decisions[0].id });
+    });
+
+    it("B8: the wake marker describes the no_reply decision that armed the timer", async () => {
+      const root = await makeTempRoot();
+      roots.push(root);
+      await ensureDataLayout(root);
+      const storage = new StorageService(root);
+      const discord = new FakeDiscord();
+      discord.contexts = [[contextMessage("m1", "user", "Kevin", "hello there")]];
+      await seedRuntimeConfig(storage);
+      const noReply = (id: string, plan: string, seconds: number, minutesAgo: number) => ({
+        id, guildId: "guild-1", channelId: "channel-1", action: "no_reply", respondingWaifus: [],
+        retriggerAfterSeconds: seconds, wakePlan: plan, reasoning: "quiet", status: "completed",
+        waifuMessageIds: [], responderOutcomes: [], createdAt: new Date(Date.now() - minutesAgo * 60_000).toISOString()
+      });
+      await seedOrchestratorHistory(storage, [noReply("newer", "newer plan", 120, 1), noReply("armer", "armed plan", 400, 10)]);
+      let capturedMarkers: ProviderRequest["decisionMarkers"];
+      const runtime = new RuntimeOrchestrator({
+        sleep: async () => undefined,
+        storage,
+        discord,
+        maxAutomaticTurns: 1,
+        createPipeline: () => ({
+          async decideOrchestrator(request) {
+            capturedMarkers = request.decisionMarkers;
+            return { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 100, reasoning: "still quiet" };
+          },
+          generateWaifu: async () => ({ content: "unused" })
+        }),
+        logger: quietLogger()
+      });
+      await runtime.triggerChannel("guild-1", "channel-1", "scheduled-retrigger", {
+        trigger: "retrigger",
+        wake: { source: "no_reply", seconds: 600, decisionId: "armer" }
+      });
+      await runtime.stop();
+      expect(capturedMarkers?.[0]).toMatchObject({ kind: "wake", scheduledSeconds: 600, wakePlan: "armed plan" });
+      const session = await readSession(storage);
+      expect(session.scheduledRetrigger?.seconds).toBe(900);
+    });
+
+    it("B9: crash-recovery wakes back off exponentially and reset after a clean run", async () => {
+      const root = await makeTempRoot();
+      roots.push(root);
+      await ensureDataLayout(root);
+      const storage = new StorageService(root);
+      const discord = new FakeDiscord();
+      let failing = true;
+      const fetch = discord.fetchFreshContext.bind(discord);
+      discord.fetchFreshContext = async () => {
+        if (failing) throw new Error("discord exploded");
+        return fetch();
+      };
+      discord.contexts = [];
+      await seedRuntimeConfig(storage);
+      const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+      const runtime = new RuntimeOrchestrator({
+        sleep: async () => undefined,
+        storage,
+        discord,
+        maxAutomaticTurns: 1,
+        createPipeline: () => ({
+          decideOrchestrator: async () => ({ action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 600, reasoning: "quiet" }),
+          generateWaifu: async () => ({ content: "unused" })
+        }),
+        logger
+      });
+      const recoverySeconds = () =>
+        logger.warn.mock.calls
+          .filter(([message]) => message === "Scheduling crash-recovery wake")
+          .map(([, context]) => (context as { seconds: number }).seconds);
+      try {
+        for (let i = 0; i < 4; i += 1) await runtime.triggerChannel("guild-1", "channel-1");
+        expect(recoverySeconds()).toEqual([180, 360, 720, 1440]);
+        failing = false;
+        await runtime.triggerChannel("guild-1", "channel-1");
+        failing = true;
+        await runtime.triggerChannel("guild-1", "channel-1");
+        expect(recoverySeconds()).toEqual([180, 360, 720, 1440, 180]);
+        await until(async () => (await readSession(storage)).scheduledRetrigger?.source === "crash_recovery", "recovery wake persisted");
+      } finally {
+        await runtime.stop();
+      }
+    });
+
+    it("B5: a channel whose run was preempted by another channel gets re-triggered afterwards", async () => {
+      const root = await makeTempRoot();
+      roots.push(root);
+      await ensureDataLayout(root);
+      const storage = new StorageService(root);
+      await seedRuntimeConfig(storage);
+      const server = await storage.readJson("user/servers/guild-1/server.json", ServerConfigSchema);
+      await storage.writeJson("server:guild-1", "user/servers/guild-1/server.json", ServerConfigSchema, {
+        ...server,
+        channels: {
+          ...server.channels,
+          "channel-2": { ...server.channels["channel-1"], channelId: "channel-2" }
+        }
+      });
+      const discord = new FakeDiscord();
+      discord.fetchFreshContext = async () => [contextMessage("m1", "user", "Kevin", "hello")];
+      let started = false;
+      const runtime = new RuntimeOrchestrator({
+        sleep: async () => undefined,
+        storage,
+        discord,
+        maxAutomaticTurns: 1,
+        createPipeline: () => ({
+          decideOrchestrator: async () => ({ action: "reply", respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }], reasoning: "reply" }),
+          generateWaifu: async (request) => {
+            if (!started) return blockingWaifu(() => (started = true))(request);
+            return { content: "hi from channel 2" };
+          }
+        }),
+        logger: quietLogger()
+      });
+      try {
+        const first = runtime.triggerChannel("guild-1", "channel-1");
+        await until(() => started, "channel-1 generation");
+        await runtime.triggerChannel("guild-1", "channel-2");
+        await first;
+        expect(discord.sent.map((entry) => entry.content)).toEqual(["hi from channel 2"]);
+        const preempted = await readSession(storage, "channel-1");
+        expect(preempted.scheduledRetrigger?.source).toBe("preempted");
+        const seconds = (Date.parse(preempted.scheduledRetriggerAt!) - Date.now()) / 1000;
+        expect(seconds).toBeLessThanOrEqual(15);
+      } finally {
+        await runtime.stop();
+      }
+    });
+
+    it("I9: an all-empty reply ends the pass loop instead of re-deciding on the same context", async () => {
+      const root = await makeTempRoot();
+      roots.push(root);
+      await ensureDataLayout(root);
+      const storage = new StorageService(root);
+      const discord = new FakeDiscord();
+      discord.fetchFreshContext = async () => [contextMessage("m1", "user", "Kevin", "hello")];
+      await seedRuntimeConfig(storage);
+      let decisions = 0;
+      const runtime = new RuntimeOrchestrator({
+        sleep: async () => undefined,
+        storage,
+        discord,
+        maxAutomaticTurns: 8,
+        createPipeline: () => ({
+          decideOrchestrator: async () => {
+            decisions += 1;
+            return { action: "reply", respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }], reasoning: "reply" };
+          },
+          generateWaifu: async () => ({ content: "" })
+        }),
+        logger: quietLogger()
+      });
+      await runtime.triggerChannel("guild-1", "channel-1");
+      await runtime.stop();
+      expect(decisions).toBe(1);
+      expect(discord.sent).toEqual([]);
+      const session = await readSession(storage);
+      expect(session.scheduledRetrigger?.source).toBe("nothing_sent");
+    });
+
+    describe("follow-ups: resume after pause, preemption fairness, wake backoff", () => {
+      // Real-time poll that works while setTimeout is faked (setImmediate/Date stay real).
+      const settle = async (predicate: () => boolean | Promise<boolean>, label: string) => {
+        const deadline = Date.now() + 4000;
+        while (Date.now() < deadline) {
+          if (await predicate()) return;
+          await new Promise((resolve) => setImmediate(resolve));
+        }
+        throw new Error(`Timed out waiting for ${label}`);
+      };
+      type Gate = { promise: Promise<void>; open: () => void };
+      const gate = (): Gate => {
+        let open: () => void = () => undefined;
+        const promise = new Promise<void>((resolve) => {
+          open = resolve;
+        });
+        return { promise, open };
+      };
+      // Each generateWaifu call takes the next scripted step: a string is sent immediately, a
+      // Gate blocks until opened (then sends `content`) or rejects when the run is aborted.
+      type Step = string | { gate: Gate; content: string; aborted?: boolean; started?: boolean };
+      const scriptedWaifu = (steps: Step[]) => {
+        let index = 0;
+        return async (request: WaifuGenerationRequest) => {
+          const step = steps[index++] ?? "extra";
+          if (typeof step === "string") return { content: step };
+          step.started = true;
+          return new Promise<{ content: string }>((resolve, reject) => {
+            request.signal?.addEventListener(
+              "abort",
+              () => {
+                step.aborted = true;
+                reject(request.signal?.reason);
+              },
+              { once: true }
+            );
+            void step.gate.promise.then(() => resolve({ content: step.content }));
+          });
+        };
+      };
+      const blocked = (content: string) => ({ gate: gate(), content }) as { gate: Gate; content: string; aborted?: boolean; started?: boolean };
+
+      async function twoChannelRuntime(steps: Step[], options: { logger?: ReturnType<typeof quietLogger> } = {}) {
+        const root = await makeTempRoot();
+        roots.push(root);
+        await ensureDataLayout(root);
+        const storage = new StorageService(root);
+        await seedRuntimeConfig(storage);
+        const server = await storage.readJson("user/servers/guild-1/server.json", ServerConfigSchema);
+        await storage.writeJson("server:guild-1", "user/servers/guild-1/server.json", ServerConfigSchema, {
+          ...server,
+          channels: { ...server.channels, "channel-2": { ...server.channels["channel-1"], channelId: "channel-2" } }
+        });
+        const discord = new FakeDiscord();
+        discord.fetchFreshContext = async () => [contextMessage("m1", "user", "Kevin", "hello")];
+        // one script shared by every pipeline instance (createPipeline runs per model call)
+        const generateWaifu = scriptedWaifu(steps);
+        const runtime = new RuntimeOrchestrator({
+          sleep: async () => undefined,
+          storage,
+          discord,
+          maxAutomaticTurns: 1,
+          createPipeline: () => ({
+            decideOrchestrator: async () => ({ action: "reply", respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }], reasoning: "reply" }),
+            generateWaifu
+          }),
+          logger: options.logger ?? quietLogger()
+        });
+        return { storage, discord, runtime };
+      }
+      const timers = (runtime: RuntimeOrchestrator) =>
+        (runtime as unknown as { retriggerTimers: Map<string, NodeJS.Timeout> }).retriggerTimers;
+
+      it("resumeAfterPause: a runtime that booted paused re-arms persisted wakes once resumed", async () => {
+        const root = await makeTempRoot();
+        roots.push(root);
+        await ensureDataLayout(root);
+        const storage = new StorageService(root);
+        const { ChannelSessionStateSchema, createEmptyChannelSessionState } = await import("../src/orchestration/session.js");
+        await seedRuntimeConfig(storage);
+        await storage.writeJson("session:guild-1:channel-1", sessionPath(), ChannelSessionStateSchema, {
+          ...createEmptyChannelSessionState("guild-1", "channel-1"),
+          scheduledRetriggerAt: new Date(Date.now() + 600_000).toISOString(),
+          scheduledRetrigger: { source: "turn_limit", seconds: 900 }
+        });
+        let paused = true;
+        const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+        // no human in the room, so the planner restores the persisted clock rather than waking now
+        const quietRoom = new FakeDiscord();
+        quietRoom.contexts = [[contextMessage("m2", "waifu", "Yuki", "hi")]];
+        const runtime = new RuntimeOrchestrator({
+          sleep: async () => undefined,
+          storage,
+          discord: quietRoom,
+          restartResumeDelayMs: 0,
+          isPaused: () => paused,
+          createPipeline: () => ({ generateWaifu: async () => ({ content: "unused" }) }),
+          logger
+        });
+        try {
+          await runtime.start();
+          paused = false;
+          runtime.resumeAfterPause();
+          await until(() => timers(runtime).has("guild-1:channel-1"), "re-armed wake");
+          const restored = logger.info.mock.calls.find(([message]) => message === "Restart resume: retrigger restored");
+          expect((restored?.[1] as { seconds: number }).seconds).toBeGreaterThan(590);
+          expect((await readSession(storage)).scheduledRetrigger?.source).toBe("turn_limit");
+        } finally {
+          await runtime.stop();
+        }
+      });
+
+      it("resumeAfterPause: a live pause clears retrigger timers and resume re-arms them", async () => {
+        const root = await makeTempRoot();
+        roots.push(root);
+        await ensureDataLayout(root);
+        const storage = new StorageService(root);
+        await seedRuntimeConfig(storage);
+        let paused = false;
+        const runtime = new RuntimeOrchestrator({
+          sleep: async () => undefined,
+          storage,
+          discord: new FakeDiscord(),
+          maxAutomaticTurns: 1,
+          restartResumeDelayMs: 0,
+          isPaused: () => paused,
+          createPipeline: () => ({
+            decideOrchestrator: async () => ({ action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 600, reasoning: "quiet" }),
+            generateWaifu: async () => ({ content: "unused" })
+          }),
+          logger: quietLogger()
+        });
+        try {
+          await runtime.triggerChannel("guild-1", "channel-1");
+          expect(timers(runtime).has("guild-1:channel-1")).toBe(true);
+          paused = true;
+          await runtime.pause();
+          expect(timers(runtime).size).toBe(0);
+          paused = false;
+          runtime.resumeAfterPause();
+          await until(() => timers(runtime).has("guild-1:channel-1"), "re-armed wake after resume");
+          expect((await readSession(storage)).scheduledRetrigger?.source).toBe("no_reply");
+        } finally {
+          await runtime.stop();
+        }
+      });
+
+      it("resumeAfterPause: a redundant resume while running does nothing", async () => {
+        const root = await makeTempRoot();
+        roots.push(root);
+        await ensureDataLayout(root);
+        const storage = new StorageService(root);
+        await seedRuntimeConfig(storage);
+        const live = blocked("live reply");
+        const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+        const discord = new FakeDiscord();
+        const decideOrchestrator = replyOnce();
+        const generateWaifu = scriptedWaifu([live, "duplicate"]);
+        const runtime = new RuntimeOrchestrator({
+          sleep: async () => undefined,
+          storage,
+          discord,
+          maxAutomaticTurns: 1,
+          restartResumeDelayMs: 0,
+          createPipeline: () => ({ decideOrchestrator, generateWaifu }),
+          logger
+        });
+        try {
+          const run = runtime.triggerChannel("guild-1", "channel-1");
+          await until(() => live.started === true, "live generation");
+          runtime.resumeAfterPause();
+          await new Promise((resolve) => setTimeout(resolve, 200));
+          expect(live.aborted).toBeUndefined();
+          live.gate.open();
+          await run;
+          expect(discord.sent.map((entry) => entry.content)).toEqual(["live reply"]);
+          expect(logger.info).not.toHaveBeenCalledWith(
+            "Restart resume: executing responders the restart interrupted",
+            expect.anything()
+          );
+        } finally {
+          await runtime.stop();
+        }
+      });
+
+      it("a timer wake never aborts another channel's live run; it queues with its wake identity", async () => {
+        const live = blocked("channel-1 reply");
+        const { storage, discord, runtime } = await twoChannelRuntime([live]);
+        try {
+          const run = runtime.triggerChannel("guild-1", "channel-1", "message", { trigger: "message" });
+          await until(() => live.started === true, "channel-1 generation");
+          await runtime.triggerChannel("guild-1", "channel-2", "scheduled-retrigger", {
+            trigger: "retrigger",
+            wake: { source: "no_reply", seconds: 600, decisionId: "d-2" }
+          });
+          expect(live.aborted).toBeUndefined();
+          live.gate.open();
+          await run;
+          expect(discord.sent.map((entry) => entry.content)).toEqual(["channel-1 reply"]);
+          const queued = await readSession(storage, "channel-2");
+          expect(queued.scheduledRetrigger).toEqual({ source: "no_reply", seconds: 600, decisionId: "d-2" });
+          expect((Date.parse(queued.scheduledRetriggerAt!) - Date.now()) / 1000).toBeLessThanOrEqual(15);
+        } finally {
+          await runtime.stop();
+        }
+      });
+
+      it("a preempted channel's re-trigger actually fires and runs the channel", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        const first = blocked("never sent");
+        const { discord, runtime } = await twoChannelRuntime([first, "channel-2 reply", "channel-1 again"]);
+        try {
+          const run = runtime.triggerChannel("guild-1", "channel-1", "message", { trigger: "message" });
+          await settle(() => first.started === true, "channel-1 generation");
+          await runtime.triggerChannel("guild-1", "channel-2", "message", { trigger: "message" });
+          await run;
+          expect(first.aborted).toBe(true);
+          expect(timers(runtime).has("guild-1:channel-1")).toBe(true);
+          await vi.advanceTimersByTimeAsync(10_000);
+          await settle(() => discord.sent.length === 2, "re-triggered channel-1 reply");
+          expect(discord.sent.map((entry) => entry.content)).toEqual(["channel-2 reply", "channel-1 again"]);
+        } finally {
+          await runtime.stop();
+        }
+      });
+
+      it("two busy channels cannot ping-pong: a queued wake waits behind a live run", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        const a1 = blocked("a1 never sent");
+        const b2 = blocked("b2");
+        const { discord, runtime } = await twoChannelRuntime([a1, "b1", b2, "a2"]);
+        try {
+          const aRun = runtime.triggerChannel("guild-1", "channel-1", "message", { trigger: "message" });
+          await settle(() => a1.started === true, "a1");
+          await runtime.triggerChannel("guild-1", "channel-2", "message", { trigger: "message" });
+          await aRun;
+          // channel-1 now has a short preempted wake; channel-2 gets busy again before it fires
+          const bRun = runtime.triggerChannel("guild-1", "channel-2", "message", { trigger: "message" });
+          await settle(() => b2.started === true, "b2");
+          await vi.advanceTimersByTimeAsync(10_000);
+          await settle(() => !timers(runtime).has("guild-1:channel-1"), "channel-1 wake fired");
+          expect(b2.aborted).toBeUndefined();
+          b2.gate.open();
+          await bRun;
+          await settle(() => timers(runtime).has("guild-1:channel-1"), "channel-1 re-queued wake");
+          await vi.advanceTimersByTimeAsync(10_000);
+          await settle(() => discord.sent.length === 3, "channel-1 finally runs");
+          expect(discord.sent.map((entry) => entry.content)).toEqual(["b1", "b2", "a2"]);
+        } finally {
+          await runtime.stop();
+        }
+      });
+
+      it("/stop removes a queued channel so it is never re-triggered", async () => {
+        const a = blocked("never");
+        const b = blocked("channel-2 reply");
+        const { storage, runtime } = await twoChannelRuntime([a, b]);
+        try {
+          const aRun = runtime.triggerChannel("guild-1", "channel-1", "message", { trigger: "message" });
+          await until(() => a.started === true, "channel-1");
+          const bRun = runtime.triggerChannel("guild-1", "channel-2", "message", { trigger: "message" });
+          await until(() => b.started === true, "channel-2");
+          await aRun;
+          await runtime.stopChannel("guild-1", "channel-1");
+          b.gate.open();
+          await bRun;
+          expect(timers(runtime).has("guild-1:channel-1")).toBe(false);
+          expect((await readSession(storage, "channel-1")).scheduledRetrigger).toBeUndefined();
+        } finally {
+          await runtime.stop();
+        }
+      });
+
+      it("/stop during the queued re-trigger's session write still wins", async () => {
+        const a = blocked("never");
+        const b = blocked("channel-2 reply");
+        const { storage, runtime } = await twoChannelRuntime([a, b]);
+        try {
+          const aRun = runtime.triggerChannel("guild-1", "channel-1", "message", { trigger: "message" });
+          await until(() => a.started === true, "channel-1");
+          const bRun = runtime.triggerChannel("guild-1", "channel-2", "message", { trigger: "message" });
+          await until(() => b.started === true, "channel-2");
+          await aRun;
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          const writeGate = gate();
+          let writeHeld = false;
+          const original = storage.updateRevisionedJson.bind(storage);
+          storage.updateRevisionedJson = (async (options: Parameters<typeof original>[0]) => {
+            if (options.relativePath === sessionPath("channel-1") && !writeHeld) {
+              writeHeld = true;
+              await writeGate.promise;
+            }
+            return original(options);
+          }) as typeof storage.updateRevisionedJson;
+          b.gate.open();
+          await until(() => writeHeld, "re-trigger session write");
+          await runtime.stopChannel("guild-1", "channel-1");
+          writeGate.open();
+          await bRun;
+          expect(timers(runtime).has("guild-1:channel-1")).toBe(false);
+          expect((await readSession(storage, "channel-1")).scheduledRetrigger).toBeUndefined();
+        } finally {
+          await runtime.stop();
+        }
+      });
+
+      it("a planned stop leaves a wake for a queued channel; a user pause does not", async () => {
+        for (const halt of ["stop", "pause"] as const) {
+          const a = blocked("never");
+          const b = blocked("never either");
+          const { storage, runtime } = await twoChannelRuntime([a, b]);
+          const aRun = runtime.triggerChannel("guild-1", "channel-1", "message", { trigger: "message" });
+          await until(() => a.started === true, "channel-1");
+          const bRun = runtime.triggerChannel("guild-1", "channel-2", "message", { trigger: "message" });
+          await until(() => b.started === true, "channel-2");
+          await aRun;
+          await (halt === "stop" ? runtime.stop() : runtime.pause());
+          await bRun;
+          const queued = await readSession(storage, "channel-1");
+          if (halt === "stop") {
+            expect(queued.scheduledRetrigger?.source).toBe("shutdown");
+          } else {
+            expect(queued.scheduledRetrigger).toBeUndefined();
+            expect(timers(runtime).size).toBe(0);
+            await runtime.stop();
+          }
+        }
+      });
+
+      it("B8: wake backoff compounds 1.5x across no_reply wakes and resets on a human-triggered run", async () => {
+        const root = await makeTempRoot();
+        roots.push(root);
+        await ensureDataLayout(root);
+        const storage = new StorageService(root);
+        await seedRuntimeConfig(storage);
+        await seedOrchestratorHistory(storage, [
+          {
+            id: "armer", guildId: "guild-1", channelId: "channel-1", action: "no_reply", respondingWaifus: [],
+            retriggerAfterSeconds: 600, reasoning: "quiet", status: "completed",
+            waifuMessageIds: [], responderOutcomes: [], createdAt: new Date().toISOString()
+          }
+        ]);
+        const discord = new FakeDiscord();
+        discord.fetchFreshContext = async () => [contextMessage("m1", "user", "Kevin", "hello")];
+        const runtime = new RuntimeOrchestrator({
+          sleep: async () => undefined,
+          storage,
+          discord,
+          maxAutomaticTurns: 1,
+          createPipeline: () => ({
+            decideOrchestrator: async () => ({ action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 600, reasoning: "quiet" }),
+            generateWaifu: async () => ({ content: "unused" })
+          }),
+          logger: quietLogger()
+        });
+        try {
+          // second consecutive no_reply wake: the armed 900s grows to 1350s
+          await runtime.triggerChannel("guild-1", "channel-1", "scheduled-retrigger", {
+            trigger: "retrigger",
+            wake: { source: "no_reply", seconds: 900, decisionId: "armer" }
+          });
+          expect((await readSession(storage)).scheduledRetrigger?.seconds).toBe(1350);
+          // a human message resets the backoff to the model's own number
+          await runtime.triggerChannel("guild-1", "channel-1", "message:1", { trigger: "message" });
+          expect((await readSession(storage)).scheduledRetrigger?.seconds).toBe(600);
+        } finally {
+          await runtime.stop();
+        }
+      });
+    });
   });
 
   it("loop notice reaches the trailing prompt and unlocks the budget", async () => {

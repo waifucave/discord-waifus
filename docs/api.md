@@ -94,6 +94,8 @@ Normal configuration changes apply at runtime. `PUT /api/config`, `PUT /api/disc
 
 During startup, HTTP binds before Discord auto-connect completes. `/api/status` and `/api/runtime` set optional `discord.connecting` while Discord login is in progress. If Discord auto-connect fails with a transient DNS or network error, the backend keeps Discord offline and retries automatically. Retry metadata is optional: `retrying`, `retryAttempt`, `nextRetryAt`, `lastError`, and `lastErrorAt`.
 
+Each configured bot logs in independently, so one bad waifu token no longer takes the others offline. `discord.bots` (optional) lists every configured bot as `{ botId, displayName, kind: "orchestrator" | "waifu", state: "connected" | "connecting" | "error" | "disabled" | "missing_token", errorCode?, error?, closeCode?, nextRetryAt?, updatedAt }`. `errorCode` is one of `invalid_token`, `disallowed_intents`, `invalid_intents`, `gateway_rejected`, `network`, `orchestrator_unavailable`, or `unknown`. Bots with `enabled: false` never log in. The orchestrator bot is required: if it cannot log in (or Discord later ends its session with an unrecoverable close code such as 4004 or 4014), every waifu client is disconnected too. Waifu bots that fail on a network error retry on their own; resumable gateway errors are left to discord.js and no longer restart every bot.
+
 ## Remote state and clean
 
 Host remote-access management uses these loopback API routes. The same routes are available to a

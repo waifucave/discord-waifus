@@ -128,6 +128,31 @@ describe("planWaifuReplyChunks", () => {
   });
 });
 
+describe("splitWaifuReply Discord length limit", () => {
+  const isLoneSurrogate = (value: string) => /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(value);
+
+  it("hard-splits an over-2000-char run with no comma or emoji at whitespace", () => {
+    const words = Array.from({ length: 900 }, (_, index) => `w${index.toString(36)}x`);
+    const input = words.join(" ");
+    expect(input.length).toBeGreaterThan(4000);
+    const chunks = splitWaifuReply(input);
+    expect(chunks.length).toBeGreaterThanOrEqual(3);
+    for (const chunk of chunks) expect(chunk.length).toBeLessThanOrEqual(2000);
+    expect(chunks.join(" ")).toBe(input);
+  });
+
+  it("hard-splits a whitespace-free run at 2000 UTF-16 units without breaking surrogate pairs", () => {
+    const input = "\u{1D49C}".repeat(3001);
+    const chunks = splitWaifuReply(input);
+    expect(chunks.length).toBeGreaterThanOrEqual(4);
+    for (const chunk of chunks) {
+      expect(chunk.length).toBeLessThanOrEqual(2000);
+      expect(isLoneSurrogate(chunk)).toBe(false);
+    }
+    expect(chunks.join("")).toBe(input);
+  });
+});
+
 describe("typingDelayMs", () => {
   it("clamps short chunks to the minimum delay", () => {
     expect(typingDelayMs("hi")).toBe(600);

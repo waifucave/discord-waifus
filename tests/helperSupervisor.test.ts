@@ -898,13 +898,146 @@ describe("role-neutral helper supervisor", () => {
     expect(supervisor.snapshot()).toMatchObject({
       state: "degraded",
       consecutiveFailures: 10,
-      restartScheduled: false
+      restartScheduled: true
     });
     expect(logs.lines.join("\n")).not.toContain("secret path must not be logged");
 
     await supervisor.reconnect();
     expect(factory.requests).toHaveLength(11);
     await supervisor.close();
+  });
+
+  it("slowly retries after the failure circuit opens instead of giving up", async () => {
+    vi.useFakeTimers();
+    const factory = new FakeProcessFactory();
+    factory.launchError = Object.assign(new Error("launch failed"), { code: "helper_unavailable" });
+    const { supervisor, logs } = await makeSupervisor(factory);
+    await supervisor.start();
+    for (const delay of [1_000, 2_000, 5_000, 10_000, 30_000, 30_000, 30_000, 30_000, 30_000]) {
+      await vi.advanceTimersByTimeAsync(delay);
+      await settle();
+    }
+    expect(factory.requests).toHaveLength(10);
+    expect(logs.lines.at(-1)).toContain("\"recoveryScheduled\":true");
+
+    // No fast restarts while the circuit is open: one bounded attempt after ten minutes.
+    await vi.advanceTimersByTimeAsync(10 * 60_000 - 1);
+    expect(factory.requests).toHaveLength(10);
+    await vi.advanceTimersByTimeAsync(1);
+    await settle();
+    expect(factory.requests).toHaveLength(11);
+    expect(supervisor.snapshot()).toMatchObject({
+      state: "degraded",
+      consecutiveFailures: 11,
+      restartScheduled: true
+    });
+
+    // A failed recovery backs off to fifteen minutes and never re-enters fast restarts.
+    await vi.advanceTimersByTimeAsync(15 * 60_000 - 1);
+    expect(factory.requests).toHaveLength(11);
+    await vi.advanceTimersByTimeAsync(1);
+    await settle();
+    expect(factory.requests).toHaveLength(12);
+    await vi.advanceTimersByTimeAsync(15 * 60_000);
+    await settle();
+    expect(factory.requests).toHaveLength(13);
+
+    // A successful recovery closes the circuit and restores normal restart backoff.
+    factory.launchError = undefined;
+    await vi.advanceTimersByTimeAsync(15 * 60_000);
+    await settle();
+    expect(factory.requests).toHaveLength(14);
+    factory.launches.at(-1)!.resolveAuthenticated(helperClient());
+    await vi.waitFor(() => expect(supervisor.snapshot().state).toBe("ready"));
+    expect(supervisor.snapshot()).toMatchObject({ consecutiveFailures: 0, restartScheduled: false });
+    factory.launches.at(-1)!.resolveExit({ code: 70, signal: null });
+    await vi.waitFor(() => expect(supervisor.snapshot().state).toBe("degraded"));
+    await vi.advanceTimersByTimeAsync(1_000);
+    await settle();
+    expect(factory.requests).toHaveLength(15);
+    await supervisor.close();
+  });
+
+  it("cancels a pending slow recovery once an explicit start succeeds", async () => {
+    vi.useFakeTimers();
+    const factory = new FakeProcessFactory();
+    factory.launchError = Object.assign(new Error("launch failed"), { code: "helper_unavailable" });
+    const { supervisor } = await makeSupervisor(factory);
+    await supervisor.start();
+    for (const delay of [1_000, 2_000, 5_000, 10_000, 30_000, 30_000, 30_000, 30_000, 30_000]) {
+      await vi.advanceTimersByTimeAsync(delay);
+      await settle();
+    }
+    expect(factory.requests).toHaveLength(10);
+    expect(supervisor.snapshot()).toMatchObject({ state: "degraded", restartScheduled: true });
+
+    // Enabling remote access or activation calls start() while the recovery timer is armed.
+    factory.launchError = undefined;
+    const started = supervisor.start();
+    await settle();
+    expect(factory.requests).toHaveLength(11);
+    const launch = factory.launches.at(-1)!;
+    launch.resolveAuthenticated(helperClient());
+    await started;
+    expect(supervisor.snapshot()).toMatchObject({ state: "ready", restartScheduled: false });
+
+    await vi.advanceTimersByTimeAsync(60 * 60_000);
+    await settle();
+    expect(factory.requests).toHaveLength(11);
+    expect(supervisor.snapshot().state).toBe("ready");
+    expect(launch.drainCalls).toBe(0);
+    await supervisor.close();
+  });
+
+  it("never runs a stale fast restart over a helper that became ready", async () => {
+    vi.useFakeTimers();
+    const factory = new FakeProcessFactory();
+    factory.launchError = Object.assign(new Error("launch failed"), { code: "helper_unavailable" });
+    const { supervisor } = await makeSupervisor(factory);
+    await supervisor.start();
+    expect(supervisor.snapshot()).toMatchObject({ state: "degraded", restartScheduled: true });
+
+    factory.launchError = undefined;
+    const started = supervisor.start();
+    await settle();
+    factory.launches.at(-1)!.resolveAuthenticated(helperClient());
+    await started;
+    expect(factory.requests).toHaveLength(2);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    await settle();
+    expect(factory.requests).toHaveLength(2);
+    expect(supervisor.snapshot().state).toBe("ready");
+    await supervisor.close();
+  });
+
+  it("cancels circuit recovery on stop and close", async () => {
+    vi.useFakeTimers();
+    const factory = new FakeProcessFactory();
+    factory.launchError = Object.assign(new Error("launch failed"), { code: "helper_unavailable" });
+    const { supervisor } = await makeSupervisor(factory);
+    await supervisor.start();
+    for (const delay of [1_000, 2_000, 5_000, 10_000, 30_000, 30_000, 30_000, 30_000, 30_000]) {
+      await vi.advanceTimersByTimeAsync(delay);
+      await settle();
+    }
+    expect(factory.requests).toHaveLength(10);
+
+    await supervisor.stop();
+    expect(supervisor.snapshot()).toMatchObject({ state: "disabled", restartScheduled: false });
+    await vi.advanceTimersByTimeAsync(60 * 60_000);
+    expect(factory.requests).toHaveLength(10);
+
+    // After stop, the next explicit start begins with a fresh fast-restart budget.
+    await supervisor.start();
+    expect(factory.requests).toHaveLength(11);
+    await vi.advanceTimersByTimeAsync(1_000);
+    await settle();
+    expect(factory.requests).toHaveLength(12);
+
+    await supervisor.close();
+    await vi.advanceTimersByTimeAsync(60 * 60_000);
+    expect(factory.requests).toHaveLength(12);
   });
 
   it("drains for twenty seconds before force-terminating a stuck helper", async () => {

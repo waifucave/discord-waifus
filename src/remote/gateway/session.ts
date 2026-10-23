@@ -33,7 +33,7 @@ export type RemoteBrowserSessionStoreOptions = {
 
 export class RemoteBrowserSessionStoreError extends Error {
   constructor(
-    readonly code: "bootstrap_capacity" | "random_collision" | "session_capacity",
+    readonly code: "bootstrap_capacity" | "random_collision",
     message: string
   ) {
     super(message);
@@ -123,12 +123,7 @@ export class RemoteBrowserSessionStore {
     this.#bootstrapTokens.delete(parsed.data);
     if (expiresAt === undefined || this.#now() >= expiresAt) return undefined;
     this.#prune();
-    if (this.#sessions.size >= this.#maxSessions) {
-      throw new RemoteBrowserSessionStoreError(
-        "session_capacity",
-        "Remote browser session capacity is exhausted."
-      );
-    }
+    this.#evictLeastRecentlyUsed(this.#maxSessions - 1);
     const createdAt = this.#now();
     const browserSessionId = this.#uniqueSessionSecret("Browser session ID");
     const csrfToken = this.#uniqueSessionSecret("CSRF token", browserSessionId);
@@ -159,7 +154,9 @@ export class RemoteBrowserSessionStore {
     const parsed = Base64Url32BytesSchema.safeParse(values[0]);
     if (!parsed.success) return undefined;
     const session = this.#activeSession(parsed.data);
-    return session ? snapshot(session) : undefined;
+    if (!session) return undefined;
+    this.#touch(session);
+    return snapshot(session);
   }
 
   commitValidated(sessionValue: RemoteBrowserSession): RemoteBrowserSession | undefined {
@@ -173,6 +170,7 @@ export class RemoteBrowserSessionStore {
     ) {
       return undefined;
     }
+    this.#touch(session);
     return snapshot(session);
   }
 
@@ -206,6 +204,24 @@ export class RemoteBrowserSessionStore {
 
   #activeSession(browserSessionId: string): MutableRemoteBrowserSession | undefined {
     return this.#closed ? undefined : this.#sessions.get(browserSessionId);
+  }
+
+  /** Map insertion order is the recency order: authenticated use moves a session last. */
+  #touch(session: MutableRemoteBrowserSession): void {
+    this.#sessions.delete(session.browserSessionId);
+    this.#sessions.set(session.browserSessionId, session);
+  }
+
+  /**
+   * Sessions have no idle timeout, so the cap is enforced by evicting the least recently
+   * used ones; every CLI reopen/resume can always obtain a session. An evicted browser
+   * simply loses its cookie and recovers through key proof or a fresh CLI bootstrap.
+   */
+  #evictLeastRecentlyUsed(limit: number): void {
+    for (const browserSessionId of this.#sessions.keys()) {
+      if (this.#sessions.size <= limit) return;
+      this.#sessions.delete(browserSessionId);
+    }
   }
 
   #prune(): void {

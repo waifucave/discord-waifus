@@ -21,7 +21,9 @@ Remote releases additionally require all five exact optional helper pins and mat
 integrities/signatures/compatibility before packing. `release:beta --dry-run` checks the proposed
 version in memory without changing tracked version files. The root publish workflow requires
 installed-helper launch/cold-restart checks on every native target before using `NPM_TOKEN`.
-Absent registry helper packages are an expected release blocker until helper publication.
+The five `@waifucave/ts-connect-*` helper packages are published: `package.json` pins them
+exactly (currently 0.1.13) and `package-lock.json` resolves each from registry.npmjs.org with an
+integrity hash. A helper bump must publish all five first; a missing one blocks the release.
 Always publish reviewed tarballs using `scripts/publish-archive.mjs <archive> <sha256>
 <package-name> <version> <latest|next> --yes` on macOS/Linux, including manual fallbacks.
 It verifies immutable bytes and package identity, then uses a private neutral temporary path:
@@ -39,7 +41,7 @@ prebuilt React SPA and Discord runtime. When Remote Access is enabled, that host
 platform-specific `ts-connect` child. `waifus remote` is a separate local Node gateway with no
 Discord runtime and supervises its own remote-role helper child.
 
-**Startup pipeline** (`src/backend/server.ts:startBackend`): `runMigrations` → `loadAppConfig` → instantiate `StorageService` (per-resource locking JSON store rooted at the data root) → optional Discord connect (`maybeConnectDiscord`, gated by `runtime.autoConnectDiscord`) → build `RuntimeOrchestrator` → mount API via `createApiServer`. Runtime state is persisted to `~/.dc-waifus/runtime.json` so `waifus status`/`stop` can find the live process.
+**Startup pipeline** (`src/backend/server.ts:startBackend`): acquire the exclusive host lock `app/host.lock` (`src/storage/instanceLock.ts`: pid + OS process start time + nonce; a second host on the same data root fails fast, stale locks are broken; the remote gateway role does not take it) → `runMigrations` → `loadAppConfig` → instantiate `StorageService` (per-resource locking JSON store rooted at the data root) → optional Discord connect (`maybeConnectDiscord`, gated by `runtime.autoConnectDiscord`) → build `RuntimeOrchestrator` → mount API via `createApiServer`. Runtime state is persisted to `~/.dc-waifus/runtime.json` so `waifus status`/`stop` can find the live process; they verify the pid against the lock's start time (or pid.json `startedAt`) before reporting or signalling it, so a pid reused after a crash is treated as stale. Start times come from `ps` on macOS/Linux; Windows falls back to pid liveness.
 
 **Per-channel orchestration loop** (`src/orchestration/runtime.ts`): Discord activity drives an abortable channel run. Each pass fetches fresh context, plans a `reply` or `no_reply`, records history, and executes responders through their own gateway pipelines. `messageSplit.ts` handles chunks and typing delays; reviewer and idle stage-manager work remain separate. Per-server `orchestratorMode` selects LLM (`model`), free structural (`deterministic`), or native choice (`one-shot`). Missing global director LLM falls back to deterministic only outside One shot; One shot has its own independent target. Its speaker/pause choice is indivisible, steering is bounded, message ages and optional OCR text are preserved, and failures use safe codes. `stageManagerEnabled: false` independently disables stage-manager/dream work.
 
@@ -47,7 +49,7 @@ Discord runtime and supervises its own remote-role helper child.
 
 **Model pipeline** (`src/orchestration/pipeline/`): every model call goes through `gatewayPipeline.ts`, which builds and sends requests via `@waifucave/gateway` (see below). `resolveTarget.ts` resolves `(providerId?, modelId)` pairs, `params.ts` leniently conforms stored params to the target model, `messages.ts`/`timeline.ts` shape the chat timeline. `src/providers/` holds only shared request/role types (`types.ts`) — the old in-app catalog/pipelines are gone.
 
-**Storage** (`src/storage/storageService.ts`, `src/shared/schemas/domain.ts`): everything user-owned is a revisioned JSON file under `~/.dc-waifus/user/` (providers, discord-bots, waifus, servers, memories, histories). Writes use atomic temp-file swap with per-resource locks. Zod schemas in `src/shared/schemas/` are the authority for both on-disk format and API I/O — change them and the migrations together. `resolveDataPath` has no traversal guard of its own — any route that builds a path from a request id must call `assertSafeId` first.
+**Storage** (`src/storage/storageService.ts`, `src/shared/schemas/domain.ts`): everything user-owned is a revisioned JSON file under `~/.dc-waifus/user/` (providers, discord-bots, waifus, servers, memories, histories). Writes use atomic temp-file swap with per-resource locks. Zod schemas in `src/shared/schemas/` are the authority for both on-disk format and API I/O — change them and the migrations together. `resolveDataPath` throws if the joined path escapes the data root, but that is a backstop — any route that builds a path from a request id must still validate it first (`assertSafeId` rejects dot-only ids; guild/channel ids must be Discord snowflakes via `assertSnowflakeId`).
 
 **API conventions** (`src/api/server.ts`, `src/api/errors.ts`): errors carry a machine-readable `code` (`BadRequest`/`NotFound`/`Conflict`/`PreconditionRequired`) via `ApiError`. Revision enforcement is deliberately split: waifu and memory writes require `expectedRevision` (missing → 428, mismatch → 409); other resources accept it optionally and are last-writer-wins otherwise. `params` on waifu/agent-config PUTs merge server-side — an explicit `null` value unsets a key, omission keeps it — so dashboard editors must send `null` for keys the user removed (see `mergeParamsPatch`). `waifu.botId` uses the same null-to-unset pattern.
 
@@ -75,11 +77,15 @@ processes can coexist. `src/api/remoteAccess.ts` exposes lifecycle/status under
 `GET /api/remote-access/diagnostics`; assistant tools dispatch through the same API and policy.
 Identity reset is local-only. Remote management cannot stop/restart the host OS process.
 Coordinator or direct-path failures require diagnosis/retry, not automatic trust deletion or
-re-pairing. On macOS, a locked login keychain can block helper startup; unlock interactively
+re-pairing. After ten helper failures in five minutes the supervisor stops fast restarts but keeps
+one slow recovery attempt pending (10 minutes, then every 15, ±10% jitter) until a launch
+authenticates or reconnect/stop/reset/close clears the circuit (`HELPER_CIRCUIT_RECOVERY_DELAYS_MS`). On macOS, a locked login keychain can block helper startup; unlock interactively
 and consult the README for SSH-assisted setup without exposing credentials.
 
 **Browser session lifetime** (`src/remote/gateway/session.ts`, `browserPersistence.ts`): sessions
-have no idle timeout or eight-hour cutoff. Owner-only files store only public browser reconnect
+have no idle timeout or eight-hour cutoff. The in-memory cap (1,024 per gateway launch) evicts the
+least-recently-used session (recency = authenticated use) so CLI reopens/resumes can never be
+locked out; an evicted browser recovers through key proof or a fresh CLI bootstrap. Owner-only files store only public browser reconnect
 keys for the exact host/trust/origin binding. The trusted frame stores a non-exportable P-256
 WebCrypto key in IndexedDB; bounded 30-second single-use challenges prove ownership and obtain
 fresh cookies/CSRF and gateway/helper launch authority. Old cookies are rejected after restart;
@@ -149,7 +155,10 @@ accept bugfixes in the same major/feature series. Gateway/helper package version
 five-minute quiet default. Only plain newer patch releases within the current major/minor are
 eligible. Global npm runtimes register private capability-authenticated loopback control servers;
 one installation-wide worker stages exact candidate/rollback packages, verifies helper signatures
-and compatibility, prepares all opted-in roles, then installs/restarts. Admission is synchronous
+and compatibility, prepares all opted-in roles, then installs/restarts. Helper pins/signatures/
+compatibility are verified strictly whenever a registered remote gateway or Remote-Access-enabled
+host (unreadable config counts as enabled) runs on a supported helper platform; otherwise only the
+app package is verified, so absent optional helpers never block bot fixes (`helperVerificationRequired`). Admission is synchronous
 in API/background work; passive polls/streams alone do not prevent maintenance. Locks serialize
 manual and automatic installations and block new registrations during replacement. Never signal
 an uncooperative/busy/unknown sibling or clear user data/trust to force progress. The macOS JXA

@@ -29,19 +29,60 @@ export async function atomicWriteText(
   );
 
   const handle = await open(tmpPath, "wx", options.mode ?? 0o600);
+  let protectedTemp = false;
   try {
-    if (options.privateMetadata) {
-      try { await protectNewPrivateMetadataFile(tmpPath); }
-      catch (error) { await discardOwnedEmptyMetadataFile(tmpPath, handle); throw error; }
+    try {
+      if (options.privateMetadata) {
+        try { await protectNewPrivateMetadataFile(tmpPath); }
+        catch (error) { await discardOwnedEmptyMetadataFile(tmpPath, handle); throw error; }
+      }
+      protectedTemp = true;
+      await handle.writeFile(content, "utf8");
+      await handle.sync();
+    } finally {
+      await handle.close();
     }
-    await handle.writeFile(content, "utf8");
-    await handle.sync();
-  } finally {
-    await handle.close();
+    await renameWithRetry(tmpPath, filePath);
+  } catch (error) {
+    // Never leave our own temp behind: same-pid temps are skipped by recoverAtomicWriteTemps,
+    // so a failed write in a long-lived process would otherwise linger until restart. A failed
+    // private-metadata protection keeps its narrower identity-checked discard above.
+    if (protectedTemp) await rm(tmpPath, { force: true }).catch(() => undefined);
+    throw error;
   }
-
-  await rename(tmpPath, filePath);
   await syncDirectoryBestEffort(dir);
+}
+
+// Windows reports a destination briefly held open by another reader, an antivirus scanner or
+// the search indexer as EPERM/EBUSY/EACCES; those clear within milliseconds. POSIX rename has no
+// such transient failure, so retries are Windows-only and bounded (~800 ms total).
+const WINDOWS_TRANSIENT_RENAME_CODES = new Set(["EPERM", "EBUSY", "EACCES"]);
+const RENAME_RETRY_DELAYS_MS = [10, 20, 40, 80, 160, 250, 250];
+
+export async function renameWithRetry(
+  from: string,
+  to: string,
+  options: {
+    platform?: NodeJS.Platform;
+    rename?: (from: string, to: string) => Promise<void>;
+    delaysMs?: readonly number[];
+  } = {}
+): Promise<void> {
+  const platform = options.platform ?? process.platform;
+  const renameFile = options.rename ?? rename;
+  const delays = options.delaysMs ?? RENAME_RETRY_DELAYS_MS;
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await renameFile(from, to);
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (platform !== "win32" || !code || !WINDOWS_TRANSIENT_RENAME_CODES.has(code) || attempt >= delays.length) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, delays[attempt]));
+    }
+  }
 }
 
 export async function recoverAtomicWriteTemps(filePath: string): Promise<string[]> {

@@ -202,7 +202,8 @@ export const DiscordBotConfigSchema = z.object({
   displayName: z.string().min(1),
   applicationId: z.string().min(1).optional(),
   token: z.string().min(1).optional(),
-  enabled: z.boolean().default(false)
+  // A missing flag means enabled: the runtime historically logged in every bot with a token.
+  enabled: z.boolean().default(true)
 });
 export type DiscordBotConfig = z.infer<typeof DiscordBotConfigSchema>;
 

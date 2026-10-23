@@ -76,13 +76,13 @@ describe("Backend API", () => {
     const { app } = await makeApp();
     try {
       const before = (await app.inject({ method: "GET", url: "/api/orchestrator/config" })).json();
-      const selected = await app.inject({ method: "PUT", url: "/api/servers/one-shot", payload: { orchestratorMode: "one-shot", oneShot: { target: "openrouter:typesafe/jev-1.13" } } });
+      const selected = await app.inject({ method: "PUT", url: "/api/servers/100000000000000001", payload: { orchestratorMode: "one-shot", oneShot: { target: "openrouter:typesafe/jev-1.13" } } });
       expect(selected.statusCode).toBe(200);
       expect(selected.json().orchestratorMode).toBe("one-shot");
-      const updated = await app.inject({ method: "PUT", url: "/api/servers/one-shot", payload: { name: "renamed" } });
+      const updated = await app.inject({ method: "PUT", url: "/api/servers/100000000000000001", payload: { name: "renamed" } });
       expect(updated.json()).toMatchObject({ orchestratorMode: "one-shot", oneShot: { target: "openrouter:typesafe/jev-1.13" } });
       expect((await app.inject({ method: "GET", url: "/api/orchestrator/config" })).json()).toEqual(before);
-      expect((await app.inject({ method: "PUT", url: "/api/servers/one-shot", payload: { oneShot: { target: "openrouter:respan/span-01" } } })).statusCode).toBe(400);
+      expect((await app.inject({ method: "PUT", url: "/api/servers/100000000000000001", payload: { oneShot: { target: "openrouter:respan/span-01" } } })).statusCode).toBe(400);
     } finally { await app.close(); }
   });
   it("lists decision models and credential presence without exposing credentials", async () => {
@@ -710,16 +710,16 @@ describe("Backend API", () => {
     it("per-server orchestratorMode and stageManagerEnabled round-trip with sane defaults", async () => {
       const { app } = await makeApp();
       try {
-        await app.inject({ method: "PUT", url: "/api/servers/g-modes", payload: { name: "Modes", enabled: true } });
-        let server = JSON.parse((await app.inject({ method: "GET", url: "/api/servers/g-modes" })).body) as Record<string, unknown>;
+        await app.inject({ method: "PUT", url: "/api/servers/100000000000000002", payload: { name: "Modes", enabled: true } });
+        let server = JSON.parse((await app.inject({ method: "GET", url: "/api/servers/100000000000000002" })).body) as Record<string, unknown>;
         expect(server.orchestratorMode).toBe("model");
         expect(server.stageManagerEnabled).toBe(true);
         await app.inject({
           method: "PUT",
-          url: "/api/servers/g-modes",
+          url: "/api/servers/100000000000000002",
           payload: { revision: server.revision, orchestratorMode: "deterministic", stageManagerEnabled: false }
         });
-        server = JSON.parse((await app.inject({ method: "GET", url: "/api/servers/g-modes" })).body) as Record<string, unknown>;
+        server = JSON.parse((await app.inject({ method: "GET", url: "/api/servers/100000000000000002" })).body) as Record<string, unknown>;
         expect(server.orchestratorMode).toBe("deterministic");
         expect(server.stageManagerEnabled).toBe(false);
       } finally {
@@ -755,10 +755,10 @@ describe("Backend API", () => {
         expect(bad.statusCode).toBe(400);
         const missing = await app.inject({ method: "POST", url: "/api/runtime/stop", payload: {} });
         expect(missing.statusCode).toBe(400);
-        const ok = await app.inject({ method: "POST", url: "/api/runtime/stop", payload: { guildId: "g1", channelId: "c1" } });
+        const ok = await app.inject({ method: "POST", url: "/api/runtime/stop", payload: { guildId: "100000000000000011", channelId: "100000000000000012" } });
         expect(ok.statusCode).toBe(200);
         expect(JSON.parse(ok.body)).toMatchObject({ stoppedRun: true, clearedRetrigger: true });
-        expect(calls).toEqual([["g1", "c1"]]);
+        expect(calls).toEqual([["100000000000000011", "100000000000000012"]]);
       } finally {
         await app.close();
       }
@@ -767,7 +767,7 @@ describe("Backend API", () => {
     it("POST /api/runtime/stop without a live runtime reports nothing to stop", async () => {
       const { app } = await makeApp();
       try {
-        const res = await app.inject({ method: "POST", url: "/api/runtime/stop", payload: { guildId: "g1", channelId: "c1" } });
+        const res = await app.inject({ method: "POST", url: "/api/runtime/stop", payload: { guildId: "100000000000000011", channelId: "100000000000000012" } });
         expect(res.statusCode).toBe(200);
         expect(JSON.parse(res.body)).toMatchObject({ stoppedRun: false });
       } finally {
@@ -798,14 +798,14 @@ describe("Backend API", () => {
     it("per-server paused round-trips, defaults false, and survives unrelated PUTs", async () => {
       const { app } = await makeApp();
       try {
-        await app.inject({ method: "PUT", url: "/api/servers/g-pause", payload: {} });
-        let server = JSON.parse((await app.inject({ method: "GET", url: "/api/servers/g-pause" })).body) as Record<string, unknown>;
+        await app.inject({ method: "PUT", url: "/api/servers/100000000000000003", payload: {} });
+        let server = JSON.parse((await app.inject({ method: "GET", url: "/api/servers/100000000000000003" })).body) as Record<string, unknown>;
         expect(server.paused).toBe(false);
-        await app.inject({ method: "PUT", url: "/api/servers/g-pause", payload: { revision: server.revision, paused: true } });
-        server = JSON.parse((await app.inject({ method: "GET", url: "/api/servers/g-pause" })).body) as Record<string, unknown>;
+        await app.inject({ method: "PUT", url: "/api/servers/100000000000000003", payload: { revision: server.revision, paused: true } });
+        server = JSON.parse((await app.inject({ method: "GET", url: "/api/servers/100000000000000003" })).body) as Record<string, unknown>;
         expect(server.paused).toBe(true);
-        await app.inject({ method: "PUT", url: "/api/servers/g-pause", payload: { revision: server.revision, orchestratorMode: "deterministic" } });
-        server = JSON.parse((await app.inject({ method: "GET", url: "/api/servers/g-pause" })).body) as Record<string, unknown>;
+        await app.inject({ method: "PUT", url: "/api/servers/100000000000000003", payload: { revision: server.revision, orchestratorMode: "deterministic" } });
+        server = JSON.parse((await app.inject({ method: "GET", url: "/api/servers/100000000000000003" })).body) as Record<string, unknown>;
         expect(server.paused).toBe(true);
       } finally {
         await app.close();
@@ -848,13 +848,13 @@ describe("Backend API", () => {
       try {
         await app.inject({
           method: "PUT",
-          url: "/api/servers/g-single",
+          url: "/api/servers/100000000000000004",
           payload: { name: "Single", enabled: true }
         });
-        const single = await app.inject({ method: "GET", url: "/api/servers/g-single" });
+        const single = await app.inject({ method: "GET", url: "/api/servers/100000000000000004" });
         expect(single.statusCode).toBe(200);
-        expect(JSON.parse(single.body).guildId).toBe("g-single");
-        const missing = await app.inject({ method: "GET", url: "/api/servers/nope" });
+        expect(JSON.parse(single.body).guildId).toBe("100000000000000004");
+        const missing = await app.inject({ method: "GET", url: "/api/servers/100000000000000099" });
         expect(missing.statusCode).toBe(404);
       } finally {
         await app.close();
@@ -864,7 +864,7 @@ describe("Backend API", () => {
     it("PUT server config omitting memoryInjectionLimit (real ServersView save body) leaves it untouched (reviewer repro)", async () => {
       const { app } = await makeApp();
       try {
-        const guildId = "guild-patch-true";
+        const guildId = "100000000000000005";
         const seeded = await app.inject({
           method: "PUT",
           url: `/api/servers/${guildId}`,
@@ -913,7 +913,7 @@ describe("Backend API", () => {
     it("PUT server config with an explicit memoryInjectionLimit still stores the new value", async () => {
       const { app } = await makeApp();
       try {
-        const guildId = "guild-explicit-write";
+        const guildId = "100000000000000006";
         const seeded = await app.inject({
           method: "PUT",
           url: `/api/servers/${guildId}`,

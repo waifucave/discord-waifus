@@ -218,13 +218,13 @@ describe("Discord member cache helpers", () => {
 });
 
 describe("orchestrator slash command payloads", () => {
-  it("keeps /run open while requiring admin permissions for other orchestrator commands", () => {
+  it("gates /run behind Manage Messages and other orchestrator commands behind Administrator", () => {
     const payloads = buildOrchestratorCommandPayloads();
     const byName = new Map(payloads.map((payload) => [payload.name, payload]));
     const run = byName.get("run");
 
     expect(run).toBeDefined();
-    expect(run).not.toHaveProperty("defaultMemberPermissions");
+    expect(run?.defaultMemberPermissions).toBe(8192n);
     for (const name of ["review", "clear", "stop", "memories", "print", "console"]) {
       expect(byName.get(name)?.defaultMemberPermissions).toBe(8n);
     }

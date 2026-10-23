@@ -92,6 +92,12 @@ const TERMINAL_ACTIVATION_RETENTION_SECONDS = 600n;
 
 export type HelperSupervisorController = {
   snapshot: () => HelperSupervisorSnapshot;
+  /**
+   * Closed-enum reason when no production helper can ever be launched by this
+   * process (unsupported platform, unusable compatibility table). Disabled
+   * summaries report it so the local host can explain why remote is unavailable.
+   */
+  unavailableReason?: () => RemoteAccessErrorCode | null;
   identityStatus: () => HelperIdentityStatus | null;
   subscribe: (listener: (snapshot: HelperSupervisorSnapshot) => void) => () => void;
   attachRequestBridge: (bridge: RemoteRequestBridge) => void;
@@ -249,7 +255,8 @@ export type RemoteAccessServiceOptions = {
 };
 
 function inactiveSummary(
-  state: RemoteAccessPersistedState
+  state: RemoteAccessPersistedState,
+  unavailableReason: RemoteAccessErrorCode | null = null
 ): RemoteAccessRuntimeSummary {
   return RemoteAccessRuntimeSummarySchema.parse({
     version: 1,
@@ -262,7 +269,7 @@ function inactiveSummary(
     directState: "inactive",
     trustedDeviceCount: trustedDeviceCount(state),
     lastDirectAt: null,
-    lastErrorCode: null
+    lastErrorCode: unavailableReason
   });
 }
 
@@ -425,7 +432,7 @@ export class RemoteAccessService {
     }
     this.#state = state;
     if (!state.config.enabled) {
-      this.#publish(inactiveSummary(state));
+      this.#publish(this.#inactiveSummary(state));
       return;
     }
     if (state.installation.activationReference === null) {
@@ -974,7 +981,7 @@ export class RemoteAccessService {
         this.#publish(failedSummary(state, lifecycleErrorCode(error)));
       }
     } else {
-      this.#publish(inactiveSummary(state));
+      this.#publish(this.#inactiveSummary(state));
     }
     await this.#stopHelperIfInactiveAndIdle();
     return structuredClone(operation.status);
@@ -1009,7 +1016,7 @@ export class RemoteAccessService {
         this.#unsubscribeSupervisor?.();
         this.#unsubscribeSupervisor = undefined;
       }
-      this.#publish(inactiveSummary(next));
+      this.#publish(this.#inactiveSummary(next));
       return structuredClone(next.config);
     }
     if (!await this.#effectiveBindIsLoopback()) {
@@ -1126,7 +1133,7 @@ export class RemoteAccessService {
       this.#state = state;
       this.#unsubscribeSupervisor?.();
       this.#unsubscribeSupervisor = undefined;
-      this.#publish(inactiveSummary(state));
+      this.#publish(this.#inactiveSummary(state));
       return receipt;
     } catch (error) {
       await this.#options.supervisor.stop().catch(() => undefined);
@@ -1194,6 +1201,11 @@ export class RemoteAccessService {
     } finally {
       await this.#options.supervisor.stop().catch(() => undefined);
     }
+  }
+
+  #inactiveSummary(state: RemoteAccessPersistedState): RemoteAccessRuntimeSummary {
+    const reason = RemoteAccessErrorCodeSchema.safeParse(this.#options.supervisor.unavailableReason?.());
+    return inactiveSummary(state, reason.success ? reason.data : null);
   }
 
   #publish(summary: RemoteAccessRuntimeSummary): void {

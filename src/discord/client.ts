@@ -4,10 +4,11 @@ import {
   Events,
   GatewayIntentBits,
   MessageFlags,
+  Options,
   Partials,
   PermissionFlagsBits
 } from "discord.js";
-import type { AutocompleteInteraction, ChatInputCommandInteraction } from "discord.js";
+import type { AutocompleteInteraction, ChatInputCommandInteraction, ClientOptions } from "discord.js";
 import { Logger } from "../backend/logger.js";
 import { ContextMessage } from "../orchestration/context.js";
 import {
@@ -31,7 +32,49 @@ export type DiscordRuntimeStatus = {
   nextRetryAt?: string;
   lastError?: string;
   lastErrorAt?: string;
+  /** Per-bot connection outcome, so one bad token is visible without taking the others down. */
+  bots?: DiscordBotConnectionStatus[];
 };
+
+export type DiscordBotKind = "orchestrator" | "waifu";
+export type DiscordBotConnectionState = "connected" | "connecting" | "error" | "disabled" | "missing_token";
+export type DiscordBotConnectionErrorCode =
+  | "invalid_token"
+  | "disallowed_intents"
+  | "invalid_intents"
+  | "gateway_rejected"
+  | "network"
+  | "orchestrator_unavailable"
+  | "unknown";
+
+export type DiscordBotConnectionStatus = {
+  botId: string;
+  displayName: string;
+  kind: DiscordBotKind;
+  state: DiscordBotConnectionState;
+  errorCode?: DiscordBotConnectionErrorCode;
+  error?: string;
+  /** Gateway close code when Discord ended the session for good (e.g. 4004, 4014). */
+  closeCode?: number;
+  nextRetryAt?: string;
+  updatedAt: string;
+};
+
+/**
+ * Thrown by `connect()` when the orchestrator bot cannot come online. The orchestrator owns message
+ * intake, slash commands and context fetches, so waifu clients are torn down too; `status` still
+ * carries every bot's outcome for the status API.
+ */
+export class DiscordConnectError extends Error {
+  readonly code?: string;
+
+  constructor(message: string, readonly status: DiscordRuntimeStatus, cause?: unknown) {
+    super(message, { cause });
+    this.name = "DiscordConnectError";
+    const causeCode = cause && typeof cause === "object" ? (cause as { code?: unknown }).code : undefined;
+    if (typeof causeCode === "string") this.code = causeCode;
+  }
+}
 
 export type DiscordRuntimeIssue = {
   source: "client-error" | "shard-error" | "shard-disconnect" | "invalidated" | "warn";
@@ -225,11 +268,30 @@ export type DiscordJsGatewayOptions = {
   refreshMembersForGuild?: (guildId: string) => Promise<DiscordCache>;
   refreshRolesForGuild?: (guildId: string) => Promise<DiscordCache>;
   onRuntimeIssue?: (issue: DiscordRuntimeIssue) => void | Promise<void>;
+  /** Called with the full status whenever a bot's connection changes after `connect()` returned. */
+  onStatusChange?: (status: DiscordRuntimeStatus) => void | Promise<void>;
+  /** Backoff for re-logging a waifu bot whose login failed on a network error. */
+  botRetryDelaysMs?: number[];
+  /** Test seam: build the discord.js client for a bot. */
+  createClient?: (input: { bot: DiscordBotConfig; kind: DiscordBotKind; options: ClientOptions }) => Client;
   logger?: Logger;
+};
+
+type ConnectableBot = {
+  bot: DiscordBotConfig;
+  kind: DiscordBotKind;
+  token: string;
 };
 
 export class DiscordJsGateway implements DiscordGatewayFacade {
   private readonly clients = new Map<string, Client>();
+  private readonly pendingClients = new Set<Client>();
+  private readonly botStatuses = new Map<string, DiscordBotConnectionStatus>();
+  private readonly botRetryTimers = new Map<string, NodeJS.Timeout>();
+  private readonly botRetryAttempts = new Map<string, number>();
+  // Bumped by every disconnect so logins that finish afterwards are destroyed instead of adopted.
+  private generation = 0;
+  private connectAbort = new AbortController();
   private readonly listeners = new Set<DiscordMessageListener>();
   private readonly reviewListeners = new Set<DiscordReviewCommandListener>();
   private readonly clearListeners = new Set<DiscordClearCommandListener>();
@@ -241,125 +303,280 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   private readonly printWaifuAutocompleteListeners = new Set<DiscordPrintWaifuAutocompleteListener>();
   private readonly debugListeners = new Set<DiscordDebugCommandListener>();
   private readonly recentMentionRefreshes = new Map<string, number>();
+  private readonly runCooldowns = new Map<string, number>();
 
   constructor(private readonly options: DiscordJsGatewayOptions) {}
 
   async connect(): Promise<DiscordRuntimeStatus> {
-    const bots = [this.options.orchestrator, ...(this.options.waifus ?? [])].filter(
-      (bot): bot is DiscordBotConfig & { token: string } => Boolean(bot.token)
+    const generation = this.generation;
+    const signal = this.connectAbort.signal;
+    this.botStatuses.clear();
+    const connectable: ConnectableBot[] = [];
+    for (const { bot, kind } of this.configuredBots()) {
+      if (bot.enabled === false) {
+        this.setBotStatus(bot, kind, { state: "disabled" });
+      } else if (!bot.token) {
+        this.setBotStatus(bot, kind, { state: "missing_token" });
+      } else {
+        connectable.push({ bot, kind, token: bot.token });
+      }
+    }
+    // Each bot logs in on its own: one bad token must not take the healthy bots offline.
+    const results = await Promise.allSettled(
+      connectable.map((entry) => this.connectBot(entry, generation, signal))
     );
-    await Promise.all(
-      bots.map(async (bot) => {
-        const client = new Client({
-          intents: [
-            GatewayIntentBits.Guilds,
-            GatewayIntentBits.GuildMessages,
-            GatewayIntentBits.GuildMessageReactions,
-            GatewayIntentBits.MessageContent
-          ],
-          partials: [Partials.Channel, Partials.Message, Partials.Reaction]
-        });
-        this.attachClientRuntimeHandlers(client, bot.id);
-        if (bot.id === this.options.orchestrator.id) {
-          client.on("messageCreate", (message) => {
-            if (!message.guildId) return;
-            const event: DiscordMessageEvent = {
-              guildId: message.guildId,
-              channelId: message.channelId,
-              messageId: message.id,
-              authorId: message.author.id,
-              authorDisplayName: message.member?.displayName ?? message.author.globalName ?? message.author.username,
-              authorBot: message.author.bot
-            };
-            this.options.logger?.info("Discord gateway received message", {
-              guildId: event.guildId,
-              channelId: event.channelId,
-              messageId: event.messageId,
-              authorBot: event.authorBot
-            });
-            for (const listener of this.listeners) {
-              this.dispatchListener("Discord message listener failed", listener, event, {
-                guildId: event.guildId,
-                channelId: event.channelId,
-                messageId: event.messageId
-              });
-            }
-          });
-          client.on(Events.InteractionCreate, (interaction) => {
-            if (interaction.isAutocomplete()) {
-              if (interaction.commandName === RUN_COMMAND_NAME) {
-                this.runBackground("Discord run autocomplete interaction failed", {
-                  commandName: interaction.commandName,
-                  guildId: interaction.guildId,
-                  channelId: interaction.channelId
-                }, () => this.handleRunAutocompleteInteraction(interaction));
-              } else if (interaction.commandName === PRINT_COMMAND_NAME) {
-                this.runBackground("Discord print autocomplete interaction failed", {
-                  commandName: interaction.commandName,
-                  guildId: interaction.guildId,
-                  channelId: interaction.channelId
-                }, () => this.handlePrintAutocompleteInteraction(interaction));
-              }
-              return;
-            }
-            if (!interaction.isChatInputCommand()) return;
-            if (interaction.commandName === REVIEW_COMMAND_NAME) {
-              this.runBackground("Discord review interaction failed", interactionLogContext(interaction), () =>
-                this.handleReviewInteraction(interaction)
-              );
-            } else if (interaction.commandName === CLEAR_COMMAND_NAME) {
-              this.runBackground("Discord clear interaction failed", interactionLogContext(interaction), () =>
-                this.handleClearInteraction(interaction)
-              );
-            } else if (interaction.commandName === RUN_COMMAND_NAME) {
-              this.runBackground("Discord run interaction failed", interactionLogContext(interaction), () =>
-                this.handleRunInteraction(interaction)
-              );
-            } else if (interaction.commandName === STOP_COMMAND_NAME) {
-              this.runBackground("Discord stop interaction failed", interactionLogContext(interaction), () =>
-                this.handleStopInteraction(interaction)
-              );
-            } else if (interaction.commandName === MEMORIES_COMMAND_NAME) {
-              this.runBackground("Discord memories interaction failed", interactionLogContext(interaction), () =>
-                this.handleMemoriesInteraction(interaction)
-              );
-            } else if (interaction.commandName === PRINT_COMMAND_NAME) {
-              this.runBackground("Discord print interaction failed", interactionLogContext(interaction), () =>
-                this.handlePrintInteraction(interaction)
-              );
-            } else if (interaction.commandName === DEBUG_COMMAND_NAME) {
-              this.runBackground("Discord debug interaction failed", interactionLogContext(interaction), () =>
-                this.handleDebugInteraction(interaction)
-              );
-            }
+    if (generation !== this.generation) {
+      throw new DiscordConnectError("Discord connection was cancelled by a disconnect.", this.status());
+    }
+    const orchestratorId = this.options.orchestrator.id;
+    if (!this.clients.has(orchestratorId)) {
+      // Without the orchestrator nothing reads channels or answers commands, so connected waifus
+      // would only be idle sessions. Take everything down and let the caller decide on a retry.
+      const index = connectable.findIndex((entry) => entry.bot.id === orchestratorId);
+      const result = index >= 0 ? results[index] : undefined;
+      const cause = result?.status === "rejected" ? result.reason : undefined;
+      const orchestratorStatus = this.botStatuses.get(orchestratorId);
+      const message = cause !== undefined
+        ? errorMessage(cause)
+        : orchestratorStatus?.state === "disabled"
+          ? "The orchestrator Discord bot is disabled."
+          : "No orchestrator Discord bot token is configured.";
+      for (const [botId, status] of this.botStatuses) {
+        if (botId !== orchestratorId && status.state === "connected") {
+          this.botStatuses.set(botId, {
+            ...status,
+            state: "error",
+            errorCode: "orchestrator_unavailable",
+            error: "Disconnected because the orchestrator bot is offline.",
+            updatedAt: new Date().toISOString()
           });
         }
-        await loginAndWaitUntilReady(client, bot.token);
-        this.clients.set(bot.id, client);
-        if (bot.id === this.options.orchestrator.id) {
-          await registerOrchestratorCommands(client, this.options.logger);
-        }
-        this.options.logger?.info("Discord bot connected", {
-          botId: bot.id,
-          displayName: bot.displayName,
-          kind: bot.id === this.options.orchestrator.id ? "orchestrator" : "waifu"
-        });
-      })
-    );
+      }
+      const status = this.status();
+      await this.disconnect();
+      throw new DiscordConnectError(message, status, cause);
+    }
+    return this.status();
+  }
+
+  async disconnect(): Promise<void> {
+    this.generation += 1;
+    this.connectAbort.abort();
+    this.connectAbort = new AbortController();
+    for (const timer of this.botRetryTimers.values()) clearTimeout(timer);
+    this.botRetryTimers.clear();
+    this.botRetryAttempts.clear();
+    const clients = [...this.clients.values(), ...this.pendingClients];
+    this.clients.clear();
+    this.pendingClients.clear();
+    await Promise.all(clients.map((client) => destroyClientQuietly(client)));
+  }
+
+  /** Current connection status, including every configured bot's outcome. */
+  status(): DiscordRuntimeStatus {
+    const bots = [...this.botStatuses.values()].map((status) => ({ ...status }));
+    const warnings: string[] = [];
+    if (this.clients.size === 0 && !bots.some((status) => status.state === "error" || status.state === "connecting")) {
+      warnings.push("No enabled Discord bot tokens are configured.");
+    }
+    for (const status of bots) {
+      if (status.state === "error") {
+        warnings.push(`Discord ${status.kind} bot "${status.displayName}" is offline: ${status.error ?? "unknown error"}`);
+      } else if (status.state === "disabled") {
+        warnings.push(`Discord ${status.kind} bot "${status.displayName}" is disabled and was not connected.`);
+      }
+    }
+    const latestError = bots
+      .filter((status) => status.state === "error" && status.errorCode !== "orchestrator_unavailable")
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
     return {
       connected: this.clients.size > 0,
       orchestratorConnected: this.clients.has(this.options.orchestrator.id),
       waifuBotCount: (this.options.waifus ?? []).filter((bot) => this.clients.has(bot.id)).length,
-      warnings:
-        this.clients.size > 0
-          ? []
-          : ["No enabled Discord bot tokens are configured."]
+      warnings,
+      ...(latestError ? { lastError: latestError.error, lastErrorAt: latestError.updatedAt } : {}),
+      bots
     };
   }
 
-  async disconnect(): Promise<void> {
-    await Promise.all([...this.clients.values()].map((client) => client.destroy()));
-    this.clients.clear();
+  private configuredBots(): Array<{ bot: DiscordBotConfig; kind: DiscordBotKind }> {
+    return [
+      { bot: this.options.orchestrator, kind: "orchestrator" as const },
+      ...(this.options.waifus ?? [])
+        .filter((bot) => bot.id !== this.options.orchestrator.id)
+        .map((bot) => ({ bot, kind: "waifu" as const }))
+    ];
+  }
+
+  private async connectBot(entry: ConnectableBot, generation: number, signal: AbortSignal): Promise<void> {
+    const { bot, kind, token } = entry;
+    this.setBotStatus(bot, kind, { state: "connecting" });
+    const client = this.createClient(bot, kind);
+    this.pendingClients.add(client);
+    try {
+      await loginAndWaitUntilReady(client, token, signal);
+    } catch (error) {
+      this.pendingClients.delete(client);
+      await destroyClientQuietly(client);
+      if (generation === this.generation) {
+        const errorCode = classifyDiscordConnectionError(error);
+        this.setBotStatus(bot, kind, { state: "error", errorCode, error: errorMessage(error) });
+        this.options.logger?.error("Discord bot failed to connect", {
+          botId: bot.id,
+          displayName: bot.displayName,
+          kind,
+          errorCode,
+          message: errorMessage(error)
+        });
+        // The orchestrator's retry is owned by the backend (it reconnects everything); a waifu on
+        // a flaky network retries alone so the rest of the cast stays online.
+        if (kind === "waifu" && errorCode === "network") {
+          this.scheduleBotRetry(entry, generation);
+        }
+      }
+      throw error;
+    }
+    this.pendingClients.delete(client);
+    if (generation !== this.generation) {
+      await destroyClientQuietly(client);
+      throw new Error("Discord connection was cancelled by a disconnect.");
+    }
+    this.clients.set(bot.id, client);
+    this.botRetryAttempts.delete(bot.id);
+    this.setBotStatus(bot, kind, { state: "connected" });
+    if (kind === "orchestrator") {
+      await registerOrchestratorCommands(client, this.options.logger);
+    }
+    this.options.logger?.info("Discord bot connected", {
+      botId: bot.id,
+      displayName: bot.displayName,
+      kind
+    });
+  }
+
+  private scheduleBotRetry(entry: ConnectableBot, generation: number): void {
+    const attempt = (this.botRetryAttempts.get(entry.bot.id) ?? 0) + 1;
+    this.botRetryAttempts.set(entry.bot.id, attempt);
+    const delays = this.options.botRetryDelaysMs?.length ? this.options.botRetryDelaysMs : DEFAULT_BOT_RETRY_DELAYS_MS;
+    const delayMs = delays[Math.min(attempt - 1, delays.length - 1)] ?? DEFAULT_BOT_RETRY_DELAYS_MS[0];
+    const current = this.botStatuses.get(entry.bot.id);
+    if (current) {
+      this.botStatuses.set(entry.bot.id, { ...current, nextRetryAt: new Date(Date.now() + delayMs).toISOString() });
+    }
+    const timer = setTimeout(() => {
+      this.botRetryTimers.delete(entry.bot.id);
+      if (generation !== this.generation) return;
+      void this.connectBot(entry, generation, this.connectAbort.signal)
+        .catch(() => undefined)
+        .then(() => this.emitStatusChange(generation));
+    }, delayMs);
+    timer.unref?.();
+    this.botRetryTimers.set(entry.bot.id, timer);
+  }
+
+  private setBotStatus(
+    bot: DiscordBotConfig,
+    kind: DiscordBotKind,
+    update: Pick<DiscordBotConnectionStatus, "state"> & Partial<DiscordBotConnectionStatus>
+  ): void {
+    this.botStatuses.set(bot.id, {
+      botId: bot.id,
+      displayName: bot.displayName,
+      kind,
+      updatedAt: new Date().toISOString(),
+      ...update
+    });
+  }
+
+  private emitStatusChange(generation: number): void {
+    if (generation !== this.generation || !this.options.onStatusChange) return;
+    const status = this.status();
+    this.runBackground("Discord status change callback failed", {}, () => this.options.onStatusChange?.(status));
+  }
+
+  private createClient(bot: DiscordBotConfig, kind: DiscordBotKind): Client {
+    const options = discordClientOptions(kind);
+    const client = this.options.createClient?.({ bot, kind, options }) ?? new Client(options);
+    this.attachClientRuntimeHandlers(client, bot.id);
+    if (kind === "orchestrator") {
+      this.attachOrchestratorListeners(client);
+    }
+    return client;
+  }
+
+  private attachOrchestratorListeners(client: Client): void {
+    client.on("messageCreate", (message) => {
+      if (!message.guildId) return;
+      const event: DiscordMessageEvent = {
+        guildId: message.guildId,
+        channelId: message.channelId,
+        messageId: message.id,
+        authorId: message.author.id,
+        authorDisplayName: message.member?.displayName ?? message.author.globalName ?? message.author.username,
+        authorBot: message.author.bot
+      };
+      this.options.logger?.info("Discord gateway received message", {
+        guildId: event.guildId,
+        channelId: event.channelId,
+        messageId: event.messageId,
+        authorBot: event.authorBot
+      });
+      for (const listener of this.listeners) {
+        this.dispatchListener("Discord message listener failed", listener, event, {
+          guildId: event.guildId,
+          channelId: event.channelId,
+          messageId: event.messageId
+        });
+      }
+    });
+    client.on(Events.InteractionCreate, (interaction) => {
+      if (interaction.isAutocomplete()) {
+        if (interaction.commandName === RUN_COMMAND_NAME) {
+          this.runBackground("Discord run autocomplete interaction failed", {
+            commandName: interaction.commandName,
+            guildId: interaction.guildId,
+            channelId: interaction.channelId
+          }, () => this.handleRunAutocompleteInteraction(interaction));
+        } else if (interaction.commandName === PRINT_COMMAND_NAME) {
+          this.runBackground("Discord print autocomplete interaction failed", {
+            commandName: interaction.commandName,
+            guildId: interaction.guildId,
+            channelId: interaction.channelId
+          }, () => this.handlePrintAutocompleteInteraction(interaction));
+        }
+        return;
+      }
+      if (!interaction.isChatInputCommand()) return;
+      if (interaction.commandName === REVIEW_COMMAND_NAME) {
+        this.runBackground("Discord review interaction failed", interactionLogContext(interaction), () =>
+          this.handleReviewInteraction(interaction)
+        );
+      } else if (interaction.commandName === CLEAR_COMMAND_NAME) {
+        this.runBackground("Discord clear interaction failed", interactionLogContext(interaction), () =>
+          this.handleClearInteraction(interaction)
+        );
+      } else if (interaction.commandName === RUN_COMMAND_NAME) {
+        this.runBackground("Discord run interaction failed", interactionLogContext(interaction), () =>
+          this.handleRunInteraction(interaction)
+        );
+      } else if (interaction.commandName === STOP_COMMAND_NAME) {
+        this.runBackground("Discord stop interaction failed", interactionLogContext(interaction), () =>
+          this.handleStopInteraction(interaction)
+        );
+      } else if (interaction.commandName === MEMORIES_COMMAND_NAME) {
+        this.runBackground("Discord memories interaction failed", interactionLogContext(interaction), () =>
+          this.handleMemoriesInteraction(interaction)
+        );
+      } else if (interaction.commandName === PRINT_COMMAND_NAME) {
+        this.runBackground("Discord print interaction failed", interactionLogContext(interaction), () =>
+          this.handlePrintInteraction(interaction)
+        );
+      } else if (interaction.commandName === DEBUG_COMMAND_NAME) {
+        this.runBackground("Discord debug interaction failed", interactionLogContext(interaction), () =>
+          this.handleDebugInteraction(interaction)
+        );
+      }
+    });
   }
 
   onMessage(listener: DiscordMessageListener): () => void {
@@ -562,7 +779,9 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
     const sent = await channel.send({
       content: denormalized.content,
       allowedMentions: denormalized.allowedMentions,
-      reply: replyToMessageId ? { messageReference: replyToMessageId } : undefined
+      // The user may delete their message while the waifu is generating; send as a normal message
+      // then instead of letting Discord reject the whole reply.
+      reply: replyToMessageId ? { messageReference: replyToMessageId, failIfNotExists: false } : undefined
     });
     return { messageId: sent.id };
   }
@@ -870,17 +1089,25 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
         error
       });
     });
+    // discord.js (14.27, @discordjs/ws) resumes or re-identifies on its own after network errors and
+    // recoverable close codes; ShardError is informational. It emits ShardDisconnect only for close
+    // codes it gives up on (4004, 4010-4014), so that bot is dead until its config is fixed.
     client.on(Events.ShardDisconnect, (event, shardId) => {
       const code = closeEventCode(event);
       const reason = closeEventReason(event);
+      const description = typeof code === "number" ? UNRECOVERABLE_CLOSE_CODE_DESCRIPTIONS[code] : undefined;
+      const message = `Discord shard disconnected${code === undefined ? "" : ` with code ${code}`}${
+        description ? ` (${description})` : ""
+      }${reason ? `: ${reason}` : "."}`;
       this.reportRuntimeIssue({
         source: "shard-disconnect",
         botId,
         shardId,
         code,
         wasClean: closeEventWasClean(event),
-        message: `Discord shard disconnected${code === undefined ? "" : ` with code ${code}`}${reason ? `: ${reason}` : "."}`
+        message
       });
+      this.handleUnrecoverableDisconnect(client, botId, typeof code === "number" ? code : undefined, message);
     });
     client.on(Events.Invalidated, () => {
       this.reportRuntimeIssue({
@@ -896,6 +1123,49 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
         message
       });
     });
+  }
+
+  private handleUnrecoverableDisconnect(client: Client, botId: string, closeCode: number | undefined, message: string): void {
+    // A client that is still logging in fails its login instead; only adopted clients are handled here.
+    if (this.clients.get(botId) !== client) return;
+    const entry = this.configuredBots().find((candidate) => candidate.bot.id === botId);
+    if (!entry) return;
+    this.clients.delete(botId);
+    void destroyClientQuietly(client);
+    this.setBotStatus(entry.bot, entry.kind, {
+      state: "error",
+      errorCode: classifyDiscordConnectionError(message, closeCode),
+      error: message,
+      ...(closeCode === undefined ? {} : { closeCode })
+    });
+    if (entry.kind === "orchestrator") {
+      // Same policy as connect(): waifus cannot be cast without the orchestrator. End this session
+      // like a disconnect (new generation, aborted logins, no retries) so an in-flight waifu retry
+      // is destroyed instead of adopted, but keep the statuses for the status API.
+      this.generation += 1;
+      this.connectAbort.abort();
+      this.connectAbort = new AbortController();
+      for (const timer of this.botRetryTimers.values()) clearTimeout(timer);
+      this.botRetryTimers.clear();
+      this.botRetryAttempts.clear();
+      for (const [waifuBotId, waifuClient] of [...this.clients]) {
+        this.clients.delete(waifuBotId);
+        void destroyClientQuietly(waifuClient);
+      }
+      for (const [waifuBotId, status] of this.botStatuses) {
+        const wasActive = status.state === "connected" || status.state === "connecting" || status.nextRetryAt !== undefined;
+        if (waifuBotId === botId || !wasActive) continue;
+        const { nextRetryAt: _cancelled, ...rest } = status;
+        this.botStatuses.set(waifuBotId, {
+          ...rest,
+          state: "error",
+          errorCode: "orchestrator_unavailable",
+          error: "Disconnected because the orchestrator bot is offline.",
+          updatedAt: new Date().toISOString()
+        });
+      }
+    }
+    this.emitStatusChange(this.generation);
   }
 
   private reportRuntimeIssue(issue: DiscordRuntimeIssue): void {
@@ -952,6 +1222,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   }
 
   private async handleReviewInteraction(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (await this.replyIfNotReady(interaction, this.reviewListeners, REVIEW_COMMAND_NAME)) return;
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     if (!interaction.guildId || !interaction.channelId) {
       await interaction.editReply("/review can only be used in a server channel.");
@@ -971,6 +1242,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   }
 
   private async handleClearInteraction(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (await this.replyIfNotReady(interaction, this.clearListeners, CLEAR_COMMAND_NAME)) return;
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     if (!interaction.guildId || !interaction.channelId) {
       await interaction.editReply("/clear can only be used in a server channel.");
@@ -992,11 +1264,23 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   }
 
   private async handleRunInteraction(interaction: ChatInputCommandInteraction): Promise<void> {
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    if (await this.replyIfNotReady(interaction, this.runListeners, RUN_COMMAND_NAME)) return;
     if (!interaction.guildId || !interaction.channelId) {
-      await interaction.editReply("/run can only be used in a server channel.");
+      await replyEphemeral(interaction, "/run can only be used in a server channel.");
       return;
     }
+    // Default member permissions can be overridden per server, and /run carries a private scene
+    // direction straight into the prompt, so the permission is enforced here too.
+    if (!interaction.memberPermissions?.has(RUN_COMMAND_PERMISSIONS)) {
+      await replyEphemeral(interaction, "You need the Manage Messages permission to use /run.");
+      return;
+    }
+    const cooldownMs = this.takeRunCooldown(interaction.guildId, interaction.user.id);
+    if (cooldownMs > 0) {
+      await replyEphemeral(interaction, `/run is cooling down; try again in ${Math.ceil(cooldownMs / 1000)}s.`);
+      return;
+    }
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const event: DiscordRunCommandEvent = {
       guildId: interaction.guildId,
       channelId: interaction.channelId,
@@ -1010,6 +1294,34 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
     for (const listener of this.runListeners) {
       this.dispatchListener("Discord run command listener failed", listener, event, slashCommandLogContext(event));
     }
+  }
+
+  /** Slash commands are registered before the runtime attaches its listeners; never leave one "thinking". */
+  private async replyIfNotReady(
+    interaction: ChatInputCommandInteraction,
+    listeners: ReadonlySet<unknown>,
+    commandName: string
+  ): Promise<boolean> {
+    if (listeners.size > 0) return false;
+    await replyEphemeral(interaction, `/${commandName} is not ready yet: Discord Waifus is still starting up. Try again in a moment.`);
+    return true;
+  }
+
+  /** Returns the remaining cooldown, or 0 after recording this use. */
+  private takeRunCooldown(guildId: string, userId: string): number {
+    const now = Date.now();
+    const key = `${guildId}:${userId}`;
+    const last = this.runCooldowns.get(key);
+    if (last !== undefined && now - last < RUN_COMMAND_COOLDOWN_MS) {
+      return RUN_COMMAND_COOLDOWN_MS - (now - last);
+    }
+    if (this.runCooldowns.size >= MAX_RUN_COOLDOWN_ENTRIES) {
+      for (const [entryKey, at] of this.runCooldowns) {
+        if (now - at >= RUN_COMMAND_COOLDOWN_MS) this.runCooldowns.delete(entryKey);
+      }
+    }
+    this.runCooldowns.set(key, now);
+    return 0;
   }
 
   private async handleRunAutocompleteInteraction(interaction: AutocompleteInteraction): Promise<void> {
@@ -1040,6 +1352,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   }
 
   private async handleStopInteraction(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (await this.replyIfNotReady(interaction, this.stopListeners, STOP_COMMAND_NAME)) return;
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     if (!interaction.guildId || !interaction.channelId) {
       await interaction.editReply("/stop can only be used in a server channel.");
@@ -1059,6 +1372,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   }
 
   private async handleMemoriesInteraction(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (await this.replyIfNotReady(interaction, this.memoriesListeners, MEMORIES_COMMAND_NAME)) return;
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     if (!interaction.guildId || !interaction.channelId) {
       await interaction.editReply("/memories can only be used in a server channel.");
@@ -1078,6 +1392,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   }
 
   private async handlePrintInteraction(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (await this.replyIfNotReady(interaction, this.printListeners, PRINT_COMMAND_NAME)) return;
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     if (!interaction.guildId || !interaction.channelId) {
       await interaction.editReply("/print can only be used in a server channel.");
@@ -1130,6 +1445,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   }
 
   private async handleDebugInteraction(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (await this.replyIfNotReady(interaction, this.debugListeners, DEBUG_COMMAND_NAME)) return;
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     if (!interaction.guildId || !interaction.channelId) {
       await interaction.editReply("/console can only be used in a server channel.");
@@ -1155,37 +1471,116 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   }
 }
 
-export class DiscordGatewayNotConfigured implements DiscordGatewayFacade {
-  async connect(): Promise<DiscordRuntimeStatus> {
+/**
+ * The orchestrator reads every channel (messages, reactions, content) and owns slash commands.
+ * Waifu clients never listen: they only fetch a channel, send, type and delete their own messages,
+ * all over REST, so they need just `Guilds` (channel cache) and keep no message/member caches.
+ */
+export function discordClientOptions(kind: DiscordBotKind): ClientOptions {
+  if (kind === "orchestrator") {
     return {
-      connected: false,
-      orchestratorConnected: false,
-      waifuBotCount: 0,
-      warnings: ["Discord tokens are not configured yet."]
+      intents: [
+        GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.GuildMessageReactions,
+        GatewayIntentBits.MessageContent
+      ],
+      partials: [Partials.Channel, Partials.Message, Partials.Reaction]
     };
   }
-
-  async disconnect(): Promise<void> {}
-
-  async fetchFreshContext(): Promise<ContextMessage[]> {
-    return [];
-  }
-
-  async sendWaifuMessage(): Promise<{ messageId: string }> {
-    throw new Error("Discord sending is not configured yet.");
-  }
-
-  async sendTyping(): Promise<void> {}
+  return {
+    intents: [GatewayIntentBits.Guilds],
+    makeCache: Options.cacheWithLimits({
+      MessageManager: 0,
+      ReactionManager: 0,
+      ReactionUserManager: 0,
+      PresenceManager: 0,
+      VoiceStateManager: 0,
+      ThreadMemberManager: 0,
+      GuildMemberManager: { maxSize: 0, keepOverLimit: (member) => member.id === member.client.user.id },
+      UserManager: { maxSize: 0, keepOverLimit: (user) => user.id === user.client.user.id }
+    })
+  };
 }
 
-async function loginAndWaitUntilReady(client: Client, token: string): Promise<void> {
+async function loginAndWaitUntilReady(client: Client, token: string, signal: AbortSignal): Promise<void> {
   if (client.isReady()) return;
-  await Promise.all([
+  if (signal.aborted) throw new Error("Discord connection was cancelled by a disconnect.");
+  const login = Promise.all([
     new Promise<void>((resolve) => {
       client.once(Events.ClientReady, () => resolve());
     }),
     client.login(token)
   ]);
+  // A cancelled login is abandoned (and its client destroyed); keep its late rejection handled.
+  login.catch(() => undefined);
+  let onAbort: (() => void) | undefined;
+  const aborted = new Promise<never>((_, reject) => {
+    onAbort = () => reject(new Error("Discord connection was cancelled by a disconnect."));
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    await Promise.race([login, aborted]);
+  } finally {
+    if (onAbort) signal.removeEventListener("abort", onAbort);
+  }
+}
+
+async function destroyClientQuietly(client: Client): Promise<void> {
+  try {
+    await client.destroy();
+  } catch {
+    // A half-initialised client can throw while tearing down; it is unreachable either way.
+  }
+}
+
+const NETWORK_ERROR_CODES = new Set([
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "ETIMEDOUT",
+  "ECONNRESET",
+  "ECONNREFUSED",
+  "ENETUNREACH",
+  "EHOSTUNREACH",
+  "EPIPE",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_SOCKET"
+]);
+
+/** Maps a login failure or gateway close code to a stable, user-actionable status code. */
+export function classifyDiscordConnectionError(error: unknown, closeCode?: number): DiscordBotConnectionErrorCode {
+  const message = errorMessage(error);
+  const code = nestedErrorCode(error);
+  if (closeCode === 4004 || code === "TokenInvalid" || /invalid token|authentication failed/i.test(message)) {
+    return "invalid_token";
+  }
+  if (closeCode === 4014 || code === "DisallowedIntents" || /disallowed intents|privileged intent/i.test(message)) {
+    return "disallowed_intents";
+  }
+  if (closeCode === 4013 || /invalid intents/i.test(message)) {
+    return "invalid_intents";
+  }
+  if (
+    (closeCode !== undefined && [4010, 4011, 4012].includes(closeCode)) ||
+    /invalid shard|sharding is required|invalid api version/i.test(message)
+  ) {
+    return "gateway_rejected";
+  }
+  if (
+    (code && NETWORK_ERROR_CODES.has(code)) ||
+    /getaddrinfo|\bnetwork\b|timed out|\btimeout\b|\bsocket\b|fetch failed|connection reset|connection refused|unreachable/i.test(message)
+  ) {
+    return "network";
+  }
+  return "unknown";
+}
+
+function nestedErrorCode(error: unknown, depth = 0): string | undefined {
+  if (!error || typeof error !== "object" || depth > 3) return undefined;
+  const code = (error as { code?: unknown }).code;
+  if (typeof code === "string") return code;
+  return nestedErrorCode((error as { cause?: unknown }).cause, depth + 1);
 }
 
 function botAuthorIds(bots: DiscordBotConfig[]): string[] {
@@ -1325,6 +1720,15 @@ function throwIfAborted(signal?: AbortSignal): void {
 
 const SNOWFLAKE_PATTERN = /^\d{17,20}$/;
 const MENTION_REFRESH_COOLDOWN_MS = 5 * 60 * 1000;
+const DEFAULT_BOT_RETRY_DELAYS_MS = [5_000, 15_000, 30_000, 60_000, 120_000];
+const UNRECOVERABLE_CLOSE_CODE_DESCRIPTIONS: Record<number, string> = {
+  4004: "authentication failed: the bot token is invalid or was reset",
+  4010: "invalid shard",
+  4011: "sharding required",
+  4012: "invalid API version",
+  4013: "invalid intents",
+  4014: "disallowed intents: enable Message Content for this bot in the Discord Developer Portal"
+};
 const REVIEW_COMMAND_NAME = "review";
 const CLEAR_COMMAND_NAME = "clear";
 const RUN_COMMAND_NAME = "run";
@@ -1346,6 +1750,14 @@ const MAX_AUTOCOMPLETE_CHOICES = 25;
 const DISCORD_BULK_DELETE_MAX_MESSAGES = 100;
 const DISCORD_BULK_DELETE_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 const ADMIN_COMMAND_PERMISSIONS = PermissionFlagsBits.Administrator;
+// /run only nudges the scene (with an optional private direction), so moderators may use it.
+const RUN_COMMAND_PERMISSIONS = PermissionFlagsBits.ManageMessages;
+const RUN_COMMAND_COOLDOWN_MS = 15_000;
+const MAX_RUN_COOLDOWN_ENTRIES = 1_000;
+
+async function replyEphemeral(interaction: ChatInputCommandInteraction, content: string): Promise<void> {
+  await interaction.reply({ content, flags: MessageFlags.Ephemeral });
+}
 
 function sanitizeReplyTarget(value?: string): string | undefined {
   return value && SNOWFLAKE_PATTERN.test(value) ? value : undefined;
@@ -1357,7 +1769,8 @@ function sanitizeRunString(value: string | null): string | undefined {
 }
 
 function parseDebugCommandType(value: string | null): DiscordDebugCommandType | undefined {
-  return value === "set" || value === "unset" || value === "print" ? value : undefined;
+  // /console only registers set/unset choices; Discord rejects anything else.
+  return value === "set" || value === "unset" ? value : undefined;
 }
 
 function parsePrintCommandType(value: string | null): DiscordPrintCommandType | undefined {
@@ -1501,6 +1914,7 @@ export function buildOrchestratorCommandPayloads() {
     {
       name: RUN_COMMAND_NAME,
       description: "Run the orchestrator in this channel immediately if the runtime is idle.",
+      defaultMemberPermissions: RUN_COMMAND_PERMISSIONS,
       options: [
         {
           type: ApplicationCommandOptionType.String as ApplicationCommandOptionType.String,

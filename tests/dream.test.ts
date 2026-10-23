@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyDreamOps, guildHash, selectDreamInput } from "../src/orchestration/dream.js";
+import { applyDreamOps, dreamChunkWaifuIds, guildHash, orderDreamChunks, selectDreamInput } from "../src/orchestration/dream.js";
 import { DreamOp } from "../src/orchestration/stageManager.js";
 import { MemoryRecord, PendingObservation } from "../src/shared/schemas/domain.js";
 
@@ -294,5 +294,34 @@ describe("applyDreamOps waifu validation", () => {
     );
     expect(memories).toHaveLength(1);
     expect(applied).toBe(1);
+  });
+});
+
+describe("orderDreamChunks / dreamChunkWaifuIds", () => {
+  const overBudget = () => {
+    const records: MemoryRecord[] = [];
+    for (const waifuId of ["aria", "mika", "yuki"]) {
+      for (let i = 0; i < 30; i += 1) records.push(record({ id: `${waifuId}-${i}`, waifuId }));
+    }
+    return selectDreamInput(records, [observation({ id: "o-zed", waifuId: "zed" })], NOW, 80);
+  };
+
+  it("starts after the cursor and wraps around, orphan chunk included", () => {
+    const chunks = overBudget();
+    expect(orderDreamChunks(chunks, undefined).map((chunk) => chunk.key)).toEqual(["aria", "mika", "yuki", "orphan"]);
+    expect(orderDreamChunks(chunks, "mika").map((chunk) => chunk.key)).toEqual(["yuki", "orphan", "aria", "mika"]);
+    expect(orderDreamChunks(chunks, "orphan").map((chunk) => chunk.key)).toEqual(["aria", "mika", "yuki", "orphan"]);
+    // a cursor whose waifu vanished still orders by position
+    expect(orderDreamChunks(chunks, "lumi").map((chunk) => chunk.key)).toEqual(["mika", "yuki", "orphan", "aria"]);
+  });
+
+  it("lists record AND observation owners as the chunk's waifus", () => {
+    const [chunk] = selectDreamInput(
+      [record({ id: "r1", waifuId: "yuki" })],
+      [observation({ id: "o1", waifuId: "mika" })],
+      NOW
+    );
+    expect(dreamChunkWaifuIds(chunk)).toEqual(["mika", "yuki"]);
+    expect(dreamChunkWaifuIds(overBudget().at(-1)!)).toEqual(["zed"]);
   });
 });

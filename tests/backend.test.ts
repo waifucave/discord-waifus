@@ -3,10 +3,13 @@ import path from "node:path";
 import { readFile, writeFile } from "node:fs/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { startBackend, type RunningBackend } from "../src/backend/server.js";
+import { RuntimeOrchestrator } from "../src/orchestration/runtime.js";
 import { createRuntimeState, RuntimeStateSchema } from "../src/backend/runtime.js";
 import type { Logger } from "../src/backend/logger.js";
 import { ensureDataLayout } from "../src/config/layout.js";
+import { DiscordConnectError } from "../src/discord/client.js";
 import type {
+  DiscordBotConnectionStatus,
   DiscordGatewayFacade,
   DiscordJsGatewayOptions,
   DiscordRuntimeIssue,
@@ -464,6 +467,53 @@ describe("backend Discord auto-connect retry", () => {
     expect(backend.runtime.discord.connected).toBe(true);
   });
 
+  it("lets discord.js resume shard socket errors instead of tearing down every bot", async () => {
+    vi.useFakeTimers();
+    const root = await initializedRootWithOrchestrator();
+    const gateway = new FakeDiscordGateway([connectedStatus()]);
+    const backend = await startTestBackend(root, gateway, [5_000]);
+
+    await waitForConnectCalls(gateway, 1);
+    await vi.waitFor(() => expect(backend.runtime.discord.connected).toBe(true));
+
+    await gateway.emitRuntimeIssue({
+      source: "shard-error",
+      shardId: 0,
+      message: "socket hang up",
+      error: Object.assign(new Error("socket hang up"), { code: "ECONNRESET" })
+    });
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(gateway.disconnectCalls).toBe(0);
+    expect(gateway.connectCalls).toBe(1);
+    expect(backend.runtime.discord.connected).toBe(true);
+    expect(backend.runtime.discord.retrying).toBeUndefined();
+  });
+
+  it("does not blindly reconnect after an unrecoverable shard disconnect", async () => {
+    vi.useFakeTimers();
+    const root = await initializedRootWithOrchestrator();
+    const gateway = new FakeDiscordGateway([connectedStatus()]);
+    const backend = await startTestBackend(root, gateway, [5_000]);
+
+    await waitForConnectCalls(gateway, 1);
+    await vi.waitFor(() => expect(backend.runtime.discord.connected).toBe(true));
+
+    await gateway.emitRuntimeIssue({
+      source: "shard-disconnect",
+      botId: "orchestrator",
+      shardId: 0,
+      code: 4004,
+      wasClean: true,
+      message: "Discord shard disconnected with code 4004."
+    });
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(gateway.disconnectCalls).toBe(0);
+    expect(gateway.connectCalls).toBe(1);
+    expect(backend.runtime.discord.retrying).toBeUndefined();
+  });
+
   it("logs non-retryable live Discord runtime issues without forcing reconnect", async () => {
     vi.useFakeTimers();
     const root = await initializedRootWithOrchestrator();
@@ -488,10 +538,95 @@ describe("backend Discord auto-connect retry", () => {
   });
 });
 
+describe("backend Discord per-bot status", () => {
+  it("does not log in a disabled orchestrator bot", async () => {
+    const root = await initializedRootWithOrchestrator(false);
+    // An explicit disable made after the one-time upgrade pass (which re-enables tokened bots).
+    await writeFile(path.join(root, "user", ".discord-bots-enabled-v1.json"), "{}\n");
+    const gateway = new FakeDiscordGateway([connectedStatus()]);
+    const backend = await startTestBackend(root, gateway, [5_000]);
+
+    await vi.waitFor(() => expect(backend.runtime.discord.warnings).toEqual([
+      "Discord auto-connect is enabled but the orchestrator bot is disabled."
+    ]));
+    expect(gateway.connectCalls).toBe(0);
+  });
+
+  it("keeps per-bot errors from a failed orchestrator login in the runtime status", async () => {
+    const root = await initializedRootWithOrchestrator();
+    const bots: DiscordBotConnectionStatus[] = [{
+      botId: "orchestrator",
+      displayName: "Orchestrator",
+      kind: "orchestrator",
+      state: "error",
+      errorCode: "invalid_token",
+      error: "An invalid token was provided.",
+      updatedAt: new Date().toISOString()
+    }];
+    const failure = new DiscordConnectError(
+      "An invalid token was provided.",
+      { ...connectedStatus(), connected: false, orchestratorConnected: false, bots },
+      Object.assign(new Error("An invalid token was provided."), { code: "TokenInvalid" })
+    );
+    const gateway = new FakeDiscordGateway([failure]);
+    const backend = await startTestBackend(root, gateway, [5_000]);
+
+    await waitForConnectCalls(gateway, 1);
+    await vi.waitFor(() => expect(backend.runtime.discord.bots).toEqual(bots));
+    expect(backend.runtime.discord).toMatchObject({
+      connected: false,
+      lastError: "An invalid token was provided.",
+      warnings: ["Discord auto-connect failed: An invalid token was provided."]
+    });
+    expect(backend.runtime.discord.retrying).toBeUndefined();
+    const status = await (await fetch(`${backend.url}/api/status`)).json() as { discord: DiscordRuntimeStatus };
+    expect(status.discord.bots).toEqual(bots);
+  });
+
+  it("applies live per-bot status changes reported by the gateway", async () => {
+    const root = await initializedRootWithOrchestrator();
+    const gateway = new FakeDiscordGateway([connectedStatus()]);
+    const backend = await startTestBackend(root, gateway, [5_000]);
+    await vi.waitFor(() => expect(backend.runtime.discord.connected).toBe(true));
+
+    const bots: DiscordBotConnectionStatus[] = [{
+      botId: "waifu-a",
+      displayName: "Aria",
+      kind: "waifu",
+      state: "connected",
+      updatedAt: new Date().toISOString()
+    }];
+    await gateway.emitStatusChange({ ...connectedStatus(), waifuBotCount: 1, bots });
+
+    expect(backend.runtime.discord).toMatchObject({ connected: true, waifuBotCount: 1, bots });
+    const persisted = RuntimeStateSchema.parse(
+      JSON.parse(await readFile(path.join(root, "app", "runtime.json"), "utf8"))
+    );
+    expect(persisted.discord.bots).toEqual(bots);
+  });
+});
+
+describe("backend runtime pause/resume", () => {
+  it("resuming the runtime asks the orchestrator to re-arm what the pause cleared", async () => {
+    const resumeAfterPause = vi.spyOn(RuntimeOrchestrator.prototype, "resumeAfterPause");
+    const root = await initializedRootWithOrchestrator();
+    const gateway = new FakeDiscordGateway([connectedStatus()]);
+    const backend = await startTestBackend(root, gateway, [5_000]);
+    await waitForConnectCalls(gateway, 1);
+    await vi.waitFor(() => expect(backend.runtime.discord.connected).toBe(true));
+
+    expect((await fetch(`${backend.url}/api/runtime/pause`, { method: "POST" })).status).toBe(200);
+    expect(resumeAfterPause).not.toHaveBeenCalled();
+    expect((await fetch(`${backend.url}/api/runtime/resume`, { method: "POST" })).status).toBe(200);
+    expect(resumeAfterPause).toHaveBeenCalledTimes(1);
+  });
+});
+
 class FakeDiscordGateway implements DiscordGatewayFacade {
   connectCalls = 0;
   disconnectCalls = 0;
   onRuntimeIssue?: DiscordJsGatewayOptions["onRuntimeIssue"];
+  onStatusChange?: DiscordJsGatewayOptions["onStatusChange"];
 
   constructor(
     private readonly outcomes: Array<DiscordRuntimeStatus | Error>,
@@ -527,9 +662,13 @@ class FakeDiscordGateway implements DiscordGatewayFacade {
   async emitRuntimeIssue(issue: DiscordRuntimeIssue): Promise<void> {
     await this.onRuntimeIssue?.(issue);
   }
+
+  async emitStatusChange(status: DiscordRuntimeStatus): Promise<void> {
+    await this.onStatusChange?.(status);
+  }
 }
 
-async function initializedRootWithOrchestrator(): Promise<string> {
+async function initializedRootWithOrchestrator(orchestratorEnabled = true): Promise<string> {
   const root = await makeTempRoot();
   roots.push(root);
   await ensureDataLayout(root);
@@ -542,7 +681,7 @@ async function initializedRootWithOrchestrator(): Promise<string> {
           id: "orchestrator",
           displayName: "Orchestrator",
           token: "test-token",
-          enabled: true
+          enabled: orchestratorEnabled
         },
         waifus: []
       },
@@ -616,6 +755,7 @@ async function startTestBackend(
     discordRetryDelaysMs,
     createDiscordGateway: (gatewayOptions) => {
       (gateway as FakeDiscordGateway).onRuntimeIssue = gatewayOptions.onRuntimeIssue;
+      (gateway as FakeDiscordGateway).onStatusChange = gatewayOptions.onStatusChange;
       return gateway;
     }
   });

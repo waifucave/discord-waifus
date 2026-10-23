@@ -116,10 +116,10 @@ describe("remote route authorization", () => {
     const catalog = await dispatchInternal(app, actor, undefined, { method: "GET", url: "/api/orchestrator/one-shot/models" });
     expect(catalog.statusCode).toBe(200);
     expect(catalog.json().models[0].configured).toBe(false);
-    const selected = await dispatchInternal(app, actor, undefined, { method: "PUT", url: "/api/servers/one-shot", headers: { "idempotency-key": Buffer.alloc(32, 0x31).toString("base64url") }, payload: { revision: 0, orchestratorMode: "one-shot", oneShot: { target: "openai:gpt-6-luna" } } });
+    const selected = await dispatchInternal(app, actor, undefined, { method: "PUT", url: "/api/servers/100000000000000001", headers: { "idempotency-key": Buffer.alloc(32, 0x31).toString("base64url") }, payload: { revision: 0, orchestratorMode: "one-shot", oneShot: { target: "openai:gpt-6-luna" } } });
     expect(selected.statusCode).toBe(200);
     expect(selected.json().orchestratorMode).toBe("one-shot");
-    const invalid = await dispatchInternal(app, actor, undefined, { method: "PUT", url: "/api/servers/one-shot", headers: { "idempotency-key": Buffer.alloc(32, 0x32).toString("base64url") }, payload: { oneShot: { target: "laya:/tmp/executable" } } });
+    const invalid = await dispatchInternal(app, actor, undefined, { method: "PUT", url: "/api/servers/100000000000000001", headers: { "idempotency-key": Buffer.alloc(32, 0x32).toString("base64url") }, payload: { oneShot: { target: "laya:/tmp/executable" } } });
     expect(invalid.statusCode).toBe(400);
   });
   it("allows reviewed APIs but denies local static routes and never-proxy client context", async () => {

@@ -77,7 +77,9 @@ import {
   notFound,
   preconditionRequired
 } from "./errors.js";
+import { DiscordAPIError, HTTPError } from "discord.js";
 import { mergeConfiguredBotsIntoMembers } from "../discord/memberCache.js";
+import { discordRestForToken, discordRestGet } from "../discord/rest.js";
 import { assertKnownProvider, assertModelWriteValid } from "./writeValidation.js";
 import { BrowserSecurity, type BrowserSecurityOptions } from "./browserSecurity.js";
 import { installRoutePolicy } from "./routePolicy.js";
@@ -133,6 +135,9 @@ export type ApiServerOptions = {
   };
 };
 
+// Serializes config.toml read-modify-write between PUT /api/config and runtime pause/resume.
+const APP_CONFIG_LOCK = "app-config";
+
 const ProviderCredentialsBodySchema = z.object({
   apiKey: z.string().min(1),
   label: z.string().optional(),
@@ -150,6 +155,46 @@ const CreateWaifuBodySchema = WaifuConfigSchema.omit({
 })
   .partial({ id: true, enabled: true, persona: true, contextWindow: true })
   .required({ name: true, displayName: true });
+
+// B17: `.unwrap().optional()` only strips a sub-schema's outer default — zod still fills the
+// inner field defaults, so `{tools:{pickNextWaifu:true}}` used to reset `shortTermMemory` and a
+// lone `{availability:{sleep:{enabled:true}}}` wiped busy intervals. Nested settings objects are
+// therefore declared through this deep partial without defaults (and without refinements: the
+// merged record is re-validated by the full schema in updateRevisionedJson), then deep-merged
+// into stored state by mergeNestedPatch. Arrays and non-object leaves replace wholesale.
+type DeepPartial<T> = T extends readonly unknown[]
+  ? T
+  : T extends Record<string, unknown>
+    ? { [K in keyof T]?: DeepPartial<T[K]> }
+    : T;
+
+function partialWithoutDefaults<T extends z.ZodType>(schema: T): z.ZodType<DeepPartial<z.output<T>>> {
+  let inner: z.ZodType = schema;
+  while (inner instanceof z.ZodDefault || inner instanceof z.ZodOptional) {
+    inner = inner.unwrap() as z.ZodType;
+  }
+  if (!(inner instanceof z.ZodObject)) return inner as never;
+  const shape: Record<string, z.ZodType> = {};
+  for (const [key, field] of Object.entries(inner.shape as Record<string, z.ZodType>)) {
+    shape[key] = partialWithoutDefaults(field).optional();
+  }
+  return z.object(shape) as never;
+}
+
+function mergeNestedPatch<T>(current: T, patch: NoInfer<DeepPartial<T>> | undefined): T {
+  if (patch === undefined) return current;
+  if (!isPlainRecord(current) || !isPlainRecord(patch)) return patch as T;
+  const merged: Record<string, unknown> = { ...current };
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === undefined) continue;
+    merged[key] = mergeNestedPatch(current[key], value as never);
+  }
+  return merged as T;
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
 // personaDigest is server-managed; clients cannot set it via PUT.
 //
@@ -169,8 +214,9 @@ const UpdateWaifuBodySchema = WaifuConfigSchema.omit({ personaDigest: true }).pa
   enabled: z.boolean().optional(),
   persona: z.string().optional(),
   contextWindow: z.number().int().min(1).max(100).optional(),
-  availability: WaifuAvailabilitySchema.unwrap().optional(),
-  tools: WaifuToolSettingsSchema.unwrap().optional(),
+  availability: partialWithoutDefaults(WaifuAvailabilitySchema).optional(),
+  tools: partialWithoutDefaults(WaifuToolSettingsSchema).optional(),
+  // promptLayout is a documented wholesale replace (the editor always sends the full tree).
   promptLayout: WaifuPromptLayoutSchema.unwrap().optional()
 });
 
@@ -193,16 +239,18 @@ const ServerConfigBodySchema = ServerConfigSchema.partial().extend({
   oneShot: OneShotConfigSchema.unwrap().optional(),
   stageManagerEnabled: z.boolean().optional(),
   paused: z.boolean().optional(),
-  contextWindows: ServerConfigSchema.shape.contextWindows.unwrap().optional(),
+  contextWindows: partialWithoutDefaults(ServerConfigSchema.shape.contextWindows).optional(),
   memoryInjectionLimit: z.number().int().min(1).max(50).optional(),
-  tools: ServerToolSettingsSchema.unwrap().optional(),
+  tools: partialWithoutDefaults(ServerToolSettingsSchema).optional(),
+  // channels is a documented wholesale replace; per-channel edits use the channel route.
   channels: ServerConfigSchema.shape.channels.unwrap().optional()
 });
 
 const ChannelConfigBodySchema = z.object({
   revision: z.number().int().nonnegative().optional(),
   name: z.string().optional(),
-  enabled: z.boolean().default(true),
+  // Omitted keeps the stored flag; only a channel first created through this route defaults on.
+  enabled: z.boolean().optional(),
   enabledWaifuIds: z.array(z.string()).optional()
 });
 
@@ -234,7 +282,7 @@ const AgentConfigBodySchema = AgentConfigSchema.partial().extend({
   contextWindow: z.number().int().min(1).max(100).optional(),
   prompt: z.string().optional(),
   directiveCooldown: z.number().int().min(0).max(20).optional(),
-  promptSections: OrchestratorPromptSectionsSchema.unwrap().optional()
+  promptSections: partialWithoutDefaults(OrchestratorPromptSectionsSchema).optional()
 });
 
 // Gateway P6 Task 4: `enabled` is required (not defaulted) in write bodies — every real client
@@ -247,11 +295,6 @@ const DiscordBotsBodySchema = DiscordBotsFileSchema.partial().extend({
   revision: z.number().int().nonnegative().optional(),
   orchestrator: DiscordBotBodySchema.nullable().optional(),
   waifus: z.array(DiscordBotBodySchema).optional()
-});
-
-const DiscordApiErrorSchema = z.object({
-  message: z.string().optional(),
-  code: z.number().optional()
 });
 
 const RuntimeTriggerBodySchema = z.object({
@@ -504,7 +547,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
         "RemoteConfigFieldForbidden"
       );
     }
-    const saved = await updateAppConfig(options.dataRoot, patch);
+    const saved = await storage.withLocks([APP_CONFIG_LOCK], () => updateAppConfig(options.dataRoot, patch));
     options.runtime.paused = saved.runtime.paused;
     const { updates: _beforeUpdates, ...beforeRuntimeConfig } = currentConfig;
     const { updates: _afterUpdates, ...afterRuntimeConfig } = saved;
@@ -730,6 +773,8 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
           ...current,
           ...patch,
           params: mergeParamsPatch(current.params, patch.params) ?? current.params,
+          availability: mergeNestedPatch(current.availability, patch.availability),
+          tools: mergeNestedPatch(current.tools, patch.tools),
           id: current.id,
           // personaDigest is server-managed; always carry it forward from current.
           personaDigest: current.personaDigest
@@ -886,6 +931,8 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
         return {
           ...current,
           ...patch,
+          contextWindows: mergeNestedPatch(current.contextWindows, patch.contextWindows),
+          tools: mergeNestedPatch(current.tools, patch.tools),
           guildId
         };
       }
@@ -911,12 +958,17 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
 
   app.delete("/api/servers/:guildId", async (request, reply) => {
     const { guildId } = parseIdParam(request.params, "guildId");
-    const serverPath = resolveDataPath(options.dataRoot, path.join("user", "servers", guildId));
-    if (!(await exists(serverPath))) {
-      return reply.code(404).send({ error: "NotFound", message: `Server ${guildId} is not configured.` });
-    }
-    await rm(serverPath, { recursive: true, force: true });
-    return { accepted: true, message: `Server ${guildId} configuration removed (sessions and rosters included).` };
+    const serverPath = userDataPath(options.dataRoot, "servers", guildId);
+    // Same resource lock as every other server.json write, so a concurrent PUT cannot recreate
+    // the directory halfway through the recursive removal. The runtime reads server config live
+    // on every pass (no PUT/channel write reloads it either), so no runtime reload is needed.
+    return storage.withLocks([`server:${guildId}`], async () => {
+      if (!(await exists(serverPath))) {
+        return reply.code(404).send({ error: "NotFound", message: `Server ${guildId} is not configured.` });
+      }
+      await rm(serverPath, { recursive: true, force: true });
+      return { accepted: true, message: `Server ${guildId} configuration removed (sessions and rosters included).` };
+    });
   });
 
   app.get("/api/servers/:guildId/members", async (request) => {
@@ -950,11 +1002,8 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   });
 
   app.put("/api/servers/:guildId/channels/:channelId", async (request) => {
-    const { guildId, channelId } = z
-      .object({ guildId: z.string().min(1), channelId: z.string().min(1) })
-      .parse(request.params);
-    assertSafeId(guildId);
-    assertSafeId(channelId);
+    const { guildId } = parseIdParam(request.params, "guildId");
+    const { channelId } = parseIdParam(request.params, "channelId");
     const body = ChannelConfigBodySchema.parse(request.body);
     return storage.updateRevisionedJson({
       resourceKey: `server:${guildId}`,
@@ -972,7 +1021,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
           [channelId]: {
             channelId,
             name: body.name ?? current.channels[channelId]?.name,
-            enabled: body.enabled,
+            enabled: body.enabled ?? current.channels[channelId]?.enabled ?? true,
             enabledWaifuIds: body.enabledWaifuIds ?? current.channels[channelId]?.enabledWaifuIds ?? []
           }
         }
@@ -1069,20 +1118,37 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     });
   });
 
-  app.post("/api/runtime/pause", async (request) => {
-    options.runtime.paused = true;
-    await (options.runtimeControl?.pause() ?? options.runtimeOrchestrator?.pause());
+  // B2: pause used to live only in memory, so the next config save/reload (which re-reads
+  // `runtime.paused` from config.toml) or a restart silently unpaused. Pause is the emergency
+  // control, so the in-memory switch always happens first; persisting through the same writer
+  // as PUT /api/config is best-effort, and a failure (unreadable/invalid/read-only config.toml)
+  // returns a warning instead of failing the request.
+  const persistRuntimePaused = async (paused: boolean): Promise<string | undefined> => {
+    try {
+      await storage.withLocks([APP_CONFIG_LOCK], () =>
+        updateAppConfig(options.dataRoot, { runtime: { paused } }));
+      return undefined;
+    } catch (error) {
+      logger.warn("Runtime pause state could not be persisted", {
+        paused,
+        message: error instanceof Error ? error.message : String(error)
+      });
+      return `Runtime ${paused ? "paused" : "resumed"}, but config.toml could not be updated; ` +
+        "this will not survive a reload or restart.";
+    }
+  };
+  const setRuntimePaused = async (request: FastifyRequest, paused: boolean) => {
+    options.runtime.paused = paused;
+    if (paused) await (options.runtimeControl?.pause() ?? options.runtimeOrchestrator?.pause());
+    else await options.runtimeControl?.resume();
     options.runtime.updatedAt = nowIso();
+    const warning = await persistRuntimePaused(paused);
     publishGlobalEvent("runtime", structuredClone(options.runtime));
-    return runtimeResponse(options.runtime, request.principal, options.dataRoot);
-  });
-  app.post("/api/runtime/resume", async (request) => {
-    options.runtime.paused = false;
-    await options.runtimeControl?.resume();
-    options.runtime.updatedAt = nowIso();
-    publishGlobalEvent("runtime", structuredClone(options.runtime));
-    return runtimeResponse(options.runtime, request.principal, options.dataRoot);
-  });
+    const body = runtimeResponse(options.runtime, request.principal, options.dataRoot);
+    return warning ? { ...body, warning } : body;
+  };
+  app.post("/api/runtime/pause", async (request) => setRuntimePaused(request, true));
+  app.post("/api/runtime/resume", async (request) => setRuntimePaused(request, false));
   app.post("/api/runtime/reload", async () => {
     await options.runtimeControl?.reload("manual-api");
     publishGlobalEvent("runtime", structuredClone(options.runtime));
@@ -1093,8 +1159,8 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   });
   app.post("/api/runtime/stop", async (request) => {
     const body = RuntimeStopBodySchema.parse(request.body);
-    assertSafeId(body.guildId);
-    assertSafeId(body.channelId);
+    assertSnowflakeId(body.guildId);
+    assertSnowflakeId(body.channelId);
     const runtimeOrchestrator = options.runtimeControl?.getOrchestrator() ?? options.runtimeOrchestrator;
     if (!runtimeOrchestrator) {
       return {
@@ -1117,8 +1183,8 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
 
   app.post("/api/runtime/trigger/orchestrator", async (request) => {
     const body = RuntimeTriggerBodySchema.parse(request.body);
-    if (body?.guildId) assertSafeId(body.guildId);
-    if (body?.channelId) assertSafeId(body.channelId);
+    if (body?.guildId) assertSnowflakeId(body.guildId);
+    if (body?.channelId) assertSnowflakeId(body.channelId);
     const runtimeOrchestrator = options.runtimeControl?.getOrchestrator() ?? options.runtimeOrchestrator;
     if (body?.guildId && body.channelId && runtimeOrchestrator) {
       void runtimeOrchestrator.triggerChannel(body.guildId, body.channelId, "manual-api");
@@ -1146,8 +1212,8 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   });
   app.post("/api/runtime/trigger/stage-manager", async (request) => {
     const body = RuntimeTriggerBodySchema.parse(request.body);
-    if (body?.guildId) assertSafeId(body.guildId);
-    if (body?.channelId) assertSafeId(body.channelId);
+    if (body?.guildId) assertSnowflakeId(body.guildId);
+    if (body?.channelId) assertSnowflakeId(body.channelId);
     const runtimeOrchestrator = options.runtimeControl?.getOrchestrator() ?? options.runtimeOrchestrator;
     if (body?.guildId && body.channelId && runtimeOrchestrator) {
       void runtimeOrchestrator.triggerStageManager(body.guildId, body.channelId);
@@ -1388,7 +1454,12 @@ async function updateAgentConfig(
     expectedRevision: expectedRevision(request, body),
     transform: (current) => {
       const { revision: _revision, schemaVersion: _schemaVersion, updatedAt: _updatedAt, ...patch } = body;
-      const next = pruneUndefined({ ...current, ...patch, params: mergeParamsPatch(current.params, patch.params) ?? current.params });
+      const next = pruneUndefined({
+        ...current,
+        ...patch,
+        params: mergeParamsPatch(current.params, patch.params) ?? current.params,
+        promptSections: mergeNestedPatch(current.promptSections, patch.promptSections)
+      });
       const target = assertModelWriteValid(next.providerId, next.modelId, next.params);
       if (target) {
         // Gateway P6 Task 4: persist the resolved pair (supersedes P4's store-literal
@@ -1628,13 +1699,25 @@ function updateMemoryOrThrow(
 
 function parseIdParam(params: unknown, key: string): Record<string, string> {
   const parsed = z.record(z.string(), z.string().min(1)).parse(params);
-  assertSafeId(parsed[key]);
+  if (key === "guildId" || key === "channelId") assertSnowflakeId(parsed[key]);
+  else assertSafeId(parsed[key]);
   return parsed;
 }
 
+// Ids become path segments under the data root. The character class alone admitted "." and
+// "..", so `DELETE /api/servers/%2E%2E` (Fastify decodes it to "..") resolved to `user/` and
+// removed every user file. Dot-only ids are rejected here; resolveDataPath also refuses any
+// path that escapes the data root as a second line of defence.
 function assertSafeId(id: string): void {
-  if (!/^[A-Za-z0-9._:-]+$/.test(id)) {
+  if (typeof id !== "string" || !/^[A-Za-z0-9._:-]+$/.test(id) || /^\.+$/.test(id)) {
     throw badRequest(`Invalid id: ${id}`);
+  }
+}
+
+// Guild and channel ids always come from Discord, so anything but a snowflake is malformed.
+function assertSnowflakeId(id: string): void {
+  if (typeof id !== "string" || !/^\d{17,20}$/.test(id)) {
+    throw badRequest(`Invalid Discord id: ${id}`);
   }
 }
 
@@ -1644,7 +1727,7 @@ function slugId(name: string): string {
     .toLowerCase()
     .replace(/[^a-z0-9._:-]+/g, "-")
     .replace(/^-+|-+$/g, "");
-  return slug || randomUUID();
+  return slug && !/^\.+$/.test(slug) ? slug : randomUUID();
 }
 
 async function saveWaifuAsset(
@@ -1877,21 +1960,16 @@ async function readDiscordBotToken(storage: StorageService): Promise<string | un
     : bots.orchestrator?.token ?? bots.waifus.find((bot) => bot.enabled && bot.token)?.token;
 }
 
+// discord.js REST client: per-bucket queueing, 429 backoff and a compliant User-Agent.
 async function discordApiFetch(token: string, pathAndQuery: string): Promise<unknown> {
-  const response = await fetch(`https://discord.com/api/v10${pathAndQuery}`, {
-    headers: {
-      authorization: token.startsWith("Bot ") ? token : `Bot ${token}`,
-      "user-agent": "Discord-Waifus/0.1"
+  try {
+    return await discordRestGet(discordRestForToken(token), pathAndQuery);
+  } catch (error) {
+    if (error instanceof DiscordAPIError || error instanceof HTTPError) {
+      throw badRequest(`Discord API request failed (${error.status}): ${error.message || "unknown error"}`);
     }
-  });
-  const text = await response.text();
-  const parsed = text ? JSON.parse(text) : undefined;
-  if (!response.ok) {
-    const body = DiscordApiErrorSchema.safeParse(parsed);
-    const message = body.success ? body.data.message : response.statusText;
-    throw badRequest(`Discord API request failed (${response.status}): ${message ?? "unknown error"}`);
+    throw error;
   }
-  return parsed;
 }
 
 async function diagnosticBundle(
