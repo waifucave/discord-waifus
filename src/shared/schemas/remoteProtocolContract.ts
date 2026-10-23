@@ -28,7 +28,7 @@ import {
   type ProtocolCapabilitiesDocument
 } from "./remoteProtocol.js";
 
-export const REMOTE_PROTOCOL_SCHEMA_ID =
+const REMOTE_PROTOCOL_SCHEMA_ID =
   "https://waifucave.com/contracts/remote/v1/protocol.schema.json";
 
 type JsonPrimitive = string | number | boolean | null;

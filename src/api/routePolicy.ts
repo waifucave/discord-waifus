@@ -244,6 +244,6 @@ export function getRegisteredRoutePolicyInventory(app: FastifyInstance): string[
   return [...seen].sort();
 }
 
-export function routePolicyForRequest(request: FastifyRequest): RoutePolicyDefinition | undefined {
+function routePolicyForRequest(request: FastifyRequest): RoutePolicyDefinition | undefined {
   return request.routeOptions.config.waifusRoutePolicy;
 }

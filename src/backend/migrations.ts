@@ -23,8 +23,6 @@ import {
 import { RemoteAccessConfigV1Schema } from "../shared/schemas/remoteLifecycle.js";
 import { remoteStatePaths } from "../remote/paths.js";
 
-export { extractEntities } from "../orchestration/memoryEntities.js";
-
 export type MigrationResult = {
   applied: string[];
 };

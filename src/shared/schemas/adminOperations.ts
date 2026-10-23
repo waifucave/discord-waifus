@@ -30,7 +30,7 @@ const DELEGATION_IDENTIFIER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$/;
 export const OperationIdSchema = Base64Url32BytesSchema.brand<"OperationId">();
 export type OperationId = z.infer<typeof OperationIdSchema>;
 
-export const OperationStatusUrlSchema = z
+const OperationStatusUrlSchema = z
   .string()
   .length(OPERATION_STATUS_PATH_PREFIX.length + 43)
   .refine((value) => {
@@ -186,7 +186,7 @@ export const AuditActorV1Schema = z.discriminatedUnion("kind", [
 
 export type AuditActorV1 = z.infer<typeof AuditActorV1Schema>;
 
-export const AssistantDelegationV1Schema = z.object({
+const AssistantDelegationV1Schema = z.object({
   conversationId: z.string().min(1).max(128).regex(DELEGATION_IDENTIFIER_PATTERN),
   toolCallId: z.string().min(1).max(128).regex(DELEGATION_IDENTIFIER_PATTERN),
   pendingActionId: z.string().min(1).max(128).regex(DELEGATION_IDENTIFIER_PATTERN).optional()

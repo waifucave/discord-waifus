@@ -7,7 +7,7 @@ import {
 // The v1 wire contract requires numeric deadlines. Use a far-future sentinel;
 // actual browser authority lives only in this process and ends on invalidation.
 export const REMOTE_SESSION_LIFETIME_SENTINEL_MS = Number.MAX_SAFE_INTEGER;
-export const REMOTE_BOOTSTRAP_TOKEN_MS = 5 * 60 * 1_000;
+const REMOTE_BOOTSTRAP_TOKEN_MS = 5 * 60 * 1_000;
 const DEFAULT_MAX_SESSIONS = 1_024;
 const DEFAULT_MAX_BOOTSTRAP_TOKENS = 32;
 const RANDOM_COLLISION_RETRIES = 8;
@@ -31,7 +31,7 @@ export type RemoteBrowserSessionStoreOptions = {
   readonly maxBootstrapTokens?: number;
 };
 
-export class RemoteBrowserSessionStoreError extends Error {
+class RemoteBrowserSessionStoreError extends Error {
   constructor(
     readonly code: "bootstrap_capacity" | "random_collision",
     message: string

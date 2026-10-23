@@ -11,7 +11,7 @@ export function getDataRoot(env: NodeJS.ProcessEnv = process.env): string {
   return path.join(os.homedir(), ".dc-waifus");
 }
 
-export class DataPathEscapeError extends Error {}
+class DataPathEscapeError extends Error {}
 
 // Every data path is joined under the root; refuse any result that escapes it (e.g. a ".."
 // segment that slipped past request-id validation) instead of handing it to fs calls.

@@ -31,7 +31,7 @@ export type ProcessIdentityProbe = {
   startTime: (pid: number) => Promise<number | null>;
 };
 
-export const defaultProcessIdentityProbe: ProcessIdentityProbe = {
+const defaultProcessIdentityProbe: ProcessIdentityProbe = {
   isAlive: (pid) => {
     try {
       process.kill(pid, 0);
@@ -72,7 +72,7 @@ export async function processStartTime(
 // belongs to a process started after the holder crashed, typically far outside this window.
 export const PROCESS_START_TIME_SLACK_MS = 2_000;
 
-export function startTimesMatch(observed: number, recorded: number): boolean {
+function startTimesMatch(observed: number, recorded: number): boolean {
   return Math.abs(observed - recorded) <= PROCESS_START_TIME_SLACK_MS;
 }
 

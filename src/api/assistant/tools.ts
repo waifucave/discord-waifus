@@ -106,7 +106,7 @@ function helperTargetLabel(target: { os: string; arch: string; goarm?: number })
   return `${target.os} ${architecture}`;
 }
 
-export const ASSISTANT_TOOLS: AssistantTool[] = [
+const ASSISTANT_TOOLS: AssistantTool[] = [
   {
     name: "get_runtime_status",
     description:

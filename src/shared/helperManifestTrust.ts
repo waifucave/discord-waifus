@@ -15,9 +15,9 @@ import {
 } from "./schemas/remoteProtocolContract.js";
 import { SemVerSchema, UINT64_MAX } from "./schemas/remoteProtocol.js";
 
-export const HELPER_MANIFEST_MAX_BYTES = 32_768;
-export const HELPER_RELEASE_SIGNATURE_BYTES = 64;
-export const HELPER_RELEASE_TRUST_MAX_KEYS = 8;
+const HELPER_MANIFEST_MAX_BYTES = 32_768;
+const HELPER_RELEASE_SIGNATURE_BYTES = 64;
+const HELPER_RELEASE_TRUST_MAX_KEYS = 8;
 
 const RELEASE_KEY_FINGERPRINT_DOMAIN = Buffer.from(
   "waifus/helper-release-key/v1",

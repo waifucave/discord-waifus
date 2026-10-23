@@ -66,7 +66,7 @@ export class ApiError extends Error {
   }
 }
 
-export class ConflictError extends ApiError {
+class ConflictError extends ApiError {
   latest: ApiErrorBody["latest"];
   constructor(body: ApiErrorBody) {
     super(409, body);

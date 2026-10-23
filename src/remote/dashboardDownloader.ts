@@ -49,7 +49,7 @@ export type DashboardDownloaderErrorCode =
   | "dashboard_asset_response_invalid"
   | "dashboard_component_incompatible";
 
-export class DashboardDownloaderError extends Error {
+class DashboardDownloaderError extends Error {
   constructor(
     readonly code: DashboardDownloaderErrorCode,
     detail: string
