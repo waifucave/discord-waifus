@@ -213,7 +213,7 @@ descriptors to its catalog — and even then keep the gateway's API/HTTP surface
 
 ## 6. Prompting, memory, and context compaction redesign
 
-Status: **proposed — needs owner review before Phase 4.**
+Status: **revised with owner input 2026-10-23** (reply target = waifu; layout editor removed; per-context self-compaction; epoch/append-only context).
 
 ### 6.1 Problems with the current design (inventory 2026-10-23)
 
@@ -240,141 +240,161 @@ Status: **proposed — needs owner review before Phase 4.**
 - **No token accounting**: gateway `contextTokens` never read; returned `usage` unused; no
   summary/compaction of any kind.
 
-### 6.2 Principles
+### 6.2 Principles (revised with owner input 2026-10-23)
 
-1. **Stable prefix, volatile tail.** Everything that changes per turn goes at the *end*.
-   Everything before it is append-only within a compaction epoch, so provider prompt caches hit.
-2. **Code owns protocol, the model owns voice.** Reply targets, mentions, splitting, and speaker
-   identity are decided/structured by code, not by text conventions the model must emit.
-3. **One source per rule.** A single per-waifu `verbosity` setting drives the prompt wording, the
+1. **Claude-Code-style context.** One static system prompt, an **append-only** transcript, and one
+   small ephemeral note at the very end. Nothing is ever inserted *before* existing content
+   mid-epoch: no mid-transcript system blocks, no sliding window, no per-turn relative ages. The
+   old "sprinkle system blocks around the transcript for adherence" pattern (built for weak cheap
+   models) is removed — it invalidates the cache from the moved block onward every turn.
+2. **Epochs.** A conversation context lives in epochs. Snapshot content (memories, summary, room
+   facts) is computed at epoch start and frozen until the next compaction — like Claude Code's
+   memory/CLAUDE.md, which load once per context. Things that become relevant mid-epoch are
+   **appended** as inline notes at the point they occur (like system-reminders) and are stored so
+   every rebuild of the transcript is byte-identical.
+3. **The model owns voice and its reply target.** Owner decision: the waifu decides what it replies
+   to, through a clean exact marker (no fuzzy matching).
+4. **One source per rule.** A per-waifu `verbosity` setting drives the prompt wording, the
    validator, and the splitter.
-4. **Memories are about people.** Global per waifu (D2), keyed by stable Discord user ids, rendered
+5. **Memories are about people.** Global per waifu (D2), keyed by stable Discord user ids, rendered
    with subject + provenance.
-5. **Compaction is per conversation, shared.** One rolling summary per channel/DM, written once,
-   reused by every waifu and the orchestrator.
+6. **Each context compacts itself, with its own model.** Every waifu (and the orchestrator / stage
+   manager) has its own context per conversation and its own model; compaction reuses that exact
+   cached prefix so the summarization call is mostly cache reads (owner insight).
+7. **No user-editable prompt layout.** Owner decision: the layout editor is removed. Customization
+   = persona + new `customInstructions` text + `verbosity`.
 
-### 6.3 Waifu prompt (new layout)
+### 6.3 Waifu context (new layout)
 
 ```
-[system]  ── cache breakpoint A (static per waifu; changes only when config changes)
-  <harness>        ~250 words, shared wording: what this is (live Discord chat with real people
-                   and other characters), you write only your own messages, plain chat text,
-                   no names/prefixes/narration/meta, how images/replies appear, emoji usage.
-  <identity>       name, server-agnostic nickname rules, roster of other characters (ids → names)
-  <persona>        user persona text
-  <style>          verbosity rule (one sentence generated from `verbosity`), persona digest voice
-  <schedule>       sleep/busy routine (static)
-  <custom>         optional per-waifu custom instructions (user-written, new field)
-[user]    ── cache breakpoint B (changes only on compaction)
-  <conversation_summary>  rolling summary of earlier conversation in this channel/DM (if any)
-[transcript]  append-only since the compaction cursor ── rolling cache breakpoint C at the last
-              fully-stable message
-  user turns: consecutive non-own messages merged into ONE user turn; each line
-              `[14:02] Kevin (reply to Aria): body` with absolute local times; gap notes
-              ("— 3 hours later —") derived from absolute times; images inline only for the newest
-              N (OCR text for the rest).
-  assistant turns: this waifu's own messages, raw body.
-[final user/system note]  ── volatile tail, never cached
-  <now>            current local time + waifu's current activity (busy/sleepy/awake)
-  <room>           who is present right now, server/channel name, server emojis (or DM context)
-  <memories>       retrieved memories (≤ memoryInjectionLimit, pinned capped)
-  <direction>      orchestrator directive for this turn (intent + goal), if any
-  <turn>           one line: "Write Aria's next message, replying to Kevin's latest." (code-chosen)
+[system]  ── cache breakpoint A: static per waifu (changes only when the waifu config changes)
+  harness           ~250 words, shared wording: live Discord chat with real people and other
+                    characters; write only your own messages as plain chat text; no names,
+                    prefixes, narration or meta; how the transcript, images, replies and time
+                    markers look; how to reply to a specific message (marker below); emoji usage.
+  identity          name, roster of the other characters
+  persona           user persona text
+  style             verbosity rule (one sentence from `verbosity`) + persona digest voice/drives
+  schedule          sleep/busy routine (static)
+  custom            optional per-waifu `customInstructions`
+[user] epoch header ── cache breakpoint B: frozen for the whole epoch
+  <conversation_summary>   this waifu's own summary of earlier conversation here (if any)
+  <memories>               memory snapshot for the people in this conversation at epoch start
+  <place>                  server/channel name or "DM with Kevin"; server emoji list
+[transcript]  append-only since the epoch cursor ── rolling cache breakpoint C at the last message
+  user turns       consecutive non-own messages merged into ONE turn:
+                     `[14:02 #k3] Kevin: body` (time HH:MM, local; #ref = short stable message ref;
+                     reply context shown as `[14:03 #k4 ↩#a1] Riko: body`)
+                   images inline only for the newest N, OCR text for older ones
+  assistant turns  this waifu's own messages, raw text
+  inline notes     appended where they happen and persisted (never moved):
+                     "— 3 hours later —" gap markers (derived from absolute times)
+                     <memory_note> newly relevant memories (new participant joined, a memory
+                       written mid-epoch, a strongly matching memory not in the snapshot)
+                     <direction> an orchestrator directive given for that turn
+                     tool calls/results (add_memory) as normal tool turns
+[ephemeral tail]  ── never cached, never stored, always last
+  one short note: current local time, the waifu's current activity (busy/sleepy/awake), who is
+  present if it changed since epoch start, and the turn instruction ("Write Aria's next message.")
 ```
 
-- **Reply targeting by code**: the orchestrator decision gains `replyToMessageId` per responder
-  (defaulting to the newest human message that triggered the turn when not the immediately
-  previous message). The waifu never writes `replying to >`; `extractReplyQuote` and its fuzzy
-  matching are deleted.
-- **Stop sequences** shrink to the generic `\n[` timeline-header guard plus own-name; the
-  `Name:` leak/impersonation strippers remain as a safety net but should rarely fire.
-- **Retry** uses a system/developer note ("Your last draft was rejected: <reason>. Write it
-  again.") — never a user turn with the waifu's name.
-- **Validator** thresholds come from `verbosity` (`terse` ≈ 1 short line, `chatty` ≈ 1–3 lines,
+- **Reply marker**: the waifu may start its message with `↩#k3 ` to reply to message `#k3`. Code
+  parses it exactly (unknown ref → plain message), strips it, sets Discord's reply reference.
+  Refs are short, stable per message (base-36 of a per-conversation counter persisted with the
+  epoch), shown only in headers. `extractReplyQuote` fuzzy matching and the `replying to >`
+  syntax are deleted. If the waifu omits the marker, the message is sent unthreaded (or to the
+  triggering message when it is not the latest one — keeps today's default).
+- **Stop sequences** shrink to the header guard (`\n[`) plus the waifu's own name; the existing
+  leak/impersonation strippers remain as a safety net.
+- **Retry** uses a short system/developer note ("Your last draft was rejected: <reason>. Write it
+  again.") — never a user turn with the waifu's name. Retry notes are ephemeral (not stored).
+- **Validator** thresholds come from `verbosity` (`terse` ≈ one short line, `chatty` ≈ 1–3 lines,
   `expressive` ≈ up to a paragraph); the splitter uses the same profile; the soft-length bypass is
-  removed (length violations either trim at a sentence boundary or retry once).
-- **Tools**: `add_memory` stays (now global); tool list and `<tools>` text no longer toggle per
-  turn (suppression handled by ignoring the tool call instead), so the system prompt stays stable.
-- **Prompt layout editor**: keeps per-waifu reorder/enable/group within the **static zone** only;
-  volatile blocks are fixed in the tail zone (UI shows "cached" vs "live" zones). Migration maps
-  old block ids 1:1 where they exist (`identity`, `persona`, `schedule` → static; `roomInfo`,
-  `relevantMemories`, `currentlyDoing`, `directorNote` → tail; `ioFormat`, `outputContract`,
-  `tools`, `anchor` → folded into `harness`/`style`); user groups inside the static zone preserved;
-  anything unmappable resets to default (precedent: `migrateWaifuPromptLayoutW2`).
-- **Caching transport** (Phase 3): gateway sends Anthropic `cache_control` at breakpoints A/B/C,
-  OpenRouter cache hints for Anthropic/Gemini routes, OpenAI `prompt_cache_key` = waifu+channel.
+  removed (trim at a sentence boundary, else retry once).
+- **Tools**: `add_memory` (now global) stays; the tool list and its text never toggle per turn
+  (suppression handled by ignoring the call), so breakpoint A stays stable.
+- **Layout editor removal**: delete `PromptLayout*` schemas, `promptLayout.ts`,
+  `PromptLayoutEditor.tsx`, layout reconcile/migrations; migration drops `promptLayout` from
+  waifu files (a disabled `persona`/`schedule` block maps to "omit schedule" only if the user had
+  it off — schedule is the only block users plausibly disabled; checked at migration).
+- **Caching transport** (Phase 3): gateway sends Anthropic `cache_control` at A/B/C, OpenRouter
+  cache hints for Anthropic/Gemini routes, OpenAI `prompt_cache_key` = `waifu:<id>:<conversation>`.
 
-### 6.4 Orchestrator prompt (model + one-shot modes)
+### 6.4 Orchestrator and background agents
 
-- **System (static, cached)**: concise director rules (~350 words, rewritten without the
-  quiet-vs-cast contradiction — the rules state the cadence policy that code enforces), casting
-  cards (id, digest voice, "cast her when"), decision schema guidance. Custom `orchestrator.prompt`
-  is appended as `<owner_policy>` in model mode too (B28).
-- **Summary + transcript**: same compaction summary and append-only absolute-time transcript as
-  waifus; past decisions replayed as compact tool calls (unchanged idea, but without per-message
-  ages). Each message line carries its Discord message id (short ref) so the decision can set
-  `replyToMessageId`.
-- **Volatile tail**: `[now]`, hour, availability of each waifu, loop/cadence `runtime_notice`, wake
-  marker (with the correct scheduling source, B8).
-- **Decision schema**: adds `respondingWaifus[].replyToMessageId?`; otherwise unchanged
-  (directives, wakePlan, retrigger). Deterministic and one-shot modes stay (owner decision) and
-  consume the same context builder; one-shot's JSON state uses absolute times too.
-- Stage manager / observer and reviewer get the same stable-system + transcript + tail shape; the
-  stage-manager custom prompt is honoured (B28).
+- **Orchestrator** gets the same shape: static system (concise director rules ~350 words without
+  the quiet-vs-cast contradiction — the rules state the cadence policy code enforces; casting cards;
+  owner custom `orchestrator.prompt` appended as `<owner_policy>` in model mode too, B28) → epoch
+  header (its own summary, roster availability snapshot) → append-only transcript with the same
+  `[HH:MM #ref]` headers and its past decisions as compact tool-call turns → ephemeral tail (now,
+  current availability, loop/cadence `runtime_notice`, wake marker with the correct scheduling
+  source, B8).
+- Decision schema unchanged (directives, wakePlan, retrigger); reply targets stay with waifus.
+  Deterministic and one-shot modes stay (owner decision) and consume the same context builder;
+  one-shot's JSON state uses absolute times.
+- **Stage manager / observer** and **reviewer** use the same builder; stage-manager custom prompt
+  honoured (B28).
 
 ### 6.5 Memory (global)
 
 - **Scope**: `MemoryRecord.guildId` → optional `origin { guildId?, channelId?, dm?: true }`
-  (provenance only). Retrieval, dedupe, dream, and the API ignore guild for filtering.
-  `GET /api/memories?guildId` becomes a provenance filter. Migration: existing records keep their
-  guild as `origin.guildId`; cross-guild duplicates merged by the first global dream pass (and a
-  one-time dedupe at migration using normalized-text similarity, conservative threshold).
+  (provenance only). Retrieval, dedupe, dream and the API ignore guild for filtering;
+  `GET /api/memories?guildId` becomes a provenance filter. Migration keeps each record's guild as
+  `origin.guildId`; a conservative one-time dedupe merges cross-guild duplicates (normalized-text
+  similarity + same waifu), the first global dream pass does the rest.
 - **Subjects**: `subjects: [{ discordUserId?, waifuId?, name }]` replaces display-name `entities`
-  (names refreshed at render time from the member cache). Rendered as
+  (names refreshed at render time from member caches). Rendered as
   `- Kevin: allergic to peanuts (fact · learned in Bake Club #general · 3 weeks ago)`.
-- **Retrieval score**: subject match with people present in the conversation (strong boost) +
-  Unicode-aware lexical match (`\p{L}\p{N}` tokenizer, CJK bigrams) + recency + strength +
-  same-origin-channel small boost − diversity penalty (recently injected, via `lastRetrievedAt`).
-  Pinned memories capped (`maxPinnedInjected`, default 6, ranked by score). Waifu's own lines get
-  lower weight in the query window than human lines.
-- **Writing**: the observer sees the existing memories for the current participants and emits
-  ops (`add | update | merge | expire`) instead of blind adds; everything goes through one
-  dedupe gate (normalized similarity + same subject). Observer keeps a last-seen message cursor
-  per conversation (I8). `add_memory` tool notes keep the 72 h TTL for `context` notes.
-- **Dream pass**: one global schedule (configurable hour, new setting) iterating waifus
-  round-robin with a persisted cursor and per-night budget (fixes B12), allowed waifu ids include
-  observation owners.
-- **DMs**: DM conversations feed the same global memory (owner: "global across everywhere").
-- **Privacy affordance**: `waifus memory forget-user <discordUserId>` / HTTP equivalent deletes all
-  memories whose subject is that user (plus DM history) — needed once memories span servers.
+- **Injection follows the epoch model**: the snapshot (≤ `memoryInjectionLimit`, pinned capped at
+  `maxPinnedInjected` default 6) is chosen at epoch start for the people present; mid-epoch
+  additions are appended `<memory_note>`s (bounded per epoch). Nothing re-ranks the snapshot until
+  the next compaction.
+- **Retrieval score**: subject match with participants (strong) + Unicode-aware lexical match
+  (`\p{L}\p{N}` tokens, CJK bigrams) + recency + strength + small same-origin boost − diversity
+  penalty via `lastRetrievedAt`; human lines weigh more than the waifu's own in the query window.
+- **Writing**: observer sees existing memories for the participants and emits
+  `add | update | merge | expire` ops; one dedupe gate for every writer (normalized similarity +
+  same subject); observer keeps a per-conversation last-seen cursor (I8); `context` notes keep the
+  72 h TTL.
+- **Dream pass**: one global schedule (configurable hour) iterating waifus round-robin with a
+  persisted cursor and per-night budget (B12); allowed waifu ids include observation owners.
+- **DMs** feed the same global memory.
+- **Privacy affordance**: `waifus memory forget-user <discordUserId>` + HTTP equivalent deletes
+  memories whose subject is that user and their DM history.
 
-### 6.6 Context compaction
+### 6.6 Context compaction (per context, own model)
 
-- **Per conversation** (channel or DM) store `user/conversations/<key>/summary.json`:
-  `{ summary, cursorMessageId, cursorAt, coveredMessages, model, updatedAt, revision }`.
-- **Token budget**: estimate prompt tokens (chars/3.5 heuristic, calibrated per model by the ratio
-  of returned `usage.inputTokens` to the estimate, persisted). `contextTokens` from the gateway
-  registry; budget = `contextTokens × compaction.triggerRatio` (default 0.7) minus max output.
-- **Trigger**: before building any prompt for that conversation, if estimate > budget **or**
-  transcript since cursor > `compaction.maxMessages` (default 120) → compact. Also on a gateway
-  `context_overflow` error (new error kind, §5): compact then retry once.
-- **Compaction**: summarize everything before the newest `compaction.keepRecent` messages (default
-  30) into an updated neutral, third-person summary (who's who, ongoing threads, promises, running
-  jokes, relationship shifts, unresolved questions) via the configurable `compactor` agent
-  (defaults to the stage-manager target, else the cheapest configured model); advance the cursor.
-  Facts worth keeping long-term are handed to the memory observer, not kept only in the summary.
-- **Window semantics**: the transcript starts at the cursor (append-only until the next
-  compaction) — this is what makes breakpoint C cacheable. Discord fetches page back to the cursor
-  (bounded by `maxMessages`); message-count `contextWindow`s become caps, not the primary limit.
-- **Concurrency**: compaction runs under the conversation's resource lock, is single-flight per
-  conversation, and never blocks a reply for longer than a timeout — on timeout the turn proceeds
-  with hard truncation and compaction finishes in the background.
-- **Settings** (registry §7): `compaction.enabled`, `triggerRatio`, `maxMessages`, `keepRecent`,
-  `compactor` target; per-server override optional.
+- **Context key** = `(agent, conversation)` where agent ∈ waifu id | orchestrator | stage-manager
+  and conversation = guild channel or DM. Stored in
+  `user/conversations/<conversationKey>/contexts/<agent>.json`:
+  `{ epoch, cursorMessageId, summary, memorySnapshotIds, notes[] (anchored to message ids),
+  refCounter, tokenCalibration, updatedAt, revision }`.
+- **Token budget**: estimate prompt tokens (chars/3.5 heuristic, calibrated per model by returned
+  `usage.inputTokens` vs estimate, persisted); limit from the gateway registry `contextTokens`;
+  budget = `contextTokens × compaction.triggerRatio` (default 0.7) − max output tokens.
+- **Trigger** (checked before building a prompt): estimate > budget, or transcript since cursor >
+  `compaction.maxMessages` (default 150), or a gateway `context_overflow` error (new kind, §5) →
+  compact, then retry once.
+- **Compaction call** = the *same* request prefix (system A + epoch header B + transcript up to C,
+  identical tool definitions with `tool_choice: none`) + a final instruction: "Summarize the
+  conversation so far from your own perspective for your future self: people, ongoing threads,
+  promises, running jokes, how you feel about each person, unresolved questions. Keep the last
+  `keepRecent` messages out of the summary." → mostly cache reads on providers with caching.
+  Output replaces the summary; cursor advances to keep the newest `compaction.keepRecent`
+  messages (default 30) verbatim; the memory snapshot is re-selected; notes before the cursor are
+  dropped. Facts worth long-term memory are passed to the observer queue, not only the summary.
+- **Window semantics**: transcript starts at the cursor and only grows until the next compaction —
+  this is what makes breakpoint C cacheable. Discord fetches page back to the cursor (bounded by
+  `maxMessages`); the old message-count `contextWindow`s become hard caps.
+- **Concurrency**: single-flight per context under its resource lock; a reply never waits longer
+  than a timeout — on timeout it proceeds with hard truncation and compaction completes in the
+  background.
+- **Settings** (registry §7): `compaction.enabled`, `triggerRatio`, `maxMessages`, `keepRecent`;
+  per-server override optional. No separate compactor model (each context uses its own model).
 
 ### 6.7 Evaluation
 
-- Extend `tests/eval` scenarios with: reply-target correctness, verbosity adherence, no
+- Extend `tests/eval` scenarios with: reply-marker correctness, verbosity adherence, no
   impersonation/name-prefix leaks, memory subject correctness, cross-server memory recall,
   compaction continuity (facts from the summarized part still used), cache-hit ratio on a scripted
   20-turn conversation (fake provider reports cache reads).
