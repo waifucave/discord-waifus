@@ -6,7 +6,7 @@ import type { DiscordBotsFile, WaifuConfig, WaifusResponse } from "../api/types"
 import { characterHue, type ViewId } from "../nav";
 import { Disclosure, FootRow, HeadRow } from "./scaffold";
 import { ModelParamsForm } from "../components/modelParams/ModelParamsForm";
-import { PromptLayoutEditor } from "../components/PromptLayoutEditor";
+import { WaifuStyleFields, waifuStyleBlocksSave } from "../components/WaifuStyleFields";
 import { Notice } from "../components/Notice";
 import {
   buildModelGroupOptions,
@@ -135,7 +135,19 @@ function CharacterEditor({
 
   useEffect(() => {
     if (creating) {
-      setDraft({ id: "", name: "", displayName: "", persona: "", contextWindow: 50, enabled: true, params: {} });
+      setDraft({
+        id: "",
+        name: "",
+        displayName: "",
+        persona: "",
+        contextWindow: 50,
+        enabled: true,
+        params: {},
+        verbosity: "terse",
+        customInstructions: "",
+        scheduleInPrompt: true,
+        tools: { toolUse: true }
+      });
     } else if (remote.data) {
       setDraft(remote.data);
     }
@@ -177,7 +189,11 @@ function CharacterEditor({
           providerId: draft.providerId,
           modelId: draft.modelId,
           params: draft.params ?? {},
-          contextWindow: draft.contextWindow
+          contextWindow: draft.contextWindow,
+          verbosity: draft.verbosity,
+          customInstructions: draft.customInstructions,
+          scheduleInPrompt: draft.scheduleInPrompt,
+          tools: draft.tools
         });
         onNavigate("cast", undefined, created.id);
         setMessage("Character created.");
@@ -203,7 +219,9 @@ function CharacterEditor({
           botId: draft.botId ?? null,
           availability: draft.availability,
           tools: draft.tools,
-          promptLayout: draft.promptLayout
+          verbosity: draft.verbosity,
+          customInstructions: draft.customInstructions,
+          scheduleInPrompt: draft.scheduleInPrompt
         });
         remote.setData(saved);
         setMessage("Saved.");
@@ -239,7 +257,7 @@ function CharacterEditor({
             className="cell clickable actioncell"
             style={{ background: "var(--mint)" }}
             onClick={save}
-            disabled={saving || (Boolean(draft.modelId) && !paramsValid)}
+            disabled={saving || (Boolean(draft.modelId) && !paramsValid) || waifuStyleBlocksSave(draft)}
           >
             {saving ? "Saving…" : "Save"}
           </button>
@@ -284,6 +302,11 @@ function CharacterEditor({
           <textarea className="textarea" rows={7} value={draft.persona ?? ""} onChange={(e) => set({ persona: e.target.value })} placeholder="Who is she? Voice, history, quirks, relationships…" />
           <span className="field-hint">Character only — message length and chat format are enforced by the harness, not the persona.</span>
         </div>
+        <WaifuStyleFields
+          verbosity={draft.verbosity}
+          customInstructions={draft.customInstructions}
+          onChange={set}
+        />
         {!creating && (
           <div className="fgrid" style={{ flex: "none", gridTemplateColumns: "1fr 1fr" }}>
             <div className="fcell">
@@ -377,19 +400,32 @@ function CharacterEditor({
           </Disclosure>
         )}
 
-        {!creating && remote.data && draft.promptLayout && draft.tools && (
-          <Disclosure title="Prompt layout" hint="advanced · defaults are sensible">
-          <div className="fused" style={{ flex: "none" }}>
-            <PromptLayoutEditor
-              layout={draft.promptLayout}
-              tools={draft.tools}
-              onLayoutChange={(promptLayout) => set({ promptLayout })}
-              onToolsChange={(tools) => set({ tools })}
-              waifuName={draft.name || draft.id || "character"}
-            />
+        <div className="fgrid" style={{ flex: "none", gridTemplateColumns: "1fr 1fr" }}>
+          <div className="fcell">
+            <label className="field-label">Schedule</label>
+            <label className="checkbox-chip">
+              <input
+                type="checkbox"
+                checked={draft.scheduleInPrompt ?? true}
+                onChange={(e) => set({ scheduleInPrompt: e.target.checked })}
+              />
+              Mention her schedule in the prompt
+            </label>
+            <span className="field-hint">When on, she knows what she is doing right now (sleeping, busy) and can say so.</span>
           </div>
-          </Disclosure>
-        )}
+          <div className="fcell">
+            <label className="field-label">Tools</label>
+            <label className="checkbox-chip">
+              <input
+                type="checkbox"
+                checked={draft.tools?.toolUse ?? true}
+                onChange={(e) => set({ tools: { ...(draft.tools ?? { toolUse: true }), toolUse: e.target.checked } })}
+              />
+              Can save memories while chatting
+            </label>
+            <span className="field-hint">Lets her remember things on her own as the conversation goes.</span>
+          </div>
+        </div>
 
         {!creating && remote.data && (
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "var(--line)", background: "var(--ink)", flex: "none" }}>
