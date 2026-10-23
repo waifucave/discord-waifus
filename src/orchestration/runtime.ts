@@ -79,7 +79,6 @@ import {
 import { relativeAge, retrieveMemories } from "./memoryRetrieval.js";
 import { createRevisionedBase, nowIso } from "../shared/schemas/common.js";
 import { StorageService } from "../storage/storageService.js";
-import { DreamOp, StageManagerObservation } from "./stageManager.js";
 import {
   ChannelSessionState,
   ChannelSessionStateSchema,
@@ -4454,10 +4453,6 @@ export function currentlyDoingForWaifu(waifu: WaifuConfig, now: Date): string | 
     return "sleepy";
   }
   return undefined;
-}
-
-function formatLocalTimeOfDay(date: Date): string {
-  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
 
 function dailyIntervalContains(currentMinutes: number, interval: { start: string; end: string }): boolean {
