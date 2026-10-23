@@ -8410,7 +8410,7 @@ describe("RuntimeOrchestrator", () => {
         return { storage, discord, runtime };
       }
       const timers = (runtime: RuntimeOrchestrator) =>
-        (runtime as unknown as { retriggerTimers: Map<string, NodeJS.Timeout> }).retriggerTimers;
+        (runtime as unknown as { runner: { retriggerTimers: Map<string, NodeJS.Timeout> } }).runner.retriggerTimers;
 
       it("resumeAfterPause: a runtime that booted paused re-arms persisted wakes once resumed", async () => {
         const root = await makeTempRoot();
