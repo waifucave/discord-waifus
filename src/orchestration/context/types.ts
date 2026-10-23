@@ -130,7 +130,14 @@ export interface CompactionService {
     trigger: CompactionTrigger;
     summarize: (p: BuiltPrompt, instruction: string) => Promise<string>;
     settings: CompactionSettings;
+    /** Stops the caller waiting (rejects with the abort reason); the compaction itself continues. */
     signal?: AbortSignal;
+    /**
+     * Additive (T7b): the context state `prompt` was built from. It may be a not-yet-persisted
+     * fresh epoch (first prepare, or a context idle beyond the pruning horizon), so the compaction
+     * builds on it when the stored revision is unchanged. Default: the stored state at start.
+     */
+    basedOn?: ContextState;
   }): Promise<void>;
   inFlight(k: ConversationKey, a: ContextAgent): Promise<void> | undefined;
 }

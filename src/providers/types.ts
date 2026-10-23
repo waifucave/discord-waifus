@@ -4,7 +4,7 @@ import { OrchestratorDecision } from "../orchestration/decisions.js";
 import { DreamOp, StageManagerObservation } from "../orchestration/stageManager.js";
 import type { ReviewerDecision } from "../orchestration/tools.js";
 import type { BuiltPrompt, ModelCallAttribution } from "../orchestration/context/types.js";
-import type { FinishReason, Usage } from "@waifucave/gateway";
+import type { FinishReason, ToolChoice, Usage } from "@waifucave/gateway";
 import type { LedgerEntry } from "../shared/schemas/context.js";
 
 export type ModelRole = "orchestrator" | "waifu" | "stage_manager" | "reviewer";
@@ -119,4 +119,26 @@ export interface ModelPipeline {
   decideReviewer?(request: ProviderRequest & { message: string }): Promise<ReviewerDecision>;
   generatePersonaDigest?(request: PersonaDigestRequest): Promise<PersonaDigest>;
   generateAssistantTurn?(request: AssistantTurnRequest): Promise<AssistantTurnResult>;
+  /** Own-model context compaction (spec 8.9); returns the summary text, tool calls ignored. */
+  summarizeContext?(request: SummarizeContextRequest): Promise<string>;
 }
+
+/**
+ * A context's summarize call (spec 8.9). `prompt` is sent through breakpoint C with its tools, and
+ * the instruction replaces the ephemeral tail. Everything else mirrors the agent's REPLY call so
+ * the provider's prompt cache hits: same `toolChoice` (waifus `auto`; a forced tool such as the
+ * orchestrator's becomes `none` where supported, else `auto`), same params/sampling. Only the
+ * output cap differs (max(1500, thinkingBudget + 1500)); stop sequences are not sent.
+ */
+export type SummarizeContextRequest = {
+  prompt: BuiltPrompt;
+  instruction: string;
+  /** The reply call's tool choice (default `auto` when the prompt has tools). */
+  toolChoice?: ToolChoice;
+  temperature?: number;
+  topP?: number;
+  params?: Record<string, unknown>;
+  /** Attribution of the reply call; the ledger purpose is always `compaction`. */
+  attribution?: Omit<ModelCallAttribution, "purpose">;
+  signal?: AbortSignal;
+};

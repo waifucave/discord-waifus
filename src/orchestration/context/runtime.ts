@@ -7,9 +7,12 @@
 // compaction.check → (join inFlight ≤ waitTimeoutMs or compact; rebuild; on timeout a one-off hard
 // truncation) → in ONE write: seal rendered entries, persist pendingNotes + memory notes + image
 // modes, update lastUsedAt.
-// call:   context_overflow → forced compact + rebuild + retry once (a second overflow surfaces).
+// call:   context_overflow → forced compact + rebuild + retry once (a second overflow surfaces;
+//         a failed compaction surfaces the original overflow).
 // commit: stores the request's breakpoint C as lastBreakpoint, appends post-call notes, runs the
-//         calibration hook with the returned usage.
+//         calibration hook with the returned usage, then a post-reply background compaction check
+//         (spec 8.9) so the next turn rarely has to wait.
+// compactNow: manual compaction (spec 10.4 / 11.6).
 
 import type { ResolvedModel, Usage } from "@waifucave/gateway";
 import type { Logger } from "../../backend/logger.js";
@@ -33,7 +36,7 @@ import {
 } from "./ledger.js";
 import { discordMessageRenderer, EMPTY_GUILD_DIRECTORY } from "./messageRender.js";
 import { hostTimeZone } from "./timeFormat.js";
-import { resolveTokenBudget } from "./tokens.js";
+import { estimateTokens, resolveTokenBudget } from "./tokens.js";
 import type {
   BuiltPrompt,
   CompactionService,
@@ -205,15 +208,25 @@ export class ContextRuntime {
       const internal = this.internals.get(p);
       if (!internal?.input.summarize) throw error;
       this.d.logger.warn("Context overflow; compacting and retrying once", { conversationKey: internal.key });
-      await this.d.compaction.compact({
-        conversation: p.conversation,
-        agent: p.agent,
-        prompt: p.prompt,
-        trigger: "overflow",
-        summarize: internal.input.summarize,
-        settings: this.d.settings(internal.input.server),
-        signal: internal.input.signal
-      });
+      try {
+        await this.d.compaction.compact({
+          conversation: p.conversation,
+          agent: p.agent,
+          prompt: p.prompt,
+          trigger: "overflow",
+          summarize: internal.input.summarize,
+          settings: this.d.settings(internal.input.server),
+          signal: internal.input.signal,
+          basedOn: p.state
+        });
+      } catch (compactionError) {
+        throwIfAborted(internal.input.signal);
+        this.d.logger.warn("Compaction after a context overflow failed", {
+          conversationKey: internal.key,
+          message: compactionError instanceof Error ? compactionError.message : String(compactionError)
+        });
+        throw error;
+      }
       const rebuilt = await this.prepareInternal({ ...internal.input, pendingNotes: [] }, false);
       Object.assign(p, rebuilt);
       this.internals.set(p, internal);
@@ -225,7 +238,8 @@ export class ContextRuntime {
     const ledger = o.notes?.length ? await this.d.store.loadLedger(p.key) : undefined;
     const anchorSeq = ledger ? newestSeq(ledger) : 0;
     const now = this.now();
-    await this.d.store.update(p.key, p.agent, (current) => {
+    const rawEstimate = estimateTokens(p.prompt.messages, p.prompt.tools);
+    const committed = await this.d.store.update(p.key, p.agent, (current) => {
       const notes = materializeNotes(current, o.notes ?? [], anchorSeq);
       let next: ContextState = {
         ...current,
@@ -239,7 +253,7 @@ export class ContextRuntime {
         const calibration = this.d.calibrate({
           state: next,
           prompt: p.prompt,
-          rawEstimate: Math.round(p.prompt.estimatedTokens / (current.tokenCalibration[o.modelKey]?.ratio ?? 1)),
+          rawEstimate,
           usage: o.usage,
           modelKey: o.modelKey,
           now
@@ -248,6 +262,56 @@ export class ContextRuntime {
       }
       return next;
     });
+    this.backgroundCheck(p, committed, o.usage);
+  }
+
+  /**
+   * Manual compaction (spec 10.4 / 11.6): prepares the context (no automatic compaction) and
+   * compacts it with trigger `manual`, waiting for the result. Needs `i.summarize`.
+   */
+  async compactNow(i: PrepareInput): Promise<void> {
+    if (!i.summarize) throw new Error("compactNow needs the agent's summarize function.");
+    const p = await this.prepareInternal({ ...i, pendingNotes: [] }, false);
+    await this.d.compaction.compact({
+      conversation: p.conversation,
+      agent: p.agent,
+      prompt: p.prompt,
+      trigger: "manual",
+      summarize: i.summarize,
+      settings: this.d.settings(i.server),
+      signal: i.signal,
+      basedOn: p.state
+    });
+  }
+
+  /**
+   * Post-reply check (spec 8.9): when the request just sent is already over the budget (by the
+   * estimate or by the provider's reported input tokens) or the message limit, compaction starts
+   * in the background so the next prepare finds the new epoch instead of waiting for it.
+   */
+  private backgroundCheck(p: PreparedContext, committed: ContextState, usage: Usage | undefined): void {
+    const internal = this.internals.get(p);
+    const summarize = internal?.input.summarize;
+    if (!internal || !summarize || committed.epoch !== p.state.epoch) return;
+    if (this.d.compaction.inFlight(internal.key, p.agent)) return;
+    const settings = this.d.settings(internal.input.server);
+    if (!settings.enabled) return;
+    const prompt: BuiltPrompt = { ...p.prompt, estimatedTokens: Math.max(p.prompt.estimatedTokens, usage?.inputTokens ?? 0) };
+    const trigger = this.d.compaction.check({
+      state: committed,
+      prompt,
+      budget: resolveTokenBudget(internal.input.model, internal.input.params ?? {}, settings),
+      settings
+    });
+    if (!trigger) return;
+    this.d.compaction
+      .compact({ conversation: p.conversation, agent: p.agent, prompt: p.prompt, trigger, summarize, settings, basedOn: committed })
+      .catch((error: unknown) => {
+        this.d.logger.warn("Background context compaction failed", {
+          conversationKey: internal.key,
+          message: error instanceof Error ? error.message : String(error)
+        });
+      });
   }
 
   private async ledgerView(key: ConversationKey) {
@@ -388,12 +452,14 @@ export class ContextRuntime {
         : undefined;
       if (trigger && allowCompaction && !compacted && i.summarize) {
         compacted = true;
-        const outcome = await this.awaitCompaction(key, i, prompt, trigger, settings);
+        const outcome = await this.awaitCompaction(key, i, prompt, trigger, settings, working);
         // An abort while waiting must not seal or persist anything.
         if (outcome === "aborted") throwIfAborted(i.signal);
         if (outcome === "done") {
           state = await this.d.store.load(key, i.agent);
-          isFresh = false;
+          // A compaction writes lastUsedAt, so a compacted context is never fresh; a no-op one
+          // (nothing to summarize, or discarded) leaves a fresh context fresh.
+          isFresh = this.isFresh(state, startedAt);
           view = await this.ledgerView(key);
           continue; // rebuild on the compacted state
         }
@@ -586,7 +652,8 @@ export class ContextRuntime {
     i: PrepareInput,
     prompt: BuiltPrompt,
     trigger: CompactionTrigger,
-    settings: CompactionSettings
+    settings: CompactionSettings,
+    basedOn: ContextState
   ): Promise<"done" | "timeout" | "failed" | "aborted"> {
     const running =
       this.d.compaction.inFlight(key, i.agent) ??
@@ -596,7 +663,8 @@ export class ContextRuntime {
         prompt,
         trigger,
         summarize: i.summarize!,
-        settings
+        settings,
+        basedOn
         // no signal: a compaction outlives the reply that started it (spec 6.6)
       });
     running.catch((error: unknown) => {
