@@ -769,6 +769,38 @@ N+1: with cache markers stripped, every block through the previous C is deep-equ
 exactly one `role:"system"` message. Holds for 20 scripted turns; two builds over the same input are
 byte-identical.
 
+#### 8.3.1 As built (T2, merged 88d5c0f): deviations later tasks build on
+
+- **Store.** `FileContextStore` implements `ContextEngineStore` (`contextStore.ts`): the §8.1
+  `ContextStore` plus `loadLedger`, `loadRefs`, `pruneConversation`, and `commitPrepare(k, a, { sealIds,
+  expectedHashes, eventSeqs, update })`. That one locked write returns `CommitPrepareResult =
+  {ok:true,state} | {ok:false,conflict:"state"|"ledger"}`. `update` returning `undefined` (the
+  same-epoch revision changed) or any `entryRenderHash` mismatch refuses the whole write. Prepare then
+  reloads and rebuilds, at most 2 retries, and otherwise throws. Merging is kept only when a compaction
+  changed the epoch; pending notes are then re-numbered from the current `noteSeq`. `reconcileLedger`
+  takes a 4th `ReconcileLedgerOptions` ({dir, timeZone, gapBeforeNew}).
+- **Fetch cap.** The shared ledger is fetched with `max(backfillCap, CONVERSATION_FETCH_CAP = 200)`.
+  `backfillCap` only sets the window when a new epoch starts. `reachedCursor:false` (the
+  "earlier messages not loaded" marker) therefore needs more than 200 new messages.
+- **Edits are notes.** `ContextNote` gains `kind:"edit"` (`eventSeq`, `messageId`, frozen
+  `authorName`, `text`). Prepare converts each new ledger edit event into an edit note in its single
+  write: numbered from `noteSeq`, anchored to the newest entry, and sealing the event. Events anchored
+  at or before the cursor, or already converted, are skipped. The transcript never renders events
+  directly, `BuildInput.events` is ignored, and nothing new writes a breakpoint `kind:"event"`. The
+  schema still accepts it for stored states; T8 removes it. **Compaction drops edit notes before the
+  cursor like any other note.**
+- **Blocks.** Every transcript TextBlock (entry, note, marker, image placeholder) ends with `"\n"`, so
+  providers that join blocks with `""` stay prefix-stable.
+- **Prepare options** (all optional, additive): `params` (token budget), `server` (compaction
+  override), `directory`, `summarize(prompt, instruction)` (the agent's own-model summarizer, which
+  compaction needs), `waifuIdForAuthor`, `memoryLimit` (default 12), `recentReactions`,
+  `renderToolTurnsAsText` (default true when `render.tools()` is empty).
+- **Runtime deps** (optional): `renderer`, `memory()`, `ocr`, `now()`, `timeZone()`, `calibrate`
+  (T7b plugs the per-model EMA in here), `refreshImageUrl`. Until T7b, `compaction` is `NoopCompaction`.
+- **Hardening.** A timeout and an abort are separate outcomes; an abort while waiting on compaction
+  throws with nothing sealed or persisted. Pruning never removes the newest 200 ledger entries
+  (`pruneProtectNewest` option for tests).
+
 ### 8.4 Image fetching (I6, moved from Phase 5)
 
 ```ts
