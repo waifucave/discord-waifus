@@ -7,8 +7,8 @@ import {
   SAS_WORDS_V1,
   mapSasIndicesToWordsV1
 } from "../src/shared/sasWordlist.js";
-import { createRemotePairingV1Fixture } from "../src/shared/remotePairingContract.js";
-import { createRemoteAccessJsonSchema } from "../src/shared/schemas/remoteAccessContract.js";
+import { createRemotePairingV1Fixture } from "../scripts/remote-contracts/remotePairingContract.js";
+import { createRemoteAccessJsonSchema } from "../scripts/remote-contracts/remoteAccessContract.js";
 
 const SOURCE_SHA256 = "8f5ca830b8bffb6fe39c9736c024a00a6a6411adb3f83a9be8bfeeb6e067ae69";
 const SAS_SHA256 = "75282c58b95c5c9b54f8b570a74bf85e1ffd78bd7d44973a82c7aebadb813874";

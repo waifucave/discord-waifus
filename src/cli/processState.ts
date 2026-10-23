@@ -24,7 +24,7 @@ export function processIsAlive(pid: number): boolean {
   }
 }
 
-export async function waitForProcessExit(
+async function waitForProcessExit(
   pid: number,
   timeoutMs: number,
   isAlive: (pid: number) => boolean = processIsAlive

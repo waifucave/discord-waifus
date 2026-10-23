@@ -13,12 +13,7 @@ import type {
   ClientContext,
   CreateMemoryBody,
   CreateWaifuBody,
-  DiagnosticBundle,
   DiscordBotsFile,
-  GuildEmojisFile,
-  GuildMembersFile,
-  GuildRolesFile,
-  HealthResponse,
   MemoryStore,
   OrchestratorHistoryFile,
   OperationAccepted,
@@ -33,8 +28,6 @@ import type {
   RuntimeState,
   ServerConfig,
   ServersResponse,
-  StageManagerHistoryFile,
-  ReviewerHistoryFile,
   StatusResponse,
   TrustedDevice,
   TrustedDeviceList,
@@ -66,7 +59,7 @@ export class ApiError extends Error {
   }
 }
 
-export class ConflictError extends ApiError {
+class ConflictError extends ApiError {
   latest: ApiErrorBody["latest"];
   constructor(body: ApiErrorBody) {
     super(409, body);
@@ -273,26 +266,11 @@ async function request<T>(
 
 export const api = {
   // Runtime
-  health: (signal?: AbortSignal) => request<HealthResponse>("GET", "/api/health", { signal }),
   status: (signal?: AbortSignal) => request<StatusResponse>("GET", "/api/status", { signal }),
   runtime: (signal?: AbortSignal) => request<RuntimeState>("GET", "/api/runtime", { signal }),
   pause: () => request<RuntimeState>("POST", "/api/runtime/pause"),
   resume: () => request<RuntimeState>("POST", "/api/runtime/resume"),
   reload: () => request<{ accepted: boolean; message: string }>("POST", "/api/runtime/reload"),
-  triggerOrchestrator: (target?: { guildId: string; channelId: string }) =>
-    request<{ accepted: boolean; message: string; history?: OrchestratorHistoryFile }>(
-      "POST",
-      "/api/runtime/trigger/orchestrator",
-      target ? { body: target } : undefined
-    ),
-  triggerStageManager: (target?: { guildId: string; channelId: string }) =>
-    request<{ accepted: boolean; message: string; history?: StageManagerHistoryFile }>(
-      "POST",
-      "/api/runtime/trigger/stage-manager",
-      target ? { body: target } : undefined
-    ),
-  diagnosticsBundle: (signal?: AbortSignal) =>
-    request<DiagnosticBundle>("GET", "/api/diagnostics/bundle", { signal }),
 
   // Remote access
   remoteAccessStatus: (signal?: AbortSignal) =>
@@ -379,14 +357,10 @@ export const api = {
     request<AgentConfig>("GET", "/api/stage-manager/config", { signal }),
   putStageManagerConfig: (config: UpdateAgentConfigBody) =>
     request<AgentConfig>("PUT", "/api/stage-manager/config", { body: config }),
-  stageManagerHistory: (signal?: AbortSignal) =>
-    request<StageManagerHistoryFile>("GET", "/api/stage-manager/history", { signal }),
   reviewerConfig: (signal?: AbortSignal) =>
     request<AgentConfig>("GET", "/api/reviewer/config", { signal }),
   putReviewerConfig: (config: UpdateAgentConfigBody) =>
     request<AgentConfig>("PUT", "/api/reviewer/config", { body: config }),
-  reviewerHistory: (signal?: AbortSignal) =>
-    request<ReviewerHistoryFile>("GET", "/api/reviewer/history", { signal }),
   assistantConfig: (signal?: AbortSignal) =>
     request<AgentConfig>("GET", "/api/assistant/config", { signal }),
   putAssistantConfig: (config: UpdateAgentConfigBody) =>
@@ -450,33 +424,6 @@ export const api = {
     request<ServerConfig>("GET", `/api/servers/${encodeURIComponent(guildId)}`, { signal }),
   updateServer: (guildId: string, body: UpdateServerBody) =>
     request<ServerConfig>("PUT", `/api/servers/${encodeURIComponent(guildId)}`, { body }),
-  members: (guildId: string, signal?: AbortSignal) =>
-    request<GuildMembersFile>("GET", `/api/servers/${encodeURIComponent(guildId)}/members`, {
-      signal
-    }),
-  refreshMembers: (guildId: string) =>
-    request<{ accepted: boolean; guildId: string; message: string }>(
-      "POST",
-      `/api/servers/${encodeURIComponent(guildId)}/members/refresh`
-    ),
-  emojis: (guildId: string, signal?: AbortSignal) =>
-    request<GuildEmojisFile>("GET", `/api/servers/${encodeURIComponent(guildId)}/emojis`, {
-      signal
-    }),
-  refreshEmojis: (guildId: string) =>
-    request<{ accepted: boolean; guildId: string; message: string }>(
-      "POST",
-      `/api/servers/${encodeURIComponent(guildId)}/emojis/refresh`
-    ),
-  roles: (guildId: string, signal?: AbortSignal) =>
-    request<GuildRolesFile>("GET", `/api/servers/${encodeURIComponent(guildId)}/roles`, {
-      signal
-    }),
-  refreshRoles: (guildId: string) =>
-    request<{ accepted: boolean; guildId: string; message: string }>(
-      "POST",
-      `/api/servers/${encodeURIComponent(guildId)}/roles/refresh`
-    ),
   updateChannel: (guildId: string, channelId: string, body: ChannelBody) =>
     request<ServerConfig>(
       "PUT",

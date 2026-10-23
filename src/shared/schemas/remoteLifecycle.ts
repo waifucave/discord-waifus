@@ -23,8 +23,8 @@ export const MAX_PENDING_PAIRING_REQUESTS = 16;
 export const MAX_REMEMBERED_HOSTS = 256;
 export const ACTIVATION_CHALLENGE_LIFETIME_SECONDS = 600;
 export const PAIR_INVITATION_LIFETIME_SECONDS = 300;
-export const MAX_FULL_PAIR_TOKEN_CHARACTERS = 1_024;
-export const OFFLINE_FORGET_WARNING_CODE = "host_unreachable_remote_trust_may_remain";
+const MAX_FULL_PAIR_TOKEN_CHARACTERS = 1_024;
+const OFFLINE_FORGET_WARNING_CODE = "host_unreachable_remote_trust_may_remain";
 
 const DISPLAY_NAME_CONTROL_PATTERN = /[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/u;
 const FULL_PAIR_TOKEN_PATTERN = /^WF1\.[A-Za-z0-9_-]+$/;
@@ -281,7 +281,7 @@ export const PairInvitationV1Schema = z.object({
 export type PairInvitationV1 = z.infer<typeof PairInvitationV1Schema>;
 
 export const PairEntryFlowSchema = z.enum(["full_token", "short_code"]);
-export const SasIndicesSchema = z.tuple([
+const SasIndicesSchema = z.tuple([
   z.number().int().min(0).max(1_023),
   z.number().int().min(0).max(1_023),
   z.number().int().min(0).max(1_023),
@@ -394,7 +394,7 @@ export const RevokeTrustedDeviceInputV1Schema = z.object({
 
 export type RevokeTrustedDeviceInputV1 = z.infer<typeof RevokeTrustedDeviceInputV1Schema>;
 
-export const AvailabilityStateSchema = z.enum(["unknown", "available", "unavailable"]);
+const AvailabilityStateSchema = z.enum(["unknown", "available", "unavailable"]);
 export const SecretStorageKindSchema = z.enum([
   "keychain",
   "windows_protected_storage",
@@ -516,7 +516,7 @@ export const PairOperationIdSchema = Base64Url32BytesSchema.brand<"PairOperation
 export type PairOperationId = z.infer<typeof PairOperationIdSchema>;
 
 const PAIR_STATUS_PATH_PREFIX = "/_waifus_remote/v1/pair/";
-export const PairOperationStatusUrlSchema = z
+const PairOperationStatusUrlSchema = z
   .string()
   .length(PAIR_STATUS_PATH_PREFIX.length + 43)
   .refine((value) => {
@@ -539,7 +539,7 @@ function pairStatusUrlMatches(
   }
 }
 
-export const PairOperationStateSchema = z.enum([
+const PairOperationStateSchema = z.enum([
   "starting",
   "verification_required",
   "awaiting_host_approval",

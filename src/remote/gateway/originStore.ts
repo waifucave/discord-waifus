@@ -27,7 +27,7 @@ const RemoteOriginHostV1Schema = z.object({
   port: z.number().int().min(1).max(65_535)
 }).strict();
 
-export const RemoteOriginStateV1Schema = z.object({
+const RemoteOriginStateV1Schema = z.object({
   version: z.literal(1),
   localOriginSeed: Base64Url32BytesSchema,
   originEpochHighWater: Uint64DecimalSchema,
@@ -103,7 +103,7 @@ export type RemoteOriginStoreErrorCode =
   | "origin_state_untrusted"
   | "preferred_port_conflict";
 
-export class RemoteOriginStoreError extends Error {
+class RemoteOriginStoreError extends Error {
   constructor(
     readonly code: RemoteOriginStoreErrorCode,
     message: string

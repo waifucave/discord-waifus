@@ -9,7 +9,7 @@ import {
 import {
   createHelperManifestTrustFixtureSet,
   serializeHelperManifestTrustFixture
-} from "../src/shared/helperManifestTrustContract.js";
+} from "../scripts/remote-contracts/helperManifestTrustContract.js";
 
 type JsonObject = Record<string, unknown>;
 

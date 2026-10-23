@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "declaration": false,
+    "sourceMap": false,
+    "rootDir": "../.."
+  },
+  "include": ["./**/*.ts", "../generate-remote-contracts.ts", "../generate-sas-wordlist.ts"],
+  "exclude": []
+}

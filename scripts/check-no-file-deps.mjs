@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 // Blocks publishing while any dependency is a file: spec — a published file:
-// dep is unresolvable for consumers. P6 swaps @waifucave/gateway to a pinned
-// registry version (MIGRATION_PLAN §8), after which this passes again.
+// dep is unresolvable for consumers (e.g. a local `npm link`ed gateway checkout).
 import { readFileSync } from "node:fs";
 
 const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
@@ -16,6 +15,6 @@ if (offenders.length > 0) {
       .map(([name, spec]) => `${name}@${spec}`)
       .join(", ")}`
   );
-  console.error("Swap to a pinned registry version (MIGRATION_PLAN §8 P6) before publishing.");
+  console.error("Swap to a pinned registry version before publishing.");
   process.exit(1);
 }

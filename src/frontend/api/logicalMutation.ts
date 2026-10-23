@@ -169,7 +169,7 @@ export class LogicalMutationRegistry {
   }
 }
 
-export class LogicalMutation {
+class LogicalMutation {
   readonly #registry: LogicalMutationRegistry;
   #record: LogicalMutationSnapshot;
 

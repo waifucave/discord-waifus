@@ -72,7 +72,7 @@ export type DashboardManifestErrorCode =
   | "dashboard_asset_hash_mismatch"
   | "dashboard_asset_content_type_mismatch";
 
-export class DashboardManifestError extends Error {
+class DashboardManifestError extends Error {
   constructor(
     readonly code: DashboardManifestErrorCode,
     detail: string

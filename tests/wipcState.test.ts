@@ -7,7 +7,7 @@ import {
   WIPC_MAX_CONCURRENT_STREAMS,
   WipcProtocolError
 } from "../src/shared/wipc.js";
-import { createWipcStateV1Fixture } from "../src/shared/wipcContract.js";
+import { createWipcStateV1Fixture } from "../scripts/remote-contracts/wipcContract.js";
 import { WipcConnectionState } from "../src/shared/wipcState.js";
 import { serializeCanonicalContractJson } from "../src/shared/schemas/remoteProtocolContract.js";
 

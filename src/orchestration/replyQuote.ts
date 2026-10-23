@@ -1,4 +1,5 @@
 import type { ContextMessage } from "./context.js";
+import { jaccard } from "./text.js";
 
 export type ReplyQuoteExtraction = {
   replyToMessageId: string | undefined;
@@ -155,7 +156,7 @@ function findBestMatch(
       let best: ContextMessage | undefined = undefined;
       let bestScore = JACCARD_THRESHOLD;
       for (const candidate of pool) {
-        const score = jaccard(target, normalizeForMatch(candidate.content));
+        const score = jaccard(wordSet(target), wordSet(normalizeForMatch(candidate.content)));
         if (score > bestScore) {
           bestScore = score;
           best = candidate;
@@ -167,7 +168,7 @@ function findBestMatch(
   return undefined;
 }
 
-export function normalizeForMatch(input: string): string {
+function normalizeForMatch(input: string): string {
   return input
     .toLowerCase()
     .replace(/\p{Extended_Pictographic}/gu, " ")
@@ -180,16 +181,8 @@ function matchTokenCount(input: string): number {
   return normalizeForMatch(input).split(" ").filter(Boolean).length;
 }
 
-function jaccard(a: string, b: string): number {
-  const setA = new Set(a.split(" ").filter(Boolean));
-  const setB = new Set(b.split(" ").filter(Boolean));
-  if (setA.size === 0 || setB.size === 0) return 0;
-  let intersection = 0;
-  for (const token of setA) {
-    if (setB.has(token)) intersection += 1;
-  }
-  const union = setA.size + setB.size - intersection;
-  return intersection / union;
+function wordSet(normalized: string): Set<string> {
+  return new Set(normalized.split(" ").filter(Boolean));
 }
 
 function findMostRecentByAuthor(authorName: string, candidates: ContextMessage[]): ContextMessage | undefined {

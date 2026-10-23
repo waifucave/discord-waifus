@@ -23,13 +23,13 @@ import {
   type SasWordsV1
 } from "./sasWordlist.js";
 
-export const FULL_PAIR_TOKEN_PREFIX = "WF1.";
+const FULL_PAIR_TOKEN_PREFIX = "WF1.";
 export const FULL_PAIR_TOKEN_VERSION = 1;
-export const PAIRING_PROTOCOL_VERSION = Object.freeze({ major: 1, minor: 0 });
-export const PAIRING_MAILBOX_MESSAGE_MAX_BYTES = 1_200;
+const PAIRING_PROTOCOL_VERSION = Object.freeze({ major: 1, minor: 0 });
+const PAIRING_MAILBOX_MESSAGE_MAX_BYTES = 1_200;
 export const NOISE_XX_PATTERN = "Noise_XX_25519_ChaChaPoly_SHA256";
 export const NOISE_XXPSK0_PATTERN = "Noise_XXpsk0_25519_ChaChaPoly_SHA256";
-export const PAIR_KEY_LABELS = Object.freeze({
+const PAIR_KEY_LABELS = Object.freeze({
   coordinationHostToRemote: "waifus-coordination-host-to-remote-v1",
   coordinationRemoteToHost: "waifus-coordination-remote-to-host-v1",
   confirmation: "waifus-confirmation-v1",
@@ -479,7 +479,7 @@ export function deriveInstallationFingerprint(installationPublicKey: Uint8Array)
   ).subarray(0, 16);
 }
 
-export function deriveFullTokenPsk(fullSecret: Uint8Array, invitationId: Uint8Array): Buffer {
+function deriveFullTokenPsk(fullSecret: Uint8Array, invitationId: Uint8Array): Buffer {
   return hkdfSha256(
     assertByteLength(fullSecret, 32, "full token secret"),
     assertByteLength(invitationId, 16, "invitation ID"),
@@ -661,7 +661,7 @@ function unsignedIdentityMap(
   ]);
 }
 
-export function encodeUnsignedDeviceIdentityBundle(bundle: UnsignedDeviceIdentityBundle): Buffer {
+function encodeUnsignedDeviceIdentityBundle(bundle: UnsignedDeviceIdentityBundle): Buffer {
   const structural = DeviceIdentityBundleSchema.parse({
     ...bundle,
     signature: Buffer.alloc(64).toString("base64url")

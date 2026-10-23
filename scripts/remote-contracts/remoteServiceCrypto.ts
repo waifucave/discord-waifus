@@ -8,7 +8,7 @@ import { TextDecoder } from "node:util";
 import {
   ApprovalReceiptV1Schema,
   type ApprovalReceiptV1
-} from "./schemas/remoteAccess.js";
+} from "../../src/shared/schemas/remoteAccess.js";
 import {
   Base64Url16BytesSchema,
   Base64Url32BytesSchema,
@@ -22,16 +22,16 @@ import {
   type HttpMethod,
   type RemoteBrowserContextEnvelopeV1,
   type RemoteBrowserContextV1
-} from "./schemas/remoteProtocol.js";
+} from "../../src/shared/schemas/remoteProtocol.js";
 import {
   deriveEd25519PublicKey,
   signEd25519,
   verifyEd25519
-} from "./remotePairing.js";
+} from "../../src/shared/remotePairing.js";
 import {
   serializeCanonicalContractJson,
   type ContractJson
-} from "./schemas/remoteProtocolContract.js";
+} from "../../src/shared/schemas/remoteProtocolContract.js";
 
 export const APPLICATION_SESSION_PROTOCOL_MAJOR = 1;
 export const APPLICATION_DIRECT_STREAM_ID = 1n;

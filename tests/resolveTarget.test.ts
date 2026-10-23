@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { LEGACY_MODEL_MAP, resolveModelTarget } from "../src/orchestration/pipeline/resolveTarget.js";
 
 describe("resolveModelTarget", () => {
-  it("maps the four retired catalog ids per MIGRATION_PLAN §7.3", () => {
+  it("maps the four retired catalog ids to their gateway replacements", () => {
     expect(resolveModelTarget({ modelId: "gpt-4o" })).toEqual({ providerId: "openai", modelId: "gpt-5-mini", remapped: true });
     expect(resolveModelTarget({ modelId: "gpt-4o-mini" })).toEqual({ providerId: "openai", modelId: "gpt-5-nano", remapped: true });
     expect(resolveModelTarget({ modelId: "glm-5-turbo" })).toEqual({ providerId: "zai", modelId: "glm-5", remapped: true });

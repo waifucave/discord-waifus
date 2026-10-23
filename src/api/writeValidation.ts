@@ -22,7 +22,7 @@ export function assertKnownProvider(providerId: string): void {
 }
 
 /** Resolves + asserts (providerId, modelId) is a real gateway route; 400s otherwise. */
-export function assertKnownModel(providerId: string | undefined, modelId: string): ModelTarget {
+function assertKnownModel(providerId: string | undefined, modelId: string): ModelTarget {
   try {
     return resolveModelTarget({ providerId, modelId });
   } catch {
@@ -30,7 +30,7 @@ export function assertKnownModel(providerId: string | undefined, modelId: string
   }
 }
 
-export function assertParamsValid(
+function assertParamsValid(
   providerId: string,
   modelId: string,
   params: Record<string, unknown>

@@ -18,11 +18,11 @@ import {
 
 export const ASSISTANT_ACTION_TTL_MS = 5 * 60 * 1000;
 export const MAX_ASSISTANT_ACTIONS_PER_OWNER = 16;
-export const MAX_ASSISTANT_ACTIONS = 256;
+const MAX_ASSISTANT_ACTIONS = 256;
 export const MAX_ASSISTANT_ACTION_BYTES = 4 * 1024 * 1024;
-export const MAX_ASSISTANT_ACTION_RECORD_BYTES = 32 * 1024;
-export const MAX_ASSISTANT_ACTION_SUMMARY_BYTES = 8 * 1024;
-export const MAX_ASSISTANT_ACTION_RECEIPT_BYTES = 8 * 1024;
+const MAX_ASSISTANT_ACTION_RECORD_BYTES = 32 * 1024;
+const MAX_ASSISTANT_ACTION_SUMMARY_BYTES = 8 * 1024;
+const MAX_ASSISTANT_ACTION_RECEIPT_BYTES = 8 * 1024;
 
 const RECEIPT_RESERVATION_BYTES = MAX_ASSISTANT_ACTION_RECEIPT_BYTES + 1_024;
 const CATEGORY_PATTERN = /^[a-z][a-z0-9_]{0,63}$/u;
@@ -181,7 +181,7 @@ export class AssistantActionUnsafeContentError extends Error {
   }
 }
 
-export function assistantActionOwner(principal: RequestPrincipal): AssistantActionOwner {
+function assistantActionOwner(principal: RequestPrincipal): AssistantActionOwner {
   if (principal.kind === "remote_device") {
     const context = principal.browserContext;
     if (!context) throw new AssistantActionBrowserRequiredError();

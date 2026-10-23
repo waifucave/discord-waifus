@@ -5,13 +5,13 @@
 // active room repeatedly). It picks the next speaker from structural signals only — reply
 // targets, name addressing, references, rotation, availability — never content judgment.
 //
-// Pure module: no side effects, no imports from runtime. Interval helpers are copied verbatim
-// from runtime.ts (modules stay decoupled per W1 precedent). Schedules are server-local time,
-// same convention as currentlyDoingForWaifu.
+// Pure module: no side effects, no imports from runtime. Interval helpers come from the shared
+// timeOfDay.ts. Schedules are server-local time, same convention as currentlyDoingForWaifu.
 
 import type { ContextMessage } from "./context.js";
 import { DIRECTIVE_GOAL_MAX_CHARS, type OrchestratorDecision } from "./decisions.js";
 import type { WaifuAvailability } from "../shared/schemas/domain.js";
+import { dailyIntervalContains, localTimeOfDayMinutes } from "./timeOfDay.js";
 
 export type DeterministicCastMember = {
   waifuId: string;
@@ -132,7 +132,7 @@ function isHumanMessage(message: ContextMessage): boolean {
 
 /** Is she awake and not busy right now? Server-local time, like the schedule prompt blocks. */
 export function isAvailable(availability: WaifuAvailability, now: Date): boolean {
-  const minutes = now.getHours() * 60 + now.getMinutes();
+  const minutes = localTimeOfDayMinutes(now);
   if (availability.sleep.enabled && dailyIntervalContains(minutes, availability.sleep)) return false;
   for (const interval of availability.busy) {
     if (dailyIntervalContains(minutes, interval)) return false;
@@ -196,19 +196,6 @@ function findLastIndex<T>(items: T[], predicate: (item: T) => boolean): number {
     if (predicate(items[i])) return i;
   }
   return -1;
-}
-
-function dailyIntervalContains(currentMinutes: number, interval: { start: string; end: string }): boolean {
-  const start = timeOfDayMinutes(interval.start);
-  const end = timeOfDayMinutes(interval.end);
-  if (start === end) return false;
-  if (start < end) return currentMinutes >= start && currentMinutes < end;
-  return currentMinutes >= start || currentMinutes < end;
-}
-
-function timeOfDayMinutes(value: string): number {
-  const [hours = "0", minutes = "0"] = value.split(":");
-  return Number(hours) * 60 + Number(minutes);
 }
 
 /**

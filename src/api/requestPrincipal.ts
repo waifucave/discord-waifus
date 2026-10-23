@@ -10,7 +10,7 @@ import {
   type RequestPrincipalWire
 } from "../shared/schemas/remoteProtocol.js";
 
-export const LocalBrowserContextSchema = z.object({
+const LocalBrowserContextSchema = z.object({
   verifiedBy: z.literal("host_server"),
   hostServerLaunchId: Base64Url32BytesSchema,
   browserSessionId: Base64Url32BytesSchema,

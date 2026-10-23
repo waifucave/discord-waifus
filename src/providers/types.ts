@@ -2,7 +2,7 @@ import { MemoryKind, OrchestratorDecisionHistoryEntry, PendingObservation } from
 import { ContextMessage, OrchestratorWakeMarker } from "../orchestration/context.js";
 import { OrchestratorDecision } from "../orchestration/decisions.js";
 import { DreamOp, StageManagerObservation } from "../orchestration/stageManager.js";
-import { ReviewerDecision } from "../orchestration/reviewer.js";
+import type { ReviewerDecision } from "../orchestration/tools.js";
 
 export type ModelRole = "orchestrator" | "waifu" | "stage_manager" | "reviewer";
 

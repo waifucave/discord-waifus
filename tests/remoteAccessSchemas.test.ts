@@ -18,7 +18,7 @@ import {
   createHelperManifestJsonSchema,
   createRemoteAccessFixtureSet,
   createRemoteAccessJsonSchema
-} from "../src/shared/schemas/remoteAccessContract.js";
+} from "../scripts/remote-contracts/remoteAccessContract.js";
 import {
   serializeCanonicalContractJson,
   serializeRemoteContractJson

@@ -15,8 +15,8 @@ import {
   encodeWipcWindowUpdate,
   type WipcFrameHeader,
   type WipcFrameType
-} from "./wipc.js";
-import type { ContractJson } from "./schemas/remoteProtocolContract.js";
+} from "../../src/shared/wipc.js";
+import type { ContractJson } from "../../src/shared/schemas/remoteProtocolContract.js";
 
 function sequentialBytes(start: number): Buffer {
   return Buffer.from(Array.from({ length: 32 }, (_, index) => start + index));

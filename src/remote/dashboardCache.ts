@@ -90,7 +90,7 @@ export type DashboardCacheErrorCode =
   | "dashboard_download_cancelled"
   | "dashboard_download_failed";
 
-export class DashboardCacheError extends Error {
+class DashboardCacheError extends Error {
   constructor(
     readonly code: DashboardCacheErrorCode,
     detail: string

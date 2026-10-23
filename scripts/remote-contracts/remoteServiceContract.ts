@@ -14,12 +14,12 @@ import {
 import {
   RemoteBrowserContextEnvelopeV1Schema,
   type RemoteBrowserContextEnvelopeV1
-} from "./schemas/remoteProtocol.js";
-import { createRemoteAccessFixtureSet } from "./schemas/remoteAccessContract.js";
+} from "../../src/shared/schemas/remoteProtocol.js";
+import { createRemoteAccessFixtureSet } from "./remoteAccessContract.js";
 import {
   serializeCanonicalContractJson,
   type ContractJson
-} from "./schemas/remoteProtocolContract.js";
+} from "../../src/shared/schemas/remoteProtocolContract.js";
 
 type ContractObject = { [key: string]: ContractJson };
 

@@ -7,11 +7,11 @@ import {
   createPairConfirmationV1,
   parseAndVerifyPairConfirmationV1,
   serializePairConfirmationV1
-} from "../src/shared/pairConfirmation.js";
+} from "../scripts/remote-contracts/pairConfirmation.js";
 import {
   createPairConfirmationFixtureSet,
   serializePairConfirmationFixture
-} from "../src/shared/pairConfirmationContract.js";
+} from "../scripts/remote-contracts/pairConfirmationContract.js";
 
 type JsonObject = Record<string, unknown>;
 

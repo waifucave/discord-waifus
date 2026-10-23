@@ -5,20 +5,20 @@ import {
   type HelperEmbeddedBuildInfoV1,
   type HelperManifestExpectedV1,
   type HelperReleaseTrustEntryV1
-} from "./helperManifestTrust.js";
+} from "../../src/shared/helperManifestTrust.js";
 import {
   deriveEd25519PublicKey,
   signEd25519
-} from "./remotePairing.js";
+} from "../../src/shared/remotePairing.js";
 import {
   HelperManifestSchema,
   type HelperManifest
-} from "./schemas/remoteAccess.js";
-import { createHelperManifestFixtureSet } from "./schemas/remoteAccessContract.js";
+} from "../../src/shared/schemas/remoteAccess.js";
+import { createHelperManifestFixtureSet } from "./remoteAccessContract.js";
 import {
   serializeCanonicalContractJson,
   type ContractJson
-} from "./schemas/remoteProtocolContract.js";
+} from "../../src/shared/schemas/remoteProtocolContract.js";
 
 type ContractObject = { [key: string]: ContractJson };
 

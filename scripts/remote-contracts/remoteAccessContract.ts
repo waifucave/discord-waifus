@@ -10,7 +10,7 @@ import {
   OperationStatusV1Schema,
   StreamSnapshotRequiredV1Schema,
   UNRESOLVED_OPERATION_RETENTION_SECONDS
-} from "./adminOperations.js";
+} from "../../src/shared/schemas/adminOperations.js";
 import {
   ApprovalReceiptV1Schema,
   CanonicalReleasedAtSchema,
@@ -43,7 +43,7 @@ import {
   ResetIdentityCommandSchema,
   ReleaseKeyIdListSchema,
   Sha256HexSchema
-} from "./remoteAccess.js";
+} from "../../src/shared/schemas/remoteAccess.js";
 import {
   Base64Url16BytesSchema,
   Base64Url32BytesSchema,
@@ -56,7 +56,7 @@ import {
   ProtocolVersionSchema,
   SemVerSchema,
   Uint64DecimalSchema
-} from "./remoteProtocol.js";
+} from "../../src/shared/schemas/remoteProtocol.js";
 import {
   ACTIVATION_CHALLENGE_LIFETIME_SECONDS,
   ActivationStartResultSchema,
@@ -98,12 +98,12 @@ import {
   TrustedDeviceListV1Schema,
   TrustedDeviceSummaryV1Schema,
   UpdateRemoteAccessInputV1Schema
-} from "./remoteLifecycle.js";
-import { SAS_WORDLIST_V1_SHA256 } from "../sasWordlist.js";
+} from "../../src/shared/schemas/remoteLifecycle.js";
+import { SAS_WORDLIST_V1_SHA256 } from "../../src/shared/sasWordlist.js";
 import {
   serializeCanonicalContractJson,
   type ContractJson
-} from "./remoteProtocolContract.js";
+} from "../../src/shared/schemas/remoteProtocolContract.js";
 
 export const HELPER_MANIFEST_SCHEMA_ID =
   "https://waifucave.com/contracts/remote/v1/helper-manifest.schema.json";

@@ -89,7 +89,7 @@ async function recover(installation: UpdateInstallation): Promise<void> {
   await unlink(file);
 }
 
-export async function runUpdateWorker(installation: UpdateInstallation): Promise<void> {
+async function runUpdateWorker(installation: UpdateInstallation): Promise<void> {
   await installationLock(installation.stateDir, "worker", async () => {
     const pkg = JSON.parse(await readFile(path.join(installation.root, "package.json"), "utf8"));
     const status: UpdateStatus = { state: "checking", currentVersion: pkg.version,

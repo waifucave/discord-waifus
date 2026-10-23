@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { clipSurrogateSafe } from "../shared/text.js";
 
-export const ReactionSummarySchema = z.object({
+const ReactionSummarySchema = z.object({
   emoji: z.string(),
   count: z.number().int().nonnegative(),
   users: z.array(z.string()).optional()

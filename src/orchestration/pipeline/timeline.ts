@@ -37,7 +37,7 @@ function formatWakeMarker(marker: OrchestratorWakeMarker): string {
   );
 }
 
-export function buildOrchestratorTimeline(
+function buildOrchestratorTimeline(
   messages: ContextMessage[],
   decisions: OrchestratorDecisionHistoryEntry[],
   markers: OrchestratorWakeMarker[]

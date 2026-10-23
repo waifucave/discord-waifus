@@ -212,7 +212,7 @@ export type DiscordPrintWaifuAutocompleteListener = (
 export type DiscordDebugCommandListener = (event: DiscordDebugCommandEvent) => void | Promise<void>;
 
 export type DiscordClearType = "waifus" | "users" | "both" | "everything";
-export type DiscordDebugCommandType = "set" | "unset" | "print";
+export type DiscordDebugCommandType = "set" | "unset";
 export type DiscordPrintCommandType = "system_prompt" | "memories" | "personality";
 
 export type DiscordDeleteMessagesResult = {
@@ -1476,7 +1476,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
  * Waifu clients never listen: they only fetch a channel, send, type and delete their own messages,
  * all over REST, so they need just `Guilds` (channel cache) and keep no message/member caches.
  */
-export function discordClientOptions(kind: DiscordBotKind): ClientOptions {
+function discordClientOptions(kind: DiscordBotKind): ClientOptions {
   if (kind === "orchestrator") {
     return {
       intents: [
@@ -1549,7 +1549,7 @@ const NETWORK_ERROR_CODES = new Set([
 ]);
 
 /** Maps a login failure or gateway close code to a stable, user-actionable status code. */
-export function classifyDiscordConnectionError(error: unknown, closeCode?: number): DiscordBotConnectionErrorCode {
+function classifyDiscordConnectionError(error: unknown, closeCode?: number): DiscordBotConnectionErrorCode {
   const message = errorMessage(error);
   const code = nestedErrorCode(error);
   if (closeCode === 4004 || code === "TokenInvalid" || /invalid token|authentication failed/i.test(message)) {

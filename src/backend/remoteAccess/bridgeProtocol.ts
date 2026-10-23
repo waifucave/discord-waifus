@@ -9,7 +9,7 @@ import {
 } from "../../shared/schemas/remoteProtocol.js";
 import { assertWipcEncodedHeadersLength } from "../../shared/wipc.js";
 
-export const REMOTE_BRIDGE_PROTOCOL_VERSION = 1;
+const REMOTE_BRIDGE_PROTOCOL_VERSION = 1;
 export const REMOTE_BRIDGE_MAX_ACTIVE_STREAMS_PER_DEVICE = 32;
 export const REMOTE_BRIDGE_MAX_ACTIVE_STREAMS_PER_CONNECTION = 128;
 export const REMOTE_BRIDGE_MAX_QUEUED_BYTES_PER_STREAM = 2 * 1_024 * 1_024;

@@ -8,7 +8,7 @@ import { createRemotePairingV1Fixture } from "./remotePairingContract.js";
 import {
   serializeCanonicalContractJson,
   type ContractJson
-} from "./schemas/remoteProtocolContract.js";
+} from "../../src/shared/schemas/remoteProtocolContract.js";
 
 type ContractObject = { [key: string]: ContractJson };
 

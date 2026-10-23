@@ -44,7 +44,7 @@ export type PreconformResult = {
 
 /**
  * Pre-conform an old-shape request against the registry (the sanctioned
- * pattern from MIGRATION_PLAN §11.9: the app conforms via the capability
+ * pattern adopted during the gateway migration: the app conforms via the capability
  * surface; the gateway stays strict). Policy:
  *  - optional value params that violate → dropped (recorded in `dropped`);
  *  - over-long stopSequences → truncated to the descriptor's maxItems;

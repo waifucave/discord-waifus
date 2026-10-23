@@ -20,22 +20,30 @@ applications total (1 orchestrator + 5 waifus).
 
 ## In the app
 
-Settings → Discord bots (or `PUT /api/discord-bots`): the orchestrator entry plus a `waifus`
-array of entries — each `{id, displayName, applicationId, token, enabled}`. Then link each
-waifu to her bot by setting the waifu's `botId` to the bot entry's `id`.
+Settings → App, "Discord bots" section (or `PUT /api/discord-bots`): the orchestrator entry plus
+a `waifus` array of entries — each `{id, displayName, applicationId, token, enabled}`. Then link
+each waifu to her bot by setting the waifu's `botId` to the bot entry's `id` (or use
+`POST /api/waifus/:id/link-bot`, below).
 
 Guild data (members, roles, emojis) syncs automatically once connected; refresh manually via
-`POST /api/servers/:guildId/members/refresh` (same for roles/emojis).
+`POST /api/servers/:guildId/members/refresh` (same for roles/emojis). The dashboard has no
+button for this; it is API-only.
 
 ## Enabling channels
 
 Rooms → pick the server → per channel, toggle the waifus that may speak there
-(`PATCH /api/servers/:guildId/channels/:channelId` with `enabledWaifuIds`). A waifu missing
-from a channel's list never speaks there, whatever the orchestrator wants.
+(`PUT /api/servers/:guildId/channels/:channelId` with `enabledWaifuIds`; both ids must be
+Discord snowflakes). A channel is active exactly when its `enabledWaifuIds` list is non-empty,
+and a waifu missing from that list never speaks there, whatever the orchestrator wants. The
+channel's `enabled` flag is stored (the dashboard mirrors it from the list) but the runtime does
+not read it, so setting `enabled: false` with waifus still listed does not silence the channel —
+empty the list instead (or pause the server with `PUT /api/servers/:guildId {"paused": true}`).
 
 ## Connection
 
-The app connects on start when `runtime.autoConnectDiscord` is on (Settings → App). Check
+The app connects on start when `runtime.autoConnectDiscord` is on (default `true`). There is no
+dashboard toggle for it yet: set it in `config.toml` under `[runtime]` or with
+`PUT /api/config {"runtime": {"autoConnectDiscord": false}}`. Check
 `GET /api/status` → `discord.connected` / `orchestratorConnected` / `waifuBotCount`; warnings
 list bots that failed (bad token, missing intents).
 
@@ -47,5 +55,6 @@ list bots that failed (bad token, missing intents).
    secure form; it never enters the conversation. A `[secure-form]` receipt confirms it.
 3. `runtime_reload` — connects the new bot.
 
-Application IDs are not secret. Only the token goes through the secure form. update_discord_bots merges entries BY ID: bots you do not mention are untouched, and stored
+Application IDs are not secret. Only the token goes through the secure form.
+`update_discord_bots` merges entries BY ID: bots you do not mention are untouched, and stored
 tokens are preserved when omitted from an entry you do mention.

@@ -12,7 +12,7 @@ import {
 import {
   createRemotePairingV1Fixture,
   serializeRemotePairingFixture
-} from "../src/shared/remotePairingContract.js";
+} from "../scripts/remote-contracts/remotePairingContract.js";
 
 type JsonRecord = Record<string, unknown>;
 

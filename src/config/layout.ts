@@ -18,7 +18,7 @@ import { resolveDataPath } from "./paths.js";
 import { PREBUILT_WAIFUS } from "./prebuiltWaifus.js";
 import { discardOwnedEmptyMetadataFile, protectNewPrivateMetadataFile } from "../storage/privateMetadataFile.js";
 
-export const DATA_LAYOUT_DIRS = [
+const DATA_LAYOUT_DIRS = [
   "app",
   "app/logs",
   "app/cache",
@@ -46,7 +46,7 @@ export const DATA_LAYOUT_DIRS = [
   "user/servers"
 ] as const;
 
-export const REMOTE_ONLY_LAYOUT_DIRS = [
+const REMOTE_ONLY_LAYOUT_DIRS = [
   "app",
   "app/logs",
   "app/cache",
@@ -173,7 +173,7 @@ export async function ensureRemoteOnlyLayout(dataRoot: string): Promise<void> {
   await ensureRemoteAccessLayout(dataRoot, [remoteStatePaths(dataRoot).remoteGatewayRuntimeRoot]);
 }
 
-export class RemoteStateRepairRequiredError extends Error {
+class RemoteStateRepairRequiredError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "RemoteStateRepairRequiredError";
@@ -363,18 +363,4 @@ async function assertOwnedRegularFile(filePath: string): Promise<void> {
       `Remote state file is not an owned regular file: ${filePath}`
     );
   }
-}
-
-export function runtimeFileDefaults(dataRoot: string, packageVersion: string, port: number, mode: string) {
-  const now = new Date().toISOString();
-  return {
-    schemaVersion: CURRENT_SCHEMA_VERSION,
-    pid: process.pid,
-    startedAt: now,
-    updatedAt: now,
-    packageVersion,
-    port,
-    dataRoot,
-    mode
-  };
 }

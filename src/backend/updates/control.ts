@@ -15,7 +15,7 @@ import { UpdateActivity } from "./activity.js";
 
 const execute = promisify(execFile);
 export const PACKAGE_NAME = "@waifucave/discord-waifus";
-export const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 export const LeaseSchema = z.object({
   pid: z.number().int().positive(), id: z.string().regex(/^[a-f0-9]{32}$/),
   port: z.number().int().min(1).max(65535), token: z.string().regex(/^[a-f0-9]{64}$/),
@@ -43,7 +43,7 @@ export type UpdateLease = z.infer<typeof LeaseSchema>;
 export type UpdateInstallation = { root: string; prefix: string; stateDir: string };
 
 // Invoke npm through Node, including on Windows (no command shell/string interpolation).
-export async function npmCommand(): Promise<string> {
+async function npmCommand(): Promise<string> {
   const candidates = process.platform === "win32"
     ? [path.join(path.dirname(process.execPath), "node_modules/npm/bin/npm-cli.js"),
         path.join(process.env.APPDATA ?? "", "npm/node_modules/npm/bin/npm-cli.js")]
@@ -171,7 +171,7 @@ export async function liveGlobalRuntimePids(installation: UpdateInstallation): P
     .map(line => Number(line.trim().split(/\s+/, 1)[0])).filter(pid => Number.isInteger(pid) && pid > 0);
 }
 
-export async function nativeCredentialsReady(platform = process.platform): Promise<boolean> {
+async function nativeCredentialsReady(platform = process.platform): Promise<boolean> {
   if (platform !== "darwin") return true;
   try {
     const result = await execute("/usr/bin/osascript", ["-l", "JavaScript", "-e",

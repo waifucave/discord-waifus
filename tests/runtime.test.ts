@@ -2331,7 +2331,7 @@ describe("RuntimeOrchestrator", () => {
       logger: quietLogger()
     });
 
-    const result = await runtime.runObserverForTest("guild-1", "channel-1");
+    const result = await runtime.memoryJobs.startStageManagerRun("guild-1", "channel-1");
     expect(result.status).not.toBe("already_running");
     expect(observerCalls).toBe(1);
   });
@@ -2364,8 +2364,8 @@ describe("RuntimeOrchestrator", () => {
       logger: quietLogger()
     });
 
-    const first = runtime.runObserverForTest("guild-1", "channel-1");
-    const second = await runtime.runObserverForTest("guild-1", "channel-1");
+    const first = runtime.memoryJobs.startStageManagerRun("guild-1", "channel-1");
+    const second = await runtime.memoryJobs.startStageManagerRun("guild-1", "channel-1");
     release();
     expect(second.status).toBe("already_running");
     expect((await first).status).toBe("no_change");
@@ -2400,7 +2400,7 @@ describe("RuntimeOrchestrator", () => {
     });
 
     // Observer-only: the dream pass (which would drain the queue) is exercised separately.
-    await runtime.runObserverForTest("guild-1", "channel-1");
+    await runtime.memoryJobs.startStageManagerRun("guild-1", "channel-1");
 
     const pending = await storage.readJson("user/memory/pending-observations.json", PendingObservationsFileSchema);
     expect(pending.observations).toHaveLength(2);
@@ -2443,7 +2443,7 @@ describe("RuntimeOrchestrator", () => {
       logger: { debug: () => undefined, info: () => undefined, warn: () => undefined, error: () => undefined }
     });
 
-    await runtime.runObserverForTest("guild-1", "channel-1");
+    await runtime.memoryJobs.startStageManagerRun("guild-1", "channel-1");
 
     // Fast-tracked records (importance >= 4) should be in the memory store
     const memories = await storage.readJson("user/memories.json", MemoryStoreSchema);
@@ -2488,7 +2488,7 @@ describe("RuntimeOrchestrator", () => {
       logger: { debug: () => undefined, info: () => undefined, warn: () => undefined, error: () => undefined }
     });
 
-    await runtime.runObserverForTest("guild-1", "channel-1");
+    await runtime.memoryJobs.startStageManagerRun("guild-1", "channel-1");
 
     const history = await storage.readJson("user/stage-manager/history.json", StageManagerHistoryFileSchema);
     expect(history.edits[0].summary).toContain("queued: 1");
@@ -2658,7 +2658,7 @@ describe("RuntimeOrchestrator", () => {
       logger: quietLogger()
     });
 
-    await runtime.runDreamPassForTest("guild-1");
+    await runtime.memoryJobs.startDreamRun("guild-1");
 
     const memories = await storage.readJson("user/memories.json", MemoryStoreSchema);
     // Other-guild record is untouched.
@@ -2729,10 +2729,10 @@ describe("RuntimeOrchestrator", () => {
       logger: quietLogger()
     });
 
-    await runtime.runDreamPassForTest("guild-1");
+    await runtime.memoryJobs.startDreamRun("guild-1");
     expect(seen).toEqual(["a", "b", "c", "d", "e"]);
     seen.length = 0;
-    await runtime.runDreamPassForTest("guild-1");
+    await runtime.memoryJobs.startDreamRun("guild-1");
     expect(seen).toEqual(["f", "g", "orphan", "a", "b"]);
   });
 
@@ -2778,7 +2778,7 @@ describe("RuntimeOrchestrator", () => {
       logger: quietLogger()
     });
 
-    await runtime.runDreamPassForTest("guild-1");
+    await runtime.memoryJobs.startDreamRun("guild-1");
     expect(availableIds).toEqual([["mika"], ["yuki"]]);
     const memories = await storage.readJson("user/memories.json", MemoryStoreSchema);
     expect(memories.memories.some((memory) => memory.content === "Misattributed to mika.")).toBe(false);
@@ -2833,7 +2833,7 @@ describe("RuntimeOrchestrator", () => {
       logger: quietLogger()
     });
 
-    await runtime.runDreamPassForTest("guild-1");
+    await runtime.memoryJobs.startDreamRun("guild-1");
     expect(offered).toEqual(["mika", "yuki"]);
     const memories = await storage.readJson("user/memories.json", MemoryStoreSchema);
     expect(memories.memories.find((memory) => memory.content === "Kevin paints.")?.waifuId).toBe("mika");
@@ -2896,7 +2896,7 @@ describe("RuntimeOrchestrator", () => {
       logger: quietLogger()
     });
 
-    await runtime.runDreamPassForTest("guild-1");
+    await runtime.memoryJobs.startDreamRun("guild-1");
 
     const memories = await storage.readJson("user/memories.json", MemoryStoreSchema);
     expect(memories.memories.find((memory) => memory.id === "pinned-1")).toMatchObject({ status: "active", pinned: true });
@@ -3002,11 +3002,11 @@ describe("RuntimeOrchestrator", () => {
 
     // Fire first run without awaiting. dreamingGuilds.add("guild-1") fires synchronously
     // inside startDreamRun before any async work begins.
-    const firstRun = runtime.runDreamPassForTest("guild-1");
+    const firstRun = runtime.memoryJobs.startDreamRun("guild-1");
 
     // Second call: the guard is already set synchronously, so this returns immediately
     // with already_running without touching runDreamPass at all.
-    const secondResult = await runtime.runDreamPassForTest("guild-1");
+    const secondResult = await runtime.memoryJobs.startDreamRun("guild-1");
     expect(secondResult.status).toBe("already_running");
 
     // Release the first run and let it complete.
@@ -3068,8 +3068,8 @@ describe("RuntimeOrchestrator", () => {
 
     // Launch both guilds concurrently. Different guild IDs: guard allows both.
     const [result1, result2] = await Promise.all([
-      runtime.runDreamPassForTest("guild-1"),
-      runtime.runDreamPassForTest("guild-2")
+      runtime.memoryJobs.startDreamRun("guild-1"),
+      runtime.memoryJobs.startDreamRun("guild-2")
     ]);
 
     // Both runs completed (no_change: each guild had one memory and no pending ops).
@@ -4093,45 +4093,6 @@ describe("RuntimeOrchestrator", () => {
       "Debug logs for channel source-channel will be posted in this channel.",
       "Debug logs disabled for channel source-channel."
     ]);
-  });
-
-  it("reports that stale /console print is deprecated", async () => {
-    const root = await makeTempRoot();
-    roots.push(root);
-    await ensureDataLayout(root);
-    const storage = new StorageService(root);
-    const discord = new FakeDiscord();
-
-    await seedRuntimeConfig(storage);
-
-    const runtime = new RuntimeOrchestrator({
-      sleep: async () => undefined,
-      storage,
-      discord,
-      createPipeline: () => ({
-        async generateWaifu() {
-          return { content: "unused" };
-        }
-      }),
-      logger: quietLogger()
-    });
-    await runtime.start();
-
-    const responses: string[] = [];
-    await discord.emitDebugCommand({
-      guildId: "guild-b",
-      channelId: "print-channel",
-      userId: "admin-user",
-      type: "print",
-      respond: async (content) => {
-        responses.push(content);
-      }
-    });
-    await waitFor(() => responses.length === 1, "debug print empty response");
-    await runtime.stop();
-
-    expect(responses).toEqual(["/console print is deprecated. Use /print instead."]);
-    expect(discord.debugMessages).toEqual([]);
   });
 
   it("prints a fresh selected waifu system prompt for the current guild", async () => {
@@ -8449,7 +8410,7 @@ describe("RuntimeOrchestrator", () => {
         return { storage, discord, runtime };
       }
       const timers = (runtime: RuntimeOrchestrator) =>
-        (runtime as unknown as { retriggerTimers: Map<string, NodeJS.Timeout> }).retriggerTimers;
+        (runtime as unknown as { runner: { retriggerTimers: Map<string, NodeJS.Timeout> } }).runner.retriggerTimers;
 
       it("resumeAfterPause: a runtime that booted paused re-arms persisted wakes once resumed", async () => {
         const root = await makeTempRoot();
