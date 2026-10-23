@@ -28,6 +28,7 @@ import type {
   TrustedDeviceSummaryV1
 } from "../shared/schemas/remoteLifecycle.js";
 import {
+  HELPER_CIRCUIT_RECOVERY_DELAYS_MS,
   HELPER_FAILURE_LIMIT,
   HELPER_FAILURE_WINDOW_MS,
   HELPER_GRACEFUL_DRAIN_MS,
@@ -263,6 +264,8 @@ export class HelperSupervisor {
   #attemptPromise: Promise<void> | undefined;
   #restartTimer: TimerHandle | undefined;
   #failureTimes: number[] = [];
+  #circuitOpen = false;
+  #recoveryAttempts = 0;
   #generation = 0;
   #reconnectPromise: Promise<void> | undefined;
   #closing = false;
@@ -331,7 +334,7 @@ export class HelperSupervisor {
       throw new HelperSupervisorError("helper_unavailable", "Remote helper supervisor is closed.");
     }
     this.#cancelRestart();
-    this.#failureTimes = [];
+    this.#resetFailureCircuit();
     this.#update({ consecutiveFailures: 0, restartScheduled: false });
     if (this.#launch) await this.#shutdownCurrentLaunch();
     await this.#runAttempt();
@@ -341,7 +344,7 @@ export class HelperSupervisor {
     if (this.#closing) return;
     this.#generation += 1;
     this.#cancelRestart();
-    this.#failureTimes = [];
+    this.#resetFailureCircuit();
     this.#desiredRuntime = undefined;
     await this.#shutdownCurrentLaunch();
     this.#update(initialSnapshot());
@@ -504,7 +507,7 @@ export class HelperSupervisor {
     const receipt = await this.#readyClient().resetIdentity(input);
     this.#generation += 1;
     this.#cancelRestart();
-    this.#failureTimes = [];
+    this.#resetFailureCircuit();
     this.#desiredRuntime = undefined;
     this.#identityStatus = undefined;
     await this.#shutdownCurrentLaunch();
@@ -536,6 +539,7 @@ export class HelperSupervisor {
     this.#closing = true;
     this.#generation += 1;
     this.#cancelRestart();
+    this.#resetFailureCircuit();
     this.#desiredRuntime = undefined;
     await this.#shutdownCurrentLaunch();
     this.#update({
@@ -557,6 +561,8 @@ export class HelperSupervisor {
   }
 
   async #attempt(): Promise<void> {
+    // This attempt supersedes any armed restart/recovery timer.
+    this.#cancelRestart();
     const generation = ++this.#generation;
     this.#update({ state: "starting", restartScheduled: false, lastErrorCode: null });
     let launch: HelperLaunch | undefined;
@@ -667,6 +673,10 @@ export class HelperSupervisor {
       this.#runtimeActive = runtimeStarted;
       this.#client = client;
       this.#identityStatus = identityStatus;
+      // An explicit start can win while a restart/recovery timer is armed. A stale
+      // timer must never launch a second helper over this one's identity lock.
+      this.#cancelRestart();
+      this.#resetFailureCircuit();
       this.#unsubscribeStatus = client.subscribeStatus((value) => {
         if (this.#client !== client || this.#closing) return;
         try {
@@ -772,7 +782,10 @@ export class HelperSupervisor {
       .filter((timestamp) => now - timestamp <= HELPER_FAILURE_WINDOW_MS);
     this.#failureTimes.push(now);
     const consecutiveFailures = this.#snapshot.consecutiveFailures + 1;
-    const degraded = this.#failureTimes.length >= HELPER_FAILURE_LIMIT;
+    // An open circuit stays open until a launch authenticates or an explicit reset;
+    // a failed slow recovery must never fall back into the fast restart cadence.
+    const degraded = this.#circuitOpen || this.#failureTimes.length >= HELPER_FAILURE_LIMIT;
+    if (degraded) this.#circuitOpen = true;
     this.#update({
       state: "degraded",
       lastErrorCode: failure.code,
@@ -785,30 +798,46 @@ export class HelperSupervisor {
         lastErrorCode: failure.code
       }),
       consecutiveFailures,
-      restartScheduled: !degraded
+      restartScheduled: true
     });
     this.#options.logger.warn("Remote helper lifecycle degraded", {
       role: this.#options.role,
       code: failure.code,
       failures: this.#failureTimes.length,
-      restartScheduled: !degraded
+      restartScheduled: !degraded,
+      recoveryScheduled: degraded
     });
-    if (!degraded) this.#scheduleRestart(consecutiveFailures);
+    if (degraded) {
+      const delays = HELPER_CIRCUIT_RECOVERY_DELAYS_MS;
+      const baseDelay = delays[Math.min(this.#recoveryAttempts, delays.length - 1)]!;
+      this.#recoveryAttempts += 1;
+      this.#scheduleAttempt(baseDelay, true);
+    } else {
+      this.#scheduleAttempt(HELPER_RESTART_DELAYS_MS[
+        Math.min(consecutiveFailures - 1, HELPER_RESTART_DELAYS_MS.length - 1)
+      ]!, false);
+    }
   }
 
-  #scheduleRestart(consecutiveFailures: number): void {
+  #scheduleAttempt(baseDelay: number, recovery: boolean): void {
     this.#cancelRestart();
-    const baseDelay = HELPER_RESTART_DELAYS_MS[
-      Math.min(consecutiveFailures - 1, HELPER_RESTART_DELAYS_MS.length - 1)
-    ]!;
     const boundedJitter = Math.max(-1, Math.min(1, this.#jitter()));
     const delay = Math.max(0, Math.round(baseDelay * (1 + boundedJitter * 0.1)));
     this.#restartTimer = this.#setTimeout(() => {
       this.#restartTimer = undefined;
-      if (this.#closing) return;
+      if (this.#closing || this.#snapshot.state === "ready" || this.#attemptPromise) return;
+      // The fast-failure window restarts per recovery attempt; the open circuit
+      // still routes another failure back to the slow recovery cadence.
+      if (recovery) this.#failureTimes = [];
       this.#update({ restartScheduled: false });
       void this.#runAttempt();
     }, delay);
+  }
+
+  #resetFailureCircuit(): void {
+    this.#failureTimes = [];
+    this.#circuitOpen = false;
+    this.#recoveryAttempts = 0;
   }
 
   #cancelRestart(): void {

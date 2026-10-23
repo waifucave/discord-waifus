@@ -21,7 +21,9 @@ Remote releases additionally require all five exact optional helper pins and mat
 integrities/signatures/compatibility before packing. `release:beta --dry-run` checks the proposed
 version in memory without changing tracked version files. The root publish workflow requires
 installed-helper launch/cold-restart checks on every native target before using `NPM_TOKEN`.
-Absent registry helper packages are an expected release blocker until helper publication.
+The five `@waifucave/ts-connect-*` helper packages are published: `package.json` pins them
+exactly (currently 0.1.13) and `package-lock.json` resolves each from registry.npmjs.org with an
+integrity hash. A helper bump must publish all five first; a missing one blocks the release.
 Always publish reviewed tarballs using `scripts/publish-archive.mjs <archive> <sha256>
 <package-name> <version> <latest|next> --yes` on macOS/Linux, including manual fallbacks.
 It verifies immutable bytes and package identity, then uses a private neutral temporary path:
@@ -75,11 +77,15 @@ processes can coexist. `src/api/remoteAccess.ts` exposes lifecycle/status under
 `GET /api/remote-access/diagnostics`; assistant tools dispatch through the same API and policy.
 Identity reset is local-only. Remote management cannot stop/restart the host OS process.
 Coordinator or direct-path failures require diagnosis/retry, not automatic trust deletion or
-re-pairing. On macOS, a locked login keychain can block helper startup; unlock interactively
+re-pairing. After ten helper failures in five minutes the supervisor stops fast restarts but keeps
+one slow recovery attempt pending (10 minutes, then every 15, ±10% jitter) until a launch
+authenticates or reconnect/stop/reset/close clears the circuit (`HELPER_CIRCUIT_RECOVERY_DELAYS_MS`). On macOS, a locked login keychain can block helper startup; unlock interactively
 and consult the README for SSH-assisted setup without exposing credentials.
 
 **Browser session lifetime** (`src/remote/gateway/session.ts`, `browserPersistence.ts`): sessions
-have no idle timeout or eight-hour cutoff. Owner-only files store only public browser reconnect
+have no idle timeout or eight-hour cutoff. The in-memory cap (1,024 per gateway launch) evicts the
+least-recently-used session (recency = authenticated use) so CLI reopens/resumes can never be
+locked out; an evicted browser recovers through key proof or a fresh CLI bootstrap. Owner-only files store only public browser reconnect
 keys for the exact host/trust/origin binding. The trusted frame stores a non-exportable P-256
 WebCrypto key in IndexedDB; bounded 30-second single-use challenges prove ownership and obtain
 fresh cookies/CSRF and gateway/helper launch authority. Old cookies are rejected after restart;
@@ -149,7 +155,10 @@ accept bugfixes in the same major/feature series. Gateway/helper package version
 five-minute quiet default. Only plain newer patch releases within the current major/minor are
 eligible. Global npm runtimes register private capability-authenticated loopback control servers;
 one installation-wide worker stages exact candidate/rollback packages, verifies helper signatures
-and compatibility, prepares all opted-in roles, then installs/restarts. Admission is synchronous
+and compatibility, prepares all opted-in roles, then installs/restarts. Helper pins/signatures/
+compatibility are verified strictly whenever a registered remote gateway or Remote-Access-enabled
+host (unreadable config counts as enabled) runs on a supported helper platform; otherwise only the
+app package is verified, so absent optional helpers never block bot fixes (`helperVerificationRequired`). Admission is synchronous
 in API/background work; passive polls/streams alone do not prevent maintenance. Locks serialize
 manual and automatic installations and block new registrations during replacement. Never signal
 an uncooperative/busy/unknown sibling or clear user data/trust to force progress. The macOS JXA

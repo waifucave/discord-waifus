@@ -166,7 +166,8 @@ Use `waifus remote --setup` for activation, pairing, or choosing another host.
 No new invitation or separate Tailscale installation is needed. The host must stay running and awake. Use the host's
 **Trusted devices** controls to revoke a device you no longer want to trust.
 
-Remote browser sessions have no idle timeout or eight-hour cutoff. A non-exportable browser key
+Remote browser sessions have no idle timeout or eight-hour cutoff; when many accumulate, the
+least recently used one is retired first and simply reconnects. A non-exportable browser key
 in the trusted local page's IndexedDB proves ownership after restart; owner-only gateway files
 store only its public key, scoped to the paired host, trust epoch and exact isolated origin.
 Cookies remain HttpOnly and SameSite=Strict. Old cookies are invalid after restart. An open

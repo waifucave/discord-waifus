@@ -33,7 +33,7 @@ import {
   type ResolvedRemoteDashboard
 } from "./remoteAccess/remoteAccessService.js";
 import { RemoteRequestBridge } from "./remoteAccess/requestBridge.js";
-import { createProductionHelperSupervisor } from "../remote/productionHelper.js";
+import { createHostHelperSupervisor } from "./remoteAccess/hostHelperSupervisor.js";
 import { remoteRolePaths } from "../remote/paths.js";
 import { DashboardBuild } from "./remoteAccess/dashboardBuild.js";
 import { UpdateActivity } from "./updates/activity.js";
@@ -113,8 +113,10 @@ export async function startBackend(options: StartBackendOptions): Promise<Runnin
         }
       : await resolveRemoteDashboard(config.frontend.staticDir, logger);
     const dashboard = dashboardResolution.dashboard;
+    // Remote Access is optional: an unsupported platform or unusable compatibility table
+    // yields a fail-closed supervisor that reports why, never a failed host boot.
     const helperSupervisor = options.remoteAccess?.supervisor
-      ?? await createProductionHelperSupervisor({
+      ?? await createHostHelperSupervisor({
         role: "host",
         dataRoot: options.dataRoot,
         appVersion: packageVersion,
