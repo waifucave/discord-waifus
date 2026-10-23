@@ -129,6 +129,8 @@ type ActiveChannelRun = {
   channelId: string;
   controller: AbortController;
   promise: Promise<void>;
+  trigger?: ChannelRunOptions["trigger"];
+  wake?: RetriggerWakeInput;
 };
 
 type ChannelRunOptions = {
@@ -136,7 +138,9 @@ type ChannelRunOptions = {
   initialReason?: string;
   firstOrchestratorMustReply?: boolean;
   firstResponderSceneDirectionOverride?: string;
-  trigger?: "message" | "retrigger" | "manual";
+  // message/manual (and untagged callers: /run, API, reviewer) may preempt another channel's run;
+  // retrigger (timer wakes) and resume (boot catch-up) never do — they queue instead.
+  trigger?: "message" | "retrigger" | "manual" | "resume";
   /** For timer wakes: who armed the timer (absent for pre-source persisted timers). */
   wake?: RetriggerWakeInput;
 };
@@ -231,7 +235,12 @@ export class RuntimeOrchestrator {
   private readonly recoveryAttempts = new Map<string, number>();
   // Per guild: channels whose run was aborted by another channel's run (insertion-ordered,
   // deduped). Each gets a short retrigger when the guild's run slot frees up.
-  private readonly preemptedChannels = new Map<string, Set<string>>();
+  // The value is the wake identity to re-arm with: the deferred/aborted timer wake's own identity,
+  // or { source: "preempted" } for an aborted human-message/manual run.
+  private readonly preemptedChannels = new Map<string, Map<string, RetriggerWakeInput>>();
+  // Set by pause() and by a paused start(); resumeAfterPause() is a no-op unless it is set, so a
+  // redundant Resume can never replan (and duplicate) live runs.
+  private wasPaused = false;
   // One-shot: when a waifu in this channel just emitted a tool-only reply
   // (add_memory call with no Discord text), drop the memory tool from the
   // next decision so the chain doesn't loop on silent memory-tool turns.
@@ -336,6 +345,7 @@ export class RuntimeOrchestrator {
     if (this.options.isPaused?.()) {
       // A paused runtime stays silent across restarts/reloads: no catch-up wakes, no resumed
       // replies. resumeAfterPause() runs the same catch-up once the user resumes.
+      this.wasPaused = true;
       this.options.logger.info("Restart resume skipped because runtime is paused");
     } else {
       this.runBackground("Restart resume failed", {}, () => this.resumeOrchestrationState());
@@ -344,7 +354,8 @@ export class RuntimeOrchestrator {
 
   /** Re-run boot catch-up (persisted timers, downtime messages) after an explicit user resume. */
   resumeAfterPause(): void {
-    if (this.options.isPaused?.()) return;
+    if (!this.wasPaused || this.options.isPaused?.()) return;
+    this.wasPaused = false;
     this.runBackground("Resume after pause failed", {}, () => this.resumeOrchestrationState());
   }
 
@@ -371,9 +382,14 @@ export class RuntimeOrchestrator {
         continue;
       }
       if (!server.enabled) continue;
+      // Resumed replies in one guild run one after another (never preempting each other).
+      const resumes: Array<() => Promise<void>> = [];
       for (const channel of Object.values(server.channels)) {
         if (!this.channelHasWaifus(channel)) continue;
         const channelId = channel.channelId;
+        // After a live resume (not boot) the room may already be moving again: never replan a
+        // channel whose run is live or whose latest decision is still in flight.
+        if (this.activeRuns.get(runKey(guildId))?.channelId === channelId) continue;
         const session = await this.options.storage.readJson(
           sessionRelativePath(guildId, channelId),
           ChannelSessionStateSchema,
@@ -383,6 +399,7 @@ export class RuntimeOrchestrator {
         const latestDecision = history.decisions.find(
           (decision) => decision.guildId === guildId && decision.channelId === channelId
         );
+        if (latestDecision?.status === "pending") continue;
         // Best-effort: a human message that landed while the server was down must wake the
         // channel promptly instead of resuming the old schedule (live 2026-07-06 10:08: K's
         // message hit the deploy window and waited out a restored 130s timer).
@@ -401,6 +418,7 @@ export class RuntimeOrchestrator {
         }
         const plan = planRestartResume({ guildId, channelId, session, latestDecision, newestHumanMessageAt }, new Date());
         if (plan.kind === "restore-timer") {
+          if (this.retriggerTimers.has(timerKey(guildId, channelId))) continue;
           this.options.logger.info("Restart resume: retrigger restored", {
             guildId,
             channelId,
@@ -415,12 +433,19 @@ export class RuntimeOrchestrator {
             decisionId: plan.decisionId,
             responders: plan.responders.map((responder) => responder.waifuId)
           });
-          this.startChannelRunBackground(guildId, channelId, "restart-resume", {
-            initialResponders: plan.responders,
-            initialReason: `Resuming a decision interrupted by a server restart: ${plan.reasoning}`,
-            trigger: "manual"
-          });
+          resumes.push(() =>
+            this.startChannelRun(guildId, channelId, "restart-resume", {
+              initialResponders: plan.responders,
+              initialReason: `Resuming a decision interrupted by a server restart: ${plan.reasoning}`,
+              trigger: "resume"
+            })
+          );
         }
+      }
+      if (resumes.length > 0) {
+        this.runBackground("Restart resume run failed", { guildId }, async () => {
+          for (const resume of resumes) await resume();
+        });
       }
     }
   }
@@ -440,6 +465,7 @@ export class RuntimeOrchestrator {
 
   /** Explicit user pause: interrupted replies are never resumed later (see restartResume.ts). */
   async pause(): Promise<void> {
+    this.wasPaused = true;
     await this.haltRuntime("runtime paused");
   }
 
@@ -452,7 +478,7 @@ export class RuntimeOrchestrator {
     this.clearAllDreamTimers();
     const haltedRuns = [...this.activeRuns.values()];
     const preempted = [...this.preemptedChannels].flatMap(([guildId, channelIds]) =>
-      [...channelIds].map((channelId) => ({ guildId, channelId }))
+      [...channelIds.keys()].map((channelId) => ({ guildId, channelId }))
     );
     this.preemptedChannels.clear();
     for (const run of haltedRuns) {
@@ -1132,13 +1158,30 @@ export class RuntimeOrchestrator {
     // channel of the guild that enables her, so two concurrent channel runs could have the same
     // character generating and typing in two rooms at once (and double the guild's model spend).
     // /run, /stop, the reviewer and the dream deferral all rely on this one-run-per-guild slot.
-    // The cost is preemption: a new run aborts the other channel's run. That channel is queued
-    // (deduped) and re-triggered shortly after the guild's slot frees, so its reply is not lost.
+    // Only human messages and manual commands preempt: they abort the other channel's run, which
+    // is queued (deduped) and re-triggered shortly after the guild's slot frees, so its reply is
+    // not lost. Timer wakes and boot catch-up never abort anything — they queue behind the live
+    // run (keeping their wake identity), so two busy channels cannot ping-pong extra passes.
     const key = runKey(guildId);
+    const existing = this.activeRuns.get(key);
+    if (existing && (options.trigger === "retrigger" || options.trigger === "resume")) {
+      if (existing.channelId !== channelId) {
+        this.notePreemptedChannel(guildId, channelId, options.wake ?? { source: "preempted" });
+        this.options.logger.info("Deferred channel wake behind another channel's active run", {
+          guildId,
+          channelId,
+          activeChannelId: existing.channelId,
+          reason
+        });
+      } else {
+        // This channel's own live run already covers the room; it schedules its own next wake.
+        this.options.logger.info("Dropped channel wake; the channel's run is already active", { guildId, channelId, reason });
+      }
+      return;
+    }
     const versionKey = timerKey(guildId, channelId);
     this.channelRunVersions.set(versionKey, (this.channelRunVersions.get(versionKey) ?? 0) + 1);
     this.dropPreemptedChannel(guildId, channelId);
-    const existing = this.activeRuns.get(key);
     if (existing) {
       this.options.logger.info("Restarting active channel run", {
         guildId,
@@ -1149,7 +1192,10 @@ export class RuntimeOrchestrator {
       existing.controller.abort(new Error(`restarted by ${reason}`));
       this.markSessionIdleBackground(existing.guildId, existing.channelId, `restarted by ${reason}`);
       if (existing.channelId !== channelId) {
-        this.notePreemptedChannel(guildId, existing.channelId);
+        // An aborted timer-wake run keeps its own wake identity (marker, cast-wake budget); an
+        // aborted human/manual run comes back as a "preempted" pass.
+        const requeueWake = existing.trigger === "retrigger" && existing.wake ? existing.wake : { source: "preempted" as const };
+        this.notePreemptedChannel(guildId, existing.channelId, requeueWake);
       }
     }
     this.clearRetriggerTimer(guildId, channelId);
@@ -1205,15 +1251,16 @@ export class RuntimeOrchestrator {
           await this.retriggerPreemptedChannel(guildId);
         }
       });
-    this.activeRuns.set(key, { guildId, channelId, controller, promise });
+    this.activeRuns.set(key, { guildId, channelId, controller, promise, trigger: options.trigger, wake: options.wake });
     this.options.onActiveRunsChange?.(this.activeRuns.size);
     this.options.logger.info("Channel runtime loop started", { guildId, channelId, reason });
     await promise;
   }
 
-  private notePreemptedChannel(guildId: string, channelId: string): void {
-    const pending = this.preemptedChannels.get(guildId) ?? new Set<string>();
-    pending.add(channelId);
+  private notePreemptedChannel(guildId: string, channelId: string, wake: RetriggerWakeInput): void {
+    const pending = this.preemptedChannels.get(guildId) ?? new Map<string, RetriggerWakeInput>();
+    // An interrupted human/manual turn outranks a deferred timer wake for the same channel.
+    if (pending.get(channelId)?.source !== "preempted") pending.set(channelId, wake);
     this.preemptedChannels.set(guildId, pending);
   }
 
@@ -1227,14 +1274,20 @@ export class RuntimeOrchestrator {
   // The guild's run slot just freed: give the oldest preempted channel its turn back.
   private async retriggerPreemptedChannel(guildId: string): Promise<void> {
     if (this.stopping || this.options.isPaused?.() || this.activeRuns.has(runKey(guildId))) return;
-    const next = this.preemptedChannels.get(guildId)?.values().next().value;
-    if (next === undefined) return;
+    const entry = this.preemptedChannels.get(guildId)?.entries().next().value;
+    if (entry === undefined) return;
+    const [next, wake] = entry;
     this.dropPreemptedChannel(guildId, next);
     // An already-armed wake will run the channel anyway; never shorten or replace it.
     if (this.retriggerTimers.has(timerKey(guildId, next))) return;
-    this.options.logger.info("Re-triggering channel preempted by another channel's run", { guildId, channelId: next });
+    this.options.logger.info("Re-triggering channel queued behind another channel's run", {
+      guildId,
+      channelId: next,
+      source: wake.source
+    });
     try {
-      await this.scheduleRetrigger(guildId, next, PREEMPTED_RETRIGGER_SECONDS, { source: "preempted" });
+      // scheduleRetrigger re-checks /stop, pause and newer runs after its write.
+      await this.scheduleRetrigger(guildId, next, PREEMPTED_RETRIGGER_SECONDS, wake);
     } catch (error) {
       this.options.logger.warn("Failed to re-trigger preempted channel", {
         guildId,
@@ -2955,6 +3008,7 @@ export class RuntimeOrchestrator {
     const scheduled: RetriggerWake | undefined = wake
       ? { source: wake.source, seconds: wake.seconds ?? bounded, ...(wake.decisionId ? { decisionId: wake.decisionId } : {}) }
       : undefined;
+    const versionAtStart = this.channelRunVersions.get(key) ?? 0;
     await this.updateSession(guildId, channelId, (current) => {
       const { scheduledRetrigger: _previous, ...rest } = current;
       return {
@@ -2964,6 +3018,18 @@ export class RuntimeOrchestrator {
         activePipeline: null
       };
     });
+    // The write awaited; never arm a timer the world moved past meanwhile. Paused/stopping keeps
+    // the persisted wake (resume / next boot restores it). A /stop or a newer run for this
+    // channel (both bump the channel version) supersedes it entirely, so drop our write too.
+    if (this.stopping || this.options.isPaused?.()) return;
+    if ((this.channelRunVersions.get(key) ?? 0) !== versionAtStart) {
+      await this.updateSession(guildId, channelId, (current) => {
+        if (current.scheduledRetriggerAt !== at) return current;
+        const { scheduledRetriggerAt: _at, scheduledRetrigger: _wake, ...rest } = current;
+        return rest;
+      });
+      return;
+    }
     const existing = this.retriggerTimers.get(key);
     if (existing) {
       clearTimeout(existing);
