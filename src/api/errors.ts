@@ -44,3 +44,19 @@ export function preconditionRequired(message: string): ApiError {
 export function activationRequired(message = "Remote access must be activated before it can be enabled."): ApiError {
   return new ApiError(428, message, undefined, "ActivationRequired");
 }
+
+/**
+ * A memory write lost an optimistic-concurrency race (per-record `recordRevision`, or the legacy
+ * store-wide `revision`). Answered as 409 `{ error: "Conflict", latest: { revision }, record }`.
+ */
+export class MemoryRecordConflictError extends ApiError {
+  readonly latest: { schemaVersion: number; revision: number; updatedAt: string };
+  readonly record: unknown;
+
+  constructor(store: { schemaVersion: number; revision: number; updatedAt: string }, record: unknown) {
+    super(409, "Memory has changed since it was read.", undefined, "Conflict");
+    this.name = "MemoryRecordConflictError";
+    this.latest = { schemaVersion: store.schemaVersion, revision: store.revision, updatedAt: store.updatedAt };
+    this.record = record;
+  }
+}

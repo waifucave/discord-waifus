@@ -261,6 +261,7 @@ export const ROUTE_POLICY_MANIFEST: readonly RoutePolicyDefinition[] = Object.fr
   ),
   safe("/api/memories"),
   mutation("POST", "/api/memories", "transactional", "memory.create"),
+  mutation("POST", "/api/memories/forget-user", "transactional", "memory.forget_user"),
   mutation("PUT", "/api/memories/:memoryId", "transactional", "memory.update"),
   mutation("DELETE", "/api/memories/:memoryId", "transactional", "memory.delete"),
   mutation("POST", "/api/runtime/pause", "reconciled", "runtime.pause"),

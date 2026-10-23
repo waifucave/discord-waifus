@@ -91,6 +91,19 @@ async function revisionedPut(
   return "Conflict: the resource changed twice while I was writing. Try again.";
 }
 
+// The current record (per-record `revision` drives memory writes), or an error text for the model.
+async function readMemoryRecord(
+  ctx: AssistantToolContext,
+  memoryId: string
+): Promise<{ revision: number } | string> {
+  const store = await inject(ctx, { method: "GET", url: "/api/memories" });
+  if (store.status !== 200) return store.body;
+  const { memories } = JSON.parse(store.body) as { memories: Array<{ id: string; revision?: number }> };
+  const record = memories.find((memory) => memory.id === memoryId);
+  if (!record) return `Memory ${memoryId} was not found.`;
+  return { revision: record.revision ?? 0 };
+}
+
 const NO_ARGS = { type: "object", properties: {}, additionalProperties: false } as const;
 
 const AGENT_CONFIG_URLS: Record<string, string> = {
@@ -507,29 +520,41 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
   },
   {
     name: "search_memories",
-    description: "Search memory records by text, optionally filtered by guildId and waifuId. Returns up to 30 matches.",
+    description:
+      "Search memory records by text. Memories are global per waifu (every server and DM); guildId and " +
+      "origin filter by provenance (where it was learned), subjectUserId by who it is about. Returns up to 30 matches.",
     parameters: {
       type: "object",
-      properties: { q: { type: "string" }, guildId: { type: "string" }, waifuId: { type: "string" } },
+      properties: {
+        q: { type: "string" },
+        waifuId: { type: "string" },
+        guildId: { type: "string", description: "Only memories learned in this server." },
+        origin: { type: "string", enum: ["dm"], description: "dm = only memories learned in private chats." },
+        subjectUserId: { type: "string", description: "Only memories about this Discord user id." }
+      },
       additionalProperties: false
     },
     execute: async (ctx, args) => {
-      const result = await inject(ctx, { method: "GET", url: "/api/memories" });
+      const query = new URLSearchParams();
+      for (const key of ["waifuId", "guildId", "origin", "subjectUserId"] as const) {
+        if (typeof args[key] === "string" && args[key]) query.set(key, String(args[key]));
+      }
+      const result = await inject(ctx, { method: "GET", url: `/api/memories${query.size ? `?${query}` : ""}` });
       if (result.status !== 200) return result.body;
       const store = JSON.parse(result.body) as { memories: Array<Record<string, unknown>> };
       const q = args.q ? String(args.q).toLowerCase() : undefined;
       const matches = store.memories
         .filter((memory) => memory.status !== "archived")
-        .filter((memory) => (args.guildId ? memory.guildId === args.guildId : true))
-        .filter((memory) => (args.waifuId ? memory.waifuId === args.waifuId : true))
         .filter((memory) => (q ? String(memory.content).toLowerCase().includes(q) : true))
         .slice(0, 30)
         .map((memory) => ({
           id: memory.id,
           waifuId: memory.waifuId,
-          guildId: memory.guildId,
+          origin: memory.origin,
+          subjects: memory.subjects,
           kind: memory.kind,
           pinned: memory.pinned,
+          recordRevision: memory.revision,
           content: memory.content
         }));
       return JSON.stringify(matches);
@@ -537,17 +562,30 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
   },
   {
     name: "add_memory",
-    description: "Add a memory record for a waifu in a guild. User-created memories are pinned by default.",
+    description:
+      "Add a memory record for a waifu. Memories are global (she remembers it in every server); guildId is " +
+      "optional provenance. User-created memories are pinned by default. A near-duplicate is still added and " +
+      "reported as duplicateOf.",
     parameters: {
       type: "object",
       properties: {
         waifuId: { type: "string" },
-        guildId: { type: "string" },
         content: { type: "string" },
+        guildId: { type: "string", description: "Optional: the server it was learned in." },
+        subjects: {
+          type: "array",
+          description: "Optional: who the memory is about.",
+          items: {
+            type: "object",
+            properties: { discordUserId: { type: "string" }, waifuId: { type: "string" }, name: { type: "string" } },
+            required: ["name"],
+            additionalProperties: false
+          }
+        },
         pinned: { type: "boolean" },
         kind: { type: "string" }
       },
-      required: ["waifuId", "guildId", "content"],
+      required: ["waifuId", "content"],
       additionalProperties: false
     },
     execute: async (ctx, args) => {
@@ -557,7 +595,7 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
   },
   {
     name: "update_memory",
-    description: "Update a memory record's content, kind, pinned flag, or archive it (status: archived).",
+    description: "Update a memory record's content, kind, pinned flag, subjects, or archive/restore it (status).",
     parameters: {
       type: "object",
       properties: { memoryId: { type: "string" }, changes: { type: "object" } },
@@ -565,18 +603,19 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
       additionalProperties: false
     },
     execute: async (ctx, args) => {
+      const memoryId = String(args.memoryId);
       for (let attempt = 0; attempt < 2; attempt++) {
-        const store = await inject(ctx, { method: "GET", url: "/api/memories" });
-        if (store.status !== 200) return store.body;
-        const { revision } = JSON.parse(store.body) as { revision: number };
+        const record = await readMemoryRecord(ctx, memoryId);
+        if (typeof record === "string") return record;
+        const { revision: _revision, recordRevision: _recordRevision, ...changes } = (args.changes ?? {}) as Record<string, unknown>;
         const result = await inject(ctx, {
           method: "PUT",
-          url: `/api/memories/${encodeURIComponent(String(args.memoryId))}`,
-          payload: { ...(args.changes as Record<string, unknown>), revision }
+          url: `/api/memories/${encodeURIComponent(memoryId)}`,
+          payload: { ...changes, recordRevision: record.revision }
         });
         if (result.status !== 409) return result.body;
       }
-      return "Conflict: the memory store changed twice while I was writing. Try again.";
+      return "Conflict: the memory changed twice while I was writing. Try again.";
     }
   },
   {
@@ -589,19 +628,58 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
       additionalProperties: false
     },
     execute: async (ctx, args) => {
+      const memoryId = String(args.memoryId);
       for (let attempt = 0; attempt < 2; attempt++) {
-        const store = await inject(ctx, { method: "GET", url: "/api/memories" });
-        if (store.status !== 200) return store.body;
-        const { revision } = JSON.parse(store.body) as { revision: number };
+        const record = await readMemoryRecord(ctx, memoryId);
+        if (typeof record === "string") return record;
         const result = await inject(ctx, {
           method: "DELETE",
-          url: `/api/memories/${encodeURIComponent(String(args.memoryId))}`,
-          payload: { revision }
+          url: `/api/memories/${encodeURIComponent(memoryId)}`,
+          payload: { recordRevision: record.revision }
         });
-        if (result.status < 300) return `Memory ${args.memoryId} deleted.`;
+        if (result.status < 300) return `Memory ${memoryId} deleted.`;
         if (result.status !== 409) return result.body;
       }
-      return "Conflict: the memory store changed twice while I was deleting. Try again.";
+      return "Conflict: the memory changed twice while I was deleting. Try again.";
+    }
+  },
+  {
+    name: "forget_user",
+    description:
+      "Propose forgetting a Discord user everywhere: deletes every memory about them, their queued observations, " +
+      "and replaces their messages with (removed) in stored conversation transcripts. Destructive: it runs only " +
+      "if the user accepts the separate secure dashboard confirmation card.",
+    parameters: {
+      type: "object",
+      properties: { discordUserId: { type: "string", description: "The Discord user id (snowflake)." } },
+      required: ["discordUserId"],
+      additionalProperties: false
+    },
+    execute: async (ctx, args) => {
+      const discordUserId = String(args.discordUserId);
+      // Dry run first so the card states exactly what will be deleted.
+      const preview = await inject(ctx, {
+        method: "POST",
+        url: "/api/memories/forget-user",
+        payload: { discordUserId, confirm: true, dryRun: true }
+      });
+      if (preview.status !== 200) return preview.body;
+      const counts = JSON.parse(preview.body) as { memories: number; observations: number; ledgerEntries: number };
+      const action = await actionController(ctx).propose({
+        category: "memory_forget_user",
+        summary:
+          `Forget Discord user ${discordUserId}: delete ${counts.memories} memor${counts.memories === 1 ? "y" : "ies"} ` +
+          `and ${counts.observations} queued observation${counts.observations === 1 ? "" : "s"}, and remove ` +
+          `${counts.ledgerEntries} stored message${counts.ledgerEntries === 1 ? "" : "s"}.`,
+        resource: { type: "discord_user", identifier: discordUserId },
+        operation: {
+          kind: "exact_http",
+          method: "POST",
+          canonicalTarget: "/api/memories/forget-user",
+          payload: { discordUserId, confirm: true }
+        }
+      });
+      return JSON.stringify({ ...JSON.parse(confirmationResult(action)), preview: counts });
     }
   },
   {

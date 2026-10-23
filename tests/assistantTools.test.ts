@@ -80,6 +80,9 @@ describe("assistant tools", () => {
       "update_agent_config",
       "search_memories",
       "add_memory",
+      "update_memory",
+      "delete_memory",
+      "forget_user",
       "trigger_orchestrator",
       "read_logs",
       "get_remote_access_status",
@@ -222,7 +225,7 @@ describe("assistant tools", () => {
     }
   });
 
-  it("update_memory and delete_memory carry the store revision", async () => {
+  it("update_memory and delete_memory carry the record revision", async () => {
     const { app } = await makeApp();
     try {
       await executeAssistantTool(localToolContext(app), "add_memory", JSON.stringify({ waifuId: "riko", guildId: "g1", content: "old fact" }));
@@ -230,10 +233,17 @@ describe("assistant tools", () => {
       const memoryId = list[0].id;
       const updated = await executeAssistantTool(localToolContext(app), "update_memory", JSON.stringify({ memoryId, changes: { content: "new fact" } }));
       expect(updated).toContain("new fact");
+      // A concurrent write to ANOTHER memory bumps the store revision but not this record's.
+      await executeAssistantTool(localToolContext(app), "add_memory", JSON.stringify({ waifuId: "riko", content: "unrelated" }));
       const deleted = await executeAssistantTool(localToolContext(app), "delete_memory", JSON.stringify({ memoryId }));
       expect(deleted.toLowerCase()).toContain("delete");
       const after = JSON.parse(await executeAssistantTool(localToolContext(app), "search_memories", JSON.stringify({ q: "fact" }))) as unknown[];
       expect(after).toHaveLength(0);
+      // Provenance filters pass through to the API.
+      const byGuild = JSON.parse(await executeAssistantTool(localToolContext(app), "search_memories", JSON.stringify({ guildId: "g1" }))) as unknown[];
+      expect(byGuild).toHaveLength(0);
+      const all = JSON.parse(await executeAssistantTool(localToolContext(app), "search_memories", JSON.stringify({}))) as Array<{ origin: unknown; recordRevision: number }>;
+      expect(all).toEqual([expect.objectContaining({ origin: {}, recordRevision: 0 })]);
     } finally {
       await app.close();
     }
