@@ -120,8 +120,10 @@ curl -s -X PUT http://127.0.0.1:3888/api/waifus/riko \
   value `null` to unset it. A partial params write never wipes the rest.
 - **Nested settings merge**: waifu `availability`/`tools`, server `contextWindows`/`tools` and
   agent `promptSections` deep-merge, so `{"tools": {"pickNextWaifu": true}}` changes only that
-  flag. Arrays (e.g. `availability.busy`), server `channels` and waifu `promptLayout` replace
-  wholesale. A channel PUT that omits a field keeps its current value.
+  flag. Arrays (e.g. `availability.busy`) and server `channels` replace wholesale.
+  Waifu `verbosity`, `customInstructions` and `scheduleInPrompt` are plain optional fields: omit
+  them and the stored value is kept. A waifu body may still carry `promptLayout`; it is accepted,
+  ignored and logged once (the layout editor was removed). A channel PUT that omits a field keeps its current value.
 - **Channel and server `enabled`**: a channel is active exactly when its `enabledWaifuIds` is
   non-empty; its stored `enabled` flag is not read by the runtime. A server's `enabled` flag only
   gates restart catch-up after a reboot, not live messages — use `paused` to silence a server.
