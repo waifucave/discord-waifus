@@ -911,12 +911,17 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
 
   app.delete("/api/servers/:guildId", async (request, reply) => {
     const { guildId } = parseIdParam(request.params, "guildId");
-    const serverPath = resolveDataPath(options.dataRoot, path.join("user", "servers", guildId));
-    if (!(await exists(serverPath))) {
-      return reply.code(404).send({ error: "NotFound", message: `Server ${guildId} is not configured.` });
-    }
-    await rm(serverPath, { recursive: true, force: true });
-    return { accepted: true, message: `Server ${guildId} configuration removed (sessions and rosters included).` };
+    const serverPath = userDataPath(options.dataRoot, "servers", guildId);
+    // Same resource lock as every other server.json write, so a concurrent PUT cannot recreate
+    // the directory halfway through the recursive removal. The runtime reads server config live
+    // on every pass (no PUT/channel write reloads it either), so no runtime reload is needed.
+    return storage.withLocks([`server:${guildId}`], async () => {
+      if (!(await exists(serverPath))) {
+        return reply.code(404).send({ error: "NotFound", message: `Server ${guildId} is not configured.` });
+      }
+      await rm(serverPath, { recursive: true, force: true });
+      return { accepted: true, message: `Server ${guildId} configuration removed (sessions and rosters included).` };
+    });
   });
 
   app.get("/api/servers/:guildId/members", async (request) => {
@@ -950,11 +955,8 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   });
 
   app.put("/api/servers/:guildId/channels/:channelId", async (request) => {
-    const { guildId, channelId } = z
-      .object({ guildId: z.string().min(1), channelId: z.string().min(1) })
-      .parse(request.params);
-    assertSafeId(guildId);
-    assertSafeId(channelId);
+    const { guildId } = parseIdParam(request.params, "guildId");
+    const { channelId } = parseIdParam(request.params, "channelId");
     const body = ChannelConfigBodySchema.parse(request.body);
     return storage.updateRevisionedJson({
       resourceKey: `server:${guildId}`,
@@ -1093,8 +1095,8 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   });
   app.post("/api/runtime/stop", async (request) => {
     const body = RuntimeStopBodySchema.parse(request.body);
-    assertSafeId(body.guildId);
-    assertSafeId(body.channelId);
+    assertSnowflakeId(body.guildId);
+    assertSnowflakeId(body.channelId);
     const runtimeOrchestrator = options.runtimeControl?.getOrchestrator() ?? options.runtimeOrchestrator;
     if (!runtimeOrchestrator) {
       return {
@@ -1117,8 +1119,8 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
 
   app.post("/api/runtime/trigger/orchestrator", async (request) => {
     const body = RuntimeTriggerBodySchema.parse(request.body);
-    if (body?.guildId) assertSafeId(body.guildId);
-    if (body?.channelId) assertSafeId(body.channelId);
+    if (body?.guildId) assertSnowflakeId(body.guildId);
+    if (body?.channelId) assertSnowflakeId(body.channelId);
     const runtimeOrchestrator = options.runtimeControl?.getOrchestrator() ?? options.runtimeOrchestrator;
     if (body?.guildId && body.channelId && runtimeOrchestrator) {
       void runtimeOrchestrator.triggerChannel(body.guildId, body.channelId, "manual-api");
@@ -1146,8 +1148,8 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   });
   app.post("/api/runtime/trigger/stage-manager", async (request) => {
     const body = RuntimeTriggerBodySchema.parse(request.body);
-    if (body?.guildId) assertSafeId(body.guildId);
-    if (body?.channelId) assertSafeId(body.channelId);
+    if (body?.guildId) assertSnowflakeId(body.guildId);
+    if (body?.channelId) assertSnowflakeId(body.channelId);
     const runtimeOrchestrator = options.runtimeControl?.getOrchestrator() ?? options.runtimeOrchestrator;
     if (body?.guildId && body.channelId && runtimeOrchestrator) {
       void runtimeOrchestrator.triggerStageManager(body.guildId, body.channelId);
@@ -1628,13 +1630,25 @@ function updateMemoryOrThrow(
 
 function parseIdParam(params: unknown, key: string): Record<string, string> {
   const parsed = z.record(z.string(), z.string().min(1)).parse(params);
-  assertSafeId(parsed[key]);
+  if (key === "guildId" || key === "channelId") assertSnowflakeId(parsed[key]);
+  else assertSafeId(parsed[key]);
   return parsed;
 }
 
+// Ids become path segments under the data root. The character class alone admitted "." and
+// "..", so `DELETE /api/servers/%2E%2E` (Fastify decodes it to "..") resolved to `user/` and
+// removed every user file. Dot-only ids are rejected here; resolveDataPath also refuses any
+// path that escapes the data root as a second line of defence.
 function assertSafeId(id: string): void {
-  if (!/^[A-Za-z0-9._:-]+$/.test(id)) {
+  if (typeof id !== "string" || !/^[A-Za-z0-9._:-]+$/.test(id) || /^\.+$/.test(id)) {
     throw badRequest(`Invalid id: ${id}`);
+  }
+}
+
+// Guild and channel ids always come from Discord, so anything but a snowflake is malformed.
+function assertSnowflakeId(id: string): void {
+  if (typeof id !== "string" || !/^\d{17,20}$/.test(id)) {
+    throw badRequest(`Invalid Discord id: ${id}`);
   }
 }
 
@@ -1644,7 +1658,7 @@ function slugId(name: string): string {
     .toLowerCase()
     .replace(/[^a-z0-9._:-]+/g, "-")
     .replace(/^-+|-+$/g, "");
-  return slug || randomUUID();
+  return slug && !/^\.+$/.test(slug) ? slug : randomUUID();
 }
 
 async function saveWaifuAsset(

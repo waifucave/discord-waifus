@@ -11,6 +11,8 @@ does goes through these endpoints, so any agent can drive the app with plain HTT
   and `updatedAt`, never the current resource body.
 - Validation failures return **400** with a message (zod field errors, or
   `unsupported_parameter` naming a violated gateway rule).
+- `:guildId`/`:channelId` (and `guildId`/`channelId` in runtime stop/trigger bodies) must be
+  Discord snowflakes (17–20 digits); other ids reject dot-only values such as `.`/`..`.
 - Model params are gateway-native dotted keys inside `params`
   (e.g. `{"temperature": 0.9, "reasoning.enabled": false}`).
 - Assistant tool calls inherit the person or paired device that initiated the conversation. Never
