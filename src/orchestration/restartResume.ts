@@ -9,6 +9,7 @@ import type {
   OrchestratorDecisionHistoryEntry,
   OrchestratorRespondingWaifu
 } from "../shared/schemas/domain.js";
+import type { RetriggerSource, RetriggerWake } from "./session.js";
 
 // Only these outcome shapes mean "the restart ate her line": still pending (resume ran before
 // the boot heal), interrupted with the heal's runtime_restarted marker (crash/kill), or interrupted
@@ -28,6 +29,8 @@ export type ResumeChannelInput = {
   channelId: string;
   session: {
     scheduledRetriggerAt?: string;
+    /** Who armed scheduledRetriggerAt; carried into the restored timer so its wake pass is honest. */
+    scheduledRetrigger?: RetriggerWake;
     activePipeline: { kind: string; startedAt: string } | null;
   };
   /** Newest orchestrator decision recorded for this channel, regardless of status. */
@@ -45,8 +48,18 @@ export type ResumeAction =
       responders: OrchestratorRespondingWaifu[];
       reasoning: string;
     }
-  | { kind: "restore-timer"; guildId: string; channelId: string; seconds: number; reason: string }
+  | {
+      kind: "restore-timer";
+      guildId: string;
+      channelId: string;
+      seconds: number;
+      reason: string;
+      /** Wake identity for the restored timer; undefined = a pre-source persisted timer. */
+      wake?: { source: RetriggerSource; seconds?: number; decisionId?: string };
+    }
   | { kind: "none" };
+
+const BOOT_WAKE = { source: "restart_resume" } as const;
 
 // Outcomes are matched to planned responders by waifu id + occurrence, never by array index:
 // PickNextWaifu handoffs insert outcomes and move planned ones forward. Results follow the
@@ -94,7 +107,7 @@ export function planRestartResume(input: ResumeChannelInput, now: Date): ResumeA
         };
       }
       // Too old to replay the beat verbatim — let a fresh pass read the room instead.
-      return { kind: "restore-timer", guildId, channelId, seconds: PROMPT_STAGGER_SECONDS, reason: "stale interrupted decision" };
+      return { kind: "restore-timer", guildId, channelId, seconds: PROMPT_STAGGER_SECONDS, reason: "stale interrupted decision", wake: BOOT_WAKE };
     }
   }
 
@@ -109,22 +122,25 @@ export function planRestartResume(input: ResumeChannelInput, now: Date): ResumeA
       guildId,
       channelId,
       seconds: PROMPT_STAGGER_SECONDS,
-      reason: "human message arrived during downtime"
+      reason: "human message arrived during downtime",
+      wake: BOOT_WAKE
     };
   }
 
-  // 3. A scheduled wake: keep counting the original clock.
+  // 3. A scheduled wake: keep counting the original clock. Fired/consumed wakes are cleared from
+  // the session at run start, so an elapsed time here really did elapse during downtime.
   if (session.scheduledRetriggerAt) {
+    const wake = session.scheduledRetrigger;
     const remainingSeconds = Math.round((Date.parse(session.scheduledRetriggerAt) - now.getTime()) / 1000);
     if (remainingSeconds > 0) {
-      return { kind: "restore-timer", guildId, channelId, seconds: remainingSeconds, reason: "persisted retrigger restored" };
+      return { kind: "restore-timer", guildId, channelId, seconds: remainingSeconds, reason: "persisted retrigger restored", wake };
     }
-    return { kind: "restore-timer", guildId, channelId, seconds: PROMPT_STAGGER_SECONDS, reason: "retrigger elapsed during downtime" };
+    return { kind: "restore-timer", guildId, channelId, seconds: PROMPT_STAGGER_SECONDS, reason: "retrigger elapsed during downtime", wake };
   }
 
   // 4. A run that died mid-flight without responders or a timer: check the room soon.
   if (session.activePipeline) {
-    return { kind: "restore-timer", guildId, channelId, seconds: PROMPT_STAGGER_SECONDS, reason: "pipeline was active at shutdown" };
+    return { kind: "restore-timer", guildId, channelId, seconds: PROMPT_STAGGER_SECONDS, reason: "pipeline was active at shutdown", wake: BOOT_WAKE };
   }
 
   return { kind: "none" };

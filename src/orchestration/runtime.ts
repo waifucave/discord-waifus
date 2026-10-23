@@ -32,7 +32,7 @@ import { ModelPipeline, WaifuGenerationResult } from "../providers/types.js";
 import { createGatewayModelPipeline } from "./pipeline/gatewayPipeline.js";
 import { isPermissionError, PermissionWarningTracker } from "./permissionWarnings.js";
 import { decideDeterministically, enforceWakePlan, type DeterministicCastMember } from "./deterministicOrchestrator.js";
-import { planRestartResume } from "./restartResume.js";
+import { RUNTIME_SHUTDOWN_INTERRUPT_REASON, planRestartResume } from "./restartResume.js";
 import { GatewayPipelineError } from "./pipeline/params.js";
 import { resolveModelTarget, sharedRegistry } from "./pipeline/resolveTarget.js";
 import { QueryRole } from "../shared/queryLog.js";
@@ -83,6 +83,8 @@ import { DreamOp, StageManagerObservation } from "./stageManager.js";
 import {
   ChannelSessionState,
   ChannelSessionStateSchema,
+  RetriggerSource,
+  RetriggerWake,
   createEmptyChannelSessionState
 } from "./session.js";
 import { ContextMessage, OrchestratorWakeMarker, formatTimestamp } from "./context.js";
@@ -118,6 +120,8 @@ export type RuntimeOrchestratorOptions = {
   };
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   stageManagerIdleDelayMs?: number;
+  /** Delay before boot catch-up runs (lets Discord bots finish connecting). Default 5000. */
+  restartResumeDelayMs?: number;
 };
 
 type ActiveChannelRun = {
@@ -133,7 +137,11 @@ type ChannelRunOptions = {
   firstOrchestratorMustReply?: boolean;
   firstResponderSceneDirectionOverride?: string;
   trigger?: "message" | "retrigger" | "manual";
+  /** For timer wakes: who armed the timer (absent for pre-source persisted timers). */
+  wake?: RetriggerWakeInput;
 };
+
+type RetriggerWakeInput = { source: RetriggerSource; seconds?: number; decisionId?: string };
 
 type ExecuteResponderDecisionInput = {
   guildId: string;
@@ -212,6 +220,11 @@ export class RuntimeOrchestrator {
   private readonly activeWaifuQueries = new Map<string, number>();
   private readonly activeReviewerRuns = new Map<string, number>();
   private readonly channelRunVersions = new Map<string, number>();
+  // Consecutive crashed runs per guildId:channelId, for the crash-recovery wake backoff.
+  private readonly recoveryAttempts = new Map<string, number>();
+  // Per guild: channels whose run was aborted by another channel's run (insertion-ordered,
+  // deduped). Each gets a short retrigger when the guild's run slot frees up.
+  private readonly preemptedChannels = new Map<string, Set<string>>();
   // One-shot: when a waifu in this channel just emitted a tool-only reply
   // (add_memory call with no Discord text), drop the memory tool from the
   // next decision so the chain doesn't loop on silent memory-tool turns.
@@ -313,7 +326,19 @@ export class RuntimeOrchestrator {
     }
     await this.healPendingOrchestratorDecisions();
     await this.scheduleDreamRuns();
-    this.runBackground("Restart resume failed", {}, () => this.resumeOrchestrationState());
+    if (this.options.isPaused?.()) {
+      // A paused runtime stays silent across restarts/reloads: no catch-up wakes, no resumed
+      // replies. resumeAfterPause() runs the same catch-up once the user resumes.
+      this.options.logger.info("Restart resume skipped because runtime is paused");
+    } else {
+      this.runBackground("Restart resume failed", {}, () => this.resumeOrchestrationState());
+    }
+  }
+
+  /** Re-run boot catch-up (persisted timers, downtime messages) after an explicit user resume. */
+  resumeAfterPause(): void {
+    if (this.options.isPaused?.()) return;
+    this.runBackground("Resume after pause failed", {}, () => this.resumeOrchestrationState());
   }
 
   /**
@@ -323,7 +348,8 @@ export class RuntimeOrchestrator {
    */
   private async resumeOrchestrationState(): Promise<void> {
     // give the Discord bots a beat to finish connecting; failed sends self-heal regardless
-    await new Promise((resolve) => setTimeout(resolve, 5000));
+    await new Promise((resolve) => setTimeout(resolve, this.options.restartResumeDelayMs ?? 5000));
+    if (this.stopping || this.options.isPaused?.()) return;
     const guildIds = await this.listKnownGuildIds();
     const history = await this.options.storage.readJson(
       "user/orchestrator/history.json",
@@ -374,7 +400,7 @@ export class RuntimeOrchestrator {
             seconds: plan.seconds,
             reason: plan.reason
           });
-          await this.scheduleRetrigger(guildId, channelId, plan.seconds);
+          await this.scheduleRetrigger(guildId, channelId, plan.seconds, plan.wake);
         } else if (plan.kind === "resume-responders") {
           this.options.logger.info("Restart resume: executing responders the restart interrupted", {
             guildId,
@@ -398,26 +424,59 @@ export class RuntimeOrchestrator {
       unsubscribe();
     }
     this.unsubscribes = [];
-    await this.pause();
+    // A planned stop (shutdown, `waifus restart`, update, config reload) interrupts replies with a
+    // resumable reason, unlike an explicit user pause.
+    await this.haltRuntime(RUNTIME_SHUTDOWN_INTERRUPT_REASON);
     this.oneShot.close();
     await this.options.ocr?.dispose?.();
   }
 
+  /** Explicit user pause: interrupted replies are never resumed later (see restartResume.ts). */
   async pause(): Promise<void> {
+    await this.haltRuntime("runtime paused");
+  }
+
+  private async haltRuntime(reason: string): Promise<void> {
     for (const timer of this.retriggerTimers.values()) {
       clearTimeout(timer);
     }
     this.retriggerTimers.clear();
     this.clearAllStageManagerTimers();
     this.clearAllDreamTimers();
-    for (const run of this.activeRuns.values()) {
-      run.controller.abort(new Error("runtime paused"));
+    const haltedRuns = [...this.activeRuns.values()];
+    const preempted = [...this.preemptedChannels].flatMap(([guildId, channelIds]) =>
+      [...channelIds].map((channelId) => ({ guildId, channelId }))
+    );
+    this.preemptedChannels.clear();
+    for (const run of haltedRuns) {
+      run.controller.abort(new Error(reason));
     }
-    await Promise.allSettled([...this.activeRuns.values()].map((run) => run.promise));
+    await Promise.allSettled(haltedRuns.map((run) => run.promise));
     this.activeRuns.clear();
+    if (reason === RUNTIME_SHUTDOWN_INTERRUPT_REASON) {
+      // Runs cut down mid-pass (and channels waiting on a preempted turn) owe the room a pass:
+      // leave an immediate persisted wake so boot catch-up runs it (unless a wake is already set).
+      for (const run of [...haltedRuns, ...preempted]) {
+        await this.persistShutdownWake(run.guildId, run.channelId).catch((error) => {
+          this.options.logger.warn("Failed to persist shutdown wake", {
+            guildId: run.guildId,
+            channelId: run.channelId,
+            message: error instanceof Error ? error.message : String(error)
+          });
+        });
+      }
+    }
     await Promise.allSettled([...this.activeStageManagerRuns]);
     await Promise.allSettled([...this.activeDreamRuns]);
     this.options.onActiveRunsChange?.(0);
+  }
+
+  private async persistShutdownWake(guildId: string, channelId: string): Promise<void> {
+    await this.updateSession(guildId, channelId, (current) =>
+      current.scheduledRetriggerAt
+        ? current
+        : { ...current, scheduledRetriggerAt: nowIso(), scheduledRetrigger: { source: "shutdown", seconds: 0 } }
+    );
   }
 
   private runBackground(
@@ -557,6 +616,7 @@ export class RuntimeOrchestrator {
     if (clearedRetrigger) {
       await this.clearScheduledRetrigger(guildId, channelId);
     }
+    this.dropPreemptedChannel(guildId, channelId);
     this.clearStageManagerTimers(guildId, channelId);
 
     const activeRun = this.activeRuns.get(key);
@@ -1055,9 +1115,22 @@ export class RuntimeOrchestrator {
     reason: string,
     options: ChannelRunOptions = {}
   ): Promise<void> {
+    // Every entry point (messages, timers, /run, restart resume, reviewer) funnels through here,
+    // so the runtime-wide pause is enforced once for all of them.
+    if (this.options.isPaused?.()) {
+      this.options.logger.info("Channel run not started because runtime is paused", { guildId, channelId, reason });
+      return;
+    }
+    // Runs are keyed per GUILD on purpose: a waifu is one Discord bot/persona shared by every
+    // channel of the guild that enables her, so two concurrent channel runs could have the same
+    // character generating and typing in two rooms at once (and double the guild's model spend).
+    // /run, /stop, the reviewer and the dream deferral all rely on this one-run-per-guild slot.
+    // The cost is preemption: a new run aborts the other channel's run. That channel is queued
+    // (deduped) and re-triggered shortly after the guild's slot frees, so its reply is not lost.
     const key = runKey(guildId);
     const versionKey = timerKey(guildId, channelId);
     this.channelRunVersions.set(versionKey, (this.channelRunVersions.get(versionKey) ?? 0) + 1);
+    this.dropPreemptedChannel(guildId, channelId);
     const existing = this.activeRuns.get(key);
     if (existing) {
       this.options.logger.info("Restarting active channel run", {
@@ -1068,11 +1141,18 @@ export class RuntimeOrchestrator {
       });
       existing.controller.abort(new Error(`restarted by ${reason}`));
       this.markSessionIdleBackground(existing.guildId, existing.channelId, `restarted by ${reason}`);
+      if (existing.channelId !== channelId) {
+        this.notePreemptedChannel(guildId, existing.channelId);
+      }
     }
     this.clearRetriggerTimer(guildId, channelId);
 
     const controller = new AbortController();
+    const recoveryKey = timerKey(guildId, channelId);
     const promise = this.runChannelLoop(guildId, channelId, controller.signal, options)
+      .then(() => {
+        this.recoveryAttempts.delete(recoveryKey);
+      })
       .catch((error) => {
         if (controller.signal.aborted) return;
         if (isPermissionError(error)) {
@@ -1088,7 +1168,18 @@ export class RuntimeOrchestrator {
         // retrigger timer — without a recovery wake the channel stays dead until the next human
         // message that doesn't crash (live incident 2026-07-05: a Gemini PROHIBITED_CONTENT block
         // silenced an active room for hours). Fresh context on the retry usually clears the block.
-        void this.scheduleRetrigger(guildId, channelId, RECOVERY_RETRIGGER_SECONDS).catch(() => undefined);
+        // Consecutive crashes back off exponentially (3m, 6m, 12m … capped at 2h) so a permanent
+        // failure does not burn a model call every 3 minutes forever; a clean run resets it.
+        const attempt = (this.recoveryAttempts.get(recoveryKey) ?? 0) + 1;
+        this.recoveryAttempts.set(recoveryKey, attempt);
+        const recoverySeconds = recoveryRetriggerSeconds(attempt);
+        this.options.logger.warn("Scheduling crash-recovery wake", {
+          guildId,
+          channelId,
+          attempt,
+          seconds: recoverySeconds
+        });
+        void this.scheduleRetrigger(guildId, channelId, recoverySeconds, { source: "crash_recovery" }).catch(() => undefined);
       })
       .finally(async () => {
         if (this.activeRuns.get(key)?.controller === controller) {
@@ -1104,12 +1195,46 @@ export class RuntimeOrchestrator {
               message: error instanceof Error ? error.message : String(error)
             });
           }
+          await this.retriggerPreemptedChannel(guildId);
         }
       });
     this.activeRuns.set(key, { guildId, channelId, controller, promise });
     this.options.onActiveRunsChange?.(this.activeRuns.size);
     this.options.logger.info("Channel runtime loop started", { guildId, channelId, reason });
     await promise;
+  }
+
+  private notePreemptedChannel(guildId: string, channelId: string): void {
+    const pending = this.preemptedChannels.get(guildId) ?? new Set<string>();
+    pending.add(channelId);
+    this.preemptedChannels.set(guildId, pending);
+  }
+
+  private dropPreemptedChannel(guildId: string, channelId: string): void {
+    const pending = this.preemptedChannels.get(guildId);
+    if (!pending) return;
+    pending.delete(channelId);
+    if (pending.size === 0) this.preemptedChannels.delete(guildId);
+  }
+
+  // The guild's run slot just freed: give the oldest preempted channel its turn back.
+  private async retriggerPreemptedChannel(guildId: string): Promise<void> {
+    if (this.stopping || this.options.isPaused?.() || this.activeRuns.has(runKey(guildId))) return;
+    const next = this.preemptedChannels.get(guildId)?.values().next().value;
+    if (next === undefined) return;
+    this.dropPreemptedChannel(guildId, next);
+    // An already-armed wake will run the channel anyway; never shorten or replace it.
+    if (this.retriggerTimers.has(timerKey(guildId, next))) return;
+    this.options.logger.info("Re-triggering channel preempted by another channel's run", { guildId, channelId: next });
+    try {
+      await this.scheduleRetrigger(guildId, next, PREEMPTED_RETRIGGER_SECONDS, { source: "preempted" });
+    } catch (error) {
+      this.options.logger.warn("Failed to re-trigger preempted channel", {
+        guildId,
+        channelId: next,
+        message: error instanceof Error ? error.message : String(error)
+      });
+    }
   }
 
   private async runChannelLoop(
@@ -1122,6 +1247,10 @@ export class RuntimeOrchestrator {
     // Tracks the newest human message seen across loop iterations so the post-limit
     // cooldown can distinguish an active room from cast-only self-chatter.
     let lastHumanMessageTs: string | undefined;
+    // Whatever wake was persisted is consumed by this run (it either fired, or this run
+    // supersedes it); every exit path that wants a later pass schedules a fresh one. Leaving it
+    // set made every boot fire a spurious "retrigger elapsed during downtime" wake.
+    await this.consumeScheduledRetrigger(guildId, channelId);
     {
       // Timer wakes and manual triggers land here directly, so the per-server pause
       // must gate the loop itself, not just the message handler.
@@ -1230,7 +1359,7 @@ export class RuntimeOrchestrator {
       // When the humans are silent and several unanswered waifu messages already trail the
       // context, skip the model pass and check back later — unless the room has been quiet
       // long enough that a genuinely fresh beat is welcome.
-      if (turns === 1 && options.trigger === "retrigger") {
+      if (turns === 1 && options.trigger === "retrigger" && options.wake?.source !== "preempted") {
         const suppressed = shouldSuppressCastWake(messages, Date.now());
         if (suppressed) {
           this.options.logger.info("Cast-only wake suppressed; beat budget exhausted", {
@@ -1238,7 +1367,7 @@ export class RuntimeOrchestrator {
             channelId,
             trailingBotMessages: suppressed.trailingBotMessages
           });
-          await this.scheduleRetrigger(guildId, channelId, CAST_WAKE_SUPPRESS_SECONDS);
+          await this.scheduleRetrigger(guildId, channelId, CAST_WAKE_SUPPRESS_SECONDS, { source: "cast_wake_suppressed" });
           return;
         }
       }
@@ -1273,18 +1402,20 @@ export class RuntimeOrchestrator {
 
       // On the first turn of a timer-fired retrigger, surface the wake marker (with the wake plan
       // the orchestrator promised last time) so it can pick up where it left off, plus escalate the
-      // next backoff if it chooses no_reply again.
+      // next backoff if it chooses no_reply again. Only a wake armed by a no_reply decision gets
+      // a marker, and it describes THAT decision — not whatever no_reply happens to be newest
+      // (turn-limit cooldowns, crash recovery and suppressed wakes have no plan to execute).
       let decisionMarkers: OrchestratorWakeMarker[] | undefined;
-      // pastDecisions is newest-first (history file prepends); find() returns the most recent no_reply.
-      const lastNoReply = pastDecisions.find((entry) => entry.action === "no_reply");
-      const timerWakeSeconds =
-        turns === 1 && options.trigger === "retrigger" ? lastNoReply?.retriggerAfterSeconds : undefined;
-      if (timerWakeSeconds) {
+      const wakeDecision =
+        turns === 1 && options.trigger === "retrigger" ? wakeSchedulingDecision(options.wake, pastDecisions) : undefined;
+      // The armed delay (includes earlier escalation) when known, else the decision's own number.
+      const timerWakeSeconds = wakeDecision ? options.wake?.seconds ?? wakeDecision.retriggerAfterSeconds : undefined;
+      if (wakeDecision && timerWakeSeconds) {
         decisionMarkers = [{
           kind: "wake",
           timestamp: formatTimestamp(new Date()),
           scheduledSeconds: timerWakeSeconds,
-          wakePlan: lastNoReply!.wakePlan
+          wakePlan: wakeDecision.wakePlan
         }];
       }
 
@@ -1363,12 +1494,12 @@ export class RuntimeOrchestrator {
         !oneShotMode &&
         !requireReply &&
         timerWakeSeconds &&
-        lastNoReply?.wakePlan &&
+        wakeDecision?.wakePlan &&
         decision.action === "no_reply" &&
-        pastDecisions[0]?.action === "no_reply"
+        pastDecisions[0]?.id === wakeDecision.id
       ) {
         const enforced = enforceWakePlan({
-          plan: lastNoReply.wakePlan,
+          plan: wakeDecision.wakePlan,
           cast: deterministicCast,
           messages,
           now: new Date()
@@ -1377,7 +1508,7 @@ export class RuntimeOrchestrator {
           this.options.logger.warn("Wake-plan enforcement: model deferred its own plan twice; executing it", {
             guildId,
             channelId,
-            plan: lastNoReply.wakePlan.slice(0, 140),
+            plan: wakeDecision.wakePlan.slice(0, 140),
             executor: enforced.respondingWaifus[0]?.waifuId,
             modelReasoning: decision.reasoning.slice(0, 140)
           });
@@ -1464,7 +1595,7 @@ export class RuntimeOrchestrator {
         if (timerWakeSeconds) {
           seconds = Math.max(seconds, Math.ceil(timerWakeSeconds * 1.5));
         }
-        await this.scheduleRetrigger(guildId, channelId, seconds);
+        await this.scheduleRetrigger(guildId, channelId, seconds, { source: "no_reply", decisionId });
         return;
       }
 
@@ -1504,7 +1635,7 @@ export class RuntimeOrchestrator {
       humanRecent,
       cooldownSeconds
     });
-    await this.scheduleRetrigger(guildId, channelId, cooldownSeconds);
+    await this.scheduleRetrigger(guildId, channelId, cooldownSeconds, { source: "turn_limit" });
   }
 
   private applyDirectiveGuardrails(input: {
@@ -2082,12 +2213,21 @@ export class RuntimeOrchestrator {
     } catch (error) {
       if (!decisionFinalized) {
         const status: OrchestratorDecisionStatus = input.signal.aborted ? "interrupted" : "failed";
+        // For interruptions record the ABORT reason (it decides restart resumability), not
+        // whatever error the cancelled provider/Discord call happened to surface.
+        const abortReason: unknown = input.signal.aborted ? input.signal.reason : undefined;
+        const reason =
+          abortReason instanceof Error
+            ? abortReason.message
+            : error instanceof Error
+              ? error.message
+              : String(error);
         try {
           await this.finalizeOrchestratorDecisionAfterError({
             decisionId: input.decisionId,
             status,
             currentOutcomeId: currentOutcomeFinalized ? undefined : currentOutcomeId,
-            reason: error instanceof Error ? error.message : String(error)
+            reason
           });
         } catch (writeError) {
           this.options.logger.warn("Failed to finalize orchestrator decision status after error", {
@@ -2534,6 +2674,10 @@ export class RuntimeOrchestrator {
     }
     const timer = setTimeout(() => {
       this.dreamTimers.delete(guildId);
+      if (this.options.isPaused?.()) {
+        this.armDreamTimer(guildId);
+        return;
+      }
       const active = this.activeRuns.has(runKey(guildId)) || [...this.activeRuns.values()].some((run) => run.guildId === guildId);
       if (active && deferCount < RuntimeOrchestrator.DREAM_MAX_DEFERS) {
         this.armDreamTimer(guildId, deferCount + 1);
@@ -2765,22 +2909,36 @@ export class RuntimeOrchestrator {
     );
   }
 
-  private async scheduleRetrigger(guildId: string, channelId: string, seconds: number): Promise<void> {
+  // wake records who armed the timer (persisted with it, so a restored timer keeps its identity);
+  // undefined only when restoring a timer persisted before sources were recorded.
+  private async scheduleRetrigger(
+    guildId: string,
+    channelId: string,
+    seconds: number,
+    wake: RetriggerWakeInput | undefined
+  ): Promise<void> {
     const bounded = Math.max(RETRIGGER_MIN_SECONDS, Math.min(RETRIGGER_MAX_SECONDS, seconds));
     const key = timerKey(guildId, channelId);
     const at = new Date(Date.now() + bounded * 1000).toISOString();
-    await this.updateSession(guildId, channelId, (current) => ({
-      ...current,
-      scheduledRetriggerAt: at,
-      activePipeline: null
-    }));
+    const scheduled: RetriggerWake | undefined = wake
+      ? { source: wake.source, seconds: wake.seconds ?? bounded, ...(wake.decisionId ? { decisionId: wake.decisionId } : {}) }
+      : undefined;
+    await this.updateSession(guildId, channelId, (current) => {
+      const { scheduledRetrigger: _previous, ...rest } = current;
+      return {
+        ...rest,
+        scheduledRetriggerAt: at,
+        ...(scheduled ? { scheduledRetrigger: scheduled } : {}),
+        activePipeline: null
+      };
+    });
     const existing = this.retriggerTimers.get(key);
     if (existing) {
       clearTimeout(existing);
     }
     const timer = setTimeout(() => {
       this.retriggerTimers.delete(key);
-      this.startChannelRunBackground(guildId, channelId, "scheduled-retrigger", { trigger: "retrigger" });
+      this.startChannelRunBackground(guildId, channelId, "scheduled-retrigger", { trigger: "retrigger", wake: scheduled });
     }, bounded * 1000);
     this.retriggerTimers.set(key, timer);
   }
@@ -2815,11 +2973,21 @@ export class RuntimeOrchestrator {
 
   private async clearScheduledRetrigger(guildId: string, channelId: string): Promise<void> {
     await this.updateSession(guildId, channelId, (current) => {
-      const { scheduledRetriggerAt: _scheduledRetriggerAt, ...rest } = current;
+      const { scheduledRetriggerAt: _scheduledRetriggerAt, scheduledRetrigger: _scheduledRetrigger, ...rest } = current;
       return {
         ...rest,
         activePipeline: null
       };
+    });
+  }
+
+  // Drop the persisted wake (if any) without touching activePipeline; skips the write when unset.
+  private async consumeScheduledRetrigger(guildId: string, channelId: string): Promise<void> {
+    const session = await this.readChannelSession(guildId, channelId);
+    if (!session.scheduledRetriggerAt && !session.scheduledRetrigger) return;
+    await this.updateSession(guildId, channelId, (current) => {
+      const { scheduledRetriggerAt: _scheduledRetriggerAt, scheduledRetrigger: _scheduledRetrigger, ...rest } = current;
+      return rest;
     });
   }
 
@@ -4373,6 +4541,30 @@ function applyFirstResponderDirectiveOverride(
 
 const HUMAN_RECENT_WINDOW_MS = 15 * 60 * 1000;
 const RECOVERY_RETRIGGER_SECONDS = 180;
+const RECOVERY_RETRIGGER_MAX_SECONDS = 2 * 60 * 60;
+// A preempted channel gets its turn back promptly once the guild's run slot frees.
+const PREEMPTED_RETRIGGER_SECONDS = RETRIGGER_MIN_SECONDS;
+
+/** Crash-recovery wake for the nth consecutive failed run: 3m, 6m, 12m, … capped at 2h. */
+function recoveryRetriggerSeconds(attempt: number): number {
+  return Math.min(RECOVERY_RETRIGGER_MAX_SECONDS, RECOVERY_RETRIGGER_SECONDS * 2 ** Math.max(0, attempt - 1));
+}
+
+// The no_reply decision that armed this wake, if any. Timers armed by anything else (turn-limit
+// cooldown, crash recovery, suppressed wakes, preemption, boot catch-up) have no plan to execute.
+function wakeSchedulingDecision(
+  wake: RetriggerWakeInput | undefined,
+  pastDecisions: OrchestratorDecisionHistoryEntry[]
+): OrchestratorDecisionHistoryEntry | undefined {
+  if (wake) {
+    if (wake.source !== "no_reply" || !wake.decisionId) return undefined;
+    return pastDecisions.find((entry) => entry.id === wake.decisionId && entry.action === "no_reply");
+  }
+  // Timer persisted before sources were recorded (or an external retrigger call): only trust the
+  // newest completed decision, and only when it is itself a no_reply that would have armed it.
+  const newest = pastDecisions[0];
+  return newest?.action === "no_reply" ? newest : undefined;
+}
 const CAST_ONLY_COOLDOWN_SECONDS = 900;
 
 const CAST_WAKE_MAX_TRAILING_BOT_MESSAGES = 4;
