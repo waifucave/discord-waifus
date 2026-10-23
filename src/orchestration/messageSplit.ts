@@ -4,6 +4,9 @@ const SENTENCE_SPLIT_RE = /(?<=[.?!])\s+/;
 // old 100-char cap shredding register-compliant replies (median 152ch) into 2-3 message bursts,
 // which both walls the channel and teaches the model multi-part replies via its own history.
 const HARD_CHUNK_CHARS = 280;
+// Discord rejects messages over 2000 characters. Measured in UTF-16 units (stricter than code
+// points) so the limit holds whichever way Discord counts.
+const DISCORD_MESSAGE_MAX_CHARS = 2000;
 const COMMA_FINDER_RE = /,/g;
 const EMOJI_FINDER_RE =
   /<a?:[A-Za-z0-9_]+:\d+>|[0-9#*]\uFE0F?\u20E3|(?:\p{Extended_Pictographic}|\p{Regional_Indicator})(?:[\uFE0E\uFE0F]|\p{Emoji_Modifier})?(?:\u200D(?:\p{Extended_Pictographic}|\p{Regional_Indicator})(?:[\uFE0E\uFE0F]|\p{Emoji_Modifier})?)*/gu;
@@ -58,11 +61,40 @@ function splitLongChunk(chunk: string, out: string[]): void {
   }
   const split = trySplitLongChunk(chunk);
   if (!split) {
-    out.push(chunk);
+    // No comma/emoji seam: an over-long piece is still sendable as-is, but one over Discord's
+    // limit would be rejected outright — hard-split it instead.
+    out.push(...hardSplitForDiscord(chunk));
     return;
   }
   splitLongChunk(split[0], out);
   splitLongChunk(split[1], out);
+}
+
+// Last resort for pieces over Discord's limit: cut at the last whitespace inside the limit (when it
+// leaves a reasonably sized head), otherwise exactly at the limit, never between a surrogate pair.
+function hardSplitForDiscord(chunk: string): string[] {
+  const pieces: string[] = [];
+  let rest = chunk;
+  while (rest.length > DISCORD_MESSAGE_MAX_CHARS) {
+    const window = rest.slice(0, DISCORD_MESSAGE_MAX_CHARS + 1);
+    let cut = -1;
+    for (let index = DISCORD_MESSAGE_MAX_CHARS; index >= DISCORD_MESSAGE_MAX_CHARS / 2; index -= 1) {
+      if (/\s/.test(window[index] ?? "")) {
+        cut = index;
+        break;
+      }
+    }
+    if (cut === -1) {
+      cut = DISCORD_MESSAGE_MAX_CHARS;
+      const before = rest.charCodeAt(cut - 1);
+      if (before >= 0xd800 && before <= 0xdbff) cut -= 1;
+    }
+    const head = rest.slice(0, cut).trimEnd();
+    if (head) pieces.push(head);
+    rest = rest.slice(cut).trimStart();
+  }
+  if (rest) pieces.push(rest);
+  return pieces;
 }
 
 function trySplitLongChunk(chunk: string): [string, string] | null {

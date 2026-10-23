@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { z } from "zod";
+import { RevisionedRecordSchema } from "../shared/schemas/common.js";
 import { MemoryRecord, PendingObservation } from "../shared/schemas/domain.js";
 import { DreamMemoryInput } from "../providers/types.js";
 import { DreamOp } from "./stageManager.js";
@@ -88,6 +90,41 @@ export function selectDreamInput(
     chunks.push(buildChunk("orphan", [], orphanObservations));
   }
   return chunks;
+}
+
+// Persisted per-guild rotation cursor: the key of the last chunk a dream pass processed. A pass
+// is capped at a few chunks, so without rotation the same alphabetically-first waifus would be
+// dreamed every night and later waifus (and the orphan chunk) never.
+export const DreamCursorFileSchema = RevisionedRecordSchema.extend({
+  cursors: z.record(z.string(), z.string()).default({})
+});
+export type DreamCursorFile = z.infer<typeof DreamCursorFileSchema>;
+export const DREAM_CURSOR_RELATIVE_PATH = "user/memory/dream-cursor.json";
+
+// selectDreamInput order: waifu ids sorted, "orphan" last. "all" (single chunk) never rotates.
+function dreamChunkSortKey(key: string): string {
+  return key === "orphan" ? "￿" : key;
+}
+
+// Rotate chunks so the pass starts with the first chunk AFTER the cursor (wrapping around).
+// Keys that vanished since the cursor was written still order correctly by sort key.
+export function orderDreamChunks(chunks: DreamChunk[], cursorKey: string | undefined): DreamChunk[] {
+  if (!cursorKey || chunks.length < 2) return chunks;
+  const cursor = dreamChunkSortKey(cursorKey);
+  const start = chunks.findIndex((chunk) => dreamChunkSortKey(chunk.key) > cursor);
+  if (start <= 0) return chunks;
+  return [...chunks.slice(start), ...chunks.slice(0, start)];
+}
+
+// Waifus a chunk is about: owners of its records AND of its observations (a waifu whose first
+// memories are still queued has no records yet). Dream ops may only assign memories to these.
+export function dreamChunkWaifuIds(chunk: DreamChunk): string[] {
+  return [
+    ...new Set([
+      ...chunk.inputs.map((input) => input.waifuId),
+      ...chunk.observations.map((observation) => observation.waifuId)
+    ])
+  ].sort();
 }
 
 export type DreamHistoryEntry = {

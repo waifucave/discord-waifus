@@ -9,10 +9,16 @@ import type {
   OrchestratorDecisionHistoryEntry,
   OrchestratorRespondingWaifu
 } from "../shared/schemas/domain.js";
+import type { RetriggerSource, RetriggerWake } from "./session.js";
 
-// Only two outcome shapes mean "the restart ate her line": still pending (resume ran before
-// the boot heal) or interrupted with the heal's runtime_restarted marker. Interruptions with
-// other reasons were superseded by real messages BEFORE the restart and must stay dead.
+// Only these outcome shapes mean "the restart ate her line": still pending (resume ran before
+// the boot heal), interrupted with the heal's runtime_restarted marker (crash/kill), or interrupted
+// by a planned stop of the runtime (restart, update, config reload). Interruptions with other
+// reasons were superseded by real messages, /stop, or an explicit user pause BEFORE the restart
+// and must stay dead.
+export const RUNTIME_RESTARTED_INTERRUPT_REASON = "runtime_restarted";
+export const RUNTIME_SHUTDOWN_INTERRUPT_REASON = "runtime_shutdown";
+const RESUMABLE_INTERRUPT_REASONS = new Set([RUNTIME_RESTARTED_INTERRUPT_REASON, RUNTIME_SHUTDOWN_INTERRUPT_REASON]);
 /** Interrupted decisions older than this get a fresh pass instead of a zombie reply. */
 const RESUME_DECISION_WINDOW_MS = 15 * 60 * 1000;
 /** Elapsed timers and stale work fire shortly after boot (clamped upward by scheduleRetrigger). */
@@ -23,6 +29,8 @@ export type ResumeChannelInput = {
   channelId: string;
   session: {
     scheduledRetriggerAt?: string;
+    /** Who armed scheduledRetriggerAt; carried into the restored timer so its wake pass is honest. */
+    scheduledRetrigger?: RetriggerWake;
     activePipeline: { kind: string; startedAt: string } | null;
   };
   /** Newest orchestrator decision recorded for this channel, regardless of status. */
@@ -40,17 +48,43 @@ export type ResumeAction =
       responders: OrchestratorRespondingWaifu[];
       reasoning: string;
     }
-  | { kind: "restore-timer"; guildId: string; channelId: string; seconds: number; reason: string }
+  | {
+      kind: "restore-timer";
+      guildId: string;
+      channelId: string;
+      seconds: number;
+      reason: string;
+      /** Wake identity for the restored timer; undefined = a pre-source persisted timer. */
+      wake?: { source: RetriggerSource; seconds?: number; decisionId?: string };
+    }
   | { kind: "none" };
 
+const BOOT_WAKE = { source: "restart_resume" } as const;
+
+// Outcomes are matched to planned responders by waifu id + occurrence, never by array index:
+// PickNextWaifu handoffs insert outcomes and move planned ones forward. Results follow the
+// outcome order (= execution order), and an unsent handoff resumes as a plain responder.
 export function unsentResponders(entry: OrchestratorDecisionHistoryEntry): OrchestratorRespondingWaifu[] {
-  return entry.respondingWaifus.filter((responder, index) => {
-    const outcome = entry.responderOutcomes[index];
-    if (!outcome || outcome.waifuId !== responder.waifuId) return false;
-    if (outcome.messageIds.length > 0) return false;
-    if (outcome.status === "pending") return true;
-    return outcome.status === "interrupted" && outcome.reason === "runtime_restarted";
-  });
+  const plannedOccurrences = new Map<string, number>();
+  const unsent: OrchestratorRespondingWaifu[] = [];
+  for (const outcome of entry.responderOutcomes) {
+    let responder: OrchestratorRespondingWaifu | undefined;
+    if (outcome.source === "handoff") {
+      responder = { waifuId: outcome.waifuId, delaySeconds: 0 };
+    } else {
+      const occurrence = plannedOccurrences.get(outcome.waifuId) ?? 0;
+      plannedOccurrences.set(outcome.waifuId, occurrence + 1);
+      responder = entry.respondingWaifus.filter((planned) => planned.waifuId === outcome.waifuId)[occurrence];
+    }
+    if (!responder || outcome.messageIds.length > 0) continue;
+    const resumable =
+      outcome.status === "pending" ||
+      (outcome.status === "interrupted" &&
+        outcome.reason !== undefined &&
+        RESUMABLE_INTERRUPT_REASONS.has(outcome.reason));
+    if (resumable) unsent.push(responder);
+  }
+  return unsent;
 }
 
 export function planRestartResume(input: ResumeChannelInput, now: Date): ResumeAction {
@@ -73,7 +107,7 @@ export function planRestartResume(input: ResumeChannelInput, now: Date): ResumeA
         };
       }
       // Too old to replay the beat verbatim — let a fresh pass read the room instead.
-      return { kind: "restore-timer", guildId, channelId, seconds: PROMPT_STAGGER_SECONDS, reason: "stale interrupted decision" };
+      return { kind: "restore-timer", guildId, channelId, seconds: PROMPT_STAGGER_SECONDS, reason: "stale interrupted decision", wake: BOOT_WAKE };
     }
   }
 
@@ -88,22 +122,25 @@ export function planRestartResume(input: ResumeChannelInput, now: Date): ResumeA
       guildId,
       channelId,
       seconds: PROMPT_STAGGER_SECONDS,
-      reason: "human message arrived during downtime"
+      reason: "human message arrived during downtime",
+      wake: BOOT_WAKE
     };
   }
 
-  // 3. A scheduled wake: keep counting the original clock.
+  // 3. A scheduled wake: keep counting the original clock. Fired/consumed wakes are cleared from
+  // the session at run start, so an elapsed time here really did elapse during downtime.
   if (session.scheduledRetriggerAt) {
+    const wake = session.scheduledRetrigger;
     const remainingSeconds = Math.round((Date.parse(session.scheduledRetriggerAt) - now.getTime()) / 1000);
     if (remainingSeconds > 0) {
-      return { kind: "restore-timer", guildId, channelId, seconds: remainingSeconds, reason: "persisted retrigger restored" };
+      return { kind: "restore-timer", guildId, channelId, seconds: remainingSeconds, reason: "persisted retrigger restored", wake };
     }
-    return { kind: "restore-timer", guildId, channelId, seconds: PROMPT_STAGGER_SECONDS, reason: "retrigger elapsed during downtime" };
+    return { kind: "restore-timer", guildId, channelId, seconds: PROMPT_STAGGER_SECONDS, reason: "retrigger elapsed during downtime", wake };
   }
 
   // 4. A run that died mid-flight without responders or a timer: check the room soon.
   if (session.activePipeline) {
-    return { kind: "restore-timer", guildId, channelId, seconds: PROMPT_STAGGER_SECONDS, reason: "pipeline was active at shutdown" };
+    return { kind: "restore-timer", guildId, channelId, seconds: PROMPT_STAGGER_SECONDS, reason: "pipeline was active at shutdown", wake: BOOT_WAKE };
   }
 
   return { kind: "none" };

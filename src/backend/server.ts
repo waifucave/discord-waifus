@@ -431,6 +431,8 @@ async function startLockedBackend(options: StartBackendOptions): Promise<Running
         },
         resume: async () => {
           runtime.paused = false;
+          // Re-arm wakes the pause cleared / catch up a paused boot (no-op unless it was paused).
+          runtimeOrchestrator?.resumeAfterPause();
           runtime.updatedAt = new Date().toISOString();
           await writeRuntimeFiles(options.dataRoot, runtime);
         },

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { planRestartResume } from "../src/orchestration/restartResume.js";
+import { planRestartResume, unsentResponders } from "../src/orchestration/restartResume.js";
 import type { OrchestratorDecisionHistoryEntry } from "../src/shared/schemas/domain.js";
 
 const NOW = new Date("2026-07-06T12:00:00.000Z");
@@ -145,5 +145,90 @@ describe("planRestartResume", () => {
       NOW
     );
     expect(plan.kind).toBe("none");
+  });
+
+  it("resumes a responder interrupted by a planned shutdown/reload (runtime_shutdown)", () => {
+    const entry = decision({
+      status: "interrupted",
+      createdAt: iso(-60),
+      respondingWaifus: [{ waifuId: "akari", delaySeconds: 0 }],
+      responderOutcomes: [{ id: "o1", waifuId: "akari", source: "orchestrator", status: "interrupted", reason: "runtime_shutdown", messageIds: [] }]
+    } as never);
+    const plan = planRestartResume(
+      { guildId: "g1", channelId: "c1", session: { activePipeline: null }, latestDecision: entry },
+      NOW
+    );
+    expect(plan.kind).toBe("resume-responders");
+  });
+
+  it("never resumes a responder interrupted by an explicit user pause", () => {
+    const entry = decision({
+      status: "interrupted",
+      createdAt: iso(-60),
+      respondingWaifus: [{ waifuId: "akari", delaySeconds: 0 }],
+      responderOutcomes: [{ id: "o1", waifuId: "akari", source: "orchestrator", status: "interrupted", reason: "runtime paused", messageIds: [] }]
+    } as never);
+    const plan = planRestartResume(
+      { guildId: "g1", channelId: "c1", session: { activePipeline: null }, latestDecision: entry },
+      NOW
+    );
+    expect(plan.kind).toBe("none");
+  });
+});
+
+describe("unsentResponders", () => {
+  const interrupted = { status: "interrupted", reason: "runtime_restarted", messageIds: [] };
+
+  it("matches planned responders by waifu id after a handoff outcome was inserted ahead of them", () => {
+    const entry = decision({
+      respondingWaifus: [
+        { waifuId: "akari", delaySeconds: 0 },
+        { waifuId: "riko", delaySeconds: 4, directive: { intent: "spotlight", goal: "answer K" } }
+      ],
+      responderOutcomes: [
+        { id: "o1", waifuId: "akari", source: "orchestrator", status: "sent", messageIds: ["m1"] },
+        { id: "h1", waifuId: "mika", source: "handoff", handoffFromWaifuId: "akari", status: "sent", messageIds: ["m2"] },
+        { id: "o2", waifuId: "riko", source: "orchestrator", ...interrupted }
+      ]
+    } as never);
+    const unsent = unsentResponders(entry);
+    expect(unsent.map((responder) => responder.waifuId)).toEqual(["riko"]);
+    expect(unsent[0].directive?.goal).toBe("answer K");
+  });
+
+  it("follows execution order after a handoff moved a planned responder forward", () => {
+    const entry = decision({
+      respondingWaifus: [
+        { waifuId: "akari", delaySeconds: 0 },
+        { waifuId: "riko", delaySeconds: 3 },
+        { waifuId: "mika", delaySeconds: 5, directive: { intent: "change_topic", goal: "the trip" } }
+      ],
+      responderOutcomes: [
+        { id: "o1", waifuId: "akari", source: "orchestrator", status: "sent", messageIds: ["m1"] },
+        { id: "o3", waifuId: "mika", source: "orchestrator", handoffFromWaifuId: "akari", ...interrupted },
+        { id: "o2", waifuId: "riko", source: "orchestrator", ...interrupted }
+      ]
+    } as never);
+    const unsent = unsentResponders(entry);
+    expect(unsent.map((responder) => responder.waifuId)).toEqual(["mika", "riko"]);
+    expect(unsent[0].directive?.goal).toBe("the trip");
+  });
+
+  it("matches repeated waifus by occurrence and resumes an unsent handoff", () => {
+    const entry = decision({
+      respondingWaifus: [
+        { waifuId: "akari", delaySeconds: 0, directive: { intent: "spotlight", goal: "first" } },
+        { waifuId: "akari", delaySeconds: 2, directive: { intent: "spotlight", goal: "second" } }
+      ],
+      responderOutcomes: [
+        { id: "o1", waifuId: "akari", source: "orchestrator", status: "sent", messageIds: ["m1"] },
+        { id: "h1", waifuId: "riko", source: "handoff", handoffFromWaifuId: "akari", ...interrupted },
+        { id: "o2", waifuId: "akari", source: "orchestrator", status: "pending", messageIds: [] }
+      ]
+    } as never);
+    const unsent = unsentResponders(entry);
+    expect(unsent.map((responder) => responder.waifuId)).toEqual(["riko", "akari"]);
+    expect(unsent[0].directive).toBeUndefined();
+    expect(unsent[1].directive?.goal).toBe("second");
   });
 });
