@@ -5,6 +5,7 @@ import { appDataPath } from "../config/paths.js";
 import { readPackageVersion } from "../config/layout.js";
 import { atomicWriteJson } from "../storage/atomic.js";
 import { StorageService } from "../storage/storageService.js";
+import { acquireHostInstanceLock } from "../storage/instanceLock.js";
 import {
   DiscordGatewayFacade,
   DiscordJsGateway,
@@ -64,7 +65,30 @@ export type RunningBackend = {
 
 const DEFAULT_DISCORD_RETRY_DELAYS_MS = [5_000, 15_000, 30_000, 60_000, 120_000] as const;
 
+// B21: hold the data root's exclusive host lock for the backend's whole lifetime, before any
+// migration, updater registration or Discord login can run; refuse to start if it is held.
 export async function startBackend(options: StartBackendOptions): Promise<RunningBackend> {
+  const instanceLock = await acquireHostInstanceLock(options.dataRoot);
+  let running: RunningBackend;
+  try {
+    running = await startLockedBackend(options);
+  } catch (error) {
+    await instanceLock.release();
+    throw error;
+  }
+  return {
+    ...running,
+    close: async () => {
+      try {
+        await running.close();
+      } finally {
+        await instanceLock.release();
+      }
+    }
+  };
+}
+
+async function startLockedBackend(options: StartBackendOptions): Promise<RunningBackend> {
   const updateActivity = new UpdateActivity();
   let updateReady = false;
   let updateClosing = false;
