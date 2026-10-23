@@ -34,6 +34,7 @@ import {
 } from "./keys.js";
 import {
   ACTIVE_CONTEXT_MS,
+  entryRenderHash,
   isGapEntry,
   orderedEntries,
   pruneLedgerEntries,
@@ -58,10 +59,20 @@ export type ReconcileLedgerOptions = {
 export type CommitPrepareInput = {
   /** Ledger entries the build rendered (sealed in this write). */
   sealIds: string[];
+  /**
+   * entryRenderHash of each sealed entry as the build rendered it. Any mismatch (the entry was
+   * replaced meanwhile) aborts the whole write with `{ conflict: "ledger" }`.
+   */
+  expectedHashes?: Record<string, string>;
   eventSeqs?: number[];
-  /** Context-state transform applied in the same locked section. */
-  update: (current: ContextState) => ContextState;
+  /**
+   * Context-state transform applied in the same locked section; returning undefined aborts the
+   * whole write (nothing sealed or persisted) with `{ conflict: "state" }`.
+   */
+  update: (current: ContextState) => ContextState | undefined;
 };
+
+export type CommitPrepareResult = { ok: true; state: ContextState } | { ok: false; conflict: "state" | "ledger" };
 
 /** The engine's store: the spec 8.1 ContextStore plus the reads/one-write the runtime needs. */
 export interface ContextEngineStore extends ContextStore {
@@ -74,7 +85,7 @@ export interface ContextEngineStore extends ContextStore {
   loadLedger(k: ConversationKey): Promise<ConversationLedger>;
   loadRefs(k: ConversationKey): Promise<ConversationRefs>;
   /** Seal + state update + pruning under one set of locks (spec 8.3 "in ONE write"). */
-  commitPrepare(k: ConversationKey, a: ContextAgent, i: CommitPrepareInput): Promise<ContextState>;
+  commitPrepare(k: ConversationKey, a: ContextAgent, i: CommitPrepareInput): Promise<CommitPrepareResult>;
   /** Prune ledger entries and refs below the minimum cursor of active contexts (spec 8.1). */
   pruneConversation(k: ConversationKey): Promise<{ removed: number }>;
 }
@@ -82,6 +93,8 @@ export interface ContextEngineStore extends ContextStore {
 export type FileContextStoreOptions = {
   now?: () => Date;
   timeZone?: () => string;
+  /** Newest ledger entries pruning never touches (default LEDGER_PROTECT_NEWEST). */
+  pruneProtectNewest?: number;
 };
 
 export function defaultContextState(
@@ -126,6 +139,7 @@ function defaultLedger(k: ConversationKey, now: Date): ConversationLedger {
 export class FileContextStore implements ContextEngineStore {
   private readonly now: () => Date;
   private readonly timeZone: () => string;
+  private readonly protectNewest: number | undefined;
 
   constructor(
     private readonly storage: StorageService,
@@ -133,6 +147,7 @@ export class FileContextStore implements ContextEngineStore {
   ) {
     this.now = options.now ?? (() => new Date());
     this.timeZone = options.timeZone ?? hostTimeZone;
+    this.protectNewest = options.pruneProtectNewest;
   }
 
   async load(k: ConversationKey, a: ContextAgent): Promise<ContextState> {
@@ -196,18 +211,24 @@ export class FileContextStore implements ContextEngineStore {
     });
   }
 
-  async commitPrepare(k: ConversationKey, a: ContextAgent, i: CommitPrepareInput): Promise<ContextState> {
+  async commitPrepare(k: ConversationKey, a: ContextAgent, i: CommitPrepareInput): Promise<CommitPrepareResult> {
     return this.storage.withLocks([ledgerResourceKey(k), refsResourceKey(k), contextResourceKey(k, a)], async () => {
       let ledger = await this.loadLedger(k);
+      for (const [id, hash] of Object.entries(i.expectedHashes ?? {})) {
+        const entry = ledger.entries[id];
+        if (!entry || entryRenderHash(entry) !== hash) return { ok: false, conflict: "ledger" } as const;
+      }
+      const current = await this.readState(k, a);
+      const next = i.update(structuredClone(current));
+      if (!next) return { ok: false, conflict: "state" } as const;
       const sealed = sealEntries(ledger, i.sealIds, i.eventSeqs ?? []);
       if (sealed) ledger = sealed;
-      const current = await this.readState(k, a);
-      const state = await this.writeRecord(contextStatePath(k, a), ContextStateSchema, i.update(structuredClone(current)));
+      const state = await this.writeRecord(contextStatePath(k, a), ContextStateSchema, next);
       const pruned = await this.pruneLocked(k, ledger, { [contextAgentId(a)]: state });
       if (pruned || sealed) {
         await this.writeRecord(conversationLedgerPath(k), ConversationLedgerSchema, pruned ?? ledger);
       }
-      return state;
+      return { ok: true, state } as const;
     });
   }
 
@@ -258,7 +279,10 @@ export class FileContextStore implements ContextEngineStore {
       if (now - Date.parse(state.lastUsedAt) > ACTIVE_CONTEXT_MS) continue;
       cursors.push(state.cursorSeq);
     }
-    const result = pruneLedgerEntries(ledger, { activeCursors: cursors });
+    const result = pruneLedgerEntries(ledger, {
+      activeCursors: cursors,
+      ...(this.protectNewest !== undefined ? { protectNewest: this.protectNewest } : {})
+    });
     if (!result) return undefined;
     const refs = await this.loadRefs(k);
     const keepIds = new Set(Object.values(result.ledger.entries).filter((e) => !isGapEntry(e)).map((e) => e.id));

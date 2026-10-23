@@ -1,5 +1,5 @@
 promptCacheKey: waifu:aria:g_100_200
-cursorSeq: 0 · transcriptCount: 4 · estimatedTokens: 1161
+cursorSeq: 0 · transcriptCount: 4 · estimatedTokens: 1163
 breakpoint: entry#4
 tools:
 - add_memory: {"type":"object","properties":{"content":{"type":"string"}},"required":["content"]}
@@ -16,13 +16,17 @@ You are Aria. Static harness text.
 === 2 user ===
 --- text ---
 — Sat 24 Oct —
+
 --- text ---
 [14:00 #a0] Kevin: morning! Sat 24 Oct 2026 14:00
+
 --- text ---
 [14:01 #a1] Riko: look at this
+
 --- image image/png · 10 bytes · 128bd9d1e4d6 ---
 --- text [cache] ---
 <direction>Compliment Riko's cake.</direction>
+
 === 3 assistant ===
 --- tool call add_memory (call_1) ---
 {"content":"Riko bakes"}
@@ -31,10 +35,13 @@ saved
 === 5 assistant ===
 --- text ---
 that cake is gorgeous
+
 === 6 user ===
 --- text ---
 — 3 hours later —
+
 --- text [cache] ---
 [18:00 #a3 ↩#a1] Kevin: agreed
+
 --- text ---
 Now 2026-10-24T18:00:30.000Z (UTC). Write Aria's next message.

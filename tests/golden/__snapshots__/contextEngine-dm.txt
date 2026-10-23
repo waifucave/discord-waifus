@@ -1,5 +1,5 @@
 promptCacheKey: waifu:aria:dm_555_aria
-cursorSeq: 0 · transcriptCount: 1 · estimatedTokens: 101
+cursorSeq: 0 · transcriptCount: 1 · estimatedTokens: 102
 breakpoint: entry#1
 tools:
 - add_memory: {"type":"object","properties":{"content":{"type":"string"}},"required":["content"]}
@@ -16,7 +16,9 @@ You are Aria. Static harness text.
 === 2 user ===
 --- text ---
 — Sat 24 Oct —
+
 --- text [cache] ---
 [14:00 #a0] Kevin: psst
+
 --- text ---
 Now 2026-10-24T15:00:00.000Z (UTC). Write Aria's next message.

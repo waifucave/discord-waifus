@@ -6,7 +6,13 @@ import { afterEach, describe, expect, it } from "vitest";
 import { buildContext, stripCacheMarkers } from "../src/orchestration/context/builder.js";
 import { FileContextStore } from "../src/orchestration/context/contextStore.js";
 import { FrozenImageRenderer } from "../src/orchestration/context/images.js";
-import { conversationKey, contextStatePath, type ConversationRef } from "../src/orchestration/context/keys.js";
+import {
+  conversationKey,
+  contextStatePath,
+  conversationLedgerPath,
+  type ConversationRef
+} from "../src/orchestration/context/keys.js";
+import { ConversationLedgerSchema } from "../src/shared/schemas/context.js";
 import { orderedEntries } from "../src/orchestration/context/ledger.js";
 import { ContextRuntime, type ContextRuntimeDeps } from "../src/orchestration/context/runtime.js";
 import {
@@ -108,7 +114,8 @@ describe("ContextRuntime.prepare", () => {
     const renderer = fakeRoleRenderer();
     const p = await prepare(h, { render: renderer, pendingNotes: [{ kind: "direction", text: "be cheerful" }] });
 
-    expect(h.channel.fetches).toEqual([{ afterMessageId: null, maxMessages: 50 }]);
+    // The shared ledger is fetched with the conversation-level cap, not this agent's backfillCap.
+    expect(h.channel.fetches).toEqual([{ afterMessageId: null, maxMessages: 200 }]);
     expect(p.transcript.map((e) => e.body)).toEqual(["hi Aria", "hello"]);
     expect(p.state.revision).toBeGreaterThan(0);
     expect(p.state.headerText).toContain("<place>");
@@ -120,7 +127,7 @@ describe("ContextRuntime.prepare", () => {
 
     // The direction is in the transcript of the very call it steers, as user content.
     const texts = flatten(p.prompt.messages).map((b) => (b.block as { text?: string }).text);
-    expect(texts).toContain("<direction>be cheerful</direction>");
+    expect(texts).toContain("<direction>be cheerful</direction>\n");
     expect(p.prompt.messages.filter((m) => m.role === "system")).toHaveLength(1);
     expect(p.prompt.messages[0]!.role).toBe("system");
     expect(p.prompt.breakpoint).toEqual({ kind: "note", seq: 1 });
@@ -172,10 +179,11 @@ describe("ContextRuntime.prepare", () => {
     h.channel.post({ content: "first" });
     const p1 = await prepare(h, { backfillCap: 3 });
     await h.runtime.commit(p1, { modelKey: p1.modelKey });
-    for (let i = 0; i < 5; i += 1) h.channel.post({ content: `burst ${i}` });
+    for (let i = 0; i < 203; i += 1) h.channel.post({ content: `burst ${i}` });
     const p2 = await prepare(h, { backfillCap: 3 });
     expect(p2.state.cursorSeq).toBe(p1.state.cursorSeq);
-    expect(p2.transcript.map((e) => e.body)).toEqual(["first", "— earlier messages not loaded —", "burst 2", "burst 3", "burst 4"]);
+    expect(p2.transcript).toHaveLength(202);
+    expect(p2.transcript.slice(0, 3).map((e) => e.body)).toEqual(["first", "— earlier messages not loaded —", "burst 3"]);
     // Nothing already rendered moved: the previous prompt is a prefix.
     const before = stripped(p1.prompt.messages).slice(0, -1);
     expect(stripped(p2.prompt.messages).slice(0, before.length)).toEqual(before);
@@ -201,6 +209,118 @@ describe("ContextRuntime.prepare", () => {
     await expect(access(path.join(h.root, contextStatePath(conversationKey(dm), ARIA)))).resolves.toBeUndefined();
     expect(p.prompt.debug.transcript).toContain("Kevin: psst");
     await expect(serializePrompt(p.prompt)).toMatchFileSnapshot("./golden/__snapshots__/contextEngine-dm.txt");
+  });
+});
+
+describe("ContextRuntime.prepare hardening", () => {
+  it("a small-cap agent preparing first after a burst never hides messages from a larger-cap agent", async () => {
+    const h = await harness();
+    h.channel.post({ content: "hello" });
+    const small = await prepare(h, { agent: { kind: "orchestrator" }, backfillCap: 3 });
+    const big = await prepare(h, { backfillCap: 50 });
+    await h.runtime.commit(small, { modelKey: small.modelKey });
+    await h.runtime.commit(big, { modelKey: big.modelKey });
+    for (let i = 0; i < 30; i += 1) h.channel.post({ content: `burst ${i}` });
+    await prepare(h, { agent: { kind: "orchestrator" }, backfillCap: 3 });
+    const after = await prepare(h, { backfillCap: 50 });
+    expect(after.transcript.map((e) => e.body)).toEqual(["hello", ...Array.from({ length: 30 }, (_, i) => `burst ${i}`)]);
+  });
+
+  it("a concurrent commit during prepare forces a rebuild, never a lossy merge", async () => {
+    const logged: string[] = [];
+    const h = await harness({ logger: { ...quietLogger(), info: (message: string) => logged.push(message) } });
+    h.channel.post({ content: "pic", attachments: [{ id: "61", url: "https://cdn.discordapp.com/attachments/200/61/x.png", filename: "x.png", contentType: "image/png", size: 10 }] });
+    const p1 = await prepare(h);
+    h.channel.post({ content: "pic 2", attachments: [{ id: "62", url: "https://cdn.discordapp.com/attachments/200/62/y.png", filename: "y.png", contentType: "image/png", size: 10 }] });
+    // The previous turn's commit lands between this prepare's load and its write.
+    const inner = h.channel.fetchSince.bind(h.channel);
+    let interleaved = false;
+    h.channel.fetchSince = async (i) => {
+      if (!interleaved) {
+        interleaved = true;
+        await h.runtime.commit(p1, { modelKey: p1.modelKey, notes: [{ kind: "tool", callId: "c1", name: "add_memory", arguments: "{}", result: "ok" }] });
+      }
+      return inner(i);
+    };
+    const p2 = await prepare(h, { pendingNotes: [{ kind: "direction", text: "steer" }] });
+    const ids = p2.state.notes.map((n) => n.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(p2.state.notes.map((n) => n.kind)).toEqual(["tool", "direction"]);
+    const texts = flatten(p2.prompt.messages).map((b) => JSON.stringify(b.block));
+    expect(texts.some((t) => t.includes("<direction>steer</direction>"))).toBe(true);
+    expect(texts.some((t) => t.includes('"toolCall"'))).toBe(true);
+    // The image frozen by the sent build is persisted.
+    expect(p2.state.imageModes["att:62"]).toEqual({ mode: "inline" });
+    expect(p2.state.inlineImageCount).toBe(2);
+    expect(logged).toContain("Context or ledger changed during prepare; rebuilding");
+    const again = await prepare(h);
+    const prev = stripped(p2.prompt.messages);
+    expect(stripped(again.prompt.messages).slice(0, prev.length - 1)).toEqual(prev.slice(0, -1));
+  });
+
+  it("an abort while waiting for compaction seals and persists nothing", async () => {
+    const h = await harness({
+      compaction: { check: () => "messages", compact: () => new Promise(() => undefined), inFlight: () => undefined },
+      settings: () => ({ ...DEFAULT_COMPACTION_SETTINGS, waitTimeoutMs: 5_000 })
+    });
+    h.channel.post({ content: "x" });
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(new Error("run superseded")), 20);
+    await expect(prepare(h, { summarize: async () => "s", signal: controller.signal })).rejects.toThrow(/superseded/);
+    const key = conversationKey(GUILD);
+    expect(orderedEntries(await h.store.loadLedger(key)).every((e) => !e.sealed)).toBe(true);
+    expect((await h.store.load(key, ARIA)).revision).toBe(0);
+  });
+
+  it("a fetch failure rejects prepare without persisting anything", async () => {
+    const h = await harness({
+      messages: { fetchSince: async () => { throw new Error("Discord 503"); } }
+    });
+    await expect(prepare(h, { pendingNotes: [{ kind: "direction", text: "d" }] })).rejects.toThrow(/503/);
+    expect((await h.store.load(conversationKey(GUILD), ARIA)).revision).toBe(0);
+  });
+
+  it("OCR finishing after the first render never rewrites the frozen image text", async () => {
+    let ocrText: string | undefined;
+    const h = await harness({ ocr: { cachedText: async () => ocrText } });
+    h.channel.post({ content: "menu", attachments: [{ id: "63", url: "https://cdn.discordapp.com/attachments/200/63/m.png", filename: "m.png", contentType: "image/png", size: 10 }] });
+    const textOnly = fakeModel({ images: false });
+    const p1 = await prepare(h, { model: textOnly });
+    await h.runtime.commit(p1, { modelKey: p1.modelKey });
+    ocrText = "SOUP 4.50";
+    const p2 = await prepare(h, { model: textOnly });
+    const texts = flatten(p2.prompt.messages).map((b) => (b.block as { text?: string }).text);
+    expect(texts).toContain("[image]\n");
+    expect(texts.some((t) => t?.includes("SOUP"))).toBe(false);
+    expect(p2.state.imageModes["att:63"]).toEqual({ mode: "text", text: "[image]" });
+  });
+
+  it("converts ledger edit events into edit notes once, from the note counter, and seals them", async () => {
+    const h = await harness();
+    const first = h.channel.post({ content: "teh cake" });
+    const p1 = await prepare(h, { pendingNotes: [{ kind: "direction", text: "d" }] });
+    await h.runtime.commit(p1, { modelKey: p1.modelKey });
+    h.channel.post({ content: "lol" });
+    await prepare(h, { agent: { kind: "orchestrator" } });
+    const key = conversationKey(GUILD);
+    const storage = new StorageService(h.root);
+    await storage.updateRevisionedJson({
+      resourceKey: `ledger:${key}`,
+      relativePath: conversationLedgerPath(key),
+      schema: ConversationLedgerSchema,
+      fallback: await h.store.loadLedger(key),
+      transform: (ledger) => ({
+        ...ledger,
+        events: [{ kind: "edit", seq: 1, at: new Date(h.clock.now).toISOString(), messageId: first.id, anchorSeq: 2, authorId: "kevin", text: "the cake", sealed: false }]
+      })
+    });
+    const p2 = await prepare(h);
+    expect(p2.state.notes.at(-1)).toMatchObject({ kind: "edit", id: "n2", seq: 2, anchorSeq: 2, eventSeq: 1, authorName: "Kevin" });
+    expect(p2.prompt.debug.transcript).toContain("<edit>Kevin edited #a0: the cake</edit>");
+    expect((await h.store.loadLedger(key)).events[0]).toMatchObject({ sealed: true });
+    await h.runtime.commit(p2, { modelKey: p2.modelKey });
+    const p3 = await prepare(h);
+    expect(p3.state.notes.filter((n) => n.kind === "edit")).toHaveLength(1);
   });
 });
 
@@ -232,7 +352,12 @@ describe("prefix stability (spec 8.3 acceptance)", () => {
       });
       // Her reply lands in Discord, then a human answers (plus an occasional image / gap).
       h.channel.post({ authorId: "aria-bot", authorName: "Aria", authorIsBot: true, content: `reply ${turn}` }, h.clock.now + 1_000);
+      if (turn % 3 === 1) {
+        // A split reply: two consecutive self messages.
+        h.channel.post({ authorId: "aria-bot", authorName: "Aria", authorIsBot: true, content: `reply ${turn} part 2` }, h.clock.now + 2_000);
+      }
       h.clock.now += turn === 9 ? 3 * 3_600_000 : 30_000;
+      if (turn % 2 === 0) h.channel.post({ authorId: "riko", authorName: "Riko", content: `riko ${turn}` }, h.clock.now - 5_000);
       h.channel.post(
         {
           content: `human ${turn}`,
@@ -244,6 +369,12 @@ describe("prefix stability (spec 8.3 acceptance)", () => {
       );
       previous = p;
     }
+    // A wire that joins text blocks with "" (OpenAI chat) still separates split replies and turns.
+    const joined = previous!.prompt.messages.map((m) =>
+      typeof m.content === "string" ? m.content : m.content.map((b) => (b.type === "text" ? b.text : "")).join("")
+    );
+    expect(joined.some((t) => t.includes("reply 1\nreply 1 part 2\n"))).toBe(true);
+    expect(joined.some((t) => /riko 0\n\[\d\d:\d\d #[0-9a-z]+\] Kevin: human 0\n/.test(t))).toBe(true);
   });
 
   it("two builds over the same input are byte-identical", async () => {
@@ -294,7 +425,7 @@ describe("prefix stability (spec 8.3 acceptance)", () => {
     const markedTexts = blocks.filter((b) => b.marked).map((b) => (b.block as { text: string }).text);
     expect(markedTexts).toHaveLength(4); // A, B, C_prev, C
     const previousCText = (flatten(p1.prompt.messages).filter((b) => b.marked).at(-1)!.block as { text: string }).text;
-    expect(previousCText).toBe("[14:00 #a0] Kevin: start");
+    expect(previousCText).toBe("[14:00 #a0] Kevin: start\n");
     expect(markedTexts[2]).toBe(previousCText);
     expect(markedTexts[3]).toContain("chatter 34");
     expect(p2.prompt.breakpoint).toEqual({ kind: "entry", seq: 36 });

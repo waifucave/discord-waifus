@@ -23,7 +23,14 @@ import { buildContext, modelKeyFor } from "./builder.js";
 import type { ContextEngineStore } from "./contextStore.js";
 import { FrozenImageRenderer, type OcrTextLookup } from "./images.js";
 import { conversationKey, type ContextAgent, type ConversationKey, type ConversationRef } from "./keys.js";
-import { ACTIVE_CONTEXT_MS, isGapEntry, newestMessageEntry, newestSeq } from "./ledger.js";
+import {
+  ACTIVE_CONTEXT_MS,
+  entryRenderHash,
+  isGapEntry,
+  newestMessageEntry,
+  newestSeq,
+  orderedEntries
+} from "./ledger.js";
 import { discordMessageRenderer, EMPTY_GUILD_DIRECTORY } from "./messageRender.js";
 import { hostTimeZone } from "./timeFormat.js";
 import { resolveTokenBudget } from "./tokens.js";
@@ -96,6 +103,9 @@ export type PrepareInput = {
 type Internal = { input: PrepareInput; key: ConversationKey };
 
 const DEFAULT_MEMORY_LIMIT = 12;
+/** Fetch cap for the shared ledger (spec 8.3 review): independent of any one agent's backfillCap. */
+export const CONVERSATION_FETCH_CAP = 200;
+const MAX_PREPARE_CONFLICTS = 2;
 
 class PrepareAbortedError extends Error {
   override name = "AbortError";
@@ -145,7 +155,11 @@ function materializeNotes(state: ContextState, notes: readonly NewContextNote[],
   });
 }
 
-async function withTimeout<T>(promise: Promise<T>, ms: number, signal?: AbortSignal): Promise<"done" | "timeout" | "failed"> {
+async function withTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  signal?: AbortSignal
+): Promise<"done" | "timeout" | "failed" | "aborted"> {
   let timer: NodeJS.Timeout | undefined;
   let onAbort: (() => void) | undefined;
   try {
@@ -154,10 +168,11 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, signal?: AbortSig
         () => "done" as const,
         () => "failed" as const
       ),
-      new Promise<"timeout">((resolve) => {
+      new Promise<"timeout" | "aborted">((resolve) => {
         timer = setTimeout(() => resolve("timeout"), ms);
-        onAbort = () => resolve("timeout");
-        signal?.addEventListener("abort", onAbort, { once: true });
+        onAbort = () => resolve("aborted");
+        if (signal?.aborted) onAbort();
+        else signal?.addEventListener("abort", onAbort, { once: true });
       })
     ]);
   } finally {
@@ -235,6 +250,28 @@ export class ContextRuntime {
     });
   }
 
+  private async ledgerView(key: ConversationKey) {
+    const ledger = await this.d.store.loadLedger(key);
+    const all = orderedEntries(ledger);
+    const refs = await this.d.store.assignRefs(
+      key,
+      all.filter((entry) => !isGapEntry(entry)).map((entry) => entry.id)
+    );
+    const byId = new Map(all.map((entry) => [entry.id, entry]));
+    return {
+      all,
+      events: ledger.events,
+      refs,
+      lookup: (id: string) => byId.get(id),
+      // Notes created now anchor to the NEWEST ledger entry (`all` is in seq order).
+      anchorSeq: all.length > 0 ? all[all.length - 1]!.seq : 0
+    };
+  }
+
+  private isFresh(state: ContextState, now: Date): boolean {
+    return state.revision === 0 || now.getTime() - Date.parse(state.lastUsedAt) > ACTIVE_CONTEXT_MS;
+  }
+
   private async prepareInternal(i: PrepareInput, allowCompaction: boolean): Promise<PreparedContext> {
     const startedAt = this.now();
     const key = conversationKey(i.conversation);
@@ -242,58 +279,68 @@ export class ContextRuntime {
 
     // 1. load state
     const loaded = await this.d.store.load(key, i.agent);
-    const fresh = loaded.revision === 0 || startedAt.getTime() - Date.parse(loaded.lastUsedAt) > ACTIVE_CONTEXT_MS;
+    const fresh = this.isFresh(loaded, startedAt);
     const timeZone = fresh || loaded.headerText === null ? this.timeZone() : loaded.timeZone;
 
-    // 2. fetch since the newest ledger entry (not the cursor)
+    // 2. fetch since the newest ledger entry (not the cursor). The ledger is shared by every agent
+    // of the conversation, so the fetch uses a conversation-level cap: a small-cap agent preparing
+    // first after a burst must not write a permanent gap the others then inherit. backfillCap only
+    // cuts the window of a new epoch (startEpochIfNeeded).
     const before = await this.d.store.loadLedger(key);
     const newest = newestMessageEntry(before);
     const fetched = await this.d.messages.fetchSince({
       conversation: i.conversation,
       afterMessageId: newest?.id ?? null,
-      maxMessages: Math.max(1, i.backfillCap),
+      maxMessages: Math.max(1, i.backfillCap, CONVERSATION_FETCH_CAP),
       signal: i.signal
     });
     throwIfAborted(i.signal);
     const hasNew = fetched.messages.some((m) => before.entries[m.id] === undefined);
     const gap = !fetched.reachedCursor && newest !== undefined && hasNew;
     if (gap) {
-      this.d.logger.info("More new messages than the backfill cap; earlier ones were not loaded", {
+      this.d.logger.info("More new messages than the fetch cap; earlier ones were not loaded", {
         conversationKey: key,
         fetched: fetched.messages.length
       });
     }
 
     // 3. reconcile ledger, 4. assign refs (shared by every agent, in seq order)
-    const all = await this.d.store.reconcileLedger(key, fetched.messages, this.renderer, {
+    await this.d.store.reconcileLedger(key, fetched.messages, this.renderer, {
       dir: i.directory ?? EMPTY_GUILD_DIRECTORY,
       timeZone,
       gapBeforeNew: gap
     });
-    const refs = await this.d.store.assignRefs(
-      key,
-      all.filter((entry) => !isGapEntry(entry)).map((entry) => entry.id)
-    );
-    const byId = new Map(all.map((entry) => [entry.id, entry]));
-    const lookup = (id: string) => byId.get(id);
-    // Notes created now anchor to the NEWEST ledger entry (`all` is in seq order).
-    const anchorSeq = all.length > 0 ? all[all.length - 1]!.seq : 0;
+    let view = await this.ledgerView(key);
 
     let state = loaded;
     let isFresh = fresh;
-    for (let attempt = 0; ; attempt += 1) {
-      if (attempt > 0) {
-        state = await this.d.store.load(key, i.agent);
-        isFresh = false;
-      }
+    let compacted = false;
+    let conflicts = 0;
+    for (;;) {
       // 5. epoch start
-      const epoch = await this.startEpochIfNeeded(state, { i, fresh: isFresh, all, timeZone, now: startedAt });
+      const epoch = await this.startEpochIfNeeded(state, { i, fresh: isFresh, all: view.all, timeZone, now: startedAt });
       const working = epoch.state;
-      const transcript = all.filter((entry) => working.cursorSeq === null || entry.seq > working.cursorSeq);
+      const transcript = view.all.filter((entry) => working.cursorSeq === null || entry.seq > working.cursorSeq);
 
-      // 6. memory notes (mid-epoch only; the snapshot covers whoever is present at epoch start)
+      // 6. notes: ledger edit events this context has not seen yet (one counter with every other
+      // note), this turn's pending notes, memory notes (mid-epoch only — the snapshot covers whoever
+      // is present at epoch start).
+      const seenEvents = new Set(working.notes.flatMap((note) => (note.kind === "edit" ? [note.eventSeq] : [])));
+      const cursor = working.cursorSeq ?? -1;
+      const edits: NewContextNote[] = [];
+      for (const event of view.events) {
+        if (event.kind !== "edit" || event.anchorSeq <= cursor || seenEvents.has(event.seq)) continue;
+        edits.push({
+          kind: "edit",
+          eventSeq: event.seq,
+          messageId: event.messageId,
+          authorName: view.lookup(event.messageId)?.authorName ?? "",
+          text: event.text
+        });
+      }
       const memoryNotes = epoch.started ? [] : await this.proposeMemoryNotes(working, transcript, i, startedAt);
-      const newNotes = materializeNotes(working, [...(i.pendingNotes ?? []), ...memoryNotes], anchorSeq);
+      const pending = i.pendingNotes ?? [];
+      const newNotes = materializeNotes(working, [...edits, ...pending, ...memoryNotes], view.anchorSeq);
       const withNotes: ContextState = {
         ...working,
         notes: [...working.notes, ...newNotes],
@@ -304,6 +351,7 @@ export class ContextRuntime {
       // 7. build
       const images = this.frozenImages(i);
       const tools = i.render.tools();
+      const currentView = view;
       const buildFor = (s: ContextState, entries: LedgerEntry[]) =>
         buildContext(
           {
@@ -314,13 +362,13 @@ export class ContextRuntime {
             systemText: i.render.system(),
             headerText: s.headerText ?? "",
             transcript: entries,
-            events: [],
+            events: currentView.events,
             selfAuthorIds: i.selfAuthorIds,
-            refs,
+            refs: currentView.refs,
             tail: i.render.tail(s, startedAt, { recentReactions: i.recentReactions }),
             tools,
             renderToolTurnsAsText: i.renderToolTurnsAsText ?? tools.length === 0,
-            lookup
+            lookup: currentView.lookup
           },
           images
         );
@@ -338,9 +386,17 @@ export class ContextRuntime {
             settings
           })
         : undefined;
-      if (trigger && allowCompaction && attempt === 0 && i.summarize) {
+      if (trigger && allowCompaction && !compacted && i.summarize) {
+        compacted = true;
         const outcome = await this.awaitCompaction(key, i, prompt, trigger, settings);
-        if (outcome === "done") continue; // rebuild on the compacted state
+        // An abort while waiting must not seal or persist anything.
+        if (outcome === "aborted") throwIfAborted(i.signal);
+        if (outcome === "done") {
+          state = await this.d.store.load(key, i.agent);
+          isFresh = false;
+          view = await this.ledgerView(key);
+          continue; // rebuild on the compacted state
+        }
         if (outcome === "timeout") {
           // One-off hard truncation: newest keepRecent entries; the stored cursor is unchanged.
           rendered = transcript.slice(-Math.max(1, settings.keepRecent));
@@ -356,6 +412,7 @@ export class ContextRuntime {
           });
         }
       }
+      throwIfAborted(i.signal);
 
       // 9. one write: seal + notes + image modes + lastUsedAt (+ epoch fields) + pruning
       const decisions = images.decisions();
@@ -365,24 +422,43 @@ export class ContextRuntime {
         inlineImageCount: withNotes.inlineImageCount + decisions.inlineAdded,
         lastUsedAt: startedAt.toISOString()
       };
-      const written = await this.d.store.commitPrepare(key, i.agent, {
+      const builtOn = state;
+      const result = await this.d.store.commitPrepare(key, i.agent, {
         sealIds: rendered.map((entry) => entry.id),
+        expectedHashes: Object.fromEntries(rendered.map((entry) => [entry.id, entryRenderHash(entry)])),
+        eventSeqs: edits.map((note) => (note.kind === "edit" ? note.eventSeq : -1)),
         update: (current) => {
-          if (current.revision === state.revision) return final;
-          // Someone wrote this context meanwhile (e.g. a compaction finished): keep their state and
-          // only add what this prepare must persist.
-          this.d.logger.warn("Context changed during prepare; merging notes only", { conversationKey: key });
-          const known = new Set(current.notes.map((note) => note.id));
-          const extra = newNotes.filter((note) => !known.has(note.id));
+          if (current.revision === builtOn.revision) return final;
+          // Same epoch, changed meanwhile (e.g. a concurrent commit): what this build froze (image
+          // modes, note ids) may now collide — rebuild from the current state instead of merging.
+          if (current.epoch === builtOn.epoch) return undefined;
+          // A compaction finished meanwhile: the prompt is already built on the old epoch; keep the
+          // new epoch and only persist this turn's pending notes (re-numbered from its counter).
+          this.d.logger.warn("Context compacted during prepare; keeping only this turn's notes", { conversationKey: key });
+          const extra = materializeNotes(current, pending, view.anchorSeq);
           return {
             ...current,
             notes: [...current.notes, ...extra],
-            noteSeq: Math.max(current.noteSeq, final.noteSeq),
+            noteSeq: current.noteSeq + extra.length,
             lastUsedAt: final.lastUsedAt
           };
         }
       });
-      const retrieved = [...(epoch.started ? working.memorySnapshotIds : []), ...memoryNotes.flatMap((n) => (n.kind === "memory" ? n.memoryIds : []))];
+      if (!result.ok) {
+        conflicts += 1;
+        if (conflicts > MAX_PREPARE_CONFLICTS) {
+          throw new Error(`Context ${key} kept changing during prepare (${result.conflict}); giving up.`);
+        }
+        this.d.logger.info("Context or ledger changed during prepare; rebuilding", { conversationKey: key, conflict: result.conflict });
+        state = await this.d.store.load(key, i.agent);
+        isFresh = this.isFresh(state, startedAt);
+        view = await this.ledgerView(key);
+        continue;
+      }
+      const retrieved = [
+        ...(epoch.started ? working.memorySnapshotIds : []),
+        ...memoryNotes.flatMap((n) => (n.kind === "memory" ? n.memoryIds : []))
+      ];
       if (retrieved.length > 0) {
         try {
           this.d.snapshots.markRetrieved(retrieved, startedAt);
@@ -395,7 +471,7 @@ export class ContextRuntime {
         conversation: i.conversation,
         agent: i.agent,
         key,
-        state: written,
+        state: result.state,
         prompt,
         transcript: rendered,
         modelKey: modelKeyFor(i.model),
@@ -511,7 +587,7 @@ export class ContextRuntime {
     prompt: BuiltPrompt,
     trigger: CompactionTrigger,
     settings: CompactionSettings
-  ): Promise<"done" | "timeout" | "failed"> {
+  ): Promise<"done" | "timeout" | "failed" | "aborted"> {
     const running =
       this.d.compaction.inFlight(key, i.agent) ??
       this.d.compaction.compact({

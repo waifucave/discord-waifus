@@ -5,6 +5,7 @@ import { FileContextStore } from "../src/orchestration/context/contextStore.js";
 import { conversationKey, contextStatePath, conversationLedgerPath } from "../src/orchestration/context/keys.js";
 import {
   EARLIER_MESSAGES_NOT_LOADED,
+  entryRenderHash,
   orderedEntries,
   pruneLedgerEntries,
   reconcileEntries,
@@ -115,23 +116,31 @@ describe("ledger pruning (spec 8.1)", () => {
     ).ledger;
 
   it("prunes below the minimum active cursor and never at or above it", () => {
-    const pruned = pruneLedgerEntries(ledgerOf(10), { activeCursors: [6, 4] })!;
+    const pruned = pruneLedgerEntries(ledgerOf(10), { activeCursors: [6, 4], protectNewest: 0 })!;
     expect(orderedEntries(pruned.ledger).map((e) => e.seq)).toEqual([4, 5, 6, 7, 8, 9, 10]);
     expect(pruned.removedIds).toEqual(["1000", "1001", "1002"]);
   });
 
   it("keeps reply targets of kept entries (so ↩Name never changes)", () => {
-    const pruned = pruneLedgerEntries(ledgerOf(10, { "1008": "1000" }), { activeCursors: [6] })!;
+    const pruned = pruneLedgerEntries(ledgerOf(10, { "1008": "1000" }), { activeCursors: [6], protectNewest: 0 })!;
     expect(orderedEntries(pruned.ledger).map((e) => e.seq)).toEqual([1, 6, 7, 8, 9, 10]);
   });
 
+  it("never prunes the newest entries (default 200), protecting a not-yet-persisted context", () => {
+    expect(pruneLedgerEntries(ledgerOf(10), { activeCursors: [9] })).toBeUndefined();
+    const pruned = pruneLedgerEntries(ledgerOf(10), { activeCursors: [9], protectNewest: 4 })!;
+    expect(orderedEntries(pruned.ledger).map((e) => e.seq)).toEqual([7, 8, 9, 10]);
+    const big = pruneLedgerEntries(ledgerOf(260), { activeCursors: [250] })!;
+    expect(orderedEntries(big.ledger)).toHaveLength(200);
+  });
+
   it("an active context with a null cursor protects everything", () => {
-    expect(pruneLedgerEntries(ledgerOf(10), { activeCursors: [8, null] })).toBeUndefined();
+    expect(pruneLedgerEntries(ledgerOf(10), { activeCursors: [8, null], protectNewest: 0 })).toBeUndefined();
   });
 
   it("with no active context only the cap applies", () => {
-    expect(pruneLedgerEntries(ledgerOf(10), { activeCursors: [], cap: 20 })).toBeUndefined();
-    const pruned = pruneLedgerEntries(ledgerOf(10), { activeCursors: [], cap: 4 })!;
+    expect(pruneLedgerEntries(ledgerOf(10), { activeCursors: [], cap: 20, protectNewest: 0 })).toBeUndefined();
+    const pruned = pruneLedgerEntries(ledgerOf(10), { activeCursors: [], cap: 4, protectNewest: 0 })!;
     expect(orderedEntries(pruned.ledger).map((e) => e.seq)).toEqual([7, 8, 9, 10]);
   });
 });
@@ -141,7 +150,7 @@ describe("FileContextStore", () => {
     const root = await makeTempRoot();
     roots.push(root);
     const storage = new StorageService(root);
-    return { root, storage, store: new FileContextStore(storage, { now, timeZone: () => "UTC" }) };
+    return { root, storage, store: new FileContextStore(storage, { now, timeZone: () => "UTC", pruneProtectNewest: 0 }) };
   }
   const key = conversationKey({ kind: "guild", guildId: "100", channelId: "200" });
   const waifu = { kind: "waifu", waifuId: "aria" } as const;
@@ -193,15 +202,33 @@ describe("FileContextStore", () => {
     await s.assignRefs(key, Array.from({ length: 6 }, (_, i) => String(7000 + i)));
     // An idle orchestrator context (> 7 days) does not hold the floor.
     await s.update(key, { kind: "orchestrator" }, (st) => ({ ...st, cursorSeq: 0, lastUsedAt: new Date(now - 8 * 86_400_000).toISOString() }));
-    const state = await s.commitPrepare(key, waifu, {
+    const result = await s.commitPrepare(key, waifu, {
       sealIds: ["7003", "7004", "7005"],
       update: (st) => ({ ...st, cursorSeq: 3, lastUsedAt: new Date(now).toISOString() })
     });
-    expect(state.cursorSeq).toBe(3);
+    expect(result.ok && result.state.cursorSeq).toBe(3);
     const ledger = await s.loadLedger(key);
     expect(orderedEntries(ledger).map((e) => [e.seq, e.sealed])).toEqual([[3, false], [4, true], [5, true], [6, true]]);
     expect(Object.keys((await s.loadRefs(key)).refs).sort()).toEqual(["7002", "7003", "7004", "7005"]);
     expect(await s.pruneConversation(key)).toEqual({ removed: 0 });
+  });
+
+  it("commitPrepare aborts the whole write on a state or ledger conflict", async () => {
+    const { store: s } = await store();
+    await s.reconcileLedger(key, [raw({ id: "1", content: "v1" })], discordMessageRenderer);
+    const rendered = (await s.loadLedger(key)).entries["1"]!;
+    // The unsealed entry is replaced (typo fix) after the build rendered it.
+    await s.reconcileLedger(key, [raw({ id: "1", content: "v2" })], discordMessageRenderer);
+    const ledgerConflict = await s.commitPrepare(key, waifu, {
+      sealIds: ["1"],
+      expectedHashes: { "1": entryRenderHash(rendered) },
+      update: (st) => ({ ...st, summary: "x" })
+    });
+    expect(ledgerConflict).toEqual({ ok: false, conflict: "ledger" });
+    const stateConflict = await s.commitPrepare(key, waifu, { sealIds: ["1"], update: () => undefined });
+    expect(stateConflict).toEqual({ ok: false, conflict: "state" });
+    expect((await s.loadLedger(key)).entries["1"]!.sealed).toBe(false);
+    expect((await s.load(key, waifu)).revision).toBe(0);
   });
 
   it("deleteConversation removes contexts, refs and ledger", async () => {

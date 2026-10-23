@@ -9,6 +9,7 @@
 // - "— earlier messages not loaded —" is a synthetic entry (id `gap:<first new id>`) appended
 //   before a batch that did not reach the previous newest entry.
 
+import { createHash } from "node:crypto";
 import type { ConversationLedger, LedgerEntry } from "../../shared/schemas/context.js";
 import type { RawDiscordMessage } from "../../shared/schemas/discordMessage.js";
 import type { GuildDirectoryView, MessageRenderer } from "./types.js";
@@ -16,6 +17,8 @@ import type { GuildDirectoryView, MessageRenderer } from "./types.js";
 export const GAP_ENTRY_PREFIX = "gap:";
 export const EARLIER_MESSAGES_NOT_LOADED = "— earlier messages not loaded —";
 export const LEDGER_ENTRY_CAP = 2000;
+/** Pruning never removes the newest entries (protects a new context not yet persisted). */
+export const LEDGER_PROTECT_NEWEST = 200;
 export const ACTIVE_CONTEXT_MS = 7 * 24 * 60 * 60 * 1000;
 
 export function isGapEntry(entry: Pick<LedgerEntry, "id">): boolean {
@@ -192,10 +195,34 @@ export function sealEntries(
   return { ...ledger, entries: entries ?? ledger.entries, events: eventsChanged ? events : ledger.events };
 }
 
+/**
+ * Hash of everything a build renders from an entry (image keys, not their re-signable URLs), so a
+ * seal can verify the ledger still holds exactly what was rendered.
+ */
+export function entryRenderHash(entry: LedgerEntry): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify([
+        entry.id,
+        entry.seq,
+        entry.authorId,
+        entry.authorName,
+        entry.authorIsBot,
+        entry.at,
+        entry.kind,
+        entry.body,
+        entry.replyToId ?? null,
+        entry.images.map((image) => image.key)
+      ])
+    )
+    .digest("hex");
+}
+
 export type PruneInput = {
   /** cursorSeq of every ACTIVE context (lastUsedAt within 7 days); null = whole ledger in view. */
   activeCursors: ReadonlyArray<number | null>;
   cap?: number;
+  protectNewest?: number;
 };
 
 /**
@@ -217,6 +244,10 @@ export function pruneLedgerEntries(
   } else {
     if (ordered.length <= cap) return undefined;
     floor = ordered[ordered.length - cap]!.seq;
+  }
+  const protect = input.protectNewest ?? LEDGER_PROTECT_NEWEST;
+  if (protect > 0 && ordered.length > 0) {
+    floor = Math.min(floor, ordered[Math.max(0, ordered.length - protect)]!.seq);
   }
   const keep = new Set(ordered.filter((entry) => entry.seq >= floor).map((entry) => entry.id));
   for (const entry of ordered) {
