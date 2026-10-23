@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { existsSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { runCommand, type CliRuntimeOptions } from "../src/cli/commands.js";
@@ -143,7 +143,10 @@ describe("B21b: CLI verifies host identity before reporting or signalling", () =
     const lockFile = appDataPath(root, HOST_INSTANCE_LOCK_FILE);
     const detachedSpawner = vi.fn(() => {
       // Another `waifus start` won the race while this child was spawning; this child exits.
-      void writeFile(lockFile, JSON.stringify({
+      // Written synchronously: the lock must be complete on disk before the CLI looks at it. An
+      // unawaited async write could still be pending (file missing) or half-written (truncated,
+      // read back as "starting") when the waiter returned under load.
+      writeFileSync(lockFile, JSON.stringify({
         version: 1, role: "host", pid: HOLDER, processStartTime: STARTED_AT - 500,
         nonce: "b".repeat(32), acquiredAt: new Date(STARTED_AT).toISOString()
       }));
