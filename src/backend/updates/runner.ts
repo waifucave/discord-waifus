@@ -102,7 +102,8 @@ export type UpdateRunnerDeps = {
   control?: typeof callUpdateControl;
   alive?: (pid: number) => boolean;
   install: (version: string) => Promise<void>;
-  verify: (version: string) => Promise<void>;
+  /** Receives the role list read under the transaction lock, never a stale pre-lock list. */
+  verify: (version: string, roles: readonly UpdateLease[]) => Promise<void>;
   restart: (lease: UpdateLease) => Promise<void>;
   sleep?: (ms: number) => Promise<void>;
   onWait?: (reason: string) => void;
@@ -156,12 +157,12 @@ export async function applyIdleUpdate(previous: string, target: string, deps: Up
       safeToRestart = false;
       try {
         await deps.install(target);
-        await deps.verify(target);
+        await deps.verify(target, roles);
         result = "updated";
         safeToRestart = true;
       } catch {
         await deps.install(previous);
-        await deps.verify(previous);
+        await deps.verify(previous, roles);
         result = "rolled_back";
         safeToRestart = true;
       }

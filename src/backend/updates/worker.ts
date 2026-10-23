@@ -176,8 +176,8 @@ export async function runUpdateWorker(installation: UpdateInstallation): Promise
                   await npm(["install", "--global", "--prefix", installation.prefix, archive,
                     "--offline", "--ignore-scripts"], 180_000);
                 },
-                verify: async version => verifyStagedUpdate(installation.root, version, {
-                  helper: await helperVerificationRequired(roles)
+                verify: async (version, lockedRoles) => verifyStagedUpdate(installation.root, version, {
+                  helper: await helperVerificationRequired(lockedRoles)
                 }),
                 restart: async role => {
                   try { await restart(installation, role); }

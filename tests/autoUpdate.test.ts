@@ -220,7 +220,7 @@ describe("coordinated installation", () => {
     expect(await applyIdleUpdate("1.5.206", "1.5.207", f.deps)).toBe("updated");
     expect(f.control.mock.calls.map(call => call[1])).toEqual(["prepare", "prepare", "stop", "stop"]);
     expect(f.install).toHaveBeenCalledExactlyOnceWith("1.5.207");
-    expect(f.verify).toHaveBeenCalledExactlyOnceWith("1.5.207");
+    expect(f.verify).toHaveBeenCalledExactlyOnceWith("1.5.207", f.leases);
     expect(f.restart.mock.calls.map(call => call[0])).toEqual(f.leases);
     const journal = JSON.parse(await readFile(path.join(f.installation.stateDir, "journal.json"), "utf8"));
     expect(journal.phase).toBe("installed");
@@ -239,6 +239,8 @@ describe("coordinated installation", () => {
     const f = await setup(); f.verify.mockRejectedValueOnce(new Error("invalid helper signature"));
     expect(await applyIdleUpdate("1.5.206", "1.5.207", f.deps)).toBe("rolled_back");
     expect(f.install.mock.calls.map(call => call[0])).toEqual(["1.5.207", "1.5.206"]);
+    // Both verifications use the role list read under the transaction lock.
+    expect(f.verify.mock.calls).toEqual([["1.5.207", f.leases], ["1.5.206", f.leases]]);
     expect(f.restart).toHaveBeenCalledTimes(2);
   });
 
