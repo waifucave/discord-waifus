@@ -27,6 +27,8 @@ From the owner, after the 2026-10-23 full-codebase review:
 | D4 | One declarative settings registry generates CLI commands, HTTP help, and assistant-kb docs so they cannot drift. |
 | D5 | Remote Access is kept but **decoupled** from the core bot: it may never block boot, auto-update, or a bot-fix release when disabled/unsupported. Not extended further in this program. |
 | D6 | Execution: subagent-driven, one `phase-N-<name>` branch per phase, merged to `main` locally, each phase green on `npm run typecheck` + `npm test` before merge. No npm release unless asked. |
+| D7 | Spec-first: every phase is fully specified in this document before any parallel implementation starts. Implementers follow the spec's contracts and report gaps instead of deciding them. |
+| D8 | Model split: Sonnet for well-specified mechanical tasks (contracts/schemas, layout removal, gateway adoption, settings registry/CLI/help, most dashboard screens, image cache, edits/deletes, per-guild history); Opus for the context engine, compaction, waifu/director prompt writing, memory migration/dedupe, the DM run loop/debounce, and every review. Rendered golden prompts are shown to the owner for sign-off before prompt work merges. |
 
 ## 3. Work items from the review
 
