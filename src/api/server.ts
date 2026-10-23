@@ -56,7 +56,6 @@ import {
   WaifuAvailabilitySchema,
   WaifuConfig,
   WaifuConfigSchema,
-  WaifuPromptLayoutSchema,
   WaifuToolSettingsSchema,
   WAIFU_VERBOSITIES,
   createEmptyRevisionedFile
@@ -154,7 +153,10 @@ const CreateWaifuBodySchema = WaifuConfigSchema.omit({
   schemaVersion: true,
   revision: true,
   updatedAt: true,
-  personaDigest: true
+  personaDigest: true,
+  // Clients can no longer set a prompt layout (spec 8.6); a stray `promptLayout` key is stripped
+  // by zod and the stored value comes from the schema default. See noteIgnoredPromptLayout.
+  promptLayout: true
 })
   .partial({ id: true, enabled: true, persona: true, contextWindow: true })
   .required({ name: true, displayName: true });
@@ -241,8 +243,9 @@ const UpdateWaifuBodySchema = WaifuConfigSchema.omit({ personaDigest: true }).pa
   customInstructions: z.string().max(4000).optional(),
   scheduleInPrompt: z.boolean().optional(),
   dm: partialWithoutDefaults(WaifuDmSettingsSchema).optional(),
-  // promptLayout is a documented wholesale replace (the editor always sends the full tree).
-  promptLayout: WaifuPromptLayoutSchema.unwrap().optional()
+  // Spec 8.6: the layout editor is gone. `promptLayout` is still accepted (any shape) for one
+  // release so older dashboards/scripts do not fail, but it is ignored and never written.
+  promptLayout: z.unknown().optional()
 });
 
 // P5 Task 4 review fix (3rd instance): same `.partial()`-does-not-suppress-`.default()` gotcha as
@@ -399,6 +402,14 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   });
   const logger = options.logger ?? createLogger({ dataRoot: options.dataRoot });
   const app = fastify({ logger: false });
+  // Spec 8.6: waifu bodies may still carry the removed `promptLayout`; it is ignored. Log it once
+  // per process so a stale client is findable without flooding the log on every save.
+  let promptLayoutIgnoredLogged = false;
+  const noteIgnoredPromptLayout = (rawBody: unknown): void => {
+    if (promptLayoutIgnoredLogged || !isPlainRecord(rawBody) || !("promptLayout" in rawBody)) return;
+    promptLayoutIgnoredLogged = true;
+    logger.warn("Ignoring `promptLayout` in a waifu request body: the prompt layout editor was removed.");
+  };
   if (options.updateActivity) installUpdateActivity(app, options.updateActivity);
   const globalEvents = new EventStream<unknown>();
   const publishGlobalEvent = (event: string, data: unknown): void => {
@@ -761,6 +772,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   app.get("/api/waifus", async () => ({ waifus: await listWaifus(storage) }));
   app.post("/api/waifus", async (request, reply) => {
     const body = CreateWaifuBodySchema.parse(request.body);
+    noteIgnoredPromptLayout(request.body);
     const id = body.id ?? slugId(body.name);
     assertSafeId(id);
     const relativePath = waifuRelativePath(id);
@@ -791,6 +803,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   app.put("/api/waifus/:waifuId", async (request) => {
     const { waifuId } = parseIdParam(request.params, "waifuId");
     const body = UpdateWaifuBodySchema.parse(request.body);
+    noteIgnoredPromptLayout(request.body);
     requireRevision(request, body);
     const saved = await storage.updateRevisionedJson({
       resourceKey: `waifu:${waifuId}`,
@@ -799,7 +812,14 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
       fallback: await readWaifu(storage, waifuId),
       expectedRevision: expectedRevision(request, body),
       transform: (current) => {
-        const { revision: _revision, schemaVersion: _schemaVersion, updatedAt: _updatedAt, id: _id, ...patch } = body;
+        const {
+          revision: _revision,
+          schemaVersion: _schemaVersion,
+          updatedAt: _updatedAt,
+          id: _id,
+          promptLayout: _ignoredPromptLayout,
+          ...patch
+        } = body;
         const next = pruneUndefined({
           ...current,
           ...patch,
