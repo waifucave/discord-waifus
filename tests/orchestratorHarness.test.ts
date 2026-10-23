@@ -306,6 +306,7 @@ describe("director context through ContextRuntime", () => {
       respondingWaifus: [],
       retriggerAfterSeconds: 420,
       wakePlan: "have Riko ask Kevin about the gig",
+      reasoning: "Nobody answered yet; give the room a minute.",
       responderOutcomes: []
     }));
     h.clock.now = BASE_TIME + 5 * 60_000 + 420_000;
