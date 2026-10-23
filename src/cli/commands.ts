@@ -87,12 +87,13 @@ export type CliDetachedSpawner = (
 const DETACHED_START_TIMEOUT_MS = 30_000;
 
 export async function runCommand(parsed: ParsedCli, options: CliRuntimeOptions = {}): Promise<number> {
+  if (parsed.helpRequested || parsed.command === "help") {
+    printHelp(parsed.command === "help" ? parsed.positional[0] : parsed.command);
+    return 0;
+  }
   const dataRoot = resolveCliDataRoot(parsed, options.env ?? process.env);
 
   switch (parsed.command) {
-    case "help":
-      printHelp();
-      return 0;
     case "start":
       return startCommand(parsed, dataRoot, "start", options);
     case "dev":
@@ -133,11 +134,7 @@ function resolveCliDataRoot(parsed: ParsedCli, env: NodeJS.ProcessEnv): string {
   return getDataRoot(explicit ? { ...env, [DATA_ROOT_ENV]: explicit } : env);
 }
 
-function printHelp(): void {
-  console.log(`waifus commands
-
-Usage:
-  waifus help
+const USAGE_LINES = `  waifus help [COMMAND]
   waifus start [--host 127.0.0.1] [--port 3888] [--data-root PATH]
   waifus dev [--host 127.0.0.1] [--port 3888] [--data-root PATH]
   waifus stop [--data-root PATH]
@@ -149,7 +146,21 @@ Usage:
   waifus update --auto on|off|status [--data-root PATH]
   waifus remote [--setup] [--foreground] [--no-open] [--host ID_OR_NAME] [--port PORT] [--data-root PATH]
   waifus remote status [--data-root PATH]
-  waifus remote stop [--data-root PATH]
+  waifus remote stop [--data-root PATH]`.split("\n");
+
+// `topic` narrows the usage block to one command (`waifus start --help`, `waifus help start`);
+// an unknown or missing topic prints everything.
+function printHelp(topic?: string): void {
+  const matching = topic && topic !== "help"
+    ? USAGE_LINES.filter((line) => line.trim() === `waifus ${topic}` || line.trim().startsWith(`waifus ${topic} `))
+    : [];
+  console.log(`${matching.length > 0 ? `waifus ${topic}` : "waifus commands"}
+
+Usage:
+${(matching.length > 0 ? matching : USAGE_LINES).join("\n")}
+
+Options:
+  -h, --help  Show help for a command without running it.
 
 Environment:
   ${DATA_ROOT_ENV}=PATH overrides the default ~/.dc-waifus data root.
