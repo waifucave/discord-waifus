@@ -1,8 +1,7 @@
 /* ==========================================================================
    FUSED-CELL DESIGN SYSTEM — the entire UI is white cells on an ink field,
    separated by 1px seams. One shade per hue. Hierarchy by size, not weight.
-   Hover snaps (no transitions). Normative source: the approved mockup at
-   docs/superpowers/specs/2026-07-04-fused-redesign-mockup.html
+   Hover snaps (no transitions).
    ========================================================================== */
 
 :root {

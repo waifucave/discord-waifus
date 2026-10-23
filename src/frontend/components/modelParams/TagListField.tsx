@@ -44,7 +44,7 @@ export function TagListField({
   // handler across the four ModelParamsForm consumers — WaifusView.tsx, ReviewerView.tsx,
   // OrchestratorView.tsx, StageManagerView.tsx — is a plain non-memoized `const save = async ()
   // => {...}` redefined every render for exactly this reason: it always closes over the latest
-  // state.) Full trace: .superpowers/sdd/task-5-report.md.
+  // state.)
   const commit = () => {
     const next = addTag(value, draft, maxItems);
     if (next !== value) onChange(next);
