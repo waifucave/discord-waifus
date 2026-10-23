@@ -27,6 +27,16 @@ export const PERSONA_DIGEST_TOOL_NAME = "set_persona_digest";
 export const REVIEWER_TOOL_NAME = "review_message";
 
 // ---------------------------------------------------------------------------
+// Reviewer decision schema
+// ---------------------------------------------------------------------------
+
+export const ReviewerDecisionSchema = z.object({
+  hallucination: z.boolean()
+});
+
+export type ReviewerDecision = z.infer<typeof ReviewerDecisionSchema>;
+
+// ---------------------------------------------------------------------------
 // Prompts
 // ---------------------------------------------------------------------------
 
