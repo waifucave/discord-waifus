@@ -466,7 +466,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     void reply.status(500).send({ error: "InternalServerError" });
   });
 
-  // P2 (MIGRATION_PLAN §7.4/§8): the gateway HTTP API rides at /api/llm/* with
+  // The gateway HTTP API rides at /api/llm/* with
   // keys read live from user/providers.json. The plugin is self-encapsulated —
   // own JSON parsing, own error envelopes; pipelines.ts chat traffic is untouched.
   const llmGatewayOptions: GatewayHandlerOptions = {
