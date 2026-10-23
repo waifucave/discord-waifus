@@ -66,7 +66,15 @@ export class RuntimeOrchestrator {
         ...(options.imageConfig ? { imageConfig: options.imageConfig } : {}),
         ...(options.compaction ? { compactionSettings: options.compaction } : {}),
         ...(options.memory ? { memory: options.memory } : {}),
-        ...(ocr?.cachedText ? { ocr: { cachedText: (ref) => ocr.cachedText!(ref) } } : {}),
+        ...(ocr?.cachedText
+          ? {
+              ocr: {
+                cachedText: (ref) => ocr.cachedText!(ref),
+                // Text-only waifus and directors get bounded OCR before an image freezes (spec 8.4).
+                ...(ocr.textFor ? { textFor: (ref, o) => ocr.textFor!(ref, o) } : {})
+              }
+            }
+          : {}),
         ...(options.contextCompaction ? { compaction: options.contextCompaction } : {}),
         // Late-bound: memoryJobs is constructed below. Fire-and-forget observer handoff (spec 8.9).
         observeThrough: (conversation, seq) => {

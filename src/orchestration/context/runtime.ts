@@ -25,7 +25,7 @@ import type { ServerConfig } from "../../shared/schemas/domain.js";
 import { buildContext, modelKeyFor } from "./builder.js";
 import type { ContextEngineStore } from "./contextStore.js";
 import { FrozenImageRenderer, type OcrTextLookup } from "./images.js";
-import { effectiveKeepRecent, isContextOverflowError } from "./compaction.js";
+import { effectiveKeepRecent, entryTokens, isContextOverflowError, nextEpochState } from "./compaction.js";
 import { contextAgentId, conversationKey, type ContextAgent, type ConversationKey, type ConversationRef } from "./keys.js";
 import {
   ACTIVE_CONTEXT_MS,
@@ -81,6 +81,8 @@ export type ContextRuntimeDeps = {
   renderer?: MessageRenderer;
   memory?: () => MemoryConfig;
   ocr?: OcrTextLookup;
+  /** Max wait for OCR of a not-yet-frozen image when the model cannot take images (default 4 s). */
+  ocrTimeoutMs?: number;
   now?: () => Date;
   timeZone?: () => string;
   /** T7b plugs per-model calibration (EMA, spec 8.9) in here; default: none. */
@@ -110,6 +112,12 @@ export type PrepareInput = {
   /** Additive (T3): user ids the caller considers present; frozen with the epoch alongside the window's authors. */
   participantIds?: string[];
   renderToolTurnsAsText?: boolean; // default: true when render.tools() is empty
+  /**
+   * Entries kept when a context WITHOUT a summarizer outgrows its limits (durable truncation;
+   * default: the effective keepRecent). A small-window agent such as the one-shot director
+   * passes its own window.
+   */
+  truncateKeep?: number;
 };
 
 /** What a PreparedContext's prompt was built from (a compaction may have moved the stored state since). */
@@ -159,6 +167,28 @@ function materializeNotes(state: ContextState, notes: readonly NewContextNote[],
     seq += 1;
     return { ...note, id: `n${seq}`, seq, anchorSeq } as ContextNote;
   });
+}
+
+type BreakpointAddress = ContextState["lastBreakpoint"];
+
+/** Transcript position of a block address: an entry, then the notes anchored after it by seq. */
+function breakpointPosition(state: ContextState, address: NonNullable<BreakpointAddress>): [number, number] | undefined {
+  if (address.kind === "entry") return [address.seq, -1];
+  if (address.kind === "note") {
+    const note = state.notes.find((candidate) => candidate.seq === address.seq);
+    return note ? [note.anchorSeq, note.seq] : undefined;
+  }
+  return undefined; // legacy "event" addresses carry no comparable position
+}
+
+/** True when `next` is at or after `current` in the transcript (or `current` cannot be placed). */
+export function breakpointAtOrAfter(state: ContextState, next: BreakpointAddress, current: BreakpointAddress): boolean {
+  if (!next) return false;
+  if (!current) return true;
+  const a = breakpointPosition(state, next);
+  const b = breakpointPosition(state, current);
+  if (!a || !b) return true;
+  return a[0] > b[0] || (a[0] === b[0] && a[1] >= b[1]);
 }
 
 async function withTimeout<T>(
@@ -274,22 +304,24 @@ export class ContextRuntime {
     o: { notes?: NewContextNote[]; usage?: Usage; modelKey: string; sentPrompt?: BuiltPrompt }
   ): Promise<void> {
     const sent = o.sentPrompt ?? p.prompt;
-    const ledger = o.notes?.length ? await this.d.store.loadLedger(p.key) : undefined;
-    const anchorSeq = ledger ? newestSeq(ledger) : 0;
     const now = this.now();
     const rawEstimate = estimateTokens(sent.messages, sent.tools);
     const internal = this.internals.get(p);
     const builtEpoch = internal?.builtEpoch ?? p.state.epoch;
     const builtCursorSeq = internal ? internal.builtCursorSeq : p.state.cursorSeq;
-    const committed = await this.d.store.update(p.key, p.agent, (current) => {
+    const transform = (current: ContextState, anchorSeq: number): ContextState => {
       const notes = materializeNotes(current, o.notes ?? [], anchorSeq);
+      const sameBasis = current.epoch === builtEpoch && current.cursorSeq === builtCursorSeq;
       let next: ContextState = {
         ...current,
         lastUsedAt: now.toISOString(),
         // The prompt's C address only means something in the epoch/cursor it was built on; a
-        // compaction that landed meanwhile (even during prepare) started a new one.
+        // compaction that landed meanwhile (even during prepare) started a new one. It only ever
+        // moves forward: a run that commits late (e.g. after an abort) never moves it back.
         lastBreakpoint:
-          current.epoch === builtEpoch && current.cursorSeq === builtCursorSeq ? p.prompt.breakpoint : current.lastBreakpoint,
+          sameBasis && breakpointAtOrAfter(current, p.prompt.breakpoint, current.lastBreakpoint)
+            ? p.prompt.breakpoint
+            : current.lastBreakpoint,
         notes: [...current.notes, ...notes],
         noteSeq: current.noteSeq + notes.length
       };
@@ -305,8 +337,23 @@ export class ContextRuntime {
         if (calibration) next = { ...next, tokenCalibration: calibration };
       }
       return next;
-    });
+    };
+    // Notes anchor to the newest ledger entry; read it under the same locks as the state write so
+    // an entry reconciled concurrently can never end up after a note anchored "before" it.
+    let committed: ContextState;
+    if (o.notes?.length && this.d.store.updateAnchored) {
+      committed = await this.d.store.updateAnchored(p.key, p.agent, transform);
+    } else {
+      const anchorSeq = o.notes?.length ? newestSeq(await this.d.store.loadLedger(p.key)) : 0;
+      committed = await this.d.store.update(p.key, p.agent, (current) => transform(current, anchorSeq));
+    }
     this.backgroundCheck(p, committed, o.usage);
+  }
+
+  /** Stable per-conversation refs for message ids (assigned on first use; spec 8.1). */
+  async assignRefs(conversation: ConversationRef, messageIds: string[]): Promise<Map<string, string>> {
+    if (messageIds.length === 0) return new Map();
+    return this.d.store.assignRefs(conversationKey(conversation), messageIds);
   }
 
   /**
@@ -401,7 +448,7 @@ export class ContextRuntime {
       const id = `${key}|${contextAgentId(i.agent)}`;
       if (!this.warnedNoSummarize.has(id)) {
         this.warnedNoSummarize.add(id);
-        this.d.logger.warn("Context prepared without a summarize function; it can never compact", {
+        this.d.logger.warn("Context prepared without a summarize function; it truncates instead of summarizing", {
           conversationKey: key,
           agentId: contextAgentId(i.agent)
         });
@@ -446,6 +493,7 @@ export class ContextRuntime {
     let state = loaded;
     let isFresh = fresh;
     let compacted = false;
+    let truncatedDurably = false;
     let conflicts = 0;
     for (;;) {
       // 5. epoch start
@@ -496,7 +544,7 @@ export class ContextRuntime {
             events: currentView.events,
             selfAuthorIds: i.selfAuthorIds,
             refs: currentView.refs,
-            tail: i.render.tail(s, startedAt, { recentReactions: i.recentReactions }),
+            tail: i.render.tail(s, startedAt, { recentReactions: i.recentReactions, transcript: entries }),
             tools,
             renderToolTurnsAsText: i.renderToolTurnsAsText ?? tools.length === 0,
             lookup: currentView.lookup
@@ -526,6 +574,39 @@ export class ContextRuntime {
         }
         this.d.logger.warn(reason, { conversationKey: key, kept: rendered.length });
       };
+      // The compaction service decides WHEN (limits, backoff); without a summarizer the "how" is a
+      // durable truncation instead of a summary.
+      const durableTrigger: CompactionTrigger | undefined = !i.summarize ? trigger : undefined;
+      if (durableTrigger && allowCompaction && !truncatedDurably && !forceTruncate && transcript.length > 1) {
+        // No summarizer (deterministic / one-shot director, or a model that cannot summarize):
+        // compaction would never run, the cursor would never advance and this context would pin
+        // ledger/refs pruning for the whole conversation. Hard-truncate DURABLY instead: a new
+        // epoch with no summary, the cursor before the newest kept entries, older notes dropped.
+        // It is written by this prepare's own commitPrepare (one write, conflict-checked).
+        truncatedDurably = true;
+        const ratio = withNotes.tokenCalibration[modelKeyFor(i.model)]?.ratio ?? 1;
+        let keep = Math.max(1, Math.min(transcript.length - 1, i.truncateKeep ?? effectiveKeepRecent(settings)));
+        if (durableTrigger === "tokens" || durableTrigger === "overflow") keep = Math.max(1, Math.min(keep, Math.floor(transcript.length / 2)));
+        const keptTokens = (k: number) => transcript.slice(-k).reduce((sum, entry) => sum + entryTokens(entry, ratio), 0);
+        while (keep > 1 && keptTokens(keep) > budget.budgetTokens / 2) keep -= 1;
+        const cursorEntry = transcript[transcript.length - keep - 1]!;
+        this.d.logger.info("Context truncated without a summary (no summarizer)", {
+          conversationKey: key,
+          agentId: contextAgentId(i.agent),
+          trigger: durableTrigger,
+          kept: keep
+        });
+        state = nextEpochState(
+          working,
+          { cursorSeq: cursorEntry.seq, cursorMessageId: isGapEntry(cursorEntry) ? null : cursorEntry.id },
+          null,
+          durableTrigger,
+          startedAt,
+          view.all
+        );
+        isFresh = false;
+        continue; // rebuild on the truncated epoch; this prepare's commitPrepare persists it
+      }
       if (trigger && allowCompaction && !compacted && i.summarize) {
         compacted = true;
         const outcome = await this.awaitCompaction(key, i, prompt, trigger, settings, working, budget);
@@ -581,6 +662,7 @@ export class ContextRuntime {
           throw new Error(`Context ${key} kept changing during prepare (${result.conflict}); giving up.`);
         }
         this.d.logger.info("Context or ledger changed during prepare; rebuilding", { conversationKey: key, conflict: result.conflict });
+        truncatedDurably = false; // re-decide on the reloaded state
         state = await this.d.store.load(key, i.agent);
         isFresh = this.isFresh(state, startedAt);
         view = await this.ledgerView(key);
@@ -621,6 +703,7 @@ export class ContextRuntime {
       acceptsImages: i.model.modalities.input.includes("image"),
       maxInlinePerEpoch: memory.maxInlineImagesPerEpoch,
       ocr: this.d.ocr,
+      ...(this.d.ocrTimeoutMs !== undefined ? { ocrTimeoutMs: this.d.ocrTimeoutMs } : {}),
       signal: i.signal,
       logger: this.d.logger,
       ...(refresh ? { refreshUrl: (entry: LedgerEntry, ref: ImageRef) => refresh(i.conversation, entry, ref) } : {})

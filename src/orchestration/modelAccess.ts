@@ -3,7 +3,6 @@
 
 import type { ResolvedModel } from "@waifucave/gateway";
 import { ModelPipeline } from "../providers/types.js";
-import { GatewayPipelineError } from "./pipeline/params.js";
 import { resolveModelTarget, sharedRegistry } from "./pipeline/resolveTarget.js";
 import { QueryRole } from "../shared/queryLog.js";
 import type { ContextMessage } from "./contextMessages.js";
@@ -35,12 +34,14 @@ export class ModelAccess {
     });
   }
 
-  /** Registry capabilities for a stored (providerId?, modelId) pair (context engine input). */
-  resolvedModel(config: { providerId?: string; modelId: string }): ResolvedModel {
-    const target = resolveModelTarget(config);
-    const resolved = sharedRegistry().resolve(target.providerId, target.modelId);
-    if (!resolved) throw new GatewayPipelineError(`Unknown model ${target.providerId}:${target.modelId}`);
-    return resolved;
+  /** The gateway capability record for a stored model config; undefined when it does not resolve. */
+  resolvedModel(config: { providerId?: string; modelId: string }): ResolvedModel | undefined {
+    try {
+      const target = resolveModelTarget(config);
+      return sharedRegistry().resolve(target.providerId, target.modelId) ?? undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   async messagesForModel(

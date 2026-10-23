@@ -981,7 +981,7 @@ describe("review fixes: minor", () => {
     await prepare(h);
     await prepare(h);
     await prepare(h, { agent: { kind: "orchestrator" } });
-    expect(h.logs.filter((m) => m === "Context prepared without a summarize function; it can never compact")).toHaveLength(2);
+    expect(h.logs.filter((m) => m === "Context prepared without a summarize function; it truncates instead of summarizing")).toHaveLength(2);
   });
 
   it("compactNow reports compacted / skipped / discarded", async () => {

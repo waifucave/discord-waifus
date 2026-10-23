@@ -1,3 +1,5 @@
+import { readFile, rm } from "node:fs/promises";
+import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RuntimeOrchestrator, currentlyDoingForWaifu, DreamPassResult } from "../src/orchestration/runtime.js";
 import { redactPrivateMemories } from "../src/orchestration/commands.js";
@@ -383,30 +385,23 @@ class FakePipeline implements ModelPipeline {
   }
 
   async decideOrchestrator(request: ProviderRequest): Promise<OrchestratorDecision> {
-    // System prompt: identity + rules + chat_message_structure + server info; no trailing-prompt content
-    expect(request.systemPrompt).toContain("director");
-    expect(request.systemPrompt).not.toMatch(/<active_waifus>\n[\s\S]*<\/active_waifus>/);
-    expect(request.systemPrompt).not.toMatch(/<task_instructions>\n[\s\S]*<\/task_instructions>/);
-    expect(request.systemPrompt).not.toMatch(/<current_time>\n[\s\S]*<\/current_time>/);
-    expect(request.systemPrompt).toContain("<orchestrator_identity>");
-    expect(request.systemPrompt).toContain("<orchestrator_rules>");
-    expect(request.systemPrompt).not.toContain("<orchestrator_behavior>");
-    expect(request.systemPrompt).toContain("<chat_message_structure>");
-    expect(request.systemPrompt).not.toContain("<identity>");
-    expect(request.systemPrompt).not.toContain("<behavior>");
-    expect(request.systemPrompt).not.toContain("<message_structure>");
-    // New rules text (not the old verbatim strings)
-    expect(request.systemPrompt).toContain("soft signals");
-    expect(request.systemPrompt).toContain("respondingWaifus non-empty");
-    // Trailing prompt: task_instructions + pause_planning + active_waifus (casting cards) + current_time
-    expect(request.trailingPrompt).toBeTruthy();
-    expect(request.trailingPrompt).toMatch(/<task_instructions>\n[\s\S]*<\/task_instructions>/);
-    expect(request.trailingPrompt).toMatch(/<pause_planning>\n[\s\S]*<\/pause_planning>/);
-    expect(request.trailingPrompt).toMatch(
-      /<active_waifus>\n<yuki>\nID: yuki · Yuki · sees images natively\nAbout: kind\nNow: [\s\S]*<\/yuki>\n<\/active_waifus>/
-    );
-    expect(request.trailingPrompt).not.toMatch(/<active_waifus>[\s\S]*Persona:/);
-    expect(request.trailingPrompt).toMatch(/<current_time>\n[\s\S]*<\/current_time>/);
+    // Spec 8.7: the context engine builds the director's prompt — one system message (director
+    // rules + static casting cards), the epoch header, the transcript and the ephemeral tail.
+    const prompt = request.prompt!;
+    expect(prompt).toBeDefined();
+    expect(prompt.promptCacheKey).toBe("orchestrator:g_guild-1_channel-1");
+    expect(prompt.messages.filter((message) => message.role === "system")).toHaveLength(1);
+    expect(prompt.debug.system).toContain("<director>");
+    expect(prompt.debug.system).toContain("<policy>");
+    expect(prompt.debug.system).toMatch(/<cast>\n<waifu>\nid: yuki · Yuki · sees images natively\nAbout: kind\n<\/waifu>\n<\/cast>/);
+    // Static: no clock, no availability, no per-pass state in the system prompt.
+    expect(prompt.debug.system).not.toMatch(/Now:|Reply required|Directive budget/);
+    // Availability lives only in the tail (it changes mid-epoch); the header is the place.
+    expect(prompt.debug.header).toMatch(/^<place>.*<\/place>$/);
+    expect(prompt.debug.tail).toMatch(/Cast right now:\n- yuki \(Yuki\): /);
+    expect(prompt.debug.transcript).toMatch(/\[\d\d:\d\d #a0\] Kevin: hello/);
+    expect(prompt.debug.tail).toMatch(/^<status>\nNow: [\s\S]*Reply required: no\.[\s\S]*Directive budget: [\s\S]*<\/status>\nCall orchestrator_decision\.$/);
+    expect(prompt.tools.map((tool) => tool.name)).toEqual(["orchestrator_decision"]);
     expect(request.availableWaifuIds).toEqual(["yuki"]);
     const decision = this.decisions.shift();
     if (!decision) throw new Error("No fake decision left.");
@@ -439,6 +434,23 @@ describe("RuntimeOrchestrator", () => {
         expect(s.discord.sent).toHaveLength(1); expect(s.generate).toHaveBeenCalledTimes(1);
         const history = await s.storage.readJson("user/orchestrator/history.json", OrchestratorHistoryFileSchema);
         expect(history.decisions[0].reasoning).toBe("one_shot: fixture");
+      } finally { await s.runtime.stop(); }
+    });
+    // T5 review C1: one-shot keeps its old input size even though the transcript may be longer.
+    it("hands one-shot only the newest window of the transcript", async () => {
+      const s = await setup();
+      s.discord.contexts = [
+        Array.from({ length: 30 }, (_, i) => ({
+          ...contextMessage(`m${i}`, "user", "Kevin", `message ${i}`),
+          timestamp: new Date(Date.parse("2026-05-16T12:00:00Z") + i * 60_000).toISOString()
+        }))
+      ];
+      try {
+        await s.runtime.triggerChannel("guild-1", "channel-1");
+        const input = s.native.mock.calls[0][0] as { messages: Array<{ content: string }>; timeZone?: string };
+        expect(input.messages.length).toBeLessThanOrEqual(20);
+        expect(input.messages.at(-1)?.content).toBe("message 29");
+        expect(input.timeZone).toBeDefined();
       } finally { await s.runtime.stop(); }
     });
     it("uses the existing deterministic fallback automatically without logging unrestricted errors", async () => {
@@ -598,7 +610,7 @@ describe("RuntimeOrchestrator", () => {
     await seedRuntimeConfig(storage);
     await setPrimaryRuntimeModel(storage, "deepseek", "deepseek-v4-pro");
 
-    let orchestratorMessages: ContextMessage[] = [];
+    let orchestratorTranscript = "";
     let waifuTranscript = "";
     const ocr = {
       enrichMessages: vi.fn(async (messages: ContextMessage[]) =>
@@ -607,12 +619,12 @@ describe("RuntimeOrchestrator", () => {
           images: message.images?.map((image) => ({ ...image, ocrText: "Start chatting with Instant" }))
         }))
       ),
-      // The waifu context freezes a non-inline image to its cached OCR text (spec 8.4).
+      // Both contexts freeze a non-inline image to its cached OCR text (spec 8.4).
       cachedText: vi.fn(async () => "Start chatting with Instant")
     };
     const pipeline: ModelPipeline = {
       async decideOrchestrator(request) {
-        orchestratorMessages = request.messages;
+        orchestratorTranscript = request.prompt!.debug.transcript;
         return {
           action: "reply",
           respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }],
@@ -638,10 +650,55 @@ describe("RuntimeOrchestrator", () => {
     await runtime.triggerChannel("guild-1", "channel-1");
     await runtime.stop();
 
-    expect(ocr.enrichMessages).toHaveBeenCalledTimes(1);
-    expect(orchestratorMessages[0].images?.[0].ocrText).toBe("Start chatting with Instant");
+    // Both context-engine prompts read the frozen image text.
+    expect(orchestratorTranscript).toContain("[image: Start chatting with Instant]");
     expect(waifuTranscript).toContain("[image: Start chatting with Instant]");
     expect(discord.sent[0].content).toBe("Got it.");
+  });
+
+  it("runs bounded OCR (ocr.textFor) for text-only models when nothing is cached yet", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    const imageMessage = imageContextMessage();
+    discord.contexts = [[imageMessage], [imageMessage]];
+    await seedRuntimeConfig(storage);
+    await setPrimaryRuntimeModel(storage, "deepseek", "deepseek-v4-pro");
+
+    let orchestratorTranscript = "";
+    let waifuTranscript = "";
+    const ocr = {
+      enrichMessages: vi.fn(async (messages: ContextMessage[]) => messages),
+      cachedText: vi.fn(async () => undefined),
+      textFor: vi.fn(async (_ref: unknown, o: { timeoutMs: number }) => (o.timeoutMs > 0 ? "Fresh OCR text" : undefined))
+    };
+    const pipeline: ModelPipeline = {
+      async decideOrchestrator(request) {
+        orchestratorTranscript = request.prompt!.debug.transcript;
+        return { action: "reply", respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }], reasoning: "image" };
+      },
+      async generateWaifu(request) {
+        waifuTranscript = promptOf(request).debug.transcript;
+        return { content: "Got it." };
+      }
+    };
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 1,
+      ocr,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    expect(ocr.textFor).toHaveBeenCalled();
+    expect(orchestratorTranscript).toContain("[image: Fresh OCR text]");
+    expect(waifuTranscript).toContain("[image: Fresh OCR text]");
   });
 
   it("skips OCR for vision-capable model calls", async () => {
@@ -734,13 +791,11 @@ describe("RuntimeOrchestrator", () => {
     await runtime.triggerChannel("guild-1", "channel-1");
     await runtime.stop();
 
-    // No cached OCR text: the image freezes to the bare placeholder.
+    // No cached OCR text (and no textFor): the image freezes to the bare placeholder. The legacy
+    // enrichment no longer runs on the reply path (both prompts use the context engine).
     expect(waifuTranscript).toContain("[image]");
     expect(discord.sent[0].content).toBe("Still works.");
-    expect(warn).toHaveBeenCalledWith(
-      "OCR enrichment failed; continuing without OCR text",
-      expect.objectContaining({ modelId: "deepseek-v4-pro" })
-    );
+    expect(warn).not.toHaveBeenCalledWith("OCR enrichment failed; continuing without OCR text", expect.anything());
   });
 
   it("lets PickNextWaifu hand off once before orchestration resumes", async () => {
@@ -1119,8 +1174,9 @@ describe("RuntimeOrchestrator", () => {
       async decideOrchestrator(request) {
         checked = true;
         expect(request.availableWaifuIds).toEqual(["yuki"]);
-        expect(request.trailingPrompt).toContain("ID: yuki");
-        expect(request.trailingPrompt).not.toContain("ID: mika");
+        // Casting cards are static system content now (spec 8.7).
+        expect(request.prompt!.debug.system).toContain("id: yuki");
+        expect(request.prompt!.debug.system).not.toContain("id: mika");
         return {
           action: "reply",
           respondingWaifus: [
@@ -1207,7 +1263,7 @@ describe("RuntimeOrchestrator", () => {
     expect(checked).toBe(true);
   });
 
-  it("truncates casting-card persona to 200 chars in trailing prompt and excludes raw persona from system prompt", async () => {
+  it("truncates the casting-card persona to 200 chars and never sends the rest of the raw persona", async () => {
     const root = await makeTempRoot();
     roots.push(root);
     await ensureDataLayout(root);
@@ -1240,11 +1296,11 @@ describe("RuntimeOrchestrator", () => {
     );
 
     let trailingPrompt: string | undefined;
-    let systemPrompt: string | undefined;
+    let wholePrompt: string | undefined;
     const pipeline: ModelPipeline = {
       async decideOrchestrator(request: ProviderRequest) {
-        trailingPrompt = request.trailingPrompt;
-        systemPrompt = request.systemPrompt;
+        trailingPrompt = request.prompt!.debug.system;
+        wholePrompt = JSON.stringify(request.prompt!.messages);
         return { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, reasoning: "done" };
       },
       async generateWaifu() {
@@ -1273,9 +1329,9 @@ describe("RuntimeOrchestrator", () => {
     // The tail of the long persona (past 200 chars) must NOT appear in trailing prompt
     const normalised = longPersona.trim().replace(/\s+/g, " ");
     expect(trailingPrompt).not.toContain(normalised.slice(200));
-    // System prompt must not contain the raw persona at all
-    expect(systemPrompt).toBeDefined();
-    expect(systemPrompt).not.toContain(normalised.slice(0, 50));
+    // Nothing in the request carries the persona beyond the card's 200 chars
+    expect(wholePrompt).toBeDefined();
+    expect(wholePrompt).not.toContain(normalised.slice(200));
   });
 
   it("uses Voice/Cast-her-when lines in casting card when personaDigest is set", async () => {
@@ -1314,7 +1370,7 @@ describe("RuntimeOrchestrator", () => {
     let trailingPrompt: string | undefined;
     const pipeline: ModelPipeline = {
       async decideOrchestrator(request: ProviderRequest) {
-        trailingPrompt = request.trailingPrompt;
+        trailingPrompt = request.prompt!.debug.system;
         return { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, reasoning: "done" };
       },
       async generateWaifu() {
@@ -1386,7 +1442,7 @@ describe("RuntimeOrchestrator", () => {
     let trailingPrompt: string | undefined;
     const pipeline: ModelPipeline = {
       async decideOrchestrator(request: ProviderRequest) {
-        trailingPrompt = request.trailingPrompt;
+        trailingPrompt = request.prompt!.debug.system;
         return { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, reasoning: "done" };
       },
       async generateWaifu() {
@@ -1408,7 +1464,7 @@ describe("RuntimeOrchestrator", () => {
 
     expect(trailingPrompt).toBeDefined();
     expect(trailingPrompt).toContain("Yuki · sees images natively");
-    expect(trailingPrompt).toContain("ID: mika · Mika\n");
+    expect(trailingPrompt).toContain("id: mika · Mika\n");
     expect(trailingPrompt).not.toContain("Mika · sees images natively");
   });
 
@@ -1877,10 +1933,11 @@ describe("RuntimeOrchestrator", () => {
     const discord = new FakeDiscord();
     discord.contexts = [
       [
-        contextMessage("waifu-1", "waifu", "Yuki", "one"),
-        contextMessage("waifu-2", "waifu", "Mika", "two"),
-        contextMessage("waifu-3", "waifu", "Yuki", "three"),
-        contextMessage("waifu-4", "waifu", "Mika", "four")
+        // History text differs from the replies below (her own "one" again would be a self-repeat).
+        contextMessage("waifu-1", "waifu", "Yuki", "first"),
+        contextMessage("waifu-2", "waifu", "Mika", "second"),
+        contextMessage("waifu-3", "waifu", "Yuki", "third"),
+        contextMessage("waifu-4", "waifu", "Mika", "fourth")
       ]
     ];
     const sleepCalls: number[] = [];
@@ -1982,35 +2039,36 @@ describe("RuntimeOrchestrator", () => {
     expect(sleepCalls).toEqual([3000, 4000]);
   });
 
-  it("passes completed past orchestrator decisions to the pipeline", async () => {
+  // Decisions replay as text lines, never assistant tool_use turns: with thinking on, Anthropic
+  // rejects (400) a replayed tool_use that has no thinking block (T3 review).
+  it("replays the director's own final decisions as frozen text lines, even for a thinking model", async () => {
     const root = await makeTempRoot();
     roots.push(root);
     await ensureDataLayout(root);
     const storage = new StorageService(root);
     const discord = new FakeDiscord();
-    discord.contexts = [
-      [
-        {
-          ...contextMessage("m1", "user", "Kevin", "latest user message"),
-          timestamp: "2026-05-16T12:10:00Z"
-        }
-      ]
-    ];
+    const first = { ...contextMessage("m1", "user", "Kevin", "anyone around?"), timestamp: "2026-05-16T12:10:00Z" };
+    const second = { ...contextMessage("m2", "user", "Kevin", "hello??"), timestamp: "2026-05-16T12:20:00Z" };
+    discord.contexts = [[first], [first, second]];
 
-    class MarkerCapturePipeline implements ModelPipeline {
-      capturedDecisions: ProviderRequest["pastDecisions"] = [];
-
+    const prompts: NonNullable<ProviderRequest["prompt"]>[] = [];
+    const pipeline: ModelPipeline = {
       async generateWaifu() {
         return { content: "unused" };
-      }
-
+      },
       async decideOrchestrator(request: ProviderRequest) {
-        this.capturedDecisions = request.pastDecisions ?? [];
-        return { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, reasoning: "done" };
+        prompts.push(request.prompt!);
+        return { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, wakePlan: "re-check", reasoning: "quiet" };
       }
-    }
+    };
 
     await seedRuntimeConfig(storage);
+    const orchestratorConfig = await storage.readJson("user/orchestrator/config.json", AgentConfigSchema);
+    await storage.writeJson("orchestrator", "user/orchestrator/config.json", AgentConfigSchema, {
+      ...orchestratorConfig,
+      params: { ...orchestratorConfig.params, "reasoning.enabled": true, "reasoning.budgetTokens": 2048 }
+    });
+    // A stale history entry that predates this context never leaks into the prompt.
     await storage.writeJson(
       "orchestrator:history",
       "user/orchestrator/history.json",
@@ -2019,54 +2077,45 @@ describe("RuntimeOrchestrator", () => {
         createEmptyRevisionedFile({
           decisions: [
             {
-              id: "before-latest-chat",
+              id: "old-history",
               guildId: "guild-1",
               channelId: "channel-1",
               action: "no_reply",
               respondingWaifus: [],
               retriggerAfterSeconds: 300,
-              reasoning: "before latest user message",
+              reasoning: "from before the context existed",
               createdAt: "2026-05-16T12:09:00.000Z"
-            },
-            {
-              id: "after-latest-chat",
-              guildId: "guild-1",
-              channelId: "channel-1",
-              action: "no_reply",
-              respondingWaifus: [],
-              retriggerAfterSeconds: 1800,
-              reasoning: "after latest user message",
-              createdAt: "2026-05-16T12:11:00.000Z"
             }
           ]
         })
       )
     );
-
-    const pipeline = new MarkerCapturePipeline();
     const runtime = new RuntimeOrchestrator({
       sleep: async () => undefined,
       storage,
       discord,
       maxAutomaticTurns: 1,
       createPipeline: () => pipeline,
-      logger: {
-        debug: () => undefined,
-        info: () => undefined,
-        warn: () => undefined,
-        error: () => undefined
-      }
+      logger: quietLogger()
     });
 
     await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.triggerChannel("guild-1", "channel-1");
     await runtime.stop();
 
-    expect(pipeline.capturedDecisions?.map((d) => d.id).sort()).toEqual(
-      ["after-latest-chat", "before-latest-chat"].sort()
-    );
-    for (const decision of pipeline.capturedDecisions ?? []) {
-      expect(decision.status).toBe("completed");
+    expect(prompts).toHaveLength(2);
+    expect(prompts[0]!.debug.transcript).not.toContain("[decision");
+    expect(JSON.stringify(prompts[0]!.messages)).not.toContain("from before the context existed");
+    // No assistant tool_use (nor tool result) can reach a thinking model's request.
+    for (const prompt of prompts) {
+      expect(prompt.messages.some((message) => message.role === "assistant" || message.role === "tool")).toBe(false);
     }
+    // Append-only: the decision renders after the message it answered and before the new one.
+    const transcript = prompts[1]!.debug.transcript;
+    const line = transcript.match(/\[decision \d\d:\d\d\] no_reply 180s · plan: "re-check" · paused 180s/);
+    expect(line).not.toBeNull();
+    expect(transcript.indexOf("anyone around?")).toBeLessThan(transcript.indexOf(line![0]));
+    expect(transcript.indexOf(line![0])).toBeLessThan(transcript.indexOf("hello??"));
   });
 
   it("heals leftover pending decisions to interrupted on startup", async () => {
@@ -4951,6 +5000,221 @@ describe("RuntimeOrchestrator", () => {
     expect(responses).toEqual(["Started orchestrator run."]);
   });
 
+  it("enforces reply-required in code: a manual pass that pauses still gets a voice", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.contexts = [[contextMessage("m1", "user", "Kevin", "hello")]];
+    const tails: string[] = [];
+    const tools: string[] = [];
+    const pipeline: ModelPipeline = {
+      async generateWaifu() {
+        return { content: "forced hello" };
+      },
+      async decideOrchestrator(request) {
+        tails.push(request.prompt!.debug.tail);
+        tools.push(JSON.stringify(request.prompt!.tools));
+        return { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 300, wakePlan: "wait", reasoning: "too quiet" };
+      }
+    };
+    await seedRuntimeConfig(storage);
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 2,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1", "manual", { firstOrchestratorMustReply: true });
+    await runtime.stop();
+
+    expect(tails[0]).toContain("Reply required: yes.");
+    expect(tails[1]).toContain("Reply required: no.");
+    // The schema never changes with the per-pass state (prefix stability).
+    expect(tools[1]).toBe(tools[0]);
+    expect(discord.sent.map((message) => [message.senderBotId, message.content])).toEqual([["yuki-bot", "forced hello"]]);
+    const history = await storage.readJson("user/orchestrator/history.json", OrchestratorHistoryFileSchema);
+    const forced = history.decisions.find((entry) => entry.action === "reply");
+    expect(forced?.respondingWaifus.map((responder) => responder.waifuId)).toEqual(["yuki"]);
+    expect(forced?.reasoning).toContain("reply required");
+  });
+
+  // T7b call-site contract: the director's summarizer mirrors its decision call.
+  it("gives the director's context its own-model summarizer (forced tool choice, attribution with conversationKey)", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.contexts = [[contextMessage("m1", "user", "Kevin", "hello")]];
+    const summarizeRequests: unknown[] = [];
+    const pipeline: ModelPipeline = {
+      async generateWaifu() {
+        return { content: "unused" };
+      },
+      async decideOrchestrator() {
+        return { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 300, wakePlan: "wait", reasoning: "quiet" };
+      },
+      async summarizeContext(request) {
+        summarizeRequests.push(request);
+        return { text: "summary" };
+      }
+    };
+    await seedRuntimeConfig(storage);
+    const runtime = new RuntimeOrchestrator({ sleep: async () => undefined, storage, discord, maxAutomaticTurns: 1, createPipeline: () => pipeline, logger: quietLogger() });
+    const prepare = vi.spyOn(runtime.contexts, "prepare");
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+    const input = prepare.mock.calls[0]![0];
+    expect(input.summarize).toBeDefined();
+    expect(input.truncateKeep).toBeUndefined();
+    await input.summarize!({ promptCacheKey: "k" } as never, "summarize please");
+    expect(summarizeRequests[0]).toMatchObject({
+      instruction: "summarize please",
+      toolChoice: { name: "orchestrator_decision" },
+      temperature: 0.2,
+      attribution: { agentId: "orchestrator", guildId: "guild-1", channelId: "channel-1", conversationKey: "g_guild-1_channel-1" }
+    });
+  });
+
+  // T5 review M6: an unusable decision on /run still produces the promised reply.
+  it("replies on a reply-required /run when the decision cannot be parsed", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.contexts = [[contextMessage("m1", "user", "Kevin", "hello")]];
+    let calls = 0;
+    const pipeline: ModelPipeline = {
+      async generateWaifu() {
+        return { content: "still here" };
+      },
+      async decideOrchestrator() {
+        calls += 1;
+        if (calls === 1) throw new GatewayPipelineError("decideOrchestrator: malformed orchestrator_decision arguments");
+        return { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 300, wakePlan: "wait", reasoning: "done" };
+      }
+    };
+    await seedRuntimeConfig(storage);
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const runtime = new RuntimeOrchestrator({ sleep: async () => undefined, storage, discord, maxAutomaticTurns: 2, createPipeline: () => pipeline, logger });
+    await runtime.triggerChannel("guild-1", "channel-1", "manual", { firstOrchestratorMustReply: true });
+    await runtime.stop();
+    expect(logger.error).not.toHaveBeenCalledWith("Channel runtime loop failed", expect.anything());
+    expect(discord.sent.map((message) => message.content)).toEqual(["still here"]);
+  });
+
+  it("still surfaces a provider failure on a reply-required /run", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.contexts = [[contextMessage("m1", "user", "Kevin", "hello")]];
+    const pipeline: ModelPipeline = {
+      async generateWaifu() {
+        return { content: "unused" };
+      },
+      async decideOrchestrator() {
+        throw new Error("network down");
+      }
+    };
+    await seedRuntimeConfig(storage);
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const runtime = new RuntimeOrchestrator({ sleep: async () => undefined, storage, discord, maxAutomaticTurns: 1, createPipeline: () => pipeline, logger });
+    await runtime.triggerChannel("guild-1", "channel-1", "manual", { firstOrchestratorMustReply: true });
+    await runtime.stop();
+    expect(logger.error).toHaveBeenCalledWith("Channel runtime loop failed", expect.objectContaining({ message: "network down" }));
+    expect(discord.sent).toEqual([]);
+  });
+
+  // T5 review I2: policy 2 is enforced as the prompt states it, with no cadence precondition.
+  it("overrides a pause on a waiting human's fresh message, without any cadence signal", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    const fresh = new Date(Date.now() - 2 * 60_000).toISOString();
+    discord.contexts = [[{ ...contextMessage("m1", "user", "Kevin", "Yuki, you around?"), timestamp: fresh }]];
+    const pipeline: ModelPipeline = {
+      async generateWaifu() {
+        return { content: "yep!" };
+      },
+      async decideOrchestrator() {
+        return { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 300, wakePlan: "wait", reasoning: "let it breathe" };
+      }
+    };
+    await seedRuntimeConfig(storage);
+    // Always available, whatever the host clock says (the structural decider reads her schedule).
+    const yuki = await storage.readJson("user/waifus/yuki/waifu.json", WaifuConfigSchema);
+    await storage.writeJson("waifu:yuki", "user/waifus/yuki/waifu.json", WaifuConfigSchema, {
+      ...yuki,
+      availability: { sleep: { enabled: false, start: "00:00", end: "00:00" }, busy: [] }
+    });
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const runtime = new RuntimeOrchestrator({ sleep: async () => undefined, storage, discord, maxAutomaticTurns: 1, createPipeline: () => pipeline, logger });
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+    expect(logger.warn).toHaveBeenCalledWith(
+      "Waiting-human override: the model paused on a human's message; deterministic reply used",
+      expect.anything()
+    );
+    expect(discord.sent.map((message) => message.content)).toEqual(["yep!"]);
+  });
+
+  it("leaves a pause alone when the human's message is older than 15 minutes", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    const stale = new Date(Date.now() - 40 * 60_000).toISOString();
+    discord.contexts = [[{ ...contextMessage("m1", "user", "Kevin", "Yuki, you around?"), timestamp: stale }]];
+    const pipeline: ModelPipeline = {
+      async generateWaifu() {
+        return { content: "unused" };
+      },
+      async decideOrchestrator() {
+        return { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 300, wakePlan: "wait", reasoning: "quiet" };
+      }
+    };
+    await seedRuntimeConfig(storage);
+    const runtime = new RuntimeOrchestrator({ sleep: async () => undefined, storage, discord, maxAutomaticTurns: 1, createPipeline: () => pipeline, logger: quietLogger() });
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+    expect(discord.sent).toEqual([]);
+  });
+
+  // T5 review M5: without a config file the director backfills 20 messages (the API default).
+  it("backfills the API's default 20 messages when the orchestrator has no config file", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.contexts = [
+      Array.from({ length: 30 }, (_, i) => ({
+        ...contextMessage(`m${i}`, "user", "Kevin", `message ${i}`),
+        timestamp: new Date(Date.parse("2026-05-16T12:00:00Z") + i * 60_000).toISOString()
+      }))
+    ];
+    await seedRuntimeConfig(storage);
+    await rm(path.join(root, "user", "orchestrator", "config.json"), { force: true });
+    const runtime = new RuntimeOrchestrator({ sleep: async () => undefined, storage, discord, maxAutomaticTurns: 1, createPipeline: () => new FakePipeline(), logger: quietLogger() });
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+    const state = JSON.parse(
+      await readFile(path.join(root, "user", "conversations", "g_guild-1_channel-1", "contexts", "orchestrator.json"), "utf8")
+    ) as { cursorSeq: number };
+    expect(state.cursorSeq).toBe(10);
+  });
+
   it("runs a selected waifu first from /run, preserves scene direction and handoffs, then resumes orchestration", async () => {
     const root = await makeTempRoot();
     roots.push(root);
@@ -6600,7 +6864,7 @@ describe("RuntimeOrchestrator", () => {
     });
   });
 
-  it("includes the directive-restatement line in the reviewer system prompt", async () => {
+  it("sends the reviewer one message and no custom prompt when none is configured", async () => {
     const root = await makeTempRoot();
     roots.push(root);
     await ensureDataLayout(root);
@@ -6614,7 +6878,7 @@ describe("RuntimeOrchestrator", () => {
     ];
 
     await seedRuntimeConfig(storage);
-    // Clear the seeded reviewer prompt so the runtime falls back to DEFAULT_REVIEWER_PROMPT.
+    // Clear the seeded reviewer prompt: the fixed instruction (tools.ts) needs no default text.
     await storage.writeJson(
       "reviewer",
       "user/reviewer/config.json",
@@ -6629,13 +6893,13 @@ describe("RuntimeOrchestrator", () => {
       })
     );
 
-    let reviewerSystemPrompt = "";
+    let reviewerRequest: (ProviderRequest & { message: string; authorName?: string }) | undefined;
     const pipeline: ModelPipeline = {
       async generateWaifu() {
         return { content: "unused" };
       },
       async decideReviewer(request) {
-        reviewerSystemPrompt = request.systemPrompt;
+        reviewerRequest = request;
         return { hallucination: false };
       }
     };
@@ -6651,9 +6915,8 @@ describe("RuntimeOrchestrator", () => {
     await runtime.triggerReviewer("guild-1", "channel-1", "reviewer-user");
     await runtime.stop();
 
-    expect(reviewerSystemPrompt).toContain(
-      "a message that primarily restates an instruction or goal it was given (reads as a directive, not as chat)"
-    );
+    expect(reviewerRequest).toMatchObject({ message: "hi", authorName: "Yuki" });
+    expect(reviewerRequest!.systemPrompt).toBeUndefined();
   });
 
   it("marks the active responder failed and later responders not run after a provider error", async () => {
@@ -7449,10 +7712,10 @@ describe("RuntimeOrchestrator", () => {
       }
     ]);
 
-    let capturedMarkers: ProviderRequest["decisionMarkers"];
+    let capturedTail = "";
     const pipeline: ModelPipeline = {
       async decideOrchestrator(request) {
-        capturedMarkers = request.decisionMarkers;
+        capturedTail = request.prompt!.debug.tail;
         return { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 200, reasoning: "still quiet" };
       },
       async generateWaifu() {
@@ -7472,9 +7735,9 @@ describe("RuntimeOrchestrator", () => {
     await runtime.triggerChannel("guild-1", "channel-1", "scheduled-retrigger", { trigger: "retrigger" });
     await runtime.stop();
 
-    expect(capturedMarkers?.[0]?.kind).toBe("wake");
-    expect(capturedMarkers?.[0]?.scheduledSeconds).toBe(600);
-    expect(capturedMarkers?.[0]?.wakePlan).toBe("have yuki answer");
+    // B8 wake marker lives in the ephemeral tail (spec 8.7).
+    expect(capturedTail).toMatch(/<wake>This pass is the wake you scheduled at \d\d:\d\d: the 600s pause has elapsed/);
+    expect(capturedTail).toContain('Your plan was: "have yuki answer".');
   });
 
   it("suppresses a timer wake when the cast already stacked unanswered messages", async () => {
@@ -7921,7 +8184,7 @@ describe("RuntimeOrchestrator", () => {
           status: "completed", waifuMessageIds: [], responderOutcomes: [], createdAt: new Date(Date.now() - 3_600_000).toISOString()
         }
       ]);
-      let capturedMarkers: ProviderRequest["decisionMarkers"] = [];
+      let capturedTail: string | undefined;
       const runtime = new RuntimeOrchestrator({
         sleep: async () => undefined,
         storage,
@@ -7929,7 +8192,7 @@ describe("RuntimeOrchestrator", () => {
         maxAutomaticTurns: 1,
         createPipeline: () => ({
           async decideOrchestrator(request) {
-            capturedMarkers = request.decisionMarkers;
+            capturedTail = request.prompt!.debug.tail;
             return { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 200, reasoning: "still quiet" };
           },
           generateWaifu: async () => ({ content: "unused" })
@@ -7942,7 +8205,8 @@ describe("RuntimeOrchestrator", () => {
         wake: { source: "turn_limit", seconds: 900 }
       });
       await runtime.stop();
-      expect(capturedMarkers).toBeUndefined();
+      expect(capturedTail).toBeDefined();
+      expect(capturedTail).not.toContain("<wake>");
       const session = await readSession(storage);
       expect((Date.parse(session.scheduledRetriggerAt!) - before) / 1000).toBeLessThan(300);
       const history = await storage.readJson("user/orchestrator/history.json", OrchestratorHistoryFileSchema);
@@ -7963,7 +8227,7 @@ describe("RuntimeOrchestrator", () => {
         waifuMessageIds: [], responderOutcomes: [], createdAt: new Date(Date.now() - minutesAgo * 60_000).toISOString()
       });
       await seedOrchestratorHistory(storage, [noReply("newer", "newer plan", 120, 1), noReply("armer", "armed plan", 400, 10)]);
-      let capturedMarkers: ProviderRequest["decisionMarkers"];
+      let capturedTail = "";
       const runtime = new RuntimeOrchestrator({
         sleep: async () => undefined,
         storage,
@@ -7971,7 +8235,7 @@ describe("RuntimeOrchestrator", () => {
         maxAutomaticTurns: 1,
         createPipeline: () => ({
           async decideOrchestrator(request) {
-            capturedMarkers = request.decisionMarkers;
+            capturedTail = request.prompt!.debug.tail;
             return { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 100, reasoning: "still quiet" };
           },
           generateWaifu: async () => ({ content: "unused" })
@@ -7983,7 +8247,8 @@ describe("RuntimeOrchestrator", () => {
         wake: { source: "no_reply", seconds: 600, decisionId: "armer" }
       });
       await runtime.stop();
-      expect(capturedMarkers?.[0]).toMatchObject({ kind: "wake", scheduledSeconds: 600, wakePlan: "armed plan" });
+      expect(capturedTail).toMatch(/<wake>[^<]*the 600s pause has elapsed[^<]*Your plan was: "armed plan"\./);
+      expect(capturedTail).not.toContain("newer plan");
       const session = await readSession(storage);
       expect(session.scheduledRetrigger?.seconds).toBe(900);
     });
@@ -8489,12 +8754,13 @@ describe("RuntimeOrchestrator", () => {
     const discord = new FakeDiscord();
     // First decision honors a directive (closing the budget). The second turn's context trips the
     // loop detector, which should reopen the budget so the second directive is honored anyway.
+    // Separate replies a minute apart (quick consecutive chunks of one reply are joined).
     const loopyContext = [
       contextMessage("c1", "user", "Kevin", "what about the weekend trip plans"),
-      contextMessage("w1", "waifu", "Yuki", "the weekend trip plans sound fun and exciting"),
-      contextMessage("w2", "waifu", "Yuki", "the weekend trip plans sound fun and exciting"),
-      contextMessage("w3", "waifu", "Yuki", "the weekend trip plans sound fun and exciting"),
-      contextMessage("w4", "waifu", "Yuki", "the weekend trip plans sound fun and exciting")
+      { ...contextMessage("w1", "waifu", "Yuki", "the weekend trip plans sound fun and exciting"), timestamp: "2026-05-16T12:01:00Z" },
+      { ...contextMessage("w2", "waifu", "Yuki", "the weekend trip plans sound fun and exciting"), timestamp: "2026-05-16T12:02:00Z" },
+      { ...contextMessage("w3", "waifu", "Yuki", "the weekend trip plans sound fun and exciting"), timestamp: "2026-05-16T12:03:00Z" },
+      { ...contextMessage("w4", "waifu", "Yuki", "the weekend trip plans sound fun and exciting"), timestamp: "2026-05-16T12:04:00Z" }
     ];
     discord.contexts = [
       [contextMessage("m1", "user", "Kevin", "hello there")],
@@ -8526,7 +8792,7 @@ describe("RuntimeOrchestrator", () => {
         { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, reasoning: "done" }
       ] as OrchestratorDecision[],
       async decideOrchestrator(request) {
-        trailingPrompts.push(request.trailingPrompt ?? "");
+        trailingPrompts.push(request.prompt!.debug.tail);
         const decision = (this as unknown as { decisions: OrchestratorDecision[] }).decisions.shift();
         if (!decision) throw new Error("No fake decision left.");
         return decision;
@@ -8552,8 +8818,9 @@ describe("RuntimeOrchestrator", () => {
     expect(waifuTrailingBlocks).toHaveLength(2);
     // Budget was closed after the first honored directive, but the loop notice reopened it.
     expect(waifuTrailingBlocks[1]).toContain("<direction>(break loop) switch gears entirely</direction>");
-    // The second orchestrator turn saw the loop notice in its trailing prompt.
-    expect(trailingPrompts[1]).toContain("runtime_notice");
+    // The second orchestrator turn saw the loop notice and the open budget in its tail.
+    expect(trailingPrompts[1]).toContain("<runtime_notice>");
+    expect(trailingPrompts[1]).toContain("Directive budget: open (a loop is forming");
   });
 
   it("W2: strips a guild-nickname self-prefix from the reply and sends the cleaned content", async () => {

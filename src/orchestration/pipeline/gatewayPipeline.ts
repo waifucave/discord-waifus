@@ -1,11 +1,10 @@
 import { sanitizeChatMessages } from "../../shared/text.js";
-import { createGateway, GatewayError, Gateway, type ChatMessage, type ChatResponse, type TextBlock, type ToolCallBlock, type ToolDef } from "@waifucave/gateway";
+import { createGateway, GatewayError, Gateway, type ChatMessage, type ResolvedModel, type ChatResponse, type TextBlock, type ToolCallBlock, type ToolDef } from "@waifucave/gateway";
 import { z } from "zod";
 import { createProviderCredentialsLookup } from "../../api/llmGatewayCredentials.js";
 import { QueryRole, recordProviderQuery, recordProviderReply } from "../../shared/queryLog.js";
 import type { AssistantTurnRequest, AssistantTurnResult, ModelPipeline, ProviderRequest, WaifuGenerationRequest, WaifuGenerationResult, StageManagerObserveRequest, DreamRequest, PersonaDigestRequest, PersonaDigest, SummarizeContextRequest } from "../../providers/types.js";
-import { ORCHESTRATOR_TOOL_NAME, PICK_NEXT_WAIFU_TOOL_NAME, REVIEWER_TOOL_NAME, SHORT_TERM_MEMORY_TOOL_NAME, OBSERVER_TOOL_NAME, DREAM_TOOL_NAME, PERSONA_DIGEST_TOOL_NAME, DREAM_PROMPT, PERSONA_DIGEST_PROMPT, ReviewerDecision, ReviewerDecisionSchema, orchestratorToolParameters, pickNextWaifuToolParameters, reviewerSystemPrompt, reviewerToolParameters, shortTermMemoryToolParameters, observerSystemPrompt, observerToolParameters, dreamToolParameters, flatDreamToolParameters, personaDigestToolParameters, dreamMessages, normalizeDreamOps, normalizeOrchestratorDecision, parseRawObserverOps } from "../tools.js";
-import { formatObserverContext } from "../contextMessages.js";
+import { ORCHESTRATOR_TOOL_NAME, PICK_NEXT_WAIFU_TOOL_NAME, REVIEWER_TOOL_NAME, SHORT_TERM_MEMORY_TOOL_NAME, OBSERVER_TOOL_NAME, DREAM_TOOL_NAME, PERSONA_DIGEST_TOOL_NAME, dreamSystemPrompt, PERSONA_DIGEST_PROMPT, ReviewerDecision, ReviewerDecisionSchema, pickNextWaifuToolParameters, reviewerMessages, reviewerToolParameters, shortTermMemoryToolParameters, observerSystemPrompt, observerToolParameters, dreamToolParameters, flatDreamToolParameters, personaDigestToolParameters, dreamMessages, normalizeDreamOps, normalizeOrchestratorDecision, parseRawObserverOps } from "../tools.js";
 import { GatewayPipelineError, TruncatedOutputError, buildUnifiedParams, preconformRequest } from "./params.js";
 import { estimateTokens } from "../context/tokens.js";
 import type { ModelCallAttribution, SummaryResult, UsagePurpose } from "../context/types.js";
@@ -13,7 +12,6 @@ import { compactionMaxOutputTokens, compactionMessages, compactionToolChoice } f
 import type { Logger } from "../../backend/logger.js";
 import { NoopUsageLedger, sharedUsageLedger, usageFields, type UsageLedger } from "../usageLedger.js";
 import { sharedProviderAlerts, type ProviderAlerts } from "../providerAlerts.js";
-import { buildOrchestratorChatMessages } from "./timeline.js";
 import { OrchestratorDecision } from "../decisions.js";
 import { DreamOp, ObserverOp } from "../stageManager.js";
 
@@ -99,6 +97,15 @@ function demoteLateSystemMessages(messages: ChatMessage[]): ChatMessage[] {
     const text = typeof message.content === "string" ? message.content : message.content.map((block) => block.text).join("\n\n");
     return { role: "user", content: `<system_note>\n${text}\n</system_note>`, ...(message.cacheControl ? { cacheControl: message.cacheControl } : {}) };
   });
+}
+
+/**
+ * True when a forced decision on this model goes out as JSON-schema structured output with NO
+ * tools (it lacks named tool choice but supports JSON schema). The orchestrator renders its past
+ * decisions as text lines on this path (spec 8.3), since there are no tool turns to replay.
+ */
+export function usesJsonSchemaDecisions(model: Pick<ResolvedModel, "features">): boolean {
+  return !model.features.tools.toolChoice?.includes("named") && Boolean(model.features.structuredOutput.jsonSchema);
 }
 
 function isAbort(error: unknown, signal: AbortSignal | undefined): boolean {
@@ -189,9 +196,7 @@ class GatewayModelPipeline implements ModelPipeline {
     // tool choice. Decisions can use the SAME schema as structured output;
     // never silently downgrade a required decision to optional tool calling.
     const choice = request.toolChoice;
-    const schemaTool = typeof choice === "object"
-      && !this.model.features.tools.toolChoice?.includes("named")
-      && this.model.features.structuredOutput.jsonSchema
+    const schemaTool = typeof choice === "object" && usesJsonSchemaDecisions(this.model)
       ? request.tools?.find((tool) => tool.name === choice.name)
       : undefined;
     const conformed = preconformRequest(this.gateway, providerId, modelId, {
@@ -263,39 +268,27 @@ class GatewayModelPipeline implements ModelPipeline {
     return resolved;
   }
 
+  // The director's prompt is built by the context engine (spec 8.7): messages, tools and
+  // promptCacheKey are sent unchanged. Reply-required is enforced by the caller in code (the tool
+  // schema is stable per channel config), so the decision is parsed without that gate.
   async decideOrchestrator(request: ProviderRequest): Promise<OrchestratorDecision> {
+    const prompt = request.prompt;
+    if (!prompt) throw new GatewayPipelineError("decideOrchestrator: a context-engine prompt is required");
     const response = await this.chat({
-      messages: buildOrchestratorChatMessages({
-        now: new Date(),
-        systemPrompt: request.systemPrompt,
-        trailingPrompt: request.trailingPrompt,
-        messages: request.messages,
-        pastDecisions: request.pastDecisions,
-        decisionMarkers: request.decisionMarkers
-      }),
-      tools: [{ name: ORCHESTRATOR_TOOL_NAME, parameters: orchestratorToolParameters(request.availableWaifuIds, request.replyRequired, request.directiveBudgetOpen ?? true) as Record<string, unknown> }],
+      messages: prompt.messages,
+      tools: prompt.tools,
       toolChoice: { name: ORCHESTRATOR_TOOL_NAME },
-      sampling: { temperature: request.temperature ?? 0.2, maxOutputTokens: request.maxOutputTokens, params: request.params },
+      sampling: { temperature: request.temperature ?? 0.2, topP: request.topP, maxOutputTokens: request.maxOutputTokens, params: request.params },
       signal: request.signal,
       meta: callMeta(request, "orchestrator", "decideOrchestrator")
     });
-    // normalizeOrchestratorDecision owns the replyRequired gate (parity with legacy
-    // parseDecision): lenient Raw parse -> replyRequired check -> strict schema mapping.
-    const decision = parseForcedCall(
-      response,
-      ORCHESTRATOR_TOOL_NAME,
-      (raw) => normalizeOrchestratorDecision(raw, request.replyRequired),
-      "decideOrchestrator"
-    );
-    return decision;
+    if (response.usage) request.onUsage?.(response.usage);
+    return parseForcedCall(response, ORCHESTRATOR_TOOL_NAME, (raw) => normalizeOrchestratorDecision(raw), "decideOrchestrator");
   }
 
-  async decideReviewer(request: ProviderRequest & { message: string }): Promise<ReviewerDecision> {
+  async decideReviewer(request: ProviderRequest & { message: string; authorName?: string }): Promise<ReviewerDecision> {
     const response = await this.chat({
-      messages: [
-        { role: "system", content: reviewerSystemPrompt(request.systemPrompt) },
-        { role: "user", content: request.message }
-      ],
+      messages: reviewerMessages({ customPrompt: request.systemPrompt, authorName: request.authorName, message: request.message }),
       tools: [{ name: REVIEWER_TOOL_NAME, parameters: reviewerToolParameters() as Record<string, unknown> }],
       toolChoice: { name: REVIEWER_TOOL_NAME },
       sampling: { temperature: request.temperature ?? 0, maxOutputTokens: request.maxOutputTokens ?? 64, params: request.params },
@@ -409,10 +402,14 @@ class GatewayModelPipeline implements ModelPipeline {
   }
 
   async decideStageManagerObservations(request: StageManagerObserveRequest): Promise<ObserverOp[]> {
+    // The observer reads its rendered per-conversation input (T6: participants, memories, the
+    // transcript since its cursor); the legacy window formatter is gone.
+    const observerInput = request.observerInput;
+    if (!observerInput) throw new GatewayPipelineError("decideStageManagerObservations: observerInput is required");
     const response = await this.chat({
       messages: [
         { role: "system", content: observerSystemPrompt(request.systemPrompt, request.availableWaifuIds) },
-        { role: "user", content: request.observerInput ?? formatObserverContext(request.messages, new Date()) }
+        { role: "user", content: observerInput }
       ],
       tools: [{ name: OBSERVER_TOOL_NAME, parameters: observerToolParameters(request.availableWaifuIds) as Record<string, unknown> }],
       toolChoice: { name: OBSERVER_TOOL_NAME },
@@ -431,7 +428,7 @@ class GatewayModelPipeline implements ModelPipeline {
     const isFlat = this.model.wire === "google-generative-language";
     const response = await this.chat({
       messages: [
-        { role: "system", content: DREAM_PROMPT },
+        { role: "system", content: dreamSystemPrompt(request.systemPrompt) },
         ...dreamMessages(request)
       ],
       tools: [{ name: DREAM_TOOL_NAME, parameters: (isFlat ? flatDreamToolParameters(request.availableWaifuIds) : dreamToolParameters(request.availableWaifuIds)) as Record<string, unknown> }],

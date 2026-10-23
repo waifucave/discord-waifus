@@ -31,6 +31,19 @@ export async function readCompletedOrchestratorDecisionsForChannel(
   );
 }
 
+/** One decision by id (any status), or undefined once it rotated out of the 200-entry history. */
+export async function readOrchestratorDecision(
+  storage: StorageService,
+  id: string
+): Promise<OrchestratorDecisionHistoryEntry | undefined> {
+  const history = await storage.readJson(
+    "user/orchestrator/history.json",
+    OrchestratorHistoryFileSchema,
+    OrchestratorHistoryFileSchema.parse(createEmptyRevisionedFile({ decisions: [] }))
+  );
+  return history.decisions.find((decision) => decision.id === id);
+}
+
 export async function appendOrchestratorHistory(storage: StorageService, entry: {
   id: string;
   guildId: string;

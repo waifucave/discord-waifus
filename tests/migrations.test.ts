@@ -1073,6 +1073,7 @@ describe("migration ledger", () => {
     // Steps whose owning task has landed (flag removed, real body).
     const LANDED_STEP_IDS = new Set([
       "waifu-drop-prompt-layout-v1",
+      "server-context-windows-explicit-v1",
       "memories-global-origin-subjects-v1",
       "memories-cross-guild-dedupe-v1",
       "pending-observations-global-v1",
@@ -1156,6 +1157,54 @@ describe("migration ledger", () => {
       for (const id of LANDED_STEP_IDS) expect(ledger.steps[id], id).toBeDefined();
       expect(ledger.steps["configs-to-gateway-params"]).toBeDefined();
       expect(ledger.steps[`stamp-schema-version-${CURRENT_SCHEMA_VERSION}`]).toBeDefined();
+    });
+  });
+
+  describe("server-context-windows-explicit-v1", () => {
+    const step = () => MIGRATION_STEPS.find((candidate) => candidate.id === "server-context-windows-explicit-v1")!;
+
+    it("drops keys equal to the old defaults and keeps explicit overrides", async () => {
+      const root = await freshRoot();
+      await writeJson(root, "user/servers/111/server.json", {
+        guildId: "111",
+        contextWindows: { orchestrator: 20, waifu: 50, stageManager: 80 }
+      });
+      await writeJson(root, "user/servers/222/server.json", {
+        guildId: "222",
+        name: "Bake Club",
+        contextWindows: { orchestrator: 35, waifu: 50, stageManager: 120 }
+      });
+      await writeJson(root, "user/servers/333/server.json", { guildId: "333", contextWindows: { waifu: 64 } });
+
+      expect(await step().run(root)).toBe("server-context-windows-explicit-2");
+
+      expect((await readJson<Record<string, unknown>>(root, "user/servers/111/server.json")).contextWindows).toEqual({});
+      expect(await readJson<Record<string, unknown>>(root, "user/servers/222/server.json")).toEqual({
+        guildId: "222",
+        name: "Bake Club",
+        contextWindows: { orchestrator: 35, stageManager: 120 }
+      });
+      expect((await readJson<Record<string, unknown>>(root, "user/servers/333/server.json")).contextWindows).toEqual({ waifu: 64 });
+    });
+
+    it("is idempotent and tolerates missing roots, missing keys and unparsable files", async () => {
+      const empty = await freshRoot();
+      expect(await step().run(empty)).toBeUndefined();
+
+      const root = await freshRoot();
+      await writeJson(root, "user/servers/111/server.json", { guildId: "111", contextWindows: { orchestrator: 20, waifu: 7 } });
+      await writeJson(root, "user/servers/222/server.json", { guildId: "222" });
+      await mkdir(path.join(root, "user/servers/333"), { recursive: true });
+      await writeFile(path.join(root, "user/servers/333/server.json"), "{ not json", "utf8");
+
+      expect(await step().run(root)).toBe("server-context-windows-explicit-1");
+      const once = await readFile(path.join(root, "user/servers/111/server.json"), "utf8");
+      expect(JSON.parse(once).contextWindows).toEqual({ waifu: 7 });
+
+      expect(await step().run(root)).toBeUndefined();
+      expect(await readFile(path.join(root, "user/servers/111/server.json"), "utf8")).toBe(once);
+      expect(await readJson<Record<string, unknown>>(root, "user/servers/222/server.json")).toEqual({ guildId: "222" });
+      expect(await readFile(path.join(root, "user/servers/333/server.json"), "utf8")).toBe("{ not json");
     });
   });
 

@@ -9,6 +9,25 @@ import { testPrompt } from "./contextFixtures.js";
 
 const memoryTools = waifuTools({ addMemory: true, pickNextWaifuIds: [] });
 const allTools = waifuTools({ addMemory: true, pickNextWaifuIds: ["riko"] });
+import type { BuiltPrompt } from "../src/orchestration/context/types.js";
+import { orchestratorTools } from "../src/orchestration/orchestratorHarness.js";
+
+// A minimal context-engine prompt: the director's call sends prompt.messages/tools verbatim.
+const orchPrompt = (): BuiltPrompt => ({
+  messages: [
+    { role: "system", content: [{ type: "text", text: "ORCH SYSTEM", cacheControl: { type: "ephemeral", ttl: "5m" } }] },
+    { role: "user", content: [{ type: "text", text: "[10:00 #a0] Ann: hello\n" }, { type: "text", text: "Call orchestrator_decision." }] }
+  ],
+  tools: orchestratorTools(["yuki"]),
+  promptCacheKey: "orchestrator:g_1_2",
+  refToMessageId: new Map(),
+  messageIdToRef: new Map(),
+  estimatedTokens: 10,
+  transcriptCount: 1,
+  cursorSeq: null,
+  breakpoint: null,
+  debug: { system: "ORCH SYSTEM", header: "", transcript: "", tail: "Call orchestrator_decision." }
+});
 
 const msg = (over: Partial<ContextMessage>): ContextMessage => ({
   id: "m1", channelId: "c", authorKind: "user", authorId: "u1", name: "ann",
@@ -143,8 +162,7 @@ describe("generateWaifu (gateway)", () => {
 describe("decideOrchestrator (gateway)", () => {
   const orchRequest: ProviderRequest = {
     modelId: "deepseek-v4-flash",
-    systemPrompt: "ORCH SYSTEM",
-    trailingPrompt: "Decide now.",
+    prompt: orchPrompt(),
     messages: [msg({})],
     availableWaifuIds: ["yuki"],
     replyRequired: false,
@@ -181,16 +199,42 @@ describe("decideOrchestrator (gateway)", () => {
     await expect(makePipeline(fetchImpl as unknown as typeof fetch).decideOrchestrator!(orchRequest)).rejects.toThrow(GatewayPipelineError);
   });
 
-  it("enforces replyRequired: a no_reply decision under /run throws", async () => {
-    const noReply = { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 600, reasoning: "nothing to say" };
+  it("leaves reply-required to the runner: the schema allows no_reply and the decision parses", async () => {
+    const noReply = { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 600, wakePlan: "re-check", reasoning: "nothing to say" };
     const fetchImpl = okFetch({
       id: "r1",
       choices: [{ message: { content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "orchestrator_decision", arguments: JSON.stringify(noReply) } }] }, finish_reason: "tool_calls" }],
       usage: {}
     });
-    await expect(
-      makePipeline(fetchImpl as unknown as typeof fetch).decideOrchestrator!({ ...orchRequest, replyRequired: true })
-    ).rejects.toThrow(/requires action=reply/);
+    const parsed = await makePipeline(fetchImpl as unknown as typeof fetch).decideOrchestrator!({ ...orchRequest, replyRequired: true });
+    expect(parsed.action).toBe("no_reply");
+    const body = JSON.parse((fetchImpl.mock.calls[0]![1] as RequestInit).body as string);
+    // Stable per channel config: reply-required never narrows the action enum.
+    expect(body.tools[0].function.parameters.properties.action.enum).toEqual(["reply", "no_reply"]);
+  });
+
+  it("sends the context-engine prompt verbatim and reports usage", async () => {
+    const decision = { action: "reply", respondingWaifus: [{ waifuId: "yuki" }], reasoning: "Ann said hi" };
+    const fetchImpl = okFetch({
+      id: "r1",
+      choices: [{ message: { content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "orchestrator_decision", arguments: JSON.stringify(decision) } }] }, finish_reason: "tool_calls" }],
+      usage: { prompt_tokens: 12, completion_tokens: 4 }
+    });
+    const reported: unknown[] = [];
+    await makePipeline(fetchImpl as unknown as typeof fetch).decideOrchestrator!({ ...orchRequest, onUsage: (usage) => reported.push(usage) });
+    const body = JSON.parse((fetchImpl.mock.calls[0]![1] as RequestInit).body as string);
+    expect(body.messages[0]).toMatchObject({ role: "system" });
+    expect(JSON.stringify(body.messages)).toContain("[10:00 #a0] Ann: hello");
+    expect(body.messages.filter((m: { role: string }) => m.role === "system")).toHaveLength(1);
+    expect(body.tools).toHaveLength(1);
+    expect(reported).toEqual([expect.objectContaining({ inputTokens: 12, outputTokens: 4 })]);
+  });
+
+  it("refuses a call without a context-engine prompt", async () => {
+    const fetchImpl = okFetch({});
+    const { prompt: _prompt, ...legacy } = orchRequest;
+    await expect(makePipeline(fetchImpl as unknown as typeof fetch).decideOrchestrator!(legacy)).rejects.toThrow(/context-engine prompt/);
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it("accepts retriggerAfterSeconds: null on a reply decision (live Haiku parity)", async () => {
@@ -272,6 +316,23 @@ describe("decideReviewer (gateway)", () => {
     expect(body.tool_choice).toBeUndefined();
     expect(body.response_format).toMatchObject({ type: "json_schema", json_schema: { name: "review_message", schema: { type: "object" } } });
   });
+  it("sends one system prompt (custom prompt as owner policy, B28) plus one wrapped message", async () => {
+    const fetchImpl = okFetch({
+      id: "r1",
+      choices: [{ message: { content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "review_message", arguments: JSON.stringify({ hallucination: false }) } }] }, finish_reason: "tool_calls" }],
+      usage: {}
+    });
+    await makePipeline(fetchImpl as unknown as typeof fetch).decideReviewer!({
+      modelId: "deepseek-v4-flash", messages: [msg({})], message: "hi there", authorName: "Aria", systemPrompt: "Flag brand names."
+    });
+    const body = JSON.parse((fetchImpl.mock.calls[0]![1] as RequestInit).body as string);
+    expect(body.messages).toHaveLength(2);
+    expect(body.messages[0].role).toBe("system");
+    expect(JSON.stringify(body.messages[0])).toContain("<owner_policy>\\nFlag brand names.\\n</owner_policy>");
+    expect(body.messages[1]).toMatchObject({ role: "user" });
+    expect(JSON.stringify(body.messages[1])).toContain('<message from=\\"Aria\\">\\nhi there\\n</message>');
+  });
+
   it("forces review_message and parses the verdict", async () => {
     const fetchImpl = okFetch({
       id: "r1",
@@ -317,9 +378,17 @@ describe("decideStageManagerObservations (gateway)", () => {
   it("normalizes legacy observations into add ops and coerces stringified importance (I1 fix)", async () => {
     const observations = [{ waifuId: "yuki", content: "Ann works remotely", importance: "3", kind: "fact", entities: ["Ann"] }];
     const out = await makePipeline(toolResponse({ observations }) as unknown as typeof fetch).decideStageManagerObservations!({
-      modelId: "deepseek-v4-flash", messages: [msg({})], availableWaifuIds: ["yuki"]
+      modelId: "deepseek-v4-flash", messages: [msg({})], availableWaifuIds: ["yuki"], observerInput: "Transcript:\n[10:00] Ann (p1): I work remotely"
     });
     expect(out).toEqual([{ op: "add", waifuId: "yuki", content: "Ann works remotely", importance: 3, kind: "fact", subjects: ["Ann"] }]);
+  });
+
+  it("requires the rendered observer input (no legacy window formatting)", async () => {
+    const fetchImpl = vi.fn();
+    await expect(
+      makePipeline(fetchImpl as unknown as typeof fetch).decideStageManagerObservations!({ modelId: "deepseek-v4-flash", messages: [msg({})], availableWaifuIds: ["yuki"] })
+    ).rejects.toThrow(/observerInput is required/);
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 });
 
@@ -560,8 +629,7 @@ describe("cross-wire goldens", () => {
 
     const orchRequest = {
       modelId: "gpt-5.4-nano",
-      systemPrompt: "ORCH",
-      trailingPrompt: "Decide now.",
+      prompt: orchPrompt(),
       messages: [msg({})],
       availableWaifuIds: ["yuki"],
       replyRequired: false,

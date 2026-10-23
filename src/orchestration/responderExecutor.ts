@@ -47,6 +47,7 @@ import type { GateDecision } from "./memoryWriteGate.js";
 import { readActiveChatParticipants } from "./stores/participants.js";
 import { setActivePipeline } from "./stores/sessions.js";
 import { PICK_NEXT_WAIFU_TOOL_NAME, SHORT_TERM_MEMORY_TOOL_NAME } from "./tools.js";
+import { GatewayPipelineError } from "./pipeline/params.js";
 import {
   CUT_OFF_RETRY_NOTE,
   type ValidationContext,
@@ -702,6 +703,7 @@ export class ResponderExecutor {
       })
       .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
     const model = this.models.resolvedModel({ providerId: waifu.providerId, modelId: waifu.modelId });
+    if (!model) throw new GatewayPipelineError(`Unknown model ${waifu.providerId ?? "?"}:${waifu.modelId}`);
     const toolsUsable = waifu.tools.toolUse && model.features.tools.supported;
     const pickNextWaifuIds =
       toolsUsable && server.tools.pickNextWaifu

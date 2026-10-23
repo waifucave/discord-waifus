@@ -1,5 +1,4 @@
 import { z } from "zod";
-import { clipSurrogateSafe } from "../shared/text.js";
 
 const ReactionSummarySchema = z.object({
   emoji: z.string(),
@@ -40,14 +39,6 @@ export const ContextMessageSchema = z.object({
 
 export type ContextMessage = z.infer<typeof ContextMessageSchema>;
 
-export const OrchestratorWakeMarkerSchema = z.object({
-  kind: z.literal("wake"),
-  timestamp: z.string(),
-  scheduledSeconds: z.number().int(),
-  wakePlan: z.string().optional()
-});
-export type OrchestratorWakeMarker = z.infer<typeof OrchestratorWakeMarkerSchema>;
-
 export type MessageLikeForContext = {
   id: string;
   channelId: string;
@@ -73,72 +64,6 @@ export type MessageLikeForContext = {
 };
 
 export const WAIFU_CHUNK_COALESCE_WINDOW_MS = 30_000;
-
-/**
- * Formats the observer context window as a lean human-readable block.
- * Header: Window: <first date+time>–<last time> UTC (today: YYYY-MM-DD)
- * Per message: optional "replying to > Author" line, "DisplayName: body", "[image_text: ...]" lines.
- * No [index:], no per-message timestamps, no [reactions:].
- * Midnight-crossing messages get a [— next day: YYYY-MM-DD —] separator.
- */
-export function formatObserverContext(messages: ContextMessage[], now: Date): string {
-  const todayStr = formatDateOnly(now);
-
-  if (messages.length === 0) {
-    return `Window: (today: ${todayStr})`;
-  }
-
-  const firstTs = messages[0].timestamp;
-  const lastTs = messages[messages.length - 1].timestamp;
-  const firstDate = firstTs.slice(0, 10);
-  const firstTime = firstTs.slice(11, 19);
-  const lastTime = lastTs.slice(11, 19);
-
-  const header =
-    firstDate === lastTs.slice(0, 10)
-      ? `Window: ${firstDate}T${firstTime}–${lastTime} UTC (today: ${todayStr})`
-      : `Window: ${firstDate}T${firstTime}–${lastTs.slice(0, 10)}T${lastTime} UTC (today: ${todayStr})`;
-
-  const lines: string[] = [header];
-  let prevDate = firstDate;
-
-  for (const message of messages) {
-    const msgDate = message.timestamp.slice(0, 10);
-    if (msgDate > prevDate) {
-      lines.push(`[— next day: ${msgDate} —]`);
-      prevDate = msgDate;
-    }
-
-    if (message.replyTo) {
-      const authorName = message.replyTo.authorName?.trim();
-      if (authorName) {
-        lines.push(`replying to > ${authorName}`);
-      } else {
-        lines.push(`replying to >`);
-      }
-    }
-
-    const body = message.content.length > 0 ? `${message.displayName}: ${message.content}` : `${message.displayName}:`;
-    lines.push(body);
-
-    for (const image of message.images ?? []) {
-      const ocr = image.ocrText?.replace(/\s+/g, " ").trim();
-      if (ocr) {
-        lines.push(`[image_text: ${ocr}]`);
-      }
-    }
-  }
-
-  return lines.join("\n");
-}
-
-function formatDateOnly(date: Date): string {
-  return [
-    String(date.getFullYear()).padStart(4, "0"),
-    String(date.getMonth() + 1).padStart(2, "0"),
-    String(date.getDate()).padStart(2, "0")
-  ].join("-");
-}
 
 export function buildContextMessages(
   messages: MessageLikeForContext[],
@@ -176,69 +101,6 @@ export function buildContextMessages(
 
 export function formatTimestamp(then: Date): string {
   return then.toISOString().replace(/\.\d{3}Z$/, "Z");
-}
-
-const COMPACT_REPLY_PREVIEW_LIMIT = 80;
-
-function clipReplyPreview(preview: string): string {
-  return preview.length > COMPACT_REPLY_PREVIEW_LIMIT
-    ? `${clipSurrogateSafe(preview, COMPACT_REPLY_PREVIEW_LIMIT - 1)}…`
-    : preview;
-}
-
-function replyQuoteLine(message: ContextMessage): string | null {
-  if (!message.replyTo) return null;
-  const authorName = message.replyTo.authorName?.trim();
-  const preview = message.replyTo.contentPreview?.trim();
-  if (authorName && preview) {
-    return `replying to > ${authorName}: ${clipReplyPreview(preview)}`;
-  }
-  if (authorName) {
-    return `replying to > ${authorName}`;
-  }
-  if (preview) {
-    return `replying to > ${clipReplyPreview(preview)}`;
-  }
-  return null;
-}
-
-/** Compact relative age for pacing awareness: 47s, 2m, 3h, 2d. */
-export function formatAge(timestamp: string, now: Date): string {
-  const deltaMs = Math.max(0, now.getTime() - Date.parse(timestamp));
-  const seconds = Math.floor(deltaMs / 1000);
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h`;
-  return `${Math.floor(hours / 24)}d`;
-}
-
-export function formatOrchestratorMessageBlock(message: ContextMessage, now?: Date): string {
-  const lines: string[] = [];
-  const quote = replyQuoteLine(message);
-  if (quote) lines.push(quote);
-  const body = senderPrefixedContent(message.displayName, message.content);
-  lines.push(now ? `[${formatAge(message.timestamp, now)}] ${body}` : body);
-  const imageCount = message.images?.length ?? 0;
-  if (imageCount > 0) {
-    lines.push(`[attachments: ${imageCount}x image]`);
-    appendImageTextLines(lines, message.images);
-  }
-  return lines.join("\n");
-}
-
-function senderPrefixedContent(displayName: string, content: string): string {
-  return content.length > 0 ? `${displayName}: ${content}` : `${displayName}:`;
-}
-
-function appendImageTextLines(lines: string[], images: AttachmentImage[] | undefined): void {
-  for (const image of images ?? []) {
-    const ocr = image.ocrText?.replace(/\s+/g, " ").trim();
-    if (ocr) {
-      lines.push(`[image_text: ${ocr}]`);
-    }
-  }
 }
 
 function coalesceAdjacentChunks(

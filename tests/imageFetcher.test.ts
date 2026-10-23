@@ -307,6 +307,47 @@ describe("FrozenImageRenderer freeze rule", () => {
     expect(r.decisions().imageModes).toEqual({});
   });
 
+  // T5 review I1: a text-only director (rule 6 "images go to native viewers") must see the text.
+  it("runs OCR (bounded) for a text-only model when nothing is cached yet, and freezes that text", async () => {
+    const images = new FakeImageFetcher();
+    const calls: Array<{ key: string; timeoutMs: number }> = [];
+    const ocr = {
+      cachedText: async () => undefined,
+      textFor: async (image: { key: string }, o: { timeoutMs: number }) => {
+        calls.push({ key: image.key, timeoutMs: o.timeoutMs });
+        return "MENU\n  ramen 9€";
+      }
+    };
+    const textOnly = new FrozenImageRenderer({ fetcher: images, acceptsImages: false, maxInlinePerEpoch: 8, ocr, ocrTimeoutMs: 1500 });
+    expect(await textOnly.blocksFor(entry("1"), state())).toEqual([{ type: "text", text: "[image: MENU ramen 9€]" }]);
+    expect(calls).toEqual([{ key: "att:1", timeoutMs: 1500 }]);
+    expect(textOnly.decisions().imageModes).toEqual({ "att:1": { mode: "text", text: "[image: MENU ramen 9€]" } });
+    expect(images.calls).toHaveLength(0);
+    // Once frozen, no OCR runs again.
+    calls.length = 0;
+    await textOnly.blocksFor(entry("1"), state({ imageModes: { "att:1": { mode: "text", text: "[image: MENU ramen 9€]" } } }));
+    expect(calls).toEqual([]);
+    // A vision model that fails to inline an image only uses cached text (it never waits on OCR).
+    images.failKeys.set("att:2", "http_error");
+    const vision = new FrozenImageRenderer({ fetcher: images, acceptsImages: true, maxInlinePerEpoch: 8, ocr });
+    expect(await vision.blocksFor(entry("2"), state())).toEqual([{ type: "text", text: "[image]" }]);
+    expect(calls).toEqual([]);
+  });
+
+  it("does not freeze an image whose OCR was cut short by an abort", async () => {
+    const controller = new AbortController();
+    const ocr = {
+      cachedText: async () => undefined,
+      textFor: async () => {
+        controller.abort();
+        return undefined;
+      }
+    };
+    const r = new FrozenImageRenderer({ fetcher: new FakeImageFetcher(), acceptsImages: false, maxInlinePerEpoch: 8, ocr, signal: controller.signal });
+    await expect(r.blocksFor(entry("1"), state())).rejects.toThrow(/aborted/);
+    expect(r.decisions().imageModes).toEqual({});
+  });
+
   it("models without image input freeze to text without fetching; a lost inline image renders unavailable", async () => {
     const images = new FakeImageFetcher();
     const textOnly = new FrozenImageRenderer({ fetcher: images, acceptsImages: false, maxInlinePerEpoch: 8 });
