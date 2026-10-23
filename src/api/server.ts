@@ -20,6 +20,7 @@ import { extractEntities } from "../orchestration/memoryEntities.js";
 import { providerStatuses, keyHint } from "./providerStatus.js";
 import type { ModelPipeline } from "../providers/types.js";
 import { createGatewayModelPipeline } from "../orchestration/pipeline/gatewayPipeline.js";
+import { sharedProviderAlerts } from "../orchestration/providerAlerts.js";
 import { resolveModelTarget } from "../orchestration/pipeline/resolveTarget.js";
 import {
   AgentConfig,
@@ -548,7 +549,9 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
           ...options.runtime,
           discord: { ...options.runtime.discord, warnings: [...options.runtime.discord.warnings, ...live] }
         };
-    return runtimeResponse(runtime, request.principal, options.dataRoot);
+    // Active quota/billing cooldowns (spec 8.10); empty when every provider is available.
+    const providerAlerts = (orchestrator?.providerAlerts ?? sharedProviderAlerts(options.dataRoot)).snapshot();
+    return { ...runtimeResponse(runtime, request.principal, options.dataRoot), providerAlerts };
   });
 
   registerAdminOperationRoutes(app, operationStore);

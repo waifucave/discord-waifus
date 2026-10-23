@@ -143,7 +143,6 @@ export const MIGRATION_STEPS: readonly MigrationStep[] = [
     // Phase 4 (spec 8.2/8.10): drops stored params the gateway 0.4.0 catalog rejects. Owned by T7a.
     id: "waifu-params-gateway-040-v1",
     frequency: "once-per-app-version",
-    pending: true,
     run: migrateWaifuParamsGateway040
   },
   {

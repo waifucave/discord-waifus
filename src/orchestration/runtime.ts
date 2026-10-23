@@ -1,5 +1,7 @@
 import { DiscordMessageEvent } from "../discord/client.js";
 import { createGatewayModelPipeline } from "./pipeline/gatewayPipeline.js";
+import { sharedProviderAlerts, type ProviderAlerts } from "./providerAlerts.js";
+import { sharedUsageLedger, type UsageLedger } from "./usageLedger.js";
 import { PermissionWarningTracker } from "./permissionWarnings.js";
 import { RUNTIME_SHUTDOWN_INTERRUPT_REASON } from "./restartResume.js";
 import { OneShotDecider } from "./oneShot/decider.js";
@@ -27,6 +29,10 @@ export { currentlyDoingForWaifu } from "./promptBuilders.js";
 
 export class RuntimeOrchestrator {
   readonly permissionWarnings = new PermissionWarningTracker();
+  /** Per-call usage lines (spec 8.10); shared with every pipeline this runtime creates. */
+  readonly usageLedger: UsageLedger;
+  /** Quota/billing cooldowns; surfaced as `/api/runtime.providerAlerts`. */
+  readonly providerAlerts: ProviderAlerts;
   // Set by pause() and by a paused start(); resumeAfterPause() is a no-op unless it is set, so a
   // redundant Resume can never replan (and duplicate) live runs.
   private wasPaused = false;
@@ -49,11 +55,19 @@ export class RuntimeOrchestrator {
       isStopping: () => this.stopping
     };
     const maxAutomaticTurns = options.maxAutomaticTurns ?? 8;
+    this.usageLedger = options.usageLedger ?? sharedUsageLedger(options.storage.dataRoot);
+    this.providerAlerts = options.providerAlerts ?? sharedProviderAlerts(options.storage.dataRoot);
     this.oneShot = new OneShotDecider(options.storage.dataRoot);
     const models = new ModelAccess(
       options,
       options.createPipeline ??
-        ((target) => createGatewayModelPipeline({ ...target, dataRoot: options.storage.dataRoot }))
+        ((target) => createGatewayModelPipeline({
+          ...target,
+          dataRoot: options.storage.dataRoot,
+          usageLedger: this.usageLedger,
+          providerAlerts: this.providerAlerts,
+          logger: options.logger
+        }))
     );
     this.executor = new ResponderExecutor(
       options,

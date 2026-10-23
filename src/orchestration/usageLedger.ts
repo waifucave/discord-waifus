@@ -70,11 +70,11 @@ class FileUsageLedger implements UsageLedger {
     while (this.pending.size > 0) await Promise.all([...this.pending]);
   }
 
-  private write(entry: UsageLedgerEntry): Promise<void> {
+  private async write(entry: UsageLedgerEntry): Promise<void> {
     const parsed = UsageLedgerEntrySchema.parse(entry);
     const filePath = usageLedgerPath(this.dataRoot, usageLedgerDay(parsed.at));
     const line = `${JSON.stringify(parsed)}\n`;
-    return enqueue(filePath, async () => {
+    await enqueue(filePath, async () => {
       await mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
       await appendFile(filePath, line, { encoding: "utf8", mode: 0o600 });
     });
