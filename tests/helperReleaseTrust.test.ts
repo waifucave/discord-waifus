@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { HELPER_RELEASE_TRUST_ROOTS } from "../src/remote/helperReleaseTrust.js";
 import { verifyHelperManifestTrustV1, type HelperManifestTrustInputV1 } from "../src/shared/helperManifestTrust.js";
-import { createHelperManifestTrustFixtureSet } from "../src/shared/helperManifestTrustContract.js";
+import { createHelperManifestTrustFixtureSet } from "../scripts/remote-contracts/helperManifestTrustContract.js";
 
 type PublicTrustFixture = Readonly<{
   valid: Readonly<{

@@ -9,11 +9,11 @@ import {
   verifyBrowserControlExceptionV1,
   verifyControlRequestEnvelopeV1,
   verifyControlResponseEnvelopeV1
-} from "../src/shared/controlAuth.js";
+} from "../scripts/remote-contracts/controlAuth.js";
 import {
   createHttpAuthEnvelopeFixtureSet,
   serializeHttpAuthEnvelopeFixture
-} from "../src/shared/controlAuthContract.js";
+} from "../scripts/remote-contracts/controlAuthContract.js";
 
 type JsonObject = Record<string, unknown>;
 

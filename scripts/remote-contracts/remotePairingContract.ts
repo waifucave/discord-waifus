@@ -14,12 +14,12 @@ import {
   runNoiseXXHandshake,
   type CanonicalCborValue,
   type UnsignedDeviceIdentityBundle
-} from "./remotePairing.js";
-import { INITIAL_REQUIRED_CAPABILITIES } from "./schemas/remoteProtocol.js";
+} from "../../src/shared/remotePairing.js";
+import { INITIAL_REQUIRED_CAPABILITIES } from "../../src/shared/schemas/remoteProtocol.js";
 import {
   serializeCanonicalContractJson,
   type ContractJson
-} from "./schemas/remoteProtocolContract.js";
+} from "../../src/shared/schemas/remoteProtocolContract.js";
 
 const ACCEPTED_AT = 1_786_270_800n;
 const EXPIRY = ACCEPTED_AT + 300n;

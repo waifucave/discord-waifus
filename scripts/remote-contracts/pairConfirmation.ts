@@ -3,11 +3,11 @@ import { TextDecoder } from "node:util";
 import {
   PairConfirmationV1Schema,
   type PairConfirmationV1
-} from "./schemas/remoteAccess.js";
+} from "../../src/shared/schemas/remoteAccess.js";
 import {
   serializeCanonicalContractJson,
   type ContractJson
-} from "./schemas/remoteProtocolContract.js";
+} from "../../src/shared/schemas/remoteProtocolContract.js";
 
 export const PAIR_CONFIRMATION_PAYLOAD_MAX_BYTES = 1_024;
 

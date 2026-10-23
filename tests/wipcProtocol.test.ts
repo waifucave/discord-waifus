@@ -25,7 +25,7 @@ import {
   verifyWipcHelperProof,
   verifyWipcParentProof
 } from "../src/shared/wipc.js";
-import { createWipcV1Fixture } from "../src/shared/wipcContract.js";
+import { createWipcV1Fixture } from "../scripts/remote-contracts/wipcContract.js";
 import { serializeCanonicalContractJson } from "../src/shared/schemas/remoteProtocolContract.js";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "..");

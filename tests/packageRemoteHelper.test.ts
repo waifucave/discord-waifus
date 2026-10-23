@@ -5,11 +5,6 @@ import { auditRootPackageInventory } from "../scripts/audit-root-package.mjs";
 
 const requiredPaths = [
   "bin/waifus.mjs",
-  "contracts/remote/v1/capabilities.json",
-  "contracts/remote/v1/fixtures/crypto/helper-manifest-trust-v1.json",
-  "contracts/remote/v1/helper-manifest.schema.json",
-  "contracts/remote/v1/protocol.schema.json",
-  "contracts/remote/v1/remote-access.schema.json",
   "dist-frontend/index.html",
   "dist-frontend/waifus-dashboard-manifest.json",
   "dist-remote-shell/index.html",
@@ -26,11 +21,14 @@ function report(paths: readonly string[]) {
 }
 
 describe("root remote helper package inventory", () => {
-  it("requires both dashboards, public contracts, compatibility, and helper trust code", async () => {
+  it("requires both dashboards, compatibility, and helper trust code", async () => {
     const pkg = JSON.parse(await readFile(path.join(process.cwd(), "package.json"), "utf8")) as {
       files?: string[];
     };
-    expect(pkg.files).toContain("contracts/remote/v1/");
+    expect(pkg.files).toContain("remote-compatibility.json");
+    // The remote contract vectors and their generators are dev-only tooling.
+    expect(pkg.files).not.toContain("contracts/remote/v1/");
+    expect(pkg.files?.some((entry) => entry.startsWith("scripts"))).toBe(false);
     expect(() => auditRootPackageInventory(report(requiredPaths))).not.toThrow();
 
     for (const required of requiredPaths) {
