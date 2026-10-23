@@ -9,6 +9,7 @@ import { DEFAULT_REVIEWER_PROMPT } from "./promptBuilders.js";
 import { type RuntimeServices, decrementActive, incrementActive, runKey, timerKey } from "./runtimeShared.js";
 import { ensureServer, readAgentConfig } from "./stores/config.js";
 import { appendReviewerHistory } from "./stores/decisionHistory.js";
+import { legacyServerContextWindow } from "./contextWindows.js";
 
 export class ReviewerRunner {
   readonly activeReviewerRuns = new Map<string, number>();
@@ -52,7 +53,7 @@ export class ReviewerRunner {
     const messages = await this.options.discord.fetchFreshContext({
       guildId: input.guildId,
       channelId: input.channelId,
-      limit: server.contextWindows.waifu ?? config.contextWindow
+      limit: legacyServerContextWindow("waifu", server)
     });
     const target = [...messages].reverse().find((message) => message.authorKind === "waifu");
     const messageIds = target ? target.sourceMessageIds ?? [target.id] : [];

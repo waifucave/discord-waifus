@@ -1,8 +1,11 @@
 import { MemoryKind, OrchestratorDecisionHistoryEntry, PendingObservation } from "../shared/schemas/domain.js";
-import { ContextMessage, OrchestratorWakeMarker } from "../orchestration/context.js";
+import { ContextMessage, OrchestratorWakeMarker } from "../orchestration/contextMessages.js";
 import { OrchestratorDecision } from "../orchestration/decisions.js";
 import { DreamOp, StageManagerObservation } from "../orchestration/stageManager.js";
 import type { ReviewerDecision } from "../orchestration/tools.js";
+import type { BuiltPrompt, ModelCallAttribution } from "../orchestration/context/types.js";
+import type { FinishReason } from "@waifucave/gateway";
+import type { LedgerEntry } from "../shared/schemas/context.js";
 
 export type ModelRole = "orchestrator" | "waifu" | "stage_manager" | "reviewer";
 
@@ -21,10 +24,18 @@ export type ProviderRequest = {
   maxOutputTokens?: number;
   params?: Record<string, unknown>;
   signal?: AbortSignal;
+  // Phase 4 context engine (spec 8.1). When set, `prompt` is sent verbatim instead of the legacy
+  // assembly from `messages`/`systemPrompt`; nothing sets it until the engine is wired (T3/T5).
+  prompt?: BuiltPrompt;
+  // Who the call is billed to in the usage ledger (spec 8.10).
+  attribution?: ModelCallAttribution;
+  // Ledger entries behind `prompt`, for fakes and the deterministic fallback.
+  transcript?: LedgerEntry[];
 };
 
 export type WaifuGenerationRequest = ProviderRequest & {
-  systemPrompt: string;
+  // Optional once `prompt` carries the system message; legacy callers still set it.
+  systemPrompt?: string;
   midSystemBlock?: string;
   trailingSystemBlock?: string;
   retryUserMessage?: string;
@@ -71,7 +82,9 @@ export type WaifuGenerationResult = {
     waifuId?: string;
   };
   shortTermMemoryEntries?: string[];
+  // `usage` stays the flat legacy shape until T7a replaces flatUsage with the gateway `Usage`.
   usage?: Record<string, number>;
+  finishReason?: FinishReason;
 };
 
 export type AssistantTurnEvent =

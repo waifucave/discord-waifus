@@ -7,7 +7,7 @@ import {
   WAIFU_CHUNK_COALESCE_WINDOW_MS,
   MessageLikeForContext,
   ContextMessage
-} from "../src/orchestration/context.js";
+} from "../src/orchestration/contextMessages.js";
 
 function msg(overrides: Partial<MessageLikeForContext> & {
   id: string;

@@ -35,6 +35,7 @@
     "test:e2e": "playwright test",
     "test:watch": "vitest",
     "benchmark:decisions": "tsx scripts/benchmark-decisions.ts",
+    "gateway:local": "node ./scripts/use-local-gateway.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p src/frontend/tsconfig.json --noEmit && tsc -p scripts/remote-contracts/tsconfig.json",
     "contracts:sas:check": "tsx scripts/generate-sas-wordlist.ts --check",
     "contracts:sas:generate": "tsx scripts/generate-sas-wordlist.ts --write",

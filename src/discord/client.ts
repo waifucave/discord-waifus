@@ -10,7 +10,7 @@ import {
 } from "discord.js";
 import type { AutocompleteInteraction, ChatInputCommandInteraction, ClientOptions } from "discord.js";
 import { Logger } from "../backend/logger.js";
-import { ContextMessage } from "../orchestration/context.js";
+import { ContextMessage } from "../orchestration/contextMessages.js";
 import {
   DiscordBotConfig,
   GuildEmojiCacheEntry,

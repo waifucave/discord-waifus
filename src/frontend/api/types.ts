@@ -220,6 +220,14 @@ export type RuntimeState = {
   };
 };
 
+export type CompactionSettings = {
+  enabled: boolean;
+  triggerRatio: number;
+  maxMessages: number;
+  keepRecent: number;
+  waitTimeoutMs: number;
+};
+
 export type AppConfig = {
   schemaVersion: number;
   http: { host: string; port: number };
@@ -234,6 +242,23 @@ export type AppConfig = {
     maxImageBytes: number;
     maxImagesPerModelCall: number;
     maxTextCharsPerImage: number;
+  };
+  compaction: CompactionSettings;
+  memory: {
+    dreamHourLocal: number;
+    maxPinnedInjected: number;
+    maxMemoryNotesPerEpoch: number;
+    maxInlineImagesPerEpoch: number;
+    dmInjectionLimit: number;
+  };
+  discord: {
+    images: {
+      maxBytes: number;
+      fetchTimeoutMs: number;
+      memoryCacheMb: number;
+      diskCacheMb: number;
+      diskCacheTtlHours: number;
+    };
   };
 };
 
@@ -451,11 +476,25 @@ export type WaifuConfig = Revisioned & {
   availability: WaifuAvailability;
   tools: WaifuToolSettings;
   promptLayout: WaifuPromptLayout;
+  verbosity: WaifuVerbosity;
+  customInstructions: string;
+  scheduleInPrompt: boolean;
+  dm: WaifuDmSettings;
   personaDigest?: {
     voice: string;
     role: string;
     personaHash: string;
   };
+};
+
+export type WaifuVerbosity = "terse" | "chatty" | "expressive";
+
+// rateLimit null = unlimited.
+export type WaifuDmSettings = {
+  allowDms: boolean;
+  rateLimit: { maxReplies: number; windowMinutes: number } | null;
+  notifyWhenLimited: boolean;
+  limitNotice: string;
 };
 
 export type WaifusResponse = { waifus: WaifuConfig[] };
@@ -474,6 +513,10 @@ export type CreateWaifuBody = {
   availability?: WaifuAvailability;
   tools?: WaifuToolSettings;
   promptLayout?: WaifuPromptLayout;
+  verbosity?: WaifuVerbosity;
+  customInstructions?: string;
+  scheduleInPrompt?: boolean;
+  dm?: Partial<Omit<WaifuDmSettings, "rateLimit">> & { rateLimit?: WaifuDmSettings["rateLimit"] };
 };
 
 // Gateway P6 Task 4: providerId/modelId accept explicit `null` on write to mean "unset" (see
@@ -502,19 +545,26 @@ export type ServerConfig = Revisioned & {
   oneShot?: { target: string };
   stageManagerEnabled?: boolean;
   paused?: boolean;
+  // Optional overrides (B29): absent = inherit the agent/waifu `contextWindow`.
   contextWindows: {
-    orchestrator: number;
-    waifu: number;
-    stageManager: number;
+    orchestrator?: number;
+    waifu?: number;
+    stageManager?: number;
   };
+  compaction?: Partial<CompactionSettings>;
   tools: ServerToolSettings;
   channels: Record<string, ChannelConfig>;
 };
 
 export type ServersResponse = { servers: ServerConfig[] };
 
-export type UpdateServerBody = Partial<Omit<ServerConfig, "schemaVersion" | "updatedAt" | "guildId">> & {
+// `null` per key in contextWindows/compaction = inherit (unset the stored override).
+export type UpdateServerBody = Partial<
+  Omit<ServerConfig, "schemaVersion" | "updatedAt" | "guildId" | "contextWindows" | "compaction">
+> & {
   revision: number;
+  contextWindows?: { [K in keyof ServerConfig["contextWindows"]]?: number | null };
+  compaction?: { [K in keyof CompactionSettings]?: CompactionSettings[K] | null };
 };
 
 export type ChannelBody = {

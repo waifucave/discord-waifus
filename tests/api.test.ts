@@ -1728,6 +1728,7 @@ describe("LLM gateway mount (/api/llm)", () => {
         jsonMode: true,
         jsonSchema: false,
         imageInput: false,
+        promptCaching: "implicit",
         deprecated: false,
         confidence: "verified"
       });

@@ -17,7 +17,7 @@ import {
 } from "../shared/schemas/domain.js";
 import { nowIso } from "../shared/schemas/common.js";
 import { ChannelSessionStateSchema, type RetriggerWake, createEmptyChannelSessionState } from "./session.js";
-import { type ContextMessage, type OrchestratorWakeMarker, formatTimestamp } from "./context.js";
+import { type ContextMessage, type OrchestratorWakeMarker, formatTimestamp } from "./contextMessages.js";
 import {
   DIRECTIVE_GOAL_MAX_CHARS,
   type DirectiveIntent,
@@ -52,6 +52,7 @@ import {
 } from "./stores/decisionHistory.js";
 import { noteActiveChatParticipantsFromContext } from "./stores/participants.js";
 import { consumeScheduledRetrigger, markSessionIdle, sessionRelativePath, setActivePipeline, updateSession } from "./stores/sessions.js";
+import { legacyServerContextWindow } from "./contextWindows.js";
 
 export type ActiveChannelRun = {
   guildId: string;
@@ -463,7 +464,7 @@ export class ChannelRunner {
       let messages = await this.options.discord.fetchFreshContext({
         guildId,
         channelId,
-        limit: server.contextWindows.orchestrator ?? orchestrator.contextWindow,
+        limit: legacyServerContextWindow("orchestrator", server),
         signal
       });
       await noteActiveChatParticipantsFromContext(this.options.storage, guildId, channelId, messages);

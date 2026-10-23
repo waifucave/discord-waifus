@@ -7,7 +7,7 @@ import { QueryRole } from "../shared/queryLog.js";
 import { OrchestratorRespondingWaifu } from "../shared/schemas/domain.js";
 import { StorageService } from "../storage/storageService.js";
 import type { RetriggerSource } from "./session.js";
-import type { ContextMessage } from "./context.js";
+import type { ContextMessage } from "./contextMessages.js";
 import type { OneShotInput, OneShotResult } from "./oneShot/decider.js";
 
 export type RuntimeOrchestratorOptions = {

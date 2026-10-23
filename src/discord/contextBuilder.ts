@@ -3,7 +3,7 @@ import {
   MessageLikeForContext,
   buildContextMessages,
   ContextMessage
-} from "../orchestration/context.js";
+} from "../orchestration/contextMessages.js";
 import { ModelVisibleRole, normalizeDiscordContentForModel } from "./normalization.js";
 
 export function buildNormalizedDiscordContext(

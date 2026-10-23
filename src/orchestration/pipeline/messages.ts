@@ -3,7 +3,7 @@ import {
   ContextMessage,
   formatSelfWaifuContent,
   formatWaifuContextBlock,
-} from "../context.js";
+} from "../contextMessages.js";
 
 type ImageBlockOut = { type: "image"; mimeType: string; data: string };
 type UserBlock = { type: "text"; text: string } | ImageBlockOut;

@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { OneShotConfigSchema } from "./oneShot.js";
 import { CURRENT_SCHEMA_VERSION, IsoDateStringSchema, RevisionedRecordSchema } from "./common.js";
+import { CompactionOverrideSchema } from "./compaction.js";
+import { WaifuDmSettingsSchema, defaultWaifuDmSettings } from "./dm.js";
 
 // Gateway P4 Task 4: widened from the legacy 6-value enum to any id the gateway registry
 // knows (14+ providers). Unknown ids still get rejected at API write time — see
@@ -228,13 +230,16 @@ export const AgentConfigSchema = RevisionedRecordSchema.extend({
   enabled: z.boolean().default(false),
   providerId: z.union([ProviderIdSchema, z.null()]).optional().transform((value) => value ?? undefined),
   modelId: z.union([z.string(), z.null()]).optional().transform((value) => value ?? undefined),
-  contextWindow: z.number().int().min(1).max(100).default(20),
+  contextWindow: z.number().int().min(1).max(200).default(20),
   prompt: z.string().default(""),
   directiveCooldown: z.number().int().min(0).max(20).default(3),
   params: z.record(z.string(), z.unknown()).default({}),
   promptSections: OrchestratorPromptSectionsSchema
 });
 export type AgentConfig = z.infer<typeof AgentConfigSchema>;
+
+export const WAIFU_VERBOSITIES = ["terse", "chatty", "expressive"] as const;
+export type WaifuVerbosity = (typeof WAIFU_VERBOSITIES)[number];
 
 export const WaifuConfigSchema = RevisionedRecordSchema.extend({
   id: z.string().min(1),
@@ -252,11 +257,17 @@ export const WaifuConfigSchema = RevisionedRecordSchema.extend({
     .union([z.string(), z.null()])
     .optional()
     .transform((value) => value ?? undefined),
-  contextWindow: z.number().int().min(1).max(100).default(50),
+  contextWindow: z.number().int().min(1).max(200).default(50),
   params: z.record(z.string(), z.unknown()).default({}),
   availability: WaifuAvailabilitySchema,
   tools: WaifuToolSettingsSchema,
   promptLayout: WaifuPromptLayoutSchema,
+  // Phase 4 prompt settings (spec 8.2). Nothing reads these until the waifu harness lands (T3).
+  verbosity: z.enum(WAIFU_VERBOSITIES).default("terse"),
+  customInstructions: z.string().max(4000).default(""),
+  scheduleInPrompt: z.boolean().default(true),
+  // Phase 5 DM settings (spec 9.1); nothing reads this until the DM runner lands.
+  dm: WaifuDmSettingsSchema.default(() => defaultWaifuDmSettings()),
   personaDigest: z
     .object({
       voice: z.string(),
@@ -271,13 +282,18 @@ export const ServerConfigSchema = RevisionedRecordSchema.extend({
   guildId: z.string().min(1),
   name: z.string().optional(),
   enabled: z.boolean().default(false),
+  // B29: optional overrides (precedence: explicit server override > agent/waifu `contextWindow`).
+  // Files written before Phase 4 carry all three keys; they parse unchanged until the
+  // server-context-windows-explicit-v1 migration drops keys equal to the old defaults.
   contextWindows: z
     .object({
-      orchestrator: z.number().int().min(1).max(100).default(20),
-      waifu: z.number().int().min(1).max(100).default(50),
-      stageManager: z.number().int().min(1).max(100).default(80)
+      orchestrator: z.number().int().min(1).max(200).optional(),
+      waifu: z.number().int().min(1).max(200).optional(),
+      stageManager: z.number().int().min(1).max(200).optional()
     })
-    .default({ orchestrator: 20, waifu: 50, stageManager: 80 }),
+    .default({}),
+  // Per-server override of AppConfig.compaction; absent keys inherit.
+  compaction: CompactionOverrideSchema.optional(),
   memoryInjectionLimit: z.number().int().min(1).max(50).default(12),
   // "model" uses the globally configured orchestrator model; "deterministic" forces the
   // model-free structural decider for every channel of this guild (zero orchestration spend).

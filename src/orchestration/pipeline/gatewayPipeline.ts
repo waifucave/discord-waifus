@@ -5,7 +5,7 @@ import { createProviderCredentialsLookup } from "../../api/llmGatewayCredentials
 import { QueryRole, recordProviderQuery, recordProviderReply } from "../../shared/queryLog.js";
 import type { AssistantTurnRequest, AssistantTurnResult, ModelPipeline, ProviderRequest, WaifuGenerationRequest, WaifuGenerationResult, StageManagerObserveRequest, DreamRequest, PersonaDigestRequest, PersonaDigest } from "../../providers/types.js";
 import { ORCHESTRATOR_TOOL_NAME, PICK_NEXT_WAIFU_TOOL_NAME, REVIEWER_TOOL_NAME, SHORT_TERM_MEMORY_TOOL_NAME, OBSERVER_TOOL_NAME, DREAM_TOOL_NAME, PERSONA_DIGEST_TOOL_NAME, DREAM_PROMPT, PERSONA_DIGEST_PROMPT, ReviewerDecision, ReviewerDecisionSchema, orchestratorToolParameters, pickNextWaifuToolParameters, reviewerSystemPrompt, reviewerToolParameters, shortTermMemoryToolParameters, observerSystemPrompt, observerToolParameters, dreamToolParameters, flatDreamToolParameters, personaDigestToolParameters, dreamMessages, normalizeDreamOps, normalizeOrchestratorDecision, parseRawStageManagerObservations } from "../tools.js";
-import { formatObserverContext } from "../context.js";
+import { formatObserverContext } from "../contextMessages.js";
 import { GatewayPipelineError, buildUnifiedParams, preconformRequest } from "./params.js";
 import { buildWaifuMessages } from "./messages.js";
 import { buildOrchestratorChatMessages } from "./timeline.js";
@@ -256,7 +256,7 @@ class GatewayModelPipeline implements ModelPipeline {
       tools.push({ name: PICK_NEXT_WAIFU_TOOL_NAME, parameters: pickNextWaifuToolParameters(request.availableWaifuIds) as Record<string, unknown> });
     }
     const response = await this.chat({
-      messages: await buildWaifuMessages(this.model, request),
+      messages: await buildWaifuMessages(this.model, { ...request, systemPrompt: request.systemPrompt ?? "" }),
       tools: tools.length ? tools : undefined,
       toolChoice: tools.length ? "auto" : undefined,
       sampling: {

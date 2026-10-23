@@ -22,6 +22,14 @@ import {
 } from "../shared/schemas/remoteAccess.js";
 import { RemoteAccessConfigV1Schema } from "../shared/schemas/remoteLifecycle.js";
 import { remoteStatePaths } from "../remote/paths.js";
+import { migrateDreamCursorGlobal } from "./migrationSteps/dreamCursorGlobal.js";
+import { migrateMemoriesCrossGuildDedupe } from "./migrationSteps/memoriesCrossGuildDedupe.js";
+import { migrateMemoriesGlobalOriginSubjects } from "./migrationSteps/memoriesGlobalOriginSubjects.js";
+import { migrateOcrCacheUrlKeysCleanup } from "./migrationSteps/ocrCacheUrlKeysCleanup.js";
+import { migratePendingObservationsGlobal } from "./migrationSteps/pendingObservationsGlobal.js";
+import { migrateServerContextWindowsExplicit } from "./migrationSteps/serverContextWindowsExplicit.js";
+import { migrateWaifuDropPromptLayout } from "./migrationSteps/waifuDropPromptLayout.js";
+import { migrateWaifuParamsGateway040 } from "./migrationSteps/waifuParamsGateway040.js";
 import {
   emptyMigrationLedger,
   readTrustedMigrationLedger,
@@ -41,9 +49,12 @@ export type MigrationResult = {
 //   steps whose outcome depends on code shipped with the app (e.g. the gateway model registry).
 type MigrationStepFrequency = "every-boot" | "once" | "once-per-app-version";
 
-type MigrationStep = {
+export type MigrationStep = {
   id: string;
   frequency: MigrationStepFrequency;
+  // Registered ahead of its implementation (spec 8.0): a pending step is skipped and NOT recorded
+  // in the ledger, so it runs normally the first boot after the owning work removes the flag.
+  pending?: boolean;
   // Returns the label reported in MigrationResult.applied when the step changed anything.
   run: (dataRoot: string) => Promise<string | undefined>;
 };
@@ -53,7 +64,7 @@ const countLabel = (count: number, prefix: string) => (count > 0 ? `${prefix}-${
 
 // Order matters and is the historical boot order. Every step is idempotent, so re-running all of
 // them (missing/corrupt ledger, 1.x → 2.x manual upgrades) is always safe.
-const MIGRATION_STEPS: readonly MigrationStep[] = [
+export const MIGRATION_STEPS: readonly MigrationStep[] = [
   {
     id: "harden-remote-access-state-v1",
     frequency: "every-boot",
@@ -129,11 +140,28 @@ const MIGRATION_STEPS: readonly MigrationStep[] = [
     run: async (dataRoot) => label(await migrateConfigsToGatewayParams(dataRoot), "migrate-configs-to-gateway-params")
   },
   {
+    // Phase 4 (spec 8.2/8.10): drops stored params the gateway 0.4.0 catalog rejects. Owned by T7a.
+    id: "waifu-params-gateway-040-v1",
+    frequency: "once-per-app-version",
+    pending: true,
+    run: migrateWaifuParamsGateway040
+  },
+  {
     // Has its own one-time marker; the cheap missing-`enabled` fill keeps running every boot.
     id: "enable-discord-bots-v1",
     frequency: "every-boot",
     run: async (dataRoot) => label(await enableDiscordBotsForUpgrade(dataRoot), "enable-discord-bots-v1")
   },
+  // Phase 4 steps (spec 8.2), registered pending until their owning tasks land. They must stay
+  // before the schema-version stamp and keep this relative order.
+  { id: "waifu-drop-prompt-layout-v1", frequency: "once", pending: true, run: migrateWaifuDropPromptLayout }, // T4
+  { id: "server-context-windows-explicit-v1", frequency: "once", pending: true, run: migrateServerContextWindowsExplicit }, // T5
+  { id: "memories-global-origin-subjects-v1", frequency: "once", pending: true, run: migrateMemoriesGlobalOriginSubjects }, // T6
+  // Guarded by its own marker file (user/.memories-dedupe-v1.json) so ledger loss never re-runs it.
+  { id: "memories-cross-guild-dedupe-v1", frequency: "once", pending: true, run: migrateMemoriesCrossGuildDedupe }, // T6
+  { id: "pending-observations-global-v1", frequency: "once", pending: true, run: migratePendingObservationsGlobal }, // T6
+  { id: "dream-cursor-global-v1", frequency: "once", pending: true, run: migrateDreamCursorGlobal }, // T6
+  { id: "ocr-cache-url-keys-cleanup-v1", frequency: "once", pending: true, run: migrateOcrCacheUrlKeysCleanup }, // T2
   {
     // Runs LAST: every step above may still leave a file's schemaVersion at 1 even once its shape
     // is current. Stamping here — after all shape conversions — is what lets the next boot's
@@ -153,7 +181,7 @@ function stepIsRecorded(step: MigrationStep, ledger: MigrationLedger, appVersion
 
 export async function runMigrations(
   dataRoot: string,
-  options: { appVersion?: string } = {}
+  options: { appVersion?: string; steps?: readonly MigrationStep[] } = {}
 ): Promise<MigrationResult> {
   await ensureDataLayout(dataRoot);
   const appVersion = options.appVersion ?? (await readPackageVersion());
@@ -170,7 +198,8 @@ export async function runMigrations(
   };
 
   try {
-    for (const step of MIGRATION_STEPS) {
+    for (const step of options.steps ?? MIGRATION_STEPS) {
+      if (step.pending) continue;
       if (stepIsRecorded(step, ledger, appVersion)) continue;
       const result = await step.run(dataRoot);
       if (result) applied.push(result);

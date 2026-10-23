@@ -6,7 +6,7 @@ import {
   relativeAge,
   RetrievalInput
 } from "../src/orchestration/memoryRetrieval.js";
-import { ContextMessage } from "../src/orchestration/context.js";
+import { ContextMessage } from "../src/orchestration/contextMessages.js";
 
 // Fixed reference time for all tests
 const NOW = new Date("2026-06-12T18:00:00Z");

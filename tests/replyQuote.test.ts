@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { ContextMessage } from "../src/orchestration/context.js";
+import type { ContextMessage } from "../src/orchestration/contextMessages.js";
 import { extractReplyQuote } from "../src/orchestration/replyQuote.js";
 
 function ctxMessage(overrides: Partial<ContextMessage> & { id: string; content: string }): ContextMessage {

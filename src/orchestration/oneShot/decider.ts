@@ -1,7 +1,7 @@
 import { createProviderCredentialsLookup } from "../../api/llmGatewayCredentials.js";
 import type { WaifuConfig } from "../../shared/schemas/domain.js";
 import { clipSurrogateSafe } from "../../shared/text.js";
-import type { ContextMessage } from "../context.js";
+import type { ContextMessage } from "../contextMessages.js";
 import { isAvailable, decideDeterministically, type DeterministicCastMember } from "../deterministicOrchestrator.js";
 import { OrchestratorDecisionSchema, type OrchestratorDecision } from "../decisions.js";
 import { OneShotTargetSchema, oneShotCatalog, type OneShotCatalog } from "./catalog.js";

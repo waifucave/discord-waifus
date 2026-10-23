@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createGateway } from "@waifucave/gateway";
 import { createGatewayModelPipeline } from "../src/orchestration/pipeline/gatewayPipeline.js";
 import { GatewayPipelineError } from "../src/orchestration/pipeline/params.js";
-import { ContextMessage } from "../src/orchestration/context.js";
+import { ContextMessage } from "../src/orchestration/contextMessages.js";
 import type { ProviderRequest } from "../src/providers/types.js";
 
 const msg = (over: Partial<ContextMessage>): ContextMessage => ({
