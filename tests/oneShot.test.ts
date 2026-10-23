@@ -103,7 +103,8 @@ describe("One shot native-choice orchestration", () => {
     const p = prepareOneShot(s);
     expect(Object.keys(p.questions.turn.criteria)).toHaveLength(20);
     expect(p.candidates[0].waifuId).toBe("w29");
-    expect(p.state).toContain('"ageSeconds":1');
+    expect(p.state).not.toContain("ageSeconds");
+    expect(prepareOneShot({ ...s, timeZone: "UTC" }).state).toContain('"time":"11:59"');
     expect(prepareOneShot({ ...s, target: "laya:multilingual" }).candidates).toHaveLength(7);
   });
   it("does not call inference without credentials, after cancellation or with no available cast", async () => {
