@@ -3,8 +3,8 @@ import { ContextMessage, OrchestratorWakeMarker } from "../orchestration/context
 import { OrchestratorDecision } from "../orchestration/decisions.js";
 import { DreamOp, ObserverOp, StageManagerObservation } from "../orchestration/stageManager.js";
 import type { ReviewerDecision } from "../orchestration/tools.js";
-import type { BuiltPrompt, ModelCallAttribution } from "../orchestration/context/types.js";
-import type { FinishReason, Usage } from "@waifucave/gateway";
+import type { BuiltPrompt, ModelCallAttribution, SummaryResult } from "../orchestration/context/types.js";
+import type { FinishReason, ToolChoice, Usage } from "@waifucave/gateway";
 import type { LedgerEntry } from "../shared/schemas/context.js";
 
 export type ModelRole = "orchestrator" | "waifu" | "stage_manager" | "reviewer";
@@ -124,4 +124,33 @@ export interface ModelPipeline {
   decideReviewer?(request: ProviderRequest & { message: string }): Promise<ReviewerDecision>;
   generatePersonaDigest?(request: PersonaDigestRequest): Promise<PersonaDigest>;
   generateAssistantTurn?(request: AssistantTurnRequest): Promise<AssistantTurnResult>;
+  /**
+   * Own-model context compaction (spec 8.9): the summary text (tool calls ignored) and the finish
+   * reason. A `length` finish is retried once with a doubled cap; if it is still `length`, the
+   * caller must not store the text.
+   */
+  summarizeContext?(request: SummarizeContextRequest): Promise<SummaryResult>;
 }
+
+/**
+ * A context's summarize call (spec 8.9). `prompt` is sent through breakpoint C with its tools, and
+ * the instruction replaces the ephemeral tail. Everything else mirrors the agent's REPLY call so
+ * the provider's prompt cache hits: same `toolChoice` (waifus `auto`; a forced tool such as the
+ * orchestrator's becomes `none` where supported, else `auto`), same params/sampling. Only the
+ * output cap differs (see compactionMaxOutputTokens; max_tokens is not part of the cache key) and
+ * stop sequences are not sent.
+ */
+export type SummarizeContextRequest = {
+  prompt: BuiltPrompt;
+  instruction: string;
+  /** The reply call's tool choice (default `auto` when the prompt has tools). */
+  toolChoice?: ToolChoice;
+  temperature?: number;
+  topP?: number;
+  /** The reply call's output cap (its sampling `maxOutputTokens`), if any. */
+  maxOutputTokens?: number;
+  params?: Record<string, unknown>;
+  /** Attribution of the reply call; the ledger purpose is always `compaction`. */
+  attribution?: Omit<ModelCallAttribution, "purpose">;
+  signal?: AbortSignal;
+};

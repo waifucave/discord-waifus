@@ -3,12 +3,13 @@ import { createGateway, GatewayError, Gateway, type ChatMessage, type ChatRespon
 import { z } from "zod";
 import { createProviderCredentialsLookup } from "../../api/llmGatewayCredentials.js";
 import { QueryRole, recordProviderQuery, recordProviderReply } from "../../shared/queryLog.js";
-import type { AssistantTurnRequest, AssistantTurnResult, ModelPipeline, ProviderRequest, WaifuGenerationRequest, WaifuGenerationResult, StageManagerObserveRequest, DreamRequest, PersonaDigestRequest, PersonaDigest } from "../../providers/types.js";
+import type { AssistantTurnRequest, AssistantTurnResult, ModelPipeline, ProviderRequest, WaifuGenerationRequest, WaifuGenerationResult, StageManagerObserveRequest, DreamRequest, PersonaDigestRequest, PersonaDigest, SummarizeContextRequest } from "../../providers/types.js";
 import { ORCHESTRATOR_TOOL_NAME, PICK_NEXT_WAIFU_TOOL_NAME, REVIEWER_TOOL_NAME, SHORT_TERM_MEMORY_TOOL_NAME, OBSERVER_TOOL_NAME, DREAM_TOOL_NAME, PERSONA_DIGEST_TOOL_NAME, DREAM_PROMPT, PERSONA_DIGEST_PROMPT, ReviewerDecision, ReviewerDecisionSchema, orchestratorToolParameters, pickNextWaifuToolParameters, reviewerSystemPrompt, reviewerToolParameters, shortTermMemoryToolParameters, observerSystemPrompt, observerToolParameters, dreamToolParameters, flatDreamToolParameters, personaDigestToolParameters, dreamMessages, normalizeDreamOps, normalizeOrchestratorDecision, parseRawObserverOps } from "../tools.js";
 import { formatObserverContext } from "../contextMessages.js";
 import { GatewayPipelineError, TruncatedOutputError, buildUnifiedParams, preconformRequest } from "./params.js";
 import { estimateTokens } from "../context/tokens.js";
-import type { ModelCallAttribution, UsagePurpose } from "../context/types.js";
+import type { ModelCallAttribution, SummaryResult, UsagePurpose } from "../context/types.js";
+import { compactionMaxOutputTokens, compactionMessages, compactionToolChoice } from "../context/compaction.js";
 import type { Logger } from "../../backend/logger.js";
 import { NoopUsageLedger, sharedUsageLedger, usageFields, type UsageLedger } from "../usageLedger.js";
 import { sharedProviderAlerts, type ProviderAlerts } from "../providerAlerts.js";
@@ -465,6 +466,41 @@ class GatewayModelPipeline implements ModelPipeline {
       meta: callMeta(request, "persona_digest", "generatePersonaDigest")
     });
     return parseForcedCall(response, PERSONA_DIGEST_TOOL_NAME, (raw) => PersonaDigestResultSchema.parse(raw), "generatePersonaDigest");
+  }
+
+  /**
+   * Spec 8.9: the context's own model summarizes it, reusing the cached prefix. Messages through
+   * C, tools, tool choice and params are the reply call's; only the tail (the instruction), the
+   * output cap and the absence of stop sequences differ. Tool calls in the output are ignored.
+   * A `length` finish (summary cut off) is retried once with a doubled cap; the finish reason is
+   * returned so compaction never stores a truncated summary.
+   */
+  async summarizeContext(request: SummarizeContextRequest): Promise<SummaryResult> {
+    const { prompt } = request;
+    const model = this.model;
+    const tools = prompt.tools.length > 0 ? prompt.tools : undefined;
+    const { stopSequences: _stop, ...params } = request.params ?? {};
+    const messages = compactionMessages(prompt, request.instruction);
+    const toolChoice = tools ? compactionToolChoice(request.toolChoice ?? "auto", model.features.tools.toolChoice) : undefined;
+    const send = (maxOutputTokens: number) =>
+      this.chat({
+        messages,
+        tools,
+        toolChoice,
+        sampling: { temperature: request.temperature, topP: request.topP, params: { ...params, maxOutputTokens } },
+        signal: request.signal,
+        meta: {
+          purpose: "compaction",
+          attribution: { ...(request.attribution ?? {}), purpose: "compaction" },
+          promptCacheKey: prompt.promptCacheKey
+        }
+      });
+    const cap = compactionMaxOutputTokens(request.params, model, request.maxOutputTokens);
+    let response = await send(cap);
+    if (response.finishReason === "length" && cap < model.limits.maxOutputTokens) {
+      response = await send(Math.min(model.limits.maxOutputTokens, cap * 2));
+    }
+    return { text: textContent(response), finishReason: response.finishReason };
   }
 }
 
