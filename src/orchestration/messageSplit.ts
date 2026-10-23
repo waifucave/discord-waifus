@@ -1,3 +1,5 @@
+import { jaccard } from "./text.js";
+
 const PARAGRAPH_SPLIT_RE = /\n+/;
 const SENTENCE_SPLIT_RE = /(?<=[.?!])\s+/;
 // Replies at or below this length ship as ONE Discord message. Live data (2026-07) showed the
@@ -174,15 +176,6 @@ function dedupeTokenSet(text: string): Set<string> {
       .split(/\s+/)
       .filter((token) => token.length >= 2)
   );
-}
-
-function jaccard(a: Set<string>, b: Set<string>): number {
-  if (a.size === 0 || b.size === 0) return 0;
-  let intersection = 0;
-  for (const token of a) {
-    if (b.has(token)) intersection += 1;
-  }
-  return intersection / (a.size + b.size - intersection);
 }
 
 const MS_PER_CHAR = 30;

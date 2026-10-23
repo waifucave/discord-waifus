@@ -1,8 +1,9 @@
 // Deterministic waifu output validator.
 //
-// Pure module — no side effects, no imports from other orchestration modules.
-// tokenSet/STOPWORDS are copied verbatim from loopDetector.ts (modules stay
-// decoupled by design — do not import from loopDetector).
+// Pure module — no side effects; its only orchestration import is the shared
+// lexical helper module (text.ts).
+
+import { tokenSet } from "./text.js";
 
 export type ValidationVerdict = "pass" | "retry" | "block";
 
@@ -19,29 +20,6 @@ export type ValidationContext = {
   toolNames: string[];
   recentSelfMessages?: string[]; // this waifu's own last few sent messages (raw content)
 };
-
-// ---------------------------------------------------------------------------
-// Token helpers (verbatim from loopDetector.ts — keep decoupled)
-// ---------------------------------------------------------------------------
-
-const STOPWORDS = new Set([
-  "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
-  "and", "or", "but", "if", "of", "to", "in", "on", "for", "with", "at", "by", "from",
-  "that", "this", "these", "those", "it", "its", "as", "into", "about",
-  "i", "you", "he", "she", "they", "we", "them", "his", "her", "their",
-  "do", "does", "did", "have", "has", "had", "will", "would", "should", "could", "can",
-  "not", "no", "yes", "so", "than", "then", "very", "just", "also", "too"
-]);
-
-function tokenSet(text: string): Set<string> {
-  return new Set(
-    text
-      .toLowerCase()
-      .replace(/[^a-z0-9\s]/g, " ")
-      .split(/\s+/)
-      .filter((token) => token.length >= 3 && !STOPWORDS.has(token))
-  );
-}
 
 // ---------------------------------------------------------------------------
 // Individual check functions (each returns Violation | undefined)
