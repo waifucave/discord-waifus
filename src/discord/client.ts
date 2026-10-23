@@ -4,6 +4,7 @@ import {
   Events,
   GatewayIntentBits,
   MessageFlags,
+  Options,
   Partials,
   PermissionFlagsBits
 } from "discord.js";
@@ -494,15 +495,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   }
 
   private createClient(bot: DiscordBotConfig, kind: DiscordBotKind): Client {
-    const options: ClientOptions = {
-      intents: [
-        GatewayIntentBits.Guilds,
-        GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.GuildMessageReactions,
-        GatewayIntentBits.MessageContent
-      ],
-      partials: [Partials.Channel, Partials.Message, Partials.Reaction]
-    };
+    const options = discordClientOptions(kind);
     const client = this.options.createClient?.({ bot, kind, options }) ?? new Client(options);
     this.attachClientRuntimeHandlers(client, bot.id);
     if (kind === "orchestrator") {
@@ -1490,6 +1483,38 @@ export class DiscordGatewayNotConfigured implements DiscordGatewayFacade {
   }
 
   async sendTyping(): Promise<void> {}
+}
+
+/**
+ * The orchestrator reads every channel (messages, reactions, content) and owns slash commands.
+ * Waifu clients never listen: they only fetch a channel, send, type and delete their own messages,
+ * all over REST, so they need just `Guilds` (channel cache) and keep no message/member caches.
+ */
+export function discordClientOptions(kind: DiscordBotKind): ClientOptions {
+  if (kind === "orchestrator") {
+    return {
+      intents: [
+        GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.GuildMessageReactions,
+        GatewayIntentBits.MessageContent
+      ],
+      partials: [Partials.Channel, Partials.Message, Partials.Reaction]
+    };
+  }
+  return {
+    intents: [GatewayIntentBits.Guilds],
+    makeCache: Options.cacheWithLimits({
+      MessageManager: 0,
+      ReactionManager: 0,
+      ReactionUserManager: 0,
+      PresenceManager: 0,
+      VoiceStateManager: 0,
+      ThreadMemberManager: 0,
+      GuildMemberManager: { maxSize: 0, keepOverLimit: (member) => member.id === member.client.user.id },
+      UserManager: { maxSize: 0, keepOverLimit: (user) => user.id === user.client.user.id }
+    })
+  };
 }
 
 async function loginAndWaitUntilReady(client: Client, token: string, signal: AbortSignal): Promise<void> {

@@ -1,4 +1,15 @@
-import { Client, Events, MessageFlags, PermissionFlagsBits } from "discord.js";
+import {
+  Client,
+  Events,
+  GatewayIntentBits,
+  GuildMessageManager,
+  IntentsBitField,
+  LimitedCollection,
+  Message,
+  MessageFlags,
+  MessageManager,
+  PermissionFlagsBits
+} from "discord.js";
 import type { ClientOptions } from "discord.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DiscordJsGateway, buildOrchestratorCommandPayloads } from "../src/discord/client.js";
@@ -228,6 +239,37 @@ describe("DiscordJsGateway per-bot connection", () => {
 
     expect(botStatus(status, "waifu-a")?.nextRetryAt).toBeUndefined();
     expect(clients.loginAttempts.get("waifu-a")).toBe(1);
+  });
+});
+
+describe("DiscordJsGateway client options", () => {
+  it("connects waifu-only clients with the Guilds intent and no message caches", async () => {
+    const clients = fakeClients({});
+    const gateway = makeGateway({
+      orchestrator: bot("orchestrator"),
+      waifus: [bot("waifu-a")],
+      createClient: clients.factory
+    });
+    await gateway.connect();
+
+    const waifu = clients.createdOptions.get("waifu-a")!;
+    expect(new IntentsBitField(waifu.intents).bitfield).toBe(GatewayIntentBits.Guilds);
+    expect(waifu.partials ?? []).toEqual([]);
+    const messageCache = waifu.makeCache?.(MessageManager as never, Message as never, GuildMessageManager as never);
+    expect(messageCache).toBeInstanceOf(LimitedCollection);
+    expect((messageCache as LimitedCollection<string, unknown>).maxSize).toBe(0);
+
+    const orchestrator = clients.createdOptions.get("orchestrator")!;
+    const orchestratorIntents = new IntentsBitField(orchestrator.intents);
+    for (const intent of [
+      GatewayIntentBits.Guilds,
+      GatewayIntentBits.GuildMessages,
+      GatewayIntentBits.GuildMessageReactions,
+      GatewayIntentBits.MessageContent
+    ]) {
+      expect(orchestratorIntents.has(intent)).toBe(true);
+    }
+    expect(orchestrator.makeCache).toBeUndefined();
   });
 });
 
