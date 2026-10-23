@@ -1,7 +1,7 @@
 // Shared contracts of the Phase 4 context engine (spec 8.1, 8.3, 8.9). Types only, plus the
 // NoopCompaction value; implementations land in later tasks (T2 engine, T6 memory, T7b compaction).
 
-import type { ChatMessage, ImageBlock, TextBlock, ToolDef } from "@waifucave/gateway";
+import type { ChatMessage, FinishReason, ImageBlock, TextBlock, ToolDef } from "@waifucave/gateway";
 import type { CompactionSettings } from "../../shared/schemas/compaction.js";
 import type { ContextNote, ContextState, LedgerEntry } from "../../shared/schemas/context.js";
 import type { ImageRef, RawDiscordMessage } from "../../shared/schemas/discordMessage.js";
@@ -123,17 +123,42 @@ export interface CompactionService {
     budget: TokenBudget;
     settings: CompactionSettings;
   }): CompactionTrigger | undefined;
-  compact(i: {
-    conversation: ConversationRef;
-    agent: ContextAgent;
-    prompt: BuiltPrompt;
-    trigger: CompactionTrigger;
-    summarize: (p: BuiltPrompt, instruction: string) => Promise<string>;
-    settings: CompactionSettings;
-    signal?: AbortSignal;
-  }): Promise<void>;
-  inFlight(k: ConversationKey, a: ContextAgent): Promise<void> | undefined;
+  compact(i: CompactInput): Promise<CompactionOutcome | void>;
+  inFlight(k: ConversationKey, a: ContextAgent): Promise<CompactionOutcome | void> | undefined;
 }
+
+/**
+ * A summarize call's result. `finishReason: "length"` means the summary was cut off; compaction
+ * never stores it. A plain string (legacy shape) is accepted as a complete summary.
+ */
+export type SummaryResult = { text: string; finishReason?: FinishReason };
+export type Summarize = (p: BuiltPrompt, instruction: string) => Promise<string | SummaryResult>;
+
+export type CompactInput = {
+  conversation: ConversationRef;
+  agent: ContextAgent;
+  prompt: BuiltPrompt;
+  trigger: CompactionTrigger;
+  summarize: Summarize;
+  settings: CompactionSettings;
+  /** Stops the caller waiting (rejects with the abort reason); the compaction itself continues. */
+  signal?: AbortSignal;
+  /**
+   * Additive (T7b): the context state `prompt` was built from. It may be a not-yet-persisted
+   * fresh epoch (first prepare, or a context idle beyond the pruning horizon), so the compaction
+   * builds on it when the stored revision is unchanged. Default: the stored state at start.
+   */
+  basedOn?: ContextState;
+  /** Additive (T7b): the agent's token budget; sizes the kept window and the overflow prompt. */
+  budget?: TokenBudget;
+  /** Additive (T7b): the agent's own author ids (their messages show no ref). */
+  selfAuthorIds?: string[];
+};
+
+export type CompactionOutcome =
+  | { status: "compacted"; trigger: CompactionTrigger; epoch: number; cursorSeq: number }
+  | { status: "skipped"; reason: string }
+  | { status: "discarded"; reason: string };
 
 /** Compaction that never triggers and never runs: the default until T7b lands. */
 export const NoopCompaction: CompactionService = {
