@@ -25,7 +25,8 @@ import type { ServerConfig } from "../../shared/schemas/domain.js";
 import { buildContext, modelKeyFor } from "./builder.js";
 import type { ContextEngineStore } from "./contextStore.js";
 import { FrozenImageRenderer, type OcrTextLookup } from "./images.js";
-import { conversationKey, type ContextAgent, type ConversationKey, type ConversationRef } from "./keys.js";
+import { effectiveKeepRecent, isContextOverflowError } from "./compaction.js";
+import { contextAgentId, conversationKey, type ContextAgent, type ConversationKey, type ConversationRef } from "./keys.js";
 import {
   ACTIVE_CONTEXT_MS,
   entryRenderHash,
@@ -37,8 +38,10 @@ import {
 import { discordMessageRenderer, EMPTY_GUILD_DIRECTORY } from "./messageRender.js";
 import { hostTimeZone } from "./timeFormat.js";
 import { estimateTokens, resolveTokenBudget } from "./tokens.js";
+import { NoopCompaction } from "./types.js";
 import type {
   BuiltPrompt,
+  CompactionOutcome,
   CompactionService,
   CompactionSettings,
   CompactionTrigger,
@@ -49,8 +52,12 @@ import type {
   NewContextNote,
   Participant,
   PreparedContext,
-  RoleRenderer
+  RoleRenderer,
+  Summarize,
+  TokenBudget
 } from "./types.js";
+
+export { isContextOverflowError };
 
 export type CalibrationHook = (i: {
   state: ContextState;
@@ -96,14 +103,15 @@ export type PrepareInput = {
   server?: ServerConfig; // compaction settings override
   directory?: GuildDirectoryView; // mention/role/channel/emoji names for new ledger entries
   /** The agent's own-model summarizer (gatewayPipeline.summarizeContext); compaction needs it. */
-  summarize?: (p: BuiltPrompt, instruction: string) => Promise<string>;
+  summarize?: Summarize;
   waifuIdForAuthor?: (authorId: string) => string | undefined;
   memoryLimit?: number; // snapshot size (memoryInjectionLimit), default 12
   recentReactions?: string[];
   renderToolTurnsAsText?: boolean; // default: true when render.tools() is empty
 };
 
-type Internal = { input: PrepareInput; key: ConversationKey };
+/** What a PreparedContext's prompt was built from (a compaction may have moved the stored state since). */
+type Internal = { input: PrepareInput; key: ConversationKey; builtEpoch: number; builtCursorSeq: number | null };
 
 const DEFAULT_MEMORY_LIMIT = 12;
 /** Fetch cap for the shared ledger (spec 8.3 review): independent of any one agent's backfillCap. */
@@ -116,13 +124,6 @@ class PrepareAbortedError extends Error {
 
 function throwIfAborted(signal: AbortSignal | undefined): void {
   if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : new PrepareAbortedError("Context prepare aborted.");
-}
-
-/** True for a gateway `context_overflow` error (also when wrapped as a cause). */
-export function isContextOverflowError(error: unknown, depth = 0): boolean {
-  if (!error || typeof error !== "object" || depth > 4) return false;
-  if ((error as { kind?: unknown }).kind === "context_overflow") return true;
-  return isContextOverflowError((error as { cause?: unknown }).cause, depth + 1);
 }
 
 function participantsOf(
@@ -189,6 +190,7 @@ export class ContextRuntime {
   private readonly now: () => Date;
   private readonly timeZone: () => string;
   private readonly renderer: MessageRenderer;
+  private readonly warnedNoSummarize = new Set<string>();
 
   constructor(private readonly d: ContextRuntimeDeps) {
     this.now = d.now ?? (() => new Date());
@@ -206,30 +208,57 @@ export class ContextRuntime {
     } catch (error) {
       if (!isContextOverflowError(error)) throw error;
       const internal = this.internals.get(p);
-      if (!internal?.input.summarize) throw error;
-      this.d.logger.warn("Context overflow; compacting and retrying once", { conversationKey: internal.key });
-      try {
-        await this.d.compaction.compact({
-          conversation: p.conversation,
-          agent: p.agent,
-          prompt: p.prompt,
-          trigger: "overflow",
-          summarize: internal.input.summarize,
-          settings: this.d.settings(internal.input.server),
-          signal: internal.input.signal,
-          basedOn: p.state
-        });
-      } catch (compactionError) {
-        throwIfAborted(internal.input.signal);
-        this.d.logger.warn("Compaction after a context overflow failed", {
-          conversationKey: internal.key,
-          message: compactionError instanceof Error ? compactionError.message : String(compactionError)
-        });
-        throw error;
+      if (!internal) throw error;
+      const i = internal.input;
+      const settings = this.d.settings(i.server);
+      let truncate = false;
+      const current = await this.d.store.load(internal.key, p.agent);
+      // A compaction that moved the epoch/cursor since this prompt was built already did the work:
+      // just rebuild on it. Otherwise compact (overflow → reduced summarize prompt), waiting at most
+      // waitTimeoutMs (spec 6.6: a reply never waits longer); on timeout, failure or nothing to
+      // compact, retry once with a hard-truncated rebuild instead.
+      if (current.epoch === internal.builtEpoch && current.cursorSeq === internal.builtCursorSeq) {
+        if (!i.summarize) {
+          truncate = true;
+        } else {
+          this.d.logger.warn("Context overflow; compacting and retrying once", { conversationKey: internal.key });
+          let result: CompactionOutcome | void = undefined;
+          const running = this.d.compaction
+            .compact({
+              conversation: p.conversation,
+              agent: p.agent,
+              prompt: p.prompt,
+              trigger: "overflow",
+              summarize: i.summarize,
+              settings,
+              budget: resolveTokenBudget(i.model, i.params ?? {}, settings),
+              selfAuthorIds: i.selfAuthorIds
+              // no signal: the compaction outlives this reply; the wait below honours the signal
+            })
+            .then((r) => {
+              result = r;
+            });
+          running.catch((compactionError: unknown) => {
+            this.d.logger.warn("Compaction after a context overflow failed", {
+              conversationKey: internal.key,
+              message: compactionError instanceof Error ? compactionError.message : String(compactionError)
+            });
+          });
+          const outcome = await withTimeout(running, settings.waitTimeoutMs, i.signal);
+          if (outcome === "aborted") throwIfAborted(i.signal);
+          const compacted = outcome === "done" && (result as CompactionOutcome | void)?.status !== "skipped";
+          if (!compacted) {
+            truncate = true;
+            this.d.logger.warn("Overflow compaction unavailable in time; retrying with a hard-truncated prompt", {
+              conversationKey: internal.key,
+              outcome
+            });
+          }
+        }
       }
-      const rebuilt = await this.prepareInternal({ ...internal.input, pendingNotes: [] }, false);
+      const rebuilt = await this.prepareInternal({ ...i, pendingNotes: [] }, false, truncate);
       Object.assign(p, rebuilt);
-      this.internals.set(p, internal);
+      this.internals.set(p, this.internals.get(rebuilt)!);
       return fn(p.prompt);
     }
   }
@@ -239,13 +268,18 @@ export class ContextRuntime {
     const anchorSeq = ledger ? newestSeq(ledger) : 0;
     const now = this.now();
     const rawEstimate = estimateTokens(p.prompt.messages, p.prompt.tools);
+    const internal = this.internals.get(p);
+    const builtEpoch = internal?.builtEpoch ?? p.state.epoch;
+    const builtCursorSeq = internal ? internal.builtCursorSeq : p.state.cursorSeq;
     const committed = await this.d.store.update(p.key, p.agent, (current) => {
       const notes = materializeNotes(current, o.notes ?? [], anchorSeq);
       let next: ContextState = {
         ...current,
         lastUsedAt: now.toISOString(),
-        // A compaction that landed meanwhile started a new epoch; the old address means nothing there.
-        lastBreakpoint: current.epoch === p.state.epoch ? p.prompt.breakpoint : current.lastBreakpoint,
+        // The prompt's C address only means something in the epoch/cursor it was built on; a
+        // compaction that landed meanwhile (even during prepare) started a new one.
+        lastBreakpoint:
+          current.epoch === builtEpoch && current.cursorSeq === builtCursorSeq ? p.prompt.breakpoint : current.lastBreakpoint,
         notes: [...current.notes, ...notes],
         noteSeq: current.noteSeq + notes.length
       };
@@ -269,19 +303,23 @@ export class ContextRuntime {
    * Manual compaction (spec 10.4 / 11.6): prepares the context (no automatic compaction) and
    * compacts it with trigger `manual`, waiting for the result. Needs `i.summarize`.
    */
-  async compactNow(i: PrepareInput): Promise<void> {
+  async compactNow(i: PrepareInput): Promise<CompactionOutcome> {
     if (!i.summarize) throw new Error("compactNow needs the agent's summarize function.");
     const p = await this.prepareInternal({ ...i, pendingNotes: [] }, false);
-    await this.d.compaction.compact({
+    const settings = this.d.settings(i.server);
+    const outcome = await this.d.compaction.compact({
       conversation: p.conversation,
       agent: p.agent,
       prompt: p.prompt,
       trigger: "manual",
       summarize: i.summarize,
-      settings: this.d.settings(i.server),
+      settings,
       signal: i.signal,
-      basedOn: p.state
+      basedOn: p.state,
+      budget: resolveTokenBudget(i.model, i.params ?? {}, settings),
+      selfAuthorIds: i.selfAuthorIds
     });
+    return outcome ?? { status: "skipped", reason: "compaction is not available" };
   }
 
   /**
@@ -292,20 +330,29 @@ export class ContextRuntime {
   private backgroundCheck(p: PreparedContext, committed: ContextState, usage: Usage | undefined): void {
     const internal = this.internals.get(p);
     const summarize = internal?.input.summarize;
-    if (!internal || !summarize || committed.epoch !== p.state.epoch) return;
+    // Only on the epoch/cursor the prompt was built on: a stale prompt would re-compact (and
+    // discard) a summary that just landed.
+    if (!internal || !summarize) return;
+    if (committed.epoch !== internal.builtEpoch || committed.cursorSeq !== internal.builtCursorSeq) return;
     if (this.d.compaction.inFlight(internal.key, p.agent)) return;
     const settings = this.d.settings(internal.input.server);
     if (!settings.enabled) return;
     const prompt: BuiltPrompt = { ...p.prompt, estimatedTokens: Math.max(p.prompt.estimatedTokens, usage?.inputTokens ?? 0) };
-    const trigger = this.d.compaction.check({
-      state: committed,
-      prompt,
-      budget: resolveTokenBudget(internal.input.model, internal.input.params ?? {}, settings),
-      settings
-    });
+    const budget = resolveTokenBudget(internal.input.model, internal.input.params ?? {}, settings);
+    const trigger = this.d.compaction.check({ state: committed, prompt, budget, settings });
     if (!trigger) return;
     this.d.compaction
-      .compact({ conversation: p.conversation, agent: p.agent, prompt: p.prompt, trigger, summarize, settings, basedOn: committed })
+      .compact({
+        conversation: p.conversation,
+        agent: p.agent,
+        prompt: p.prompt,
+        trigger,
+        summarize,
+        settings,
+        basedOn: committed,
+        budget,
+        selfAuthorIds: internal.input.selfAuthorIds
+      })
       .catch((error: unknown) => {
         this.d.logger.warn("Background context compaction failed", {
           conversationKey: internal.key,
@@ -336,10 +383,20 @@ export class ContextRuntime {
     return state.revision === 0 || now.getTime() - Date.parse(state.lastUsedAt) > ACTIVE_CONTEXT_MS;
   }
 
-  private async prepareInternal(i: PrepareInput, allowCompaction: boolean): Promise<PreparedContext> {
+  private async prepareInternal(i: PrepareInput, allowCompaction: boolean, forceTruncate = false): Promise<PreparedContext> {
     const startedAt = this.now();
     const key = conversationKey(i.conversation);
     throwIfAborted(i.signal);
+    if (!i.summarize && this.d.compaction !== NoopCompaction) {
+      const id = `${key}|${contextAgentId(i.agent)}`;
+      if (!this.warnedNoSummarize.has(id)) {
+        this.warnedNoSummarize.add(id);
+        this.d.logger.warn("Context prepared without a summarize function; it can never compact", {
+          conversationKey: key,
+          agentId: contextAgentId(i.agent)
+        });
+      }
+    }
 
     // 1. load state
     const loaded = await this.d.store.load(key, i.agent);
@@ -442,17 +499,26 @@ export class ContextRuntime {
 
       // 8. compaction check
       const settings = this.d.settings(i.server);
+      const budget = resolveTokenBudget(i.model, i.params ?? {}, settings);
       const trigger: CompactionTrigger | undefined = settings.enabled
-        ? this.d.compaction.check({
-            state: withNotes,
-            prompt,
-            budget: resolveTokenBudget(i.model, i.params ?? {}, settings),
-            settings
-          })
+        ? this.d.compaction.check({ state: withNotes, prompt, budget, settings })
         : undefined;
+      // One-off hard truncation (timeout, or an overflow retry): the newest effective-keepRecent
+      // entries, halved while still over budget; the stored cursor is unchanged.
+      const truncate = async (reason: string) => {
+        let keep = Math.max(1, Math.min(transcript.length, effectiveKeepRecent(settings)));
+        for (;;) {
+          rendered = transcript.slice(-keep);
+          const floor = rendered[0]?.seq ?? Number.POSITIVE_INFINITY;
+          prompt = await buildFor({ ...withNotes, notes: withNotes.notes.filter((note) => note.anchorSeq >= floor) }, rendered);
+          if (prompt.estimatedTokens <= budget.budgetTokens || keep <= 1) break;
+          keep = Math.max(1, Math.floor(keep / 2));
+        }
+        this.d.logger.warn(reason, { conversationKey: key, kept: rendered.length });
+      };
       if (trigger && allowCompaction && !compacted && i.summarize) {
         compacted = true;
-        const outcome = await this.awaitCompaction(key, i, prompt, trigger, settings, working);
+        const outcome = await this.awaitCompaction(key, i, prompt, trigger, settings, working, budget);
         // An abort while waiting must not seal or persist anything.
         if (outcome === "aborted") throwIfAborted(i.signal);
         if (outcome === "done") {
@@ -463,20 +529,9 @@ export class ContextRuntime {
           view = await this.ledgerView(key);
           continue; // rebuild on the compacted state
         }
-        if (outcome === "timeout") {
-          // One-off hard truncation: newest keepRecent entries; the stored cursor is unchanged.
-          rendered = transcript.slice(-Math.max(1, settings.keepRecent));
-          const floor = rendered[0]?.seq ?? Number.POSITIVE_INFINITY;
-          const truncatedState: ContextState = {
-            ...withNotes,
-            notes: withNotes.notes.filter((note) => note.anchorSeq >= floor)
-          };
-          prompt = await buildFor(truncatedState, rendered);
-          this.d.logger.warn("Compaction did not finish in time; sending a hard-truncated prompt", {
-            conversationKey: key,
-            kept: rendered.length
-          });
-        }
+        if (outcome === "timeout") await truncate("Compaction did not finish in time; sending a hard-truncated prompt");
+      } else if (forceTruncate) {
+        await truncate("Retrying a context overflow with a hard-truncated prompt");
       }
       throwIfAborted(i.signal);
 
@@ -543,7 +598,7 @@ export class ContextRuntime {
         modelKey: modelKeyFor(i.model),
         startedAt
       };
-      this.internals.set(prepared, { input: i, key });
+      this.internals.set(prepared, { input: i, key, builtEpoch: withNotes.epoch, builtCursorSeq: withNotes.cursorSeq });
       return prepared;
     }
   }
@@ -601,8 +656,16 @@ export class ContextRuntime {
         limit: o.i.memoryLimit ?? DEFAULT_MEMORY_LIMIT,
         maxPinned: memory.maxPinnedInjected
       });
-      next.memorySnapshotIds = snapshot.ids;
-      lines = snapshot.lines;
+      // Memory notes kept across a compaction already show their memories in the transcript.
+      const noted = new Set(next.notes.flatMap((note) => (note.kind === "memory" ? note.memoryIds : [])));
+      if (noted.size > 0 && snapshot.ids.length === snapshot.lines.length) {
+        const keep = snapshot.ids.map((id) => !noted.has(id));
+        next.memorySnapshotIds = snapshot.ids.filter((_id, index) => keep[index]);
+        lines = snapshot.lines.filter((_line, index) => keep[index]);
+      } else {
+        next.memorySnapshotIds = snapshot.ids.filter((id) => !noted.has(id));
+        lines = snapshot.lines;
+      }
     }
     next.headerText = o.i.render.header({ lines }, next);
     return { state: next, started: true };
@@ -653,7 +716,8 @@ export class ContextRuntime {
     prompt: BuiltPrompt,
     trigger: CompactionTrigger,
     settings: CompactionSettings,
-    basedOn: ContextState
+    basedOn: ContextState,
+    budget: TokenBudget
   ): Promise<"done" | "timeout" | "failed" | "aborted"> {
     const running =
       this.d.compaction.inFlight(key, i.agent) ??
@@ -664,7 +728,9 @@ export class ContextRuntime {
         trigger,
         summarize: i.summarize!,
         settings,
-        basedOn
+        basedOn,
+        budget,
+        selfAuthorIds: i.selfAuthorIds
         // no signal: a compaction outlives the reply that started it (spec 6.6)
       });
     running.catch((error: unknown) => {
