@@ -684,8 +684,6 @@ const RETRYABLE_DISCORD_MESSAGE_PATTERNS = [
   /\bunreachable\b/i
 ];
 
-const RETRYABLE_DISCORD_CLOSE_CODES = new Set([1001, 1006, 1011, 1012, 1013, 4000]);
-
 function isRetryableDiscordAutoConnectError(error: unknown): boolean {
   const code = errorCode(error);
   if (code && RETRYABLE_DISCORD_ERROR_CODES.has(code)) {
@@ -696,16 +694,16 @@ function isRetryableDiscordAutoConnectError(error: unknown): boolean {
 }
 
 function isRetryableDiscordRuntimeIssue(issue: DiscordRuntimeIssue): boolean {
-  if (isRetryableDiscordAutoConnectError(issue.error ?? issue) || isRetryableDiscordAutoConnectError(issue)) {
-    return true;
+  // discord.js resumes/re-identifies by itself after shard errors and recoverable closes, and only
+  // emits ShardDisconnect for close codes it gives up on (bad token, disallowed intents, ...): a
+  // reconnect cannot fix those, so the gateway marks that bot errored instead (see client.ts).
+  if (issue.source === "shard-error" || issue.source === "shard-disconnect" || issue.source === "warn") {
+    return false;
   }
   if (issue.source === "invalidated") {
     return true;
   }
-  if (issue.source === "shard-disconnect" && issue.wasClean === false && typeof issue.code === "number") {
-    return RETRYABLE_DISCORD_CLOSE_CODES.has(issue.code);
-  }
-  return false;
+  return isRetryableDiscordAutoConnectError(issue.error ?? issue) || isRetryableDiscordAutoConnectError(issue);
 }
 
 function discordRuntimeIssueLogContext(issue: DiscordRuntimeIssue): Record<string, unknown> {

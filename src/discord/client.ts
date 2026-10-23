@@ -1095,17 +1095,25 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
         error
       });
     });
+    // discord.js (14.27, @discordjs/ws) resumes or re-identifies on its own after network errors and
+    // recoverable close codes; ShardError is informational. It emits ShardDisconnect only for close
+    // codes it gives up on (4004, 4010-4014), so that bot is dead until its config is fixed.
     client.on(Events.ShardDisconnect, (event, shardId) => {
       const code = closeEventCode(event);
       const reason = closeEventReason(event);
+      const description = typeof code === "number" ? UNRECOVERABLE_CLOSE_CODE_DESCRIPTIONS[code] : undefined;
+      const message = `Discord shard disconnected${code === undefined ? "" : ` with code ${code}`}${
+        description ? ` (${description})` : ""
+      }${reason ? `: ${reason}` : "."}`;
       this.reportRuntimeIssue({
         source: "shard-disconnect",
         botId,
         shardId,
         code,
         wasClean: closeEventWasClean(event),
-        message: `Discord shard disconnected${code === undefined ? "" : ` with code ${code}`}${reason ? `: ${reason}` : "."}`
+        message
       });
+      this.handleUnrecoverableDisconnect(client, botId, typeof code === "number" ? code : undefined, message);
     });
     client.on(Events.Invalidated, () => {
       this.reportRuntimeIssue({
@@ -1121,6 +1129,40 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
         message
       });
     });
+  }
+
+  private handleUnrecoverableDisconnect(client: Client, botId: string, closeCode: number | undefined, message: string): void {
+    // A client that is still logging in fails its login instead; only adopted clients are handled here.
+    if (this.clients.get(botId) !== client) return;
+    const entry = this.configuredBots().find((candidate) => candidate.bot.id === botId);
+    if (!entry) return;
+    const generation = this.generation;
+    this.clients.delete(botId);
+    void destroyClientQuietly(client);
+    this.setBotStatus(entry.bot, entry.kind, {
+      state: "error",
+      errorCode: classifyDiscordConnectionError(message, closeCode),
+      error: message,
+      ...(closeCode === undefined ? {} : { closeCode })
+    });
+    if (entry.kind === "orchestrator") {
+      // Same policy as connect(): waifus cannot be cast without the orchestrator.
+      for (const [waifuBotId, waifuClient] of [...this.clients]) {
+        this.clients.delete(waifuBotId);
+        void destroyClientQuietly(waifuClient);
+        const status = this.botStatuses.get(waifuBotId);
+        if (status) {
+          this.botStatuses.set(waifuBotId, {
+            ...status,
+            state: "error",
+            errorCode: "orchestrator_unavailable",
+            error: "Disconnected because the orchestrator bot is offline.",
+            updatedAt: new Date().toISOString()
+          });
+        }
+      }
+    }
+    this.emitStatusChange(generation);
   }
 
   private reportRuntimeIssue(issue: DiscordRuntimeIssue): void {
@@ -1621,6 +1663,14 @@ function throwIfAborted(signal?: AbortSignal): void {
 const SNOWFLAKE_PATTERN = /^\d{17,20}$/;
 const MENTION_REFRESH_COOLDOWN_MS = 5 * 60 * 1000;
 const DEFAULT_BOT_RETRY_DELAYS_MS = [5_000, 15_000, 30_000, 60_000, 120_000];
+const UNRECOVERABLE_CLOSE_CODE_DESCRIPTIONS: Record<number, string> = {
+  4004: "authentication failed: the bot token is invalid or was reset",
+  4010: "invalid shard",
+  4011: "sharding required",
+  4012: "invalid API version",
+  4013: "invalid intents",
+  4014: "disallowed intents: enable Message Content for this bot in the Discord Developer Portal"
+};
 const REVIEW_COMMAND_NAME = "review";
 const CLEAR_COMMAND_NAME = "clear";
 const RUN_COMMAND_NAME = "run";

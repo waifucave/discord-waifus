@@ -466,6 +466,53 @@ describe("backend Discord auto-connect retry", () => {
     expect(backend.runtime.discord.connected).toBe(true);
   });
 
+  it("lets discord.js resume shard socket errors instead of tearing down every bot", async () => {
+    vi.useFakeTimers();
+    const root = await initializedRootWithOrchestrator();
+    const gateway = new FakeDiscordGateway([connectedStatus()]);
+    const backend = await startTestBackend(root, gateway, [5_000]);
+
+    await waitForConnectCalls(gateway, 1);
+    await vi.waitFor(() => expect(backend.runtime.discord.connected).toBe(true));
+
+    await gateway.emitRuntimeIssue({
+      source: "shard-error",
+      shardId: 0,
+      message: "socket hang up",
+      error: Object.assign(new Error("socket hang up"), { code: "ECONNRESET" })
+    });
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(gateway.disconnectCalls).toBe(0);
+    expect(gateway.connectCalls).toBe(1);
+    expect(backend.runtime.discord.connected).toBe(true);
+    expect(backend.runtime.discord.retrying).toBeUndefined();
+  });
+
+  it("does not blindly reconnect after an unrecoverable shard disconnect", async () => {
+    vi.useFakeTimers();
+    const root = await initializedRootWithOrchestrator();
+    const gateway = new FakeDiscordGateway([connectedStatus()]);
+    const backend = await startTestBackend(root, gateway, [5_000]);
+
+    await waitForConnectCalls(gateway, 1);
+    await vi.waitFor(() => expect(backend.runtime.discord.connected).toBe(true));
+
+    await gateway.emitRuntimeIssue({
+      source: "shard-disconnect",
+      botId: "orchestrator",
+      shardId: 0,
+      code: 4004,
+      wasClean: true,
+      message: "Discord shard disconnected with code 4004."
+    });
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(gateway.disconnectCalls).toBe(0);
+    expect(gateway.connectCalls).toBe(1);
+    expect(backend.runtime.discord.retrying).toBeUndefined();
+  });
+
   it("logs non-retryable live Discord runtime issues without forcing reconnect", async () => {
     vi.useFakeTimers();
     const root = await initializedRootWithOrchestrator();

@@ -5,6 +5,7 @@ import { DiscordJsGateway } from "../src/discord/client.js";
 import type {
   DiscordBotConnectionStatus,
   DiscordJsGatewayOptions,
+  DiscordRuntimeIssue,
   DiscordRuntimeStatus
 } from "../src/discord/client.js";
 import type { DiscordBotConfig } from "../src/shared/schemas/domain.js";
@@ -227,6 +228,87 @@ describe("DiscordJsGateway per-bot connection", () => {
 
     expect(botStatus(status, "waifu-a")?.nextRetryAt).toBeUndefined();
     expect(clients.loginAttempts.get("waifu-a")).toBe(1);
+  });
+});
+
+describe("DiscordJsGateway unrecoverable gateway closes", () => {
+  it("marks a waifu errored and destroys its client when Discord rejects its token mid-session", async () => {
+    const clients = fakeClients({});
+    const statusChanges: DiscordRuntimeStatus[] = [];
+    const issues: DiscordRuntimeIssue[] = [];
+    const gateway = makeGateway({
+      orchestrator: bot("orchestrator"),
+      waifus: [bot("waifu-a")],
+      createClient: clients.factory,
+      onStatusChange: (status) => {
+        statusChanges.push(status);
+      },
+      onRuntimeIssue: (issue) => {
+        issues.push(issue);
+      }
+    });
+    await gateway.connect();
+
+    // discord.js 14.27 only emits ShardDisconnect for close codes it will not recover from.
+    clients.created.get("waifu-a")?.emit(Events.ShardDisconnect, { code: 4004, reason: "", wasClean: true } as never, 0);
+
+    await vi.waitFor(() => expect(statusChanges).toHaveLength(1));
+    expect(connectedBotIds(gateway)).toEqual(["orchestrator"]);
+    expect(clients.destroyed).toEqual(["waifu-a"]);
+    expect(statusChanges[0]).toMatchObject({ connected: true, orchestratorConnected: true, waifuBotCount: 0 });
+    expect(botStatus(statusChanges[0]!, "waifu-a")).toMatchObject({
+      state: "error",
+      errorCode: "invalid_token",
+      closeCode: 4004
+    });
+    expect(issues).toEqual([expect.objectContaining({ source: "shard-disconnect", botId: "waifu-a", code: 4004 })]);
+  });
+
+  it("takes the cast offline when the orchestrator loses its session to disallowed intents", async () => {
+    const clients = fakeClients({});
+    const statusChanges: DiscordRuntimeStatus[] = [];
+    const gateway = makeGateway({
+      orchestrator: bot("orchestrator"),
+      waifus: [bot("waifu-a")],
+      createClient: clients.factory,
+      onStatusChange: (status) => {
+        statusChanges.push(status);
+      }
+    });
+    await gateway.connect();
+
+    clients.created.get("orchestrator")?.emit(Events.ShardDisconnect, { code: 4014, reason: "", wasClean: true } as never, 0);
+
+    await vi.waitFor(() => expect(statusChanges).toHaveLength(1));
+    expect(connectedBotIds(gateway)).toEqual([]);
+    expect(clients.destroyed.sort()).toEqual(["orchestrator", "waifu-a"]);
+    expect(statusChanges[0]).toMatchObject({ connected: false, orchestratorConnected: false });
+    expect(botStatus(statusChanges[0]!, "orchestrator")).toMatchObject({
+      state: "error",
+      errorCode: "disallowed_intents",
+      closeCode: 4014
+    });
+    expect(botStatus(statusChanges[0]!, "waifu-a")).toMatchObject({ errorCode: "orchestrator_unavailable" });
+  });
+
+  it("leaves resumable shard errors to discord.js", async () => {
+    const clients = fakeClients({});
+    const statusChanges: DiscordRuntimeStatus[] = [];
+    const gateway = makeGateway({
+      orchestrator: bot("orchestrator"),
+      createClient: clients.factory,
+      onStatusChange: (status) => {
+        statusChanges.push(status);
+      }
+    });
+    await gateway.connect();
+
+    clients.created.get("orchestrator")?.emit(Events.ShardError, new Error("socket hang up"), 0);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(connectedBotIds(gateway)).toEqual(["orchestrator"]);
+    expect(clients.destroyed).toEqual([]);
+    expect(statusChanges).toEqual([]);
   });
 });
 
