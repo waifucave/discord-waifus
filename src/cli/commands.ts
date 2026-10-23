@@ -39,6 +39,12 @@ import {
   stopDaemonProcess,
   type StopDaemonResult
 } from "./processState.js";
+import {
+  clearStaleHostInstanceLock,
+  hostInstanceState,
+  processStartTime,
+  type ProcessIdentityProbe
+} from "../storage/instanceLock.js";
 
 const LEGACY_PACKAGE_NAME = "@starlight-ai/discord-waifus";
 const UPDATE_PACKAGE_NAME = "@waifucave/discord-waifus";
@@ -76,6 +82,8 @@ export type CliRuntimeOptions = RemoteCliOptions & {
   detachedSpawner?: CliDetachedSpawner;
   detachedBackendWaiter?: (dataRoot: string, pid: number, timeoutMs: number) => Promise<RuntimeState | undefined>;
   processAlive?: (pid: number) => boolean;
+  /** Test hook: OS process start time (epoch ms) used to verify a pid is still the host. */
+  processStartTime?: (pid: number) => Promise<number | null>;
 };
 
 export type CliDetachedSpawner = (
@@ -100,14 +108,14 @@ export async function runCommand(parsed: ParsedCli, options: CliRuntimeOptions =
       return startCommand(parsed, dataRoot, "dev", options);
     case "stop":
       return stopCommand(dataRoot, {
-        isAlive: options.processAlive,
+        probe: hostProbe(options),
         kill: options.killProcess,
         waitForExit: options.waitForProcessExit
       });
     case "restart": {
       const stopCode = await stopCommand(dataRoot, {
         quiet: true,
-        isAlive: options.processAlive,
+        probe: hostProbe(options),
         kill: options.killProcess,
         waitForExit: options.waitForProcessExit
       });
@@ -117,7 +125,7 @@ export async function runCommand(parsed: ParsedCli, options: CliRuntimeOptions =
       return startCommand(parsed, dataRoot, "start", options);
     }
     case "status":
-      return statusCommand(dataRoot, options.processAlive);
+      return statusCommand(dataRoot, hostProbe(options), options.processAlive);
     case "doctor":
       return doctorCommand(dataRoot, options);
     case "clean":
@@ -127,6 +135,42 @@ export async function runCommand(parsed: ParsedCli, options: CliRuntimeOptions =
     case "remote":
       return runRemoteCommand(parsed, dataRoot, options);
   }
+}
+
+function hostProbe(options: CliRuntimeOptions): ProcessIdentityProbe {
+  return {
+    isAlive: options.processAlive ?? processIsAlive,
+    startTime: options.processStartTime ?? ((pid) => processStartTime(pid))
+  };
+}
+
+// ps reports start times truncated to whole seconds and the backend records `startedAt` after
+// booting, so the genuine host always started at or before it; allow a little clock slack.
+const HOST_START_TIME_SLACK_MS = 2_000;
+
+/**
+ * B21b: a live pid from pid.json is only the host if its identity checks out. The host lock
+ * records the OS start time of its process; without a lock (a pre-lock host), a process that
+ * started after the backend recorded its own start cannot be that backend — the pid was reused
+ * after a crash. Unknown start times keep the old pid-liveness behavior.
+ */
+async function hostPidIsGenuine(
+  dataRoot: string,
+  state: { pid: number; startedAt: string },
+  probe: ProcessIdentityProbe
+): Promise<boolean> {
+  if (!probe.isAlive(state.pid)) return false;
+  const lock = await hostInstanceState(dataRoot, probe);
+  if (lock.state === "running" && lock.pid === state.pid) return true;
+  if (lock.state === "stale" && lock.record?.pid === state.pid) return false;
+  const started = await probe.startTime(state.pid);
+  const recorded = Date.parse(state.startedAt);
+  return started === null || !Number.isFinite(recorded) || started <= recorded + HOST_START_TIME_SLACK_MS;
+}
+
+async function hostPortFor(dataRoot: string, pid: number): Promise<number | undefined> {
+  const state = await readProcessState(appDataPath(dataRoot, "pid.json"), RuntimeStateReadSchema).catch(() => undefined);
+  return state?.pid === pid ? state.port : undefined;
 }
 
 function resolveCliDataRoot(parsed: ParsedCli, env: NodeJS.ProcessEnv): string {
@@ -187,14 +231,22 @@ async function startDetachedCommand(
 ): Promise<number> {
   const existing = await readProcessState(appDataPath(dataRoot, "pid.json"), RuntimeStateReadSchema);
   const processAlive = options.processAlive ?? processIsAlive;
-  if (existing && processAlive(existing.pid)) {
+  const probe = hostProbe(options);
+  if (existing && await hostPidIsGenuine(dataRoot, existing, probe)) {
     console.log(`waifus backend already running at http://127.0.0.1:${existing.port}`);
+    console.log(`data root: ${dataRoot}`);
+    return 0;
+  }
+  const lock = await hostInstanceState(dataRoot, probe);
+  if (lock.state === "running" || lock.state === "starting") {
+    console.log(`waifus backend already running${lock.state === "running" ? ` (pid ${lock.pid})` : " (starting)"}`);
     console.log(`data root: ${dataRoot}`);
     return 0;
   }
   if (existing) {
     await rm(appDataPath(dataRoot, "pid.json"), { force: true });
   }
+  await clearStaleHostInstanceLock(dataRoot, probe);
 
   const argv = options.argv ?? process.argv;
   const entrypoint = argv[1];
@@ -219,6 +271,15 @@ async function startDetachedCommand(
     DETACHED_START_TIMEOUT_MS
   );
   if (!runtime) {
+    // Two concurrent `waifus start`s both pass the check above; the backend's exclusive lock
+    // lets only one child run, so a loser that exited reports the winner instead of failing.
+    const winner = processAlive(child.pid) ? undefined : await hostInstanceState(dataRoot, probe);
+    if (winner?.state === "running" && winner.pid !== child.pid) {
+      const port = await hostPortFor(dataRoot, winner.pid);
+      console.log(`waifus backend already running (pid ${winner.pid})${port ? ` at http://127.0.0.1:${port}` : ""}`);
+      console.log(`data root: ${dataRoot}`);
+      return 0;
+    }
     if (processAlive(child.pid)) {
       console.log(`waifus backend is still starting after 30s; spawned pid ${child.pid}`);
       console.log(`data root: ${dataRoot}`);
@@ -277,10 +338,10 @@ async function stopCommand(
   dataRoot: string,
   options: {
     quiet?: boolean;
-    isAlive?: (pid: number) => boolean;
+    probe: ProcessIdentityProbe;
     kill?: (pid: number, signal: NodeJS.Signals) => void;
     waitForExit?: (pid: number, timeoutMs: number) => Promise<boolean>;
-  } = {}
+  }
 ): Promise<number> {
   const logFile = appDataPath(dataRoot, "logs", "backend.log");
   let tailController: AbortController | undefined;
@@ -290,7 +351,8 @@ async function stopCommand(
     result = await stopDaemonProcess({
       pidFile: appDataPath(dataRoot, "pid.json"),
       schema: RuntimeStateReadSchema,
-      isAlive: options.isAlive,
+      isAlive: options.probe.isAlive,
+      verifyIdentity: (state) => hostPidIsGenuine(dataRoot, state, options.probe),
       kill: options.kill,
       waitForExit: options.waitForExit,
       beforeTerminate: async (pid) => {
@@ -311,6 +373,8 @@ async function stopCommand(
     tailController?.abort();
     await tailDone;
   }
+  // A crashed or SIGKILLed host leaves its lock behind; drop it once the holder is gone.
+  if (result.state !== "still_running") await clearStaleHostInstanceLock(dataRoot, options.probe);
   if (!options.quiet) reportHostStop(result);
   return result.state === "still_running" ? 1 : 0;
 }
@@ -328,6 +392,7 @@ function reportHostStop(result: StopDaemonResult): void {
 
 async function statusCommand(
   dataRoot: string,
+  probe: ProcessIdentityProbe,
   isAlive: (pid: number) => boolean = processIsAlive
 ): Promise<number> {
   const [runtime, pidState, remote] = await Promise.all([
@@ -335,7 +400,7 @@ async function statusCommand(
     readProcessState(appDataPath(dataRoot, "pid.json"), RuntimeStateReadSchema),
     readRemoteDaemonStatus(dataRoot, isAlive)
   ]);
-  const hostRunning = pidState ? isAlive(pidState.pid) : false;
+  const hostRunning = pidState ? await hostPidIsGenuine(dataRoot, pidState, probe) : false;
   console.log(
     JSON.stringify(
       {
@@ -487,7 +552,7 @@ async function remoteManagementDoctorSummary(
     readProcessState(appDataPath(dataRoot, "pid.json"), RuntimeStateReadSchema),
     readRemoteDaemonStatus(dataRoot, isAlive)
   ]);
-  const hostRunning = hostPid ? isAlive(hostPid.pid) : false;
+  const hostRunning = hostPid ? await hostPidIsGenuine(dataRoot, hostPid, hostProbe(options)) : false;
   const remoteRuntime = remote.runtime;
   const runtimeVerified = remote.running
     && remoteRuntime?.helperState === "ready"
@@ -703,6 +768,14 @@ async function inspectCleanDaemonState(
         error: `cannot verify whether ${candidate.label} pid ${parsed.data.pid} is stopped; no files were changed.`
       };
     }
+  }
+  // A host still booting holds the instance lock before it writes pid.json.
+  const lock = await hostInstanceState(dataRoot, { isAlive: processAlive, startTime: (pid) => processStartTime(pid) });
+  if (lock.state === "starting") {
+    return { running, error: "a waifus host is starting for this data root; no files were changed." };
+  }
+  if (lock.state === "running" && !running.some((entry) => entry.pid === lock.pid)) {
+    running.push({ label: "host daemon", pid: lock.pid });
   }
   return { running };
 }
@@ -1067,6 +1140,9 @@ async function waitForBackendStart(dataRoot: string, pid: number, timeoutMs: num
     if (runtime?.pid === pid && processIsAlive(pid)) {
       return runtime;
     }
+    // A child that already exited (e.g. it lost the host lock to a concurrent start) will
+    // never write runtime.json; stop waiting so the caller can report why.
+    if (!processIsAlive(pid)) return undefined;
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   return undefined;
