@@ -1243,7 +1243,9 @@ describe("migration ledger", () => {
     });
 
     it("pending stub bodies throw if ever invoked, and the real boot never invokes them", async () => {
-      for (const id of PHASE4_STEP_IDS) {
+      // Steps whose body has landed (still registered pending until their runtime half lands).
+      const IMPLEMENTED = new Set(["waifu-drop-prompt-layout-v1"]);
+      for (const id of PHASE4_STEP_IDS.filter((stepId) => !IMPLEMENTED.has(stepId))) {
         const step = MIGRATION_STEPS.find((candidate) => candidate.id === id)!;
         await expect(step.run("/nonexistent"), id).rejects.toThrow(/pending/);
       }

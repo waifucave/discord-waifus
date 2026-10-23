@@ -28,7 +28,7 @@ import { migrateMemoriesGlobalOriginSubjects } from "./migrationSteps/memoriesGl
 import { migrateOcrCacheUrlKeysCleanup } from "./migrationSteps/ocrCacheUrlKeysCleanup.js";
 import { migratePendingObservationsGlobal } from "./migrationSteps/pendingObservationsGlobal.js";
 import { migrateServerContextWindowsExplicit } from "./migrationSteps/serverContextWindowsExplicit.js";
-import { migrateWaifuDropPromptLayout } from "./migrationSteps/waifuDropPromptLayout.js";
+import { layoutHasScheduleDisabled, migrateWaifuDropPromptLayout } from "./migrationSteps/waifuDropPromptLayout.js";
 import { migrateWaifuParamsGateway040 } from "./migrationSteps/waifuParamsGateway040.js";
 import {
   emptyMigrationLedger,
@@ -154,7 +154,8 @@ export const MIGRATION_STEPS: readonly MigrationStep[] = [
   },
   // Phase 4 steps (spec 8.2), registered pending until their owning tasks land. They must stay
   // before the schema-version stamp and keep this relative order.
-  { id: "waifu-drop-prompt-layout-v1", frequency: "once", pending: true, run: migrateWaifuDropPromptLayout }, // T4
+  // Implemented (T4) but kept pending until T3 stops reading layouts at runtime; T4 part 2 removes the flag.
+  { id: "waifu-drop-prompt-layout-v1", frequency: "once", pending: true, run: migrateWaifuDropPromptLayout },
   { id: "server-context-windows-explicit-v1", frequency: "once", pending: true, run: migrateServerContextWindowsExplicit }, // T5
   { id: "memories-global-origin-subjects-v1", frequency: "once", pending: true, run: migrateMemoriesGlobalOriginSubjects }, // T6
   // Guarded by its own marker file (user/.memories-dedupe-v1.json) so ledger loss never re-runs it.
@@ -572,7 +573,9 @@ const LEGACY_PROMPT_SECTION_TO_BLOCK: Record<string, string> = {
   environmentInstructions: "environment",
   inputFormat: "contextStructure",
   styleConstraints: "styleConstraints",
-  personality: "personalityReminder"
+  personality: "personalityReminder",
+  // Not a W1 toggle, but `waifu-drop-prompt-layout-v1` (which runs later) reads it from the layout.
+  schedule: "schedule"
 };
 
 function setBlockEnabled(layout: WaifuPromptLayout, blockId: string, enabled: boolean): void {
@@ -939,7 +942,11 @@ async function migrateWaifuPromptLayoutW2(dataRoot: string): Promise<number> {
     if (!isObject(data)) continue;
     // Only migrate waifus that have a promptLayout with legacy block IDs.
     if (!layoutContainsLegacyIds(data.promptLayout)) continue;
-    data.promptLayout = defaultWaifuPromptLayout();
+    const scheduleDisabled = layoutHasScheduleDisabled(data.promptLayout);
+    const layout = defaultWaifuPromptLayout();
+    // Keep the one choice `waifu-drop-prompt-layout-v1` still honours.
+    if (scheduleDisabled) setBlockEnabled(layout, "schedule", false);
+    data.promptLayout = layout;
     await atomicWriteJson(filePath, data);
     count += 1;
   }
