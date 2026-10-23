@@ -302,6 +302,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   private readonly printWaifuAutocompleteListeners = new Set<DiscordPrintWaifuAutocompleteListener>();
   private readonly debugListeners = new Set<DiscordDebugCommandListener>();
   private readonly recentMentionRefreshes = new Map<string, number>();
+  private readonly runCooldowns = new Map<string, number>();
 
   constructor(private readonly options: DiscordJsGatewayOptions) {}
 
@@ -1219,6 +1220,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   }
 
   private async handleReviewInteraction(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (await this.replyIfNotReady(interaction, this.reviewListeners, REVIEW_COMMAND_NAME)) return;
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     if (!interaction.guildId || !interaction.channelId) {
       await interaction.editReply("/review can only be used in a server channel.");
@@ -1238,6 +1240,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   }
 
   private async handleClearInteraction(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (await this.replyIfNotReady(interaction, this.clearListeners, CLEAR_COMMAND_NAME)) return;
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     if (!interaction.guildId || !interaction.channelId) {
       await interaction.editReply("/clear can only be used in a server channel.");
@@ -1259,11 +1262,23 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   }
 
   private async handleRunInteraction(interaction: ChatInputCommandInteraction): Promise<void> {
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    if (await this.replyIfNotReady(interaction, this.runListeners, RUN_COMMAND_NAME)) return;
     if (!interaction.guildId || !interaction.channelId) {
-      await interaction.editReply("/run can only be used in a server channel.");
+      await replyEphemeral(interaction, "/run can only be used in a server channel.");
       return;
     }
+    // Default member permissions can be overridden per server, and /run carries a private scene
+    // direction straight into the prompt, so the permission is enforced here too.
+    if (!interaction.memberPermissions?.has(RUN_COMMAND_PERMISSIONS)) {
+      await replyEphemeral(interaction, "You need the Manage Messages permission to use /run.");
+      return;
+    }
+    const cooldownMs = this.takeRunCooldown(interaction.guildId, interaction.user.id);
+    if (cooldownMs > 0) {
+      await replyEphemeral(interaction, `/run is cooling down; try again in ${Math.ceil(cooldownMs / 1000)}s.`);
+      return;
+    }
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const event: DiscordRunCommandEvent = {
       guildId: interaction.guildId,
       channelId: interaction.channelId,
@@ -1277,6 +1292,34 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
     for (const listener of this.runListeners) {
       this.dispatchListener("Discord run command listener failed", listener, event, slashCommandLogContext(event));
     }
+  }
+
+  /** Slash commands are registered before the runtime attaches its listeners; never leave one "thinking". */
+  private async replyIfNotReady(
+    interaction: ChatInputCommandInteraction,
+    listeners: ReadonlySet<unknown>,
+    commandName: string
+  ): Promise<boolean> {
+    if (listeners.size > 0) return false;
+    await replyEphemeral(interaction, `/${commandName} is not ready yet: Discord Waifus is still starting up. Try again in a moment.`);
+    return true;
+  }
+
+  /** Returns the remaining cooldown, or 0 after recording this use. */
+  private takeRunCooldown(guildId: string, userId: string): number {
+    const now = Date.now();
+    const key = `${guildId}:${userId}`;
+    const last = this.runCooldowns.get(key);
+    if (last !== undefined && now - last < RUN_COMMAND_COOLDOWN_MS) {
+      return RUN_COMMAND_COOLDOWN_MS - (now - last);
+    }
+    if (this.runCooldowns.size >= MAX_RUN_COOLDOWN_ENTRIES) {
+      for (const [entryKey, at] of this.runCooldowns) {
+        if (now - at >= RUN_COMMAND_COOLDOWN_MS) this.runCooldowns.delete(entryKey);
+      }
+    }
+    this.runCooldowns.set(key, now);
+    return 0;
   }
 
   private async handleRunAutocompleteInteraction(interaction: AutocompleteInteraction): Promise<void> {
@@ -1307,6 +1350,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   }
 
   private async handleStopInteraction(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (await this.replyIfNotReady(interaction, this.stopListeners, STOP_COMMAND_NAME)) return;
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     if (!interaction.guildId || !interaction.channelId) {
       await interaction.editReply("/stop can only be used in a server channel.");
@@ -1326,6 +1370,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   }
 
   private async handleMemoriesInteraction(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (await this.replyIfNotReady(interaction, this.memoriesListeners, MEMORIES_COMMAND_NAME)) return;
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     if (!interaction.guildId || !interaction.channelId) {
       await interaction.editReply("/memories can only be used in a server channel.");
@@ -1345,6 +1390,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   }
 
   private async handlePrintInteraction(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (await this.replyIfNotReady(interaction, this.printListeners, PRINT_COMMAND_NAME)) return;
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     if (!interaction.guildId || !interaction.channelId) {
       await interaction.editReply("/print can only be used in a server channel.");
@@ -1397,6 +1443,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   }
 
   private async handleDebugInteraction(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (await this.replyIfNotReady(interaction, this.debugListeners, DEBUG_COMMAND_NAME)) return;
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     if (!interaction.guildId || !interaction.channelId) {
       await interaction.editReply("/console can only be used in a server channel.");
@@ -1692,6 +1739,14 @@ const MAX_AUTOCOMPLETE_CHOICES = 25;
 const DISCORD_BULK_DELETE_MAX_MESSAGES = 100;
 const DISCORD_BULK_DELETE_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 const ADMIN_COMMAND_PERMISSIONS = PermissionFlagsBits.Administrator;
+// /run only nudges the scene (with an optional private direction), so moderators may use it.
+const RUN_COMMAND_PERMISSIONS = PermissionFlagsBits.ManageMessages;
+const RUN_COMMAND_COOLDOWN_MS = 15_000;
+const MAX_RUN_COOLDOWN_ENTRIES = 1_000;
+
+async function replyEphemeral(interaction: ChatInputCommandInteraction, content: string): Promise<void> {
+  await interaction.reply({ content, flags: MessageFlags.Ephemeral });
+}
 
 function sanitizeReplyTarget(value?: string): string | undefined {
   return value && SNOWFLAKE_PATTERN.test(value) ? value : undefined;
@@ -1847,6 +1902,7 @@ export function buildOrchestratorCommandPayloads() {
     {
       name: RUN_COMMAND_NAME,
       description: "Run the orchestrator in this channel immediately if the runtime is idle.",
+      defaultMemberPermissions: RUN_COMMAND_PERMISSIONS,
       options: [
         {
           type: ApplicationCommandOptionType.String as ApplicationCommandOptionType.String,

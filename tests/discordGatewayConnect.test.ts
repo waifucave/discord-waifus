@@ -1,7 +1,7 @@
-import { Client, Events } from "discord.js";
+import { Client, Events, MessageFlags, PermissionFlagsBits } from "discord.js";
 import type { ClientOptions } from "discord.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DiscordJsGateway } from "../src/discord/client.js";
+import { DiscordJsGateway, buildOrchestratorCommandPayloads } from "../src/discord/client.js";
 import type {
   DiscordBotConnectionStatus,
   DiscordJsGatewayOptions,
@@ -309,6 +309,109 @@ describe("DiscordJsGateway unrecoverable gateway closes", () => {
     expect(connectedBotIds(gateway)).toEqual(["orchestrator"]);
     expect(clients.destroyed).toEqual([]);
     expect(statusChanges).toEqual([]);
+  });
+});
+
+type FakeInteractionCalls = {
+  reply: Array<{ content?: string; flags?: unknown }>;
+  deferReply: unknown[];
+  editReply: unknown[];
+};
+
+function fakeInteraction(input: { commandName: string; userId?: string; canManageMessages?: boolean }) {
+  const calls: FakeInteractionCalls = { reply: [], deferReply: [], editReply: [] };
+  const interaction = {
+    commandName: input.commandName,
+    guildId: "guild-1",
+    channelId: "channel-1",
+    user: { id: input.userId ?? "user-1" },
+    memberPermissions: {
+      has: (permission: bigint) => permission === PermissionFlagsBits.ManageMessages && (input.canManageMessages ?? true)
+    },
+    options: {
+      getString: () => null,
+      getInteger: () => null
+    },
+    async reply(payload: { content?: string; flags?: unknown }) {
+      calls.reply.push(payload);
+    },
+    async deferReply(payload: unknown) {
+      calls.deferReply.push(payload);
+    },
+    async editReply(payload: unknown) {
+      calls.editReply.push(payload);
+    }
+  };
+  return { interaction, calls };
+}
+
+type SlashHandlers = Record<string, (interaction: unknown) => Promise<void>>;
+
+function slashHandler(gateway: DiscordJsGateway, name: string): (interaction: unknown) => Promise<void> {
+  return (gateway as unknown as SlashHandlers)[name]!.bind(gateway);
+}
+
+describe("DiscordJsGateway slash commands", () => {
+  it.each([
+    ["review", "handleReviewInteraction"],
+    ["clear", "handleClearInteraction"],
+    ["run", "handleRunInteraction"],
+    ["stop", "handleStopInteraction"],
+    ["memories", "handleMemoriesInteraction"],
+    ["print", "handlePrintInteraction"],
+    ["console", "handleDebugInteraction"]
+  ])("answers /%s with an ephemeral not-ready message when no listener is attached", async (commandName, handler) => {
+    const gateway = makeGateway({ orchestrator: bot("orchestrator") });
+    const { interaction, calls } = fakeInteraction({ commandName });
+
+    await slashHandler(gateway, handler)(interaction);
+
+    expect(calls.deferReply).toEqual([]);
+    expect(calls.reply).toEqual([
+      { content: expect.stringContaining("not ready"), flags: MessageFlags.Ephemeral }
+    ]);
+  });
+
+  it("requires Manage Messages for /run at runtime as well as by default permissions", async () => {
+    const gateway = makeGateway({ orchestrator: bot("orchestrator") });
+    const runs: unknown[] = [];
+    gateway.onRunCommand((event) => {
+      runs.push(event);
+    });
+    const { interaction, calls } = fakeInteraction({ commandName: "run", canManageMessages: false });
+
+    await slashHandler(gateway, "handleRunInteraction")(interaction);
+
+    expect(runs).toEqual([]);
+    expect(calls.deferReply).toEqual([]);
+    expect(calls.reply).toEqual([
+      { content: expect.stringContaining("Manage Messages"), flags: MessageFlags.Ephemeral }
+    ]);
+    const run = buildOrchestratorCommandPayloads().find((payload) => payload.name === "run");
+    expect(run?.defaultMemberPermissions).toBe(PermissionFlagsBits.ManageMessages);
+  });
+
+  it("applies a per-user cooldown to /run", async () => {
+    const gateway = makeGateway({ orchestrator: bot("orchestrator") });
+    const runs: Array<{ userId: string }> = [];
+    gateway.onRunCommand((event) => {
+      runs.push(event);
+    });
+
+    const first = fakeInteraction({ commandName: "run", userId: "user-1" });
+    const second = fakeInteraction({ commandName: "run", userId: "user-1" });
+    const otherUser = fakeInteraction({ commandName: "run", userId: "user-2" });
+    await slashHandler(gateway, "handleRunInteraction")(first.interaction);
+    await slashHandler(gateway, "handleRunInteraction")(second.interaction);
+    await slashHandler(gateway, "handleRunInteraction")(otherUser.interaction);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(runs.map((run) => run.userId)).toEqual(["user-1", "user-2"]);
+    expect(first.calls.deferReply).toHaveLength(1);
+    expect(second.calls.deferReply).toEqual([]);
+    expect(second.calls.reply).toEqual([
+      { content: expect.stringContaining("try again in"), flags: MessageFlags.Ephemeral }
+    ]);
   });
 });
 
