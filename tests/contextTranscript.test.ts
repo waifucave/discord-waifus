@@ -5,7 +5,6 @@ import { renderTranscript, type TranscriptInput } from "../src/orchestration/con
 import {
   ContextStateSchema,
   type ContextNote,
-  type ConversationEvent,
   type LedgerEntry
 } from "../src/shared/schemas/context.js";
 import { BASE_TIME, FakeImageFetcher } from "./contextFixtures.js";
@@ -43,6 +42,19 @@ function entry(p: Partial<LedgerEntry> & { id: string }): LedgerEntry {
   };
 }
 
+/** Every transcript text block must end with "\n" (wires that join blocks with "" stay readable). */
+function textOf(text: string): string {
+  expect(text.endsWith("\n")).toBe(true);
+  return text.slice(0, -1);
+}
+
+/** What a wire that joins a message's text blocks with "" (OpenAI chat) sends. */
+function joined(messages: ChatMessage[]): string[] {
+  return messages.map((m) =>
+    typeof m.content === "string" ? m.content : m.content.map((b) => (b.type === "text" ? b.text : "")).join("")
+  );
+}
+
 /** [role, ...text] per message; images as "<image>", tool calls as "call:name(args)". */
 function flat(messages: ChatMessage[]): string[][] {
   return messages.map((m) => {
@@ -51,7 +63,7 @@ function flat(messages: ChatMessage[]): string[][] {
     return [
       m.role,
       ...m.content.map((b) =>
-        b.type === "text" ? b.text : b.type === "image" ? "<image>" : b.type === "toolCall" ? `call:${b.name}(${b.arguments})#${b.id}` : "<reasoning>"
+        b.type === "text" ? textOf(b.text) : b.type === "image" ? "<image>" : b.type === "toolCall" ? `call:${b.name}(${b.arguments})#${b.id}` : "<reasoning>"
       )
     ];
   });
@@ -60,7 +72,6 @@ function flat(messages: ChatMessage[]): string[][] {
 async function render(o: {
   entries: LedgerEntry[];
   notes?: ContextNote[];
-  events?: ConversationEvent[];
   before?: LedgerEntry[];
   text?: boolean;
   images?: FakeImageFetcher;
@@ -72,7 +83,6 @@ async function render(o: {
   const input: TranscriptInput = {
     entries: o.entries,
     notes: o.notes ?? [],
-    events: o.events ?? [],
     state: st,
     selfAuthorIds: ["aria-bot"],
     refs,
@@ -190,7 +200,7 @@ describe("renderTranscript", () => {
     ]);
   });
 
-  it("renders the not-loaded entry, images and Phase 5 edit events", async () => {
+  it("renders the not-loaded entry, images and edit notes", async () => {
     seq = 0;
     const fetcher = new FakeImageFetcher();
     fetcher.failKeys.set("att:8", "too_large");
@@ -206,11 +216,11 @@ describe("renderTranscript", () => {
         ]
       })
     ];
-    const events: ConversationEvent[] = [
-      { kind: "edit", seq: 1, at: at(4), messageId: "1", anchorSeq: 3, authorId: "kevin", text: "msg 1 (fixed)", sealed: false },
-      { kind: "delete", seq: 2, at: at(4), messageId: "2", anchorSeq: 3 }
+    const notes: ContextNote[] = [
+      { kind: "edit", id: "n1", seq: 1, anchorSeq: 3, eventSeq: 1, messageId: "1", authorName: "Kevin", text: "msg 1 (fixed)" },
+      { kind: "edit", id: "n2", seq: 2, anchorSeq: 3, eventSeq: 2, messageId: "old", authorName: "Mina", text: "typo" }
     ];
-    const out = await render({ entries, events, images: fetcher });
+    const out = await render({ entries, notes, images: fetcher });
     expect(flat(out.messages)).toEqual([
       [
         "user",
@@ -220,10 +230,32 @@ describe("renderTranscript", () => {
         "[14:03 #a1] Kevin: look",
         "<image>",
         "[image]",
-        "<edit>Kevin edited #a0: msg 1 (fixed)</edit>"
+        "<edit>Kevin edited #a0: msg 1 (fixed)</edit>",
+        "<edit>Mina edited an earlier message: typo</edit>"
       ]
     ]);
     // The text-mode image block belongs to its entry; the inline image is never addressable.
-    expect(out.textBlocks.map((p) => `${p.address.kind}#${p.address.seq}`)).toEqual(["entry#1", "entry#2", "entry#3", "entry#3", "event#1"]);
+    expect(out.textBlocks.map((p) => `${p.address.kind}#${p.address.seq}`)).toEqual(["entry#1", "entry#2", "entry#3", "entry#3", "note#1", "note#2"]);
+  });
+
+  it("keeps separators when a wire joins text blocks with \"\" (split replies, merged human turns)", async () => {
+    seq = 0;
+    const entries = [
+      entry({ id: "1", body: "start" }),
+      entry({ id: "2", authorId: "riko", authorName: "Riko", body: "hi" }),
+      entry({ id: "3", authorId: "aria-bot", body: "first chunk" }),
+      entry({ id: "4", authorId: "aria-bot", body: "second chunk" })
+    ];
+    const out = await render({ entries });
+    expect(joined(out.messages)).toEqual([
+      "— Sat 24 Oct —\n[14:01 #a0] Kevin: start\n[14:02 #a1] Riko: hi\n",
+      "first chunk\nsecond chunk\n"
+    ]);
+    // Appending a message never edits the previous block.
+    const more = await render({ entries: [...entries, entry({ id: "5", authorId: "aria-bot", body: "third" })] });
+    const before = out.messages[1]!.content as Array<{ text: string }>;
+    const after = more.messages[1]!.content as Array<{ text: string }>;
+    expect(after.slice(0, before.length)).toEqual(before);
+    expect(joined(more.messages)[1]).toBe("first chunk\nsecond chunk\nthird\n");
   });
 });

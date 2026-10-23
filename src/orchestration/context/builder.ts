@@ -28,6 +28,7 @@ export type BuildInput = {
   systemText: string;
   headerText: string;
   transcript: LedgerEntry[];
+  /** Ledger events. Not rendered directly: ContextRuntime converts edit events into `edit` notes (one note counter orders everything). */
   events: ConversationEvent[];
   selfAuthorIds: string[];
   refs: ReadonlyMap<string, string>;
@@ -46,11 +47,12 @@ export function modelKeyFor(model: Pick<ResolvedModel, "providerId" | "modelId">
   return `${model.providerId}:${model.modelId}`;
 }
 
-function sameAddress(a: BlockAddress | null | undefined, b: BlockAddress | null | undefined): boolean {
+type AnyAddress = { kind: string; seq: number }; // stored breakpoints may carry the legacy "event" kind
+function sameAddress(a: AnyAddress | null | undefined, b: AnyAddress | null | undefined): boolean {
   return !!a && !!b && a.kind === b.kind && a.seq === b.seq;
 }
 
-function lastPositionOf(positions: BlockPosition[], address: BlockAddress): BlockPosition | undefined {
+function lastPositionOf(positions: BlockPosition[], address: AnyAddress): BlockPosition | undefined {
   for (let index = positions.length - 1; index >= 0; index -= 1) {
     if (sameAddress(positions[index]!.address, address)) return positions[index];
   }
@@ -75,7 +77,6 @@ export async function buildContext(i: BuildInput, images: FrozenImages): Promise
   const transcript = await renderTranscript({
     entries: i.transcript,
     notes: i.state.notes,
-    events: i.events,
     state: i.state,
     selfAuthorIds: i.selfAuthorIds,
     refs,

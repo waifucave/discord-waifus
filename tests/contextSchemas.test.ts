@@ -86,6 +86,9 @@ describe("ContextNoteSchema", () => {
     expect(
       ContextNoteSchema.parse({ kind: "decision", ...anchor, decisionId: "d", call: "{}", outcome: "sent" }).kind
     ).toBe("decision");
+    expect(
+      ContextNoteSchema.parse({ kind: "edit", ...anchor, eventSeq: 3, messageId: "m", authorName: "Kevin", text: "fixed" }).kind
+    ).toBe("edit");
   });
 
   it("rejects unknown kinds, missing anchors and null anchors", () => {

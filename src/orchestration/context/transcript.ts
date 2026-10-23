@@ -4,34 +4,40 @@
 //   target is the viewer's own message; `↩Name` when the target is before the cursor.
 // - Consecutive non-self messages merge into one user turn with ONE text block per message
 //   (appending never changes earlier blocks); self messages are assistant turns (raw text).
+// - Every transcript TextBlock ends with "\n" at creation: some wires (OpenAI chat and its
+//   relatives) join a message's text blocks with "", so separators must live inside the blocks —
+//   appending a block then never edits the previous one.
 // - Images render through FrozenImages after the entry's header block.
 // - A gap ≥ 30 min inserts its own block `— 3 hours later —`; a day change appends `· Tue 24 Oct`
 //   (the first entry gets a day marker so the model always knows the date).
 // - Notes render after their anchor entry (the last transcript entry with seq ≤ anchorSeq; notes
-//   anchored before the transcript lead it), ordered by seq; Phase 5 edit events interleave.
+//   anchored before the transcript lead it), ordered by seq. Phase 5 ledger edit events reach the
+//   transcript only as `edit` notes (ContextRuntime converts them), so one counter orders
+//   everything after an anchor.
 // - Times render in the context's frozen timeZone.
 //
-// Every TextBlock is tagged with the address (entry/note/event + seq) of the item it belongs to,
-// which is how the builder places and finds cache breakpoints C and C_prev.
+// Every TextBlock is tagged with the address (entry/note + seq) of the item it belongs to, which
+// is how the builder places and finds cache breakpoints C and C_prev.
 
 import type { ChatMessage, ImageBlock, TextBlock, ToolCallBlock } from "@waifucave/gateway";
-import type { ContextNote, ContextState, ConversationEvent, LedgerEntry } from "../../shared/schemas/context.js";
+import type { ContextNote, ContextState, LedgerEntry } from "../../shared/schemas/context.js";
 import { IMAGE_PLACEHOLDER } from "./images.js";
 import { isGapEntry } from "./ledger.js";
 import { formatClock, transitionMarker } from "./timeFormat.js";
 import type { FrozenImages } from "./types.js";
 
-export type BlockAddress = { kind: "entry" | "note" | "event"; seq: number };
+export type BlockAddress = { kind: "entry" | "note"; seq: number };
 
 /** Tool name used for orchestrator decision notes rendered as tool-call turns. */
 export const DECISION_TOOL_NAME = "orchestrator_decision";
 export const EMPTY_SELF_MESSAGE = "…";
+/** Terminator of every transcript text block. */
+export const BLOCK_END = "\n";
 
 export type TranscriptInput = {
   /** Transcript entries (ledger seq > cursorSeq), in seq order. */
   entries: LedgerEntry[];
   notes: ContextNote[];
-  events: ConversationEvent[];
   state: ContextState;
   selfAuthorIds: readonly string[];
   /** messageId → ref for transcript entries. */
@@ -57,6 +63,10 @@ type Part =
   | { role: "user"; block: TextBlock | ImageBlock; address: BlockAddress | null }
   | { role: "assistant"; block: TextBlock | ToolCallBlock; address: BlockAddress | null }
   | { role: "tool"; toolCallId: string; content: string; address: BlockAddress };
+
+function textBlock(text: string): TextBlock {
+  return { type: "text", text: text.endsWith(BLOCK_END) ? text : text + BLOCK_END };
+}
 
 export function toolCallIdFor(raw: string): string {
   const cleaned = raw.replace(/[^A-Za-z0-9_-]/g, "_");
@@ -94,6 +104,11 @@ function noteText(note: ContextNote, i: TranscriptInput, anchor: LedgerEntry | u
       return `<memory_note>${note.text}</memory_note>`;
     case "direction":
       return `<direction>${note.text}</direction>`;
+    case "edit": {
+      const who = note.authorName || "Someone";
+      const ref = i.refs.get(note.messageId);
+      return ref ? `<edit>${who} edited #${ref}: ${note.text}</edit>` : `<edit>${who} edited an earlier message: ${note.text}</edit>`;
+    }
     case "tool":
       return i.renderToolTurnsAsText ? `[tool ${note.name}] ${note.arguments} → ${note.result}` : undefined;
     case "decision": {
@@ -104,64 +119,41 @@ function noteText(note: ContextNote, i: TranscriptInput, anchor: LedgerEntry | u
   }
 }
 
-function eventText(event: ConversationEvent, i: TranscriptInput): string | undefined {
-  if (event.kind !== "edit") return undefined; // deletes are audit-only
-  const target = i.lookup(event.messageId);
-  const who = target?.authorName || "Someone";
-  const ref = i.refs.get(event.messageId);
-  return ref ? `<edit>${who} edited #${ref}: ${event.text}</edit>` : `<edit>${who} edited an earlier message: ${event.text}</edit>`;
-}
-
-type Attached = { kind: "note"; seq: number; note: ContextNote } | { kind: "event"; seq: number; event: ConversationEvent };
-
 export async function renderTranscript(i: TranscriptInput): Promise<RenderedTranscript> {
-  // Group notes/events by the index of the transcript entry they render after (-1 = leading).
-  const indexBySeq = i.entries.map((entry) => entry.seq);
+  // Group notes by the index of the transcript entry they render after (-1 = leading).
+  const seqs = i.entries.map((entry) => entry.seq);
   const slotFor = (anchorSeq: number): number => {
     let lo = 0;
-    let hi = indexBySeq.length - 1;
+    let hi = seqs.length - 1;
     let found = -1;
     while (lo <= hi) {
       const mid = (lo + hi) >> 1;
-      if (indexBySeq[mid]! <= anchorSeq) {
+      if (seqs[mid]! <= anchorSeq) {
         found = mid;
         lo = mid + 1;
       } else hi = mid - 1;
     }
     return found;
   };
-  const attached = new Map<number, Attached[]>();
-  const attach = (slot: number, item: Attached) => {
+  const attached = new Map<number, ContextNote[]>();
+  for (const note of i.notes) {
+    const slot = slotFor(note.anchorSeq);
     const list = attached.get(slot) ?? [];
-    list.push(item);
+    list.push(note);
     attached.set(slot, list);
-  };
-  for (const note of i.notes) attach(slotFor(note.anchorSeq), { kind: "note", seq: note.seq, note });
-  for (const event of i.events) {
-    if (event.kind === "edit") attach(slotFor(event.anchorSeq), { kind: "event", seq: event.seq, event });
   }
-  for (const list of attached.values()) {
-    list.sort((a, b) => a.seq - b.seq || (a.kind === b.kind ? 0 : a.kind === "note" ? -1 : 1));
-  }
+  for (const list of attached.values()) list.sort((a, b) => a.seq - b.seq);
 
   const parts: Part[] = [];
   const debug: string[] = [];
 
   const renderAttached = (slot: number) => {
     const anchor = slot >= 0 ? i.entries[slot] : undefined;
-    for (const item of attached.get(slot) ?? []) {
-      if (item.kind === "event") {
-        const text = eventText(item.event, i);
-        if (!text) continue;
-        parts.push({ role: "user", block: { type: "text", text }, address: { kind: "event", seq: item.seq } });
-        debug.push(text);
-        continue;
-      }
-      const note = item.note;
+    for (const note of attached.get(slot) ?? []) {
       const address: BlockAddress = { kind: "note", seq: note.seq };
       const text = noteText(note, i, anchor);
       if (text !== undefined) {
-        parts.push({ role: "user", block: { type: "text", text }, address });
+        parts.push({ role: "user", block: textBlock(text), address });
         debug.push(text);
         continue;
       }
@@ -182,26 +174,31 @@ export async function renderTranscript(i: TranscriptInput): Promise<RenderedTran
   for (const [index, entry] of i.entries.entries()) {
     const marker = transitionMarker(previous?.at, entry.at, i.timeZone);
     if (marker) {
-      parts.push({ role: "user", block: { type: "text", text: marker }, address: null });
+      parts.push({ role: "user", block: textBlock(marker), address: null });
       debug.push(marker);
     }
     const address: BlockAddress = { kind: "entry", seq: entry.seq };
     if (isGapEntry(entry)) {
-      parts.push({ role: "user", block: { type: "text", text: entry.body }, address });
+      parts.push({ role: "user", block: textBlock(entry.body), address });
       debug.push(entry.body);
     } else if (i.selfAuthorIds.includes(entry.authorId)) {
       const extras = entry.images.map(() => IMAGE_PLACEHOLDER);
       const text = [entry.body, ...extras].filter(Boolean).join("\n") || EMPTY_SELF_MESSAGE;
-      parts.push({ role: "assistant", block: { type: "text", text }, address });
+      parts.push({ role: "assistant", block: textBlock(text), address });
       debug.push(`(you) ${text}`);
     } else {
       const line = entryLine(entry, i);
-      parts.push({ role: "user", block: { type: "text", text: line }, address });
+      parts.push({ role: "user", block: textBlock(line), address });
       debug.push(line);
       if (entry.images.length > 0) {
         for (const block of await i.images.blocksFor(entry, i.state)) {
-          parts.push({ role: "user", block, address: block.type === "text" ? address : null });
-          debug.push(block.type === "text" ? block.text : `[inline image ${block.mimeType}]`);
+          if (block.type === "text") {
+            parts.push({ role: "user", block: textBlock(block.text), address });
+            debug.push(block.text);
+          } else {
+            parts.push({ role: "user", block, address: null });
+            debug.push(`[inline image ${block.mimeType}]`);
+          }
         }
       }
     }
