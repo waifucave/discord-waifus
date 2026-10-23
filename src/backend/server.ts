@@ -14,6 +14,12 @@ import {
   DiscordRuntimeStatus
 } from "../discord/client.js";
 import { mergeConfiguredBotsIntoMembers } from "../discord/memberCache.js";
+import {
+  discordRestForToken,
+  fetchAllDiscordGuildMembers,
+  fetchDiscordGuildRoles,
+  type DiscordGuildRolePayload
+} from "../discord/rest.js";
 import { RuntimeOrchestrator } from "../orchestration/runtime.js";
 import { ImageOcrService } from "../orchestration/ocr.js";
 import {
@@ -735,7 +741,7 @@ async function refreshDiscordMembersForRuntime(storage: StorageService, guildId:
       GuildMembersFileSchema.parse(createEmptyRevisionedFile({ guildId, members: [] }))
     );
   }
-  const rawMembers = await fetchAllDiscordGuildMembers(token, guildId);
+  const rawMembers = await fetchAllDiscordGuildMembers(discordRestForToken(token), guildId);
   const now = new Date().toISOString();
   const members = rawMembers.map((member) => ({
     userId: member.user.id,
@@ -759,28 +765,6 @@ async function refreshDiscordMembersForRuntime(storage: StorageService, guildId:
   });
 }
 
-async function fetchAllDiscordGuildMembers(token: string, guildId: string) {
-  const members: Array<{
-    nick?: string | null;
-    user: {
-      id: string;
-      username?: string;
-      global_name?: string | null;
-      bot?: boolean;
-    };
-  }> = [];
-  let after = "0";
-  for (;;) {
-    const response = await discordApiFetch(token, `/guilds/${guildId}/members?limit=1000&after=${encodeURIComponent(after)}`);
-    const page = response as typeof members;
-    members.push(...page);
-    if (page.length < 1000) {
-      return members;
-    }
-    after = page[page.length - 1]?.user.id ?? after;
-  }
-}
-
 async function refreshDiscordRolesForRuntime(storage: StorageService, guildId: string) {
   const token = await readDiscordBotToken(storage);
   if (!token) {
@@ -790,7 +774,7 @@ async function refreshDiscordRolesForRuntime(storage: StorageService, guildId: s
       GuildRolesFileSchema.parse(createEmptyRevisionedFile({ guildId, roles: [] }))
     );
   }
-  const rawRoles = await fetchAllDiscordGuildRoles(token, guildId);
+  const rawRoles = await fetchDiscordGuildRoles(discordRestForToken(token), guildId);
   const roles = mapDiscordRoles(rawRoles);
   return storage.updateRevisionedJson({
     resourceKey: `roles:${guildId}`,
@@ -805,19 +789,7 @@ async function refreshDiscordRolesForRuntime(storage: StorageService, guildId: s
   });
 }
 
-async function fetchAllDiscordGuildRoles(token: string, guildId: string) {
-  const response = await discordApiFetch(token, `/guilds/${guildId}/roles`);
-  return response as Array<{
-    id: string;
-    name: string;
-    color?: number;
-    hoist?: boolean;
-    mentionable?: boolean;
-    managed?: boolean;
-  }>;
-}
-
-function mapDiscordRoles(rawRoles: Awaited<ReturnType<typeof fetchAllDiscordGuildRoles>>): GuildRoleCacheEntry[] {
+function mapDiscordRoles(rawRoles: DiscordGuildRolePayload[]): GuildRoleCacheEntry[] {
   const now = new Date().toISOString();
   return rawRoles
     .filter((role) => role.name !== "@everyone")
@@ -841,24 +813,6 @@ async function readDiscordBotToken(storage: StorageService): Promise<string | un
   return bots.orchestrator?.enabled === false
     ? bots.waifus.find((bot) => bot.enabled && bot.token)?.token
     : bots.orchestrator?.token ?? bots.waifus.find((bot) => bot.enabled && bot.token)?.token;
-}
-
-async function discordApiFetch(token: string, pathAndQuery: string): Promise<unknown> {
-  const response = await fetch(`https://discord.com/api/v10${pathAndQuery}`, {
-    headers: {
-      authorization: token.startsWith("Bot ") ? token : `Bot ${token}`,
-      "user-agent": "Discord-Waifus/0.1"
-    }
-  });
-  const text = await response.text();
-  const parsed = text ? JSON.parse(text) : undefined;
-  if (!response.ok) {
-    const message = typeof parsed === "object" && parsed && "message" in parsed
-      ? String((parsed as { message?: unknown }).message)
-      : response.statusText;
-    throw new Error(`Discord API request failed (${response.status}): ${message}`);
-  }
-  return parsed;
 }
 
 async function countConfiguredGuilds(storage: StorageService): Promise<number> {
