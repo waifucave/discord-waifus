@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import {
   DiscordAutocompleteChoice,
   DiscordClearCommandEvent,
@@ -18,23 +17,21 @@ import { PermissionWarningTracker } from "./permissionWarnings.js";
 import { RUNTIME_SHUTDOWN_INTERRUPT_REASON } from "./restartResume.js";
 import { ServerConfig, WaifuConfig } from "../shared/schemas/domain.js";
 import { relativeAge } from "./memoryRetrieval.js";
-import { nowIso } from "../shared/schemas/common.js";
 import type { ContextMessage } from "./context.js";
 import { OneShotDecider } from "./oneShot/decider.js";
 import { ChannelRunner } from "./channelRunner.js";
 import { formatPrintDebugBlock, formatWaifuPromptDebugMessages } from "./debugFormat.js";
 import { MemoryJobs } from "./memoryJobs.js";
 import { ModelAccess } from "./modelAccess.js";
-import { DEFAULT_REVIEWER_PROMPT, buildWaifuPromptParts } from "./promptBuilders.js";
+import { buildWaifuPromptParts } from "./promptBuilders.js";
 import { ResponderExecutor } from "./responderExecutor.js";
+import { ReviewerRunner } from "./reviewerRunner.js";
 import {
   type ChannelRunOptions,
   type DreamPassResult,
   type RuntimeHooks,
   type RuntimeOrchestratorOptions,
   type StageManagerRunResult,
-  decrementActive,
-  incrementActive,
   isHumanUserMessage,
   runKey,
   timerKey
@@ -47,11 +44,10 @@ import {
   listAvailableWaifusForChannel,
   listAvailableWaifusForGuild,
   listWaifus,
-  readAgentConfig,
   syncGuilds
 } from "./stores/config.js";
 import { setDebugRoute, unsetDebugRoute } from "./stores/debugRoutes.js";
-import { appendReviewerHistory, healPendingOrchestratorDecisions } from "./stores/decisionHistory.js";
+import { healPendingOrchestratorDecisions } from "./stores/decisionHistory.js";
 import { readMemoryStore } from "./stores/memories.js";
 import { noteActiveChatParticipant } from "./stores/participants.js";
 import { clearScheduledRetrigger, ensureChannelSession, persistShutdownWake } from "./stores/sessions.js";
@@ -62,7 +58,6 @@ export { currentlyDoingForWaifu } from "./promptBuilders.js";
 export class RuntimeOrchestrator {
   readonly permissionWarnings = new PermissionWarningTracker();
   private readonly models: ModelAccess;
-  private readonly activeReviewerRuns = new Map<string, number>();
   // Set by pause() and by a paused start(); resumeAfterPause() is a no-op unless it is set, so a
   // redundant Resume can never replan (and duplicate) live runs.
   private wasPaused = false;
@@ -72,6 +67,7 @@ export class RuntimeOrchestrator {
   private readonly memoryJobs: MemoryJobs;
   private readonly executor: ResponderExecutor;
   private readonly runner: ChannelRunner;
+  private readonly reviewer: ReviewerRunner;
 
   constructor(private readonly options: RuntimeOrchestratorOptions) {
     const hooks: RuntimeHooks = {
@@ -101,6 +97,7 @@ export class RuntimeOrchestrator {
       this.permissionWarnings,
       maxAutomaticTurns
     );
+    this.reviewer = new ReviewerRunner(options, this.models, this.runner);
     this.memoryJobs = new MemoryJobs(
       options,
       this.models,
@@ -407,12 +404,12 @@ export class RuntimeOrchestrator {
     deleted: boolean;
     messageIds: string[];
   }> {
-    return this.runReviewer({ guildId, channelId, userId });
+    return this.reviewer.runReviewer({ guildId, channelId, userId });
   }
 
   private async handleReviewCommand(event: DiscordReviewCommandEvent): Promise<void> {
     try {
-      const result = await this.runReviewer({
+      const result = await this.reviewer.runReviewer({
         guildId: event.guildId,
         channelId: event.channelId,
         userId: event.userId,
@@ -837,118 +834,10 @@ export class RuntimeOrchestrator {
     if ((this.executor.activeWaifuQueries.get(key) ?? 0) > 0) {
       return "A waifu response query is already in flight.";
     }
-    if ((this.activeReviewerRuns.get(key) ?? 0) > 0) {
+    if ((this.reviewer.activeReviewerRuns.get(key) ?? 0) > 0) {
       return "Reviewer is already running.";
     }
     return undefined;
-  }
-
-  private async runReviewer(input: {
-    guildId: string;
-    channelId: string;
-    userId?: string;
-    commandMessageId?: string;
-    triggerAfterActiveRun?: boolean;
-  }): Promise<{ hallucination: boolean; deleted: boolean; messageIds: string[] }> {
-    const key = runKey(input.guildId);
-    incrementActive(this.activeReviewerRuns, key);
-    try {
-      return await this.runReviewerInternal(input);
-    } finally {
-      decrementActive(this.activeReviewerRuns, key);
-    }
-  }
-
-  private async runReviewerInternal(input: {
-    guildId: string;
-    channelId: string;
-    userId?: string;
-    commandMessageId?: string;
-    triggerAfterActiveRun?: boolean;
-  }): Promise<{ hallucination: boolean; deleted: boolean; messageIds: string[] }> {
-    const versionKey = timerKey(input.guildId, input.channelId);
-    const runVersionAtStart = this.runner.channelRunVersions.get(versionKey) ?? 0;
-    const config = await readAgentConfig(this.options.storage, "reviewer", 20);
-    if (!config.enabled || !config.modelId) {
-      throw new Error("Reviewer model is not configured or enabled.");
-    }
-    const server = await ensureServer(this.options.storage, input.guildId);
-    const messages = await this.options.discord.fetchFreshContext({
-      guildId: input.guildId,
-      channelId: input.channelId,
-      limit: server.contextWindows.waifu ?? config.contextWindow
-    });
-    const target = [...messages].reverse().find((message) => message.authorKind === "waifu");
-    const messageIds = target ? target.sourceMessageIds ?? [target.id] : [];
-    if (!target) {
-      await appendReviewerHistory(this.options.storage, {
-        id: randomUUID(),
-        guildId: input.guildId,
-        channelId: input.channelId,
-        reviewerUserId: input.userId,
-        targetMessageIds: [],
-        hallucination: false,
-        deleted: false,
-        createdAt: nowIso()
-      });
-      return { hallucination: false, deleted: false, messageIds: [] };
-    }
-    const pipeline = this.models.pipelineFor(
-      { providerId: config.providerId, modelId: config.modelId },
-      "reviewer"
-    );
-    if (!pipeline.decideReviewer) {
-      throw new Error(`Model ${config.modelId} does not implement reviewer decisions.`);
-    }
-    const decision = await pipeline.decideReviewer({
-      modelId: config.modelId,
-      messages: [],
-      message: target.content,
-      systemPrompt: config.prompt || DEFAULT_REVIEWER_PROMPT,
-      params: config.params,
-      signal: undefined
-    });
-
-    let deleted = false;
-    if (decision.hallucination && this.options.discord.deleteMessages) {
-      const deletion = await this.options.discord.deleteMessages({
-        guildId: input.guildId,
-        channelId: input.channelId,
-        messageIds,
-        authorId: target.authorId
-      });
-      deleted = messageIds.every((messageId) => deletion.deletedMessageIds.includes(messageId));
-      if (input.commandMessageId) {
-        await this.options.discord.deleteMessages({
-          guildId: input.guildId,
-          channelId: input.channelId,
-          messageIds: [input.commandMessageId]
-        });
-      }
-    }
-
-    await appendReviewerHistory(this.options.storage, {
-      id: randomUUID(),
-      guildId: input.guildId,
-      channelId: input.channelId,
-      reviewerUserId: input.userId,
-      targetMessageIds: messageIds,
-      hallucination: decision.hallucination,
-      deleted,
-      createdAt: nowIso()
-    });
-
-    const noNewChannelRun = (this.runner.channelRunVersions.get(versionKey) ?? 0) === runVersionAtStart;
-    if (noNewChannelRun && !this.runner.activeRuns.has(runKey(input.guildId))) {
-      this.runner.startChannelRunBackground(input.guildId, input.channelId, "reviewer-complete");
-    } else if (noNewChannelRun && input.triggerAfterActiveRun) {
-      setTimeout(() => {
-        if ((this.runner.channelRunVersions.get(versionKey) ?? 0) === runVersionAtStart && !this.runner.activeRuns.has(runKey(input.guildId))) {
-          this.runner.startChannelRunBackground(input.guildId, input.channelId, "reviewer-complete");
-        }
-      }, 0);
-    }
-    return { hallucination: decision.hallucination, deleted, messageIds };
   }
 
   private async clearLatestMessages(guildId: string, channelId: string, count: number, type: DiscordClearType): Promise<{
