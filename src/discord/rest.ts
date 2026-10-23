@@ -42,6 +42,14 @@ export function discordRestForToken(token: string): REST {
   return cachedRest.rest;
 }
 
+/** GET an API path such as `/guilds/1/emojis?limit=5`; throws DiscordAPIError/HTTPError on failure. */
+export async function discordRestGet(rest: REST, pathAndQuery: string): Promise<unknown> {
+  const queryStart = pathAndQuery.indexOf("?");
+  const route = (queryStart === -1 ? pathAndQuery : pathAndQuery.slice(0, queryStart)) as `/${string}`;
+  const query = queryStart === -1 ? undefined : new URLSearchParams(pathAndQuery.slice(queryStart + 1));
+  return rest.get(route, query ? { query } : {});
+}
+
 export async function fetchAllDiscordGuildMembers(rest: REST, guildId: string): Promise<DiscordGuildMemberPayload[]> {
   const members: DiscordGuildMemberPayload[] = [];
   let after = "0";

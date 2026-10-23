@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { createDiscordRest, fetchAllDiscordGuildMembers, fetchDiscordGuildRoles } from "../src/discord/rest.js";
+import { DiscordAPIError } from "discord.js";
+import {
+  createDiscordRest,
+  discordRestGet,
+  fetchAllDiscordGuildMembers,
+  fetchDiscordGuildRoles
+} from "../src/discord/rest.js";
 
 type RecordedRequest = { url: string; headers: Record<string, string> };
 
@@ -68,5 +74,27 @@ describe("Discord REST refresh helpers", () => {
 
     expect(members).toHaveLength(1001);
     expect(api.requests[1]?.url).toContain("after=1000");
+  });
+
+  it("gets an arbitrary API path with its query string through the rate-limited client", async () => {
+    const api = fakeDiscordApi([
+      { status: 429, body: { message: "slow down", retry_after: 0.01, global: false }, headers: { "retry-after": "0.01" } },
+      { status: 200, body: [{ id: "emoji-1", name: "wave" }] }
+    ]);
+    const rest = createDiscordRest("secret-token", { makeRequest: api.makeRequest, offset: 0 });
+
+    await expect(discordRestGet(rest, "/guilds/guild-1/emojis?limit=5")).resolves.toEqual([{ id: "emoji-1", name: "wave" }]);
+    expect(api.requests).toHaveLength(2);
+    expect(api.requests[1]?.url).toMatch(/\/api\/v10\/guilds\/guild-1\/emojis\?limit=5$/);
+  });
+
+  it("surfaces Discord API errors with their status", async () => {
+    const api = fakeDiscordApi([{ status: 403, body: { message: "Missing Access", code: 50001 } }]);
+    const rest = createDiscordRest("secret-token", { makeRequest: api.makeRequest });
+
+    const error = await discordRestGet(rest, "/guilds/guild-1/members?limit=1000&after=0").catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(DiscordAPIError);
+    expect(error).toMatchObject({ status: 403, message: "Missing Access" });
   });
 });
