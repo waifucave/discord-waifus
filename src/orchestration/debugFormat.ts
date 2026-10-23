@@ -96,12 +96,12 @@ export function formatDreamDebugLog(input: {
   return lines.join("\n");
 }
 
-export function waifuDebugName(waifu: WaifuConfig): string {
+function waifuDebugName(waifu: WaifuConfig): string {
   const display = waifu.displayName || waifu.name || waifu.id;
   return display === waifu.id ? waifu.id : `${display} (${waifu.id})`;
 }
 
-export function stageManagerToolLabel(tool: StageManagerDebugEntry["tool"]): string {
+function stageManagerToolLabel(tool: StageManagerDebugEntry["tool"]): string {
   if (tool === "add_memory") return "added";
   if (tool === "update_memory") return "updated";
   if (tool === "archive_memory") return "deleted/archived";
@@ -109,7 +109,7 @@ export function stageManagerToolLabel(tool: StageManagerDebugEntry["tool"]): str
   return "no change";
 }
 
-export function clipDebugText(value: string, maxLength = 700): string {
+function clipDebugText(value: string, maxLength = 700): string {
   const normalized = value.replace(/\s+/g, " ").trim();
   if (normalized.length <= maxLength) return normalized;
   return `${normalized.slice(0, maxLength - 1)}…`;
@@ -141,13 +141,13 @@ export function formatPrintDebugBlock(title: string, content: string): string[] 
   return messages;
 }
 
-export function promptDebugCodeFence(content: string): string {
+function promptDebugCodeFence(content: string): string {
   const runs = content.match(/`+/g) ?? [];
   const longestRun = runs.reduce((longest, run) => Math.max(longest, run.length), 3);
   return "`".repeat(longestRun + 1);
 }
 
-export function takePromptDebugChunk(content: string, maxLength: number): string {
+function takePromptDebugChunk(content: string, maxLength: number): string {
   if (content.length <= maxLength) return content;
   const splitAt = content.lastIndexOf("\n", maxLength);
   if (splitAt > 0) {
@@ -172,4 +172,4 @@ export function splitDebugMessage(content: string): string[] {
   return chunks;
 }
 
-export const DISCORD_DEBUG_MESSAGE_LIMIT = 1900;
+const DISCORD_DEBUG_MESSAGE_LIMIT = 1900;

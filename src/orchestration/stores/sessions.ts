@@ -20,7 +20,7 @@ export async function ensureChannelSession(storage: StorageService, guildId: str
   });
 }
 
-export async function readChannelSession(storage: StorageService, guildId: string, channelId: string): Promise<ChannelSessionState> {
+async function readChannelSession(storage: StorageService, guildId: string, channelId: string): Promise<ChannelSessionState> {
   return storage.withLocks(
     [`session:${guildId}:${channelId}`],
     () => storage.readJson(

@@ -54,7 +54,7 @@ export async function sendDreamDebugLog(services: RuntimeServices, input: {
   );
 }
 
-export async function sendDebugLogForChannel(services: RuntimeServices, guildId: string, channelId: string, content: string): Promise<void> {
+async function sendDebugLogForChannel(services: RuntimeServices, guildId: string, channelId: string, content: string): Promise<void> {
   try {
     if (!services.discord.sendDebugMessage) {
       return;

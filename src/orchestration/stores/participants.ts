@@ -37,7 +37,7 @@ export async function noteActiveChatParticipantsFromContext(
   await noteActiveChatParticipants(storage, guildId, channelId, participants);
 }
 
-export async function noteActiveChatParticipants(
+async function noteActiveChatParticipants(
   storage: StorageService,
   guildId: string,
   channelId: string,

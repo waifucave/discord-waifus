@@ -275,7 +275,7 @@ export function directiveTextForWaifu(
   return `(${directive.intent.replace(/_/g, " ")}) ${goal}`.trim();
 }
 
-export function modelSupportsTools(waifu: WaifuConfig): boolean {
+function modelSupportsTools(waifu: WaifuConfig): boolean {
   if (!waifu.modelId) return false;
   try {
     const target = resolveModelTarget({ providerId: waifu.providerId, modelId: waifu.modelId });
@@ -285,7 +285,7 @@ export function modelSupportsTools(waifu: WaifuConfig): boolean {
   }
 }
 
-export function buildWaifuToolUseInstructions(
+function buildWaifuToolUseInstructions(
   waifu: WaifuConfig,
   availableWaifus: WaifuConfig[],
   activeTools: { pickNextWaifu: boolean; shortTermMemory: boolean }
@@ -313,7 +313,7 @@ export function buildWaifuToolUseInstructions(
   return sections.join("\n\n");
 }
 
-export function formatWaifuScheduleForPrompt(waifu: WaifuConfig): string {
+function formatWaifuScheduleForPrompt(waifu: WaifuConfig): string {
   const availability = waifu.availability;
   const lines = [
     "- This is your configured routine. Treat it as background for your energy and timing, not as a live status readout.",
@@ -351,7 +351,7 @@ export function currentlyDoingForWaifu(waifu: WaifuConfig, now: Date): string | 
   return undefined;
 }
 
-export function formatPromptCurrentHour(date: Date): string {
+function formatPromptCurrentHour(date: Date): string {
   return [
     String(date.getFullYear()).padStart(4, "0"),
     String(date.getMonth() + 1).padStart(2, "0"),
@@ -359,11 +359,11 @@ export function formatPromptCurrentHour(date: Date): string {
   ].join("-") + `T${String(date.getHours()).padStart(2, "0")}`;
 }
 
-export function manualRunReplyRequiredInstruction(): string {
+function manualRunReplyRequiredInstruction(): string {
   return "Manual /run override: choose action=\"reply\" now. Do not choose no_reply for this decision.";
 }
 
-export function channelParticipantDisplayNames(
+function channelParticipantDisplayNames(
   activeParticipants: ActiveChatParticipant[],
   self: WaifuConfig,
   availableWaifus: WaifuConfig[]
@@ -394,7 +394,7 @@ export const DEFAULT_REVIEWER_PROMPT = [
   "The output must be the reviewer tool decision only."
 ].join("\n");
 
-export const DEFAULT_ORCHESTRATOR_PROMPT = [
+const DEFAULT_ORCHESTRATOR_PROMPT = [
   "You watch one Discord channel and direct a small cast of waifu personas. Each pass, decide who (if anyone) speaks next. You choose speakers and timing; each waifu writes her own words — never write or paraphrase a reply for her.",
   "",
   "Most of the time the right answer is one waifu, or nobody. Pick the persona whose voice fits the moment. Two waifus only when the second has a clearly distinct reaction of her own; three or more only for rare pile-on moments. You are consulted again after each reply lands, so plan one beat, not a scene.",
@@ -418,7 +418,7 @@ export const DEFAULT_ORCHESTRATOR_PROMPT = [
 // A waifu on a vision model can look at posted images directly; the rest get OCR text only.
 // Surfaced on the casting card so the orchestrator can prefer (not must pick) a native viewer
 // when images land.
-export function waifuSeesImages(waifu: WaifuConfig): boolean {
+function waifuSeesImages(waifu: WaifuConfig): boolean {
   if (!waifu.modelId) return false;
   try {
     const target = resolveModelTarget({ providerId: waifu.providerId, modelId: waifu.modelId });
@@ -429,7 +429,7 @@ export function waifuSeesImages(waifu: WaifuConfig): boolean {
   }
 }
 
-export function castingCard(waifu: WaifuConfig, now: Date, seesImages = false, serverNickname?: string): string {
+function castingCard(waifu: WaifuConfig, now: Date, seesImages = false, serverNickname?: string): string {
   const tagName = promptTagName(waifu.name || waifu.id);
   const displayName = waifu.displayName || waifu.name;
   const nicknamePart = serverNickname && serverNickname !== displayName ? ` · appears in this server as "${serverNickname}"` : "";
@@ -450,7 +450,7 @@ export function castingCard(waifu: WaifuConfig, now: Date, seesImages = false, s
   return lines.join("\n");
 }
 
-export function castingAvailabilityLine(waifu: WaifuConfig, now: Date): string {
+function castingAvailabilityLine(waifu: WaifuConfig, now: Date): string {
   const minutes = localTimeOfDayMinutes(now);
   const parts: string[] = [];
   const sleep = waifu.availability.sleep;

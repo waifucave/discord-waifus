@@ -66,7 +66,7 @@ export type ExecuteResponderDecisionInput = {
   signal: AbortSignal;
 };
 
-export type ResponderQueueEntry = {
+type ResponderQueueEntry = {
   responder: OrchestratorRespondingWaifu;
   outcomeId: string;
 };

@@ -13,7 +13,7 @@ export function dailyIntervalContains(currentMinutes: number, interval: { start:
   return currentMinutes >= start || currentMinutes < end;
 }
 
-export function timeOfDayMinutes(value: string): number {
+function timeOfDayMinutes(value: string): number {
   const [hours = "0", minutes = "0"] = value.split(":");
   return Number(hours) * 60 + Number(minutes);
 }
