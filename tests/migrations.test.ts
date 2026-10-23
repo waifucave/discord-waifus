@@ -1169,8 +1169,8 @@ describe("migration ledger", () => {
   });
 
   describe("pending steps", () => {
+    // `waifu-params-gateway-040-v1` landed live in T7a (see tests/waifuParamsGateway040.test.ts).
     const PHASE4_STEP_IDS = [
-      "waifu-params-gateway-040-v1",
       "waifu-drop-prompt-layout-v1",
       "server-context-windows-explicit-v1",
       "memories-global-origin-subjects-v1",
@@ -1231,7 +1231,8 @@ describe("migration ledger", () => {
       const positions = PHASE4_STEP_IDS.map((id) => ids.indexOf(id));
       expect(positions.every((index) => index >= 0)).toBe(true);
       expect([...positions].sort((a, b) => a - b)).toEqual(positions);
-      expect(positions[0]).toBe(ids.indexOf("configs-to-gateway-params") + 1);
+      expect(positions[0]).toBeGreaterThan(ids.indexOf("waifu-params-gateway-040-v1"));
+      expect(ids.indexOf("waifu-params-gateway-040-v1")).toBe(ids.indexOf("configs-to-gateway-params") + 1);
       expect(positions[positions.length - 1]).toBeLessThan(ids.indexOf(`stamp-schema-version-${CURRENT_SCHEMA_VERSION}`));
       for (const id of PHASE4_STEP_IDS) {
         const step = MIGRATION_STEPS.find((candidate) => candidate.id === id)!;
