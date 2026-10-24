@@ -73,7 +73,8 @@ her to answer. Her text output is private thought; only `send_message` and `reac
 per-conversation prompts. In Living cast every tool result is frozen in her life log instead, so
 the ledger is no longer a prompt source. `read_messages` renders from the conversation cache's
 current messages. The per-conversation ref table (`refs.json`) stays, so `#k3` names the same
-message for every waifu. Ledger files are archived by migration (§11.2).
+message for every waifu; its only writer is a new `src/discord/refStore.ts` (§6.2). Ledger files
+are archived by migration (§11.2).
 
 ## 4. Waking
 
@@ -235,7 +236,7 @@ One text block in a user turn, followed by the time line (§5.4):
 
 | File | Contents |
 |---|---|
-| `state.json` | `LifeState` (revisioned): `{epoch, epochStartedAt, status: idle|turn, currentTurn?: {id, startedAt, rounds, wakeIds}, summary: string|null, systemSnapshot: {harnessHash, memoryIndex, places}, modelRoute, imageModes: Record<imageKey, {mode:"inline"}|{mode:"text", text}>, inlineImageCount, readMessageIds: string[] (≤2000, this epoch), tokenCalibration, lastCompaction?, compactionPausedUntil?}` |
+| `state.json` | `LifeState` (revisioned): `{epoch, epochStartedAt, status: idle|turn, currentTurn?: {id, startedAt, rounds, wakeIds}, summary: string|null, systemSnapshot: {harnessHash, memoryIndex, places}, modelRoute, inlineImageCount, inlineImageBytes, readMessageIds: string[] (this epoch, uncapped; kept turns' ids carry over), pendingNotices: string[] (folded into the next turn, never waking), deletedReadIds: string[], tokenCalibration, lastCompaction?, compactionPausedUntil?, pendingEpochStart?: boolean}` |
 | `log/<epoch>.jsonl` | Append-only life log (§5.3). |
 | `intents.jsonl` | Side-effect intents (§5.7). |
 | `reads.json` | Read cursors `{placeKey → {lastReadMessageId, at}}`; cursors only move forward. |
@@ -301,15 +302,18 @@ Each line: `{seq, at, kind, message}`.
 - Every build passes the log through winter's history renderer (`createHistoryRenderer`) before
   `streamTurn`, so provider-state that does not match the current route is dropped by winter rather
   than sent.
-- Images inside tool results are stored as `{placeKey, messageId, attachment: ImageRef}`, never as
-  bytes. The builder resolves them through the image fetcher and the frozen `imageModes` (§6.2).
-  Images referenced by the current epoch are pinned in the image cache (not evicted by TTL).
+- Images inside tool results are stored as `{placeKey, messageId, attachment: ImageRef, mode:
+  "inline" | {text}}`: the mode is decided once, when the tool result is created, and stored in the
+  result itself, never as bytes. The builder resolves inline images through the image fetcher.
+  Images referenced by the current epoch are pinned in the image cache, exempt from its TTL and size
+  cap. A pinned image that can no longer be resolved forces a compaction (the new epoch renders it
+  as text); it is never substituted inside the current epoch.
 
 ### 5.4 Prompt layout
 
 | Part | Content | Changes |
 |---|---|---|
-| System (one message, two system blocks) | Block A: life harness (§8), identity, persona, style, schedule, custom instructions. Block B: `<your_notes_index>` (her `MEMORY.md` as of epoch start, presented as her own notes, not instructions), `<life_so_far>` (compaction summary), `<places>` (her places at epoch start). | Per epoch only. |
+| System (two system blocks) | Block A: life harness (§8), identity, persona, style, schedule, custom instructions. Block B: `<your_notes_index>` (her `MEMORY.md` as of epoch start, presented as her own notes, not instructions), `<life_so_far>` (compaction summary), `<places>` (her places at epoch start). | Per epoch only. |
 | Log | Every life-log message of the epoch, in order. | Append-only. |
 
 - **Time lines are permanent.** Every user message the loop appends (`notifications`,
@@ -323,8 +327,12 @@ Each line: `{seq, at, kind, message}`.
   positions, with a 1-hour TTL on all markers (W3). `cacheKey`: `life:<waifuId>`.
 - **Context cap.** The compaction budget is `min(life.maxContextTokens (96,000), model window −
   output reserve)`, so lives stay below long-context price tiers (Haiku 5.5 above 100K, GPT-6 above
-  272K).
-- Exactly one system message, always first.
+  272K). Before **every** call, if the estimated request exceeds the budget, the loop treats it as a
+  `context_overflow` (§5.6), so a long turn cannot cross a price tier.
+- **How the system prompt is passed.** `ModelClient` sets `system` = A + "\n\n" + B,
+  `systemBlocks` = [A, B] (scope `org`) and `cacheTtl: "1h"`. `messages` never contains a
+  `role:"system"` entry (the Anthropic adapter would turn it into a mid-conversation system
+  message, and the Chat Completions and Responses adapters read only `system`).
 
 ### 5.5 Places and read cursors
 
@@ -344,18 +352,23 @@ calibration). It does not reuse the conversation planner, which works on ledger 
 - **Same model, prefix reuse**: the summarise request is her normal request with the same tools and
   reasoning settings, plus one appended user message with the compaction instruction and a time
   line. winter has no `toolChoice: none`; the instruction says "reply with text only". Tool calls in
-  the response are discarded; if there is no text, retry once without tools (one uncached call);
-  if that fails, fall back to truncation.
+  the response are discarded; if there is no text, retry once with the same tools and a stronger
+  text-only instruction; if that fails, fall back to truncation.
 - **Instruction** (first person): "Write notes for your future self about your life since the last
   summary: what happened in each place, who you talked to and how it went, plans and promises, open
   threads, things you meant to do. Anything that should last longer belongs in your notes; this
   summary is replaced next time." It lists deleted messages and forgotten people for omission.
-- **Kept window**: the last 3 complete turns; a cut never separates a tool call from its result. A
-  mid-turn overflow keeps the open turn whole and summarises everything before it; if the open turn
-  alone is over budget, its oldest tool results are replaced by `[result omitted: too long]` in the
-  new epoch (the new epoch is a new prefix, so this is allowed).
+- **Kept window**: the last 3 complete turns; a cut never separates a tool call from its result.
+  Kept turns are copied into the new epoch through winter's `stripOpaque`, because their thinking
+  blocks are bound to the old prefix. Kept tool results that contain a message in `deletedReadIds`
+  become `[result omitted: deleted message]`.
+- **Mid-turn overflow**: the open turn is closed first (results appended, then `[system] memory
+  summarised`), compaction runs, and the work continues in a new turn whose notifications repeat
+  the open turn's wakes. Two consecutive non-transient `bad_request` errors are handled the same way,
+  with the truncation fallback.
 - **New epoch**: A rebuilt from current config, B with the new summary, `MEMORY.md` re-read and
-  places re-listed; `readMessageIds`, `imageModes` and `inlineImageCount` reset; read cursors kept.
+  places re-listed; `inlineImageCount`, `inlineImageBytes` and `deletedReadIds` reset;
+  `readMessageIds` keeps only the kept turns' ids; read cursors kept.
 - **Config keys** that apply to lives: `compaction.enabled` (off → truncate without summary at the
   same triggers), `compaction.triggerRatio`, `compaction.waitTimeoutMs`. `maxMessages` and
   `keepRecent` apply only to the remaining conversation uses and are replaced for lives by
@@ -406,16 +419,20 @@ read_messages({ place: string, limit?: number = 15 (1–50), before?: string /* 
 - Renders the cache's **current** messages (edits applied, deletes shown as `(message deleted)`)
   with `renderDiscordMessage` and the transcript line format: `[14:02 #k3] Kevin: text`, `↩#a1` /
   `↩you` reply marks, `(edited)`, attachments, and one reaction summary line.
-- Messages by forgotten users (§7.5) render as `[14:02 #k3] someone: (removed)`.
-- Images: for routes with image input, up to 4 newest images as image blocks, until
-  `life.maxInlineImagesPerEpoch` (default 8, at most the smallest route's per-request image budget)
-  is reached; images are frozen the first time they render (`imageModes`): later or over-cap images
-  become `[image: <ocr text>]` or `[image]`.
-- Refs come from the shared per-conversation ref table. A `before` ref that no longer exists returns
-  `error: message too old`.
-- Source: `ConversationMessageCache.fetchSince` for the newest page (no REST when trusted) and a new
-  REST-backed `fetchBefore(placeKey, beforeMessageId, limit)` for older pages. DMs respect the
-  forget floor.
+- Messages by forgotten users written at or before their forget time (§7.5) render as
+  `[14:02 #k3] someone: (removed)`.
+- Images: for routes with image input, an image renders inline only at its **first occurrence in
+  the epoch**, at most 4 per result, while `life.maxInlineImagesPerEpoch` (8) and
+  `life.maxInlineImageBytesPerEpoch` (12 MiB raw) allow; every other occurrence renders as
+  `[image: <ocr text>]` or `[image]`. The decided mode is stored in the tool result (§5.3).
+- Refs: `src/discord/refStore.ts` (refs.json plus its lock) is the only writer; `read_messages`,
+  previews and notices assign refs in message-id order. Refs older than 10,000 messages or 30 days
+  in that place are pruned; a pruned or unknown ref returns `error: message too old`.
+- Source: a new stateless `ConversationMessageCache.readPage({conversation, beforeId?, limit})`. It
+  serves from the buffer when the conversation is trusted and the buffer covers the page, otherwise
+  from REST (`DiscordConversationSource` moves to `src/discord/`). It never touches the
+  `fetchSince` late-message state. DM forget floors are loaded for every DM conversation at boot
+  and on every forget.
 - Footer when more exist: `— older messages available; pass before:"#a0" —`.
 - Adds the returned message ids to `readMessageIds` and advances the read cursor.
 
@@ -428,6 +445,8 @@ send_message({ place: string, text: string (1–2000 chars), reply_to?: string /
 - Allowed places: rooms where she is cast; DMs where the user has DMed her before, is not marked
   undeliverable, has written to her since any forget floor, and is not rate-limited (D11).
   Otherwise `error: you can't post there`.
+- A turn that has already sent to a DM user may keep sending to them even if that first send
+  reached the rate limit, so a reply is never cut in half.
 - At most `life.maxSendPlacesPerTurn` (default 3) distinct places per turn.
 - Shows typing in that place for `typingDelayMs(text)` (30 ms per character, 0.6–4.5 s) before
   sending; the tool call takes that long.
@@ -563,26 +582,32 @@ Applies to the owner's forget-user and a DM user's `/forget everything` (D12). `
 conversation` runs steps 0–2 only.
 
 0. **Collect identity first**: user id, current and past display names and nicknames from the
-   directory, DM state, ledger authors, watches and her handle map.
+   conversation cache's authors, the guild directory's name history, DM state, watches and her
+   handle map.
 1. **DM data**: existing DM forget (history and state deleted, forget floor written, images and OCR
-   purged). The user id is added to `user/people/forgotten.json`; `read_messages` renders that
-   user's messages as `(removed)` everywhere (owner forget-user only).
-2. **Life without the person**: abort her turn; compact with **no kept turns** (the summary
-   instruction lists the person for omission); on failure, start a new epoch with no summary. Every
-   old epoch log is deleted at once.
-3. **Other state**: remove the person's entries from `wakes.json` (previews included), watches
-   whose `from` is the person (and scrub their notes), reminder notes mentioning the person, her
-   DM read cursor and handle, and `maintenance.jsonl` lines.
+   purged). For the owner's forget-user, `{userId, at}` is added to `user/people/forgotten.json`:
+   that user's messages written at or before `at` render as `(removed)` in `read_messages`,
+   previews, the detector state and watch matching. Newer messages render normally.
+2. **Summary without the person**: abort her turn; write the compaction summary with **no kept
+   turns** and the person listed for omission (on failure, an empty summary). The new epoch does
+   **not** start yet (`pendingEpochStart`); no turn can run in between because the per-waifu lock
+   is held.
+3. **Other state**: remove the person's entries from `wakes.json` (previews included) and
+   `pendingNotices`, watches whose `from` is the person (and scrub their notes), reminder notes
+   mentioning the person, her DM read cursor and handle, and `maintenance.jsonl` lines.
 4. **Notes scrub**: a maintenance session (§7.3) instructed to remove everything about the person
    and update the index.
-5. **Verify**: search notes and the new summary for the user id and for each collected name of at
-   least 3 characters that no other known member shares, as a whole word. Lines matching the id are
-   removed. Lines matching only a name are removed when unambiguous; otherwise they are listed as
-   `needsReview` in the result. Result: `{removedLines, removedSentences, needsReview}`, returned to
-   the caller and logged.
+5. **Start the epoch and verify**: start the new epoch (`MEMORY.md` re-read, places re-listed, every
+   old epoch log deleted). Then search the notes, the summary and the new `systemSnapshot` for the
+   user id and for each collected name of at least 3 characters that no other known member shares,
+   as a whole word. Lines matching the id are removed. Lines matching only a name are removed when
+   unambiguous; otherwise they are listed as `needsReview`. If anything was removed from notes, the
+   system snapshot is rebuilt before the first turn. Result: `{removedLines, removedSentences,
+   needsReview}`, returned to the caller and logged.
 
 Rate limit: a DM user's `/forget` runs step 2 at most once per 6 hours per user; later requests
-inside that window do steps 0–1 at once and queue steps 2–5 as a pending scrub (§7.3). The owner's
+inside that window do steps 0–1 at once and queue steps 2–5, in the same order, as a pending scrub
+(§7.3). The owner's
 forget-user always runs everything immediately.
 
 Limits of the scrub, stated to the owner in the dashboard: Discord history itself is not deleted
@@ -685,7 +710,7 @@ The persona digest retires.
 
 | # | Item | Size |
 |---|---|---|
-| W1 | `cache_control` pass-through for Anthropic models through OpenRouter (Chat Completions adapter) | S–M |
+| W1 | Chat Completions adapter: read `systemBlocks`, apply rolling and lookback `cache_control` markers (with W3's TTL) for Anthropic models through OpenRouter; the `openrouter/anthropic/*` rows declare `promptCaching` | S–M |
 | W2 | Catalog rows: Haiku 5.5 (Anthropic, OpenRouter), OpenRouter Sol 6.1, OpenRouter Muse Spark 1.3 contributor | S |
 | W3 | Per-marker cache TTL: 1-hour TTL on rolling and lookback message markers, not only system blocks | S–M |
 | W4 | Long-context price tiers in the catalog schema and `estimateCostUsd` | M |
@@ -693,7 +718,7 @@ The persona digest retires.
 | W6 | Declare `provider-runtime` and `provider-catalog` supported public APIs with a semver policy | S |
 | W7 | OpenRouter `reasoning_details` capture and verbatim replay in the Chat Completions adapter, catalog continuation for those rows, and a live probe | M |
 | W8 | Move the stream assembler (`foldProviderStream`, `stampNativeState`) into `provider-runtime`, with a streaming sink | M |
-| W9 | `provider-runtime` without a runtime dependency on `winter-agent-sdk` (so no native binary is installed); `setWinterIdentity` usable from it | S–M |
+| W9 | `provider-runtime` without a runtime dependency on `winter-agent-sdk` (so no native binary is installed). `setWinterIdentity` is already exported from provider-runtime. | S–M |
 
 All in one winter release, pinned by the app.
 
@@ -717,9 +742,11 @@ All in one winter release, pinned by the app.
 ### 10.3 Edits and deletes in a life
 
 Past tool results never change. `read_messages` always shows the current state. When a message in
-her `readMessageIds` is deleted, her next turn's notifications include `(Kevin deleted a message you
-read in #general: #k3)`. Its content stays in her log until the next compaction, which lists it for
-omission. This replaces the Phase 5 "recent deletes redacted in place" rule.
+her `readMessageIds` is deleted, its id goes to `deletedReadIds` and a line goes to
+`pendingNotices`: `(Kevin deleted a message you read in #general: #k3)`. Pending notices are folded
+into her next turn's notifications and never start a turn on their own. The content stays in her
+log until the next compaction, which lists it for omission and omits it from kept turns (§5.6).
+This replaces the Phase 5 "recent deletes redacted in place" rule.
 
 ### 10.4 Slash commands
 
@@ -778,6 +805,7 @@ Registered before the schema stamp; idempotent; re-run safe.
 | `life.maxLogMessages` | 400 |
 | `life.maxContextTokens` | 96000 |
 | `life.maxInlineImagesPerEpoch` | 8 |
+| `life.maxInlineImageBytesPerEpoch` | 12582912 (12 MiB raw) |
 | `life.maxSendPlacesPerTurn` | 3 |
 | `life.maxWakesPerUserPerHour` | 20 |
 | `life.maxWatchFiresPerDay` | 24 |
@@ -792,6 +820,26 @@ Registered before the schema stamp; idempotent; re-run safe.
 
 `compaction.enabled`, `triggerRatio` and `waitTimeoutMs` apply to lives (§5.6).
 
+Bounds (validated by the config schema):
+
+| Key | Range |
+|---|---|
+| `life.maxContextTokens` | 32000–100000 (below the lowest long-context tier in the curated list) |
+| `life.maxToolRounds` | 1–30 |
+| `life.maxTurnMs` | 30000–600000 |
+| `life.maxLogMessages` | 50–2000 |
+| `life.maxConcurrentTurns` | 1–16 |
+| `life.maxInlineImagesPerEpoch` | 0–20 |
+| `life.maxInlineImageBytesPerEpoch` | 0–20971520 |
+| `life.maxSendPlacesPerTurn` | 1–10 |
+| `life.maxWakesPerUserPerHour` | 1–200 |
+| `life.maxWatchFiresPerDay` | 1–100 |
+| `life.maxWaifuTriggeredTurns` | 0–100 |
+| `life.maintenanceHourLocal` | 0–23 |
+| `waifu.life.dailyBudgetUsd` | > 0, or null |
+| `search.maxPerSecond` / `maxPerDay` / `maxPerWaifuPerDay` | ≥ 0 (0 disables) |
+| `discord.debounce.dmMs` / `dmMaxWaitMs` | 0–120000 / 0–300000 |
+
 ### 11.4 Release
 
 3.0.0, together with Phases 4–5 (D14). Idle updates never install a major version; the owner
@@ -805,7 +853,12 @@ upgrades each host by hand. Downgrade is unsupported.
   caps; budget deferral; unsent-reply check fires once; assistant text never reaches Discord;
   `length` and `refusal` stops; tool errors carry `is_error`.
 - **Reasoning stability**: across 20 calls over several turns, every assistant message and its
-  `nativeState` is sent byte-identically, and `thinkingBlocksDropped` stays 0.
+  `nativeState` is sent byte-identically, and `thinkingBlocksDropped` stays 0 except on an epoch's
+  first call (kept turns are stripped, §5.6).
+- **Budget inside a turn**: a turn that grows past `life.maxContextTokens` is compacted before the
+  next call, never sent.
+- **Images**: an image re-read in the same epoch renders as text; per-epoch count and byte caps;
+  a pinned image that disappears forces a compaction.
 - **Prefix stability**: every request is a byte prefix of the next within an epoch; exactly one
   system message.
 - **Crash repair**: a crash between tool call and result, and between a Discord send and its result,
@@ -915,3 +968,16 @@ local merge. The branch `living-cast` merges to `main` only after L3.
 | L2 | app | Living cast core (§4–§8, §10, §11.2–§11.3): intake, wake router, detector mapping, wake queue, life loop and store, harness, tools, notes, maintenance, forget, search, scheduler, crash repair, Discord additions, data migrations, tests and goldens. |
 | — | owner | Golden review. |
 | L3 | app | §14: API, settings registry, help, CLI, dashboard, assistant tools and KB. |
+
+What L1 keeps and moves (everything else listed in §11.1 is deleted):
+
+| From | Keep / move |
+|---|---|
+| `context/compaction.ts` | Keep `emaTokenCalibration`, `compactionMaxOutputTokens`, `thinkingMayRun`, `isContextOverflowError` and the failure backoff constant; delete the conversation compaction service class (L2 writes the life planner). |
+| `context/types.ts` | Trim to `ConversationMessageSource`, `GuildDirectoryView`, `MessageRenderer`; chat types come from winter. |
+| `context/images.ts` | Keep the fetch and OCR freeze logic, rewritten over the life-owned image modes (§5.3). |
+| `context/{refs,messageRender,timeFormat,tokens}.ts` | Keep; refs move to `src/discord/refStore.ts`. |
+| `context/transcript.ts` | Move `entryHeader`/`entryLine`-style formatting into `src/life/render.ts`, working on cache messages. |
+| `context/fetchTranscript.ts` | `DiscordConversationSource` moves to `src/discord/`. |
+| `dm/dmForget.ts` | Drop its ledger, memory-store and context-store parts; keep floors, DM state, images and OCR purge. |
+| `oneShot/*` | Protocol, catalog and Laya move to `src/life/detector/`; the decider mapping is deleted. |
