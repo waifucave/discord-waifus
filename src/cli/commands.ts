@@ -7,14 +7,13 @@ import { z } from "zod";
 import { ensureDataLayout } from "../config/layout.js";
 import { appDataPath, DATA_ROOT_ENV, getDataRoot, resolveDataPath } from "../config/paths.js";
 import { loadAppConfig } from "../config/appConfig.js";
-import { startBackend } from "../backend/server.js";
 import {
   findUnresolvedModels,
   findUnstampedFiles,
   readDiscordBotsLeniently,
   readProviderIdsLeniently
 } from "../backend/migrations.js";
-import { RuntimeStateSchema } from "../backend/runtime.js";
+import { hostPidIsGenuine, RuntimeStateReadSchema } from "./hostIdentity.js";
 import type { RuntimeState } from "../backend/runtime.js";
 import {
   RemoteAccessInstallationStateV1Schema,
@@ -28,7 +27,10 @@ import { StorageService } from "../storage/storageService.js";
 import { castHealth } from "../backend/castHealth.js";
 import { DEFAULT_APP_CONFIG } from "../shared/schemas/config.js";
 import { DiscordBotsFileSchema, ProviderCredentialsFileSchema, createEmptyRevisionedFile } from "../shared/schemas/domain.js";
-import { ParsedCli, flagBoolean, flagNumber, flagString } from "./parser.js";
+import { ParsedCli, SETTINGS_AND_LIFE_COMMANDS, flagBoolean, flagNumber, flagString } from "./parser.js";
+import type { CliIo } from "./cliContext.js";
+import type { HostTransport } from "./hostClient.js";
+import { runHelp, runOwnerCommand } from "./ownerCommands.js";
 import {
   readRemoteDaemonStatus,
   runRemoteCommand,
@@ -86,6 +88,10 @@ export type CliRuntimeOptions = RemoteCliOptions & {
   processAlive?: (pid: number) => boolean;
   /** Test hook: OS process start time (epoch ms) used to verify a pid is still the host. */
   processStartTime?: (pid: number) => Promise<number | null>;
+  /** Test hooks for the settings and life commands: output, stdin and prompts; the host transport (null: none runs); the clock. */
+  cliIo?: CliIo;
+  hostTransport?: HostTransport | null;
+  now?: () => Date;
 };
 
 export type CliDetachedSpawner = (
@@ -98,10 +104,18 @@ const DETACHED_START_TIMEOUT_MS = 30_000;
 
 export async function runCommand(parsed: ParsedCli, options: CliRuntimeOptions = {}): Promise<number> {
   if (parsed.helpRequested || parsed.command === "help") {
-    printHelp(parsed.command === "help" ? parsed.positional[0] : parsed.command);
-    return 0;
+    // `waifus X --help` is the command's own help (`life`, `forget` and `usage` are also topics).
+    return runHelp(parsed.command === "help" ? parsed.positional[0] : `cli.${parsed.command}`, options.cliIo ? { io: options.cliIo } : {});
   }
   const dataRoot = resolveCliDataRoot(parsed, options.env ?? process.env);
+  if (SETTINGS_AND_LIFE_COMMANDS.has(parsed.command)) {
+    return runOwnerCommand(parsed, dataRoot, {
+      ...(options.cliIo ? { io: options.cliIo } : {}),
+      ...(options.hostTransport !== undefined ? { hostTransport: options.hostTransport } : {}),
+      ...(options.now ? { now: options.now } : {}),
+      probe: hostProbe(options)
+    });
+  }
 
   switch (parsed.command) {
     case "start":
@@ -136,6 +150,8 @@ export async function runCommand(parsed: ParsedCli, options: CliRuntimeOptions =
       return updateCommand(parsed, options);
     case "remote":
       return runRemoteCommand(parsed, dataRoot, options);
+    default:
+      return 2;
   }
 }
 
@@ -146,27 +162,6 @@ function hostProbe(options: CliRuntimeOptions): ProcessIdentityProbe {
   };
 }
 
-/**
- * B21b: a live pid from pid.json is only the host if its identity checks out. The host lock
- * records the OS start time of its process; without a lock (a pre-lock host), a process that
- * started after the backend recorded its own start cannot be that backend — the pid was reused
- * after a crash. Unknown start times keep the old pid-liveness behavior.
- */
-async function hostPidIsGenuine(
-  dataRoot: string,
-  state: { pid: number; startedAt: string },
-  probe: ProcessIdentityProbe
-): Promise<boolean> {
-  if (!probe.isAlive(state.pid)) return false;
-  const lock = await hostInstanceState(dataRoot, probe);
-  if (lock.state === "running" && lock.pid === state.pid) return true;
-  if (lock.state === "stale" && lock.record?.pid === state.pid) return false;
-  const started = await probe.startTime(state.pid);
-  const recorded = Date.parse(state.startedAt);
-  // The backend records `startedAt` after booting, so the genuine host started at or before it;
-  // the shared slack absorbs ps second-resolution and clock drift.
-  return started === null || !Number.isFinite(recorded) || started <= recorded + PROCESS_START_TIME_SLACK_MS;
-}
 
 async function hostPortFor(dataRoot: string, pid: number): Promise<number | undefined> {
   const state = await readProcessState(appDataPath(dataRoot, "pid.json"), RuntimeStateReadSchema).catch(() => undefined);
@@ -176,39 +171,6 @@ async function hostPortFor(dataRoot: string, pid: number): Promise<number | unde
 function resolveCliDataRoot(parsed: ParsedCli, env: NodeJS.ProcessEnv): string {
   const explicit = flagString(parsed.flags, "dataRoot");
   return getDataRoot(explicit ? { ...env, [DATA_ROOT_ENV]: explicit } : env);
-}
-
-const USAGE_LINES = `  waifus help [COMMAND]
-  waifus start [--host 127.0.0.1] [--port 3888] [--data-root PATH]
-  waifus dev [--host 127.0.0.1] [--port 3888] [--data-root PATH]
-  waifus stop [--data-root PATH]
-  waifus restart [--host 127.0.0.1] [--port 3888] [--data-root PATH]
-  waifus status [--data-root PATH]
-  waifus doctor [--data-root PATH]
-  waifus clean [--force] [--include-logs] [--data-root PATH]
-  waifus update [--npm | --github]
-  waifus update --auto on|off|status [--data-root PATH]
-  waifus remote [--setup] [--foreground] [--no-open] [--host ID_OR_NAME] [--port PORT] [--data-root PATH]
-  waifus remote status [--data-root PATH]
-  waifus remote stop [--data-root PATH]`.split("\n");
-
-// `topic` narrows the usage block to one command (`waifus start --help`, `waifus help start`);
-// an unknown or missing topic prints everything.
-function printHelp(topic?: string): void {
-  const matching = topic && topic !== "help"
-    ? USAGE_LINES.filter((line) => line.trim() === `waifus ${topic}` || line.trim().startsWith(`waifus ${topic} `))
-    : [];
-  console.log(`${matching.length > 0 ? `waifus ${topic}` : "waifus commands"}
-
-Usage:
-${(matching.length > 0 ? matching : USAGE_LINES).join("\n")}
-
-Options:
-  -h, --help  Show help for a command without running it.
-
-Environment:
-  ${DATA_ROOT_ENV}=PATH overrides the default ~/.dc-waifus data root.
-`);
 }
 
 async function startCommand(
@@ -305,6 +267,8 @@ async function startForegroundCommand(
 ): Promise<number> {
   const port = flagNumber(parsed.flags, "port");
   const host = flagString(parsed.flags, "host");
+  // Loaded only to run the host, so help, get/set and the other commands never load Discord or Fastify.
+  const { startBackend } = await import("../backend/server.js");
   const running = await startBackend({ dataRoot, port, host, mode });
   console.log(`waifus backend running at ${running.url}`);
   console.log(`data root: ${dataRoot}`);
@@ -1070,14 +1034,6 @@ function npmCommand(platform: NodeJS.Platform): string {
   return platform === "win32" ? "npm.cmd" : "npm";
 }
 
-// status/stop only need the pid (plus, for status, a couple of display fields) out of
-// runtime.json/pid.json — they never migrate anything. Loosen just the schemaVersion check
-// (any non-negative integer, not literally CURRENT_SCHEMA_VERSION) so a stale runtime/pid file
-// left on disk by a pre-upgrade process doesn't crash `waifus status`/`waifus stop`. The strict
-// literal in RuntimeStateSchema itself is untouched — it still governs every write.
-const RuntimeStateReadSchema = RuntimeStateSchema.extend({
-  schemaVersion: z.number().int().nonnegative()
-});
 
 async function fileSize(filePath: string): Promise<number> {
   try {

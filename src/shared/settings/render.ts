@@ -211,7 +211,7 @@ export function indexMarkdown(): string {
     "",
     "Commands:",
     "",
-    ...COMMANDS.map((command) => `- \`${command.usage[0]}\` — ${command.summary}`),
+    ...COMMANDS.flatMap((command) => [`- \`${command.usage[0]}\` — ${command.summary}`, ...command.usage.slice(1).filter((line) => !line.includes(" app.") && !line.includes(":")).map((line) => `  \`${line}\``)]),
     "",
     "Settings groups (`waifus help GROUP`, `waifus list GROUP`):",
     "",

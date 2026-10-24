@@ -8,7 +8,15 @@ export type CliCommand =
   | "clean"
   | "update"
   | "dev"
-  | "remote";
+  | "remote"
+  | "list"
+  | "get"
+  | "set"
+  | "unset"
+  | "wake"
+  | "life"
+  | "forget"
+  | "usage";
 
 export type RemoteCliAction = "start" | "status" | "stop";
 
@@ -31,7 +39,38 @@ const COMMANDS = new Set<CliCommand>([
   "clean",
   "update",
   "dev",
-  "remote"
+  "remote",
+  "list",
+  "get",
+  "set",
+  "unset",
+  "wake",
+  "life",
+  "forget",
+  "usage"
+]);
+
+/** The settings and life commands (they talk to the host through `hostClient.ts`). */
+export const SETTINGS_AND_LIFE_COMMANDS: ReadonlySet<CliCommand> = new Set<CliCommand>(["list", "get", "set", "unset", "wake", "life", "forget", "usage"]);
+
+// Switches that never take a value, so `waifus wake aria --json hello` keeps "hello" as an argument.
+const BOOLEAN_FLAGS = new Set([
+  "json",
+  "yes",
+  "log",
+  "private",
+  "dryRun",
+  "stdin",
+  "force",
+  "includeLogs",
+  "foreground",
+  "setup",
+  "noOpen",
+  "npm",
+  "global",
+  "github",
+  "release",
+  "git"
 ]);
 
 export function parseCliArgs(rawArgv: string[]): ParsedCli {
@@ -78,7 +117,7 @@ export function parseCliArgs(rawArgv: string[]): ParsedCli {
     }
     const key = toCamel(withoutPrefix);
     const next = args[index + 1];
-    if (next && !next.startsWith("--")) {
+    if (next && !next.startsWith("--") && !BOOLEAN_FLAGS.has(key)) {
       flags[key] = next;
       index += 1;
     } else {

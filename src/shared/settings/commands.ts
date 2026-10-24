@@ -87,18 +87,22 @@ export const COMMANDS: readonly CommandSpec[] = Object.freeze([
     ],
     topic: "usage"
   },
-  { name: "start", summary: "Start the host in the background (dashboard, API and Discord).", usage: ["waifus start [--host 127.0.0.1] [--port 3888] [--foreground]"], lifecycle: true },
-  { name: "dev", summary: "Run the host in the foreground for development.", usage: ["waifus dev [--host 127.0.0.1] [--port 3888]"], lifecycle: true },
-  { name: "stop", summary: "Stop the host.", usage: ["waifus stop"], lifecycle: true },
-  { name: "restart", summary: "Stop, then start the host.", usage: ["waifus restart [--host 127.0.0.1] [--port 3888]"], lifecycle: true },
-  { name: "status", summary: "Whether the host and the remote gateway run, plus the Living cast's state that needs attention (JSON).", usage: ["waifus status"], lifecycle: true, topic: "runtime" },
-  { name: "doctor", summary: "Check the install and the data root (read-only; JSON).", usage: ["waifus doctor"], lifecycle: true, topic: "runtime" },
-  { name: "clean", summary: "Delete ordinary user data (keeps Remote Access pairing).", usage: ["waifus clean [--force] [--include-logs]"], lifecycle: true },
-  { name: "update", summary: "Update the installed package, or turn idle updates on or off.", usage: ["waifus update [--npm | --github]", "waifus update --auto on|off|status"], lifecycle: true },
+  { name: "start", summary: "Start the host in the background (dashboard, API and Discord).", usage: ["waifus start [--host 127.0.0.1] [--port 3888] [--data-root PATH]"], lifecycle: true },
+  { name: "dev", summary: "Run the host in the foreground for development.", usage: ["waifus dev [--host 127.0.0.1] [--port 3888] [--data-root PATH]"], lifecycle: true },
+  { name: "stop", summary: "Stop the host.", usage: ["waifus stop [--data-root PATH]"], lifecycle: true },
+  { name: "restart", summary: "Stop, then start the host.", usage: ["waifus restart [--host 127.0.0.1] [--port 3888] [--data-root PATH]"], lifecycle: true },
+  { name: "status", summary: "Whether the host and the remote gateway run, plus the Living cast's state that needs attention (JSON).", usage: ["waifus status [--data-root PATH]"], lifecycle: true, topic: "runtime" },
+  { name: "doctor", summary: "Check the install and the data root (read-only; JSON).", usage: ["waifus doctor [--data-root PATH]"], lifecycle: true, topic: "runtime" },
+  { name: "clean", summary: "Delete ordinary user data (keeps Remote Access pairing).", usage: ["waifus clean [--force] [--include-logs] [--data-root PATH]"], lifecycle: true },
+  { name: "update", summary: "Update the installed package, or turn idle updates on or off.", usage: ["waifus update [--npm | --github]", "waifus update --auto on|off|status [--data-root PATH]"], lifecycle: true },
   {
     name: "remote",
     summary: "Run the Remote Access gateway on this device, or check or stop it.",
-    usage: ["waifus remote [--setup] [--foreground] [--no-open] [--host ID_OR_NAME] [--port PORT]", "waifus remote status", "waifus remote stop"],
+    usage: [
+      "waifus remote [--setup] [--foreground] [--no-open] [--host ID_OR_NAME] [--port PORT] [--data-root PATH]",
+      "waifus remote status [--data-root PATH]",
+      "waifus remote stop [--data-root PATH]"
+    ],
     lifecycle: true
   }
 ]);
