@@ -33,67 +33,179 @@ does goes through these endpoints, so any agent can drive the app with plain HTT
 
 ## Endpoints
 
-| Method | Path | Purpose |
-|---|---|---|
-| GET | /api/health | Liveness. |
-| GET | /api/status | Runtime + Discord connection state. |
-| GET | /api/runtime | Runtime state incl. pause state, queues, `providerAlerts` (`[{providerId, kind: "quota"\|"billing", until, lastMessage}]`, active provider cooldowns during which calls fail fast) and `models.warnings` (`[{scope, label, code, detail, previous?, dismissible}]`: `model_unmapped`, `effort_dropped`, `model_unavailable`, `model_unpriced`); host paths/process fields are local-only. |
-| DELETE | /api/runtime/model-warnings/:scope | Dismiss the persisted model notices of `waifu:<id>` or `assistant` → `{scope, dismissed}`. Live notices stay while their cause holds. |
-| GET | /api/admin/operations/:operationId | Principal-scoped mutation recovery status; no response body/result. |
-| POST | /api/runtime/pause · /resume | Pause/resume the cast (takes effect in memory immediately, then persisted as `runtime.paused` in config.toml so it survives reloads/restarts; if that write fails the response carries a `warning`). |
-| POST | /api/runtime/reload | Reload configs into the running runtime. |
-| GET | /api/updates | Sanitized idle-update status/history (closed enums, versions, timestamps). |
-| GET | /api/providers | `{catalogVersion, providers}`: credential status (redacted hints only) for the providers serving curated routes, the detector's providers, and any provider with a stored key. |
-| PUT | /api/providers/:id/credentials | Body `{apiKey}` — set a key (write-only). |
-| DELETE | /api/providers/:id/credentials | Remove a key. |
-| GET | /api/models | The curated model list: `{catalogVersion, maxOutputUsdPerMTok, models: [{id, providerId, modelId, displayName, providerDisplayName, efforts, defaultEffort?, pricing?, contributor, imageInput, credentialsConfigured, ...}], hidden: [{id, reason}]}`. |
-| GET | /api/detector/models | Native-choice decision model catalog for the addressee detector, with credential/local-setup presence; no secrets or inference. |
-| GET | /api/waifus | All waifus. |
-| POST | /api/waifus | Create (body: id, name, persona, model?, ...). |
-| GET/PUT/DELETE | /api/waifus/:id | Read / update (revisioned) / delete. |
-| POST | /api/waifus/:id/link-bot | Body `{applicationId?}` — ensure her discord-bots entry and set `botId` in one call. |
-| POST | /api/waifus/:id/assets/pfp · /banner | Upload raw image bytes (png/jpeg/webp/gif, max 8 MB). Stored under `user/waifus/:id/` only — nothing applies it to the Discord bot or shows it yet. |
-| GET | /api/servers | Guilds with channels and their waifu lists. |
-| GET | /api/servers/:guildId | One guild. |
-| PUT | /api/servers/:guildId | Partial server settings: `paused`, `channels` (wholesale) and `detector` (`{target}` override of the addressee detector; `""` = off here, `null` = inherit). The director-era fields were removed by a migration and are ignored if sent. |
-| DELETE | /api/servers/:guildId | Remove the guild config incl. rosters. |
-| PUT | /api/servers/:guildId/channels/:channelId | `{enabledWaifuIds?, name?, threads?}` — one channel; omitted fields keep their value. `threads` is `"inherit"` (default: threads and forum posts under it share its cast) or `"off"`. |
-| GET | /api/servers/:guildId/threads | The threads and forum posts the bot has seen (`threadId`, `parentId`, `name`, `kind`, `archived`, `locked`, `lastActivityAt`); guild id must be a snowflake. |
-| DELETE | /api/servers/:guildId/channels/:channelId | Remove one channel entry. |
-| GET/POST | /api/servers/:guildId/members·roles·emojis(/refresh) | Guild caches. |
-| GET | /api/discord-bots | Bot entries (tokens redacted). |
-| PUT | /api/discord-bots | `{orchestrator?, waifus?}` — each entry needs `enabled`; a sent `waifus` array replaces the list, omitted tokens are kept per id. |
-| GET/PUT | /api/assistant/config | The assistant's own `model` (unset: a waifu's model that is offered, has a key and is not a contributor variant; none → the assistant does not run). |
-| GET | /api/assistant/conversations | Conversation list, most recent first. |
-| POST | /api/assistant/conversations | New chat conversation → `{conversationId}`. |
-| DELETE | /api/assistant/conversations/:id | Delete a conversation. |
-| GET/DELETE | /api/assistant/actions/:actionId · POST …/confirm | Pending confirmation card for a destructive assistant action: read, cancel, or confirm. |
-| GET | /api/assistant/conversations/:id | Transcript (messages + events). |
-| POST | /api/assistant/conversations/:id/messages | `{content}` → runs a turn → `{reply}`. |
-| GET | /api/assistant/conversations/:id/stream | SSE: turn/tool events and live `text_delta` fragments of the reply (never stored). |
-| POST | /api/people/:userId/forget | `{confirm: true, dryRun?}` — the owner's forget of one Discord user, best effort: every DM with them (`user/dms/<userId>/`, conversations, cached DM images; rate-limit counters reset, each limits file keeps only its forget floor), a `forgotten.json` record, server member lists, the Living cast archive, their entries in the in-memory captured traffic, then each waifu's life scrub (it runs even when a part failed) (summary, wakes, watches, reminders, notes, a new epoch, verification). Returns counts (`dmContexts`, `dmStates`, `dmLimits`, `cachedImages`, `memberLists`, `archive`) and `lives: [{waifuId, removedLines, removedSentences, removedNotes, needsReview, queued?}]` (offline: `livesQueued`). A part that failed makes it 202 with `pending: [{part, error, failures, retried}]` (error code only); unfinished parts retry at the next start, at most three tries, then `GET /api/runtime` shows an owner notice. Not covered: Discord history, what she already said, ids in usage/log lines, cached guild images and any DM image no image index recorded (until the 168-hour disk cache expires them), the 15-minute web cache. Audited `people.forget`. |
-| GET | /api/dms | DM conversations, newest first: `?waifuId&userId&limit≤200` → `{conversations: [{conversationKey, waifuId, userId, userDisplayName?, lastInboundAt?, lastReplyAt?, rateLimit: {used, max, windowMinutes, limited, freesAt?} \| null, lastRun?}]}`. Never message text. |
-| GET | /api/dms/:waifuId/:userId | `{state, rateLimit}`: DM state (the `living-cast-dm-state-v1` migration dropped the old `recentRuns` and `pending*` fields). 404 when there is no DM. |
-| POST | /api/dms/:waifuId/:userId/forget | `{confirm: true, scope: "conversation" \| "all", dryRun?}` → `{dryRun, scope, deleted: {dmContexts, dmStates, cachedImages}}`. Her life scrub follows (`all`: everything about them; `conversation`: her summary without the chat); offline it is queued. Never resets the rate limit. Audited `dm.forget`. |
-| GET | /api/logs?limit=N | Recent backend log entries (max 500). |
-| GET | /api/docs · /api/docs/:slug | This knowledge base. |
-| GET | /api/events | SSE firehose: logs, runtime, captured model queries/replies. |
-| GET | /api/config · PUT /api/config | App settings (`runtime.autoConnectDiscord`, ports, updates...). |
-| GET | /api/client-context | Dashboard-only browser-session bootstrap; never call from assistant tools. |
-| GET | /api/diagnostics/bundle | One-shot diagnostic snapshot. |
-| POST | /api/cache/ocr/clear | Clear the OCR cache. |
-| GET/PUT | /api/remote-access | Remote-access status and revisioned settings. |
-| POST · GET/DELETE | /api/remote-access/activation(/:activationOperationId) | Start, poll, or cancel installation activation. |
-| POST | /api/remote-access/reconnect | Reconnect the direct-only remote runtime. |
-| GET | /api/remote-access/diagnostics | Sanitized helper/control/direct-network diagnostics. |
-| POST/DELETE | /api/remote-access/invitations(/:invitationId) | Create or cancel an attended pairing invitation. |
-| GET | /api/remote-access/pairing-requests | Pending attended pairing requests. |
-| POST | /api/remote-access/pairing-requests/:requestId/approve·reject | Decide a pending request; approval uses the secure comparison surface. |
-| GET | /api/remote-access/devices | Trusted devices with current revision and direct state. |
-| PUT | /api/remote-access/devices/:deviceId | Rename with `{revision,displayName}`. |
-| DELETE | /api/remote-access/devices/:deviceId | Revoke with `{revision}` through a confirmed browser action. |
-| GET | /api/remote-access/dashboard-manifest | Canonical pinned host dashboard manifest (transport use). |
-| GET | /api/remote-access/dashboard-assets/:buildId/* | One allowlisted immutable host dashboard asset (transport use). |
+Every route with its one-line purpose and the help topic that explains it (`GET /api/help/<topic>`,
+`waifus help <topic>`). The table is generated from the route help; details follow below it.
+
+<!-- generated:routes (npm run docs:settings:generate) -->
+
+| Method | Path | Purpose | Help topic |
+|---|---|---|---|
+| GET | `/api/admin/operations/:operationId` | Outcome of a recorded mutation (recovery read). | `runtime` |
+| DELETE | `/api/assistant/actions/:actionId` | Cancel a card. | `assistant` |
+| GET | `/api/assistant/actions/:actionId` | A confirmation card the assistant raised. | `assistant` |
+| POST | `/api/assistant/actions/:actionId/confirm` | Confirm a card (secure dashboard only). | `assistant` |
+| GET | `/api/assistant/config` | The assistant's own model. | `assistant` |
+| PUT | `/api/assistant/config` | Set or unset the assistant's model. | `assistant` |
+| GET | `/api/assistant/conversations` | Your assistant conversations. | `assistant` |
+| POST | `/api/assistant/conversations` | Start an assistant conversation. | `assistant` |
+| DELETE | `/api/assistant/conversations/:id` | Delete an assistant conversation. | `assistant` |
+| GET | `/api/assistant/conversations/:id` | One assistant conversation. | `assistant` |
+| POST | `/api/assistant/conversations/:id/messages` | Send the assistant a message. | `assistant` |
+| GET | `/api/assistant/conversations/:id/stream` | The conversation's live events (SSE). | `assistant` |
+| POST | `/api/cache/ocr/clear` | Clear the OCR cache. | `app.ocr` |
+| GET | `/api/client-context` | Establish the dashboard's browser session (never proxied). | `runtime` |
+| GET | `/api/config` | The app settings (config.toml). | `app` |
+| PUT | `/api/config` | Change app settings (partial patch). | `app` |
+| GET | `/api/detector/config` | The detector's global target. | `detector` |
+| PUT | `/api/detector/config` | Set the detector's global target ("" turns it off). | `detector` |
+| GET | `/api/detector/history` | A server's last 300 detector results (?guildId). | `detector` |
+| GET | `/api/detector/models` | The addressee detector's decision models. | `detector` |
+| GET | `/api/diagnostics/bundle` | A sanitized diagnostics bundle. | `runtime` |
+| GET | `/api/discord-bots` | The House bot and the waifu bots (tokens redacted). | `bot` |
+| PUT | `/api/discord-bots` | Change bot entries (merged by id; stored tokens kept). | `bot` |
+| GET | `/api/dms` | DM conversations (state and rate limits; never message text). | `forget` |
+| GET | `/api/dms/:waifuId/:userId` | One DM conversation's state. | `forget` |
+| POST | `/api/dms/:waifuId/:userId/forget` | Forget one waifu's DMs with one user. | `forget` |
+| GET | `/api/docs` | The assistant's knowledge base pages. | `runtime` |
+| GET | `/api/docs/:slug` | One knowledge base page. | `runtime` |
+| GET | `/api/events` | Live events (SSE): runtime, logs, model calls (life calls as metadata only). | `runtime` |
+| GET | `/api/health` | Liveness check. | `runtime` |
+| GET | `/api/help` | Help index: settings groups, topics, routes and CLI commands. | `help` |
+| GET | `/api/help/:topic` | Help for a group, a key, a topic or a command (?format=md for Markdown). | `help` |
+| GET | `/api/logs` | Recent host log lines. | `runtime` |
+| GET | `/api/models` | The curated model list with prices, efforts and key status. | `app.models` |
+| GET | `/api/owner-notices` | What needs the owner's attention (notices, forget jobs, incomplete migrations). | `runtime` |
+| POST | `/api/people/:userId/forget` | Forget a Discord user everywhere ({confirm: true, dryRun?}; 202 with pending parts). | `forget` |
+| GET | `/api/people/forget-jobs` | Owner forgets that have not finished, part by part. | `forget` |
+| GET | `/api/providers` | Provider key status (hints only, never keys). | `provider` |
+| DELETE | `/api/providers/:providerId/credentials` | Remove a provider key. | `provider` |
+| PUT | `/api/providers/:providerId/credentials` | Save a provider key (write-only). | `provider` |
+| GET | `/api/remote-access` | Remote Access configuration and live direct-connection state. | `remote-access` |
+| PUT | `/api/remote-access` | Turn Remote Access on or off, or rename this host. | `remote-access` |
+| POST | `/api/remote-access/activation` | Start activating this installation (local browser only). | `remote-access` |
+| DELETE | `/api/remote-access/activation/:activationOperationId` | Cancel an activation (local only). | `remote-access` |
+| GET | `/api/remote-access/activation/:activationOperationId` | Activation progress (local only). | `remote-access` |
+| GET | `/api/remote-access/dashboard-assets/:buildId/*` | One declared asset of the bundled dashboard. | `remote-access` |
+| GET | `/api/remote-access/dashboard-manifest` | The bundled dashboard's manifest (for the remote gateway). | `remote-access` |
+| GET | `/api/remote-access/devices` | Trusted remote devices. | `remote-access` |
+| DELETE | `/api/remote-access/devices/:deviceId` | Revoke a trusted device. | `remote-access` |
+| PUT | `/api/remote-access/devices/:deviceId` | Rename a trusted device. | `remote-access` |
+| GET | `/api/remote-access/diagnostics` | Sanitized direct-connection diagnostics. | `remote-access` |
+| POST | `/api/remote-access/invitations` | Create a pairing invitation (secure dashboard only). | `remote-access` |
+| DELETE | `/api/remote-access/invitations/:invitationId` | Cancel a pairing invitation. | `remote-access` |
+| GET | `/api/remote-access/pairing-requests` | Pending pairing requests. | `remote-access` |
+| POST | `/api/remote-access/pairing-requests/:requestId/approve` | Approve a pairing request after comparing its safety phrase. | `remote-access` |
+| POST | `/api/remote-access/pairing-requests/:requestId/reject` | Reject a pairing request. | `remote-access` |
+| POST | `/api/remote-access/reconnect` | Rediscover a direct path. | `remote-access` |
+| POST | `/api/remote-access/reset` | Reset the Remote Access identity (local only; every device pairs again). | `remote-access` |
+| GET | `/api/runtime` | Live runtime status: bots, queues, warnings (owner notices), model notices, provider cooldowns. | `runtime` |
+| DELETE | `/api/runtime/model-warnings/:scope` | Dismiss a scope's persisted model notices. | `runtime` |
+| POST | `/api/runtime/pause` | Pause every life (queues are kept). | `runtime` |
+| POST | `/api/runtime/reload` | Rebuild the Discord runtime without restarting HTTP. | `runtime` |
+| POST | `/api/runtime/resume` | Resume; what arrived meanwhile is caught up. | `runtime` |
+| GET | `/api/search/usage` | Today's web searches, the caps and the newest queries. | `usage` |
+| GET | `/api/servers` | Every server with its channels. | `server` |
+| DELETE | `/api/servers/:guildId` | Forget a server's configuration. | `server` |
+| GET | `/api/servers/:guildId` | One server. | `server` |
+| PUT | `/api/servers/:guildId` | Change a server's settings (name, paused, detector override). | `server` |
+| DELETE | `/api/servers/:guildId/channels/:channelId` | Remove a channel entry. | `channel` |
+| PUT | `/api/servers/:guildId/channels/:channelId` | Change a channel's cast or thread mode. | `channel` |
+| GET | `/api/servers/:guildId/emojis` | A server's cached emojis. | `server` |
+| POST | `/api/servers/:guildId/emojis/refresh` | Refresh a server's emojis. | `server` |
+| GET | `/api/servers/:guildId/members` | A server's cached members. | `server` |
+| POST | `/api/servers/:guildId/members/refresh` | Refresh a server's member list. | `server` |
+| GET | `/api/servers/:guildId/roles` | A server's cached roles. | `server` |
+| POST | `/api/servers/:guildId/roles/refresh` | Refresh a server's roles. | `server` |
+| GET | `/api/servers/:guildId/threads` | Threads and forum posts seen in a server. | `channel` |
+| GET | `/api/status` | Short status: running, paused, Discord, queues. | `runtime` |
+| GET | `/api/updates` | Idle-update status. | `app.updates` |
+| GET | `/api/usage` | Model calls and cost by local day (?from&to&groupBy&tz&waifuId&purpose). | `usage` |
+| GET | `/api/waifus` | Every waifu. | `waifu` |
+| POST | `/api/waifus` | Create a waifu. | `waifu` |
+| DELETE | `/api/waifus/:waifuId` | Delete a waifu (revision required). | `waifu` |
+| GET | `/api/waifus/:waifuId` | One waifu's settings. | `waifu` |
+| PUT | `/api/waifus/:waifuId` | Change a waifu's settings (partial; revision required). | `waifu` |
+| POST | `/api/waifus/:waifuId/assets/banner` | Upload her banner image. | `waifu` |
+| POST | `/api/waifus/:waifuId/assets/pfp` | Upload her avatar image. | `waifu` |
+| GET | `/api/waifus/:waifuId/life` | Her life: status, current turn, queue, epoch, today's cost (?includePrivate=1 locally). | `life` |
+| POST | `/api/waifus/:waifuId/life/compact` | Summarise her life now (between turns). | `life` |
+| GET | `/api/waifus/:waifuId/life/log` | Her life log, paged (?epoch&before&limit; DM content only with a local includePrivate=1). | `life` |
+| GET | `/api/waifus/:waifuId/life/needs-review` | Forget review lines for the owner. | `forget` |
+| DELETE | `/api/waifus/:waifuId/life/needs-review/:itemId` | Dismiss a review line. | `forget` |
+| POST | `/api/waifus/:waifuId/life/reset` | Reset her short-term memory: a fresh epoch, no summary ({confirm: true}). | `life` |
+| POST | `/api/waifus/:waifuId/link-bot` | Create or link her Discord bot entry. | `bot` |
+| POST | `/api/waifus/:waifuId/wake` | Wake her now with an optional note (skips sleep and budget). | `life` |
+
+<!-- /generated:routes -->
+
+## Route details
+
+- `GET /api/runtime`: pause state, queues, `discord.warnings` (the owner notices: channel
+  permission failures, Living cast notices, forget parts given up), `providerAlerts`
+  (`[{providerId, kind: "quota"|"billing", until, lastMessage}]`, cooldowns during which calls fail
+  fast) and `models.warnings` (`[{scope, label, code, detail, previous?, dismissible}]`:
+  `model_unmapped`, `effort_dropped`, `model_unavailable`, `model_unpriced`); host paths and process
+  fields are local-only. `DELETE /api/runtime/model-warnings/:scope` (`waifu:<id>` or `assistant`)
+  dismisses the persisted ones.
+- `POST /api/runtime/pause` / `resume`: takes effect in memory at once, then is saved as
+  `runtime.paused` (a failed save comes back as `warning`).
+- `GET /api/providers`: `{catalogVersion, providers}` with credential status (redacted hints only).
+  `PUT /api/providers/:id/credentials` `{apiKey, label?}` sets a key (write-only); `DELETE` removes it.
+  The `exa` provider's key is the web-search fallback (search also works keyless).
+- `GET /api/models`: `{catalogVersion, maxOutputUsdPerMTok, models: [{id, providerId, modelId,
+  displayName, efforts, defaultEffort?, pricing?, contributor, imageInput, credentialsConfigured,
+  ...}], hidden: [{id, reason}]}`.
+- `PUT /api/servers/:guildId`: `paused`, `channels` (replaced whole) and `detector` (`{target}`
+  overrides the addressee detector here; `""` = off here, `null` = inherit).
+  `PUT /api/servers/:guildId/channels/:channelId` `{enabledWaifuIds?, name?, threads?}` changes one
+  channel; `threads` is `"inherit"` (threads and forum posts share its cast) or `"off"`.
+- `PUT /api/discord-bots`: `{orchestrator?, waifus?}` (the House bot is stored under
+  `orchestrator`); each entry needs `enabled`; a sent `waifus` array replaces the list, omitted
+  tokens are kept per id. `POST /api/waifus/:id/link-bot {applicationId?}` ensures her bot entry and
+  links it in one call.
+- **A waifu's life** (`life` topic): `GET /api/waifus/:id/life` is her status (awake, asleep or
+  busy; idle or mid-turn; epoch, queue, today's cost and budget, last compaction, counts of review
+  lines and queued forget scrubs). `GET /api/waifus/:id/life/log?epoch&before&limit` pages her life
+  log (newest last; default 50, at most 200; old epochs are kept 7 days). Content from private chats
+  (DM notifications, tool calls and results that touch a DM, her own text in a turn that touched a
+  DM, and her summary) is left out unless the request says `includePrivate=1`, which only a request
+  on the host itself may do: over Remote Access, and for the assistant, it is refused with 403
+  `PrivateContentLocalOnly`. `POST /api/waifus/:id/wake {note?}` wakes her as the owner (skips sleep
+  and budget) → `{outcome: queued | deferred | quiet | dropped | queued_offline}` (Discord offline:
+  the wake waits in her queue). `POST …/life/compact` summarises her life now (409 without a live
+  cast or without a model; after 10 s it answers 202 `{state: "running"}` and finishes on its own).
+  `POST …/life/reset {confirm: true}` starts a fresh epoch with no summary (her notes, plans and
+  queued wakes stay). `GET …/life/needs-review` lists lines a forget could not remove for sure;
+  `DELETE …/life/needs-review/:itemId` dismisses one.
+- `POST /api/people/:userId/forget` `{confirm: true, dryRun?}`: the owner's forget of one Discord
+  user, best effort: every DM with them (conversations, DM state, cached DM images; rate-limit
+  counters reset to their forget floor), a `forgotten.json` record, server member lists, the Living
+  cast archive, their entries in the captured traffic, then each waifu's life scrub (summary, wakes,
+  reminders, notes, a new epoch, verification). Returns counts (`dmContexts`, `dmStates`,
+  `dmLimits`, `cachedImages`, `memberLists`, `archive`) and `lives: [{waifuId, removedLines,
+  removedSentences, removedNotes, needsReview, queued?}]` (Discord offline: `livesQueued`). A part
+  that failed makes it 202 with `pending: [{part, error, failures, retried}]`; unfinished parts
+  retry at the next start, at most three tries, then an owner notice lists them
+  (`GET /api/people/forget-jobs`). Not covered: Discord history, what she already said, ids in
+  usage and log lines, cached guild images and any DM image no image index recorded (until the
+  168-hour disk cache expires them), the 15-minute web cache. Audited `people.forget`.
+- `GET /api/dms?waifuId&userId&limit` lists DM conversations (never message text);
+  `GET /api/dms/:waifuId/:userId` is one DM's state and rate limit;
+  `POST /api/dms/:waifuId/:userId/forget {confirm: true, scope: "conversation" | "all", dryRun?}`
+  forgets one waifu's DMs with one person (never resets the rate limit).
+- `GET /api/usage?from&to&groupBy&tz&waifuId&purpose&guildId`: the usage ledger by local day of the
+  host's time zone (or `tz`), last 7 days by default; `groupBy` is one or two of `day`, `waifu`,
+  `purpose`, `model`, `provider`, `turn`, `place`, `server` → `{from, to, timeZone, groupBy,
+  totals, groups: [{key, calls, tokens…, costUsd, unpricedCalls, failedCalls}], skippedLines}`.
+  `GET /api/search/usage` is today's web searches and page fetches with the caps.
+- `GET/PUT /api/detector/config` `{target}`: the app-wide addressee detector (`""` = none);
+  `GET /api/detector/history?guildId` its recent decisions in one server.
+- `GET /api/owner-notices`: what needs the owner's attention (the notices, unfinished forget jobs,
+  migrations that left unreadable data alone, kept copies of unreadable forget records, queued
+  forget scrubs, intake pause and marks); `waifus doctor` and `waifus status` show the same.
+- `GET /api/help` lists every settings group, topic, command and route; `GET /api/help/:topic`
+  explains one (a group, a key such as `app.life.maxSendsPerTurn`, a topic or a command), as JSON or
+  with `?format=md` as Markdown. An unknown topic is 404 with `details.suggestions`.
 
 ## Read-modify-write example
 
@@ -150,8 +262,8 @@ curl -s -X PUT http://127.0.0.1:3888/api/waifus/riko \
   `user/usage/YYYY-MM-DD.jsonl` (UTC day) with purpose, ids, provider/model, token counts (zero
   with `usageKnown: false` when the provider reported none), cache read/write tokens, cost when
   known and status `ok | aborted | failed`. Purposes: `life`, `maintenance`, `detector`,
-  `compaction`, `assistant` (older lines keep their retired purposes). There is no HTTP endpoint
-  for it yet.
+  `compaction`, `assistant`, `web` (older lines keep their retired purposes). `GET /api/usage`
+  and `waifus usage` read it by local day.
 - **No channel or server `enabled` flag**: a channel is live exactly when its `enabledWaifuIds` is
   non-empty, and `paused` is the server's kill switch (restart catch-up honours it too). The old
   flags were removed; bodies that still send `enabled` are accepted for one release and ignored.

@@ -755,7 +755,7 @@ describe("assistant action API", () => {
     });
   });
 
-  it("forget_user proposes a confirmation card with dry-run counts and forgets only once confirmed", async () => {
+  it("forget_person proposes a confirmation card with dry-run counts and forgets only once confirmed", async () => {
     let toolResult = "";
     const state: FakeRemoteState = {
       authorized: true,
@@ -767,7 +767,7 @@ describe("assistant action API", () => {
     };
     const userId = "100000000000000042";
     const { app, auditStore, storage } = await makeActionApp(
-      scriptedToolPipeline("forget_user", { discordUserId: userId }, (value) => {
+      scriptedToolPipeline("forget_person", { discordUserId: userId }, (value) => {
         toolResult = value;
       }),
       state
@@ -787,6 +787,7 @@ describe("assistant action API", () => {
       url: detailTarget
     });
     expect(detail.json()).toMatchObject({ category: "people_forget", summary: expect.stringContaining("1 DM state") });
+    expect(detail.json().summary).toContain("best-effort scrub");
 
     const confirmTarget = `${detailTarget}/confirm`;
     const confirmed = await dispatchInternal(app, remotePrincipal({ method: "POST", canonicalTarget: confirmTarget }), undefined, {

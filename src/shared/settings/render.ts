@@ -243,7 +243,7 @@ export function topicMarkdown(resolved: ResolvedTopic, summary?: RouteSummary): 
 }
 
 /** The generated KB page: every settings group with its keys, the topics and the CLI. */
-export function settingsKbMarkdown(): string {
+export function settingsKbMarkdown(summary?: RouteSummary): string {
   return [
     "# Settings, help and the CLI",
     "",
@@ -251,10 +251,10 @@ export function settingsKbMarkdown(): string {
     "",
     "Targets: `app`, `assistant`, `remote-access`, `waifu:<id>`, `server:<guildId>`, `channel:<guildId>/<channelId>`, `bot:<house|id>`, `provider:<id>`. Secrets (`apiKey`, `token`) are write-only and never go on the command line.",
     "",
-    ...SETTING_GROUPS.flatMap((group) => [groupMarkdown(group, undefined, { heading: "##" }), ""]),
+    ...SETTING_GROUPS.flatMap((group) => [groupMarkdown(group, summary, { heading: "##" }), ""]),
     "## Topics",
     "",
-    ...RESOURCE_TOPICS.flatMap((topic) => [`### ${topic.title} (\`${topic.id}\`)`, "", topic.description, "", ...routeLines(topic.routes), ...(topic.cli.length ? ["", ...topic.cli.map((line) => `- \`${line}\``)] : []), ""]),
+    ...RESOURCE_TOPICS.flatMap((topic) => [`### ${topic.title} (\`${topic.id}\`)`, "", topic.description, "", ...routeLines(topic.routes, summary), ...(topic.cli.length ? ["", ...topic.cli.map((line) => `- \`${line}\``)] : []), ""]),
     "## Commands",
     "",
     ...COMMANDS.map((command) => `- \`${command.usage.join("` · `")}\` — ${command.summary}`),

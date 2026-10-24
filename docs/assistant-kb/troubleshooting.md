@@ -21,6 +21,9 @@ server is paused, and a DM waits for 30 seconds of quiet first.
 If nothing ever replies, check in order: `GET /api/status` — is `discord.connected` true and
 `waifuBotCount` > 0? Does the channel list at least one waifu (Rooms), and is the server not
 `paused`? Does she have a model (`GET /api/runtime` → `models.warnings`) and its provider a key?
+Then look at her life: the dashboard's Life screen, `waifus life <id> --log` or
+`GET /api/waifus/:id/life` show whether she was woken, whether wakes wait (asleep, over budget)
+and what she did in her last turns (she may have read the room and chosen to stay quiet).
 
 ## She doesn't answer DMs
 
@@ -76,8 +79,12 @@ roles. A trusted remote can manage the app but cannot stop or restart the host O
 ## Where the evidence lives
 
 - `GET /api/logs?limit=200` — recent backend log entries.
-- Queries/Replies in Activity — the last 100 raw model requests/responses (exact prompts).
-- `waifus doctor` — filesystem/config diagnostics.
+- Queries/Replies in Activity — the last 100 model calls. The assistant's and the detector's
+  calls keep their content; a life, maintenance, compaction or web call shows only its metadata
+  (route, counts, stop reason, usage, cost, timing). Her own life log (Life screen) is where her
+  turns are.
+- `waifus doctor` — filesystem/config diagnostics and the Living cast's state that needs attention
+  (also `GET /api/owner-notices`).
 - Backend log file: `<data-root>/app/logs/backend.log`.
 
 ## Images
@@ -90,11 +97,27 @@ roles. A trusted remote can manage the app but cannot stop or restart the host O
 ## Costs and quotas
 
 Every model call writes a line to `user/usage/YYYY-MM-DD.jsonl` (purpose, provider, model, tokens,
-cache read and write tokens, cost when known, `status`).
+cache read and write tokens, cost when known, `status`). `GET /api/usage`, `waifus usage` and the
+Activity screen's usage tab add them up by local day, waifu, purpose or model. A waifu's
+`life.dailyBudgetUsd` stops her ordinary wakes for the rest of the local day once reached.
 
 `provider_quota` / `provider_billing` errors mean the provider account is out of quota or credit;
 calls to that provider fail fast for 10 / 30 minutes (see `providerAlerts` in `GET /api/runtime`)
 instead of retrying. Top up the account; no restart is needed.
+
+## Owner notices
+
+`GET /api/owner-notices` (Home, `waifus doctor`, `waifus status`) lists what needs the owner:
+
+- a part of a forget that failed three times and was given up (forget the person again to retry);
+- a migration step that left an unreadable file alone (it runs again at the next start; fix or
+  remove the file it names);
+- kept copies of an unreadable forget record (`*.corrupt-<time>`, deleted after 7 days);
+- forget scrubs still queued for a waifu (they run when her life next starts or at nightly
+  maintenance);
+- a waifu linked to a Discord bot that is missing, turned off or has no token (her sends fail;
+  a waifu with no bot linked speaks through the House bot instead), and a waifu's review lines (names someone else also has, which a
+  forget only lists): Life screen → Needs review, dismiss each line once checked.
 
 ## After an upgrade
 
@@ -113,3 +136,6 @@ start.
 - `get_runtime_status` — includes `discord.warnings` with live per-channel permission failures
   (e.g. "riko cannot send in channel … — check the channel permissions in Discord").
 - `list_models` — the curated models with their efforts and whether each provider has a key.
+- `get_life` — a waifu's status and recent life log (content from private chats left out).
+- `get_usage` — model calls and cost by day, waifu, purpose or model.
+- `get_setting_help` — any setting's type, default and bounds.

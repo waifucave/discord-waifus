@@ -9,6 +9,7 @@ import {
   TrustedDeviceListV1Schema,
   TrustedDeviceSummaryV1Schema
 } from "../../shared/schemas/remoteLifecycle.js";
+import { FORGET_LIMITS_TEXT } from "../../shared/constants/forget.js";
 import { listDocs, readDoc, searchDocs } from "../docsKb.js";
 import { dispatchInternal } from "../internalDispatch.js";
 import type {
@@ -78,6 +79,9 @@ async function revisionedPut(
 }
 
 const NO_ARGS = { type: "object", properties: {}, additionalProperties: false } as const;
+
+/** get_setting_help answers are cut here (overhaul spec §10.7). */
+const SETTING_HELP_MAX_CHARS = 12_000;
 
 const MODEL_CHOICE_PARAMETER = {
   type: "object",
@@ -308,7 +312,8 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
       "Update fields on an existing waifu. Pass only the fields to change under `changes`. " +
       "`model` is {providerId, modelId, effort?} from list_models (null unsets it). Style fields: `verbosity` (terse | chatty | expressive, how long her messages are), " +
       "`customInstructions` (extra prompt text, max 4000 chars) and `scheduleInPrompt` (boolean, whether her " +
-      "schedule is mentioned in the prompt). The prompt layout editor no longer exists; there is nothing to send for it.",
+      "schedule is mentioned in the prompt). The prompt layout editor no longer exists; there is nothing to send for it. " +
+      "Every key with its type and default: get_setting_help('waifu').",
     parameters: {
       type: "object",
       properties: { id: { type: "string" }, changes: { type: "object" } },
@@ -353,7 +358,7 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
   },
   {
     name: "update_channel",
-    description: "Update a channel's settings: enabledWaifuIds (which waifus may speak; a channel is live when the list is non-empty).",
+    description: "Update a channel's settings: enabledWaifuIds (which waifus may speak; a channel is live when the list is non-empty). Every key: get_setting_help('channel').",
     parameters: {
       type: "object",
       properties: {
@@ -418,7 +423,8 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
     description:
       "Update Discord bot entries. Entries are merged BY ID: bots you do not mention are left untouched, and stored " +
       "tokens are preserved when omitted from an entry. For wiring a character's bot prefer link_waifu_bot; use this " +
-      "for the House bot's applicationId or display tweaks (key `orchestrator`). Apply directly; no confirmation needed.",
+      "for the House bot's applicationId or display tweaks (key `orchestrator`). Apply directly; no confirmation needed. " +
+      "Every key: get_setting_help('bot').",
     parameters: {
       // NOTE: keep every "type" a single string — Google's proto-based schema validation
       // rejects JSON-Schema type arrays like ["object", "null"].
@@ -472,11 +478,12 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
     }
   },
   {
-    name: "forget_user",
+    name: "forget_person",
     description:
-      "Propose forgetting a Discord user: deletes every waifu's DM conversations, DM state and rate-limit " +
-      "counters with them and their cached DM images. Destructive: it runs only if the user accepts the " +
-      "separate secure dashboard confirmation card.",
+      "Propose forgetting a Discord user everywhere on this host (Living cast §7.5): their DMs with every waifu, DM " +
+      "state and cached DM images, member lists, the archive, and a best-effort scrub of every waifu's life log, " +
+      "summary and notes (a name someone else also has is only listed for review). Destructive: it runs only if the " +
+      "user accepts the separate secure dashboard confirmation card, which states what a forget cannot remove.",
     parameters: {
       type: "object",
       properties: { discordUserId: { type: "string", description: "The Discord user id (snowflake)." } },
@@ -494,7 +501,8 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
         category: "people_forget",
         summary:
           `Forget Discord user ${discordUserId}: delete ${counts.dmContexts} DM conversation${counts.dmContexts === 1 ? "" : "s"}, ` +
-          `${counts.dmStates} DM state${counts.dmStates === 1 ? "" : "s"} and ${counts.cachedImages} cached image${counts.cachedImages === 1 ? "" : "s"}.`,
+          `${counts.dmStates} DM state${counts.dmStates === 1 ? "" : "s"} and ${counts.cachedImages} cached image${counts.cachedImages === 1 ? "" : "s"}, ` +
+          `and scrub them from every waifu's life and notes. ${FORGET_LIMITS_TEXT}`,
         resource: { type: "discord_user", identifier: discordUserId },
         operation: {
           kind: "exact_http",
@@ -503,7 +511,7 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
           payload: { confirm: true }
         }
       });
-      return JSON.stringify({ ...JSON.parse(confirmationResult(action)), preview: counts });
+      return JSON.stringify({ ...JSON.parse(confirmationResult(action)), preview: counts, limits: FORGET_LIMITS_TEXT });
     }
   },
   {
@@ -569,7 +577,8 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
   {
     name: "update_server",
     description:
-      "Update server-level settings for a guild: paused (the kill switch). For per-channel toggles use update_channel.",
+      "Update server-level settings for a guild: paused (the kill switch), detector ({ target } overrides the app's " +
+      "detector here; null inherits). For per-channel toggles use update_channel. Every key: get_setting_help('server').",
     parameters: {
       type: "object",
       properties: {
@@ -879,6 +888,113 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
     execute: async (ctx) => {
       const result = await inject(ctx, { method: "POST", url: "/api/runtime/reload", payload: { reason: "assistant" } });
       return result.status === 200 ? "Runtime reloaded." : result.body;
+    }
+  },
+  {
+    name: "get_life",
+    description:
+      "A waifu's life (Living cast): awake, asleep or mid-turn, her wake queue, today's cost and budget, her last " +
+      "compaction and turn, and with `log: true` the newest life-log lines (tool calls show their name and arguments). " +
+      "Content from private chats (DMs) is never shown to you; such lines say they were redacted.",
+    parameters: {
+      type: "object",
+      properties: {
+        waifuId: { type: "string" },
+        log: { type: "boolean", description: "Also return the newest life-log lines." },
+        limit: { type: "number", description: "How many log lines (default 20, max 100)." }
+      },
+      required: ["waifuId"],
+      additionalProperties: false
+    },
+    execute: async (ctx, args) => {
+      const base = `/api/waifus/${encodeURIComponent(String(args.waifuId))}/life`;
+      const status = await inject(ctx, { method: "GET", url: base });
+      if (status.status !== 200 || args.log !== true) return status.body;
+      const limit = Math.max(1, Math.min(Math.trunc(Number(args.limit) || 20), 100));
+      const log = await inject(ctx, { method: "GET", url: `${base}/log?limit=${limit}` });
+      return JSON.stringify({ status: JSON.parse(status.body), log: log.status === 200 ? JSON.parse(log.body) : log.body });
+    }
+  },
+  {
+    name: "wake_waifu",
+    description:
+      "Wake a waifu now as the owner, with an optional note she sees (max 500 characters). An owner wake skips her " +
+      "sleep and budget; with Discord offline it waits in her queue. Apply directly when the user asks.",
+    parameters: {
+      type: "object",
+      properties: { waifuId: { type: "string" }, note: { type: "string" } },
+      required: ["waifuId"],
+      additionalProperties: false
+    },
+    execute: async (ctx, args) =>
+      (
+        await inject(ctx, {
+          method: "POST",
+          url: `/api/waifus/${encodeURIComponent(String(args.waifuId))}/wake`,
+          payload: typeof args.note === "string" && args.note.trim() ? { note: args.note.trim().slice(0, 500) } : {}
+        })
+      ).body
+  },
+  {
+    name: "get_usage",
+    description:
+      "Model calls and cost from the usage ledger, by local day (default: the last 7 days in the host's time zone). " +
+      "groupBy is one or two of day, waifu, purpose, model, provider, turn, place, server (comma separated).",
+    parameters: {
+      type: "object",
+      properties: {
+        from: { type: "string", description: "First local day, YYYY-MM-DD." },
+        to: { type: "string", description: "Last local day, YYYY-MM-DD." },
+        groupBy: { type: "string" },
+        waifuId: { type: "string" },
+        tz: { type: "string", description: "IANA time zone, e.g. Europe/Berlin." }
+      },
+      additionalProperties: false
+    },
+    execute: async (ctx, args) => {
+      const query = new URLSearchParams();
+      for (const key of ["from", "to", "groupBy", "waifuId", "tz"] as const) {
+        if (typeof args[key] === "string" && args[key]) query.set(key, args[key] as string);
+      }
+      const suffix = query.toString();
+      return (await inject(ctx, { method: "GET", url: `/api/usage${suffix ? `?${suffix}` : ""}` })).body;
+    }
+  },
+  {
+    name: "get_setting_help",
+    description:
+      "Help for settings from the settings registry: a group (app, waifu, server, channel, assistant, bot, provider, " +
+      "remote-access), a key (app.life.maxSendsPerTurn), part of a group (app.life) or a topic (life, forget, usage, " +
+      "detector, runtime). Lists each key's type, default, bounds and how to set it. Use it before changing a setting " +
+      "you are not sure about.",
+    parameters: {
+      type: "object",
+      properties: { topic: { type: "string" } },
+      required: ["topic"],
+      additionalProperties: false
+    },
+    execute: async (ctx, args) => {
+      const topic = String(args.topic ?? "").trim() || "index";
+      const result = await inject(ctx, { method: "GET", url: `/api/help/${encodeURIComponent(topic)}?format=md` });
+      return result.body.length > SETTING_HELP_MAX_CHARS ? `${result.body.slice(0, SETTING_HELP_MAX_CHARS)}\n… (cut; ask for a narrower topic)` : result.body;
+    }
+  },
+  {
+    name: "update_app_config",
+    description:
+      "Change host-wide settings (config.toml): pass only the keys to change as a nested object under `changes`, e.g. " +
+      "{ life: { maxSendsPerTurn: 6 } } or { search: { maxPerDay: 200 } }. See get_setting_help('app') for every key. " +
+      "Some keys (http, updates, frontend) can only be changed on the host itself. Apply directly.",
+    parameters: {
+      type: "object",
+      properties: { changes: { type: "object" } },
+      required: ["changes"],
+      additionalProperties: false
+    },
+    execute: async (ctx, args) => {
+      if (!args.changes || typeof args.changes !== "object" || Array.isArray(args.changes)) return JSON.stringify({ error: "Pass the keys to change under `changes`." });
+      const result = await inject(ctx, { method: "PUT", url: "/api/config", payload: args.changes });
+      return result.status === 200 ? JSON.stringify({ ok: true, changed: Object.keys(args.changes as Record<string, unknown>) }) : result.body;
     }
   },
   {

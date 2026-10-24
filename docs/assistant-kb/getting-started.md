@@ -10,8 +10,8 @@ process hosts everything: each waifu has her own persona, model and Discord bot.
 > **Living cast.** Each character is an autonomous agent with one continuous life: she is woken by
 > mentions, replies, her name, DMs, her own reminders and watches, or the addressee detector; she
 > reads the conversation, decides whether to answer, keeps notes as her memory and tidies them
-> nightly. There is no director. The dashboard's life timeline and settings arrive in a later
-> release; the owner can use the House bot's `/wake` and `/print` meanwhile.
+> nightly. There is no director. The dashboard's Life screen shows what she is doing (see the
+> life doc); the owner can also use the House bot's `/wake` and `/print` and `waifus life`.
 
 Everything is stored locally under the data root (default `~/.dc-waifus`, override with
 `DC_WAIFUS_HOME`). Ordinary operation sends data only to the model providers you configure and to
@@ -33,7 +33,10 @@ metadata; dashboard and API traffic remains direct between the paired devices an
 
 - `waifus start` / `waifus stop` / `waifus restart` — manage the background process.
 - `waifus status` — where it runs and whether Discord is connected.
-- `waifus doctor` — quick health diagnostics.
+- `waifus doctor` — quick health diagnostics, including what needs the owner's attention.
+- `waifus get|set|unset|list` — read and change any setting (`waifus help` lists them all; the
+  settings doc has every key). `waifus wake`, `waifus life`, `waifus forget` and `waifus usage`
+  manage lives.
 - Dashboard: http://127.0.0.1:3888 (local only).
 
 ## Optional remote management
@@ -51,5 +54,10 @@ stop or restart the host OS process. Intel macOS and Linux ARMv7 are not support
 
 ## How a conversation works
 
-The Living cast rebuild changes this: each waifu will notice what concerns her, read the room
-with tools and decide for herself whether to answer. Until it ships, nothing replies.
+Messages reach the House bot. A mention, a reply to her, her name (when `wakeOnName` is on), a DM
+to her own bot, or one of her reminders or watches wakes the waifu it concerns; a message nobody
+addressed goes to the addressee detector (`detector.target`), which picks who it is for, if
+anyone. Wakes queue per waifu and she handles them one turn at a time: she reads the conversation,
+may stay quiet, and only what she sends reaches people. While she sleeps (her schedule) or after
+her daily budget, wakes wait; the owner's own wakes always go through. Each turn is limited by the
+`life.*` settings (sends, places, tool rounds, time).

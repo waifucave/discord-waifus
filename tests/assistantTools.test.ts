@@ -79,7 +79,12 @@ describe("assistant tools", () => {
       "get_assistant_config",
       "set_assistant_model",
       "list_detector_models",
-      "forget_user",
+      "forget_person",
+      "get_life",
+      "wake_waifu",
+      "get_usage",
+      "get_setting_help",
+      "update_app_config",
       "list_dms",
       "forget_dm",
       "read_logs",
@@ -101,12 +106,40 @@ describe("assistant tools", () => {
       expect(names, required).toContain(required);
     }
     // Living cast L1 retired the director, stage manager, reviewer and memory store with their tools.
-    for (const retired of ["get_agent_config", "update_agent_config", "search_memories", "add_memory", "update_memory", "delete_memory", "trigger_orchestrator", "trigger_stage_manager", "get_orchestrator_history", "regenerate_waifu_digest", "list_one_shot_models"]) {
+    for (const retired of ["get_agent_config", "update_agent_config", "search_memories", "add_memory", "update_memory", "delete_memory", "trigger_orchestrator", "trigger_stage_manager", "get_orchestrator_history", "regenerate_waifu_digest", "list_one_shot_models", "forget_user"]) {
       expect(names, retired).not.toContain(retired);
     }
     for (const tool of toolDefs()) {
       expect(typeof tool.description, tool.name).toBe("string");
       expect((tool.inputSchema as { type?: unknown }).type, tool.name).toBe("object");
+    }
+  });
+
+  it("Living cast tools: get_life, wake_waifu, get_usage, get_setting_help and update_app_config", async () => {
+    const { app } = await makeApp();
+    try {
+      const ctx = localToolContext(app);
+      await executeAssistantTool(ctx, "create_waifu", JSON.stringify({ id: "momo", name: "Momo" }));
+      const woken = JSON.parse(await executeAssistantTool(ctx, "wake_waifu", JSON.stringify({ waifuId: "momo", note: "say hi to the garden club" })));
+      expect(woken).toMatchObject({ waifuId: "momo", outcome: "queued_offline" });
+      const life = JSON.parse(await executeAssistantTool(ctx, "get_life", JSON.stringify({ waifuId: "momo", log: true, limit: 5 })));
+      expect(life.status).toMatchObject({ waifuId: "momo", includePrivate: false });
+      expect(life.status.queue.wakes).toEqual([expect.objectContaining({ reason: "owner", note: "say hi to the garden club" })]);
+      expect(life.log).toMatchObject({ includePrivate: false, lines: [] });
+      const usage = JSON.parse(await executeAssistantTool(ctx, "get_usage", JSON.stringify({ groupBy: "waifu", tz: "UTC" })));
+      expect(usage).toMatchObject({ groupBy: ["waifu"], timeZone: "UTC", totals: { calls: 0 } });
+      const help = await executeAssistantTool(ctx, "get_setting_help", JSON.stringify({ topic: "app.life.maxSendsPerTurn" }));
+      expect(help).toContain("maxSendsPerTurn");
+      expect(help.length).toBeLessThanOrEqual(12_100);
+      const whole = await executeAssistantTool(ctx, "get_setting_help", JSON.stringify({ topic: "app" }));
+      expect(whole.length).toBeLessThanOrEqual(12_100);
+      const changed = JSON.parse(await executeAssistantTool(ctx, "update_app_config", JSON.stringify({ changes: { life: { maxSendsPerTurn: 6 } } })));
+      expect(changed).toEqual({ ok: true, changed: ["life"] });
+      const config = (await app.inject({ method: "GET", url: "/api/config" })).json() as { life: { maxSendsPerTurn: number; maxToolRounds: number } };
+      expect(config.life.maxSendsPerTurn).toBe(6);
+      expect(config.life.maxToolRounds).toBeGreaterThan(0);
+    } finally {
+      await app.close();
     }
   });
 

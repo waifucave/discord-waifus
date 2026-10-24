@@ -57,8 +57,7 @@ missing. `GET /api/servers/:guildId/threads` lists the threads the bot has seen.
 
 ## Direct messages (DMs)
 
-(Living cast in progress: DMs are not answered until the life loop ships; the rules below
-describe what the settings control.) A waifu answers DMs sent to her own bot when her
+A waifu answers DMs sent to her own bot when her
 `dm.allowDms` is on (default off; `PUT
 /api/waifus/:id {"dm": {"allowDms": true}}`). A DM is a 1:1 chat with that waifu only: no
 other waifus, with the same model and prompt rules as in servers. Requirements: the waifu is enabled, has a model, and is the ONLY enabled waifu linked to
@@ -86,8 +85,8 @@ resets the rate limit. The owner's full forget is `POST /api/people/:userId/forg
 
 ## Connection
 
-The app connects on start when `runtime.autoConnectDiscord` is on (default `true`). There is no
-dashboard toggle for it yet: set it in `config.toml` under `[runtime]` or with
+The app connects on start when `runtime.autoConnectDiscord` is on (default `true`): Settings →
+App, `waifus set app runtime.autoConnectDiscord false`, or
 `PUT /api/config {"runtime": {"autoConnectDiscord": false}}`. Check
 `GET /api/status` → `discord.connected` / `houseConnected` / `waifuBotCount`; warnings
 list bots that failed (bad token, missing intents).
