@@ -164,6 +164,7 @@ export class ConversationMessageCache implements ConversationMessageSource {
   private readonly scopes = new Map<DiscordConnectionScope, ScopeState>();
   private readonly listeners = new Set<(event: ConversationCacheEvent) => void>();
   private readonly seenCreates = new Set<string>();
+  private readonly floors = new Map<string, string>();
   private readonly fallback: DiscordConversationSource;
   private detach: (() => void) | undefined;
   private readonly now: () => number;
@@ -214,6 +215,16 @@ export class ConversationMessageCache implements ConversationMessageSource {
     this.buffers.delete(conversationKey(conversation));
   }
 
+  /**
+   * DM forget floor (spec 9.1.4): messages at or below `floor` are never served again, and a read
+   * that would start below it starts at it (no backfill of forgotten messages).
+   */
+  setFloor(conversation: ConversationRef, floor: string | undefined): void {
+    const key = conversationKey(conversation);
+    if (floor === undefined) this.floors.delete(key);
+    else this.floors.set(key, floor);
+  }
+
   /** Trusted = a read right now would make no REST call (tail check aside). */
   isTrusted(conversation: ConversationRef): boolean {
     const buf = this.buffers.get(conversationKey(conversation));
@@ -222,7 +233,15 @@ export class ConversationMessageCache implements ConversationMessageSource {
 
   // ---- ConversationMessageSource ----------------------------------------------------------------
 
-  async fetchSince(i: ConversationFetchInput): Promise<ConversationFetchResult> {
+  async fetchSince(input: ConversationFetchInput): Promise<ConversationFetchResult> {
+    const floor = this.floors.get(conversationKey(input.conversation));
+    if (floor === undefined) return this.fetchSinceUnfloored(input);
+    const after = input.afterMessageId === null || compareIds(input.afterMessageId, floor) < 0 ? floor : input.afterMessageId;
+    const result = await this.fetchSinceUnfloored({ ...input, afterMessageId: after });
+    return { ...result, messages: result.messages.filter((message) => compareIds(message.id, floor) > 0) };
+  }
+
+  private async fetchSinceUnfloored(i: ConversationFetchInput): Promise<ConversationFetchResult> {
     throwIfAborted(i.signal);
     const discord = this.d.discord();
     if (!discord) return { messages: [], reachedCursor: true };

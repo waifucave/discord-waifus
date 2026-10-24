@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { IsoDateStringSchema, RevisionedRecordSchema } from "./common.js";
 
-// DM schemas (spec 9.1). T1 only wires `WaifuConfig.dm`; nothing reads it until Phase 5.
+// DM schemas (spec 9.1): per-waifu settings, the per-conversation DM state and the rate-limit counters.
 
 export const DmRateLimitSchema = z.object({
   maxReplies: z.number().int().min(1).max(1000),
@@ -52,6 +52,8 @@ export const DmStateSchema = RevisionedRecordSchema.extend({
   userId: z.string().min(1),
   botId: z.string().min(1),
   dmChannelId: z.string().optional(),
+  /** The user's Discord display name as last seen on an inbound DM (dashboard listing only). */
+  userDisplayName: z.string().max(100).optional(),
   lastInboundMessageId: z.string().optional(),
   lastInboundAt: IsoDateStringSchema.optional(),
   lastRepliedMessageId: z.string().optional(),
@@ -69,6 +71,12 @@ export const DmLimitStateSchema = RevisionedRecordSchema.extend({
   waifuId: z.string().min(1),
   userId: z.string().min(1),
   replyTimestamps: z.array(IsoDateStringSchema).max(1000).default([]),
-  limitNoticeSentAt: IsoDateStringSchema.optional()
+  limitNoticeSentAt: IsoDateStringSchema.optional(),
+  /**
+   * Forget floor (spec 9.1.4): Discord message ids at or below it predate the last DM /forget and
+   * are never read again (the bot cannot delete the user's messages). Kept here because forgetting
+   * never deletes this file.
+   */
+  floorMessageId: z.string().min(1).optional()
 });
 export type DmLimitState = z.infer<typeof DmLimitStateSchema>;

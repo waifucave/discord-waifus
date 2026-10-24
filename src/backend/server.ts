@@ -17,7 +17,8 @@ import {
 } from "../discord/client.js";
 import { mergeConfiguredBotsIntoMembers } from "../discord/memberCache.js";
 import { GuildDirectory } from "../discord/guildDirectory.js";
-import { readDiscordBotsFile } from "../orchestration/stores/config.js";
+import { listWaifus, readDiscordBotsFile } from "../orchestration/stores/config.js";
+import { computeDmEligibility } from "../orchestration/dm/dmStore.js";
 import { RuntimeOrchestrator } from "../orchestration/runtime.js";
 import { ImageOcrService } from "../orchestration/ocr.js";
 import { DiscordImageFetcher, sharedImageFetcherConfig } from "../discord/attachments.js";
@@ -220,6 +221,8 @@ async function startLockedBackend(options: StartBackendOptions): Promise<Running
         memberListRefreshHours: currentConfig.discord.memberListRefreshHours,
         compaction: currentConfig.compaction,
         deletedMessages: { ...currentConfig.discord.deletedMessages },
+        debounce: { ...currentConfig.discord.debounce },
+        dm: { ...currentConfig.discord.dm },
         updateActivity,
         memory: { ...currentConfig.memory },
         isPaused: () => runtime.paused || closing,
@@ -696,7 +699,12 @@ async function maybeConnectDiscord(
       return { roles: (await cacheForGuild(guildId)).roles };
     },
     onRuntimeIssue,
-    onStatusChange
+    onStatusChange,
+    // Spec 9.1: bots of DM-eligible waifus log in with the DM intents (re-read on reconcile).
+    dmBots: async () => {
+      const [waifus, current] = await Promise.all([listWaifus(storage), readDiscordBotsFile(storage)]);
+      return computeDmEligibility(waifus, current).eligible;
+    }
   });
   try {
     const status = await gateway.connect();

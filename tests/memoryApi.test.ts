@@ -195,11 +195,11 @@ describe("POST /api/memories/forget-user", () => {
 
     const dry = await app.inject({ method: "POST", url: "/api/memories/forget-user", payload: { discordUserId: KEVIN_ID, confirm: true, dryRun: true } });
     expect(dry.statusCode).toBe(200);
-    expect(dry.json()).toEqual({ discordUserId: KEVIN_ID, dryRun: true, memories: 2, observations: 1, ledgers: 1, ledgerEntries: 1 });
+    expect(dry.json()).toEqual({ discordUserId: KEVIN_ID, dryRun: true, memories: 2, observations: 1, ledgers: 1, ledgerEntries: 1, dmContexts: 0, dmStates: 0, dmLimits: 0, cachedImages: 0 });
     expect((await readMemoryStore(storage)).memories).toHaveLength(3);
 
     const done = await app.inject({ method: "POST", url: "/api/memories/forget-user", payload: { discordUserId: KEVIN_ID, confirm: true } });
-    expect(done.json()).toEqual({ discordUserId: KEVIN_ID, dryRun: false, memories: 2, observations: 1, ledgers: 1, ledgerEntries: 1 });
+    expect(done.json()).toEqual({ discordUserId: KEVIN_ID, dryRun: false, memories: 2, observations: 1, ledgers: 1, ledgerEntries: 1, dmContexts: 0, dmStates: 0, dmLimits: 0, cachedImages: 0 });
     expect((await readMemoryStore(storage)).memories.map((m) => m.id)).toEqual(["mia"]);
     const pending = await storage.readJson("user/memory/pending-observations.json", PendingObservationsFileSchema);
     expect(pending.observations.map((o) => o.id)).toEqual(["o2"]);

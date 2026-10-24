@@ -453,12 +453,13 @@ describe("RuntimeOrchestrator.applyMessageEvent (the one adapter for conversatio
     expect(spy.mock.calls[0]![0]).toMatchObject({ messageId: id, thread: THREAD_INFO });
   });
 
-  it("handles delete and deleteBulk the same way, and ignores DM conversations", async () => {
+  it("handles delete and deleteBulk the same way, DM conversations included (recorded, never triggering)", async () => {
     const { runtime, calls } = await setup();
     await runtime.applyMessageEvent({ type: "delete", conversation, messageId: "1", source: "gateway" });
     await runtime.applyMessageEvent({ type: "deleteBulk", conversation, messageIds: ["2", "3"] });
-    await runtime.applyMessageEvent({ type: "delete", conversation: { kind: "dm", botId: "b", userId: "u" } as never, messageId: "4" });
-    expect(calls.deletes.map((d) => d.ids)).toEqual([["1"], ["2", "3"]]);
+    await runtime.applyMessageEvent({ type: "delete", conversation: { kind: "dm", waifuId: "aria", userId: "5" }, messageId: "4" });
+    expect(calls.deletes.map((d) => d.ids)).toEqual([["1"], ["2", "3"], ["4"]]);
+    expect(calls.deletes[2]!.conversation).toEqual({ kind: "dm", waifuId: "aria", userId: "5" });
     expect(calls.deletes.every((d) => d.redactRecent === 7)).toBe(true);
   });
 });

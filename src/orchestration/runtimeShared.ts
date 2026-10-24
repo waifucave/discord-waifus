@@ -57,6 +57,15 @@ export type RuntimeOrchestratorOptions = {
   directory?: GuildDirectory;
   /** Prebuilt conversation cache (tests); otherwise one is built over the Discord facade (spec 9.4). */
   conversationCache?: ConversationMessageCache;
+  /**
+   * `AppConfig.discord.debounce` (spec 9.2). Omitted keys: `serverMs`/`dmMs` 0 (fire at once, the
+   * pre-debounce behaviour); the backend passes the config (defaults 1200 / 4000 / 1500 / 8000).
+   */
+  debounce?: Partial<import("../shared/schemas/config.js").DebounceConfig>;
+  /** `AppConfig.discord.dm` (spec 9.1): DM run concurrency and the restart catch-up window. */
+  dm?: Partial<import("../shared/schemas/config.js").DmRuntimeConfig>;
+  /** Stagger between DM catch-up runs at boot/resume (default 2000 ms; tests use 0). */
+  dmResumeStaggerMs?: number;
   /** `AppConfig.discord.memberListRefreshHours` (default 24, 0 = never). */
   memberListRefreshHours?: number;
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;

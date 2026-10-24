@@ -311,7 +311,8 @@ export function applyDreamOps(
         source: "dream",
         pinned: false,
         strength: Math.max(...sources.map((memory) => memory.strength)),
-        origin: sources[0]!.origin,
+        // A merge that includes a private-chat memory stays private (spec 9.1, O4).
+        origin: sources.find((memory) => memory.origin.dm)?.origin ?? sources[0]!.origin,
         subjects,
         revision: 0,
         createdAt: now,

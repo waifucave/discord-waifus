@@ -145,7 +145,8 @@ export function lexicalMatch(record: MemoryRecord, query: QueryTokens, nameFor?:
 }
 
 export function sameOriginScore(origin: MemoryOrigin, conversation: ConversationRef): number {
-  if (conversation.kind === "dm") return origin.dm ? 1 : 0;
+  // Only this user's own private chat with her counts as the same origin.
+  if (conversation.kind === "dm") return origin.dm && origin.userId === conversation.userId ? 1 : 0;
   if (origin.dm || origin.guildId !== conversation.guildId) return 0;
   return origin.channelId === conversation.channelId ? 1 : 0.5;
 }

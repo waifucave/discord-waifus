@@ -83,6 +83,8 @@ describe("assistant tools", () => {
       "update_memory",
       "delete_memory",
       "forget_user",
+      "list_dms",
+      "forget_dm",
       "trigger_orchestrator",
       "read_logs",
       "get_remote_access_status",

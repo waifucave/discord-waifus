@@ -4,7 +4,7 @@ How waifus remember: one global memory per waifu, retrieval, pinning, the observ
 
 ## Global memory
 
-Each waifu has ONE memory space across every server and (from Phase 5) her DMs. A fact she
+Each waifu has ONE memory space across every server and her DMs. A fact she
 learned in one server is available to her in every other server. Where a memory was learned is
 kept only as provenance (`origin: { guildId?, channelId?, dm? }`) — it never hides a memory.
 Memories learned in a private chat render as "learned in a private chat", and `/print memories`
@@ -55,7 +55,11 @@ disappear at the next compaction.
   since its last read, sees the participants and what the waifus already remember about them,
   and adds, updates, merges or expires memories. Important adds (importance ≥ 4) and edits apply
   at once; the rest queue for the dream. `stageManagerEnabled: false` on a server turns its
-  observers off.
+  observers off. Each DM conversation has its own observer (after an hour of quiet, or before a
+  compaction), which ignores server flags; what it learns belongs to that waifu, with
+  `origin: { dm: true, userId }`. A DM observer only sees (and edits) memories from that user's
+  DMs, a server observer never sees DM memories, and a merge that includes a DM memory stays a DM
+  memory.
 - **Dream** (once a night at `memory.dreamHourLocal`, default 05:00 local): one global pass that
   visits waifus round-robin (at most 8 model calls a night, continuing where the last night
   stopped): merges duplicates, rewrites stale phrasing, decays trivia, promotes worthwhile notes.
@@ -72,8 +76,21 @@ disappear at the next compaction.
 - `DELETE /api/memories/:memoryId` — remove (`recordRevision` in the body).
 - `POST /api/memories/forget-user {discordUserId, confirm: true, dryRun?}` — forget a person:
   deletes every memory about them (including shared ones), their queued observations, and
-  replaces their stored messages with `(removed)`. Conversation summaries keep them until their
-  next compaction. The assistant's `forget_user` tool always shows a confirmation card first.
+  replaces their stored messages with `(removed)`. It also deletes every DM with them (DM
+  transcripts, DM state and the DM rate-limit counters: the whole `user/dms/<userId>/`, except a
+  "forget floor" so the old chat is never read back from Discord), every memory she learned in
+  their DMs, and the cached images of those DMs; the response adds `dmContexts`, `dmStates`, `dmLimits`,
+  `cachedImages`. Conversation summaries keep them until their next compaction. The assistant's
+  `forget_user` tool always shows a confirmation card first.
+- `POST /api/dms/:waifuId/:userId/forget {confirm: true, scope: "conversation" | "all", dryRun?}`
+  — forget one waifu's DMs with one user: `conversation` deletes the DM transcript and run records;
+  `all` also deletes the DM state, her memories and queued observations about the user and the
+  DM's cached images (both scopes drop the DM's cached images). After a forget nothing older than
+  the forget is ever read back into her DM (the bot cannot delete the user's own messages, so the
+  app remembers where the forget happened). It never touches the rate-limit counters (only
+  forget-user does). The
+  assistant's `forget_dm` tool shows a confirmation card first; users can do the same from the DM
+  with `/forget`.
 
 Pin sparingly: pinned records take snapshot slots in every conversation. Canon facts about the
 room's people and relationships are good pins; passing jokes are not.

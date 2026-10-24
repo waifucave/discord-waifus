@@ -54,6 +54,32 @@ were active in the last 24 hours. The bot needs "Send Messages in Threads" (and 
 parent) to reply in a thread; the dashboard shows a permission warning naming it when it is
 missing. `GET /api/servers/:guildId/threads` lists the threads the bot has seen.
 
+## Direct messages (DMs)
+
+A waifu answers DMs sent to her own bot when her `dm.allowDms` is on (default off; `PUT
+/api/waifus/:id {"dm": {"allowDms": true}}`). A DM is a 1:1 chat with that waifu only: no
+orchestrator, no other waifus, but the same prompt rules, model, memories and compaction as in
+servers. Requirements: the waifu is enabled, has a model, and is the ONLY enabled waifu linked to
+her bot (a shared bot takes no DMs; `GET /api/runtime` → `discord.dm.warnings` shows
+`dm_bot_shared:<botId>`, `dm_missing_model:<waifuId>` or `dm_intent_pending_reconnect:<botId>`).
+The DM intents (Direct Messages, DM reactions) are not privileged and need no Developer Portal
+toggle. They are fixed at login, so saving a waifu change to `dm.allowDms`, `botId` or `enabled`
+re-logs only the bots whose intents changed (about 2 seconds offline); other bots keep `[Guilds]`.
+A user must share a server with the bot (or have it installed) to DM it, and the bot can't see a
+DM sent before its first message to it while the app was down.
+
+Each user gets at most `dm.rateLimit.maxReplies` replies per `windowMinutes` (default 30 per 60
+minutes, `null` = unlimited), per waifu. When the limit is hit she stays silent and, if
+`dm.notifyWhenLimited` (default on), sends one fixed notice per limited period
+(`dm.limitNotice`, tokens `{name}`, `{user}`, `{retryInMinutes}`; empty = "I need a little break —
+talk to you in about {retryInMinutes} minutes!"). She answers again once the window frees up and
+the user writes again. Counters survive restarts and a user's `/forget`.
+
+In DMs her bot offers `/forget what:<this conversation|everything about me>`, answered privately
+with a 30-second Confirm button. "this conversation" deletes the DM transcript; "everything"
+also deletes the DM state and her memories about that user. Neither resets the rate limit.
+Server slash commands (`/run`, `/print`, …) exist only in servers.
+
 ## Connection
 
 The app connects on start when `runtime.autoConnectDiscord` is on (default `true`). There is no

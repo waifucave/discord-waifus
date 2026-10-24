@@ -1,4 +1,6 @@
 import type {
+  DiscordDirectMessageEvent,
+  DiscordDmForgetCommandEvent,
   DiscordMessageEvent,
   DiscordThreadEvent,
   DiscordThreadInfo
@@ -38,6 +40,19 @@ import { healPendingOrchestratorDecisions } from "./stores/decisionHistory.js";
 import { noteActiveChatParticipant } from "./stores/participants.js";
 import { clearScheduledRetrigger, ensureChannelSession, persistShutdownWake, removeChannelSession } from "./stores/sessions.js";
 import { observeThread, parentSharesCast, readThreads, removeThread } from "./stores/threads.js";
+import { KeyedDebouncer } from "./debounce.js";
+import { DmRunner } from "./dm/dmRunner.js";
+import { dmForget, type DmForgetInput, type DmForgetResult } from "./dm/dmForget.js";
+import { computeDmEligibility, dmFloorAt } from "./dm/dmStore.js";
+import { listWaifus } from "./stores/config.js";
+import { forgetUser, type ForgetUserResult } from "./memoryForget.js";
+import { DEFAULT_DEBOUNCE, DEFAULT_DM_RUNTIME } from "../shared/schemas/config.js";
+
+/** Spec 9.6: `/api/runtime` `discord.dm`. */
+export type DmRuntimeStatus = {
+  eligibleWaifus: Array<{ waifuId: string; botId: string; intentActive: boolean }>;
+  warnings: string[];
+};
 
 /** Spec 9.5: an edit that adds a waifu mention to the newest human message this recently re-triggers. */
 const EDIT_MENTION_RETRIGGER_MS = 2 * 60_000;
@@ -93,6 +108,10 @@ export class RuntimeOrchestrator {
    * message update/delete/reaction events (edits and deletes, DM traffic).
    */
   readonly conversations: ConversationMessageCache;
+  /** The DM run loop (spec 9.1). */
+  readonly dm: DmRunner;
+  /** Spec 9.2: per-channel human message bursts (`guild:channel` keys). */
+  private readonly bursts = new KeyedDebouncer<string>();
 
   constructor(private readonly options: RuntimeOrchestratorOptions) {
     const ocr = options.ocr;
@@ -190,10 +209,36 @@ export class RuntimeOrchestrator {
       },
       options.stageManagerIdleDelayMs
     );
+    this.runner.pendingBurst = (guildId, channelId) => this.bursts.has(timerKey(guildId, channelId));
+    this.runner.pendingBurstInGuild = (guildId) => this.bursts.keys().some((key) => key.startsWith(`${guildId}:`));
+    this.dm = new DmRunner({
+      storage: options.storage,
+      discord: options.discord,
+      logger: options.logger,
+      contexts: this.contexts,
+      conversationCache: this.conversations,
+      models,
+      settings: () => ({
+        dmMs: options.debounce?.dmMs ?? 0,
+        dmMaxWaitMs: options.debounce?.dmMaxWaitMs ?? DEFAULT_DEBOUNCE.dmMaxWaitMs,
+        maxConcurrentRuns: options.dm?.maxConcurrentRuns ?? DEFAULT_DM_RUNTIME.maxConcurrentRuns,
+        resumeWindowMinutes: options.dm?.resumeWindowMinutes ?? DEFAULT_DM_RUNTIME.resumeWindowMinutes,
+        dmInjectionLimit: options.memory?.dmInjectionLimit ?? 12
+      }),
+      isPaused: () => options.isPaused?.() === true,
+      isStopping: () => this.stopping,
+      runBackground: (label, context, task) => this.runBackground(label, context, task),
+      noteActivity: (conversation) => this.memoryJobs.noteDmActivity(conversation),
+      sleep: options.sleep ?? defaultSleep,
+      ...(options.dmResumeStaggerMs !== undefined ? { resumeStaggerMs: options.dmResumeStaggerMs } : {})
+    });
     this.commands = new RuntimeCommands(services, {
       runtimeBusyReason: (guildId, channelId) => this.runtimeBusyReason(guildId, channelId),
-      startChannelRunBackground: (guildId, channelId, reason, runOptions) =>
-        this.runner.startChannelRunBackground(guildId, channelId, reason, runOptions),
+      // `/run` (and any command that starts a run now) supersedes a pending burst (spec 9.2).
+      startChannelRunBackground: (guildId, channelId, reason, runOptions) => {
+        this.bursts.cancel(timerKey(guildId, channelId));
+        this.runner.startChannelRunBackground(guildId, channelId, reason, runOptions);
+      },
       stopChannel: (guildId, channelId, reason) => this.stopChannel(guildId, channelId, reason),
       triggerStageManager: (guildId, channelId) => this.triggerStageManager(guildId, channelId),
       runReviewer: (input) => this.reviewer.runReviewer(input),
@@ -294,6 +339,12 @@ export class RuntimeOrchestrator {
           waifuId: event.waifuId
         }, () => this.commands.handlePrintCommand(event));
       }),
+      this.options.discord.onDirectMessage?.((event) => {
+        this.runBackground("Discord DM handler failed", { waifuId: event.waifuId, messageId: event.messageId }, () =>
+          this.dm.handleInbound(event)
+        );
+      }),
+      this.options.discord.onDmForgetCommand?.((event) => this.handleDmForgetCommand(event)),
       this.options.discord.onDebugCommand?.((event) => {
         this.runBackground("Discord debug command handler failed", {
           ...slashCommandLogContext(event),
@@ -314,7 +365,14 @@ export class RuntimeOrchestrator {
       this.options.logger.info("Restart resume skipped because runtime is paused");
     } else {
       this.runBackground("Restart resume failed", {}, () => this.runner.resumeOrchestrationState());
+      this.runBackground("DM restart resume failed", {}, () => this.resumeDms());
     }
+  }
+
+  /** DM catch-up after the bots had a beat to connect (spec 9.1.2). */
+  private async resumeDms(): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, this.options.restartResumeDelayMs ?? 5000));
+    await this.dm.resume();
   }
 
   /** Re-run boot catch-up (persisted timers, downtime messages) after an explicit user resume. */
@@ -322,6 +380,7 @@ export class RuntimeOrchestrator {
     if (!this.wasPaused || this.options.isPaused?.()) return;
     this.wasPaused = false;
     this.runBackground("Resume after pause failed", {}, () => this.runner.resumeOrchestrationState());
+    this.runBackground("DM resume after pause failed", {}, () => this.dm.resume());
   }
 
   async stop(): Promise<void> {
@@ -344,10 +403,29 @@ export class RuntimeOrchestrator {
   /** Explicit user pause: interrupted replies are never resumed later (see restartResume.ts). */
   async pause(): Promise<void> {
     this.wasPaused = true;
+    this.bursts.cancelAll();
+    await this.dm.pause();
     await this.haltRuntime("runtime paused");
   }
 
   private async haltRuntime(reason: string): Promise<void> {
+    if (reason === RUNTIME_SHUTDOWN_INTERRUPT_REASON) {
+      // Spec 9.2: bursts that had not fired yet owe the room a pass after the restart.
+      for (const key of this.bursts.drain()) {
+        const [guildId, channelId] = key.split(":");
+        if (!guildId || !channelId) continue;
+        await persistShutdownWake(this.options.storage, guildId, channelId).catch((error) => {
+          this.options.logger.warn("Failed to persist a pending burst at shutdown", {
+            guildId,
+            channelId,
+            message: error instanceof Error ? error.message : String(error)
+          });
+        });
+      }
+      await this.dm.shutdown(reason);
+    } else {
+      this.bursts.cancelAll();
+    }
     for (const timer of this.runner.retriggerTimers.values()) {
       clearTimeout(timer);
     }
@@ -483,9 +561,35 @@ export class RuntimeOrchestrator {
       authorBot: event.authorBot
     });
     this.memoryJobs.noteStageManagerActivity(event.guildId, event.channelId);
-    await this.runner.startChannelRun(event.guildId, event.channelId, `message:${event.messageId}`, {
-      trigger: "message"
-    });
+    const quietMs = this.options.debounce?.serverMs ?? 0;
+    if (quietMs <= 0) {
+      // `serverMs: 0`: every message starts its run at once (the pre-debounce behaviour).
+      await this.runner.startChannelRun(event.guildId, event.channelId, `message:${event.messageId}`, {
+        trigger: "message"
+      });
+      return;
+    }
+    // Spec 9.2: this channel's own run that has not started sending is now stale; abort it at
+    // arrival (not resumable). A run that is sending finishes; another channel's run is only
+    // preempted when the burst fires.
+    const active = this.runner.activeRuns.get(runKey(event.guildId));
+    if (active && active.channelId === event.channelId && !this.executor.activeWaifuSendChannels.has(event.channelId)) {
+      this.options.logger.info("Aborting channel run: a newer message arrived", {
+        guildId: event.guildId,
+        channelId: event.channelId,
+        messageId: event.messageId
+      });
+      active.controller.abort(new Error("superseded_by_message"));
+    }
+    const { guildId, channelId } = event;
+    this.bursts.schedule(
+      timerKey(guildId, channelId),
+      { quietMs, maxWaitMs: this.options.debounce?.serverMaxWaitMs ?? DEFAULT_DEBOUNCE.serverMaxWaitMs },
+      () => {
+        if (this.stopping || this.options.isPaused?.()) return;
+        this.runner.startChannelRunBackground(guildId, channelId, `message-burst:${event.messageId}`, { trigger: "message" });
+      }
+    );
   }
 
   /** Thread facts for a message event that carries none: a tracked thread, else Discord's channel metadata. */
@@ -586,7 +690,8 @@ export class RuntimeOrchestrator {
    *   only marked). Never starts a run; deleting the message that triggered a run that has not sent
    *   anything yet aborts it (`trigger_deleted`).
    *
-   * Only guild conversations are handled here; DM conversations belong to the DM runner (wave 2).
+   * DM conversations record edits and deletes the same way, without triggers (the DM runner
+   * answers new messages only).
    * `extra.thread` carries the thread facts a re-trigger needs when the source knows them;
    * `extra.previousMentionIds` stands in for `event.previous` when only the old mentions are known.
    */
@@ -595,7 +700,16 @@ export class RuntimeOrchestrator {
     extra: { thread?: DiscordThreadInfo; previousMentionIds?: string[] } = {}
   ): Promise<void> {
     const conversation = event.conversation;
-    if (conversation.kind !== "guild") return;
+    if (conversation.kind === "dm") {
+      if (event.type === "update") {
+        if (event.message.editedAt) await this.contexts.recordMessageEdit(conversation, event.message, {});
+        return;
+      }
+      await this.contexts.recordMessageDeletes(conversation, event.type === "delete" ? [event.messageId] : event.messageIds, {
+        ...(this.options.deletedMessages ? { redactRecent: this.options.deletedMessages.redactRecent } : {})
+      });
+      return;
+    }
     const { guildId, channelId } = conversation;
     if (event.type === "update") {
       const message = event.message;
@@ -722,6 +836,7 @@ export class RuntimeOrchestrator {
       this.options.logger.warn("Manual runtime trigger ignored because runtime is paused", { guildId, channelId });
       return;
     }
+    this.bursts.cancel(timerKey(guildId, channelId));
     await this.runner.startChannelRun(guildId, channelId, reason, options);
   }
 
@@ -739,6 +854,8 @@ export class RuntimeOrchestrator {
     const versionKey = timerKey(guildId, channelId);
     this.runner.channelRunVersions.set(versionKey, (this.runner.channelRunVersions.get(versionKey) ?? 0) + 1);
 
+    // Spec 9.2: /stop also cancels a burst that has not fired yet (and releases a channel held behind it).
+    if (this.bursts.cancel(versionKey)) this.runner.releasePreempted(guildId);
     const clearedRetrigger = this.runner.clearRetriggerTimer(guildId, channelId);
     if (clearedRetrigger) {
       await clearScheduledRetrigger(this.options.storage, guildId, channelId);
@@ -768,6 +885,75 @@ export class RuntimeOrchestrator {
     messageIds: string[];
   }> {
     return this.reviewer.runReviewer({ guildId, channelId, userId });
+  }
+
+  // ---- DMs (spec 9.1) ---------------------------------------------------------------------------
+
+  /** True while a debounced human burst is pending for the channel (spec 9.2). */
+  hasPendingBurst(guildId: string, channelId: string): boolean {
+    return this.bursts.has(timerKey(guildId, channelId));
+  }
+
+  /** After a waifu write that may change DM eligibility: re-log only bots whose intents changed. */
+  async reconcileDmIntents(): Promise<{ relogged: string[] }> {
+    return (await this.options.discord.reconcileDmIntents?.()) ?? { relogged: [] };
+  }
+
+  /** `/api/runtime` `discord.dm` (spec 9.6). */
+  async dmStatus(): Promise<DmRuntimeStatus> {
+    const [waifus, bots] = await Promise.all([listWaifus(this.options.storage), readDiscordBotsFile(this.options.storage)]);
+    const eligibility = computeDmEligibility(waifus, bots);
+    const intents = this.options.discord.dmIntentStatus?.() ?? [];
+    const warnings = [...eligibility.warnings];
+    const eligibleWaifus = eligibility.eligible.map((entry) => {
+      const intent = intents.find((candidate) => candidate.botId === entry.botId);
+      const intentActive = intent?.intentActive === true && intent.waifuId === entry.waifuId;
+      if (intent?.connected && !intentActive) warnings.push(`dm_intent_pending_reconnect:${entry.botId}`);
+      return { waifuId: entry.waifuId, botId: entry.botId, intentActive };
+    });
+    return { eligibleWaifus, warnings };
+  }
+
+  /** dmForget with the runtime's side effects: live slots aborted, cached messages and images dropped. */
+  async forgetDm(input: DmForgetInput): Promise<DmForgetResult> {
+    return dmForget(this.options.storage, input, this.dmForgetHooks());
+  }
+
+  /** The owner's forget-user (spec 9.1.4) with the same runtime side effects. */
+  async forgetUser(input: { discordUserId: string; dryRun?: boolean }): Promise<ForgetUserResult> {
+    return forgetUser(this.options.storage, input, this.dmForgetHooks());
+  }
+
+  private dmForgetHooks() {
+    return {
+      beforeDelete: async (conversation: { kind: "dm"; waifuId: string; userId: string }) => {
+        // Nothing may write into the conversation after this: no DM run, no observer (its cursor
+        // write would recreate the folder), no cached messages from before the forget.
+        await this.dm.forgetConversation(conversation);
+        await this.memoryJobs.quiesceDmObserver(conversation);
+        this.conversations.forget(conversation);
+        this.conversations.setFloor(conversation, dmFloorAt(new Date()));
+      },
+      purgeImages: (keys: string[]) => this.contexts.purgeImageKeys(keys)
+    };
+  }
+
+  /** A confirmed DM `/forget` (spec 9.1.5, O3). Never touches the rate-limit counters. */
+  async handleDmForgetCommand(event: DiscordDmForgetCommandEvent): Promise<string> {
+    const result = await this.forgetDm({
+      userId: event.userId,
+      waifuId: event.waifuId,
+      scope: event.scope === "everything" ? "all" : "conversation"
+    });
+    this.options.logger.info("DM forget command handled", { waifuId: event.waifuId, scope: result.scope, ...result.deleted });
+    return event.scope === "everything"
+      ? "Done: I forgot our private chat and everything I remembered about you."
+      : "Done: I forgot our private chat.";
+  }
+
+  /** Test seam: deliver a DM as the gateway would. */
+  async handleDirectMessage(event: DiscordDirectMessageEvent): Promise<void> {
+    await this.dm.handleInbound(event);
   }
 
   private runtimeBusyReason(guildId: string, channelId: string): string | undefined {

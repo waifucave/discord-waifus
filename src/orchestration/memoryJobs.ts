@@ -84,6 +84,8 @@ export class MemoryJobs {
   readonly activeStageManagerRuns = new Set<Promise<StageManagerRunResult>>();
   // guildId:channelId → observer run in flight (in-memory so a crash can never leave it stuck).
   private readonly activeStageManagerChannels = new Map<string, Promise<StageManagerRunResult>>();
+  // conversation key → DM observer run in flight (spec 9.1 step 8).
+  private readonly activeDmObservers = new Map<string, Promise<StageManagerRunResult>>();
   // The single global dream timer (key "global"; also holds the defer chain) — a Map so
   // stop()/pause() clear it like any other timer.
   readonly dreamTimers = new Map<string, NodeJS.Timeout>();
@@ -159,11 +161,30 @@ export class MemoryJobs {
   /**
    * Compaction handoff (spec 8.9): resolve once the stage-manager observer of `conversation`
    * has read the ledger through `seq` (running it now, in cursor-bounded batches, if needed).
-   * Never rejects; a disabled/failed observer simply stops the catch-up. DM observers arrive in
-   * Phase 5, so DM conversations resolve immediately.
+   * Never rejects; a disabled/failed observer simply stops the catch-up. DM conversations use the
+   * DM observer (no per-server flags).
    */
   async requestObserveThrough(conversation: ConversationRef, seq: number): Promise<void> {
-    if (conversation.kind !== "guild") return;
+    if (conversation.kind === "dm") {
+      try {
+        for (let round = 0; round < OBSERVE_THROUGH_MAX_ROUNDS; round += 1) {
+          await this.activeDmObservers.get(conversationKey(conversation))?.catch(() => undefined);
+          const before = await readObserverCursor(this.options.storage, conversation);
+          if (before.cursorSeq !== null && before.cursorSeq >= seq) return;
+          const result = await this.startDmObserverRun(conversation);
+          if (result.status === "disabled" || result.status === "failed") return;
+          if (result.status === "already_running") continue;
+          const after = await readObserverCursor(this.options.storage, conversation);
+          if (after.cursorSeq === before.cursorSeq) return;
+        }
+      } catch (error) {
+        this.options.logger.warn("DM observer catch-up before compaction failed", {
+          waifuId: conversation.waifuId,
+          message: error instanceof Error ? error.message : String(error)
+        });
+      }
+      return;
+    }
     const { guildId, channelId } = conversation;
     try {
       for (let round = 0; round < OBSERVE_THROUGH_MAX_ROUNDS; round += 1) {
@@ -266,7 +287,8 @@ export class MemoryJobs {
     }
     const participants = observerParticipants(transcript.entries, (authorId) => waifuByAuthor.get(authorId));
     const now = new Date();
-    const existing = existingMemoriesFor(store.memories, { allowedWaifuIds, participants, now });
+    // DM-origin memories never reach a server observer (it could rewrite or merge them into guild records).
+    const existing = existingMemoriesFor(store.memories.filter((record) => !record.origin.dm), { allowedWaifuIds, participants, now });
     const input = renderObserverInput({
       participants,
       memories: existing,
@@ -355,6 +377,132 @@ export class MemoryJobs {
       await appendStageManagerHistory(this.options.storage, entry);
     }
     void sendStageManagerDebugLog(this.options, { guildId, channelId, entries, observationCount: ops.length });
+    return { status: result.applied > 0 ? "updated" : "no_change" };
+  }
+
+  /**
+   * DM observer scheduling (spec 9.1 step 8): the same idle delay as channels; DM observers ignore
+   * every per-server flag (there is no server).
+   */
+  noteDmActivity(conversation: Extract<ConversationRef, { kind: "dm" }>): void {
+    const key = `dm:${conversationKey(conversation)}`;
+    const schedule = this.stageManagerSchedules.get(key) ?? {};
+    this.stageManagerSchedules.set(key, schedule);
+    if (schedule.idleTimer) clearTimeout(schedule.idleTimer);
+    schedule.idleTimer = setTimeout(() => {
+      const current = this.stageManagerSchedules.get(key);
+      if (!current) return;
+      current.idleTimer = undefined;
+      this.stageManagerSchedules.delete(key);
+      this.hooks.runBackground("Scheduled DM observer run failed", { waifuId: conversation.waifuId }, () =>
+        this.startDmObserverRun(conversation)
+      );
+    }, this.stageManagerIdleDelayMs);
+    schedule.idleTimer.unref?.();
+  }
+
+  /** DM forget: cancel the conversation's idle observer and wait for a run in flight. */
+  async quiesceDmObserver(conversation: Extract<ConversationRef, { kind: "dm" }>): Promise<void> {
+    const timerKey = `dm:${conversationKey(conversation)}`;
+    const schedule = this.stageManagerSchedules.get(timerKey);
+    if (schedule?.idleTimer) clearTimeout(schedule.idleTimer);
+    this.stageManagerSchedules.delete(timerKey);
+    await this.activeDmObservers.get(conversationKey(conversation))?.catch(() => undefined);
+  }
+
+  startDmObserverRun(conversation: Extract<ConversationRef, { kind: "dm" }>): Promise<StageManagerRunResult> {
+    const key = conversationKey(conversation);
+    if (this.activeDmObservers.has(key)) return Promise.resolve({ status: "already_running" });
+    const promise = this.runDmObserver(conversation).catch((error: unknown): StageManagerRunResult => {
+      this.options.logger.error("DM observer failed", {
+        waifuId: conversation.waifuId,
+        message: error instanceof Error ? error.message : String(error)
+      });
+      return { status: "failed", message: error instanceof Error ? error.message : "DM observer failed." };
+    });
+    this.activeDmObservers.set(key, promise);
+    this.activeStageManagerRuns.add(promise);
+    void promise.finally(() => {
+      this.activeStageManagerRuns.delete(promise);
+      if (this.activeDmObservers.get(key) === promise) this.activeDmObservers.delete(key);
+    });
+    return promise;
+  }
+
+  /** The observer over one DM ledger: memories get `origin: { dm: true }` and belong to her only. */
+  private async runDmObserver(conversation: Extract<ConversationRef, { kind: "dm" }>): Promise<StageManagerRunResult> {
+    const config = await readAgentConfig(this.options.storage, "stage-manager", 80);
+    if (!config.enabled || !config.modelId) return { status: "disabled" };
+    const pipeline = this.models.pipelineFor({ providerId: config.providerId, modelId: config.modelId }, "stage_manager_observer");
+    if (!pipeline.decideStageManagerObservations) {
+      throw new Error(`Model ${config.modelId} does not implement observer decisions.`);
+    }
+    const allowedWaifuIds = [conversation.waifuId];
+    const cursor = await readObserverCursor(this.options.storage, conversation);
+    const ledger = await readConversationLedger(this.options.storage, conversation);
+    const batch = ledger
+      ? ledgerEntriesAfterCursor(Object.values(ledger.entries), cursor, resolveContextCap("stageManager", undefined, config))
+      : { entries: [] as LedgerEntry[], next: cursor };
+    if (batch.entries.length === 0) {
+      await advanceObserverCursor(this.options.storage, conversation, batch.next);
+      return { status: "no_change", message: "No new messages since the last observer run." };
+    }
+    const [bots, waifus, store, directory] = await Promise.all([
+      readDiscordBotsFile(this.options.storage),
+      listWaifus(this.options.storage),
+      readMemoryStore(this.options.storage),
+      loadSubjectDirectory(this.options.storage)
+    ]);
+    const waifuByAuthor = new Map<string, string>();
+    for (const waifu of waifus) {
+      for (const id of resolveBotAuthorIds(waifu.botId, bots)) waifuByAuthor.set(id, waifu.id);
+    }
+    const participants = observerParticipants(batch.entries, (authorId) => waifuByAuthor.get(authorId));
+    const now = new Date();
+    // Only this user's DM-origin memories: the DM observer may never rewrite a server memory with
+    // private content (or another user's DM).
+    const existing = existingMemoriesFor(
+      store.memories.filter((record) => record.origin.dm === true && record.origin.userId === conversation.userId),
+      { allowedWaifuIds, participants, now }
+    );
+    const input = renderObserverInput({ participants, memories: existing, entries: batch.entries, nameFor: subjectNameResolver([directory]) });
+    const rawOps = await pipeline.decideStageManagerObservations({
+      modelId: config.modelId,
+      messages: [],
+      observerInput: input.text,
+      ...(config.prompt.trim() ? { systemPrompt: config.prompt } : {}),
+      availableWaifuIds: allowedWaifuIds,
+      params: config.params
+    });
+    const ops = parseRawObserverOps(rawOps as unknown[]);
+    const applyContext = {
+      handles: input.handles,
+      memoryHandles: input.memoryHandles,
+      allowedWaifuIds,
+      origin: { dm: true as const, userId: conversation.userId },
+      conversationKey: conversationKey(conversation)
+    };
+    let result: ApplyObserverOpsResult = { memories: [], queued: [], history: [], applied: 0, skipped: 0 };
+    if (ops.some((op) => op.op !== "add" || op.importance >= 4)) {
+      await updateMemoryStore(this.options.storage, (current) => {
+        result = applyObserverOps(current.memories, ops, { ...applyContext, now });
+        return { ...current, memories: result.memories };
+      });
+    } else {
+      result = applyObserverOps(store.memories, ops, { ...applyContext, now });
+    }
+    if (result.queued.length > 0) {
+      const queued = result.queued;
+      await updatePendingObservations(this.options.storage, (current) => ({ ...current, observations: [...current.observations, ...queued] }));
+    }
+    await advanceObserverCursor(this.options.storage, conversation, batch.next, now);
+    // DM outcomes are not routed to debug channels or the guild observer history (spec 9.1.3).
+    this.options.logger.info("DM observer finished", {
+      waifuId: conversation.waifuId,
+      ops: ops.length,
+      applied: result.applied,
+      queued: result.queued.length
+    });
     return { status: result.applied > 0 ? "updated" : "no_change" };
   }
 

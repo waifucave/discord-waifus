@@ -1531,6 +1531,73 @@ everything`); cache-trust bugs (tail check, untrusted boot); intent changes re-l
 during downtime (accepted); thread inheritance on upgrade (O2); DM memories surfacing in servers
 (O4).
 
+### 9.10 As built (Phase 5)
+
+Tasks A (cache/directory), B (per-guild history, `enabled` flags) and C (edits/deletes/threads,
+see the note in 9.5) built 9.3–9.5 and 9.7 as specified. Wave 2 (DMs, rate limit, debounce,
+forget) deviates as follows; later phases build on this.
+
+- **Debounce.** `ActiveChannelRun` has no `phase` field: "sending" is read from the executor
+  (`activeWaifuSendChannels`), everything before it counts as pre-send. A `RuntimeOrchestrator`
+  built without a `debounce` option fires at once (`serverMs`/`dmMs` 0); the backend always passes
+  the config (defaults 1200/4000/1500/8000). A burst run's reason is `message-burst:<newest id>`
+  and it keeps `trigger_deleted` working. Timer wakes are dropped in the retrigger timer callback
+  while a burst is pending; pause cancels bursts, shutdown persists them as `shutdown` wakes.
+- **DM transport.** The DM connection scope is `dm:<waifuId>` (one waifu per DM bot), not
+  `dm:<botId>`. DM bots also get `Partials.Reaction` (reaction events on uncached DM messages).
+  The facade gained `dmIntentStatus()` for the runtime status. `reconcileDmIntents()` also re-logs a
+  bot whose DM waifu changed (relink), since the feed is bound to the waifu at login. Waifu
+  create/update/delete and link-bot call it; `PUT /api/discord-bots` still reloads everything.
+- **DM inbound while paused** records `lastInbound*`/`dmChannelId` (never a run), so the resume
+  scan finds a first DM that arrived during the pause.
+- **DM state.** `DmState` gained optional `userDisplayName` (place name and `GET /api/dms`).
+  `lastRepliedMessageId` is set for every handled outcome (sent, tool_only, empty, blocked, and a
+  rate-limited trigger), so boot never re-answers them; `lastReplyAt` only when a chunk was sent.
+  An undeliverable conversation (50007, also on the limit notice) is skipped by runs and the resume
+  scan until the next inbound clears `undeliverableSince`.
+- **Rate limit.** "No notice in the current limited period" = no `limitNoticeSentAt` at or after
+  the newest counted reply. With `rateLimit: null` timestamps older than a day are pruned. The
+  notice is sent through `sendDirectMessage` like a reply (it lands in her transcript) and is never
+  counted.
+- **DM observer.** `MemoryJobs.noteDmActivity` / `startDmObserverRun` run a separate observer over
+  the DM ledger (no server flags, no stage-manager history, no debug-channel routing);
+  `requestObserveThrough` works for DMs, so the compaction handoff covers DMs too. DM edits and
+  deletes go to the DM ledger through `applyMessageEvent` (never a trigger).
+- **Forget floor (review C1).** The bot cannot delete the user's DM messages, so a forget (either
+  scope, and forget-user) writes `floorMessageId` (the snowflake of the forget time) into the
+  limits file, which forgetting keeps (forget-user removes `user/dms/<userId>/` and writes back a
+  limits file holding only the floor). `ConversationMessageCache.setFloor` (set by the DM runner
+  before every prepare) starts reads at the floor and drops anything at or below it, so reconcile,
+  the ledger, the observer (which reads the ledger) and the resume tail check never see the old
+  chat again.
+- **Forget.** The image cache is not tagged by conversation, so both scopes purge the image keys
+  found in the DM ledger, with their OCR text, before the ledger goes (`ContextRuntime.purgeImageKeys`
+  with a live runtime, the on-disk caches otherwise); `cachedImages` counts only images that were
+  cached. `forget-user` returns `dmLimits` as well; its `ledgers` count excludes the user's own DM
+  ledgers (deleted whole, counted in `dmContexts`). With a live runtime a forget first aborts the DM
+  slot, cancels the DM observer's idle timer and waits for an observer run in flight, and drops the
+  cached DM messages. The DM `/forget` confirm UI (ephemeral reply, 30-second buttons) lives in the
+  gateway; the runtime only receives the confirmed request.
+- **DM provenance (review I2/I3).** DM memories carry `origin: { dm: true, userId }`. Forget deletes
+  by subject or by that origin. The DM observer is shown (and so can only update or merge) this
+  user's DM-origin memories, and its updates keep the DM origin; a guild observer is never shown a
+  DM-origin memory; any observer or dream merge with a DM-origin source keeps the DM origin. The
+  same-origin snapshot boost in a DM counts only that user's own DM.
+- **Runner details (review).** The DM semaphore hands a released slot to the oldest live waiter and
+  drops aborted waiters. A fire re-checks the slot after every wait and claims it synchronously, so
+  two messages during one generation start one rerun. An aborted run never sends the limit notice.
+  The DM `generateValidatedWaifuReply` call passes `redactPreviews`, so no reply text reaches the
+  logs. Boot skips a conversation whose newest message is already hers (a crash after sending).
+- **Server debounce (review).** While any channel of a guild has a pending burst, the
+  preempted-channel retrigger is held (the burst's run would preempt it again); the burst run's end,
+  or `/stop` cancelling the burst, releases it.
+- **API.** `assertSafeId`/`assertSnowflakeId` moved to `src/api/ids.ts`. `GET /api/runtime`
+  reports `discord.dm` without a live runtime too (eligibility, `intentActive: false`). The
+  assistant's `forget_dm` card uses category `dm_forget`.
+- **Not built here.** The dashboard Cast editor DM controls (Phase 7, §11.3), the settings
+  registry entries and `waifus dm list|show|forget` (Phase 6, §10). Intents, real DM delivery,
+  50007 and the `/forget` buttons are covered by fakes only and need a live Discord check.
+
 ## 10. Phase 6 — Settings registry, CLI, HTTP and help (detailed design)
 
 Implements D4 and I17 on top of Phases 4–5. Corrections to the original inventory: `--help` no
