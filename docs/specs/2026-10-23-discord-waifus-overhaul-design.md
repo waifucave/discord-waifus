@@ -1600,7 +1600,7 @@ forget) deviates as follows; later phases build on this.
 
 ## 10. Phase 6 — Settings registry, CLI, HTTP and help (detailed design)
 
-> **Superseded (2026-10-24)** by `2026-10-24-living-cast-design.md` §13. The orchestrator, stage-manager and
+> **Superseded (2026-10-24)** by `2026-10-24-living-cast-design.md` §14. The orchestrator, stage-manager and
 > gateway concepts below no longer exist; the settings-registry, help and CLI mechanism is reused there.
 
 Implements D4 and I17 on top of Phases 4–5. Corrections to the original inventory: `--help` no
@@ -1942,7 +1942,7 @@ help payload size (memoized, < 64 KiB index); redaction exemption scoped and tes
 
 ## 11. Phase 7 — Dashboard and assistant (detailed design)
 
-> **Superseded (2026-10-24)** by `2026-10-24-living-cast-design.md` §13. The orchestrator, stage-manager and
+> **Superseded (2026-10-24)** by `2026-10-24-living-cast-design.md` §14. The orchestrator, stage-manager and
 > gateway concepts below no longer exist; the settings-registry, help and CLI mechanism is reused there.
 
 Covers B15–B20, B26, I3, I4, I13, I14 and the UI for every Phase 4–6 setting. Consumes: Phase 1

@@ -1,12 +1,12 @@
 # Living cast — design spec
 
-Status: draft for owner review, 2026-10-24. Base: app `main` at 65fcbab (overhaul Phases 1–5
-merged, not released). This spec **supersedes Phases 6 and 7** of
+Status: revision 2 (after the independent spec review), 2026-10-24. Base: app `main` at 65fcbab
+(overhaul Phases 1–5 merged, not released). This spec **supersedes Phases 6 and 7** of
 `2026-10-23-discord-waifus-overhaul-design.md` and replaces the orchestrator, the stage-manager
-observer and dream, the LLM reviewer and the `@waifucave/gateway` dependency. Everything the
-overhaul built for the Discord layer (conversation cache, guild directory, ledger and refs, message
-rendering, edits/deletes/threads, DM transport, debounce, rate limits, usage ledger, compaction)
-is reused.
+observer and dream, the LLM reviewer, the conversation ledger as a prompt source, and the
+`@waifucave/gateway` dependency. The Discord layer the overhaul built (conversation cache, guild
+directory, refs, message rendering, threads, DM transport, debounce, rate limits, usage ledger,
+compaction service, image fetcher, OCR) is reused.
 
 There are no plan documents. Task breakdowns live in implementer briefs.
 
@@ -18,7 +18,7 @@ one continuous life**. She is asleep until something wakes her (a mention, a DM,
 reminder she scheduled, or the addressee detector deciding a message is probably for her). A wake
 arrives as a phone-style notification. She then decides what to do with her own tools: read the
 chat, answer, react, write a note, look something up, set a reminder, or do nothing. Nobody forces
-her to answer. Her text output is private thought; only `send_message` reaches people.
+her to answer. Her text output is private thought; only `send_message` and `react` reach people.
 
 ## 2. Owner decisions (2026-10-24)
 
@@ -26,49 +26,54 @@ her to answer. Her text output is private thought; only `send_message` reaches p
 |---|---|
 | D1 | The orchestrator is replaced everywhere, not offered as a mode. Director prompts, decision notes, directive budget, loop detector and deterministic mode retire. |
 | D2 | A human message that addresses nobody goes through an **addressee detector** built from the one-shot / Laya native-choice call: for a waifu → wake her; for another human → ignore; unclear → wake one waifu chosen at random, weighted by her schedule. |
-| D3 | Waifus are never forced to answer. Several waifus answering at once is fine. `WatchFor` takes several bindings (rooms, people, words, "the next message") and an expiry the waifu chooses. |
+| D3 | Waifus are never forced to answer. Several waifus answering at once is fine. `watch_for` takes several bindings (rooms, people, words, "the next message") and an expiry the waifu chooses. |
 | D4 | One life per waifu. What she learns in DMs and servers shares one memory; users accept that. |
 | D5 | Web search through Exa, with configurable caps. Junk and manipulation are handled by her character (she is her own person and obeys nobody) plus hard caps. Users are never told about her sandbox. |
 | D6 | The model catalog moves to winter-agent-sdk (which we own). Curated list, nothing above $10 per million output tokens. No temperature, top_p, stop sequences, penalties or JSON-schema output. |
 | D7 | Wakes carry **metadata plus a ~60-character preview**, never full content. She pulls context with `read_messages`. Her prompt says to answer only when it is relevant. |
 | D8 | Memory works like Claude Code's `MEMORY.md`: an index she maintains, linking to deep-dive note files. Her prompt actively encourages writing notes. A nightly maintenance pass checks contradictions and tidies. |
-| D9 | Winter **option B**: winter's provider runtime and catalog replace the gateway, under our own agent loop and context engine. Winter's full agent runtime (option A) is revisited later. |
-| D10 | Sleep defers **every** wake, DMs included, until her wake time. |
+| D9 | Winter **option B**: winter's provider runtime and catalog replace the gateway, under our own agent loop. Winter's full agent runtime (option A) is revisited later. |
+| D10 | Sleep defers **every** wake, DMs included, until her wake time. (Clarified in §4.5: the owner's own manual wake is the one exception.) |
 | D11 | She may start conversations in channels where she is cast and in DMs with people who have DMed her before. She never cold-DMs anyone. |
-| D12 | Forget is a best-effort scrub: delete DM history, rebuild her life context without it, clean her notes, then verify the person's names and id are gone. |
+| D12 | Forget is a best-effort scrub: delete DM history, rebuild her life context without it, clean her notes, then verify the person is gone. |
 | D13 | Phases 4 and 5 are merged to `main` without a release; Living cast builds on top. |
+| D14 | Room loop guard **off** by default; no default daily budget; DM content hidden behind a reveal toggle in the dashboard; ship as **3.0.0** together with Phases 4–5. |
 
 ## 3. Architecture
 
 ```
- Discord ──► House bot (listener, slash commands) ──► Intake ──► Wake router ──► per-waifu Wake queue
-             Waifu bots (send; DM intake)              │            │  ▲                 │
-                                                       │            │  └─ Watch index    ▼
-                                                       ▼            └─ Addressee        Life loop (one per waifu)
-                                       Conversation cache + ledger     detector         │  model calls ─► ModelClient (winter)
-                                       (read_messages backend)                          │  tools ─► Discord / Notes / Search / Scheduler
-                                                                                        ▼
-                                                                         Life store (epochs, log, notes, schedule)
+ Discord ──► House bot (listener, slash commands) ──► Intake ──► Wake router ──► per-waifu wake queue
+             Waifu bots (send, react; DM intake)        │            │  ▲                 │
+                                                        │            │  └─ Watch index    ▼
+                                                        ▼            └─ Addressee        Life loop (one per waifu)
+                                        Conversation cache + refs       detector         │  model calls ─► ModelClient (winter)
+                                        (read_messages backend)                          │  tools ─► Discord / Notes / Search / Scheduler
+                                                                                         ▼
+                                                                          Life store (epochs, log, notes, schedule, watches)
 ```
 
-Components and where they live:
-
-| Component | Module (new unless noted) | Notes |
+| Component | Module | Notes |
 |---|---|---|
-| House bot | `src/discord/client.ts` (existing orchestrator bot) | Renamed "House bot" in the UI. Same intents; it is the only bot that reads guild messages. |
-| Intake | `src/orchestration/runtime.ts` → `src/life/intake.ts` | Turns Discord events into wake candidates. |
-| Wake router | `src/life/wakeRouter.ts` | Mention/role/everyone/reply/name/watch rules, detector hand-off, sleep deferral. |
-| Addressee detector | `src/life/detector.ts` (from `oneShot/`) | Native-choice call; same protocol, catalog and Laya worker. |
+| House bot | `src/discord/client.ts` (existing orchestrator bot) | Renamed "House bot" in the UI. Same intents; the only bot that reads guild messages. |
+| Intake | `src/life/intake.ts` (from `src/orchestration/runtime.ts`) | Turns Discord events into wake candidates. |
+| Wake router | `src/life/wakeRouter.ts` | Direct reasons, watches, detector hand-off, guards, sleep deferral. |
+| Addressee detector | `src/life/detector/` (protocol, catalog and Laya worker moved from `oneShot/`) | Native-choice call, new mapping. |
 | Wake queue | `src/life/wakeQueue.ts` | Persistent, per waifu, coalescing. |
-| Life loop | `src/life/lifeLoop.ts` | The agent loop, one turn at a time per waifu. |
-| Life store | `src/life/lifeStore.ts` | Epoch state, append-only life log, read cursors. |
-| Life harness | `src/life/lifeHarness.ts` | System prompt, header, tail. |
+| Life loop | `src/life/lifeLoop.ts` | The agent loop. |
+| Life store | `src/life/lifeStore.ts` | Epoch state, append-only log, read cursors, handle map, intents. |
+| Life harness | `src/life/lifeHarness.ts` | System prompt and time lines. |
 | Tools | `src/life/tools/*.ts` | §6. |
 | Notes | `src/life/notes.ts` | Virtual sandbox on disk. |
-| Scheduler | `src/life/scheduler.ts` | Her reminders and nightly maintenance. |
+| Scheduler | `src/life/scheduler.ts` | Her reminders, nightly maintenance, boot catch-up. |
 | Search | `src/life/search.ts` | Exa client with budgets. |
-| Model client | `src/models/*` | winter provider runtime + curated catalog (§9). |
-| Context engine | `src/orchestration/context/*` (existing) | Ledger, refs, rendering, compaction service, cache-control builder — reused, generalised (§5.4). |
+| Model client | `src/models/*` | winter provider runtime and curated catalog (§9). |
+| Reused | `src/discord/*`, `src/orchestration/context/{refs,messageRender,timeFormat,tokens,images}.ts`, the compaction service (generalised), `src/orchestration/dm/{rateLimit,dmStore,dmForget}.ts`, `debounce.ts`, `usageLedger.ts`, `ocr.ts` | |
+
+**Ledger.** The Phase 4 conversation ledger existed to freeze rendered bodies for prefix-stable
+per-conversation prompts. In Living cast every tool result is frozen in her life log instead, so
+the ledger is no longer a prompt source. `read_messages` renders from the conversation cache's
+current messages. The per-conversation ref table (`refs.json`) stays, so `#k3` names the same
+message for every waifu. Ledger files are archived by migration (§11.2).
 
 ## 4. Waking
 
@@ -76,131 +81,151 @@ Components and where they live:
 
 | Reason | Trigger | Notes |
 |---|---|---|
-| `mention` | Her bot user is mentioned, or a reply targets one of her messages | Immediate (after the per-waifu coalesce window, §4.6). |
-| `name` | Her name, display name or server nickname appears as a whole word in a human message | Same as `mention`. Not applied to messages written by other waifus. |
-| `role` | A role her bot member holds is mentioned | Needs her member roles per guild (§10.2). |
-| `everyone` | `@everyone` / `@here` in a channel where she is cast | Every cast waifu in that channel is woken, each after a random 0–20 s stagger so later ones can see earlier replies. |
+| `mention` | Her bot user is mentioned, or a reply targets one of her messages | Direct. |
+| `name` | Her name, display name or server nickname (each at least 3 characters) appears as a whole word in a human message | Direct. Off when `waifu.wakeOnName` is false (for names that are common words). Never applied to messages written by waifus. |
+| `role` | A role her bot member holds is mentioned | Direct. |
+| `everyone` | `@everyone` / `@here` in a channel where she is cast | Direct. |
 | `watch` | One of her `watch_for` bindings matched (§6.5) | Carries her own note. |
-| `dm` | A DM to her bot, 30 s after the user's last message | The timer resets on every new message; a 3-minute cap (`discord.debounce.dmMaxWaitMs`) stops a never-ending typer from blocking it. |
-| `detector` | The addressee detector chose her, or chose "anyone" and the weighted draw picked her | §4.3. |
-| `reminder` | One of her `schedule_wake` entries fired | Carries her own note. |
-| `morning` | Her sleep window ended and wakes were deferred | One batched summary (§4.5). |
-| `owner` | `/wake` slash command, dashboard or CLI | Carries the owner's note. |
+| `dm` | A DM to her bot, 30 s after the user's last message | Timer resets on each message; capped at `discord.debounce.dmMaxWaitMs` (default 180 s). |
+| `detector` | The addressee detector chose her, or chose "anyone" and the draw picked her | §4.3. |
+| `reminder` | One of her `schedule_wake` entries came due | Carries her own note. |
+| `morning` | Her sleep window ended with deferred wakes | One batched summary (§4.7). |
+| `owner` | `/wake`, the dashboard or the CLI | Carries the owner's note. Bypasses sleep and budget (§4.5). |
 
-Messages written by other waifus only wake her through `mention`, `role`, `everyone` (rare; waifu
-output cannot contain `@everyone`), reply-to-her, or `watch`. They never go to the detector, and
-the `name` rule does not apply to them, so two waifus saying each other's names cannot loop.
+**Staggering.** When one message wakes several waifus through `everyone` or a shared `role`, each
+is woken after a random 0–20 s delay so later ones can see earlier replies.
 
-Messages in channels where she is not cast never wake her, and she cannot read or send there.
-Paused servers produce no wakes. A paused app produces none at all.
+**Waifu authors.** Messages written by other waifus only wake her through `mention`, `role`,
+reply-to-her and `watch`. They never reach the detector, and the `name` rule never applies to
+them. Her own messages never wake her.
 
-### 4.2 Intake rules
+**Scope.** Messages in channels where she is not cast never wake her, and she cannot read or send
+there. A paused server produces no wakes; a paused app produces none at all.
 
-Per accepted guild message (human or configured waifu bot, cast channel or tracked thread),
-`intake` computes wake candidates in this order and stops adding `detector` candidates once any
-waifu has a direct reason:
+### 4.2 Intake
 
-1. Direct reasons for each cast waifu: `mention`, reply-to-her, `role`, `everyone`, `name`.
-2. Watch matches for every waifu with an active binding on that place.
-3. If the author is human and step 1 produced no candidate: hand the burst to the detector (§4.3).
+Per accepted guild message (human or configured waifu bot, in a cast channel or tracked thread):
 
-Bursts: the existing channel debounce (`discord.debounce.serverMs` 1200 / `serverMaxWaitMs` 4000)
-applies to the **detector only**. Direct reasons go straight to the wake queue, which coalesces on
+1. **Direct reasons** for each cast waifu: `mention`, reply-to-her, `role`, `everyone`, `name`.
+2. **Watches**: every waifu with an active binding on that place (§6.5).
+3. **Detector**: if the author is human and no message in the current burst produced a direct
+   reason for anyone, the burst goes to the detector (§4.3).
+
+Bursts: the channel debounce (`discord.debounce.serverMs` 1200 / `serverMaxWaitMs` 4000) applies to
+the **detector only**. Direct reasons and watches go straight to the wake queue, which coalesces on
 its own (§4.6).
 
 Edits: an edit that adds a mention of her to a human message less than 2 minutes old counts as a
-`mention` (the existing `editAddsWaifuMention` rule). Other edits and deletes never wake anyone.
+`mention` (the existing rule), once. Other edits and deletes never wake anyone (§10.3).
 
 ### 4.3 Addressee detector
 
-The detector answers one question about the newest human burst in a channel: who is it for?
+One question about the newest human burst in a channel: who is it for?
 
-- **Choices**: `waifu_<i>` for each cast waifu in that channel (at most 7 for Laya, 17 otherwise,
-  as today), `human` (addressed to another person), `anyone` (open to the room), `none` (not
-  conversational: a bot command, a link dump, a reaction-only line).
-- **State** (JSON, the existing one-shot state shape, trimmed): `date`, `now`, the cast list
-  (`option`, `id`, `names`, persona ≤300 chars), and `chronologicalChat` with the last 12 messages
-  (OCR text included, capped at 8,000 characters, newest kept).
+- **Choices**: `waifu_<i>` for each cast waifu in that channel (at most 7 for Laya, 17 otherwise),
+  `human` (addressed to another person), `anyone` (open to the room), `none` (not conversational:
+  a bot command, a link dump, a reaction-only line).
+- **State** (JSON, the one-shot state shape trimmed): `date`, `now`, the cast (`option`, `id`,
+  `names`, persona ≤300 chars) and `chronologicalChat` with the last 12 messages (OCR text
+  included, at most 8,000 characters, newest kept).
 - **Mapping**:
-  - `waifu_<i>` → wake her with reason `detector`.
+  - `waifu_<i>` → wake her (`detector`).
   - `anyone` → draw one cast waifu, weighted by availability (awake and free ×3, busy ×1, asleep
-    ×0) and by how long since she last spoke in that place (longer is likelier). A draw of nobody
-    (everyone asleep) ends there.
+    or over budget ×0) and by time since she last spoke in that place (longer is likelier). An
+    empty draw ends there.
   - `human` / `none` → nothing.
-- **Targets**: the existing one-shot catalog and protocol (`oneShot/catalog.ts`,
-  `oneShot/protocol.ts`, `oneShot/laya.ts`): OpenAI decisions, OpenRouter decision models, local
-  Laya. One global target in `detector.target`, with a per-server override. Each call writes one
-  usage line with purpose `detector`.
-- **Fallback when no target is configured or the call fails**: if the burst is a question or names
-  nobody and the room has been quiet for 10 minutes, behave as `anyone`; otherwise do nothing. Log
-  the failure; never retry in a loop.
-- **History**: the last 300 detector results per guild in
-  `user/servers/<guildId>/detector-history.json` (`{at, channelId, burstMessageIds, choice,
-  probabilities, woke?: waifuId}`), for the dashboard and the benchmark.
-- **Benchmark**: the decision benchmark (`scripts/decision-benchmark/`) is repurposed. New case
-  groups: addressed-by-name, reply-to-waifu, human-to-human, open question, link dump, multilingual,
-  ambiguous. It measures exact-choice accuracy, calibration (Brier/ECE) and latency per target.
+- **Targets**: the existing native-choice catalog and protocol (OpenAI decisions, OpenRouter
+  decision models, local Laya). One global target `detector.target`, plus a per-server override.
+  Each call writes one usage line with purpose `detector`.
+- **Without a target, or on failure**: treat the burst as `anyone` only when it is the first human
+  message in that place for 10 minutes or ends with a question mark; otherwise do nothing. Log the
+  failure; never retry in a loop.
+- **History**: the last 300 results per guild in `user/servers/<guildId>/detector-history.json`
+  (`{at, channelId, burstMessageIds, choice, probabilities, woke?}`).
+- **Benchmark**: `scripts/decision-benchmark/` is repurposed with new case groups
+  (addressed-by-name, reply-to-waifu, human-to-human, open question, link dump, multilingual,
+  ambiguous), measuring exact-choice accuracy, calibration (Brier, ECE) and latency per target.
 
-### 4.4 Rate limits and guards on wakes
+### 4.4 Guards
 
-- **DM rate limit** (existing, per user, per waifu): while a user is limited, DM wakes from that
-  user are dropped and the fixed notice (`renderLimitNotice`) is sent once per limited period, with
-  no model call. Her own DM sends count toward the limit.
-- **Daily budget** (new, per waifu, `life.dailyBudgetUsd`, default `null` = unlimited): once her
-  usage-ledger cost for the local day reaches it, wakes are deferred to the next local day exactly
-  like sleep, except `owner` wakes.
-- **Room loop guard** (new, `life.maxWaifuOnlyRun`, default 0 = off, owner decision): when set, after that many
-  consecutive messages in one place written only by waifus, waifu-authored messages stop producing
-  `mention`/`watch` wakes in that place until a human writes there again. This is a cost backstop,
-  not a turn-taking rule.
+Evaluated in this order for every wake candidate:
+
+1. **Paused** server or app: drop.
+2. **DM rate limit** (existing, per user per waifu, `waifu.dm.rateLimit`): a DM wake from a limited
+   user is dropped and the fixed limit notice is sent once per limited period (no model call).
+   A "reply" for the limit is one turn that sent at least one message to that user.
+3. **Per-user wake limit** (new, guilds): at most `life.maxWakesPerUserPerHour` (default 20) direct
+   or detector wakes per user per waifu; the excess is merged into one queued line ("+N more from
+   Kevin") instead of starting turns.
+4. **Sleep**: defer (§4.5).
+5. **Daily budget** (`waifu.life.dailyBudgetUsd`, default none): when her cost for the local day
+   reaches it, defer to the next local day.
+6. **Room loop guard** (`life.maxWaifuTriggeredTurns`, default 0 = off): when set, after that many
+   turns in one place woken by waifu-authored messages since the last human message there, further
+   waifu-authored messages in that place stop producing wakes. It limits wakes only; it never
+   blocks a send.
+
+`owner` wakes skip steps 3–6.
+
+Cost note for the owner: with the loop guard off, two waifus that keep replying to each other wake
+each other indefinitely; only their own judgement stops them. The usage dashboard (§14) shows this
+per place.
 
 ### 4.5 Sleep
 
-Her availability (`waifu.availability.sleep`, busy blocks) stays as configured today.
+Availability (`waifu.availability.sleep`, busy blocks) stays as configured today.
 
-- While she is asleep, **every** wake is deferred (D10), including DMs, reminders, watches and
-  detector picks. Deferred wakes are kept in her wake queue with `deferredUntil`.
-- At the end of her sleep window she receives one `morning` notification summarising everything
-  deferred, grouped by place (§4.7). The individual entries are not replayed.
-- While she is busy, wakes are delivered normally; the notification line says she is busy and she
-  decides.
-- A DM user who writes while she sleeps gets nothing until she wakes (no auto-reply). The owner can
-  set `waifu.dm.sleepNotice` (≤300 chars, empty = none) to send a fixed one-time "asleep" message,
-  no model call.
+- While she is asleep, every wake except `owner` is deferred, including DMs, reminders, watches and
+  detector picks (D10). The owner's manual wake goes through so the owner can test her.
+- At the end of her sleep window she receives one `morning` notification (§4.7).
+- While she is busy, wakes are delivered normally; the notification says she is busy.
+- `waifu.dm.sleepNotice` (≤300 chars, empty = none): when a DM wake is deferred for sleep, this
+  fixed text is sent once per sleep window per user, recorded in that user's limits file
+  (`sleepNoticeSentFor: <window start ISO>`). It is an automatic notice: no model call, not counted
+  by the rate limit, rendered in her `read_messages` as `[auto] …`.
 
-### 4.6 Wake queue and coalescing
+### 4.6 Wake queue
 
-- One persistent queue per waifu: `user/waifus/<id>/life/wakes.json`
-  (`{entries: [{id, reason, place?, fromUserId?, messageId?, preview?, note?, at, deferredUntil?}]}`,
-  capped at 500 entries; oldest dropped with a warning).
-- When she is idle and a wake arrives, a turn starts after a **2-second coalesce window**, so a
-  burst of mentions becomes one turn.
-- If she is mid-turn, new wakes are folded into the next model call after the current tool round,
-  as an extra text block (`<notifications>`) after the tool results. She is never interrupted
-  mid-call.
-- Wakes for the same place merge into one line with a count.
-- On shutdown the queue is persisted as is; on boot non-deferred entries start a turn after a 5 s
-  stagger per waifu.
+- One persistent queue per waifu: `user/waifus/<id>/life/wakes.json`.
+  - `immediate`: `[{id, reason, placeKey?, fromUserId?, messageId?, preview?, note?, at}]`, at
+    most 200; beyond that, entries for the same place merge into counters.
+  - `deferred`: per-place counters (`{placeKey → {mentions, messages, dms, detector, fromUserIds}}`)
+    plus the full list of deferred reminders and watch matches with their notes. Never dropped.
+- When she is idle, a turn starts after a **2-second coalesce window**.
+- During a turn, new wakes are folded into the next model call after the current tool round
+  (§5.2). She is never interrupted mid-call.
+- Entries for one place merge into one line with the reasons joined (`mention, watch`).
+- Shutdown persists the queue. Boot catch-up is §5.7.
 
 ### 4.7 Notification format
 
-Rendered as one text block in a user turn:
+One text block in a user turn, followed by the time line (§5.4):
 
 ```
-<notifications at="Sat 24 Oct 14:02">
+<notifications>
 - mention · Bake Club › #general · from Kevin · 3 unread · "aria are you coming saturday? we need someo…"
 - dm · Kevin · 2 unread · "hey quick question about the recipe you…"
 - reminder · "ask Kevin how the exam went" (you set this Tue 18:00)
-- watch · Bake Club › #recipes · "brownie" · from Mina · "anyone have a good brownie rec…" (your note: "Mina wanted brownie tips")
+- watch · Bake Club › #recipes · "brownie" · from Mina · "anyone have a good brownie rec…" · your note: "Mina wanted brownie tips"
 </notifications>
 ```
 
-- Preview: the triggering message rendered like a transcript body (mentions as names, attachments as
-  `[image]`/`[file: …]`), first 60 characters, then `…`.
-- `unread`: messages in that place newer than her read cursor (§5.5).
-- `morning` renders as `- while you were asleep · Bake Club › #general: 2 mentions, 14 messages ·
-  DMs: Kevin (3), Mina (1) · 1 reminder · 2 watches matched`.
-- Places use the handles from §6.1 so she can pass them straight to tools.
+- Preview: the triggering message rendered as a transcript body (mentions as names, attachments as
+  `[image]` / `[file: …]`), first 60 characters, then `…`.
+- `unread`: messages in that place newer than the higher of her read cursor and the forget floor.
+- `morning`:
+
+```
+<notifications>
+- while you were asleep (23:00–07:00):
+  · Bake Club › #general: 2 mentions, 14 messages
+  · DMs: Kevin (3 messages), Mina (1)
+  · reminder (Sat 02:00): "check if the bake sale flyer is up"
+  · watch matched · Bake Club › #recipes · "brownie" · your note: "Mina wanted brownie tips"
+</notifications>
+```
+
+- Places use the handles from §6.1.
 
 ## 5. The life
 
@@ -210,121 +235,167 @@ Rendered as one text block in a user turn:
 
 | File | Contents |
 |---|---|
-| `state.json` | `LifeState`: `{epoch, epochStartedAt, status: idle|turn|deferred, currentTurn?: {id, startedAt, rounds, wakeIds}, summary: string|null, memoryIndexSnapshot: string, placesSnapshot: string, lastBreakpoint, tokenCalibration, lastCompaction?, interruptedTurnId?}` (revisioned). |
-| `log/<epoch>.jsonl` | Append-only life log for the epoch: one line per message exactly as sent to or returned by the model (§5.3). |
-| `reads.json` | Per-place read cursors `{placeKey → {lastReadMessageId, at}}`. |
+| `state.json` | `LifeState` (revisioned): `{epoch, epochStartedAt, status: idle|turn, currentTurn?: {id, startedAt, rounds, wakeIds}, summary: string|null, systemSnapshot: {harnessHash, memoryIndex, places}, modelRoute, imageModes: Record<imageKey, {mode:"inline"}|{mode:"text", text}>, inlineImageCount, readMessageIds: string[] (≤2000, this epoch), tokenCalibration, lastCompaction?, compactionPausedUntil?}` |
+| `log/<epoch>.jsonl` | Append-only life log (§5.3). |
+| `intents.jsonl` | Side-effect intents (§5.7). |
+| `reads.json` | Read cursors `{placeKey → {lastReadMessageId, at}}`; cursors only move forward. |
+| `handles.json` | Place handle map (§6.1). |
 | `wakes.json` | Wake queue (§4.6). |
-| `watches.json` | Active watches (§6.5). |
-| `schedule.json` | Her reminders (§6.6). |
+| `watches.json` | Watches (§6.5), stored with placeKeys and user ids. |
+| `schedule.json` | Reminders (§6.6). |
+| `maintenance.jsonl` | Maintenance and scrub reports. |
 
-Old epochs' logs are kept for 7 days for debugging, then deleted.
+Old epoch logs are kept 7 days, then deleted (except after a forget, §7.5). A per-waifu lock
+(`life:<id>`) serialises turns, compaction, maintenance and forget scrubs.
 
 ### 5.2 Turn lifecycle
 
 ```
-idle ──wake──► (coalesce 2 s) ──► turn: loop {
-                                     build prompt (§5.4) → model call (ModelClient, abortable)
-                                     append assistant message to log
-                                     if no tool calls → end turn
-                                     execute tool calls (sequentially, in order) → append tool results
-                                     fold in any new wakes (§4.6)
-                                     stop if rounds ≥ life.maxToolRounds (12) or wall time ≥ life.maxTurnMs (180 s)
-                                   } ──► idle
+idle ──wake──► coalesce 2 s ──► turn:
+   append <notifications> user message (+ time line)
+   loop {
+     build request (§5.4) → ModelClient.call (abortable)
+     append the assistant message exactly as assembled (§5.3)
+     if finish = length and a tool call is truncated → reply to it with an error result ("your message was cut off; try shorter") and continue
+     if finish = refusal → end turn
+     if no tool calls → end turn
+     execute tool calls in order (§5.7 intents for side effects) → append one tool-results user message:
+        tool results (errors with is_error) + folded <notifications> for new wakes + time line
+     stop when rounds ≥ life.maxToolRounds (12) or wall time ≥ life.maxTurnMs (180 s)
+   }
+   unsent-reply check (below) → idle
 ```
 
-- One turn at a time per waifu. Different waifus run in parallel, bounded by
-  `life.maxConcurrentTurns` (default 4, the existing DM semaphore generalised).
-- When a turn hits a cap, the loop appends a final user note ("[system] turn ended: tool-round
-  limit") and goes idle; pending wakes start a new turn.
-- **Assistant text is private.** It is kept in her life log and never sent anywhere. Only
-  `send_message` and `react` act on Discord.
-- **Reasoning replay**: assistant messages are logged exactly as returned, including reasoning
-  blocks and their replay data, and replayed verbatim. This keeps tool loops valid on models that
-  require thinking blocks before `tool_use` (the Phase 4 C1 failure) and keeps the cached prefix
-  identical.
-- **Aborts**: owner pause, shutdown, a forget scrub on her (§7.5) and reset abort the in-flight
-  call. The partial turn is closed with "[system] interrupted" and logged. Pause and shutdown keep
-  the queue; resume re-queues the interrupted wakes.
-- A model error that is not an overflow ends the turn with a logged error line; the wakes are
-  re-queued once with a 60 s delay, then dropped with a warning.
+- One turn at a time per waifu; different waifus run in parallel, bounded by
+  `life.maxConcurrentTurns` (default from the old `discord.dm.maxConcurrentRuns`, 4).
+- **Private text.** Assistant text is kept in her log and never sent anywhere.
+- **Unsent-reply check.** If the turn included a direct wake (`mention`, `name`, `role`, `dm`,
+  `owner`), ended with assistant text and made no `send_message`, one extra round is run with
+  `[system] Nothing you wrote above was sent. If you meant to reply, use send_message; otherwise
+  just end.` At most once per turn. The live eval measures how often this fires (§12).
+- **Caps.** When a turn hits a cap, the loop appends `[system] turn ended: <limit>` and goes idle;
+  queued wakes start a new turn.
+- **Reasoning.** Assistant messages are stored with their reasoning blocks and provider state and
+  replayed verbatim (§5.3). Nothing already sent is ever changed (§5.4), which keeps replay valid on
+  models that bind thinking blocks to the exact prior conversation (Sonnet 5.5) and keeps tool
+  loops valid on models that require a thinking block before `tool_use`.
+- **Aborts.** Pause, shutdown, reset and a forget scrub abort the in-flight call. The open turn is
+  closed with synthetic results for any unanswered tool calls (`[interrupted]`, `is_error`) and a
+  `[system] interrupted` line. Pause and shutdown keep the queue.
+- **Errors.** A model error other than overflow ends the turn with a logged `[system] error: …`
+  line. The turn's wakes stay consumed; a follow-up turn starts after 60 s with `[system] your last
+  turn failed; the notifications above may still need you`, once. Notifications are not re-rendered.
+- **Configuration changes.** Any change to what part A contains (persona, style, schedule, custom
+  instructions, name, model route, tools offered) takes effect at the next turn boundary through a
+  compaction (§5.6), never by editing A in place. A model change runs that compaction with the
+  **old** model, then starts the new epoch on the new model.
 
-### 5.3 Life log shape
+### 5.3 Life log
 
-Each line is `{seq, at, kind, message}` where `kind` is `notifications | tool_results |
-assistant | system_note | compaction_boundary` and `message` is the provider-neutral chat message
-(winter `TurnRequest` message shape: role, content blocks, tool calls, tool results, reasoning).
-Images in tool results (from `read_messages`) are stored as cache keys plus mime type, never inline
-bytes; the builder resolves them through the existing image fetcher at build time and freezes them
-on first use, as the context engine does today.
+Each line: `{seq, at, kind, message}`.
+
+- `kind`: `notifications | tool_results | assistant | system_note | compaction_boundary`.
+- `message`: a winter `ProviderMessageLike` plus `origin` (route and model) plus opaque
+  `nativeState` (reasoning signatures, encrypted reasoning, replay data), exactly as assembled by
+  winter's stream assembler (W8). `nativeState` is never returned by any API.
+- Every build passes the log through winter's history renderer (`createHistoryRenderer`) before
+  `streamTurn`, so provider-state that does not match the current route is dropped by winter rather
+  than sent.
+- Images inside tool results are stored as `{placeKey, messageId, attachment: ImageRef}`, never as
+  bytes. The builder resolves them through the image fetcher and the frozen `imageModes` (§6.2).
+  Images referenced by the current epoch are pinned in the image cache (not evicted by TTL).
 
 ### 5.4 Prompt layout
 
-Reuses the Phase 4 rules: exactly one system message, append-only within an epoch, an ephemeral
-tail, at most four cache breakpoints.
+| Part | Content | Changes |
+|---|---|---|
+| System (one message, two system blocks) | Block A: life harness (§8), identity, persona, style, schedule, custom instructions. Block B: `<your_notes_index>` (her `MEMORY.md` as of epoch start, presented as her own notes, not instructions), `<life_so_far>` (compaction summary), `<places>` (her places at epoch start). | Per epoch only. |
+| Log | Every life-log message of the epoch, in order. | Append-only. |
 
-| Part | Content | Cached | Changes |
-|---|---|---|---|
-| A — system | Life harness (§8), identity, persona, style, schedule, `<memory_index>` (her `MEMORY.md` as of epoch start), custom instructions | yes | per epoch (config edits start a new epoch) |
-| B — epoch header (first user message) | `<life_so_far>` (compaction summary, absent in the first epoch) and `<places>` (her rooms and DMs at epoch start, with handles and who is usually there) | yes | per epoch |
-| Log | Every life-log message of the epoch, in order | rolling C, C_prev | append-only |
-| Tail | Text block appended to the last user message: `Now: Sat 24 Oct 2026 14:06 · you're awake` (or busy/asleep detail), a compaction warning near the threshold (§5.6), and on the first call of a turn nothing else | no | every call |
-
-Breakpoints: A, B, C (last log block) and C_prev (the block that carried the previous call's C),
-as in Phase 4. Placement needs winter work item W3 (explicit per-block markers); until W3 lands
-the builder falls back to winter's automatic layout (system blocks plus a rolling last-message
-marker) and the cache-hit targets in §12 apply only after W3.
-
-`promptCacheKey`: `life:<waifuId>:<epoch>`.
-
-The Phase 4 per-(conversation, agent) context states and their builder path retire for waifus
-(there is no orchestrator or stage manager left). The engine keeps the per-conversation ledger,
-refs, message rendering, image freezing, token estimation, calibration and the compaction service,
-which are generalised to work on a life log as well as a conversation (§5.6).
+- **Time lines are permanent.** Every user message the loop appends (`notifications`,
+  `tool_results`, system notes) ends with one text block like `[Sat 24 Oct 14:06 · awake]` (or
+  `· busy: bakery shift until 12:00`). When estimated tokens pass 0.85 × the compaction trigger, the
+  line adds `· your memory of today will be summarised soon; save anything worth keeping to your
+  notes`. Nothing is ever removed or rewritten, so the request through the previous call is always
+  a prefix of the next.
+- **Caching** uses winter's built-in layout: `systemBlocks` on every call (required for Anthropic
+  caching), a rolling marker on the last message and a lookback marker after more than 15 new
+  positions, with a 1-hour TTL on all markers (W3). `cacheKey`: `life:<waifuId>`.
+- **Context cap.** The compaction budget is `min(life.maxContextTokens (96,000), model window −
+  output reserve)`, so lives stay below long-context price tiers (Haiku 5.5 above 100K, GPT-6 above
+  272K).
+- Exactly one system message, always first.
 
 ### 5.5 Places and read cursors
 
-A **place** is a channel, thread or DM she can use. `placeKey` is the existing `ConversationKey`
-(`g_<guild>_<channel>` / `dm_<user>_<waifu>`). Handles for the model are in §6.1.
-
-`read_messages` advances her read cursor for that place to the newest message it returned.
-`unread` counts in notifications use that cursor. Her own sends advance it too.
+A **place** is a channel, thread or DM she can use, identified by `placeKey` (the existing
+`ConversationKey`: `g_<guild>_<channel>` / `dm_<user>_<waifu>`). `read_messages` and her own sends
+advance her cursor for that place; cursors never move backwards (reading older pages with `before`
+leaves them unchanged). A forget resets the DM cursor to the forget floor.
 
 ### 5.6 Compaction
 
-The Phase 4 compaction service, applied to the life:
+A life-specific planner on top of the Phase 4 compaction service (summarise call, failure pause,
+calibration). It does not reuse the conversation planner, which works on ledger cursors.
 
-- **Triggers**: estimated tokens ≥ `triggerRatio` (0.7) × the model's context budget, or ≥
-  `life.maxLogMessages` (400) log messages, or a provider `context_overflow`, or a manual compact,
-  or a forget scrub (§7.5).
-- **Same model, prefix reuse**: the summarize request is her normal request through C with the
-  same tools and reasoning settings, and the tail replaced by the compaction instruction.
+- **Triggers**, checked only between turns: estimated tokens ≥ `triggerRatio` (0.7) × the budget
+  (§5.4); log length ≥ `life.maxLogMessages` (400); a provider `context_overflow` (checked
+  mid-turn too); a manual compact; a configuration change (§5.2); a forget scrub (§7.5).
+- **Same model, prefix reuse**: the summarise request is her normal request with the same tools and
+  reasoning settings, plus one appended user message with the compaction instruction and a time
+  line. winter has no `toolChoice: none`; the instruction says "reply with text only". Tool calls in
+  the response are discarded; if there is no text, retry once without tools (one uncached call);
+  if that fails, fall back to truncation.
 - **Instruction** (first person): "Write notes for your future self about your life since the last
-  summary: what happened in each place, who you talked to and how it went, plans and promises,
-  open threads, things you meant to do. Anything that should last longer belongs in your notes —
-  this summary is replaced next time." Old deleted messages and forgotten people are listed for
-  omission.
-- **Kept window**: the last 3 complete turns (never splitting a tool call from its result).
-- **New epoch**: summary into B, `MEMORY.md` re-read into A, places re-listed in B, read cursors
-  untouched.
-- **Warning**: when estimated tokens pass 0.85 × the trigger, the tail adds "Your memory of today
-  will be summarised soon. Save anything worth keeping to your notes now."
-- **Failure handling**: as in Phase 4 (5-minute pause on failure, hard truncation fallback, one
-  overflow retry).
+  summary: what happened in each place, who you talked to and how it went, plans and promises, open
+  threads, things you meant to do. Anything that should last longer belongs in your notes; this
+  summary is replaced next time." It lists deleted messages and forgotten people for omission.
+- **Kept window**: the last 3 complete turns; a cut never separates a tool call from its result. A
+  mid-turn overflow keeps the open turn whole and summarises everything before it; if the open turn
+  alone is over budget, its oldest tool results are replaced by `[result omitted: too long]` in the
+  new epoch (the new epoch is a new prefix, so this is allowed).
+- **New epoch**: A rebuilt from current config, B with the new summary, `MEMORY.md` re-read and
+  places re-listed; `readMessageIds`, `imageModes` and `inlineImageCount` reset; read cursors kept.
+- **Config keys** that apply to lives: `compaction.enabled` (off → truncate without summary at the
+  same triggers), `compaction.triggerRatio`, `compaction.waitTimeoutMs`. `maxMessages` and
+  `keepRecent` apply only to the remaining conversation uses and are replaced for lives by
+  `life.maxLogMessages` and the 3-turn window.
+
+### 5.7 Crash, restart and catch-up
+
+- **Intents.** Before a side-effecting tool runs (`send_message`, `react`, `write_note`,
+  `edit_note`, `delete_note`, `schedule_wake`, `watch_for`, cancels), an intent line
+  `{turnId, toolCallId, tool, args digest, at}` is appended to `intents.jsonl`; after it completes,
+  a matching `done` line.
+- **Boot repair**, per waifu, before anything else:
+  - A log whose last assistant message has tool calls without results gets synthetic results. For
+    an intent without `done`: a `send_message` is checked against the conversation cache for her
+    own message with the same text after the intent time; found → `sent #ref (recovered)`,
+    otherwise `[interrupted] not sent`. Note and schedule writes are idempotent by content and are
+    re-checked on disk. Then `[system] interrupted by a restart`.
+  - `status: turn` is reset to idle.
+- **Catch-up**: messages that arrived while the host was down are fed through intake as if live,
+  for messages newer than each waifu's read cursors and at most
+  `discord.dm.resumeWindowMinutes` (60) old. Older ones wake nobody but stay readable.
+- **Late reminders**: due reminders fire once on boot (deferred if she is asleep). Recurring ones
+  then continue from the next future occurrence.
 
 ## 6. Tools
 
-Tool names are snake_case. Results are short text (errors start with `error:`). Every tool call
-and result is logged in the life log; tool calls that act on Discord also write a line to the
-activity log.
+Tool names are snake_case. Results are short text; errors start with `error:` and set `is_error`.
+Every tool call and result is in the life log. Discord-side actions are also logged through the
+app logger (category `life`), which the Activity screen shows.
 
 ### 6.1 Place handles
 
-- Rooms: `<server-slug>/#<channel-slug>` (e.g. `bake-club/#general`); threads
-  `bake-club/#general/<thread-slug>`. Slugs are lower-case, ASCII-folded, and suffixed `-2`, `-3`
-  on collision within a server.
-- DMs: `dm/<username-slug>`.
-- Every tool accepts a handle or the raw `placeKey`. Unknown handles return `error: unknown place;
-  use list_places`.
+- Rooms: `<server-slug>/#<channel-slug>`; threads `<server-slug>/#<channel-slug>/<thread-slug>`.
+  DMs: `dm/<name-slug>`. Slugs are lower-case and ASCII-folded.
+- `handles.json` is a persistent per-waifu map from handle to placeKey. A handle, once assigned, is
+  never reassigned to another place. When a server, channel or user is renamed, the new slug is
+  added as the primary handle and the old one stays as an alias. Collisions get `-2`, `-3` in
+  creation order.
+- Every tool accepts a handle, an alias or a raw placeKey. Unknown handles return `error: unknown
+  place; use list_places`.
 
 ### 6.2 `read_messages`
 
@@ -332,37 +403,39 @@ activity log.
 read_messages({ place: string, limit?: number = 15 (1–50), before?: string /* ref */ })
 ```
 
-- Returns lines rendered by the existing transcript renderer: `[14:02 #k3] Kevin: text`,
-  `↩#a1` / `↩you` reply marks, `(edited)`, `(message deleted)`, attachments, and one reaction
-  summary line from `recentReactions`.
-- Images: for models with image input, up to 4 newest images in the result as image blocks (frozen
-  per §5.3); otherwise `[image: <ocr text>]` / `[image]`.
-- Refs come from the shared per-conversation ref table (`ContextRuntime.assignRefs`), so `#k3`
-  means the same message for every waifu.
-- Source: `ConversationMessageCache.fetchSince` (no REST when trusted), reconciled into the
-  conversation ledger. DMs respect the forget floor.
-- Footer: `— 23 older messages; pass before:"#a0" for more —` when more exist.
-- Advances her read cursor (§5.5).
+- Renders the cache's **current** messages (edits applied, deletes shown as `(message deleted)`)
+  with `renderDiscordMessage` and the transcript line format: `[14:02 #k3] Kevin: text`, `↩#a1` /
+  `↩you` reply marks, `(edited)`, attachments, and one reaction summary line.
+- Messages by forgotten users (§7.5) render as `[14:02 #k3] someone: (removed)`.
+- Images: for routes with image input, up to 4 newest images as image blocks, until
+  `life.maxInlineImagesPerEpoch` (default 8, at most the smallest route's per-request image budget)
+  is reached; images are frozen the first time they render (`imageModes`): later or over-cap images
+  become `[image: <ocr text>]` or `[image]`.
+- Refs come from the shared per-conversation ref table. A `before` ref that no longer exists returns
+  `error: message too old`.
+- Source: `ConversationMessageCache.fetchSince` for the newest page (no REST when trusted) and a new
+  REST-backed `fetchBefore(placeKey, beforeMessageId, limit)` for older pages. DMs respect the
+  forget floor.
+- Footer when more exist: `— older messages available; pass before:"#a0" —`.
+- Adds the returned message ids to `readMessageIds` and advances the read cursor.
 
 ### 6.3 `send_message`
 
 ```
-send_message({ place: string, text: string (1–2000 chars), reply_to?: string /* ref */ })
-→ "sent #k9"
+send_message({ place: string, text: string (1–2000 chars), reply_to?: string /* ref */ }) → "sent #k9"
 ```
 
-- Allowed places: rooms where she is cast; DMs where the user has DMed her before, is not
-  undeliverable, is not within a forget floor with no newer inbound message, and is not
-  rate-limited (D11). Otherwise `error: you can't post there`.
-- Before sending, shows typing in that place for a length-based delay (30 ms per character,
-  0.6–4.5 s, the existing `typingDelayMs`). The tool call takes that long.
-- Mentions: `<@Name>` resolves through the existing `denormalizeModelContentForDiscord` and pings
-  only people present in that place. `@everyone`, `@here` and role pings are neutralised.
-- Outbound filter (deterministic, from `outputValidator.ts`): strips a leading `[HH:MM #ref] Name:`
-  header she may have copied and rejects text that is only tool syntax. No LLM reviewer.
-- Room loop guard (§4.4, when enabled) and DM rate limit apply; a blocked send returns a short
-  error she can read.
-- 50007 marks the DM undeliverable (existing behaviour).
+- Allowed places: rooms where she is cast; DMs where the user has DMed her before, is not marked
+  undeliverable, has written to her since any forget floor, and is not rate-limited (D11).
+  Otherwise `error: you can't post there`.
+- At most `life.maxSendPlacesPerTurn` (default 3) distinct places per turn.
+- Shows typing in that place for `typingDelayMs(text)` (30 ms per character, 0.6–4.5 s) before
+  sending; the tool call takes that long.
+- Mentions: `<@Name>` resolves through `denormalizeModelContentForDiscord` and pings only people
+  present in that place. `@everyone`, `@here` and role pings are neutralised.
+- Deterministic outbound filter (kept from `outputValidator.ts`): strips a leading copied
+  `[HH:MM #ref] Name:` header; rejects text that is only tool-call syntax. No LLM reviewer.
+- DM error 50007 marks the DM undeliverable (existing).
 - Records the own send in the conversation cache and advances her read cursor.
 
 ### 6.4 `react`
@@ -375,21 +448,21 @@ react({ place: string, ref: string, emoji: string /* unicode or :server_emoji: *
 
 ```
 watch_for({
-  bindings: Array<{ place?: string, from?: string /* person name or @id */, words?: string[] (≤10), any_message?: boolean }> (1–5),
+  bindings: Array<{ place?: string, from?: string /* name or <@id> */, words?: string[] (≤10), any_message?: boolean }> (1–5),
   note: string (≤200),
   expires_in_minutes: number (5–10080),
   once?: boolean = true
 }) → "watching w3 until Sun 25 Oct 14:02"
 ```
 
-- A binding matches a new message when every field it sets matches: place, author, any of the
-  words (case-insensitive, whole word, Unicode-folded), or `any_message`. A binding with only
-  `from` watches that person everywhere she can read.
-- `once: true` removes the watch after the first match; otherwise it fires at most once per 10
-  minutes until it expires.
-- At most 10 active watches per waifu. Expired watches are removed silently.
-- Matching runs in intake against every message in her places, including other waifus' messages
-  (subject to the loop guard).
+- `from` is resolved to a user id when the watch is created; an ambiguous name returns
+  `error: more than one person called Kevin; use <@id>`.
+- A binding matches when every field it sets matches: place, author id, any of the words
+  (case-insensitive, whole word, Unicode-folded) or `any_message`. Only `from` = that person
+  anywhere she can read. Her own messages never match.
+- `once: true` removes the watch at the first match. Otherwise it fires at most once per 10 minutes
+  and at most `life.maxWatchFiresPerDay` (24) times a day, until it expires.
+- At most 10 active watches per waifu; expired watches are removed silently.
 
 ### 6.6 `schedule_wake`, `list_schedule`, `cancel_wake`
 
@@ -397,26 +470,22 @@ watch_for({
 schedule_wake({ at?: string /* "2026-10-25 18:00" local */, in_minutes?: number, note: string (≤200), repeat?: "daily" | "weekly" }) → "set r4 for Sun 25 Oct 18:00"
 ```
 
-- Exactly one of `at` / `in_minutes`. At least 5 minutes ahead, at most 30 days ahead. At most 20
-  pending per waifu. Times are interpreted in the host time zone and stored as ISO instants.
-- A wake that comes due while she sleeps is deferred to her `morning` batch (D10).
+- Exactly one of `at` / `in_minutes`; 5 minutes to 30 days ahead; at most 20 pending. Interpreted
+  in the host time zone, stored as ISO instants.
+- Due while she sleeps → deferred to `morning` with its note. Due during downtime → §5.7.
 
 ### 6.7 Notes tools
 
 ```
-list_notes() → paths with sizes and modified dates
-read_note({ path })
-write_note({ path, content })            // create or replace
-edit_note({ path, find, replace })       // exact single occurrence, like an editor
-delete_note({ path })
-search_notes({ query }) → matching lines with paths
+list_notes() · read_note({ path }) · write_note({ path, content }) · edit_note({ path, find, replace }) · delete_note({ path }) · search_notes({ query })
 ```
 
-- Paths: relative, `[a-z0-9-_/]+\.md`, at most 3 levels deep. `MEMORY.md` is the index.
-- Limits: 16 KB per file, 200 files, 1 MB total. `MEMORY.md` is shown in the system prompt up to
-  200 lines / 8 KB; beyond that it is cut with a note telling her to tidy it.
-- Writes take effect immediately on disk; the system-prompt copy refreshes at the next epoch (she
-  sees her own edits through the tool results in the meantime).
+- Paths: exactly `MEMORY.md` at the root, or 1–3 segments of `[a-z0-9_-]+` ending in `.md`
+  (e.g. `people/kevin.md`). No leading `/`, no empty segments, no `..`.
+- Limits: 16 KB per file, 200 files, 1 MB total. The system-prompt copy of `MEMORY.md` is cut at
+  200 lines / 8 KB with a note asking her to tidy it.
+- `edit_note` replaces exactly one occurrence. Writes take effect on disk at once; the system-prompt
+  copy refreshes at the next epoch.
 
 ### 6.8 `web_search`
 
@@ -424,25 +493,27 @@ search_notes({ query }) → matching lines with paths
 web_search({ query: string (≤300), num_results?: number = 5 (1–8) }) → numbered results: title, url, published date, ~300-char highlight
 ```
 
-- Backend: Exa search API (`search.exaApiKey`; when empty, the anonymous endpoint if Exa's terms
-  allow it — verify during implementation).
-- Caps (all configurable): `search.maxPerSecond` 2 (host-wide token bucket), `search.maxPerDay` 50
-  (host-wide), `search.maxPerWaifuPerDay` 20. Exhausted caps return `error: no more searches today`.
-- No page fetching tool in this phase (injection and exfiltration surface).
-- Results are labelled as untrusted web content in the tool result.
+- Backend: Exa search API with `search.exaApiKey`; when empty, the anonymous endpoint if Exa's
+  terms allow it (checked in L2); with neither, the tool is not offered.
+- Caps: `search.maxPerSecond` 2 (host-wide), `search.maxPerDay` 50 (host-wide),
+  `search.maxPerWaifuPerDay` 20. Exhausted → `error: no more searches today`.
+- Results are labelled as untrusted web content. Queries are recorded for the dashboard (§14).
+- No page-fetching tool in this phase.
 
 ### 6.9 `list_places`
 
 ```
-list_places() → her rooms (handle, server, channel, people seen in the last day, last activity) and DMs (handle, last message time)
+list_places() → rooms (handle, server › channel, people seen there in the last day, last activity) and DMs (handle, last message time)
 ```
+
+"People seen" comes from the existing active-participants store.
 
 ## 7. Memory
 
 ### 7.1 Notes on disk
 
-`user/waifus/<id>/notes/` holds real Markdown files so the owner can read and edit them.
-`MEMORY.md` is an index, one line per entry, in the Claude Code style:
+`user/waifus/<id>/notes/` holds real Markdown files the owner can read and edit. `MEMORY.md` is an
+index, one line per entry:
 
 ```
 # Memory
@@ -453,126 +524,143 @@ list_places() → her rooms (handle, server, channel, people seen in the last da
 
 ### 7.2 Encouragement
 
-The harness (§8) tells her to write notes the moment she learns something worth keeping (people,
+The harness tells her to write notes the moment she learns something worth keeping (people,
 promises, plans, preferences, running jokes, her own opinions) and to keep `MEMORY.md` short with
-links. The compaction warning (§5.6) reminds her before her short-term context is summarised.
+links. The time line's compaction warning reminds her before her short-term memory is summarised.
 
 ### 7.3 Nightly maintenance
 
-- When: 30 minutes into her sleep window; at `life.maintenanceHourLocal` (default 5, the old
-  `dreamHourLocal`) if she has no sleep window.
-- How: a **separate short session**, not her life log: her model, her harness identity and
-  persona, a maintenance instruction, and only the notes tools. Purpose `maintenance` in the usage
-  ledger. At most 30 tool rounds.
-- Task: find contradictions and keep the newest fact, merge duplicates, fix broken index links,
-  prune stale trivia, keep `MEMORY.md` under its limit, apply pending forget requests (§7.5).
-- Result: a short report appended to `user/waifus/<id>/life/maintenance.jsonl` (not in her notes).
-  The next epoch picks up the tidied index.
+- When: 30 minutes into her sleep window; at `life.maintenanceHourLocal` (5) if she has no sleep
+  window. Takes the per-waifu lock, so it never overlaps a turn.
+- How: a separate short session (not her life log): her model, her identity and persona, a
+  maintenance instruction, only the notes tools; purpose `maintenance`; at most 30 tool rounds.
+- Task: resolve contradictions (newest fact wins), merge duplicates, fix broken index links, prune
+  stale trivia, keep `MEMORY.md` within its limit, and run any **pending scrubs**: forget requests
+  that were rate-limited (§7.5) are stored in `user/waifus/<id>/life/pending-scrubs.json` and
+  executed here.
+- Result: one report line in `maintenance.jsonl`.
 
 ### 7.4 Migration from the memory store
 
-Step `living-cast-memories-to-notes-v1`, deterministic, no model calls:
+Step `living-cast-memories-to-notes-v1`, deterministic, no model calls, only for waifus without a
+`notes/` directory:
 
-- For each waifu, active records from `user/memories.json` become note files: records whose
-  subjects include a person go to `people/<name-slug>.md` (one bullet per record, pinned first,
-  then by strength and date); records about the waifu herself to `me.md`; the rest to
-  `misc.md`. DM-origin records keep a `(from a private chat with <name>)` suffix.
-- `MEMORY.md` is generated with one line per file.
-- `user/memories.json` is moved to `user/.archive/living-cast/memories.json`; pending observations
-  and the dream cursor are moved there too.
-- Idempotent: it only writes notes for waifus with no `notes/` directory.
+- Active records about a person go to `people/<name-slug>.md`, keyed by Discord user id when known;
+  two people with the same name get `<name-slug>-<last 4 digits of id>.md`. A record about several
+  people is written to each of their files. Records about the waifu herself go to `me.md`; the rest
+  to `misc.md`. DM-origin records get a `(from a private chat with <name>)` suffix.
+- Within a file: pinned first, then by strength, then newest. Lines beyond 16 KB per file are left
+  out and listed in the archive. Beyond 200 files, the people with the least total strength are
+  merged into `people/others.md`.
+- `MEMORY.md`: one line per file, by total strength; beyond 150 lines the rest are summarised as
+  `- …and N more people in people/`.
+- `user/memories.json`, `user/memory/` (pending observations, dream cursor) and the omitted lines
+  move to `user/.archive/living-cast/`.
 
 ### 7.5 Forget (best-effort scrub)
 
 Applies to the owner's forget-user and a DM user's `/forget everything` (D12). `/forget
-conversation` runs steps 1–2 only.
+conversation` runs steps 0–2 only.
 
-1. Existing DM forget: DM history and state deleted, forget floor written, images and OCR purged,
-   guild ledger bodies replaced with "(removed)" (forget-user only).
-2. Life reset without the person: abort her turn if running; force a compaction whose instruction
-   lists the person (names, nicknames, `<@id>`) for omission; if that fails, start a new epoch with
-   no summary. Old epoch logs containing the DM are deleted, not kept for 7 days.
-3. Notes scrub: an immediate maintenance session (§7.3) with the instruction to remove everything
-   about the person and update the index.
-4. Verify: search her notes and the new life summary for every known name and alias of the person
-   and their id. Remaining matches are removed deterministically: the matching line in notes, the
-   matching sentence in the summary. The result (`{removedLines, removedSentences}`) is returned to
+0. **Collect identity first**: user id, current and past display names and nicknames from the
+   directory, DM state, ledger authors, watches and her handle map.
+1. **DM data**: existing DM forget (history and state deleted, forget floor written, images and OCR
+   purged). The user id is added to `user/people/forgotten.json`; `read_messages` renders that
+   user's messages as `(removed)` everywhere (owner forget-user only).
+2. **Life without the person**: abort her turn; compact with **no kept turns** (the summary
+   instruction lists the person for omission); on failure, start a new epoch with no summary. Every
+   old epoch log is deleted at once.
+3. **Other state**: remove the person's entries from `wakes.json` (previews included), watches
+   whose `from` is the person (and scrub their notes), reminder notes mentioning the person, her
+   DM read cursor and handle, and `maintenance.jsonl` lines.
+4. **Notes scrub**: a maintenance session (§7.3) instructed to remove everything about the person
+   and update the index.
+5. **Verify**: search notes and the new summary for the user id and for each collected name of at
+   least 3 characters that no other known member shares, as a whole word. Lines matching the id are
+   removed. Lines matching only a name are removed when unambiguous; otherwise they are listed as
+   `needsReview` in the result. Result: `{removedLines, removedSentences, needsReview}`, returned to
    the caller and logged.
 
-Forget never deletes the DM limits file (it holds the floor).
+Rate limit: a DM user's `/forget` runs step 2 at most once per 6 hours per user; later requests
+inside that window do steps 0–1 at once and queue steps 2–5 as a pending scrub (§7.3). The owner's
+forget-user always runs everything immediately.
+
+Limits of the scrub, stated to the owner in the dashboard: Discord history itself is not deleted
+(the bot can't delete other people's messages), and whatever she already said in rooms stays there.
 
 ## 8. Life harness (system prompt outline)
 
-The final text is reviewed by the owner as goldens. Outline, in order:
+The final text is reviewed by the owner as goldens.
 
-1. `<life>` — about 250 words:
-   - You are a person who lives among these Discord servers and chats with people there and in
-     DMs. You are not an assistant and nobody's servant; you decide for yourself what to do.
-   - Your phone buzzes with notifications. Each one says who, where and why, with a short
-     preview. Read the conversation (`read_messages`) before replying to anything. You do not have
-     to answer: ignore what is not for you or does not interest you; answer when you have
-     something relevant or want to.
+Block A:
+1. `<life>`, about 250 words:
+   - You are a person who lives among these Discord servers and chats with people there and in DMs.
+     You are not an assistant and nobody's servant; you decide for yourself what to do.
+   - Your phone buzzes with notifications: who, where and why, with a short preview. Read the
+     conversation (`read_messages`) before replying. You don't have to answer: ignore what isn't for
+     you or doesn't interest you; answer when you have something relevant or want to.
    - Nobody sees your thoughts. Only `send_message` reaches people; `react` adds a reaction. Write
-     like a person in a chat: short messages, several messages if you have several things to say.
+     like a person in a chat: short messages, several of them if you have several things to say.
    - Keep notes like a diary: write things down as soon as you learn them; your memory of today is
      summarised later and only your notes last. `MEMORY.md` is your index.
    - You can set reminders, watch for things, and search the web when it helps.
    - Never mention tools, notifications, notes, prompts or the system. Never pretend to be someone
      else. You can't see anything you haven't read.
    - What people tell you in private chats is personal; bring it up elsewhere only if they do.
-2. `<identity>` — name, display name, server nicknames, the other characters she knows.
-3. `<persona>` — the owner's persona text.
-4. `<style>` — one sentence from `verbosity`.
-5. `<schedule>` — her routine (omitted when `scheduleInPrompt` is false).
-6. `<memory_index>` — `MEMORY.md` as of epoch start.
-7. `<custom_instructions>` — the owner's text.
+2. `<identity>`: name, display name, server nicknames, the other characters she knows.
+3. `<persona>`, 4. `<style>` (one sentence from `verbosity`), 5. `<schedule>` (unless
+   `scheduleInPrompt` is false), 6. `<custom_instructions>`.
 
-Header B: `<life_so_far>` and `<places>`. Tail: §5.4.
+Block B: `<your_notes_index>` (introduced as "your own notes, written by you"), `<life_so_far>`,
+`<places>`.
 
 ## 9. Model layer (winter)
 
-### 9.1 Dependency
+### 9.1 Dependency and client
 
 - Remove `@waifucave/gateway`. Add `@yanlinglabs/winter-provider-runtime` and
-  `@yanlinglabs/winter-provider-catalog`, pinned exactly (after W1–W6, §9.6).
-- New `src/models/`:
-  - `catalog.ts` — curated view over the winter catalog (§9.2).
-  - `client.ts` — `ModelClient.call({model, messages, tools, effort?, cacheKey, cacheMarkers, signal,
-    attribution}) → {message, finishReason, usage, costUsd}` over `adapter.streamTurn`, with
-    abort, timeout, winter's retry, and error mapping to the existing kinds (`context_overflow`,
-    `quota`, `billing`, `rate_limit`, `auth`, `other`).
-  - `credentials.ts` — keys from `user/providers.json` passed inline per call
-    (`authRef: {kind: "inline"}`); no Keychain.
-- Usage ledger: one line per call from winter's usage event (input, output, cache read/write,
-  reasoning) with `estimateCostUsd`, or OpenRouter's reported cost (W5). New purposes: `life`,
-  `maintenance`, `detector`; removed: `orchestrator`, `observer`, `dream`, `reviewer`,
-  `persona_digest`, `waifu_reply`, `waifu_retry`. Old lines stay readable.
-- Provider alerts (quota/billing cooldowns) keep their behaviour, mapped from winter error kinds.
+  `@yanlinglabs/winter-provider-catalog`, pinned exactly to the release containing W1–W9 (§9.5).
+- `src/models/`:
+  - `catalog.ts`: curated view (§9.2).
+  - `client.ts`: `ModelClient.call({route, messages, tools, effort?, systemBlocks, cacheKey,
+    signal, attribution}) → {message, finishReason, usage, costUsd}`. Uses `adapter.streamTurn`,
+    winter's stream assembler (W8), winter's history renderer, abort, timeout and winter's retry.
+    Also a streaming variant for the assistant's SSE.
+  - `credentials.ts`: keys from `user/providers.json`, passed inline per call; no Keychain.
+  - `errors.ts`: winter error → app kind. `context_overflow` from `contextOverflow`; `quota` from a
+    subscription-quota `rate_limit` or `insufficient_quota`; `billing` from `billing_error`;
+    `rate_limit`, `auth`, `other`.
+  - Calls `setWinterIdentity` so the User-Agent names Discord Waifus (W9).
+- Usage ledger: one line per call, from winter's usage event and `estimateCostUsd` (or OpenRouter's
+  reported cost, W5). New fields `turnId?` and `thinkingBlocksDropped?`. New purposes `life`,
+  `maintenance`, `detector`; removed `orchestrator`, `observer`, `dream`, `reviewer`,
+  `persona_digest`, `waifu_reply`, `waifu_retry` (old lines stay readable). Unpriced routes record
+  `costUsd` absent and count as 0 toward budgets, with a warning in `/api/runtime`.
+- Provider alerts (quota/billing cooldowns) keep their behaviour on the new error kinds.
 
 ### 9.2 Curated catalog
 
-- `models.allowed`: list of `{providerId, modelId}` routes, default:
+- `models.allowed`: routes, default:
 
 | Family | Routes |
 |---|---|
-| Meta Muse Spark 1.3 contributor | `meta/muse-spark-1.3-contributor`, `openrouter/meta/muse-spark-1.3-contributor` (W2) |
-| Anthropic Haiku 5.5 | `anthropic/claude-haiku-5-5` (W2), `openrouter/anthropic/claude-haiku-5.5` (W2) |
-| Anthropic Sonnet 5.5 | `anthropic/claude-sonnet-5-5`, `openrouter/anthropic/claude-sonnet-5.5` |
-| DeepSeek V4.1 Flash | `deepseek/deepseek-flash`, `openrouter/deepseek/deepseek-v4.1-flash` |
-| OpenAI Luna 6 | `openai/gpt-6-luna`, `openrouter/openai/gpt-6-luna` |
-| OpenAI Sol 6.1 | `openai/gpt-6.1-sol`, `openrouter/openai/gpt-6.1-sol` (W2) |
+| Meta Muse Spark 1.3 contributor | `meta/muse-spark-1.3-contributor`; `openrouter/meta/muse-spark-1.3-contributor` (W2) |
+| Anthropic Haiku 5.5 | `anthropic/claude-haiku-5-5` (W2); `openrouter/anthropic/claude-haiku-5.5` (W2, W7) |
+| Anthropic Sonnet 5.5 | `anthropic/claude-sonnet-5-5`; `openrouter/anthropic/claude-sonnet-5.5` (W7) |
+| DeepSeek V4.1 Flash | `deepseek/deepseek-flash`; `openrouter/deepseek/deepseek-v4.1-flash` (W7) |
+| OpenAI Luna 6 | `openai/gpt-6-luna`; `openrouter/openai/gpt-6-luna` (W7) |
+| OpenAI Sol 6.1 | `openai/gpt-6.1-sol`; `openrouter/openai/gpt-6.1-sol` (W2, W7) |
 
-  Exact ids are confirmed against the catalog during W2.
-- Filters: `toolCalling` must be true; output price ≤ `models.maxOutputUsdPerMTok` (default 10);
-  not deprecated.
-- Muse Spark contributor variants enable training on prompts; the picker labels them as such
-  (existing rule in CLAUDE.md).
-- Per waifu: `model: {providerId, modelId, effort?: string}`; `effort` only when the model lists
-  reasoning efforts. No other parameters.
-- API: `GET /api/models` → the curated routes with display name, provider, context window, max
-  output, image input, efforts, input/output/cache prices, and whether credentials are configured.
-  `/api/llm/*` and `GET /api/providers`'s `gatewayProviders` are removed; provider status comes
-  from the winter catalog's provider list.
+  Exact ids are confirmed against the catalog in L0. OpenRouter routes require W7 (reasoning replay
+  through OpenRouter); without it they are hidden.
+- Filters: `toolCalling` true; base output price ≤ `models.maxOutputUsdPerMTok` (10); not
+  deprecated. Long-context tiers above the cap are avoided by `life.maxContextTokens` (§5.4).
+- Muse Spark contributor variants enable training on prompts; the picker labels them.
+- Per waifu: `model: {providerId, modelId, effort?}`. `effort` only from the route's listed efforts;
+  stored efforts are re-validated at every boot and dropped with a warning if no longer listed.
+- `GET /api/models`: curated routes with display name, provider, context window, max output, image
+  input, efforts, prices, the contributor flag, and whether credentials are configured. Provider
+  status comes from the winter catalog's provider list. `/api/llm/*` is removed.
 
 ### 9.3 Callers
 
@@ -580,237 +668,250 @@ Header B: `<life_so_far>` and `<places>`. Tail: §5.4.
 |---|---|---|
 | Life loop | her model | `life` |
 | Compaction | her model | `compaction` |
-| Nightly maintenance and forget scrub | her model | `maintenance` |
+| Maintenance and forget scrub | her model | `maintenance` |
 | Addressee detector | detector target (native choice, not winter) | `detector` |
 | Dashboard assistant | assistant model, else the first configured waifu's model | `assistant` |
 
-The persona digest retires (it only fed the orchestrator's casting cards).
+The persona digest retires.
 
-### 9.4 Migration
+### 9.4 Migration tables (built in L1)
 
-Step `living-cast-models-v1`:
-- Waifu and assistant configs: map `(providerId, modelId)` to the curated route with the same model
-  family; unmappable models are unset with a warning in `/api/runtime` so the owner re-picks.
-- Drop every stored `params` key; keep a reasoning effort only if it maps to a listed effort.
+- Gateway provider id → winter provider id.
+- Gateway `(providerId, modelId)` → curated route by model family; unmappable models are unset with
+  a warning in `/api/runtime` so the owner re-picks.
+- Stored `params` dropped; a reasoning effort is kept only if it maps to a listed effort.
 
-### 9.5 Winter work items (in the winter repo, owner-owned)
+### 9.5 Winter work items (L0, winter repo)
 
 | # | Item | Size |
 |---|---|---|
 | W1 | `cache_control` pass-through for Anthropic models through OpenRouter (Chat Completions adapter) | S–M |
-| W2 | Catalog rows: Haiku 5.5 (Anthropic and OpenRouter), OpenRouter Sol 6.1, OpenRouter Muse Spark 1.3 contributor | S |
-| W3 | Explicit per-block cache markers in `TurnRequest` (the app places A/B/C_prev/C itself) | S–M |
-| W4 | Long-context price tiers in the catalog schema and `estimateCostUsd` (Haiku 5.5 >100K prompts) | M |
+| W2 | Catalog rows: Haiku 5.5 (Anthropic, OpenRouter), OpenRouter Sol 6.1, OpenRouter Muse Spark 1.3 contributor | S |
+| W3 | Per-marker cache TTL: 1-hour TTL on rolling and lookback message markers, not only system blocks | S–M |
+| W4 | Long-context price tiers in the catalog schema and `estimateCostUsd` | M |
 | W5 | Read OpenRouter's reported `usage.cost` | S |
-| W6 | Declare `provider-runtime` and `provider-catalog` a supported public API with a semver policy and changelog section | S |
+| W6 | Declare `provider-runtime` and `provider-catalog` supported public APIs with a semver policy | S |
+| W7 | OpenRouter `reasoning_details` capture and verbatim replay in the Chat Completions adapter, catalog continuation for those rows, and a live probe | M |
+| W8 | Move the stream assembler (`foldProviderStream`, `stampNativeState`) into `provider-runtime`, with a streaming sink | M |
+| W9 | `provider-runtime` without a runtime dependency on `winter-agent-sdk` (so no native binary is installed); `setWinterIdentity` usable from it | S–M |
 
-Released as one winter version; the app pins it.
+All in one winter release, pinned by the app.
 
 ## 10. Discord layer
 
 ### 10.1 Bots
 
 - The orchestrator bot becomes the **House bot** (UI label; the `discord-bots.json` key stays
-  `orchestrator` for compatibility). It keeps its intents, reads all guild messages and hosts slash
-  commands.
-- Waifu bots send their waifu's messages, typing and reactions, and receive DMs when DM-eligible
-  (existing).
+  `orchestrator`). It keeps its intents, reads all guild messages and hosts slash commands.
+- Waifu bots send their waifu's messages, typing and reactions, and receive DMs when DM-eligible.
 
 ### 10.2 Additions
 
-- `RawDiscordMessage` gains `mentionsEveryone: boolean` (from `message.mentions.everyone`) and
-  keeps `mentions.roles`.
-- Bot member roles per guild: the guild directory records each waifu bot's member roles (fetched
-  once per guild at boot, kept current by member events) for the `role` wake.
+- `RawDiscordMessage.mentionsEveryone: boolean` (from `message.mentions.everyone`).
+- Bot member roles: each waifu bot's member in each guild is fetched once per guild at boot with a
+  single-member REST fetch (no privileged intent needed), refreshed every
+  `discord.memberListRefreshHours` and on role update/delete events.
+- `ConversationMessageCache.fetchBefore(conversation, beforeMessageId, limit)`, REST-backed.
 - `react` uses the waifu's bot client.
 
 ### 10.3 Edits and deletes in a life
 
-Past tool results in her life log never change (append-only). So:
-- `read_messages` always shows the current state of a message.
-- A delete of a message she has read in the current epoch appends, at her next turn, one line in
-  the notifications block: `(Kevin deleted a message you read in #general: #k3)`. Its content
-  stays in her log until the next compaction, which lists it for omission.
-
-This replaces the Phase 5 "recent deletes are redacted in place" rule for waifus, because
-nothing is re-rendered any more.
+Past tool results never change. `read_messages` always shows the current state. When a message in
+her `readMessageIds` is deleted, her next turn's notifications include `(Kevin deleted a message you
+read in #general: #k3)`. Its content stays in her log until the next compaction, which lists it for
+omission. This replaces the Phase 5 "recent deletes redacted in place" rule.
 
 ### 10.4 Slash commands
 
 | Command | Who | What |
 |---|---|---|
-| `/wake <waifu> [note]` | owner (guild, House bot) | Queue an `owner` wake. |
-| `/print system_prompt|notes|life` | owner (guild, ephemeral) | Her current system prompt, `MEMORY.md`, or the last 20 life-log lines. DM-origin content redacted as today. |
-| `/forget conversation|everything` | DM user (waifu bot) | §7.5. Existing confirm button. |
+| `/wake <waifu> [note]` | owner (House bot, guild) | Queue an `owner` wake. |
+| `/print system_prompt|notes|life` | owner (ephemeral) | Her system prompt, `MEMORY.md`, or the last 20 life-log lines with DM tool results and DM send arguments redacted. |
+| `/forget conversation|everything` | DM user (waifu bot) | §7.5, existing confirm button. |
 
 Retired: `/run`, `/stop`, `/review`, `/memories`, `/console`, `/clear`.
 
-## 11. Retirements and data migrations
+## 11. Retirements and migrations
 
 ### 11.1 Code removed
 
-Orchestrator and director: `channelRunner.ts`, `orchestratorHarness.ts`, `decisions.ts`,
-`deterministicOrchestrator.ts`, `loopDetector.ts`, `restartResume.ts`, `session.ts` retrigger
-state, `stores/decisionHistory.ts` (orchestrator/stage-manager/reviewer histories),
-`pipeline/timeline.ts`, `promptBuilders.ts` (keep `currentlyDoingForWaifu` by moving it to
-`timeOfDay.ts`).
+- **Director**: `channelRunner.ts`, `orchestratorHarness.ts`, `decisions.ts`,
+  `deterministicOrchestrator.ts`, `loopDetector.ts`, `restartResume.ts`, `session.ts` retrigger
+  state, `stores/decisionHistory.ts`, `pipeline/timeline.ts`, `promptBuilders.ts`
+  (`currentlyDoingForWaifu` moves to `timeOfDay.ts`; `isAvailable` moves to `src/life/`).
+- **Memory jobs**: `memoryJobs.ts`, `observer.ts`, `observerCursor.ts`, `dream.ts`,
+  `stageManager.ts`, `memoryRetrieval.ts`, `memorySnapshot.ts`, `memoryWriteGate.ts`,
+  `memorySubjects.ts` (`wordBoundaryIncludes` moves to `src/life/`), `stores/memories.ts`.
+- **Reply path**: `responderExecutor.ts`, `waifuHarness.ts`, `verbosity.ts` (`typingDelayMs`
+  moves), `outputValidator.ts` (the two outbound checks move into `send_message`),
+  `dm/dmRunner.ts`, `reviewerRunner.ts`, `context/{builder,transcript,runtime,contextStore,ledger,fetchTranscript}.ts`
+  conversation-prompt code (helpers reused by `read_messages` move to `src/life/render.ts`).
+- **Model layer**: `pipeline/gatewayPipeline.ts`, `pipeline/params.ts`, `pipeline/resolveTarget.ts`,
+  `api/llmGatewayCredentials.ts`, the `/api/llm` mount, gateway checks in `writeValidation.ts`,
+  frontend `api/llm.ts` and `components/modelParams/*`. Migration step
+  `waifuParamsGateway040` is removed; its id stays in the history comment.
+- `oneShot/` → `src/life/detector/` (catalog, protocol, Laya kept; decider mapping replaced).
+- `src/config/layout.ts` stops seeding `user/orchestrator`, `user/stage-manager`, `user/reviewer`
+  and `user/memory`.
 
-Memory jobs: `memoryJobs.ts`, `observer.ts`, `observerCursor.ts`, `dream.ts`, `stageManager.ts`,
-`memoryRetrieval.ts`, `memorySnapshot.ts`, `memoryWriteGate.ts`, `memorySubjects.ts` (keep
-`wordBoundaryIncludes` for name wakes), `stores/memories.ts` after migration.
-
-Waifu reply path: `responderExecutor.ts`, `waifuHarness.ts`, `verbosity.ts` (keep
-`typingDelayMs`), `dm/dmRunner.ts` (DM intake becomes a wake source; `rateLimit.ts`, `dmStore.ts`,
-`dmForget.ts` stay), `reviewerRunner.ts`.
-
-Model layer: `pipeline/gatewayPipeline.ts`, `pipeline/params.ts`, `pipeline/resolveTarget.ts`,
-`api/llmGatewayCredentials.ts` (replaced by `models/credentials.ts`), the `/api/llm` mount,
-`writeValidation.ts` gateway checks, `migrationSteps/waifuParamsGateway040.ts` (its ledger id is
-kept as history), frontend `api/llm.ts` and `components/modelParams/*`.
-
-`oneShot/` becomes `src/life/detector/` (catalog, protocol, Laya kept; decision mapping replaced).
-
-Each removal takes its tests with it. Tests of reused modules are kept and adapted.
+Removed modules take their tests with them; reused modules' tests are adapted.
 
 ### 11.2 Data migrations
 
-All registered before the schema stamp, idempotent, re-run safe.
+Registered before the schema stamp; idempotent; re-run safe.
 
 | Step | Does |
 |---|---|
 | `living-cast-memories-to-notes-v1` | §7.4 |
-| `living-cast-models-v1` | §9.4 |
-| `living-cast-archive-director-v1` | Moves `user/orchestrator/`, `user/stage-manager/`, `user/reviewer/` and every `user/servers/*/orchestrator-history.json`, `stage-manager` and reviewer histories, and `user/servers/*/sessions/` to `user/.archive/living-cast/`. Deletes `user/conversations/*/contexts/` (ledgers and refs stay). |
-| `living-cast-server-fields-v1` | Drops `orchestratorMode`, `stageManagerEnabled`, `contextWindows`, `memoryInjectionLimit`, `tools`, `compaction` from server files; `oneShot.target` becomes the per-server detector override. |
-| `living-cast-app-config-v1` | Drops `memory.*` except `dreamHourLocal` → `life.maintenanceHourLocal`; sets `discord.debounce.dmMs` 30000 and `dmMaxWaitMs` 180000 if they are still the old defaults. |
+| `living-cast-models-v1` | §9.4; converts flat `providerId`/`modelId`/`params` to nested `model`; drops `contextWindow`, `personaDigest`, `tools.toolUse`. |
+| `living-cast-archive-director-v1` | Moves to `user/.archive/living-cast/`: `user/orchestrator/`, `user/stage-manager/`, `user/reviewer/`, every guild's orchestrator/stage-manager/reviewer histories and `sessions/`, and every `user/conversations/*/ledger.json` and `contexts/` (refs stay). Shutdown-persisted wakes in old session files are not converted. |
+| `living-cast-dm-state-v1` | DM `pending*` (a DM in flight at upgrade) becomes an immediate `dm` wake in that waifu's queue; `recentRuns` dropped. |
+| `living-cast-server-fields-v1` | Drops `orchestratorMode`, `stageManagerEnabled`, `contextWindows`, `memoryInjectionLimit`, `tools`, `compaction` from server files. `oneShot.target` becomes a per-server detector override **only** if the server was in one-shot mode and its target differs from the old default; otherwise removed. |
+| `living-cast-app-config-v1` | `memory.dreamHourLocal` → `life.maintenanceHourLocal`; `memory.maxInlineImagesPerEpoch` → `life.maxInlineImagesPerEpoch`; `discord.dm.maxConcurrentRuns` → `life.maxConcurrentTurns`; other `memory.*` dropped; `discord.deletedMessages.redactRecent` dropped. Widens `discord.debounce.dmMaxWaitMs` to max 300000 and sets `dmMs` 30000 / `dmMaxWaitMs` 180000 if they still hold the old defaults. |
 
-### 11.3 New configuration
+### 11.3 New and changed configuration
 
 | Key | Default |
 |---|---|
 | `life.maxConcurrentTurns` | 4 |
-| `life.maxToolRounds` | 12 |
-| `life.maxTurnMs` | 180000 |
+| `life.maxToolRounds` / `life.maxTurnMs` | 12 / 180000 |
 | `life.maxLogMessages` | 400 |
-| `life.maxWaifuOnlyRun` | 0 (off) |
+| `life.maxContextTokens` | 96000 |
+| `life.maxInlineImagesPerEpoch` | 8 |
+| `life.maxSendPlacesPerTurn` | 3 |
+| `life.maxWakesPerUserPerHour` | 20 |
+| `life.maxWatchFiresPerDay` | 24 |
+| `life.maxWaifuTriggeredTurns` | 0 (off) |
 | `life.maintenanceHourLocal` | 5 |
-| `life.dailyBudgetUsd` (per waifu, in the waifu config) | null |
-| `search.exaApiKey` | "" |
-| `search.maxPerSecond` / `maxPerDay` / `maxPerWaifuPerDay` | 2 / 50 / 20 |
-| `models.allowed` | §9.2 |
-| `models.maxOutputUsdPerMTok` | 10 |
-| `detector.target` | the old orchestrator one-shot default |
-| `waifu.dm.sleepNotice` | "" |
+| `search.exaApiKey` / `maxPerSecond` / `maxPerDay` / `maxPerWaifuPerDay` | "" / 2 / 50 / 20 |
+| `models.allowed` / `models.maxOutputUsdPerMTok` | §9.2 / 10 |
+| `detector.target` | the old one-shot default target |
+| `discord.debounce.dmMs` / `dmMaxWaitMs` | 30000 / 180000 |
+| `discord.dm.resumeWindowMinutes` | 60 (now the boot catch-up window) |
+| Waifu: `model`, `life.dailyBudgetUsd` (none), `dm.sleepNotice` (""), `wakeOnName` (true) | |
 
-`compaction.*` app config stays and applies to lives.
+`compaction.enabled`, `triggerRatio` and `waitTimeoutMs` apply to lives (§5.6).
 
 ### 11.4 Release
 
-Living cast ships together with the unreleased Phases 4–5 as **3.0.0**: behaviour changes
-completely and the migrations cannot be reversed. Idle updates never install a major version, so
-the owner upgrades each host by hand.
+3.0.0, together with Phases 4–5 (D14). Idle updates never install a major version; the owner
+upgrades each host by hand. Downgrade is unsupported.
 
 ## 12. Testing and acceptance
 
-Fake transports for winter adapters and Exa. Real temp-dir storage.
-
-- **Life loop**: wake → read → send; wake → ignore (no send); mid-turn wake folded after the next
-  tool round; caps (rounds, wall time); budget deferral; interrupted turn on shutdown resumes;
-  assistant text never reaches Discord; reasoning blocks replayed verbatim through a tool loop.
-- **Wakes**: each reason in §4.1; waifu-authored messages never reach the detector; the loop guard;
-  `@everyone` staggering; edit-adds-mention.
-- **Sleep**: every reason deferred, one `morning` batch, `sleepNotice` sent once.
-- **DMs**: 30 s quiet timer reset by each message, 3-minute cap; rate limit drops wakes and sends
-  one notice; D11 send permissions (never a stranger, never past a forget floor).
-- **Detector**: mapping table; weighted draw; fallback; history; benchmark cases.
-- **Tools**: schemas and limits for every tool in §6; notes path safety (no `..`, no absolute
-  paths, size caps); search caps; watch matching and expiry; schedules across restart.
-- **Memory**: migration output and idempotence; maintenance session uses only notes tools;
-  forget scrub end to end including the verify step.
-- **Prompt**: exactly one system message; prefix stability across tool rounds and turns (every
-  block through the previous C byte-identical); compaction request equals her normal request
-  through C with the same tools.
-- **Cache simulation** (`tests/eval/cacheHit.test.ts`, adapted to lives, after W3): quiet day, busy
-  room with many wakes, DM conversation, a compaction. Target ≥ 0.85 cache-read ratio per waifu
-  excluding compaction calls.
-- **Goldens for owner review**: life system prompt, a wake turn (notification → read → send), a DM
+- **Fakes**: a Node fake `ProviderAdapter` implementing `streamTurn` with scripted events (winter's
+  own fakes are Bun-only), a fake Exa, real temp-dir storage.
+- **Life loop**: wake → read → send; wake → ignore; mid-turn wake folded after the next tool round;
+  caps; budget deferral; unsent-reply check fires once; assistant text never reaches Discord;
+  `length` and `refusal` stops; tool errors carry `is_error`.
+- **Reasoning stability**: across 20 calls over several turns, every assistant message and its
+  `nativeState` is sent byte-identically, and `thinkingBlocksDropped` stays 0.
+- **Prefix stability**: every request is a byte prefix of the next within an epoch; exactly one
+  system message.
+- **Crash repair**: a crash between tool call and result, and between a Discord send and its result,
+  recovers without a duplicate send; boot catch-up within the window; late reminders fire once.
+- **Wakes**: every reason in §4.1; waifu authors never reach the detector; stagger; guard order
+  (§4.4) including `sleepNotice` once per window and limit notice once per period; per-user wake
+  limit merging; loop guard when enabled limits wakes only.
+- **Sleep**: every reason deferred except `owner`; one `morning` batch that lists every reminder and
+  watch note.
+- **DMs**: 30 s timer reset by each message and the 180 s cap; D11 send permissions.
+- **Detector**: mapping, weighted draw, fallback, history, benchmark cases.
+- **Tools**: schemas and limits for every tool; note path rules (including `MEMORY.md`, `..`,
+  leading `/`, empty segments); search caps; watch matching, `from` resolution, own-message
+  exclusion, daily cap; schedule limits.
+- **Memory**: migration output, limits and idempotence; maintenance uses only notes tools; pending
+  scrubs run; forget end to end including steps 0–5, the rate limit and `needsReview`.
+- **Cache simulation** (`tests/eval/cacheHit.test.ts`, adapted, Anthropic rules with W3's 1-hour
+  TTL), excluding compaction calls and the first call after a gap longer than the TTL:
+  - busy room (wakes under 5 minutes apart) and DM conversation: ≥ 0.85;
+  - quiet day (wakes 15–60 minutes apart): ≥ 0.75.
+- **Goldens for owner review**: the system prompt, a wake turn (notification → read → send), a DM
   wake, a `morning` batch, a maintenance session, a compaction request, the detector state.
-- **Live eval** (`WAIFUS_EVAL_LIVE=1`, owner's keys): reads before replying, ignores off-topic
-  pings, writes notes about a new fact, keeps a promise via `schedule_wake`, cost per wake.
+- **Live eval** (`WAIFUS_EVAL_LIVE=1`, owner's keys), per curated route, 30 scripted wakes each:
+  - reads before replying in ≥ 90% of answered wakes;
+  - answers ≤ 20% of off-topic pings;
+  - writes a note within the turn for ≥ 70% of "new personal fact" scenarios;
+  - unsent-reply check fires on ≤ 10% of direct wakes;
+  - cost per answered wake reported.
 - **Migrations**: every new step on a realistic main-era data root; re-running is a no-op.
 
-Acceptance: all of the above green; typecheck and the full suite green; goldens approved; no
-import of `@waifucave/gateway` left; `grep -rn "orchestrator" src` only in migrations, the House
-bot key and the archive path.
+Acceptance: all of the above green; typecheck and the full suite green; goldens approved; no import
+of `@waifucave/gateway`; the word `orchestrator` appears only in migrations, the bots-file key and
+the archive path.
 
-## 13. Dashboard, API, CLI (replaces overhaul Phases 6–7)
+## 13. Cost and latency expectations
 
-### 13.1 API
+Estimates for planning, to be replaced by live-eval numbers. A plus tools ≈ 8K tokens, B ≈ 3K, an
+average epoch log ≈ 60K under the 96K cap; an answered wake is about 3 calls (read, send, end),
+an ignored one 1.
+
+| Route | Answered wake, warm | Answered wake, cold |
+|---|---|---|
+| Sonnet 5.5 | ≈ $0.06–0.08 | ≈ $0.25 |
+| GPT-6 Luna | ≈ $0.004 | ≈ $0.015 |
+| DeepSeek Flash | ≈ $0.003 | ≈ $0.03 |
+| Muse contributor | ≈ $0.001 | ≈ $0.01 |
+
+- Latency for a mention and reply: about 8–20 s warm (2 s coalesce, two model calls, typing), plus
+  3–10 s cold. DMs add the 30 s quiet timer. Today's path is about 4–10 s.
+- A user spamming mentions is bounded by `life.maxWakesPerUserPerHour`; without a budget, a waifu
+  on Sonnet can still cost several dollars an hour in a very busy room.
+
+## 14. Dashboard, API, CLI (replaces overhaul Phases 6–7)
+
+### 14.1 API
 
 | Route | Notes |
 |---|---|
-| `GET/POST /api/waifus`, `GET/PUT/DELETE /api/waifus/:id` | Fields per §9.2 (model), DM settings, budget, `sleepNotice`. |
-| `GET /api/waifus/:id/life` | status, current turn, queue, epoch, today's usage and cost |
-| `GET /api/waifus/:id/life/log?epoch&before&limit` | Life log lines. DM tool results are redacted unless `?includePrivate=1` (owner, local only). |
+| `GET/POST /api/waifus`, `GET/PUT/DELETE /api/waifus/:id` | Fields per §11.3. |
+| `GET /api/waifus/:id/life` | Status, current turn, queue, epoch, today's usage and cost. |
+| `GET /api/waifus/:id/life/log?epoch&before&limit` | Life log lines without `nativeState`. DM tool results and DM send arguments are redacted unless `includePrivate=1` (local requests only). Her private text, notes, summary and room sends are not redacted and are labelled "may include things from private chats". |
 | `POST /api/waifus/:id/wake {note}`, `POST …/life/compact`, `POST …/life/reset` | |
-| `GET /api/waifus/:id/notes`, `GET/PUT/DELETE /api/waifus/:id/notes/*path` | Revision via content hash. |
+| `GET /api/waifus/:id/notes`, `GET/PUT/DELETE /api/waifus/:id/notes/*path` | Revision by content hash; path rules §6.7. |
 | `GET/DELETE /api/waifus/:id/watches[/:wid]`, `GET/DELETE /api/waifus/:id/schedule[/:rid]` | |
 | `GET /api/models` | §9.2 |
 | `GET/PUT /api/detector/config`, `GET /api/detector/history?guildId` | |
-| `GET /api/search/usage` | Today's counts against the caps. |
-| `GET /api/usage?from&to&groupBy=waifu|purpose|model|day` | Reads the usage ledger. |
-| Existing kept | runtime, config, servers/channels/threads, DMs, discord-bots, providers, assistant, docs, remote access |
-| Removed | orchestrator/stage-manager/reviewer config and history, `/api/memories*` (replaced by notes; `forget-user` moves to `POST /api/people/:userId/forget`), `/api/llm/*`, `POST /api/waifus/:id/digest`, `trigger/orchestrator`, `trigger/stage-manager`, `runtime/stop` |
+| `GET /api/search/usage` | Today's counts and recent queries. |
+| `GET /api/usage?from&to&groupBy=waifu|purpose|model|day|turn|place` | Reads the usage ledger (local-day boundaries, `tz` override). |
+| `POST /api/people/:userId/forget {confirm, dryRun?}` | Replaces `/api/memories/forget-user`; returns the §7.5 result. |
+| Kept | runtime, config, servers/channels/threads, DMs, discord-bots, providers, assistant, docs, remote access |
+| Removed | orchestrator/stage-manager/reviewer config and history, `/api/memories*`, `/api/llm/*`, `POST /api/waifus/:id/digest`, `trigger/orchestrator`, `trigger/stage-manager`, `runtime/stop`, `/api/orchestrator/one-shot/models` (→ `GET /api/detector/models`) |
 
-All routes go in `ROUTE_POLICY_MANIFEST`; ids validated with `assertSafeId` / `assertSnowflakeId`;
-note paths validated against §6.7.
+All routes are in `ROUTE_POLICY_MANIFEST`; ids validated with `assertSafeId` / `assertSnowflakeId`.
 
-### 13.2 Settings registry, help and CLI
+### 14.2 Settings registry, help and CLI
 
-The overhaul spec's §10 mechanism stays (one registry describing every setting with type, default,
-scope and help text; `GET /api/help` and `GET /api/help/:topic`; `waifus get|set|list` CLI grammar;
-generated assistant KB), with the key list replaced by §11.3 plus the kept keys. Additional CLI
-commands: `waifus wake <waifu> [note]`, `waifus life <waifu> [--log]`, `waifus notes <waifu>
-[path]`, `waifus forget <userId>`.
+The overhaul spec's §10 mechanism stays (a registry of every setting with type, default, scope and
+help text; `GET /api/help` and `GET /api/help/:topic`; `waifus get|set|list`; generated assistant
+KB), with the key list from §11.3 plus kept keys. Extra CLI commands: `waifus wake <waifu> [note]`,
+`waifus life <waifu> [--log]`, `waifus notes <waifu> [path]`, `waifus forget <userId>`.
 
-### 13.3 Dashboard
+### 14.3 Dashboard
 
 | Screen | Content |
 |---|---|
 | Home | Who is awake, asleep or mid-turn; recent sends and wakes; today's cost. |
-| Cast | Waifu editor: persona, style, custom instructions, model (curated picker with prices and the "contributor" label), schedule, DM settings, sleep notice, daily budget. |
-| Life (new) | Per waifu: live timeline (wakes, tool calls, sends; DM content hidden unless revealed), notes browser and editor, watches, reminders; Wake / Compact / Reset buttons. |
+| Cast | Waifu editor: persona, style, custom instructions, model (curated picker with prices and the contributor label), effort, schedule, DM settings, sleep notice, daily budget, wake-on-name. |
+| Life (new) | Per waifu: live timeline (DM content hidden behind a reveal toggle, D14), notes browser and editor, watches, reminders, search queries; Wake / Compact / Reset buttons; the forget scrub limits text (§7.5). |
 | Rooms | Servers and channels, cast per channel, paused, threads, detector override. |
 | Activity | Logs and model calls. |
-| Settings | Providers, models allow-list, search key and caps, detector, app settings, Remote Access. |
+| Settings | Providers, models allow-list, search key and caps, detector, life limits, app settings, Remote Access. |
 
-Removed: Direction, Memory (replaced by Life → Notes).
+Removed: Direction and Memory. The dashboard assistant drops orchestrator, stage-manager, memory and
+one-shot tools and gains `get_life`, `wake_waifu`, `list_notes`, `read_note`, `write_note`,
+`list_watches`, `list_schedule`, `get_usage`, `list_models`, `forget_person` (confirmation card).
+The assistant KB is rewritten.
 
-The dashboard assistant drops orchestrator, stage-manager, memory and one-shot tools and gains
-`get_life`, `wake_waifu`, `list_notes`, `read_note`, `write_note`, `list_watches`,
-`list_schedule`, `get_usage`, `list_models`. Assistant KB pages are rewritten for Living cast.
+## 15. Implementation order
 
-## 14. Implementation order
-
-Each task goes to one implementer (Opus), followed by one independent Opus review and one fix
-pass, then a local merge.
+Each task goes to one implementer (Opus), then one independent Opus review and one fix pass, then a
+local merge. The branch `living-cast` merges to `main` only after L3.
 
 | Task | Repo | Scope |
 |---|---|---|
-| L0 | winter | W1–W6, one release. Can run alongside L1. |
-| L1 | app | Model layer (§9): `src/models/*`, curated catalog, credentials, usage ledger and alerts on winter, `GET /api/models`, model-id migration, assistant on the new client, removal of the gateway from every surviving caller. The orchestrator and memory jobs are deleted here rather than ported. |
-| L2 | app | Living cast core (§4–§8, §10, §11): intake and wake router, detector, wake queue, life loop and store, harness, tools, notes, maintenance, forget scrub, search, scheduler, Discord additions, retirements and data migrations, tests and goldens. |
+| L0 | winter | W1–W9, one release. |
+| L1 | app | Model layer (§9) on winter, and the demolition: every module §11.1 removes is deleted here rather than ported, except the reused helpers, which move. Context-engine type imports switch from the gateway to winter or app-owned types. The native-choice protocol, catalog and Laya worker move to `src/life/detector/`. Migration tables (§9.4). The app has no reply path between L1 and L2. Starts on winter 0.0.55 plus a local link to L0's work in progress; pins L0's release before merging. |
+| L2 | app | Living cast core (§4–§8, §10, §11.2–§11.3): intake, wake router, detector mapping, wake queue, life loop and store, harness, tools, notes, maintenance, forget, search, scheduler, crash repair, Discord additions, data migrations, tests and goldens. |
 | — | owner | Golden review. |
-| L3 | app | §13: API, settings registry, help, CLI, dashboard, assistant tools and KB. |
-
-L1 and L2 are separate because L1 is a mechanical swap that L2 builds on; the app is not expected
-to be usable between them (the branch `living-cast` is merged to `main` only after L3).
-
-## 15. Owner answers to the open points (2026-10-24)
-
-1. Room loop guard: **off** by default (`life.maxWaifuOnlyRun` 0); the owner can enable it.
-2. Daily budget: **none** by default; set per waifu when wanted.
-3. Release: **3.0.0** together with Phases 4–5, once Living cast is done.
-4. DM content in the dashboard Life timeline: **hidden with a reveal toggle** (local only).
-5. Exa: use `search.exaApiKey` when set, otherwise the anonymous endpoint if Exa's terms allow it
-   (checked during L2); with neither, `web_search` is not offered to the model.
+| L3 | app | §14: API, settings registry, help, CLI, dashboard, assistant tools and KB. |
