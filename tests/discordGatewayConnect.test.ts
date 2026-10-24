@@ -457,7 +457,7 @@ type FakeInteractionCalls = {
   editReply: unknown[];
 };
 
-function fakeInteraction(input: { commandName: string; userId?: string; canManageMessages?: boolean }) {
+function fakeInteraction(input: { commandName: string; userId?: string; admin?: boolean; strings?: Record<string, string> }) {
   const calls: FakeInteractionCalls = { reply: [], deferReply: [], editReply: [] };
   const interaction = {
     commandName: input.commandName,
@@ -465,10 +465,10 @@ function fakeInteraction(input: { commandName: string; userId?: string; canManag
     channelId: "channel-1",
     user: { id: input.userId ?? "user-1" },
     memberPermissions: {
-      has: (permission: bigint) => permission === PermissionFlagsBits.ManageMessages && (input.canManageMessages ?? true)
+      has: (permission: bigint) => permission === PermissionFlagsBits.Administrator && (input.admin ?? true)
     },
     options: {
-      getString: () => null,
+      getString: (name: string) => input.strings?.[name] ?? null,
       getInteger: () => null
     },
     async reply(payload: { content?: string; flags?: unknown }) {
@@ -492,13 +492,8 @@ function slashHandler(gateway: DiscordJsGateway, name: string): (interaction: un
 
 describe("DiscordJsGateway slash commands", () => {
   it.each([
-    ["review", "handleReviewInteraction"],
-    ["clear", "handleClearInteraction"],
-    ["run", "handleRunInteraction"],
-    ["stop", "handleStopInteraction"],
-    ["memories", "handleMemoriesInteraction"],
-    ["print", "handlePrintInteraction"],
-    ["console", "handleDebugInteraction"]
+    ["wake", "handleWakeInteraction"],
+    ["print", "handlePrintInteraction"]
   ])("answers /%s with an ephemeral not-ready message when no listener is attached", async (commandName, handler) => {
     const gateway = makeGateway({ orchestrator: bot("orchestrator") });
     const { interaction, calls } = fakeInteraction({ commandName });
@@ -511,46 +506,51 @@ describe("DiscordJsGateway slash commands", () => {
     ]);
   });
 
-  it("requires Manage Messages for /run at runtime as well as by default permissions", async () => {
+  it("requires Administrator for /wake at runtime as well as by default permissions", async () => {
     const gateway = makeGateway({ orchestrator: bot("orchestrator") });
-    const runs: unknown[] = [];
-    gateway.onRunCommand((event) => {
-      runs.push(event);
+    const wakes: unknown[] = [];
+    gateway.onWakeCommand((event) => {
+      wakes.push(event);
     });
-    const { interaction, calls } = fakeInteraction({ commandName: "run", canManageMessages: false });
+    const { interaction, calls } = fakeInteraction({ commandName: "wake", admin: false });
 
-    await slashHandler(gateway, "handleRunInteraction")(interaction);
+    await slashHandler(gateway, "handleWakeInteraction")(interaction);
 
-    expect(runs).toEqual([]);
+    expect(wakes).toEqual([]);
     expect(calls.deferReply).toEqual([]);
     expect(calls.reply).toEqual([
-      { content: expect.stringContaining("Manage Messages"), flags: MessageFlags.Ephemeral }
+      { content: expect.stringContaining("Administrator"), flags: MessageFlags.Ephemeral }
     ]);
-    const run = buildOrchestratorCommandPayloads().find((payload) => payload.name === "run");
-    expect(run?.defaultMemberPermissions).toBe(PermissionFlagsBits.ManageMessages);
   });
 
-  it("applies a per-user cooldown to /run", async () => {
+  it("hands /wake's waifu and note to the listener, ephemerally", async () => {
     const gateway = makeGateway({ orchestrator: bot("orchestrator") });
-    const runs: Array<{ userId: string }> = [];
-    gateway.onRunCommand((event) => {
-      runs.push(event);
+    const wakes: Array<{ waifuId?: string; note?: string }> = [];
+    gateway.onWakeCommand(async (event) => {
+      wakes.push({ waifuId: event.waifuId, note: event.note });
+      await event.respond("Woke Aria.");
     });
+    const { interaction, calls } = fakeInteraction({ commandName: "wake", strings: { waifu: "aria", note: "  say hi to the new member  " } });
 
-    const first = fakeInteraction({ commandName: "run", userId: "user-1" });
-    const second = fakeInteraction({ commandName: "run", userId: "user-1" });
-    const otherUser = fakeInteraction({ commandName: "run", userId: "user-2" });
-    await slashHandler(gateway, "handleRunInteraction")(first.interaction);
-    await slashHandler(gateway, "handleRunInteraction")(second.interaction);
-    await slashHandler(gateway, "handleRunInteraction")(otherUser.interaction);
+    await slashHandler(gateway, "handleWakeInteraction")(interaction);
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(runs.map((run) => run.userId)).toEqual(["user-1", "user-2"]);
-    expect(first.calls.deferReply).toHaveLength(1);
-    expect(second.calls.deferReply).toEqual([]);
-    expect(second.calls.reply).toEqual([
-      { content: expect.stringContaining("try again in"), flags: MessageFlags.Ephemeral }
-    ]);
+    expect(wakes).toEqual([{ waifuId: "aria", note: "say hi to the new member" }]);
+    expect(calls.deferReply).toEqual([{ flags: MessageFlags.Ephemeral }]);
+    expect(calls.editReply).toEqual(["Woke Aria."]);
+  });
+
+  it("sends a long /print as an attached file", async () => {
+    const gateway = makeGateway({ orchestrator: bot("orchestrator") });
+    gateway.onPrintCommand(async (event) => {
+      await event.respond("x".repeat(5_000));
+    });
+    const { interaction, calls } = fakeInteraction({ commandName: "print", strings: { type: "system_prompt", waifu: "aria" } });
+
+    await slashHandler(gateway, "handlePrintInteraction")(interaction);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(calls.editReply).toEqual([{ content: "Attached as system_prompt.md.", files: [{ attachment: expect.any(Buffer), name: "system_prompt.md" }] }]);
   });
 });
 

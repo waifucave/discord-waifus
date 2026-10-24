@@ -113,15 +113,12 @@ export interface DiscordGatewayFacade {
   onThreadChange?(listener: DiscordThreadListener): () => void;
   /** Best-effort: join a (public) thread so its messages are delivered. */
   joinThread?(input: { guildId: string; threadId: string }): Promise<void>;
-  onReviewCommand?(listener: DiscordReviewCommandListener): () => void;
-  onClearCommand?(listener: DiscordClearCommandListener): () => void;
-  onRunCommand?(listener: DiscordRunCommandListener): () => void;
-  onRunWaifuAutocomplete?(listener: DiscordRunWaifuAutocompleteListener): () => void;
-  onStopCommand?(listener: DiscordStopCommandListener): () => void;
-  onMemoriesCommand?(listener: DiscordMemoriesCommandListener): () => void;
+  /** Living cast §10.4: the owner's `/wake <waifu> [note]` (House bot, guild). */
+  onWakeCommand?(listener: DiscordWakeCommandListener): () => void;
+  /** Living cast §10.4: the owner's `/print system_prompt|notes|life <waifu>` (ephemeral). */
   onPrintCommand?(listener: DiscordPrintCommandListener): () => void;
-  onPrintWaifuAutocomplete?(listener: DiscordPrintWaifuAutocompleteListener): () => void;
-  onDebugCommand?(listener: DiscordDebugCommandListener): () => void;
+  /** The `waifu` option of `/wake` and `/print`. */
+  onWaifuAutocomplete?(listener: DiscordWaifuAutocompleteListener): () => void;
   /**
    * Phase 5 caches (spec 9.4): gateway events as plain data. Conversation events carry messages,
    * reactions and connection state (trust); own sends are published before sendWaifuMessage returns.
@@ -210,26 +207,6 @@ export interface DiscordGatewayFacade {
     channelId: string;
     senderBotId?: string;
   }): Promise<void>;
-  validateDebugChannel?(input: {
-    channelId: string;
-    requireMessages?: boolean;
-    requireSend?: boolean;
-  }): Promise<DiscordDebugChannelInfo>;
-  sendDebugMessage?(input: {
-    channelId: string;
-    content: string;
-  }): Promise<{ messageId: string }>;
-  deleteMessages?(input: {
-    guildId: string;
-    channelId: string;
-    messageIds: string[];
-    authorId?: string;
-    authorIdByMessageId?: Record<string, string>;
-  }): Promise<DiscordDeleteMessagesResult>;
-  deleteAllMessages?(input: {
-    guildId: string;
-    channelId: string;
-  }): Promise<DiscordDeleteChannelMessagesResult>;
 }
 
 /** What the gateway knows about a thread or forum post a message lives in (spec 9.5). */
@@ -292,80 +269,32 @@ export type DiscordSlashCommandEvent = {
   guildId: string;
   channelId: string;
   userId: string;
-  commandMessageId?: string;
   respond: (content: string) => Promise<void>;
 };
 
-export type DiscordReviewCommandEvent = DiscordSlashCommandEvent;
-export type DiscordClearCommandEvent = DiscordSlashCommandEvent & {
-  count?: number;
-  type?: DiscordClearType;
-};
-export type DiscordRunCommandEvent = DiscordSlashCommandEvent & {
-  waifuId?: string;
-  sceneDirection?: string;
-};
 export type DiscordAutocompleteChoice = {
   name: string;
   value: string;
 };
-export type DiscordRunWaifuAutocompleteEvent = {
-  guildId?: string;
-  channelId?: string;
-  focusedValue: string;
-  respond: (choices: DiscordAutocompleteChoice[]) => Promise<void>;
+export type DiscordWakeCommandEvent = DiscordSlashCommandEvent & {
+  waifuId?: string;
+  note?: string;
 };
-export type DiscordStopCommandEvent = DiscordSlashCommandEvent;
-export type DiscordMemoriesCommandEvent = DiscordSlashCommandEvent;
 export type DiscordPrintCommandEvent = DiscordSlashCommandEvent & {
   type?: DiscordPrintCommandType;
   waifuId?: string;
-  /** Ephemeral follow-up visible only to the invoker (prompt prints never post publicly). */
-  followUp?: (content: string) => Promise<void>;
 };
-export type DiscordPrintWaifuAutocompleteEvent = {
+export type DiscordWaifuAutocompleteEvent = {
   guildId?: string;
   channelId?: string;
   focusedValue: string;
   respond: (choices: DiscordAutocompleteChoice[]) => Promise<void>;
 };
-export type DiscordDebugCommandEvent = DiscordSlashCommandEvent & {
-  type?: DiscordDebugCommandType;
-  sourceChannelId?: string;
-};
-export type DiscordReviewCommandListener = (event: DiscordReviewCommandEvent) => void | Promise<void>;
-export type DiscordClearCommandListener = (event: DiscordClearCommandEvent) => void | Promise<void>;
-export type DiscordRunCommandListener = (event: DiscordRunCommandEvent) => void | Promise<void>;
-export type DiscordRunWaifuAutocompleteListener = (event: DiscordRunWaifuAutocompleteEvent) => void | Promise<void>;
-export type DiscordStopCommandListener = (event: DiscordStopCommandEvent) => void | Promise<void>;
-export type DiscordMemoriesCommandListener = (event: DiscordMemoriesCommandEvent) => void | Promise<void>;
+export type DiscordWakeCommandListener = (event: DiscordWakeCommandEvent) => void | Promise<void>;
 export type DiscordPrintCommandListener = (event: DiscordPrintCommandEvent) => void | Promise<void>;
-export type DiscordPrintWaifuAutocompleteListener = (
-  event: DiscordPrintWaifuAutocompleteEvent
-) => void | Promise<void>;
-export type DiscordDebugCommandListener = (event: DiscordDebugCommandEvent) => void | Promise<void>;
+export type DiscordWaifuAutocompleteListener = (event: DiscordWaifuAutocompleteEvent) => void | Promise<void>;
 
-export type DiscordClearType = "waifus" | "users" | "both" | "everything";
-export type DiscordDebugCommandType = "set" | "unset";
-export type DiscordPrintCommandType = "system_prompt" | "memories" | "personality";
-
-export type DiscordDeleteMessagesResult = {
-  deletedMessageIds: string[];
-  failedMessageIds: Array<{ messageId: string; message: string }>;
-};
-
-export type DiscordDeleteChannelMessagesResult = {
-  scannedMessageCount: number;
-  deletedCount: number;
-  failedCount: number;
-  failedMessageIds: Array<{ messageId: string; message: string }>;
-};
-
-export type DiscordDebugChannelInfo = {
-  channelId: string;
-  guildId?: string;
-  name?: string;
-};
+export type DiscordPrintCommandType = "system_prompt" | "notes" | "life";
 
 export type DiscordChannelMetadata = {
   guildId: string;
@@ -380,19 +309,6 @@ type DiscordCache = {
   members?: GuildMemberCacheEntry[];
   emojis?: GuildEmojiCacheEntry[];
   roles?: GuildRoleCacheEntry[];
-};
-
-type DiscordFetchedMessageForDelete = {
-  id: string;
-  createdTimestamp?: number;
-};
-
-type DiscordMessageManageableChannel = {
-  messages: {
-    fetch(options: { limit?: number; before?: string }): Promise<{ values(): Iterable<DiscordFetchedMessageForDelete> }>;
-    delete(messageId: string): Promise<unknown>;
-  };
-  bulkDelete?(messages: string[], filterOld?: boolean): Promise<{ keys(): IterableIterator<string> }>;
 };
 
 export type DiscordJsGatewayOptions = {
@@ -449,17 +365,10 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   private readonly threadListeners = new Set<DiscordThreadListener>();
   private readonly conversationListeners = new Set<DiscordConversationEventListener>();
   private readonly directoryListeners = new Set<DiscordDirectoryEventListener>();
-  private readonly reviewListeners = new Set<DiscordReviewCommandListener>();
-  private readonly clearListeners = new Set<DiscordClearCommandListener>();
-  private readonly runListeners = new Set<DiscordRunCommandListener>();
-  private readonly runWaifuAutocompleteListeners = new Set<DiscordRunWaifuAutocompleteListener>();
-  private readonly stopListeners = new Set<DiscordStopCommandListener>();
-  private readonly memoriesListeners = new Set<DiscordMemoriesCommandListener>();
+  private readonly wakeListeners = new Set<DiscordWakeCommandListener>();
   private readonly printListeners = new Set<DiscordPrintCommandListener>();
-  private readonly printWaifuAutocompleteListeners = new Set<DiscordPrintWaifuAutocompleteListener>();
-  private readonly debugListeners = new Set<DiscordDebugCommandListener>();
+  private readonly waifuAutocompleteListeners = new Set<DiscordWaifuAutocompleteListener>();
   private readonly recentMentionRefreshes = new Map<string, number>();
-  private readonly runCooldowns = new Map<string, number>();
   // DMs (spec 9.1): wanted (bot → waifu, from eligibility) and what each live client was built with.
   private dmWaifuByBot = new Map<string, string>();
   private readonly clientDmWaifu = new Map<string, string>();
@@ -1121,49 +1030,23 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
     client.on(Events.ThreadDelete, (thread) => emitThread("delete", thread));
     client.on(Events.InteractionCreate, (interaction) => {
       if (interaction.isAutocomplete()) {
-        if (interaction.commandName === RUN_COMMAND_NAME) {
-          this.runBackground("Discord run autocomplete interaction failed", {
+        if (interaction.commandName === WAKE_COMMAND_NAME || interaction.commandName === PRINT_COMMAND_NAME) {
+          this.runBackground("Discord waifu autocomplete interaction failed", {
             commandName: interaction.commandName,
             guildId: interaction.guildId,
             channelId: interaction.channelId
-          }, () => this.handleRunAutocompleteInteraction(interaction));
-        } else if (interaction.commandName === PRINT_COMMAND_NAME) {
-          this.runBackground("Discord print autocomplete interaction failed", {
-            commandName: interaction.commandName,
-            guildId: interaction.guildId,
-            channelId: interaction.channelId
-          }, () => this.handlePrintAutocompleteInteraction(interaction));
+          }, () => this.handleWaifuAutocompleteInteraction(interaction));
         }
         return;
       }
       if (!interaction.isChatInputCommand()) return;
-      if (interaction.commandName === REVIEW_COMMAND_NAME) {
-        this.runBackground("Discord review interaction failed", interactionLogContext(interaction), () =>
-          this.handleReviewInteraction(interaction)
-        );
-      } else if (interaction.commandName === CLEAR_COMMAND_NAME) {
-        this.runBackground("Discord clear interaction failed", interactionLogContext(interaction), () =>
-          this.handleClearInteraction(interaction)
-        );
-      } else if (interaction.commandName === RUN_COMMAND_NAME) {
-        this.runBackground("Discord run interaction failed", interactionLogContext(interaction), () =>
-          this.handleRunInteraction(interaction)
-        );
-      } else if (interaction.commandName === STOP_COMMAND_NAME) {
-        this.runBackground("Discord stop interaction failed", interactionLogContext(interaction), () =>
-          this.handleStopInteraction(interaction)
-        );
-      } else if (interaction.commandName === MEMORIES_COMMAND_NAME) {
-        this.runBackground("Discord memories interaction failed", interactionLogContext(interaction), () =>
-          this.handleMemoriesInteraction(interaction)
+      if (interaction.commandName === WAKE_COMMAND_NAME) {
+        this.runBackground("Discord wake interaction failed", interactionLogContext(interaction), () =>
+          this.handleWakeInteraction(interaction)
         );
       } else if (interaction.commandName === PRINT_COMMAND_NAME) {
         this.runBackground("Discord print interaction failed", interactionLogContext(interaction), () =>
           this.handlePrintInteraction(interaction)
-        );
-      } else if (interaction.commandName === DEBUG_COMMAND_NAME) {
-        this.runBackground("Discord debug interaction failed", interactionLogContext(interaction), () =>
-          this.handleDebugInteraction(interaction)
         );
       }
     });
@@ -1184,34 +1067,9 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
     if (channel && channel.isThread() && channel.joinable && !channel.archived) await channel.join();
   }
 
-  onReviewCommand(listener: DiscordReviewCommandListener): () => void {
-    this.reviewListeners.add(listener);
-    return () => this.reviewListeners.delete(listener);
-  }
-
-  onClearCommand(listener: DiscordClearCommandListener): () => void {
-    this.clearListeners.add(listener);
-    return () => this.clearListeners.delete(listener);
-  }
-
-  onRunCommand(listener: DiscordRunCommandListener): () => void {
-    this.runListeners.add(listener);
-    return () => this.runListeners.delete(listener);
-  }
-
-  onRunWaifuAutocomplete(listener: DiscordRunWaifuAutocompleteListener): () => void {
-    this.runWaifuAutocompleteListeners.add(listener);
-    return () => this.runWaifuAutocompleteListeners.delete(listener);
-  }
-
-  onStopCommand(listener: DiscordStopCommandListener): () => void {
-    this.stopListeners.add(listener);
-    return () => this.stopListeners.delete(listener);
-  }
-
-  onMemoriesCommand(listener: DiscordMemoriesCommandListener): () => void {
-    this.memoriesListeners.add(listener);
-    return () => this.memoriesListeners.delete(listener);
+  onWakeCommand(listener: DiscordWakeCommandListener): () => void {
+    this.wakeListeners.add(listener);
+    return () => this.wakeListeners.delete(listener);
   }
 
   onPrintCommand(listener: DiscordPrintCommandListener): () => void {
@@ -1219,14 +1077,9 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
     return () => this.printListeners.delete(listener);
   }
 
-  onPrintWaifuAutocomplete(listener: DiscordPrintWaifuAutocompleteListener): () => void {
-    this.printWaifuAutocompleteListeners.add(listener);
-    return () => this.printWaifuAutocompleteListeners.delete(listener);
-  }
-
-  onDebugCommand(listener: DiscordDebugCommandListener): () => void {
-    this.debugListeners.add(listener);
-    return () => this.debugListeners.delete(listener);
+  onWaifuAutocomplete(listener: DiscordWaifuAutocompleteListener): () => void {
+    this.waifuAutocompleteListeners.add(listener);
+    return () => this.waifuAutocompleteListeners.delete(listener);
   }
 
   async listGuilds(): Promise<Array<{ guildId: string; name: string }>> {
@@ -1456,224 +1309,6 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
     }
   }
 
-  async validateDebugChannel(input: {
-    channelId: string;
-    requireMessages?: boolean;
-    requireSend?: boolean;
-  }): Promise<DiscordDebugChannelInfo> {
-    const channel = await this.orchestratorClient().channels.fetch(input.channelId);
-    if (!channel) {
-      throw new Error(`Discord channel ${input.channelId} is not accessible to the orchestrator bot.`);
-    }
-    if (input.requireMessages && !("messages" in channel)) {
-      throw new Error(`Discord channel ${input.channelId} is not readable by the orchestrator bot.`);
-    }
-    if (input.requireSend && !("send" in channel)) {
-      throw new Error(`Discord channel ${input.channelId} is not sendable by the orchestrator bot.`);
-    }
-    return {
-      channelId: input.channelId,
-      guildId: "guildId" in channel && typeof channel.guildId === "string" ? channel.guildId : undefined,
-      name: "name" in channel && typeof channel.name === "string" ? channel.name : undefined
-    };
-  }
-
-  async sendDebugMessage(input: {
-    channelId: string;
-    content: string;
-  }): Promise<{ messageId: string }> {
-    const channel = await this.orchestratorClient().channels.fetch(input.channelId);
-    if (!channel || !("send" in channel)) {
-      throw new Error(`Discord channel ${input.channelId} is not sendable by the orchestrator bot.`);
-    }
-    const sent = await channel.send({
-      content: input.content,
-      allowedMentions: { parse: [], users: [], roles: [], repliedUser: false }
-    });
-    return { messageId: sent.id };
-  }
-
-  async deleteMessages(input: {
-    guildId: string;
-    channelId: string;
-    messageIds: string[];
-    authorId?: string;
-    authorIdByMessageId?: Record<string, string>;
-  }): Promise<DiscordDeleteMessagesResult> {
-    const result: DiscordDeleteMessagesResult = {
-      deletedMessageIds: [],
-      failedMessageIds: []
-    };
-    if (input.messageIds.length === 0) return result;
-
-    const orchestrator = this.orchestratorClient();
-    const orchestratorChannel = await orchestrator.channels.fetch(input.channelId);
-    if (!orchestratorChannel || !("messages" in orchestratorChannel)) {
-      throw new Error(`Discord channel ${input.channelId} is not message-manageable.`);
-    }
-
-    const remaining = new Set(input.messageIds);
-    const supportsBulkDelete =
-      "bulkDelete" in orchestratorChannel &&
-      typeof (orchestratorChannel as { bulkDelete?: unknown }).bulkDelete === "function";
-    if (input.messageIds.length >= 2 && supportsBulkDelete) {
-      try {
-        const bulkChannel = orchestratorChannel as unknown as {
-          bulkDelete(messages: string[], filterOld?: boolean): Promise<{ keys(): IterableIterator<string> }>;
-        };
-        const bulkDeleted = await bulkChannel.bulkDelete(input.messageIds, true);
-        for (const id of bulkDeleted.keys()) {
-          if (remaining.has(id)) {
-            result.deletedMessageIds.push(id);
-            remaining.delete(id);
-          }
-        }
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        this.options.logger?.warn(
-          "Discord bulk delete failed, falling back to per-message deletes",
-          {
-            guildId: input.guildId,
-            channelId: input.channelId,
-            messageCount: input.messageIds.length,
-            message
-          }
-        );
-      }
-    }
-
-    if (remaining.size === 0) return result;
-
-    const channelByBotId = new Map<string, typeof orchestratorChannel>();
-    channelByBotId.set(this.options.orchestrator.id, orchestratorChannel);
-    for (const messageId of input.messageIds) {
-      if (!remaining.has(messageId)) continue;
-      const messageAuthorId = input.authorIdByMessageId?.[messageId] ?? input.authorId;
-      const client = this.clientForAuthor(messageAuthorId);
-      const botId = this.botIdForClient(client);
-      let channel = botId ? channelByBotId.get(botId) : undefined;
-      try {
-        if (!channel) {
-          const fetched = await client.channels.fetch(input.channelId);
-          if (!fetched || !("messages" in fetched)) {
-            throw new Error(`Discord channel ${input.channelId} is not message-manageable from this bot.`);
-          }
-          channel = fetched;
-          if (botId) channelByBotId.set(botId, fetched);
-        }
-        await channel.messages.delete(messageId);
-        result.deletedMessageIds.push(messageId);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        result.failedMessageIds.push({ messageId, message });
-        this.options.logger?.warn("Failed to delete Discord message", {
-          guildId: input.guildId,
-          channelId: input.channelId,
-          messageId,
-          authorId: messageAuthorId,
-          deletingBotId: botId,
-          message
-        });
-      }
-    }
-    return result;
-  }
-
-  async deleteAllMessages(input: {
-    guildId: string;
-    channelId: string;
-  }): Promise<DiscordDeleteChannelMessagesResult> {
-    const result: DiscordDeleteChannelMessagesResult = {
-      scannedMessageCount: 0,
-      deletedCount: 0,
-      failedCount: 0,
-      failedMessageIds: []
-    };
-
-    const orchestrator = this.orchestratorClient();
-    const fetchedChannel = await orchestrator.channels.fetch(input.channelId);
-    if (!fetchedChannel || !("messages" in fetchedChannel)) {
-      throw new Error(`Discord channel ${input.channelId} is not message-manageable.`);
-    }
-    const channel = fetchedChannel as unknown as DiscordMessageManageableChannel;
-
-    let before: string | undefined;
-    while (true) {
-      const page = await channel.messages.fetch(before ? { limit: 100, before } : { limit: 100 });
-      const messages = [...page.values()];
-      if (messages.length === 0) break;
-      result.scannedMessageCount += messages.length;
-
-      await this.deleteFetchedMessages({
-        guildId: input.guildId,
-        channelId: input.channelId,
-        channel,
-        messages,
-        result
-      });
-
-      const nextBefore = oldestMessageId(messages);
-      if (!nextBefore || nextBefore === before) break;
-      before = nextBefore;
-    }
-
-    return result;
-  }
-
-  private async deleteFetchedMessages(input: {
-    guildId: string;
-    channelId: string;
-    channel: DiscordMessageManageableChannel;
-    messages: DiscordFetchedMessageForDelete[];
-    result: DiscordDeleteChannelMessagesResult;
-  }): Promise<void> {
-    const remaining = new Set(input.messages.map((message) => message.id));
-    const bulkIds = input.messages
-      .filter((message) => isBulkDeletableMessage(message))
-      .map((message) => message.id);
-
-    if (bulkIds.length >= 2 && input.channel.bulkDelete) {
-      for (const chunk of chunks(bulkIds, DISCORD_BULK_DELETE_MAX_MESSAGES)) {
-        if (chunk.length < 2) continue;
-        try {
-          const bulkDeleted = await input.channel.bulkDelete(chunk, true);
-          for (const id of bulkDeleted.keys()) {
-            if (remaining.delete(id)) {
-              input.result.deletedCount += 1;
-            }
-          }
-        } catch (error) {
-          this.options.logger?.warn("Discord bulk delete failed during full channel clear", {
-            guildId: input.guildId,
-            channelId: input.channelId,
-            messageCount: chunk.length,
-            message: error instanceof Error ? error.message : String(error)
-          });
-        }
-      }
-    }
-
-    for (const message of input.messages) {
-      if (!remaining.has(message.id)) continue;
-      try {
-        await input.channel.messages.delete(message.id);
-        remaining.delete(message.id);
-        input.result.deletedCount += 1;
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        remaining.delete(message.id);
-        input.result.failedCount += 1;
-        input.result.failedMessageIds.push({ messageId: message.id, message: errorMessage });
-        this.options.logger?.warn("Failed to delete Discord message during full channel clear", {
-          guildId: input.guildId,
-          channelId: input.channelId,
-          messageId: message.id,
-          message: errorMessage
-        });
-      }
-    }
-  }
-
   private async cacheForGuild(guildId: string): Promise<DiscordCache> {
     return this.options.cacheForGuild?.(guildId) ?? {
       members: this.options.members,
@@ -1869,78 +1504,66 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
       });
   }
 
-  private async handleReviewInteraction(interaction: ChatInputCommandInteraction): Promise<void> {
-    if (await this.replyIfNotReady(interaction, this.reviewListeners, REVIEW_COMMAND_NAME)) return;
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  /** Living cast §10.4: `/wake` and `/print` are the owner's (Administrator), checked here too. */
+  private async replyIfNotOwner(interaction: ChatInputCommandInteraction, commandName: string): Promise<boolean> {
     if (!interaction.guildId || !interaction.channelId) {
-      await interaction.editReply("/review can only be used in a server channel.");
-      return;
+      await replyEphemeral(interaction, `/${commandName} can only be used in a server channel.`);
+      return true;
     }
-    const event: DiscordReviewCommandEvent = {
-      guildId: interaction.guildId,
+    // Default member permissions can be overridden per server, so the permission is enforced here.
+    if (!interaction.memberPermissions?.has(OWNER_COMMAND_PERMISSIONS)) {
+      await replyEphemeral(interaction, `You need the Administrator permission to use /${commandName}.`);
+      return true;
+    }
+    return false;
+  }
+
+  private async handleWakeInteraction(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (await this.replyIfNotReady(interaction, this.wakeListeners, WAKE_COMMAND_NAME)) return;
+    if (await this.replyIfNotOwner(interaction, WAKE_COMMAND_NAME)) return;
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const note = sanitizeOptionString(interaction.options.getString(WAKE_NOTE_OPTION_NAME));
+    const event: DiscordWakeCommandEvent = {
+      guildId: interaction.guildId!,
       channelId: interaction.channelId,
       userId: interaction.user.id,
+      waifuId: sanitizeOptionString(interaction.options.getString(WAIFU_OPTION_NAME)),
+      ...(note ? { note } : {}),
       respond: async (content) => {
         await interaction.editReply(content);
       }
     };
-    for (const listener of this.reviewListeners) {
-      this.dispatchListener("Discord review command listener failed", listener, event, slashCommandLogContext(event));
+    for (const listener of this.wakeListeners) {
+      this.dispatchListener("Discord wake command listener failed", listener, event, slashCommandLogContext(event));
     }
   }
 
-  private async handleClearInteraction(interaction: ChatInputCommandInteraction): Promise<void> {
-    if (await this.replyIfNotReady(interaction, this.clearListeners, CLEAR_COMMAND_NAME)) return;
+  private async handlePrintInteraction(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (await this.replyIfNotReady(interaction, this.printListeners, PRINT_COMMAND_NAME)) return;
+    if (await this.replyIfNotOwner(interaction, PRINT_COMMAND_NAME)) return;
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-    if (!interaction.guildId || !interaction.channelId) {
-      await interaction.editReply("/clear can only be used in a server channel.");
-      return;
-    }
-    const event: DiscordClearCommandEvent = {
-      guildId: interaction.guildId,
+    const event: DiscordPrintCommandEvent = {
+      guildId: interaction.guildId!,
       channelId: interaction.channelId,
       userId: interaction.user.id,
-      count: interaction.options.getInteger(CLEAR_COUNT_OPTION_NAME) ?? undefined,
-      type: parseClearType(interaction.options.getString(CLEAR_TYPE_OPTION_NAME)),
+      type: parsePrintCommandType(interaction.options.getString(PRINT_TYPE_OPTION_NAME)),
+      waifuId: sanitizeOptionString(interaction.options.getString(WAIFU_OPTION_NAME)),
+      // A print longer than one message goes as a text file on the same ephemeral reply.
       respond: async (content) => {
-        await interaction.editReply(content);
+        if (content.length <= PRINT_INLINE_MAX_CHARS) {
+          await interaction.editReply(content);
+          return;
+        }
+        const name = `${parsePrintCommandType(interaction.options.getString(PRINT_TYPE_OPTION_NAME)) ?? "print"}.md`;
+        await interaction.editReply({ content: `Attached as ${name}.`, files: [{ attachment: Buffer.from(content, "utf8"), name }] });
       }
     };
-    for (const listener of this.clearListeners) {
-      this.dispatchListener("Discord clear command listener failed", listener, event, slashCommandLogContext(event));
-    }
-  }
-
-  private async handleRunInteraction(interaction: ChatInputCommandInteraction): Promise<void> {
-    if (await this.replyIfNotReady(interaction, this.runListeners, RUN_COMMAND_NAME)) return;
-    if (!interaction.guildId || !interaction.channelId) {
-      await replyEphemeral(interaction, "/run can only be used in a server channel.");
-      return;
-    }
-    // Default member permissions can be overridden per server, and /run carries a private scene
-    // direction straight into the prompt, so the permission is enforced here too.
-    if (!interaction.memberPermissions?.has(RUN_COMMAND_PERMISSIONS)) {
-      await replyEphemeral(interaction, "You need the Manage Messages permission to use /run.");
-      return;
-    }
-    const cooldownMs = this.takeRunCooldown(interaction.guildId, interaction.user.id);
-    if (cooldownMs > 0) {
-      await replyEphemeral(interaction, `/run is cooling down; try again in ${Math.ceil(cooldownMs / 1000)}s.`);
-      return;
-    }
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-    const event: DiscordRunCommandEvent = {
-      guildId: interaction.guildId,
-      channelId: interaction.channelId,
-      userId: interaction.user.id,
-      waifuId: sanitizeRunString(interaction.options.getString(RUN_WAIFU_OPTION_NAME)),
-      sceneDirection: sanitizeRunString(interaction.options.getString(RUN_SCENE_DIRECTION_OPTION_NAME)),
-      respond: async (content) => {
-        await interaction.editReply(content);
-      }
-    };
-    for (const listener of this.runListeners) {
-      this.dispatchListener("Discord run command listener failed", listener, event, slashCommandLogContext(event));
+    for (const listener of this.printListeners) {
+      this.dispatchListener("Discord print command listener failed", listener, event, {
+        ...slashCommandLogContext(event),
+        type: event.type,
+        waifuId: event.waifuId
+      });
     }
   }
 
@@ -1955,30 +1578,13 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
     return true;
   }
 
-  /** Returns the remaining cooldown, or 0 after recording this use. */
-  private takeRunCooldown(guildId: string, userId: string): number {
-    const now = Date.now();
-    const key = `${guildId}:${userId}`;
-    const last = this.runCooldowns.get(key);
-    if (last !== undefined && now - last < RUN_COMMAND_COOLDOWN_MS) {
-      return RUN_COMMAND_COOLDOWN_MS - (now - last);
-    }
-    if (this.runCooldowns.size >= MAX_RUN_COOLDOWN_ENTRIES) {
-      for (const [entryKey, at] of this.runCooldowns) {
-        if (now - at >= RUN_COMMAND_COOLDOWN_MS) this.runCooldowns.delete(entryKey);
-      }
-    }
-    this.runCooldowns.set(key, now);
-    return 0;
-  }
-
-  private async handleRunAutocompleteInteraction(interaction: AutocompleteInteraction): Promise<void> {
+  private async handleWaifuAutocompleteInteraction(interaction: AutocompleteInteraction): Promise<void> {
     const focused = interaction.options.getFocused(true);
-    if (focused.name !== RUN_WAIFU_OPTION_NAME) {
+    if (focused.name !== WAIFU_OPTION_NAME || this.waifuAutocompleteListeners.size === 0) {
       await interaction.respond([]);
       return;
     }
-    const event: DiscordRunWaifuAutocompleteEvent = {
+    const event: DiscordWaifuAutocompleteEvent = {
       guildId: interaction.guildId ?? undefined,
       channelId: interaction.channelId ?? undefined,
       focusedValue: typeof focused.value === "string" ? focused.value : String(focused.value ?? ""),
@@ -1986,139 +1592,13 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
         await interaction.respond(choices.slice(0, MAX_AUTOCOMPLETE_CHOICES));
       }
     };
-    if (this.runWaifuAutocompleteListeners.size === 0) {
-      await interaction.respond([]);
-      return;
-    }
-    await Promise.all([...this.runWaifuAutocompleteListeners].map((listener) =>
-      this.callListener("Discord run autocomplete listener failed", listener, event, {
+    await Promise.all([...this.waifuAutocompleteListeners].map((listener) =>
+      this.callListener("Discord waifu autocomplete listener failed", listener, event, {
         guildId: event.guildId,
         channelId: event.channelId,
         focusedValue: event.focusedValue
       })
     ));
-  }
-
-  private async handleStopInteraction(interaction: ChatInputCommandInteraction): Promise<void> {
-    if (await this.replyIfNotReady(interaction, this.stopListeners, STOP_COMMAND_NAME)) return;
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-    if (!interaction.guildId || !interaction.channelId) {
-      await interaction.editReply("/stop can only be used in a server channel.");
-      return;
-    }
-    const event: DiscordStopCommandEvent = {
-      guildId: interaction.guildId,
-      channelId: interaction.channelId,
-      userId: interaction.user.id,
-      respond: async (content) => {
-        await interaction.editReply(content);
-      }
-    };
-    for (const listener of this.stopListeners) {
-      this.dispatchListener("Discord stop command listener failed", listener, event, slashCommandLogContext(event));
-    }
-  }
-
-  private async handleMemoriesInteraction(interaction: ChatInputCommandInteraction): Promise<void> {
-    if (await this.replyIfNotReady(interaction, this.memoriesListeners, MEMORIES_COMMAND_NAME)) return;
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-    if (!interaction.guildId || !interaction.channelId) {
-      await interaction.editReply("/memories can only be used in a server channel.");
-      return;
-    }
-    const event: DiscordMemoriesCommandEvent = {
-      guildId: interaction.guildId,
-      channelId: interaction.channelId,
-      userId: interaction.user.id,
-      respond: async (content) => {
-        await interaction.editReply(content);
-      }
-    };
-    for (const listener of this.memoriesListeners) {
-      this.dispatchListener("Discord memories command listener failed", listener, event, slashCommandLogContext(event));
-    }
-  }
-
-  private async handlePrintInteraction(interaction: ChatInputCommandInteraction): Promise<void> {
-    if (await this.replyIfNotReady(interaction, this.printListeners, PRINT_COMMAND_NAME)) return;
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-    if (!interaction.guildId || !interaction.channelId) {
-      await interaction.editReply("/print can only be used in a server channel.");
-      return;
-    }
-    const event: DiscordPrintCommandEvent = {
-      guildId: interaction.guildId,
-      channelId: interaction.channelId,
-      userId: interaction.user.id,
-      type: parsePrintCommandType(interaction.options.getString(PRINT_TYPE_OPTION_NAME)),
-      waifuId: sanitizeRunString(interaction.options.getString(PRINT_WAIFU_OPTION_NAME)),
-      respond: async (content) => {
-        await interaction.editReply(content);
-      },
-      followUp: async (content) => {
-        await interaction.followUp({ content, flags: MessageFlags.Ephemeral });
-      }
-    };
-    for (const listener of this.printListeners) {
-      this.dispatchListener("Discord print command listener failed", listener, event, {
-        ...slashCommandLogContext(event),
-        type: event.type,
-        waifuId: event.waifuId
-      });
-    }
-  }
-
-  private async handlePrintAutocompleteInteraction(interaction: AutocompleteInteraction): Promise<void> {
-    const focused = interaction.options.getFocused(true);
-    if (focused.name !== PRINT_WAIFU_OPTION_NAME) {
-      await interaction.respond([]);
-      return;
-    }
-    const event: DiscordPrintWaifuAutocompleteEvent = {
-      guildId: interaction.guildId ?? undefined,
-      channelId: interaction.channelId ?? undefined,
-      focusedValue: typeof focused.value === "string" ? focused.value : String(focused.value ?? ""),
-      respond: async (choices) => {
-        await interaction.respond(choices.slice(0, MAX_AUTOCOMPLETE_CHOICES));
-      }
-    };
-    if (this.printWaifuAutocompleteListeners.size === 0) {
-      await interaction.respond([]);
-      return;
-    }
-    await Promise.all([...this.printWaifuAutocompleteListeners].map((listener) =>
-      this.callListener("Discord print autocomplete listener failed", listener, event, {
-        guildId: event.guildId,
-        channelId: event.channelId,
-        focusedValue: event.focusedValue
-      })
-    ));
-  }
-
-  private async handleDebugInteraction(interaction: ChatInputCommandInteraction): Promise<void> {
-    if (await this.replyIfNotReady(interaction, this.debugListeners, DEBUG_COMMAND_NAME)) return;
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-    if (!interaction.guildId || !interaction.channelId) {
-      await interaction.editReply("/console can only be used in a server channel.");
-      return;
-    }
-    const event: DiscordDebugCommandEvent = {
-      guildId: interaction.guildId,
-      channelId: interaction.channelId,
-      userId: interaction.user.id,
-      type: parseDebugCommandType(interaction.options.getString(DEBUG_TYPE_OPTION_NAME)),
-      sourceChannelId: sanitizeRunString(interaction.options.getString(DEBUG_CHANNEL_ID_OPTION_NAME)),
-      respond: async (content) => {
-        await interaction.editReply(content);
-      }
-    };
-    for (const listener of this.debugListeners) {
-      this.dispatchListener("Discord debug command listener failed", listener, event, {
-        ...slashCommandLogContext(event),
-        type: event.type,
-        sourceChannelId: event.sourceChannelId
-      });
-    }
   }
 }
 
@@ -2431,34 +1911,20 @@ const UNRECOVERABLE_CLOSE_CODE_DESCRIPTIONS: Record<number, string> = {
   4013: "invalid intents",
   4014: "disallowed intents: enable Message Content for this bot in the Discord Developer Portal"
 };
-const REVIEW_COMMAND_NAME = "review";
 const DM_FORGET_COMMAND_NAME = "forget";
 const DM_FORGET_WHAT_OPTION_NAME = "what";
 const DM_FORGET_CONFIRM_MS = 30_000;
-const CLEAR_COMMAND_NAME = "clear";
-const RUN_COMMAND_NAME = "run";
-const STOP_COMMAND_NAME = "stop";
-const MEMORIES_COMMAND_NAME = "memories";
+const WAKE_COMMAND_NAME = "wake";
 const PRINT_COMMAND_NAME = "print";
-const DEBUG_COMMAND_NAME = "console";
-const LEGACY_DEBUG_COMMAND_NAMES = ["debug"];
-const CLEAR_COUNT_OPTION_NAME = "count";
-const CLEAR_TYPE_OPTION_NAME = "type";
+const WAIFU_OPTION_NAME = "waifu";
+const WAKE_NOTE_OPTION_NAME = "note";
 const PRINT_TYPE_OPTION_NAME = "type";
-const PRINT_WAIFU_OPTION_NAME = "waifu";
-const DEBUG_TYPE_OPTION_NAME = "type";
-const DEBUG_CHANNEL_ID_OPTION_NAME = "channel_id";
-const RUN_WAIFU_OPTION_NAME = "waifu";
-const RUN_SCENE_DIRECTION_OPTION_NAME = "scene_direction";
-const MAX_CLEAR_COUNT = 100;
+/** Commands earlier releases registered on the House bot; removed at registration (§10.4). */
+const RETIRED_COMMAND_NAMES = ["run", "stop", "review", "memories", "console", "clear", "debug"];
 const MAX_AUTOCOMPLETE_CHOICES = 25;
-const DISCORD_BULK_DELETE_MAX_MESSAGES = 100;
-const DISCORD_BULK_DELETE_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
-const ADMIN_COMMAND_PERMISSIONS = PermissionFlagsBits.Administrator;
-// /run only nudges the scene (with an optional private direction), so moderators may use it.
-const RUN_COMMAND_PERMISSIONS = PermissionFlagsBits.ManageMessages;
-const RUN_COMMAND_COOLDOWN_MS = 15_000;
-const MAX_RUN_COOLDOWN_ENTRIES = 1_000;
+const MAX_WAKE_NOTE_LENGTH = 500;
+const PRINT_INLINE_MAX_CHARS = 1_900;
+const OWNER_COMMAND_PERMISSIONS = PermissionFlagsBits.Administrator;
 
 async function replyEphemeral(interaction: ChatInputCommandInteraction, content: string): Promise<void> {
   await interaction.reply({ content, flags: MessageFlags.Ephemeral });
@@ -2468,18 +1934,13 @@ function sanitizeReplyTarget(value?: string): string | undefined {
   return value && SNOWFLAKE_PATTERN.test(value) ? value : undefined;
 }
 
-function sanitizeRunString(value: string | null): string | undefined {
+function sanitizeOptionString(value: string | null): string | undefined {
   const trimmed = value?.trim();
   return trimmed || undefined;
 }
 
-function parseDebugCommandType(value: string | null): DiscordDebugCommandType | undefined {
-  // /console only registers set/unset choices; Discord rejects anything else.
-  return value === "set" || value === "unset" ? value : undefined;
-}
-
 function parsePrintCommandType(value: string | null): DiscordPrintCommandType | undefined {
-  return value === "system_prompt" || value === "memories" || value === "personality" ? value : undefined;
+  return value === "system_prompt" || value === "notes" || value === "life" ? value : undefined;
 }
 
 function errorMessage(error: unknown): string {
@@ -2522,35 +1983,8 @@ function slashCommandLogContext(event: DiscordSlashCommandEvent): Record<string,
   return {
     guildId: event.guildId,
     channelId: event.channelId,
-    userId: event.userId,
-    commandMessageId: event.commandMessageId
+    userId: event.userId
   };
-}
-
-function isBulkDeletableMessage(message: DiscordFetchedMessageForDelete): boolean {
-  return message.createdTimestamp === undefined || Date.now() - message.createdTimestamp < DISCORD_BULK_DELETE_MAX_AGE_MS;
-}
-
-function oldestMessageId(messages: DiscordFetchedMessageForDelete[]): string | undefined {
-  if (messages.length === 0) return undefined;
-  if (messages.some((message) => typeof message.createdTimestamp !== "number")) {
-    return messages[messages.length - 1]?.id;
-  }
-  let oldest = messages[0];
-  for (const message of messages.slice(1)) {
-    if ((message.createdTimestamp ?? 0) < (oldest.createdTimestamp ?? 0)) {
-      oldest = message;
-    }
-  }
-  return oldest.id;
-}
-
-function chunks<T>(values: T[], size: number): T[][] {
-  const result: T[][] = [];
-  for (let index = 0; index < values.length; index += size) {
-    result.push(values.slice(index, index + size));
-  }
-  return result;
 }
 
 async function registerOrchestratorCommands(client: Client, logger?: Logger): Promise<void> {
@@ -2567,13 +2001,9 @@ async function registerOrchestratorCommands(client: Client, logger?: Logger): Pr
         await manager.create(payload);
       }
     }
-    const payloadNames = new Set(payloads.map((payload) => payload.name));
-    for (const legacyName of LEGACY_DEBUG_COMMAND_NAMES) {
-      if (payloadNames.has(legacyName)) continue;
-      const existing = commands.find((command) => command.name === legacyName);
-      if (existing) {
-        await manager.delete(existing.id);
-      }
+    for (const retiredName of RETIRED_COMMAND_NAMES) {
+      const existing = commands.find((command) => command.name === retiredName);
+      if (existing) await manager.delete(existing.id);
     }
   } catch (error) {
     logger?.warn("Failed to register orchestrator slash commands", {
@@ -2630,112 +2060,48 @@ async function registerDmCommands(client: Client, dm: boolean, logger?: Logger):
 export function buildOrchestratorCommandPayloads() {
   return withGuildContext([
     {
-      name: REVIEW_COMMAND_NAME,
-      description: "Review and remove the latest waifu message if it leaked hallucinated internals.",
-      defaultMemberPermissions: ADMIN_COMMAND_PERMISSIONS
-    },
-    {
-      name: CLEAR_COMMAND_NAME,
-      description: "Delete channel messages without running reviewer judgment.",
-      defaultMemberPermissions: ADMIN_COMMAND_PERMISSIONS,
+      name: WAKE_COMMAND_NAME,
+      description: "Wake a waifu now, with an optional note from you.",
+      defaultMemberPermissions: OWNER_COMMAND_PERMISSIONS,
       options: [
         {
           type: ApplicationCommandOptionType.String as ApplicationCommandOptionType.String,
-          name: CLEAR_TYPE_OPTION_NAME,
-          description: "Which messages to clear.",
+          name: WAIFU_OPTION_NAME,
+          description: "Which waifu to wake.",
           required: true,
-          choices: [
-            { name: "waifus", value: "waifus" },
-            { name: "users", value: "users" },
-            { name: "both", value: "both" },
-            { name: "everything", value: "everything" }
-          ]
-        },
-        {
-          type: ApplicationCommandOptionType.Integer as ApplicationCommandOptionType.Integer,
-          name: CLEAR_COUNT_OPTION_NAME,
-          description: "How many latest messages to delete for waifus, users, or both.",
-          required: false,
-          min_value: 1,
-          max_value: MAX_CLEAR_COUNT
-        }
-      ]
-    },
-    {
-      name: RUN_COMMAND_NAME,
-      description: "Run the orchestrator in this channel immediately if the runtime is idle.",
-      defaultMemberPermissions: RUN_COMMAND_PERMISSIONS,
-      options: [
-        {
-          type: ApplicationCommandOptionType.String as ApplicationCommandOptionType.String,
-          name: RUN_WAIFU_OPTION_NAME,
-          description: "Optional waifu id or display name to speak first.",
-          required: false,
           autocomplete: true
         },
         {
           type: ApplicationCommandOptionType.String as ApplicationCommandOptionType.String,
-          name: RUN_SCENE_DIRECTION_OPTION_NAME,
-          description: "Optional private scene direction for the selected waifu.",
-          required: false
+          name: WAKE_NOTE_OPTION_NAME,
+          description: "A note she sees with the wake.",
+          required: false,
+          max_length: MAX_WAKE_NOTE_LENGTH
         }
       ]
     },
     {
-      name: STOP_COMMAND_NAME,
-      description: "Stop the current orchestrator and waifu work in this channel.",
-      defaultMemberPermissions: ADMIN_COMMAND_PERMISSIONS
-    },
-    {
-      name: MEMORIES_COMMAND_NAME,
-      description: "Run the stage manager for this channel and update guild memories.",
-      defaultMemberPermissions: ADMIN_COMMAND_PERMISSIONS
-    },
-    {
       name: PRINT_COMMAND_NAME,
-      description: "Print a configured waifu field for this server.",
-      defaultMemberPermissions: ADMIN_COMMAND_PERMISSIONS,
+      description: "Show a waifu's system prompt, notes or recent life (only to you).",
+      defaultMemberPermissions: OWNER_COMMAND_PERMISSIONS,
       options: [
         {
           type: ApplicationCommandOptionType.String as ApplicationCommandOptionType.String,
           name: PRINT_TYPE_OPTION_NAME,
-          description: "Which waifu field to print.",
+          description: "What to show.",
           required: true,
           choices: [
             { name: "system prompt", value: "system_prompt" },
-            { name: "memories", value: "memories" },
-            { name: "personality", value: "personality" }
+            { name: "notes (MEMORY.md)", value: "notes" },
+            { name: "life (last 20 lines)", value: "life" }
           ]
         },
         {
           type: ApplicationCommandOptionType.String as ApplicationCommandOptionType.String,
-          name: PRINT_WAIFU_OPTION_NAME,
-          description: "Waifu to inspect from this server.",
+          name: WAIFU_OPTION_NAME,
+          description: "Which waifu.",
           required: true,
           autocomplete: true
-        }
-      ]
-    },
-    {
-      name: DEBUG_COMMAND_NAME,
-      description: "Route debug logs for a source channel.",
-      defaultMemberPermissions: ADMIN_COMMAND_PERMISSIONS,
-      options: [
-        {
-          type: ApplicationCommandOptionType.String as ApplicationCommandOptionType.String,
-          name: DEBUG_TYPE_OPTION_NAME,
-          description: "Whether to set or unset debug output.",
-          required: true,
-          choices: [
-            { name: "set", value: "set" },
-            { name: "unset", value: "unset" }
-          ]
-        },
-        {
-          type: ApplicationCommandOptionType.String as ApplicationCommandOptionType.String,
-          name: DEBUG_CHANNEL_ID_OPTION_NAME,
-          description: "Source channel ID for set/unset.",
-          required: false
         }
       ]
     }
@@ -2747,12 +2113,3 @@ function withGuildContext<T extends object>(payloads: T[]): Array<T & { contexts
   return payloads.map((payload) => ({ ...payload, contexts: [InteractionContextType.Guild] }));
 }
 
-function parseClearType(value: string | null): DiscordClearType | undefined {
-  if (value === "waifus" || value === "users" || value === "both" || value === "everything") {
-    return value;
-  }
-  if (value === "all") {
-    return "both";
-  }
-  return undefined;
-}

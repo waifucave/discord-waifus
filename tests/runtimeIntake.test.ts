@@ -9,7 +9,7 @@ import { conversationKey } from "../src/orchestration/context/keys.js";
 import { RuntimeOrchestrator } from "../src/orchestration/runtime.js";
 import { readThreads } from "../src/orchestration/stores/threads.js";
 import { createRevisionedBase } from "../src/shared/schemas/common.js";
-import { ServerConfigSchema } from "../src/shared/schemas/domain.js";
+import { ServerConfigSchema, WaifuConfigSchema } from "../src/shared/schemas/domain.js";
 import { StorageService } from "../src/storage/storageService.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
 
@@ -93,6 +93,27 @@ describe("runtime facade", () => {
     await runtime.handleDiscordThreadChange({ change: "delete", guildId: GUILD, threadId: THREAD, thread });
     expect((await readThreads(storage, GUILD)).threads[THREAD]).toBeUndefined();
     await expect(access(dir)).rejects.toMatchObject({ code: "ENOENT" });
+    await runtime.stop();
+  });
+
+  it("answers the owner's /wake, /print and the waifu autocomplete (§10.4)", async () => {
+    const { storage, runtime } = await setup();
+    for (const [id, displayName, enabled] of [["aria", "Aria", true], ["mina", "Mina", true], ["old", "Old", false]] as const) {
+      await storage.writeJson(`waifu:${id}`, `user/waifus/${id}/waifu.json`, WaifuConfigSchema, WaifuConfigSchema.parse({ ...createRevisionedBase(), id, name: displayName, displayName, enabled }));
+    }
+    const wake = vi.spyOn(runtime.cast, "ownerWake").mockResolvedValue("queued");
+    const replies: string[] = [];
+    const respond = async (content: string) => void replies.push(content);
+    await runtime.handleWakeCommand({ guildId: GUILD, channelId: CHANNEL, userId: "1", waifuId: "ARIA", note: "say hi", respond });
+    await runtime.handleWakeCommand({ guildId: GUILD, channelId: CHANNEL, userId: "1", waifuId: "nobody", respond });
+    expect(wake.mock.calls).toEqual([["aria", "say hi"]]);
+    vi.spyOn(runtime.cast, "printNotes").mockResolvedValue("# Memory");
+    await runtime.handlePrintCommand({ guildId: GUILD, channelId: CHANNEL, userId: "1", waifuId: "Mina", type: "notes", respond });
+    expect(replies).toEqual(["Woke Aria.", "I don't know that waifu.", "# Memory"]);
+    const choices: unknown[] = [];
+    await runtime.handleWaifuAutocomplete({ guildId: GUILD, channelId: CHANNEL, focusedValue: "A", respond: async (list) => void choices.push(list) });
+    // This channel's cast first, then the other enabled matches (the layout seeds Mira too).
+    expect(choices).toEqual([[{ name: "Aria", value: "aria" }, { name: "Mina", value: "mina" }, { name: "Mira", value: "mira" }]]);
     await runtime.stop();
   });
 });

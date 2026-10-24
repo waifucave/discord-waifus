@@ -217,126 +217,31 @@ describe("Discord member cache helpers", () => {
   });
 });
 
-describe("orchestrator slash command payloads", () => {
-  it("gates /run behind Manage Messages and other orchestrator commands behind Administrator", () => {
+describe("House bot slash command payloads (Living cast §10.4)", () => {
+  it("registers only /wake and /print, both for Administrators", () => {
     const payloads = buildOrchestratorCommandPayloads();
-    const byName = new Map(payloads.map((payload) => [payload.name, payload]));
-    const run = byName.get("run");
-
-    expect(run).toBeDefined();
-    expect(run?.defaultMemberPermissions).toBe(8192n);
-    for (const name of ["review", "clear", "stop", "memories", "print", "console"]) {
-      expect(byName.get(name)?.defaultMemberPermissions).toBe(8n);
-    }
-    expect(byName.has("debug")).toBe(false);
+    expect(payloads.map((payload) => payload.name)).toEqual(["wake", "print"]);
+    for (const payload of payloads) expect(payload.defaultMemberPermissions).toBe(8n);
   });
 
-  it("registers /print with required type and waifu options", () => {
-    const printCommand = buildOrchestratorCommandPayloads().find((payload) => payload.name === "print");
-    expect(printCommand?.options).toEqual([
+  it("/wake takes a waifu (autocomplete) and an optional note; /print takes system_prompt, notes or life", () => {
+    const byName = new Map(buildOrchestratorCommandPayloads().map((payload) => [payload.name, payload]));
+    expect(byName.get("wake")?.options).toEqual([
+      expect.objectContaining({ name: "waifu", required: true, autocomplete: true }),
+      expect.objectContaining({ name: "note", required: false, max_length: 500 })
+    ]);
+    expect(byName.get("print")?.options).toEqual([
       expect.objectContaining({
         name: "type",
         required: true,
         choices: [
           { name: "system prompt", value: "system_prompt" },
-          { name: "memories", value: "memories" },
-          { name: "personality", value: "personality" }
+          { name: "notes (MEMORY.md)", value: "notes" },
+          { name: "life (last 20 lines)", value: "life" }
         ]
       }),
-      expect.objectContaining({
-        name: "waifu",
-        required: true,
-        autocomplete: true
-      })
+      expect.objectContaining({ name: "waifu", required: true, autocomplete: true })
     ]);
-  });
-
-  it("registers /console with required set/unset type and optional channel_id", () => {
-    const consoleCommand = buildOrchestratorCommandPayloads().find((payload) => payload.name === "console");
-    expect(consoleCommand?.options).toEqual([
-      expect.objectContaining({
-        name: "type",
-        required: true,
-        choices: [
-          { name: "set", value: "set" },
-          { name: "unset", value: "unset" }
-        ]
-      }),
-      expect.objectContaining({
-        name: "channel_id",
-        required: false
-      })
-    ]);
-  });
-});
-
-describe("DiscordJsGateway message deletion", () => {
-  it("bulk deletes recent messages and individually deletes messages older than two weeks", async () => {
-    const recentTimestamp = Date.now() - 60_000;
-    const oldTimestamp = Date.now() - 15 * 24 * 60 * 60 * 1000;
-    const pages = new Map<string, Array<{ id: string; createdTimestamp: number }>>([
-      [
-        "first",
-        [
-          { id: "recent-1", createdTimestamp: recentTimestamp },
-          { id: "recent-2", createdTimestamp: recentTimestamp - 1_000 },
-          { id: "old-1", createdTimestamp: oldTimestamp }
-        ]
-      ],
-      ["old-1", [{ id: "old-2", createdTimestamp: oldTimestamp - 1_000 }]],
-      ["old-2", []]
-    ]);
-    const fetchCalls: Array<{ limit?: number; before?: string }> = [];
-    const bulkDeletes: string[][] = [];
-    const singleDeletes: string[] = [];
-    const channel = {
-      messages: {
-        async fetch(options: { limit?: number; before?: string }) {
-          fetchCalls.push(options);
-          const page = pages.get(options.before ?? "first") ?? [];
-          return { values: () => page.values() };
-        },
-        async delete(messageId: string) {
-          singleDeletes.push(messageId);
-        }
-      },
-      async bulkDelete(messageIds: string[]) {
-        bulkDeletes.push(messageIds);
-        return { keys: () => messageIds.values() };
-      }
-    };
-    const gateway = new DiscordJsGateway({
-      orchestrator: {
-        id: "orchestrator",
-        displayName: "Orchestrator",
-        token: "token"
-      },
-      logger: quietLogger()
-    });
-    const clients = (gateway as unknown as { clients: Map<string, unknown> }).clients;
-    clients.set("orchestrator", {
-      channels: {
-        async fetch() {
-          return channel;
-        }
-      }
-    });
-
-    const result = await gateway.deleteAllMessages({ guildId: "guild-1", channelId: "channel-1" });
-
-    expect(fetchCalls).toEqual([
-      { limit: 100 },
-      { limit: 100, before: "old-1" },
-      { limit: 100, before: "old-2" }
-    ]);
-    expect(bulkDeletes).toEqual([["recent-1", "recent-2"]]);
-    expect(singleDeletes).toEqual(["old-1", "old-2"]);
-    expect(result).toMatchObject({
-      scannedMessageCount: 4,
-      deletedCount: 4,
-      failedCount: 0,
-      failedMessageIds: []
-    });
   });
 });
 

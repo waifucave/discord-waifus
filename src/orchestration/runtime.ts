@@ -7,8 +7,11 @@ import type {
   DiscordDirectMessageEvent,
   DiscordDmForgetCommandEvent,
   DiscordMessageEvent,
+  DiscordPrintCommandEvent,
   DiscordThreadEvent,
-  DiscordThreadInfo
+  DiscordThreadInfo,
+  DiscordWaifuAutocompleteEvent,
+  DiscordWakeCommandEvent
 } from "../discord/client.js";
 import { rm } from "node:fs/promises";
 import path from "node:path";
@@ -124,6 +127,10 @@ export class RuntimeOrchestrator {
         );
       }),
       discord.onDmForgetCommand?.((event) => this.handleDmForgetCommand(event)),
+      // The owner's slash commands on the House bot (§10.4).
+      discord.onWakeCommand?.((event) => this.handleWakeCommand(event)),
+      discord.onPrintCommand?.((event) => this.handlePrintCommand(event)),
+      discord.onWaifuAutocomplete?.((event) => this.handleWaifuAutocomplete(event)),
       // Edits and deletes in a life (§10.3); a newly added mention under 2 minutes wakes (§4.2).
       this.conversations.onEvent((event) => this.cast.onCacheEvent(event, (guildId, channelId) => this.castOf(guildId, channelId))),
       // Bot roles refetch after role changes (§10.2).
@@ -466,6 +473,55 @@ export class RuntimeOrchestrator {
     return everything
       ? "Done: I deleted our private chat, and everything else I remember about you is marked to be forgotten."
       : "Done: I deleted our private chat.";
+  }
+
+  /** A waifu by id or display name (case-insensitive). */
+  private async findWaifu(query: string | undefined): Promise<{ id: string; displayName: string } | undefined> {
+    const wanted = query?.trim().toLowerCase();
+    if (!wanted) return undefined;
+    const waifus = await listWaifus(this.options.storage).catch(() => []);
+    return waifus.find((waifu) => waifu.id.toLowerCase() === wanted) ?? waifus.find((waifu) => waifu.displayName.toLowerCase() === wanted);
+  }
+
+  /** `/wake <waifu> [note]` (§10.4): an `owner` wake, which skips sleep and budget (§4.5). */
+  async handleWakeCommand(event: DiscordWakeCommandEvent): Promise<void> {
+    const waifu = await this.findWaifu(event.waifuId);
+    if (!waifu) return event.respond("I don't know that waifu.");
+    const outcome = await this.cast.ownerWake(waifu.id, event.note);
+    await event.respond(
+      outcome === "queued"
+        ? `Woke ${waifu.displayName}.`
+        : outcome === "dropped"
+          ? `${waifu.displayName} can't be woken right now (paused or disabled).`
+          : `${waifu.displayName}'s wake is queued.`
+    );
+  }
+
+  /** `/print system_prompt|notes|life <waifu>` (§10.4), only to the owner. */
+  async handlePrintCommand(event: DiscordPrintCommandEvent): Promise<void> {
+    const waifu = await this.findWaifu(event.waifuId);
+    if (!waifu) return event.respond("I don't know that waifu.");
+    const text =
+      event.type === "notes"
+        ? await this.cast.printNotes(waifu.id)
+        : event.type === "life"
+          ? await this.cast.printLife(waifu.id)
+          : event.type === "system_prompt"
+            ? await this.cast.printSystemPrompt(waifu.id)
+            : undefined;
+    if (text === undefined) return event.respond("Pick what to print: system_prompt, notes or life.");
+    await event.respond(text);
+  }
+
+  /** The `waifu` option: this channel's cast first, then every other enabled waifu. */
+  async handleWaifuAutocomplete(event: DiscordWaifuAutocompleteEvent): Promise<void> {
+    const wanted = event.focusedValue.trim().toLowerCase();
+    const here = event.guildId && event.channelId ? new Set(await this.castOf(event.guildId, event.channelId).catch(() => [])) : new Set<string>();
+    const waifus = (await listWaifus(this.options.storage).catch(() => []))
+      .filter((waifu) => waifu.enabled || here.has(waifu.id))
+      .filter((waifu) => !wanted || waifu.id.toLowerCase().includes(wanted) || waifu.displayName.toLowerCase().includes(wanted))
+      .sort((a, b) => Number(here.has(b.id)) - Number(here.has(a.id)) || a.displayName.localeCompare(b.displayName));
+    await event.respond(waifus.map((waifu) => ({ name: waifu.displayName.slice(0, 100), value: waifu.id })));
   }
 }
 
