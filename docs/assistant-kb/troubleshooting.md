@@ -97,16 +97,26 @@ temperature or use a stronger model.
 - Look for `Context compaction failed` (warning) and `Context compacted` (info) in
   `GET /api/logs`; `Compaction discarded` just means the conversation moved on meanwhile and the
   next prepare retries. After a failure that
-  context does not retry automatically for 5 minutes and keeps answering on its current prompt;
-  `lastCompaction` in the context state records `ok: false`.
+  context does not retry automatically for 5 minutes and keeps answering on its current prompt.
+  The context file `<data-root>/user/conversations/<key>/contexts/<agentId>.json` (key
+  `g_<guildId>_<channelId>`, agent `waifu-<id>` or `orchestrator`) then has
+  `lastCompaction.ok: false`; there is no API for it.
 - "She replied slowly after a long chat": the reply waited up to `compaction.waitTimeoutMs`
   (default 6 s) for a summary, then went out on a shortened prompt. Raise or lower it in app
   config `compaction` or per server (`PUT /api/servers/:guildId` `compaction`).
 - Summaries use the waifu's own model, so a model with very small output limits can return a cut
   off summary; the app retries once with double the output cap and then keeps the old context
   instead of storing a truncated one.
-- `compaction: {enabled: false}` (app or server) stops automatic summaries and truncation, so the
-  prompt keeps growing until the model's own limit; use it only to debug.
+- `compaction: {enabled: false}` (app or server) stops summaries only: at the same limits the
+  context is cut to its newest `keepRecent` messages with no summary, so older chat is forgotten
+  instead of summarized. The prompt never grows without bound.
+
+## Images
+
+- "She ignored my picture": an image larger than 3.75 MiB is never sent inline (providers reject
+  it), so she sees its OCR text or `[image]`; `discord.images.maxBytes` (default 5 MiB) caps what
+  is downloaded at all. See the image settings in the API notes; `ocr.maxImageBytes` /
+  `ocr.timeoutMs` are deprecated for fetching.
 
 ## Costs look high / prompt caching
 
@@ -128,7 +138,9 @@ Re-running them is always safe (deleting that file just makes them run again wit
 Phase 4 migrations: unsupported model params are dropped from waifu/orchestrator/assistant configs,
 the prompt layout is removed (a disabled schedule block becomes `scheduleInPrompt: false`),
 memories become global (guild/channel move into `origin`, names into `subjects`, and duplicates
-across servers are merged once), and the old URL-keyed OCR cache is deleted.
+across servers are merged once), the old URL-keyed OCR cache is deleted, and an
+`ocr.cacheTtlHours` of exactly 24 (the old default) becomes 168. Phase 4 is release 2.112.0; it
+cannot be downgraded to 2.111.x (the migrated memory store is not readable there).
 
 
 ## Fast diagnosis tools

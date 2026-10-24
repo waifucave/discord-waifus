@@ -137,13 +137,27 @@ curl -s -X PUT http://127.0.0.1:3888/api/waifus/riko \
   `maxMessages` 20-200, `keepRecent` 5-120, `waitTimeoutMs` 0-30000), which merges key by key over
   the app-level `compaction` config; send `null` for a key to inherit again. `keepRecent` is capped
   at 60% of `maxMessages`.
+- **Image fetching (app config `discord.images`)**: one fetcher downloads Discord images for both
+  OCR and inline images. `maxBytes` (default 5 MiB, 64 KiB-20 MiB), `fetchTimeoutMs` (default
+  5000, 500-30000), `memoryCacheMb` (64), `diskCacheMb` (256), `diskCacheTtlHours` (168). Set them
+  with `PUT /api/config {"discord": {"images": {...}}}`; they apply when the Discord runtime next
+  starts (restart to be sure). Whatever `maxBytes` allows, an image is only sent inline when it is
+  at most 3.75 MiB (3,932,160 bytes, the most that stays under Anthropic's 5 MB per-image limit
+  once base64-encoded); a larger one is shown as its OCR text or `[image]`.
+- **Deprecated OCR keys**: `ocr.maxImageBytes` and `ocr.timeoutMs` no longer control fetching. A
+  value left at its default (8 MiB / 1500 ms) is ignored; a changed value still raises the fetch
+  limit to the larger of it and `discord.images` (a deprecation warning is logged). Move such
+  values to `discord.images.maxBytes` / `fetchTimeoutMs`. `ocr.cacheTtlHours` now defaults to 168
+  hours; configs that still said 24 (the old default) were moved to 168 once at upgrade, any other
+  value was kept.
 - **Memory origin**: memory records carry `origin: {guildId?, channelId?, dm?}` (where learned)
   and `subjects` (who it is about); the old top-level `guildId`/`channelId`/`entities` fields no
   longer exist. `POST /api/memories` still accepts `guildId`/`channelId` and stores them as `origin`.
 - **Usage ledger**: every model call (including aborted and failed ones) appends one line to
   `user/usage/YYYY-MM-DD.jsonl` (UTC day) with purpose, ids, provider/model, token counts (zero
   with `usageKnown: false` when the provider reported none), cache read/write tokens, cost when
-  known and status `ok | aborted | failed`. There is no HTTP endpoint for it yet.
+  known and status `ok | aborted | failed`. One-shot orchestrator decisions are logged with purpose
+  `one_shot`. There is no HTTP endpoint for it yet.
 - **Channel and server `enabled`**: a channel is active exactly when its `enabledWaifuIds` is
   non-empty; its stored `enabled` flag is not read by the runtime. A server's `enabled` flag only
   gates restart catch-up after a reboot, not live messages — use `paused` to silence a server.
