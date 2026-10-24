@@ -211,6 +211,7 @@ async function startLockedBackend(options: StartBackendOptions): Promise<Running
         ocr,
         images,
         compaction: currentConfig.compaction,
+        deletedMessages: { ...currentConfig.discord.deletedMessages },
         updateActivity,
         memory: { ...currentConfig.memory },
         isPaused: () => runtime.paused || closing,

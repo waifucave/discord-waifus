@@ -1,5 +1,6 @@
 import {
   ApplicationCommandOptionType,
+  ChannelType,
   Client,
   Events,
   GatewayIntentBits,
@@ -18,6 +19,7 @@ import {
   GuildRoleCacheEntry
 } from "../shared/schemas/domain.js";
 import type { RawDiscordMessage } from "../shared/schemas/discordMessage.js";
+import type { ThreadKind } from "../shared/schemas/threads.js";
 import { buildNormalizedDiscordContext } from "./contextBuilder.js";
 import { unresolvedMentionIdsByType } from "./memberCache.js";
 import { denormalizeModelContentForDiscord } from "./normalization.js";
@@ -92,6 +94,14 @@ export interface DiscordGatewayFacade {
   connect(): Promise<DiscordRuntimeStatus>;
   disconnect(): Promise<void>;
   onMessage?(listener: DiscordMessageListener): () => void;
+  /** Spec 9.5: an edit (Discord `messageUpdate`, only with a new `editedTimestamp`) of a guild message. */
+  onMessageEdit?(listener: DiscordMessageEditListener): () => void;
+  /** Spec 9.5: a delete or bulk delete of guild messages (never triggers runs by itself). */
+  onMessageDelete?(listener: DiscordMessageDeleteListener): () => void;
+  /** Spec 9.5: a thread or forum post was created, changed (archived, locked, renamed) or deleted. */
+  onThreadChange?(listener: DiscordThreadListener): () => void;
+  /** Best-effort: join a (public) thread so its messages are delivered. */
+  joinThread?(input: { guildId: string; threadId: string }): Promise<void>;
   onReviewCommand?(listener: DiscordReviewCommandListener): () => void;
   onClearCommand?(listener: DiscordClearCommandListener): () => void;
   onRunCommand?(listener: DiscordRunCommandListener): () => void;
@@ -159,6 +169,15 @@ export interface DiscordGatewayFacade {
   }): Promise<DiscordDeleteChannelMessagesResult>;
 }
 
+/** What the gateway knows about a thread or forum post a message lives in (spec 9.5). */
+export type DiscordThreadInfo = {
+  parentId: string;
+  name: string;
+  kind: ThreadKind;
+  archived: boolean;
+  locked: boolean;
+};
+
 export type DiscordMessageEvent = {
   guildId: string;
   channelId: string;
@@ -166,9 +185,44 @@ export type DiscordMessageEvent = {
   authorId: string;
   authorDisplayName?: string;
   authorBot: boolean;
+  /** Set when `channelId` is a thread or forum post (its parent is `thread.parentId`). */
+  thread?: DiscordThreadInfo;
 };
 
 export type DiscordMessageListener = (event: DiscordMessageEvent) => void | Promise<void>;
+
+export type DiscordMessageEditEvent = {
+  guildId: string;
+  channelId: string;
+  messageId: string;
+  authorId: string;
+  authorBot: boolean;
+  /** The message as it is now (raw, one record per message). */
+  message: RawDiscordMessage;
+  /** User ids mentioned before the edit, when the old message was cached (else undefined). */
+  previousMentionIds?: string[];
+  thread?: DiscordThreadInfo;
+};
+export type DiscordMessageEditListener = (event: DiscordMessageEditEvent) => void | Promise<void>;
+
+export type DiscordMessageDeleteEvent = {
+  guildId: string;
+  channelId: string;
+  messageIds: string[];
+  bulk: boolean;
+  thread?: DiscordThreadInfo;
+};
+export type DiscordMessageDeleteListener = (event: DiscordMessageDeleteEvent) => void | Promise<void>;
+
+export type DiscordThreadEvent = {
+  change: "create" | "update" | "delete";
+  guildId: string;
+  threadId: string;
+  thread: DiscordThreadInfo;
+  /** For `update`: the state before (when Discord had it cached). */
+  previous?: Pick<DiscordThreadInfo, "archived" | "locked" | "name">;
+};
+export type DiscordThreadListener = (event: DiscordThreadEvent) => void | Promise<void>;
 
 export type DiscordSlashCommandEvent = {
   guildId: string;
@@ -309,6 +363,9 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   private generation = 0;
   private connectAbort = new AbortController();
   private readonly listeners = new Set<DiscordMessageListener>();
+  private readonly editListeners = new Set<DiscordMessageEditListener>();
+  private readonly deleteListeners = new Set<DiscordMessageDeleteListener>();
+  private readonly threadListeners = new Set<DiscordThreadListener>();
   private readonly reviewListeners = new Set<DiscordReviewCommandListener>();
   private readonly clearListeners = new Set<DiscordClearCommandListener>();
   private readonly runListeners = new Set<DiscordRunCommandListener>();
@@ -523,13 +580,15 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   private attachOrchestratorListeners(client: Client): void {
     client.on("messageCreate", (message) => {
       if (!message.guildId) return;
+      const thread = threadInfoOf(message.channel);
       const event: DiscordMessageEvent = {
         guildId: message.guildId,
         channelId: message.channelId,
         messageId: message.id,
         authorId: message.author.id,
         authorDisplayName: message.member?.displayName ?? message.author.globalName ?? message.author.username,
-        authorBot: message.author.bot
+        authorBot: message.author.bot,
+        ...(thread ? { thread } : {})
       };
       this.options.logger?.info("Discord gateway received message", {
         guildId: event.guildId,
@@ -545,6 +604,97 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
         });
       }
     });
+    // Spec 9.5: edits, deletes and thread lifecycle feed the conversation ledger. The orchestrator
+    // client is the only reader (waifu bots hold no message intents).
+    client.on(Events.MessageUpdate, (oldMessage, newMessage) => {
+      const guildId = newMessage.guildId ?? oldMessage.guildId;
+      if (!guildId) return;
+      this.runBackground(
+        "Discord message edit handler failed",
+        { guildId, channelId: newMessage.channelId, messageId: newMessage.id },
+        async () => {
+          // Only a new `editedTimestamp` is an edit (embed unfurls also fire messageUpdate).
+          if (!newMessage.partial && !newMessage.editedTimestamp) return;
+          const message = newMessage.partial ? await newMessage.fetch() : newMessage;
+          if (!message.editedTimestamp || !message.author) return;
+          const thread = threadInfoOf(message.channel);
+          const event: DiscordMessageEditEvent = {
+            guildId,
+            channelId: message.channelId,
+            messageId: message.id,
+            authorId: message.author.id,
+            authorBot: message.author.bot,
+            message: toRawDiscordMessage(message as unknown as DiscordMessageLike, guildId),
+            ...(!oldMessage.partial ? { previousMentionIds: [...oldMessage.mentions.users.keys()] } : {}),
+            ...(thread ? { thread } : {})
+          };
+          for (const listener of this.editListeners) {
+            this.dispatchListener("Discord message edit listener failed", listener, event, {
+              guildId,
+              channelId: event.channelId,
+              messageId: event.messageId
+            });
+          }
+        }
+      );
+    });
+    client.on(Events.MessageDelete, (message) => {
+      if (!message.guildId) return;
+      const thread = threadInfoOf(message.channel);
+      const event: DiscordMessageDeleteEvent = {
+        guildId: message.guildId,
+        channelId: message.channelId,
+        messageIds: [message.id],
+        bulk: false,
+        ...(thread ? { thread } : {})
+      };
+      for (const listener of this.deleteListeners) {
+        this.dispatchListener("Discord message delete listener failed", listener, event, {
+          guildId: event.guildId,
+          channelId: event.channelId,
+          messageId: message.id
+        });
+      }
+    });
+    client.on(Events.MessageBulkDelete, (messages, channel) => {
+      const guildId = channel.guildId;
+      if (!guildId) return;
+      const thread = threadInfoOf(channel);
+      const event: DiscordMessageDeleteEvent = {
+        guildId,
+        channelId: channel.id,
+        messageIds: [...messages.keys()],
+        bulk: true,
+        ...(thread ? { thread } : {})
+      };
+      for (const listener of this.deleteListeners) {
+        this.dispatchListener("Discord message bulk delete listener failed", listener, event, {
+          guildId,
+          channelId: event.channelId,
+          count: event.messageIds.length
+        });
+      }
+    });
+    const emitThread = (change: DiscordThreadEvent["change"], thread: unknown, previous?: unknown) => {
+      const info = threadInfoOf(thread);
+      const threadId = (thread as { id?: string } | undefined)?.id;
+      const guildId = (thread as { guildId?: string | null } | undefined)?.guildId;
+      if (!info || !threadId || !guildId) return;
+      const before = previous ? threadInfoOf(previous) : undefined;
+      const event: DiscordThreadEvent = {
+        change,
+        guildId,
+        threadId,
+        thread: info,
+        ...(before ? { previous: { archived: before.archived, locked: before.locked, name: before.name } } : {})
+      };
+      for (const listener of this.threadListeners) {
+        this.dispatchListener("Discord thread listener failed", listener, event, { guildId, threadId, change });
+      }
+    };
+    client.on(Events.ThreadCreate, (thread) => emitThread("create", thread));
+    client.on(Events.ThreadUpdate, (oldThread, newThread) => emitThread("update", newThread, oldThread));
+    client.on(Events.ThreadDelete, (thread) => emitThread("delete", thread));
     client.on(Events.InteractionCreate, (interaction) => {
       if (interaction.isAutocomplete()) {
         if (interaction.commandName === RUN_COMMAND_NAME) {
@@ -598,6 +748,26 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   onMessage(listener: DiscordMessageListener): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  onMessageEdit(listener: DiscordMessageEditListener): () => void {
+    this.editListeners.add(listener);
+    return () => this.editListeners.delete(listener);
+  }
+
+  onMessageDelete(listener: DiscordMessageDeleteListener): () => void {
+    this.deleteListeners.add(listener);
+    return () => this.deleteListeners.delete(listener);
+  }
+
+  onThreadChange(listener: DiscordThreadListener): () => void {
+    this.threadListeners.add(listener);
+    return () => this.threadListeners.delete(listener);
+  }
+
+  async joinThread(input: { guildId: string; threadId: string }): Promise<void> {
+    const channel = await this.orchestratorClient().channels.fetch(input.threadId);
+    if (channel && channel.isThread() && channel.joinable && !channel.archived) await channel.join();
   }
 
   onReviewCommand(listener: DiscordReviewCommandListener): () => void {
@@ -1522,6 +1692,32 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
  * Waifu clients never listen: they only fetch a channel, send, type and delete their own messages,
  * all over REST, so they need just `Guilds` (channel cache) and keep no message/member caches.
  */
+/**
+ * Thread facts of a channel-like object (structural, so test doubles work): undefined when it is
+ * not a thread. A thread whose parent is a forum or media channel is a "forum_post".
+ */
+export function threadInfoOf(channel: unknown): DiscordThreadInfo | undefined {
+  const c = channel as
+    | {
+        isThread?: () => boolean;
+        parentId?: string | null;
+        parent?: { type?: number } | null;
+        name?: string | null;
+        type?: number;
+        archived?: boolean | null;
+        locked?: boolean | null;
+      }
+    | null
+    | undefined;
+  if (!c || typeof c.isThread !== "function" || !c.isThread() || !c.parentId) return undefined;
+  const parentType = c.parent?.type;
+  let kind: ThreadKind = "public_thread";
+  if (parentType === ChannelType.GuildForum || parentType === ChannelType.GuildMedia) kind = "forum_post";
+  else if (c.type === ChannelType.PrivateThread) kind = "private_thread";
+  else if (c.type === ChannelType.AnnouncementThread) kind = "announcement_thread";
+  return { parentId: c.parentId, name: c.name ?? "", kind, archived: c.archived === true, locked: c.locked === true };
+}
+
 function discordClientOptions(kind: DiscordBotKind): ClientOptions {
   if (kind === "orchestrator") {
     return {

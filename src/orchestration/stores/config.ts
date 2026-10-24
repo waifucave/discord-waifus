@@ -17,6 +17,7 @@ import {
 import { createRevisionedBase } from "../../shared/schemas/common.js";
 import { StorageService } from "../../storage/storageService.js";
 import type { RuntimeServices } from "../runtimeShared.js";
+import { withThreadChannels } from "./threads.js";
 
 export async function readAgentConfig(storage: StorageService, agent: "orchestrator" | "stage-manager" | "reviewer", defaultWindow: number): Promise<AgentConfig> {
   return storage.readJson(
@@ -82,13 +83,15 @@ export async function listAvailableWaifusForGuild(storage: StorageService, serve
 }
 
 export async function ensureServer(storage: StorageService, guildId: string): Promise<ServerConfig> {
-  return storage.updateRevisionedJson({
+  const server = await storage.updateRevisionedJson({
     resourceKey: `server:${guildId}`,
     relativePath: path.join("user", "servers", guildId, "server.json"),
     schema: ServerConfigSchema,
     fallback: ServerConfigSchema.parse({ ...createRevisionedBase(), guildId, enabled: true }),
     transform: (current) => current
   });
+  // Spec 9.5: live threads that inherit a parent's cast appear as virtual channel entries.
+  return withThreadChannels(storage, server);
 }
 
 export async function ensureChannelConfig(services: RuntimeServices, server: ServerConfig, channelId: string): Promise<ServerConfig> {

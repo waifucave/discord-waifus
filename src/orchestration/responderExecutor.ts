@@ -10,7 +10,7 @@ import { DiscordGatewayFacade } from "../discord/client.js";
 import { loadGuildDirectoryView } from "../discord/directoryView.js";
 import { dedupeNames, modelVisibleEmojiToken, stripLeakedContextHeader } from "../discord/normalization.js";
 import type { ModelPipeline, WaifuGenerationResult } from "../providers/types.js";
-import { PermissionWarningTracker } from "./permissionWarnings.js";
+import { PermissionWarningTracker, classifyDiscordSendError } from "./permissionWarnings.js";
 import {
   GuildEmojisFileSchema,
   GuildMembersFileSchema,
@@ -34,6 +34,7 @@ import { ModelAccess } from "./modelAccess.js";
 import { directiveTextForWaifu } from "./promptBuilders.js";
 import { type RuntimeContextServices, decrementActive, incrementActive, runKey, throwIfAborted, timerKey } from "./runtimeShared.js";
 import { readDiscordBotsFile, readWaifu } from "./stores/config.js";
+import { channelPlaceName, observeThread } from "./stores/threads.js";
 import {
   finalizeOrchestratorDecisionAfterError,
   insertOrchestratorResponderOutcomeAfter,
@@ -102,6 +103,9 @@ export class ResponderExecutor {
   // Discord text), the next decision IGNORES add_memory calls (tool result "ignored") so the chain
   // doesn't loop on silent memory-tool turns. The tool stays listed (breakpoint A is stable).
   private readonly suppressMemoryToolOnce = new Set<string>();
+  // Per channel: when a waifu message was last sent (spec 9.5: a deleted trigger only aborts a run
+  // that has not sent anything yet).
+  private readonly lastSendAt = new Map<string, number>();
   private static readonly SELF_SENT_TTL_MS = 60_000;
 
   constructor(
@@ -111,6 +115,27 @@ export class ResponderExecutor {
     private readonly sleep: (ms: number, signal?: AbortSignal) => Promise<void>,
     private readonly maxAutomaticTurns: number
   ) {}
+
+  /**
+   * Spec 9.5: a classified Discord send failure (archived thread, AutoMod) becomes the responder
+   * outcome. One call site for the history update so a change to its signature (per-guild history)
+   * touches only this method.
+   */
+  private async recordSendFailureOutcome(
+    input: ExecuteResponderDecisionInput,
+    outcomeId: string,
+    failure: NonNullable<ReturnType<typeof classifyDiscordSendError>>
+  ): Promise<void> {
+    await updateOrchestratorResponderOutcome(this.options.storage, input.decisionId, outcomeId, {
+      status: failure.status,
+      reason: failure.reason
+    });
+  }
+
+  /** True while a waifu message is being sent in the channel, or one was sent at/after `sinceMs`. */
+  hasSentSince(channelId: string, sinceMs: number): boolean {
+    return this.activeWaifuSendChannels.has(channelId) || (this.lastSendAt.get(channelId) ?? 0) >= sinceMs;
+  }
 
   async executeResponderDecision(input: ExecuteResponderDecisionInput): Promise<ResponderExecutionResult> {
     let attemptedCount = 0;
@@ -373,18 +398,43 @@ export class ResponderExecutor {
             : marker.unknownRef || marker.strippedTarget
               ? undefined
               : replyTargetForTranscript(responder.replyToMessageId, prepared.transcript);
-          const sentMessageIds = await this.sendWaifuChunks({
-            guildId: input.guildId,
-            channelId: input.channelId,
-            waifuId: waifu.id,
-            senderBotId: waifu.botId,
-            chunks,
-            replyToMessageId,
-            allowedUserMentionIds: [...new Set(prepared.transcript.map((entry) => entry.authorId))],
-            orchestratorDecisionId: input.decisionId,
-            responderOutcomeId: outcomeId,
-            signal: input.signal
-          });
+          let sentMessageIds: string[] = [];
+          let sendFailure: ReturnType<typeof classifyDiscordSendError>;
+          try {
+            sentMessageIds = await this.sendWaifuChunks({
+              guildId: input.guildId,
+              channelId: input.channelId,
+              waifuId: waifu.id,
+              senderBotId: waifu.botId,
+              chunks,
+              replyToMessageId,
+              allowedUserMentionIds: [...new Set(prepared.transcript.map((entry) => entry.authorId))],
+              orchestratorDecisionId: input.decisionId,
+              responderOutcomeId: outcomeId,
+              signal: input.signal,
+              ...(input.channel.thread ? { thread: true } : {})
+            });
+          } catch (sendError) {
+            // Spec 9.5: an archived thread (50083) or an AutoMod block (200000/200001) is the
+            // reply's final answer, not a crash of the whole decision.
+            sendFailure = input.signal.aborted ? undefined : classifyDiscordSendError(sendError);
+            if (!sendFailure) throw sendError;
+            this.options.logger.warn("Waifu reply could not be delivered", {
+              guildId: input.guildId,
+              channelId: input.channelId,
+              waifuId: waifu.id,
+              status: sendFailure.status,
+              reason: sendFailure.reason
+            });
+            if (sendFailure.reason === "thread_archived" && input.channel.thread) {
+              // Silence the thread until Discord reports it unarchived.
+              await observeThread(this.options.storage, input.guildId, {
+                threadId: input.channelId,
+                parentId: input.channel.thread.parentId,
+                archived: true
+              }).catch(() => undefined);
+            }
+          }
           if (sentMessageIds.length > 0) {
             await updateOrchestratorResponderOutcome(this.options.storage, input.decisionId, outcomeId, {
               status: "sent"
@@ -412,7 +462,9 @@ export class ResponderExecutor {
             }
           }
           if (sentMessageIds.length === 0) {
-            if (blockedViolations) {
+            if (sendFailure) {
+              await this.recordSendFailureOutcome(input, outcomeId, sendFailure);
+            } else if (blockedViolations) {
               // The model's text was rejected by the validator. Record "blocked" even when a tool
               // was also called: the leak channel is the visible reply, not the tool call, but the
               // text was the thing that was refused, so "blocked" takes precedence over "tool_only".
@@ -717,7 +769,7 @@ export class ResponderExecutor {
       place: {
         kind: "guild",
         ...(server.name ? { serverName: server.name } : {}),
-        ...(server.channels[input.channelId]?.name ? { channelName: server.channels[input.channelId]!.name } : {})
+        ...(channelPlaceName(server, input.channelId) ? { channelName: channelPlaceName(server, input.channelId)! } : {})
       },
       people,
       emojis: emojis.emojis.filter((emoji) => emoji.available).map(modelVisibleEmojiToken),
@@ -766,6 +818,8 @@ export class ResponderExecutor {
     orchestratorDecisionId?: string;
     responderOutcomeId?: string;
     signal?: AbortSignal;
+    /** The channel is a thread: permission warnings mention Send Messages in Threads. */
+    thread?: boolean;
   }): Promise<string[]> {
     if (input.chunks.length === 0) {
       return [];
@@ -792,10 +846,13 @@ export class ResponderExecutor {
             allowedUserMentionIds: input.allowedUserMentionIds
           });
         } catch (error) {
-          this.permissionWarnings.record(input.guildId, input.channelId, input.waifuId, error);
+          this.permissionWarnings.record(input.guildId, input.channelId, input.waifuId, error, {
+            ...(input.thread ? { thread: true } : {})
+          });
           throw error;
         }
         this.permissionWarnings.resolve(input.guildId, input.channelId);
+        this.lastSendAt.set(input.channelId, Date.now());
         this.rememberSelfSent(sentResult.messageId);
         messageIds.push(sentResult.messageId);
         if (input.orchestratorDecisionId) {

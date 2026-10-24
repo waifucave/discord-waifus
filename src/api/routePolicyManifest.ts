@@ -232,6 +232,7 @@ export const ROUTE_POLICY_MANIFEST: readonly RoutePolicyDefinition[] = Object.fr
     "server.channel.delete"
   ),
   mutation("DELETE", "/api/servers/:guildId", "transactional", "server.delete"),
+  safe("/api/servers/:guildId/threads"),
   safe("/api/servers/:guildId/members"),
   mutation(
     "POST",

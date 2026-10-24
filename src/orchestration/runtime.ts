@@ -1,4 +1,12 @@
-import { DiscordMessageEvent } from "../discord/client.js";
+import type {
+  DiscordMessageDeleteEvent,
+  DiscordMessageEditEvent,
+  DiscordMessageEvent,
+  DiscordThreadEvent,
+  DiscordThreadInfo
+} from "../discord/client.js";
+import { loadGuildDirectoryView } from "../discord/directoryView.js";
+import type { ServerConfig } from "../shared/schemas/domain.js";
 import { createGatewayModelPipeline } from "./pipeline/gatewayPipeline.js";
 import { sharedProviderAlerts, type ProviderAlerts } from "./providerAlerts.js";
 import { sharedUsageLedger, type UsageLedger } from "./usageLedger.js";
@@ -12,7 +20,10 @@ import { ModelAccess } from "./modelAccess.js";
 import { ResponderExecutor } from "./responderExecutor.js";
 import { ReviewerRunner } from "./reviewerRunner.js";
 import { createAppContextRuntime } from "./context/appRuntime.js";
+import { isGapEntry } from "./context/ledger.js";
+import type { ConversationRef } from "./context/keys.js";
 import type { ContextRuntime } from "./context/runtime.js";
+import type { RawDiscordMessage } from "../shared/schemas/discordMessage.js";
 import {
   type ChannelRunOptions,
   type RuntimeCollaboratorOptions,
@@ -26,6 +37,27 @@ import { channelHasWaifus, ensureChannelConfig, ensureServer, isKnownWaifuAuthor
 import { healPendingOrchestratorDecisions } from "./stores/decisionHistory.js";
 import { noteActiveChatParticipant } from "./stores/participants.js";
 import { clearScheduledRetrigger, ensureChannelSession, persistShutdownWake } from "./stores/sessions.js";
+import { observeThread, parentSharesCast, readThreads, removeThread } from "./stores/threads.js";
+
+/** Spec 9.5: an edit that adds a waifu mention to the newest human message this recently re-triggers. */
+const EDIT_MENTION_RETRIGGER_MS = 2 * 60_000;
+
+/**
+ * A change to a message already in a conversation, in the shape of the Phase 5 conversation cache's
+ * `update` / `delete` / `deleteBulk` events (`ConversationCacheEvent`), so switching the source from
+ * the raw discord.js listeners to `conversations.onEvent` is one line. `source: "catchup"` marks a
+ * change found after downtime or a reconnect: it is recorded like any other but never re-triggers.
+ */
+export type MessageChangeEvent =
+  | {
+      type: "update";
+      conversation: ConversationRef;
+      message: RawDiscordMessage;
+      previous?: RawDiscordMessage;
+      source?: "gateway" | "catchup";
+    }
+  | { type: "delete"; conversation: ConversationRef; messageId: string; previous?: RawDiscordMessage; source?: "gateway" | "catchup" }
+  | { type: "deleteBulk"; conversation: ConversationRef; messageIds: string[] };
 
 export type { DreamPassResult, RuntimeOrchestratorOptions, StageManagerRunResult } from "./runtimeShared.js";
 export { currentlyDoingForWaifu } from "./promptBuilders.js";
@@ -149,6 +181,21 @@ export class RuntimeOrchestrator {
       this.options.discord.onMessage?.((event) => {
         this.runBackground("Discord message handler failed", discordMessageLogContext(event), () =>
           this.handleDiscordMessage(event)
+        );
+      }),
+      this.options.discord.onMessageEdit?.((event) => {
+        this.runBackground("Discord message edit handler failed", discordEditLogContext(event), () =>
+          this.handleDiscordMessageEdit(event)
+        );
+      }),
+      this.options.discord.onMessageDelete?.((event) => {
+        this.runBackground("Discord message delete handler failed", discordDeleteLogContext(event), () =>
+          this.handleDiscordMessageDelete(event)
+        );
+      }),
+      this.options.discord.onThreadChange?.((event) => {
+        this.runBackground("Discord thread handler failed", { guildId: event.guildId, threadId: event.threadId, change: event.change }, () =>
+          this.handleDiscordThreadChange(event)
         );
       }),
       this.options.discord.onReviewCommand?.((event) => {
@@ -348,7 +395,11 @@ export class RuntimeOrchestrator {
       await ensureChannelSession(this.options.storage, event.guildId, event.channelId);
       return;
     }
-    const serverWithChannel = await ensureChannelConfig(this.options, server, event.channelId);
+    // Spec 9.5: a thread is never auto-created as a channel entry; it is tracked in threads.json and
+    // inherits its parent's cast (unless the parent switched threads off or has no cast).
+    const serverWithChannel = event.thread
+      ? await this.admitThreadMessage(server, event)
+      : await ensureChannelConfig(this.options, server, event.channelId);
     const channel = serverWithChannel.channels[event.channelId];
     if (!channelHasWaifus(channel)) {
       this.options.logger.info("Discord message observed in inactive channel; enable at least one waifu in Servers", {
@@ -378,6 +429,183 @@ export class RuntimeOrchestrator {
     await this.runner.startChannelRun(event.guildId, event.channelId, `message:${event.messageId}`, {
       trigger: "message"
     });
+  }
+
+  /** Track the thread a message arrived in (when it can take part) and return the refreshed server. */
+  private async admitThreadMessage(server: ServerConfig, event: DiscordMessageEvent): Promise<ServerConfig> {
+    const thread = event.thread!;
+    const explicit = server.channels[event.channelId];
+    const hasOwnCast = (explicit?.enabledWaifuIds?.length ?? 0) > 0 && !explicit?.thread;
+    if (!hasOwnCast && !parentSharesCast(server.channels[thread.parentId])) return server;
+    // A message in a thread means it is open: Discord unarchives on send, so a stale cached
+    // `archived: true` must not silence it.
+    await observeThread(this.options.storage, event.guildId, {
+      threadId: event.channelId,
+      parentId: thread.parentId,
+      name: thread.name,
+      kind: thread.kind,
+      archived: false,
+      locked: thread.locked,
+      activity: true
+    });
+    return ensureServer(this.options.storage, event.guildId);
+  }
+
+  /** Raw discord.js edit event: translated to the shared adapter shape. */
+  async handleDiscordMessageEdit(event: DiscordMessageEditEvent): Promise<void> {
+    await this.applyMessageEvent(
+      {
+        type: "update",
+        conversation: { kind: "guild", guildId: event.guildId, channelId: event.channelId },
+        message: event.message,
+        source: "gateway"
+      },
+      {
+        ...(event.thread ? { thread: event.thread } : {}),
+        ...(event.previousMentionIds ? { previousMentionIds: event.previousMentionIds } : {})
+      }
+    );
+  }
+
+  /** Raw discord.js delete / bulk delete event: translated to the shared adapter shape. */
+  async handleDiscordMessageDelete(event: DiscordMessageDeleteEvent): Promise<void> {
+    const conversation = { kind: "guild" as const, guildId: event.guildId, channelId: event.channelId };
+    await this.applyMessageEvent({ type: "deleteBulk", conversation, messageIds: event.messageIds });
+  }
+
+  /**
+   * The single entry point for message edits and deletes (spec 9.5), whatever the source.
+   *
+   * - `update`: recorded in the conversation ledger (in place while unsealed, else an `edit`
+   *   event). Never starts a run, except a live edit that adds a waifu mention to the newest human
+   *   message within 2 minutes: that is treated as a new message.
+   * - `delete` / `deleteBulk`: hybrid rule O1 (recent or unsealed messages are redacted, older ones
+   *   only marked). Never starts a run; deleting the message that triggered a run that has not sent
+   *   anything yet aborts it (`trigger_deleted`).
+   *
+   * Only guild conversations are handled here; DM conversations belong to the DM runner (wave 2).
+   * `extra.thread` carries the thread facts a re-trigger needs when the source knows them;
+   * `extra.previousMentionIds` stands in for `event.previous` when only the old mentions are known.
+   */
+  async applyMessageEvent(
+    event: MessageChangeEvent,
+    extra: { thread?: DiscordThreadInfo; previousMentionIds?: string[] } = {}
+  ): Promise<void> {
+    const conversation = event.conversation;
+    if (conversation.kind !== "guild") return;
+    const { guildId, channelId } = conversation;
+    if (event.type === "update") {
+      const message = event.message;
+      if (!message.editedAt) return;
+      const retrigger = event.source !== "catchup" && (await this.editAddsWaifuMention(conversation, event, extra.previousMentionIds));
+      const server = await ensureServer(this.options.storage, guildId);
+      const directory = await loadGuildDirectoryView(this.options.storage, guildId, {
+        channelName: (id) => server.channels[id]?.name
+      });
+      await this.contexts.recordMessageEdit(conversation, message, { directory });
+      if (!retrigger) return;
+      this.options.logger.info("Edit added a waifu mention to the newest human message; treating it as a new message", {
+        guildId,
+        channelId,
+        messageId: message.id
+      });
+      await this.handleDiscordMessage({
+        guildId,
+        channelId,
+        messageId: message.id,
+        authorId: message.authorId,
+        authorBot: message.authorIsBot,
+        ...(extra.thread ? { thread: extra.thread } : {})
+      });
+      return;
+    }
+    const messageIds = event.type === "delete" ? [event.messageId] : event.messageIds;
+    this.runner.abortRunIfTriggerDeleted(guildId, channelId, messageIds, (id, since) => this.executor.hasSentSince(id, since));
+    await this.contexts.recordMessageDeletes(conversation, messageIds, {
+      ...(this.options.deletedMessages ? { redactRecent: this.options.deletedMessages.redactRecent } : {})
+    });
+  }
+
+  private async editAddsWaifuMention(
+    conversation: { kind: "guild"; guildId: string; channelId: string },
+    event: Extract<MessageChangeEvent, { type: "update" }>,
+    fallbackPreviousIds?: string[]
+  ): Promise<boolean> {
+    const message = event.message;
+    if (message.authorIsBot) return false;
+    const editedAt = Date.parse(message.editedAt ?? "");
+    const createdAt = Date.parse(message.createdAt);
+    if (!Number.isFinite(editedAt) || !Number.isFinite(createdAt) || editedAt - createdAt > EDIT_MENTION_RETRIGGER_MS) return false;
+    if (Date.now() - createdAt > EDIT_MENTION_RETRIGGER_MS) return false;
+    const mentioned = Object.keys(message.mentions.users);
+    if (mentioned.length === 0) return false;
+    const ledger = await this.contexts.peekLedger(conversation);
+    let newestHuman: (typeof ledger.entries)[string] | undefined;
+    for (const entry of Object.values(ledger.entries)) {
+      if (isGapEntry(entry) || entry.authorIsBot || entry.kind !== "default" || entry.state === "deleted") continue;
+      if (!newestHuman || entry.seq > newestHuman.seq) newestHuman = entry;
+    }
+    if (!newestHuman || newestHuman.id !== message.id) return false;
+    // "Adds": not mentioned before the edit. The cached old message says so; otherwise the
+    // frozen ledger body (`<@Name>`) does.
+    const previousIds = event.previous ? Object.keys(event.previous.mentions.users) : fallbackPreviousIds;
+    const added = mentioned.filter((id) =>
+      previousIds ? !previousIds.includes(id) : !newestHuman!.body.includes(`<@${message.mentions.users[id]}>`)
+    );
+    for (const id of added) {
+      if (await isKnownWaifuAuthor(this.options.storage, id)) return true;
+    }
+    return false;
+  }
+
+  /** Thread lifecycle (spec 9.5): track it, and stop its timers when it is archived, locked or deleted. */
+  async handleDiscordThreadChange(event: DiscordThreadEvent): Promise<void> {
+    const { guildId, threadId, thread } = event;
+    if (event.change === "delete") {
+      await removeThread(this.options.storage, guildId, threadId);
+      await this.stopChannel(guildId, threadId, "thread_deleted");
+      // The thread is gone: so is its conversation (ledger, refs, every agent context).
+      await this.contexts
+        .deleteConversation({ kind: "guild", guildId, channelId: threadId })
+        .catch((error: unknown) => {
+          this.options.logger.warn("Failed to delete a deleted thread's conversation", {
+            guildId,
+            threadId,
+            message: error instanceof Error ? error.message : String(error)
+          });
+        });
+      return;
+    }
+    const server = await ensureServer(this.options.storage, guildId);
+    const explicit = server.channels[threadId];
+    const hasOwnCast = (explicit?.enabledWaifuIds?.length ?? 0) > 0 && !explicit?.thread;
+    const known = (await readThreads(this.options.storage, guildId)).threads[threadId];
+    // Only threads that can take part are tracked (a cast of their own or one to inherit); one we
+    // already track keeps following its archive / lock state even if the parent lost its cast.
+    if (!hasOwnCast && !known && !parentSharesCast(server.channels[thread.parentId])) return;
+    await observeThread(this.options.storage, guildId, {
+      threadId,
+      parentId: thread.parentId,
+      name: thread.name,
+      kind: thread.kind,
+      archived: thread.archived,
+      locked: thread.locked
+    });
+    if (thread.archived || thread.locked) {
+      // Archive / lock clears the thread's timers and any run in it.
+      await this.stopChannel(guildId, threadId, thread.archived ? "thread_archived" : "thread_locked");
+      return;
+    }
+    if (event.change === "create" || event.previous?.archived) {
+      // New or resumed (unarchived) thread: make sure the bot receives its messages.
+      await this.options.discord.joinThread?.({ guildId, threadId }).catch((error: unknown) => {
+        this.options.logger.info("Could not join thread", {
+          guildId,
+          threadId,
+          message: error instanceof Error ? error.message : String(error)
+        });
+      });
+    }
   }
 
   async triggerChannel(
@@ -459,6 +687,14 @@ function discordMessageLogContext(event: DiscordMessageEvent): Record<string, un
     authorId: event.authorId,
     authorBot: event.authorBot
   };
+}
+
+function discordEditLogContext(event: DiscordMessageEditEvent): Record<string, unknown> {
+  return { guildId: event.guildId, channelId: event.channelId, messageId: event.messageId };
+}
+
+function discordDeleteLogContext(event: DiscordMessageDeleteEvent): Record<string, unknown> {
+  return { guildId: event.guildId, channelId: event.channelId, count: event.messageIds.length };
 }
 
 function slashCommandLogContext(event: {

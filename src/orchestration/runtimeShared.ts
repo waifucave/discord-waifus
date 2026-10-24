@@ -43,6 +43,8 @@ export type RuntimeOrchestratorOptions = {
   imageConfig?: Partial<ImageCacheConfig>;
   /** `AppConfig.compaction`; `ServerConfig.compaction` overrides per key. */
   compaction?: CompactionSettings;
+  /** `AppConfig.discord.deletedMessages` (spec 9.5): how many newest messages a delete redacts. */
+  deletedMessages?: { redactRecent: number };
   /** Context compaction service (T7b); NoopCompaction when omitted. */
   contextCompaction?: CompactionService;
   /** Prebuilt context runtime (tests); otherwise createAppContextRuntime builds one. */

@@ -82,6 +82,7 @@ import {
   updateOrchestratorResponderOutcome
 } from "./stores/decisionHistory.js";
 import { noteActiveChatParticipantsFromContext } from "./stores/participants.js";
+import { channelPlaceName, isStaleThreadForResume } from "./stores/threads.js";
 import { consumeScheduledRetrigger, markSessionIdle, sessionRelativePath, setActivePipeline, updateSession } from "./stores/sessions.js";
 import { resolveContextCap } from "./contextWindows.js";
 
@@ -92,6 +93,9 @@ export type ActiveChannelRun = {
   promise: Promise<void>;
   trigger?: ChannelRunOptions["trigger"];
   wake?: RetriggerWakeInput;
+  /** The human message that started this run (reason `message:<id>`), for `trigger_deleted`. */
+  triggerMessageId?: string;
+  startedAt: number;
 };
 
 type ChannelRunnerOptions = Pick<
@@ -105,6 +109,7 @@ type ChannelRunnerOptions = Pick<
   | "restartResumeDelayMs"
   | "onActiveRunsChange"
   | "contexts"
+  | "deletedMessages"
 >;
 
 export class ChannelRunner {
@@ -164,6 +169,8 @@ export class ChannelRunner {
       const resumes: Array<() => Promise<void>> = [];
       for (const channel of Object.values(server.channels)) {
         if (!channelHasWaifus(channel)) continue;
+        // Spec 9.5: restart resume revisits only threads active within 24 hours.
+        if (isStaleThreadForResume(channel)) continue;
         const channelId = channel.channelId;
         // After a live resume (not boot) the room may already be moving again: never replan a
         // channel whose run is live or whose latest decision is still in flight.
@@ -181,6 +188,7 @@ export class ChannelRunner {
         // Best-effort: a human message that landed while the server was down must wake the
         // channel promptly instead of resuming the old schedule (live 2026-07-06 10:08: K's
         // message hit the deploy window and waited out a restored 130s timer).
+        await this.reconcileDowntime(guildId, channelId, server);
         let newestHumanMessageAt: string | undefined;
         try {
           const recent = await this.options.discord.fetchFreshContext({ guildId, channelId, limit: 10 });
@@ -225,6 +233,43 @@ export class ChannelRunner {
           for (const resume of resumes) await resume();
         });
       }
+    }
+  }
+
+  /**
+   * Edits and deletes that happened while the app was down (spec 9.5): compare the channel's
+   * newest 50 messages with the ledger. Best-effort and a no-op for a conversation without a
+   * ledger; a failure only means the next live event or reconnect catches it.
+   */
+  private async reconcileDowntime(guildId: string, channelId: string, server: ServerConfig): Promise<void> {
+    const discord = this.options.discord;
+    if (!discord.fetchContextSince) return;
+    try {
+      const conversation = { kind: "guild" as const, guildId, channelId };
+      const page = await discord.fetchContextSince({ guildId, channelId, afterMessageId: null, maxMessages: 50 });
+      const directory = await loadGuildDirectoryView(this.options.storage, guildId, {
+        channelName: (id) => server.channels[id]?.name
+      });
+      const summary = await this.options.contexts.reconcileRecent(conversation, page.messages, {
+        directory,
+        ...(this.options.deletedMessages ? { redactRecent: this.options.deletedMessages.redactRecent } : {})
+      });
+      const deleted = summary.deletes.redacted.length + summary.deletes.marked.length;
+      const edited = Object.values(summary.edits).filter((outcome) => outcome === "event" || outcome === "coalesced").length;
+      if (deleted > 0 || edited > 0) {
+        this.options.logger.info("Restart resume: reconciled edits and deletes made while the app was down", {
+          guildId,
+          channelId,
+          edited,
+          deleted
+        });
+      }
+    } catch (error) {
+      this.options.logger.warn("Restart resume: reconciling downtime edits failed", {
+        guildId,
+        channelId,
+        message: error instanceof Error ? error.message : String(error)
+      });
     }
   }
 
@@ -354,10 +399,45 @@ export class ChannelRunner {
           await this.retriggerPreemptedChannel(guildId);
         }
       });
-    this.activeRuns.set(key, { guildId, channelId, controller, promise, trigger: options.trigger, wake: options.wake });
+    const triggerMessageId = /^message:(\d+)$/.exec(reason)?.[1];
+    this.activeRuns.set(key, {
+      guildId,
+      channelId,
+      controller,
+      promise,
+      trigger: options.trigger,
+      wake: options.wake,
+      startedAt: Date.now(),
+      ...(triggerMessageId ? { triggerMessageId } : {})
+    });
     this.options.onActiveRunsChange?.(this.activeRuns.size);
     this.options.logger.info("Channel runtime loop started", { guildId, channelId, reason });
     await promise;
+  }
+
+  /**
+   * Spec 9.5: the human message that triggered the channel's run was deleted. A run that has not
+   * sent anything yet (still planning or generating) is aborted with `trigger_deleted`; a run
+   * that is already sending (or has sent) finishes. Returns whether a run was aborted.
+   */
+  abortRunIfTriggerDeleted(
+    guildId: string,
+    channelId: string,
+    deletedMessageIds: readonly string[],
+    hasSentSince: (channelId: string, sinceMs: number) => boolean
+  ): boolean {
+    const run = this.activeRuns.get(runKey(guildId));
+    if (!run || run.channelId !== channelId || !run.triggerMessageId) return false;
+    if (!deletedMessageIds.includes(run.triggerMessageId)) return false;
+    if (hasSentSince(channelId, run.startedAt)) return false;
+    this.options.logger.info("Aborting channel run: its triggering message was deleted", {
+      guildId,
+      channelId,
+      messageId: run.triggerMessageId
+    });
+    run.controller.abort(new Error("trigger_deleted"));
+    this.markSessionIdleBackground(guildId, channelId, "trigger_deleted");
+    return true;
   }
 
   private notePreemptedChannel(guildId: string, channelId: string, wake: RetriggerWakeInput): void {
@@ -538,7 +618,7 @@ export class ChannelRunner {
         mode,
         cast: buildCastCards(availableWaifus, guildNicknames),
         availableWaifuIds: availableWaifus.map((waifu) => waifu.id),
-        place: orchestratorPlace(server.name, channel.name, channelId),
+        place: orchestratorPlace(server.name, channelPlaceName(server, channelId), channelId),
         pausePlanning: orchestrator.promptSections.pausePlanning,
         ownerPolicy: orchestrator.prompt,
         turn: {
