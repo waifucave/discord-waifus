@@ -370,5 +370,7 @@ export const OwnerNoticesResponseSchema = z.object({
   corruptForgetCopies: z.number().int().nonnegative(),
   /** Forget scrubs still queued, per waifu. */
   pendingScrubs: z.array(z.object({ waifuId: z.string(), count: z.number().int().nonnegative() })),
-  intake: z.object({ paused: z.boolean(), pausedAt: z.string().nullable(), marks: z.number().int().nonnegative() })
+  intake: z.object({ paused: z.boolean(), pausedAt: z.string().nullable(), marks: z.number().int().nonnegative() }),
+  /** Enabled waifus linked to a bot that cannot log in for her: missing, turned off, or without a token. */
+  waifusWithoutBot: z.array(z.object({ waifuId: z.string(), reason: z.enum(["bot_missing", "bot_disabled", "bot_no_token"]) }))
 });

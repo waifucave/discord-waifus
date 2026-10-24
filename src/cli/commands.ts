@@ -24,7 +24,7 @@ import { remoteStatePaths } from "../remote/paths.js";
 import { inspectRememberedHostState } from "../remote/rememberedHosts.js";
 import { diagnoseBundledOcr } from "../orchestration/ocrPackages.js";
 import { StorageService } from "../storage/storageService.js";
-import { castHealth } from "../backend/castHealth.js";
+import { castHealth, noBotNotice } from "../backend/castHealth.js";
 import { DEFAULT_APP_CONFIG } from "../shared/schemas/config.js";
 import { DiscordBotsFileSchema, ProviderCredentialsFileSchema, createEmptyRevisionedFile } from "../shared/schemas/domain.js";
 import { ParsedCli, SETTINGS_AND_LIFE_COMMANDS, flagBoolean, flagNumber, flagString } from "./parser.js";
@@ -450,6 +450,7 @@ async function doctorCommand(dataRoot: string, options: CliRuntimeOptions): Prom
   if (cast.incompleteMigrations.length > 0) warnings.push(`${cast.incompleteMigrations.length} migration step(s) left unreadable data alone; repair the file(s) and restart`);
   if (cast.forgetJobs.some((job) => job.pending.some((part) => !part.retried))) warnings.push("an owner forget has a part that was given up after 3 tries; fix the cause, then forget the person again");
   if (cast.corruptForgetCopies > 0) warnings.push(`${cast.corruptForgetCopies} kept copy/copies of an unreadable forget record (deleted after 7 days)`);
+  for (const entry of cast.waifusWithoutBot) warnings.push(noBotNotice(entry));
   const result = {
     node: {
       version: process.versions.node,

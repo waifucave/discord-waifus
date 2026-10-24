@@ -157,4 +157,23 @@ describe("search, detector, forget jobs and owner notices", () => {
     await runMigrations(root, { appVersion: "3.0.0-test", steps: [{ ...step, run: async () => "converted" }] });
     expect((await castHealth(storage, { paused: false })).incompleteMigrations).toEqual([]);
   });
+
+  it("names an enabled waifu whose linked bot cannot log in (not one that speaks through the House bot)", async () => {
+    const { app } = await setup();
+    for (const id of ["aria", "mina", "solo"]) {
+      expect((await app.inject({ method: "POST", url: "/api/waifus", payload: { id, name: id, displayName: id } })).statusCode).toBe(201);
+    }
+    expect((await app.inject({ method: "PUT", url: "/api/discord-bots", payload: { waifus: [{ id: "aria-bot", displayName: "Aria", enabled: true }, { id: "mina-bot", displayName: "Mina", enabled: false, token: "MTAx.fake-token" }] } })).statusCode).toBe(200);
+    for (const [id, botId] of [["aria", "aria-bot"], ["mina", "mina-bot"]] as const) {
+      const current = (await app.inject({ method: "GET", url: `/api/waifus/${id}` })).json() as { revision: number };
+      expect((await app.inject({ method: "PUT", url: `/api/waifus/${id}`, payload: { revision: current.revision, botId } })).statusCode).toBe(200);
+    }
+    const notices = OwnerNoticesResponseSchema.parse((await app.inject({ method: "GET", url: "/api/owner-notices" })).json());
+    expect(notices.waifusWithoutBot).toEqual([
+      { waifuId: "aria", reason: "bot_no_token" },
+      { waifuId: "mina", reason: "bot_disabled" }
+    ]);
+    expect(notices.notices.filter((notice) => notice.includes("nothing she sends reaches Discord"))).toHaveLength(2);
+    expect(JSON.stringify(notices)).not.toContain("fake-token");
+  });
 });

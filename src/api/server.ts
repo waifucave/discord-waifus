@@ -18,6 +18,7 @@ import { redactRemoteHostDetails, redactSecrets } from "../backend/redaction.js"
 import { CastRuntime } from "../orchestration/runtime.js";
 import { clearOcrArtifacts } from "../orchestration/ocr.js";
 import { forgetJobNotices, forgetUser, unqueuedForgetResult } from "../orchestration/dm/forgetUser.js";
+import { noBotNotice, waifusWithoutBot } from "../backend/castHealth.js";
 import { readThreads } from "../orchestration/stores/threads.js";
 import { providerStatuses, keyHint } from "./providerStatus.js";
 import { sharedProviderAlerts } from "../orchestration/providerAlerts.js";
@@ -409,8 +410,11 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   const liveNotices = async (): Promise<string[]> => {
     const cast = currentCast();
     // An owner forget part given up after three tries stays a notice until the person is forgotten again.
-    const forgetNotices = await forgetJobNotices(storage).catch(() => [] as string[]);
-    return [...(cast?.permissionWarnings.list() ?? []), ...(cast?.cast?.notices.list() ?? []), ...forgetNotices];
+    const [forgetNotices, withoutBot] = await Promise.all([
+      forgetJobNotices(storage).catch(() => [] as string[]),
+      waifusWithoutBot(storage).catch(() => [])
+    ]);
+    return [...(cast?.permissionWarnings.list() ?? []), ...(cast?.cast?.notices.list() ?? []), ...forgetNotices, ...withoutBot.map(noBotNotice)];
   };
 
   app.get("/api/runtime", async (request) => {
