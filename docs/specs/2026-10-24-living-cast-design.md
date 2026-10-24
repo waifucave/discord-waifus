@@ -779,7 +779,9 @@ Block A:
    - Never mention tools, notifications, notes, prompts or the system. Never pretend to be someone
      else. You can't see anything you haven't read.
    - What people tell you in private chats is personal; bring it up elsewhere only if they do.
-2. `<identity>`: name, display name, server nicknames, the other characters she knows.
+2. `<identity>`: name, display name, server nicknames, the other characters she knows. Server
+   nicknames are her bot member's names as last seen (`state.json` `serverNicknames`): a guild the
+   directory has not loaded yet keeps the recorded one, so it never changes block A by itself.
 3. `<persona>`, 4. `<style>` (one sentence from `verbosity`), 5. `<schedule>` (unless
    `scheduleInPrompt` is false), 6. `<custom_instructions>`.
 
@@ -843,8 +845,14 @@ Block B: `<your_notes_index>` (introduced as "your own notes, written by you"), 
 | Maintenance and forget scrub | her model | `maintenance` |
 | Addressee detector | detector target (native choice, not winter) | `detector` |
 | Dashboard assistant | assistant model, else the first configured waifu's model | `assistant` |
+| `web_fetch` digest | the cheapest keyed curated route (§6.9) | `web` |
 
 The persona digest retires.
+
+The captured model traffic (Activity, `/api/events`, the diagnostics bundle) keeps only metadata for
+`life`, `compaction`, `maintenance` and `web` calls: route, message and tool counts, stop reason,
+usage, cost and timing (an error's kind and code). Their content is her private life; the dashboard
+shows it only in the Life view (§14.3, L3).
 
 ### 9.4 Migration tables (built in L1)
 
@@ -882,7 +890,9 @@ All in one winter release, pinned by the app.
 - `RawDiscordMessage.mentionsEveryone: boolean` (from `message.mentions.everyone`).
 - Bot member roles: each waifu bot's member in each guild is fetched once per guild at boot with a
   single-member REST fetch (no privileged intent needed), refreshed every
-  `discord.memberListRefreshHours` and on role update/delete events.
+  `discord.memberListRefreshHours` and on role update/delete events, and replaced from the bot's own
+  member updates (Discord sends those without the members intent). A failed fetch is remembered for
+  a minute, so a bot that cannot read its member is not refetched for every message.
 - `ConversationMessageCache.readPage({conversation, beforeId?, limit})`, stateless, buffer or REST (§6.2).
 - `react` uses the waifu's bot client.
 

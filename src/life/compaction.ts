@@ -27,6 +27,7 @@ import type { LifeDeps } from "./deps.js";
 import { buildBlockA, harnessHash } from "./lifeHarness.js";
 import { pruneOldEpochLogs, readLifeState, rewriteLifeLog, updateLifeState } from "./lifeStore.js";
 import { Notes } from "./notes.js";
+import { selfAuthorIds } from "./people.js";
 import { placesWithHandles, renderPlacesBlock } from "./places.js";
 import { buildLifeRequest, lifeBudget } from "./request.js";
 import { offeredToolNames } from "./tools/index.js";
@@ -42,20 +43,37 @@ export function routeOf(model: CuratedModel, effort?: string): LifeModelRoute {
 /** Block A, the tools and the route as the configuration says right now. */
 export async function currentHarness(deps: LifeDeps, waifu: WaifuConfig, model: CuratedModel): Promise<HarnessNow> {
   const places = await placesWithHandles(deps.storage, waifu.id);
-  const nicknames = new Set<string>();
-  if (waifu.botId) {
-    for (const guildId of new Set(places.flatMap((place) => (place.guildId ? [place.guildId] : [])))) {
-      const nick = deps.directory.memberName(guildId, waifu.botId);
-      if (nick) nicknames.add(nick);
-    }
-  }
+  const guildIds = [...new Set(places.flatMap((place) => (place.guildId ? [place.guildId] : [])))].sort();
+  const nicknames = await serverNicknames(deps, waifu, guildIds);
   const others = (await listWaifus(deps.storage).catch(() => []))
     .filter((other) => other.enabled && other.id !== waifu.id)
     .map((other) => ({ name: other.name, displayName: other.displayName }));
-  const harness = buildBlockA(waifu, { serverNicknames: [...nicknames].sort(), others }, deps.timeZone);
+  const harness = buildBlockA(waifu, { serverNicknames: nicknames, others }, deps.timeZone);
   const tools = offeredToolNames(deps);
   const route = routeOf(model, waifu.model?.effort);
   return { harness, tools, route, hash: harnessHash(harness, tools, route) };
+}
+
+/**
+ * Her bot's server nicknames from stable inputs (review M11): the guild directory's name for her
+ * bot's member when it knows it, else the one recorded last time. A guild the directory has not
+ * loaded yet (right after boot or a reconnect) never changes block A, so it never forces a
+ * configuration compaction; a guild she has left drops out.
+ */
+async function serverNicknames(deps: LifeDeps, waifu: WaifuConfig, guildIds: readonly string[]): Promise<string[]> {
+  if (!waifu.botId) return [];
+  const ids = await selfAuthorIds(deps.storage, waifu);
+  const known = (await readLifeState(deps.storage, waifu.id)).serverNicknames ?? {};
+  const next: Record<string, string> = {};
+  for (const guildId of guildIds) {
+    const live = ids.map((id) => deps.directory.memberName(guildId, id)).find((name): name is string => Boolean(name));
+    const nick = live ?? known[guildId];
+    if (nick) next[guildId] = nick;
+  }
+  if (JSON.stringify(next) !== JSON.stringify(known)) {
+    await updateLifeState(deps.storage, waifu.id, (current) => ({ ...current, ...(Object.keys(next).length > 0 ? { serverNicknames: next } : { serverNicknames: undefined }) }));
+  }
+  return [...new Set(Object.values(next))].sort();
 }
 
 function newTurnId(): string {

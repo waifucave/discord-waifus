@@ -175,8 +175,8 @@ export class Intake {
   }
 
   /** Her name, display name and server nickname (each ≥ 3 characters), for the `name` rule. */
-  private namesOf(waifu: WaifuConfig, guildId: string): string[] {
-    const nick = waifu.botId ? this.deps.directory.memberName(guildId, waifu.botId) : undefined;
+  private namesOf(waifu: WaifuConfig, guildId: string, selfIds: readonly string[]): string[] {
+    const nick = selfIds.map((id) => this.deps.directory.memberName(guildId, id)).find((name): name is string => Boolean(name));
     return [...new Set([waifu.name, waifu.displayName, nick].filter((name): name is string => typeof name === "string" && name.trim().length >= 3))];
   }
 
@@ -230,7 +230,7 @@ export class Intake {
         }
         if (human && raw.mentionsEveryone) reasons.push("everyone");
         // A mention already says it is for her; her name in the same message adds nothing.
-        if (human && !removed && !reasons.includes("mention") && waifu.wakeOnName && this.namesOf(waifu, input.guildId).some((name) => wordBoundaryIncludes(text, name))) reasons.push("name");
+        if (human && !removed && !reasons.includes("mention") && waifu.wakeOnName && this.namesOf(waifu, input.guildId, selfIds).some((name) => wordBoundaryIncludes(text, name))) reasons.push("name");
         if (reasons.length > 0) {
           const ordered = DIRECT_ORDER.filter((reason) => reasons.includes(reason));
           const shared = !ordered.includes("mention") && !ordered.includes("name") && (ordered.includes("everyone") || ordered.includes("role"));
@@ -336,7 +336,11 @@ export class Intake {
         ...(imageText.some(Boolean) ? { imageText: imageText.filter(Boolean) } : {})
       });
     }
-    const cast: DetectorCastMember[] = waifus.map((waifu) => ({ waifuId: waifu.id, names: this.namesOf(waifu, burst.guildId).length > 0 ? this.namesOf(waifu, burst.guildId) : [waifu.name], persona: waifu.persona }));
+    const cast: DetectorCastMember[] = [];
+    for (const waifu of waifus) {
+      const names = this.namesOf(waifu, burst.guildId, await selfAuthorIds(deps.storage, waifu));
+      cast.push({ waifuId: waifu.id, names: names.length > 0 ? names : [waifu.name], persona: waifu.persona });
+    }
     let choice: string | undefined;
     let probabilities: Record<string, number> = {};
     let error: string | undefined;

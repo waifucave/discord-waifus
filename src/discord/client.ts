@@ -168,6 +168,11 @@ export interface DiscordGatewayFacade {
   /** Living cast §10.2: the role ids of a waifu bot's own member in a guild (single-member fetch). */
   fetchBotMemberRoles?(input: { botId: string; guildId: string }): Promise<string[] | undefined>;
   /**
+   * Living cast §10.2: a bot's own guild member changed (Discord sends the current user's member
+   * updates without the members intent); `roleIds` excludes `@everyone`.
+   */
+  onBotRolesChange?(listener: (event: { botId: string; guildId: string; roleIds: string[] }) => void): () => void;
+  /**
    * Intents are fixed at login: after a waifu write that changes `dm.allowDms`, `botId` or
    * `enabled`, re-log only the bots whose DM intents changed (spec 9.1).
    */
@@ -374,6 +379,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   private readonly threadListeners = new Set<DiscordThreadListener>();
   private readonly conversationListeners = new Set<DiscordConversationEventListener>();
   private readonly directoryListeners = new Set<DiscordDirectoryEventListener>();
+  private readonly botRolesListeners = new Set<(event: { botId: string; guildId: string; roleIds: string[] }) => void>();
   private readonly wakeListeners = new Set<DiscordWakeCommandListener>();
   private readonly printListeners = new Set<DiscordPrintCommandListener>();
   private readonly waifuAutocompleteListeners = new Set<DiscordWaifuAutocompleteListener>();
@@ -982,6 +988,11 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
     return () => this.directoryListeners.delete(listener);
   }
 
+  onBotRolesChange(listener: (event: { botId: string; guildId: string; roleIds: string[] }) => void): () => void {
+    this.botRolesListeners.add(listener);
+    return () => this.botRolesListeners.delete(listener);
+  }
+
   ownAuthorIds(): string[] {
     const ids = new Set<string>();
     for (const client of this.clients.values()) if (client.user?.id) ids.add(client.user.id);
@@ -1382,6 +1393,13 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   }
 
   private attachClientRuntimeHandlers(client: Client, botId: string): void {
+    // The bot's own member (roles for the Living cast `role` wake, §10.2). Discord sends the current
+    // user's member updates on every bot, with or without the members intent.
+    client.on(Events.GuildMemberUpdate, (_old, member) => {
+      if (!client.user || member.id !== client.user.id) return;
+      const event = { botId, guildId: member.guild.id, roleIds: [...member.roles.cache.keys()].filter((roleId) => roleId !== member.guild.id) };
+      for (const listener of this.botRolesListeners) this.dispatchTo(listener, event);
+    });
     client.on(Events.Error, (error) => {
       this.reportRuntimeIssue({
         source: "client-error",

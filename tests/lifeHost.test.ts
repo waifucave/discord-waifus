@@ -5,9 +5,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { readLifeFile, readLifeState, updateLifeFile } from "../src/life/lifeStore.js";
 import { reminderWakeId } from "../src/life/scheduler.js";
+import { BotRoles, FAILED_FETCH_RETRY_MS } from "../src/life/botRoles.js";
+import { currentHarness } from "../src/life/compaction.js";
+import { readWaifu } from "../src/orchestration/stores/config.js";
 import { enqueueWake, newWakeId } from "../src/life/wakeQueue.js";
 import { hangingTurn, textTurn } from "./modelFakes.js";
-import { closeWorlds, lifeWorld, script, type LifeWorld } from "./lifeFixtures.js";
+import { ARIA_BOT, closeWorlds, lifeWorld, script, type LifeWorld } from "./lifeFixtures.js";
 import { removeTempRoot } from "./testUtils.js";
 
 const roots: string[] = [];
@@ -101,5 +104,50 @@ describe("reminders (M4) and quiet writes (M5)", () => {
     await w.cast.scheduler.tick({ waitForMaintenance: false });
     expect((await readLifeFile(w.storage, "aria", "schedule")).revision).toBe(schedule.revision);
     expect((await readLifeFile(w.storage, "aria", "watches")).revision).toBe(watches.revision);
+  });
+});
+
+describe("block A from stable inputs (M11)", () => {
+  it("a guild the directory has not loaded keeps her last seen nickname: no configuration compaction", async () => {
+    const w = await lifeWorld(roots);
+    const deps = w.cast.deps;
+    const waifu = await readWaifu(w.storage, "aria");
+    const route = deps.catalog().models.find((model) => model.providerId === waifu.model!.providerId && model.modelId === waifu.model!.modelId)!;
+    // Her bot's member is known by its Discord id (the application id), not the bot config id.
+    const memberName = vi.spyOn(deps.directory, "memberName").mockImplementation((_guildId, userId) => (userId === ARIA_BOT ? "Ari-chan" : undefined));
+    const loaded = await currentHarness(deps, waifu, route);
+    expect(loaded.harness).toContain('"Ari-chan"');
+    // After a restart the directory is empty until the guild loads.
+    memberName.mockImplementation(() => undefined);
+    expect((await currentHarness(deps, waifu, route)).hash).toBe(loaded.hash);
+    // A real rename does change it.
+    memberName.mockImplementation((_guildId, userId) => (userId === ARIA_BOT ? "Lady Aria" : undefined));
+    expect((await currentHarness(deps, waifu, route)).hash).not.toBe(loaded.hash);
+  });
+});
+
+describe("bot roles (M10)", () => {
+  it("a failed fetch is remembered for a minute; the bot's own member update replaces the roles without a fetch", async () => {
+    let now = 0;
+    let calls = 0;
+    let answer: string[] | undefined;
+    const fetchBotMemberRoles = async () => {
+      calls += 1;
+      return answer;
+    };
+    const roles = new BotRoles({ discord: () => ({ fetchBotMemberRoles }) as never, refreshHours: () => 24, now: () => now });
+    expect([...(await roles.roles("g1", "aria-bot"))]).toEqual([]);
+    expect([...(await roles.roles("g1", "aria-bot"))]).toEqual([]);
+    expect(calls).toBe(1);
+    now += FAILED_FETCH_RETRY_MS + 1;
+    answer = ["r1"];
+    expect([...(await roles.roles("g1", "aria-bot"))]).toEqual(["r1"]);
+    expect(calls).toBe(2);
+    roles.set("g1", "aria-bot", ["r2", "g1"]);
+    expect([...(await roles.roles("g1", "aria-bot"))]).toEqual(["r2"]);
+    expect(calls).toBe(2);
+    roles.invalidate("g1");
+    expect([...(await roles.roles("g1", "aria-bot"))]).toEqual(["r1"]);
+    expect(calls).toBe(3);
   });
 });

@@ -113,7 +113,10 @@ purposes). Without a request cap, a route the catalog gives no `maxOutputTokens`
 list-price estimate; failed and aborted lines are priced whenever usage is known. The captured
 query/reply log (Activity, `/api/events`, diagnostics) never carries reasoning: `nativeState`,
 signatures, encrypted reasoning and thinking blocks are stripped from the log copy
-(`withoutReasoningPayloads` in `src/shared/queryLog.ts`); the provider still gets them.
+(`withoutReasoningPayloads` in `src/shared/queryLog.ts`); the provider still gets them. Calls with
+purpose `life`, `maintenance`, `compaction` or `web` are captured as metadata only
+(`METADATA_ONLY_ROLES`: route, message/tool counts, stop reason, usage, cost, timing; an error's
+kind and code), never their content; the assistant's and the detector's calls keep theirs.
 
 **Migrations** (`src/backend/migrations.ts`, `src/backend/migrationSteps/`): steps are `once`
 (legacy shape conversions, recorded in `app/migrations.json`), `once-per-app-version` (outcome

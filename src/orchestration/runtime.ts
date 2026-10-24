@@ -139,7 +139,8 @@ export class CastRuntime {
       discord.onWaifuAutocomplete?.((event) => this.handleWaifuAutocomplete(event)),
       // Edits and deletes in a life (§10.3); a newly added mention under 2 minutes wakes (§4.2).
       this.conversations.onEvent((event) => this.cast.onCacheEvent(event, (guildId, channelId) => this.castOf(guildId, channelId))),
-      // Bot roles refetch after role changes (§10.2).
+      // Bot roles: replaced from the bot's own member updates, refetched after role changes (§10.2).
+      discord.onBotRolesChange?.((event) => this.cast.botRoles.set(event.guildId, event.botId, event.roleIds)),
       discord.onDirectoryEvent?.((event) => {
         if (event.type === "roleUpsert" || event.type === "roleDelete" || event.type === "guildDelete") this.cast.onRolesChanged(event.guildId);
         else if (event.type === "memberUpsert" && (discord.ownAuthorIds?.() ?? []).includes(event.member.userId)) this.cast.onRolesChanged(event.guildId);

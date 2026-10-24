@@ -114,6 +114,11 @@ export const LifeStateSchema = RevisionedRecordSchema.extend({
   lastTurnEndedAt: IsoDateStringSchema.optional(),
   /** Last nightly maintenance (§7.3). */
   lastMaintenanceAt: IsoDateStringSchema.optional(),
+  /**
+   * Her bot's server nicknames as last seen (guild id → name), so block A does not change just
+   * because the guild directory has not loaded a guild yet (review M11).
+   */
+  serverNicknames: z.record(z.string(), z.string()).optional(),
   /** Per user: when a DM `/forget` last ran step 2 (§7.5 rate limit). */
   scrubbedAt: z.record(z.string(), IsoDateStringSchema).default({})
 });
