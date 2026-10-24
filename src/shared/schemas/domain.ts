@@ -3,6 +3,7 @@ import { OneShotConfigSchema } from "./oneShot.js";
 import { CURRENT_SCHEMA_VERSION, IsoDateStringSchema, RevisionedRecordSchema } from "./common.js";
 import { CompactionOverrideSchema } from "./compaction.js";
 import { WaifuDmSettingsSchema, defaultWaifuDmSettings } from "./dm.js";
+import { ChannelThreadsModeSchema } from "./threads.js";
 
 // Gateway P4 Task 4: widened from the legacy 6-value enum to any id the gateway registry
 // knows (14+ providers). Unknown ids still get rejected at API write time — see
@@ -250,7 +251,15 @@ export const ServerConfigSchema = RevisionedRecordSchema.extend({
       channelId: z.string().min(1),
       name: z.string().optional(),
       enabled: z.boolean().default(false),
-      enabledWaifuIds: z.array(z.string()).default([])
+      enabledWaifuIds: z.array(z.string()).default([]),
+      // Spec 9.5 / O2: do this channel's threads and forum posts inherit its cast ("inherit") or
+      // stay silent ("off")? Absent means "inherit" (kept optional, not defaulted, so older writers
+      // and partial PUTs never manufacture or reset it). A thread with an explicit entry of its own
+      // is not affected.
+      threads: ChannelThreadsModeSchema.optional(),
+      // Runtime-only (ensureServer's thread overlay, stores/threads.ts): marks a virtual entry for
+      // a thread that inherits `parentId`'s cast. Never persisted; the API never returns it.
+      thread: z.object({ parentId: z.string().min(1), lastActivityAt: IsoDateStringSchema.optional() }).optional()
     })
   ).default({})
 });

@@ -25,7 +25,7 @@ import type { ModelPipeline, SummarizeContextRequest } from "../../providers/typ
 import type { ContextState, LedgerEntry } from "../../shared/schemas/context.js";
 import type { ContextEngineStore } from "./contextStore.js";
 import { contextAgentId, conversationKey, type ContextAgent, type ConversationKey, type ConversationRef } from "./keys.js";
-import { isGapEntry, orderedEntries } from "./ledger.js";
+import { deletedEntryIdsAfter, isGapEntry, orderedEntries } from "./ledger.js";
 import type { CalibrationHook } from "./runtime.js";
 import { estimateTokens } from "./tokens.js";
 import type {
@@ -378,6 +378,8 @@ export function nextEpochState(
     memorySnapshotIds: [],
     memoryNoteCount: 0,
     inlineImageCount: 0,
+    // Spec 9.5: messages deleted before the epoch starts render as "(message deleted)" in it.
+    redactedIds: deletedEntryIdsAfter(all, cut.cursorSeq),
     imageModes: Object.fromEntries(Object.entries(s.imageModes).filter(([imageKey]) => keptImageKeys.has(imageKey))),
     notes: s.notes.filter((note) => note.anchorSeq > cut.cursorSeq),
     lastBreakpoint: null,

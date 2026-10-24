@@ -97,9 +97,16 @@ const DiscordImagesConfigSchema = z
     diskCacheTtlHours: DISCORD_IMAGE_FIELDS.diskCacheTtlHours.default(DEFAULT_DISCORD_IMAGES.diskCacheTtlHours)
   })
   .default({ ...DEFAULT_DISCORD_IMAGES });
+// Spec 9.5 (hybrid delete): a deleted message among the newest `redactRecent` ledger entries (or
+// not yet seen by any model) becomes "(message deleted)"; older ones keep the cached transcript.
+const DELETED_MESSAGES_FIELDS = { redactRecent: z.number().int().min(0).max(200) };
+const DEFAULT_DELETED_MESSAGES = { redactRecent: 20 };
+const DiscordDeletedMessagesConfigSchema = z
+  .object({ redactRecent: DELETED_MESSAGES_FIELDS.redactRecent.default(DEFAULT_DELETED_MESSAGES.redactRecent) })
+  .default({ ...DEFAULT_DELETED_MESSAGES });
 export const DiscordConfigSchema = z
-  .object({ images: DiscordImagesConfigSchema })
-  .default({ images: { ...DEFAULT_DISCORD_IMAGES } });
+  .object({ images: DiscordImagesConfigSchema, deletedMessages: DiscordDeletedMessagesConfigSchema })
+  .default({ images: { ...DEFAULT_DISCORD_IMAGES }, deletedMessages: { ...DEFAULT_DELETED_MESSAGES } });
 export type DiscordConfig = z.infer<typeof DiscordConfigSchema>;
 
 export const AppConfigSchema = z.object({
@@ -171,6 +178,9 @@ export const UpdateAppConfigBodySchema = z.object({
       memoryCacheMb: DISCORD_IMAGE_FIELDS.memoryCacheMb.optional(),
       diskCacheMb: DISCORD_IMAGE_FIELDS.diskCacheMb.optional(),
       diskCacheTtlHours: DISCORD_IMAGE_FIELDS.diskCacheTtlHours.optional()
+    }).strict().optional(),
+    deletedMessages: z.object({
+      redactRecent: DELETED_MESSAGES_FIELDS.redactRecent.optional()
     }).strict().optional()
   }).strict().optional()
 }).strict();

@@ -10,7 +10,7 @@
 //   before a batch that did not reach the previous newest entry.
 
 import { createHash } from "node:crypto";
-import type { ConversationLedger, LedgerEntry } from "../../shared/schemas/context.js";
+import type { ConversationEvent, ConversationLedger, LedgerEntry } from "../../shared/schemas/context.js";
 import type { RawDiscordMessage } from "../../shared/schemas/discordMessage.js";
 import type { GuildDirectoryView, MessageRenderer } from "./types.js";
 
@@ -20,6 +20,27 @@ export const LEDGER_ENTRY_CAP = 2000;
 /** Pruning never removes the newest entries (protects a new context not yet persisted). */
 export const LEDGER_PROTECT_NEWEST = 200;
 export const ACTIVE_CONTEXT_MS = 7 * 24 * 60 * 60 * 1000;
+/** What a deleted message renders as (spec 9.5): redacted in place, or at the next epoch start. */
+export const DELETED_MESSAGE_BODY = "(message deleted)";
+/** Spec 9.5: at most this many `edit` events per message; later edits only refresh `editedAt`. */
+export const MAX_EDIT_EVENTS_PER_MESSAGE = 3;
+export const EDIT_EVENT_TEXT_MAX = 500;
+export const DEFAULT_REDACT_RECENT = 20;
+
+/**
+ * True when `entry` renders as "(message deleted)" in a context: it was redacted in the ledger
+ * (recent / unsealed delete) or it was old when that context's epoch started (`redactedIds`).
+ */
+export function isRedactedEntry(entry: LedgerEntry, redactedIds?: readonly string[]): boolean {
+  return entry.state === "deleted" && (entry.body === DELETED_MESSAGE_BODY || redactedIds?.includes(entry.id) === true);
+}
+
+/** Ids of ledger entries newer than `cursorSeq` that were deleted before an epoch starts here. */
+export function deletedEntryIdsAfter(entries: readonly LedgerEntry[], cursorSeq: number | null): string[] {
+  return entries
+    .filter((entry) => entry.state === "deleted" && !isGapEntry(entry) && (cursorSeq === null || entry.seq > cursorSeq))
+    .map((entry) => entry.id);
+}
 
 /**
  * The pruning floor an active stage-manager observer holds (spec 8.7): it has read everything up
@@ -109,7 +130,84 @@ export type ReconcileOptions = {
   timeZone: string;
   /** Insert the "earlier messages not loaded" entry before the first NEW message of this batch. */
   gapBeforeNew?: boolean;
+  /** Recently deleted message ids (a delete that arrived before its message was reconciled). */
+  skipIds?: ReadonlySet<string>;
+  /** Clock for the edit events this reconcile creates (default: now). */
+  now?: Date;
 };
+
+/** The mutable pieces of a ledger while an operation edits it. */
+type Working = { entries: Record<string, LedgerEntry>; events: ConversationEvent[]; nextSeq: number };
+
+function working(ledger: ConversationLedger): Working {
+  return {
+    entries: { ...ledger.entries },
+    events: [...ledger.events],
+    nextSeq: Math.max(ledger.nextSeq, newestSeq(ledger) + 1)
+  };
+}
+
+function finish(ledger: ConversationLedger, w: Working): ConversationLedger {
+  return { ...ledger, entries: w.entries, events: w.events, nextSeq: w.nextSeq };
+}
+
+function clipEditText(text: string): string {
+  const trimmed = text.trim();
+  return trimmed.length > EDIT_EVENT_TEXT_MAX ? `${trimmed.slice(0, EDIT_EVENT_TEXT_MAX - 1).trimEnd()}…` : trimmed;
+}
+
+type SealedEditOutcome = "ignored" | "event" | "coalesced" | "capped";
+
+/**
+ * A sealed entry's message was edited (Discord's `editedTimestamp` moved forward): keep the frozen
+ * body, remember the new `editedAt` and add an `edit` event (spec 9.5) that prepare turns into a
+ * note anchored to the newest entry. A not-yet-converted event of the same message is replaced
+ * under a fresh seq (a context that already converted the old text then converts the new text
+ * too); at most MAX_EDIT_EVENTS_PER_MESSAGE events per message, later edits only move `editedAt`.
+ */
+function recordSealedEdit(
+  w: Working,
+  entry: LedgerEntry,
+  message: Pick<RawDiscordMessage, "editedAt">,
+  rendered: { body: string; images: readonly unknown[] },
+  now: Date
+): SealedEditOutcome {
+  const editedAt = message.editedAt;
+  if (!editedAt) return "ignored";
+  const editedMs = Date.parse(editedAt);
+  if (!Number.isFinite(editedMs)) return "ignored";
+  // A duplicate or an out-of-order older edit (events can arrive in any order).
+  if (entry.editedAt && Date.parse(entry.editedAt) >= editedMs) return "ignored";
+  w.entries[entry.id] = { ...entry, editedAt, state: "edited" };
+  const body = rendered.body.trim();
+  // Embed-only / flag-only updates keep the text the model already saw: nothing to tell it.
+  if (body === entry.body.trim() && rendered.images.length === entry.images.length) return "ignored";
+  const text = clipEditText(body || (rendered.images.length > 0 ? "[image]" : "(no text)"));
+  const anchorSeq = Math.max(0, ...Object.values(w.entries).map((candidate) => candidate.seq));
+  const mine = w.events.filter((event) => event.kind === "edit" && event.messageId === entry.id);
+  const open = mine.find((event) => event.kind === "edit" && !event.sealed);
+  if (open) {
+    const seq = w.nextSeq;
+    w.nextSeq += 1;
+    w.events = w.events.map((event) =>
+      event === open ? { kind: "edit", seq, at: now.toISOString(), messageId: entry.id, anchorSeq, authorId: entry.authorId, text, sealed: false } : event
+    );
+    return "coalesced";
+  }
+  if (mine.length >= MAX_EDIT_EVENTS_PER_MESSAGE) return "capped";
+  w.events.push({
+    kind: "edit",
+    seq: w.nextSeq,
+    at: now.toISOString(),
+    messageId: entry.id,
+    anchorSeq,
+    authorId: entry.authorId,
+    text,
+    sealed: false
+  });
+  w.nextSeq += 1;
+  return "event";
+}
 
 export function reconcileEntries(
   ledger: ConversationLedger,
@@ -117,30 +215,42 @@ export function reconcileEntries(
   render: MessageRenderer,
   o: ReconcileOptions
 ): { ledger: ConversationLedger; changed: boolean } {
-  const entries = { ...ledger.entries };
-  let nextSeq = Math.max(ledger.nextSeq, newestSeq(ledger) + 1);
+  const w = working(ledger);
+  const entries = w.entries;
   let changed = false;
   let gapPending = o.gapBeforeNew === true;
+  const now = o.now ?? new Date();
   const sorted = [...fetched].sort(compareMessageOrder);
   const seen = new Set<string>();
 
   for (const message of sorted) {
     if (seen.has(message.id) || message.id.startsWith(GAP_ENTRY_PREFIX)) continue;
     seen.add(message.id);
+    if (o.skipIds?.has(message.id)) continue;
     const existing = entries[message.id];
+    // A deleted message is never resurrected by a stale fetch.
+    if (existing?.state === "deleted") continue;
     const rendered = render.render(message, o.dir, o.timeZone);
     if (existing?.sealed) {
-      const refreshed = rendered ? refreshImageUrls(existing, rendered.images) : undefined;
+      if (!rendered) continue;
+      const refreshed = refreshImageUrls(existing, rendered.images);
       if (refreshed) {
         entries[message.id] = refreshed;
         changed = true;
       }
+      // Edits made while the bot was away (or missed): the fetched message carries a newer
+      // `editedTimestamp` than the ledger remembers.
+      const before = entries[message.id]!;
+      const eventsBefore = w.events;
+      const seqBefore = w.nextSeq;
+      recordSealedEdit(w, before, message, rendered, now);
+      if (entries[message.id] !== before || w.events !== eventsBefore || w.nextSeq !== seqBefore) changed = true;
       continue;
     }
     if (rendered === null) continue;
     const candidate: LedgerEntry = {
       id: message.id,
-      seq: existing?.seq ?? nextSeq,
+      seq: existing?.seq ?? w.nextSeq,
       authorId: message.authorId,
       authorName: existing?.authorName ?? message.authorName, // frozen at first render
       authorIsBot: message.authorIsBot,
@@ -165,7 +275,7 @@ export function reconcileEntries(
       const gapId = `${GAP_ENTRY_PREFIX}${message.id}`;
       entries[gapId] = {
         id: gapId,
-        seq: nextSeq,
+        seq: w.nextSeq,
         authorId: "system",
         authorName: "",
         authorIsBot: false,
@@ -176,15 +286,125 @@ export function reconcileEntries(
         state: "live",
         sealed: false
       };
-      nextSeq += 1;
-      candidate.seq = nextSeq;
+      w.nextSeq += 1;
+      candidate.seq = w.nextSeq;
     }
     entries[message.id] = candidate;
-    nextSeq += 1;
+    w.nextSeq += 1;
     changed = true;
   }
   if (!changed) return { ledger, changed: false };
-  return { ledger: { ...ledger, entries, nextSeq }, changed: true };
+  return { ledger: finish(ledger, w), changed: true };
+}
+
+export type EditOutcome = "unknown" | "ignored" | "replaced" | SealedEditOutcome;
+
+/**
+ * One message was edited (Discord `messageUpdate`, spec 9.5). An unsealed entry is replaced in
+ * place (no model has seen it); a sealed one keeps its body and gains an `edit` event. A message
+ * the ledger does not hold (not fetched yet, pruned, before the backfill) is "unknown": a message
+ * not fetched yet arrives already edited, so there is nothing to record.
+ */
+export function applyEdit(
+  ledger: ConversationLedger,
+  message: RawDiscordMessage,
+  render: MessageRenderer,
+  o: ReconcileOptions
+): { ledger: ConversationLedger; outcome: EditOutcome } {
+  const entry = ledger.entries[message.id];
+  if (!entry || isGapEntry(entry)) return { ledger, outcome: "unknown" };
+  if (entry.state === "deleted" || o.skipIds?.has(message.id)) return { ledger, outcome: "ignored" };
+  if (!entry.sealed) {
+    const result = reconcileEntries(ledger, [message], render, o);
+    return { ledger: result.ledger, outcome: result.changed ? "replaced" : "ignored" };
+  }
+  const rendered = render.render(message, o.dir, o.timeZone);
+  if (!rendered) return { ledger, outcome: "ignored" };
+  const w = working(ledger);
+  const eventsBefore = w.events;
+  const outcome = recordSealedEdit(w, entry, message, rendered, o.now ?? new Date());
+  if (w.entries[entry.id] === entry && w.events === eventsBefore && outcome === "ignored") return { ledger, outcome };
+  return { ledger: finish(ledger, w), outcome };
+}
+
+export type DeleteResult = {
+  ledger: ConversationLedger;
+  /** Entries whose body became "(message deleted)" (unsealed or among the newest `redactRecent`). */
+  redacted: string[];
+  /** Older entries marked `deleted` with their text left alone (the cached transcript is intact). */
+  marked: string[];
+  /** Ids the ledger does not hold. */
+  unknown: string[];
+  /** Images of the redacted entries, for the caller to purge from the image cache. */
+  purgedImages: LedgerEntry["images"];
+};
+
+/**
+ * Spec 9.5 hybrid delete (O1). An unsealed entry, or one among the newest `redactRecent` real
+ * entries of the ledger, is redacted in place: body "(message deleted)", images dropped, so the
+ * rendered bytes change only from that message onward. An older sealed entry keeps its text (the
+ * cache survives) and is only marked `deleted`; a compaction leaves it out of the summary and the
+ * next epoch start renders it as "(message deleted)". Either way an audit `delete` event is added
+ * and any not-yet-converted `edit` event of the message is dropped.
+ */
+export function applyDeletes(
+  ledger: ConversationLedger,
+  ids: readonly string[],
+  o: { redactRecent: number; now?: Date }
+): DeleteResult {
+  const result: DeleteResult = { ledger, redacted: [], marked: [], unknown: [], purgedImages: [] };
+  const real = orderedEntries(ledger).filter((entry) => !isGapEntry(entry));
+  const recent = new Set(o.redactRecent > 0 ? real.slice(-o.redactRecent).map((entry) => entry.id) : []);
+  const w = working(ledger);
+  const at = (o.now ?? new Date()).toISOString();
+  const dropUnsealedEdits = new Set<string>();
+  for (const id of new Set(ids)) {
+    const entry = ledger.entries[id];
+    if (!entry || isGapEntry(entry)) {
+      result.unknown.push(id);
+      continue;
+    }
+    if (entry.state === "deleted") continue;
+    dropUnsealedEdits.add(id);
+    const anchorSeq = Math.max(0, ...Object.values(w.entries).map((candidate) => candidate.seq));
+    w.events.push({ kind: "delete", seq: w.nextSeq, at, messageId: id, anchorSeq });
+    w.nextSeq += 1;
+    if (!entry.sealed || recent.has(id)) {
+      w.entries[id] = { ...entry, body: DELETED_MESSAGE_BODY, images: [], state: "deleted" };
+      result.redacted.push(id);
+      result.purgedImages = [...result.purgedImages, ...entry.images];
+    } else {
+      w.entries[id] = { ...entry, state: "deleted" };
+      result.marked.push(id);
+    }
+  }
+  if (result.redacted.length === 0 && result.marked.length === 0) return result;
+  w.events = w.events.filter((event) => !(event.kind === "edit" && !event.sealed && dropUnsealedEdits.has(event.messageId)));
+  result.ledger = finish(ledger, w);
+  return result;
+}
+
+/**
+ * Deletes visible as a gap in a contiguous page of recent messages (spec 9.5): every ledger entry
+ * whose id lies between the page's oldest and newest message but is missing from it was deleted.
+ * Only valid for a page fetched without holes (a REST page of the newest N messages).
+ */
+export function detectGapDeletes(ledger: ConversationLedger, page: readonly Pick<RawDiscordMessage, "id" | "createdAt">[]): string[] {
+  if (page.length === 0) return [];
+  const sorted = [...page].sort(compareMessageOrder);
+  const oldest = sorted[0]!;
+  const newest = sorted[sorted.length - 1]!;
+  const present = new Set(page.map((message) => message.id));
+  return Object.values(ledger.entries)
+    .filter(
+      (entry) =>
+        !isGapEntry(entry) &&
+        entry.state !== "deleted" &&
+        !present.has(entry.id) &&
+        compareMessageOrder({ id: entry.id, createdAt: entry.at }, oldest) > 0 &&
+        compareMessageOrder({ id: entry.id, createdAt: entry.at }, newest) < 0
+    )
+    .map((entry) => entry.id);
 }
 
 /** Seal entries (and Phase 5 events) that a build rendered. Undefined when nothing changed. */

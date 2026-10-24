@@ -19,21 +19,23 @@ import type { Logger } from "../../backend/logger.js";
 import type { ImageFetcher } from "../../discord/attachments.js";
 import type { MemoryConfig } from "../../shared/schemas/config.js";
 import { DEFAULT_APP_CONFIG } from "../../shared/schemas/config.js";
-import type { ContextNote, ContextState, LedgerEntry } from "../../shared/schemas/context.js";
-import type { ImageRef } from "../../shared/schemas/discordMessage.js";
+import type { ContextNote, ContextState, ConversationLedger, LedgerEntry } from "../../shared/schemas/context.js";
+import type { ImageRef, RawDiscordMessage } from "../../shared/schemas/discordMessage.js";
 import type { ServerConfig } from "../../shared/schemas/domain.js";
 import { buildContext, modelKeyFor } from "./builder.js";
-import type { ContextEngineStore } from "./contextStore.js";
+import type { ContextEngineStore, DeleteSummary, WindowReconcileSummary } from "./contextStore.js";
 import { FrozenImageRenderer, type OcrTextLookup } from "./images.js";
 import { effectiveKeepRecent, entryTokens, isContextOverflowError, nextEpochState } from "./compaction.js";
 import { contextAgentId, conversationKey, type ContextAgent, type ConversationKey, type ConversationRef } from "./keys.js";
 import {
   ACTIVE_CONTEXT_MS,
+  deletedEntryIdsAfter,
   entryRenderHash,
   isGapEntry,
   newestMessageEntry,
   newestSeq,
-  orderedEntries
+  orderedEntries,
+  type EditOutcome
 } from "./ledger.js";
 import { discordMessageRenderer, EMPTY_GUILD_DIRECTORY } from "./messageRender.js";
 import { hostTimeZone } from "./timeFormat.js";
@@ -344,6 +346,90 @@ export class ContextRuntime {
       committed = await this.d.store.update(p.key, p.agent, (current) => transform(current, anchorSeq));
     }
     this.backgroundCheck(p, committed, o.usage);
+  }
+
+  /**
+   * A Discord message was edited (spec 9.5): replace in place while no model has seen it, else
+   * remember the new text as an `edit` event that the next prepare of each context turns into a
+   * note. Detection is by Discord's `editedTimestamp` only. Never creates a ledger.
+   */
+  async recordMessageEdit(
+    conversation: ConversationRef,
+    message: RawDiscordMessage,
+    o: { directory?: GuildDirectoryView } = {}
+  ): Promise<EditOutcome> {
+    const outcome = await this.d.store.applyMessageEdit(conversationKey(conversation), message, this.renderer, {
+      dir: o.directory ?? EMPTY_GUILD_DIRECTORY,
+      timeZone: this.timeZone()
+    });
+    if (outcome === "event" || outcome === "coalesced" || outcome === "replaced") {
+      this.d.logger.info("Discord message edit recorded", {
+        conversationKey: conversationKey(conversation),
+        messageId: message.id,
+        outcome
+      });
+    }
+    return outcome;
+  }
+
+  /**
+   * Discord messages were deleted (event, bulk delete or a gap in a page; spec 9.5 hybrid rule):
+   * recent or unsealed ones are redacted in place (and their cached images purged), older ones are
+   * only marked. Never starts a run.
+   */
+  async recordMessageDeletes(conversation: ConversationRef, ids: string[], o: { redactRecent?: number } = {}): Promise<DeleteSummary> {
+    const key = conversationKey(conversation);
+    const summary = await this.d.store.applyMessageDeletes(key, ids, o);
+    await this.purgeImages(summary.purgedImages);
+    if (summary.redacted.length + summary.marked.length > 0) {
+      this.d.logger.info("Discord message delete recorded", {
+        conversationKey: key,
+        redacted: summary.redacted.length,
+        marked: summary.marked.length
+      });
+    }
+    return summary;
+  }
+
+  /**
+   * Catch-up over a contiguous page of recent messages after downtime or a reconnect: edits become
+   * events, entries missing from the page's id range are deleted (spec 9.5). The caller must pass
+   * a page fetched without holes (newest N messages of the channel, no `before` cut in the middle).
+   */
+  async reconcileRecent(
+    conversation: ConversationRef,
+    page: RawDiscordMessage[],
+    o: { directory?: GuildDirectoryView; redactRecent?: number } = {}
+  ): Promise<WindowReconcileSummary> {
+    const key = conversationKey(conversation);
+    const summary = await this.d.store.reconcileWindow(key, page, this.renderer, {
+      dir: o.directory ?? EMPTY_GUILD_DIRECTORY,
+      timeZone: this.timeZone(),
+      ...(o.redactRecent !== undefined ? { redactRecent: o.redactRecent } : {})
+    });
+    await this.purgeImages(summary.deletes.purgedImages);
+    return summary;
+  }
+
+  /** Read-only view of the conversation ledger (never creates it). */
+  async peekLedger(conversation: ConversationRef): Promise<ConversationLedger> {
+    return this.d.store.loadLedger(conversationKey(conversation));
+  }
+
+  /** `/clear everything`: the conversation's ledger, refs and every agent context (spec 9.5). */
+  async deleteConversation(conversation: ConversationRef): Promise<void> {
+    await this.d.store.deleteConversation(conversationKey(conversation));
+  }
+
+  private async purgeImages(images: ReadonlyArray<ImageRef>): Promise<void> {
+    if (images.length === 0 || !this.d.images.purge) return;
+    try {
+      await this.d.images.purge(images.map((image) => image.key));
+    } catch (error) {
+      this.d.logger.warn("Purging a deleted message's cached images failed", {
+        message: error instanceof Error ? error.message : String(error)
+      });
+    }
   }
 
   /** Stable per-conversation refs for message ids (assigned on first use; spec 8.1). */
@@ -727,6 +813,8 @@ export class ContextRuntime {
     next.memoryNoteCount = 0;
     next.inlineImageCount = 0;
     const transcript = o.all.filter((entry) => next.cursorSeq === null || entry.seq > next.cursorSeq);
+    // Spec 9.5: messages deleted before this epoch starts render as "(message deleted)" in it.
+    next.redactedIds = deletedEntryIdsAfter(o.all, next.cursorSeq);
     const keptKeys = new Set(transcript.flatMap((entry) => entry.images.map((image) => image.key)));
     next.imageModes = Object.fromEntries(Object.entries(next.imageModes).filter(([imageKey]) => keptKeys.has(imageKey)));
 
