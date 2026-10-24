@@ -51,9 +51,6 @@ type MigrationStepFrequency = "every-boot" | "once" | "once-per-app-version";
 export type MigrationStep = {
   id: string;
   frequency: MigrationStepFrequency;
-  // Registered ahead of its implementation (spec 8.0): a pending step is skipped and NOT recorded
-  // in the ledger, so it runs normally the first boot after the owning work removes the flag.
-  pending?: boolean;
   // Returns the label reported in MigrationResult.applied when the step changed anything.
   run: (dataRoot: string) => Promise<string | undefined>;
 };
@@ -186,7 +183,6 @@ export async function runMigrations(
 
   try {
     for (const step of options.steps ?? MIGRATION_STEPS) {
-      if (step.pending) continue;
       if (stepIsRecorded(step, ledger, appVersion)) continue;
       const result = await step.run(dataRoot);
       if (result) applied.push(result);

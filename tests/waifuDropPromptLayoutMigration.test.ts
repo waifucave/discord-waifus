@@ -71,7 +71,6 @@ function disableBlock(layout: Layout, blockId: string): void {
 describe("waifu-drop-prompt-layout-v1", () => {
   it("is registered live (the waifu harness no longer reads layouts)", () => {
     const step = MIGRATION_STEPS.find((candidate) => candidate.id === "waifu-drop-prompt-layout-v1")!;
-    expect(step.pending).toBeUndefined();
     expect(step.run).toBe(migrateWaifuDropPromptLayout);
   });
 
@@ -250,9 +249,7 @@ describe("waifu-drop-prompt-layout-v1", () => {
     });
     // Flat promptSections predate the layout tree.
     await writeWaifu(root, "flat", { promptSections: { hardRules: true, schedule: false } });
-    const steps = MIGRATION_STEPS.filter((step) => !step.pending);
-
-    await runMigrations(root, { appVersion: "2.200.0", steps });
+    await runMigrations(root, { appVersion: "2.200.0", steps: MIGRATION_STEPS });
 
     for (const id of ["w1", "flat"]) {
       const saved = await readWaifu(root, id);
