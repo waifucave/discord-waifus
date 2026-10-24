@@ -1,13 +1,22 @@
 // Per-channel session state (user/servers/<guild>/sessions/<channel>.json): active pipeline and
 // the persisted retrigger wake.
 
+import { rm } from "node:fs/promises";
 import path from "node:path";
+import { resolveDataPath } from "../../config/paths.js";
 import { nowIso } from "../../shared/schemas/common.js";
 import { StorageService } from "../../storage/storageService.js";
 import { type ChannelSessionState, ChannelSessionStateSchema, createEmptyChannelSessionState } from "../session.js";
 
 export function sessionRelativePath(guildId: string, channelId: string): string {
   return path.join("user", "servers", guildId, "sessions", `${channelId}.json`);
+}
+
+/** Forget a channel's session file (a deleted or expired thread). A missing file is fine. */
+export async function removeChannelSession(storage: StorageService, guildId: string, channelId: string): Promise<void> {
+  await storage.withLocks([`session:${guildId}:${channelId}`], () =>
+    rm(resolveDataPath(storage.dataRoot, sessionRelativePath(guildId, channelId)), { force: true })
+  );
 }
 
 export async function ensureChannelSession(storage: StorageService, guildId: string, channelId: string): Promise<ChannelSessionState> {

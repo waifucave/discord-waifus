@@ -22,11 +22,12 @@
 import type { ChatMessage, ResolvedModel, TextBlock, ToolChoice } from "@waifucave/gateway";
 import type { Logger } from "../../backend/logger.js";
 import type { ModelPipeline, SummarizeContextRequest } from "../../providers/types.js";
-import type { ContextState, LedgerEntry } from "../../shared/schemas/context.js";
+import type { ContextState, ConversationEvent, LedgerEntry } from "../../shared/schemas/context.js";
 import type { ContextEngineStore } from "./contextStore.js";
 import { contextAgentId, conversationKey, type ContextAgent, type ConversationKey, type ConversationRef } from "./keys.js";
 import { deletedEntryIdsAfter, isGapEntry, orderedEntries } from "./ledger.js";
 import type { CalibrationHook } from "./runtime.js";
+import { formatClock } from "./timeFormat.js";
 import { estimateTokens } from "./tokens.js";
 import type {
   BuiltPrompt,
@@ -186,7 +187,10 @@ export type CompactionInstructionInput = {
   /** Ref of the first message that stays verbatim ("messages from #k9 on stay verbatim"). */
   keepFromRef?: string;
   keepCount: number;
-  /** Refs of summarized messages their authors deleted (spec 9.5): the summary leaves them out. */
+  /**
+   * Summarized messages their authors deleted (spec 9.5): the summary leaves them out. Each is
+   * `#ref` for a message with a visible ref, else a time/author label such as `Aria's message at 14:05`.
+   */
   deletedRefs: string[];
   hasPreviousSummary: boolean;
 };
@@ -208,8 +212,7 @@ export function compactionInstruction(i: CompactionInstructionInput): string {
     focus
   ];
   if (i.deletedRefs.length > 0) {
-    const refs = i.deletedRefs.map((ref) => `#${ref}`).join(", ");
-    lines.push(`Leave out messages ${refs} — their authors deleted them.`);
+    lines.push(`Leave out messages ${i.deletedRefs.join(", ")} — their authors deleted them.`);
   }
   lines.push("Reply with the summary text only: no preamble, no chat message, no tool calls.", "</compaction_request>");
   return lines.join("\n");
@@ -362,8 +365,10 @@ export function nextEpochState(
   summary: string | null,
   trigger: CompactionTrigger,
   at: Date,
-  all: LedgerEntry[]
+  all: LedgerEntry[],
+  events: readonly ConversationEvent[] = []
 ): ContextState {
+  const keptNotes = s.notes.filter((note) => note.anchorSeq > cut.cursorSeq);
   const keptImageKeys = new Set(all.filter((e) => e.seq > cut.cursorSeq).flatMap((e) => e.images.map((image) => image.key)));
   const iso = at.toISOString();
   return {
@@ -379,9 +384,9 @@ export function nextEpochState(
     memoryNoteCount: 0,
     inlineImageCount: 0,
     // Spec 9.5: messages deleted before the epoch starts render as "(message deleted)" in it.
-    redactedIds: deletedEntryIdsAfter(all, cut.cursorSeq),
+    redactedIds: deletedEntryIdsAfter(all, cut.cursorSeq, { notes: keptNotes, events }),
     imageModes: Object.fromEntries(Object.entries(s.imageModes).filter(([imageKey]) => keptImageKeys.has(imageKey))),
-    notes: s.notes.filter((note) => note.anchorSeq > cut.cursorSeq),
+    notes: keptNotes,
     lastBreakpoint: null,
     lastCompaction: { at: iso, trigger, ok: true }
   };
@@ -461,7 +466,7 @@ export class ContextCompactionService implements CompactionService {
         const source = current.revision === base.revision ? base : current.epoch === base.epoch ? current : undefined;
         if (!source) return undefined; // the epoch changed meanwhile: discard
         if (source.cursorSeq !== null && plan.cursorSeq <= source.cursorSeq) return undefined;
-        return this.nextEpoch(source, plan, summary, i.trigger, at, orderedEntries(ledger));
+        return this.nextEpoch(source, plan, summary, i.trigger, at, orderedEntries(ledger), ledger.events);
       }
     });
     if (!result.ok) {
@@ -552,11 +557,15 @@ export class ContextCompactionService implements CompactionService {
     const cursorEntry = rendered[count - keep - 1]!;
     const kept = rendered.slice(count - keep);
     const keepFrom = kept.find((e) => visibleRef(e) !== undefined);
+    // A deleted message without a visible ref (the waifu's own, which renders as her turn) is named
+    // by author and time so the summary can still leave it out.
     const deletedRefs = rendered
       .slice(0, count - keep)
-      .filter((e) => e.state === "deleted")
-      .map(visibleRef)
-      .filter((ref): ref is string => ref !== undefined);
+      .filter((e) => e.state === "deleted" && !isGapEntry(e))
+      .map((e) => {
+        const ref = visibleRef(e);
+        return ref !== undefined ? `#${ref}` : `${e.authorName || "someone"}'s message at ${formatClock(e.at, base.timeZone ?? "UTC")}`;
+      });
     const keepFromRef = keepFrom ? visibleRef(keepFrom) : undefined;
     return {
       cursorSeq: cursorEntry.seq,
@@ -578,9 +587,10 @@ export class ContextCompactionService implements CompactionService {
     summary: string,
     trigger: CompactionTrigger,
     at: Date,
-    all: LedgerEntry[]
+    all: LedgerEntry[],
+    events: readonly ConversationEvent[]
   ): ContextState {
-    return nextEpochState(s, plan, summary, trigger, at, all);
+    return nextEpochState(s, plan, summary, trigger, at, all, events);
   }
 
   private async recordFailure(key: ConversationKey, i: CompactInput, base: ContextState, startedAt: Date, message: string): Promise<void> {

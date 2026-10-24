@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { stripCacheMarkers } from "../src/orchestration/context/builder.js";
 import { FileContextStore } from "../src/orchestration/context/contextStore.js";
 import { conversationKey, type ConversationRef } from "../src/orchestration/context/keys.js";
+import { nextEpochState } from "../src/orchestration/context/compaction.js";
 import { DELETED_MESSAGE_BODY, orderedEntries } from "../src/orchestration/context/ledger.js";
 import { ContextRuntime, type ContextRuntimeDeps } from "../src/orchestration/context/runtime.js";
 import { NoopCompaction, type PreparedContext } from "../src/orchestration/context/types.js";
@@ -28,6 +29,7 @@ type Harness = {
   images: FakeImageFetcher;
   clock: { now: number };
   purged: string[];
+  ocrPurged: string[];
 };
 
 async function harness(o: Partial<ContextRuntimeDeps> = {}): Promise<Harness> {
@@ -38,6 +40,7 @@ async function harness(o: Partial<ContextRuntimeDeps> = {}): Promise<Harness> {
   const channel = new FakeChannel();
   const images = new FakeImageFetcher();
   const purged: string[] = [];
+  const ocrPurged: string[] = [];
   images.purge = async (keys: readonly string[]) => {
     purged.push(...keys);
   };
@@ -47,13 +50,19 @@ async function harness(o: Partial<ContextRuntimeDeps> = {}): Promise<Harness> {
     compaction: NoopCompaction,
     messages: channel,
     images,
+    ocr: {
+      cachedText: async () => undefined,
+      purge: async (keys: readonly string[]) => {
+        ocrPurged.push(...keys);
+      }
+    },
     settings: () => ({ ...DEFAULT_COMPACTION_SETTINGS }),
     logger: quietLogger(),
     now: () => new Date(clock.now),
     timeZone: () => "UTC",
     ...o
   });
-  return { store, runtime, channel, images, clock, purged };
+  return { store, runtime, channel, images, clock, purged, ocrPurged };
 }
 
 function prepare(h: Harness, extra: Partial<Parameters<ContextRuntime["prepare"]>[0]> = {}) {
@@ -173,23 +182,18 @@ describe("ContextRuntime edits and deletes (spec 9.5, acceptance 7)", () => {
     h.clock.now += 1_000;
     const p = await prepare(h);
     expect(transcriptText(p)).toContain("oops wrong channel");
-    const h2 = await harness();
-    const m = h2.channel.post({ content: "oops wrong channel" });
-    h2.channel.post({ authorId: "riko", authorName: "Riko", content: "hello" });
-    // Delete event arrives before the first prepare: the message is never seen, the race is covered by a tombstone.
-    await h2.runtime.recordMessageDeletes(GUILD, [m.id], { redactRecent: 20 });
-    h2.channel.messages.splice(0, 1);
-    const p2 = await prepare(h2);
-    expect(transcriptText(p2)).not.toContain("oops wrong channel");
     void posted;
   });
 
   it("a delete that races ahead of the fetch (message still returned by Discord) is not resurrected", async () => {
     const h = await harness();
+    h.channel.post({ content: "earlier" }, BASE_TIME);
+    await prepare(h); // the conversation has a ledger
     const m = h.channel.post({ content: "ghost" });
     h.channel.post({ authorId: "riko", authorName: "Riko", content: "hello" });
     await h.runtime.recordMessageDeletes(GUILD, [m.id], { redactRecent: 20 });
     // A stale fetch still returns it.
+    h.clock.now += 60_000;
     const p = await prepare(h);
     expect(transcriptText(p)).not.toContain("ghost");
   });
@@ -263,6 +267,103 @@ describe("ContextRuntime edits and deletes (spec 9.5, acceptance 7)", () => {
     const state = await h.store.load(conversationKey(GUILD), ARIA);
     expect(state.notes).toEqual([]);
     expect(state.epoch).toBe(0);
+  });
+});
+
+describe("deleted text does not survive in edit data (review I1, I2, M2)", () => {
+  it("never converts an edit event whose target was deleted, and blanks the event text on disk", async () => {
+    const h = await harness();
+    const { posted } = await seeded(h, 30);
+    await h.runtime.recordMessageEdit(GUILD, editMessage(h, posted[2]!, "secret new text"));
+    expect((await h.runtime.peekLedger(GUILD)).events.map((e) => e.kind === "edit" && e.text)).toEqual(["secret new text"]);
+    await h.runtime.recordMessageDeletes(GUILD, [posted[2]!.id], { redactRecent: 5 }); // old: only marked
+    h.channel.messages.splice(h.channel.messages.indexOf(posted[2]!), 1);
+    const ledger = await h.runtime.peekLedger(GUILD);
+    expect(JSON.stringify(ledger)).not.toContain("secret new text");
+    h.clock.now += 60_000;
+    const next = await prepare(h);
+    expect(next.state.notes.filter((n) => n.kind === "edit")).toEqual([]);
+    expect(transcriptText(next)).not.toContain("secret new text");
+  });
+
+  it("blanks sealed edit events too when a recent message is redacted", async () => {
+    const h = await harness();
+    const { posted } = await seeded(h, 6);
+    await h.runtime.recordMessageEdit(GUILD, editMessage(h, posted[5]!, "private edit"));
+    h.clock.now += 60_000;
+    const withNote = await prepare(h); // converts and seals the event
+    expect(withNote.state.notes.some((n) => n.kind === "edit" && n.text === "private edit")).toBe(true);
+    await h.runtime.recordMessageDeletes(GUILD, [posted[5]!.id], { redactRecent: 5 });
+    h.channel.messages.splice(h.channel.messages.indexOf(posted[5]!), 1);
+    expect(JSON.stringify(await h.runtime.peekLedger(GUILD))).not.toContain("private edit");
+    // The context's note text is scrubbed the next time it is written; rendering says (message deleted).
+    h.clock.now += 60_000;
+    const after = await prepare(h);
+    expect(after.state.notes.filter((n) => n.kind === "edit").map((n) => n.kind === "edit" && n.text)).toEqual([""]);
+    expect(JSON.stringify(after.prompt.messages)).not.toContain("private edit");
+    const stored = await h.store.load(conversationKey(GUILD), ARIA);
+    expect(JSON.stringify(stored)).not.toContain("private edit");
+  });
+
+  it("a note of an old deleted message that survives the cut is masked in the next epoch (redactedIds)", async () => {
+    const h = await harness();
+    const { posted } = await seeded(h, 30);
+    await h.runtime.recordMessageEdit(GUILD, editMessage(h, posted[2]!, "edited old message"));
+    h.clock.now += 60_000;
+    const withNote = await prepare(h);
+    const note = withNote.state.notes.find((n) => n.kind === "edit")!;
+    expect(note).toBeDefined();
+    await h.runtime.recordMessageDeletes(GUILD, [posted[2]!.id], { redactRecent: 5 });
+    const ledger = await h.runtime.peekLedger(GUILD);
+    const all = orderedEntries(ledger);
+    // The cut lies after the deleted message but before the note's anchor, so the note survives.
+    const cursorSeq = ledger.entries[posted[2]!.id]!.seq + 1;
+    const next = nextEpochState(withNote.state, { cursorSeq, cursorMessageId: null }, "summary", "messages", new Date(h.clock.now), all, ledger.events);
+    expect(next.notes.some((n) => n.kind === "edit")).toBe(true);
+    expect(next.redactedIds).toContain(posted[2]!.id);
+  });
+
+  it("purges the OCR cache entries of a redacted message's images (same keys as the image purge)", async () => {
+    const h = await harness();
+    const m = h.channel.post({
+      content: "pic",
+      attachments: [{ id: "71", url: "https://cdn.discordapp.com/attachments/200/71/x.png", filename: "x.png", contentType: "image/png", size: 10 }]
+    });
+    h.channel.post({ authorId: "riko", authorName: "Riko", content: "nice" });
+    h.clock.now += 1_000;
+    await prepare(h);
+    const summary = await h.runtime.recordMessageDeletes(GUILD, [m.id], { redactRecent: 20 });
+    expect(summary.purgedImages).toHaveLength(1);
+    expect(h.ocrPurged).toEqual(h.purged);
+    expect(h.ocrPurged).toHaveLength(1);
+  });
+
+  it("remembers a delete that beat its message only for a conversation that has a ledger, and sweeps expired ids globally", async () => {
+    const h = await harness();
+    // No ledger yet: nothing is remembered.
+    await h.runtime.recordMessageDeletes(GUILD, ["1300000000000000999"], { redactRecent: 20 });
+    const tombstones = () => (h.store as unknown as { deletedBeforeSeen: Map<string, Map<string, number>> }).deletedBeforeSeen;
+    expect(tombstones().size).toBe(0);
+    // With a ledger it is.
+    h.channel.post({ content: "hello" });
+    await prepare(h);
+    await h.runtime.recordMessageDeletes(GUILD, ["1300000000000000998"], { redactRecent: 20 });
+    expect(tombstones().size).toBe(1);
+    // A day later another conversation's delete sweeps the expired bucket.
+    h.clock.now += 24 * 3_600_000;
+    const other: ConversationRef = { kind: "guild", guildId: "100", channelId: "201" };
+    const otherChannel = new FakeChannel();
+    otherChannel.post({ content: "hi" });
+    await h.runtime.prepare({
+      conversation: other,
+      agent: ARIA,
+      model: fakeModel(),
+      backfillCap: 50,
+      selfAuthorIds: SELF,
+      render: fakeRoleRenderer()
+    }).catch(() => undefined); // the harness channel serves both ids; only the ledger's existence matters
+    await h.runtime.recordMessageDeletes(other, ["1300000000000000997"], { redactRecent: 20 });
+    expect([...tombstones().keys()]).not.toContain(conversationKey(GUILD));
   });
 });
 

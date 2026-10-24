@@ -94,7 +94,13 @@ export async function ensureServer(storage: StorageService, guildId: string): Pr
   return withThreadChannels(storage, server);
 }
 
-export async function ensureChannelConfig(services: RuntimeServices, server: ServerConfig, channelId: string): Promise<ServerConfig> {
+export async function ensureChannelConfig(
+  services: RuntimeServices,
+  server: ServerConfig,
+  channelId: string,
+  /** Metadata the caller already fetched for this channel (avoids a second Discord lookup). */
+  prefetched?: { guildName?: string; channelName?: string }
+): Promise<ServerConfig> {
   if (server.channels[channelId]) {
     return server;
   }
@@ -105,10 +111,12 @@ export async function ensureChannelConfig(services: RuntimeServices, server: Ser
       }
     | undefined;
   try {
-    metadata = await services.discord.fetchChannelMetadata?.({
-      guildId: server.guildId,
-      channelId
-    });
+    metadata =
+      prefetched ??
+      (await services.discord.fetchChannelMetadata?.({
+        guildId: server.guildId,
+        channelId
+      }));
   } catch (error) {
     services.logger.warn("Failed to fetch Discord names for newly detected channel", {
       guildId: server.guildId,
@@ -147,7 +155,7 @@ export async function ensureChannelConfig(services: RuntimeServices, server: Ser
 export function channelHasWaifus(
   channel: ServerConfig["channels"][string] | undefined
 ): channel is ServerConfig["channels"][string] {
-  return Boolean(channel && (channel.enabledWaifuIds?.length ?? 0) > 0);
+  return Boolean(channel && !channel.thread?.silenced && (channel.enabledWaifuIds?.length ?? 0) > 0);
 }
 
 export async function readDiscordBotsFile(storage: StorageService): Promise<DiscordBotsFile> {

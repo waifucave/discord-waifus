@@ -120,7 +120,7 @@ describe("threads store (spec 9.5, O2)", () => {
     const threads = { ...createRevisionedBase(), guildId: GUILD, threads: { [THREAD]: { threadId: THREAD, parentId: PARENT, name: "t", kind: "public_thread" as const, archived: false, locked: false, lastActivityAt: "2026-10-24T10:00:00.000Z" } } };
     const view = overlayThreadChannels(server, threads as never);
     expect(view.channels[THREAD]!.enabledWaifuIds).toEqual(["mina"]);
-    expect(view.channels[THREAD]!.thread).toBeUndefined();
+    expect(view.channels[THREAD]!.thread).toMatchObject({ parentId: PARENT, explicit: true });
     expect(resolveChannelConfig(server, THREAD, PARENT)!.enabledWaifuIds).toEqual(["mina"]);
     // Without its own cast the same thread would inherit only if the parent allowed it.
     expect(resolveChannelConfig(serverWith({ [PARENT]: { enabledWaifuIds: ["aria"], threads: "off" } }), THREAD, PARENT)).toBeUndefined();
@@ -227,6 +227,27 @@ describe("GET /api/servers/:guildId/threads", () => {
         const res = await app.inject({ method: "GET", url: `/api/servers/${bad}/threads` });
         expect(res.statusCode, bad).toBe(400);
       }
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("a server PUT never stores the runtime-only thread marker of a channel (M1)", async () => {
+    const { app, storage } = await makeApp();
+    try {
+      const res = await app.inject({
+        method: "PUT",
+        url: `/api/servers/${GUILD}`,
+        payload: {
+          channels: {
+            [PARENT]: { channelId: PARENT, enabledWaifuIds: ["aria"], thread: { parentId: "1", silenced: true } }
+          }
+        }
+      });
+      expect(res.statusCode).toBe(200);
+      const stored = await storage.readJson(`user/servers/${GUILD}/server.json`, ServerConfigSchema);
+      expect(stored.channels[PARENT]).toMatchObject({ enabledWaifuIds: ["aria"] });
+      expect(stored.channels[PARENT]!.thread).toBeUndefined();
     } finally {
       await app.close();
     }

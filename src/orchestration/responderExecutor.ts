@@ -398,9 +398,10 @@ export class ResponderExecutor {
               ? undefined
               : replyTargetForTranscript(responder.replyToMessageId, prepared.transcript);
           let sentMessageIds: string[] = [];
+          let partialSendError: unknown;
           let sendFailure: ReturnType<typeof classifyDiscordSendError>;
           try {
-            sentMessageIds = await this.sendWaifuChunks({
+            const sent = await this.sendWaifuChunks({
               guildId: input.guildId,
               channelId: input.channelId,
               waifuId: waifu.id,
@@ -413,6 +414,26 @@ export class ResponderExecutor {
               signal: input.signal,
               ...(input.channel.thread ? { thread: true } : {})
             });
+            sentMessageIds = sent.messageIds;
+            partialSendError = sent.error;
+            if (partialSendError !== undefined) {
+              const classified = classifyDiscordSendError(partialSendError);
+              this.options.logger.warn("Waifu reply was only partly delivered", {
+                guildId: input.guildId,
+                channelId: input.channelId,
+                waifuId: waifu.id,
+                delivered: sentMessageIds.length,
+                chunkCount: chunks.length,
+                message: partialSendError instanceof Error ? partialSendError.message : String(partialSendError)
+              });
+              if (classified?.reason === "thread_archived" && input.channel.thread) {
+                await observeThread(this.options.storage, input.guildId, {
+                  threadId: input.channelId,
+                  parentId: input.channel.thread.parentId,
+                  archived: true
+                }).catch(() => undefined);
+              }
+            }
           } catch (sendError) {
             // Spec 9.5: an archived thread (50083) or an AutoMod block (200000/200001) is the
             // reply's final answer, not a crash of the whole decision.
@@ -436,7 +457,15 @@ export class ResponderExecutor {
           }
           if (sentMessageIds.length > 0) {
             await updateOrchestratorResponderOutcome(this.options.storage, input.guildId, input.decisionId, outcomeId, {
-              status: "sent"
+              status: "sent",
+              ...(partialSendError !== undefined
+                ? {
+                    reason: `partial_send: ${sentMessageIds.length} of ${chunks.length} parts delivered (${
+                      classifyDiscordSendError(partialSendError)?.reason ??
+                      (partialSendError instanceof Error ? partialSendError.message : String(partialSendError)).slice(0, 120)
+                    })`
+                  }
+                : {})
             });
             currentOutcomeFinalized = true;
           }
@@ -822,9 +851,9 @@ export class ResponderExecutor {
     signal?: AbortSignal;
     /** The channel is a thread: permission warnings mention Send Messages in Threads. */
     thread?: boolean;
-  }): Promise<string[]> {
+  }): Promise<{ messageIds: string[]; error?: unknown }> {
     if (input.chunks.length === 0) {
-      return [];
+      return { messageIds: [] };
     }
     const messageIds: string[] = [];
     this.activeWaifuSendChannels.add(input.channelId);
@@ -851,6 +880,9 @@ export class ResponderExecutor {
           this.permissionWarnings.record(input.guildId, input.channelId, input.waifuId, error, {
             ...(input.thread ? { thread: true } : {})
           });
+          // Some chunks already reached Discord: report them with the error instead of losing
+          // their ids (the caller records the reply as sent, with a note about the failure).
+          if (messageIds.length > 0 && !input.signal?.aborted) return { messageIds, error };
           throw error;
         }
         this.permissionWarnings.resolve(input.guildId, input.channelId);
@@ -878,7 +910,7 @@ export class ResponderExecutor {
     } finally {
       this.activeWaifuSendChannels.delete(input.channelId);
     }
-    return messageIds;
+    return { messageIds };
   }
 
   private rememberSelfSent(messageId: string): void {

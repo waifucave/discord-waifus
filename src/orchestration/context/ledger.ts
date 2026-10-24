@@ -35,10 +35,29 @@ export function isRedactedEntry(entry: LedgerEntry, redactedIds?: readonly strin
   return entry.state === "deleted" && (entry.body === DELETED_MESSAGE_BODY || redactedIds?.includes(entry.id) === true);
 }
 
-/** Ids of ledger entries newer than `cursorSeq` that were deleted before an epoch starts here. */
-export function deletedEntryIdsAfter(entries: readonly LedgerEntry[], cursorSeq: number | null): string[] {
+/**
+ * Ids of deleted ledger entries that must render as "(message deleted)" in an epoch starting at
+ * `cursorSeq`: those after the cursor, plus the deleted targets of the edit notes that survive the
+ * cut and of the edit events the epoch will convert (their text would otherwise carry the deleted
+ * message's content into the new epoch even though the message itself is cut or masked).
+ */
+export function deletedEntryIdsAfter(
+  entries: readonly LedgerEntry[],
+  cursorSeq: number | null,
+  carried: { notes?: ReadonlyArray<{ kind: string; messageId?: string }>; events?: readonly ConversationEvent[] } = {}
+): string[] {
+  const targets = new Set<string>();
+  for (const note of carried.notes ?? []) if (note.kind === "edit" && note.messageId) targets.add(note.messageId);
+  for (const event of carried.events ?? []) {
+    if (event.kind === "edit" && (cursorSeq === null || event.anchorSeq > cursorSeq)) targets.add(event.messageId);
+  }
   return entries
-    .filter((entry) => entry.state === "deleted" && !isGapEntry(entry) && (cursorSeq === null || entry.seq > cursorSeq))
+    .filter(
+      (entry) =>
+        entry.state === "deleted" &&
+        !isGapEntry(entry) &&
+        (cursorSeq === null || entry.seq > cursorSeq || targets.has(entry.id))
+    )
     .map((entry) => entry.id);
 }
 
@@ -369,6 +388,10 @@ export function applyDeletes(
     const anchorSeq = Math.max(0, ...Object.values(w.entries).map((candidate) => candidate.seq));
     w.events.push({ kind: "delete", seq: w.nextSeq, at, messageId: id, anchorSeq });
     w.nextSeq += 1;
+    // The deleted message's edit text must not stay on disk, converted or not.
+    w.events = w.events.map((event) =>
+      event.kind === "edit" && event.messageId === id && event.text !== "" ? { ...event, text: "" } : event
+    );
     if (!entry.sealed || recent.has(id)) {
       w.entries[id] = { ...entry, body: DELETED_MESSAGE_BODY, images: [], state: "deleted" };
       result.redacted.push(id);

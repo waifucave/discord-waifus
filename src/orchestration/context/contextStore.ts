@@ -331,7 +331,10 @@ export class FileContextStore implements ContextEngineStore {
     const result = applyDeletes(ledger, ids, { redactRecent: o.redactRecent ?? DEFAULT_REDACT_RECENT, now: this.now() });
     // A delete that beats its message into the ledger (the fetch raced the event) must not be
     // resurrected by that fetch: remember the id for a while.
-    for (const id of result.unknown) this.rememberDeleted(k, id);
+    // Only for a conversation that has a ledger: a channel nobody has talked in yet needs no memory.
+    if (ledger.revision > 0 || Object.keys(ledger.entries).length > 0) {
+      for (const id of result.unknown) this.rememberDeleted(k, id);
+    }
     if (result.ledger !== ledger) await this.writeRecord(conversationLedgerPath(k), ConversationLedgerSchema, result.ledger);
     return { redacted: result.redacted, marked: result.marked, unknown: result.unknown, purgedImages: result.purgedImages };
   }
@@ -348,6 +351,12 @@ export class FileContextStore implements ContextEngineStore {
   }
 
   private rememberDeleted(k: ConversationKey, id: string): void {
+    // Sweep every conversation's expired ids, so a bucket nobody reads again cannot linger.
+    const nowMs = this.now().getTime();
+    for (const [key, other] of this.deletedBeforeSeen) {
+      for (const [otherId, expiresAt] of other) if (expiresAt <= nowMs) other.delete(otherId);
+      if (other.size === 0) this.deletedBeforeSeen.delete(key);
+    }
     const bucket = this.deletedBeforeSeen.get(k) ?? new Map<string, number>();
     bucket.set(id, this.now().getTime() + DELETED_BEFORE_SEEN_TTL_MS);
     if (bucket.size > DELETED_BEFORE_SEEN_MAX) {

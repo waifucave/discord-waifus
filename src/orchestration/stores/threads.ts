@@ -55,7 +55,9 @@ export async function observeThread(
   storage: StorageService,
   guildId: string,
   observation: ThreadObservation,
-  now: Date = new Date()
+  now: Date = new Date(),
+  /** Receives the ids of threads dropped by the 30-day idle prune, so the caller can delete their conversations. */
+  pruned?: string[]
 ): Promise<ThreadRecord> {
   return storage.locks.withLock(threadsResourceKey(guildId), async () => {
     const file = await readThreads(storage, guildId);
@@ -87,7 +89,10 @@ export async function observeThread(
       existing.lastActivityAt === next.lastActivityAt;
     if (same && stale.length === 0) return existing;
     const threads = { ...file.threads, [next.threadId]: next };
-    for (const thread of stale) delete threads[thread.threadId];
+    for (const thread of stale) {
+      delete threads[thread.threadId];
+      pruned?.push(thread.threadId);
+    }
     const written = ThreadsFileSchema.parse(bumpRevision({ ...file, threads, schemaVersion: CURRENT_SCHEMA_VERSION }, nowIso));
     await atomicWriteJson(resolveDataPath(storage.dataRoot, threadsRelativePath(guildId)), written);
     return next;
@@ -162,7 +167,20 @@ export function overlayThreadChannels(server: ServerConfig, threads: ThreadsFile
   let channels: ServerConfig["channels"] | undefined;
   for (const thread of Object.values(threads.threads)) {
     const explicit = server.channels[thread.threadId];
-    if (explicit && (explicit.enabledWaifuIds?.length ?? 0) > 0) continue; // explicit cast wins
+    if (explicit && (explicit.enabledWaifuIds?.length ?? 0) > 0) {
+      // Explicit cast wins, but the thread's own archive / lock state and activity still apply.
+      channels ??= { ...server.channels };
+      channels[thread.threadId] = {
+        ...explicit,
+        thread: {
+          parentId: thread.parentId,
+          lastActivityAt: thread.lastActivityAt,
+          explicit: true,
+          ...(isLiveThread(thread) ? {} : { silenced: true })
+        }
+      };
+      continue;
+    }
     if (!isLiveThread(thread)) {
       continue;
     }

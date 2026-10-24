@@ -27,6 +27,8 @@ export const IMAGE_UNAVAILABLE = "[image unavailable]";
 export type OcrTextLookup = {
   cachedText(ref: ImageRef): Promise<string | undefined>;
   textFor?(ref: ImageRef, o: { timeoutMs: number; signal?: AbortSignal }): Promise<string | undefined>;
+  /** Drop the cached OCR text of these image keys (a deleted message's images, spec 9.5). */
+  purge?(keys: readonly string[]): Promise<void>;
 };
 
 /**

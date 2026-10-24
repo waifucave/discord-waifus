@@ -8,8 +8,12 @@ import type {
 } from "../src/discord/client.js";
 import { ensureDataLayout } from "../src/config/layout.js";
 import { RuntimeOrchestrator } from "../src/orchestration/runtime.js";
-import { observeThread, readThreads } from "../src/orchestration/stores/threads.js";
-import { ensureServer } from "../src/orchestration/stores/config.js";
+import { observeThread, readThreads, isStaleThreadForResume } from "../src/orchestration/stores/threads.js";
+import { access } from "node:fs/promises";
+import { resolveDataPath } from "../src/config/paths.js";
+import { ensureChannelSession, sessionRelativePath } from "../src/orchestration/stores/sessions.js";
+import { appendOrchestratorHistory } from "../src/orchestration/stores/decisionHistory.js";
+import { channelHasWaifus, ensureServer } from "../src/orchestration/stores/config.js";
 import { runKey } from "../src/orchestration/runtimeShared.js";
 import type { ContextRuntime } from "../src/orchestration/context/runtime.js";
 import { ConversationLedgerSchema, type ConversationLedger } from "../src/shared/schemas/context.js";
@@ -34,8 +38,9 @@ afterEach(async () => {
 
 const THREAD_INFO: DiscordThreadInfo = { parentId: PARENT, name: "Best brownies", kind: "public_thread", archived: false, locked: false };
 
-function fakeContexts(ledger?: ConversationLedger) {
+function fakeContexts(ledger?: ConversationLedger, editOutcome = "event") {
   const calls = {
+    reconciled: [] as Array<{ conversation: unknown; page: RawDiscordMessage[] }>,
     edits: [] as Array<{ conversation: unknown; message: RawDiscordMessage }>,
     deletes: [] as Array<{ conversation: unknown; ids: string[]; redactRecent: number | undefined }>,
     deleted: [] as unknown[]
@@ -43,7 +48,11 @@ function fakeContexts(ledger?: ConversationLedger) {
   const contexts = {
     recordMessageEdit: async (conversation: unknown, message: RawDiscordMessage) => {
       calls.edits.push({ conversation, message });
-      return "event";
+      return editOutcome;
+    },
+    reconcileRecent: async (conversation: unknown, page: RawDiscordMessage[]) => {
+      calls.reconciled.push({ conversation, page });
+      return { edits: {}, deletes: { redacted: [], marked: [], unknown: [], purgedImages: [] } };
     },
     recordMessageDeletes: async (conversation: unknown, ids: string[], o: { redactRecent?: number } = {}) => {
       calls.deletes.push({ conversation, ids, redactRecent: o.redactRecent });
@@ -57,7 +66,17 @@ function fakeContexts(ledger?: ConversationLedger) {
   return { contexts: contexts as unknown as ContextRuntime, calls };
 }
 
-async function setup(o: { ledger?: ConversationLedger; parentThreads?: "inherit" | "off"; paused?: boolean } = {}) {
+async function setup(
+  o: {
+    ledger?: ConversationLedger;
+    parentThreads?: "inherit" | "off";
+    paused?: boolean;
+    editOutcome?: string;
+    metadata?: (input: { channelId: string }) => unknown;
+    page?: RawDiscordMessage[];
+    explicitThread?: boolean;
+  } = {}
+) {
   const root = await makeTempRoot();
   roots.push(root);
   await ensureDataLayout(root);
@@ -69,9 +88,9 @@ async function setup(o: { ledger?: ConversationLedger; parentThreads?: "inherit"
     fallback: ServerConfigSchema.parse({ ...createEmptyRevisionedFile({}), guildId: GUILD }),
     transform: (current) => ({
       ...current,
-      enabled: true,
       channels: {
-        [PARENT]: { channelId: PARENT, name: "recipes", enabled: true, enabledWaifuIds: ["aria"], ...(o.parentThreads ? { threads: o.parentThreads } : {}) }
+        [PARENT]: { channelId: PARENT, name: "recipes", enabledWaifuIds: ["aria"], ...(o.parentThreads ? { threads: o.parentThreads } : {}) },
+        ...(o.explicitThread ? { [THREAD]: { channelId: THREAD, name: "mine", enabledWaifuIds: ["mina"] } } : {})
       }
     })
   });
@@ -83,8 +102,9 @@ async function setup(o: { ledger?: ConversationLedger; parentThreads?: "inherit"
       createEmptyRevisionedFile({ orchestrator: null, waifus: [{ id: WAIFU_BOT, displayName: "Aria", enabled: true }] })
     )
   );
-  const { contexts, calls } = fakeContexts(o.ledger);
+  const { contexts, calls } = fakeContexts(o.ledger, o.editOutcome);
   const joined: string[] = [];
+  const fetches: number[] = [];
   const discord = {
     async connect() {
       return { connected: true, orchestratorConnected: true, waifuBotCount: 1, warnings: [] };
@@ -92,6 +112,17 @@ async function setup(o: { ledger?: ConversationLedger; parentThreads?: "inherit"
     async disconnect() {},
     async joinThread(input: { threadId: string }) {
       joined.push(input.threadId);
+    },
+    ...(o.metadata
+      ? { fetchChannelMetadata: async (input: { channelId: string }) => o.metadata!(input) }
+      : {}),
+    async fetchContextSince() {
+      fetches.push(1);
+      return { messages: o.page ?? [], reachedCursor: true };
+    },
+    async fetchFreshContext() {
+      fetches.push(1);
+      return [];
     },
     async deleteAllMessages() {
       return { scannedMessageCount: 3, deletedCount: 3, failedCount: 0, failedMessageIds: [] };
@@ -103,10 +134,11 @@ async function setup(o: { ledger?: ConversationLedger; parentThreads?: "inherit"
     logger: quietLogger(),
     contexts,
     isPaused: () => o.paused !== false,
+    restartResumeDelayMs: 0,
     sleep: async () => undefined,
     deletedMessages: { redactRecent: 7 }
   });
-  return { runtime, storage, calls, joined };
+  return { runtime, storage, calls, joined, fetches };
 }
 
 const editEvent = (message: RawDiscordMessage, o: Partial<DiscordMessageEditEvent> = {}): DiscordMessageEditEvent => ({
@@ -222,6 +254,8 @@ describe("RuntimeOrchestrator deletes (spec 9.5)", () => {
     await runtime.handleDiscordMessageDelete({ guildId: GUILD, channelId: PARENT, messageIds: ["900000000000000010"], bulk: false });
     expect(controller.signal.aborted).toBe(true);
     expect((controller.signal.reason as Error).message).toBe("trigger_deleted");
+    // The abort marks the session idle in the background: let that write land before teardown.
+    await runtime.settleBackground();
   });
 
   it("a run that already sent a reply is not aborted", async () => {
@@ -403,5 +437,142 @@ describe("RuntimeOrchestrator.applyMessageEvent (the one adapter for conversatio
     await runtime.applyMessageEvent({ type: "delete", conversation: { kind: "dm", botId: "b", userId: "u" } as never, messageId: "4" });
     expect(calls.deletes.map((d) => d.ids)).toEqual([["1"], ["2", "3"]]);
     expect(calls.deletes.every((d) => d.redactRecent === 7)).toBe(true);
+  });
+});
+
+describe("review fixes: duplicate edits, thread facts, thread cleanup, resume", () => {
+  it("a second delivery of the same edit (ledger says ignored) does not trigger a second run (I3)", async () => {
+    const id = "900000000000000002";
+    const { runtime } = await setup({ ledger: ledgerWithNewestHuman(id, "hey there"), editOutcome: "ignored" });
+    const spy = vi.spyOn(runtime, "handleDiscordMessage").mockResolvedValue(undefined as never);
+    const now = Date.now();
+    const message = raw({
+      id,
+      channelId: PARENT,
+      guildId: GUILD,
+      content: `hey there <@${WAIFU_BOT}>`,
+      createdAt: new Date(now - 30_000).toISOString(),
+      editedAt: new Date(now).toISOString(),
+      mentions: { users: { [WAIFU_BOT]: "Aria" }, roles: {}, channels: {} }
+    });
+    await runtime.handleDiscordMessageEdit(editEvent(message, { previousMentionIds: [] }));
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("a message event without thread info in an untracked thread is recognized and never gets a server.json entry (I3)", async () => {
+    const { runtime, storage } = await setup({
+      paused: false,
+      metadata: ({ channelId }) => ({ guildId: GUILD, channelId, channelName: "Best brownies", thread: THREAD_INFO })
+    });
+    const start = vi
+      .spyOn((runtime as unknown as { runner: { startChannelRun: (...a: unknown[]) => Promise<void> } }).runner, "startChannelRun")
+      .mockResolvedValue(undefined);
+    await runtime.handleDiscordMessage({ guildId: GUILD, channelId: THREAD, messageId: "900000000000000030", authorId: "kevin", authorBot: false });
+    expect(start).toHaveBeenCalledWith(GUILD, THREAD, "message:900000000000000030", { trigger: "message" });
+    const stored = await storage.readJson(`user/servers/${GUILD}/server.json`, ServerConfigSchema);
+    expect(stored.channels[THREAD]).toBeUndefined();
+    expect((await readThreads(storage, GUILD)).threads[THREAD]).toMatchObject({ parentId: PARENT });
+  });
+
+  it("an untracked thread under a parent with threads off creates no entry either (I3)", async () => {
+    const { runtime, storage } = await setup({
+      paused: false,
+      parentThreads: "off",
+      metadata: ({ channelId }) => ({ guildId: GUILD, channelId, thread: THREAD_INFO })
+    });
+    const start = vi
+      .spyOn((runtime as unknown as { runner: { startChannelRun: (...a: unknown[]) => Promise<void> } }).runner, "startChannelRun")
+      .mockResolvedValue(undefined);
+    await runtime.handleDiscordMessage({ guildId: GUILD, channelId: THREAD, messageId: "900000000000000031", authorId: "kevin", authorBot: false });
+    expect(start).not.toHaveBeenCalled();
+    const stored = await storage.readJson(`user/servers/${GUILD}/server.json`, ServerConfigSchema);
+    expect(stored.channels[THREAD]).toBeUndefined();
+  });
+
+  it("deleting a thread also removes its session file and explicit channel entry; decision history stays (M4)", async () => {
+    const { runtime, storage, calls } = await setup({ explicitThread: true });
+    await observeThread(storage, GUILD, { threadId: THREAD, parentId: PARENT, name: "mine" });
+    await ensureChannelSession(storage, GUILD, THREAD);
+    const sessionPath = resolveDataPath(storage.dataRoot, sessionRelativePath(GUILD, THREAD));
+    await expect(access(sessionPath)).resolves.toBeUndefined();
+    await runtime.handleDiscordThreadChange({ change: "delete", guildId: GUILD, threadId: THREAD, thread: THREAD_INFO });
+    await expect(access(sessionPath)).rejects.toThrow();
+    const stored = await storage.readJson(`user/servers/${GUILD}/server.json`, ServerConfigSchema);
+    expect(stored.channels[THREAD]).toBeUndefined();
+    expect(stored.channels[PARENT]).toBeDefined();
+    expect(calls.deleted).toEqual([{ kind: "guild", guildId: GUILD, channelId: THREAD }]);
+  });
+
+  it("the 30-day idle prune also deletes the pruned thread's conversation and session (M4)", async () => {
+    const { runtime, storage, calls } = await setup({ paused: false });
+    const old = "423456789012345679";
+    await observeThread(storage, GUILD, { threadId: old, parentId: PARENT, name: "old" }, new Date(Date.now() - 40 * 24 * 3_600_000));
+    await ensureChannelSession(storage, GUILD, old);
+    await runtime.handleDiscordThreadChange({ change: "create", guildId: GUILD, threadId: THREAD, thread: THREAD_INFO });
+    expect((await readThreads(storage, GUILD)).threads[old]).toBeUndefined();
+    expect(calls.deleted).toEqual([{ kind: "guild", guildId: GUILD, channelId: old }]);
+    await expect(access(resolveDataPath(storage.dataRoot, sessionRelativePath(GUILD, old)))).rejects.toThrow();
+  });
+
+  it("an explicit-entry thread follows its own archive and lock state, in the overlay and for resume (M4)", async () => {
+    const { storage } = await setup({ explicitThread: true });
+    await observeThread(storage, GUILD, { threadId: THREAD, parentId: PARENT, name: "mine" });
+    let server = await ensureServer(storage, GUILD);
+    expect(server.channels[THREAD]).toMatchObject({ enabledWaifuIds: ["mina"], thread: { explicit: true } });
+    expect(channelHasWaifus(server.channels[THREAD])).toBe(true);
+    await observeThread(storage, GUILD, { threadId: THREAD, parentId: PARENT, archived: true });
+    server = await ensureServer(storage, GUILD);
+    expect(server.channels[THREAD]).toMatchObject({ enabledWaifuIds: ["mina"], thread: { silenced: true } });
+    expect(channelHasWaifus(server.channels[THREAD])).toBe(false);
+    await observeThread(storage, GUILD, { threadId: THREAD, parentId: PARENT, archived: false, locked: true });
+    expect(channelHasWaifus((await ensureServer(storage, GUILD)).channels[THREAD])).toBe(false);
+    // Stale for resume after 24 hours without activity, explicit or not.
+    await observeThread(storage, GUILD, { threadId: THREAD, parentId: PARENT, locked: false });
+    const entry = (await ensureServer(storage, GUILD)).channels[THREAD]!;
+    expect(isStaleThreadForResume(entry, new Date(Date.now() + 25 * 3_600_000))).toBe(true);
+    expect(isStaleThreadForResume(entry, new Date())).toBe(false);
+  });
+
+  it("a message in an archived explicit thread reopens it (M4)", async () => {
+    const { runtime, storage } = await setup({ paused: false, explicitThread: true });
+    const start = vi
+      .spyOn((runtime as unknown as { runner: { startChannelRun: (...a: unknown[]) => Promise<void> } }).runner, "startChannelRun")
+      .mockResolvedValue(undefined);
+    await observeThread(storage, GUILD, { threadId: THREAD, parentId: PARENT, name: "mine", archived: true });
+    await runtime.handleDiscordMessage({ guildId: GUILD, channelId: THREAD, messageId: "900000000000000040", authorId: "kevin", authorBot: false, thread: THREAD_INFO });
+    expect(start).toHaveBeenCalledTimes(1);
+    expect((await readThreads(storage, GUILD)).threads[THREAD]).toMatchObject({ archived: false });
+  });
+
+  it("restart resume reconciles a channel whose latest decision is pending, with one fetch per channel (M5)", async () => {
+    const human = raw({ id: "900000000000000050", channelId: PARENT, guildId: GUILD, content: "hi", createdAt: new Date(Date.now() - 60_000).toISOString() });
+    const { runtime, storage, calls, fetches } = await setup({ paused: false, page: [human] });
+    await appendOrchestratorHistory(storage, {
+      id: "decision-1",
+      guildId: GUILD,
+      channelId: PARENT,
+      action: "reply",
+      respondingWaifus: [{ waifuId: "aria", delaySeconds: 0 }],
+      reasoning: "x",
+      status: "pending",
+      waifuMessageIds: [],
+      responderOutcomes: [],
+      createdAt: new Date().toISOString()
+    });
+    await (runtime as unknown as { runner: { resumeOrchestrationState: () => Promise<void> } }).runner.resumeOrchestrationState();
+    expect(calls.reconciled).toHaveLength(1);
+    expect(calls.reconciled[0]!.page).toEqual([human]);
+    expect(fetches).toHaveLength(1);
+    await runtime.stop();
+  });
+
+  it("restart resume visits a tracked live thread (overlay) and one fetch serves reconcile and the human check (M5)", async () => {
+    const { runtime, storage, calls, fetches } = await setup({ paused: false });
+    await observeThread(storage, GUILD, { threadId: THREAD, parentId: PARENT, name: "Best brownies", activity: true });
+    await (runtime as unknown as { runner: { resumeOrchestrationState: () => Promise<void> } }).runner.resumeOrchestrationState();
+    const conversations = calls.reconciled.map((entry) => (entry.conversation as { channelId: string }).channelId).sort();
+    expect(conversations).toEqual([PARENT, THREAD].sort());
+    expect(fetches).toHaveLength(2);
+    await runtime.stop();
   });
 });

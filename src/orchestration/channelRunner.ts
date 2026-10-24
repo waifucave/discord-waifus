@@ -83,7 +83,8 @@ import {
   updateOrchestratorResponderOutcome
 } from "./stores/decisionHistory.js";
 import { noteActiveChatParticipantsFromContext } from "./stores/participants.js";
-import { channelPlaceName, isStaleThreadForResume } from "./stores/threads.js";
+import { channelPlaceName, isStaleThreadForResume, withThreadChannels } from "./stores/threads.js";
+import type { RawDiscordMessage } from "../shared/schemas/discordMessage.js";
 import { consumeScheduledRetrigger, markSessionIdle, sessionRelativePath, setActivePipeline, updateSession } from "./stores/sessions.js";
 import { resolveContextCap } from "./contextWindows.js";
 
@@ -157,9 +158,10 @@ export class ChannelRunner {
       // Read-only: resume must never (re)create a server that was deleted or has no server.json.
       let server: ServerConfig;
       try {
-        server = await this.options.storage.readJson(
-          path.join("user", "servers", guildId, "server.json"),
-          ServerConfigSchema
+        // Tracked threads join as virtual channel entries (read-only overlay of threads.json).
+        server = await withThreadChannels(
+          this.options.storage,
+          await this.options.storage.readJson(path.join("user", "servers", guildId, "server.json"), ServerConfigSchema)
         );
       } catch {
         continue;
@@ -188,23 +190,33 @@ export class ChannelRunner {
         const latestDecision = history.decisions.find(
           (decision) => decision.guildId === guildId && decision.channelId === channelId
         );
+        // Edits and deletes made while the app was down are reconciled for every resumed channel,
+        // including one whose latest decision is still pending. One fetch of the newest 50
+        // messages serves both that and the "human spoke while we were down" check below.
+        const downtimePage = await this.reconcileDowntime(guildId, channelId, server);
         if (latestDecision?.status === "pending") continue;
         // Best-effort: a human message that landed while the server was down must wake the
         // channel promptly instead of resuming the old schedule (live 2026-07-06 10:08: K's
         // message hit the deploy window and waited out a restored 130s timer).
-        await this.reconcileDowntime(guildId, channelId, server);
         let newestHumanMessageAt: string | undefined;
-        try {
-          const recent = await this.options.discord.fetchFreshContext({ guildId, channelId, limit: 10 });
-          newestHumanMessageAt = recent.reduce<string | undefined>(
-            (acc, message) =>
-              message.authorKind === "user" && message.authorBot !== true && (!acc || message.timestamp > acc)
-                ? message.timestamp
-                : acc,
+        if (downtimePage) {
+          newestHumanMessageAt = downtimePage.reduce<string | undefined>(
+            (acc, message) => (!message.authorIsBot && (!acc || message.createdAt > acc) ? message.createdAt : acc),
             undefined
           );
-        } catch {
-          // Discord not ready or channel unreadable — fall back to schedule-only planning.
+        } else {
+          try {
+            const recent = await this.options.discord.fetchFreshContext({ guildId, channelId, limit: 10 });
+            newestHumanMessageAt = recent.reduce<string | undefined>(
+              (acc, message) =>
+                message.authorKind === "user" && message.authorBot !== true && (!acc || message.timestamp > acc)
+                  ? message.timestamp
+                  : acc,
+              undefined
+            );
+          } catch {
+            // Discord not ready or channel unreadable — fall back to schedule-only planning.
+          }
         }
         const plan = planRestartResume({ guildId, channelId, session, latestDecision, newestHumanMessageAt }, new Date());
         if (plan.kind === "restore-timer") {
@@ -245,9 +257,9 @@ export class ChannelRunner {
    * newest 50 messages with the ledger. Best-effort and a no-op for a conversation without a
    * ledger; a failure only means the next live event or reconnect catches it.
    */
-  private async reconcileDowntime(guildId: string, channelId: string, server: ServerConfig): Promise<void> {
+  private async reconcileDowntime(guildId: string, channelId: string, server: ServerConfig): Promise<RawDiscordMessage[] | undefined> {
     const discord = this.options.discord;
-    if (!discord.fetchContextSince) return;
+    if (!discord.fetchContextSince) return undefined;
     try {
       const conversation = { kind: "guild" as const, guildId, channelId };
       const page = await discord.fetchContextSince({ guildId, channelId, afterMessageId: null, maxMessages: 50 });
@@ -268,12 +280,14 @@ export class ChannelRunner {
           deleted
         });
       }
+      return page.messages;
     } catch (error) {
       this.options.logger.warn("Restart resume: reconciling downtime edits failed", {
         guildId,
         channelId,
         message: error instanceof Error ? error.message : String(error)
       });
+      return undefined;
     }
   }
 

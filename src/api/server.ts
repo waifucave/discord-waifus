@@ -282,7 +282,8 @@ const ServerConfigBodySchema = ServerConfigSchema.partial().extend({
   memoryInjectionLimit: z.number().int().min(1).max(50).optional(),
   tools: partialWithoutDefaults(ServerToolSettingsSchema).optional(),
   // channels is a documented wholesale replace; per-channel edits use the channel route.
-  channels: ServerConfigSchema.shape.channels.unwrap().optional()
+  // `thread` marks the runtime-only overlay entries and is never accepted from a client.
+  channels: z.record(z.string(), ServerConfigSchema.shape.channels.unwrap().valueType.omit({ thread: true })).optional()
 });
 
 const ChannelConfigBodySchema = z.object({

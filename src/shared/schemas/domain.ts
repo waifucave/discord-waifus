@@ -258,7 +258,16 @@ export const ServerConfigSchema = RevisionedRecordSchema.extend({
       threads: ChannelThreadsModeSchema.optional(),
       // Runtime-only (ensureServer's thread overlay, stores/threads.ts): marks a virtual entry for
       // a thread that inherits `parentId`'s cast. Never persisted; the API never returns it.
-      thread: z.object({ parentId: z.string().min(1), lastActivityAt: IsoDateStringSchema.optional() }).optional()
+      thread: z
+        .object({
+          parentId: z.string().min(1),
+          lastActivityAt: IsoDateStringSchema.optional(),
+          /** The thread has an entry (and cast) of its own; the overlay only adds its state. */
+          explicit: z.boolean().optional(),
+          /** Archived or locked: the entry keeps its cast but takes no part until unarchived. */
+          silenced: z.boolean().optional()
+        })
+        .optional()
     })
   ).default({})
 });

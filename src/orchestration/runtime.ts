@@ -5,8 +5,9 @@ import type {
   DiscordThreadEvent,
   DiscordThreadInfo
 } from "../discord/client.js";
+import path from "node:path";
 import { loadGuildDirectoryView } from "../discord/directoryView.js";
-import type { ServerConfig } from "../shared/schemas/domain.js";
+import { ServerConfigSchema, type ServerConfig } from "../shared/schemas/domain.js";
 import { createGatewayModelPipeline } from "./pipeline/gatewayPipeline.js";
 import { sharedProviderAlerts, type ProviderAlerts } from "./providerAlerts.js";
 import { sharedUsageLedger, type UsageLedger } from "./usageLedger.js";
@@ -36,7 +37,7 @@ import {
 import { channelHasWaifus, ensureChannelConfig, ensureServer, isKnownWaifuAuthor, syncGuilds } from "./stores/config.js";
 import { healPendingOrchestratorDecisions } from "./stores/decisionHistory.js";
 import { noteActiveChatParticipant } from "./stores/participants.js";
-import { clearScheduledRetrigger, ensureChannelSession, persistShutdownWake } from "./stores/sessions.js";
+import { clearScheduledRetrigger, ensureChannelSession, persistShutdownWake, removeChannelSession } from "./stores/sessions.js";
 import { observeThread, parentSharesCast, readThreads, removeThread } from "./stores/threads.js";
 
 /** Spec 9.5: an edit that adds a waifu mention to the newest human message this recently re-triggers. */
@@ -72,6 +73,7 @@ export class RuntimeOrchestrator {
   // redundant Resume can never replan (and duplicate) live runs.
   private wasPaused = false;
   private unsubscribes: Array<() => void> = [];
+  private readonly background = new Set<Promise<unknown>>();
   private stopping = false;
   private readonly oneShot: OneShotDecider;
   /**
@@ -103,7 +105,8 @@ export class RuntimeOrchestrator {
               ocr: {
                 cachedText: (ref) => ocr.cachedText!(ref),
                 // Text-only waifus and directors get bounded OCR before an image freezes (spec 8.4).
-                ...(ocr.textFor ? { textFor: (ref, o) => ocr.textFor!(ref, o) } : {})
+                ...(ocr.textFor ? { textFor: (ref, o) => ocr.textFor!(ref, o) } : {}),
+                ...(ocr.purge ? { purge: (keys: readonly string[]) => ocr.purge!(keys) } : {})
               }
             }
           : {}),
@@ -176,13 +179,13 @@ export class RuntimeOrchestrator {
     });
   }
 
-  async start(): Promise<void> {
-    this.unsubscribes = [
-      this.options.discord.onMessage?.((event) => {
-        this.runBackground("Discord message handler failed", discordMessageLogContext(event), () =>
-          this.handleDiscordMessage(event)
-        );
-      }),
+  /**
+   * The raw discord.js edit / delete subscriptions, kept in one place: once the conversation cache
+   * is the source of these events (`conversations.onEvent` into `applyMessageEvent`) this is the
+   * only function to drop.
+   */
+  private subscribeRawEditDeleteEvents(): Array<(() => void) | undefined> {
+    return [
       this.options.discord.onMessageEdit?.((event) => {
         this.runBackground("Discord message edit handler failed", discordEditLogContext(event), () =>
           this.handleDiscordMessageEdit(event)
@@ -192,7 +195,18 @@ export class RuntimeOrchestrator {
         this.runBackground("Discord message delete handler failed", discordDeleteLogContext(event), () =>
           this.handleDiscordMessageDelete(event)
         );
+      })
+    ];
+  }
+
+  async start(): Promise<void> {
+    this.unsubscribes = [
+      this.options.discord.onMessage?.((event) => {
+        this.runBackground("Discord message handler failed", discordMessageLogContext(event), () =>
+          this.handleDiscordMessage(event)
+        );
       }),
+      ...this.subscribeRawEditDeleteEvents(),
       this.options.discord.onThreadChange?.((event) => {
         this.runBackground("Discord thread handler failed", { guildId: event.guildId, threadId: event.threadId, change: event.change }, () =>
           this.handleDiscordThreadChange(event)
@@ -345,14 +359,23 @@ export class RuntimeOrchestrator {
     if (this.stopping) return;
     const release = this.options.updateActivity?.begin();
     if (this.options.updateActivity && !release) return;
-    void Promise.resolve()
+    const tracked = Promise.resolve()
       .then(() => this.stopping ? undefined : task())
       .catch((error) => {
         this.options.logger.error(label, {
           ...context,
           message: error instanceof Error ? error.message : String(error)
         });
-      }).finally(() => release?.());
+      }).finally(() => {
+        release?.();
+        this.background.delete(tracked);
+      });
+    this.background.add(tracked);
+  }
+
+  /** Wait for the background handlers started so far (tests: before tearing the data root down). */
+  async settleBackground(): Promise<void> {
+    while (this.background.size > 0) await Promise.allSettled([...this.background]);
   }
 
   async handleDiscordMessage(event: DiscordMessageEvent): Promise<void> {
@@ -397,9 +420,12 @@ export class RuntimeOrchestrator {
     }
     // Spec 9.5: a thread is never auto-created as a channel entry; it is tracked in threads.json and
     // inherits its parent's cast (unless the parent switched threads off or has no cast).
-    const serverWithChannel = event.thread
-      ? await this.admitThreadMessage(server, event)
-      : await ensureChannelConfig(this.options, server, event.channelId);
+    // The event may not say it is a thread (any source other than the raw listener): find out from
+    // threads.json or Discord before a channel entry could be created for it.
+    const facts = event.thread ? { thread: event.thread } : await this.resolveThreadFacts(server, event);
+    const serverWithChannel = facts.thread
+      ? await this.admitThreadMessage(server, { ...event, thread: facts.thread })
+      : await ensureChannelConfig(this.options, server, event.channelId, facts.metadata);
     const channel = serverWithChannel.channels[event.channelId];
     if (!channelHasWaifus(channel)) {
       this.options.logger.info("Discord message observed in inactive channel; enable at least one waifu in Servers", {
@@ -431,23 +457,85 @@ export class RuntimeOrchestrator {
     });
   }
 
+  /** Thread facts for a message event that carries none: a tracked thread, else Discord's channel metadata. */
+  private async resolveThreadFacts(
+    server: ServerConfig,
+    event: DiscordMessageEvent
+  ): Promise<{ thread?: DiscordThreadInfo; metadata?: { guildName?: string; channelName?: string } }> {
+    const tracked = (await readThreads(this.options.storage, event.guildId)).threads[event.channelId];
+    if (tracked) {
+      return { thread: { parentId: tracked.parentId, name: tracked.name, kind: tracked.kind, archived: tracked.archived, locked: tracked.locked } };
+    }
+    // A channel with a stored entry of its own (not a thread overlay) is a plain channel.
+    if (server.channels[event.channelId]) return {};
+    try {
+      const metadata = await this.options.discord.fetchChannelMetadata?.({ guildId: event.guildId, channelId: event.channelId });
+      return metadata ? { ...(metadata.thread ? { thread: metadata.thread } : {}), metadata } : {};
+    } catch {
+      return {};
+    }
+  }
+
+  /** Delete what remains of threads that left threads.json (deleted on Discord or idle for 30 days). */
+  private async forgetThreads(guildId: string, threadIds: readonly string[], o: { removeEntry: boolean }): Promise<void> {
+    for (const threadId of threadIds) {
+      try {
+        await this.stopChannel(guildId, threadId, "thread_forgotten", { markIdle: false });
+        await this.contexts.deleteConversation({ kind: "guild", guildId, channelId: threadId });
+        await removeChannelSession(this.options.storage, guildId, threadId);
+        if (o.removeEntry) await this.removeStoredChannelEntry(guildId, threadId);
+      } catch (error) {
+        this.options.logger.warn("Failed to forget a thread", {
+          guildId,
+          threadId,
+          message: error instanceof Error ? error.message : String(error)
+        });
+      }
+    }
+  }
+
+  /** Drop a channel entry from server.json when one exists (never creates the file). */
+  private async removeStoredChannelEntry(guildId: string, channelId: string): Promise<void> {
+    const relativePath = path.join("user", "servers", guildId, "server.json");
+    const stored = await this.options.storage.readJson(relativePath, ServerConfigSchema).catch(() => undefined);
+    if (!stored?.channels[channelId]) return;
+    await this.options.storage.updateRevisionedJson({
+      resourceKey: `server:${guildId}`,
+      relativePath,
+      schema: ServerConfigSchema,
+      fallback: stored,
+      transform: (current) => {
+        const { [channelId]: _removed, ...channels } = current.channels;
+        return { ...current, channels };
+      }
+    });
+  }
+
   /** Track the thread a message arrived in (when it can take part) and return the refreshed server. */
   private async admitThreadMessage(server: ServerConfig, event: DiscordMessageEvent): Promise<ServerConfig> {
     const thread = event.thread!;
     const explicit = server.channels[event.channelId];
-    const hasOwnCast = (explicit?.enabledWaifuIds?.length ?? 0) > 0 && !explicit?.thread;
+    const hasOwnCast = (explicit?.enabledWaifuIds?.length ?? 0) > 0 && (!explicit?.thread || explicit.thread.explicit === true);
     if (!hasOwnCast && !parentSharesCast(server.channels[thread.parentId])) return server;
     // A message in a thread means it is open: Discord unarchives on send, so a stale cached
     // `archived: true` must not silence it.
-    await observeThread(this.options.storage, event.guildId, {
-      threadId: event.channelId,
-      parentId: thread.parentId,
-      name: thread.name,
-      kind: thread.kind,
-      archived: false,
-      locked: thread.locked,
-      activity: true
-    });
+    const pruned: string[] = [];
+    await observeThread(
+      this.options.storage,
+      event.guildId,
+      {
+        threadId: event.channelId,
+        parentId: thread.parentId,
+        name: thread.name,
+        kind: thread.kind,
+        archived: false,
+        locked: thread.locked,
+        activity: true
+      },
+      new Date(),
+      pruned
+    );
+    await this.forgetThreads(event.guildId, pruned, { removeEntry: false });
     return ensureServer(this.options.storage, event.guildId);
   }
 
@@ -497,13 +585,16 @@ export class RuntimeOrchestrator {
     if (event.type === "update") {
       const message = event.message;
       if (!message.editedAt) return;
-      const retrigger = event.source !== "catchup" && (await this.editAddsWaifuMention(conversation, event, extra.previousMentionIds));
+      // Decided before recording (it compares with the ledger as it was), fired only if the ledger
+      // newly recorded this edit: a second delivery of the same edit is ignored by the ledger.
+      const wouldRetrigger = event.source !== "catchup" && (await this.editAddsWaifuMention(conversation, event, extra.previousMentionIds));
       const server = await ensureServer(this.options.storage, guildId);
       const directory = await loadGuildDirectoryView(this.options.storage, guildId, {
         channelName: (id) => server.channels[id]?.name
       });
-      await this.contexts.recordMessageEdit(conversation, message, { directory });
-      if (!retrigger) return;
+      const outcome = await this.contexts.recordMessageEdit(conversation, message, { directory });
+      const newlyRecorded = outcome === "replaced" || outcome === "event" || outcome === "coalesced";
+      if (!wouldRetrigger || !newlyRecorded) return;
       this.options.logger.info("Edit added a waifu mention to the newest human message; treating it as a new message", {
         guildId,
         channelId,
@@ -563,34 +654,34 @@ export class RuntimeOrchestrator {
     const { guildId, threadId, thread } = event;
     if (event.change === "delete") {
       await removeThread(this.options.storage, guildId, threadId);
-      await this.stopChannel(guildId, threadId, "thread_deleted");
-      // The thread is gone: so is its conversation (ledger, refs, every agent context).
-      await this.contexts
-        .deleteConversation({ kind: "guild", guildId, channelId: threadId })
-        .catch((error: unknown) => {
-          this.options.logger.warn("Failed to delete a deleted thread's conversation", {
-            guildId,
-            threadId,
-            message: error instanceof Error ? error.message : String(error)
-          });
-        });
+      // The thread is gone: so are its conversation (ledger, refs, every agent context), its
+      // session file and any explicit channel entry. Decision history stays.
+      await this.forgetThreads(guildId, [threadId], { removeEntry: true });
       return;
     }
     const server = await ensureServer(this.options.storage, guildId);
     const explicit = server.channels[threadId];
-    const hasOwnCast = (explicit?.enabledWaifuIds?.length ?? 0) > 0 && !explicit?.thread;
+    const hasOwnCast = (explicit?.enabledWaifuIds?.length ?? 0) > 0 && (!explicit?.thread || explicit.thread.explicit === true);
     const known = (await readThreads(this.options.storage, guildId)).threads[threadId];
     // Only threads that can take part are tracked (a cast of their own or one to inherit); one we
     // already track keeps following its archive / lock state even if the parent lost its cast.
     if (!hasOwnCast && !known && !parentSharesCast(server.channels[thread.parentId])) return;
-    await observeThread(this.options.storage, guildId, {
-      threadId,
-      parentId: thread.parentId,
-      name: thread.name,
-      kind: thread.kind,
-      archived: thread.archived,
-      locked: thread.locked
-    });
+    const pruned: string[] = [];
+    await observeThread(
+      this.options.storage,
+      guildId,
+      {
+        threadId,
+        parentId: thread.parentId,
+        name: thread.name,
+        kind: thread.kind,
+        archived: thread.archived,
+        locked: thread.locked
+      },
+      new Date(),
+      pruned
+    );
+    await this.forgetThreads(guildId, pruned, { removeEntry: false });
     if (thread.archived || thread.locked) {
       // Archive / lock clears the thread's timers and any run in it.
       await this.stopChannel(guildId, threadId, thread.archived ? "thread_archived" : "thread_locked");
@@ -621,7 +712,12 @@ export class RuntimeOrchestrator {
     await this.runner.startChannelRun(guildId, channelId, reason, options);
   }
 
-  async stopChannel(guildId: string, channelId: string, reason = "manual-stop"): Promise<{
+  async stopChannel(
+    guildId: string,
+    channelId: string,
+    reason = "manual-stop",
+    o: { markIdle?: boolean } = {}
+  ): Promise<{
     stoppedRun: boolean;
     clearedRetrigger: boolean;
     activeInAnotherChannel: boolean;
@@ -643,7 +739,7 @@ export class RuntimeOrchestrator {
     if (activeRun && stoppedRun) {
       this.options.logger.info("Stopping active channel run", { guildId, channelId, reason });
       activeRun.controller.abort(new Error(reason));
-      this.runner.markSessionIdleBackground(guildId, channelId, reason);
+      if (o.markIdle !== false) this.runner.markSessionIdleBackground(guildId, channelId, reason);
     }
 
     return { stoppedRun, clearedRetrigger, activeInAnotherChannel };

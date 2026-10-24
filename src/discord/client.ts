@@ -308,6 +308,8 @@ export type DiscordChannelMetadata = {
   guildName?: string;
   channelId: string;
   channelName?: string;
+  /** Set when the channel is a thread or forum post (spec 9.5). */
+  thread?: DiscordThreadInfo;
 };
 
 type DiscordCache = {
@@ -845,7 +847,8 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
       guildId: guild.id,
       guildName: guild.name,
       channelId: channel.id,
-      channelName: "name" in channel && typeof channel.name === "string" ? channel.name : undefined
+      channelName: "name" in channel && typeof channel.name === "string" ? channel.name : undefined,
+      ...(threadInfoOf(channel) ? { thread: threadInfoOf(channel)! } : {})
     };
   }
 
