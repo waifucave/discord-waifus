@@ -736,7 +736,7 @@ All in one winter release, pinned by the app.
 - Bot member roles: each waifu bot's member in each guild is fetched once per guild at boot with a
   single-member REST fetch (no privileged intent needed), refreshed every
   `discord.memberListRefreshHours` and on role update/delete events.
-- `ConversationMessageCache.fetchBefore(conversation, beforeMessageId, limit)`, REST-backed.
+- `ConversationMessageCache.readPage({conversation, beforeId?, limit})`, stateless, buffer or REST (§6.2).
 - `react` uses the waifu's bot client.
 
 ### 10.3 Edits and deletes in a life
