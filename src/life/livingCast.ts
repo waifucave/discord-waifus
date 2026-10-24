@@ -241,6 +241,9 @@ export class LivingCast {
         // A failed turn's follow-up that never ran is armed again (review M13).
         const failed = (await readLifeState(deps.storage, waifu.id)).failedTurn;
         if (failed && !failed.followUpDone) this.life(waifu.id).armFollowUp(Date.parse(failed.at));
+        // `scrubbedAt` keeps only the DM forget window; an older entry is a trace of the person.
+        const now = deps.now();
+        await updateLifeState(deps.storage, waifu.id, (current) => ({ ...current, scrubbedAt: recentScrubs(current.scrubbedAt, now) }));
       } catch (error) {
         deps.logger.error("Life boot repair failed", { waifuId: waifu.id, message: error instanceof Error ? error.message : String(error) });
       }

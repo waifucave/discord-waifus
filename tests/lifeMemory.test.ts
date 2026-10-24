@@ -145,11 +145,15 @@ describe("forget (§7.5)", () => {
     expect(await notes.read("people/kevin.md")).toBeUndefined();
     expect(await notes.read("MEMORY.md")).toBe("# Memory\n- [Me](me.md) — about me\n");
     expect(await notes.read("me.md")).toBe("# Me\n- Sam is funny.\n");
-    // Step 3: wakes, notices, watches and reminders about him are gone; others stay.
+    // Step 3: his wakes, notices and watches are gone; her reminder about him stays and loses the
+    // text (review F3: her own entry is not his); others stay.
     expect((await readLifeFile(w.storage, "aria", "wakes")).immediate).toEqual([]);
     expect(state.pendingNotices).toEqual([]);
     expect((await readLifeFile(w.storage, "aria", "watches")).watches).toEqual([]);
-    expect((await readLifeFile(w.storage, "aria", "schedule")).reminders.map((reminder) => reminder.id)).toEqual(["r2"]);
+    expect((await readLifeFile(w.storage, "aria", "schedule")).reminders.map((reminder) => [reminder.id, reminder.note])).toEqual([
+      ["r1", "(removed)"],
+      ["r2", "buy lemons"]
+    ]);
     // The report keeps counts only.
     const report = (await readMaintenanceReports(w.storage, "aria")).find((line) => line.kind === "forget")!;
     expect(report).toMatchObject({ source: "owner", removedLines: 4, removedSentences: 0, needsReview: 1 });
@@ -193,7 +197,8 @@ describe("forget (§7.5)", () => {
     const state = await readLifeState(w.storage, "aria");
     expect(state.epoch).toBe(2);
     expect(state.summary).toBe("We celebrated in Bake Club.");
-    expect(state.scrubbedAt[KEVIN]).toBeDefined();
+    // An owner forget is not a DM forget: no rate-limit trace of him (review F6).
+    expect(state.scrubbedAt[KEVIN]).toBeUndefined();
     expect(await readPendingScrubs(w.storage, "aria")).toEqual([]);
     expect((await readMaintenanceReports(w.storage, "aria")).map((report) => [report.kind, report.source ?? report.summary])).toEqual([
       ["forget", "owner"],
@@ -340,7 +345,8 @@ describe("forget: person notes, failures and the archive (§7.5, D-b)", () => {
     expect(Object.keys((await readLifeFile(w.storage, "aria", "reads")).cursors)).toEqual([ROOM_KEY]);
     const usage = JSON.parse(await readFile(path.join(w.root, "user/search/usage.json"), "utf8")) as { recent: Array<{ query: string }> };
     expect(usage.recent.map((entry) => entry.query)).toEqual(["lemon tart recipe"]);
-    expect(Object.keys((await readLifeState(w.storage, "aria")).scrubbedAt)).toEqual([KEVIN]);
+    // The 7-hour-old entry is pruned, and an owner forget leaves no rate-limit trace (review F6).
+    expect((await readLifeState(w.storage, "aria")).scrubbedAt).toEqual({});
   });
 
   it("a waifu with only queued wakes (no state yet) is scrubbed too: her life folder counts", async () => {

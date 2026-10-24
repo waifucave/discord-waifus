@@ -13,6 +13,8 @@ import type { StorageService } from "../storage/storageService.js";
 import { readLifeFile, updateLifeFile } from "./lifeStore.js";
 
 export const MAX_IMMEDIATE_WAKES = 200;
+/** What forget leaves of her own note (a reminder's, a watch's) that named the person. */
+export const REMOVED_TEXT = "(removed)";
 const HOUR_MS = 3_600_000;
 
 /** Wake reasons that count as direct mentions in the morning batch. */
@@ -206,19 +208,51 @@ export async function admitUserWake(
 }
 
 /** Forget (§7.5 step 3): the person's wakes, previews, counters and quiet lines go. Returns how many entries changed. */
-export async function scrubWakeQueue(storage: StorageService, waifuId: string, o: { userId: string; placeKeys: ReadonlySet<string>; mentions: (text: string) => boolean }): Promise<number> {
+export async function scrubWakeQueue(
+  storage: StorageService,
+  waifuId: string,
+  o: {
+    userId: string;
+    placeKeys: ReadonlySet<string>;
+    /** Text that names the person for certain (their id or a name only they have). */
+    mentions: (text: string) => boolean;
+    /** Every text left in place: the caller lists uncertain matches (shared names) for review. */
+    review?: (text: string) => void;
+  }
+): Promise<number> {
   let removed = 0;
   await updateLifeFile(storage, waifuId, "wakes", (queue) => {
-    const keep = (wake: Wake) => {
-      const drop =
-        wake.fromUserId === o.userId ||
-        (wake.placeKey !== undefined && o.placeKeys.has(wake.placeKey)) ||
-        (wake.note !== undefined && o.mentions(wake.note)) ||
-        (wake.preview !== undefined && o.mentions(wake.preview)) ||
-        (wake.batch ?? []).some((line) => o.mentions(line));
-      if (drop) removed += 1;
-      return !drop;
-    };
+    // The person's own wakes (and their DM's) go; someone else's wake that mentions them keeps its
+    // place in her queue, and only what it quoted goes (its preview, note, match or batch lines).
+    const scrub = (wakes: readonly Wake[]): Wake[] =>
+      wakes.flatMap((wake): Wake[] => {
+        if (wake.fromUserId === o.userId || (wake.placeKey !== undefined && o.placeKeys.has(wake.placeKey))) {
+          removed += 1;
+          return [];
+        }
+        const next: Wake = { ...wake };
+        let changed = false;
+        for (const field of ["preview", "note", "matched"] as const) {
+          const text = next[field];
+          if (text === undefined) continue;
+          if (o.mentions(text)) {
+            // Her note is kept as a marker (a reminder still fires); a quote just goes.
+            if (field === "note") next.note = REMOVED_TEXT;
+            else delete next[field];
+            changed = true;
+          } else o.review?.(text);
+        }
+        if (next.batch) {
+          const batch = next.batch.filter((line) => !o.mentions(line));
+          if (batch.length !== next.batch.length) {
+            next.batch = batch;
+            changed = true;
+          }
+          for (const line of batch) o.review?.(line);
+        }
+        if (changed) removed += 1;
+        return [next];
+      });
     const places: Record<string, DeferredPlace> = {};
     for (const [key, place] of Object.entries(queue.deferred.places)) {
       if (o.placeKeys.has(key)) {
@@ -238,8 +272,8 @@ export async function scrubWakeQueue(storage: StorageService, waifuId: string, o
     delete userWakes[o.userId];
     return {
       ...queue,
-      immediate: queue.immediate.filter(keep),
-      deferred: { ...queue.deferred, places, items: queue.deferred.items.filter(keep) },
+      immediate: scrub(queue.immediate),
+      deferred: { ...queue.deferred, places, items: scrub(queue.deferred.items) },
       quiet,
       userWakes
     };

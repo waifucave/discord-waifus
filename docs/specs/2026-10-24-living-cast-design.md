@@ -721,8 +721,13 @@ conversation` runs steps 0–2 only.
    names and nicknames from the conversation cache's authors, the guild directory, DM state,
    watches and her handle map (a `user-<tail>` placeholder handle is no name). Names are split:
    unique names (only this person has them) and shared names (another known member or a waifu has
-   them, or they are three characters or fewer, one for CJK, or a generic word such as "user").
-   Matching is whole-word with Latin diacritics folded both ways (José / jose). The scrub is
+   them, a note marked as someone else's is headed by them, or they are weak: three characters or
+   fewer, one for CJK, or a generic or common chat word such as "user", "server" or "nobody").
+   Matching is whole-word with Latin diacritics folded both ways (José / jose; stroke letters and
+   ligatures too: Søren / soren, Łukasz, Æsa / aesa, Straße / strasse, Đorđe, Þóra / thora). A name
+   in a script without word boundaries (CJK, Thai) matches anywhere (はな inside はなし), so its
+   matches are only listed for review, like a shared name's. Only the id and the remaining unique
+   names ("removable") ever remove or blank text; shared and weak names never do. The scrub is
    queued at once in `pending-scrubs.json` **with the names**, so a crash, a failure or a later
    run (rate limit, Discord offline) still knows them; it is cleared only when it finished.
 1. **DM data**: existing DM forget (history and state deleted, forget floor written, images and OCR
@@ -744,26 +749,35 @@ conversation` runs steps 0–2 only.
    turns** and every name (unique and shared) listed for omission (on failure, an empty summary).
    The new epoch does **not** start yet (`pendingEpochStart`); no turn can run in between because
    the per-waifu lock is held.
-3. **Other state** (every name): remove the person's entries from `wakes.json` (previews included)
-   and `pendingNotices`, watches whose `from` is the person, bound to their DM or watching for
-   words that name them (and scrub other watches' notes), reminder notes mentioning the person,
-   her DM read cursor and handle, `maintenance.jsonl` lines, the host's recent web queries naming
-   them (`user/search/usage.json`), and her slice of the archive.
+3. **Other state** (the id and removable names): remove the person's own wakes (theirs, or in
+   their DM) and `pendingNotices` naming them, watches whose `from` is the person, bound to their
+   DM or watching for words that name them, her DM read cursor and handle, `maintenance.jsonl`
+   lines, earlier `needs-review.json` lines carrying them, the host's recent web queries naming
+   them (`user/search/usage.json`), and her slice of the archive. Someone else's entry that names
+   them keeps its place and loses only the text: another person's wake loses its preview, match or
+   batch lines; her own reminder or watch note becomes `(removed)` (a reminder still fires). Shared
+   and weak names remove nothing here: their matches are listed as `needsReview`. `scrubbedAt` is
+   pruned to the 6-hour window on this write and at every boot; an owner forget adds no entry.
 4. **Notes scrub**: a maintenance session (§7.3) instructed to remove everything about the person
    (every name) and update the index. If it fails, the scrub stays queued and runs again at her
-   next start (owner) or nightly maintenance.
+   next start (owner) or nightly maintenance. A waifu without a model has no session to run: it is
+   recorded as skipped (one review line, `notesScrub: "skipped"` in the report), the other steps
+   run and the scrub completes, so it is not retried at every start.
 5. **Start the epoch and verify**: a note marked as the person's own (`<!-- user:<id> -->`) or a
    `people/` note whose heading is one of their unique names is deleted whole, with its `MEMORY.md`
    links; a `people/` note headed by a shared name is listed for review. Then start the new epoch
    (`MEMORY.md` re-read, places re-listed, every old epoch log deleted; without a model the logs
    are deleted all the same and the epoch starts with her next turn). Then search the notes, the
-   summary and the new `systemSnapshot` for the user id and the unique names, as whole words.
+   summary and the new `systemSnapshot` for the user id and the removable names, as whole words.
    Lines with the id are removed. A bullet, list item or heading naming them goes whole (a removed
    heading lists the rest of its note for review); in prose, the sentences that name them go.
-   Shared-name matches are listed as `needsReview`. If anything was removed from notes, the system
-   snapshot is rebuilt before the first turn. Result: `{removedLines, removedSentences,
-   removedNotes, needsReview}`, returned to the caller and logged (counts only); review lines are
-   kept for the owner in `user/waifus/<id>/life/needs-review.json` (newest 200).
+   Inside a note marked as someone else's, and on a `MEMORY.md` line linking one, a name match is
+   only listed for review (the id is proof there, a name is not). Shared, weak and
+   no-word-boundary name matches are listed as `needsReview`. If anything was removed from notes,
+   the system snapshot is rebuilt before the first turn. Result: `{removedLines,
+   removedSentences, removedNotes, needsReview}`, returned to the caller and logged (counts only);
+   review lines are kept for the owner in `user/waifus/<id>/life/needs-review.json` (newest 200; a
+   line already listed moves to the end instead of repeating).
 
 **The archive** (owner decision D-b), best effort: the owner's forget-user scrubs everything under
 `user/.archive/living-cast/`: archived conversation ledgers and contexts, the director's, stage
@@ -774,7 +788,9 @@ them go whole, and so does every archived file filed under their id (the origina
 `dms/<userId>/`); a dropped memory record also drops its omitted lines. A waifu's own scrub (a DM
 `/forget everything`) takes her slice: her memory records, her omitted lines, her pending
 observations, her archived DM with the person and her archived DM state with them. `providers.json`
-and `models/` are never touched; a file that does not parse is left and counted.
+and `models/` are never touched; a file that does not parse, or nests deeper than 256 levels, is
+left and counted, and the scrub carries on with the rest. Names without word boundaries remove no
+archived record (records bound to the id still go).
 
 `/forget conversation` runs steps 0–2 for the DM only (her summary without the chat, the DM's wakes
 and watches, the cursor at the floor), then starts the epoch at once so the old log goes too.
@@ -791,9 +807,12 @@ TTL, anything outside this host, and the 15-minute web page cache. Name matching
 shared names are only listed for review.
 
 Unreadable forget records fail closed: an unreadable `forgotten.json` hides every human message's
-preview, turns the detector off and shows an owner notice until it is repaired; the next forget
-keeps a copy of the broken file and carries over every entry that can still be read from it. A
-torn `pending-scrubs.json` is salvaged the same way on read, so no queued scrub is lost.
+preview and name (rooms, DMs and edit mentions), turns the detector off and shows an owner notice
+until it is repaired; the next forget keeps a copy of the broken file and carries over every entry
+that can still be read from it. A torn `pending-scrubs.json` is salvaged the same way on read, so
+no queued scrub is lost. A forget removes the person from these kept copies (their entries, or
+every line carrying them when the copy does not parse), and a copy older than 7 days is deleted
+(at boot and at every owner forget): its salvage was merged when it was made.
 
 ## 8. Life harness (system prompt outline)
 

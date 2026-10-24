@@ -4,27 +4,33 @@
 //      (conversation cache authors, the guild directory, DM state, watches, her DM handle unless it
 //      is a `user-<tail>` placeholder). The names are stored with the queued scrub, so a scrub that
 //      runs later (a restart, the DM rate limit) still knows them. Names are split: `names` only
-//      this person has (removed in step 5) and `sharedNames` (another member or a waifu has them,
-//      or they are three characters or fewer, or a generic word: steps 2–4 use them, step 5 only
-//      lists their matches for review). Matching is whole-word with Latin diacritics folded both
-//      ways (José / jose);
+//      this person has and `sharedNames` (another member or a waifu has them, a note marked as
+//      someone else's is headed by them, or they are weak: three characters or fewer, or a generic
+//      or common chat word). Only the id and the unique names with word boundaries ("removable")
+//      ever remove or blank text (steps 3 and 5); every other match is listed for review. The model
+//      is told every name (steps 2 and 4). Matching is whole-word with Latin diacritics, stroke
+//      letters and ligatures folded both ways (José / jose, Søren / soren);
 //   1. DM data (the caller: `dmForget` / `forgetUser`; the owner's forget also records
 //      `user/people/forgotten.json`);
 //   2. summary without the person: her turn is aborted, the compaction summary is written with no
 //      kept turns and every name listed for omission (empty on failure); the new epoch waits
 //      (`pendingEpochStart`) while the per-waifu lock is held;
-//   3. other state: wakes and pending notices, watches from the person or bound to their DM or to
-//      words naming them, reminder notes, her DM read cursor and handle, maintenance.jsonl lines,
-//      the host's recent web queries naming them, and her slice of the Living cast archive;
+//   3. other state: their wakes and pending notices, watches from the person or bound to their DM
+//      or to words naming them, her DM read cursor and handle, maintenance.jsonl and review lines,
+//      the host's recent web queries naming them, and her slice of the Living cast archive.
+//      Someone else's wake that names them keeps its place and loses the quote; her reminder or
+//      watch note naming them becomes `(removed)`;
 //   4. notes scrub: a maintenance session told to remove everything about the person (a failed
-//      session keeps the scrub queued, so it runs again);
+//      session keeps the scrub queued, so it runs again; without a model it is skipped, with one
+//      review line, and the scrub completes);
 //   5. start the epoch (MEMORY.md re-read, places re-listed, every old epoch log deleted) and verify:
 //      a note marked as the person's own (`<!-- user:<id> -->`), or a `people/` note whose heading is
 //      a name only they have, is deleted whole (with its MEMORY.md links); a `people/` note headed by
 //      a shared name is listed for review. Then notes, summary and the new system snapshot are
-//      searched: id lines are removed; a bullet or heading naming them by a unique name goes whole
-//      (a removed heading lists the rest of the note for review), prose loses the sentences that
-//      name them; shared-name matches are listed as needsReview (persisted in
+//      searched: id lines are removed; a bullet or heading naming them by a removable name goes
+//      whole (a removed heading lists the rest of the note for review), prose loses the sentences
+//      that name them; inside a note marked as someone else's (or its MEMORY.md line) a name is
+//      only listed; other matches are listed as needsReview (persisted, without repeats, in
 //      `life/needs-review.json` for the owner).
 //
 // `/forget conversation` runs steps 0–2 for the DM only, then starts the epoch at once, so the old
@@ -68,8 +74,8 @@ import { markedUserIds, MEMORY_INDEX, Notes } from "./notes.js";
 import { lifeDir } from "./paths.js";
 import { collectPlaces, dropPlaceHandles } from "./places.js";
 import { scrubSearchUsage } from "./search.js";
-import { foldName, isGenericName, isWeakName, namesSomeone } from "./text.js";
-import { scrubWakeQueue } from "./wakeQueue.js";
+import { foldName, hasNoWordBoundaries, isGenericName, isWeakName, namesSomeone } from "./text.js";
+import { REMOVED_TEXT, scrubWakeQueue } from "./wakeQueue.js";
 
 export const DM_SCRUB_RATE_MS = 6 * 3_600_000;
 /** At most this many review lines are kept per scrub, and in `needs-review.json`. */
@@ -97,9 +103,23 @@ export type ForgetScrubResult = {
   queued?: boolean;
 };
 
-/** Every name of the identity that steps 2–4 use: unique and shared, never a generic word. */
+/** Every name of the identity the model is told about (steps 2 and 4): unique and shared, never a generic word. */
 export function scrubNames(identity: ForgetIdentity): string[] {
   return [...identity.names, ...identity.sharedNames].filter((name) => !isGenericName(name));
+}
+
+/**
+ * The names that remove or blank text (steps 3 and 5): the unique ones, except a name in a script
+ * without word boundaries (はな also matches はなし), whose matches are only listed for review.
+ */
+export function removableNames(identity: ForgetIdentity): string[] {
+  return identity.names.filter((name) => !hasNoWordBoundaries(name) && !isWeakName(name));
+}
+
+/** The names whose matches are only listed for review: shared or weak ones, and unique ones without word boundaries. */
+function reviewNames(identity: ForgetIdentity): string[] {
+  const removable = new Set(removableNames(identity));
+  return [...identity.sharedNames, ...identity.names.filter((name) => !removable.has(name))];
 }
 
 /** Two identities of one person: names in either's shared list stay shared. */
@@ -175,6 +195,13 @@ async function storedNames(storage: StorageService, waifu: WaifuConfig, userId: 
   for (const other of await listWaifus(storage).catch(() => [])) {
     add("others", other.name);
     add("others", other.displayName);
+  }
+  // A note marked as someone else's (`<!-- user:<other id> -->`) is headed by their name: two
+  // people called Kevin share the name, so forgetting one never removes text by it.
+  for (const [notePath, text] of await new Notes(storage, waifu.id).readAll().catch(() => new Map<string, string>())) {
+    if (notePath === MEMORY_INDEX) continue;
+    const marked = markedUserIds(text);
+    if (marked.length > 0 && !marked.includes(userId)) add("others", headingOf(text));
   }
 }
 
@@ -253,11 +280,15 @@ export async function summaryWithoutPerson(deps: LifeDeps, waifu: WaifuConfig, i
 }
 
 /**
- * Step 3: wakes, notices, watches, reminders, DM cursor and handle, maintenance lines, recent web
- * queries and her slice of the archive. `dmOnly` (`/forget conversation`): only what belongs to
- * the DM with the person (wakes and watches there, the cursor at the floor).
+ * Step 3: wakes, notices, watches, reminders, DM cursor and handle, maintenance lines, review
+ * lines, recent web queries and her slice of the archive. What the person owns goes (their wakes,
+ * their watches); someone else's entry that names them for certain (the id or a removable name)
+ * keeps its place and loses the text (a wake's preview, a reminder's or watch's note). A shared or
+ * weak name never removes anything: its matches are listed for review (`review`). `dmOnly`
+ * (`/forget conversation`): only what belongs to the DM with the person (wakes and watches there,
+ * the cursor at the floor).
  */
-export async function scrubOtherState(deps: LifeDeps, waifu: WaifuConfig, identity: ForgetIdentity, o: { dmOnly?: boolean } = {}): Promise<number> {
+export async function scrubOtherState(deps: LifeDeps, waifu: WaifuConfig, identity: ForgetIdentity, o: { dmOnly?: boolean; review?: (item: ReviewLine) => void } = {}): Promise<number> {
   const dmKey = conversationKey({ kind: "dm", waifuId: waifu.id, userId: identity.userId });
   const floor = await readDmFloor(deps.storage, identity.userId, waifu.id).catch(() => undefined);
   if (o.dmOnly) {
@@ -270,13 +301,18 @@ export async function scrubOtherState(deps: LifeDeps, waifu: WaifuConfig, identi
     await setReadCursor(deps.storage, waifu.id, dmKey, floor, deps.now());
     return removed;
   }
-  const names = scrubNames(identity);
+  const names = removableNames(identity);
   const mentions = (text: string) => mentionsPerson(text, identity.userId, names);
-  let removed = await scrubWakeQueue(deps.storage, waifu.id, { userId: identity.userId, placeKeys: new Set([dmKey]), mentions });
+  const uncertain = reviewNames(identity).filter((name) => !isGenericName(name));
+  const review = (where: string) => (text: string) => {
+    if (o.review && uncertain.some((name) => namesSomeone(text, name))) o.review({ where, line: text.trim().slice(0, 300) });
+  };
+  let removed = await scrubWakeQueue(deps.storage, waifu.id, { userId: identity.userId, placeKeys: new Set([dmKey]), mentions, review: review("wakes") });
   await updateLifeState(deps.storage, waifu.id, (current) => {
     const pendingNotices = current.pendingNotices.filter((notice) => !mentions(notice));
     removed += current.pendingNotices.length - pendingNotices.length;
-    return { ...current, pendingNotices };
+    // `scrubbedAt` loses what is past the DM forget window here too (an owner forget adds nothing).
+    return { ...current, pendingNotices, scrubbedAt: recentScrubs(current.scrubbedAt, deps.now()) };
   });
   await updateLifeFile(deps.storage, waifu.id, "watches", (file) => {
     const watches = file.watches
@@ -286,20 +322,36 @@ export async function scrubOtherState(deps: LifeDeps, waifu: WaifuConfig, identi
             (binding) => binding.fromUserId === identity.userId || binding.placeKey === dmKey || (binding.words ?? []).some((word) => names.some((name) => namesSomeone(word, name) || namesSomeone(name, word)))
           )
       )
-      .map((watch) => (mentions(watch.note) ? { ...watch, note: "" } : watch));
+      .map((watch) => {
+        if (mentions(watch.note)) {
+          removed += 1;
+          return { ...watch, note: REMOVED_TEXT };
+        }
+        review("watches")(watch.note);
+        for (const binding of watch.bindings) for (const word of binding.words ?? []) review("watches")(word);
+        return watch;
+      });
     removed += file.watches.length - watches.length;
     return { ...file, watches };
   });
+  // A reminder is hers: it stays and loses the text that names the person.
   await updateLifeFile(deps.storage, waifu.id, "schedule", (file) => {
-    const reminders = file.reminders.filter((reminder) => !mentions(reminder.note));
-    removed += file.reminders.length - reminders.length;
+    const reminders = file.reminders.map((reminder) => {
+      if (mentions(reminder.note)) {
+        removed += 1;
+        return { ...reminder, note: REMOVED_TEXT };
+      }
+      review("reminders")(reminder.note);
+      return reminder;
+    });
     return { ...file, reminders };
   });
+  removed += await scrubNeedsReview(deps.storage, waifu.id, mentions);
   // Her DM cursor goes whole: the conversation is gone, and the floor holds on the read path.
   await setReadCursor(deps.storage, waifu.id, dmKey, undefined, deps.now());
   removed += await dropPlaceHandles(deps.storage, waifu.id, dmKey);
   removed += await scrubMaintenanceReports(deps.storage, waifu.id, (line) => mentions(line));
-  removed += await scrubSearchUsage(deps.storage, (query) => query.includes(identity.userId) || identity.names.some((name) => namesSomeone(query, name)));
+  removed += await scrubSearchUsage(deps.storage, mentions);
   const archived = await scrubArchive(deps.storage.dataRoot, { userId: identity.userId, names: identity.names, avoidNames: identity.sharedNames, waifuId: waifu.id, logger: deps.logger });
   removed += archived.removed;
   return removed;
@@ -316,15 +368,30 @@ function review(out: Verify, item: ReviewLine): void {
 
 /**
  * Step 5's text pass: id lines removed; a bullet, list item or heading naming the person by a
- * unique name goes whole (a removed heading lists the note for review), prose loses the sentences
- * that name them; shared-name matches are listed for review.
+ * removable name goes whole (a removed heading lists the note for review), prose loses the
+ * sentences that name them; shared-name matches are listed for review. `reviewOnly` (a note marked
+ * as someone else's) and `protectedLine` (a `MEMORY.md` line linking such a note) only list name
+ * matches for review: the id is proof, a name there is not.
  */
-export function scrubText(text: string, identity: ForgetIdentity, where: string, out: Verify): string {
+export function scrubText(
+  text: string,
+  identity: ForgetIdentity,
+  where: string,
+  out: Verify,
+  o: { reviewOnly?: boolean; protectedLine?: (line: string) => boolean } = {}
+): string {
   const kept: string[] = [];
-  const unique = (line: string) => identity.names.some((name) => namesSomeone(line, name));
+  const removable = removableNames(identity);
+  const uncertain = reviewNames(identity);
+  const unique = (line: string) => removable.some((name) => namesSomeone(line, name));
   for (const line of text.split("\n")) {
     if (line.includes(identity.userId)) {
       out.removedLines += 1;
+      continue;
+    }
+    if (unique(line) && (o.reviewOnly || o.protectedLine?.(line))) {
+      review(out, { where, line: line.trim().slice(0, 300) });
+      kept.push(line);
       continue;
     }
     if (unique(line)) {
@@ -343,7 +410,7 @@ export function scrubText(text: string, identity: ForgetIdentity, where: string,
       kept.push(remaining.join(" "));
       continue;
     }
-    if (identity.sharedNames.some((name) => namesSomeone(line, name))) review(out, { where, line: line.trim().slice(0, 300) });
+    if (uncertain.some((name) => namesSomeone(line, name))) review(out, { where, line: line.trim().slice(0, 300) });
     kept.push(line);
   }
   return kept.join("\n");
@@ -414,8 +481,15 @@ export async function startEpochAndVerify(deps: LifeDeps, waifu: WaifuConfig, id
   const notes = new Notes(deps.storage, waifu.id);
   const all = await notes.readAll();
   let notesChanged = (await deletePersonNotes(notes, all, identity, out)).length > 0;
+  // Notes marked as someone else's: a name match there (or in the index line linking one) is
+  // listed for review, never removed (two people may share the name).
+  const othersNotes = [...all].flatMap(([notePath, text]) => {
+    const marked = markedUserIds(text);
+    return notePath !== MEMORY_INDEX && marked.length > 0 && !marked.includes(identity.userId) ? [notePath] : [];
+  });
+  const linksOthersNote = (line: string) => othersNotes.some((notePath) => line.includes(`](${notePath})`));
   for (const [notePath, text] of all) {
-    const scrubbed = scrubText(text, identity, `notes/${notePath}`, out);
+    const scrubbed = scrubText(text, identity, `notes/${notePath}`, out, notePath === MEMORY_INDEX ? { protectedLine: linksOthersNote } : { reviewOnly: othersNotes.includes(notePath) });
     if (scrubbed !== text) {
       await notes.write(notePath, scrubbed);
       notesChanged = true;
@@ -430,7 +504,7 @@ export async function startEpochAndVerify(deps: LifeDeps, waifu: WaifuConfig, id
   // The new snapshot is checked too; a match means the system prompt is rebuilt after the fix.
   const snapshot = started?.systemSnapshot;
   if (snapshot && lifeModelOf(deps, waifu)) {
-    const memory = scrubText(snapshot.memoryIndex, identity, "system prompt", out);
+    const memory = scrubText(snapshot.memoryIndex, identity, "system prompt", out, { protectedLine: linksOthersNote });
     const places = scrubText(snapshot.places, identity, "system prompt", out);
     if (memory !== snapshot.memoryIndex || places !== snapshot.places || notesChanged) {
       await updateLifeState(deps.storage, waifu.id, (state2) => ({ ...state2, systemSnapshot: state2.systemSnapshot ? { ...state2.systemSnapshot, memoryIndex: memory, places } : null }));
@@ -441,42 +515,84 @@ export async function startEpochAndVerify(deps: LifeDeps, waifu: WaifuConfig, id
 
 export const NEEDS_REVIEW_FILE = "needs-review.json";
 
-/** Review lines for the owner (`life/needs-review.json`, newest 200; the dashboard shows them in L3). */
-export async function recordNeedsReview(storage: StorageService, waifuId: string, at: Date, source: string, lines: readonly ReviewLine[]): Promise<void> {
-  if (lines.length === 0) return;
+const reviewKey = (item: unknown): string => {
+  const record = item && typeof item === "object" ? (item as Record<string, unknown>) : {};
+  return JSON.stringify([record.where, record.line]);
+};
+
+async function updateNeedsReview(storage: StorageService, waifuId: string, transform: (items: unknown[]) => unknown[]): Promise<void> {
   const relative = path.join(lifeDir(waifuId), NEEDS_REVIEW_FILE);
   await storage.withLocks([`life-needs-review:${waifuId}`], async () => {
+    let raw: string;
+    try {
+      raw = await readFile(storage.dataPath(relative), "utf8");
+    } catch {
+      raw = "";
+    }
     let items: unknown[] = [];
     try {
-      const parsed = JSON.parse(await readFile(storage.dataPath(relative), "utf8")) as { items?: unknown };
+      const parsed = JSON.parse(raw) as { items?: unknown };
       if (Array.isArray(parsed.items)) items = parsed.items;
     } catch {
       // missing or unreadable: start over (the lines are hints, not records)
     }
-    const next = [...items, ...lines.map((line) => ({ at: at.toISOString(), source, ...line }))].slice(-MAX_REVIEW_FILE);
+    const next = transform(items);
+    if (raw && JSON.stringify(next) === JSON.stringify(items)) return;
+    if (!raw && next.length === 0) return;
     await atomicWriteJson(storage.dataPath(relative), { items: next });
   });
 }
 
+/**
+ * Review lines for the owner (`life/needs-review.json`, newest 200; the dashboard shows them in
+ * L3). A line already listed (same place, same text) moves to the end instead of repeating.
+ */
+export async function recordNeedsReview(storage: StorageService, waifuId: string, at: Date, source: string, lines: readonly ReviewLine[]): Promise<void> {
+  if (lines.length === 0) return;
+  const fresh = new Map<string, ReviewLine>();
+  for (const line of lines) fresh.set(reviewKey(line), line);
+  await updateNeedsReview(storage, waifuId, (items) =>
+    [...items.filter((item) => !fresh.has(reviewKey(item))), ...[...fresh.values()].map((line) => ({ at: at.toISOString(), source, ...line }))].slice(-MAX_REVIEW_FILE)
+  );
+}
+
+/** Forget (step 3): earlier review lines that carry the person go. Returns how many. */
+async function scrubNeedsReview(storage: StorageService, waifuId: string, carries: (text: string) => boolean): Promise<number> {
+  let removed = 0;
+  await updateNeedsReview(storage, waifuId, (items) => {
+    const kept = items.filter((item) => !carries(JSON.stringify(item)));
+    removed = items.length - kept.length;
+    return kept;
+  });
+  return removed;
+}
+
 export type ScrubPersonOutcome = ForgetScrubResult & { complete: boolean };
+
+/** The one review line a scrub without a notes session leaves (she has no model). */
+export const NOTES_SCRUB_SKIPPED = "(no notes session ran: she has no model; the checks below ran, but read her notes for anything else about them)";
 
 /**
  * Steps 2–5 for one waifu (the caller holds her life lock and has aborted her turn). `complete`
- * is false when the notes scrub (step 4) could not run or failed: the caller keeps the scrub queued.
+ * is false when the notes scrub (step 4) failed: the caller keeps the scrub queued. Without a model
+ * there is no notes session to wait for: it is recorded as skipped (one review line) and the
+ * scrub completes, so it is not retried at every start.
  */
 export async function scrubPerson(deps: LifeDeps, waifu: WaifuConfig, identity: ForgetIdentity, o: { signal?: AbortSignal; source: string }): Promise<ScrubPersonOutcome> {
   await summaryWithoutPerson(deps, waifu, identity, o.signal);
-  await scrubOtherState(deps, waifu, identity);
+  const stateReview: ReviewLine[] = [];
+  await scrubOtherState(deps, waifu, identity, { review: (item) => stateReview.push(item) });
   const model = lifeModelOf(deps, waifu);
-  let complete = false;
+  let complete = true;
   if (model) {
     const session = await runNotesSession(deps, { waifu, model, instruction: scrubInstruction({ userId: identity.userId, names: scrubNames(identity) }), kind: "scrub", ...(o.signal ? { signal: o.signal } : {}) });
     complete = session.ok;
     if (!session.ok) deps.logger.warn("Forget notes scrub failed; it stays queued and runs again", { category: "life", waifuId: waifu.id, error: session.error });
   }
   const verify = await startEpochAndVerify(deps, waifu, identity);
+  if (!model) verify.needsReview.unshift({ where: "notes", line: NOTES_SCRUB_SKIPPED });
+  for (const item of stateReview) if (verify.needsReview.length < MAX_REVIEW_LINES) verify.needsReview.push(item);
   const now = deps.now();
-  await updateLifeState(deps.storage, waifu.id, (current) => ({ ...current, scrubbedAt: recentScrubs({ ...current.scrubbedAt, [identity.userId]: now.toISOString() }, now) }));
   await recordNeedsReview(deps.storage, waifu.id, now, o.source, verify.needsReview);
   // The report keeps counts only: no names, no id.
   await appendMaintenanceReport(deps.storage, waifu.id, {
@@ -487,7 +603,7 @@ export async function scrubPerson(deps: LifeDeps, waifu: WaifuConfig, identity: 
     removedSentences: verify.removedSentences,
     removedNotes: verify.removedNotes,
     needsReview: verify.needsReview.length,
-    ...(complete ? {} : { notesScrub: "pending" })
+    ...(!model ? { notesScrub: "skipped" } : complete ? {} : { notesScrub: "pending" })
   });
   deps.logger.info("Life forget scrub done", { category: "life", waifuId: waifu.id, removedLines: verify.removedLines, removedSentences: verify.removedSentences, removedNotes: verify.removedNotes, needsReview: verify.needsReview.length, complete });
   return { waifuId: waifu.id, removedLines: verify.removedLines, removedSentences: verify.removedSentences, removedNotes: verify.removedNotes, needsReview: verify.needsReview, complete, ...(complete ? {} : { queued: true }) };

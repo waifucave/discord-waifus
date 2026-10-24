@@ -25,7 +25,7 @@ import path from "node:path";
 import type { Logger } from "../backend/logger.js";
 import { LIVING_CAST_ARCHIVE_DIR } from "../backend/migrationSteps/livingCastModels.js";
 import { atomicWriteJson, atomicWriteText } from "../storage/atomic.js";
-import { foldName, isWeakName, namesSomeone } from "./text.js";
+import { foldName, hasNoWordBoundaries, isWeakName, namesSomeone } from "./text.js";
 
 export type ArchiveScrubResult = { files: number; removed: number; unreadable: number; skipped: number };
 
@@ -97,7 +97,7 @@ function scrubJson(node: Json, match: Matcher, counter: { removed: number }, dep
 export function scrubJsonForPerson(value: unknown, userId: string, names: readonly string[] = []): { value: unknown; removed: number } {
   const counter = { removed: 0 };
   try {
-    const next = scrubJson(value as Json, { userId, names: names.filter((name) => !isWeakName(name)) }, counter);
+    const next = scrubJson(value as Json, { userId, names: names.filter((name) => !isWeakName(name) && !hasNoWordBoundaries(name)) }, counter);
     return { value: next, removed: counter.removed };
   } catch (error) {
     // Nested deeper than any of ours: left as it is (like an unreadable file).
@@ -144,7 +144,7 @@ async function walk(root: string, relative = ""): Promise<string[]> {
   return out;
 }
 
-/** Names usable for removal: the caller's plus archived subjects' names for the id, minus anything shared or weak. */
+/** Names usable for removal: the caller's plus archived subjects' names for the id, minus anything shared, weak or without word boundaries. */
 function archiveNames(memories: Json | undefined, userId: string, given: readonly string[], avoid: readonly string[]): string[] {
   const mine = new Set(given);
   const others = new Set(avoid.map(foldName));
@@ -157,7 +157,7 @@ function archiveNames(memories: Json | undefined, userId: string, given: readonl
       else others.add(foldName(subject.name));
     }
   }
-  return [...mine].filter((name) => !isWeakName(name) && !others.has(foldName(name)));
+  return [...mine].filter((name) => !isWeakName(name) && !hasNoWordBoundaries(name) && !others.has(foldName(name)));
 }
 
 export type ArchiveScrubInput = {
