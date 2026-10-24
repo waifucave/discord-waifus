@@ -46,6 +46,7 @@ import {
   ServerConfig,
   ServerConfigSchema,
   WaifuAvailabilitySchema,
+  WaifuLifeSettingsSchema,
   WaifuConfig,
   WaifuConfigSchema,
   WAIFU_VERBOSITIES,
@@ -206,6 +207,10 @@ const UpdateWaifuBodySchema = WaifuConfigSchema.partial().extend({
   customInstructions: z.string().max(4000).optional(),
   scheduleInPrompt: z.boolean().optional(),
   dm: partialWithoutDefaults(WaifuDmSettingsSchema).optional(),
+  // Living cast §4.1 / §4.4: `wakeOnName` and `life.dailyBudgetUsd` (null = no budget, a real
+  // value) are kept when a PUT leaves them out.
+  wakeOnName: z.boolean().optional(),
+  life: partialWithoutDefaults(WaifuLifeSettingsSchema).optional(),
   // Spec 8.6: the layout editor is gone. `promptLayout` is still accepted (any shape) for one
   // release so older dashboards/scripts do not fail, but it is ignored and never written.
   promptLayout: z.unknown().optional()
@@ -784,6 +789,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
           model: applyModelPatch(current.model, modelPatch),
           availability: mergeNestedPatch(current.availability, patch.availability),
           dm: mergeNestedPatch(current.dm, patch.dm),
+          life: mergeNestedPatch(current.life, patch.life),
           id: current.id
         });
       }

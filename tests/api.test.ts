@@ -386,6 +386,28 @@ describe("Backend API", () => {
       }
     });
 
+    it("a partial waifu PUT keeps her daily budget, wake-on-name and sleep notice (review I-A)", async () => {
+      const { app } = await makeApp();
+      try {
+        const created = await app.inject({ method: "POST", url: "/api/waifus", payload: { id: "laya", name: "Laya", displayName: "Laya" } });
+        const set = await app.inject({
+          method: "PUT",
+          url: "/api/waifus/laya",
+          payload: { revision: created.json().revision, life: { dailyBudgetUsd: 5 }, wakeOnName: false, dm: { sleepNotice: "asleep, back at 8" } }
+        });
+        expect(set.statusCode, set.body).toBe(200);
+        const toggled = await app.inject({ method: "PUT", url: "/api/waifus/laya", payload: { revision: set.json().revision, enabled: false } });
+        expect(toggled.statusCode, toggled.body).toBe(200);
+        expect(toggled.json()).toMatchObject({ enabled: false, wakeOnName: false, life: { dailyBudgetUsd: 5 }, dm: { sleepNotice: "asleep, back at 8" } });
+        // null is a real value: no budget.
+        const cleared = await app.inject({ method: "PUT", url: "/api/waifus/laya", payload: { revision: toggled.json().revision, life: { dailyBudgetUsd: null } } });
+        expect(cleared.json()).toMatchObject({ life: { dailyBudgetUsd: null }, wakeOnName: false });
+        expect((await app.inject({ method: "PUT", url: "/api/waifus/laya", payload: { revision: cleared.json().revision, life: { dailyBudgetUsd: -1 } } })).statusCode).toBe(400);
+      } finally {
+        await app.close();
+      }
+    });
+
     it("POST /api/waifus with a minimal body still applies schema defaults (create semantics unaffected)", async () => {
       const { app } = await makeApp();
       try {

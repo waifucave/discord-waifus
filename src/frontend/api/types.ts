@@ -423,6 +423,10 @@ export type WaifuConfig = Revisioned & {
   verbosity: WaifuVerbosity;
   customInstructions: string;
   scheduleInPrompt: boolean;
+  /** Her names wake her as whole words (Living cast §4.1). */
+  wakeOnName: boolean;
+  /** Her daily budget in USD for her local day; null = none (Living cast §4.4). */
+  life: { dailyBudgetUsd: number | null };
   dm: WaifuDmSettings;
 };
 
@@ -434,6 +438,8 @@ export type WaifuDmSettings = {
   rateLimit: { maxReplies: number; windowMinutes: number } | null;
   notifyWhenLimited: boolean;
   limitNotice: string;
+  /** Sent once per sleep window when a DM waits for her morning ("" = none, Living cast §4.5). */
+  sleepNotice: string;
 };
 
 export type WaifusResponse = { waifus: WaifuConfig[] };
@@ -456,11 +462,14 @@ export type CreateWaifuBody = {
 // `model`/`botId` accept explicit `null` on write to mean "unset" (a bare `undefined` field is
 // dropped by JSON.stringify and is indistinguishable from "field omitted, leave untouched").
 export type UpdateWaifuBody = Partial<
-  Omit<WaifuConfig, "schemaVersion" | "updatedAt" | "model" | "botId">
+  Omit<WaifuConfig, "schemaVersion" | "updatedAt" | "model" | "botId" | "dm" | "life">
 > & {
   revision: number;
   model?: ModelChoice | null;
   botId?: string | null;
+  /** Merged into the stored settings: omitted keys keep their value. */
+  dm?: Partial<Omit<WaifuDmSettings, "rateLimit">> & { rateLimit?: WaifuDmSettings["rateLimit"] };
+  life?: { dailyBudgetUsd?: number | null };
 };
 
 export type ChannelConfig = {

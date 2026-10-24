@@ -281,6 +281,10 @@ A waifu's model is `model: { providerId, modelId, effort? }` (or `null`). A `PUT
 `tools.toolUse` and `personaDigest` fields were removed by the `living-cast-models-v1` migration;
 request bodies that still carry them are accepted and the fields are ignored.
 
+A `PUT` is partial: omitted fields keep their stored values. The nested settings `availability`,
+`dm` (incl. `sleepNotice`) and `life` (`dailyBudgetUsd`, `null` = no budget) are merged key by
+key; `wakeOnName` is a plain boolean.
+
 Asset uploads accept raw `image/png`, `image/jpeg`, `image/webp`, or `image/gif` request bodies up to 8 MB. Files are stored in `user/waifus/<waifu-id>/`. Nothing reads them yet: they are not applied to the Discord bot's avatar/banner and the dashboard neither uploads nor displays them.
 
 ## Servers
