@@ -42,6 +42,7 @@ import {
   AgentConfigSchema,
   DiscordBotConfig,
   DiscordBotsFileSchema,
+  GuildEmojisFileSchema,
   GuildMembersFileSchema,
   MemoryStoreSchema,
   OrchestratorDebugConfigFileSchema,
@@ -9004,6 +9005,64 @@ describe("RuntimeOrchestrator", () => {
     // Identical to her own prior message: one corrective retry, then block — nothing sent.
     expect(generateCalls).toBe(2);
     expect(discord.sent).toHaveLength(0);
+  });
+
+  // Acceptance M2: the orchestrator usually reconciles a new message first, freezing its ledger
+  // render for every agent, so its prepare must resolve mentions and custom emoji too.
+  it("the orchestrator's prepare freezes mentions and custom emoji with the guild directory", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.contexts = [[contextMessage("m1", "user", "Kevin", "hey <@555000111> look <:cat:777000111>")]];
+    await seedRuntimeConfig(storage);
+    await seedDiscordBots(storage, [{ id: "aria", displayName: "Aria", applicationId: "111222333444555666", enabled: true }]);
+    await storage.writeJson(
+      "members:guild-1",
+      "user/servers/guild-1/members.json",
+      GuildMembersFileSchema,
+      GuildMembersFileSchema.parse(
+        createEmptyRevisionedFile({
+          guildId: "guild-1",
+          members: [{ userId: "555000111", guildDisplayName: "Bob", bot: false, perChannelLastSeenAt: {} }]
+        })
+      )
+    );
+    await storage.writeJson(
+      "emojis:guild-1",
+      "user/servers/guild-1/emojis.json",
+      GuildEmojisFileSchema,
+      GuildEmojisFileSchema.parse(
+        createEmptyRevisionedFile({ guildId: "guild-1", emojis: [{ id: "777000111", name: "cutecat", fetchedAt: "2026-10-24T00:00:00.000Z" }] })
+      )
+    );
+    await seedWaifu(storage, "aria", "Aria", "aria", "playful");
+    await enableWaifus(storage, ["aria"]);
+    let transcript = "";
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 1,
+      createPipeline: () => ({
+        async decideOrchestrator(request) {
+          transcript = promptOf(request).debug.transcript;
+          return { action: "no_reply", respondingWaifus: [], reasoning: "Wait." };
+        },
+        async generateWaifu() {
+          throw new Error("no waifu turn expected");
+        }
+      }),
+      logger: quietLogger()
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    expect(transcript).toContain("Kevin: hey <@Bob> look <:cutecat:>");
+    const ledger = JSON.parse(await readFile(path.join(root, "user/conversations/g_guild-1_channel-1/ledger.json"), "utf8"));
+    expect(ledger.entries.m1.body).toContain("hey <@Bob> look <:cutecat:>");
   });
 
   it("resolves serverNickname and roster names via the bots entry applicationId", async () => {

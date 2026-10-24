@@ -4,6 +4,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { ResolvedModel, Usage } from "@waifucave/gateway";
+import { loadGuildDirectoryView } from "../discord/directoryView.js";
 import { PermissionWarningTracker, isPermissionError } from "./permissionWarnings.js";
 import {
   type DeterministicCastMember,
@@ -566,6 +567,11 @@ export class ChannelRunner {
         channelId,
         conversationKey: conversationKey(conversation)
       };
+      // The orchestrator usually reconciles a new message first, freezing its ledger render for
+      // every agent: it needs the same mention/role/channel/emoji names as the waifu path.
+      const directory = await loadGuildDirectoryView(this.options.storage, guildId, {
+        channelName: (id) => server.channels[id]?.name
+      });
       const prepared = await this.options.contexts.prepare({
         conversation,
         agent: ORCHESTRATOR_AGENT,
@@ -576,6 +582,7 @@ export class ChannelRunner {
         signal,
         params: orchestrator.params,
         server,
+        directory,
         // Own-model compaction mirrors the decision call (T7b contract): forced tool choice (mapped
         // to none/auto for summarizing), same sampling, params and attribution. Deterministic and
         // one-shot passes have no summarizer: their context truncates durably instead.
