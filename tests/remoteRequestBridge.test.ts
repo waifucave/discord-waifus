@@ -12,8 +12,6 @@ import { afterEach, describe, expect, it } from "vitest";
 import { BrowserSecurity } from "../src/api/browserSecurity.js";
 import { getInternalDispatchContext } from "../src/api/internalDispatch.js";
 import { installRoutePolicy, type RoutePolicyDefinition } from "../src/api/routePolicy.js";
-import { createApiServer } from "../src/api/server.js";
-import { createRuntimeState } from "../src/backend/runtime.js";
 import {
   REMOTE_BRIDGE_MAX_ACTIVE_STREAMS_PER_CONNECTION,
   REMOTE_BRIDGE_MAX_ACTIVE_STREAMS_PER_DEVICE,
@@ -21,8 +19,6 @@ import {
 } from "../src/backend/remoteAccess/requestBridge.js";
 import type { RequestPrincipalWire } from "../src/shared/schemas/remoteProtocol.js";
 import { WipcParentAuthSession } from "../src/shared/wipcAuthSession.js";
-import { ensureDataLayout } from "../src/config/layout.js";
-import { StorageService } from "../src/storage/storageService.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
 // This fixture intentionally models the authenticated helper boundary at a high level. The WIPC
 // codec and proof vectors have their own byte-exact contract suites.
@@ -243,39 +239,6 @@ async function makeApp(options: {
   return { app, bridge, observations };
 }
 
-async function makeRealApiApp(fetchImpl: typeof fetch) {
-  const root = await makeTempRoot("waifus-remote-bridge-");
-  roots.push(root);
-  await ensureDataLayout(root);
-  const runtime = createRuntimeState({
-    pid: process.pid,
-    startedAt: new Date().toISOString(),
-    packageVersion: "0.1.0",
-    port: 3888,
-    dataRoot: root,
-    mode: "test",
-    paused: false,
-    discord: {
-      connected: false,
-      orchestratorConnected: false,
-      waifuBotCount: 0,
-      warnings: []
-    },
-    queues: { active: 0, configuredGuilds: 0 }
-  });
-  const app = await createApiServer({
-    dataRoot: root,
-    runtime,
-    storage: new StorageService(root),
-    llmGateway: { fetchImpl },
-    remoteTrust: { isAuthorized: () => true }
-  });
-  apps.push(app);
-  const bridge = new RemoteRequestBridge(app);
-  bridges.push(bridge);
-  return { app, bridge, root };
-}
-
 describe("authenticated remote request bridge", () => {
   it("preserves HTTP semantics and attaches the actor outside HTTP headers", async () => {
     const { bridge } = await makeApp();
@@ -479,76 +442,6 @@ describe("authenticated remote request bridge", () => {
     await llmClosed;
     await waitFor(() => observations.cancelled.has("llm"), "LLM handler cancellation");
     expect(performance.now() - llmStartedAt).toBeLessThan(1_000);
-  });
-
-  it("aborts the real /api/llm/v1/chat provider fetch before response headers", async () => {
-    let providerSignal: AbortSignal | undefined;
-    let providerStarted!: () => void;
-    const started = new Promise<void>((resolve) => { providerStarted = resolve; });
-    const fetchImpl = ((_url: string | URL | Request, init?: RequestInit) =>
-      new Promise<Response>((_resolve, reject) => {
-        providerSignal = init?.signal ?? undefined;
-        providerStarted();
-        providerSignal?.addEventListener("abort", () => {
-          reject(providerSignal?.reason ?? new Error("provider request aborted"));
-        }, { once: true });
-      })) as typeof fetch;
-    const { app, bridge, root } = await makeRealApiApp(fetchImpl);
-    const credential = await app.inject({
-      method: "PUT",
-      url: "/api/providers/deepseek/credentials",
-      payload: { apiKey: "sk-bridge-test" }
-    });
-    expect(credential.statusCode).toBe(200);
-
-    const helper = new FakeTsConnect(bridge);
-    const controller = new AbortController();
-    const pending = helper.request(
-      start(
-        "travel-mac",
-        "POST",
-        "/api/llm/v1/chat",
-        [
-          ["content-type", "application/json"],
-          ["idempotency-key", Buffer.alloc(32, 0x51).toString("base64url")]
-        ]
-      ),
-      {
-        body: Readable.from([JSON.stringify({
-          provider: "deepseek",
-          model: "deepseek-v4-pro",
-          messages: [{ role: "user", content: "keep waiting" }]
-        })]),
-        signal: controller.signal
-      }
-    );
-    await started;
-    const startedAt = performance.now();
-    controller.abort();
-    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
-    expect(providerSignal?.aborted).toBe(true);
-    expect(performance.now() - startedAt).toBeLessThan(1_000);
-    await waitForAsync(async () => {
-      try {
-        const [ledger, audit] = await Promise.all([
-          readFile(
-            path.join(root, "app", "remote-access", "operations", "ledger.json"),
-            "utf8"
-          ).then((value) => JSON.parse(value) as { records?: Array<{ status?: string }> }),
-          readFile(
-            path.join(root, "app", "remote-access", "audit", "ledger.json"),
-            "utf8"
-          ).then((value) => JSON.parse(value) as { records?: Array<{ outcome?: string }> })
-        ]);
-        return Boolean(
-          ledger.records?.some((record) => record.status === "outcome_unknown")
-          && ledger.records.every((record) => record.status !== "prepared")
-          && audit.records?.some((record) => record.outcome === "unknown")
-        );
-      } catch {
-        return false;
-      }
-    }, "cancelled LLM operation durability");
   });
 
   it("rejects forged metadata and stale trust epochs", async () => {

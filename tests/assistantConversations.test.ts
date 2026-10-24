@@ -1,7 +1,9 @@
+import type { ProviderMessageLike } from "@yanlinglabs/winter-provider-runtime";
 import { describe, expect, it } from "vitest";
 import {
   ConversationStore,
-  conversationOwner
+  conversationOwner,
+  trimTranscript
 } from "../src/api/assistant/conversations.js";
 import {
   LOCAL_REQUEST_PRINCIPAL,
@@ -64,14 +66,49 @@ describe("ConversationStore", () => {
     });
   });
 
-  it("stores user/assistant display messages and the model transcript separately", () => {
+  it("stores user/assistant display messages and the model transcript separately; the system prompt freezes", () => {
     const store = new ConversationStore();
     const { id } = store.create(localOwner);
     store.appendStored(id, localOwner, { role: "user", content: "hi", at: new Date().toISOString() });
-    store.appendChat(id, localOwner, [{ role: "system", content: "sys" }, { role: "user", content: "hi" }]);
+    store.setTranscript(id, localOwner, { system: "sys", chat: [{ role: "user", content: "hi" }] });
+    store.setTranscript(id, localOwner, { system: "a later snapshot", chat: [{ role: "user", content: "hi" }, { role: "assistant", content: "hello" }] });
     const convo = store.get(id, localOwner)!;
     expect(convo.messages.filter((m) => m.role === "user")).toHaveLength(1);
     expect(convo.chat).toHaveLength(2);
+    expect(convo.chat.some((message) => message.role === "system")).toBe(false);
+    expect(convo.system).toBe("sys");
+  });
+
+  it("publishes live-only text deltas without storing them", async () => {
+    const store = new ConversationStore();
+    const { id } = store.create(localOwner);
+    const seen: string[] = [];
+    const unsubscribe = store.subscribe(id, localOwner, (event) => seen.push(event.type));
+    store.publish(id, localOwner, { type: "text_delta", content: "Hel" });
+    store.emit(id, localOwner, { type: "text", content: "Hello" });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    unsubscribe();
+    expect(seen).toEqual(["text_delta", "text"]);
+    expect(store.get(id, localOwner)!.messages.map((message) => (message.role === "event" ? message.event.type : message.role))).toEqual(["text"]);
+  });
+
+  it("trims the model transcript from the front to a plain user message, never to an orphaned tool result", () => {
+    const big = "x".repeat(400);
+    const transcript: ProviderMessageLike[] = [
+      { role: "user", content: `first ${big}` },
+      { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "list_waifus", input: {} }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: big }] },
+      { role: "assistant", content: [{ type: "text", text: big }] },
+      { role: "user", content: "second" },
+      { role: "assistant", content: [{ type: "text", text: "ok" }] }
+    ];
+    const trimmed = trimTranscript(transcript, 300);
+    expect(trimmed[0]).toEqual({ role: "user", content: "second" });
+    expect(trimmed).toHaveLength(2);
+    // Under budget nothing is dropped.
+    expect(trimTranscript(transcript, 1_000_000)).toHaveLength(transcript.length);
+    // Even a single oversized exchange keeps its newest user message.
+    expect(trimTranscript([{ role: "user", content: big }, { role: "assistant", content: big }], 10)[0]).toEqual({ role: "user", content: big });
   });
 
   it("guards concurrent turns with the busy flag", () => {

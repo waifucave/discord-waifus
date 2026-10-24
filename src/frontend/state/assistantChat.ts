@@ -17,16 +17,23 @@ export type ChatItem =
  * Chat state for the corner assistant panel. The conversation id survives view changes via
  * sessionStorage; the SSE stream renders tool activity live while a turn runs. A stale id
  * (backend restarted — conversations are in-memory) transparently gets a fresh conversation.
+ * `streaming` is the reply text streamed so far (live-only `text_delta` events); it clears when
+ * the turn ends and the canonical transcript replaces it.
  */
 export function useAssistantChat(open: boolean) {
   const [items, setItems] = useState<ChatItem[]>([]);
   const [busy, setBusy] = useState(false);
+  const [streaming, setStreaming] = useState("");
   const [error, setError] = useState<string | undefined>(undefined);
   const conversationRef = useRef<string | undefined>(sessionStorage.getItem(STORAGE_KEY) ?? undefined);
   const sourceRef = useRef<ResumableEventFeed | undefined>(undefined);
 
   const foldEvent = useCallback((event: AssistantEvent) => {
-    if (event.type === "tool_call") {
+    if (event.type === "text_delta") {
+      setStreaming((prev) => prev + event.content);
+    } else if (event.type === "turn_started" || event.type === "turn_completed" || event.type === "text") {
+      setStreaming("");
+    } else if (event.type === "tool_call") {
       setItems((prev) => [...prev, { kind: "tool", name: event.name, args: event.arguments }]);
     } else if (event.type === "tool_result") {
       setItems((prev) => {
@@ -41,6 +48,7 @@ export function useAssistantChat(open: boolean) {
         return next;
       });
     } else if (event.type === "error") {
+      setStreaming("");
       setItems((prev) => [...prev, { kind: "error", message: event.message }]);
     } else if (event.type === "confirmation_required") {
       setItems((prev) => [...prev, {
@@ -163,6 +171,7 @@ export function useAssistantChat(open: boolean) {
         setError((err as Error).message);
       } finally {
         setBusy(false);
+        setStreaming("");
       }
     },
     [attachStream, ensureConversation]
@@ -175,10 +184,11 @@ export function useAssistantChat(open: boolean) {
     sessionStorage.removeItem(STORAGE_KEY);
     setItems([]);
     setBusy(false);
+    setStreaming("");
     setError(undefined);
   }, []);
 
-  return { items, busy, error, send, reset };
+  return { items, busy, streaming, error, send, reset };
 }
 
 export function restoreAssistantItems(messages: readonly AssistantStoredMessage[]): ChatItem[] {

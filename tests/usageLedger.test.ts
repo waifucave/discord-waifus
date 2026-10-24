@@ -12,9 +12,9 @@ afterEach(async () => {
 
 const entry = (over: Partial<UsageLedgerEntry> = {}): UsageLedgerEntry => ({
   at: "2026-10-23T23:59:59.000Z",
-  purpose: "waifu_reply",
+  purpose: "life",
   providerId: "deepseek",
-  modelId: "deepseek-v4-flash",
+  modelId: "deepseek-flash",
   status: "ok",
   usageKnown: true,
   inputTokens: 10,
@@ -37,7 +37,7 @@ describe("usageLedger", () => {
     await ledger.record(entry({ at: "2026-10-24T00:00:01.000Z", status: "failed", errorKind: "server", ...usageFields(undefined) }));
     expect(await readdir(path.join(root, "user", "usage"))).toEqual(["2026-10-23.jsonl", "2026-10-24.jsonl"]);
     const [first] = await readLines(root, "2026-10-23");
-    expect(UsageLedgerEntrySchema.parse(first)).toMatchObject({ purpose: "waifu_reply", inputTokens: 10 });
+    expect(UsageLedgerEntrySchema.parse(first)).toMatchObject({ purpose: "life", inputTokens: 10 });
     const [second] = await readLines(root, "2026-10-24");
     expect(second).toMatchObject({ status: "failed", usageKnown: false, inputTokens: 0, outputTokens: 0, errorKind: "server" });
   });
@@ -71,9 +71,12 @@ describe("usageLedger", () => {
     await ledger.flush();
   });
 
-  it("maps gateway usage including cache, reasoning and cost fields", () => {
-    expect(usageFields({ inputTokens: 100, outputTokens: 20, cacheReadTokens: 60, cacheWriteTokens: 10, reasoningTokens: 5, costUsd: 0.0123 }))
-      .toEqual({ usageKnown: true, inputTokens: 100, outputTokens: 20, cacheReadTokens: 60, cacheWriteTokens: 10, reasoningTokens: 5, costUsd: 0.0123 });
+  it("maps winter usage including cache, reasoning, dropped thinking blocks and the call's cost", () => {
+    expect(usageFields({ inputTokens: 100, outputTokens: 20, cacheReadTokens: 60, cacheWriteTokens: 10, reasoningTokens: 5, thinkingBlocksDropped: 1 }, 0.0123))
+      .toEqual({ usageKnown: true, inputTokens: 100, outputTokens: 20, cacheReadTokens: 60, cacheWriteTokens: 10, reasoningTokens: 5, thinkingBlocksDropped: 1, costUsd: 0.0123 });
+    // An unpriced route has no cost; a negative or non-finite one is dropped.
+    expect(usageFields({ inputTokens: 1, outputTokens: 1 })).not.toHaveProperty("costUsd");
+    expect(usageFields({ inputTokens: 1, outputTokens: 1 }, Number.NaN)).not.toHaveProperty("costUsd");
     expect(usageFields({ inputTokens: 0, outputTokens: 0 }).usageKnown).toBe(false);
     expect(usageFields(undefined)).toEqual({ usageKnown: false, inputTokens: 0, outputTokens: 0 });
   });

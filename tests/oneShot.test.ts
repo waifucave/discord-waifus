@@ -1,59 +1,47 @@
+// The native-choice decision protocol and the decision-model catalog, kept from One shot for the
+// Living cast addressee detector (src/life/detector/, spec §4.3). The decider itself was retired
+// in L1; L3 builds the detector on these.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { writeFile } from "node:fs/promises";
-import { ensureDataLayout } from "../src/config/layout.js";
-import { ServerConfigSchema, WaifuConfigSchema } from "../src/shared/schemas/domain.js";
-import { createRevisionedBase } from "../src/shared/schemas/common.js";
-import { OneShotTargetSchema } from "../src/shared/schemas/oneShot.js";
-import { OneShotCatalog } from "../src/orchestration/oneShot/catalog.js";
-import { OneShotDecider, prepareOneShot, type OneShotInput } from "../src/orchestration/oneShot/decider.js";
-import { decisionAnswers, decisionRequest, readDecisionJson, type ChoiceQuestions } from "../src/orchestration/oneShot/protocol.js";
-import { UsageLedgerEntrySchema, type UsageLedgerEntry } from "../src/shared/schemas/usage.js";
-import { makeTempRoot, removeTempRoot } from "./testUtils.js";
+import { OneShotCatalog, OneShotTargetSchema } from "../src/life/detector/catalog.js";
+import { decisionAnswers, decisionRequest, readDecisionJson, type ChoiceQuestions } from "../src/life/detector/protocol.js";
 
-const roots: string[] = [];
-afterEach(async () => { vi.restoreAllMocks(); await Promise.all(roots.splice(0).map(removeTempRoot)); });
-function input(): OneShotInput {
-  const waifu = WaifuConfigSchema.parse({ ...createRevisionedBase(), id: "yuki", name: "Yuki", displayName: "Yuki", availability: { sleep: { enabled: false }, busy: [] } });
-  return { target: "openai:gpt-6-luna", now: new Date("2026-10-13T12:00:00Z"), waifus: [waifu],
-    cast: [{ waifuId: "yuki", names: ["Yuki"], authorIds: ["bot-yuki"], availability: waifu.availability }],
-    messages: [{ id: "m1", channelId: "c", authorKind: "user", authorId: "human", name: "Human", displayName: "Human", content: "Yuki, how are you?", timestamp: "2026-10-13T11:59:59Z", reactions: [] }],
-    replyRequired: false, directiveBudgetOpen: true, loopSuspected: false, policy: "", signal: new AbortController().signal };
-}
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+const QUESTIONS: ChoiceQuestions = {
+  turn: { instructions: "Who speaks next?", criteria: { speaker_0: "Yuki", pause: "Nobody" } },
+  loop: { instructions: "Is the room looping?", criteria: { healthy: "No", looping: "Yes" } }
+};
+
 function payload(questions: ChoiceQuestions, choices: Record<string, string>, openai = true) {
-  const rows = Object.entries(questions).map(([name, q]) => ({ name, type: "choice", choice: choices[name],
-    probabilities: openai ? Object.keys(q.criteria).map((value) => ({ value, probability: Number(value === choices[name]) }))
-      : Object.fromEntries(Object.keys(q.criteria).map((v) => [v, Number(v === choices[name])])) }));
+  const rows = Object.entries(questions).map(([name, q]) => ({
+    name,
+    type: "choice",
+    choice: choices[name],
+    probabilities: openai
+      ? Object.keys(q.criteria).map((value) => ({ value, probability: Number(value === choices[name]) }))
+      : Object.fromEntries(Object.keys(q.criteria).map((v) => [v, Number(v === choices[name])]))
+  }));
   return { answers: openai ? rows : Object.fromEntries(rows.map((r) => [r.name, r])) };
 }
-async function root() {
-  const r = await makeTempRoot(); roots.push(r); await ensureDataLayout(r);
-  await writeFile(`${r}/user/providers.json`, JSON.stringify({ providers: { openai: { apiKey: "fixture-openai" }, openrouter: { apiKey: "fixture-router" } } }), { mode: 0o600 });
-  return r;
-}
-async function decider(choices: Record<string, string>) {
-  const sample = input(); const prepared = prepareOneShot(sample);
-  const fetchImpl = vi.fn(async () => new Response(JSON.stringify(payload(prepared.questions, choices))));
-  return { client: new OneShotDecider(await root(), fetchImpl as typeof fetch), sample, fetchImpl };
-}
 
-describe("One shot native-choice orchestration", () => {
-  it("leaves existing server mode untouched and supplies missing config defaults", () => {
-    const server = ServerConfigSchema.parse({ ...createRevisionedBase(), guildId: "g" });
-    expect(server.orchestratorMode).toBe("model");
-    expect(server.oneShot.target).toBe("openrouter:cloudflare/clef");
-  });
+describe("detector decision protocol", () => {
   it("rejects predicate-only models and arbitrary endpoints or executables", () => {
     for (const t of ["openrouter:respan/span-01", "openrouter:respan/span-01-lite:free", "https://evil.test", "laya:/tmp/executable", "openai:unknown"])
       expect(OneShotTargetSchema.safeParse(t).success).toBe(false);
+    expect(OneShotTargetSchema.safeParse("openai:gpt-6-luna").success).toBe(true);
   });
+
   it("uses native OpenAI choice arrays and router choice maps", () => {
-    const p = prepareOneShot(input());
-    expect(decisionRequest("m", p.state, p.questions, true)).toHaveProperty("input", p.state);
-    expect(decisionRequest("m", p.state, p.questions, false)).toHaveProperty("questions.turn.type", "choice");
-    for (const openai of [false, true]) expect(decisionAnswers(payload(p.questions, { turn: "speaker_0", loop: "healthy", steering: "none" }, openai), p.questions, openai).turn.choice).toBe("speaker_0");
+    expect(decisionRequest("m", "STATE", QUESTIONS, true)).toHaveProperty("input", "STATE");
+    expect(decisionRequest("m", "STATE", QUESTIONS, false)).toHaveProperty("questions.turn.type", "choice");
+    for (const openai of [false, true]) {
+      expect(decisionAnswers(payload(QUESTIONS, { turn: "speaker_0", loop: "healthy" }, openai), QUESTIONS, openai).turn.choice).toBe("speaker_0");
+    }
   });
+
   it("rejects invalid choices, malformed probabilities, refusals and missing answers", () => {
-    const p = prepareOneShot(input());
     for (const mutation of [
       (r: any) => { r.answers[0].choice = "other"; },
       (r: any) => { r.answers[0].probabilities[0].probability = 0.7; },
@@ -61,121 +49,38 @@ describe("One shot native-choice orchestration", () => {
       (r: any) => { r.answers.pop(); },
       (r: any) => { r.answers.push(r.answers[0]); }
     ]) {
-      const result = payload(p.questions, { turn: "speaker_0", loop: "healthy", steering: "none" });
-      mutation(result); expect(() => decisionAnswers(result, p.questions, true)).toThrow();
+      const result = payload(QUESTIONS, { turn: "speaker_0", loop: "healthy" });
+      mutation(result);
+      expect(() => decisionAnswers(result, QUESTIONS, true)).toThrow();
     }
   });
-  it("uses one inference request, existing credentials and no chat/tools fallback", async () => {
-    const { client, sample, fetchImpl } = await decider({ turn: "speaker_0", loop: "healthy", steering: "none" });
-    const result = await client.decide(sample);
-    expect(result.decision).toMatchObject({ action: "reply", respondingWaifus: [{ waifuId: "yuki" }] });
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-    expect(fetchImpl.mock.calls[0][0]).toBe("https://api.openai.com/v1/decisions");
-    client.close();
+
+  it("bounds provider responses and never forwards parse errors or response contents", async () => {
+    await expect(readDecisionJson(new Response('"' + "x".repeat(100) + '"'), 50)).rejects.toThrow(/^one_shot_invalid_response$/);
+    await expect(readDecisionJson(new Response("private invalid content"))).rejects.toThrow(/^one_shot_invalid_response$/);
   });
-  it("cannot contradict speaker selection with pause or emit steering while waiting", async () => {
-    const { client, sample } = await decider({ turn: "wait_short", loop: "stalled_scene", steering: "break_loop" });
-    const { decision } = await client.decide({ ...sample, timerWakeSeconds: 600 });
-    expect(decision).toMatchObject({ action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 1200 });
-    expect(decision.wakePlan).toBeUndefined(); client.close();
-  });
-  it("enforces an explicit required reply without a second inference call", async () => {
-    const { client, sample, fetchImpl } = await decider({ turn: "wait_dead", loop: "healthy", steering: "none" });
-    const result = await client.decide({ ...sample, replyRequired: true });
-    expect(result.decision.action).toBe("reply"); expect(fetchImpl).toHaveBeenCalledTimes(1); client.close();
-  });
-  it("blocks ordinary directives over budget but allows a semantic loop break", async () => {
-    const a = await decider({ turn: "speaker_0", loop: "healthy", steering: "change_topic" });
-    expect((await a.client.decide({ ...a.sample, directiveBudgetOpen: false })).decision.respondingWaifus[0].directive).toBeUndefined(); a.client.close();
-    const b = await decider({ turn: "speaker_0", loop: "stalled_scene", steering: "none" });
-    const result = await b.client.decide({ ...b.sample, directiveBudgetOpen: false });
-    expect(result.loopDetected).toBe(true);
-    expect(result.decision.respondingWaifus[0].directive?.intent).toBe("break_loop");
-    expect(result.decision.respondingWaifus[0].directive!.goal.length).toBeLessThanOrEqual(100); b.client.close();
-  });
-  it("does not force a loop break for a lexical false alarm when semantic diagnosis is healthy", async () => {
-    const s = await decider({ turn: "speaker_0", loop: "healthy", steering: "none" });
-    const result = await s.client.decide({ ...s.sample, loopSuspected: true });
-    expect(result.loopDetected).toBe(false); expect(result.decision.respondingWaifus[0].directive).toBeUndefined(); s.client.close();
-  });
-  it("keeps timestamps, caps choices linearly and retains the directly addressed candidate", () => {
-    const s = input(); s.cast = Array.from({ length: 30 }, (_, i) => ({ ...s.cast[0], waifuId: `w${i}`, names: [`Waifu${i}`], authorIds: [`bot-${i}`] }));
-    s.messages[0].content = "Waifu29, how are you?";
-    const p = prepareOneShot(s);
-    expect(Object.keys(p.questions.turn.criteria)).toHaveLength(20);
-    expect(p.candidates[0].waifuId).toBe("w29");
-    expect(p.state).not.toContain("ageSeconds");
-    expect(prepareOneShot({ ...s, timeZone: "UTC" }).state).toContain('"time":"11:59"');
-    expect(prepareOneShot({ ...s, target: "laya:multilingual" }).candidates).toHaveLength(7);
-  });
-  it("does not call inference without credentials, after cancellation or with no available cast", async () => {
-    const r = await root(); await writeFile(`${r}/user/providers.json`, "{}");
-    const fetchImpl = vi.fn(); const client = new OneShotDecider(r, fetchImpl);
-    await expect(client.decide(input())).rejects.toThrow("credential_missing");
-    await expect(client.decide({ ...input(), signal: AbortSignal.abort() })).rejects.toThrow();
-    expect((await client.decide({ ...input(), cast: [] })).decision.action).toBe("no_reply");
-    await expect(client.decide({ ...input(), cast: [], replyRequired: true })).rejects.toThrow("no_available_speaker");
-    expect(fetchImpl).not.toHaveBeenCalled(); client.close();
-  });
-  // Acceptance M7: every decision call writes one usage-ledger line, failed ones included.
-  it("records one usage-ledger line per decision call, failures and aborts included", async () => {
-    const lines: UsageLedgerEntry[] = [];
-    const usage = { record: async (entry: UsageLedgerEntry) => void lines.push(entry), flush: async () => undefined };
-    const sample = input(); const prepared = prepareOneShot(sample);
-    const ok = vi.fn(async () => new Response(JSON.stringify({
-      ...payload(prepared.questions, { turn: "speaker_0", loop: "healthy", steering: "none" }),
-      usage: { input_tokens: 812, output_tokens: 6 }
-    })));
-    const r = await root();
-    const attribution = { guildId: "g1", channelId: "c1", conversationKey: "g_g1_c1" };
-    await new OneShotDecider(r, ok as typeof fetch, undefined, usage).decide({ ...sample, attribution });
-    expect(lines).toHaveLength(1);
-    expect(UsageLedgerEntrySchema.parse(lines[0])).toMatchObject({
-      purpose: "one_shot", agentId: "orchestrator", providerId: "openai", modelId: "gpt-6-luna", status: "ok",
-      usageKnown: true, inputTokens: 812, outputTokens: 6, ...attribution
-    });
-    const failing = vi.fn(async () => new Response("nope", { status: 503 }));
-    await expect(new OneShotDecider(r, failing as typeof fetch, undefined, usage).decide(input())).rejects.toThrow("one_shot_http_503");
-    expect(lines[1]).toMatchObject({ purpose: "one_shot", status: "failed", errorKind: "one_shot_http_503", usageKnown: false, inputTokens: 0 });
-    const invalid = vi.fn(async () => new Response(JSON.stringify({ answers: [] })));
-    await expect(new OneShotDecider(r, invalid as typeof fetch, undefined, usage).decide(input())).rejects.toThrow();
-    expect(lines[2]).toMatchObject({ status: "failed", errorKind: "one_shot_invalid_answer" });
-    const controller = new AbortController();
-    const aborting = vi.fn(async () => { controller.abort(); throw new Error("aborted"); });
-    await expect(new OneShotDecider(r, aborting as typeof fetch, undefined, usage).decide({ ...input(), signal: controller.signal })).rejects.toThrow("one_shot_aborted");
-    expect(lines[3]).toMatchObject({ status: "aborted", errorKind: "one_shot_aborted" });
-    // No credentials: no call was made, so nothing is recorded.
-    await writeFile(`${r}/user/providers.json`, "{}");
-    await expect(new OneShotDecider(r, ok as typeof fetch, undefined, usage).decide(input())).rejects.toThrow("credential_missing");
-    expect(lines).toHaveLength(4);
-  });
-  it("does not expose HTTP errors or retry a failed inference", async () => {
-    const fetchImpl = vi.fn(async () => new Response("private provider response", { status: 400 }));
-    const client = new OneShotDecider(await root(), fetchImpl);
-    await expect(client.decide(input())).rejects.toThrow(/^one_shot_http_400$/);
-    expect(fetchImpl).toHaveBeenCalledTimes(1); client.close();
-  });
+});
+
+describe("detector model catalog", () => {
   it("discovers choice candidates without exposing chat-only or known predicate-only models, caching concurrent reads", async () => {
     const model = (id: string, output: string[]) => ({ id, context_length: id.startsWith("respan/") ? 0 : 32768, architecture: { input_modalities: ["text"], output_modalities: output } });
     const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ data: [model("typesafe/jev-1.13", ["decisions"]), model("respan/span-01", ["decisions"]), model("chat/model", ["text"])] })));
     const catalog = new OneShotCatalog(fetchImpl);
     const [a, b] = await Promise.all([catalog.list(), catalog.list()]);
-    expect(a).toEqual(b); expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(a).toEqual(b);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(a.models.filter((m) => m.provider === "openrouter").map((m) => m.target)).toEqual(["openrouter:typesafe/jev-1.13"]);
   });
+
   it("preserves built-in entries and reports catalog failures explicitly", async () => {
-    const fetchImpl = vi.fn(async () => { throw new Error("private network detail"); });
+    const fetchImpl = vi.fn(async () => {
+      throw new Error("private network detail");
+    });
     const catalog = new OneShotCatalog(fetchImpl);
-    const result = await catalog.list(); expect(result.unavailable).toBe(true); expect(result.models).toHaveLength(4);
-    await catalog.list(); expect(fetchImpl).toHaveBeenCalledTimes(1);
-  });
-  it("bounds provider responses and never forwards parse errors or response contents", async () => {
-    await expect(readDecisionJson(new Response('"' + "x".repeat(100) + '"'), 50)).rejects.toThrow(/^one_shot_invalid_response$/);
-    await expect(readDecisionJson(new Response("private invalid content"))).rejects.toThrow(/^one_shot_invalid_response$/);
-  });
-  it("preserves available OCR text without exposing image URLs to the decider", () => {
-    const s = input(); s.messages[0].images = [{ url: "https://private-image.example/file", ocrText: "Museum opens at nine" }];
-    const p = prepareOneShot(s);
-    expect(p.state).toContain("Museum opens at nine"); expect(p.state).not.toContain("private-image.example");
+    const result = await catalog.list();
+    expect(result.unavailable).toBe(true);
+    expect(result.models).toHaveLength(4);
+    await catalog.list();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 });

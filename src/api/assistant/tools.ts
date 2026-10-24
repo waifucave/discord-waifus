@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import type { FastifyInstance } from "fastify";
-import type { ToolDef } from "@waifucave/gateway";
+import type { ModelTool } from "../../models/client.js";
 import {
   ApprovePairingInputV1Schema,
   AssistantSafePairingRequestSummaryV1Schema,
@@ -56,20 +56,6 @@ async function inject(
   return { status: response.statusCode, body: response.body };
 }
 
-// Trigger routes answer 200 with `accepted: false` when nothing ran (no live runtime / no target).
-function triggerResultText(result: { status: number; body: string }, success: string): string {
-  if (result.status !== 200) return result.body;
-  try {
-    const parsed = JSON.parse(result.body) as { accepted?: unknown; message?: unknown };
-    if (parsed.accepted === false) {
-      return typeof parsed.message === "string" ? parsed.message : "Nothing was triggered.";
-    }
-  } catch {
-    // Non-JSON 200 bodies fall through to the success text.
-  }
-  return success;
-}
-
 // Read-modify-write for revisioned resources: GET → merge → PUT with the fresh revision;
 // one retry when a concurrent writer bumps the revision between our read and write (409).
 async function revisionedPut(
@@ -91,27 +77,19 @@ async function revisionedPut(
   return "Conflict: the resource changed twice while I was writing. Try again.";
 }
 
-// The current record (per-record `revision` drives memory writes), or an error text for the model.
-async function readMemoryRecord(
-  ctx: AssistantToolContext,
-  memoryId: string
-): Promise<{ revision: number } | string> {
-  const store = await inject(ctx, { method: "GET", url: "/api/memories" });
-  if (store.status !== 200) return store.body;
-  const { memories } = JSON.parse(store.body) as { memories: Array<{ id: string; revision?: number }> };
-  const record = memories.find((memory) => memory.id === memoryId);
-  if (!record) return `Memory ${memoryId} was not found.`;
-  return { revision: record.revision ?? 0 };
-}
-
 const NO_ARGS = { type: "object", properties: {}, additionalProperties: false } as const;
 
-const AGENT_CONFIG_URLS: Record<string, string> = {
-  orchestrator: "/api/orchestrator/config",
-  "stage-manager": "/api/stage-manager/config",
-  reviewer: "/api/reviewer/config",
-  assistant: "/api/assistant/config"
-};
+const MODEL_CHOICE_PARAMETER = {
+  type: "object",
+  description: "A curated model from list_models.",
+  properties: {
+    providerId: { type: "string" },
+    modelId: { type: "string" },
+    effort: { type: "string", description: "One of the model's efforts." }
+  },
+  required: ["providerId", "modelId"],
+  additionalProperties: false
+} as const;
 
 function actionController(ctx: AssistantToolContext): AssistantActionController {
   if (!ctx.actions) throw new Error("Secure assistant actions require a bound browser session.");
@@ -241,25 +219,29 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
   {
     name: "list_models",
     description:
-      "Models in the gateway registry (compact: id, provider, displayName). Filter by providerId to stay small — " +
-      "the unfiltered list is long and may truncate.",
+      "The curated model list (Living cast): every model a waifu or the assistant may use, with its route " +
+      "{providerId, modelId}, the reasoning efforts it accepts, whether it is a contributor (training) variant, " +
+      "and whether its provider has an API key. Optional providerId filter.",
     parameters: {
       type: "object",
-      properties: { providerId: { type: "string", description: "e.g. deepseek, google-ai-studio, anthropic, openai" } },
+      properties: { providerId: { type: "string", description: "e.g. anthropic, openai, deepseek, meta, openrouter" } },
       additionalProperties: false
     },
     execute: async (ctx, args) => {
-      const result = await inject(ctx, { method: "GET", url: "/api/llm/v1/models" });
-      if (result.status !== 200) return `Model registry unavailable (${result.status}).`;
-      const parsed = JSON.parse(result.body) as { data?: Array<Record<string, unknown>> } | Array<Record<string, unknown>>;
-      const models = Array.isArray(parsed) ? parsed : (parsed.data ?? []);
-      const compact = models
+      const result = await inject(ctx, { method: "GET", url: "/api/models" });
+      if (result.status !== 200) return `Model list unavailable (${result.status}).`;
+      const parsed = JSON.parse(result.body) as { models?: Array<Record<string, unknown>> };
+      const compact = (parsed.models ?? [])
+        .filter((model) => (args.providerId ? model.providerId === args.providerId : true))
         .map((model) => ({
-          id: model.id ?? model.modelId,
-          provider: model.provider ?? model.providerId,
-          displayName: model.displayName ?? model.name
-        }))
-        .filter((model) => (args.providerId ? model.provider === args.providerId : true));
+          providerId: model.providerId,
+          modelId: model.modelId,
+          displayName: model.displayName,
+          efforts: model.efforts,
+          ...(model.defaultEffort ? { defaultEffort: model.defaultEffort } : {}),
+          contributor: model.contributor,
+          credentialsConfigured: model.credentialsConfigured
+        }));
       return JSON.stringify(compact);
     }
   },
@@ -277,8 +259,7 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
           name: waifu.name,
           displayName: waifu.displayName,
           enabled: waifu.enabled,
-          providerId: waifu.providerId,
-          modelId: waifu.modelId,
+          model: waifu.model,
           botId: waifu.botId
         }))
       );
@@ -286,7 +267,7 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
   },
   {
     name: "get_waifu",
-    description: "Full config of one waifu (persona, params, availability, tools, prompt layout).",
+    description: "Full config of one waifu (persona, model, availability, DM and style settings).",
     parameters: {
       type: "object",
       properties: { id: { type: "string" } },
@@ -300,7 +281,9 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
   },
   {
     name: "create_waifu",
-    description: "Create a waifu. Required: id (kebab-case), name, persona. Optional: providerId, modelId, displayName, params.",
+    description:
+      "Create a waifu. Required: id (kebab-case), name, persona. Optional: displayName and model " +
+      "{providerId, modelId, effort?} from list_models.",
     parameters: {
       type: "object",
       properties: {
@@ -308,9 +291,7 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
         name: { type: "string" },
         persona: { type: "string" },
         displayName: { type: "string" },
-        providerId: { type: "string" },
-        modelId: { type: "string" },
-        params: { type: "object" }
+        model: MODEL_CHOICE_PARAMETER
       },
       required: ["id", "name", "persona"],
       additionalProperties: false
@@ -325,7 +306,7 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
     name: "update_waifu",
     description:
       "Update fields on an existing waifu. Pass only the fields to change under `changes`. " +
-      "Style fields: `verbosity` (terse | chatty | expressive, how long her messages are), " +
+      "`model` is {providerId, modelId, effort?} from list_models (null unsets it). Style fields: `verbosity` (terse | chatty | expressive, how long her messages are), " +
       "`customInstructions` (extra prompt text, max 4000 chars) and `scheduleInPrompt` (boolean, whether her " +
       "schedule is mentioned in the prompt). The prompt layout editor no longer exists; there is nothing to send for it.",
     parameters: {
@@ -335,15 +316,9 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
       additionalProperties: false
     },
     execute: async (ctx, args) =>
-      revisionedPut(ctx, `/api/waifus/${encodeURIComponent(String(args.id))}`, (current) => {
-        const changes = { ...(args.changes as Record<string, unknown>) };
-        // The PUT route already merges params server-side (an explicit null unsets a key), so
-        // this pre-merge is redundant belt-and-braces: "set the temperature" keeps the rest.
-        if (changes.params && typeof changes.params === "object") {
-          changes.params = { ...(current.params as Record<string, unknown>), ...(changes.params as Record<string, unknown>) };
-        }
-        return changes;
-      })
+      revisionedPut(ctx, `/api/waifus/${encodeURIComponent(String(args.id))}`, () => ({
+        ...(args.changes as Record<string, unknown>)
+      }))
   },
   {
     name: "delete_waifu",
@@ -365,20 +340,6 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
         if (result.status !== 409) return result.body;
       }
       return "Conflict: the waifu changed twice while I was deleting. Try again.";
-    }
-  },
-  {
-    name: "regenerate_waifu_digest",
-    description: "Regenerate the persona digest (voice/drives summary) for a waifu.",
-    parameters: {
-      type: "object",
-      properties: { id: { type: "string" } },
-      required: ["id"],
-      additionalProperties: false
-    },
-    execute: async (ctx, args) => {
-      const result = await inject(ctx, { method: "POST", url: `/api/waifus/${encodeURIComponent(String(args.id))}/digest` });
-      return result.body;
     }
   },
   {
@@ -420,7 +381,7 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
   },
   {
     name: "list_discord_bots",
-    description: "Discord bot entries (orchestrator + waifu bots). Tokens are redacted.",
+    description: "Discord bot entries (the optional orchestrator bot + waifu bots). Tokens are redacted.",
     parameters: NO_ARGS,
     execute: async (ctx) => {
       const result = await inject(ctx, { method: "GET", url: "/api/discord-bots" });
@@ -481,177 +442,32 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
       })
   },
   {
-    name: "get_agent_config",
-    description: "Read an agent config: orchestrator, stage-manager, reviewer, or assistant.",
-    parameters: {
-      type: "object",
-      properties: { agent: { type: "string", enum: Object.keys(AGENT_CONFIG_URLS) } },
-      required: ["agent"],
-      additionalProperties: false
-    },
-    execute: async (ctx, args) => {
-      const url = AGENT_CONFIG_URLS[String(args.agent)];
-      if (!url) return `Unknown agent: ${args.agent}`;
-      const result = await inject(ctx, { method: "GET", url });
-      return result.body;
-    }
-  },
-  {
-    name: "update_agent_config",
-    description: "Update an agent config (model, params, prompt, enabled, contextWindow). Pass only changed fields under `changes`.",
-    parameters: {
-      type: "object",
-      properties: {
-        agent: { type: "string", enum: Object.keys(AGENT_CONFIG_URLS) },
-        changes: { type: "object" }
-      },
-      required: ["agent", "changes"],
-      additionalProperties: false
-    },
-    execute: async (ctx, args) => {
-      const url = AGENT_CONFIG_URLS[String(args.agent)];
-      if (!url) return `Unknown agent: ${args.agent}`;
-      return revisionedPut(ctx, url, (current) => {
-        const changes = { ...(args.changes as Record<string, unknown>) };
-        // Redundant with the server-side params merge (null unsets a key); kept as belt-and-braces.
-        if (changes.params && typeof changes.params === "object") {
-          changes.params = { ...(current.params as Record<string, unknown>), ...(changes.params as Record<string, unknown>) };
-        }
-        return changes;
-      });
-    }
-  },
-  {
-    name: "search_memories",
+    name: "get_assistant_config",
     description:
-      "Search memory records by text. Memories are global per waifu (every server and DM); guildId and " +
-      "origin filter by provenance (where it was learned), subjectUserId by who it is about. Returns up to 30 matches.",
-    parameters: {
-      type: "object",
-      properties: {
-        q: { type: "string" },
-        waifuId: { type: "string" },
-        guildId: { type: "string", description: "Only memories learned in this server." },
-        origin: { type: "string", enum: ["dm"], description: "dm = only memories learned in private chats." },
-        subjectUserId: { type: "string", description: "Only memories about this Discord user id." }
-      },
-      additionalProperties: false
-    },
-    execute: async (ctx, args) => {
-      const query = new URLSearchParams();
-      for (const key of ["waifuId", "guildId", "origin", "subjectUserId"] as const) {
-        if (typeof args[key] === "string" && args[key]) query.set(key, String(args[key]));
-      }
-      const result = await inject(ctx, { method: "GET", url: `/api/memories${query.size ? `?${query}` : ""}` });
-      if (result.status !== 200) return result.body;
-      const store = JSON.parse(result.body) as { memories: Array<Record<string, unknown>> };
-      const q = args.q ? String(args.q).toLowerCase() : undefined;
-      const matches = store.memories
-        .filter((memory) => memory.status !== "archived")
-        .filter((memory) => (q ? String(memory.content).toLowerCase().includes(q) : true))
-        .slice(0, 30)
-        .map((memory) => ({
-          id: memory.id,
-          waifuId: memory.waifuId,
-          origin: memory.origin,
-          subjects: memory.subjects,
-          kind: memory.kind,
-          pinned: memory.pinned,
-          recordRevision: memory.revision,
-          content: memory.content
-        }));
-      return JSON.stringify(matches);
-    }
+      "Read the assistant's own model setting. When it is unset the assistant uses the first configured waifu's model.",
+    parameters: NO_ARGS,
+    execute: async (ctx) => (await inject(ctx, { method: "GET", url: "/api/assistant/config" })).body
   },
   {
-    name: "add_memory",
+    name: "set_assistant_model",
     description:
-      "Add a memory record for a waifu. Memories are global (she remembers it in every server); guildId is " +
-      "optional provenance. User-created memories are pinned by default. A near-duplicate is still added and " +
-      "reported as duplicateOf.",
+      "Set the assistant's own model: {providerId, modelId, effort?} from list_models, or null to fall back to " +
+      "the first configured waifu's model.",
     parameters: {
       type: "object",
-      properties: {
-        waifuId: { type: "string" },
-        content: { type: "string" },
-        guildId: { type: "string", description: "Optional: the server it was learned in." },
-        subjects: {
-          type: "array",
-          description: "Optional: who the memory is about.",
-          items: {
-            type: "object",
-            properties: { discordUserId: { type: "string" }, waifuId: { type: "string" }, name: { type: "string" } },
-            required: ["name"],
-            additionalProperties: false
-          }
-        },
-        pinned: { type: "boolean" },
-        kind: { type: "string" }
-      },
-      required: ["waifuId", "content"],
+      properties: { model: MODEL_CHOICE_PARAMETER },
+      required: ["model"],
       additionalProperties: false
     },
-    execute: async (ctx, args) => {
-      const result = await inject(ctx, { method: "POST", url: "/api/memories", payload: args });
-      return result.body;
-    }
-  },
-  {
-    name: "update_memory",
-    description: "Update a memory record's content, kind, pinned flag, subjects, or archive/restore it (status).",
-    parameters: {
-      type: "object",
-      properties: { memoryId: { type: "string" }, changes: { type: "object" } },
-      required: ["memoryId", "changes"],
-      additionalProperties: false
-    },
-    execute: async (ctx, args) => {
-      const memoryId = String(args.memoryId);
-      for (let attempt = 0; attempt < 2; attempt++) {
-        const record = await readMemoryRecord(ctx, memoryId);
-        if (typeof record === "string") return record;
-        const { revision: _revision, recordRevision: _recordRevision, ...changes } = (args.changes ?? {}) as Record<string, unknown>;
-        const result = await inject(ctx, {
-          method: "PUT",
-          url: `/api/memories/${encodeURIComponent(memoryId)}`,
-          payload: { ...changes, recordRevision: record.revision }
-        });
-        if (result.status !== 409) return result.body;
-      }
-      return "Conflict: the memory changed twice while I was writing. Try again.";
-    }
-  },
-  {
-    name: "delete_memory",
-    description: "Delete a memory record permanently.",
-    parameters: {
-      type: "object",
-      properties: { memoryId: { type: "string" } },
-      required: ["memoryId"],
-      additionalProperties: false
-    },
-    execute: async (ctx, args) => {
-      const memoryId = String(args.memoryId);
-      for (let attempt = 0; attempt < 2; attempt++) {
-        const record = await readMemoryRecord(ctx, memoryId);
-        if (typeof record === "string") return record;
-        const result = await inject(ctx, {
-          method: "DELETE",
-          url: `/api/memories/${encodeURIComponent(memoryId)}`,
-          payload: { recordRevision: record.revision }
-        });
-        if (result.status < 300) return `Memory ${memoryId} deleted.`;
-        if (result.status !== 409) return result.body;
-      }
-      return "Conflict: the memory changed twice while I was deleting. Try again.";
-    }
+    execute: async (ctx, args) =>
+      revisionedPut(ctx, "/api/assistant/config", () => ({ model: args.model ?? null }))
   },
   {
     name: "forget_user",
     description:
-      "Propose forgetting a Discord user everywhere: deletes every memory about them, their queued observations, " +
-      "and replaces their messages with (removed) in stored conversation transcripts. Destructive: it runs only " +
-      "if the user accepts the separate secure dashboard confirmation card.",
+      "Propose forgetting a Discord user: deletes every waifu's DM conversations, DM state and rate-limit " +
+      "counters with them and their cached DM images. Destructive: it runs only if the user accepts the " +
+      "separate secure dashboard confirmation card.",
     parameters: {
       type: "object",
       properties: { discordUserId: { type: "string", description: "The Discord user id (snowflake)." } },
@@ -660,26 +476,22 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
     },
     execute: async (ctx, args) => {
       const discordUserId = String(args.discordUserId);
+      const target = `/api/people/${encodeURIComponent(discordUserId)}/forget`;
       // Dry run first so the card states exactly what will be deleted.
-      const preview = await inject(ctx, {
-        method: "POST",
-        url: "/api/memories/forget-user",
-        payload: { discordUserId, confirm: true, dryRun: true }
-      });
+      const preview = await inject(ctx, { method: "POST", url: target, payload: { confirm: true, dryRun: true } });
       if (preview.status !== 200) return preview.body;
-      const counts = JSON.parse(preview.body) as { memories: number; observations: number; ledgerEntries: number };
+      const counts = JSON.parse(preview.body) as { dmContexts: number; dmStates: number; cachedImages: number };
       const action = await actionController(ctx).propose({
-        category: "memory_forget_user",
+        category: "people_forget",
         summary:
-          `Forget Discord user ${discordUserId}: delete ${counts.memories} memor${counts.memories === 1 ? "y" : "ies"} ` +
-          `and ${counts.observations} queued observation${counts.observations === 1 ? "" : "s"}, and remove ` +
-          `${counts.ledgerEntries} stored message${counts.ledgerEntries === 1 ? "" : "s"}.`,
+          `Forget Discord user ${discordUserId}: delete ${counts.dmContexts} DM conversation${counts.dmContexts === 1 ? "" : "s"}, ` +
+          `${counts.dmStates} DM state${counts.dmStates === 1 ? "" : "s"} and ${counts.cachedImages} cached image${counts.cachedImages === 1 ? "" : "s"}.`,
         resource: { type: "discord_user", identifier: discordUserId },
         operation: {
           kind: "exact_http",
           method: "POST",
-          canonicalTarget: "/api/memories/forget-user",
-          payload: { discordUserId, confirm: true }
+          canonicalTarget: target,
+          payload: { confirm: true }
         }
       });
       return JSON.stringify({ ...JSON.parse(confirmationResult(action)), preview: counts });
@@ -689,8 +501,8 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
     name: "list_dms",
     description:
       "Read-only: private DM conversations between waifus and Discord users (newest first): last inbound/reply times, " +
-      "the per-user rate limit (used/max, freesAt), the latest run outcome (sent, rate_limited, undeliverable, ...) and the " +
-      "context epoch. Never returns message text. THE tool for 'why didn't she answer my DM'. Optional waifuId/userId filters.",
+      "the per-user rate limit (used/max, freesAt) and the latest run outcome (sent, rate_limited, undeliverable, ...). " +
+      "Never returns message text. Optional waifuId/userId filters.",
     parameters: {
       type: "object",
       properties: {
@@ -713,8 +525,8 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
     name: "forget_dm",
     description:
       "Propose forgetting one waifu's DMs with one Discord user. scope 'conversation' deletes the DM transcript and run " +
-      "records; 'all' also deletes the DM state, her memories about that user and cached images. Never resets the rate " +
-      "limit. Destructive: it runs only if the user accepts the separate secure dashboard confirmation card.",
+      "records; 'all' also deletes the DM state and cached images. Never resets the rate limit. Destructive: it runs " +
+      "only if the user accepts the separate secure dashboard confirmation card.",
     parameters: {
       type: "object",
       properties: {
@@ -733,12 +545,11 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
       const preview = await inject(ctx, { method: "POST", url: target, payload: { confirm: true, scope, dryRun: true } });
       if (preview.status !== 200) return preview.body;
       const counts = (JSON.parse(preview.body) as { deleted: Record<string, number> }).deleted;
-      const memories = counts.memories ?? 0;
       const action = await actionController(ctx).propose({
         category: "dm_forget",
         summary:
           `Forget ${waifuId}'s DMs with Discord user ${userId} (${scope}): delete ${counts.dmContexts ?? 0} conversation(s)` +
-          (scope === "all" ? `, ${memories} memor${memories === 1 ? "y" : "ies"} and ${counts.cachedImages ?? 0} cached image(s)` : "") +
+          (scope === "all" ? ` and ${counts.cachedImages ?? 0} cached image(s)` : "") +
           ". The rate limit is kept.",
         resource: { type: "dm_conversation", identifier: `${waifuId}:${userId}` },
         operation: { kind: "exact_http", method: "POST", canonicalTarget: target, payload: { confirm: true, scope } }
@@ -747,76 +558,9 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
     }
   },
   {
-    name: "trigger_orchestrator",
-    description: "Run an orchestrator decision pass on a channel right now.",
-    parameters: {
-      type: "object",
-      properties: { guildId: { type: "string" }, channelId: { type: "string" } },
-      required: ["guildId", "channelId"],
-      additionalProperties: false
-    },
-    execute: async (ctx, args) => {
-      const result = await inject(ctx, { method: "POST", url: "/api/runtime/trigger/orchestrator", payload: args });
-      return triggerResultText(result, "Orchestrator pass triggered.");
-    }
-  },
-  {
-    name: "trigger_stage_manager",
-    description: "Run a stage-manager observer pass on a channel right now.",
-    parameters: {
-      type: "object",
-      properties: { guildId: { type: "string" }, channelId: { type: "string" } },
-      required: ["guildId", "channelId"],
-      additionalProperties: false
-    },
-    execute: async (ctx, args) => {
-      const result = await inject(ctx, { method: "POST", url: "/api/runtime/trigger/stage-manager", payload: args });
-      return triggerResultText(result, "Stage-manager pass triggered.");
-    }
-  },
-  {
-    name: "get_orchestrator_history",
-    description:
-      "Recent orchestrator decisions (newest first): action, responders, reasoning, retrigger, wake plan, outcomes. " +
-      "THE tool for 'why did/didn't a waifu reply'. Optionally filter by guildId/channelId.",
-    parameters: {
-      type: "object",
-      properties: {
-        guildId: { type: "string" },
-        channelId: { type: "string" },
-        limit: { type: "number", description: "Max decisions to return (default 10, max 25)." }
-      },
-      additionalProperties: false
-    },
-    execute: async (ctx, args) => {
-      const guildQuery = args.guildId ? `?guildId=${encodeURIComponent(String(args.guildId))}` : "";
-      const result = await inject(ctx, { method: "GET", url: `/api/orchestrator/history${guildQuery}` });
-      if (result.status !== 200) return result.body;
-      const history = JSON.parse(result.body) as { decisions: Array<Record<string, unknown>> };
-      const limit = Math.min(Number(args.limit) || 10, 25);
-      const decisions = history.decisions
-        .filter((decision) => (args.guildId ? decision.guildId === args.guildId : true))
-        .filter((decision) => (args.channelId ? decision.channelId === args.channelId : true))
-        .slice(0, limit)
-        .map((decision) => ({
-          at: decision.createdAt,
-          channelId: decision.channelId,
-          action: decision.action,
-          responders: ((decision.respondingWaifus as Array<{ waifuId: string }>) ?? []).map((responder) => responder.waifuId),
-          retriggerAfterSeconds: decision.retriggerAfterSeconds,
-          wakePlan: decision.wakePlan,
-          status: decision.status,
-          reasoning: String(decision.reasoning ?? "").slice(0, 220)
-        }));
-      return JSON.stringify(decisions);
-    }
-  },
-  {
     name: "update_server",
     description:
-      "Update server-level settings for a guild: paused (the kill switch), contextWindows {orchestrator,waifu,stageManager}, " +
-      "memoryInjectionLimit, tools {pickNextWaifu, shortTermMemory}, orchestratorMode (model, deterministic, one-shot), " +
-      "oneShot {target} from list_one_shot_models. One shot does not change the global LLM config. For per-channel toggles use update_channel.",
+      "Update server-level settings for a guild: paused (the kill switch). For per-channel toggles use update_channel.",
     parameters: {
       type: "object",
       properties: {
@@ -832,11 +576,11 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
       }))
   },
   {
-    name: "list_one_shot_models",
-    description: "List native-choice One shot orchestrator models and credential/setup status. Includes OpenAI, OpenRouter decision models and experimental local Laya. Yes/no-only models are excluded. Does not change configuration or run inference.",
+    name: "list_detector_models",
+    description: "List the addressee detector's native-choice decision models and credential/setup status (OpenAI, OpenRouter and experimental local Laya). Does not change configuration or run inference.",
     parameters: NO_ARGS,
     execute: async (ctx) => {
-      const result = await inject(ctx, { method: "GET", url: "/api/orchestrator/one-shot/models" });
+      const result = await inject(ctx, { method: "GET", url: "/api/detector/models" });
       return result.body;
     }
   },
@@ -1103,7 +847,7 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
   },
   {
     name: "runtime_pause",
-    description: "Pause all orchestration (bots stop replying).",
+    description: "Pause the cast (bots stop replying).",
     parameters: NO_ARGS,
     execute: async (ctx) => {
       const result = await inject(ctx, { method: "POST", url: "/api/runtime/pause" });
@@ -1112,7 +856,7 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
   },
   {
     name: "runtime_resume",
-    description: "Resume orchestration after a pause.",
+    description: "Resume the cast after a pause.",
     parameters: NO_ARGS,
     execute: async (ctx) => {
       const result = await inject(ctx, { method: "POST", url: "/api/runtime/resume" });
@@ -1121,7 +865,7 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
   },
   {
     name: "runtime_reload",
-    description: "Reload configs into the running orchestrator (after config changes).",
+    description: "Reload configs into the running runtime (after config changes).",
     parameters: NO_ARGS,
     execute: async (ctx) => {
       const result = await inject(ctx, { method: "POST", url: "/api/runtime/reload", payload: { reason: "assistant" } });
@@ -1178,8 +922,8 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
 
 const TOOLS_BY_NAME = new Map(ASSISTANT_TOOLS.map((tool) => [tool.name, tool]));
 
-export function toolDefs(_context?: Pick<AssistantToolContext, "actor" | "principal">): ToolDef[] {
-  return ASSISTANT_TOOLS.map(({ name, description, parameters }) => ({ name, description, parameters }));
+export function toolDefs(_context?: Pick<AssistantToolContext, "actor" | "principal">): ModelTool[] {
+  return ASSISTANT_TOOLS.map(({ name, description, parameters }) => ({ name, description, inputSchema: parameters }));
 }
 
 /** Execute a tool by name. Never throws — failures come back as strings the model can react to. */

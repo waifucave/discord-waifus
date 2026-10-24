@@ -5,10 +5,26 @@ import { CompactionOverrideSchema } from "./compaction.js";
 import { WaifuDmSettingsSchema, defaultWaifuDmSettings } from "./dm.js";
 import { ChannelThreadsModeSchema } from "./threads.js";
 
-// Gateway P4 Task 4: widened from the legacy 6-value enum to any id the gateway registry
-// knows (14+ providers). Unknown ids still get rejected at API write time — see
-// src/api/writeValidation.ts's assertKnownProvider, which checks the live registry.
+// A winter catalog provider id (`anthropic`, `openrouter`, …). Unknown ids are rejected at API
+// write time — see src/api/writeValidation.ts's assertKnownProvider, which checks the installed
+// winter catalog.
 export const ProviderIdSchema = z.string().min(1);
+
+/**
+ * A model choice (Living cast spec §9.2): a curated winter route plus an optional reasoning effort
+ * from the route's own list. The route is validated against the curated catalog at write time;
+ * stored efforts are re-validated at every boot (src/backend/migrationSteps/modelEffortCheck.ts).
+ */
+export const ModelChoiceSchema = z.object({
+  providerId: ProviderIdSchema,
+  modelId: z.string().min(1),
+  effort: z.string().min(1).optional()
+});
+export type ModelChoice = z.infer<typeof ModelChoiceSchema>;
+
+// Explicit `null` on write means "unset" (the PUT handlers delete the key from the merged object);
+// plain `.optional()` alone cannot tell "send null to unset" from "field omitted, leave untouched".
+const OptionalModelChoiceSchema = z.union([ModelChoiceSchema, z.null()]).optional().transform((value) => value ?? undefined);
 export type ProviderId = z.infer<typeof ProviderIdSchema>;
 
 const TimeOfDaySchema = z
@@ -106,15 +122,6 @@ export const WaifuAvailabilitySchema = z
   });
 export type WaifuAvailability = z.infer<typeof WaifuAvailabilitySchema>;
 
-export const WaifuToolSettingsSchema = z
-  .object({
-    toolUse: z.boolean().default(true)
-  })
-  .default({
-    toolUse: true
-  });
-export type WaifuToolSettings = z.infer<typeof WaifuToolSettingsSchema>;
-
 export const ServerToolSettingsSchema = z
   .object({
     pickNextWaifu: z.boolean().default(false),
@@ -156,28 +163,14 @@ export const DiscordBotsFileSchema = RevisionedRecordSchema.extend({
 });
 export type DiscordBotsFile = z.infer<typeof DiscordBotsFileSchema>;
 
-export const OrchestratorPromptSectionsSchema = z
-  .object({
-    pausePlanning: z.boolean().default(true),
-    messageStructure: z.boolean().default(true)
-  })
-  .default({
-    pausePlanning: true,
-    messageStructure: true
-  });
-export type OrchestratorPromptSections = z.infer<typeof OrchestratorPromptSectionsSchema>;
-
-export const AgentConfigSchema = RevisionedRecordSchema.extend({
-  enabled: z.boolean().default(false),
-  providerId: z.union([ProviderIdSchema, z.null()]).optional().transform((value) => value ?? undefined),
-  modelId: z.union([z.string(), z.null()]).optional().transform((value) => value ?? undefined),
-  contextWindow: z.number().int().min(1).max(200).default(20),
-  prompt: z.string().default(""),
-  directiveCooldown: z.number().int().min(0).max(20).default(3),
-  params: z.record(z.string(), z.unknown()).default({}),
-  promptSections: OrchestratorPromptSectionsSchema
+/**
+ * `user/assistant/config.json`: the dashboard assistant's own model (Living cast spec §9.3). When
+ * unset, the assistant uses the first configured waifu's model.
+ */
+export const AssistantConfigSchema = RevisionedRecordSchema.extend({
+  model: OptionalModelChoiceSchema
 });
-export type AgentConfig = z.infer<typeof AgentConfigSchema>;
+export type AssistantConfig = z.infer<typeof AssistantConfigSchema>;
 
 export const WAIFU_VERBOSITIES = ["terse", "chatty", "expressive"] as const;
 export type WaifuVerbosity = (typeof WAIFU_VERBOSITIES)[number];
@@ -188,33 +181,20 @@ export const WaifuConfigSchema = RevisionedRecordSchema.extend({
   displayName: z.string().min(1),
   enabled: z.boolean().default(true),
   persona: z.string().default(""),
-  // Gateway P6 Task 4: explicit `null` on write means "unset" (mirrors AgentConfigSchema below) —
-  // the PUT transforms in server.ts delete the key from the merged object rather than storing
-  // undefined/null. Plain `.optional()` alone can't distinguish "send null to unset" from
-  // "field omitted, leave untouched" since a bare string schema rejects null outright.
-  providerId: z.union([ProviderIdSchema, z.null()]).optional().transform((value) => value ?? undefined),
-  modelId: z.union([z.string(), z.null()]).optional().transform((value) => value ?? undefined),
+  // Living cast §9.2: nested model choice (living-cast-models-v1 converted the flat gateway
+  // providerId/modelId/params). Explicit `null` on write unsets it.
+  model: OptionalModelChoiceSchema,
   botId: z
     .union([z.string(), z.null()])
     .optional()
     .transform((value) => value ?? undefined),
-  contextWindow: z.number().int().min(1).max(200).default(50),
-  params: z.record(z.string(), z.unknown()).default({}),
   availability: WaifuAvailabilitySchema,
-  tools: WaifuToolSettingsSchema,
-  // Phase 4 prompt settings (spec 8.2), read by the waifu harness (waifuHarness.ts).
+  // Phase 4 prompt settings (spec 8.2); Living cast's life harness (L2) reads them.
   verbosity: z.enum(WAIFU_VERBOSITIES).default("terse"),
   customInstructions: z.string().max(4000).default(""),
   scheduleInPrompt: z.boolean().default(true),
-  // Phase 5 DM settings (spec 9.1): read by the DM runner (src/orchestration/dm/).
-  dm: WaifuDmSettingsSchema.default(() => defaultWaifuDmSettings()),
-  personaDigest: z
-    .object({
-      voice: z.string(),
-      role: z.string(),
-      personaHash: z.string()
-    })
-    .optional()
+  // Phase 5 DM settings (spec 9.1).
+  dm: WaifuDmSettingsSchema.default(() => defaultWaifuDmSettings())
 });
 export type WaifuConfig = z.infer<typeof WaifuConfigSchema>;
 

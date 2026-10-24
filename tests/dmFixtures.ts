@@ -1,17 +1,13 @@
-// Shared fixtures for the DM tests (spec 9.1): a fake DM transport, a scripted model pipeline and
-// a data root with one DM-capable waifu ("aria" on bot "aria-bot").
+// Shared fixtures for the DM tests (spec 9.1): a fake DM transport and a data root with one
+// DM-capable waifu ("aria" on bot "aria-bot").
 
 import type { DiscordDirectMessageEvent, DiscordGatewayFacade } from "../src/discord/client.js";
-import type { ContextMessage } from "../src/orchestration/contextMessages.js";
 import { dmFloorAt } from "../src/orchestration/dm/dmStore.js";
-import type { OrchestratorDecision } from "../src/orchestration/decisions.js";
 import { RuntimeOrchestrator } from "../src/orchestration/runtime.js";
-import type { ModelPipeline, WaifuGenerationRequest, WaifuGenerationResult } from "../src/providers/types.js";
 import { createRevisionedBase } from "../src/shared/schemas/common.js";
 import type { RawDiscordMessage } from "../src/shared/schemas/discordMessage.js";
 import type { WaifuDmSettings } from "../src/shared/schemas/dm.js";
 import {
-  AgentConfigSchema,
   DiscordBotsFileSchema,
   ProviderCredentialsFileSchema,
   WaifuConfigSchema,
@@ -95,7 +91,7 @@ export class DmDiscord implements DiscordGatewayFacade {
     return { connected: true, orchestratorConnected: true, waifuBotCount: 1, warnings: [] };
   }
   async disconnect() {}
-  async fetchFreshContext(): Promise<ContextMessage[]> {
+  async fetchFreshContext(): Promise<never[]> {
     return [];
   }
   async sendWaifuMessage(): Promise<{ messageId: string }> {
@@ -125,64 +121,28 @@ export class DmDiscord implements DiscordGatewayFacade {
   }
 }
 
-export class ScriptedPipeline implements ModelPipeline {
-  readonly requests: WaifuGenerationRequest[] = [];
-  replies: WaifuGenerationResult[] = [];
-  decisions: OrchestratorDecision[] = [];
-  /** Awaited inside generateWaifu (before replying) when set: hold a run in "generating". */
-  gate: (() => Promise<void>) | undefined;
-  decideCalls = 0;
-
-  async decideOrchestrator(): Promise<OrchestratorDecision> {
-    this.decideCalls += 1;
-    return this.decisions.shift() ?? { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 600, reasoning: "quiet" } as OrchestratorDecision;
-  }
-
-  async generateWaifu(request: WaifuGenerationRequest): Promise<WaifuGenerationResult> {
-    this.requests.push(request);
-    if (this.gate) {
-      const gate = this.gate();
-      await new Promise<void>((resolve, reject) => {
-        const onAbort = () => reject(request.signal?.reason instanceof Error ? request.signal.reason : new Error("aborted"));
-        if (request.signal?.aborted) return onAbort();
-        request.signal?.addEventListener("abort", onAbort, { once: true });
-        gate.then(() => {
-          request.signal?.removeEventListener("abort", onAbort);
-          resolve();
-        }, reject);
-      });
-    }
-    // Distinct default replies: the validator rejects a waifu repeating herself.
-    const words = ["sure thing", "oh nice", "haha really", "tell me more", "wow okay", "no way", "same here", "cool cool", "hmm maybe", "love that"];
-    return this.replies.shift() ?? { content: `${words[this.requests.length % words.length]} ${this.requests.length}` };
-  }
-}
-
 export async function seedDmWorld(
   storage: StorageService,
-  o: { dm?: Partial<WaifuDmSettings>; sharedBot?: boolean; toolUse?: boolean; modelId?: string | null } = {}
+  o: { dm?: Partial<WaifuDmSettings>; sharedBot?: boolean; modelId?: string | null } = {}
 ): Promise<void> {
   const now = new Date().toISOString();
   await storage.writeJson("providers", "user/providers.json", ProviderCredentialsFileSchema, ProviderCredentialsFileSchema.parse(
     createEmptyRevisionedFile({ providers: { openai: { providerId: "openai", apiKey: "sk-test", createdAt: now, updatedAt: now } } })
   ));
-  await storage.writeJson("orchestrator", "user/orchestrator/config.json", AgentConfigSchema, AgentConfigSchema.parse({
-    ...createRevisionedBase(), enabled: true, providerId: "openai", modelId: "gpt-5.4-mini", contextWindow: 20, prompt: "decide"
-  }));
   await storage.writeJson("discord-bots", "user/discord-bots.json", DiscordBotsFileSchema, DiscordBotsFileSchema.parse(
     createEmptyRevisionedFile({
       orchestrator: { id: "orchestrator", displayName: "Director", enabled: true, token: "t" },
       waifus: [{ id: "aria-bot", displayName: "Aria", enabled: true, token: "t", applicationId: BOT_USER }]
     })
   ));
-  await writeWaifu(storage, "aria", { dm: { allowDms: true, ...o.dm }, toolUse: o.toolUse, modelId: o.modelId });
+  await writeWaifu(storage, "aria", { dm: { allowDms: true, ...o.dm }, modelId: o.modelId });
   if (o.sharedBot) await writeWaifu(storage, "mina", { dm: { allowDms: false } });
 }
 
 export async function writeWaifu(
   storage: StorageService,
   id: string,
-  o: { dm?: Partial<WaifuDmSettings>; toolUse?: boolean; modelId?: string | null } = {}
+  o: { dm?: Partial<WaifuDmSettings>; modelId?: string | null } = {}
 ): Promise<void> {
   await storage.writeJson(`waifu:${id}`, `user/waifus/${id}/waifu.json`, WaifuConfigSchema, WaifuConfigSchema.parse({
     ...createRevisionedBase(),
@@ -190,12 +150,9 @@ export async function writeWaifu(
     name: id === "aria" ? "Aria" : "Mina",
     displayName: id === "aria" ? "Aria" : "Mina",
     enabled: true,
-    providerId: "openai",
-    ...(o.modelId === null ? {} : { modelId: o.modelId ?? "gpt-5.4-mini" }),
+    ...(o.modelId === null ? {} : { model: { providerId: "openai", modelId: o.modelId ?? "gpt-6-luna" } }),
     botId: "aria-bot",
     persona: "sunny baker",
-    contextWindow: 50,
-    tools: { toolUse: o.toolUse ?? false },
     availability: { sleep: { enabled: false, start: "23:00", end: "07:00" }, busy: [] },
     dm: { allowDms: false, rateLimit: { maxReplies: 30, windowMinutes: 60 }, notifyWhenLimited: true, limitNotice: "", ...o.dm }
   }));
@@ -211,17 +168,12 @@ export async function dmRoot(roots: string[]): Promise<{ root: string; storage: 
 export function dmRuntime(
   storage: StorageService,
   discord: DiscordGatewayFacade,
-  pipeline: ModelPipeline,
   o: Partial<RuntimeOrchestratorOptions> = {}
 ): RuntimeOrchestrator {
   return new RuntimeOrchestrator({
     storage,
     discord,
     logger: quietLogger(),
-    createPipeline: () => pipeline,
-    sleep: async () => undefined,
-    restartResumeDelayMs: 0,
-    dmResumeStaggerMs: 0,
     ...o
   });
 }

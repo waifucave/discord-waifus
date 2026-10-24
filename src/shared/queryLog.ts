@@ -1,13 +1,7 @@
 import { redactSecrets } from "../backend/redaction.js";
 
-export type QueryRole =
-  | "orchestrator"
-  | "waifu"
-  | "stage_manager_observer"
-  | "stage_manager_librarian"
-  | "dream"
-  | "reviewer"
-  | "assistant";
+/** Which caller made a model call (the usage purposes, spec §9.3). */
+export type QueryRole = "life" | "maintenance" | "detector" | "compaction" | "assistant";
 
 export type CapturedQuery = {
   id: number;

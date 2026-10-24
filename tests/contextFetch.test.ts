@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { DiscordGatewayFacade } from "../src/discord/client.js";
 import { pageMessagesSince, toRawDiscordMessage, withoutAuthors, type DiscordMessageLike } from "../src/discord/rawMessage.js";
-import { DiscordConversationSource, filterSinceCursor } from "../src/orchestration/context/fetchTranscript.js";
+import { DiscordConversationSource, filterSinceCursor } from "../src/discord/conversationSource.js";
 import type { ContextMessage } from "../src/orchestration/contextMessages.js";
 import { RawDiscordMessageSchema } from "../src/shared/schemas/discordMessage.js";
 import { StorageService } from "../src/storage/storageService.js";

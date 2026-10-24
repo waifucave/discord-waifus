@@ -37,11 +37,7 @@ const DATA_LAYOUT_DIRS = [
   "app/remote-access/audit",
   "app/remote-gateway",
   "user",
-  "user/memory",
   "user/waifus",
-  "user/orchestrator",
-  "user/stage-manager",
-  "user/reviewer",
   "user/assistant",
   "user/servers"
 ] as const;
@@ -74,56 +70,6 @@ const DEFAULT_JSON_FILES: Array<{ relativePath: string; content: unknown }> = [
       ...createRevisionedBase(),
       orchestrator: null,
       waifus: []
-    }
-  },
-  {
-    relativePath: "user/orchestrator/config.json",
-    content: {
-      ...createRevisionedBase(),
-      enabled: false,
-      contextWindow: 20,
-      prompt: ""
-    }
-  },
-  // Decision history is per guild (user/servers/<guildId>/orchestrator-history.json, spec 9.3);
-  // the old global history.json is no longer seeded.
-  {
-    relativePath: "user/orchestrator/debug.json",
-    content: {
-      ...createRevisionedBase(),
-      routes: {}
-    }
-  },
-  {
-    relativePath: "user/stage-manager/config.json",
-    content: {
-      ...createRevisionedBase(),
-      enabled: false,
-      contextWindow: 80,
-      prompt: ""
-    }
-  },
-  {
-    relativePath: "user/stage-manager/history.json",
-    content: {
-      ...createRevisionedBase(),
-      edits: []
-    }
-  },
-  {
-    relativePath: "user/reviewer/config.json",
-    content: {
-      ...createRevisionedBase(),
-      enabled: false,
-      contextWindow: 20,
-      prompt: ""
-    }
-  },
-  {
-    relativePath: "user/reviewer/history.json",
-    content: {
-      ...createRevisionedBase(),
-      reviews: []
     }
   }
 ];

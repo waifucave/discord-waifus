@@ -17,11 +17,9 @@ describe("frontend mutation retry policy", () => {
   it.each([
     ["PUT", "/api/config", "reconciled"],
     ["PUT", "/api/waifus/akari", "transactional"],
-    ["POST", "/api/waifus/akari/digest", "non_replayable"],
+    ["POST", "/api/people/400000000000000001/forget", "transactional"],
     ["POST", "/api/runtime/reload", "reconciled"],
-    ["POST", "/api/runtime/trigger/orchestrator", "non_replayable"],
-    ["POST", "/api/llm/v1/validate", "safe"],
-    ["POST", "/api/llm/v1/chat", "non_replayable"]
+    ["POST", "/api/assistant/conversations/abc/messages", "non_replayable"]
   ] as const)("classifies %s %s as %s", (method, target, retryClass) => {
     expect(classifyMutationRetry(method, target)).toBe(retryClass);
   });
@@ -116,8 +114,8 @@ describe("logical frontend mutations", () => {
     });
     const action = await registry.begin({
       method: "POST",
-      target: "/api/runtime/trigger/orchestrator",
-      body: { guildId: "1", channelId: "2" }
+      target: "/api/assistant/conversations/abc/messages",
+      body: { content: "hello" }
     });
     let attempts = 0;
 

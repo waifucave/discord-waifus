@@ -1,8 +1,7 @@
 import { appendFile, mkdir } from "node:fs/promises";
 import path from "node:path";
-import type { Usage } from "@waifucave/gateway";
 import { userDataPath } from "../config/paths.js";
-import { UsageLedgerEntrySchema, type UsageLedgerEntry } from "../shared/schemas/usage.js";
+import { UsageLedgerEntrySchema, type UsageLedgerEntry, type UsageLedgerLine } from "../shared/schemas/usage.js";
 
 // Append-only per-model-call usage ledger (spec 8.10): `user/usage/YYYY-MM-DD.jsonl`, one JSON
 // line per call, file date = UTC day of the call. Writes go through one in-process queue per file
@@ -10,11 +9,11 @@ import { UsageLedgerEntrySchema, type UsageLedgerEntry } from "../shared/schemas
 // cross-process case. Recording is best-effort: a ledger failure is reported to `onError` and
 // never fails (or delays) the model call that produced it.
 
-export type { UsageLedgerEntry };
+export type { UsageLedgerEntry, UsageLedgerLine };
 
 export interface UsageLedger {
   /** Queue one line. Never rejects; resolves once the line is on disk (or the write failed). */
-  record(entry: UsageLedgerEntry): Promise<void>;
+  record(entry: UsageLedgerLine): Promise<void>;
   /** Resolves when every line queued so far has been written. */
   flush(): Promise<void>;
 }
@@ -53,7 +52,7 @@ class FileUsageLedger implements UsageLedger {
 
   constructor(private readonly dataRoot: string, private readonly options: UsageLedgerOptions) {}
 
-  record(entry: UsageLedgerEntry): Promise<void> {
+  record(entry: UsageLedgerLine): Promise<void> {
     const done = this.write(entry).catch((error) => {
       try {
         this.options.onError?.(error, entry);
@@ -108,13 +107,36 @@ export const NoopUsageLedger: UsageLedger = { record: async () => undefined, flu
 const tokens = (value: number | undefined) =>
   typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.round(value) : 0;
 
+/** The usage numbers winter reports for one call (its `usage` stream event, minus the tag). */
+export type ModelUsage = {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  cacheWrite1hTokens?: number;
+  reasoningTokens?: number;
+  thinkingBlocksDropped?: number;
+};
+
 /**
- * Gateway `Usage` -> ledger token fields. `usageKnown` is false when there is no usage at all
- * (aborted/failed call) or the provider reported nothing (zero input and output).
+ * winter usage (+ the call's cost) -> ledger token fields. `usageKnown` is false when there is no
+ * usage at all (aborted/failed call) or the provider reported nothing (zero input and output).
+ * winter's convention: `inputTokens` is the non-cached prompt, disjoint from the cache counts.
+ * `costUsd` is absent for an unpriced route (it counts as 0 toward budgets).
  */
-export function usageFields(usage: Usage | undefined): Pick<
+export function usageFields(
+  usage: ModelUsage | undefined,
+  costUsd?: number
+): Pick<
   UsageLedgerEntry,
-  "usageKnown" | "inputTokens" | "outputTokens" | "cacheReadTokens" | "cacheWriteTokens" | "reasoningTokens" | "costUsd"
+  | "usageKnown"
+  | "inputTokens"
+  | "outputTokens"
+  | "cacheReadTokens"
+  | "cacheWriteTokens"
+  | "reasoningTokens"
+  | "thinkingBlocksDropped"
+  | "costUsd"
 > {
   if (!usage) return { usageKnown: false, inputTokens: 0, outputTokens: 0 };
   const inputTokens = tokens(usage.inputTokens);
@@ -124,12 +146,10 @@ export function usageFields(usage: Usage | undefined): Pick<
     inputTokens,
     outputTokens
   };
-  const cacheRead = usage.cacheReadTokens ?? usage.cachedInputTokens;
-  if (typeof cacheRead === "number") fields.cacheReadTokens = tokens(cacheRead);
+  if (typeof usage.cacheReadTokens === "number") fields.cacheReadTokens = tokens(usage.cacheReadTokens);
   if (typeof usage.cacheWriteTokens === "number") fields.cacheWriteTokens = tokens(usage.cacheWriteTokens);
   if (typeof usage.reasoningTokens === "number") fields.reasoningTokens = tokens(usage.reasoningTokens);
-  if (typeof usage.costUsd === "number" && Number.isFinite(usage.costUsd) && usage.costUsd >= 0) {
-    fields.costUsd = usage.costUsd;
-  }
+  if (typeof usage.thinkingBlocksDropped === "number") fields.thinkingBlocksDropped = tokens(usage.thinkingBlocksDropped);
+  if (typeof costUsd === "number" && Number.isFinite(costUsd) && costUsd >= 0) fields.costUsd = costUsd;
   return fields;
 }

@@ -6,8 +6,6 @@ const VALID: ReadonlySet<ViewId> = new Set<ViewId>([
   "home",
   "cast",
   "rooms",
-  "direction",
-  "memory",
   "activity",
   "settings"
 ]);
@@ -18,10 +16,13 @@ const LEGACY: Record<string, { view: ViewId; tab?: string }> = {
   setup: { view: "home" },
   waifus: { view: "cast" },
   servers: { view: "rooms" },
-  orchestrator: { view: "direction", tab: "orchestrator" },
-  "stage-manager": { view: "direction", tab: "stage-manager" },
-  reviewer: { view: "direction", tab: "reviewer" },
-  memories: { view: "memory" },
+  // Living cast L1 retired Direction and Memory; their links land somewhere still meaningful.
+  direction: { view: "settings", tab: "assistant" },
+  memory: { view: "home" },
+  orchestrator: { view: "home" },
+  "stage-manager": { view: "home" },
+  reviewer: { view: "home" },
+  memories: { view: "home" },
   logs: { view: "activity", tab: "logs" },
   queries: { view: "activity", tab: "queries" },
   replies: { view: "activity", tab: "replies" },

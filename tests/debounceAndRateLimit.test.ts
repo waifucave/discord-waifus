@@ -122,7 +122,7 @@ describe("DM eligibility", () => {
       name: id,
       displayName: id,
       enabled: true,
-      modelId: "gpt-5.4-mini",
+      model: { providerId: "openai", modelId: "gpt-6-luna" },
       botId: `${id}-bot`,
       dm: { allowDms: allowDms ?? true },
       ...rest
@@ -142,14 +142,14 @@ describe("DM eligibility", () => {
       [
         waifu("aria"),
         waifu("mina", { allowDms: false }),
-        waifu("nomodel", { botId: "nomodel-bot", modelId: undefined }),
+        waifu("nomodel", { botId: "nomodel-bot", model: undefined }),
         waifu("off", { botId: "off-bot" }),
         waifu("disabled", { enabled: false, botId: "mina-bot" })
       ],
       { ...bots, waifus: [...bots.waifus, { id: "nomodel-bot", displayName: "N", enabled: true }] }
     );
     expect(result.eligible).toEqual([{ waifuId: "aria", botId: "aria-bot" }]);
-    const noModel = computeDmEligibility([{ ...waifu("aria"), modelId: undefined } as WaifuConfig], bots);
+    const noModel = computeDmEligibility([{ ...waifu("aria"), model: undefined } as WaifuConfig], bots);
     expect(noModel).toEqual({ eligible: [], warnings: ["dm_missing_model:aria"] });
   });
 

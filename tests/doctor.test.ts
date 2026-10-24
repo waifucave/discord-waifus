@@ -92,20 +92,21 @@ describe("waifus doctor: unresolved models and unstamped schema files", () => {
     expect(result.warnings).toEqual([]);
   });
 
-  it("flags an unresolved agent model id with its scope", async () => {
+  it("flags an assistant model the installed winter catalog does not know, with its scope", async () => {
     const root = await makeTempRoot();
     roots.push(root);
     await ensureDataLayout(root);
 
-    const configPath = path.join(root, "user", "orchestrator", "config.json");
-    const config = JSON.parse(await readFile(configPath, "utf8")) as Record<string, unknown>;
-    config.providerId = "openai";
-    config.modelId = "totally-unknown-model";
-    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+    await writeJson(root, "user/assistant/config.json", {
+      schemaVersion: 2,
+      revision: 0,
+      updatedAt: new Date().toISOString(),
+      model: { providerId: "openai", modelId: "totally-unknown-model" }
+    });
 
     const { result } = await runDoctor(root);
     expect(result.models.unresolved).toEqual([
-      { scope: "orchestrator", providerId: "openai", modelId: "totally-unknown-model" }
+      { scope: "assistant", providerId: "openai", modelId: "totally-unknown-model" }
     ]);
   });
 });

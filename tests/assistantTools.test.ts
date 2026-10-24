@@ -57,11 +57,11 @@ describe("assistant tools", () => {
         }
       }
     };
-    for (const tool of toolDefs()) walk(tool.parameters, tool.name);
+    for (const tool of toolDefs()) walk(tool.inputSchema, tool.name);
     expect(offenders).toEqual([]);
   });
 
-  it("exposes every spec tool as a gateway ToolDef", () => {
+  it("exposes every spec tool as a ModelTool with a JSON input schema", () => {
     const names = toolDefs().map((tool) => tool.name);
     for (const required of [
       "get_runtime_status",
@@ -76,16 +76,12 @@ describe("assistant tools", () => {
       "list_servers",
       "update_channel",
       "list_discord_bots",
-      "get_agent_config",
-      "update_agent_config",
-      "search_memories",
-      "add_memory",
-      "update_memory",
-      "delete_memory",
+      "get_assistant_config",
+      "set_assistant_model",
+      "list_detector_models",
       "forget_user",
       "list_dms",
       "forget_dm",
-      "trigger_orchestrator",
       "read_logs",
       "get_remote_access_status",
       "set_remote_access_enabled",
@@ -103,6 +99,14 @@ describe("assistant tools", () => {
       "docs_read"
     ]) {
       expect(names, required).toContain(required);
+    }
+    // Living cast L1 retired the director, stage manager, reviewer and memory store with their tools.
+    for (const retired of ["get_agent_config", "update_agent_config", "search_memories", "add_memory", "update_memory", "delete_memory", "trigger_orchestrator", "trigger_stage_manager", "get_orchestrator_history", "regenerate_waifu_digest", "list_one_shot_models"]) {
+      expect(names, retired).not.toContain(retired);
+    }
+    for (const tool of toolDefs()) {
+      expect(typeof tool.description, tool.name).toBe("string");
+      expect((tool.inputSchema as { type?: unknown }).type, tool.name).toBe("object");
     }
   });
 
@@ -142,23 +146,42 @@ describe("assistant tools", () => {
     }
   });
 
-  it("reads agent configs and updates them with revision retry", async () => {
+  it("sets and reads the assistant's own model, validated against the curated list", async () => {
     const { app } = await makeApp();
     try {
       const ctx = localToolContext(app);
       const updated = await executeAssistantTool(
         ctx,
-        "update_agent_config",
-        JSON.stringify({ agent: "assistant", changes: { providerId: "deepseek", modelId: "deepseek-v4-pro" } })
+        "set_assistant_model",
+        JSON.stringify({ model: { providerId: "deepseek", modelId: "deepseek-flash" } })
       );
-      expect(JSON.parse(updated).modelId).toBe("deepseek-v4-pro");
-      const read = await executeAssistantTool(ctx, "get_agent_config", JSON.stringify({ agent: "assistant" }));
-      expect(JSON.parse(read).modelId).toBe("deepseek-v4-pro");
+      expect(JSON.parse(updated).model).toEqual({ providerId: "deepseek", modelId: "deepseek-flash" });
+      const read = await executeAssistantTool(ctx, "get_assistant_config", "{}");
+      expect(JSON.parse(read).model).toEqual({ providerId: "deepseek", modelId: "deepseek-flash" });
+      const refused = await executeAssistantTool(ctx, "set_assistant_model", JSON.stringify({ model: { providerId: "openai", modelId: "gpt-4o" } }));
+      expect(refused).toContain("model_not_available");
+      const unset = await executeAssistantTool(ctx, "set_assistant_model", JSON.stringify({ model: null }));
+      expect(JSON.parse(unset)).not.toHaveProperty("model");
     } finally {
       await app.close();
     }
   });
 
+  it("list_models returns the curated routes with efforts and key status, filterable by provider", async () => {
+    const { app } = await makeApp();
+    try {
+      const ctx = localToolContext(app);
+      await executeAssistantTool(ctx, "set_provider_key", JSON.stringify({ providerId: "deepseek", apiKey: "sk-test" }));
+      const all = JSON.parse(await executeAssistantTool(ctx, "list_models", "{}")) as Array<Record<string, unknown>>;
+      expect(all.length).toBeGreaterThan(0);
+      expect(all.every((model) => Array.isArray(model.efforts) && typeof model.contributor === "boolean")).toBe(true);
+      const deepseek = JSON.parse(await executeAssistantTool(ctx, "list_models", JSON.stringify({ providerId: "deepseek" }))) as Array<Record<string, unknown>>;
+      expect(deepseek.map((model) => model.modelId)).toContain("deepseek-flash");
+      expect(deepseek.every((model) => model.providerId === "deepseek" && model.credentialsConfigured === true)).toBe(true);
+    } finally {
+      await app.close();
+    }
+  });
   it("returns tool errors as strings instead of throwing", async () => {
     const { app } = await makeApp();
     try {
@@ -173,19 +196,16 @@ describe("assistant tools", () => {
     }
   });
 
-  it("trigger tools report when nothing ran instead of claiming success", async () => {
+  it("retired tools are unknown to the assistant", async () => {
     const { app } = await makeApp();
     try {
-      const target = JSON.stringify({ guildId: "100000000000000011", channelId: "100000000000000012" });
-      for (const tool of ["trigger_orchestrator", "trigger_stage_manager"]) {
-        const result = await executeAssistantTool(localToolContext(app), tool, target);
-        expect(result).toBe("No live runtime; nothing was triggered.");
+      for (const tool of ["trigger_orchestrator", "search_memories"]) {
+        expect(await executeAssistantTool(localToolContext(app), tool, "{}")).toBe(`Unknown tool: ${tool}`);
       }
     } finally {
       await app.close();
     }
   });
-
   it("link_waifu_bot wires bot entry, applicationId, and waifu.botId in one call", async () => {
     const { app } = await makeApp();
     try {
@@ -227,30 +247,6 @@ describe("assistant tools", () => {
     }
   });
 
-  it("update_memory and delete_memory carry the record revision", async () => {
-    const { app } = await makeApp();
-    try {
-      await executeAssistantTool(localToolContext(app), "add_memory", JSON.stringify({ waifuId: "riko", guildId: "g1", content: "old fact" }));
-      const list = JSON.parse(await executeAssistantTool(localToolContext(app), "search_memories", JSON.stringify({ q: "old" }))) as Array<{ id: string }>;
-      const memoryId = list[0].id;
-      const updated = await executeAssistantTool(localToolContext(app), "update_memory", JSON.stringify({ memoryId, changes: { content: "new fact" } }));
-      expect(updated).toContain("new fact");
-      // A concurrent write to ANOTHER memory bumps the store revision but not this record's.
-      await executeAssistantTool(localToolContext(app), "add_memory", JSON.stringify({ waifuId: "riko", content: "unrelated" }));
-      const deleted = await executeAssistantTool(localToolContext(app), "delete_memory", JSON.stringify({ memoryId }));
-      expect(deleted.toLowerCase()).toContain("delete");
-      const after = JSON.parse(await executeAssistantTool(localToolContext(app), "search_memories", JSON.stringify({ q: "fact" }))) as unknown[];
-      expect(after).toHaveLength(0);
-      // Provenance filters pass through to the API.
-      const byGuild = JSON.parse(await executeAssistantTool(localToolContext(app), "search_memories", JSON.stringify({ guildId: "g1" }))) as unknown[];
-      expect(byGuild).toHaveLength(0);
-      const all = JSON.parse(await executeAssistantTool(localToolContext(app), "search_memories", JSON.stringify({}))) as Array<{ origin: unknown; recordRevision: number }>;
-      expect(all).toEqual([expect.objectContaining({ origin: {}, recordRevision: 0 })]);
-    } finally {
-      await app.close();
-    }
-  });
-
   it("clear_provider_key removes a stored key", async () => {
     const { app } = await makeApp();
     try {
@@ -283,19 +279,22 @@ describe("assistant tools", () => {
     }
   });
 
-  it("update_waifu deep-merges params — setting temperature keeps the rest", async () => {
+  it("update_waifu sets, changes and unsets the nested model", async () => {
     const { app } = await makeApp();
     try {
-      await executeAssistantTool(localToolContext(app), "create_waifu", JSON.stringify({ id: "p1", name: "P", displayName: "P", persona: "x" }));
-      await executeAssistantTool(localToolContext(app), "update_waifu", JSON.stringify({ id: "p1", changes: { params: { temperature: 0.7, topP: 0.9 } } }));
-      await executeAssistantTool(localToolContext(app), "update_waifu", JSON.stringify({ id: "p1", changes: { params: { temperature: 0.3 } } }));
-      const waifu = JSON.parse((await app.inject({ method: "GET", url: "/api/waifus/p1" })).body) as { params: Record<string, unknown> };
-      expect(waifu.params).toEqual({ temperature: 0.3, topP: 0.9 });
+      await executeAssistantTool(localToolContext(app), "create_waifu", JSON.stringify({ id: "p1", name: "P", displayName: "P", persona: "x", model: { providerId: "deepseek", modelId: "deepseek-flash" } }));
+      let waifu = JSON.parse((await app.inject({ method: "GET", url: "/api/waifus/p1" })).body) as { model?: Record<string, unknown> };
+      expect(waifu.model).toEqual({ providerId: "deepseek", modelId: "deepseek-flash" });
+      await executeAssistantTool(localToolContext(app), "update_waifu", JSON.stringify({ id: "p1", changes: { model: { providerId: "anthropic", modelId: "claude-sonnet-5-5", effort: "low" } } }));
+      waifu = JSON.parse((await app.inject({ method: "GET", url: "/api/waifus/p1" })).body);
+      expect(waifu.model).toEqual({ providerId: "anthropic", modelId: "claude-sonnet-5-5", effort: "low" });
+      await executeAssistantTool(localToolContext(app), "update_waifu", JSON.stringify({ id: "p1", changes: { model: null } }));
+      waifu = JSON.parse((await app.inject({ method: "GET", url: "/api/waifus/p1" })).body);
+      expect(waifu).not.toHaveProperty("model");
     } finally {
       await app.close();
     }
   });
-
   it("request_secret shows a secure form marker without touching storage", async () => {
     const { app } = await makeApp();
     try {
@@ -313,7 +312,7 @@ describe("assistant tools", () => {
       expect(providers.body).not.toContain('"configured":true');
       // purpose is constrained so the panel can always render a form
       const def = toolDefs().find((tool) => tool.name === "request_secret");
-      const purposeSchema = (def?.parameters as { properties: Record<string, { enum?: string[] }> }).properties.purpose;
+      const purposeSchema = (def?.inputSchema as { properties: Record<string, { enum?: string[] }> }).properties.purpose;
       expect(purposeSchema.enum).toEqual(["provider_key", "bot_token"]);
     } finally {
       await app.close();

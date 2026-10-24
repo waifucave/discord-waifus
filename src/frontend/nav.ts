@@ -1,5 +1,5 @@
 /** Section registry for the home-launcher navigation. Hue names map to system.css vars. */
-export type ViewId = "home" | "cast" | "rooms" | "direction" | "memory" | "activity" | "settings";
+export type ViewId = "home" | "cast" | "rooms" | "activity" | "settings";
 
 export type SectionDef = {
   id: Exclude<ViewId, "home">;
@@ -13,20 +13,12 @@ export type SectionDef = {
 export const SECTIONS: SectionDef[] = [
   { id: "cast", index: "02", label: "Cast", hue: "mint" },
   { id: "rooms", index: "03", label: "Rooms", hue: "sky" },
-  { id: "direction", index: "04", label: "Direction", hue: "lavender" },
-  { id: "memory", index: "05", label: "Memory", hue: "butter" },
-  { id: "activity", index: "06", label: "Activity", hue: "peach" },
-  { id: "settings", index: "07", label: "Settings", hue: "mint", inverts: true }
+  { id: "activity", index: "04", label: "Activity", hue: "peach" },
+  { id: "settings", index: "05", label: "Settings", hue: "mint", inverts: true }
 ];
 
 /** Tab sets per section; first entry is the default. */
 export const SECTION_TABS: Partial<Record<ViewId, Array<{ id: string; label: string }>>> = {
-  direction: [
-    { id: "orchestrator", label: "Orchestrator" },
-    { id: "stage-manager", label: "Stage manager" },
-    { id: "reviewer", label: "Reviewer" },
-    { id: "assistant", label: "Assistant" }
-  ],
   activity: [
     { id: "logs", label: "Logs" },
     { id: "queries", label: "Queries" },
@@ -34,6 +26,7 @@ export const SECTION_TABS: Partial<Record<ViewId, Array<{ id: string; label: str
   ],
   settings: [
     { id: "providers", label: "Providers" },
+    { id: "assistant", label: "Assistant" },
     { id: "app", label: "App" },
     { id: "remote-access", label: "Remote Access" }
   ]

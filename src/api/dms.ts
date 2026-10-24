@@ -1,16 +1,15 @@
-// DM routes (spec 9.8, 12.5): list DM conversations, show one (state, rate limit, context; never
-// message bodies), and forget one (transactional, audited as `dm.forget`). waifuId is validated
-// with assertSafeId, user ids must be Discord snowflakes.
+// DM routes (spec 9.8, 12.5): list DM conversations, show one (state and rate limit; never message
+// bodies), and forget one (transactional, audited as `dm.forget`). waifuId is validated with
+// assertSafeId, user ids must be Discord snowflakes.
 
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { RuntimeOrchestrator } from "../orchestration/runtime.js";
-import { contextStatePath, conversationKey } from "../orchestration/context/keys.js";
+import { conversationKey } from "../orchestration/context/keys.js";
 import { dmForget } from "../orchestration/dm/dmForget.js";
 import { assessDmLimit } from "../orchestration/dm/rateLimit.js";
 import { listDmStates, readDmLimitIfExists, readDmState } from "../orchestration/dm/dmStore.js";
 import { readWaifu } from "../orchestration/stores/config.js";
-import { ContextStateSchema } from "../shared/schemas/context.js";
 import type { DmState } from "../shared/schemas/dm.js";
 import type { StorageService } from "../storage/storageService.js";
 import { badRequest, notFound } from "./errors.js";
@@ -48,16 +47,6 @@ async function rateLimitView(storage: StorageService, state: Pick<DmState, "user
   };
 }
 
-async function contextView(storage: StorageService, state: Pick<DmState, "userId" | "waifuId">) {
-  const key = conversationKey({ kind: "dm", waifuId: state.waifuId, userId: state.userId });
-  try {
-    const context = await storage.readJson(contextStatePath(key, { kind: "waifu", waifuId: state.waifuId }), ContextStateSchema);
-    return { epoch: context.epoch, ...(context.lastCompaction ? { lastCompaction: context.lastCompaction } : {}) };
-  } catch {
-    return undefined;
-  }
-}
-
 function parseParams(params: unknown): { waifuId: string; userId: string } {
   const parsed = z.object({ waifuId: z.string().min(1), userId: z.string().min(1) }).parse(params);
   assertSafeId(parsed.waifuId);
@@ -78,7 +67,6 @@ export function registerDmRoutes(app: FastifyInstance, o: DmRouteOptions): void 
     const conversations = [];
     for (const state of states) {
       const lastRun = state.recentRuns[state.recentRuns.length - 1];
-      const context = await contextView(o.storage, state);
       conversations.push({
         conversationKey: conversationKey({ kind: "dm", waifuId: state.waifuId, userId: state.userId }),
         waifuId: state.waifuId,
@@ -87,8 +75,7 @@ export function registerDmRoutes(app: FastifyInstance, o: DmRouteOptions): void 
         ...(state.lastInboundAt ? { lastInboundAt: state.lastInboundAt } : {}),
         ...(state.lastReplyAt ? { lastReplyAt: state.lastReplyAt } : {}),
         rateLimit: await rateLimitView(o.storage, state),
-        ...(lastRun ? { lastRun } : {}),
-        ...(context ? { context } : {})
+        ...(lastRun ? { lastRun } : {})
       });
     }
     return { conversations };
@@ -98,8 +85,7 @@ export function registerDmRoutes(app: FastifyInstance, o: DmRouteOptions): void 
     const { waifuId, userId } = parseParams(request.params);
     const state = await readDmState(o.storage, userId, waifuId);
     if (!state) throw notFound(`No DM between ${waifuId} and ${userId}.`);
-    const context = await contextView(o.storage, state);
-    return { state, rateLimit: await rateLimitView(o.storage, state), ...(context ? { context } : {}) };
+    return { state, rateLimit: await rateLimitView(o.storage, state) };
   });
 
   app.post("/api/dms/:waifuId/:userId/forget", async (request) => {

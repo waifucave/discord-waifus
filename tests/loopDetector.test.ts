@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assessLoop } from "../src/orchestration/loopDetector.js";
+import { assessLoop } from "../scripts/decision-benchmark/lexicalLoop.js";
 import { ContextMessage } from "../src/orchestration/contextMessages.js";
 
 function msg(id: string, authorKind: "user" | "waifu", authorId: string, content: string): ContextMessage {
@@ -143,7 +143,7 @@ describe("assessLoop", () => {
   });
 });
 
-import { assessCastCadence } from "../src/orchestration/loopDetector.js";
+import { assessCastCadence } from "../scripts/decision-benchmark/lexicalLoop.js";
 
 describe("assessCastCadence", () => {
   const reply = { action: "reply" as const };

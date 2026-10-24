@@ -1,33 +1,8 @@
 import { useApi } from "../api/useApi";
 import { api } from "../api/client";
-import type {
-  MemoryStore,
-  OrchestratorHistoryFile,
-  ProvidersResponse,
-  RuntimeState,
-  ServersResponse,
-  WaifusResponse
-} from "../api/types";
-import { SECTIONS, type ViewId } from "../nav";
+import type { ProvidersResponse, RuntimeState, ServersResponse, WaifusResponse } from "../api/types";
+import type { ViewId } from "../nav";
 import { FootRow } from "./scaffold";
-
-type FeedItem = { at: string; who: string; what: string; kind: "reply" | "decision" | "memory" };
-
-function feedFromHistory(history: OrchestratorHistoryFile | undefined): FeedItem[] {
-  if (!history) return [];
-  const items: FeedItem[] = [];
-  for (const decision of history.decisions.slice(0, 12)) {
-    const at = decision.createdAt ? new Date(decision.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
-    if (decision.action === "reply") {
-      const who = decision.respondingWaifus?.map((w) => w.waifuId).join(", ") || "cast";
-      items.push({ at, who: "director", what: `${who} replies — ${decision.reasoning ?? ""}`.slice(0, 140), kind: "decision" });
-    } else {
-      items.push({ at, who: "director", what: (decision.reasoning ?? "waiting").slice(0, 140), kind: "decision" });
-    }
-    if (items.length >= 6) break;
-  }
-  return items;
-}
 
 export function HomeScreen({
   onNavigate,
@@ -39,9 +14,7 @@ export function HomeScreen({
   const runtime = useApi<RuntimeState>((s) => api.runtime(s), []);
   const waifus = useApi<WaifusResponse>((s) => api.waifus(s), []);
   const servers = useApi<ServersResponse>((s) => api.servers(s), []);
-  const memories = useApi<MemoryStore>((s) => api.memories(s), []);
   const providers = useApi<ProvidersResponse>((s) => api.providers(s), []);
-  const history = useApi<OrchestratorHistoryFile>((s) => api.orchestratorHistory(s), []);
 
   const cast = waifus.data?.waifus ?? [];
   const castNames = cast.map((w) => w.displayName || w.name).join(", ");
@@ -50,32 +23,29 @@ export function HomeScreen({
     (sum, guild) => sum + Object.values(guild.channels ?? {}).filter((c) => (c.enabledWaifuIds?.length ?? 0) > 0).length,
     0
   );
-  const memoryCount = (memories.data?.memories ?? []).filter((m) => m.status !== "archived").length;
   const anyProvider = (providers.data?.providers ?? []).some((p) => p.credentials.configured);
   const discord = runtime.data?.discord;
-  const feed = feedFromHistory(history.data);
+  const warnings = runtime.data?.models?.warnings ?? [];
 
   const meta: Record<string, { text: string; needsSetup?: boolean }> = {
     cast: {
       text: cast.length ? `${cast.length} characters — ${castNames}`.slice(0, 110) : "no characters yet",
-      needsSetup: cast.length === 0 || cast.some((w) => !w.modelId)
+      needsSetup: cast.length === 0 || cast.some((w) => !w.model)
     },
     rooms: {
       text: guilds.length ? `${guilds.length} servers · ${liveChannels} channels live` : "no servers yet",
       needsSetup: guilds.length > 0 && liveChannels === 0
     },
-    direction: { text: "director · stage manager · reviewer · assistant" },
-    memory: { text: `${memoryCount} memories` },
     activity: { text: "logs · queries · events" },
     settings: {
-      text: anyProvider ? "providers · app" : "add a provider key to start",
+      text: anyProvider ? "providers · assistant · app" : "add a provider key to start",
       needsSetup: !anyProvider
     }
   };
 
   const statusWord = !runtime.data ? "…" : runtime.data.paused ? "Paused" : discord?.connected ? "Live" : "Offline";
   const statusSub = runtime.data
-    ? `${discord?.waifuBotCount ?? 0} bots · ${guilds.length} servers · ${cast.length} characters · ${memoryCount} memories`
+    ? `${discord?.waifuBotCount ?? 0} bots · ${guilds.length} servers · ${cast.length} characters`
     : "connecting to the backend…";
 
   return (
@@ -127,23 +97,20 @@ export function HomeScreen({
             {meta.rooms.text} {meta.rooms.needsSetup && <span className="chip butter">enable a channel</span>}
           </span>
         </button>
-        <button className="cell clickable tile" data-hue style={{ gridColumn: 3, gridRow: 2, ["--hover-hue" as string]: "var(--lavender)" }} onClick={() => onNavigate("direction")}>
+        <button className="cell clickable tile" data-hue style={{ gridColumn: 3, gridRow: 2, ["--hover-hue" as string]: "var(--peach)" }} onClick={() => onNavigate("activity")}>
           <span className="idx">04</span>
-          <span className="nm">Direction</span>
-          <span className="meta">{meta.direction.text}</span>
-        </button>
-        <button className="cell clickable tile" data-hue style={{ gridColumn: 2, gridRow: 3, ["--hover-hue" as string]: "var(--butter)" }} onClick={() => onNavigate("memory")}>
-          <span className="idx">05</span>
-          <span className="nm">Memory</span>
-          <span className="meta">{meta.memory.text}</span>
-        </button>
-        <button className="cell clickable tile" data-hue style={{ gridColumn: 3, gridRow: 3, ["--hover-hue" as string]: "var(--peach)" }} onClick={() => onNavigate("activity")}>
-          <span className="idx">06</span>
           <span className="nm">Activity</span>
           <span className="meta">{meta.activity.text}</span>
         </button>
+        <div className="cell" style={{ gridColumn: "2 / 4", gridRow: 3, display: "flex", flexDirection: "column", justifyContent: "flex-end", gap: 6, padding: "20px 26px" }}>
+          <span className="t-micro">Living cast · in progress</span>
+          <span className="t-small" style={{ lineHeight: 1.5 }}>
+            The cast is being rebuilt to live on its own. Until that lands, characters do not answer in Discord or
+            DMs; configuration keeps working.
+          </span>
+        </div>
         <button className="cell clickable tile inverts" style={{ gridColumn: 1, gridRow: 4 }} onClick={() => onNavigate("settings")}>
-          <span className="idx">07</span>
+          <span className="idx">05</span>
           <span className="nm">Settings</span>
           <span className="meta">
             {meta.settings.text} {meta.settings.needsSetup && <span className="chip butter">needs setup</span>}
@@ -152,23 +119,21 @@ export function HomeScreen({
 
         <div style={{ gridColumn: 4, gridRow: "3 / 5", display: "flex", flexDirection: "column", gap: "var(--line)", background: "var(--ink)", minHeight: 0, overflow: "hidden" }}>
           <div className="cell" style={{ padding: "12px 20px 10px", flex: "none" }}>
-            <span className="t-micro">Recent decisions · newest first</span>
+            <span className="t-micro">Model notices</span>
           </div>
-          {feed.length === 0 && (
+          {warnings.length === 0 && (
             <div className="cell" style={{ flex: 1, padding: 20 }}>
-              <span className="t-mute t-small">No activity yet — decisions appear here once the director is running.</span>
+              <span className="t-mute t-small">Every stored model choice is on the curated list.</span>
             </div>
           )}
-          {feed.map((item, index) => (
-            <div className="cell" style={{ padding: "12px 20px", flex: index === feed.length - 1 ? 1 : "none" }} key={index}>
+          {warnings.slice(0, 6).map((warning, index, shown) => (
+            <div className="cell" style={{ padding: "12px 20px", flex: index === shown.length - 1 ? 1 : "none" }} key={`${warning.scope}-${warning.code}-${index}`}>
               <div className="t-micro" style={{ marginBottom: 3 }}>
-                {item.at} · {item.who}
-                <span className={"chip " + (item.kind === "reply" ? "mint" : item.kind === "memory" ? "butter" : "lavender")} style={{ marginLeft: 8 }}>
-                  {item.kind}
-                </span>
+                {warning.scope}
+                <span className="chip butter" style={{ marginLeft: 8 }}>{warning.code}</span>
               </div>
               <div className="t-small" style={{ overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>
-                {item.what}
+                {warning.detail}
               </div>
             </div>
           ))}
@@ -176,7 +141,7 @@ export function HomeScreen({
 
         <div className="cell" style={{ gridColumn: "2 / 4", gridRow: 4, display: "flex", alignItems: "flex-end", padding: "20px 26px" }}>
           <span className="t-mute t-small" style={{ lineHeight: 1.5 }}>
-            Everything runs on this machine. The director decides who speaks; characters remember your server and dream at night.
+            Everything runs on this machine. Each character has her own persona, model and Discord bot.
           </span>
         </div>
       </div>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assignRefsTo, encodeRef, pruneRefs, REF_COUNTER_START } from "../src/orchestration/context/refs.js";
+import { assignRefsTo, encodeRef, pruneRefs, REF_COUNTER_START } from "../src/discord/refStore.js";
 import {
   dayKey,
   formatClock,

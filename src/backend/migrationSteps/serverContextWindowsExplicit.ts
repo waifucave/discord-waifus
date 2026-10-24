@@ -1,6 +1,6 @@
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
-import { LEGACY_SERVER_CONTEXT_WINDOWS, type ContextCapKind } from "../../orchestration/contextWindows.js";
+import { LEGACY_SERVER_CONTEXT_WINDOWS, type ContextCapKind } from "./legacy.js";
 import { atomicWriteJson } from "../../storage/atomic.js";
 
 // Step `server-context-windows-explicit-v1` (spec 6.8 B29, 8.7). Before B29 every server file was

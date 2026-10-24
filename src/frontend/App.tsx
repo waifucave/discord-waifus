@@ -3,9 +3,7 @@ import { useRoute } from "./state/router";
 import type { ViewId } from "./nav";
 import { HomeScreen } from "./screens/HomeScreen";
 import { CastScreen } from "./screens/CastScreen";
-import { DirectionScreen } from "./screens/DirectionScreen";
 import { RoomsScreen } from "./screens/RoomsScreen";
-import { MemoryScreen } from "./screens/MemoryScreen";
 import { ActivityScreen } from "./screens/ActivityScreen";
 import { SettingsScreen } from "./screens/SettingsScreen";
 import { AssistantLauncher, AssistantPanel } from "./components/assistant/AssistantPanel";
@@ -82,10 +80,6 @@ function Screen({
       return <CastScreen characterId={route.id} onNavigate={goto} />;
     case "rooms":
       return <RoomsScreen guildId={route.id} onNavigate={goto} />;
-    case "direction":
-      return <DirectionScreen tab={route.tab} onNavigate={goto} onTab={(tab) => goto("direction", tab)} />;
-    case "memory":
-      return <MemoryScreen onNavigate={goto} />;
     case "activity":
       return <ActivityScreen tab={route.tab} onNavigate={goto} onTab={(tab) => goto("activity", tab)} />;
     case "settings":

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { readDmLimit, readDmState, updateDmLimit, updateDmState } from "../src/orchestration/dm/dmStore.js";
-import type { ModelPipeline } from "../src/providers/types.js";
+import type { AssistantModelClient } from "../src/api/assistant/service.js";
+import { ASSISTANT_TEST_MODEL, scriptedAssistantClient } from "./assistantFakes.js";
 import {
   ASSISTANT_ACTION_TTL_MS,
   AssistantActionCapacityError,
@@ -302,29 +303,15 @@ function scriptedToolPipeline(
   toolName: string,
   args: Record<string, unknown>,
   capture: (result: string) => void
-): ModelPipeline {
-  return {
-    async generateWaifu() {
-      throw new Error("unused");
-    },
-    async generateAssistantTurn(request) {
-      const argumentsJson = JSON.stringify(args);
-      const result = await request.executeTool(toolName, argumentsJson);
-      capture(result);
-      request.onEvent?.({ type: "tool_call", name: toolName, arguments: argumentsJson });
-      request.onEvent?.({ type: "tool_result", name: toolName, result });
-      return {
-        content: "The secure dashboard card is ready.",
-        messages: [
-          ...request.messages,
-          { role: "assistant", content: "The secure dashboard card is ready." }
-        ]
-      };
-    }
-  };
+): AssistantModelClient {
+  return scriptedAssistantClient(({ round, toolResults }) => {
+    if (round === 0) return { toolCalls: [{ name: toolName, args }] };
+    capture(toolResults[0]!.result);
+    return { text: "The secure dashboard card is ready." };
+  });
 }
 
-async function makeActionApp(pipeline: ModelPipeline, state: FakeRemoteState) {
+async function makeActionApp(pipeline: AssistantModelClient, state: FakeRemoteState) {
   const root = await makeTempRoot("waifus-assistant-actions-");
   roots.push(root);
   await ensureDataLayout(root);
@@ -345,7 +332,7 @@ async function makeActionApp(pipeline: ModelPipeline, state: FakeRemoteState) {
     dataRoot: root,
     runtime,
     storage,
-    assistant: { createPipeline: () => pipeline },
+    assistant: { modelClient: pipeline },
     remoteAccess: fakeRemoteAccess(state),
     remoteTrust: { isAuthorized: () => state.authorized },
     administration: { auditStore }
@@ -356,16 +343,7 @@ async function makeActionApp(pipeline: ModelPipeline, state: FakeRemoteState) {
     url: "/api/providers/deepseek/credentials",
     payload: { apiKey: "sk-test" }
   });
-  const config = await app.inject({ method: "GET", url: "/api/orchestrator/config" });
-  await app.inject({
-    method: "PUT",
-    url: "/api/orchestrator/config",
-    payload: {
-      revision: config.json().revision,
-      providerId: "deepseek",
-      modelId: "deepseek-v4-pro"
-    }
-  });
+  await app.inject({ method: "PUT", url: "/api/assistant/config", payload: { model: ASSISTANT_TEST_MODEL } });
   return { app, auditStore, storage };
 }
 
@@ -788,33 +766,27 @@ describe("assistant action API", () => {
       pairingRequest: undefined
     };
     const userId = "100000000000000042";
-    const { app, auditStore } = await makeActionApp(
+    const { app, auditStore, storage } = await makeActionApp(
       scriptedToolPipeline("forget_user", { discordUserId: userId }, (value) => {
         toolResult = value;
       }),
       state
     );
-    const seeded = await app.inject({
-      method: "POST",
-      url: "/api/memories",
-      headers: { "idempotency-key": bytes32(0x91) },
-      payload: { waifuId: "yuki", content: "Kevin is allergic to peanuts.", subjects: [{ discordUserId: userId, name: "Kevin" }] }
-    });
-    expect(seeded.statusCode, seeded.body).toBe(201);
+    await updateDmState(storage, { userId, waifuId: "yuki", botId: "yuki-bot" }, (current) => ({ ...current, lastInboundMessageId: "1" }));
+    await updateDmLimit(storage, userId, "yuki", (current) => ({ ...current, replyTimestamps: [new Date().toISOString()] }));
 
     await createRemoteActionConversation(app);
     const proposed = JSON.parse(toolResult) as { status: string; actionId: string; category: string; preview: Record<string, number> };
-    expect(proposed).toMatchObject({ status: "confirmation_required", category: "memory_forget_user", preview: { memories: 1, observations: 0 } });
+    expect(proposed).toMatchObject({ status: "confirmation_required", category: "people_forget", preview: { dmStates: 1 } });
     // Nothing is deleted until the user confirms the card.
-    const before = await app.inject({ method: "GET", url: "/api/memories" });
-    expect(before.json().memories).toHaveLength(1);
+    expect(await readDmState(storage, userId, "yuki")).toBeDefined();
 
     const detailTarget = `/api/assistant/actions/${proposed.actionId}`;
     const detail = await dispatchInternal(app, remotePrincipal({ method: "GET", canonicalTarget: detailTarget }), undefined, {
       method: "GET",
       url: detailTarget
     });
-    expect(detail.json()).toMatchObject({ category: "memory_forget_user", summary: expect.stringContaining("delete 1 memory") });
+    expect(detail.json()).toMatchObject({ category: "people_forget", summary: expect.stringContaining("1 DM state") });
 
     const confirmTarget = `${detailTarget}/confirm`;
     const confirmed = await dispatchInternal(app, remotePrincipal({ method: "POST", canonicalTarget: confirmTarget }), undefined, {
@@ -823,11 +795,12 @@ describe("assistant action API", () => {
       headers: { "idempotency-key": bytes32(0x92) }
     });
     expect(confirmed.statusCode, confirmed.body).toBe(200);
-    expect(confirmed.json()).toMatchObject({ status: "completed", category: "memory_forget_user" });
-    const after = await app.inject({ method: "GET", url: "/api/memories" });
-    expect(after.json().memories).toHaveLength(0);
+    expect(confirmed.json()).toMatchObject({ status: "completed", category: "people_forget", message: "The user was forgotten." });
+    expect(await readDmState(storage, userId, "yuki")).toBeUndefined();
+    // The owner's forget is the one path that also removes the rate-limit counters.
+    expect((await readDmLimit(storage, userId, "yuki")).replyTimestamps).toHaveLength(0);
     const audit = await auditStore.list();
-    expect(audit.some((record) => record.action === "memory.forget_user")).toBe(true);
+    expect(audit.some((record) => record.action === "people.forget")).toBe(true);
   });
 
   it("forget_dm proposes a confirmation card with dry-run counts and forgets the DM only once confirmed", async () => {
@@ -881,31 +854,19 @@ describe("assistant action API", () => {
       invitationActors: [],
       pairingRequest: pending
     };
-    const pipeline: ModelPipeline = {
-      async generateWaifu() {
-        throw new Error("unused");
-      },
-      async generateAssistantTurn(request) {
-        safeList = await request.executeTool("list_remote_pairing_requests", "{}");
-        actionResult = await request.executeTool(
-          "approve_remote_pairing_request",
-          JSON.stringify({ requestId: pending.requestId })
-        );
-        request.onEvent?.({
-          type: "tool_call",
-          name: "approve_remote_pairing_request",
-          arguments: JSON.stringify({ requestId: pending.requestId })
-        });
-        request.onEvent?.({ type: "tool_result", name: "approve_remote_pairing_request", result: actionResult });
+    const pipeline = scriptedAssistantClient(({ round, toolResults }) => {
+      if (round === 0) {
         return {
-          content: "Compare the secure card on both devices.",
-          messages: [
-            ...request.messages,
-            { role: "assistant", content: "Compare the secure card on both devices." }
+          toolCalls: [
+            { name: "list_remote_pairing_requests" },
+            { name: "approve_remote_pairing_request", args: { requestId: pending.requestId } }
           ]
         };
       }
-    };
+      safeList = toolResults[0]!.result;
+      actionResult = toolResults[1]!.result;
+      return { text: "Compare the secure card on both devices." };
+    });
     const { app, auditStore } = await makeActionApp(pipeline, state);
     const conversationId = await createRemoteActionConversation(app);
     const actionId = (JSON.parse(actionResult) as { actionId: string }).actionId;
@@ -1079,30 +1040,17 @@ describe("assistant action API", () => {
       pairingRequest: undefined,
       cancellationActors: []
     };
-    const pipeline: ModelPipeline = {
-      async generateWaifu() {
-        throw new Error("unused");
-      },
-      async generateAssistantTurn(request) {
+    const pipeline = scriptedAssistantClient(({ round, toolResults }) => {
+      if (round === 0) {
         turn += 1;
-        const toolName = turn === 1 ? "request_remote_pairing_invite" : "cancel_remote_pairing_invite";
-        const argumentsJson = turn === 1
-          ? "{}"
-          : JSON.stringify({ invitationId: bytes16(0x71) });
-        const result = await request.executeTool(toolName, argumentsJson);
-        if (turn === 1) toolResult = result;
-        else cancelResult = result;
-        request.onEvent?.({ type: "tool_call", name: toolName, arguments: argumentsJson });
-        request.onEvent?.({ type: "tool_result", name: toolName, result });
-        const content = turn === 1
-          ? "The secure invitation card is ready."
-          : "The invitation was cancelled.";
-        return {
-          content,
-          messages: [...request.messages, { role: "assistant", content }]
-        };
+        return turn === 1
+          ? { toolCalls: [{ name: "request_remote_pairing_invite" }] }
+          : { toolCalls: [{ name: "cancel_remote_pairing_invite", args: { invitationId: bytes16(0x71) } }] };
       }
-    };
+      if (turn === 1) toolResult = toolResults[0]!.result;
+      else cancelResult = toolResults[0]!.result;
+      return { text: turn === 1 ? "The secure invitation card is ready." : "The invitation was cancelled." };
+    });
     const { app, auditStore } = await makeActionApp(pipeline, state);
     const conversationId = await createRemoteActionConversation(app);
     const actionId = (JSON.parse(toolResult) as { actionId: string }).actionId;
@@ -1192,23 +1140,11 @@ describe("assistant action API", () => {
       ["reject_remote_pairing_request", { requestId: pending.requestId }],
       ["reconnect_remote_access", {}]
     ];
-    const pipeline: ModelPipeline = {
-      async generateWaifu() {
-        throw new Error("unused");
-      },
-      async generateAssistantTurn(request) {
-        for (const [name, args] of calls) {
-          captured.set(name, await request.executeTool(name, JSON.stringify(args)));
-        }
-        return {
-          content: "Remote Access maintenance is complete.",
-          messages: [
-            ...request.messages,
-            { role: "assistant", content: "Remote Access maintenance is complete." }
-          ]
-        };
-      }
-    };
+    const pipeline = scriptedAssistantClient(({ round, toolResults }) => {
+      if (round === 0) return { toolCalls: calls.map(([name, args]) => ({ name, args })) };
+      for (const { name, result } of toolResults) captured.set(name, result);
+      return { text: "Remote Access maintenance is complete." };
+    });
     const { app } = await makeActionApp(pipeline, state);
     const conversationId = await createRemoteActionConversation(app);
 

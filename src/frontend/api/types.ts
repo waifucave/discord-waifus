@@ -1,10 +1,44 @@
 // Types mirror docs/api.md and src/shared/schemas/*.ts.
 // They are hand-aligned, not generated. Keep narrow and tolerant.
 
-// P5 T6: the gateway registry (api/llm.ts) is the source of truth for provider ids now — the
-// SPA writes native `params` everywhere, so this stays a plain string rather than a hard-coded
-// union of the six legacy-catalog providers.
+// A winter catalog provider id (`anthropic`, `openrouter`, …): a plain string, the server validates.
 export type ProviderId = string;
+
+/** A curated model route plus an optional reasoning effort from the route's own list (Living cast §9.2). */
+export type ModelChoice = {
+  providerId: ProviderId;
+  modelId: string;
+  effort?: string;
+};
+
+/** One row of GET /api/models (mirrors src/models/catalog.ts CuratedModel). */
+export type CuratedModel = {
+  id: string;
+  providerId: ProviderId;
+  modelId: string;
+  displayName: string;
+  providerDisplayName: string;
+  family: string;
+  contextWindow?: number;
+  maxOutputTokens?: number;
+  imageInput: boolean;
+  efforts: string[];
+  defaultEffort?: string;
+  pricing?: { inputPerMTokUsd: number; outputPerMTokUsd: number; cacheReadPerMTokUsd?: number; cacheWritePerMTokUsd?: number };
+  /** Contributor (training) variant: only ever an explicit user choice. */
+  contributor: boolean;
+  promptCaching: boolean;
+  credentialsConfigured: boolean;
+};
+
+export type ModelsResponse = {
+  catalogVersion: string;
+  maxOutputUsdPerMTok: number;
+  models: CuratedModel[];
+  hidden: Array<{ id: string; reason: string }>;
+};
+
+export type ModelWarning = { scope: string; code: string; detail: string; at?: string };
 
 export type Revisioned = {
   schemaVersion: number;
@@ -219,6 +253,8 @@ export type RuntimeState = {
   paused: boolean;
   discord: DiscordRuntime;
   queues: QueueRuntime;
+  /** Living cast §9.2: unmapped/unavailable model choices and unpriced routes. */
+  models?: { warnings: ModelWarning[] };
   remoteAccess?: {
     version: 1;
     enabled: boolean;
@@ -256,6 +292,7 @@ export type AppConfig = {
     maxTextCharsPerImage: number;
   };
   compaction: CompactionSettings;
+  models?: { allowed: string[]; maxOutputUsdPerMTok: number };
   memory: {
     dreamHourLocal: number;
     maxPinnedInjected: number;
@@ -297,31 +334,15 @@ export type DiscordBotsFile = Revisioned & {
   waifus: DiscordBotConfig[];
 };
 
-export type OrchestratorPromptSections = {
-  pausePlanning: boolean;
-  messageStructure: boolean;
+/** `user/assistant/config.json`: the assistant's own model (unset = first configured waifu's). */
+export type AssistantConfig = Revisioned & {
+  model?: ModelChoice;
 };
 
-export type AgentConfig = Revisioned & {
-  enabled: boolean;
-  providerId?: ProviderId;
-  modelId?: string;
-  contextWindow: number;
-  prompt: string;
-  directiveCooldown: number;
-  params: Record<string, unknown>;
-  promptSections: OrchestratorPromptSections;
-};
-
-// Gateway P6 Task 4: providerId/modelId accept explicit `null` on write to mean "unset" — the
-// wire needs to carry that intent (a bare `undefined` field is dropped by JSON.stringify before
-// it ever reaches the server and is indistinguishable from "field omitted, leave untouched").
-export type UpdateAgentConfigBody = Partial<
-  Omit<AgentConfig, "schemaVersion" | "updatedAt" | "providerId" | "modelId">
-> & {
-  revision: number;
-  providerId?: ProviderId | null;
-  modelId?: string | null;
+export type UpdateAssistantConfigBody = {
+  revision?: number;
+  /** `null` unsets. */
+  model: ModelChoice | null;
 };
 
 export type ProviderCredentialStatus =
@@ -333,9 +354,8 @@ export type ProviderCredentialStatus =
       keyHint: string;
     };
 
-// Gateway P6 Task 3: /api/providers is now credentials-status over the full gateway registry
-// (all 14 provider ids) — no per-provider model list. The gateway registry itself (models
-// included) lives at /api/llm/v1/* (see api/llm.ts).
+// /api/providers: credential status for the providers serving curated routes, the detector's
+// providers and any provider with a stored key. Models are listed by GET /api/models.
 export type ProviderMetadata = {
   id: ProviderId;
   displayName: string;
@@ -346,53 +366,8 @@ export type ProviderMetadata = {
 export type ProvidersResponse = {
   revision: number;
   updatedAt: string;
+  catalogVersion: string;
   providers: ProviderMetadata[];
-};
-
-export type OrchestratorRespondingWaifu = {
-  waifuId: string;
-  delaySeconds: number;
-  replyToMessageId?: string;
-  directive?: { intent: string; goal?: string };
-};
-
-export type OrchestratorResponderOutcome = {
-  id: string;
-  waifuId: string;
-  source: "orchestrator" | "handoff";
-  handoffFromWaifuId?: string;
-  status:
-    | "pending"
-    | "sent"
-    | "tool_only"
-    | "empty"
-    | "blocked"
-    | "unavailable"
-    | "interrupted"
-    | "failed"
-    | "not_run";
-  reason?: string;
-  directiveStripped?: "cooldown" | "over_cap";
-  messageIds: string[];
-};
-
-export type OrchestratorDecisionHistoryEntry = {
-  id: string;
-  guildId?: string;
-  channelId?: string;
-  action: "reply" | "no_reply";
-  respondingWaifus: OrchestratorRespondingWaifu[];
-  retriggerAfterSeconds?: number;
-  wakePlan?: string;
-  reasoning: string;
-  status: "pending" | "completed" | "interrupted" | "failed";
-  waifuMessageIds: string[];
-  responderOutcomes: OrchestratorResponderOutcome[];
-  createdAt: string;
-};
-
-export type OrchestratorHistoryFile = Revisioned & {
-  decisions: OrchestratorDecisionHistoryEntry[];
 };
 
 export type WaifuSleepSchedule = {
@@ -412,43 +387,9 @@ export type WaifuAvailability = {
   busy: WaifuBusyInterval[];
 };
 
-export type WaifuToolSettings = {
-  toolUse: boolean;
-};
-
 export type ServerToolSettings = {
   pickNextWaifu: boolean;
   shortTermMemory: boolean;
-};
-
-export type StageManagerEditHistoryEntry = {
-  id: string;
-  guildId?: string;
-  channelId?: string;
-  tool: "add_memory" | "update_memory" | "archive_memory" | "merge_memories" | "no_change";
-  affectedMemoryIds: string[];
-  summary: string;
-  observationCount?: number;
-  createdAt: string;
-};
-
-export type StageManagerHistoryFile = Revisioned & {
-  edits: StageManagerEditHistoryEntry[];
-};
-
-export type ReviewerHistoryEntry = {
-  id: string;
-  guildId?: string;
-  channelId?: string;
-  reviewerUserId?: string;
-  targetMessageIds: string[];
-  hallucination: boolean;
-  deleted: boolean;
-  createdAt: string;
-};
-
-export type ReviewerHistoryFile = Revisioned & {
-  reviews: ReviewerHistoryEntry[];
 };
 
 export type WaifuConfig = Revisioned & {
@@ -457,22 +398,13 @@ export type WaifuConfig = Revisioned & {
   displayName: string;
   enabled: boolean;
   persona: string;
-  providerId?: ProviderId;
-  modelId?: string;
+  model?: ModelChoice;
   botId?: string;
-  contextWindow: number;
-  params: Record<string, unknown>;
   availability: WaifuAvailability;
-  tools: WaifuToolSettings;
   verbosity: WaifuVerbosity;
   customInstructions: string;
   scheduleInPrompt: boolean;
   dm: WaifuDmSettings;
-  personaDigest?: {
-    voice: string;
-    role: string;
-    personaHash: string;
-  };
 };
 
 export type WaifuVerbosity = "terse" | "chatty" | "expressive";
@@ -493,27 +425,22 @@ export type CreateWaifuBody = {
   id?: string;
   enabled?: boolean;
   persona?: string;
-  providerId?: ProviderId;
-  modelId?: string;
+  model?: ModelChoice;
   botId?: string;
-  contextWindow?: number;
-  params?: Record<string, unknown>;
   availability?: WaifuAvailability;
-  tools?: WaifuToolSettings;
   verbosity?: WaifuVerbosity;
   customInstructions?: string;
   scheduleInPrompt?: boolean;
   dm?: Partial<Omit<WaifuDmSettings, "rateLimit">> & { rateLimit?: WaifuDmSettings["rateLimit"] };
 };
 
-// Gateway P6 Task 4: providerId/modelId accept explicit `null` on write to mean "unset" (see
-// UpdateAgentConfigBody above for why `undefined` alone can't carry that intent over the wire).
+// `model`/`botId` accept explicit `null` on write to mean "unset" (a bare `undefined` field is
+// dropped by JSON.stringify and is indistinguishable from "field omitted, leave untouched").
 export type UpdateWaifuBody = Partial<
-  Omit<WaifuConfig, "schemaVersion" | "updatedAt" | "providerId" | "modelId" | "botId">
+  Omit<WaifuConfig, "schemaVersion" | "updatedAt" | "model" | "botId">
 > & {
   revision: number;
-  providerId?: ProviderId | null;
-  modelId?: string | null;
+  model?: ModelChoice | null;
   botId?: string | null;
 };
 
@@ -619,77 +546,10 @@ export type GuildRolesFile = Revisioned & {
   roles: GuildRoleCacheEntry[];
 };
 
-export type MemoryStatus = "active" | "archived";
-export type MemoryKind = "fact" | "preference" | "relationship" | "event" | "commitment" | "context";
-export const MEMORY_KINDS: MemoryKind[] = ["fact", "preference", "relationship", "event", "commitment", "context"];
-export type MemorySource = "waifu_tool" | "stage_manager" | "dream" | "user";
-export const MEMORY_SOURCES: MemorySource[] = ["waifu_tool", "stage_manager", "dream", "user"];
-
-// Memories are global per waifu (spec 8.8): `origin` is provenance only.
-export type MemoryOrigin = { guildId?: string; channelId?: string; dm?: true; userId?: string };
-export type MemorySubject = { discordUserId?: string; waifuId?: string; name: string };
-export type MemoryArchivedReason = "merged" | "expired" | "deduped" | "user" | "unknown_waifu";
-
-export type MemoryRecord = {
-  id: string;
-  waifuId: string;
-  content: string;
-  kind: MemoryKind;
-  source: MemorySource;
-  pinned: boolean;
-  strength: number;
-  origin: MemoryOrigin;
-  subjects: MemorySubject[];
-  /** Per-record revision: send it back as `recordRevision` on PUT/DELETE. */
-  revision: number;
-  expiresAt?: string;
-  createdAt: string;
-  updatedAt: string;
-  lastRetrievedAt?: string;
-  status: MemoryStatus;
-  archivedReason?: MemoryArchivedReason;
-  mergedInto?: string;
-};
-
-export type MemoryStore = Revisioned & {
-  memories: MemoryRecord[];
-};
-
-export type CreateMemoryBody = {
-  revision?: number;
-  waifuId: string;
-  guildId?: string;
-  channelId?: string;
-  content: string;
-  strength?: number;
-  pinned?: boolean;
-  kind?: MemoryKind;
-  subjects?: MemorySubject[];
-};
-
-/** POST /api/memories answers the full store, plus `duplicateOf` when the write looked like one. */
-export type CreateMemoryResponse = MemoryStore & { duplicateOf?: string };
-
-export type UpdateMemoryBody = {
-  /** Preferred: the record's own revision. */
-  recordRevision?: number;
-  /** Legacy store-wide revision. */
-  revision?: number;
-  content?: string;
-  strength?: number;
-  pinned?: boolean;
-  kind?: MemoryKind;
-  subjects?: MemorySubject[];
-  status?: MemoryStatus;
-};
-
+/** POST /api/people/:userId/forget (Living cast §14.1; L1 runs the DM part). */
 export type ForgetUserResult = {
   discordUserId: string;
   dryRun: boolean;
-  memories: number;
-  observations: number;
-  ledgers: number;
-  ledgerEntries: number;
   /** Spec 9.1.4: DM conversations, DM state files and rate-limit counter files removed. */
   dmContexts: number;
   dmStates: number;
@@ -755,21 +615,7 @@ export type DiagnosticBundle = {
     waifuBotCount: number;
     configuredWaifuBotCount: number;
   };
-  orchestrator: {
-    revision: number;
-    providerId?: ProviderId;
-    modelId?: string;
-    contextWindow: number;
-    promptLength: number;
-  };
-  stageManager: {
-    revision: number;
-    providerId?: ProviderId;
-    modelId?: string;
-    contextWindow: number;
-    promptLength: number;
-  };
-  memories: { revision: number; count: number };
+  assistant: { model: string | null };
   remoteAccess?: RemoteAccessDiagnostics;
 };
 
@@ -785,6 +631,8 @@ export type ApiErrorBody = {
 export type AssistantEvent =
   | { type: "turn_started" }
   | { type: "text"; content: string }
+  /** Live-only fragment of the reply being streamed (never in the stored transcript). */
+  | { type: "text_delta"; content: string }
   | { type: "tool_call"; name: string; arguments: string }
   | { type: "tool_result"; name: string; result: string }
   | { type: "confirmation_required"; actionId: string; category: string; summary: string }

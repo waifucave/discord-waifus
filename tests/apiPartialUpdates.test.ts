@@ -117,24 +117,6 @@ describe("B17: partial PUT bodies never re-materialize nested defaults", () => {
     }
   });
 
-  it("agent promptSections patches keep sibling flags", async () => {
-    const app = await makeApp();
-    try {
-      const url = "/api/orchestrator/config";
-      const seeded = await app.inject({
-        method: "PUT",
-        url,
-        payload: { promptSections: { pausePlanning: false, messageStructure: false } }
-      });
-      expect(seeded.statusCode).toBe(200);
-      const patched = await app.inject({ method: "PUT", url, payload: { promptSections: { pausePlanning: true } } });
-      expect(patched.statusCode).toBe(200);
-      expect(patched.json().promptSections).toEqual({ pausePlanning: true, messageStructure: false });
-    } finally {
-      await app.close();
-    }
-  });
-
   it("channel PUT keeps omitted fields and accepts but ignores the removed enabled flag (spec 9.7)", async () => {
     const app = await makeApp();
     try {

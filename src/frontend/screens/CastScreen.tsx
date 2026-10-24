@@ -1,24 +1,13 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { api } from "../api/client";
 import { useApi } from "../api/useApi";
-import { llmModels, llmProviders, type LlmModelSummary } from "../api/llm";
-import type { DiscordBotsFile, WaifuConfig, WaifusResponse } from "../api/types";
+import type { DiscordBotsFile, ModelsResponse, WaifuConfig, WaifusResponse } from "../api/types";
 import { characterHue, type ViewId } from "../nav";
-import { Disclosure, FootRow, HeadRow } from "./scaffold";
-import { ModelParamsForm } from "../components/modelParams/ModelParamsForm";
+import { FootRow, HeadRow } from "./scaffold";
+import { ModelPicker } from "../components/ModelPicker";
 import { WaifuStyleFields, waifuStyleBlocksSave } from "../components/WaifuStyleFields";
 import { Notice } from "../components/Notice";
-import {
-  buildModelGroupOptions,
-  buildRouteOptions,
-  defaultRoute,
-  findRoute,
-  groupModelRoutes,
-  UNAVAILABLE_MODEL_VALUE
-} from "../components/modelParams/logic";
 import { violationsFromApiError, type SaveErrorViolation } from "../api/violations";
-
-type LlmProviderSummary = Awaited<ReturnType<typeof llmProviders>>[number];
 
 export function CastScreen({
   characterId,
@@ -41,8 +30,8 @@ function CastMosaic({ onNavigate }: { onNavigate: (view: ViewId, tab?: string, i
   const cast = waifus.data?.waifus ?? [];
   const botIds = new Set((bots.data?.waifus ?? []).map((b) => b.id));
 
-  const talking = cast.filter((w) => w.enabled && w.modelId).length;
-  const unconfigured = cast.filter((w) => !w.modelId || !w.botId).length;
+  const talking = cast.filter((w) => w.enabled && w.model).length;
+  const unconfigured = cast.filter((w) => !w.model || !w.botId).length;
 
   return (
     <div className="screen">
@@ -63,7 +52,7 @@ function CastMosaic({ onNavigate }: { onNavigate: (view: ViewId, tab?: string, i
         >
           {cast.map((waifu, index) => {
             const hue = characterHue(index);
-            const missing = !waifu.modelId || !waifu.botId || !botIds.has(waifu.botId ?? "");
+            const missing = !waifu.model || !waifu.botId || !botIds.has(waifu.botId ?? "");
             const wide = index === 0;
             return (
               <button
@@ -79,11 +68,11 @@ function CastMosaic({ onNavigate }: { onNavigate: (view: ViewId, tab?: string, i
                 <div>
                   <span className="nm" style={{ fontSize: wide ? 52 : 34 }}>{waifu.displayName || waifu.name}</span>
                   <div className="t-micro" style={{ marginTop: 8, textTransform: "none", letterSpacing: "0.04em" }}>
-                    {waifu.modelId ?? "no model"} · {waifu.contextWindow} ctx{waifu.botId ? " · bot linked" : " · no bot"}
+                    {waifu.model?.modelId ?? "no model"}{waifu.botId ? " · bot linked" : " · no bot"}
                   </div>
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8 }}>
-                  <span className="t-micro">{waifu.enabled ? (waifu.modelId ? "ready" : "no model") : "disabled"}</span>
+                  <span className="t-micro">{waifu.enabled ? (waifu.model ? "ready" : "no model") : "disabled"}</span>
                   {missing && <span className="chip butter">needs setup</span>}
                 </div>
               </button>
@@ -118,8 +107,7 @@ function CharacterEditor({
   onNavigate: (view: ViewId, tab?: string, id?: string) => void;
 }) {
   const creating = characterId === "__new__";
-  const llmModelsState = useApi<LlmModelSummary[]>(() => llmModels(), []);
-  const llmProvidersState = useApi<LlmProviderSummary[]>(() => llmProviders(), []);
+  const models = useApi<ModelsResponse>((s) => api.models(s), []);
   const bots = useApi<DiscordBotsFile>((s) => api.discordBots(s), []);
   const remote = useApi<WaifuConfig | undefined>(
     async (s) => (creating ? undefined : api.waifu(characterId, s)),
@@ -127,7 +115,6 @@ function CharacterEditor({
   );
 
   const [draft, setDraft] = useState<Partial<WaifuConfig>>({});
-  const [paramsValid, setParamsValid] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | undefined>(undefined);
   const [violations, setViolations] = useState<SaveErrorViolation[] | undefined>(undefined);
@@ -140,38 +127,15 @@ function CharacterEditor({
         name: "",
         displayName: "",
         persona: "",
-        contextWindow: 50,
         enabled: true,
-        params: {},
         verbosity: "terse",
         customInstructions: "",
-        scheduleInPrompt: true,
-        tools: { toolUse: true }
+        scheduleInPrompt: true
       });
     } else if (remote.data) {
       setDraft(remote.data);
     }
   }, [creating, remote.data]);
-
-  const routeGroups = useMemo(() => groupModelRoutes(llmModelsState.data ?? []), [llmModelsState.data]);
-  const configuredProviderIds = useMemo(
-    () => new Set((llmProvidersState.data ?? []).filter((p) => p.credentialConfigured).map((p) => p.id)),
-    [llmProvidersState.data]
-  );
-  const resolvedRoute = useMemo(() => {
-    if (!draft.providerId || !draft.modelId) return undefined;
-    return findRoute(llmModelsState.data ?? [], draft.providerId, draft.modelId);
-  }, [llmModelsState.data, draft.providerId, draft.modelId]);
-  const modelGroupOptions = useMemo(
-    () =>
-      buildModelGroupOptions(
-        routeGroups,
-        draft.providerId && draft.modelId && !resolvedRoute ? { providerId: draft.providerId, modelId: draft.modelId } : undefined
-      ),
-    [routeGroups, draft.providerId, draft.modelId, resolvedRoute]
-  );
-  const modelGroupValue = !draft.providerId || !draft.modelId ? "" : resolvedRoute ? resolvedRoute.group.key : UNAVAILABLE_MODEL_VALUE;
-  const routeOptions = resolvedRoute ? buildRouteOptions(resolvedRoute.group, configuredProviderIds) : [];
 
   const set = (patch: Partial<WaifuConfig>) => setDraft((d) => ({ ...d, ...patch }));
 
@@ -186,14 +150,10 @@ function CharacterEditor({
           name: draft.name || draft.displayName || "Unnamed",
           displayName: draft.displayName || draft.name || "Unnamed",
           persona: draft.persona ?? "",
-          providerId: draft.providerId,
-          modelId: draft.modelId,
-          params: draft.params ?? {},
-          contextWindow: draft.contextWindow,
+          ...(draft.model ? { model: draft.model } : {}),
           verbosity: draft.verbosity,
           customInstructions: draft.customInstructions,
-          scheduleInPrompt: draft.scheduleInPrompt,
-          tools: draft.tools
+          scheduleInPrompt: draft.scheduleInPrompt
         });
         onNavigate("cast", undefined, created.id);
         setMessage("Character created.");
@@ -204,21 +164,10 @@ function CharacterEditor({
           displayName: draft.displayName,
           persona: draft.persona,
           enabled: draft.enabled,
-          providerId: draft.providerId ?? null,
-          modelId: draft.modelId ?? null,
-          // server merges params; removed keys must be sent as explicit nulls to unset
-          params: {
-            ...Object.fromEntries(
-              Object.keys(remote.data?.params ?? {})
-                .filter((key) => !(key in (draft.params ?? {})))
-                .map((key) => [key, null])
-            ),
-            ...(draft.params ?? {})
-          },
-          contextWindow: draft.contextWindow,
+          // `null` unsets the model; omitting it would keep the stored one
+          model: draft.model ?? null,
           botId: draft.botId ?? null,
           availability: draft.availability,
-          tools: draft.tools,
           verbosity: draft.verbosity,
           customInstructions: draft.customInstructions,
           scheduleInPrompt: draft.scheduleInPrompt
@@ -251,13 +200,13 @@ function CharacterEditor({
       <HeadRow
         onBack={() => onNavigate("cast")}
         title={title}
-        sub={creating ? "define who she is" : remote.data?.modelId ?? "no model"}
+        sub={creating ? "define who she is" : remote.data?.model?.modelId ?? "no model"}
         action={
           <button
             className="cell clickable actioncell"
             style={{ background: "var(--mint)" }}
             onClick={save}
-            disabled={saving || (Boolean(draft.modelId) && !paramsValid) || waifuStyleBlocksSave(draft)}
+            disabled={saving || waifuStyleBlocksSave(draft)}
           >
             {saving ? "Saving…" : "Save"}
           </button>
@@ -331,74 +280,18 @@ function CharacterEditor({
           </div>
         )}
 
-        <div className="fgrid" style={{ flex: "none", gridTemplateColumns: "1fr 1fr 200px" }}>
-            <div className="fcell">
-              <label className="field-label">Model</label>
-              <select
-                className="select"
-                value={modelGroupValue}
-                onChange={(e) => {
-                  const value = e.target.value;
-                  if (!value) return set({ providerId: undefined, modelId: undefined });
-                  if (value === UNAVAILABLE_MODEL_VALUE) return;
-                  const group = routeGroups.find((g) => g.key === value);
-                  const route = group && defaultRoute(group, configuredProviderIds);
-                  if (route) set({ providerId: route.providerId, modelId: route.modelId });
-                }}
-              >
-                {modelGroupOptions.map((opt) => (
-                  <option key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-            {resolvedRoute && resolvedRoute.group.routes.length > 1 ? (
-              <div className="fcell">
-                <label className="field-label">Route</label>
-                <select
-                  className="select"
-                  value={resolvedRoute.route.providerId}
-                  onChange={(e) => {
-                    const route = resolvedRoute.group.routes.find((r) => r.providerId === e.target.value);
-                    if (route) set({ providerId: route.providerId, modelId: route.modelId });
-                  }}
-                >
-                  {routeOptions.map((opt) => (
-                    <option key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            ) : (
-              <div className="cell" />
-            )}
-            <div className="fcell">
-              <label className="field-label">Messages loaded at start</label>
-              <input
-                className="input"
-                type="number"
-                min={1}
-                max={200}
-                value={draft.contextWindow ?? 50}
-                onChange={(e) => set({ contextWindow: Number(e.target.value) })}
-              />
-              <span className="field-hint">Backfill when she first joins a conversation; compaction keeps the context bounded after that.</span>
-            </div>
+        <div className="fgrid" style={{ flex: "none", gridTemplateColumns: "1fr 240px" }}>
+          <ModelPicker
+            value={draft.model}
+            models={models.data?.models ?? []}
+            onChange={(model) => setDraft((d) => ({ ...d, model }))}
+            unsetHint="She stays quiet until she has a model."
+          />
         </div>
-        {draft.modelId && (
-          <Disclosure title="Model parameters" hint="temperature · reasoning · advanced">
-            <div className="fused" style={{ flex: "none" }}>
-              <ModelParamsForm
-                providerId={draft.providerId ?? null}
-                modelId={draft.modelId ?? null}
-                value={draft.params ?? {}}
-                onChange={(params) => set({ params })}
-                onValidity={setParamsValid}
-              />
-            </div>
-          </Disclosure>
+        {models.error && (
+          <div className="cell" style={{ padding: 16, flex: "none" }}>
+            <Notice tone="warn">The model list could not be loaded. Your saved model is kept.</Notice>
+          </div>
         )}
 
         <div className="fgrid" style={{ flex: "none", gridTemplateColumns: "1fr 1fr" }}>
@@ -414,41 +307,12 @@ function CharacterEditor({
             </label>
             <span className="field-hint">When on, she knows what she is doing right now (sleeping, busy) and can say so.</span>
           </div>
-          <div className="fcell">
-            <label className="field-label">Tools</label>
-            <label className="checkbox-chip">
-              <input
-                type="checkbox"
-                checked={draft.tools?.toolUse ?? true}
-                onChange={(e) => set({ tools: { ...(draft.tools ?? { toolUse: true }), toolUse: e.target.checked } })}
-              />
-              Can save memories while chatting
-            </label>
-            <span className="field-hint">Lets her remember things on her own as the conversation goes.</span>
-          </div>
+          <div className="cell" />
         </div>
 
         {!creating && remote.data && (
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "var(--line)", background: "var(--ink)", flex: "none" }}>
-            <button
-              className="cell clickable"
-              data-hue
-              style={{ ["--hover-hue" as string]: "var(--lavender)", padding: "18px 26px" }}
-              onClick={async () => {
-                try {
-                  const updated = await api.regeneratePersonaDigest(remote.data!.id);
-                  remote.setData(updated);
-                  setMessage("Digest regenerated.");
-                } catch (err) {
-                  setMessage((err as Error).message);
-                }
-              }}
-            >
-              <div className="t-body">Regenerate persona digest</div>
-              <div className="t-micro" style={{ marginTop: 4, textTransform: "none" }}>
-                {remote.data.personaDigest ? remote.data.personaDigest.voice.slice(0, 90) : "no digest yet"}
-              </div>
-            </button>
+            <div className="cell" />
             <button
               className="cell clickable"
               data-hue
@@ -471,7 +335,7 @@ function CharacterEditor({
               <span className="t-title">Delete {draft.displayName || draft.name}?</span>
             </div>
             <div className="modal-body">
-              <p className="t-small t-mute">Her config and persona are removed permanently. Memories about her stay in the store.</p>
+              <p className="t-small t-mute">Her config and persona are removed permanently.</p>
             </div>
             <div className="modal-footer">
               <button className="cell clickable" style={{ background: "var(--paper)" }} onClick={() => setConfirmDelete(false)}>

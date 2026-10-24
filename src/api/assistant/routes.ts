@@ -1,7 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
-import type { ModelPipeline } from "../../providers/types.js";
+import { sharedModelClient } from "../../models/client.js";
 import {
   ApprovePairingInputV1Schema,
   PairInvitationV1Schema,
@@ -10,7 +10,7 @@ import {
 } from "../../shared/schemas/remoteLifecycle.js";
 import { Base64Url32BytesSchema } from "../../shared/schemas/remoteProtocol.js";
 import { ConversationStore, conversationOwner } from "./conversations.js";
-import { AssistantTurnError, runAssistantTurn } from "./service.js";
+import { AssistantTurnError, runAssistantTurn, type AssistantModelClient } from "./service.js";
 import {
   withoutBrowserContext,
   type RequestPrincipal
@@ -47,7 +47,8 @@ export function registerAssistantRoutes(
   app: FastifyInstance,
   options: {
     dataRoot: string;
-    createPipeline?: (target: { providerId: string; modelId: string }) => ModelPipeline;
+    /** Default: the process-wide ModelClient of the data root. */
+    modelClient?: AssistantModelClient;
     authorizePrincipal: (principal: RequestPrincipal) => boolean | Promise<boolean>;
     subscribeInvalidations?: (listener: RemoteAccessInvalidationListener) => () => void;
   }
@@ -93,7 +94,7 @@ export function registerAssistantRoutes(
           authorizationPrincipal: request.principal,
           delegation: { conversationId: id },
           authorizePrincipal: options.authorizePrincipal,
-          createPipeline: options.createPipeline
+          modelClient: options.modelClient ?? sharedModelClient(options.dataRoot)
         },
         id,
         body.content
@@ -382,7 +383,7 @@ function actionReceiptMessage(category: string): string {
   if (category === "remote_pairing_approval") return "The pairing request was approved.";
   if (category === "remote_invitation_cancel") return "The pairing invitation was cancelled.";
   if (category === "remote_device_revoke") return "The trusted remote device was revoked.";
-  if (category === "memory_forget_user") return "The user was forgotten.";
+  if (category === "people_forget") return "The user was forgotten.";
   if (category === "dm_forget") return "The DM conversation was forgotten.";
   return "The confirmed assistant action completed.";
 }

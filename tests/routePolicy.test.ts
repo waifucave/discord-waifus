@@ -1,6 +1,6 @@
 import fastify from "fastify";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { oneShotCatalog } from "../src/orchestration/oneShot/catalog.js";
+import { oneShotCatalog } from "../src/life/detector/catalog.js";
 import { createApiServer } from "../src/api/server.js";
 import { BrowserSecurity } from "../src/api/browserSecurity.js";
 import { dispatchInternal } from "../src/api/internalDispatch.js";
@@ -67,23 +67,31 @@ async function makeApp() {
 }
 
 describe("route policy inventory", () => {
-  it("keeps gateway wildcard methods bounded when Fastify adds QUERY support", async () => {
+  // The LLM gateway's wildcard route left with Living cast L1; the wildcard machinery stays, so it
+  // is exercised with a synthetic definition.
+  it("keeps wildcard methods bounded when Fastify adds QUERY support", async () => {
     const app = fastify({ logger: false });
     apps.push(app);
     // QUERY is built into current Fastify; send a valid body/content type so
     // the assertion proves route exclusion, not an earlier parser rejection.
     const registration = installRoutePolicy(app, {
-      manifest: ROUTE_POLICY_MANIFEST.filter((definition) => (
-        definition.path === "/api/llm/*" || definition.synthetic === "not_found"
-      )),
+      manifest: [
+        {
+          method: "*",
+          path: "/api/wildcard/*",
+          remotePolicy: "full_admin",
+          gatewaySemanticRoutes: [{ method: "GET", path: "/api/wildcard/v1/models", retryClass: "safe" }]
+        },
+        ...ROUTE_POLICY_MANIFEST.filter((definition) => definition.synthetic === "not_found")
+      ],
       browserSecurity: new BrowserSecurity({ listenerHost: "127.0.0.1", port: 3888, mode: "test" })
     });
-    app.all("/api/llm/*", async () => ({ ok: true }));
+    app.all("/api/wildcard/*", async () => ({ ok: true }));
     registration.registerNotFound();
     expect(() => registration.assertComplete()).not.toThrow();
-    const query = await app.inject({ method: "QUERY" as never, url: "/api/llm/v1/models", payload: {} });
+    const query = await app.inject({ method: "QUERY" as never, url: "/api/wildcard/v1/models", payload: {} });
     expect(query.statusCode).toBe(404);
-    const models = await app.inject({ method: "GET", url: "/api/llm/v1/models" });
+    const models = await app.inject({ method: "GET", url: "/api/wildcard/v1/models" });
     expect(models.statusCode).toBe(200);
   });
 
@@ -110,10 +118,10 @@ describe("route policy inventory", () => {
 });
 
 describe("remote route authorization", () => {
-  it("allows authorized remotes to discover and save One shot settings without credentials or executable inputs", async () => {
+  it("allows authorized remotes to discover detector models and save One shot settings without credentials or executable inputs", async () => {
     vi.spyOn(oneShotCatalog, "list").mockResolvedValue({ unavailable: false, models: [{ target: "openai:gpt-6-luna", label: "OpenAI Decisions", provider: "openai", local: false }] });
     const app = await makeApp(); const actor = remote();
-    const catalog = await dispatchInternal(app, actor, undefined, { method: "GET", url: "/api/orchestrator/one-shot/models" });
+    const catalog = await dispatchInternal(app, actor, undefined, { method: "GET", url: "/api/detector/models" });
     expect(catalog.statusCode).toBe(200);
     expect(catalog.json().models[0].configured).toBe(false);
     const selected = await dispatchInternal(app, actor, undefined, { method: "PUT", url: "/api/servers/100000000000000001", headers: { "idempotency-key": Buffer.alloc(32, 0x31).toString("base64url") }, payload: { revision: 0, orchestratorMode: "one-shot", oneShot: { target: "openai:gpt-6-luna" } } });
@@ -140,24 +148,4 @@ describe("remote route authorization", () => {
     expect(context.statusCode).toBe(403);
   });
 
-  it("applies the exact five-route semantic allowlist inside the gateway wildcard", async () => {
-    const app = await makeApp();
-    const actor = remote();
-    for (const url of [
-      "/api/llm/v1/providers",
-      "/api/llm/v1/models",
-      "/api/llm/v1/models/deepseek/deepseek-v4-pro"
-    ]) {
-      const response = await dispatchInternal(app, actor, undefined, { method: "GET", url });
-      expect(response.statusCode, url).not.toBe(403);
-    }
-    for (const [method, url] of [
-      ["GET", "/api/llm/v1/sync"],
-      ["DELETE", "/api/llm/v1/models"],
-      ["POST", "/api/llm/v1/providers"]
-    ] as const) {
-      const response = await dispatchInternal(app, actor, undefined, { method, url });
-      expect(response.statusCode, `${method} ${url}`).toBe(403);
-    }
-  });
 });

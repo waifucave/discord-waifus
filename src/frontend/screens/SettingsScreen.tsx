@@ -1,7 +1,17 @@
 import { useEffect, useState } from "react";
 import { api } from "../api/client";
 import { useApi } from "../api/useApi";
-import type { AppConfig, AutoUpdateStatus, DiscordBotConfig, DiscordBotsFile, ProvidersResponse, WaifusResponse } from "../api/types";
+import type {
+  AppConfig,
+  AssistantConfig,
+  AutoUpdateStatus,
+  DiscordBotConfig,
+  DiscordBotsFile,
+  ModelChoice,
+  ModelsResponse,
+  ProvidersResponse,
+  WaifusResponse
+} from "../api/types";
 import { useClientContext } from "../state/clientContext";
 import type { ViewId } from "../nav";
 import { FootRow, HeadRow, TabCells } from "./scaffold";
@@ -9,6 +19,7 @@ import { Notice } from "../components/Notice";
 import { DiscordBotGuide } from "../components/DiscordBotGuide";
 import { ContextExternalLink } from "../components/ContextExternalLink";
 import { RemoteAccessTab } from "../components/remoteAccess/RemoteAccessTab";
+import { ModelPicker } from "../components/ModelPicker";
 
 export function SettingsScreen({
   tab,
@@ -22,13 +33,15 @@ export function SettingsScreen({
   const active = tab ?? "providers";
   return (
     <div className="screen">
-      <HeadRow onBack={() => onNavigate("home")} title="Settings" sub="providers · app · remote access" />
+      <HeadRow onBack={() => onNavigate("home")} title="Settings" sub="providers · assistant · app · remote access" />
       <TabCells view="settings" active={active} onTab={onTab} />
       {active === "providers"
         ? <ProvidersTab />
-        : active === "remote-access"
-          ? <RemoteAccessTab />
-          : <AppTab />}
+        : active === "assistant"
+          ? <AssistantTab />
+          : active === "remote-access"
+            ? <RemoteAccessTab />
+            : <AppTab />}
       <FootRow />
     </div>
   );
@@ -113,6 +126,80 @@ function ProvidersTab() {
       ))}
       <div className="cell" style={{ padding: "14px 26px", flex: "none" }}>
         <span className="t-mute t-small">Keys are stored locally, sent only to their provider, and never shown again once saved.</span>
+      </div>
+      <div className="cell growcell" />
+    </div>
+  );
+}
+
+/* ================= assistant ================= */
+
+/** Norma's own model (Living cast §9.3); unset = the first configured waifu's model. */
+function AssistantTab() {
+  const remote = useApi<AssistantConfig>((s) => api.assistantConfig(s), []);
+  const models = useApi<ModelsResponse>((s) => api.models(s), []);
+  const waifus = useApi<WaifusResponse>((s) => api.waifus(s), []);
+  const [draft, setDraft] = useState<ModelChoice | undefined>(undefined);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState<{ tone: "ok" | "err"; text: string } | undefined>(undefined);
+
+  useEffect(() => {
+    if (remote.data) setDraft(remote.data.model);
+  }, [remote.data]);
+
+  const list = waifus.data?.waifus ?? [];
+  const fallback = [...list.filter((w) => w.enabled), ...list.filter((w) => !w.enabled)].find((w) => w.model);
+
+  const save = async () => {
+    if (!remote.data) return;
+    setSaving(true);
+    setMessage(undefined);
+    try {
+      const saved = await api.putAssistantConfig({ revision: remote.data.revision, model: draft ?? null });
+      remote.setData(saved);
+      setMessage({ tone: "ok", text: "Saved." });
+    } catch (err) {
+      setMessage({ tone: "err", text: (err as Error).message });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="content">
+      {message && (
+        <div className="cell" style={{ padding: 16, flex: "none" }}>
+          <Notice tone={message.tone}>{message.text}</Notice>
+        </div>
+      )}
+      <div className="cell" style={{ padding: "14px 26px", flex: "none" }}>
+        <span className="t-mute t-small">
+          Norma, the dashboard helper, reads and changes app configuration through the same API this UI uses.
+        </span>
+      </div>
+      <div className="fgrid" style={{ flex: "none", gridTemplateColumns: "1fr 240px" }}>
+        <ModelPicker
+          value={draft}
+          models={models.data?.models ?? []}
+          onChange={setDraft}
+          unsetLabel="— use a waifu's model —"
+          unsetHint={
+            fallback?.model
+              ? `Unset: borrowing ${fallback.displayName || fallback.name}'s ${fallback.model.modelId}.`
+              : "Unset, and no waifu has a model either."
+          }
+        />
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 280px", gap: "var(--line)", background: "var(--ink)", flex: "none" }}>
+        <div className="cell" />
+        <button
+          className="cell clickable"
+          style={{ background: "var(--mint)", height: 64, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16 }}
+          onClick={save}
+          disabled={saving || !remote.data}
+        >
+          {saving ? "Saving…" : "Save"}
+        </button>
       </div>
       <div className="cell growcell" />
     </div>

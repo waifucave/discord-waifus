@@ -1,4 +1,4 @@
-import { assessLoop } from "../../src/orchestration/loopDetector.js";
+import { assessLoop } from "./lexicalLoop.js";
 import type { BenchmarkCase, DecisionRubrics } from "./cases.js";
 import { summarize, type Result } from "./core.js";
 

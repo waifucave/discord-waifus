@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useApi } from "../../api/useApi";
 import { api } from "../../api/client";
-import type { AgentConfig, AssistantActionDetail } from "../../api/types";
+import type { AssistantActionDetail, AssistantConfig } from "../../api/types";
 import { useAssistantChat, type ChatItem } from "../../state/assistantChat";
 import type { ViewId } from "../../nav";
 import { InvitationCard } from "../remoteAccess/InvitationCard";
@@ -290,8 +290,7 @@ export function AssistantPanel({
   const [handledSecrets, setHandledSecrets] = useState<Set<number>>(new Set());
   const [actionReceipts, setActionReceipts] = useState<Map<string, string>>(new Map());
   const scrollRef = useRef<HTMLDivElement>(null);
-  const assistantConfig = useApi<AgentConfig | undefined>(async (s) => (open ? api.assistantConfig(s) : undefined), [open]);
-  const orchestratorConfig = useApi<AgentConfig | undefined>(async (s) => (open ? api.orchestratorConfig(s) : undefined), [open]);
+  const assistantConfig = useApi<AssistantConfig | undefined>(async (s) => (open ? api.assistantConfig(s) : undefined), [open]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
@@ -307,7 +306,7 @@ export function AssistantPanel({
   };
 
   const modelMissing = chat.error && /model|provider/i.test(chat.error);
-  const model = assistantConfig.data?.modelId ?? orchestratorConfig.data?.modelId;
+  const model = assistantConfig.data?.model?.modelId;
 
   return (
     <aside className="norma">
@@ -337,7 +336,7 @@ export function AssistantPanel({
         {chat.items.length === 0 && !chat.error && (
           <div className="hint">
             Ask about your setup, or tell me to change it — "create a character named Momo", "which channels is Riko
-            in?", "set the orchestrator temperature to 0.3". Changes apply immediately.
+            in?", "switch Riko to a cheaper model". Changes apply immediately.
           </div>
         )}
         {chat.items.map((item, index) => {
@@ -399,13 +398,14 @@ export function AssistantPanel({
           }
           return <div key={index} className="m-err">{item.message}</div>;
         })}
-        {chat.busy && <div className="m-busy">working…</div>}
+        {chat.busy && chat.streaming && <div className="m-asst">{chat.streaming}</div>}
+        {chat.busy && !chat.streaming && <div className="m-busy">working…</div>}
         {chat.error && (
           <div className="m-err">
             {chat.error}
             {modelMissing && (
               <div>
-                <button className="btn sm" style={{ marginTop: 8 }} onClick={() => onNavigate("direction", "assistant")}>
+                <button className="btn sm" style={{ marginTop: 8 }} onClick={() => onNavigate("settings", "assistant")}>
                   Configure the assistant model
                 </button>
               </div>

@@ -177,7 +177,7 @@ export interface DiscordGatewayFacade {
   /**
    * Phase 4 context engine (spec 8.3): raw messages newer than `afterMessageId` (null = newest
    * `maxMessages`), one record per Discord message, oldest-first; pages `before` in batches of
-   * 100. Fakes without it fall back to fetchFreshContext + cursor filter (fetchTranscript.ts).
+   * 100. Fakes without it fall back to fetchFreshContext + cursor filter (conversationSource.ts).
    */
   fetchContextSince?(input: {
     guildId: string;

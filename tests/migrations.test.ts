@@ -7,7 +7,6 @@ import { loadAppConfig } from "../src/config/appConfig.js";
 import { RuntimeStateSchema } from "../src/backend/runtime.js";
 import { CURRENT_SCHEMA_VERSION } from "../src/shared/schemas/common.js";
 import {
-  AgentConfigSchema,
   DiscordBotsFileSchema,
   MemoryStoreSchema,
   ProviderCredentialsFileSchema,
@@ -691,7 +690,7 @@ describe("runMigrations", () => {
 });
 
 describe("schema v2 migration (§7.3)", () => {
-  it("converts legacy reasoning/generation to gateway params, remaps retired model ids, leaves unknown ids in place, and stamps every file to schemaVersion 2", async () => {
+  it("converts legacy reasoning/generation to gateway params, then the Living cast model step drops params and unmapped ids, and stamps every file to schemaVersion 2", async () => {
     const root = await makeTempRoot();
     roots.push(root);
     const now = "2026-05-16T12:00:00.000Z";
@@ -797,6 +796,7 @@ describe("schema v2 migration (§7.3)", () => {
     expect(result.applied).toEqual([
       "migrate-configs-to-gateway-params",
       "migrate-memories-global-origin-subjects-1",
+      "living-cast-models-v1",
       "stamp-schema-version-2"
     ]);
 
@@ -805,28 +805,36 @@ describe("schema v2 migration (§7.3)", () => {
     expect(orchestratorConfig).not.toHaveProperty("reasoning");
     expect(orchestratorConfig).not.toHaveProperty("generation");
     expect(orchestratorConfig.schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
-    expect(() => AgentConfigSchema.parse(orchestratorConfig)).not.toThrow();
 
+    // living-cast-models-v1: the gateway params are gone with the flat model fields.
     const haru = await readJson<Record<string, unknown>>(root, "user/waifus/haru/waifu.json");
-    expect(haru.params).toEqual({ temperature: 1.2, "reasoning.enabled": false });
+    expect(haru).not.toHaveProperty("params");
+    expect(haru).not.toHaveProperty("model");
     expect(haru).not.toHaveProperty("reasoning");
     expect(haru).not.toHaveProperty("generation");
     expect(haru.schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
     expect(() => WaifuConfigSchema.parse(haru)).not.toThrow();
 
+    // gpt-4o was remapped to gpt-5-mini (a retired id), which has no curated Living cast family:
+    // the model is unset and a model_unmapped warning names it.
     const sable = await readJson<Record<string, unknown>>(root, "user/waifus/sable/waifu.json");
-    expect(sable.providerId).toBe("openai");
-    expect(sable.modelId).toBe("gpt-5-mini");
+    expect(sable).not.toHaveProperty("providerId");
+    expect(sable).not.toHaveProperty("modelId");
+    expect(sable).not.toHaveProperty("model");
     expect(sable.schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
     expect(() => WaifuConfigSchema.parse(sable)).not.toThrow();
 
-    // Unknown model id: resolveModelTarget throws, so the migration must leave it untouched
-    // rather than silently substituting something (waifus doctor warns about this in T5).
+    // An unknown id is never substituted: unset, with a warning.
     const quill = await readJson<Record<string, unknown>>(root, "user/waifus/quill/waifu.json");
-    expect(quill.providerId).toBe("openai");
-    expect(quill.modelId).toBe("bogus-model");
+    expect(quill).not.toHaveProperty("modelId");
+    expect(quill).not.toHaveProperty("model");
     expect(quill.schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
     expect(() => WaifuConfigSchema.parse(quill)).not.toThrow();
+    const warnings = await readJson<{ warnings: Array<{ scope: string; code: string; detail: string }> }>(root, "app/model-warnings.json");
+    expect(warnings.warnings.filter((warning) => warning.code === "model_unmapped").map((warning) => warning.scope).sort()).toEqual([
+      "waifu:quill",
+      "waifu:sable"
+    ]);
 
     const providers = await readJson<Record<string, unknown>>(root, "user/providers.json");
     expect(providers.schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
@@ -1069,7 +1077,7 @@ describe("migration ledger", () => {
   });
 
   describe("Phase 4 steps", () => {
-    // `waifu-params-gateway-040-v1` is checked in tests/waifuParamsGateway040.test.ts.
+    // `waifu-params-gateway-040-v1` was removed by Living cast L1 (its id stays in the history comment).
     const PHASE4_STEP_IDS = [
       "waifu-drop-prompt-layout-v1",
       "server-context-windows-explicit-v1",
@@ -1086,14 +1094,11 @@ describe("migration ledger", () => {
       const positions = PHASE4_STEP_IDS.map((id) => ids.indexOf(id));
       expect(positions.every((index) => index >= 0)).toBe(true);
       expect([...positions].sort((a, b) => a - b)).toEqual(positions);
-      expect(positions[0]).toBeGreaterThan(ids.indexOf("waifu-params-gateway-040-v1"));
-      expect(ids.indexOf("waifu-params-gateway-040-v1")).toBe(ids.indexOf("configs-to-gateway-params") + 1);
+      expect(ids).not.toContain("waifu-params-gateway-040-v1");
+      expect(positions[0]).toBeGreaterThan(ids.indexOf("configs-to-gateway-params"));
       expect(positions[positions.length - 1]).toBeLessThan(ids.indexOf(`stamp-schema-version-${CURRENT_SCHEMA_VERSION}`));
       expect(ids.at(-1)).toBe(`stamp-schema-version-${CURRENT_SCHEMA_VERSION}`);
       for (const id of PHASE4_STEP_IDS) expect(MIGRATION_STEPS.find((step) => step.id === id)!.frequency, id).toBe("once");
-      expect(MIGRATION_STEPS.find((step) => step.id === "waifu-params-gateway-040-v1")!.frequency).toBe(
-        "once-per-app-version"
-      );
     });
 
     it("the real boot runs and records every Phase 4 step", async () => {

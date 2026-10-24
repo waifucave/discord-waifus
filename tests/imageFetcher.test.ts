@@ -9,8 +9,13 @@ import {
 import { appDataPath } from "../src/config/paths.js";
 import { sharedImageFetcherConfig } from "../src/discord/attachments.js";
 import { DEFAULT_APP_CONFIG } from "../src/shared/schemas/config.js";
-import { FrozenImageRenderer, MAX_INLINE_IMAGE_BYTES } from "../src/orchestration/context/images.js";
-import { ContextStateSchema, type LedgerEntry } from "../src/shared/schemas/context.js";
+import {
+  decideImageMode,
+  ImageBuildAbortedError,
+  imageTextFor,
+  inlineImageBlock,
+  MAX_INLINE_IMAGE_BYTES
+} from "../src/orchestration/context/images.js";
 import type { ImageRef } from "../src/shared/schemas/discordMessage.js";
 import { FakeImageFetcher, quietLogger } from "./contextFixtures.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
@@ -232,60 +237,22 @@ describe("DiscordImageFetcher", () => {
   });
 });
 
-describe("FrozenImageRenderer freeze rule", () => {
-  const state = (patch: Record<string, unknown> = {}) =>
-    ContextStateSchema.parse({
-      schemaVersion: 2,
-      revision: 1,
-      updatedAt: "2026-10-24T00:00:00.000Z",
-      conversationKey: "g_1_2",
-      agentId: "waifu-aria",
-      epoch: 0,
-      epochStartedAt: "2026-10-24T00:00:00.000Z",
-      lastUsedAt: "2026-10-24T00:00:00.000Z",
-      timeZone: "UTC",
-      ...patch
-    });
-  const entry = (...ids: string[]): LedgerEntry => ({
-    id: "m1",
-    seq: 1,
-    authorId: "kevin",
-    authorName: "Kevin",
-    authorIsBot: false,
-    at: "2026-10-24T14:00:00.000Z",
-    kind: "default",
-    body: "",
-    images: ids.map((id) => ref(id)),
-    state: "live",
-    sealed: false
-  });
+describe("decideImageMode freeze rule (Living cast §5.3)", () => {
+  const unlimited = () => true;
+  const label = (decided: { mode: "inline" } | { mode: { text: string } }) => (decided.mode === "inline" ? "inline" : decided.mode.text);
 
-  it("inlines up to the per-epoch cap, then freezes to OCR text or [image]", async () => {
+  it("inlines while the epoch budget allows, then freezes to OCR text or [image]", async () => {
     const images = new FakeImageFetcher();
-    const r = new FrozenImageRenderer({
+    let inlineLeft = 1;
+    const o = {
       fetcher: images,
       acceptsImages: true,
-      maxInlinePerEpoch: 2,
-      ocr: { cachedText: async (image) => (image.key === "att:3" ? "SALE\n50%  off" : undefined) }
-    });
-    const blocks = await r.blocksFor(entry("1", "2", "3", "4"), state({ inlineImageCount: 1 }));
-    expect(blocks.map((b) => (b.type === "text" ? b.text : "inline"))).toEqual(["inline", "[image]", "[image: SALE 50% off]", "[image]"]);
-    const decisions = r.decisions();
-    expect(decisions.inlineAdded).toBe(1);
-    expect(decisions.imageModes).toEqual({
-      "att:1": { mode: "inline" },
-      "att:2": { mode: "text", text: "[image]" },
-      "att:3": { mode: "text", text: "[image: SALE 50% off]" },
-      "att:4": { mode: "text", text: "[image]" }
-    });
-  });
-
-  it("never re-decides a frozen mode: frozen text stays even when OCR arrives later", async () => {
-    const images = new FakeImageFetcher();
-    const r = new FrozenImageRenderer({ fetcher: images, acceptsImages: true, maxInlinePerEpoch: 8, ocr: { cachedText: async () => "late OCR" } });
-    const blocks = await r.blocksFor(entry("1"), state({ imageModes: { "att:1": { mode: "text", text: "[image]" } } }));
-    expect(blocks).toEqual([{ type: "text", text: "[image]" }]);
-    expect(images.calls).toHaveLength(0);
+      allowInline: () => inlineLeft-- > 0,
+      ocr: { cachedText: async (image: ImageRef) => (image.key === "att:3" ? "SALE\n50%  off" : undefined) }
+    };
+    const decided = [];
+    for (const id of ["1", "2", "3"]) decided.push(label(await decideImageMode(ref(id), o)));
+    expect(decided).toEqual(["inline", "[image]", "[image: SALE 50% off]"]);
   });
 
   it.each(["too_large", "unsupported_type", "http_error", "timeout", "network", "blocked_host"] as const)(
@@ -293,22 +260,17 @@ describe("FrozenImageRenderer freeze rule", () => {
     async (reason) => {
       const images = new FakeImageFetcher();
       images.failKeys.set("att:1", reason);
-      const r = new FrozenImageRenderer({ fetcher: images, acceptsImages: true, maxInlinePerEpoch: 8 });
-      expect(await r.blocksFor(entry("1"), state())).toEqual([{ type: "text", text: "[image]" }]);
-      expect(r.decisions().imageModes["att:1"]).toEqual({ mode: "text", text: "[image]" });
+      expect(await decideImageMode(ref("1"), { fetcher: images, acceptsImages: true, allowInline: unlimited })).toEqual({ mode: { text: "[image]" } });
     }
   );
 
   it("aborted never freezes (the build fails instead)", async () => {
     const images = new FakeImageFetcher();
     images.failKeys.set("att:1", "aborted");
-    const r = new FrozenImageRenderer({ fetcher: images, acceptsImages: true, maxInlinePerEpoch: 8 });
-    await expect(r.blocksFor(entry("1"), state())).rejects.toThrow(/aborted/);
-    expect(r.decisions().imageModes).toEqual({});
+    await expect(decideImageMode(ref("1"), { fetcher: images, acceptsImages: true, allowInline: unlimited })).rejects.toBeInstanceOf(ImageBuildAbortedError);
   });
 
-  // T5 review I1: a text-only director (rule 6 "images go to native viewers") must see the text.
-  it("runs OCR (bounded) for a text-only model when nothing is cached yet, and freezes that text", async () => {
+  it("runs OCR (bounded) for a text-only model when nothing is cached yet; a vision model only uses cached text", async () => {
     const images = new FakeImageFetcher();
     const calls: Array<{ key: string; timeoutMs: number }> = [];
     const ocr = {
@@ -318,19 +280,14 @@ describe("FrozenImageRenderer freeze rule", () => {
         return "MENU\n  ramen 9€";
       }
     };
-    const textOnly = new FrozenImageRenderer({ fetcher: images, acceptsImages: false, maxInlinePerEpoch: 8, ocr, ocrTimeoutMs: 1500 });
-    expect(await textOnly.blocksFor(entry("1"), state())).toEqual([{ type: "text", text: "[image: MENU ramen 9€]" }]);
+    expect(await decideImageMode(ref("1"), { fetcher: images, acceptsImages: false, allowInline: unlimited, ocr, ocrTimeoutMs: 1500 })).toEqual({
+      mode: { text: "[image: MENU ramen 9€]" }
+    });
     expect(calls).toEqual([{ key: "att:1", timeoutMs: 1500 }]);
-    expect(textOnly.decisions().imageModes).toEqual({ "att:1": { mode: "text", text: "[image: MENU ramen 9€]" } });
     expect(images.calls).toHaveLength(0);
-    // Once frozen, no OCR runs again.
     calls.length = 0;
-    await textOnly.blocksFor(entry("1"), state({ imageModes: { "att:1": { mode: "text", text: "[image: MENU ramen 9€]" } } }));
-    expect(calls).toEqual([]);
-    // A vision model that fails to inline an image only uses cached text (it never waits on OCR).
     images.failKeys.set("att:2", "http_error");
-    const vision = new FrozenImageRenderer({ fetcher: images, acceptsImages: true, maxInlinePerEpoch: 8, ocr });
-    expect(await vision.blocksFor(entry("2"), state())).toEqual([{ type: "text", text: "[image]" }]);
+    expect(await decideImageMode(ref("2"), { fetcher: images, acceptsImages: true, allowInline: unlimited, ocr })).toEqual({ mode: { text: "[image]" } });
     expect(calls).toEqual([]);
   });
 
@@ -343,26 +300,13 @@ describe("FrozenImageRenderer freeze rule", () => {
         return undefined;
       }
     };
-    const r = new FrozenImageRenderer({ fetcher: new FakeImageFetcher(), acceptsImages: false, maxInlinePerEpoch: 8, ocr, signal: controller.signal });
-    await expect(r.blocksFor(entry("1"), state())).rejects.toThrow(/aborted/);
-    expect(r.decisions().imageModes).toEqual({});
+    await expect(
+      decideImageMode(ref("1"), { fetcher: new FakeImageFetcher(), acceptsImages: false, allowInline: unlimited, ocr, signal: controller.signal })
+    ).rejects.toBeInstanceOf(ImageBuildAbortedError);
   });
 
-  it("models without image input freeze to text without fetching; a lost inline image renders unavailable", async () => {
-    const images = new FakeImageFetcher();
-    const textOnly = new FrozenImageRenderer({ fetcher: images, acceptsImages: false, maxInlinePerEpoch: 8 });
-    expect(await textOnly.blocksFor(entry("1"), state())).toEqual([{ type: "text", text: "[image]" }]);
-    expect(images.calls).toHaveLength(0);
-    images.failKeys.set("att:2", "http_error");
-    const r = new FrozenImageRenderer({ fetcher: images, acceptsImages: true, maxInlinePerEpoch: 8 });
-    expect(await r.blocksFor(entry("2"), state({ imageModes: { "att:2": { mode: "inline" } } }))).toEqual([
-      { type: "text", text: "[image unavailable]" }
-    ]);
-    expect(r.decisions().imageModes).toEqual({});
-  });
-
-  // Acceptance I1: an inline image over the provider's per-image limit would be frozen into the
-  // epoch prefix and fail every call; it must freeze to text instead.
+  // Acceptance I1: an inline image over the provider's per-image limit would fail every call of
+  // the epoch; it must freeze to text instead.
   it("freezes an image over the provider-safe inline cap to text (OCR text when available)", async () => {
     expect(MAX_INLINE_IMAGE_BYTES).toBe(3_932_160);
     expect(Math.ceil(MAX_INLINE_IMAGE_BYTES / 3) * 4).toBeLessThanOrEqual(5 * 1024 * 1024);
@@ -372,23 +316,16 @@ describe("FrozenImageRenderer freeze rule", () => {
     images.sizes.set("att:3", 6 * 1024 * 1024);
     const debug: unknown[] = [];
     const logger = { ...quietLogger(), debug: (_m: string, context?: unknown) => void debug.push(context) };
-    const r = new FrozenImageRenderer({
+    const o = {
       fetcher: images,
       acceptsImages: true,
-      maxInlinePerEpoch: 8,
+      allowInline: unlimited,
       logger,
-      ocr: { cachedText: async (image) => (image.key === "att:3" ? "big poster" : undefined) }
-    });
-    const blocks = await r.blocksFor(entry("1", "2", "3"), state());
-    expect(blocks.map((b) => (b.type === "text" ? b.text : "inline"))).toEqual(["[image]", "inline", "[image: big poster]"]);
-    expect(r.decisions()).toEqual({
-      inlineAdded: 1,
-      imageModes: {
-        "att:1": { mode: "text", text: "[image]" },
-        "att:2": { mode: "inline" },
-        "att:3": { mode: "text", text: "[image: big poster]" }
-      }
-    });
+      ocr: { cachedText: async (image: ImageRef) => (image.key === "att:3" ? "big poster" : undefined) }
+    };
+    const decided = [];
+    for (const id of ["1", "2", "3"]) decided.push(label(await decideImageMode(ref(id), o)));
+    expect(decided).toEqual(["[image]", "inline", "[image: big poster]"]);
     expect(debug).toEqual([
       expect.objectContaining({ reason: "too_large", bytes: MAX_INLINE_IMAGE_BYTES + 1 }),
       expect.objectContaining({ reason: "too_large", bytes: 6 * 1024 * 1024 })
@@ -397,21 +334,24 @@ describe("FrozenImageRenderer freeze rule", () => {
 
   it("skips the fetch when the attachment's declared size is over the inline cap", async () => {
     const images = new FakeImageFetcher();
-    const r = new FrozenImageRenderer({ fetcher: images, acceptsImages: true, maxInlinePerEpoch: 8 });
-    const big = { ...entry(), images: [ref("1", { bytes: MAX_INLINE_IMAGE_BYTES + 1 })] };
-    expect(await r.blocksFor(big, state())).toEqual([{ type: "text", text: "[image]" }]);
+    const big = ref("1", { bytes: MAX_INLINE_IMAGE_BYTES + 1 });
+    expect(await decideImageMode(big, { fetcher: images, acceptsImages: true, allowInline: unlimited })).toEqual({ mode: { text: "[image]" } });
     expect(images.calls).toHaveLength(0);
-    expect(r.decisions().imageModes).toEqual({ "att:1": { mode: "text", text: "[image]" } });
   });
 
-  it("an image frozen inline before the cap existed renders unavailable instead of breaking the call", async () => {
+  it("re-resolving an inline image reports a lost one as undefined (the caller compacts), never a substitute", async () => {
     const images = new FakeImageFetcher();
-    images.sizes.set("att:1", 7 * 1024 * 1024);
-    const r = new FrozenImageRenderer({ fetcher: images, acceptsImages: true, maxInlinePerEpoch: 8 });
-    expect(await r.blocksFor(entry("1"), state({ imageModes: { "att:1": { mode: "inline" } }, inlineImageCount: 1 }))).toEqual([
-      { type: "text", text: "[image unavailable]" }
-    ]);
-    expect(r.decisions().imageModes).toEqual({});
+    const fetched = await inlineImageBlock(ref("1"), { fetcher: images });
+    expect(fetched?.block).toEqual({ type: "image", source: { type: "base64", media_type: "image/png", data: Buffer.from("png:att:1").toString("base64") } });
+    images.failKeys.set("att:2", "http_error");
+    expect(await inlineImageBlock(ref("2"), { fetcher: images })).toBeUndefined();
+    images.sizes.set("att:3", 7 * 1024 * 1024);
+    expect(await inlineImageBlock(ref("3"), { fetcher: images })).toBeUndefined();
+  });
+
+  it("imageTextFor collapses whitespace", () => {
+    expect(imageTextFor("  a\n b  ")).toBe("[image: a b]");
+    expect(imageTextFor(undefined)).toBe("[image]");
   });
 });
 

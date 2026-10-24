@@ -1,7 +1,7 @@
 // DM deletion scopes (spec 9.1.4), the DM /forget command (9.1.5, O3) and the /api/dms routes
 // (9.8): manifest, id validation, listing without message bodies, forget with audit.
 
-import { access } from "node:fs/promises";
+import { access, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApiServer } from "../src/api/server.js";
@@ -9,12 +9,11 @@ import { ROUTE_POLICY_MANIFEST } from "../src/api/routePolicyManifest.js";
 import { createRuntimeState } from "../src/backend/runtime.js";
 import { conversationKey } from "../src/orchestration/context/keys.js";
 import { dmForget } from "../src/orchestration/dm/dmForget.js";
-import { readDmLimit, readDmState } from "../src/orchestration/dm/dmStore.js";
-import { forgetUser } from "../src/orchestration/memoryForget.js";
-import { readMemoryStore, recordWaifuNotes, updatePendingObservations } from "../src/orchestration/stores/memories.js";
+import { readDmLimit, readDmState, updateDmLimit, updateDmState } from "../src/orchestration/dm/dmStore.js";
+import { forgetUser } from "../src/orchestration/dm/forgetUser.js";
 import { AuditStore } from "../src/storage/auditStore.js";
 import type { StorageService } from "../src/storage/storageService.js";
-import { DmDiscord, ScriptedPipeline, USER, dmRoot, dmRuntime, seedDmWorld } from "./dmFixtures.js";
+import { DmDiscord, USER, dmRoot, dmRuntime, seedDmWorld } from "./dmFixtures.js";
 import { removeTempRoot } from "./testUtils.js";
 
 vi.setConfig({ testTimeout: 30_000 });
@@ -29,30 +28,37 @@ afterEach(async () => {
 const KEY = conversationKey({ kind: "dm", waifuId: "aria", userId: USER });
 const exists = (file: string) => access(file).then(() => true, () => false);
 
-/** One answered DM (conversation, state, one rate-limit stamp), plus her memories about the user. */
+/**
+ * One answered DM: the conversation directory, the DM state with one run record and one
+ * rate-limit stamp. Written directly: the DM life that produces them arrives in L2.
+ */
 async function world() {
   const { root, storage } = await dmRoot(roots);
   await seedDmWorld(storage);
   const discord = new DmDiscord();
-  const runtime = dmRuntime(storage, discord, new ScriptedPipeline());
-  await runtime.handleDirectMessage(discord.dm("hi"));
-  await recordWaifuNotes(storage, { waifuId: "aria", entries: ["Kevin likes tea"], origin: { dm: true }, subjects: [{ discordUserId: USER, name: "Kevin" }] });
-  await recordWaifuNotes(storage, { waifuId: "mina", entries: ["Kevin plays chess"], origin: { guildId: "1" }, subjects: [{ discordUserId: USER, name: "Kevin" }] });
-  await updatePendingObservations(storage, (current) => ({
+  const runtime = dmRuntime(storage, discord);
+  const now = new Date().toISOString();
+  await updateDmState(storage, { userId: USER, waifuId: "aria", botId: "aria-bot" }, (current) => ({
     ...current,
-    observations: [
-      { id: "o1", waifuId: "aria", content: "Kevin is tired", kind: "context", importance: 2, subjects: [{ discordUserId: USER, name: "Kevin" }], origin: { dm: true }, createdAt: new Date().toISOString() },
-      { id: "o2", waifuId: "mina", content: "Kevin won", kind: "context", importance: 2, subjects: [{ discordUserId: USER, name: "Kevin" }], origin: {}, createdAt: new Date().toISOString() }
-    ]
+    userDisplayName: "Kevin",
+    lastInboundMessageId: "1300000000000000001",
+    lastInboundAt: now,
+    lastRepliedMessageId: "1300000000000000002",
+    lastReplyAt: now,
+    recentRuns: [{ id: "run-1", at: now, triggerMessageId: "1300000000000000001", status: "sent", messageIds: ["1300000000000000002"] }]
   }));
+  await updateDmLimit(storage, USER, "aria", (current) => ({ ...current, replyTimestamps: [now] }));
+  const dir = path.join(root, "user", "conversations", KEY);
+  await mkdir(dir, { recursive: true });
+  await writeFile(path.join(dir, "refs.json"), JSON.stringify({ schemaVersion: 2, revision: 1, updatedAt: now, counter: 361, refs: { "1300000000000000001": "a0" } }));
   return { root, storage, discord, runtime };
 }
 
 describe("dmForget scopes", () => {
-  it("conversation: deletes the transcript and run records, keeps state, memories and the limiter", async () => {
+  it("conversation: deletes the transcript and run records, keeps state and the limiter", async () => {
     const { root, storage, runtime } = await world();
     const dry = await dmForget(storage, { userId: USER, waifuId: "aria", scope: "conversation", dryRun: true });
-    expect(dry.deleted).toMatchObject({ dmContexts: 1, recentRuns: 1, dmStates: 0, memories: 0 });
+    expect(dry.deleted).toMatchObject({ dmContexts: 1, recentRuns: 1, dmStates: 0 });
     expect(await exists(path.join(root, "user", "conversations", KEY))).toBe(true);
 
     const done = await runtime.forgetDm({ userId: USER, waifuId: "aria", scope: "conversation" });
@@ -61,19 +67,22 @@ describe("dmForget scopes", () => {
     const state = await readDmState(storage, USER, "aria");
     expect(state?.recentRuns).toEqual([]);
     expect(state?.lastInboundMessageId).toBeDefined();
-    expect((await readMemoryStore(storage)).memories).toHaveLength(2);
     expect((await readDmLimit(storage, USER, "aria")).replyTimestamps).toHaveLength(1);
     await runtime.stop();
   });
 
-  it("all: also deletes the state, her memories and observations about the user; other waifus and the limiter stay", async () => {
+  it("all: also deletes the state and cached images; the limiter stays", async () => {
     const { root, storage, runtime } = await world();
     const purged: string[][] = [];
-    const done = await dmForget(storage, { userId: USER, waifuId: "aria", scope: "all" }, { purgeImages: async (keys) => void purged.push(keys) });
-    expect(done.deleted).toMatchObject({ dmContexts: 1, dmStates: 1, memories: 1, observations: 1 });
+    const done = await dmForget(
+      storage,
+      { userId: USER, waifuId: "aria", scope: "all" },
+      { purgeImages: async (keys) => void purged.push(keys), imageKeys: () => ["att:1"] }
+    );
+    expect(done.deleted).toMatchObject({ dmContexts: 1, dmStates: 1 });
+    expect(purged).toEqual([["att:1"]]);
     expect(await exists(path.join(root, "user", "dms", USER, "aria.json"))).toBe(false);
     expect(await exists(path.join(root, "user", "dms", USER, "limits", "aria.json"))).toBe(true);
-    expect((await readMemoryStore(storage)).memories.map((m) => m.waifuId)).toEqual(["mina"]);
     expect((await readDmLimit(storage, USER, "aria")).replyTimestamps).toHaveLength(1);
     await runtime.stop();
   });
@@ -81,16 +90,16 @@ describe("dmForget scopes", () => {
   it("the owner's forget-user removes every DM file of the user, counters included (the floor stays)", async () => {
     const { root, storage, runtime } = await world();
     const dry = await forgetUser(storage, { discordUserId: USER, dryRun: true });
-    expect(dry).toMatchObject({ dmContexts: 1, dmStates: 1, dmLimits: 1, memories: 2, observations: 2 });
+    expect(dry).toMatchObject({ dmContexts: 1, dmStates: 1, dmLimits: 1 });
+    expect(await readDmState(storage, USER, "aria")).toBeDefined();
     const done = await runtime.forgetUser({ discordUserId: USER });
-    expect(done).toMatchObject({ dmContexts: 1, dmStates: 1, dmLimits: 1, memories: 2, observations: 2 });
+    expect(done).toMatchObject({ discordUserId: USER, dryRun: false, dmContexts: 1, dmStates: 1, dmLimits: 1 });
     // Counters and state are gone; only the forget floor is written back.
     expect(await exists(path.join(root, "user", "dms", USER, "aria.json"))).toBe(false);
     const limits = await readDmLimit(storage, USER, "aria");
     expect(limits.replyTimestamps).toEqual([]);
     expect(limits.floorMessageId).toBeDefined();
     expect(await exists(path.join(root, "user", "conversations", KEY))).toBe(false);
-    expect((await readMemoryStore(storage)).memories).toEqual([]);
     await runtime.stop();
   });
 
@@ -101,7 +110,6 @@ describe("dmForget scopes", () => {
     expect(await readDmState(storage, USER, "aria")).toBeDefined();
     expect(await runtime.handleDmForgetCommand({ waifuId: "aria", botId: "aria-bot", userId: USER, scope: "everything" })).toMatch(/everything/);
     expect(await readDmState(storage, USER, "aria")).toBeUndefined();
-    expect((await readMemoryStore(storage)).memories.map((m) => m.waifuId)).toEqual(["mina"]);
     expect((await readDmLimit(storage, USER, "aria")).replyTimestamps).toHaveLength(1);
     await runtime.stop();
   });
@@ -147,8 +155,7 @@ describe("/api/dms", () => {
       userId: USER,
       userDisplayName: "Kevin",
       rateLimit: { used: 1, max: 30, windowMinutes: 60, limited: false },
-      lastRun: { status: "sent" },
-      context: { epoch: 0 }
+      lastRun: { status: "sent" }
     });
     expect(list.body).not.toContain("\"hi\"");
     expect((await app.inject({ method: "GET", url: "/api/dms?waifuId=mina" })).json().conversations).toEqual([]);
@@ -165,7 +172,7 @@ describe("/api/dms", () => {
     const noConfirm = await app.inject({ method: "POST", url: `/api/dms/aria/${USER}/forget`, payload: { scope: "all" } });
     expect(noConfirm.statusCode).toBe(400);
     const dry = await app.inject({ method: "POST", url: `/api/dms/aria/${USER}/forget`, payload: { confirm: true, scope: "all", dryRun: true } });
-    expect(dry.json()).toMatchObject({ dryRun: true, scope: "all", deleted: { dmContexts: 1, dmStates: 1, memories: 1 } });
+    expect(dry.json()).toMatchObject({ dryRun: true, scope: "all", deleted: { dmContexts: 1, dmStates: 1 } });
     const done = await app.inject({ method: "POST", url: `/api/dms/aria/${USER}/forget`, payload: { confirm: true, scope: "all" } });
     expect(done.statusCode, done.body).toBe(200);
     expect(done.json()).toMatchObject({ dryRun: false, deleted: { dmStates: 1 } });
@@ -180,5 +187,28 @@ describe("/api/dms", () => {
     const { app } = await api(storage, root);
     const response = await app.inject({ method: "GET", url: "/api/runtime" });
     expect(response.json().discord.dm).toEqual({ eligibleWaifus: [{ waifuId: "aria", botId: "aria-bot", intentActive: false }], warnings: [] });
+  });
+});
+
+describe("POST /api/people/:userId/forget (Living cast §14.1, DM part)", () => {
+  it("is in the route policy manifest and needs confirm; dry runs count, the real run deletes and audits", async () => {
+    expect(ROUTE_POLICY_MANIFEST.find((entry) => entry.method === "POST" && entry.path === "/api/people/:userId/forget")).toMatchObject({
+      auditAction: "people.forget",
+      retryClass: "transactional"
+    });
+    const { root, storage, runtime } = await world();
+    await runtime.stop();
+    const { app, auditStore } = await api(storage, root);
+    expect((await app.inject({ method: "POST", url: `/api/people/${USER}/forget`, payload: {} })).statusCode).toBe(400);
+    expect((await app.inject({ method: "POST", url: "/api/people/kevin/forget", payload: { confirm: true } })).statusCode).toBe(400);
+    const dry = await app.inject({ method: "POST", url: `/api/people/${USER}/forget`, payload: { confirm: true, dryRun: true } });
+    expect(dry.json()).toMatchObject({ discordUserId: USER, dryRun: true, dmContexts: 1, dmStates: 1, dmLimits: 1 });
+    expect(await readDmState(storage, USER, "aria")).toBeDefined();
+    const done = await app.inject({ method: "POST", url: `/api/people/${USER}/forget`, payload: { confirm: true } });
+    expect(done.statusCode, done.body).toBe(200);
+    expect(await readDmState(storage, USER, "aria")).toBeUndefined();
+    expect(await exists(path.join(root, "user", "conversations", KEY))).toBe(false);
+    expect((await readDmLimit(storage, USER, "aria")).replyTimestamps).toEqual([]);
+    expect((await auditStore.list()).some((record) => record.action === "people.forget")).toBe(true);
   });
 });

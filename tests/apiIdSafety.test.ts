@@ -94,8 +94,8 @@ describe("B1: request ids cannot escape the data root", () => {
       })).statusCode).toBe(400);
       expect((await app.inject({
         method: "POST",
-        url: "/api/runtime/stop",
-        payload: { guildId: "g1", channelId: CHANNEL }
+        url: "/api/people/not-a-user/forget",
+        payload: { confirm: true }
       })).statusCode).toBe(400);
       expect((await app.inject({ method: "PUT", url: `/api/servers/${GUILD}`, payload: {} })).statusCode).toBe(200);
       expect((await app.inject({

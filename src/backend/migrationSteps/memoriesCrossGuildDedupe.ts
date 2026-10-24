@@ -1,7 +1,7 @@
 import { access } from "node:fs/promises";
 import path from "node:path";
 import { MemoryRecordSchema, type MemoryRecord } from "../../shared/schemas/domain.js";
-import { subjectsOverlap } from "../../orchestration/memorySubjects.js";
+import { subjectsOverlap } from "./legacy.js";
 import { dedupeTokenSet, jaccard, normalizeForDedupe } from "../../orchestration/text.js";
 import { atomicWriteJson } from "../../storage/atomic.js";
 import { isObject, readJsonFile } from "./memorySupport.js";

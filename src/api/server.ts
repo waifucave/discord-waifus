@@ -1,13 +1,14 @@
-import { randomUUID, createHash } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { access, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import fastify, { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
-import { createGatewayHandler, type GatewayHandlerOptions, type ProviderDef } from "@waifucave/gateway";
-import gatewayPlugin from "@waifucave/gateway/fastify";
-import { createProviderCredentialsLookup } from "./llmGatewayCredentials.js";
-import { oneShotCatalog } from "../orchestration/oneShot/catalog.js";
+import { createProviderCredentialsLookup } from "../models/credentials.js";
+import { curatedCatalog, installedCatalog } from "../models/catalog.js";
+import type { AssistantModelClient } from "./assistant/service.js";
+import { clearModelWarnings, readModelWarnings } from "../models/modelWarnings.js";
+import { oneShotCatalog } from "../life/detector/catalog.js";
 import { OneShotConfigSchema } from "../shared/schemas/oneShot.js";
 import { loadAppConfig, updateAppConfig } from "../config/appConfig.js";
 import { resolveDataPath, userDataPath } from "../config/paths.js";
@@ -16,20 +17,14 @@ import { RuntimeState } from "../backend/runtime.js";
 import { redactRemoteHostDetails, redactSecrets } from "../backend/redaction.js";
 import { RuntimeOrchestrator } from "../orchestration/runtime.js";
 import { clearOcrArtifacts } from "../orchestration/ocr.js";
-import { forgetUser } from "../orchestration/memoryForget.js";
-import { loadSubjectDirectory, resolveSubjectsInText } from "../orchestration/memorySubjects.js";
-import { readMergedOrchestratorHistory, readOrchestratorHistoryForGuild } from "../orchestration/stores/decisionHistory.js";
+import { forgetUser } from "../orchestration/dm/forgetUser.js";
 import { readThreads } from "../orchestration/stores/threads.js";
 import { ChannelThreadsModeSchema } from "../shared/schemas/threads.js";
-import { applyMemoryCandidate, bumpMemoryRecord, emptyMemoryStore, readMemoryStore, updateMemoryStore } from "../orchestration/stores/memories.js";
 import { providerStatuses, keyHint } from "./providerStatus.js";
-import type { ModelPipeline } from "../providers/types.js";
-import { createGatewayModelPipeline } from "../orchestration/pipeline/gatewayPipeline.js";
 import { sharedProviderAlerts } from "../orchestration/providerAlerts.js";
-import { resolveModelTarget } from "../orchestration/pipeline/resolveTarget.js";
 import {
-  AgentConfig,
-  AgentConfigSchema,
+  AssistantConfig,
+  AssistantConfigSchema,
   DiscordBotConfigSchema,
   DiscordBotsFile,
   DiscordBotsFileSchema,
@@ -42,26 +37,17 @@ import {
   GuildRoleCacheEntry,
   GuildRolesFile,
   GuildRolesFileSchema,
-  MemoryRecord,
-  MemoryStore,
-  MemoryStoreSchema,
-  MemoryKindSchema,
-  MemorySubjectSchema,
-  OrchestratorPromptSectionsSchema,
+  ModelChoiceSchema,
+  type ModelChoice,
   ProviderCredentialsFile,
   ProviderCredentialsFileSchema,
-  ReviewerHistoryFile,
-  ReviewerHistoryFileSchema,
   ProviderIdSchema,
   ServerConfig,
   ServerConfigSchema,
   ServerToolSettingsSchema,
-  StageManagerHistoryFile,
-  StageManagerHistoryFileSchema,
   WaifuAvailabilitySchema,
   WaifuConfig,
   WaifuConfigSchema,
-  WaifuToolSettingsSchema,
   WAIFU_VERBOSITIES,
   createEmptyRevisionedFile
 } from "../shared/schemas/domain.js";
@@ -70,7 +56,6 @@ import { CompactionOverrideBodySchema } from "../shared/schemas/compaction.js";
 import { UpdateAppConfigBodySchema, type AppConfig } from "../shared/schemas/config.js";
 import { createRevisionedBase, nowIso } from "../shared/schemas/common.js";
 import { StorageConflictError } from "../storage/errors.js";
-import { MemoryRecordConflictError } from "./errors.js";
 import { StorageService } from "../storage/storageService.js";
 import { AuditStore } from "../storage/auditStore.js";
 import { OperationStore } from "../storage/operationStore.js";
@@ -90,7 +75,7 @@ import {
 } from "./errors.js";
 import { mergeConfiguredBotsIntoMembers } from "../discord/memberCache.js";
 import { DirectoryTransportError, GuildDirectory, type DirectoryKind } from "../discord/guildDirectory.js";
-import { assertKnownProvider, assertModelWriteValid } from "./writeValidation.js";
+import { assertKnownProvider, assertModelChoiceValid } from "./writeValidation.js";
 import { BrowserSecurity, type BrowserSecurityOptions } from "./browserSecurity.js";
 import { installRoutePolicy } from "./routePolicy.js";
 import { ROUTE_POLICY_MANIFEST } from "./routePolicyManifest.js";
@@ -125,13 +110,9 @@ export type ApiServerOptions = {
     reload: (reason: string) => Promise<void>;
   };
   logger?: Logger;
-  /** Test hook: overrides the fetch the mounted LLM gateway uses for provider calls. */
-  llmGateway?: {
-    fetchImpl?: typeof fetch;
-  };
-  /** Test hook: overrides the pipeline the assistant chat uses. */
+  /** Test hook: overrides the model client the assistant chat uses. */
   assistant?: {
-    createPipeline?: (target: { providerId: string; modelId: string }) => ModelPipeline;
+    modelClient?: AssistantModelClient;
   };
   browserSecurity?: Partial<BrowserSecurityOptions>;
   remoteTrust?: {
@@ -156,19 +137,17 @@ const ProviderCredentialsBodySchema = z.object({
   revision: z.number().int().nonnegative().optional()
 });
 
-// personaDigest is server-managed; omitted here (not just left optional) so a client-supplied
-// value on create is an unknown key — zod's default "strip" mode drops it silently rather than
-// storing it (Gateway P6 Task 4).
+// `model` is validated against the curated catalog on write (Living cast §9.2).
 const CreateWaifuBodySchema = WaifuConfigSchema.omit({
   schemaVersion: true,
   revision: true,
-  updatedAt: true,
-  // Clients can no longer set a prompt layout (spec 8.6): `promptLayout` is not in the schema, so
-  // a stray key is stripped by zod. See noteIgnoredPromptLayout.
-  personaDigest: true
+  updatedAt: true
 })
-  .partial({ id: true, enabled: true, persona: true, contextWindow: true })
+  .partial({ id: true, enabled: true, persona: true })
   .required({ name: true, displayName: true });
+
+/** `null` unsets the model; omitted leaves it untouched. */
+const ModelChoicePatchSchema = z.union([ModelChoiceSchema, z.null()]).optional();
 
 // B17: `.unwrap().optional()` only strips a sub-schema's outer default — zod still fills the
 // inner field defaults, so `{tools:{pickNextWaifu:true}}` used to reset `shortTermMemory` and a
@@ -226,25 +205,18 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-// personaDigest is server-managed; clients cannot set it via PUT.
-//
-// P5 Task 4 review fix: every WaifuConfigSchema field below carries a `.default(...)` (either
-// directly, like contextWindow, or baked into a shared sub-schema, like availability/tools). `.partial()` does not suppress those defaults — zod still fills in the default
-// when the field is absent from the request body, even though "absent" should mean "leave it
-// alone" for a PATCH-style update. Re-declared here without a default (same validation, via
-// `.unwrap()` on the sub-schemas that bundle their `.default()` internally) so an omitted field
-// parses to `undefined` — zod then omits it from the parsed body entirely — and the PUT
-// transform's `{...current, ...patch}` merge leaves the stored value alone instead of resetting
-// it. `params` MERGES with the stored object (an explicit null value unsets that key) — a
-// partial params write must never wipe the rest of a config's sampling/reasoning settings.
-const UpdateWaifuBodySchema = WaifuConfigSchema.omit({ personaDigest: true }).partial().extend({
+// P5 Task 4 review fix: every WaifuConfigSchema field below carries a `.default(...)` (directly or
+// baked into a shared sub-schema, like availability/dm). `.partial()` does not suppress those
+// defaults — zod still fills in the default when the field is absent from the request body, even
+// though "absent" should mean "leave it alone" for a PATCH-style update. Re-declared here without a
+// default so an omitted field parses to `undefined` and the PUT transform's `{...current, ...patch}`
+// merge leaves the stored value alone instead of resetting it.
+const UpdateWaifuBodySchema = WaifuConfigSchema.partial().extend({
   revision: z.number().int().nonnegative().optional(),
-  params: z.record(z.string(), z.unknown()).optional(),
   enabled: z.boolean().optional(),
   persona: z.string().optional(),
-  contextWindow: z.number().int().min(1).max(200).optional(),
+  model: ModelChoicePatchSchema,
   availability: partialWithoutDefaults(WaifuAvailabilitySchema).optional(),
-  tools: partialWithoutDefaults(WaifuToolSettingsSchema).optional(),
   // Phase 4/5 additions: truly optional so a partial PUT never resets a stored value.
   // dm.rateLimit is a leaf whose `null` (unlimited) is a real value, replaced wholesale.
   verbosity: z.enum(WAIFU_VERBOSITIES).optional(),
@@ -301,59 +273,15 @@ const ChannelConfigBodySchema = z.object({
   threads: ChannelThreadsModeSchema.optional()
 });
 
-// Memories are global per waifu (spec 8.8): guildId/channelId are optional provenance only.
-const CreateMemoryBodySchema = z.object({
-  revision: z.number().int().nonnegative().optional(),
-  waifuId: z.string().min(1),
-  guildId: z.string().min(1).optional(),
-  channelId: z.string().min(1).optional(),
-  content: z.string().min(1),
-  // User-created memories are pinned by default (per design), but the dashboard can override.
-  strength: z.number().min(0).max(5).optional(),
-  pinned: z.boolean().optional(),
-  kind: MemoryKindSchema.optional(),
-  subjects: z.array(MemorySubjectSchema).max(20).optional()
-});
-
-// PUT/DELETE accept the per-record `recordRevision` (preferred) or the legacy store-wide
-// `revision` / If-Match; one is required (428).
-const UpdateMemoryBodySchema = z.object({
-  revision: z.number().int().nonnegative().optional(),
-  recordRevision: z.number().int().nonnegative().optional(),
-  content: z.string().min(1).optional(),
-  strength: z.number().min(0).max(5).optional(),
-  pinned: z.boolean().optional(),
-  kind: MemoryKindSchema.optional(),
-  subjects: z.array(MemorySubjectSchema).max(20).optional(),
-  status: z.enum(["active", "archived"]).optional()
-});
-
-const DeleteMemoryBodySchema = z
-  .object({
-    revision: z.number().int().nonnegative().optional(),
-    recordRevision: z.number().int().nonnegative().optional()
-  })
-  .optional();
-
-const ForgetUserBodySchema = z.object({
-  discordUserId: z.string().min(1),
+// Owner forget (Living cast §14.1; replaces /api/memories/forget-user). L1 runs the DM part.
+const PeopleForgetBodySchema = z.object({
   confirm: z.literal(true),
   dryRun: z.boolean().optional()
 });
 
-// P5 Task 4 review fix: same `.partial()`-does-not-suppress-`.default()` gotcha as
-// UpdateWaifuBodySchema above, applied to AgentConfigSchema's defaulted fields (enabled,
-// contextWindow, prompt, directiveCooldown, promptSections). Without this, an agent-view PUT
-// that omits e.g. `contextWindow` would silently reset it to AgentConfigSchema's default (20)
-// instead of leaving the stored value (e.g. the stage manager's 80) untouched.
-const AgentConfigBodySchema = AgentConfigSchema.partial().extend({
+const AssistantConfigBodySchema = z.object({
   revision: z.number().int().nonnegative().optional(),
-  params: z.record(z.string(), z.unknown()).optional(),
-  enabled: z.boolean().optional(),
-  contextWindow: z.number().int().min(1).max(200).optional(),
-  prompt: z.string().optional(),
-  directiveCooldown: z.number().int().min(0).max(20).optional(),
-  promptSections: partialWithoutDefaults(OrchestratorPromptSectionsSchema).optional()
+  model: ModelChoicePatchSchema
 });
 
 // Gateway P6 Task 4: `enabled` is required (not defaulted) in write bodies — the dashboard sends
@@ -367,34 +295,6 @@ const DiscordBotsBodySchema = DiscordBotsFileSchema.partial().extend({
   orchestrator: DiscordBotBodySchema.nullable().optional(),
   waifus: z.array(DiscordBotBodySchema).optional()
 });
-
-const RuntimeTriggerBodySchema = z.object({
-  guildId: z.string().min(1).optional(),
-  channelId: z.string().min(1).optional()
-}).optional();
-
-const RuntimeStopBodySchema = z.object({
-  guildId: z.string().min(1),
-  channelId: z.string().min(1)
-});
-
-const HistoryQuerySchema = z.object({
-  guildId: z.string().optional(),
-  channelId: z.string().optional(),
-  limit: z.coerce.number().int().min(1).max(200).optional()
-});
-
-/** Entries without the filtered field never match an explicit filter (untargeted manual triggers). */
-function filterHistoryEntries<T extends { guildId?: string; channelId?: string }>(
-  entries: T[],
-  query: { guildId?: string; channelId?: string; limit?: number }
-): T[] {
-  let out = entries;
-  if (query.guildId) out = out.filter((entry) => entry.guildId === query.guildId);
-  if (query.channelId) out = out.filter((entry) => entry.channelId === query.channelId);
-  if (query.limit !== undefined) out = out.slice(0, query.limit);
-  return out;
-}
 
 const ASSET_EXT_BY_MIME: Record<string, string> = {
   "image/png": "png",
@@ -458,6 +358,12 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     return { accepted: result.accepted, guildId, message: result.message, ...(await read()) };
   };
   const app = fastify({ logger: false });
+  // Model choices are validated against the curated catalog on write; the allow-list lives in
+  // config.toml and changes without a restart, so it is re-read per write.
+  const assertModelAllowed = async (choice: ModelChoice): Promise<void> => {
+    const config = await loadAppConfig(options.dataRoot);
+    assertModelChoiceValid(choice, { allowed: config.models.allowed, maxOutputUsdPerMTok: config.models.maxOutputUsdPerMTok });
+  };
   // Spec 8.6: waifu bodies may still carry the removed `promptLayout`; it is ignored. Log it once
   // per process so a stale client is findable without flooding the log on every save.
   let promptLayoutIgnoredLogged = false;
@@ -550,14 +456,6 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
       });
       return;
     }
-    if (error instanceof MemoryRecordConflictError) {
-      void reply.status(409).send(redactApiPayload(
-        request.principal,
-        { error: "Conflict", message: error.message, latest: error.latest, record: error.record ?? null },
-        options.dataRoot
-      ));
-      return;
-    }
     if (error instanceof ApiError) {
       void reply.status(error.statusCode).send(redactApiPayload(
         request.principal,
@@ -586,28 +484,6 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     }));
     void reply.status(500).send({ error: "InternalServerError" });
   });
-
-  // The gateway HTTP API rides at /api/llm/* with
-  // keys read live from user/providers.json. The plugin is self-encapsulated —
-  // own JSON parsing, own error envelopes; pipelines.ts chat traffic is untouched.
-  const llmGatewayOptions: GatewayHandlerOptions = {
-    credentials: createProviderCredentialsLookup(options.dataRoot),
-    ...(options.llmGateway?.fetchImpl ? { fetchImpl: options.llmGateway.fetchImpl } : {})
-  };
-  await app.register(gatewayPlugin, { prefix: "/api/llm", ...llmGatewayOptions });
-
-  // Registry proxy (§7.4): /api/providers carries the gateway provider listing as an additive
-  // sibling field (gatewayProviders). A second handler instance (the plugin builds its own
-  // internally) serves the exact public /v1 shape; it's a static-registry GET, so a non-200 is a
-  // gateway defect → 500.
-  const llmProxy = createGatewayHandler(llmGatewayOptions);
-  async function llmRegistryJson(endpoint: "/v1/providers"): Promise<unknown> {
-    const response = await llmProxy.handle(new Request(`http://gateway.internal${endpoint}`));
-    if (response.status !== 200) {
-      throw new Error(`gateway registry endpoint ${endpoint} returned ${response.status}`);
-    }
-    return response.json();
-  }
 
   app.get("/", async (request, reply) => {
     if (await tryServeFrontend(request, reply, options.dataRoot, "/")) {
@@ -664,7 +540,9 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     };
     // Active quota/billing cooldowns (spec 8.10); empty when every provider is available.
     const providerAlerts = (orchestrator?.providerAlerts ?? sharedProviderAlerts(options.dataRoot)).snapshot();
-    return { ...runtimeResponse(runtime, request.principal, options.dataRoot), providerAlerts };
+    // Model choices the owner must revisit (Living cast §9.2, §9.4).
+    const models = { warnings: await modelWarnings(storage, options.dataRoot) };
+    return { ...runtimeResponse(runtime, request.principal, options.dataRoot), providerAlerts, models };
   });
 
   registerAdminOperationRoutes(app, operationStore);
@@ -741,44 +619,16 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     return sanitizeDiscordBots(saved);
   });
 
-  app.get("/api/orchestrator/one-shot/models", async () => {
+  // The addressee detector's native-choice decision models (Living cast §4.3): a separate
+  // decision-only catalog, never offered as waifu models.
+  app.get("/api/detector/models", async () => {
     const result = await oneShotCatalog.list();
     const credentials = createProviderCredentialsLookup(options.dataRoot);
     return { ...result, models: result.models.map((m) => ({ ...m, configured: m.local ? Boolean(process.env.DC_WAIFUS_LAYA_PYTHON) : Boolean(credentials(m.provider)) })) };
   });
-  app.get("/api/orchestrator/config", async () => readAgentConfig(storage, "orchestrator"));
-  app.put("/api/orchestrator/config", async (request) => {
-    const body = AgentConfigBodySchema.parse(request.body);
-    return updateAgentConfig(storage, request, "orchestrator", body, 20);
-  });
-  app.get("/api/orchestrator/history", async (request) => {
-    const query = HistoryQuerySchema.parse(request.query);
-    // Decisions are stored per guild (spec 9.3): a guildId reads that guild's file, otherwise every
-    // guild file plus the legacy no-guild decisions are merged, newest first.
-    if (query.guildId) assertSnowflakeId(query.guildId);
-    const history = query.guildId
-      ? await readOrchestratorHistoryForGuild(storage, query.guildId)
-      : await readMergedOrchestratorHistory(storage, logger);
-    // Bounded by default (200, spec 9.3), on the merged and the per-guild path alike.
-    return { ...history, decisions: filterHistoryEntries(history.decisions, { ...query, limit: query.limit ?? 200 }) };
-  });
 
-  app.get("/api/stage-manager/config", async () => readAgentConfig(storage, "stage-manager"));
-  app.put("/api/stage-manager/config", async (request) => {
-    const body = AgentConfigBodySchema.parse(request.body);
-    return updateAgentConfig(storage, request, "stage-manager", body, 80);
-  });
-  app.get("/api/stage-manager/history", async (request) => {
-    const query = HistoryQuerySchema.parse(request.query);
-    const history = await readStageManagerHistory(storage);
-    return { ...history, edits: filterHistoryEntries(history.edits, query) };
-  });
-
-  app.get("/api/reviewer/config", async () => readAgentConfig(storage, "reviewer"));
-  app.put("/api/reviewer/config", async (request) => {
-    const body = AgentConfigBodySchema.parse(request.body);
-    return updateAgentConfig(storage, request, "reviewer", body, 20);
-  });
+  // The curated model catalog (Living cast §9.2).
+  app.get("/api/models", async () => modelsResponse(options.dataRoot));
 
   app.get("/api/logs", async (request) => {
     const limit = Math.min(Number((request.query as Record<string, string>).limit ?? 100) || 100, 500);
@@ -799,15 +649,25 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     return doc;
   });
 
-  app.get("/api/assistant/config", async () => readAgentConfig(storage, "assistant"));
+  app.get("/api/assistant/config", async () => readAssistantConfig(storage));
   app.put("/api/assistant/config", async (request) => {
-    const body = AgentConfigBodySchema.parse(request.body);
-    return updateAgentConfig(storage, request, "assistant", body, 20);
+    const body = AssistantConfigBodySchema.parse(request.body);
+    if (body.model) await assertModelAllowed(body.model);
+    const saved = await storage.updateRevisionedJson({
+      resourceKey: "assistant",
+      relativePath: "user/assistant/config.json",
+      schema: AssistantConfigSchema,
+      fallback: emptyAssistantConfig(),
+      expectedRevision: expectedRevision(request, body),
+      transform: (current) => pruneUndefined({ ...current, model: applyModelPatch(current.model, body.model) })
+    });
+    if (body.model !== undefined) await clearModelWarnings(options.dataRoot, "assistant");
+    return saved;
   });
 
   registerAssistantRoutes(app, {
     dataRoot: options.dataRoot,
-    createPipeline: options.assistant?.createPipeline,
+    ...(options.assistant?.modelClient ? { modelClient: options.assistant.modelClient } : {}),
     authorizePrincipal: (principal) => requestPrincipalStillAuthorized(options, browserSecurity, principal),
     ...(typeof options.remoteAccess?.subscribeInvalidations === "function"
       ? {
@@ -817,22 +677,13 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
         }
       : {})
   });
-  app.get("/api/reviewer/history", async (request) => {
-    const query = HistoryQuerySchema.parse(request.query);
-    const history = await readReviewerHistory(storage);
-    return { ...history, reviews: filterHistoryEntries(history.reviews, query) };
-  });
-
   app.get("/api/providers", async () => {
-    const [credentials, gatewayList] = await Promise.all([
-      readProviderCredentials(storage),
-      llmRegistryJson("/v1/providers") as Promise<{ providers: GatewayProviderListing[] }>
-    ]);
+    const [credentials, config] = await Promise.all([readProviderCredentials(storage), loadAppConfig(options.dataRoot)]);
     return {
       revision: credentials.revision,
       updatedAt: credentials.updatedAt,
-      providers: providerStatuses(credentials),
-      gatewayProviders: gatewayList.providers
+      catalogVersion: installedCatalog().catalogVersion,
+      providers: providerStatuses(credentials, { allowed: config.models.allowed })
     };
   });
 
@@ -903,13 +754,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
       ...body,
       id
     });
-    const target = assertModelWriteValid(waifu.providerId, waifu.modelId, waifu.params);
-    if (target) {
-      // Gateway P6 Task 4: persist the resolved (providerId, modelId) pair, not the literal
-      // input — covers legacy-id remaps (LEGACY_MODEL_MAP) and bare-modelId provider derivation.
-      waifu.providerId = target.providerId;
-      waifu.modelId = target.modelId;
-    }
+    if (waifu.model) await assertModelAllowed(waifu.model);
     const saved = await storage.writeJson(`waifu:${id}`, relativePath, WaifuConfigSchema, waifu);
     await reconcileDmIntents();
     return reply.status(201).send(saved);
@@ -925,6 +770,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     const body = UpdateWaifuBodySchema.parse(request.body);
     noteIgnoredPromptLayout(request.body);
     requireRevision(request, body);
+    if (body.model) await assertModelAllowed(body.model);
     const saved = await storage.updateRevisionedJson({
       resourceKey: `waifu:${waifuId}`,
       relativePath: waifuRelativePath(waifuId),
@@ -938,35 +784,22 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
           updatedAt: _updatedAt,
           id: _id,
           promptLayout: _ignoredPromptLayout,
+          model: modelPatch,
           ...patch
         } = body;
-        const next = pruneUndefined({
+        return pruneUndefined({
           ...current,
           ...patch,
-          params: mergeParamsPatch(current.params, patch.params) ?? current.params,
+          model: applyModelPatch(current.model, modelPatch),
           availability: mergeNestedPatch(current.availability, patch.availability),
-          tools: mergeNestedPatch(current.tools, patch.tools),
           dm: mergeNestedPatch(current.dm, patch.dm),
-          id: current.id,
-          // personaDigest is server-managed; always carry it forward from current.
-          personaDigest: current.personaDigest
+          id: current.id
         });
-        const target = assertModelWriteValid(next.providerId, next.modelId, next.params);
-        if (target) {
-          // Gateway P6 Task 4: persist the resolved pair (supersedes P4's store-literal
-          // deviation) — remap only fires for LEGACY_MODEL_MAP ids and bare-modelId derivation.
-          next.providerId = target.providerId;
-          next.modelId = target.modelId;
-        }
-        return next;
       }
     });
+    if (body.model !== undefined) await clearModelWarnings(options.dataRoot, `waifu:${waifuId}`);
     // Intents are fixed at login (spec 9.1): re-log only bots whose DM intents changed.
     await reconcileDmIntents();
-    // Fire-and-forget: regenerate persona digest when persona text changed.
-    void generatePersonaDigestIfStale(storage, saved, logger, options).catch(() => {
-      // Errors are handled inside generatePersonaDigestIfStale with logger.warn.
-    });
     return saved;
   });
 
@@ -1019,33 +852,6 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
         ? "Token already stored — reload Discord to connect."
         : "Store the bot token (secure form or PUT /api/discord-bots), then reload Discord."
     };
-  });
-
-  app.post("/api/waifus/:waifuId/digest", async (request) => {
-    const { waifuId } = parseIdParam(request.params, "waifuId");
-    const waifu = await readWaifu(storage, waifuId);
-    const setup = await resolvePersonaDigestPipeline(storage, options);
-    if (!setup.ok) {
-      throw conflict(setup.reason);
-    }
-    const { pipeline, modelId } = setup;
-    const personaHash = createHash("sha256").update(waifu.persona).digest("hex");
-    const digest = await pipeline.generatePersonaDigest!({
-      modelId,
-      messages: [],
-      personaText: waifu.persona
-    });
-    const saved = await storage.updateRevisionedJson({
-      resourceKey: `waifu:${waifuId}`,
-      relativePath: waifuRelativePath(waifuId),
-      schema: WaifuConfigSchema,
-      fallback: waifu,
-      transform: (current) => ({
-        ...current,
-        personaDigest: { ...digest, personaHash }
-      })
-    });
-    return saved;
   });
 
   app.delete("/api/waifus/:waifuId", async (request, reply) => {
@@ -1228,110 +1034,15 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     });
   });
 
-  app.get("/api/memories", async (request) => {
-    const query = z
-      .object({
-        // Provenance filters: where a memory was learned (never a visibility rule).
-        guildId: z.string().optional(),
-        origin: z.enum(["dm"]).optional(),
-        subjectUserId: z.string().optional(),
-        waifuId: z.string().optional(),
-        q: z.string().optional(),
-        status: z.string().optional(),
-        limit: z.coerce.number().int().min(1).max(500).optional()
-      })
-      .parse(request.query ?? {});
-    const store = await readMemoryStore(storage);
-    if (Object.values(query).every((value) => value === undefined)) return store;
-    const q = query.q?.toLowerCase();
-    const memories = store.memories
-      .filter((memory) => (query.guildId ? memory.origin.guildId === query.guildId : true))
-      .filter((memory) => (query.origin === "dm" ? memory.origin.dm === true : true))
-      .filter((memory) =>
-        query.subjectUserId ? memory.subjects.some((subject) => subject.discordUserId === query.subjectUserId) : true
-      )
-      .filter((memory) => (query.waifuId ? memory.waifuId === query.waifuId : true))
-      .filter((memory) => (query.status ? memory.status === query.status : true))
-      .filter((memory) => (q ? memory.content.toLowerCase().includes(q) : true))
-      .slice(0, query.limit ?? 500);
-    return { ...store, memories };
-  });
-  app.post("/api/memories", async (request, reply) => {
-    const body = CreateMemoryBodySchema.parse(request.body);
-    const now = new Date();
-    // "global" was the dashboard's placeholder guild before memories became global.
-    const guildId = body.guildId && body.guildId !== "global" ? body.guildId : undefined;
-    const origin = {
-      ...(guildId ? { guildId } : {}),
-      ...(guildId && body.channelId ? { channelId: body.channelId } : {})
-    };
-    const subjects = body.subjects ?? resolveSubjectsInText(body.content, await loadSubjectDirectory(storage, guildId));
-    let duplicateOf: string | undefined;
-    const updated = await updateMemoryStore(
-      storage,
-      (current) => {
-        // The dedupe gate is report-only for user writes: it never blocks, it reports duplicateOf.
-        const result = applyMemoryCandidate(
-          current.memories,
-          {
-            waifuId: body.waifuId,
-            kind: body.kind ?? "fact",
-            content: body.content,
-            subjects,
-            origin,
-            source: "user"
-          },
-          // User-created memories are pinned by default (only the user manages them).
-          { writer: "user", now, pinned: body.pinned ?? true, strength: body.strength ?? 5 }
-        );
-        duplicateOf = result.duplicateOf;
-        return { ...current, memories: result.memories };
-      },
-      expectedRevision(request, body)
-    );
-    return reply.status(201).send(duplicateOf ? { ...updated, duplicateOf } : updated);
-  });
-
-  app.put("/api/memories/:memoryId", async (request) => {
-    const { memoryId } = parseIdParam(request.params, "memoryId");
-    const body = UpdateMemoryBodySchema.parse(request.body);
-    const storeRevision = body.recordRevision === undefined ? expectedRevision(request, body) : undefined;
-    if (body.recordRevision === undefined && storeRevision === undefined) {
-      throw preconditionRequired("PUT /api/memories/:memoryId requires recordRevision, revision or If-Match.");
-    }
-    return withMemoryConflicts(memoryId, () =>
-      updateMemoryStore(storage, (current) => updateMemoryOrThrow(current, memoryId, body), storeRevision)
-    );
-  });
-
-  app.delete("/api/memories/:memoryId", async (request) => {
-    const { memoryId } = parseIdParam(request.params, "memoryId");
-    const body = DeleteMemoryBodySchema.parse(request.body);
-    const storeRevision = body?.recordRevision === undefined ? expectedRevision(request, body) : undefined;
-    if (body?.recordRevision === undefined && storeRevision === undefined) {
-      throw preconditionRequired("DELETE /api/memories/:memoryId requires recordRevision, revision or If-Match.");
-    }
-    return withMemoryConflicts(memoryId, () =>
-      updateMemoryStore(
-        storage,
-        (current) => {
-          const record = current.memories.find((memory) => memory.id === memoryId);
-          if (record && body?.recordRevision !== undefined && record.revision !== body.recordRevision) {
-            throw new MemoryRecordConflictError(current, record);
-          }
-          return { ...current, memories: current.memories.filter((memory) => memory.id !== memoryId) };
-        },
-        storeRevision
-      )
-    );
-  });
-
-  // Owner privacy affordance (spec 8.8): forget one Discord user everywhere memory reaches.
-  app.post("/api/memories/forget-user", async (request) => {
-    const body = ForgetUserBodySchema.parse(request.body);
-    assertSnowflakeId(body.discordUserId);
-    const input = { discordUserId: body.discordUserId, dryRun: body.dryRun === true };
-    // The live runtime also aborts DM runs and drops cached DM messages/images (spec 9.1.4).
+  // Owner privacy affordance (Living cast §7.5, §14.1): forget one Discord user. L1 runs the DM
+  // part (DM history and state, rate-limit counters, cached images; floors kept); L2 adds the
+  // life scrub and returns the full §7.5 result.
+  app.post("/api/people/:userId/forget", async (request) => {
+    const { userId } = z.object({ userId: z.string().min(1) }).parse(request.params);
+    assertSnowflakeId(userId);
+    const body = PeopleForgetBodySchema.parse(request.body);
+    const input = { discordUserId: userId, dryRun: body.dryRun === true };
+    // The live runtime also drops cached DM messages and images (spec 9.1.4).
     const orchestrator = options.runtimeControl?.getOrchestrator?.() ?? options.runtimeOrchestrator;
     return orchestrator ? orchestrator.forgetUser(input) : forgetUser(storage, input);
   });
@@ -1373,68 +1084,6 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     return {
       accepted: true,
       message: "Runtime reload applied. Discord clients and runtime orchestration were rebuilt without restarting HTTP."
-    };
-  });
-  app.post("/api/runtime/stop", async (request) => {
-    const body = RuntimeStopBodySchema.parse(request.body);
-    assertSnowflakeId(body.guildId);
-    assertSnowflakeId(body.channelId);
-    const runtimeOrchestrator = options.runtimeControl?.getOrchestrator() ?? options.runtimeOrchestrator;
-    if (!runtimeOrchestrator) {
-      return {
-        stoppedRun: false,
-        clearedRetrigger: false,
-        activeInAnotherChannel: false,
-        message: "No live runtime; nothing to stop."
-      };
-    }
-    const result = await runtimeOrchestrator.stopChannel(body.guildId, body.channelId, "manual-api-stop");
-    return {
-      ...result,
-      message: result.stoppedRun
-        ? "Active run stopped and any scheduled wake cancelled."
-        : result.clearedRetrigger
-          ? "No run was active; the scheduled wake was cancelled."
-          : "Nothing was running or scheduled for that channel."
-    };
-  });
-
-  app.post("/api/runtime/trigger/orchestrator", async (request) => {
-    const body = RuntimeTriggerBodySchema.parse(request.body);
-    if (body?.guildId) assertSnowflakeId(body.guildId);
-    if (body?.channelId) assertSnowflakeId(body.channelId);
-    const runtimeOrchestrator = options.runtimeControl?.getOrchestrator() ?? options.runtimeOrchestrator;
-    if (body?.guildId && body.channelId && runtimeOrchestrator) {
-      void runtimeOrchestrator.triggerChannel(body.guildId, body.channelId, "manual-api");
-      return {
-        accepted: true,
-        message: "Orchestrator trigger accepted for the requested channel."
-      };
-    }
-    return {
-      accepted: false,
-      message: runtimeOrchestrator
-        ? "Nothing was triggered: provide both guildId and channelId."
-        : "No live runtime; nothing was triggered."
-    };
-  });
-  app.post("/api/runtime/trigger/stage-manager", async (request) => {
-    const body = RuntimeTriggerBodySchema.parse(request.body);
-    if (body?.guildId) assertSnowflakeId(body.guildId);
-    if (body?.channelId) assertSnowflakeId(body.channelId);
-    const runtimeOrchestrator = options.runtimeControl?.getOrchestrator() ?? options.runtimeOrchestrator;
-    if (body?.guildId && body.channelId && runtimeOrchestrator) {
-      void runtimeOrchestrator.triggerStageManager(body.guildId, body.channelId);
-      return {
-        accepted: true,
-        message: "Stage-manager trigger accepted for the requested channel."
-      };
-    }
-    return {
-      accepted: false,
-      message: runtimeOrchestrator
-        ? "Nothing was triggered: provide both guildId and channelId."
-        : "No live runtime; nothing was triggered."
     };
   });
   app.get("/api/diagnostics/bundle", async (request) => diagnosticBundle(
@@ -1548,6 +1197,7 @@ function remoteAppConfig(config: AppConfig) {
     compaction: config.compaction,
     memory: config.memory,
     discord: config.discord,
+    models: config.models,
     updates: config.updates
   };
 }
@@ -1604,93 +1254,58 @@ function sanitizeDiscordBot(bot: DiscordBotsFile["waifus"][number]) {
   };
 }
 
-async function readAgentConfig(
-  storage: StorageService,
-  agent: "orchestrator" | "stage-manager" | "reviewer" | "assistant"
-): Promise<AgentConfig> {
-  const defaultWindow = agent === "stage-manager" ? 80 : 20;
-  return storage.readJson(
-    `user/${agent}/config.json`,
-    AgentConfigSchema,
-    AgentConfigSchema.parse(
-      createEmptyRevisionedFile({
-        enabled: false,
-        contextWindow: defaultWindow,
-        prompt: ""
-      })
-    )
-  );
+async function readAssistantConfig(storage: StorageService): Promise<AssistantConfig> {
+  return storage.readJson("user/assistant/config.json", AssistantConfigSchema, emptyAssistantConfig());
 }
 
-
-// `params` used to replace wholesale on write, which made "set the temperature" wipe the rest
-// of a config's sampling/reasoning params for every consumer that forgot to merge client-side
-// (Norma did, curl agents did not). Merge server-side; a null value unsets that key.
-function mergeParamsPatch(
-  current: Record<string, unknown> | undefined,
-  patch: Record<string, unknown> | undefined
-): Record<string, unknown> | undefined {
-  if (patch === undefined) return undefined;
-  const merged: Record<string, unknown> = { ...(current ?? {}), ...patch };
-  for (const [key, value] of Object.entries(merged)) {
-    if (value === null) delete merged[key];
-  }
-  return merged;
+function emptyAssistantConfig(): AssistantConfig {
+  return AssistantConfigSchema.parse(createEmptyRevisionedFile({}));
 }
 
-async function updateAgentConfig(
-  storage: StorageService,
-  request: FastifyRequest,
-  agent: "orchestrator" | "stage-manager" | "reviewer" | "assistant",
-  body: z.infer<typeof AgentConfigBodySchema>,
-  defaultContextWindow: number
-): Promise<AgentConfig> {
-  return storage.updateRevisionedJson({
-    resourceKey: agent,
-    relativePath: `user/${agent}/config.json`,
-    schema: AgentConfigSchema,
-    fallback: AgentConfigSchema.parse(
-      createEmptyRevisionedFile({
-        enabled: false,
-        contextWindow: defaultContextWindow,
-        prompt: ""
-      })
-    ),
-    expectedRevision: expectedRevision(request, body),
-    transform: (current) => {
-      const { revision: _revision, schemaVersion: _schemaVersion, updatedAt: _updatedAt, ...patch } = body;
-      const next = pruneUndefined({
-        ...current,
-        ...patch,
-        params: mergeParamsPatch(current.params, patch.params) ?? current.params,
-        promptSections: mergeNestedPatch(current.promptSections, patch.promptSections)
-      });
-      const target = assertModelWriteValid(next.providerId, next.modelId, next.params);
-      if (target) {
-        // Gateway P6 Task 4: persist the resolved pair (supersedes P4's store-literal
-        // deviation) — remap only fires for LEGACY_MODEL_MAP ids and bare-modelId derivation.
-        next.providerId = target.providerId;
-        next.modelId = target.modelId;
-      }
-      return next;
-    }
-  });
+/** `null` unsets, a choice replaces, `undefined` keeps the stored model. */
+function applyModelPatch(current: ModelChoice | undefined, patch: ModelChoice | null | undefined): ModelChoice | undefined {
+  if (patch === undefined) return current;
+  return patch ?? undefined;
 }
 
-async function readStageManagerHistory(storage: StorageService): Promise<StageManagerHistoryFile> {
-  return storage.readJson("user/stage-manager/history.json", StageManagerHistoryFileSchema, emptyStageManagerHistory());
+/** `GET /api/models` (Living cast §9.2): curated routes with their facts and credential status. */
+async function modelsResponse(dataRoot: string) {
+  const config = await loadAppConfig(dataRoot);
+  const lookup = createProviderCredentialsLookup(dataRoot);
+  const curated = curatedCatalog({ allowed: config.models.allowed, maxOutputUsdPerMTok: config.models.maxOutputUsdPerMTok });
+  return {
+    catalogVersion: curated.catalogVersion,
+    maxOutputUsdPerMTok: config.models.maxOutputUsdPerMTok,
+    models: curated.models.map((model) => ({ ...model, credentialsConfigured: Boolean(lookup(model.providerId)) })),
+    hidden: curated.hidden
+  };
 }
 
-function emptyStageManagerHistory(): StageManagerHistoryFile {
-  return StageManagerHistoryFileSchema.parse(createEmptyRevisionedFile({ edits: [] }));
-}
+type ModelWarningView = { scope: string; code: string; detail: string; at?: string };
 
-async function readReviewerHistory(storage: StorageService): Promise<ReviewerHistoryFile> {
-  return storage.readJson("user/reviewer/history.json", ReviewerHistoryFileSchema, emptyReviewerHistory());
-}
-
-function emptyReviewerHistory(): ReviewerHistoryFile {
-  return ReviewerHistoryFileSchema.parse(createEmptyRevisionedFile({ reviews: [] }));
+/** Persisted model warnings plus live ones: unpriced curated routes and stored choices the catalog no longer offers. */
+async function modelWarnings(storage: StorageService, dataRoot: string): Promise<ModelWarningView[]> {
+  const [persisted, config, waifus, assistant] = await Promise.all([
+    readModelWarnings(dataRoot),
+    loadAppConfig(dataRoot),
+    listWaifus(storage),
+    readAssistantConfig(storage).catch(() => undefined)
+  ]);
+  const curated = curatedCatalog({ allowed: config.models.allowed, maxOutputUsdPerMTok: config.models.maxOutputUsdPerMTok });
+  const offered = new Set(curated.models.map((model) => model.id));
+  const live: ModelWarningView[] = curated.models
+    .filter((model) => !model.pricing)
+    .map((model) => ({ scope: "models", code: "model_unpriced", detail: `${model.id} has no price; its cost counts as 0 toward budgets.` }));
+  const unavailable = (scope: string, model: ModelChoice | undefined) => {
+    if (!model) return;
+    const id = `${model.providerId}/${model.modelId}`;
+    if (offered.has(id)) return;
+    const hidden = curated.hidden.find((entry) => entry.id === id);
+    live.push({ scope, code: "model_unavailable", detail: `${id} is not offered${hidden ? ` (${hidden.reason})` : ""}.` });
+  };
+  for (const waifu of waifus) unavailable(`waifu:${waifu.id}`, waifu.model);
+  unavailable("assistant", assistant?.model);
+  return [...persisted, ...live];
 }
 
 async function readProviderCredentials(storage: StorageService): Promise<ProviderCredentialsFile> {
@@ -1786,8 +1401,6 @@ function serverRelativePath(guildId: string): string {
   return path.join("user", "servers", guildId, "server.json");
 }
 
-type GatewayProviderListing = ProviderDef & { credentialConfigured: boolean };
-
 async function readMembers(storage: StorageService, guildId: string): Promise<GuildMembersFile> {
   assertSafeId(guildId);
   const [file, bots] = await Promise.all([
@@ -1820,46 +1433,6 @@ async function readRoles(storage: StorageService, guildId: string): Promise<Guil
     GuildRolesFileSchema,
     GuildRolesFileSchema.parse(createEmptyRevisionedFile({ guildId, roles: [] }))
   );
-}
-
-// A store-wide (legacy `revision`) conflict on a memory route still answers with the record.
-async function withMemoryConflicts<T>(memoryId: string, run: () => Promise<T>): Promise<T> {
-  try {
-    return await run();
-  } catch (error) {
-    if (error instanceof StorageConflictError) {
-      const latest = error.latest as MemoryStore;
-      throw new MemoryRecordConflictError(latest, latest.memories.find((memory) => memory.id === memoryId));
-    }
-    throw error;
-  }
-}
-
-function updateMemoryOrThrow(
-  current: MemoryStore,
-  memoryId: string,
-  patch: z.infer<typeof UpdateMemoryBodySchema>
-): MemoryStore {
-  const existing = current.memories.find((memory) => memory.id === memoryId);
-  if (!existing) {
-    throw notFound(`Memory ${memoryId} was not found.`);
-  }
-  if (patch.recordRevision !== undefined && existing.revision !== patch.recordRevision) {
-    throw new MemoryRecordConflictError(current, existing);
-  }
-  const { revision: _revision, recordRevision: _recordRevision, status, ...editable } = patch;
-  let next: MemoryRecord = bumpMemoryRecord(existing, editable, nowIso());
-  if (status === "active" && existing.status !== "active") {
-    // Restore: back to active, provenance of the archival dropped.
-    const { archivedReason: _reason, mergedInto: _mergedInto, ...rest } = next;
-    next = { ...rest, status: "active" };
-  } else if (status === "archived" && existing.status !== "archived") {
-    next = { ...next, status: "archived", archivedReason: "user" };
-  }
-  return {
-    ...current,
-    memories: current.memories.map((memory) => (memory.id === memoryId ? next : memory))
-  };
 }
 
 function parseIdParam(params: unknown, key: string): Record<string, string> {
@@ -1922,12 +1495,10 @@ async function diagnosticBundle(
   runtime: unknown,
   remoteAccess?: Awaited<ReturnType<RemoteAccessService["diagnostics"]>>
 ) {
-  const [providers, bots, orchestrator, stageManager, memories] = await Promise.all([
+  const [providers, bots, assistant] = await Promise.all([
     readProviderCredentials(storage),
     readDiscordBots(storage),
-    readAgentConfig(storage, "orchestrator"),
-    readAgentConfig(storage, "stage-manager"),
-    readMemoryStore(storage)
+    readAssistantConfig(storage).catch(() => undefined)
   ]);
   return {
     generatedAt: nowIso(),
@@ -1952,23 +1523,8 @@ async function diagnosticBundle(
       waifuBotCount: bots.waifus.length,
       configuredWaifuBotCount: bots.waifus.filter((bot) => bot.token).length
     },
-    orchestrator: {
-      revision: orchestrator.revision,
-      providerId: orchestrator.providerId,
-      modelId: orchestrator.modelId,
-      contextWindow: orchestrator.contextWindow,
-      promptLength: orchestrator.prompt.length
-    },
-    stageManager: {
-      revision: stageManager.revision,
-      providerId: stageManager.providerId,
-      modelId: stageManager.modelId,
-      contextWindow: stageManager.contextWindow,
-      promptLength: stageManager.prompt.length
-    },
-    memories: {
-      revision: memories.revision,
-      count: memories.memories.length
+    assistant: {
+      model: assistant?.model ? `${assistant.model.providerId}/${assistant.model.modelId}` : null
     },
     ...(remoteAccess ? { remoteAccess } : {})
   };
@@ -2205,79 +1761,6 @@ function boundGlobalSnapshot(snapshot: {
 
 function endSseReply(reply: FastifyReply): void {
   if (!reply.raw.destroyed && !reply.raw.writableEnded) reply.raw.end();
-}
-
-type DigestPipeline = ModelPipeline & { generatePersonaDigest: NonNullable<ModelPipeline["generatePersonaDigest"]> };
-type DigestSetup =
-  | { ok: true; pipeline: DigestPipeline; modelId: string }
-  | { ok: false; reason: string };
-
-async function resolvePersonaDigestPipeline(storage: StorageService, options: ApiServerOptions): Promise<DigestSetup> {
-  const stageManagerConfig = await readAgentConfig(storage, "stage-manager");
-  const modelId = stageManagerConfig.modelId;
-  if (!modelId) {
-    return { ok: false, reason: "Stage-manager has no model configured." };
-  }
-  let target: ReturnType<typeof resolveModelTarget>;
-  try {
-    target = resolveModelTarget({ providerId: stageManagerConfig.providerId, modelId });
-  } catch {
-    return { ok: false, reason: "Stage-manager model is not recognized." };
-  }
-  if (!createProviderCredentialsLookup(options.dataRoot)(target.providerId)) {
-    return { ok: false, reason: `Provider ${target.providerId} has no API key configured.` };
-  }
-  const pipeline = createGatewayModelPipeline({
-    providerId: target.providerId,
-    modelId: target.modelId,
-    queryRole: "stage_manager_librarian",
-    dataRoot: options.dataRoot
-  });
-  if (!pipeline.generatePersonaDigest) {
-    return { ok: false, reason: "Stage-manager model does not support persona digest generation." };
-  }
-  return { ok: true, pipeline: pipeline as DigestPipeline, modelId: target.modelId };
-}
-
-async function generatePersonaDigestIfStale(
-  storage: StorageService,
-  waifu: WaifuConfig,
-  logger: Logger,
-  options: ApiServerOptions
-): Promise<void> {
-  let resolvedModelId: string | undefined;
-  try {
-    const personaHash = createHash("sha256").update(waifu.persona).digest("hex");
-    if (waifu.personaDigest?.personaHash === personaHash) {
-      // Digest is up to date; nothing to do.
-      return;
-    }
-    const setup = await resolvePersonaDigestPipeline(storage, options);
-    if (!setup.ok) return;
-    const { pipeline, modelId } = setup;
-    resolvedModelId = modelId;
-    const digest = await pipeline.generatePersonaDigest({
-      modelId,
-      messages: [],
-      personaText: waifu.persona
-    });
-    await storage.updateRevisionedJson({
-      resourceKey: `waifu:${waifu.id}`,
-      relativePath: waifuRelativePath(waifu.id),
-      schema: WaifuConfigSchema,
-      fallback: waifu,
-      transform: (current) => ({
-        ...current,
-        personaDigest: { ...digest, personaHash }
-      })
-    });
-  } catch (error) {
-    logger.warn("Persona digest generation failed", {
-      waifuId: waifu.id,
-      modelId: resolvedModelId,
-      error: error instanceof Error ? error.message : String(error)
-    });
-  }
 }
 
 async function offlineDmStatus(storage: StorageService) {

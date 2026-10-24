@@ -4,13 +4,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import { resolveDataPath } from "../src/config/paths.js";
 import {
   compareSnowflakes,
-  contextAgentId,
-  contextStatePath,
+  conversationDirPath,
   conversationKey,
-  conversationLedgerPath,
   conversationRefsPath,
   parseConversationKey,
-  promptCacheKey,
   type ConversationKey,
   type ConversationRef
 } from "../src/orchestration/context/keys.js";
@@ -58,51 +55,27 @@ describe("conversation keys", () => {
   });
 });
 
-describe("context agents and cache keys", () => {
-  const key = conversationKey({ kind: "guild", guildId: GUILD, channelId: CHANNEL });
-
-  it("names agents", () => {
-    expect(contextAgentId({ kind: "waifu", waifuId: "aria" })).toBe("waifu-aria");
-    expect(contextAgentId({ kind: "orchestrator" })).toBe("orchestrator");
-    expect(contextAgentId({ kind: "stage-manager" })).toBe("stage-manager");
-    expect(() => contextAgentId({ kind: "waifu", waifuId: "../evil" })).toThrow();
-  });
-
-  it("builds prompt cache keys", () => {
-    expect(promptCacheKey(key, { kind: "waifu", waifuId: "aria" })).toBe(`waifu:aria:${key}`);
-    expect(promptCacheKey(key, { kind: "orchestrator" })).toBe(`orchestrator:${key}`);
-    expect(promptCacheKey(key, { kind: "stage-manager" })).toBe(`stage-manager:${key}`);
-  });
-});
-
 describe("conversation paths", () => {
   const key = conversationKey({ kind: "guild", guildId: GUILD, channelId: CHANNEL });
   const dmKey = conversationKey({ kind: "dm", userId: USER, waifuId: "aria" });
 
   it("lays out files under user/conversations/<key>/", () => {
-    const base = path.join("user", "conversations", key);
-    expect(contextStatePath(key, { kind: "waifu", waifuId: "aria" })).toBe(
-      path.join(base, "contexts", "waifu-aria.json")
-    );
-    expect(contextStatePath(key, { kind: "orchestrator" })).toBe(path.join(base, "contexts", "orchestrator.json"));
-    expect(conversationRefsPath(key)).toBe(path.join(base, "refs.json"));
-    expect(conversationLedgerPath(dmKey)).toBe(path.join("user", "conversations", dmKey, "ledger.json"));
+    expect(conversationDirPath(key)).toBe(path.join("user", "conversations", key));
+    expect(conversationRefsPath(key)).toBe(path.join("user", "conversations", key, "refs.json"));
+    expect(conversationDirPath(dmKey)).toBe(path.join("user", "conversations", dmKey));
   });
 
-  it("rejects forged keys and agents that would escape the data root", () => {
+  it("rejects forged keys that would escape the data root", () => {
     for (const forged of ["../../../etc", "g_1_2/../../x", "dm_1_../../x", ""]) {
       expect(() => conversationRefsPath(forged as ConversationKey), forged).toThrow();
-      expect(() => conversationLedgerPath(forged as ConversationKey), forged).toThrow();
-      expect(() => contextStatePath(forged as ConversationKey, { kind: "orchestrator" }), forged).toThrow();
-      expect(() => promptCacheKey(forged as ConversationKey, { kind: "orchestrator" }), forged).toThrow();
+      expect(() => conversationDirPath(forged as ConversationKey), forged).toThrow();
     }
-    expect(() => contextStatePath(key, { kind: "waifu", waifuId: "../../x" })).toThrow();
   });
 
   it("stays inside a real data root and is usable for file IO", async () => {
     const root = await makeTempRoot();
     roots.push(root);
-    const relative = contextStatePath(dmKey, { kind: "waifu", waifuId: "aria" });
+    const relative = conversationRefsPath(dmKey);
     const absolute = resolveDataPath(root, relative);
     expect(path.relative(root, absolute).startsWith("..")).toBe(false);
     await mkdir(path.dirname(absolute), { recursive: true });

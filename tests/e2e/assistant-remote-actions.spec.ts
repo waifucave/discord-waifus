@@ -1,5 +1,6 @@
 import { expect, test, type Frame, type Page } from "@playwright/test";
-import type { ModelPipeline } from "../../src/providers/types.js";
+import type { AssistantModelClient } from "../../src/api/assistant/service.js";
+import { scriptedAssistantClient } from "../assistantFakes.js";
 import {
   createRemoteHarness,
   type RemoteHarness
@@ -23,30 +24,17 @@ async function dashboardFrame(page: Page): Promise<Frame> {
   return frame;
 }
 
-function assistantPipeline(): ModelPipeline {
+function assistantClient(): AssistantModelClient {
   let turn = 0;
-  return {
-    async generateWaifu() {
-      throw new Error("unused");
-    },
-    async generateAssistantTurn(request) {
+  return scriptedAssistantClient(({ round }) => {
+    if (round === 0) {
       turn += 1;
-      const toolName = turn === 1
-        ? "request_remote_pairing_invite"
-        : "set_remote_access_enabled";
-      const argumentsJson = turn === 1 ? "{}" : JSON.stringify({ enabled: false });
-      const result = await request.executeTool(toolName, argumentsJson);
-      request.onEvent?.({ type: "tool_call", name: toolName, arguments: argumentsJson });
-      request.onEvent?.({ type: "tool_result", name: toolName, result });
-      const content = turn === 1
-        ? "Use the private invitation card."
-        : "Review the pending Remote Access change.";
-      return {
-        content,
-        messages: [...request.messages, { role: "assistant", content }]
-      };
+      return turn === 1
+        ? { toolCalls: [{ name: "request_remote_pairing_invite" }] }
+        : { toolCalls: [{ name: "set_remote_access_enabled", args: { enabled: false } }] };
     }
-  };
+    return { text: turn === 1 ? "Use the private invitation card." : "Review the pending Remote Access change." };
+  });
 }
 
 async function sendAssistantMessage(dashboard: Frame, content: string): Promise<void> {
@@ -59,7 +47,7 @@ test("keeps assistant ownership remote, redacts invitation secrets, and invalida
   harness = await createRemoteHarness({
     rememberedHosts: "one",
     fullDashboard: true,
-    assistantPipeline: assistantPipeline()
+    assistantClient: assistantClient()
   });
   await page.addInitScript(() => {
     localStorage.setItem("onboarding-dismissed", "1");

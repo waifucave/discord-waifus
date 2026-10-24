@@ -38,28 +38,6 @@ function mutation(
 
 export const ROUTE_POLICY_MANIFEST: readonly RoutePolicyDefinition[] = Object.freeze([
   safe("/", "local_only"),
-  {
-    method: "*",
-    path: "/api/llm/*",
-    remotePolicy: "full_admin",
-    gatewaySemanticRoutes: [
-      { method: "GET", path: "/api/llm/v1/providers", retryClass: "safe" },
-      { method: "GET", path: "/api/llm/v1/models", retryClass: "safe" },
-      {
-        method: "GET",
-        path: "/api/llm/v1/models/:provider/:model",
-        pathPattern: /^\/api\/llm\/v1\/models\/[^/]+\/.+$/u,
-        retryClass: "safe"
-      },
-      {
-        method: "POST",
-        path: "/api/llm/v1/chat",
-        retryClass: "non_replayable",
-        auditAction: "llm.chat"
-      },
-      { method: "POST", path: "/api/llm/v1/validate", retryClass: "safe" }
-    ]
-  },
   safe("/api/health"),
   safe("/api/status"),
   safe("/api/runtime"),
@@ -144,16 +122,8 @@ export const ROUTE_POLICY_MANIFEST: readonly RoutePolicyDefinition[] = Object.fr
   mutation("POST", "/api/cache/ocr/clear", "reconciled", "cache.ocr.clear"),
   safe("/api/discord-bots"),
   mutation("PUT", "/api/discord-bots", "reconciled", "discord_bots.update"),
-  safe("/api/orchestrator/config"),
-  safe("/api/orchestrator/one-shot/models"),
-  mutation("PUT", "/api/orchestrator/config", "transactional", "orchestrator.config.update"),
-  safe("/api/orchestrator/history"),
-  safe("/api/stage-manager/config"),
-  mutation("PUT", "/api/stage-manager/config", "transactional", "stage_manager.config.update"),
-  safe("/api/stage-manager/history"),
-  safe("/api/reviewer/config"),
-  mutation("PUT", "/api/reviewer/config", "transactional", "reviewer.config.update"),
-  safe("/api/reviewer/history"),
+  safe("/api/models"),
+  safe("/api/detector/models"),
   safe("/api/logs"),
   safe("/api/docs"),
   safe("/api/docs/:slug"),
@@ -213,7 +183,6 @@ export const ROUTE_POLICY_MANIFEST: readonly RoutePolicyDefinition[] = Object.fr
   safe("/api/waifus/:waifuId"),
   mutation("PUT", "/api/waifus/:waifuId", "transactional", "waifu.update"),
   mutation("POST", "/api/waifus/:waifuId/link-bot", "reconciled", "waifu.bot.link"),
-  mutation("POST", "/api/waifus/:waifuId/digest", "non_replayable", "waifu.digest.generate"),
   mutation("DELETE", "/api/waifus/:waifuId", "transactional", "waifu.delete"),
   mutation("POST", "/api/waifus/:waifuId/assets/pfp", "transactional", "waifu.asset.pfp.write"),
   mutation(
@@ -260,30 +229,13 @@ export const ROUTE_POLICY_MANIFEST: readonly RoutePolicyDefinition[] = Object.fr
     "transactional",
     "server.channel.update"
   ),
-  safe("/api/memories"),
-  mutation("POST", "/api/memories", "transactional", "memory.create"),
-  mutation("POST", "/api/memories/forget-user", "transactional", "memory.forget_user"),
+  mutation("POST", "/api/people/:userId/forget", "transactional", "people.forget"),
   safe("/api/dms"),
   safe("/api/dms/:waifuId/:userId"),
   mutation("POST", "/api/dms/:waifuId/:userId/forget", "transactional", "dm.forget"),
-  mutation("PUT", "/api/memories/:memoryId", "transactional", "memory.update"),
-  mutation("DELETE", "/api/memories/:memoryId", "transactional", "memory.delete"),
   mutation("POST", "/api/runtime/pause", "reconciled", "runtime.pause"),
   mutation("POST", "/api/runtime/resume", "reconciled", "runtime.resume"),
   mutation("POST", "/api/runtime/reload", "reconciled", "runtime.reload"),
-  mutation("POST", "/api/runtime/stop", "reconciled", "runtime.channel.stop"),
-  mutation(
-    "POST",
-    "/api/runtime/trigger/orchestrator",
-    "non_replayable",
-    "runtime.orchestrator.trigger"
-  ),
-  mutation(
-    "POST",
-    "/api/runtime/trigger/stage-manager",
-    "non_replayable",
-    "runtime.stage_manager.trigger"
-  ),
   safe("/api/diagnostics/bundle"),
   safe("/api/events"),
   safe("/api/client-context", "never_proxy"),

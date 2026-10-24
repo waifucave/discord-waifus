@@ -3,13 +3,9 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 import { ensureDataLayout, readPackageVersion } from "../config/layout.js";
-import { RETRIGGER_MAX_SECONDS, RETRIGGER_MIN_SECONDS } from "../orchestration/decisions.js";
-import { WAIFU_NOTE_STRENGTH } from "../orchestration/memorySubjects.js";
+import { LEGACY_MODEL_MAP, RETRIGGER_MAX_SECONDS, RETRIGGER_MIN_SECONDS, WAIFU_NOTE_STRENGTH } from "./migrationSteps/legacy.js";
 import { extractLegacyEntities as extractEntities } from "./migrationSteps/memorySupport.js";
-import { resolveModelTarget } from "../orchestration/pipeline/resolveTarget.js";
 import { MEMORY_KINDS } from "../shared/schemas/domain.js";
-import {
-} from "../shared/schemas/domain.js";
 import { CURRENT_SCHEMA_VERSION } from "../shared/schemas/common.js";
 import { legacyToParams, LegacyGeneration, LegacyReasoning } from "../shared/paramsCompat.js";
 import { atomicWriteJson, atomicWriteText } from "../storage/atomic.js";
@@ -30,7 +26,9 @@ import { migrateOcrCacheUrlKeysCleanup } from "./migrationSteps/ocrCacheUrlKeysC
 import { migratePendingObservationsGlobal } from "./migrationSteps/pendingObservationsGlobal.js";
 import { migrateServerContextWindowsExplicit } from "./migrationSteps/serverContextWindowsExplicit.js";
 import { migrateWaifuDropPromptLayout } from "./migrationSteps/waifuDropPromptLayout.js";
-import { migrateWaifuParamsGateway040 } from "./migrationSteps/waifuParamsGateway040.js";
+import { migrateLivingCastModels } from "./migrationSteps/livingCastModels.js";
+import { checkStoredModelEfforts } from "./migrationSteps/modelEffortCheck.js";
+import { installedCatalog, routeKey } from "../models/catalog.js";
 import {
   emptyMigrationLedger,
   readTrustedMigrationLedger,
@@ -119,18 +117,16 @@ export const MIGRATION_STEPS: readonly MigrationStep[] = [
   {
     // §7.3: convert stored reasoning/generation into unified gateway params and remap retired
     // model ids. Must run after the shape migrations above (which may still be touching agent
-    // config.json / waifu.json) and before the version stamp below. The remap table ships with the
-    // app/gateway, so it re-runs whenever the app version changes.
+    // config.json / waifu.json) and before the version stamp below. The remap table is frozen in
+    // migrationSteps/legacy.ts since the gateway left (Living cast L1); living-cast-models-v1 then
+    // turns the result into winter model choices.
     id: "configs-to-gateway-params",
     frequency: "once-per-app-version",
     run: async (dataRoot) => label(await migrateConfigsToGatewayParams(dataRoot), "migrate-configs-to-gateway-params")
   },
-  {
-    // Phase 4 (spec 8.2/8.10): drops stored params the gateway 0.4.0 catalog rejects. Owned by T7a.
-    id: "waifu-params-gateway-040-v1",
-    frequency: "once-per-app-version",
-    run: migrateWaifuParamsGateway040
-  },
+  // Removed with the gateway (Living cast L1): waifu-params-gateway-040-v1 (Phase 4, dropped params
+  // the gateway 0.4.0 catalog rejected). Its id may remain in existing ledgers as history;
+  // living-cast-models-v1 drops `params` altogether.
   {
     // Has its own one-time marker; the cheap missing-`enabled` fill keeps running every boot.
     id: "enable-discord-bots-v1",
@@ -152,6 +148,10 @@ export const MIGRATION_STEPS: readonly MigrationStep[] = [
   // above, which still normalizes legacy decision shapes in the global file it splits.
   { id: "orchestrator-history-per-guild-v1", frequency: "every-boot", run: migrateOrchestratorHistoryPerGuild },
   { id: "server-drop-enabled-flags-v1", frequency: "once", run: migrateServerDropEnabledFlags },
+  // Living cast steps (spec §11.2). The gateway-era model fields become nested winter model choices;
+  // the effort check re-validates stored efforts against the installed winter catalog every boot.
+  { id: "living-cast-models-v1", frequency: "once", run: migrateLivingCastModels },
+  { id: "living-cast-model-effort-check", frequency: "every-boot", run: (dataRoot) => checkStoredModelEfforts(dataRoot) },
   {
     // Runs LAST: every step above may still leave a file's schemaVersion at 1 even once its shape
     // is current. Stamping here — after all shape conversions — is what lets the next boot's
@@ -854,19 +854,12 @@ async function migrateConfigDocToGatewayParams(filePath: string): Promise<boolea
   }
 
   if (typeof data.modelId === "string" && data.modelId.length > 0) {
-    try {
-      const target = resolveModelTarget({
-        providerId: typeof data.providerId === "string" ? data.providerId : undefined,
-        modelId: data.modelId
-      });
-      if (target.remapped) {
-        data.providerId = target.providerId;
-        data.modelId = target.modelId;
-        mutated = true;
-      }
-    } catch {
-      // Unknown model id — leave it in place rather than silently substituting one.
-      // waifus doctor (T5) surfaces this as a warning.
+    // Only retired ids remap; any other id is left in place rather than silently substituted.
+    const mapped = LEGACY_MODEL_MAP[data.modelId];
+    if (mapped) {
+      data.providerId = mapped.providerId;
+      data.modelId = mapped.modelId;
+      mutated = true;
     }
   }
 
@@ -1010,20 +1003,16 @@ export async function readDiscordBotsLeniently(dataRoot: string): Promise<Lenien
 
 export type UnresolvedModelRef = { scope: string; providerId: string | null; modelId: string };
 
-// Read-only companion to migrateConfigsToGatewayParams' model-remap step, for `waifus doctor`
-// (T5). Same file set (three agent config.json docs + every waifu.json), but reports ids
-// resolveModelTarget can't route instead of silently leaving them in place. Uses lenient raw JSON
-// reads rather than the domain Zod schemas so an unmigrated (schemaVersion 1) file still surfaces
-// its unresolved model instead of being dropped by a strict schema parse failure.
+// For `waifus doctor`: every stored model choice (each waifu.json and the assistant config) whose
+// route the installed winter catalog does not carry, plus any gateway-era flat model id that has
+// not been migrated yet. Uses lenient raw JSON reads rather than the domain Zod schemas so an
+// unmigrated file still surfaces its model instead of being dropped by a strict parse failure.
 export async function findUnresolvedModels(dataRoot: string): Promise<UnresolvedModelRef[]> {
   const unresolved: UnresolvedModelRef[] = [];
 
-  const agentDirs = ["orchestrator", "stage-manager", "reviewer"];
-  for (const agent of agentDirs) {
-    const filePath = path.join(dataRoot, "user", agent, "config.json");
-    const data = await readJsonOrUndefined(filePath);
-    if (!isObject(data)) continue;
-    const ref = unresolvedModelRef(data, agent);
+  const assistant = await readJsonOrUndefined(path.join(dataRoot, "user", "assistant", "config.json"));
+  if (isObject(assistant)) {
+    const ref = unresolvedModelRef(assistant, "assistant");
     if (ref) unresolved.push(ref);
   }
 
@@ -1048,14 +1037,16 @@ export async function findUnresolvedModels(dataRoot: string): Promise<Unresolved
 }
 
 function unresolvedModelRef(data: Record<string, unknown>, scope: string): UnresolvedModelRef | undefined {
-  if (typeof data.modelId !== "string" || data.modelId.length === 0) return undefined;
-  const providerId = typeof data.providerId === "string" ? data.providerId : undefined;
-  try {
-    resolveModelTarget({ providerId, modelId: data.modelId });
-    return undefined;
-  } catch {
-    return { scope, providerId: providerId ?? null, modelId: data.modelId };
+  const model = data.model;
+  if (isObject(model) && typeof model.providerId === "string" && typeof model.modelId === "string") {
+    const key = routeKey({ providerId: model.providerId, modelId: model.modelId });
+    return installedCatalog().models.some((entry) => entry.key === key)
+      ? undefined
+      : { scope, providerId: model.providerId, modelId: model.modelId };
   }
+  // A gateway-era flat id that living-cast-models-v1 has not converted yet.
+  if (typeof data.modelId !== "string" || data.modelId.length === 0) return undefined;
+  return { scope, providerId: typeof data.providerId === "string" ? data.providerId : null, modelId: data.modelId };
 }
 
 async function collectJsonFilesRecursive(dir: string): Promise<string[]> {

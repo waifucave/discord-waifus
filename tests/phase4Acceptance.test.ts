@@ -1,30 +1,13 @@
-// Phase 4 acceptance (spec 8.11) for the two behaviours no other test covers end to end:
-// - a memory learned in server A is retrieved in server B through the real ContextRuntime.prepare
-//   over the storage-backed snapshot provider (and nowhere it should not be);
-// - re-running every migration is a no-op: byte-identical files, with or without the ledger.
-//
-// (The 200-message compaction, the compaction-request-equals-reply-call check and the usage-ledger
-// line per model call live in contextCompaction.test.ts, gatewayPipelineAdoption.test.ts and
-// eval/cacheHit.test.ts.)
+// Phase 4 acceptance (spec 8.11), kept through Living cast L1 for the behaviour no other test
+// covers end to end: re-running every migration is a no-op (byte-identical files, with or without
+// the ledger). The Phase 4 cross-server memory check left with the memory store (L1); the Living
+// cast memory migration (L2) brings its own acceptance.
 
 import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { createGateway } from "@waifucave/gateway";
 import { afterEach, describe, expect, it } from "vitest";
-import { MIGRATION_STEPS, runMigrations } from "../src/backend/migrations.js";
+import { runMigrations } from "../src/backend/migrations.js";
 import { ensureDataLayout } from "../src/config/layout.js";
-import { emaTokenCalibration, createCompactionService } from "../src/orchestration/context/compaction.js";
-import { FileContextStore } from "../src/orchestration/context/contextStore.js";
-import type { ConversationRef } from "../src/orchestration/context/keys.js";
-import { ContextRuntime } from "../src/orchestration/context/runtime.js";
-import { createStorageMemorySnapshotProvider } from "../src/orchestration/memorySnapshot.js";
-import { createWaifuHarness } from "../src/orchestration/waifuHarness.js";
-import { recordWaifuNotes } from "../src/orchestration/stores/memories.js";
-import { DEFAULT_COMPACTION_SETTINGS } from "../src/shared/schemas/compaction.js";
-import { createRevisionedBase } from "../src/shared/schemas/common.js";
-import { MemoryStoreSchema, WaifuConfigSchema } from "../src/shared/schemas/domain.js";
-import { StorageService } from "../src/storage/storageService.js";
-import { BASE_TIME, FakeChannel, FakeImageFetcher, quietLogger } from "./contextFixtures.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
 
 const roots: string[] = [];
@@ -37,106 +20,6 @@ async function freshRoot(): Promise<string> {
   roots.push(root);
   return root;
 }
-
-// ---------------------------------------------------------------------------------------------
-// Memory learned in server A is retrieved in server B
-
-describe("cross-server memory", () => {
-  const MODEL = createGateway({ credentials: { anthropic: "sk-test" }, fetchImpl: (async () => new Response("{}")) as typeof fetch }).getCapabilities(
-    "anthropic",
-    "claude-sonnet-4-6"
-  )!;
-  const GUILD_A: ConversationRef = { kind: "guild", guildId: "111111111111111111", channelId: "211111111111111111" };
-  const GUILD_B: ConversationRef = { kind: "guild", guildId: "322222222222222222", channelId: "422222222222222222" };
-  const DM: ConversationRef = { kind: "dm", waifuId: "yuki", userId: "kevin" };
-  const KEVIN = { discordUserId: "kevin", name: "Kevin" };
-
-  const waifu = (id: string) =>
-    WaifuConfigSchema.parse({
-      ...createRevisionedBase(),
-      id,
-      name: id,
-      displayName: id,
-      botId: `${id}-bot`,
-      modelId: "claude-sonnet-4-6",
-      persona: `${id} is a friend.`
-    });
-
-  async function prepareAs(storage: StorageService, id: string, conversation: ConversationRef, say: string): Promise<string> {
-    const channel = new FakeChannel();
-    channel.post({ authorId: "kevin", authorName: "Kevin", content: say }, BASE_TIME);
-    const now = () => new Date(BASE_TIME + 60_000);
-    const store = new FileContextStore(storage, { now, timeZone: () => "UTC" });
-    const logger = quietLogger();
-    const runtime = new ContextRuntime({
-      store,
-      snapshots: createStorageMemorySnapshotProvider(storage),
-      compaction: createCompactionService({ store, logger, now }),
-      messages: channel,
-      images: new FakeImageFetcher(),
-      settings: () => ({ ...DEFAULT_COMPACTION_SETTINGS }),
-      logger,
-      now,
-      timeZone: () => "UTC",
-      calibrate: emaTokenCalibration
-    });
-    const place =
-      conversation.kind === "guild"
-        ? ({ kind: "guild", serverName: "Other Club", channelName: "chat" } as const)
-        : ({ kind: "dm", userName: "Kevin" } as const);
-    const harness = createWaifuHarness({
-      waifu: waifu(id),
-      conversation,
-      roster: [],
-      place,
-      people: [{ userId: "kevin", name: "Kevin" }],
-      emojis: [],
-      tools: [],
-      activity: () => undefined
-    });
-    const prepared = await runtime.prepare({
-      conversation,
-      agent: { kind: "waifu", waifuId: id },
-      model: MODEL,
-      backfillCap: 20,
-      selfAuthorIds: [`${id}-bot`],
-      render: harness,
-      renderToolTurnsAsText: true,
-      participantIds: ["kevin"],
-      params: {}
-    });
-    return JSON.stringify(prepared.prompt.messages);
-  }
-
-  it("retrieves what Yuki learned in guild A when she talks to the same person in guild B and in a DM, and only for her", async () => {
-    const root = await freshRoot();
-    await ensureDataLayout(root);
-    const storage = new StorageService(root);
-
-    const decisions = await recordWaifuNotes(storage, {
-      waifuId: "yuki",
-      entries: ["Kevin is allergic to peanuts"],
-      origin: { guildId: GUILD_A.guildId, channelId: GUILD_A.channelId },
-      subjects: [KEVIN]
-    });
-    expect(decisions).toHaveLength(1);
-    const store = MemoryStoreSchema.parse(JSON.parse(await readFile(path.join(root, "user", "memories.json"), "utf8")));
-    expect(store.memories).toHaveLength(1);
-    expect(store.memories[0]).toMatchObject({ waifuId: "yuki", origin: { guildId: GUILD_A.guildId } });
-
-    const inB = await prepareAs(storage, "yuki", GUILD_B, "did anyone bring peanut butter cookies?");
-    expect(inB).toContain("Kevin is allergic to peanuts");
-    const inDm = await prepareAs(storage, "yuki", DM, "do you remember what I told you about peanuts?");
-    expect(inDm).toContain("Kevin is allergic to peanuts");
-
-    // Memories belong to one waifu: a sibling in the same room does not inherit them.
-    const sibling = await prepareAs(storage, "riko", GUILD_B, "did anyone bring peanut butter cookies?");
-    expect(sibling).not.toContain("allergic to peanuts");
-  });
-});
-
-// ---------------------------------------------------------------------------------------------
-// Re-running every migration is a no-op
 
 describe("migrations re-run", () => {
   const T = "2026-10-01T12:00:00.000Z";
@@ -248,7 +131,16 @@ describe("migrations re-run", () => {
     // The shapes really moved: no legacy keys survive.
     const yuki = JSON.parse(migrated.get("user/waifus/yuki/waifu.json")!);
     expect(yuki).not.toHaveProperty("promptLayout");
-    expect(yuki.params).not.toHaveProperty("temperature");
+    // living-cast-models-v1: gateway params are gone; Opus has no curated family (unset, warned),
+    // Haiku 4.5 maps to the curated Haiku 5.5 route.
+    expect(yuki).not.toHaveProperty("params");
+    expect(yuki).not.toHaveProperty("model");
+    const riko = JSON.parse(migrated.get("user/waifus/riko/waifu.json")!);
+    expect(riko.model).toEqual({ providerId: "anthropic", modelId: "claude-haiku-5-5" });
+    expect(riko).not.toHaveProperty("modelId");
+    expect(JSON.parse(migrated.get("app/model-warnings.json")!).warnings).toEqual([
+      expect.objectContaining({ scope: "waifu:yuki", code: "model_unmapped" })
+    ]);
     expect(migrated.has("app/cache/ocr/results/abc.json")).toBe(false);
     expect(migrated.has("app/cache/ocr/results-v2/def.json")).toBe(true);
     expect(JSON.parse(migrated.get("user/memory/dream-cursor.json")!)).not.toHaveProperty("cursors");

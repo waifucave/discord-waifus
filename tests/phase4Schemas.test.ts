@@ -7,7 +7,7 @@ import { loadAppConfig, mergeAppConfigPatch } from "../src/config/appConfig.js";
 import { ensureDataLayout } from "../src/config/layout.js";
 import { CURRENT_SCHEMA_VERSION, createRevisionedBase } from "../src/shared/schemas/common.js";
 import { AppConfigSchema, DEFAULT_APP_CONFIG, UpdateAppConfigBodySchema } from "../src/shared/schemas/config.js";
-import { AgentConfigSchema, ServerConfigSchema, WaifuConfigSchema } from "../src/shared/schemas/domain.js";
+import { ServerConfigSchema, WaifuConfigSchema } from "../src/shared/schemas/domain.js";
 import { StorageService } from "../src/storage/storageService.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
 
@@ -54,19 +54,19 @@ describe("pre-Phase-4 files still parse", () => {
       contextWindow: 50,
       params: {}
     });
+    // Living cast L1 dropped the per-waifu window and gateway params (living-cast-models-v1).
+    expect(old).not.toHaveProperty("contextWindow");
+    expect(old).not.toHaveProperty("params");
     expect(old).toMatchObject({
       verbosity: "terse",
       customInstructions: "",
       scheduleInPrompt: true,
       dm: { allowDms: false, rateLimit: { maxReplies: 30, windowMinutes: 60 }, notifyWhenLimited: true, limitNotice: "" }
     });
-    expect(old.contextWindow).toBe(50);
   });
 
-  it("waifu: contextWindow up to 200, prompt settings validated", () => {
+  it("waifu: prompt settings validated", () => {
     const input = { ...base, id: "a", name: "A", displayName: "A" };
-    expect(WaifuConfigSchema.parse({ ...input, contextWindow: 200 }).contextWindow).toBe(200);
-    expect(() => WaifuConfigSchema.parse({ ...input, contextWindow: 201 })).toThrow();
     expect(() => WaifuConfigSchema.parse({ ...input, verbosity: "loud" })).toThrow();
     expect(() => WaifuConfigSchema.parse({ ...input, customInstructions: "x".repeat(4001) })).toThrow();
     expect(WaifuConfigSchema.parse({ ...input, dm: { rateLimit: null } }).dm.rateLimit).toBeNull();
@@ -94,11 +94,6 @@ describe("pre-Phase-4 files still parse", () => {
     const parsed = ServerConfigSchema.parse({ ...base, guildId: GUILD, compaction: { maxMessages: 100 } });
     expect(parsed.compaction).toEqual({ maxMessages: 100 });
     expect(() => ServerConfigSchema.parse({ ...base, guildId: GUILD, compaction: { triggerRatio: 2 } })).toThrow();
-  });
-
-  it("agent: contextWindow up to 200", () => {
-    expect(AgentConfigSchema.parse({ ...base, contextWindow: 200 }).contextWindow).toBe(200);
-    expect(() => AgentConfigSchema.parse({ ...base, contextWindow: 201 })).toThrow();
   });
 
   it("app config: an old config.toml gets the Phase 4 sections with spec defaults", async () => {
@@ -214,7 +209,6 @@ describe("partial PUTs never manufacture Phase 4 defaults", () => {
           verbosity: "expressive",
           customInstructions: "Be kind.",
           scheduleInPrompt: false,
-          contextWindow: 200,
           dm: { allowDms: true, rateLimit: null, limitNotice: "slow down" }
         }
       });
@@ -224,7 +218,6 @@ describe("partial PUTs never manufacture Phase 4 defaults", () => {
         verbosity: "expressive",
         customInstructions: "Be kind.",
         scheduleInPrompt: false,
-        contextWindow: 200,
         dm: { allowDms: true, rateLimit: null, notifyWhenLimited: true, limitNotice: "slow down" }
       });
 
@@ -236,7 +229,6 @@ describe("partial PUTs never manufacture Phase 4 defaults", () => {
         verbosity: "expressive",
         customInstructions: "Be kind.",
         scheduleInPrompt: false,
-        contextWindow: 200,
         dm: { allowDms: true, rateLimit: null, notifyWhenLimited: true, limitNotice: "slow down" }
       });
 
@@ -261,13 +253,6 @@ describe("partial PUTs never manufacture Phase 4 defaults", () => {
         payload: { revision: limited.json().revision, dm: { rateLimit: null } }
       });
       expect(unlimited.json().dm).toMatchObject({ rateLimit: null, allowDms: true, notifyWhenLimited: false });
-
-      const tooBig = await app.inject({
-        method: "PUT",
-        url,
-        payload: { revision: unlimited.json().revision, contextWindow: 201 }
-      });
-      expect(tooBig.statusCode).toBe(400);
     } finally {
       await app.close();
     }
@@ -352,20 +337,6 @@ describe("partial PUTs never manufacture Phase 4 defaults", () => {
       expect(read.json().contextWindows).toEqual({ orchestrator: 20, waifu: 50, stageManager: 80 });
       const patched = await app.inject({ method: "PUT", url: `/api/servers/${GUILD}`, payload: { contextWindows: { waifu: 30 } } });
       expect(patched.json().contextWindows).toEqual({ orchestrator: 20, waifu: 30, stageManager: 80 });
-    } finally {
-      await app.close();
-    }
-  });
-
-  it("agent PUT accepts contextWindow 200 and keeps it across unrelated PUTs", async () => {
-    const { app } = await makeApp();
-    try {
-      const url = "/api/stage-manager/config";
-      const seeded = await app.inject({ method: "PUT", url, payload: { contextWindow: 200 } });
-      expect(seeded.json().contextWindow).toBe(200);
-      const unrelated = await app.inject({ method: "PUT", url, payload: { prompt: "hi" } });
-      expect(unrelated.json().contextWindow).toBe(200);
-      expect((await app.inject({ method: "PUT", url, payload: { contextWindow: 201 } })).statusCode).toBe(400);
     } finally {
       await app.close();
     }

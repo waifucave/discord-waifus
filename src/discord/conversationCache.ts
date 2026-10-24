@@ -13,7 +13,7 @@
 
 import type { Logger } from "../backend/logger.js";
 import { conversationKey, type ConversationRef } from "../orchestration/context/keys.js";
-import { DiscordConversationSource } from "../orchestration/context/fetchTranscript.js";
+import { DiscordConversationSource } from "./conversationSource.js";
 import type { ConversationMessageSource } from "../orchestration/context/types.js";
 import type { RawDiscordMessage } from "../shared/schemas/discordMessage.js";
 import type { DiscordGatewayFacade } from "./client.js";
@@ -208,6 +208,11 @@ export class ConversationMessageCache implements ConversationMessageSource {
   onEvent(listener: (event: ConversationCacheEvent) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  /** The messages currently buffered for a conversation (no fetch; empty when none). */
+  bufferedMessages(conversation: ConversationRef): RawDiscordMessage[] {
+    return [...(this.buffers.get(conversationKey(conversation))?.messages.values() ?? [])];
   }
 
   /** Drop everything cached for a conversation (`/clear everything`, DM forget). */

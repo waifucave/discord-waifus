@@ -1,66 +1,41 @@
-// Gateway P4 Task 4: provider ids widen from the legacy 6-value enum to any id the gateway
-// registry knows (as of Gateway P6 Task 3, src/api/providerStatus.ts's /api/providers response
-// covers the same full registry — see the comment at its top). Storage writes that name a
-// provider/model now get validated against the live registry instead of failing later at chat
-// time:
-//   - unknown provider id (credentials PUT)                      -> 400 unknown_provider
-//   - unknown (providerId, modelId) pair (waifu/agent config)    -> 400 unknown_model
-//   - params the model's registry descriptor forbids             -> 400 unsupported_parameter
-import { createGateway, PROVIDERS } from "@waifucave/gateway";
+// Write-time validation of provider ids and model choices against the winter catalog (Living cast
+// spec §9.2):
+//   - unknown provider id (credentials PUT)                         -> 400 unknown_provider
+//   - a model route the curated catalog does not offer               -> 400 model_not_available
+//   - an effort the route does not list                              -> 400 unsupported_effort
+// Validation needs no credentials and makes no network call.
+
+import { catalogProvider, curatedCatalog, findCuratedModel, routeKey, type CuratedCatalogOptions } from "../models/catalog.js";
+import type { ModelChoice } from "../shared/schemas/domain.js";
 import { badRequest } from "./errors.js";
-import { resolveModelTarget, type ModelTarget } from "../orchestration/pipeline/resolveTarget.js";
 
-const KNOWN_PROVIDER_IDS = new Set(PROVIDERS.map((provider) => provider.id));
-
-/** Validation needs no provider credentials — it never makes a network call. */
-const validationGateway = createGateway({ credentials: () => undefined });
-
+/** A winter catalog LLM provider; anything else is refused. */
 export function assertKnownProvider(providerId: string): void {
-  if (!KNOWN_PROVIDER_IDS.has(providerId)) {
+  const provider = catalogProvider(providerId);
+  if (!provider || provider.scope !== "llm") {
     throw badRequest(`Unknown provider: ${providerId}`, { error: "unknown_provider", providerId });
   }
 }
 
-/** Resolves + asserts (providerId, modelId) is a real gateway route; 400s otherwise. */
-function assertKnownModel(providerId: string | undefined, modelId: string): ModelTarget {
-  try {
-    return resolveModelTarget({ providerId, modelId });
-  } catch {
-    throw badRequest(`Unknown model: ${modelId}`, { error: "unknown_model", providerId, modelId });
-  }
-}
-
-function assertParamsValid(
-  providerId: string,
-  modelId: string,
-  params: Record<string, unknown>
-): void {
-  const result = validationGateway.validate(providerId, modelId, { params });
-  if (!result.ok) {
-    throw badRequest(`Unsupported parameters for ${providerId}:${modelId}`, {
-      error: "unsupported_parameter",
-      violations: result.violations.map((violation) => ({
-        param: violation.param,
-        code: violation.code,
-        rule: violation.ruleId
-      }))
+/** Asserts `choice` is an offered curated route and its effort (if any) is one the route lists. */
+export function assertModelChoiceValid(choice: ModelChoice, options: CuratedCatalogOptions = {}): void {
+  const curated = curatedCatalog(options);
+  const model = findCuratedModel(choice, curated);
+  if (!model) {
+    const id = routeKey(choice);
+    const hidden = curated.hidden.find((entry) => entry.id === id);
+    throw badRequest(`Model ${id} is not offered${hidden ? ` (${hidden.reason})` : ""}.`, {
+      error: "model_not_available",
+      providerId: choice.providerId,
+      modelId: choice.modelId,
+      ...(hidden ? { reason: hidden.reason } : {})
     });
   }
-}
-
-/**
- * Runs the full write-time check when a (possibly updated) config carries a modelId, and
- * returns the resolved (providerId, modelId) target so callers can persist the normalized pair
- * instead of the literal input (Gateway P6 Task 4: supersedes P4's store-literal deviation —
- * legacy ids like "gpt-4o" and bare-modelId provider derivation both get written back resolved).
- */
-export function assertModelWriteValid(
-  providerId: string | undefined,
-  modelId: string | undefined,
-  params: Record<string, unknown>
-): ModelTarget | undefined {
-  if (!modelId) return undefined;
-  const target = assertKnownModel(providerId, modelId);
-  assertParamsValid(target.providerId, target.modelId, params);
-  return target;
+  if (choice.effort !== undefined && !model.efforts.includes(choice.effort)) {
+    throw badRequest(`Effort ${choice.effort} is not supported by ${model.id}.`, {
+      error: "unsupported_effort",
+      effort: choice.effort,
+      efforts: model.efforts
+    });
+  }
 }

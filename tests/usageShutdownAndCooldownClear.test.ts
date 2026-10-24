@@ -2,7 +2,7 @@ import net from "node:net";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { GatewayError } from "@waifucave/gateway";
+import { ModelCallError } from "../src/models/errors.js";
 import { createApiServer } from "../src/api/server.js";
 import { startBackend } from "../src/backend/server.js";
 import { createRuntimeState } from "../src/backend/runtime.js";
@@ -21,7 +21,7 @@ afterEach(async () => {
 
 const quiet = () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() });
 const entry = (): UsageLedgerEntry => ({
-  at: new Date().toISOString(), purpose: "waifu_reply", providerId: "deepseek", modelId: "deepseek-v4-flash",
+  at: new Date().toISOString(), purpose: "life", providerId: "deepseek", modelId: "deepseek-flash",
   status: "aborted", usageKnown: false, inputTokens: 0, outputTokens: 0, errorKind: "aborted", durationMs: 1
 });
 
@@ -85,8 +85,8 @@ describe("saving provider credentials clears the provider's cooldown", () => {
     const app = await createApiServer({ dataRoot: root, runtime, storage: new StorageService(root) });
     try {
       const alerts = sharedProviderAlerts(root);
-      alerts.report("openai", new GatewayError("quota", "q"));
-      alerts.report("anthropic", new GatewayError("billing", "b"));
+      alerts.report("openai", new ModelCallError("quota", "q"));
+      alerts.report("anthropic", new ModelCallError("billing", "b"));
       const put = await app.inject({ method: "PUT", url: "/api/providers/openai/credentials", payload: { apiKey: "sk-test-key-123456789" } });
       expect(put.statusCode).toBe(200);
       expect(alerts.snapshot().map((a) => a.providerId)).toEqual(["anthropic"]);

@@ -198,7 +198,7 @@ export function computeDmEligibility(
       warnings.add(`dm_bot_shared:${bot.id}`);
       continue;
     }
-    if (!waifu.modelId) {
+    if (!waifu.model) {
       warnings.add(`dm_missing_model:${waifu.id}`);
       continue;
     }

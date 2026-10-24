@@ -8,16 +8,13 @@ import type {
   ActivationStatus,
   ApprovePairingInput,
   ApiErrorBody,
-  AgentConfig,
+  AssistantConfig,
   ChannelBody,
   ClientContext,
-  CreateMemoryBody,
-  CreateMemoryResponse,
   ForgetUserResult,
   CreateWaifuBody,
   DiscordBotsFile,
-  MemoryStore,
-  OrchestratorHistoryFile,
+  ModelsResponse,
   OperationAccepted,
   PairInvitation,
   PendingPairingRequestList,
@@ -33,8 +30,7 @@ import type {
   StatusResponse,
   TrustedDevice,
   TrustedDeviceList,
-  UpdateAgentConfigBody,
-  UpdateMemoryBody,
+  UpdateAssistantConfigBody,
   UpdateServerBody,
   UpdateWaifuBody,
   WaifuConfig,
@@ -349,24 +345,12 @@ export const api = {
     request<DiscordBotsFile>("GET", "/api/discord-bots", { signal }),
   putDiscordBots: (bots: DiscordBotsFile) =>
     request<DiscordBotsFile>("PUT", "/api/discord-bots", { body: bots }),
-  orchestratorConfig: (signal?: AbortSignal) =>
-    request<AgentConfig>("GET", "/api/orchestrator/config", { signal }),
-  putOrchestratorConfig: (config: UpdateAgentConfigBody) =>
-    request<AgentConfig>("PUT", "/api/orchestrator/config", { body: config }),
-  orchestratorHistory: (signal?: AbortSignal) =>
-    request<OrchestratorHistoryFile>("GET", "/api/orchestrator/history", { signal }),
-  stageManagerConfig: (signal?: AbortSignal) =>
-    request<AgentConfig>("GET", "/api/stage-manager/config", { signal }),
-  putStageManagerConfig: (config: UpdateAgentConfigBody) =>
-    request<AgentConfig>("PUT", "/api/stage-manager/config", { body: config }),
-  reviewerConfig: (signal?: AbortSignal) =>
-    request<AgentConfig>("GET", "/api/reviewer/config", { signal }),
-  putReviewerConfig: (config: UpdateAgentConfigBody) =>
-    request<AgentConfig>("PUT", "/api/reviewer/config", { body: config }),
+  // Models (Living cast §9.2): the curated list every model picker offers.
+  models: (signal?: AbortSignal) => request<ModelsResponse>("GET", "/api/models", { signal }),
   assistantConfig: (signal?: AbortSignal) =>
-    request<AgentConfig>("GET", "/api/assistant/config", { signal }),
-  putAssistantConfig: (config: UpdateAgentConfigBody) =>
-    request<AgentConfig>("PUT", "/api/assistant/config", { body: config }),
+    request<AssistantConfig>("GET", "/api/assistant/config", { signal }),
+  putAssistantConfig: (config: UpdateAssistantConfigBody) =>
+    request<AssistantConfig>("PUT", "/api/assistant/config", { body: config }),
   createAssistantConversation: () =>
     request<{ conversationId: string }>("POST", "/api/assistant/conversations"),
   assistantConversation: (id: string, signal?: AbortSignal) =>
@@ -412,15 +396,12 @@ export const api = {
     request<WaifuConfig>("POST", "/api/waifus", { body }),
   updateWaifu: (id: string, body: UpdateWaifuBody) =>
     request<WaifuConfig>("PUT", `/api/waifus/${encodeURIComponent(id)}`, { body }),
-  regeneratePersonaDigest: (id: string) =>
-    request<WaifuConfig>("POST", `/api/waifus/${encodeURIComponent(id)}/digest`),
   deleteWaifu: (id: string, revision: number) =>
     request<void>("DELETE", `/api/waifus/${encodeURIComponent(id)}`, {
       body: { revision }
     }),
 
   // Servers
-  oneShotModels: (signal?: AbortSignal) => request<{ unavailable: boolean; models: Array<{ target: string; label: string; provider: string; local: boolean; configured: boolean; contextLength?: number }> }>("GET", "/api/orchestrator/one-shot/models", { signal }),
   servers: (signal?: AbortSignal) => request<ServersResponse>("GET", "/api/servers", { signal }),
   server: (guildId: string, signal?: AbortSignal) =>
     request<ServerConfig>("GET", `/api/servers/${encodeURIComponent(guildId)}`, { signal }),
@@ -433,18 +414,9 @@ export const api = {
       { body }
     ),
 
-  // Memories
-  memories: (signal?: AbortSignal) => request<MemoryStore>("GET", "/api/memories", { signal }),
-  createMemory: (body: CreateMemoryBody) =>
-    request<CreateMemoryResponse>("POST", "/api/memories", { body }),
-  updateMemory: (id: string, body: UpdateMemoryBody) =>
-    request<MemoryStore>("PUT", `/api/memories/${encodeURIComponent(id)}`, { body }),
-  deleteMemory: (id: string, recordRevision: number) =>
-    request<MemoryStore>("DELETE", `/api/memories/${encodeURIComponent(id)}`, {
-      body: { recordRevision }
-    }),
+  // People (Living cast §14.1)
   forgetUser: (discordUserId: string, dryRun = false) =>
-    request<ForgetUserResult>("POST", "/api/memories/forget-user", { body: { discordUserId, confirm: true, dryRun } })
+    request<ForgetUserResult>("POST", `/api/people/${encodeURIComponent(discordUserId)}/forget`, { body: { confirm: true, dryRun } })
 };
 
 export type EventFeedOptions = Omit<

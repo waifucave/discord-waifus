@@ -1,28 +1,26 @@
 /**
- * providerStatus.ts — /api/providers response assembly: the full gateway provider registry
- * (all 14 ids PROVIDERS knows, the same source src/api/writeValidation.ts validates writes
- * against) with per-provider credential status merged in from user/providers.json.
- *
- * Formerly legacyCatalog.ts, which also synthesised a legacy ModelCapabilityMetadata list from
- * the registry for the now-deleted /api/models route (Task 4, Gateway P3b cutover). That
- * synthesis, and the legacy 6-native-provider scoping it required, are gone as of Gateway P6
- * Task 3 — /api/llm/v1/models is the sole models listing now. This file keeps the docsUrl map
- * and the credential-status assembly, widened to every registry provider.
+ * providerStatus.ts — `/api/providers` response assembly (Living cast spec §9.2): provider status
+ * comes from the winter catalog's provider list. Listed: every provider that serves an allowed
+ * route in the installed catalog, the decision providers the addressee detector uses (OpenAI,
+ * OpenRouter), and any provider that already has a stored key (so it can be removed), each with
+ * its credential status from user/providers.json (redacted key hints only).
  */
 
-import { PROVIDERS } from "@waifucave/gateway";
+import type { WinterCatalog } from "@yanlinglabs/winter-provider-catalog";
+import { allowedProviderIds, installedCatalog } from "../models/catalog.js";
 import type { ProviderCredentialsFile } from "../shared/schemas/domain.js";
 
-/** Static docsUrls preserved from the old catalog. Absent for providers we have no known link for. */
+/** Static docsUrls for the providers the curated list and the detector use. */
 const DOCS_URLS: Record<string, string> = {
-  xai: "https://docs.x.ai/developers/models",
   deepseek: "https://api-docs.deepseek.com/api/create-chat-completion",
   anthropic: "https://platform.claude.com/docs/en/about-claude/models/overview",
   openai: "https://developers.openai.com/api/docs/models",
   meta: "https://dev.meta.ai/docs/models",
-  zai: "https://docs.z.ai/guides/overview/migrate-to-glm-new",
-  "google-ai-studio": "https://ai.google.dev/gemini-api/docs"
+  openrouter: "https://openrouter.ai/docs"
 };
+
+/** The addressee detector's decision providers (Living cast §4.3). */
+const DETECTOR_PROVIDER_IDS = ["openai", "openrouter"];
 
 export function keyHint(value: string): string {
   return value.length <= 4 ? "****" : `****${value.slice(-4)}`;
@@ -39,23 +37,30 @@ export type ProviderStatusEntry = {
   credentials: ProviderCredentialStatus;
 };
 
-/** Union by id over the full registry: every provider PROVIDERS knows, with its credential status. */
-export function providerStatuses(credentials: ProviderCredentialsFile): ProviderStatusEntry[] {
-  return PROVIDERS.map((provider) => {
-    const saved = credentials.providers[provider.id];
-    const docsUrl = DOCS_URLS[provider.id];
-    return {
-      id: provider.id,
-      displayName: provider.displayName,
+export function providerStatuses(
+  credentials: ProviderCredentialsFile,
+  o: { allowed?: readonly string[]; catalog?: WinterCatalog } = {}
+): ProviderStatusEntry[] {
+  const catalog = o.catalog ?? installedCatalog();
+  const ids = new Set<string>([
+    ...allowedProviderIds({ catalog, ...(o.allowed ? { allowed: o.allowed } : {}) }),
+    ...DETECTOR_PROVIDER_IDS,
+    ...Object.keys(credentials.providers)
+  ]);
+  const entries: ProviderStatusEntry[] = [];
+  for (const id of ids) {
+    const provider = catalog.providers.find((candidate) => candidate.id === id);
+    const saved = credentials.providers[id];
+    if (!provider && !saved) continue;
+    const docsUrl = DOCS_URLS[id];
+    entries.push({
+      id,
+      displayName: provider?.displayName ?? id,
       ...(docsUrl ? { docsUrl } : {}),
       credentials: saved
-        ? {
-            configured: true,
-            label: saved.label,
-            updatedAt: saved.updatedAt,
-            keyHint: keyHint(saved.apiKey)
-          }
+        ? { configured: true, label: saved.label, updatedAt: saved.updatedAt, keyHint: keyHint(saved.apiKey) }
         : { configured: false }
-    };
-  });
+    });
+  }
+  return entries.sort((a, b) => a.displayName.localeCompare(b.displayName));
 }

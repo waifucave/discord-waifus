@@ -3,7 +3,8 @@ import { createApiServer } from "../src/api/server.js";
 import { createRuntimeState } from "../src/backend/runtime.js";
 import { ensureDataLayout } from "../src/config/layout.js";
 import { StorageService } from "../src/storage/storageService.js";
-import type { ModelPipeline } from "../src/providers/types.js";
+import type { AssistantModelClient } from "../src/api/assistant/service.js";
+import { ASSISTANT_TEST_MODEL, scriptedAssistantClient } from "./assistantFakes.js";
 import { dispatchInternal } from "../src/api/internalDispatch.js";
 import { createRemoteRequestPrincipal } from "../src/api/requestPrincipal.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
@@ -16,7 +17,7 @@ afterEach(async () => {
 });
 
 async function makeApp(extra: {
-  assistantPipeline?: ModelPipeline;
+  assistantClient?: AssistantModelClient;
   authorizeRemote?: (stableId: string) => boolean;
 } = {}) {
   const root = await makeTempRoot();
@@ -37,7 +38,7 @@ async function makeApp(extra: {
     dataRoot: root,
     runtime,
     storage: new StorageService(root),
-    ...(extra.assistantPipeline ? { assistant: { createPipeline: () => extra.assistantPipeline! } } : {}),
+    ...(extra.assistantClient ? { assistant: { modelClient: extra.assistantClient } } : {}),
     ...(extra.authorizeRemote
       ? { remoteTrust: { isAuthorized: (principal) => extra.authorizeRemote!(principal.stableId) } }
       : {})
@@ -77,33 +78,20 @@ async function browserSession(app: Awaited<ReturnType<typeof makeApp>>["app"]) {
   };
 }
 
-const fakePipeline: ModelPipeline = {
-  async generateWaifu() {
-    throw new Error("unused");
-  },
-  async generateAssistantTurn(request) {
-    const toolResult = await request.executeTool("list_waifus", "{}");
-    request.onEvent?.({ type: "tool_call", name: "list_waifus", arguments: "{}" });
-    request.onEvent?.({ type: "tool_result", name: "list_waifus", result: toolResult });
-    const count = (JSON.parse(toolResult) as unknown[]).length;
-    return {
-      content: `You have ${count} waifus.`,
-      messages: [...request.messages, { role: "assistant", content: `You have ${count} waifus.` }]
-    };
-  }
-};
+/** Round 0 lists the waifus; round 1 answers with the count from the tool result. */
+const fakeClient = () =>
+  scriptedAssistantClient(({ round, toolResults }) =>
+    round === 0
+      ? { toolCalls: [{ name: "list_waifus" }] }
+      : { text: `You have ${(JSON.parse(toolResults[0]!.result) as unknown[]).length} waifus.` }
+  );
 
 describe("assistant chat API", () => {
   it("runs a turn end-to-end through the fake pipeline and real tools", async () => {
-    const { app } = await makeApp({ assistantPipeline: fakePipeline });
+    const { app } = await makeApp({ assistantClient: fakeClient() });
     try {
       await app.inject({ method: "PUT", url: "/api/providers/deepseek/credentials", payload: { apiKey: "sk-test" } });
-      const orch = await app.inject({ method: "GET", url: "/api/orchestrator/config" });
-      await app.inject({
-        method: "PUT",
-        url: "/api/orchestrator/config",
-        payload: { revision: orch.json().revision, providerId: "deepseek", modelId: "deepseek-v4-pro" }
-      });
+      await app.inject({ method: "PUT", url: "/api/assistant/config", payload: { model: ASSISTANT_TEST_MODEL } });
 
       const created = await app.inject({ method: "POST", url: "/api/assistant/conversations" });
       expect(created.statusCode).toBe(200);
@@ -139,7 +127,7 @@ describe("assistant chat API", () => {
   it("keeps a remote actor through assistant snapshots and self-REST tools", async () => {
     const authorizedStableIds: string[] = [];
     const { app } = await makeApp({
-      assistantPipeline: fakePipeline,
+      assistantClient: fakeClient(),
       authorizeRemote: (stableId) => {
         authorizedStableIds.push(stableId);
         return stableId === "remote:travel-mac";
@@ -151,16 +139,7 @@ describe("assistant chat API", () => {
         url: "/api/providers/deepseek/credentials",
         payload: { apiKey: "sk-test" }
       });
-      const orchestrator = await app.inject({ method: "GET", url: "/api/orchestrator/config" });
-      await app.inject({
-        method: "PUT",
-        url: "/api/orchestrator/config",
-        payload: {
-          revision: orchestrator.json().revision,
-          providerId: "deepseek",
-          modelId: "deepseek-v4-pro"
-        }
-      });
+      await app.inject({ method: "PUT", url: "/api/assistant/config", payload: { model: ASSISTANT_TEST_MODEL } });
       const actor = remoteActor("travel-mac");
       const created = await dispatchInternal(app, actor, undefined, {
         method: "POST",
@@ -282,21 +261,13 @@ describe("assistant chat API", () => {
     const finish = new Promise<void>((resolve) => {
       finishTurn = resolve;
     });
-    const delayedPipeline: ModelPipeline = {
-      async generateWaifu() {
-        throw new Error("unused");
-      },
-      async generateAssistantTurn(request) {
-        markStarted!();
-        await finish;
-        return {
-          content: "stale reply",
-          messages: [...request.messages, { role: "assistant", content: "stale reply" }]
-        };
-      }
-    };
+    const delayedClient = scriptedAssistantClient(async () => {
+      markStarted!();
+      await finish;
+      return { text: "stale reply" };
+    });
     const { app } = await makeApp({
-      assistantPipeline: delayedPipeline,
+      assistantClient: delayedClient,
       authorizeRemote: () => authorized
     });
     try {
@@ -305,16 +276,7 @@ describe("assistant chat API", () => {
         url: "/api/providers/deepseek/credentials",
         payload: { apiKey: "sk-test" }
       });
-      const orchestrator = await app.inject({ method: "GET", url: "/api/orchestrator/config" });
-      await app.inject({
-        method: "PUT",
-        url: "/api/orchestrator/config",
-        payload: {
-          revision: orchestrator.json().revision,
-          providerId: "deepseek",
-          modelId: "deepseek-v4-pro"
-        }
-      });
+      await app.inject({ method: "PUT", url: "/api/assistant/config", payload: { model: ASSISTANT_TEST_MODEL } });
       const actor = remoteActor("travel-mac");
       const created = await dispatchInternal(app, actor, undefined, {
         method: "POST",
@@ -357,22 +319,14 @@ describe("assistant chat API", () => {
     const toolGate = new Promise<void>((resolve) => {
       releaseTool = resolve;
     });
-    const queuedToolPipeline: ModelPipeline = {
-      async generateWaifu() {
-        throw new Error("unused");
-      },
-      async generateAssistantTurn(request) {
-        markToolQueued!();
-        await toolGate;
-        await request.executeTool("runtime_pause", "{}");
-        return {
-          content: "paused",
-          messages: [...request.messages, { role: "assistant", content: "paused" }]
-        };
-      }
-    };
+    const queuedToolClient = scriptedAssistantClient(async ({ round }) => {
+      if (round > 0) return { text: "paused" };
+      markToolQueued!();
+      await toolGate;
+      return { toolCalls: [{ name: "runtime_pause" }] };
+    });
     const { app } = await makeApp({
-      assistantPipeline: queuedToolPipeline,
+      assistantClient: queuedToolClient,
       authorizeRemote: () => authorized
     });
     try {
@@ -381,16 +335,7 @@ describe("assistant chat API", () => {
         url: "/api/providers/deepseek/credentials",
         payload: { apiKey: "sk-test" }
       });
-      const orchestrator = await app.inject({ method: "GET", url: "/api/orchestrator/config" });
-      await app.inject({
-        method: "PUT",
-        url: "/api/orchestrator/config",
-        payload: {
-          revision: orchestrator.json().revision,
-          providerId: "deepseek",
-          modelId: "deepseek-v4-pro"
-        }
-      });
+      await app.inject({ method: "PUT", url: "/api/assistant/config", payload: { model: ASSISTANT_TEST_MODEL } });
       const actor = remoteActor("travel-mac");
       const created = await dispatchInternal(app, actor, undefined, {
         method: "POST",

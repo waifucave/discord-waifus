@@ -16,7 +16,7 @@ import {
 import { RemoteRequestBridge } from "../../../src/backend/remoteAccess/requestBridge.js";
 import { createRuntimeState } from "../../../src/backend/runtime.js";
 import { ensureDataLayout, ensureRemoteOnlyLayout } from "../../../src/config/layout.js";
-import type { ModelPipeline } from "../../../src/providers/types.js";
+import type { AssistantModelClient } from "../../../src/api/assistant/service.js";
 import { DashboardCache } from "../../../src/remote/dashboardCache.js";
 import type { DashboardRemoteClient } from "../../../src/remote/dashboardDownloader.js";
 import { writeDashboardManifest } from "../../../src/remote/dashboardManifest.js";
@@ -157,7 +157,7 @@ export type RemoteHarnessOptions = Readonly<{
   explicitSelectedHost?: "a" | "b";
   fullDashboard?: boolean;
   initialConnection?: MutableConnectionState;
-  assistantPipeline?: ModelPipeline;
+  assistantClient?: AssistantModelClient;
 }>;
 
 export type RemoteHarness = Readonly<{
@@ -593,7 +593,7 @@ async function createHostRuntime(
   record: RememberedHostRecordV1,
   fullDashboard: boolean,
   ledger: RemoteHarnessLedger,
-  assistantPipeline?: ModelPipeline
+  assistantClient?: AssistantModelClient
 ): Promise<HostRuntime> {
   const version = key === "a" ? "1.5.250" : "1.6.0";
   const fixture = await createDashboardBundle(root, key, version, fullDashboard);
@@ -640,12 +640,12 @@ async function createHostRuntime(
       isAuthorized: (principal) => remoteAccess.isAuthorized(principal)
     },
     remoteAccess,
-    ...(assistantPipeline ? { assistant: { createPipeline: () => assistantPipeline } } : {}),
+    ...(assistantClient ? { assistant: { modelClient: assistantClient } } : {}),
     browserSecurity: { listenerHost: "127.0.0.1", port: 3888, mode: "test" }
   });
   const bridge = new RemoteRequestBridge(app);
   remoteAccess.attachRequestBridge(bridge);
-  if (assistantPipeline) {
+  if (assistantClient) {
     const credentials = await app.inject({
       method: "PUT",
       url: "/api/providers/deepseek/credentials",
@@ -660,8 +660,7 @@ async function createHostRuntime(
       url: "/api/assistant/config",
       payload: {
         revision: current.json<{ revision: number }>().revision,
-        providerId: "deepseek",
-        modelId: "deepseek-v4-pro"
+        model: { providerId: "deepseek", modelId: "deepseek-flash" }
       }
     });
     if (configured.statusCode !== 200) {
@@ -865,7 +864,7 @@ export async function createRemoteHarness(
       records.a,
       options.fullDashboard ?? false,
       ledger,
-      options.assistantPipeline
+      options.assistantClient
     ),
     createHostRuntime(
       root,
@@ -873,7 +872,7 @@ export async function createRemoteHarness(
       records.b,
       options.fullDashboard ?? false,
       ledger,
-      options.assistantPipeline
+      options.assistantClient
     )
   ]);
   const hostRuntimes = new Map([

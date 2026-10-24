@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { ChatMessage } from "@waifucave/gateway";
+import type { ContentBlockLike, ProviderMessageLike } from "@yanlinglabs/winter-provider-runtime";
 import type { EventCursor } from "../../shared/schemas/adminOperations.js";
 import { EventStream } from "../eventStream.js";
 import type { RequestPrincipal } from "../requestPrincipal.js";
@@ -7,6 +7,8 @@ import type { RequestPrincipal } from "../requestPrincipal.js";
 export type AssistantEvent =
   | { type: "turn_started" }
   | { type: "text"; content: string }
+  /** A live text fragment of the reply being streamed. Ephemeral: never stored or replayed. */
+  | { type: "text_delta"; content: string }
   | { type: "tool_call"; name: string; arguments: string }
   | { type: "tool_result"; name: string; result: string }
   | { type: "confirmation_required"; actionId: string; category: string; summary: string }
@@ -22,7 +24,9 @@ type Conversation = {
   createdAt: string;
   owner: ConversationOwner;
   messages: StoredMessage[];
-  chat: ChatMessage[];
+  /** The system prompt, frozen at the conversation's first turn (spec §9.3: one cached prefix). */
+  system?: string;
+  chat: ProviderMessageLike[];
   busy: boolean;
   eventStream: EventStream<AssistantEvent>;
 };
@@ -55,8 +59,9 @@ function sameOwner(left: ConversationOwner, right: ConversationOwner): boolean {
 
 /**
  * In-memory conversation state for the dashboard assistant. `messages` is the display
- * transcript (user/assistant text plus tool events); `chat` is the model-facing gateway
- * transcript. Both live only for the process lifetime — v1 has no persistence by design.
+ * transcript (user/assistant text plus tool events); `chat` is the model-facing winter transcript
+ * (the system prompt rides separately in `system`, never as a message). Both live only for the
+ * process lifetime — v1 has no persistence by design.
  */
 export class ConversationStore {
   private readonly conversations = new Map<string, Conversation>();
@@ -90,7 +95,14 @@ export class ConversationStore {
   get(
     id: string,
     owner: ConversationOwner
-  ): { id: string; createdAt: string; messages: StoredMessage[]; chat: ChatMessage[]; busy: boolean } | undefined {
+  ): {
+    id: string;
+    createdAt: string;
+    messages: StoredMessage[];
+    system?: string;
+    chat: ProviderMessageLike[];
+    busy: boolean;
+  } | undefined {
     const conversation = this.conversations.get(id);
     if (!conversation || !sameOwner(conversation.owner, owner)) return undefined;
     // LRU touch: re-insert so create() evicts genuinely idle conversations first
@@ -100,21 +112,12 @@ export class ConversationStore {
     return visible;
   }
 
-  appendChat(id: string, owner: ConversationOwner, messages: ChatMessage[]): void {
+  /** Stores the model transcript (and freezes the system prompt on first use), trimmed to budget. */
+  setTranscript(id: string, owner: ConversationOwner, transcript: { system: string; chat: ProviderMessageLike[] }): void {
     const conversation = this.ownedConversation(id, owner);
     if (!conversation) return;
-    // trim the model transcript from the front (never the system prompt) past a byte budget —
-    // tool results are up to 6000 chars each and were resent wholesale forever (audit finding 12)
-    const budget = 120_000;
-    let size = messages.reduce((sum, message) => sum + JSON.stringify(message).length, 0);
-    const trimmed = [...messages];
-    while (size > budget && trimmed.length > 2) {
-      const index = trimmed.findIndex((message) => message.role !== "system");
-      if (index === -1) break;
-      size -= JSON.stringify(trimmed[index]).length;
-      trimmed.splice(index, 1);
-    }
-    conversation.chat = trimmed;
+    conversation.system ??= transcript.system;
+    conversation.chat = trimTranscript(transcript.chat);
   }
 
   appendStored(id: string, owner: ConversationOwner, message: StoredMessage): void {
@@ -196,6 +199,11 @@ export class ConversationStore {
     return invalidated;
   }
 
+  /** Publishes a live-only event (`text_delta`): subscribers see it, the transcript does not keep it. */
+  publish(id: string, owner: ConversationOwner, event: AssistantEvent): void {
+    this.ownedConversation(id, owner)?.eventStream.publish("assistant", event);
+  }
+
   emit(id: string, owner: ConversationOwner, event: AssistantEvent): void {
     const conversation = this.ownedConversation(id, owner);
     if (!conversation) return;
@@ -211,4 +219,39 @@ export class ConversationStore {
     const conversation = this.conversations.get(id);
     return conversation && sameOwner(conversation.owner, owner) ? conversation : undefined;
   }
+}
+
+/** Byte budget of the model transcript; tool results are up to 6000 chars each (audit finding 12). */
+export const TRANSCRIPT_BUDGET_CHARS = 120_000;
+
+function isPlainUserMessage(message: ProviderMessageLike): boolean {
+  if (message.role !== "user") return false;
+  if (typeof message.content === "string") return true;
+  return !message.content.some((block: ContentBlockLike) => block.type === "tool_result");
+}
+
+/**
+ * Trims the model transcript from the front past the byte budget. The result always starts at a
+ * plain user message (never at an assistant turn or at an orphaned tool result whose tool call was
+ * dropped), so every provider accepts it; the newest user message is always kept.
+ */
+export function trimTranscript(messages: readonly ProviderMessageLike[], budget = TRANSCRIPT_BUDGET_CHARS): ProviderMessageLike[] {
+  const sizes = messages.map((message) => JSON.stringify(message).length);
+  let size = sizes.reduce((sum, value) => sum + value, 0);
+  let start = 0;
+  while (size > budget && start < messages.length - 1) {
+    size -= sizes[start]!;
+    start += 1;
+  }
+  while (start < messages.length && !isPlainUserMessage(messages[start]!)) start += 1;
+  if (start >= messages.length) {
+    start = 0;
+    for (let index = messages.length - 1; index >= 0; index--) {
+      if (isPlainUserMessage(messages[index]!)) {
+        start = index;
+        break;
+      }
+    }
+  }
+  return messages.slice(start);
 }

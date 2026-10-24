@@ -1,14 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { CURRENT_SCHEMA_VERSION } from "../src/shared/schemas/common.js";
-import {
-  ContextNoteSchema,
-  ContextStateSchema,
-  ConversationEventSchema,
-  ConversationLedgerSchema,
-  ConversationRefsSchema,
-  LedgerEntrySchema,
-  REF_COUNTER_START
-} from "../src/shared/schemas/context.js";
+import { ConversationRefsSchema, REF_COUNTER_START } from "../src/shared/schemas/context.js";
 import { ImageRefSchema, RawDiscordMessageSchema } from "../src/shared/schemas/discordMessage.js";
 import {
   DmLimitStateSchema,
@@ -74,101 +66,6 @@ describe("RawDiscordMessageSchema", () => {
   });
 });
 
-describe("ContextNoteSchema", () => {
-  const anchor = { id: "n1", anchorSeq: 4, seq: 1 };
-
-  it("accepts each note kind", () => {
-    expect(ContextNoteSchema.parse({ kind: "memory", ...anchor, memoryIds: ["m1"], text: "likes tea" }).kind).toBe("memory");
-    expect(ContextNoteSchema.parse({ kind: "direction", ...anchor, text: "be brief" }).kind).toBe("direction");
-    expect(
-      ContextNoteSchema.parse({ kind: "tool", ...anchor, callId: "c", name: "add_memory", arguments: "{}", result: "ok" }).kind
-    ).toBe("tool");
-    expect(
-      ContextNoteSchema.parse({ kind: "decision", ...anchor, decisionId: "d", call: "{}", outcome: "sent" }).kind
-    ).toBe("decision");
-    expect(
-      ContextNoteSchema.parse({ kind: "edit", ...anchor, eventSeq: 3, messageId: "m", authorName: "Kevin", text: "fixed" }).kind
-    ).toBe("edit");
-  });
-
-  it("rejects unknown kinds, missing anchors and null anchors", () => {
-    expect(() => ContextNoteSchema.parse({ kind: "other", ...anchor, text: "x" })).toThrow();
-    expect(() => ContextNoteSchema.parse({ kind: "direction", id: "n", seq: 1, text: "x" })).toThrow();
-    expect(() => ContextNoteSchema.parse({ kind: "direction", ...anchor, anchorSeq: null, text: "x" })).toThrow();
-    expect(() => ContextNoteSchema.parse({ kind: "memory", ...anchor, text: "x" })).toThrow(); // memoryIds required
-  });
-});
-
-describe("ContextStateSchema", () => {
-  const minimal = {
-    ...base,
-    conversationKey: "g_1_2",
-    agentId: "waifu-aria",
-    epoch: 0,
-    epochStartedAt: AT,
-    lastUsedAt: AT,
-    timeZone: "UTC"
-  };
-
-  it("fills defaults for everything optional", () => {
-    const state = ContextStateSchema.parse(minimal);
-    expect(state).toMatchObject({
-      cursorSeq: null,
-      cursorMessageId: null,
-      lastBreakpoint: null,
-      summary: null,
-      headerText: null,
-      memorySnapshotIds: [],
-      memoryNoteCount: 0,
-      imageModes: {},
-      inlineImageCount: 0,
-      notes: [],
-      noteSeq: 0,
-      tokenCalibration: {}
-    });
-    expect(state.lastCompaction).toBeUndefined();
-  });
-
-  it("reads a stored legacy `event` breakpoint as null (the type no longer has that kind)", () => {
-    expect(ContextStateSchema.parse({ ...minimal, lastBreakpoint: { kind: "event", seq: 3 } }).lastBreakpoint).toBeNull();
-    expect(ContextStateSchema.parse({ ...minimal, lastBreakpoint: { kind: "note", seq: 3 } }).lastBreakpoint).toEqual({ kind: "note", seq: 3 });
-    expect(ContextStateSchema.parse({ ...minimal, lastBreakpoint: null }).lastBreakpoint).toBeNull();
-    expect(ContextStateSchema.safeParse({ ...minimal, lastBreakpoint: { kind: "other", seq: 3 } }).success).toBe(false);
-  });
-
-  it("round-trips a full state", () => {
-    const full = {
-      ...minimal,
-      epoch: 3,
-      cursorSeq: 10,
-      cursorMessageId: "99",
-      lastBreakpoint: { kind: "note", seq: 2 },
-      summary: "They talked about tea.",
-      headerText: "<header/>",
-      memorySnapshotIds: ["m1"],
-      epochParticipantIds: ["kevin"],
-      memoryNoteCount: 1,
-      redactedIds: ["88"],
-      imageModes: { "att:1": { mode: "inline" }, "att:2": { mode: "text", text: "[image: a cat]" } },
-      inlineImageCount: 1,
-      notes: [{ kind: "direction", id: "n1", anchorSeq: 10, seq: 1, text: "go" }],
-      noteSeq: 1,
-      tokenCalibration: { "anthropic:claude": { ratio: 1.1, samples: 4, updatedAt: AT } },
-      lastCompaction: { at: AT, trigger: "tokens", ok: false, error: "timeout" }
-    };
-    expect(ContextStateSchema.parse(full)).toEqual(full);
-  });
-
-  it("rejects bad shapes", () => {
-    expect(() => ContextStateSchema.parse({ ...minimal, epoch: -1 })).toThrow();
-    expect(() => ContextStateSchema.parse({ ...minimal, timeZone: undefined })).toThrow();
-    expect(() => ContextStateSchema.parse({ ...minimal, lastBreakpoint: { kind: "tail", seq: 1 } })).toThrow();
-    expect(() => ContextStateSchema.parse({ ...minimal, imageModes: { k: { mode: "text" } } })).toThrow();
-    expect(() => ContextStateSchema.parse({ ...minimal, lastCompaction: { at: AT, trigger: "sometimes", ok: true } })).toThrow();
-    expect(() => ContextStateSchema.parse({ ...minimal, schemaVersion: 1 })).toThrow();
-  });
-});
-
 describe("ConversationRefsSchema", () => {
   it("starts the counter at 360 (ref a0)", () => {
     const refs = ConversationRefsSchema.parse({ ...base, conversationKey: "g_1_2" });
@@ -182,55 +79,10 @@ describe("ConversationRefsSchema", () => {
   });
 });
 
-describe("ConversationLedgerSchema", () => {
-  const entry = {
-    id: "100",
-    seq: 1,
-    authorId: "3",
-    authorName: "Kevin",
-    authorIsBot: false,
-    at: AT,
-    kind: "default",
-    body: "hello",
-    state: "live",
-    sealed: false
-  };
-
-  it("defaults an empty ledger and entry images", () => {
-    const ledger = ConversationLedgerSchema.parse({ ...base, conversationKey: "g_1_2" });
-    expect(ledger).toMatchObject({ nextSeq: 1, entries: {}, events: [] });
-    expect(LedgerEntrySchema.parse(entry).images).toEqual([]);
-  });
-
-  it("parses entries and edit/delete events", () => {
-    const ledger = ConversationLedgerSchema.parse({
-      ...base,
-      conversationKey: "g_1_2",
-      nextSeq: 3,
-      entries: { "100": entry },
-      events: [
-        { kind: "edit", seq: 2, at: AT, messageId: "100", anchorSeq: 1, authorId: "3", text: "hello!", sealed: true },
-        { kind: "delete", seq: 3, at: AT, messageId: "100", anchorSeq: 1 }
-      ]
-    });
-    expect(ledger.events).toHaveLength(2);
-  });
-
-  it("rejects bad shapes", () => {
-    expect(() => LedgerEntrySchema.parse({ ...entry, kind: "weird" })).toThrow();
-    expect(() => LedgerEntrySchema.parse({ ...entry, state: "gone" })).toThrow();
-    expect(() => LedgerEntrySchema.parse({ ...entry, sealed: undefined })).toThrow();
-    expect(() =>
-      ConversationEventSchema.parse({ kind: "edit", seq: 1, at: AT, messageId: "1", anchorSeq: 0, authorId: "3", text: "x".repeat(501), sealed: false })
-    ).toThrow();
-    expect(() => ConversationEventSchema.parse({ kind: "react", seq: 1, at: AT })).toThrow();
-  });
-});
-
 describe("UsageLedgerEntrySchema", () => {
   const entry = {
     at: AT,
-    purpose: "waifu_reply",
+    purpose: "life",
     providerId: "anthropic",
     modelId: "claude-x",
     status: "ok",
@@ -252,11 +104,21 @@ describe("UsageLedgerEntrySchema", () => {
       cacheReadTokens: 80,
       cacheWriteTokens: 10,
       reasoningTokens: 5,
+      turnId: "turn-1",
+      thinkingBlocksDropped: 2,
       costUsd: 0.01,
       finishReason: "stop",
       estimatedInputTokens: 95
     });
     expect(full.costUsd).toBe(0.01);
+    expect(full.turnId).toBe("turn-1");
+    expect(full.thinkingBlocksDropped).toBe(2);
+  });
+
+  it("reads the Living cast purposes and the retired ones (old ledger lines stay readable)", () => {
+    for (const purpose of ["life", "maintenance", "detector", "compaction", "assistant", "waifu_reply", "orchestrator", "one_shot", "dream"]) {
+      expect(UsageLedgerEntrySchema.parse({ ...entry, purpose }).purpose).toBe(purpose);
+    }
   });
 
   it("accepts failed calls with unknown usage", () => {

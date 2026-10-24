@@ -1,11 +1,9 @@
 // Read/ensure helpers for user-owned config files the runtime consults: servers, channels,
-// waifus, agent configs and the Discord bots file.
+// waifus and the Discord bots file.
 
 import { readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import {
-  AgentConfig,
-  AgentConfigSchema,
   DiscordBotsFile,
   DiscordBotsFileSchema,
   ServerConfig,
@@ -18,20 +16,6 @@ import { createRevisionedBase } from "../../shared/schemas/common.js";
 import { StorageService } from "../../storage/storageService.js";
 import type { RuntimeServices } from "../runtimeShared.js";
 import { withThreadChannels } from "./threads.js";
-
-export async function readAgentConfig(storage: StorageService, agent: "orchestrator" | "stage-manager" | "reviewer", defaultWindow: number): Promise<AgentConfig> {
-  return storage.readJson(
-    `user/${agent}/config.json`,
-    AgentConfigSchema,
-    AgentConfigSchema.parse(
-      createEmptyRevisionedFile({
-        enabled: false,
-        contextWindow: defaultWindow,
-        prompt: ""
-      })
-    )
-  );
-}
 
 export async function readWaifu(storage: StorageService, waifuId: string): Promise<WaifuConfig> {
   return storage.readJson(path.join("user", "waifus", waifuId, "waifu.json"), WaifuConfigSchema);
@@ -57,7 +41,7 @@ export async function listAvailableWaifusForChannel(storage: StorageService, cha
   const waifus = await listWaifus(storage);
   const waifusById = new Map(
     waifus
-      .filter((waifu) => waifu.enabled && waifu.modelId && waifu.botId)
+      .filter((waifu) => waifu.enabled && waifu.model && waifu.botId)
       .map((waifu) => [waifu.id, waifu])
   );
   return (channel.enabledWaifuIds ?? [])

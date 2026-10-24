@@ -11,7 +11,8 @@ async function captureRemote() {
   const path = await import("node:path");
   const root = path.join(process.env.HOME!, ".dc-waifus");
   const runtime = JSON.parse(await fs.readFile(path.join(root, "app/runtime.json"), "utf8"));
-  const config = JSON.parse(await fs.readFile(path.join(root, "user/orchestrator/config.json"), "utf8"));
+  // The retired orchestrator config (Living cast L1) may be absent on newer data roots.
+  const config = JSON.parse(await fs.readFile(path.join(root, "user/orchestrator/config.json"), "utf8").catch(() => "{}"));
   // Decision history is per guild since Phase 5 (spec 9.3): count every guild file plus the
   // no-guild legacy file; hosts that have not migrated yet still have the global file.
   const countDecisions = async (file: string): Promise<number> => {

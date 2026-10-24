@@ -4,7 +4,7 @@
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import type { GuildMemberCacheEntry, MemorySubject } from "../../shared/schemas/domain.js";
-import { type SubjectDirectory, buildSubjectDirectory, resolveSubjectNames } from "../../orchestration/memorySubjects.js";
+import { type SubjectDirectory, buildSubjectDirectory, resolveSubjectNames } from "./legacy.js";
 
 export function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);

@@ -1,9 +1,10 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
-import type { ModelPipeline } from "../../providers/types.js";
-import { createGatewayModelPipeline } from "../../orchestration/pipeline/gatewayPipeline.js";
-import { resolveModelTarget } from "../../orchestration/pipeline/resolveTarget.js";
-import { createProviderCredentialsLookup } from "../llmGatewayCredentials.js";
+import type { ContentBlockLike, ProviderMessageLike } from "@yanlinglabs/winter-provider-runtime";
+import type { ModelChoice } from "../../shared/schemas/domain.js";
+import { routeKey } from "../../models/catalog.js";
+import { createProviderCredentialsLookup } from "../../models/credentials.js";
+import type { ModelCallRequest, ModelCallResult, ModelClient, ModelStreamSink } from "../../models/client.js";
 import { executeAssistantTool, toolDefs } from "./tools.js";
 import {
   AssistantEvent,
@@ -20,9 +21,18 @@ import type {
   RequestPrincipal
 } from "../requestPrincipal.js";
 
+/** The slice of ModelClient the assistant uses (tests pass a scripted stand-in). */
+export type AssistantModelClient = Pick<ModelClient, "stream">;
+
 export type AssistantTarget =
-  | { ok: true; providerId: string; modelId: string; params: Record<string, unknown> }
+  | { ok: true; route: ModelChoice }
   | { ok: false; reason: string };
+
+/** Hard cap on executed tool calls per turn. */
+export const ASSISTANT_MAX_TOOL_CALLS = 12;
+/** Tool results longer than this are cut before they reach the model. */
+export const ASSISTANT_TOOL_RESULT_MAX_CHARS = 6000;
+const TEXT_DELTA_FLUSH_MS = 80;
 
 async function getJson(
   app: FastifyInstance,
@@ -35,9 +45,16 @@ async function getJson(
   return JSON.parse(response.body) as Record<string, unknown>;
 }
 
+function modelChoiceOf(value: unknown): ModelChoice | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const { providerId, modelId, effort } = value as Record<string, unknown>;
+  if (typeof providerId !== "string" || typeof modelId !== "string" || !providerId || !modelId) return undefined;
+  return { providerId, modelId, ...(typeof effort === "string" && effort ? { effort } : {}) };
+}
+
 /**
- * The assistant runs on its own configured model when set, otherwise it borrows the
- * orchestrator's. Params always come from the config that supplied the model.
+ * The assistant runs on its own configured model (`user/assistant/config.json`) when set, otherwise
+ * on the first configured waifu's model (enabled waifus first). Living cast spec §9.3.
  */
 async function resolveAssistantTarget(
   app: FastifyInstance,
@@ -46,24 +63,23 @@ async function resolveAssistantTarget(
   delegation?: AssistantDelegation
 ): Promise<AssistantTarget> {
   const assistant = await getJson(app, principal, delegation, "/api/assistant/config");
-  const orchestrator = await getJson(app, principal, delegation, "/api/orchestrator/config");
-  const source = assistant?.modelId ? assistant : orchestrator?.modelId ? orchestrator : undefined;
-  if (!source) {
-    return { ok: false, reason: "No model is configured for the assistant. Set one under Direction \u2192 Assistant (do not repurpose the orchestrator\u2019s setting \u2014 an empty orchestrator model can be a deliberate free deterministic mode)." };
+  let route = modelChoiceOf(assistant?.model);
+  if (!route) {
+    const waifus = await getJson(app, principal, delegation, "/api/waifus");
+    const list = (waifus?.waifus as Array<Record<string, unknown>> | undefined) ?? [];
+    const ordered = [...list.filter((waifu) => waifu.enabled === true), ...list.filter((waifu) => waifu.enabled !== true)];
+    for (const waifu of ordered) {
+      route = modelChoiceOf(waifu.model);
+      if (route) break;
+    }
   }
-  let target: { providerId: string; modelId: string };
-  try {
-    target = resolveModelTarget({
-      providerId: source.providerId as string | undefined,
-      modelId: source.modelId as string
-    });
-  } catch {
-    return { ok: false, reason: `Model ${String(source.modelId)} is not recognized.` };
+  if (!route) {
+    return { ok: false, reason: "No model is configured for the assistant. Pick one in Settings → Assistant, or give a waifu a model." };
   }
-  if (!createProviderCredentialsLookup(dataRoot)(target.providerId)) {
-    return { ok: false, reason: `Provider ${target.providerId} has no API key configured.` };
+  if (!createProviderCredentialsLookup(dataRoot)(route.providerId)) {
+    return { ok: false, reason: `Provider ${route.providerId} has no API key configured (assistant model ${routeKey(route)}).` };
   }
-  return { ok: true, ...target, params: (source.params as Record<string, unknown>) ?? {} };
+  return { ok: true, route };
 }
 
 function assistantSystemPrompt(snapshot: {
@@ -75,14 +91,16 @@ function assistantSystemPrompt(snapshot: {
   return [
     "You are Norma, the Discord Waifus dashboard assistant. You operate a locally-hosted multi-character Discord bot app on the user's behalf. Users may address you by name.",
     "Never ask the user to paste API keys or bot tokens into this chat: call request_secret so they can enter the secret in a secure form that bypasses the conversation entirely.",
-    "You have tools that read AND directly modify live configuration (waifus, servers, providers, agent configs, memories), manage direct-only Remote Access, and search a docs knowledge base (docs_search/docs_read).",
+    "You have tools that read AND directly modify live configuration (waifus, servers, providers, models), manage direct-only Remote Access, and search a docs knowledge base (docs_search/docs_read).",
+    "The app is mid-way through the Living cast rebuild: waifus do not answer Discord messages or DMs yet. Configuration still works; say so plainly if the user asks why nobody replies.",
     "Rules:",
-    "- Apply ordinary changes directly — the user chose an agent that writes without asking. Only DELETIONS (delete_waifu, delete_memory, clear_provider_key) need a confirmation in chat first. forget_user and forget_dm always raise their own secure dashboard card. Config updates, model changes, bot wiring, and token forms never do.",
+    "- Apply ordinary changes directly — the user chose an agent that writes without asking. Only DELETIONS (delete_waifu, clear_provider_key) need a confirmation in chat first. forget_user and forget_dm always raise their own secure dashboard card. Config updates, model changes, bot wiring, and token forms never do.",
+    "- Models are chosen from the curated list (list_models): a model is { providerId, modelId, effort? } and effort must be one the model lists. Contributor variants share data for training: only pick one when the user explicitly asks for it.",
     "- Remote Access is direct-only: pair.waifucave.com coordinates handshakes but never carries dashboard/API traffic. Never claim a relay or proxy fallback exists.",
     "- Remote Access enable/disable, pairing approval, device revocation, and another actor's invitation cancellation create secure dashboard cards. You cannot confirm those cards yourself or replace their stored target. Invitation tokens, QR data, safety words, fingerprints, transcript bindings, and identity bundles must never be requested, quoted, or placed in chat.",
     "- Always answer the user's NEWEST message. Messages starting with [secure-form] are automated receipts from the dashboard (not the user speaking); acknowledge them briefly and continue the task. Secure-action receipts stay outside the model transcript.",
     "- To connect a character to Discord: link_waifu_bot(waifuId, applicationId) first, then request_secret(purpose bot_token, botId = waifuId) for the token, then runtime_reload once saved. Open at most one secret form per reply.",
-    "- /api/runtime/stop and its tools stop a channel run; they do not stop or restart the host operating-system process.",
+    "- runtime_pause pauses the bots; nothing you can call stops or restarts the host operating-system process.",
     "- Never echo API keys or bot tokens back to the user, even if they appear in tool output.",
     "- Prefer docs_search before answering how-to questions you are not certain about.",
     "- Be concise. Report what you changed with the field values that matter.",
@@ -122,7 +140,7 @@ export type AssistantServiceDeps = {
   authorizationPrincipal: RequestPrincipal;
   delegation?: AssistantDelegation;
   authorizePrincipal: (principal: RequestPrincipal) => boolean | Promise<boolean>;
-  createPipeline?: (target: { providerId: string; modelId: string }) => ModelPipeline;
+  modelClient: AssistantModelClient;
 };
 
 export class AssistantTurnError extends Error {
@@ -144,6 +162,83 @@ async function assertConversationOwnerAuthorized(
   }
 }
 
+/** The JSON text a tool receives; winter's unparsed-arguments marker is passed through raw so the tool reports it. */
+function toolArgumentsJson(input: unknown): string {
+  if (input && typeof input === "object" && "__winter_unparsed_arguments" in input) {
+    const raw = (input as Record<string, unknown>).__winter_unparsed_arguments;
+    if (typeof raw === "string") return raw;
+  }
+  return JSON.stringify(input ?? {});
+}
+
+/** Coalesces streamed text into `text_delta` events (at most one per flush window). */
+function textDeltaPublisher(publish: (content: string) => void) {
+  let pending = "";
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const flush = (): void => {
+    if (timer) clearTimeout(timer);
+    timer = undefined;
+    if (!pending) return;
+    const content = pending;
+    pending = "";
+    publish(content);
+  };
+  return {
+    push(text: string): void {
+      pending += text;
+      timer ??= setTimeout(flush, TEXT_DELTA_FLUSH_MS);
+    },
+    flush
+  };
+}
+
+/**
+ * The assistant's tool loop over ModelClient.stream: up to ASSISTANT_MAX_TOOL_CALLS executed calls,
+ * each round's assistant message appended exactly as assembled, tool results returned in one user
+ * message of `tool_result` blocks.
+ */
+async function runToolLoop(input: {
+  client: AssistantModelClient;
+  request: Omit<ModelCallRequest, "messages">;
+  transcript: ProviderMessageLike[];
+  sink: ModelStreamSink;
+  executeTool: (name: string, argsJson: string) => Promise<string>;
+  onEvent: (event: AssistantEvent) => void;
+}): Promise<string> {
+  const { client, request, transcript, sink, executeTool, onEvent } = input;
+  let executedCalls = 0;
+  for (let round = 0; round <= ASSISTANT_MAX_TOOL_CALLS; round++) {
+    const result: ModelCallResult = await client.stream({ ...request, messages: [...transcript] }, sink);
+    transcript.push(result.message);
+    if (result.toolCalls.length === 0) return result.text;
+    const results: ContentBlockLike[] = [];
+    for (const call of result.toolCalls) {
+      if (executedCalls >= ASSISTANT_MAX_TOOL_CALLS) {
+        results.push({ type: "tool_result", tool_use_id: call.id, content: "Tool call limit reached for this turn." });
+        continue;
+      }
+      executedCalls += 1;
+      const argsJson = toolArgumentsJson(call.input);
+      onEvent({ type: "tool_call", name: call.name, arguments: argsJson });
+      let output: string;
+      try {
+        output = await executeTool(call.name, argsJson);
+      } catch (error) {
+        if (error instanceof AssistantTurnError) throw error;
+        output = `Tool failed: ${error instanceof Error ? error.message : String(error)}`;
+      }
+      if (output.length > ASSISTANT_TOOL_RESULT_MAX_CHARS) output = `${output.slice(0, ASSISTANT_TOOL_RESULT_MAX_CHARS)}\n[truncated]`;
+      onEvent({ type: "tool_result", name: call.name, result: output });
+      results.push({ type: "tool_result", tool_use_id: call.id, content: output });
+    }
+    transcript.push({ role: "user", content: results });
+    if (executedCalls >= ASSISTANT_MAX_TOOL_CALLS) break;
+  }
+  const summary = "I hit the tool call limit for this turn — here's where I got to.";
+  transcript.push({ role: "assistant", content: [{ type: "text", text: summary }] });
+  return summary;
+}
+
 export async function runAssistantTurn(deps: AssistantServiceDeps, conversationId: string, userContent: string): Promise<string> {
   const { app, store, actions, dataRoot, actor, principal, authorizationPrincipal, delegation } = deps;
   const conversation = store.get(conversationId, actor);
@@ -153,46 +248,42 @@ export async function runAssistantTurn(deps: AssistantServiceDeps, conversationI
   // check above and interleaved, last-writer-winning the model transcript (audit finding 6)
   store.setBusy(conversationId, actor, true);
   let turnStarted = false;
+  const deltas = textDeltaPublisher((content) => store.publish(conversationId, actor, { type: "text_delta", content }));
   try {
     await assertConversationOwnerAuthorized(deps, conversationId);
     const target = await resolveAssistantTarget(app, dataRoot, principal, delegation);
     await assertConversationOwnerAuthorized(deps, conversationId);
     if (!target.ok) throw new AssistantTurnError(503, target.reason);
-    const pipeline = deps.createPipeline
-      ? deps.createPipeline({ providerId: target.providerId, modelId: target.modelId })
-      : createGatewayModelPipeline({
-          providerId: target.providerId,
-          modelId: target.modelId,
-          queryRole: "assistant",
-          dataRoot
-        });
-    if (!pipeline.generateAssistantTurn) {
-      throw new AssistantTurnError(503, "The resolved pipeline cannot run assistant turns.");
-    }
 
-    const transcript =
-      conversation.chat.length > 0
-        ? [...conversation.chat]
-        : [{
-            role: "system" as const,
-            content: assistantSystemPrompt(await buildSnapshot(app, principal, delegation))
-          }];
+    // The system prompt is frozen at the first turn so every later call reuses the cached prefix.
+    const system = conversation.system ?? assistantSystemPrompt(await buildSnapshot(app, principal, delegation));
     await assertConversationOwnerAuthorized(deps, conversationId);
-    transcript.push({ role: "user", content: userContent });
+    const transcript: ProviderMessageLike[] = [...conversation.chat, { role: "user", content: userContent }];
 
     // Persist the accepted user turn before invoking the provider. If the provider fails, the
     // next turn still has the user's message, but an owner revoked during setup stores nothing.
-    store.appendChat(conversationId, actor, transcript);
+    store.setTranscript(conversationId, actor, { system, chat: transcript });
     store.appendStored(conversationId, actor, { role: "user", content: userContent, at: new Date().toISOString() });
     store.emit(conversationId, actor, { type: "turn_started" });
     turnStarted = true;
     let toolCallSequence = 0;
-    const result = await pipeline.generateAssistantTurn({
-      modelId: target.modelId,
-      messages: transcript,
-      tools: toolDefs({ actor, principal }),
-      params: target.params,
+    const content = await runToolLoop({
+      client: deps.modelClient,
+      request: {
+        route: target.route,
+        system: [system],
+        tools: toolDefs({ actor, principal }),
+        ...(target.route.effort ? { effort: target.route.effort } : {}),
+        cacheKey: `assistant:${conversationId}`,
+        attribution: { purpose: "assistant", conversationKey: `assistant:${conversationId}` }
+      },
+      transcript,
+      sink: {
+        onTextDelta: (text) => deltas.push(text),
+        onToolCallStart: () => deltas.flush()
+      },
       executeTool: async (name, argsJson) => {
+        deltas.flush();
         await assertConversationOwnerAuthorized(deps, conversationId);
         toolCallSequence += 1;
         const toolDelegation = {
@@ -256,19 +347,17 @@ export async function runAssistantTurn(deps: AssistantServiceDeps, conversationI
         await assertConversationOwnerAuthorized(deps, conversationId);
         return result;
       },
-      onEvent: (event) => store.emit(
-        conversationId,
-        actor,
-        scrubSecretsFromEvent(event as AssistantEvent)
-      )
+      onEvent: (event) => store.emit(conversationId, actor, scrubSecretsFromEvent(event))
     });
+    deltas.flush();
     await assertConversationOwnerAuthorized(deps, conversationId);
-    store.appendChat(conversationId, actor, result.messages);
-    store.appendStored(conversationId, actor, { role: "assistant", content: result.content, at: new Date().toISOString() });
-    store.emit(conversationId, actor, { type: "text", content: result.content });
+    store.setTranscript(conversationId, actor, { system, chat: transcript });
+    store.appendStored(conversationId, actor, { role: "assistant", content, at: new Date().toISOString() });
+    store.emit(conversationId, actor, { type: "text", content });
     store.emit(conversationId, actor, { type: "turn_completed" });
-    return result.content;
+    return content;
   } catch (error) {
+    deltas.flush();
     const message = error instanceof Error ? error.message : String(error);
     if (turnStarted) store.emit(conversationId, actor, { type: "error", message });
     if (error instanceof AssistantTurnError) throw error;

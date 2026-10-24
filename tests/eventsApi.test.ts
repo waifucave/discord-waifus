@@ -5,7 +5,8 @@ import { createRemoteRequestPrincipal } from "../src/api/requestPrincipal.js";
 import type { LogEntry, Logger } from "../src/backend/logger.js";
 import { createRuntimeState } from "../src/backend/runtime.js";
 import { ensureDataLayout } from "../src/config/layout.js";
-import type { ModelPipeline } from "../src/providers/types.js";
+import type { AssistantModelClient } from "../src/api/assistant/service.js";
+import { ASSISTANT_TEST_MODEL, scriptedAssistantClient } from "./assistantFakes.js";
 import { parseEventCursor } from "../src/shared/eventCursor.js";
 import { SseParser, type ParsedSseEvent } from "../src/frontend/api/resumableEventFeed.js";
 import { StorageService } from "../src/storage/storageService.js";
@@ -43,7 +44,7 @@ function testLogger(): Logger {
 async function makeApp(options: {
   logger?: Logger;
   authorizeRemote?: () => boolean;
-  assistantPipeline?: ModelPipeline;
+  assistantClient?: AssistantModelClient;
 } = {}) {
   const root = await makeTempRoot("waifus-events-api-");
   roots.push(root);
@@ -72,8 +73,8 @@ async function makeApp(options: {
     ...(options.authorizeRemote
       ? { remoteTrust: { isAuthorized: () => options.authorizeRemote!() } }
       : {}),
-    ...(options.assistantPipeline
-      ? { assistant: { createPipeline: () => options.assistantPipeline! } }
+    ...(options.assistantClient
+      ? { assistant: { modelClient: options.assistantClient } }
       : {})
   });
   apps.push(app);
@@ -253,26 +254,15 @@ describe("assistant event API", () => {
     let markTurnStarted!: () => void;
     const turnGate = new Promise<void>((resolve) => { finishTurn = resolve; });
     const turnStarted = new Promise<void>((resolve) => { markTurnStarted = resolve; });
-    const pipeline: ModelPipeline = {
-      async generateWaifu() {
-        throw new Error("unused");
-      },
-      async generateAssistantTurn(request) {
-        markTurnStarted();
-        await turnGate;
-        return {
-          content: "must-not-cross-assistant-revocation",
-          messages: [
-            ...request.messages,
-            { role: "assistant", content: "must-not-cross-assistant-revocation" }
-          ]
-        };
-      }
-    };
+    const pipeline = scriptedAssistantClient(async () => {
+      markTurnStarted();
+      await turnGate;
+      return { text: "must-not-cross-assistant-revocation" };
+    });
     let allowed = true;
     let authorizationChecks = 0;
     const { app } = await makeApp({
-      assistantPipeline: pipeline,
+      assistantClient: pipeline,
       authorizeRemote: () => {
         authorizationChecks += 1;
         return allowed;
@@ -283,16 +273,7 @@ describe("assistant event API", () => {
       url: "/api/providers/deepseek/credentials",
       payload: { apiKey: "sk-test" }
     });
-    const orchestrator = await app.inject({ method: "GET", url: "/api/orchestrator/config" });
-    await app.inject({
-      method: "PUT",
-      url: "/api/orchestrator/config",
-      payload: {
-        revision: orchestrator.json().revision,
-        providerId: "deepseek",
-        modelId: "deepseek-v4-pro"
-      }
-    });
+    await app.inject({ method: "PUT", url: "/api/assistant/config", payload: { model: ASSISTANT_TEST_MODEL } });
     const actor = remotePrincipal();
     const created = await dispatchInternal(app, actor, undefined, {
       method: "POST",

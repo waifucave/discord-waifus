@@ -1,11 +1,10 @@
 import path from "node:path";
-import { GatewayError } from "@waifucave/gateway";
-import { GatewayPipelineError } from "./pipeline/params.js";
+import { ModelCallError } from "../models/errors.js";
 
-// Per-provider quota/billing cooldowns (spec 8.10). A `quota` or `billing` GatewayError opens a
-// cooldown for that provider (10 / 30 minutes); while it is open, calls fail fast with
-// `provider_quota` / `provider_billing` and never reach the network. Surfaced to the dashboard
-// through `/api/runtime.providerAlerts`.
+// Per-provider quota/billing cooldowns (spec 8.10, Living cast §9.1). A model call that fails with
+// error kind `quota` or `billing` (src/models/errors.ts) opens a cooldown for that provider (10 / 30
+// minutes); while it is open, calls fail fast with `provider_quota` / `provider_billing` and never
+// reach the network. Surfaced to the dashboard through `/api/runtime.providerAlerts`.
 
 export type ProviderAlertKind = "quota" | "billing";
 export type ProviderAlert = { providerId: string; kind: ProviderAlertKind; until: string; lastMessage: string };
@@ -14,13 +13,13 @@ export const QUOTA_COOLDOWN_MS = 10 * 60_000;
 export const BILLING_COOLDOWN_MS = 30 * 60_000;
 const MAX_MESSAGE_CHARS = 300;
 
-export class ProviderCooldownError extends GatewayPipelineError {
-  override readonly code: "provider_quota" | "provider_billing";
+export class ProviderCooldownError extends ModelCallError {
+  override name = "ProviderCooldownError";
 
   constructor(readonly alert: ProviderAlert) {
-    super(`Provider ${alert.providerId} is cooling down after a ${alert.kind} error until ${alert.until}.`);
-    this.name = "ProviderCooldownError";
-    this.code = alert.kind === "billing" ? "provider_billing" : "provider_quota";
+    super(alert.kind, `Provider ${alert.providerId} is cooling down after a ${alert.kind} error until ${alert.until}.`, {
+      code: alert.kind === "billing" ? "provider_billing" : "provider_quota"
+    });
   }
 }
 
@@ -38,9 +37,10 @@ export class ProviderAlerts {
     this.durations = { quota: options.quotaMs ?? QUOTA_COOLDOWN_MS, billing: options.billingMs ?? BILLING_COOLDOWN_MS };
   }
 
-  /** Opens a cooldown when `error` is a quota/billing GatewayError. Returns whether it did. */
+  /** Opens a cooldown when `error` is a quota/billing model error. Returns whether it did. */
   report(providerId: string, error: unknown): boolean {
-    if (!(error instanceof GatewayError) || (error.kind !== "quota" && error.kind !== "billing")) return false;
+    if (!(error instanceof ModelCallError) || error instanceof ProviderCooldownError) return false;
+    if (error.kind !== "quota" && error.kind !== "billing") return false;
     const kind: ProviderAlertKind = error.kind;
     this.cooldowns.set(this.key(providerId, kind), {
       untilMs: this.now() + this.durations[kind],

@@ -62,6 +62,7 @@ export function mergeAppConfigPatch(
       debounce: { ...current.discord.debounce, ...patch.discord?.debounce },
       dm: { ...current.discord.dm, ...patch.discord?.dm }
     },
+    models: { ...current.models, ...patch.models },
     updates: { ...current.updates, ...patch.updates }
   });
 }

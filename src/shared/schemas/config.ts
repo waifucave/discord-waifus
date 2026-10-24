@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { CURRENT_SCHEMA_VERSION } from "./common.js";
 import { CompactionSettingsSchema } from "./compaction.js";
+import { DEFAULT_ALLOWED_ROUTES, DEFAULT_MAX_OUTPUT_USD_PER_MTOK } from "../../models/defaults.js";
 
 const HttpConfigSchema = z
   .object({
@@ -159,6 +160,24 @@ export const DiscordConfigSchema = z
   });
 export type DiscordConfig = z.infer<typeof DiscordConfigSchema>;
 
+// Curated model catalog (Living cast §9.2): the allowed winter routes and the output price cap.
+export const DEFAULT_MODELS_CONFIG = {
+  allowed: [...DEFAULT_ALLOWED_ROUTES],
+  maxOutputUsdPerMTok: DEFAULT_MAX_OUTPUT_USD_PER_MTOK
+};
+const MODEL_ROUTE_RE = /^[a-z0-9][a-z0-9._-]*\/\S+$/u;
+const MODELS_FIELDS = {
+  allowed: z.array(z.string().regex(MODEL_ROUTE_RE, "Use a winter route key such as anthropic/claude-sonnet-5-5.")).max(100),
+  maxOutputUsdPerMTok: z.number().positive().max(1000)
+};
+const ModelsConfigSchema = z
+  .object({
+    allowed: MODELS_FIELDS.allowed.default(() => [...DEFAULT_MODELS_CONFIG.allowed]),
+    maxOutputUsdPerMTok: MODELS_FIELDS.maxOutputUsdPerMTok.default(DEFAULT_MODELS_CONFIG.maxOutputUsdPerMTok)
+  })
+  .default(() => ({ allowed: [...DEFAULT_MODELS_CONFIG.allowed], maxOutputUsdPerMTok: DEFAULT_MODELS_CONFIG.maxOutputUsdPerMTok }));
+export type ModelsConfig = z.infer<typeof ModelsConfigSchema>;
+
 export const AppConfigSchema = z.object({
   schemaVersion: z.literal(CURRENT_SCHEMA_VERSION).default(CURRENT_SCHEMA_VERSION),
   http: HttpConfigSchema,
@@ -168,6 +187,7 @@ export const AppConfigSchema = z.object({
   compaction: CompactionSettingsSchema,
   memory: MemoryConfigSchema,
   discord: DiscordConfigSchema,
+  models: ModelsConfigSchema,
   updates: z.object({
     enabled: z.boolean().default(false),
     checkIntervalMinutes: z.number().int().min(15).max(1440).default(60),
@@ -244,6 +264,10 @@ export const UpdateAppConfigBodySchema = z.object({
       maxConcurrentRuns: DM_RUNTIME_FIELDS.maxConcurrentRuns.optional(),
       resumeWindowMinutes: DM_RUNTIME_FIELDS.resumeWindowMinutes.optional()
     }).strict().optional()
+  }).strict().optional(),
+  models: z.object({
+    allowed: MODELS_FIELDS.allowed.optional(),
+    maxOutputUsdPerMTok: MODELS_FIELDS.maxOutputUsdPerMTok.optional()
   }).strict().optional()
 }).strict();
 

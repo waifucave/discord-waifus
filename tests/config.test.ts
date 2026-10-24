@@ -244,9 +244,11 @@ describe("data root and config", () => {
     expect(seeded.displayName).toBe(first.displayName);
     expect(seeded.availability.sleep.enabled).toBe(true);
     expect(seeded.availability.busy.length).toBeGreaterThan(0);
-    expect(seeded.tools).toEqual({ toolUse: true });
+    expect(seeded).not.toHaveProperty("tools");
+    expect(seeded).not.toHaveProperty("params");
+    expect(seeded).not.toHaveProperty("contextWindow");
     expect(seeded).not.toHaveProperty("promptLayout");
-    expect(seeded.modelId).toBeUndefined();
+    expect(seeded.model).toBeUndefined();
     expect(seeded.botId).toBeUndefined();
 
     await rm(path.join(root, "user", "waifus", first.id), { recursive: true, force: true });
@@ -267,7 +269,7 @@ describe("data root and config", () => {
     expect(redacted.safe).toBe("visible");
   });
 
-  it("defaults server-level waifu tools and ignores legacy per-waifu tool gates", () => {
+  it("defaults server-level waifu tools and drops legacy per-waifu tool gates", () => {
     const now = "2026-05-16T12:00:00.000Z";
     const server = ServerConfigSchema.parse({
       schemaVersion: CURRENT_SCHEMA_VERSION,
@@ -291,7 +293,8 @@ describe("data root and config", () => {
         shortTermMemory: false
       }
     });
-    expect(waifu.tools).toEqual({ toolUse: false });
+    // Living cast L1 dropped `tools.toolUse` (every life has the full tool set).
+    expect(waifu).not.toHaveProperty("tools");
     expect(waifu).not.toHaveProperty("promptLayout");
   });
 

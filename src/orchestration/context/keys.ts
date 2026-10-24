@@ -1,4 +1,4 @@
-// Conversation keys, context agents and the on-disk locations derived from them (spec 8.1).
+// Conversation keys (place keys, Living cast §5.5) and the on-disk locations derived from them.
 // Pure helpers: no I/O. Path helpers return data-root-relative paths (the form StorageService
 // takes) and are validated through resolveDataPath so a malformed key can never escape the root.
 
@@ -11,11 +11,6 @@ export type ConversationRef =
   | { kind: "dm"; waifuId: string; userId: string };
 
 export type ConversationKey = string & { readonly __brand: "ConversationKey" };
-
-export type ContextAgent =
-  | { kind: "waifu"; waifuId: string }
-  | { kind: "orchestrator" }
-  | { kind: "stage-manager" };
 
 // Discord ids (guild, channel, thread, user) become key segments split on "_", so they must not
 // contain it. Real ids are snowflakes (digits); tests may use short ASCII fakes.
@@ -57,15 +52,6 @@ export function parseConversationKey(key: string): ConversationRef | undefined {
   return undefined;
 }
 
-/** "waifu-<id>" | "orchestrator" | "stage-manager". */
-export function contextAgentId(a: ContextAgent): string {
-  if (a.kind === "waifu") {
-    assertWaifuId(a.waifuId);
-    return `waifu-${a.waifuId}`;
-  }
-  return a.kind;
-}
-
 // The key is a branded string that callers could forge with a cast, so every path helper
 // re-validates it, then proves containment under a probe data root.
 function conversationDir(k: ConversationKey): string[] {
@@ -79,25 +65,14 @@ function contained(segments: string[]): string {
   return path.join(...segments);
 }
 
-/** user/conversations/<k>/contexts/<agentId>.json */
-export function contextStatePath(k: ConversationKey, a: ContextAgent): string {
-  return contained([...conversationDir(k), "contexts", `${contextAgentId(a)}.json`]);
+/** user/conversations/<k> (the whole conversation directory). */
+export function conversationDirPath(k: ConversationKey): string {
+  return contained(conversationDir(k));
 }
 
 /** user/conversations/<k>/refs.json */
 export function conversationRefsPath(k: ConversationKey): string {
   return contained([...conversationDir(k), "refs.json"]);
-}
-
-/** user/conversations/<k>/ledger.json */
-export function conversationLedgerPath(k: ConversationKey): string {
-  return contained([...conversationDir(k), "ledger.json"]);
-}
-
-/** "waifu:<id>:<k>" | "orchestrator:<k>" | "stage-manager:<k>" */
-export function promptCacheKey(k: ConversationKey, a: ContextAgent): string {
-  conversationDir(k);
-  return a.kind === "waifu" ? `waifu:${a.waifuId}:${k}` : `${a.kind}:${k}`;
 }
 
 /** Numeric compare of Discord snowflakes (BigInt): negative, 0 or positive. */
