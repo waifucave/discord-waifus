@@ -291,7 +291,7 @@ function CharacterEditor({
             <div className="fcell">
               <label className="field-label">Discord bot</label>
               <select className="select" value={draft.botId ?? ""} onChange={(e) => set({ botId: e.target.value || undefined })}>
-                <option value="">— none —</option>
+                <option value="">— none: she speaks through the House bot —</option>
                 {(bots.data?.waifus ?? []).map((bot) => (
                   <option key={bot.id} value={bot.id}>
                     {bot.displayName} ({bot.id})

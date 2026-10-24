@@ -23,7 +23,7 @@ export function RegistryForm({
   config,
   onSaved,
   filter,
-  columns = 3
+  columns = 4
 }: {
   topic: string;
   title: string;
@@ -78,7 +78,7 @@ export function RegistryForm({
           <Notice tone={message.tone}>{message.text}</Notice>
         </div>
       )}
-      <div className="fgrid" style={{ gridTemplateColumns: `repeat(auto-fill, minmax(min(100%, ${columns >= 3 ? 260 : 340}px), 1fr))` }}>
+      <div className="fgrid" style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}>
         {keys.map((key) => {
           const stored = getPath(config, key.path);
           const text = drafts[key.path] ?? formText(key, stored);
@@ -128,6 +128,10 @@ export function RegistryForm({
             </div>
           );
         })}
+        {/* fill the last row so no ink shows through */}
+        {Array.from({ length: (columns - (keys.length % columns)) % columns }, (_, index) => (
+          <div className="fcell" key={`pad-${index}`} />
+        ))}
       </div>
     </div>
   );
