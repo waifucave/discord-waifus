@@ -168,8 +168,15 @@ export function recoverBrowserSession(status: number, body: unknown): boolean {
   return true;
 }
 
+/** The mutation layer's in-progress answer (`{operationId, status: "accepted", statusUrl}`). */
+function isOperationAccepted(parsed: unknown): boolean {
+  return Boolean(parsed) && typeof parsed === "object" && typeof (parsed as { operationId?: unknown }).operationId === "string";
+}
+
 function operationStatusUrl(status: number, parsed: unknown): string | undefined {
-  if (status !== 202) return undefined;
+  // A route may answer 202 with its own result (a forget with pending parts, a compaction still
+  // running): that is a value, not an operation receipt.
+  if (status !== 202 || !isOperationAccepted(parsed)) return undefined;
   if (
     !parsed
     || typeof parsed !== "object"
