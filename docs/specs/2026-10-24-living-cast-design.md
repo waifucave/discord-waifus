@@ -363,6 +363,15 @@ Each line: `{seq, at, kind, message}`.
   `systemBlocks` = [A, B] (scope `org`) and `cacheTtl: "1h"`. `messages` never contains a
   `role:"system"` entry (the Anthropic adapter would turn it into a mid-conversation system
   message, and the Chat Completions and Responses adapters read only `system`).
+- **Adjacent user messages.** A turn that ended on a user message (a cap, an interrupt, an error, a
+  restart repair) is followed by the next turn's notifications, so the log can hold two user
+  messages in a row. `ModelClient` joins them into one (blocks in order; a tool-results message is
+  never joined onto the one before it) after winter's renderer, for every family: DeepSeek's
+  reasoning models refuse successive same-role messages, winter's chat-completions and Responses
+  mappers pass them through, and Anthropic joins them server-side anyway. Joining only appends
+  blocks to an existing message, so each request is still a block prefix of the next.
+  `tests/modelRequestFormat.test.ts` checks every curated route's wire body through its real
+  adapter.
 
 ### 5.5 Places and read cursors
 

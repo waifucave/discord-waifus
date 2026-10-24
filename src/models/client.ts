@@ -20,6 +20,7 @@ import type {
 } from "@yanlinglabs/winter-provider-runtime";
 import type { Logger } from "../backend/logger.js";
 import { recordProviderQuery, recordProviderReply, type QueryRole } from "../shared/queryLog.js";
+import { joinAdjacentUserMessages } from "./messageShape.js";
 import type { UsagePurpose } from "../shared/schemas/usage.js";
 import { NoopUsageLedger, sharedUsageLedger, usageFields, type ModelUsage, type UsageLedger } from "../orchestration/usageLedger.js";
 import { sharedProviderAlerts, type ProviderAlerts } from "../orchestration/providerAlerts.js";
@@ -292,7 +293,7 @@ export class ModelClient {
         ...(system.length > 0
           ? { system: system.join("\n\n"), systemBlocks: system.map((text) => ({ text, cacheScope: "org" as const })) }
           : {}),
-        messages: rendered,
+        messages: joinAdjacentUserMessages(rendered),
         ...(request.tools && request.tools.length > 0 ? { tools: request.tools.map((tool) => ({ ...tool })) } : {}),
         ...(request.toolChoice ? { toolChoice: request.toolChoice } : {}),
         ...(request.effort !== undefined ? { effort: request.effort as TurnRequest["effort"] } : {}),
