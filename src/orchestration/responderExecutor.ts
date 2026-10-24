@@ -7,7 +7,6 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { Logger } from "../backend/logger.js";
 import { DiscordGatewayFacade } from "../discord/client.js";
-import { loadGuildDirectoryView } from "../discord/directoryView.js";
 import { dedupeNames, modelVisibleEmojiToken, stripLeakedContextHeader } from "../discord/normalization.js";
 import type { ModelPipeline, WaifuGenerationResult } from "../providers/types.js";
 import { PermissionWarningTracker } from "./permissionWarnings.js";
@@ -579,9 +578,7 @@ export class ResponderExecutor {
     const { waifu, server } = input;
     const built = await this.buildWaifuHarness({ ...input, ...(input.directiveText ? { direction: input.directiveText } : {}) });
     const { harness, conversation, model, selfAuthorIds, serverNickname, roster, people, pickNextWaifuIds, waifuByAuthorId } = built;
-    const directory = await loadGuildDirectoryView(this.options.storage, input.guildId, {
-      channelName: (id) => server.channels[id]?.name
-    });
+    const directory = await this.options.directory.view(input.guildId, (id) => server.channels[id]?.name);
     // Same tool choice / params / attribution as her reply call, so compaction reuses the cached
     // prefix (spec 8.9). Without a summarizer nothing compacts.
     const summarize = input.pipeline.summarizeContext
@@ -608,6 +605,19 @@ export class ResponderExecutor {
       // thinking block is rejected by Claude with thinking on (spec 8.5, T3 review C1).
       renderToolTurnsAsText: true,
       participantIds: people.flatMap((person) => (person.userId ? [person.userId] : [])),
+      // Event-fed reactions since her last own message, for messages she can see (spec 9.4); tail only.
+      recentReactions: ({ refs, transcript }) => {
+        const lastOwn = [...transcript].reverse().find((entry) => selfAuthorIds.includes(entry.authorId));
+        const visible = new Map<string, string>();
+        for (const entry of transcript) {
+          const ref = refs.get(entry.id);
+          if (ref !== undefined) visible.set(entry.id, ref);
+        }
+        return this.options.conversationCache.recentReactions(conversation, {
+          sinceMs: lastOwn ? Date.parse(lastOwn.at) || 0 : 0,
+          refs: visible
+        });
+      },
       signal: input.signal,
       params: waifu.params,
       server,

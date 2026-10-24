@@ -25,9 +25,15 @@ a `waifus` array of entries — each `{id, displayName, applicationId, token, en
 each waifu to her bot by setting the waifu's `botId` to the bot entry's `id` (or use
 `POST /api/waifus/:id/link-bot`, below).
 
-Guild data (members, roles, emojis) syncs automatically once connected; refresh manually via
-`POST /api/servers/:guildId/members/refresh` (same for roles/emojis). The dashboard has no
-button for this; it is API-only.
+Guild data (members, roles, emojis, channels) is kept current from gateway events once
+connected; refresh manually via `POST /api/servers/:guildId/members/refresh` (same for
+roles/emojis). The dashboard has no button for this; it is API-only. The member list is also
+refreshed every `discord.memberListRefreshHours` (default 24, 0 = never). The privileged
+Server Members intent is opt-in: set `discord.guildMembersIntent = true` (PUT `/api/config`) after
+enabling it in the Developer Portal, otherwise Discord closes the connection with `invalid_intents`.
+Without it, member names are learned from messages and mentions, and `GET /api/runtime` reports
+`discord.directory` (`memberListAvailable`, `lastRefreshAt`, `warnings`, e.g.
+`member_list_unavailable` when Discord refuses the list).
 
 ## Enabling channels
 

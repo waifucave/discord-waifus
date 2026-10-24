@@ -71,6 +71,20 @@ describe("Backend API", () => {
       expect(reload).toHaveBeenCalledExactlyOnceWith("config-updated");
     } finally { await app.close(); }
   });
+  it("persists the opt-in GuildMembers intent and member-list refresh interval, defaulting to off and 24 h", async () => {
+    const { app } = await makeApp();
+    try {
+      const current = (await app.inject({ method: "GET", url: "/api/config" })).json();
+      expect(current.discord).toMatchObject({ guildMembersIntent: false, memberListRefreshHours: 24 });
+      const saved = await app.inject({ method: "PUT", url: "/api/config", payload: { discord: { guildMembersIntent: true, memberListRefreshHours: 6 } } });
+      expect(saved.statusCode).toBe(200);
+      expect(saved.json().discord).toMatchObject({ guildMembersIntent: true, memberListRefreshHours: 6 });
+      const other = await app.inject({ method: "PUT", url: "/api/config", payload: { discord: { memberListRefreshHours: 0 } } });
+      expect(other.json().discord).toMatchObject({ guildMembersIntent: true, memberListRefreshHours: 0 });
+      const bad = await app.inject({ method: "PUT", url: "/api/config", payload: { discord: { memberListRefreshHours: 500 } } });
+      expect(bad.statusCode).toBe(400);
+    } finally { await app.close(); }
+  });
   it("persists One shot independently of the global LLM and preserves it on unrelated server updates", async () => {
     const { app } = await makeApp();
     try {

@@ -16,12 +16,8 @@ import {
   DiscordRuntimeStatus
 } from "../discord/client.js";
 import { mergeConfiguredBotsIntoMembers } from "../discord/memberCache.js";
-import {
-  discordRestForToken,
-  fetchAllDiscordGuildMembers,
-  fetchDiscordGuildRoles,
-  type DiscordGuildRolePayload
-} from "../discord/rest.js";
+import { GuildDirectory } from "../discord/guildDirectory.js";
+import { readDiscordBotsFile } from "../orchestration/stores/config.js";
 import { RuntimeOrchestrator } from "../orchestration/runtime.js";
 import { ImageOcrService } from "../orchestration/ocr.js";
 import { DiscordImageFetcher, sharedImageFetcherConfig } from "../discord/attachments.js";
@@ -29,7 +25,6 @@ import {
   DiscordBotsFileSchema,
   GuildEmojisFileSchema,
   GuildMembersFileSchema,
-  GuildRoleCacheEntry,
   GuildRolesFileSchema,
   createEmptyRevisionedFile
 } from "../shared/schemas/domain.js";
@@ -164,6 +159,16 @@ async function startLockedBackend(options: StartBackendOptions): Promise<Running
       supervisor: helperSupervisor
     });
 
+    // One directory for the host (spec 9.4): the runtime keeps it fresh from gateway events, the
+    // dashboard's refresh buttons and the periodic member list refresh go through it too.
+    let memberListRefreshHours = config.discord.memberListRefreshHours;
+    const directory = new GuildDirectory({
+      storage,
+      logger,
+      settings: () => ({ memberListRefreshHours }),
+      bots: () => readDiscordBotsFile(storage)
+    });
+
     const createDiscordGateway =
       options.createDiscordGateway ??
       ((gatewayOptions: DiscordJsGatewayOptions) => new DiscordJsGateway(gatewayOptions));
@@ -192,6 +197,7 @@ async function startLockedBackend(options: StartBackendOptions): Promise<Running
     };
 
     const makeRuntimeOrchestrator = (nextGateway: DiscordGatewayFacade, currentConfig = config) => {
+      memberListRefreshHours = currentConfig.discord.memberListRefreshHours;
       // One image fetcher shared by OCR and the context engine's inline images (spec 8.4).
       const images = new DiscordImageFetcher({
         dataRoot: options.dataRoot,
@@ -210,6 +216,8 @@ async function startLockedBackend(options: StartBackendOptions): Promise<Running
         logger,
         ocr,
         images,
+        directory,
+        memberListRefreshHours: currentConfig.discord.memberListRefreshHours,
         compaction: currentConfig.compaction,
         updateActivity,
         memory: { ...currentConfig.memory },
@@ -388,7 +396,8 @@ async function startLockedBackend(options: StartBackendOptions): Promise<Running
         logger,
         createDiscordGateway,
         handleDiscordRuntimeIssue,
-        handleDiscordStatusChange
+        handleDiscordStatusChange,
+        { directory, guildMembersIntent: currentConfig.discord.guildMembersIntent }
       );
       if (closing) {
         await connected.gateway?.disconnect();
@@ -451,6 +460,7 @@ async function startLockedBackend(options: StartBackendOptions): Promise<Running
         reload: enqueueReloadRuntime
       },
       logger,
+      directory,
       browserSecurity: {
         listenerHost: host,
         port,
@@ -509,6 +519,8 @@ async function startLockedBackend(options: StartBackendOptions): Promise<Running
         stepStartedAt = Date.now();
         await runtimeOrchestrator?.stop();
         logger.info("Shutdown step done", { step: "orchestrator.stop", ms: Date.now() - stepStartedAt });
+
+        await directory.close();
 
         logger.info("Shutdown step start", { step: "discord.disconnect" });
         stepStartedAt = Date.now();
@@ -616,8 +628,9 @@ async function maybeConnectDiscord(
   autoConnect: boolean,
   logger: Logger,
   createDiscordGateway: (options: DiscordJsGatewayOptions) => DiscordGatewayFacade,
-  onRuntimeIssue?: (issue: DiscordRuntimeIssue) => void | Promise<void>,
-  onStatusChange?: (status: DiscordRuntimeStatus) => void | Promise<void>
+  onRuntimeIssue: ((issue: DiscordRuntimeIssue) => void | Promise<void>) | undefined,
+  onStatusChange: ((status: DiscordRuntimeStatus) => void | Promise<void>) | undefined,
+  extra: { directory: GuildDirectory; guildMembersIntent: boolean }
 ): Promise<{
   status: DiscordRuntimeStatus;
   gateway?: DiscordGatewayFacade;
@@ -641,11 +654,7 @@ async function maybeConnectDiscord(
     // Waifu bots only speak when the orchestrator casts them, so nothing logs in without it.
     return { status: offlineDiscordStatus(["Discord auto-connect is enabled but the orchestrator bot is disabled."]) };
   }
-  const gateway = createDiscordGateway({
-    orchestrator: bots.orchestrator,
-    waifus: bots.waifus,
-    logger,
-    cacheForGuild: async (guildId) => {
+  const cacheForGuild = async (guildId: string) => {
       const [members, emojis, roles] = await Promise.all([
         storage.readJson(
           `user/servers/${guildId}/members.json`,
@@ -668,18 +677,22 @@ async function maybeConnectDiscord(
         emojis: emojis.emojis,
         roles: roles.roles
       };
-    },
+  };
+  const gateway = createDiscordGateway({
+    orchestrator: bots.orchestrator,
+    waifus: bots.waifus,
+    logger,
+    guildMembersIntent: extra.guildMembersIntent,
+    cacheForGuild,
+    // The legacy fetchFreshContext paths (reviewer, /print, resume detection) still ask for a
+    // refresh on unresolved mentions; it is the directory's single refresh path now (spec 9.4).
     refreshMembersForGuild: async (guildId) => {
-      const members = await refreshDiscordMembersForRuntime(storage, guildId);
-      return {
-        members: mergeConfiguredBotsIntoMembers(members.members, bots)
-      };
+      await extra.directory.refresh(guildId, "members");
+      return { members: (await cacheForGuild(guildId)).members };
     },
     refreshRolesForGuild: async (guildId) => {
-      const roles = await refreshDiscordRolesForRuntime(storage, guildId);
-      return {
-        roles: roles.roles
-      };
+      await extra.directory.refresh(guildId, "roles");
+      return { roles: (await cacheForGuild(guildId)).roles };
     },
     onRuntimeIssue,
     onStatusChange
@@ -774,89 +787,6 @@ function errorCode(error: unknown): string | undefined {
   const nestedError = errorCode((error as { error?: unknown }).error);
   if (nestedError) return nestedError;
   return errorCode((error as { cause?: unknown }).cause);
-}
-
-async function refreshDiscordMembersForRuntime(storage: StorageService, guildId: string) {
-  const token = await readDiscordBotToken(storage);
-  if (!token) {
-    return storage.readJson(
-      `user/servers/${guildId}/members.json`,
-      GuildMembersFileSchema,
-      GuildMembersFileSchema.parse(createEmptyRevisionedFile({ guildId, members: [] }))
-    );
-  }
-  const rawMembers = await fetchAllDiscordGuildMembers(discordRestForToken(token), guildId);
-  const now = new Date().toISOString();
-  const members = rawMembers.map((member) => ({
-    userId: member.user.id,
-    username: member.user.username,
-    globalDisplayName: member.user.global_name ?? undefined,
-    guildDisplayName: member.nick ?? member.user.global_name ?? member.user.username,
-    bot: member.user.bot ?? false,
-    lastSeenAt: now,
-    perChannelLastSeenAt: {}
-  }));
-  return storage.updateRevisionedJson({
-    resourceKey: `members:${guildId}`,
-    relativePath: path.join("user", "servers", guildId, "members.json"),
-    schema: GuildMembersFileSchema,
-    fallback: GuildMembersFileSchema.parse(createEmptyRevisionedFile({ guildId, members: [] })),
-    transform: (current) => ({
-      ...current,
-      guildId,
-      members
-    })
-  });
-}
-
-async function refreshDiscordRolesForRuntime(storage: StorageService, guildId: string) {
-  const token = await readDiscordBotToken(storage);
-  if (!token) {
-    return storage.readJson(
-      `user/servers/${guildId}/roles.json`,
-      GuildRolesFileSchema,
-      GuildRolesFileSchema.parse(createEmptyRevisionedFile({ guildId, roles: [] }))
-    );
-  }
-  const rawRoles = await fetchDiscordGuildRoles(discordRestForToken(token), guildId);
-  const roles = mapDiscordRoles(rawRoles);
-  return storage.updateRevisionedJson({
-    resourceKey: `roles:${guildId}`,
-    relativePath: path.join("user", "servers", guildId, "roles.json"),
-    schema: GuildRolesFileSchema,
-    fallback: GuildRolesFileSchema.parse(createEmptyRevisionedFile({ guildId, roles: [] })),
-    transform: (current) => ({
-      ...current,
-      guildId,
-      roles
-    })
-  });
-}
-
-function mapDiscordRoles(rawRoles: DiscordGuildRolePayload[]): GuildRoleCacheEntry[] {
-  const now = new Date().toISOString();
-  return rawRoles
-    .filter((role) => role.name !== "@everyone")
-    .map((role) => ({
-      id: role.id,
-      name: role.name,
-      color: role.color ?? 0,
-      hoist: role.hoist ?? false,
-      mentionable: role.mentionable ?? false,
-      managed: role.managed ?? false,
-      fetchedAt: now
-    }));
-}
-
-async function readDiscordBotToken(storage: StorageService): Promise<string | undefined> {
-  const bots = await storage.readJson(
-    "user/discord-bots.json",
-    DiscordBotsFileSchema,
-    DiscordBotsFileSchema.parse(createEmptyRevisionedFile({ orchestrator: null, waifus: [] }))
-  );
-  return bots.orchestrator?.enabled === false
-    ? bots.waifus.find((bot) => bot.enabled && bot.token)?.token
-    : bots.orchestrator?.token ?? bots.waifus.find((bot) => bot.enabled && bot.token)?.token;
 }
 
 async function countConfiguredGuilds(storage: StorageService): Promise<number> {

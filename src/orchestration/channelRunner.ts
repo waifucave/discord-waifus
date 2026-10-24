@@ -5,7 +5,6 @@ import path from "node:path";
 
 import { randomUUID } from "node:crypto";
 import type { ResolvedModel, Usage } from "@waifucave/gateway";
-import { loadGuildDirectoryView } from "../discord/directoryView.js";
 import { PermissionWarningTracker, isPermissionError } from "./permissionWarnings.js";
 import {
   type DeterministicCastMember,
@@ -98,6 +97,7 @@ export type ActiveChannelRun = {
 type ChannelRunnerOptions = Pick<
   RuntimeCollaboratorOptions,
   | "storage"
+  | "directory"
   | "discord"
   | "logger"
   | "isPaused"
@@ -573,9 +573,7 @@ export class ChannelRunner {
       };
       // The orchestrator usually reconciles a new message first, freezing its ledger render for
       // every agent: it needs the same mention/role/channel/emoji names as the waifu path.
-      const directory = await loadGuildDirectoryView(this.options.storage, guildId, {
-        channelName: (id) => server.channels[id]?.name
-      });
+      const directory = await this.options.directory.view(guildId, (id) => server.channels[id]?.name);
       const prepared = await this.options.contexts.prepare({
         conversation,
         agent: ORCHESTRATOR_AGENT,
