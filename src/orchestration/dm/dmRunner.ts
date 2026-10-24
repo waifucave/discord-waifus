@@ -226,8 +226,15 @@ export class DmRunner {
   private async arm(conversation: DmRef): Promise<void> {
     const settings = this.d.settings();
     const key = conversationKey(conversation);
-    const fired = this.debouncer.schedule(key, { quietMs: settings.dmMs, maxWaitMs: settings.dmMaxWaitMs }, () => this.fire(conversation));
-    if (fired) await fired;
+    if (settings.dmMs <= 0) {
+      this.debouncer.cancel(key);
+      await this.fire(conversation);
+      return;
+    }
+    // Fired as tracked background work, so stop/updates wait for the run like any other.
+    this.debouncer.schedule(key, { quietMs: settings.dmMs, maxWaitMs: settings.dmMaxWaitMs }, () =>
+      this.d.runBackground("DM run failed", { waifuId: conversation.waifuId }, () => this.fire(conversation))
+    );
   }
 
   /** Step 2: the debounce fired. Resolves when this run (not a follow-up) is done. */

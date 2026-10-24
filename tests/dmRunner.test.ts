@@ -64,6 +64,7 @@ describe("DM runner", () => {
     const burst = [discord.dm("hey"), discord.dm("you there?"), discord.dm("got a question")];
     await Promise.all(burst.map((event) => runtime.handleDirectMessage(event)));
     await until(() => discord.sent.length === 1, "the reply");
+    await runtime.settleBackground();
     await new Promise((resolve) => setTimeout(resolve, 120));
     await runtime.settleBackground();
 
