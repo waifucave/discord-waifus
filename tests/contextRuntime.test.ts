@@ -109,12 +109,12 @@ function stripped(messages: ChatMessage[]): FlatBlock[] {
 }
 
 describe("ContextRuntime.prepare", () => {
-  it("fetches, reconciles, seals, freezes the epoch and persists pending notes in one write", async () => {
+  it("fetches, reconciles, seals and freezes the epoch in one write; committed notes render next pass", async () => {
     const h = await harness();
     h.channel.post({ content: "hi Aria" });
     h.channel.post({ authorId: "riko", authorName: "Riko", content: "hello" });
     const renderer = fakeRoleRenderer();
-    const p = await prepare(h, { render: renderer, pendingNotes: [{ kind: "direction", text: "be cheerful" }] });
+    const p = await prepare(h, { render: renderer });
 
     // The shared ledger is fetched with the conversation-level cap, not this agent's backfillCap.
     expect(h.channel.fetches).toEqual([{ afterMessageId: null, maxMessages: 200 }]);
@@ -122,19 +122,18 @@ describe("ContextRuntime.prepare", () => {
     expect(p.state.revision).toBeGreaterThan(0);
     expect(p.state.headerText).toContain("<place>");
     expect(p.state.timeZone).toBe("UTC");
-    expect(p.state.notes).toEqual([{ kind: "direction", text: "be cheerful", id: "n1", seq: 1, anchorSeq: 2 }]);
+    expect(p.state.notes).toEqual([]);
     expect(p.state.lastUsedAt).toBe(new Date(h.clock.now).toISOString());
     const ledger = await h.store.loadLedger(p.key);
     expect(orderedEntries(ledger).every((e) => e.sealed)).toBe(true);
-
-    // The direction is in the transcript of the very call it steers, as user content.
-    const texts = flatten(p.prompt.messages).map((b) => (b.block as { text?: string }).text);
-    expect(texts).toContain("<direction>be cheerful</direction>\n");
     expect(p.prompt.messages.filter((m) => m.role === "system")).toHaveLength(1);
     expect(p.prompt.messages[0]!.role).toBe("system");
-    expect(p.prompt.breakpoint).toEqual({ kind: "note", seq: 1 });
     expect(p.prompt.promptCacheKey).toBe("waifu:aria:g_100_200");
     expect([...p.prompt.refToMessageId.keys()]).toEqual(["a0", "a1"]);
+
+    // The turn's direction is committed with it (production: commitWaifuTurn) and renders as user
+    // content from the next pass on.
+    await h.runtime.commit(p, { modelKey: p.modelKey, notes: [{ kind: "direction", text: "be cheerful" }] });
 
     // Next pass downloads only what is new; the header stays frozen.
     h.channel.post({ content: "again" });
@@ -144,6 +143,9 @@ describe("ContextRuntime.prepare", () => {
     expect(h.channel.fetches[1]!.afterMessageId).toBe(p.transcript[1]!.id);
     expect(headerCalls).toHaveLength(0);
     expect(p2.state.headerText).toBe(p.state.headerText);
+    expect(p2.state.notes).toEqual([{ kind: "direction", text: "be cheerful", id: "n1", seq: 1, anchorSeq: 2 }]);
+    const texts = flatten(p2.prompt.messages).map((b) => (b.block as { text?: string }).text);
+    expect(texts).toContain("<direction>be cheerful</direction>\n");
   });
 
   it("selects the memory snapshot at epoch start only and appends memory notes mid-epoch", async () => {
@@ -240,14 +242,17 @@ describe("ContextRuntime.prepare hardening", () => {
     h.channel.fetchSince = async (i) => {
       if (!interleaved) {
         interleaved = true;
-        await h.runtime.commit(p1, { modelKey: p1.modelKey, notes: [{ kind: "tool", callId: "c1", name: "add_memory", arguments: "{}", result: "ok" }] });
+        await h.runtime.commit(p1, {
+          modelKey: p1.modelKey,
+          notes: [{ kind: "direction", text: "steer" }, { kind: "tool", callId: "c1", name: "add_memory", arguments: "{}", result: "ok" }]
+        });
       }
       return inner(i);
     };
-    const p2 = await prepare(h, { pendingNotes: [{ kind: "direction", text: "steer" }] });
+    const p2 = await prepare(h);
     const ids = p2.state.notes.map((n) => n.id);
     expect(new Set(ids).size).toBe(ids.length);
-    expect(p2.state.notes.map((n) => n.kind)).toEqual(["tool", "direction"]);
+    expect(p2.state.notes.map((n) => n.kind)).toEqual(["direction", "tool"]);
     const texts = flatten(p2.prompt.messages).map((b) => JSON.stringify(b.block));
     expect(texts.some((t) => t.includes("<direction>steer</direction>"))).toBe(true);
     expect(texts.some((t) => t.includes('"toolCall"'))).toBe(true);
@@ -278,7 +283,7 @@ describe("ContextRuntime.prepare hardening", () => {
     const h = await harness({
       messages: { fetchSince: async () => { throw new Error("Discord 503"); } }
     });
-    await expect(prepare(h, { pendingNotes: [{ kind: "direction", text: "d" }] })).rejects.toThrow(/503/);
+    await expect(prepare(h)).rejects.toThrow(/503/);
     expect((await h.store.load(conversationKey(GUILD), ARIA)).revision).toBe(0);
   });
 
@@ -300,8 +305,8 @@ describe("ContextRuntime.prepare hardening", () => {
   it("converts ledger edit events into edit notes once, from the note counter, and seals them", async () => {
     const h = await harness();
     const first = h.channel.post({ content: "teh cake" });
-    const p1 = await prepare(h, { pendingNotes: [{ kind: "direction", text: "d" }] });
-    await h.runtime.commit(p1, { modelKey: p1.modelKey });
+    const p1 = await prepare(h);
+    await h.runtime.commit(p1, { modelKey: p1.modelKey, notes: [{ kind: "direction", text: "d" }] });
     h.channel.post({ content: "lol" });
     await prepare(h, { agent: { kind: "orchestrator" } });
     const key = conversationKey(GUILD);
@@ -337,9 +342,7 @@ describe("prefix stability (spec 8.3 acceptance)", () => {
     let previous: PreparedContext | undefined;
     for (let turn = 0; turn < 20; turn += 1) {
       h.clock.now += 60_000;
-      const p = await prepare(h, {
-        pendingNotes: turn % 3 === 0 ? [{ kind: "direction", text: `turn ${turn} goal` }] : []
-      });
+      const p = await prepare(h);
       expect(p.prompt.messages.filter((m) => m.role === "system")).toHaveLength(1);
       expect(p.prompt.messages[0]!.role).toBe("system");
       const markers = flatten(p.prompt.messages).filter((b) => b.marked).length;
@@ -354,7 +357,10 @@ describe("prefix stability (spec 8.3 acceptance)", () => {
       }
       await h.runtime.commit(p, {
         modelKey: p.modelKey,
-        notes: turn % 4 === 1 ? [{ kind: "tool", callId: `c${turn}`, name: "add_memory", arguments: "{}", result: "saved" }] : []
+        notes: [
+          ...(turn % 3 === 0 ? [{ kind: "direction" as const, text: `turn ${turn} goal` }] : []),
+          ...(turn % 4 === 1 ? [{ kind: "tool" as const, callId: `c${turn}`, name: "add_memory", arguments: "{}", result: "saved" }] : [])
+        ]
       });
       // Her reply lands in Discord, then a human answers (plus an occasional image / gap).
       h.channel.post({ authorId: "aria-bot", authorName: "Aria", authorIsBot: true, content: `reply ${turn}` }, h.clock.now + 1_000);
@@ -387,7 +393,10 @@ describe("prefix stability (spec 8.3 acceptance)", () => {
     const h = await harness();
     h.channel.post({ content: "one", attachments: [{ id: "77", url: "https://cdn.discordapp.com/attachments/200/77/x.png", filename: "x.png", contentType: "image/png", size: 10 }] });
     h.channel.post({ authorId: "aria-bot", content: "two" });
-    const p = await prepare(h, { pendingNotes: [{ kind: "direction", text: "d" }] });
+    const p0 = await prepare(h);
+    await h.runtime.commit(p0, { modelKey: p0.modelKey, notes: [{ kind: "direction", text: "d" }] });
+    const p = await prepare(h);
+    expect(p.state.notes.map((n) => n.kind)).toEqual(["direction"]);
     const ledger = orderedEntries(await h.store.loadLedger(p.key));
     const refs = new Map(Object.entries((await h.store.loadRefs(p.key)).refs));
     const build = () =>
@@ -400,7 +409,6 @@ describe("prefix stability (spec 8.3 acceptance)", () => {
           systemText: "sys",
           headerText: p.state.headerText ?? "",
           transcript: ledger,
-          events: [],
           selfAuthorIds: SELF,
           refs,
           tail: "tail",
@@ -460,8 +468,15 @@ describe("prefix stability (spec 8.3 acceptance)", () => {
     const h = await harness();
     h.channel.post({ content: "morning! <t:1792850400:R>" }, BASE_TIME);
     h.channel.post({ authorId: "riko", authorName: "Riko", content: "look at this", attachments: [{ id: "91", url: "https://cdn.discordapp.com/attachments/200/91/cake.png", filename: "cake.png", contentType: "image/png", size: 10 }] }, BASE_TIME + 60_000);
-    const p1 = await prepare(h, { pendingNotes: [{ kind: "direction", text: "Compliment Riko's cake." }] });
-    await h.runtime.commit(p1, { modelKey: p1.modelKey, notes: [{ kind: "tool", callId: "call_1", name: "add_memory", arguments: '{"content":"Riko bakes"}', result: "saved" }] });
+    const p1 = await prepare(h);
+    // The turn's direction and tool call are committed together, as commitWaifuTurn does.
+    await h.runtime.commit(p1, {
+      modelKey: p1.modelKey,
+      notes: [
+        { kind: "direction", text: "Compliment Riko's cake." },
+        { kind: "tool", callId: "call_1", name: "add_memory", arguments: '{"content":"Riko bakes"}', result: "saved" }
+      ]
+    });
     h.channel.post({ authorId: "aria-bot", authorName: "Aria", authorIsBot: true, content: "that cake is gorgeous", referenceMessageId: p1.transcript[1]!.id }, BASE_TIME + 120_000);
     h.channel.post({ content: "agreed", referenceMessageId: p1.transcript[1]!.id }, BASE_TIME + 4 * 3_600_000);
     h.clock.now = BASE_TIME + 4 * 3_600_000 + 30_000;
@@ -502,12 +517,12 @@ describe("ContextRuntime compaction seam", () => {
     const h = await harness({ compaction: service });
     service.attach(h.store);
     for (let i = 0; i < 4; i += 1) h.channel.post({ content: `m${i}` });
-    const p = await prepare(h, { summarize: async () => "unused", pendingNotes: [{ kind: "direction", text: "go" }] });
+    const p = await prepare(h, { summarize: async () => "unused" });
     expect(compactCalls).toEqual(["messages"]);
     expect(p.state.epoch).toBe(1);
     expect(p.transcript.map((e) => e.body)).toEqual(["m3"]);
     expect(p.prompt.debug.header).toContain("summary of 3");
-    expect(p.state.notes.map((n) => n.kind)).toEqual(["direction"]);
+    expect(p.state.notes).toEqual([]);
   });
 
   it("on timeout sends a one-off hard-truncated prompt and keeps the cursor", async () => {

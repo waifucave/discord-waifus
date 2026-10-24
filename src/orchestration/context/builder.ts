@@ -13,7 +13,7 @@
 // with a user turn, otherwise a new user turn). Exactly one role:"system" message (spec 6.8).
 
 import type { CacheControl, ChatMessage, ResolvedModel, TextBlock, ToolDef } from "@waifucave/gateway";
-import type { ContextState, ConversationEvent, LedgerEntry } from "../../shared/schemas/context.js";
+import type { ContextState, LedgerEntry } from "../../shared/schemas/context.js";
 import type { ContextAgent, ConversationRef } from "./keys.js";
 import { conversationKey, promptCacheKey } from "./keys.js";
 import { estimateTokens } from "./tokens.js";
@@ -28,8 +28,6 @@ export type BuildInput = {
   systemText: string;
   headerText: string;
   transcript: LedgerEntry[];
-  /** Ledger events. Not rendered directly: ContextRuntime converts edit events into `edit` notes (one note counter orders everything). */
-  events: ConversationEvent[];
   selfAuthorIds: string[];
   refs: ReadonlyMap<string, string>;
   tail: string;

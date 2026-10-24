@@ -5,8 +5,8 @@
 // backfillCap) → reconcile ledger → assign refs → epoch start if headerText is null (freeze
 // timeZone, memory snapshot, header; reset image counters) → propose memory notes → BUILD →
 // compaction.check → (join inFlight ≤ waitTimeoutMs or compact; rebuild; on timeout a one-off hard
-// truncation) → in ONE write: seal rendered entries, persist pendingNotes + memory notes + image
-// modes, update lastUsedAt.
+// truncation) → in ONE write: seal rendered entries, persist edit + memory notes + image modes,
+// update lastUsedAt.
 // call:   context_overflow → forced compact + rebuild + retry once (a second overflow surfaces;
 //         a failed compaction surfaces the original overflow).
 // commit: stores the request's breakpoint C as lastBreakpoint, appends post-call notes, runs the
@@ -98,7 +98,6 @@ export type PrepareInput = {
   backfillCap: number;
   selfAuthorIds: string[];
   render: RoleRenderer;
-  pendingNotes?: NewContextNote[]; // e.g. this turn's direction
   signal?: AbortSignal;
   /** Additive (all optional): */
   params?: Record<string, unknown>; // token budget (maxOutputTokens)
@@ -288,7 +287,7 @@ export class ContextRuntime {
           }
         }
       }
-      const rebuilt = await this.prepareInternal({ ...i, pendingNotes: [] }, false, truncate);
+      const rebuilt = await this.prepareInternal(i, false, truncate);
       Object.assign(p, rebuilt);
       this.internals.set(p, this.internals.get(rebuilt)!);
       return fn(p.prompt);
@@ -362,7 +361,7 @@ export class ContextRuntime {
    */
   async compactNow(i: PrepareInput): Promise<CompactionOutcome> {
     if (!i.summarize) throw new Error("compactNow needs the agent's summarize function.");
-    const p = await this.prepareInternal({ ...i, pendingNotes: [] }, false);
+    const p = await this.prepareInternal(i, false);
     const settings = this.d.settings(i.server);
     const outcome = await this.d.compaction.compact({
       conversation: p.conversation,
@@ -502,8 +501,8 @@ export class ContextRuntime {
       const transcript = view.all.filter((entry) => working.cursorSeq === null || entry.seq > working.cursorSeq);
 
       // 6. notes: ledger edit events this context has not seen yet (one counter with every other
-      // note), this turn's pending notes, memory notes (mid-epoch only — the snapshot covers whoever
-      // is present at epoch start).
+      // note) and memory notes (mid-epoch only — the snapshot covers whoever is present at epoch
+      // start). A turn's direction and tool notes are appended by commit, after the call.
       const seenEvents = new Set(working.notes.flatMap((note) => (note.kind === "edit" ? [note.eventSeq] : [])));
       const cursor = working.cursorSeq ?? -1;
       const edits: NewContextNote[] = [];
@@ -518,8 +517,7 @@ export class ContextRuntime {
         });
       }
       const memoryNotes = epoch.started ? [] : await this.proposeMemoryNotes(working, transcript, i, startedAt);
-      const pending = i.pendingNotes ?? [];
-      const newNotes = materializeNotes(working, [...edits, ...pending, ...memoryNotes], view.anchorSeq);
+      const newNotes = materializeNotes(working, [...edits, ...memoryNotes], view.anchorSeq);
       const withNotes: ContextState = {
         ...working,
         notes: [...working.notes, ...newNotes],
@@ -541,7 +539,6 @@ export class ContextRuntime {
             systemText: i.render.system(),
             headerText: s.headerText ?? "",
             transcript: entries,
-            events: currentView.events,
             selfAuthorIds: i.selfAuthorIds,
             refs: currentView.refs,
             tail: i.render.tail(s, startedAt, { recentReactions: i.recentReactions, transcript: entries }),
@@ -651,15 +648,9 @@ export class ContextRuntime {
           // modes, note ids) may now collide — rebuild from the current state instead of merging.
           if (current.epoch === builtOn.epoch) return undefined;
           // A compaction finished meanwhile: the prompt is already built on the old epoch; keep the
-          // new epoch and only persist this turn's pending notes (re-numbered from its counter).
-          this.d.logger.warn("Context compacted during prepare; keeping only this turn's notes", { conversationKey: key });
-          const extra = materializeNotes(current, pending, view.anchorSeq);
-          return {
-            ...current,
-            notes: [...current.notes, ...extra],
-            noteSeq: current.noteSeq + extra.length,
-            lastUsedAt: final.lastUsedAt
-          };
+          // new epoch as it is (this build's notes belong to the old one) and only mark it used.
+          this.d.logger.warn("Context compacted during prepare; keeping the new epoch", { conversationKey: key });
+          return { ...current, lastUsedAt: final.lastUsedAt };
         }
       });
       if (!result.ok) {
