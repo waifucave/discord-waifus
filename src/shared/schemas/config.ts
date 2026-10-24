@@ -104,6 +104,38 @@ const DEFAULT_DELETED_MESSAGES = { redactRecent: 20 };
 const DiscordDeletedMessagesConfigSchema = z
   .object({ redactRecent: DELETED_MESSAGES_FIELDS.redactRecent.default(DEFAULT_DELETED_MESSAGES.redactRecent) })
   .default({ ...DEFAULT_DELETED_MESSAGES });
+// I2 debounce (spec 9.2/9.8): a burst of human messages costs one pass. `serverMs: 0` restores
+// the pre-debounce behaviour (every message starts a run at once).
+const DEBOUNCE_FIELDS = {
+  serverMs: z.number().int().min(0).max(30_000),
+  serverMaxWaitMs: z.number().int().min(0).max(120_000),
+  dmMs: z.number().int().min(0).max(30_000),
+  dmMaxWaitMs: z.number().int().min(0).max(120_000)
+};
+export const DEFAULT_DEBOUNCE = { serverMs: 1200, serverMaxWaitMs: 4000, dmMs: 1500, dmMaxWaitMs: 8000 };
+const DiscordDebounceConfigSchema = z
+  .object({
+    serverMs: DEBOUNCE_FIELDS.serverMs.default(DEFAULT_DEBOUNCE.serverMs),
+    serverMaxWaitMs: DEBOUNCE_FIELDS.serverMaxWaitMs.default(DEFAULT_DEBOUNCE.serverMaxWaitMs),
+    dmMs: DEBOUNCE_FIELDS.dmMs.default(DEFAULT_DEBOUNCE.dmMs),
+    dmMaxWaitMs: DEBOUNCE_FIELDS.dmMaxWaitMs.default(DEFAULT_DEBOUNCE.dmMaxWaitMs)
+  })
+  .default({ ...DEFAULT_DEBOUNCE });
+export type DebounceConfig = z.infer<typeof DiscordDebounceConfigSchema>;
+// DM runner (spec 9.1/9.8): concurrent DM generations across all waifus, and how old a missed
+// DM may be for boot/resume catch-up.
+const DM_RUNTIME_FIELDS = {
+  maxConcurrentRuns: z.number().int().min(1).max(32),
+  resumeWindowMinutes: z.number().int().min(0).max(1440)
+};
+export const DEFAULT_DM_RUNTIME = { maxConcurrentRuns: 4, resumeWindowMinutes: 60 };
+const DiscordDmConfigSchema = z
+  .object({
+    maxConcurrentRuns: DM_RUNTIME_FIELDS.maxConcurrentRuns.default(DEFAULT_DM_RUNTIME.maxConcurrentRuns),
+    resumeWindowMinutes: DM_RUNTIME_FIELDS.resumeWindowMinutes.default(DEFAULT_DM_RUNTIME.resumeWindowMinutes)
+  })
+  .default({ ...DEFAULT_DM_RUNTIME });
+export type DmRuntimeConfig = z.infer<typeof DiscordDmConfigSchema>;
 // Guild directory (spec 9.4/9.8): the privileged GuildMembers intent is opt-in (O7) and re-logs
 // the orchestrator when changed; the full member list is re-fetched every N hours (0 = never).
 const DEFAULT_GUILD_MEMBERS_INTENT = false;
@@ -113,13 +145,17 @@ export const DiscordConfigSchema = z
     images: DiscordImagesConfigSchema,
     guildMembersIntent: z.boolean().default(DEFAULT_GUILD_MEMBERS_INTENT),
     memberListRefreshHours: z.number().int().min(0).max(168).default(DEFAULT_MEMBER_LIST_REFRESH_HOURS),
-    deletedMessages: DiscordDeletedMessagesConfigSchema
+    deletedMessages: DiscordDeletedMessagesConfigSchema,
+    debounce: DiscordDebounceConfigSchema,
+    dm: DiscordDmConfigSchema
   })
   .default({
     images: { ...DEFAULT_DISCORD_IMAGES },
     guildMembersIntent: DEFAULT_GUILD_MEMBERS_INTENT,
     memberListRefreshHours: DEFAULT_MEMBER_LIST_REFRESH_HOURS,
-    deletedMessages: { ...DEFAULT_DELETED_MESSAGES }
+    deletedMessages: { ...DEFAULT_DELETED_MESSAGES },
+    debounce: { ...DEFAULT_DEBOUNCE },
+    dm: { ...DEFAULT_DM_RUNTIME }
   });
 export type DiscordConfig = z.infer<typeof DiscordConfigSchema>;
 
@@ -197,6 +233,16 @@ export const UpdateAppConfigBodySchema = z.object({
     memberListRefreshHours: z.number().int().min(0).max(168).optional(),
     deletedMessages: z.object({
       redactRecent: DELETED_MESSAGES_FIELDS.redactRecent.optional()
+    }).strict().optional(),
+    debounce: z.object({
+      serverMs: DEBOUNCE_FIELDS.serverMs.optional(),
+      serverMaxWaitMs: DEBOUNCE_FIELDS.serverMaxWaitMs.optional(),
+      dmMs: DEBOUNCE_FIELDS.dmMs.optional(),
+      dmMaxWaitMs: DEBOUNCE_FIELDS.dmMaxWaitMs.optional()
+    }).strict().optional(),
+    dm: z.object({
+      maxConcurrentRuns: DM_RUNTIME_FIELDS.maxConcurrentRuns.optional(),
+      resumeWindowMinutes: DM_RUNTIME_FIELDS.resumeWindowMinutes.optional()
     }).strict().optional()
   }).strict().optional()
 }).strict();

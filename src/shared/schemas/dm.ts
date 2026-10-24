@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { IsoDateStringSchema, RevisionedRecordSchema } from "./common.js";
 
-// DM schemas (spec 9.1). T1 only wires `WaifuConfig.dm`; nothing reads it until Phase 5.
+// DM schemas (spec 9.1): per-waifu settings, the per-conversation DM state and the rate-limit counters.
 
 export const DmRateLimitSchema = z.object({
   maxReplies: z.number().int().min(1).max(1000),
@@ -52,6 +52,8 @@ export const DmStateSchema = RevisionedRecordSchema.extend({
   userId: z.string().min(1),
   botId: z.string().min(1),
   dmChannelId: z.string().optional(),
+  /** The user's Discord display name as last seen on an inbound DM (dashboard listing only). */
+  userDisplayName: z.string().max(100).optional(),
   lastInboundMessageId: z.string().optional(),
   lastInboundAt: IsoDateStringSchema.optional(),
   lastRepliedMessageId: z.string().optional(),

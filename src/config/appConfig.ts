@@ -58,7 +58,9 @@ export function mergeAppConfigPatch(
       ...current.discord,
       ...patch.discord,
       images: { ...current.discord.images, ...patch.discord?.images },
-      deletedMessages: { ...current.discord.deletedMessages, ...patch.discord?.deletedMessages }
+      deletedMessages: { ...current.discord.deletedMessages, ...patch.discord?.deletedMessages },
+      debounce: { ...current.discord.debounce, ...patch.discord?.debounce },
+      dm: { ...current.discord.dm, ...patch.discord?.dm }
     },
     updates: { ...current.updates, ...patch.updates }
   });

@@ -206,7 +206,7 @@ export const WaifuConfigSchema = RevisionedRecordSchema.extend({
   verbosity: z.enum(WAIFU_VERBOSITIES).default("terse"),
   customInstructions: z.string().max(4000).default(""),
   scheduleInPrompt: z.boolean().default(true),
-  // Phase 5 DM settings (spec 9.1); nothing reads this until the DM runner lands.
+  // Phase 5 DM settings (spec 9.1): read by the DM runner (src/orchestration/dm/).
   dm: WaifuDmSettingsSchema.default(() => defaultWaifuDmSettings()),
   personaDigest: z
     .object({
