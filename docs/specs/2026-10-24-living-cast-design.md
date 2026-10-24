@@ -506,7 +506,11 @@ list_notes() · read_note({ path }) · write_note({ path, content }) · edit_not
 ```
 
 - Paths: exactly `MEMORY.md` at the root, or 1–3 segments of `[a-z0-9_-]+` ending in `.md`
-  (e.g. `people/kevin.md`). No leading `/`, no empty segments, no `..`.
+  (e.g. `people/kevin.md`). No leading `/`, no empty segments, no `..`. `memory.md` (any spelling
+  other than `MEMORY.md`, which a case-insensitive disk treats as the index) and Windows device
+  names (`con`, `prn`, `aux`, `nul`, `com1`–`com9`, `lpt1`–`lpt9`) are refused. A note, a folder on
+  its path or the notes folder that is a symbolic link is refused for reads, writes and deletes,
+  and never listed.
 - Limits: 16 KB per file, 200 files, 1 MB total. The system-prompt copy of `MEMORY.md` is cut at
   200 lines / 8 KB with a note asking her to tidy it.
 - `edit_note` replaces exactly one occurrence. Writes take effect on disk at once; the system-prompt

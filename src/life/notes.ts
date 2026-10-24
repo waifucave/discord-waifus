@@ -5,7 +5,7 @@
 // Every write is atomic (temp + rename) under the `notes:<id>` lock and takes effect on disk at
 // once; the system prompt's copy of MEMORY.md only refreshes at the next epoch.
 
-import { mkdir, readdir, readFile, rm, rmdir, stat } from "node:fs/promises";
+import { lstat, mkdir, readdir, readFile, rm, rmdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { atomicWriteText } from "../storage/atomic.js";
 import type { StorageService } from "../storage/storageService.js";
@@ -21,11 +21,15 @@ export const MEMORY_PROMPT_MAX_BYTES = 8 * 1024;
 export const MEMORY_PROMPT_CUT_NOTE = "(…your index is longer than this; tidy MEMORY.md so it stays short, with links to the details.)";
 
 const SEGMENT = /^[a-z0-9_-]+$/;
+/** Names Windows reserves for devices (`con.md` would open the console, not a file). */
+const WINDOWS_DEVICE = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/;
 
 /** A validated note path (`MEMORY.md`, `me.md`, `people/kevin.md`), or an error message. */
 export function validateNotePath(input: unknown): { ok: true; path: string } | { ok: false; error: string } {
   if (typeof input !== "string" || input.length === 0) return { ok: false, error: "path is required" };
   if (input === MEMORY_INDEX) return { ok: true, path: input };
+  // On a case-insensitive disk `memory.md` is the index itself.
+  if (input.toLowerCase() === MEMORY_INDEX.toLowerCase()) return { ok: false, error: "the index is MEMORY.md (upper case)" };
   if (input.startsWith("/")) return { ok: false, error: "paths are relative, like people/kevin.md" };
   if (input.length > 120) return { ok: false, error: "path too long" };
   const segments = input.split("/");
@@ -38,6 +42,7 @@ export function validateNotePath(input: unknown): { ok: true; path: string } | {
   if (!names.every((segment) => SEGMENT.test(segment))) {
     return { ok: false, error: "use lower-case letters, digits, - and _ in note paths (and MEMORY.md for the index)" };
   }
+  if (names.some((segment) => WINDOWS_DEVICE.test(segment))) return { ok: false, error: "that name is reserved on Windows; pick another" };
   return { ok: true, path: input };
 }
 
@@ -66,6 +71,25 @@ export class Notes {
     const checked = validateNotePath(notePath);
     if (!checked.ok) throw new NotesError(checked.error);
     return path.join(this.dir(), ...checked.path.split("/"));
+  }
+
+  /**
+   * The note's file, refusing links: the notes folder, every folder on the way and the file itself
+   * must not be symbolic links, so a planted link can never read or write outside her notes.
+   */
+  private async realFile(notePath: string): Promise<string> {
+    const file = this.file(notePath);
+    let current = this.dir();
+    for (const segment of ["", ...path.relative(current, file).split(path.sep)]) {
+      if (segment) current = path.join(current, segment);
+      const info = await lstat(current).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return undefined;
+        throw error;
+      });
+      if (!info) break;
+      if (info.isSymbolicLink()) throw new NotesError(`${notePath} can't be used: it is a link`);
+    }
+    return file;
   }
 
   /** True once the notes directory exists (the memories→notes migration skips such waifus). */
@@ -102,8 +126,9 @@ export class Notes {
 
   /** The note's text, or undefined when it does not exist. */
   async read(notePath: string): Promise<string | undefined> {
+    const file = await this.realFile(notePath);
     try {
-      return await readFile(this.file(notePath), "utf8");
+      return await readFile(file, "utf8");
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
       throw error;
@@ -112,16 +137,19 @@ export class Notes {
 
   /** Writes a note whole, enforcing the limits. Returns "created" or "updated". */
   async write(notePath: string, content: string): Promise<"created" | "updated"> {
-    const file = this.file(notePath);
+    this.file(notePath);
     const size = bytesOf(content);
     if (size > MAX_NOTE_BYTES) throw new NotesError(`a note can be at most ${MAX_NOTE_BYTES / 1024} KB; split it into several notes`);
     return this.storage.withLocks([lifeLocks.notes(this.waifuId)], async () => {
+      const file = await this.realFile(notePath);
       const notes = await this.list();
       const existing = notes.find((note) => note.path === notePath);
       if (!existing && notes.length >= MAX_NOTE_FILES) throw new NotesError(`you have ${MAX_NOTE_FILES} notes already; merge or delete some first`);
       const total = notes.reduce((sum, note) => sum + note.bytes, 0) - (existing?.bytes ?? 0) + size;
       if (total > MAX_NOTES_TOTAL_BYTES) throw new NotesError("your notes are full (1 MB); tidy or delete some first");
       await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+      // Folders made just now are checked again, so a link raced in on the way is still refused.
+      await this.realFile(notePath);
       await atomicWriteText(file, content);
       return existing ? "updated" : "created";
     });
@@ -143,8 +171,9 @@ export class Notes {
   }
 
   async delete(notePath: string): Promise<boolean> {
-    const file = this.file(notePath);
+    this.file(notePath);
     return this.storage.withLocks([lifeLocks.notes(this.waifuId)], async () => {
+      const file = await this.realFile(notePath);
       const existed = await stat(file).then(() => true, () => false);
       await rm(file, { force: true });
       // Leave no empty folders behind (they would still count as nothing, but read badly).
