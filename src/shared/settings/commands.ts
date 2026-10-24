@@ -25,8 +25,8 @@ export const COMMANDS: readonly CommandSpec[] = Object.freeze([
   },
   {
     name: "get",
-    summary: "Read settings: a whole target or one key.",
-    usage: ["waifus get TARGET [KEY]", "waifus get app.life.maxSendsPerTurn"],
+    summary: "Read settings: a whole target, a part of one (app.search) or one key.",
+    usage: ["waifus get TARGET [KEY]", "waifus get app.life.maxSendsPerTurn", "waifus get app.search"],
     description: "TARGET is app, assistant, remote-access, waifu:<id>, server:<guildId>, channel:<guildId>/<channelId>, bot:<house|id> or provider:<id>. Secrets are never shown, only whether they are set. `app` works with the host stopped (it reads config.toml); the rest need the running host."
   },
   {

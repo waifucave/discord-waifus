@@ -132,6 +132,9 @@ describe("waifus set/get round-trip over the real API", () => {
     expect((await cli(root, host, ["get", "app.life.maxSendsPerTurn"])).out).toBe("7");
     const all = await cli(root, host, ["get", "app"]);
     expect(all.out).toContain("life.maxSendsPerTurn = 7");
+    const part = await cli(root, host, ["get", "app.search"]);
+    expect(part.out).toContain("search.maxPerDay = ");
+    expect(part.out).not.toContain("life.");
   });
 
   it("refuses bad input with exit 2 and a hint, and rejected writes with exit 4", async () => {

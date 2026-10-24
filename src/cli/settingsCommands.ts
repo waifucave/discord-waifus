@@ -368,9 +368,12 @@ export async function listCommand(ctx: CliContext, groupId: string | undefined):
 export async function getCommand(ctx: CliContext, args: readonly string[]): Promise<ExitCode> {
   const { target, keys } = splitTargetAndKey(args);
   if (keys.length > 1) throw usageError("get reads one key at a time (or the whole target).");
-  const infos = keys.length === 1 ? [keyOf(target, keys[0]!)] : groupKeyInfos(target.group);
+  // A part of a group (`app.search`, `waifu:aria dm`) reads every key under it.
+  const part = keys.length === 1 ? groupKeyInfos(target.group).filter((info) => info.path.startsWith(`${keys[0]}.`)) : [];
+  const single = keys.length === 1 && part.length === 0;
+  const infos = single ? [keyOf(target, keys[0]!)] : part.length > 0 ? part : groupKeyInfos(target.group);
   const { view, revision } = await ADAPTERS[target.group.id].read(ctx, target);
-  if (keys.length === 1) {
+  if (single) {
     const value = getPath(view, infos[0]!.path);
     if (ctx.json) ctx.out(JSON.stringify({ target: target.label, key: infos[0]!.path, value: value ?? null, ...(revision !== undefined ? { revision } : {}) }, null, 2));
     else ctx.out(display(value));
