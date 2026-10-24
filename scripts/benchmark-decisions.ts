@@ -15,6 +15,10 @@ import { CASES, RUBRICS } from "./decision-benchmark/cases.js";
 import { replayCases } from "./decision-benchmark/replay.js";
 import { LOOP_CASES, LOOP_RUBRICS, lexicalLoopBaseline, loopReplayCases, summarizeLoops } from "./decision-benchmark/loops.js";
 import { QUESTION_NAMES, isPredicateOnlyTarget, parseAnswers, requestBody, selectBenchmarkTargets, summarize, type Result } from "./decision-benchmark/core.js";
+import { ADDRESSEE_CASES, addresseeQuestion, expectedChoices, summarizeAddressee, type AddresseeResult } from "./decision-benchmark/addressee.js";
+import { AddresseeDetector } from "../src/life/detector/decider.js";
+import { decisionRequest } from "../src/life/detector/protocol.js";
+import type { UsageLedger, UsageLedgerLine } from "../src/orchestration/usageLedger.js";
 
 type CatalogModel = { id: string; context_length: number; pricing: { prompt: string; completion: string }; architecture: { input_modalities: string[]; output_modalities: string[] } };
 const args = process.argv.slice(2);
@@ -108,7 +112,8 @@ async function main(): Promise<void> {
   const dataset = value("dataset", "");
   const labelPath = value("labels", "");
   const suite = value("suite", "orchestration");
-  if (!["orchestration", "loops"].includes(suite)) throw new Error("invalid_suite");
+  if (!["orchestration", "loops", "addressee"].includes(suite)) throw new Error("invalid_suite");
+  if (suite === "addressee") { await addresseeSuite(); return; }
   const loopSuite = suite === "loops";
   const allCases = dataset ? (loopSuite ? loopReplayCases : replayCases)(JSON.parse(await readFile(dataset, "utf8")), JSON.parse(await readFile(labelPath, "utf8")).labels)
     : loopSuite ? LOOP_CASES : CASES;
@@ -269,6 +274,109 @@ async function main(): Promise<void> {
   await write();
   console.log(`Benchmark report: ${reportPath}`);
   console.log(JSON.stringify(Object.fromEntries(Object.entries(report.targets).map(([id, t]) => [id, { ...t.summary, ...(t.skipped ? { skipped: t.skipped } : {}), ...(t.error ? { error: t.error } : {}) }])), null, 2));
+}
+
+// --suite=addressee (Living cast spec §4.3): the production question through the production
+// AddresseeDetector, so request, transport, validation and Laya worker are what a life sees. Chat
+// targets are not detector targets and are skipped. No private replay dataset for this suite.
+async function addresseeSuite(): Promise<void> {
+  if (value("dataset", "")) throw new Error("addressee_dataset_unsupported");
+  const runs = Number(value("runs", "1"));
+  const limit = Number(value("limit", String(ADDRESSEE_CASES.length)));
+  if (!Number.isInteger(runs) || runs < 1 || runs > 10 || !Number.isInteger(limit) || limit < 1 || limit > ADDRESSEE_CASES.length) throw new Error("invalid_run_limits");
+  const cases = ADDRESSEE_CASES.slice(0, limit);
+  const concurrency = Number(value("concurrency", "3"));
+  if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 4) throw new Error("invalid_concurrency");
+  const requested = value("targets", "openai:gpt-6-luna,openrouter:cloudflare/clef,laya:english,laya:multilingual,laya:typed-decisions").split(",");
+  const includeAllOpenRouter = !args.some((a) => a.startsWith("--targets=")) || flags.has("--all-openrouter");
+  let catalog: CatalogModel[] = [];
+  if (requested.some((t) => t.startsWith("openrouter:")) || includeAllOpenRouter) {
+    const response = await fetch("https://openrouter.ai/api/v1/models?output_modalities=decisions", { signal: AbortSignal.timeout(20000) });
+    if (!response.ok) throw new Error(`catalog_http_${response.status}`);
+    catalog = (await response.json() as { data: CatalogModel[] }).data.filter((m) => m.architecture.output_modalities.includes("decisions"));
+  }
+  const targets = selectBenchmarkTargets(requested, catalog, includeAllOpenRouter);
+  const excluded = [...new Set([...requested, ...catalog.map((m) => `openrouter:${m.id}`)])].filter(isPredicateOnlyTarget);
+  if (!flags.has("--live")) {
+    const question = addresseeQuestion("openrouter:MODEL", cases[0]!);
+    console.log(JSON.stringify({ live: false, suite: "addressee", cases: cases.length, runs, targets, excludedPredicateOnly: excluded,
+      keyPresence: { openai: !!credentials("openai"), openrouter: !!credentials("openrouter") }, layaPython: !!process.env.DC_WAIFUS_LAYA_PYTHON,
+      example: decisionRequest("MODEL", question.state, question.questions, false) }, null, 2));
+    return;
+  }
+  const report = {
+    generatedAt: new Date().toISOString(), protocol: "addressee-detector-v1", dataset: "synthetic-addressee-v1",
+    datasetSha256: createHash("sha256").update(JSON.stringify(cases)).digest("hex"), cases, runs,
+    hardware: { platform: process.platform, arch: process.arch, cpus: os.cpus()[0]?.model, ramBytes: os.totalmem() }, catalog, targets: {} as Record<string, any>
+  };
+  for (const target of excluded) report.targets[target] = { skipped: "predicate_only_excluded" };
+  const reportPath = path.resolve(value("report", `tests/eval/reports/addressee-${Date.now()}.json`));
+  let writeQueue = Promise.resolve();
+  const write = () => { writeQueue = writeQueue.then(() => atomicWriteJson(reportPath, report)); return writeQueue; };
+  const runTarget = async (target: string) => {
+    const kind = target.slice(0, target.indexOf(":"));
+    if (kind === "chat") { report.targets[target] = { skipped: "not_a_detector_target" }; await write(); return; }
+    if (kind === "laya" && !process.env.DC_WAIFUS_LAYA_PYTHON) { report.targets[target] = { skipped: "laya_python_not_configured" }; await write(); return; }
+    if (kind !== "laya" && !credentials(kind)) { report.targets[target] = { skipped: "credential_missing" }; console.log(`${target}: credential missing; skipped`); await write(); return; }
+    // Each call's usage line (tokens, reported cost) is read back from this per-target ledger.
+    let line: UsageLedgerLine | undefined;
+    const ledger: UsageLedger = { record: async (entry) => { line = entry; }, flush: async () => undefined };
+    const detector = new AddresseeDetector({ credentials, usage: ledger });
+    const results: AddresseeResult[] = [];
+    report.targets[target] = { results };
+    const decide = (question: ReturnType<typeof addresseeQuestion>) => detector.decide({ target, question, signal: AbortSignal.timeout(120_000), attribution: {} });
+    try {
+      if (kind === "laya") {
+        console.log(`${target}: loading the local model (unscored warm-up)…`);
+        // The first load can outlast the worker's ready timeout while weights download; one retry.
+        await decide(addresseeQuestion(target, cases[0]!)).catch(() => decide(addresseeQuestion(target, cases[0]!))).catch(() => undefined);
+      }
+      for (let run = 0; run < runs; run++) {
+        // Rotate order between runs; repeated samples are not independent test cases.
+        const ordered = [...cases.slice(run % cases.length), ...cases.slice(0, run % cases.length)];
+        let stop = false;
+        for (const sample of ordered) {
+          const question = addresseeQuestion(target, sample);
+          const result: AddresseeResult = { caseId: sample.id, group: sample.group, run, latencyMs: 0, expected: expectedChoices(question, sample) };
+          line = undefined;
+          const before = performance.now();
+          try {
+            const answer = await decide(question);
+            result.choice = answer.choice;
+            result.probabilities = answer.probabilities;
+          } catch (error) {
+            // Only the detector's closed error codes; never provider bodies, prompts or keys.
+            const message = error instanceof Error ? error.message : "";
+            result.error = /^detector_[a-z0-9_]+$/.test(message) ? message : "detector_failed";
+            if (/^detector_(?:credential_missing|model_unavailable|http_(?:401|402|403|404))$/.test(result.error)) stop = true;
+          }
+          result.latencyMs = Math.round((performance.now() - before) * 100) / 100;
+          const usage = line as UsageLedgerLine | undefined;
+          if (usage) {
+            result.inputTokens = usage.inputTokens;
+            result.outputTokens = usage.outputTokens;
+            if (usage.costUsd !== undefined) result.costUsd = usage.costUsd;
+          }
+          results.push(result);
+          report.targets[target].summary = summarizeAddressee(results);
+          await write();
+          console.log(`${target} ${sample.id} ${result.error ?? result.choice} (${Math.round(result.latencyMs)}ms)`);
+          if (stop) break;
+        }
+        if (stop) break;
+      }
+    } catch { report.targets[target].error = "target_initialization_failed"; }
+    finally { detector.close(); }
+    report.targets[target].summary = summarizeAddressee(results);
+    await write();
+  };
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(concurrency, targets.length) }, async () => {
+    while (next < targets.length) await runTarget(targets[next++]);
+  }));
+  await write();
+  console.log(`Benchmark report: ${reportPath}`);
+  console.log(JSON.stringify(Object.fromEntries(Object.entries(report.targets).map(([id, t]) => [id, { ...(t.summary ? { ...t.summary, misses: undefined } : {}), ...(t.skipped ? { skipped: t.skipped } : {}), ...(t.error ? { error: t.error } : {}) }])), null, 2));
 }
 
 main().catch(() => { console.error("Benchmark could not start. Check flags, local runtime/key availability, or Python dependencies. No secret or raw provider error was printed."); process.exitCode = 1; });

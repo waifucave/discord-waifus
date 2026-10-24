@@ -1,10 +1,38 @@
-# Orchestrator decision API benchmark
+# Decision API benchmark
 
-Status: benchmark tooling and measurements plus an experimental per-server **One shot** mode
-in the current source. The original measurements below predate that integration. Existing LLM
-configs and the current model gateway remain unchanged; One shot is opt-in through Rooms.
-See the README for setup and bounded-planner limitations. Source support is not publication
-or proof of successful live-room routing/loop breaking.
+Status (Living cast, 2026-10-24): the director and its One shot mode are gone. The decision APIs
+now serve one production question, the **addressee detector** (spec
+`docs/specs/2026-10-24-living-cast-design.md` §4.3): who is the newest human message for? The
+`--suite=addressee` run below measures it. Everything after that section is the earlier
+director-era record, kept for its measurements; its "One shot", "orchestrator" and directive
+wording describes code that no longer exists.
+
+## Addressee detector suite (Living cast)
+
+`scripts/decision-benchmark/addressee.ts` holds 30 hand-labelled synthetic cases over a
+three-member cast, in the spec's groups: addressed by name (including a nickname and a name
+shouted on its own line), reply to a waifu (a human answering her last line without naming her),
+human to human (including an instruction-injection line), open question, link dump (links,
+a bot command, emoji only), multilingual (Portuguese, Japanese, Spanish, French, German) and
+ambiguous (several answers accepted). Each request is built by the production
+`detectorQuestion` and answered by the production `AddresseeDetector`, so the state, the
+`waifu_<i>`/`human`/`anyone`/`none` choices, the transport, the answer validation and the Laya
+worker are exactly what a life's intake uses. Expected answers, case ids and groups never enter a
+request (`tests/decisionAddressee.test.ts`).
+
+```sh
+npm run benchmark:decisions -- --suite=addressee                       # preview, no inference
+npm run benchmark:decisions -- --live --suite=addressee --targets=openrouter:cloudflare/clef,openai:gpt-6-luna
+npm run benchmark:decisions -- --live --suite=addressee --runs=3 --all-openrouter
+```
+
+Reported per target: exact-choice accuracy (failed calls count as wrong), accuracy of answered
+calls, multi-class Brier score and ECE over the single-answer cases, p50/p95 latency, cost from
+the usage the API reports, accuracy per group, the error codes and the missed cases. `chat:`
+targets are not detector targets and are skipped; `laya:` targets need host-local
+`DC_WAIFUS_LAYA_PYTHON` (as in production) and get one unscored warm-up. No private replay
+dataset exists for this suite yet. No live run has been recorded for it; synthetic results would
+not be a guarantee of real-room routing either.
 
 ### One shot integration verification (2026-10-13)
 
