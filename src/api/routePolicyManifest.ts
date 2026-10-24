@@ -127,6 +127,8 @@ export const ROUTE_POLICY_MANIFEST: readonly RoutePolicyDefinition[] = Object.fr
   safe("/api/logs"),
   safe("/api/docs"),
   safe("/api/docs/:slug"),
+  safe("/api/help"),
+  safe("/api/help/:topic"),
   safe("/api/assistant/config"),
   mutation("PUT", "/api/assistant/config", "transactional", "assistant.config.update"),
   mutation(

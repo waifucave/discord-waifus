@@ -121,7 +121,7 @@ export const WaifuAvailabilitySchema = z
   });
 export type WaifuAvailability = z.infer<typeof WaifuAvailabilitySchema>;
 
-const ProviderCredentialsSchema = z.object({
+export const ProviderCredentialsSchema = z.object({
   providerId: ProviderIdSchema,
   apiKey: z.string().min(1),
   label: z.string().optional(),

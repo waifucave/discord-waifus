@@ -68,6 +68,7 @@ import { registerAssistantRoutes } from "./assistant/routes.js";
 import { registerDmRoutes } from "./dms.js";
 import { registerLifeRoutes } from "./lifeRoutes.js";
 import { registerCastRoutes } from "./castRoutes.js";
+import { registerHelpRoutes } from "./help.js";
 import { computeDmEligibility } from "../orchestration/dm/dmStore.js";
 import { assertSafeId, assertSnowflakeId } from "./ids.js";
 import {
@@ -873,6 +874,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   // Living cast §14.1: lives, usage, search, the detector, forget jobs and owner notices.
   registerLifeRoutes(app, { storage, cast: () => currentCast()?.cast, isPaused: () => options.runtime.paused });
   registerCastRoutes(app, { storage, dataRoot: options.dataRoot, isPaused: () => options.runtime.paused, liveNotices, applyConfigPatch });
+  registerHelpRoutes(app);
 
   app.get("/api/servers/:guildId/threads", async (request) => {
     const { guildId } = parseIdParam(request.params, "guildId");
