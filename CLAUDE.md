@@ -47,12 +47,15 @@ Discord runtime and supervises its own remote-role helper child.
 
 **Context engine** (`src/orchestration/context/`, spec 8.3): every waifu reply and orchestrator
 decision is built by `ContextRuntime` (`runtime.ts`; production wiring in `appRuntime.ts`) as
-`prepare` -> `call` -> `commit` (+ `compactNow`). Per (conversation, agent) it keeps a durable
-`ledger` of Discord messages with stable `#ref`s (`contextStore.ts`, `ledger.ts`, `refs.ts`) and a
-`ContextState`. The prompt is **epoch-based, append-only and ends with an ephemeral tail**:
-system (A) + a frozen epoch header (B: memory snapshot, roster, summary) + the transcript since the
-epoch's `cursorSeq` + a per-call tail (clock, direction, retry/wake text) that is never persisted
-and never marked. Nothing already rendered may move within an epoch: edits, deletes, tool calls and
+`prepare` -> `call` -> `commit` (+ `compactNow`). Per conversation it keeps one durable `ledger`
+of Discord messages and one set of stable `#ref`s shared by every agent (`contextStore.ts`,
+`ledger.ts`, `refs.ts`); per (conversation, agent) it keeps a `ContextState` (epoch, cursor,
+notes, frozen header). Ledger pruning stays below every context used in the last 7 days and the
+stage-manager observer's read-through cursor (capped); refs are dropped only with the entries
+the ledger removes. The prompt is **epoch-based, append-only and ends with an ephemeral tail**:
+system (A: rules, identity and the cast) + a frozen epoch header (B: summary, memory snapshot,
+place) + the transcript since the epoch's `cursorSeq` + a per-call tail (clock, who is around
+now, direction, retry/wake text) that is never persisted and never marked. Nothing already rendered may move within an epoch: edits, deletes, tool calls and
 decisions are appended as notes (`memory`, `direction`, `tool`, `decision`, `edit`), images and
 OCR text freeze at first render, and a new epoch starts only on compaction. Cache breakpoints sit
 on A, B, the previous C (`lastBreakpoint`) and C (the last transcript text block): at most 4.
@@ -61,14 +64,18 @@ on A, B, the previous C (`lastBreakpoint`) and C (the last transcript text block
 `role:"system"` message, always `messages[0]`**: every harness, the reviewer, observer, dream,
 digest and assistant paths obey it, the gateway demotes any late system message, and
 `tests/singleSystemMessage.test.ts` fails on a second one. Agents without a summarizer
-(deterministic/one-shot) truncate durably (new epoch, no summary). Compaction
+(deterministic/one-shot), and every agent when `compaction.enabled` is false, truncate durably
+(new epoch, no summary) at the same limits, so no prompt grows without bound. Inline images are
+capped at 3,932,160 raw bytes (`MAX_INLINE_IMAGE_BYTES`, Anthropic's 5 MB base64 limit); a larger
+one freezes to text. Compaction
 (`compaction.ts`) is per context and uses that agent's own model: it sends the prompt through C
 with the same tools/tool choice/params as the reply call and only the tail replaced, so it reuses
 the cached prefix (defaults: 150 messages or 70% of the model budget, keep 30). Per-call usage is
 appended to the usage ledger (`usageLedger.ts`), one line per model call including aborted and
-failed ones. `tests/eval/cacheHit.test.ts` simulates Anthropic's cache over the real wire body at
-default settings (targets and the known busy-room orchestrator gap are documented there and in
-spec 8.11); `tests/golden/` pins the rendered prompts and must be reviewed by the owner when it
+failed ones (one-shot decisions use purpose `one_shot`). `tests/eval/cacheHit.test.ts` simulates
+Anthropic's cache over the real wire body at default settings (targets: 0.8 cache-read ratio for
+quiet rooms, DMs and deletions, 0.75 for busy rooms for both roles, see spec 8.11.1);
+`tests/golden/` pins the rendered prompts and must be reviewed by the owner when it
 changes.
 
 **Migrations** (`src/backend/migrations.ts`, `src/backend/migrationSteps/`): steps are `once`
@@ -78,7 +85,9 @@ never recorded). Every step is idempotent: re-running all of them (lost ledger, 
 leaves the data root byte-identical (`tests/phase4Acceptance.test.ts`). Phase 4 added the
 gateway-0.4.0 param cleanup, prompt-layout removal, explicit server context windows, global
 memory origin/subjects with a one-time cross-guild dedupe (its own marker file survives ledger
-loss), global pending observations and dream cursor, and the URL-keyed OCR cache cleanup. Never
+loss), global pending observations and dream cursor, the URL-keyed OCR cache cleanup and the
+`ocr.cacheTtlHours` 24 -> 168 default move. Phase 4 must ship as a minor release (2.112.0): its
+memory migrations cannot be read by 2.111.x, and downgrade is unsupported. Never
 change a shipped step's id or meaning: add a new step with a new id, keep the removed steps' ids
 in the history comment, and register it before the schema-version stamp, which stays last.
 `promptLayout` may appear under `src/` only in the layout-removal migration and the one-release
@@ -88,7 +97,7 @@ PUT shim in `src/api/server.ts`.
 
 **Model pipeline** (`src/orchestration/pipeline/`): every model call goes through `gatewayPipeline.ts`, which builds and sends requests via `@waifucave/gateway` (see below). `resolveTarget.ts` resolves `(providerId?, modelId)` pairs, `params.ts` leniently conforms stored params to the target model, `timeline.ts` holds the decision-note serializers. Context-engine prompts are sent verbatim; the pipeline only demotes stray system messages and writes the usage-ledger line. `src/providers/` holds only shared request/role types (`types.ts`) — the old in-app catalog/pipelines are gone.
 
-**Storage** (`src/storage/storageService.ts`, `src/shared/schemas/domain.ts`): everything user-owned is a revisioned JSON file under `~/.dc-waifus/user/` (providers, discord-bots, waifus, servers, memories, histories). Writes use atomic temp-file swap with per-resource locks. Zod schemas in `src/shared/schemas/` are the authority for both on-disk format and API I/O — change them and the migrations together. `resolveDataPath` throws if the joined path escapes the data root, but that is a backstop — any route that builds a path from a request id must still validate it first (`assertSafeId` rejects dot-only ids; guild/channel ids must be Discord snowflakes via `assertSnowflakeId`).
+**Storage** (`src/storage/storageService.ts`, `src/shared/schemas/domain.ts`): everything user-owned is a revisioned JSON file under `~/.dc-waifus/user/` (providers, discord-bots, waifus, servers, memories, histories, and `conversations/<key>/` with the context engine's ledger, refs and per-agent `contexts/*.json`), except `user/usage/YYYY-MM-DD.jsonl`, the append-only usage ledger. Writes use atomic temp-file swap with per-resource locks. Zod schemas in `src/shared/schemas/` are the authority for both on-disk format and API I/O — change them and the migrations together. `resolveDataPath` throws if the joined path escapes the data root, but that is a backstop — any route that builds a path from a request id must still validate it first (`assertSafeId` rejects dot-only ids; guild/channel ids must be Discord snowflakes via `assertSnowflakeId`).
 
 **API conventions** (`src/api/server.ts`, `src/api/errors.ts`): errors carry a machine-readable `code` (`BadRequest`/`NotFound`/`Conflict`/`PreconditionRequired`) via `ApiError`. Revision enforcement is deliberately split: waifu and memory writes require `expectedRevision` (missing → 428, mismatch → 409); other resources accept it optionally and are last-writer-wins otherwise. `params` on waifu/agent-config PUTs merge server-side — an explicit `null` value unsets a key, omission keeps it — so dashboard editors must send `null` for keys the user removed (see `mergeParamsPatch`). `waifu.botId` uses the same null-to-unset pattern.
 
