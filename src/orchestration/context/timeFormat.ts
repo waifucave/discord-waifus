@@ -33,16 +33,6 @@ export function hostTimeZone(): string {
   return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 }
 
-/** True when `timeZone` is a zone Intl accepts. */
-export function isValidTimeZone(timeZone: string): boolean {
-  try {
-    new Intl.DateTimeFormat("en-GB", { timeZone });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 /** "14:02" (24-hour) in `timeZone`. */
 export function formatClock(value: Date | string | number, timeZone: string): string {
   const parts = formatters(timeZone).clock.formatToParts(toDate(value));
