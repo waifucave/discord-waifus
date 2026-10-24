@@ -1,23 +1,45 @@
+import path from "node:path";
 // Per-channel run loop: one run slot per guild with human/manual preemption and a deduped
 // preemption queue, orchestrator decisions (model / deterministic / one-shot) with guardrails and
 // overrides, decision recording, retrigger timers, crash-recovery wakes and restart resume.
 
 import { randomUUID } from "node:crypto";
+import type { ResolvedModel, Usage } from "@waifucave/gateway";
 import { PermissionWarningTracker, isPermissionError } from "./permissionWarnings.js";
-import { decideDeterministically, enforceWakePlan } from "./deterministicOrchestrator.js";
+import {
+  type DeterministicCastMember,
+  decideDeterministically,
+  enforceWakePlan,
+  forceReplyDecision
+} from "./deterministicOrchestrator.js";
+import type { LedgerEntry } from "../shared/schemas/context.js";
+import { resolveBotAuthorIds } from "../shared/botIdentity.js";
+import { contextSummarizer } from "./context/compaction.js";
+import { conversationKey, type ContextAgent } from "./context/keys.js";
+import type { ModelCallAttribution, PreparedContext } from "./context/types.js";
+import {
+  type OrchestratorMode,
+  assessOrchestratorTurn,
+  buildCastCards,
+  createOrchestratorRenderer,
+  ledgerToContextMessages,
+  orchestratorPlace,
+  waifuAuthorMatcher
+} from "./orchestratorHarness.js";
+import { decisionNoteFor } from "./pipeline/timeline.js";
+import { ORCHESTRATOR_TOOL_NAME } from "./tools.js";
 import { planRestartResume } from "./restartResume.js";
-import { GatewayPipelineError } from "./pipeline/params.js";
+import { GatewayPipelineError, TruncatedOutputError } from "./pipeline/params.js";
 import {
   OrchestratorDecisionHistoryEntry,
   OrchestratorDecisionStatus,
-  OrchestratorHistoryFileSchema,
   OrchestratorResponderOutcome,
   ServerConfig,
-  createEmptyRevisionedFile
+  ServerConfigSchema
 } from "../shared/schemas/domain.js";
 import { nowIso } from "../shared/schemas/common.js";
 import { ChannelSessionStateSchema, type RetriggerWake, createEmptyChannelSessionState } from "./session.js";
-import { type ContextMessage, type OrchestratorWakeMarker, formatTimestamp } from "./context.js";
+import type { ContextMessage } from "./contextMessages.js";
 import {
   DIRECTIVE_GOAL_MAX_CHARS,
   type DirectiveIntent,
@@ -27,31 +49,43 @@ import {
   RETRIGGER_MAX_SECONDS,
   RETRIGGER_MIN_SECONDS
 } from "./decisions.js";
-import { assessCastCadence, assessLoop } from "./loopDetector.js";
 import { OneShotDecider } from "./oneShot/decider.js";
 import { sendOrchestratorDebugLog } from "./debugLog.js";
 import { ModelAccess } from "./modelAccess.js";
-import { buildDeterministicCast, buildOrchestratorSystemPrompt, buildOrchestratorTrailingPrompt } from "./promptBuilders.js";
+import { buildDeterministicCast } from "./promptBuilders.js";
 import { ResponderExecutor } from "./responderExecutor.js";
 import {
   type ChannelRunOptions,
   type RetriggerWakeInput,
   type RuntimeHooks,
-  type RuntimeOrchestratorOptions,
+  type RuntimeCollaboratorOptions,
   isHumanUserMessage,
   runKey,
   summarizeProviderPipelineDetails,
   throwIfAborted,
   timerKey
 } from "./runtimeShared.js";
-import { channelHasWaifus, ensureServer, listAvailableWaifusForChannel, listKnownGuildIds, readAgentConfig } from "./stores/config.js";
+import {
+  channelHasWaifus,
+  ensureServer,
+  listAvailableWaifusForChannel,
+  listKnownGuildIds,
+  listWaifus,
+  readAgentConfig,
+  readDiscordBotsFile
+} from "./stores/config.js";
 import {
   appendOrchestratorHistory,
   readCompletedOrchestratorDecisionsForChannel,
+  readOrchestratorDecision,
+  readOrchestratorHistoryForGuild,
   updateOrchestratorResponderOutcome
 } from "./stores/decisionHistory.js";
 import { noteActiveChatParticipantsFromContext } from "./stores/participants.js";
+import { channelPlaceName, isStaleThreadForResume, withThreadChannels } from "./stores/threads.js";
+import type { RawDiscordMessage } from "../shared/schemas/discordMessage.js";
 import { consumeScheduledRetrigger, markSessionIdle, sessionRelativePath, setActivePipeline, updateSession } from "./stores/sessions.js";
+import { resolveContextCap } from "./contextWindows.js";
 
 export type ActiveChannelRun = {
   guildId: string;
@@ -60,11 +94,24 @@ export type ActiveChannelRun = {
   promise: Promise<void>;
   trigger?: ChannelRunOptions["trigger"];
   wake?: RetriggerWakeInput;
+  /** The human message that started this run (reason `message:<id>`), for `trigger_deleted`. */
+  triggerMessageId?: string;
+  startedAt: number;
 };
 
 type ChannelRunnerOptions = Pick<
-  RuntimeOrchestratorOptions,
-  "storage" | "discord" | "logger" | "isPaused" | "ocr" | "decideOneShot" | "restartResumeDelayMs" | "onActiveRunsChange"
+  RuntimeCollaboratorOptions,
+  | "storage"
+  | "directory"
+  | "discord"
+  | "logger"
+  | "isPaused"
+  | "ocr"
+  | "decideOneShot"
+  | "restartResumeDelayMs"
+  | "onActiveRunsChange"
+  | "contexts"
+  | "deletedMessages"
 >;
 
 export class ChannelRunner {
@@ -81,6 +128,15 @@ export class ChannelRunner {
   // Per-channel directive budget counter. Increments each decision a directive is not honored,
   // resets to 0 when one is honored; the budget opens once it reaches directiveCooldown.
   private readonly directiveDecisionCounts = new Map<string, number>();
+  /** Spec 9.2: true while a debounced message burst is pending for the channel (set by the facade). */
+  pendingBurst?: (guildId: string, channelId: string) => boolean;
+  /** True while any channel of the guild has a pending burst (holds the preempted-channel retrigger). */
+  pendingBurstInGuild?: (guildId: string) => boolean;
+
+  /** A held preempted channel gets its turn back (a pending burst was cancelled). */
+  releasePreempted(guildId: string): void {
+    this.hooks.runBackground("Re-triggering a preempted channel failed", { guildId }, () => this.retriggerPreemptedChannel(guildId));
+  }
 
   constructor(
     private readonly options: ChannelRunnerOptions,
@@ -107,23 +163,29 @@ export class ChannelRunner {
     await new Promise((resolve) => setTimeout(resolve, this.options.restartResumeDelayMs ?? 5000));
     if (this.hooks.isStopping() || this.options.isPaused?.()) return;
     const guildIds = await listKnownGuildIds(this.options.storage);
-    const history = await this.options.storage.readJson(
-      "user/orchestrator/history.json",
-      OrchestratorHistoryFileSchema,
-      OrchestratorHistoryFileSchema.parse(createEmptyRevisionedFile({ decisions: [] }))
-    );
     for (const guildId of guildIds) {
+      // Read-only: resume must never (re)create a server that was deleted or has no server.json.
       let server: ServerConfig;
       try {
-        server = await ensureServer(this.options.storage, guildId);
+        // Tracked threads join as virtual channel entries (read-only overlay of threads.json).
+        server = await withThreadChannels(
+          this.options.storage,
+          await this.options.storage.readJson(path.join("user", "servers", guildId, "server.json"), ServerConfigSchema)
+        );
       } catch {
         continue;
       }
-      if (!server.enabled) continue;
+      // A paused server stays quiet through a restart (the kill switch, spec 9.7); channels without
+      // waifus are skipped below. There is no separate server/channel `enabled` flag any more.
+      if (server.paused) continue;
+      // Decisions are stored per guild (spec 9.3); newest first.
+      const history = await readOrchestratorHistoryForGuild(this.options.storage, guildId);
       // Resumed replies in one guild run one after another (never preempting each other).
       const resumes: Array<() => Promise<void>> = [];
       for (const channel of Object.values(server.channels)) {
         if (!channelHasWaifus(channel)) continue;
+        // Spec 9.5: restart resume revisits only threads active within 24 hours.
+        if (isStaleThreadForResume(channel)) continue;
         const channelId = channel.channelId;
         // After a live resume (not boot) the room may already be moving again: never replan a
         // channel whose run is live or whose latest decision is still in flight.
@@ -137,22 +199,33 @@ export class ChannelRunner {
         const latestDecision = history.decisions.find(
           (decision) => decision.guildId === guildId && decision.channelId === channelId
         );
+        // Edits and deletes made while the app was down are reconciled for every resumed channel,
+        // including one whose latest decision is still pending. One fetch of the newest 50
+        // messages serves both that and the "human spoke while we were down" check below.
+        const downtimePage = await this.reconcileDowntime(guildId, channelId, server);
         if (latestDecision?.status === "pending") continue;
         // Best-effort: a human message that landed while the server was down must wake the
         // channel promptly instead of resuming the old schedule (live 2026-07-06 10:08: K's
         // message hit the deploy window and waited out a restored 130s timer).
         let newestHumanMessageAt: string | undefined;
-        try {
-          const recent = await this.options.discord.fetchFreshContext({ guildId, channelId, limit: 10 });
-          newestHumanMessageAt = recent.reduce<string | undefined>(
-            (acc, message) =>
-              message.authorKind === "user" && message.authorBot !== true && (!acc || message.timestamp > acc)
-                ? message.timestamp
-                : acc,
+        if (downtimePage) {
+          newestHumanMessageAt = downtimePage.reduce<string | undefined>(
+            (acc, message) => (!message.authorIsBot && (!acc || message.createdAt > acc) ? message.createdAt : acc),
             undefined
           );
-        } catch {
-          // Discord not ready or channel unreadable — fall back to schedule-only planning.
+        } else {
+          try {
+            const recent = await this.options.discord.fetchFreshContext({ guildId, channelId, limit: 10 });
+            newestHumanMessageAt = recent.reduce<string | undefined>(
+              (acc, message) =>
+                message.authorKind === "user" && message.authorBot !== true && (!acc || message.timestamp > acc)
+                  ? message.timestamp
+                  : acc,
+              undefined
+            );
+          } catch {
+            // Discord not ready or channel unreadable — fall back to schedule-only planning.
+          }
         }
         const plan = planRestartResume({ guildId, channelId, session, latestDecision, newestHumanMessageAt }, new Date());
         if (plan.kind === "restore-timer") {
@@ -185,6 +258,43 @@ export class ChannelRunner {
           for (const resume of resumes) await resume();
         });
       }
+    }
+  }
+
+  /**
+   * Edits and deletes that happened while the app was down (spec 9.5): compare the channel's
+   * newest 50 messages with the ledger. Best-effort and a no-op for a conversation without a
+   * ledger; a failure only means the next live event or reconnect catches it.
+   */
+  private async reconcileDowntime(guildId: string, channelId: string, server: ServerConfig): Promise<RawDiscordMessage[] | undefined> {
+    const discord = this.options.discord;
+    if (!discord.fetchContextSince) return undefined;
+    try {
+      const conversation = { kind: "guild" as const, guildId, channelId };
+      const page = await discord.fetchContextSince({ guildId, channelId, afterMessageId: null, maxMessages: 50 });
+      const directory = await this.options.directory.view(guildId, (id) => server.channels[id]?.name);
+      const summary = await this.options.contexts.reconcileRecent(conversation, page.messages, {
+        directory,
+        ...(this.options.deletedMessages ? { redactRecent: this.options.deletedMessages.redactRecent } : {})
+      });
+      const deleted = summary.deletes.redacted.length + summary.deletes.marked.length;
+      const edited = Object.values(summary.edits).filter((outcome) => outcome === "event" || outcome === "coalesced").length;
+      if (deleted > 0 || edited > 0) {
+        this.options.logger.info("Restart resume: reconciled edits and deletes made while the app was down", {
+          guildId,
+          channelId,
+          edited,
+          deleted
+        });
+      }
+      return page.messages;
+    } catch (error) {
+      this.options.logger.warn("Restart resume: reconciling downtime edits failed", {
+        guildId,
+        channelId,
+        message: error instanceof Error ? error.message : String(error)
+      });
+      return undefined;
     }
   }
 
@@ -314,10 +424,45 @@ export class ChannelRunner {
           await this.retriggerPreemptedChannel(guildId);
         }
       });
-    this.activeRuns.set(key, { guildId, channelId, controller, promise, trigger: options.trigger, wake: options.wake });
+    const triggerMessageId = /^message(?:-burst)?:(\d+)$/.exec(reason)?.[1];
+    this.activeRuns.set(key, {
+      guildId,
+      channelId,
+      controller,
+      promise,
+      trigger: options.trigger,
+      wake: options.wake,
+      startedAt: Date.now(),
+      ...(triggerMessageId ? { triggerMessageId } : {})
+    });
     this.options.onActiveRunsChange?.(this.activeRuns.size);
     this.options.logger.info("Channel runtime loop started", { guildId, channelId, reason });
     await promise;
+  }
+
+  /**
+   * Spec 9.5: the human message that triggered the channel's run was deleted. A run that has not
+   * sent anything yet (still planning or generating) is aborted with `trigger_deleted`; a run
+   * that is already sending (or has sent) finishes. Returns whether a run was aborted.
+   */
+  abortRunIfTriggerDeleted(
+    guildId: string,
+    channelId: string,
+    deletedMessageIds: readonly string[],
+    hasSentSince: (channelId: string, sinceMs: number) => boolean
+  ): boolean {
+    const run = this.activeRuns.get(runKey(guildId));
+    if (!run || run.channelId !== channelId || !run.triggerMessageId) return false;
+    if (!deletedMessageIds.includes(run.triggerMessageId)) return false;
+    if (hasSentSince(channelId, run.startedAt)) return false;
+    this.options.logger.info("Aborting channel run: its triggering message was deleted", {
+      guildId,
+      channelId,
+      messageId: run.triggerMessageId
+    });
+    run.controller.abort(new Error("trigger_deleted"));
+    this.markSessionIdleBackground(guildId, channelId, "trigger_deleted");
+    return true;
   }
 
   private notePreemptedChannel(guildId: string, channelId: string, wake: RetriggerWakeInput): void {
@@ -337,6 +482,9 @@ export class ChannelRunner {
   // The guild's run slot just freed: give the oldest preempted channel its turn back.
   private async retriggerPreemptedChannel(guildId: string): Promise<void> {
     if (this.hooks.isStopping() || this.options.isPaused?.() || this.activeRuns.has(runKey(guildId))) return;
+    // Spec 9.2: a pending burst in this guild is about to take the slot (and would preempt the
+    // queued channel's pass again); its run gives the queued channel its turn when it ends.
+    if (this.pendingBurstInGuild?.(guildId)) return;
     const entry = this.preemptedChannels.get(guildId)?.entries().next().value;
     if (entry === undefined) return;
     const [next, wake] = entry;
@@ -455,30 +603,132 @@ export class ChannelRunner {
         return;
       }
 
-      const orchestrator = await readAgentConfig(this.options.storage, "orchestrator", 40);
+      const orchestrator = await readAgentConfig(this.options.storage, "orchestrator", ORCHESTRATOR_DEFAULT_WINDOW);
       // Deterministic when: no global model configured (free mode), or this guild explicitly
       // opted its channels into the model-free structural decider.
       const oneShotMode = server.orchestratorMode === "one-shot";
       const deterministicMode = server.orchestratorMode === "deterministic" || (!oneShotMode && !orchestrator.modelId);
-      let messages = await this.options.discord.fetchFreshContext({
-        guildId,
-        channelId,
-        limit: server.contextWindows.orchestrator ?? orchestrator.contextWindow,
-        signal
-      });
-      await noteActiveChatParticipantsFromContext(this.options.storage, guildId, channelId, messages);
-      if (!deterministicMode && !oneShotMode && orchestrator.modelId) {
-        messages = await this.models.messagesForModel(
-          messages,
-          { providerId: orchestrator.providerId, modelId: orchestrator.modelId },
-          signal
-        );
+      const mode: OrchestratorMode = oneShotMode ? "one-shot" : deterministicMode ? "deterministic" : "model";
+      const modelConfig =
+        mode === "model" ? { providerId: orchestrator.providerId, modelId: orchestrator.modelId! } : undefined;
+      const pipeline = modelConfig ? this.models.pipelineFor(modelConfig, "orchestrator") : undefined;
+      if (pipeline && !pipeline.decideOrchestrator) {
+        throw new Error(`Model ${orchestrator.modelId} does not implement orchestrator decisions.`);
       }
-      if (oneShotMode && this.options.ocr) messages = await this.options.ocr.enrichMessages(messages, { signal });
-      this.options.logger.info("Fetched Discord context for orchestrator", {
+      const availableWaifus = await listAvailableWaifusForChannel(this.options.storage, channel);
+      const { cast: deterministicCast, nicknames: guildNicknames } = await buildDeterministicCast(
+        this.options.storage,
+        guildId,
+        availableWaifus
+      );
+      const pastDecisions = await readCompletedOrchestratorDecisionsForChannel(this.options.storage, guildId, channelId);
+      const requireReply = Boolean(options.firstOrchestratorMustReply && turns === 1);
+      const channelKey = timerKey(guildId, channelId);
+      const directiveCount = this.directiveDecisionCounts.get(channelKey) ?? orchestrator.directiveCooldown;
+
+      // On the first turn of a timer-fired retrigger, surface the wake marker (with the wake plan
+      // the orchestrator promised last time) so it can pick up where it left off, plus escalate the
+      // next backoff if it chooses no_reply again. Only a wake armed by a no_reply decision gets
+      // a marker, and it describes THAT decision (B8: the decision id recorded with the timer) —
+      // turn-limit cooldowns, crash recovery and suppressed wakes have no plan to execute.
+      const wakeDecision =
+        turns === 1 && options.trigger === "retrigger" ? wakeSchedulingDecision(options.wake, pastDecisions) : undefined;
+      // The armed delay (includes earlier escalation) when known, else the decision's own number.
+      const timerWakeSeconds = wakeDecision ? options.wake?.seconds ?? wakeDecision.retriggerAfterSeconds : undefined;
+
+      // The director's context (spec 8.7): one cursor-bounded, append-only transcript for every
+      // mode — the model reads it as a prompt, deterministic and one-shot read the same entries.
+      const resolvedModel = modelConfig ? this.models.resolvedModel(modelConfig) : undefined;
+      const model = resolvedModel ?? structuralModel(mode, modelConfig?.modelId ?? server.oneShot.target);
+      const isWaifu = await this.waifuAuthorMatcher(deterministicCast);
+      const backfillCap = resolveContextCap("orchestrator", server, orchestrator);
+      const renderer = createOrchestratorRenderer({
+        mode,
+        cast: buildCastCards(availableWaifus, guildNicknames),
+        availableWaifuIds: availableWaifus.map((waifu) => waifu.id),
+        place: orchestratorPlace(server.name, channelPlaceName(server, channelId), channelId),
+        pausePlanning: orchestrator.promptSections.pausePlanning,
+        ownerPolicy: orchestrator.prompt,
+        turn: {
+          replyRequired: requireReply,
+          directiveCount,
+          directiveCooldown: orchestrator.directiveCooldown,
+          pastDecisions,
+          ...(wakeDecision && timerWakeSeconds
+            ? {
+                wake: {
+                  scheduledSeconds: timerWakeSeconds,
+                  ...(wakeDecision.wakePlan ? { wakePlan: wakeDecision.wakePlan } : {}),
+                  decidedAt: wakeDecision.createdAt
+                }
+              }
+            : {})
+        },
+        conversation: { guildId, channelId },
+        isWaifu
+      });
+      const conversation = { kind: "guild" as const, guildId, channelId };
+      const attribution: ModelCallAttribution = {
+        purpose: "orchestrator",
+        agentId: "orchestrator",
         guildId,
         channelId,
-        messageCount: messages.length,
+        conversationKey: conversationKey(conversation)
+      };
+      // The orchestrator usually reconciles a new message first, freezing its ledger render for
+      // every agent: it needs the same mention/role/channel/emoji names as the waifu path.
+      const directory = await this.options.directory.view(guildId, (id) => server.channels[id]?.name);
+      const prepared = await this.options.contexts.prepare({
+        conversation,
+        agent: ORCHESTRATOR_AGENT,
+        model,
+        backfillCap,
+        selfAuthorIds: [],
+        render: renderer,
+        signal,
+        params: orchestrator.params,
+        server,
+        directory,
+        // Own-model compaction mirrors the decision call (T7b contract): forced tool choice (mapped
+        // to none/auto for summarizing), same sampling, params and attribution. Deterministic and
+        // one-shot passes have no summarizer: their context truncates durably instead.
+        ...(pipeline?.summarizeContext
+          ? {
+              summarize: contextSummarizer(pipeline, {
+                toolChoice: { name: ORCHESTRATOR_TOOL_NAME },
+                temperature: ORCHESTRATOR_TEMPERATURE,
+                params: orchestrator.params,
+                attribution
+              })
+            }
+          : {}),
+        // One-shot reads a small window (its old ~20 messages); deterministic keeps keepRecent.
+        ...(oneShotMode ? { truncateKeep: backfillCap } : {}),
+        // Past decisions always render as text lines, never as assistant tool_use turns: a Claude
+        // model with thinking on rejects (400) a replayed tool_use that has no thinking block, the
+        // JSON-schema fallback sends no tools at all, and one fixed rendering keeps the prefix stable
+        // when the model or its reasoning params change.
+        renderToolTurnsAsText: true
+      });
+      const assessment =
+        renderer.assessment() ??
+        assessOrchestratorTurn(
+          ledgerToContextMessages(prepared.transcript, { guildId, channelId, isWaifu }),
+          { directiveCount, directiveCooldown: orchestrator.directiveCooldown, pastDecisions },
+          prepared.startedAt
+        );
+      const messages = assessment.messages;
+      await noteActiveChatParticipantsFromContext(this.options.storage, guildId, channelId, messages);
+      // Structural deciders (deterministic, one-shot, fallbacks, overrides) read the newest window
+      // only, the same size they always had; the transcript itself may be longer.
+      let recent = messages.slice(-backfillCap);
+      if (oneShotMode && this.options.ocr) recent = await this.options.ocr.enrichMessages(recent, { signal });
+      this.options.logger.info("Prepared orchestrator context", {
+        guildId,
+        channelId,
+        mode,
+        transcriptCount: prepared.prompt.transcriptCount,
+        estimatedTokens: prepared.prompt.estimatedTokens,
         modelId: oneShotMode ? server.oneShot.target : orchestrator.modelId
       });
       // Cast-only beat budget: a timer wake must not milk a beat the cast already covered.
@@ -497,73 +747,22 @@ export class ChannelRunner {
           return;
         }
       }
-      const pipeline = deterministicMode || oneShotMode
-        ? undefined
-        : this.models.pipelineFor({ providerId: orchestrator.providerId, modelId: orchestrator.modelId! }, "orchestrator");
-      if (pipeline && !pipeline.decideOrchestrator) {
-        throw new Error(`Model ${orchestrator.modelId} does not implement orchestrator decisions.`);
-      }
-      const availableWaifus = await listAvailableWaifusForChannel(this.options.storage, channel);
-      const { cast: deterministicCast, nicknames: guildNicknames } = await buildDeterministicCast(
-        this.options.storage,
-        guildId,
-        availableWaifus
-      );
-      const pastDecisions = await readCompletedOrchestratorDecisionsForChannel(this.options.storage, guildId, channelId);
-      const requireReply = Boolean(options.firstOrchestratorMustReply && turns === 1);
 
-      const loop = assessLoop(messages);
-      // Only nag about early cast retirement while humans are actually around — in a dead room
-      // the reply→pause rhythm is correct behavior, not a rut.
-      const newestHumanTs = messages.reduce<string | undefined>(
-        (acc, message) => (isHumanUserMessage(message) && (!acc || message.timestamp > acc) ? message.timestamp : acc),
-        undefined
-      );
-      const humanActiveNow =
-        newestHumanTs !== undefined && Date.now() - Date.parse(newestHumanTs) < HUMAN_RECENT_WINDOW_MS;
-      const cadence = humanActiveNow ? assessCastCadence(pastDecisions) : { suspected: false as const };
-      const runtimeNotice = [loop.notice, cadence.notice].filter(Boolean).join("\n") || undefined;
-      const channelKey = timerKey(guildId, channelId);
-      const directiveCount = this.directiveDecisionCounts.get(channelKey) ?? orchestrator.directiveCooldown;
-      const directiveBudgetOpen = loop.suspected || cadence.suspected || directiveCount >= orchestrator.directiveCooldown;
-
-      // On the first turn of a timer-fired retrigger, surface the wake marker (with the wake plan
-      // the orchestrator promised last time) so it can pick up where it left off, plus escalate the
-      // next backoff if it chooses no_reply again. Only a wake armed by a no_reply decision gets
-      // a marker, and it describes THAT decision — not whatever no_reply happens to be newest
-      // (turn-limit cooldowns, crash recovery and suppressed wakes have no plan to execute).
-      let decisionMarkers: OrchestratorWakeMarker[] | undefined;
-      const wakeDecision =
-        turns === 1 && options.trigger === "retrigger" ? wakeSchedulingDecision(options.wake, pastDecisions) : undefined;
-      // The armed delay (includes earlier escalation) when known, else the decision's own number.
-      const timerWakeSeconds = wakeDecision ? options.wake?.seconds ?? wakeDecision.retriggerAfterSeconds : undefined;
-      if (wakeDecision && timerWakeSeconds) {
-        decisionMarkers = [{
-          kind: "wake",
-          timestamp: formatTimestamp(new Date()),
-          scheduledSeconds: timerWakeSeconds,
-          wakePlan: wakeDecision.wakePlan
-        }];
-      }
-
-      const trailingPrompt = buildOrchestratorTrailingPrompt(
-        orchestrator,
-        availableWaifus,
-        requireReply,
-        runtimeNotice,
-        guildNicknames
-      );
+      const { loop, humanActiveNow, directiveBudgetOpen } = assessment;
       // No typing scope for orchestrator decisions: the orchestrator bot showing "typing…" while it
       // deliberates leaks the machinery's presence into the room. Only the waifu send path types.
       let decision: OrchestratorDecision;
       let semanticLoopDetected = false;
+      let usage: Usage | undefined;
       if (oneShotMode) {
         try {
           const before = performance.now();
           const result = await (this.options.decideOneShot ?? ((input) => this.oneShot.decide(input)))({
-            target: server.oneShot.target, messages, cast: deterministicCast, waifus: availableWaifus, now: new Date(),
+            target: server.oneShot.target, messages: recent, cast: deterministicCast, waifus: availableWaifus, now: new Date(),
+            timeZone: prepared.state.timeZone,
             replyRequired: requireReply, directiveBudgetOpen, loopSuspected: loop.suspected, timerWakeSeconds,
-            policy: orchestrator.prompt, signal
+            policy: orchestrator.prompt, signal,
+            attribution: { guildId, channelId, conversationKey: attribution.conversationKey }
           });
           decision = result.decision;
           semanticLoopDetected = result.loopDetected;
@@ -571,12 +770,12 @@ export class ChannelRunner {
             action: decision.action, loopDetected: semanticLoopDetected, durationMs: Math.round(performance.now() - before) });
         } catch (error) {
           if (requireReply || signal.aborted) throw error;
-          decision = decideDeterministically({ messages, cast: deterministicCast, now: new Date() });
+          decision = decideDeterministically({ messages: recent, cast: deterministicCast, now: new Date() });
           const code = error instanceof Error && /^one_shot_[a-z0-9_]+$/.test(error.message) ? error.message : "one_shot_failed";
           this.options.logger.warn("One shot failed; deterministic fallback decision used", { guildId, channelId, code, action: decision.action });
         }
       } else if (!pipeline || !pipeline.decideOrchestrator) {
-        decision = decideDeterministically({ messages, cast: deterministicCast, now: new Date() });
+        decision = decideDeterministically({ messages: recent, cast: deterministicCast, now: new Date() });
         this.options.logger.info("Deterministic orchestrator decision (no model configured)", {
           guildId,
           channelId,
@@ -584,24 +783,32 @@ export class ChannelRunner {
           reasoning: decision.reasoning
         });
       } else {
+        const decide = pipeline.decideOrchestrator.bind(pipeline);
         try {
-          decision = await pipeline.decideOrchestrator({
-            modelId: orchestrator.modelId!,
-            messages,
-            pastDecisions,
-            decisionMarkers,
-            directiveBudgetOpen,
-            trailingPrompt,
-            systemPrompt: buildOrchestratorSystemPrompt(orchestrator, server, requireReply),
-            availableWaifuIds: availableWaifus.map((waifu) => waifu.id),
-            replyRequired: requireReply,
-            params: orchestrator.params,
-            signal
-          });
+          decision = await this.options.contexts.call(prepared, (prompt) =>
+            decide({
+              modelId: orchestrator.modelId!,
+              messages,
+              prompt,
+              transcript: prepared.transcript,
+              availableWaifuIds: availableWaifus.map((waifu) => waifu.id),
+              replyRequired: requireReply,
+              temperature: ORCHESTRATOR_TEMPERATURE,
+              params: orchestrator.params,
+              signal,
+              attribution: { ...attribution, conversationKey: prepared.key },
+              onUsage: (reported) => {
+                usage = reported;
+              }
+            })
+          );
         } catch (error) {
-          // Manual /run promised the user a reply from the model — surface its failure instead.
-          if (requireReply || signal.aborted) throw error;
-          decision = decideDeterministically({ messages, cast: deterministicCast, now: new Date() });
+          if (signal.aborted) throw error;
+          // Manual /run promised the user a reply: a decision that came back unusable (unparsable,
+          // invalid or truncated) becomes the enforced structural reply below; a provider failure
+          // (network, quota, …) still surfaces.
+          if (requireReply && !isDecisionShapeError(error)) throw error;
+          decision = decideDeterministically({ messages: recent, cast: deterministicCast, now: new Date() });
           this.options.logger.warn("Model orchestrator failed; deterministic fallback decision used", {
             guildId,
             channelId,
@@ -609,6 +816,20 @@ export class ChannelRunner {
             action: decision.action,
             reasoning: decision.reasoning
           });
+        }
+      }
+      // Reply-required is enforced in code (the tool schema is stable per channel config): a
+      // manual /run that came back with a pause still gets a voice.
+      if (requireReply && decision.action !== "reply") {
+        const forced = forceReplyDecision({ messages: recent, cast: deterministicCast, now: new Date() });
+        if (forced) {
+          this.options.logger.warn("Reply required: the decision paused; a deterministic reply is used", {
+            guildId,
+            channelId,
+            modelReasoning: decision.reasoning.slice(0, 140),
+            responder: forced.respondingWaifus[0]?.waifuId
+          });
+          decision = forced;
         }
       }
       // Wake-plan enforcement: this pass IS the wake a no_reply plan scheduled. If the model
@@ -628,7 +849,7 @@ export class ChannelRunner {
         const enforced = enforceWakePlan({
           plan: wakeDecision.wakePlan,
           cast: deterministicCast,
-          messages,
+          messages: recent,
           now: new Date()
         });
         if (enforced) {
@@ -643,15 +864,15 @@ export class ChannelRunner {
           wakePlanEnforced = true;
         }
       }
-      // Enforcement tier for the retire-early rut: the cadence notice is advisory, and
-      // flash-lite-class models demonstrably acknowledge an active room and pause anyway
-      // (live 2026-07-06 06:07: "conversation is still very active, but…" → no_reply 45).
-      // When the detector fired, humans are around, and the model still pauses, a
-      // deterministic reply keeps the room alive; the model resumes control next pass.
-      if (!deterministicMode && !requireReply && cadence.suspected && humanActiveNow && decision.action === "no_reply") {
-        const override = decideDeterministically({ messages, cast: deterministicCast, now: new Date() });
+      // Waiting-human rule (spec 8.7 policy 2, enforced as the director prompt states it): a human
+      // wrote in the last 15 minutes and the model pauses anyway (live 2026-07-06 06:07: "the
+      // conversation is still very active, but…" → no_reply 45). The structural decider replies
+      // when the newest message is that human's and someone is available; the model resumes
+      // control next pass.
+      if (!deterministicMode && !requireReply && humanActiveNow && decision.action === "no_reply") {
+        const override = decideDeterministically({ messages: recent, cast: deterministicCast, now: new Date() });
         if (override.action === "reply") {
-          this.options.logger.warn("Cadence override: model retired an active room again; deterministic reply used", {
+          this.options.logger.warn("Waiting-human override: the model paused on a human's message; deterministic reply used", {
             guildId,
             channelId,
             modelReasoning: decision.reasoning.slice(0, 160),
@@ -699,7 +920,7 @@ export class ChannelRunner {
       for (const strippedEntry of guarded.stripped) {
         const outcome = responderOutcomes[strippedEntry.index];
         if (outcome) {
-          await updateOrchestratorResponderOutcome(this.options.storage, decisionId, outcome.id, {
+          await updateOrchestratorResponderOutcome(this.options.storage, guildId, decisionId, outcome.id, {
             directiveStripped: strippedEntry.reason
           });
           this.options.logger.info("Stripped orchestrator directive", {
@@ -718,6 +939,8 @@ export class ChannelRunner {
       });
 
       if (decision.action === "no_reply") {
+        // A pause is final the moment it is recorded.
+        await this.commitDecision(guildId, prepared, decisionId, usage);
         let seconds = decision.retriggerAfterSeconds ?? RETRIGGER_DEFAULT_SECONDS;
         if (timerWakeSeconds) {
           seconds = Math.max(seconds, Math.ceil(timerWakeSeconds * 1.5));
@@ -726,19 +949,27 @@ export class ChannelRunner {
         return;
       }
 
-      const { attemptedCount, executedCount } = await this.executor.executeResponderDecision({
-        guildId,
-        channelId,
-        server,
-        channel,
-        decision: guarded.decision,
-        decisionId,
-        responderOutcomes,
-        decisionDelayBaseMs,
-        useDecisionRelativeDelays,
-        availableWaifus,
-        signal
-      });
+      let execution: { attemptedCount: number; executedCount: number };
+      try {
+        execution = await this.executor.executeResponderDecision({
+          guildId,
+          channelId,
+          server,
+          channel,
+          decision: guarded.decision,
+          decisionId,
+          responderOutcomes,
+          decisionDelayBaseMs,
+          useDecisionRelativeDelays,
+          availableWaifus,
+          signal
+        });
+      } finally {
+        // The executor has finalized the decision (completed / interrupted / failed) by now, so its
+        // note carries the real outcome; a decision still pending is never rendered.
+        await this.commitDecision(guildId, prepared, decisionId, usage);
+      }
+      const { attemptedCount, executedCount } = execution;
       if (attemptedCount === 0) {
         this.options.logger.info("Channel runtime loop stopped because no responders were executed", {
           guildId,
@@ -760,7 +991,6 @@ export class ChannelRunner {
       }
       await setActivePipeline(this.options.storage, guildId, channelId, "orchestrator");
     }
-
     // Cast-only pacing: when no human has spoken recently, the room can idle far longer
     // between automatic bursts — this is also the API-credit throttle for self-chatter.
     const humanRecent =
@@ -779,6 +1009,56 @@ export class ChannelRunner {
     await this.scheduleRetrigger(guildId, channelId, cooldownSeconds, {
       source: nothingSent ? "nothing_sent" : "turn_limit"
     });
+  }
+
+  /**
+   * Waifu authorship for ledger entries: every configured waifu's bot author ids (not only this
+   * channel's cast, so a waifu disabled here still never counts as a human), plus cast names for
+   * bot entries whose id is unknown.
+   */
+  private async waifuAuthorMatcher(cast: DeterministicCastMember[]): Promise<(entry: LedgerEntry) => boolean> {
+    const [waifus, bots] = await Promise.all([listWaifus(this.options.storage), readDiscordBotsFile(this.options.storage)]);
+    return waifuAuthorMatcher({
+      authorIds: [
+        ...waifus.flatMap((waifu) => resolveBotAuthorIds(waifu.botId, bots)),
+        ...cast.flatMap((member) => member.authorIds)
+      ],
+      names: [
+        ...waifus.flatMap((waifu) => [waifu.name, waifu.displayName]),
+        ...cast.flatMap((member) => member.names)
+      ]
+    });
+  }
+
+  /**
+   * Commit the pass to the director's context once its decision is final (spec 8.7): the
+   * request's breakpoint and usage, plus the decision as a frozen `decision` note anchored to the
+   * newest ledger entry at this moment. The note write is a locked update of the current state, so
+   * it never conflicts with a concurrent prepare (that prepare sees the new revision and rebuilds).
+   * A decision still pending (its finalization failed) is never rendered. Best-effort: a failed
+   * write only costs the director this one note.
+   */
+  private async commitDecision(guildId: string, prepared: PreparedContext, decisionId: string, usage: Usage | undefined): Promise<void> {
+    try {
+      const entry = await readOrchestratorDecision(this.options.storage, guildId, decisionId);
+      // Name the messages the decision produced by their refs (assigned now if they have not
+      // reached the ledger yet; refs are stable per conversation), so the note's place in the
+      // transcript does not matter.
+      const produced = (entry?.responderOutcomes ?? []).filter((outcome) => outcome.status === "sent").flatMap((outcome) => outcome.messageIds);
+      const refs = produced.length ? await this.options.contexts.assignRefs(prepared.conversation, produced) : new Map<string, string>();
+      const note = entry ? decisionNoteFor(entry, (messageId) => refs.get(messageId)) : undefined;
+      await this.options.contexts.commit(prepared, {
+        notes: note ? [note] : [],
+        ...(usage ? { usage } : {}),
+        modelKey: prepared.modelKey
+      });
+    } catch (error) {
+      this.options.logger.warn("Failed to commit the orchestrator decision to its context", {
+        conversationKey: prepared.key,
+        decisionId,
+        message: error instanceof Error ? error.message : String(error)
+      });
+    }
   }
 
   private applyDirectiveGuardrails(input: {
@@ -832,7 +1112,7 @@ export class ChannelRunner {
         messageIds: []
       })
     );
-    await appendOrchestratorHistory(this.options.storage, {
+    const recorded = await appendOrchestratorHistory(this.options.storage, {
       id: input.decisionId,
       guildId: input.guildId,
       channelId: input.channelId,
@@ -846,6 +1126,12 @@ export class ChannelRunner {
       responderOutcomes,
       createdAt: nowIso()
     });
+    if (!recorded) {
+      this.options.logger.warn("Orchestrator decision not recorded: the server's folder is gone", {
+        guildId: input.guildId,
+        channelId: input.channelId
+      });
+    }
     this.options.logger.info("Orchestrator decision recorded", {
       guildId: input.guildId,
       channelId: input.channelId,
@@ -899,6 +1185,11 @@ export class ChannelRunner {
     }
     const timer = setTimeout(() => {
       this.retriggerTimers.delete(key);
+      // Spec 9.2: a human burst is about to fire for this channel; its run covers the wake.
+      if (this.pendingBurst?.(guildId, channelId)) {
+        this.options.logger.info("Dropped channel wake; a message burst is pending", { guildId, channelId });
+        return;
+      }
       this.startChannelRunBackground(guildId, channelId, "scheduled-retrigger", { trigger: "retrigger", wake: scheduled });
     }, bounded * 1000);
     this.retriggerTimers.set(key, timer);
@@ -943,6 +1234,41 @@ function applyFirstResponderDirectiveOverride(
 }
 
 const HUMAN_RECENT_WINDOW_MS = 15 * 60 * 1000;
+
+const ORCHESTRATOR_AGENT: ContextAgent = { kind: "orchestrator" };
+
+/** The orchestrator agent's default backfill window when no config file exists (same as the API). */
+const ORCHESTRATOR_DEFAULT_WINDOW = 20;
+
+/** Decision-call temperature; the summarizer mirrors it so compaction reuses the same request shape. */
+const ORCHESTRATOR_TEMPERATURE = 0.2;
+
+/**
+ * Capability stand-in for passes that make no chat-model call (deterministic, one-shot) or whose
+ * model the gateway registry cannot resolve: text-only (images freeze to their OCR text), and a
+ * context window large enough that only compaction's message cap applies. It deliberately has no
+ * `features`/`params`: only the context engine's budget (limits) and image rule (modalities) read
+ * it; compaction never sees it (summary-less contexts truncate, and a summarizer always uses its
+ * pipeline's own gateway model).
+ */
+function structuralModel(mode: OrchestratorMode, modelId: string): ResolvedModel {
+  return {
+    providerId: mode === "model" ? "unresolved" : "structural",
+    modelId: mode === "model" ? modelId : mode === "one-shot" ? `one-shot:${modelId}` : "deterministic",
+    limits: { contextTokens: 1_000_000, maxOutputTokens: 4096 },
+    modalities: { input: ["text"], output: ["text"] }
+  } as unknown as ResolvedModel;
+}
+
+/**
+ * A decision call that came back but is unusable (unparsable / invalid arguments, a structured
+ * decision that did not complete, or one truncated by the output cap), as opposed to a provider
+ * failure. On a reply-required /run these become the enforced structural reply.
+ */
+function isDecisionShapeError(error: unknown): boolean {
+  if (error instanceof TruncatedOutputError) return true;
+  return error instanceof GatewayPipelineError && /^(decideOrchestrator:|Structured decision did not complete)/.test(error.message);
+}
 
 const RECOVERY_RETRIGGER_SECONDS = 180;
 

@@ -15,13 +15,14 @@ import {
   DiscordStopCommandEvent
 } from "../discord/client.js";
 import { ServerConfig, WaifuConfig } from "../shared/schemas/domain.js";
-import { relativeAge } from "./memoryRetrieval.js";
-import type { ContextMessage } from "./context.js";
+import { loadPlaceResolver, renderMemoryLine } from "./memorySnapshot.js";
+import { loadSubjectDirectory, subjectNameResolver } from "./memorySubjects.js";
+import type { ContextMessage } from "./contextMessages.js";
 import { formatPrintDebugBlock, formatWaifuPromptDebugMessages } from "./debugFormat.js";
-import { buildWaifuPromptParts } from "./promptBuilders.js";
-import { ResponderExecutor } from "./responderExecutor.js";
+import { conversationKey } from "./context/keys.js";
+import { ResponderExecutor, waifuPromptCaptureKey } from "./responderExecutor.js";
 import { ReviewerRunner } from "./reviewerRunner.js";
-import { type ChannelRunOptions, type RuntimeServices, type StageManagerRunResult, isHumanUserMessage } from "./runtimeShared.js";
+import { type ChannelRunOptions, type RuntimeContextServices, type StageManagerRunResult, isHumanUserMessage } from "./runtimeShared.js";
 import {
   channelHasWaifus,
   ensureServer,
@@ -31,6 +32,7 @@ import {
 } from "./stores/config.js";
 import { setDebugRoute, unsetDebugRoute } from "./stores/debugRoutes.js";
 import { readMemoryStore } from "./stores/memories.js";
+import { LEGACY_SERVER_CONTEXT_WINDOWS } from "./contextWindows.js";
 
 /** What the command handlers need from the runtime facade. */
 export type CommandHost = {
@@ -44,11 +46,12 @@ export type CommandHost = {
   triggerStageManager(guildId: string, channelId: string): Promise<StageManagerRunResult>;
   runReviewer: ReviewerRunner["runReviewer"];
   lastSentWaifuPrompts: ResponderExecutor["lastSentWaifuPrompts"];
+  renderWaifuSystemPrompt: ResponderExecutor["renderWaifuSystemPrompt"];
 };
 
 export class RuntimeCommands {
   constructor(
-    private readonly options: RuntimeServices,
+    private readonly options: RuntimeContextServices,
     private readonly host: CommandHost
   ) {}
 
@@ -98,6 +101,17 @@ export class RuntimeCommands {
         } else {
           await event.respond(`Cleared ${result.deletedCount} ${clearMessageLabel("everything", result.deletedCount)}.`);
         }
+        // Spec 9.5: `/clear everything` also forgets the conversation (ledger, refs, every context).
+        // After the reply, so the moderator is never kept waiting on file cleanup.
+        await this.options.contexts
+          .deleteConversation({ kind: "guild", guildId: event.guildId, channelId: event.channelId })
+          .catch((error: unknown) => {
+            this.options.logger.warn("Failed to delete the cleared conversation's context", {
+              guildId: event.guildId,
+              channelId: event.channelId,
+              message: error instanceof Error ? error.message : String(error)
+            });
+          });
         return;
       }
       if (event.count === undefined) {
@@ -307,23 +321,26 @@ export class RuntimeCommands {
         await event.respond(resolved);
         return;
       }
-      if (!this.options.discord.sendDebugMessage) {
+      if (!event.followUp && !this.options.discord.sendDebugMessage) {
         throw new Error("Discord debug message sending is not available.");
       }
 
+      // The roster of the prompt is the channel's cast (not every waifu enabled in the guild).
+      const channelCast = server.channels[event.channelId]
+        ? await listAvailableWaifusForChannel(this.options.storage, server.channels[event.channelId]!)
+        : [];
       const messages = await this.formatPrintCommandMessages({
         guildId: event.guildId,
         channelId: event.channelId,
         server,
         waifu: resolved,
-        availableWaifus,
+        availableWaifus: channelCast.length > 0 ? channelCast : availableWaifus,
         type: event.type
       });
+      // Prefer the invoker-only (ephemeral) follow-up: prompts are not for the whole channel.
       for (const content of messages) {
-        await this.options.discord.sendDebugMessage({
-          channelId: event.channelId,
-          content
-        });
+        if (event.followUp) await event.followUp(content);
+        else await this.options.discord.sendDebugMessage!({ channelId: event.channelId, content });
       }
       await event.respond(printCommandConfirmation(event.type, resolved.displayName));
     } catch (error) {
@@ -347,40 +364,27 @@ export class RuntimeCommands {
     type: Exclude<DiscordPrintCommandEvent["type"], undefined>;
   }): Promise<string[]> {
     if (input.type === "system_prompt") {
-      const captured = this.host.lastSentWaifuPrompts.get(`${input.guildId}:${input.waifu.id}`);
+      const key = conversationKey({ kind: "guild", guildId: input.guildId, channelId: input.channelId });
+      const captured = this.host.lastSentWaifuPrompts.get(waifuPromptCaptureKey(key, input.waifu.id));
       if (captured) {
         return [
           `Captured from ${input.waifu.displayName}'s last reply at ${captured.at} in <#${captured.channelId}> — exactly what the model received.`,
-          ...formatWaifuPromptDebugMessages({
-            waifuDisplayName: input.waifu.displayName,
-            systemPrompt: captured.systemPrompt,
-            midSystemBlock: captured.midSystemBlock,
-            trailingSystemBlock: captured.trailingSystemBlock
-          })
+          ...formatWaifuPromptDebugMessages({ waifuDisplayName: input.waifu.displayName, debug: redactPrivateMemories(captured.debug) })
         ];
       }
-      const { systemPrompt, midSystemBlock, trailingSystemBlock } = await buildWaifuPromptParts(
-        this.options,
-        input.guildId,
-        input.waifu,
-        input.availableWaifus,
-        {
-          channelId: input.channelId,
-          pickNextWaifuToolOverride: input.server.tools.pickNextWaifu,
-          shortTermMemoryToolOverride: input.server.tools.shortTermMemory,
-          // No generation since backend start: fresh render; no live window, scores on recency+strength.
-          contextMessages: undefined,
-          memoryInjectionLimit: input.server.memoryInjectionLimit
-        }
-      );
+      if (!input.waifu.modelId) {
+        return [`${input.waifu.displayName} has no model configured, so she has no prompt yet.`];
+      }
+      const system = await this.host.renderWaifuSystemPrompt({
+        guildId: input.guildId,
+        channelId: input.channelId,
+        server: input.server,
+        waifu: { ...input.waifu, modelId: input.waifu.modelId },
+        availableWaifus: input.availableWaifus
+      });
       return [
-        `${input.waifu.displayName} has not replied since the backend started — showing a freshly rendered prompt, not one from a live turn.`,
-        ...formatWaifuPromptDebugMessages({
-          waifuDisplayName: input.waifu.displayName,
-          systemPrompt,
-          midSystemBlock,
-          trailingSystemBlock
-        })
+        `${input.waifu.displayName} has not replied in this channel since the backend started — showing her static system prompt; the epoch header, transcript and tail are built on her next reply.`,
+        ...formatPrintDebugBlock(`System prompt (${input.waifu.displayName})`, system)
       ];
     }
     if (input.type === "memories") {
@@ -390,36 +394,48 @@ export class RuntimeCommands {
     const digest = input.waifu.personaDigest;
     const digestText = digest
       ? `Voice: ${digest.voice}\nDrives: ${digest.role}`
-      : "(no digest generated yet — the trailing anchor falls back to a 200-char persona slice)";
+      : "(no digest generated yet — her style block uses only the verbosity rule)";
     return [
       ...formatPrintDebugBlock(
         `Personality block 1 — raw persona (${input.waifu.displayName})`,
         input.waifu.persona.trim() || "(no personality configured)"
       ),
       ...formatPrintDebugBlock(
-        `Personality block 2 — trailing-anchor summary (${input.waifu.displayName})`,
+        `Personality block 2 — persona digest (${input.waifu.displayName})`,
         digestText
       )
     ];
   }
 
-  /** Every memory for this waifu+guild — active AND archived — newest first, with flags. */
+  /**
+   * Every memory of this waifu — active AND archived — newest first, with flags and provenance.
+   * Memories are global (spec 8.8), so this is not filtered by guild; it is printed into a guild
+   * channel, so DM-origin memories are never included (only counted).
+   */
   private async allMemoriesBlockForPrint(guildId: string, waifu: WaifuConfig): Promise<string> {
     const now = new Date();
     const store = await readMemoryStore(this.options.storage);
-    const records = store.memories
-      .filter((record) => record.guildId === guildId && record.waifuId === waifu.id)
+    const own = store.memories.filter((record) => record.waifuId === waifu.id);
+    const privateCount = own.filter((record) => record.origin.dm).length;
+    const records = own
+      .filter((record) => !record.origin.dm)
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-    if (records.length === 0) return "(none)";
+    const privateNote = privateCount > 0 ? `\n(${privateCount} memor${privateCount === 1 ? "y" : "ies"} from private chats not shown)` : "";
+    if (records.length === 0) return `(none)${privateNote}`;
+    const [directory, placeFor] = await Promise.all([
+      loadSubjectDirectory(this.options.storage, guildId),
+      loadPlaceResolver(this.options.storage, records.map((record) => record.origin.guildId).filter((id): id is string => Boolean(id)))
+    ]);
+    const nameFor = subjectNameResolver([directory]);
     const active = records.filter((record) => record.status === "active").length;
     const lines = records.map((record) => {
       const expired = record.expiresAt !== undefined && Date.parse(record.expiresAt) <= now.getTime();
-      const flags = [record.kind, record.status, expired ? "expired" : undefined, record.pinned ? "pinned" : undefined, `s${record.strength}`]
+      const flags = [record.status, record.archivedReason, expired ? "expired" : undefined, record.pinned ? "pinned" : undefined, `s${record.strength}`]
         .filter(Boolean)
         .join("|");
-      return `- [${flags}] (${relativeAge(record.createdAt, now)}) ${record.content}`;
+      return `[${flags}] ${renderMemoryLine(record, { now, nameFor, placeFor }).replace(/^- /, "")}`;
     });
-    return `${records.length} total (${active} active, ${records.length - active} archived)\n${lines.join("\n")}`;
+    return `${records.length} total (${active} active, ${records.length - active} archived)\n${lines.join("\n")}${privateNote}`;
   }
 
   async handleDebugCommand(event: DiscordDebugCommandEvent): Promise<void> {
@@ -479,7 +495,8 @@ export class RuntimeCommands {
     const messages = await this.options.discord.fetchFreshContext({
       guildId,
       channelId,
-      limit: Math.max(server.contextWindows.waifu, clearCount)
+      // The server's explicit waifu window, else the old 50-message default: enough to find the targets.
+      limit: Math.max(server.contextWindows.waifu ?? LEGACY_SERVER_CONTEXT_WINDOWS.waifu, clearCount)
     });
     const targets = [...messages]
       .reverse()
@@ -645,3 +662,19 @@ function clearMessageLabel(type: DiscordClearType, count: number): string {
 }
 
 const MAX_CLEAR_COUNT = 100;
+
+const PRIVATE_MEMORY_RE = /learned in a private chat/;
+const PRIVATE_MEMORY_PLACEHOLDER = "- (a memory from a private chat — not shown here)";
+
+/**
+ * O4: a printed prompt never shows what someone said in a private chat. Lines carrying DM
+ * provenance (header memories, inline memory notes) are replaced by a placeholder.
+ */
+export function redactPrivateMemories<T extends { header: string; transcript: string }>(debug: T): T {
+  const redact = (text: string) =>
+    text
+      .split("\n")
+      .map((line) => (PRIVATE_MEMORY_RE.test(line) ? PRIVATE_MEMORY_PLACEHOLDER : line))
+      .join("\n");
+  return { ...debug, header: redact(debug.header), transcript: redact(debug.transcript) };
+}

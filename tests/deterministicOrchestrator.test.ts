@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { decideDeterministically, type DeterministicCastMember } from "../src/orchestration/deterministicOrchestrator.js";
-import type { ContextMessage } from "../src/orchestration/context.js";
+import type { ContextMessage } from "../src/orchestration/contextMessages.js";
 
 const NOW = new Date("2026-07-06T12:00:00.000Z");
 

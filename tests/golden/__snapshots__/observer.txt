@@ -1,0 +1,150 @@
+=== system ===
+Never record home addresses.
+
+You maintain the long-term memories of a cast of Discord characters (waifus). Each waifu has one memory that follows her across every server and private chat.
+
+The user message has three parts:
+- Participants: everyone in this chat, as handles. Humans are p1, p2, …; waifus are w:<waifuId>.
+- Existing memories: what the waifus already remember about these participants, as m1, m2, … with owner, kind and strength. Pinned memories are user-managed and read-only.
+- Transcript: the messages since your last read, "[HH:MM] Name (handle): text". You never see a message twice.
+
+Call record_observations exactly once with an ops array. No assistant text. An empty array is the correct answer when nothing durable was said.
+
+Ops:
+- add: a new durable memory. waifuId = the owner. Allowed waifuId values: yuki, riko. waifuId is the waifu who should carry the memory; it is never a human. content = one standalone sentence with names spelled out. kind = fact | preference | relationship | event | commitment. importance 1-5. subjects = handles of the people (or waifus) it is about.
+- update: an existing memory (memory: "m3") is now more precise or has changed: give the full corrected sentence. Use this instead of adding a near-duplicate.
+- merge: two or more existing memories of the same owner say the same thing: into = the one to keep, from = the others, content = one clean combined sentence.
+- expire: an existing memory is now false or resolved (a plan that happened, a preference that changed). Give a short reason.
+
+The durability test for add and update: "Would this still be useful to know in a week, with zero memory of this conversation?" If no, drop it.
+
+Each memory must be a single atomic fact about named people, never a recap of the chat. If a fact is time-bound, state the absolute date ('Kevin plans to release the update on 2026-06-12'), never bare 'tomorrow' or 'tonight'.
+
+Do NOT write narration such as:
+- "Kevin and Mia were talking about cooking." (recap, not a fact)
+- "The user mentioned a movie." (no specific content)
+- "Yuki greeted Kevin warmly." (chat event with no durable substance)
+
+Do write things like:
+- "Kevin is allergic to peanuts." (fact, subjects [p1])
+- "Mia prefers green tea over black tea." (preference)
+- "Kevin and Mia are siblings." (relationship, subjects [p1, p2])
+- "Kevin promised Yuki to share his cookbook on 2026-10-30." (commitment, subjects [p1, w:yuki])
+
+Importance: a one-off mention is a 2; a stated preference is a 3; an allergy, hard constraint or family relation is a 4-5. Emotional intensity alone is not importance.
+
+Roleplay, banter and small talk are normal; most windows produce no ops at all.
+
+=== user ===
+Participants:
+- p1 = Kevin
+- w:yuki = Yuki (waifu)
+- p2 = Mia
+
+Existing memories:
+m1 [yuki · context · strength 2] about p1: Kevin is baking sourdough tonight.
+m2 [yuki · preference · strength 3] about p1: Kevin prefers green tea over coffee.
+m3 [yuki · commitment · strength 4] about p1: Kevin plans a trip to Osaka on 2026-10-22.
+m4 [yuki · fact · strength 5 · pinned] about p2: Mia plays the cello in a community orchestra.
+
+Transcript:
+— 2026-10-22 (UTC) —
+[23:55] Kevin (p1): back from Osaka!! the trip was amazing
+[23:56] Yuki (w:yuki): welcome back~ did you bring me anything
+— 2026-10-23 (UTC) —
+[00:02] Mia (p2): Kevin we need to talk about the bake-off on 12 December, I'm in
+[00:03] Kevin (p1): yes! also I switched to oolong, green tea got boring
+
+=== tool: record_observations ===
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "ops": {
+      "type": "array",
+      "description": "Memory operations. An empty array is valid and means nothing durable was said.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "op"
+        ],
+        "properties": {
+          "op": {
+            "type": "string",
+            "enum": [
+              "add",
+              "update",
+              "merge",
+              "expire"
+            ],
+            "description": "add: new memory. update: correct an existing memory. merge: combine duplicates. expire: retire a false or resolved memory."
+          },
+          "waifuId": {
+            "type": "string",
+            "description": "Required for add. Must be one of the configured waifu ids: yuki, riko. The memory owner, never a human.",
+            "enum": [
+              "yuki",
+              "riko"
+            ]
+          },
+          "content": {
+            "type": "string",
+            "description": "Required for add, update and merge: one atomic standalone sentence, not a recap of chat events."
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "fact",
+              "preference",
+              "relationship",
+              "event",
+              "commitment"
+            ],
+            "description": "Required for add; optional for update."
+          },
+          "importance": {
+            "type": "integer",
+            "enum": [
+              1,
+              2,
+              3,
+              4,
+              5
+            ],
+            "description": "Required for add; optional for update."
+          },
+          "subjects": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Participant handles (p1, w:<waifuId>) of everyone the memory is about."
+          },
+          "memory": {
+            "type": "string",
+            "description": "Required for update and expire: the existing memory id (m1, m2, ...)."
+          },
+          "into": {
+            "type": "string",
+            "description": "Required for merge: the memory id to keep."
+          },
+          "from": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Required for merge: the memory ids folded into `into`."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Optional for expire: why it no longer holds."
+          }
+        }
+      }
+    }
+  },
+  "required": [
+    "ops"
+  ]
+}

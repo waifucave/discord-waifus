@@ -2,7 +2,8 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
-import { ImageOcrService } from "../src/orchestration/ocr.js";
+import { ImageOcrService, ocrCacheKey } from "../src/orchestration/ocr.js";
+import { attachmentKey } from "../src/discord/attachments.js";
 import { OcrConfigSchema } from "../src/shared/schemas/config.js";
 import { appDataPath } from "../src/config/paths.js";
 import type { ContextMessage } from "../src/discord/contextBuilder.js";
@@ -18,9 +19,9 @@ function quietLogger() {
 }
 
 async function seedCache(root: string, url: string, text: string): Promise<void> {
-  const dir = appDataPath(root, "cache", "ocr", "results");
+  const dir = appDataPath(root, "cache", "ocr", "results-v2");
   await mkdir(dir, { recursive: true });
-  const key = createHash("sha256").update(url).digest("hex");
+  const key = ocrCacheKey(attachmentKey(url));
   await writeFile(
     path.join(dir, `${key}.json`),
     JSON.stringify({

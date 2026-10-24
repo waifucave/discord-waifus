@@ -7,8 +7,16 @@ import { QueryRole } from "../shared/queryLog.js";
 import { OrchestratorRespondingWaifu } from "../shared/schemas/domain.js";
 import { StorageService } from "../storage/storageService.js";
 import type { RetriggerSource } from "./session.js";
-import type { ContextMessage } from "./context.js";
+import type { ContextMessage } from "./contextMessages.js";
 import type { OneShotInput, OneShotResult } from "./oneShot/decider.js";
+import type { ImageCacheConfig, ImageFetcher } from "../discord/attachments.js";
+import type { ImageRef } from "../shared/schemas/discordMessage.js";
+import type { CompactionSettings } from "../shared/schemas/compaction.js";
+import type { MemoryConfig } from "../shared/schemas/config.js";
+import type { ContextRuntime } from "./context/runtime.js";
+import type { CompactionService } from "./context/types.js";
+import type { ConversationMessageCache } from "../discord/conversationCache.js";
+import type { GuildDirectory } from "../discord/guildDirectory.js";
 
 export type RuntimeOrchestratorOptions = {
   updateActivity?: import("../backend/updates/activity.js").UpdateActivity;
@@ -16,22 +24,75 @@ export type RuntimeOrchestratorOptions = {
   discord: DiscordGatewayFacade;
   logger: Logger;
   maxAutomaticTurns?: number;
+  /** Defaults to the shared per-data-root instances. */
+  usageLedger?: import("./usageLedger.js").UsageLedger;
+  providerAlerts?: import("./providerAlerts.js").ProviderAlerts;
   isPaused?: () => boolean;
   onActiveRunsChange?: (activeRuns: number) => void;
   createPipeline?: (target: { providerId: string; modelId: string; queryRole: QueryRole }) => ModelPipeline;
   decideOneShot?: (input: OneShotInput) => Promise<OneShotResult>;
   ocr?: {
     enrichMessages(messages: ContextMessage[], options?: { signal?: AbortSignal }): Promise<ContextMessage[]>;
+    /** Cached OCR text without running OCR (ImageOcrService.cachedText); feeds the image freeze rule. */
+    cachedText?(ref: ImageRef): Promise<string | undefined>;
+    /** Bounded OCR (ImageOcrService.textFor): text-only contexts wait for it before an image freezes. */
+    textFor?(ref: ImageRef, o: { timeoutMs: number; signal?: AbortSignal }): Promise<string | undefined>;
+    /** Drop cached OCR text for deleted images (ImageOcrService.purge). */
+    purge?(keys: readonly string[]): Promise<void>;
     dispose?(): Promise<void>;
   };
+  /** Shared Discord image fetcher (the OCR service's, spec 8.4); built over the data root when omitted. */
+  images?: ImageFetcher;
+  /** `AppConfig.discord.images`, used only when `images` is omitted. */
+  imageConfig?: Partial<ImageCacheConfig>;
+  /** `AppConfig.compaction`; `ServerConfig.compaction` overrides per key. */
+  compaction?: CompactionSettings;
+  /** `AppConfig.discord.deletedMessages` (spec 9.5): how many newest messages a delete redacts. */
+  deletedMessages?: { redactRecent: number };
+  /** Context compaction service (T7b); NoopCompaction when omitted. */
+  contextCompaction?: CompactionService;
+  /** Prebuilt context runtime (tests); otherwise createAppContextRuntime builds one. */
+  contexts?: ContextRuntime;
+  /** Prebuilt guild directory (tests); otherwise one is built over the data root (spec 9.4). */
+  directory?: GuildDirectory;
+  /** Prebuilt conversation cache (tests); otherwise one is built over the Discord facade (spec 9.4). */
+  conversationCache?: ConversationMessageCache;
+  /**
+   * `AppConfig.discord.debounce` (spec 9.2). Omitted keys: `serverMs`/`dmMs` 0 (fire at once, the
+   * pre-debounce behaviour); the backend passes the config (defaults 1200 / 4000 / 1500 / 8000).
+   */
+  debounce?: Partial<import("../shared/schemas/config.js").DebounceConfig>;
+  /** `AppConfig.discord.dm` (spec 9.1): DM run concurrency and the restart catch-up window. */
+  dm?: Partial<import("../shared/schemas/config.js").DmRuntimeConfig>;
+  /** Stagger between DM catch-up runs at boot/resume (default 2000 ms; tests use 0). */
+  dmResumeStaggerMs?: number;
+  /** `AppConfig.discord.memberListRefreshHours` (default 24, 0 = never). */
+  memberListRefreshHours?: number;
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   stageManagerIdleDelayMs?: number;
   /** Delay before boot catch-up runs (lets Discord bots finish connecting). Default 5000. */
   restartResumeDelayMs?: number;
+  /** AppConfig `memory` section (dream hour, pinned cap) plus a test hook for the nightly budget. */
+  memory?: Partial<MemoryConfig> & { dreamChunksPerNight?: number };
+};
+
+/**
+ * Collaborator deps: the orchestrator options plus the one ContextRuntime the facade builds
+ * (spec 8.3). Every collaborator (ResponderExecutor, ChannelRunner, ...) reads `options.contexts`.
+ */
+export type RuntimeCollaboratorOptions = RuntimeOrchestratorOptions & {
+  contexts: ContextRuntime;
+  /** Names for mentions/roles/channels/emojis, maintained from gateway events (spec 9.4). */
+  directory: GuildDirectory;
+  /** Message source of `contexts`; also carries reactions and message events (spec 9.4). */
+  conversationCache: ConversationMessageCache;
 };
 
 /** The narrow I/O services most runtime collaborators need. */
-export type RuntimeServices = Pick<RuntimeOrchestratorOptions, "storage" | "discord" | "logger" | "isPaused">;
+export type RuntimeServices = Pick<RuntimeOrchestratorOptions, "storage" | "discord" | "logger" | "isPaused" | "memory">;
+
+/** RuntimeServices plus the shared context engine (reply path, orchestrator). */
+export type RuntimeContextServices = RuntimeServices & Pick<RuntimeCollaboratorOptions, "contexts" | "directory" | "conversationCache">;
 
 /** Facade-owned lifecycle hooks shared with the collaborators. */
 export type RuntimeHooks = {

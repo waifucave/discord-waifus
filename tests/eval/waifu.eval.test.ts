@@ -7,7 +7,7 @@
 //
 // Prompt building reuses the RuntimeOrchestrator path (same as runtime.test.ts):
 //   the real gateway pipeline (createGatewayModelPipeline) is passed as createPipeline,
-//   so buildWaifuPromptParts assembles the W2 harness blocks through the normal code path.
+//   so the waifu harness + context engine build the prompt through the normal code path.
 
 import { afterEach, describe, expect, it } from "vitest";
 import { createGateway } from "@waifucave/gateway";
@@ -21,7 +21,9 @@ import type {
 import type { OrchestratorDecision } from "../../src/orchestration/decisions.js";
 import { resolveModelTarget } from "../../src/orchestration/pipeline/resolveTarget.js";
 import { createGatewayModelPipeline } from "../../src/orchestration/pipeline/gatewayPipeline.js";
-import { validateWaifuOutput } from "../../src/orchestration/outputValidator.js";
+// The full waifu validator: leak checks plus the length/verbosity budget of her profile (the
+// eval waifus use the schema default, terse).
+import { VERBOSITY_PROFILES, validateWaifuOutput } from "../../src/orchestration/verbosity.js";
 import { ensureDataLayout } from "../../src/config/layout.js";
 import { StorageService } from "../../src/storage/storageService.js";
 import {
@@ -33,7 +35,7 @@ import {
 } from "../../src/shared/schemas/domain.js";
 import { createRevisionedBase } from "../../src/shared/schemas/common.js";
 import { makeTempRoot, removeTempRoot } from "../testUtils.js";
-import type { ContextMessage } from "../../src/orchestration/context.js";
+import type { ContextMessage } from "../../src/orchestration/contextMessages.js";
 import { EVAL_SCENARIOS } from "./scenarios.js";
 
 // ---------------------------------------------------------------------------
@@ -312,6 +314,7 @@ describeLive("waifu eval — tier 2 (WAIFUS_EVAL_LIVE=1)", () => {
 
       // Validator passes
       const validationResult = validateWaifuOutput(content, {
+        profile: VERBOSITY_PROFILES.terse,
         selfNames: [yuki.displayName, yuki.id],
         participantNames: ["Kevin", yuki.displayName, yuki.id],
         blockTags: [
@@ -382,6 +385,7 @@ describeLive("waifu eval — tier 2 (WAIFUS_EVAL_LIVE=1)", () => {
 
       // Validator must pass
       const validationResult = validateWaifuOutput(content, {
+        profile: VERBOSITY_PROFILES.terse,
         selfNames: ["Yuki", "yuki"],
         participantNames: ["Kevin", "Yuki", "yuki"],
         blockTags: [

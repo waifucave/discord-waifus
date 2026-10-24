@@ -1,6 +1,9 @@
 import { z } from "zod";
 import { OneShotConfigSchema } from "./oneShot.js";
 import { CURRENT_SCHEMA_VERSION, IsoDateStringSchema, RevisionedRecordSchema } from "./common.js";
+import { CompactionOverrideSchema } from "./compaction.js";
+import { WaifuDmSettingsSchema, defaultWaifuDmSettings } from "./dm.js";
+import { ChannelThreadsModeSchema } from "./threads.js";
 
 // Gateway P4 Task 4: widened from the legacy 6-value enum to any id the gateway registry
 // knows (14+ providers). Unknown ids still get rejected at API write time — see
@@ -112,66 +115,6 @@ export const WaifuToolSettingsSchema = z
   });
 export type WaifuToolSettings = z.infer<typeof WaifuToolSettingsSchema>;
 
-// Prompt layout: an ordered tree describing which prompt blocks live in each of the three
-// model-message slots (top system prompt / mid system block / trailing system block), in what
-// order, and how they are grouped inside named XML wrappers. Block *wording* is fixed in code
-// (see src/orchestration/promptBlocks.ts); this only controls placement, order, grouping and
-// enable/disable. Replaces the former flat boolean WaifuPromptSectionsSchema.
-export const PromptLayoutBlockNodeSchema = z.object({
-  kind: z.literal("block"),
-  blockId: z.string().min(1),
-  enabled: z.boolean().default(true)
-});
-export type PromptLayoutBlockNode = z.infer<typeof PromptLayoutBlockNodeSchema>;
-
-export const PromptLayoutGroupNodeSchema = z.object({
-  kind: z.literal("group"),
-  id: z.string().min(1),
-  // XML wrapper tag. May contain the `{name}` token, substituted with the waifu tag at render.
-  tag: z.string().min(1),
-  enabled: z.boolean().default(true),
-  children: z.array(PromptLayoutBlockNodeSchema).default([])
-});
-export type PromptLayoutGroupNode = z.infer<typeof PromptLayoutGroupNodeSchema>;
-
-export const PromptLayoutNodeSchema = z.discriminatedUnion("kind", [
-  PromptLayoutBlockNodeSchema,
-  PromptLayoutGroupNodeSchema
-]);
-export type PromptLayoutNode = z.infer<typeof PromptLayoutNodeSchema>;
-
-export const WaifuPromptLayoutSchema = z
-  .object({
-    top: z.array(PromptLayoutNodeSchema),
-    mid: z.array(PromptLayoutNodeSchema),
-    trailing: z.array(PromptLayoutNodeSchema)
-  })
-  .default(() => defaultWaifuPromptLayout());
-export type WaifuPromptLayout = z.infer<typeof WaifuPromptLayoutSchema>;
-
-// The default arrangement for new waifus: identity, persona, schedule, ioFormat, tools, and
-// outputContract in the top slot; roomInfo and relevantMemories in mid (10 messages deep);
-// anchor, currentlyDoing, and directorNote in trailing.
-export function defaultWaifuPromptLayout(): WaifuPromptLayout {
-  const block = (blockId: string): PromptLayoutBlockNode => ({ kind: "block", blockId, enabled: true });
-  return {
-    top: [
-      block("identity"),
-      block("persona"),
-      block("schedule"),
-      block("ioFormat"),
-      block("tools"),
-      block("outputContract")
-    ],
-    mid: [block("roomInfo"), block("relevantMemories")],
-    trailing: [
-      block("anchor"),
-      block("currentlyDoing"),
-      block("directorNote")
-    ]
-  };
-}
-
 export const ServerToolSettingsSchema = z
   .object({
     pickNextWaifu: z.boolean().default(false),
@@ -228,13 +171,16 @@ export const AgentConfigSchema = RevisionedRecordSchema.extend({
   enabled: z.boolean().default(false),
   providerId: z.union([ProviderIdSchema, z.null()]).optional().transform((value) => value ?? undefined),
   modelId: z.union([z.string(), z.null()]).optional().transform((value) => value ?? undefined),
-  contextWindow: z.number().int().min(1).max(100).default(20),
+  contextWindow: z.number().int().min(1).max(200).default(20),
   prompt: z.string().default(""),
   directiveCooldown: z.number().int().min(0).max(20).default(3),
   params: z.record(z.string(), z.unknown()).default({}),
   promptSections: OrchestratorPromptSectionsSchema
 });
 export type AgentConfig = z.infer<typeof AgentConfigSchema>;
+
+export const WAIFU_VERBOSITIES = ["terse", "chatty", "expressive"] as const;
+export type WaifuVerbosity = (typeof WAIFU_VERBOSITIES)[number];
 
 export const WaifuConfigSchema = RevisionedRecordSchema.extend({
   id: z.string().min(1),
@@ -252,11 +198,16 @@ export const WaifuConfigSchema = RevisionedRecordSchema.extend({
     .union([z.string(), z.null()])
     .optional()
     .transform((value) => value ?? undefined),
-  contextWindow: z.number().int().min(1).max(100).default(50),
+  contextWindow: z.number().int().min(1).max(200).default(50),
   params: z.record(z.string(), z.unknown()).default({}),
   availability: WaifuAvailabilitySchema,
   tools: WaifuToolSettingsSchema,
-  promptLayout: WaifuPromptLayoutSchema,
+  // Phase 4 prompt settings (spec 8.2), read by the waifu harness (waifuHarness.ts).
+  verbosity: z.enum(WAIFU_VERBOSITIES).default("terse"),
+  customInstructions: z.string().max(4000).default(""),
+  scheduleInPrompt: z.boolean().default(true),
+  // Phase 5 DM settings (spec 9.1): read by the DM runner (src/orchestration/dm/).
+  dm: WaifuDmSettingsSchema.default(() => defaultWaifuDmSettings()),
   personaDigest: z
     .object({
       voice: z.string(),
@@ -270,14 +221,18 @@ export type WaifuConfig = z.infer<typeof WaifuConfigSchema>;
 export const ServerConfigSchema = RevisionedRecordSchema.extend({
   guildId: z.string().min(1),
   name: z.string().optional(),
-  enabled: z.boolean().default(false),
+  // B29: optional overrides (precedence: explicit server override > agent/waifu `contextWindow`).
+  // Files written before Phase 4 carry all three keys; they parse unchanged until the
+  // server-context-windows-explicit-v1 migration drops keys equal to the old defaults.
   contextWindows: z
     .object({
-      orchestrator: z.number().int().min(1).max(100).default(20),
-      waifu: z.number().int().min(1).max(100).default(50),
-      stageManager: z.number().int().min(1).max(100).default(80)
+      orchestrator: z.number().int().min(1).max(200).optional(),
+      waifu: z.number().int().min(1).max(200).optional(),
+      stageManager: z.number().int().min(1).max(200).optional()
     })
-    .default({ orchestrator: 20, waifu: 50, stageManager: 80 }),
+    .default({}),
+  // Per-server override of AppConfig.compaction; absent keys inherit.
+  compaction: CompactionOverrideSchema.optional(),
   memoryInjectionLimit: z.number().int().min(1).max(50).default(12),
   // "model" uses the globally configured orchestrator model; "deterministic" forces the
   // model-free structural decider for every channel of this guild (zero orchestration spend).
@@ -286,7 +241,8 @@ export const ServerConfigSchema = RevisionedRecordSchema.extend({
   // Per-guild kill switch for the stage manager's automatic work (idle observers + dreams).
   stageManagerEnabled: z.boolean().default(true),
   // Temporary per-guild mute: messages are observed (sessions stay warm) but nothing runs
-  // and nothing is scheduled until unpaused. Distinct from channel enabled flags.
+  // and nothing is scheduled until unpaused. This is the server's kill switch (spec 9.7): the
+  // old server/channel `enabled` flags are gone, a channel is live when it has an enabled waifu.
   paused: z.boolean().default(false),
   tools: ServerToolSettingsSchema,
   channels: z.record(
@@ -294,8 +250,24 @@ export const ServerConfigSchema = RevisionedRecordSchema.extend({
     z.object({
       channelId: z.string().min(1),
       name: z.string().optional(),
-      enabled: z.boolean().default(false),
-      enabledWaifuIds: z.array(z.string()).default([])
+      enabledWaifuIds: z.array(z.string()).default([]),
+      // Spec 9.5 / O2: do this channel's threads and forum posts inherit its cast ("inherit") or
+      // stay silent ("off")? Absent means "inherit" (kept optional, not defaulted, so older writers
+      // and partial PUTs never manufacture or reset it). A thread with an explicit entry of its own
+      // is not affected.
+      threads: ChannelThreadsModeSchema.optional(),
+      // Runtime-only (ensureServer's thread overlay, stores/threads.ts): marks a virtual entry for
+      // a thread that inherits `parentId`'s cast. Never persisted; the API never returns it.
+      thread: z
+        .object({
+          parentId: z.string().min(1),
+          lastActivityAt: IsoDateStringSchema.optional(),
+          /** The thread has an entry (and cast) of its own; the overlay only adds its state. */
+          explicit: z.boolean().optional(),
+          /** Archived or locked: the entry keeps its cast but takes no part until unarchived. */
+          silenced: z.boolean().optional()
+        })
+        .optional()
     })
   ).default({})
 });
@@ -378,22 +350,50 @@ export const MEMORY_SOURCES = ["waifu_tool", "stage_manager", "dream", "user"] a
 export const MemorySourceSchema = z.enum(MEMORY_SOURCES);
 export type MemorySource = z.infer<typeof MemorySourceSchema>;
 
+// Phase 4 (spec 8.8, D2): memories are global per waifu. Where a memory was learned is provenance
+// only (`origin`), never a retrieval filter. Subjects are the people/waifus the memory is about,
+// keyed by stable ids; `name` is the last-known display name (refreshed at render time).
+export const MemoryOriginSchema = z.object({
+  guildId: z.string().min(1).optional(),
+  channelId: z.string().min(1).optional(),
+  dm: z.literal(true).optional(),
+  // DM provenance (spec 9.1.4): the Discord user of the private chat, so forgetting a user
+  // finds every DM-origin record and the same-origin boost stays inside that user's own DM.
+  userId: z.string().min(1).optional()
+});
+export type MemoryOrigin = z.infer<typeof MemoryOriginSchema>;
+
+export const MemorySubjectSchema = z.object({
+  discordUserId: z.string().min(1).optional(),
+  waifuId: z.string().min(1).optional(),
+  name: z.string().min(1)
+});
+export type MemorySubject = z.infer<typeof MemorySubjectSchema>;
+
+export const MEMORY_ARCHIVED_REASONS = ["merged", "expired", "deduped", "user", "unknown_waifu"] as const;
+export const MemoryArchivedReasonSchema = z.enum(MEMORY_ARCHIVED_REASONS);
+export type MemoryArchivedReason = z.infer<typeof MemoryArchivedReasonSchema>;
+
 export const MemoryRecordSchema = z.object({
   id: z.string().min(1),
-  guildId: z.string().min(1),
-  channelId: z.string().optional(), // origin channel; retrieval boost, NOT a visibility filter
   waifuId: z.string().min(1),
   content: z.string().min(1),
   kind: MemoryKindSchema.default("fact"),
   source: MemorySourceSchema.default("stage_manager"),
   pinned: z.boolean().default(false), // user-managed; never auto-edited, always injected
   strength: z.number().min(0).max(5).default(3),
-  entities: z.array(z.string()).default([]),
+  origin: MemoryOriginSchema.default({}),
+  subjects: z.array(MemorySubjectSchema).default([]),
+  // Per-record optimistic-concurrency counter: every content write bumps it (API, observer ops,
+  // dream, waifu tool, archival); retrieval statistics (lastRetrievedAt) never do.
+  revision: z.number().int().nonnegative().default(0),
   expiresAt: IsoDateStringSchema.optional(), // hard TTL (waifu notes); absent = durable
   createdAt: IsoDateStringSchema,
   updatedAt: IsoDateStringSchema,
   lastRetrievedAt: IsoDateStringSchema.optional(),
-  status: z.enum(["active", "archived"]).default("active")
+  status: z.enum(["active", "archived"]).default("active"),
+  archivedReason: MemoryArchivedReasonSchema.optional(),
+  mergedInto: z.string().min(1).optional()
 });
 export type MemoryRecord = z.infer<typeof MemoryRecordSchema>;
 
@@ -404,13 +404,14 @@ export type MemoryStore = z.infer<typeof MemoryStoreSchema>;
 
 export const PendingObservationSchema = z.object({
   id: z.string().min(1),
-  guildId: z.string().min(1),
-  channelId: z.string().min(1),
   waifuId: z.string().min(1),
   content: z.string().min(1),
   kind: MemoryKindSchema,
   importance: z.number().int().min(1).max(5),
-  entities: z.array(z.string()).default([]),
+  subjects: z.array(MemorySubjectSchema).default([]),
+  origin: MemoryOriginSchema.default({}),
+  // The conversation the observer read (`g_<guild>_<channel>` | `dm_<user>_<waifu>`).
+  conversationKey: z.string().min(1).optional(),
   createdAt: IsoDateStringSchema
 });
 export type PendingObservation = z.infer<typeof PendingObservationSchema>;

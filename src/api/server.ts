@@ -16,10 +16,16 @@ import { RuntimeState } from "../backend/runtime.js";
 import { redactRemoteHostDetails, redactSecrets } from "../backend/redaction.js";
 import { RuntimeOrchestrator } from "../orchestration/runtime.js";
 import { clearOcrArtifacts } from "../orchestration/ocr.js";
-import { extractEntities } from "../orchestration/memoryEntities.js";
+import { forgetUser } from "../orchestration/memoryForget.js";
+import { loadSubjectDirectory, resolveSubjectsInText } from "../orchestration/memorySubjects.js";
+import { readMergedOrchestratorHistory, readOrchestratorHistoryForGuild } from "../orchestration/stores/decisionHistory.js";
+import { readThreads } from "../orchestration/stores/threads.js";
+import { ChannelThreadsModeSchema } from "../shared/schemas/threads.js";
+import { applyMemoryCandidate, bumpMemoryRecord, emptyMemoryStore, readMemoryStore, updateMemoryStore } from "../orchestration/stores/memories.js";
 import { providerStatuses, keyHint } from "./providerStatus.js";
 import type { ModelPipeline } from "../providers/types.js";
 import { createGatewayModelPipeline } from "../orchestration/pipeline/gatewayPipeline.js";
+import { sharedProviderAlerts } from "../orchestration/providerAlerts.js";
 import { resolveModelTarget } from "../orchestration/pipeline/resolveTarget.js";
 import {
   AgentConfig,
@@ -40,8 +46,7 @@ import {
   MemoryStore,
   MemoryStoreSchema,
   MemoryKindSchema,
-  OrchestratorHistoryFile,
-  OrchestratorHistoryFileSchema,
+  MemorySubjectSchema,
   OrchestratorPromptSectionsSchema,
   ProviderCredentialsFile,
   ProviderCredentialsFileSchema,
@@ -56,19 +61,25 @@ import {
   WaifuAvailabilitySchema,
   WaifuConfig,
   WaifuConfigSchema,
-  WaifuPromptLayoutSchema,
   WaifuToolSettingsSchema,
+  WAIFU_VERBOSITIES,
   createEmptyRevisionedFile
 } from "../shared/schemas/domain.js";
+import { WaifuDmSettingsSchema } from "../shared/schemas/dm.js";
+import { CompactionOverrideBodySchema } from "../shared/schemas/compaction.js";
 import { UpdateAppConfigBodySchema, type AppConfig } from "../shared/schemas/config.js";
 import { createRevisionedBase, nowIso } from "../shared/schemas/common.js";
 import { StorageConflictError } from "../storage/errors.js";
+import { MemoryRecordConflictError } from "./errors.js";
 import { StorageService } from "../storage/storageService.js";
 import { AuditStore } from "../storage/auditStore.js";
 import { OperationStore } from "../storage/operationStore.js";
 import { recentQueries, recentReplies, subscribeQueries, subscribeReplies } from "../shared/queryLog.js";
 import { listDocs, readDoc } from "./docsKb.js";
 import { registerAssistantRoutes } from "./assistant/routes.js";
+import { registerDmRoutes } from "./dms.js";
+import { computeDmEligibility } from "../orchestration/dm/dmStore.js";
+import { assertSafeId, assertSnowflakeId } from "./ids.js";
 import {
   ApiError,
   apiErrorResponse,
@@ -77,9 +88,8 @@ import {
   notFound,
   preconditionRequired
 } from "./errors.js";
-import { DiscordAPIError, HTTPError } from "discord.js";
 import { mergeConfiguredBotsIntoMembers } from "../discord/memberCache.js";
-import { discordRestForToken, discordRestGet } from "../discord/rest.js";
+import { DirectoryTransportError, GuildDirectory, type DirectoryKind } from "../discord/guildDirectory.js";
 import { assertKnownProvider, assertModelWriteValid } from "./writeValidation.js";
 import { BrowserSecurity, type BrowserSecurityOptions } from "./browserSecurity.js";
 import { installRoutePolicy } from "./routePolicy.js";
@@ -106,6 +116,8 @@ export type ApiServerOptions = {
   storage?: StorageService;
   runtime: RuntimeState;
   runtimeOrchestrator?: RuntimeOrchestrator;
+  /** The host's guild directory (spec 9.4); the refresh routes go through it. Built over the storage when omitted. */
+  directory?: GuildDirectory;
   runtimeControl?: {
     getOrchestrator: () => RuntimeOrchestrator | undefined;
     pause: () => Promise<void>;
@@ -151,6 +163,8 @@ const CreateWaifuBodySchema = WaifuConfigSchema.omit({
   schemaVersion: true,
   revision: true,
   updatedAt: true,
+  // Clients can no longer set a prompt layout (spec 8.6): `promptLayout` is not in the schema, so
+  // a stray key is stripped by zod. See noteIgnoredPromptLayout.
   personaDigest: true
 })
   .partial({ id: true, enabled: true, persona: true, contextWindow: true })
@@ -192,6 +206,22 @@ function mergeNestedPatch<T>(current: T, patch: NoInfer<DeepPartial<T>> | undefi
   return merged as T;
 }
 
+// Optional-override maps (ServerConfig.contextWindows/compaction): a number/boolean sets the key,
+// an explicit `null` unsets it (= inherit), an omitted key is kept. An emptied map is dropped.
+function mergeOverridePatch<T extends Record<string, unknown>>(
+  current: T | undefined,
+  patch: { [K in keyof T]?: T[K] | null } | undefined
+): T | undefined {
+  if (patch === undefined) return current;
+  const merged: Record<string, unknown> = { ...(current ?? {}) };
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === undefined) continue;
+    if (value === null) delete merged[key];
+    else merged[key] = value;
+  }
+  return Object.keys(merged).length > 0 ? (merged as T) : undefined;
+}
+
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -199,8 +229,7 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 // personaDigest is server-managed; clients cannot set it via PUT.
 //
 // P5 Task 4 review fix: every WaifuConfigSchema field below carries a `.default(...)` (either
-// directly, like contextWindow, or baked into a shared sub-schema, like availability/tools/
-// promptLayout). `.partial()` does not suppress those defaults — zod still fills in the default
+// directly, like contextWindow, or baked into a shared sub-schema, like availability/tools). `.partial()` does not suppress those defaults — zod still fills in the default
 // when the field is absent from the request body, even though "absent" should mean "leave it
 // alone" for a PATCH-style update. Re-declared here without a default (same validation, via
 // `.unwrap()` on the sub-schemas that bundle their `.default()` internally) so an omitted field
@@ -213,11 +242,18 @@ const UpdateWaifuBodySchema = WaifuConfigSchema.omit({ personaDigest: true }).pa
   params: z.record(z.string(), z.unknown()).optional(),
   enabled: z.boolean().optional(),
   persona: z.string().optional(),
-  contextWindow: z.number().int().min(1).max(100).optional(),
+  contextWindow: z.number().int().min(1).max(200).optional(),
   availability: partialWithoutDefaults(WaifuAvailabilitySchema).optional(),
   tools: partialWithoutDefaults(WaifuToolSettingsSchema).optional(),
-  // promptLayout is a documented wholesale replace (the editor always sends the full tree).
-  promptLayout: WaifuPromptLayoutSchema.unwrap().optional()
+  // Phase 4/5 additions: truly optional so a partial PUT never resets a stored value.
+  // dm.rateLimit is a leaf whose `null` (unlimited) is a real value, replaced wholesale.
+  verbosity: z.enum(WAIFU_VERBOSITIES).optional(),
+  customInstructions: z.string().max(4000).optional(),
+  scheduleInPrompt: z.boolean().optional(),
+  dm: partialWithoutDefaults(WaifuDmSettingsSchema).optional(),
+  // Spec 8.6: the layout editor is gone. `promptLayout` is still accepted (any shape) for one
+  // release so older dashboards/scripts do not fail, but it is ignored and never written.
+  promptLayout: z.unknown().optional()
 });
 
 // P5 Task 4 review fix (3rd instance): same `.partial()`-does-not-suppress-`.default()` gotcha as
@@ -230,6 +266,7 @@ const UpdateWaifuBodySchema = WaifuConfigSchema.omit({ personaDigest: true }).pa
 // drift on) their inline definitions.
 const ServerConfigBodySchema = ServerConfigSchema.partial().extend({
   revision: z.number().int().nonnegative().optional(),
+  // Spec 9.7: the server `enabled` flag was removed. Accepted and ignored for one release (logged).
   enabled: z.boolean().optional(),
   // Truly-optional re-declarations: .partial() alone still lets ZodDefault manufacture
   // values for absent keys, which would reset stored state on unrelated PUTs
@@ -239,35 +276,69 @@ const ServerConfigBodySchema = ServerConfigSchema.partial().extend({
   oneShot: OneShotConfigSchema.unwrap().optional(),
   stageManagerEnabled: z.boolean().optional(),
   paused: z.boolean().optional(),
-  contextWindows: partialWithoutDefaults(ServerConfigSchema.shape.contextWindows).optional(),
+  // B29: `null` per key = inherit (unset the stored override); omitted keys are kept.
+  contextWindows: z.object({
+    orchestrator: z.number().int().min(1).max(200).nullable().optional(),
+    waifu: z.number().int().min(1).max(200).nullable().optional(),
+    stageManager: z.number().int().min(1).max(200).nullable().optional()
+  }).optional(),
+  compaction: CompactionOverrideBodySchema.optional(),
   memoryInjectionLimit: z.number().int().min(1).max(50).optional(),
   tools: partialWithoutDefaults(ServerToolSettingsSchema).optional(),
   // channels is a documented wholesale replace; per-channel edits use the channel route.
-  channels: ServerConfigSchema.shape.channels.unwrap().optional()
+  // `thread` marks the runtime-only overlay entries and is never accepted from a client.
+  channels: z.record(z.string(), ServerConfigSchema.shape.channels.unwrap().valueType.omit({ thread: true })).optional()
 });
 
 const ChannelConfigBodySchema = z.object({
   revision: z.number().int().nonnegative().optional(),
   name: z.string().optional(),
-  // Omitted keeps the stored flag; only a channel first created through this route defaults on.
+  // Spec 9.7: the channel `enabled` flag was removed. Accepted and ignored for one release (logged).
   enabled: z.boolean().optional(),
-  enabledWaifuIds: z.array(z.string()).optional()
+  enabledWaifuIds: z.array(z.string()).optional(),
+  // Spec 9.5 / O2: "inherit" (default) lets threads and forum posts under this channel share its
+  // cast; "off" silences them. Omitted keeps the stored value.
+  threads: ChannelThreadsModeSchema.optional()
 });
 
+// Memories are global per waifu (spec 8.8): guildId/channelId are optional provenance only.
 const CreateMemoryBodySchema = z.object({
   revision: z.number().int().nonnegative().optional(),
   waifuId: z.string().min(1),
-  guildId: z.string().min(1),
+  guildId: z.string().min(1).optional(),
+  channelId: z.string().min(1).optional(),
   content: z.string().min(1),
   // User-created memories are pinned by default (per design), but the dashboard can override.
   strength: z.number().min(0).max(5).optional(),
   pinned: z.boolean().optional(),
-  kind: MemoryKindSchema.optional()
+  kind: MemoryKindSchema.optional(),
+  subjects: z.array(MemorySubjectSchema).max(20).optional()
 });
 
-const UpdateMemoryBodySchema = CreateMemoryBodySchema.partial().extend({
+// PUT/DELETE accept the per-record `recordRevision` (preferred) or the legacy store-wide
+// `revision` / If-Match; one is required (428).
+const UpdateMemoryBodySchema = z.object({
   revision: z.number().int().nonnegative().optional(),
+  recordRevision: z.number().int().nonnegative().optional(),
+  content: z.string().min(1).optional(),
+  strength: z.number().min(0).max(5).optional(),
+  pinned: z.boolean().optional(),
+  kind: MemoryKindSchema.optional(),
+  subjects: z.array(MemorySubjectSchema).max(20).optional(),
   status: z.enum(["active", "archived"]).optional()
+});
+
+const DeleteMemoryBodySchema = z
+  .object({
+    revision: z.number().int().nonnegative().optional(),
+    recordRevision: z.number().int().nonnegative().optional()
+  })
+  .optional();
+
+const ForgetUserBodySchema = z.object({
+  discordUserId: z.string().min(1),
+  confirm: z.literal(true),
+  dryRun: z.boolean().optional()
 });
 
 // P5 Task 4 review fix: same `.partial()`-does-not-suppress-`.default()` gotcha as
@@ -279,7 +350,7 @@ const AgentConfigBodySchema = AgentConfigSchema.partial().extend({
   revision: z.number().int().nonnegative().optional(),
   params: z.record(z.string(), z.unknown()).optional(),
   enabled: z.boolean().optional(),
-  contextWindow: z.number().int().min(1).max(100).optional(),
+  contextWindow: z.number().int().min(1).max(200).optional(),
   prompt: z.string().optional(),
   directiveCooldown: z.number().int().min(0).max(20).optional(),
   promptSections: partialWithoutDefaults(OrchestratorPromptSectionsSchema).optional()
@@ -367,7 +438,49 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     ...(options.administration?.now ? { now: options.administration.now } : {})
   });
   const logger = options.logger ?? createLogger({ dataRoot: options.dataRoot });
+  // The dashboard's refresh buttons and the runtime share one GuildDirectory (spec 9.4); a bare API
+  // (tests, no runtime) refreshes through its own, which writes the same files.
+  const standaloneDirectory = new GuildDirectory({ storage, logger, bots: () => readDiscordBots(storage) });
+  const directoryFor = () =>
+    options.directory ?? (options.runtimeControl?.getOrchestrator?.() ?? options.runtimeOrchestrator)?.directory ?? standaloneDirectory;
+  const refreshDirectory = async <T extends Record<string, unknown>>(
+    guildId: string,
+    kind: DirectoryKind,
+    read: () => Promise<T>
+  ) => {
+    let result;
+    try {
+      result = await directoryFor().refresh(guildId, kind);
+    } catch (error) {
+      if (error instanceof DirectoryTransportError) throw badRequest(error.message);
+      throw error;
+    }
+    return { accepted: result.accepted, guildId, message: result.message, ...(await read()) };
+  };
   const app = fastify({ logger: false });
+  // Spec 8.6: waifu bodies may still carry the removed `promptLayout`; it is ignored. Log it once
+  // per process so a stale client is findable without flooding the log on every save.
+  let promptLayoutIgnoredLogged = false;
+  const noteIgnoredPromptLayout = (rawBody: unknown): void => {
+    if (promptLayoutIgnoredLogged || !isPlainRecord(rawBody) || !("promptLayout" in rawBody)) return;
+    promptLayoutIgnoredLogged = true;
+    logger.warn("Ignoring `promptLayout` in a waifu request body: the prompt layout editor was removed.");
+  };
+  // Spec 9.7: server and channel bodies may still carry the removed `enabled` flag for one
+  // release. It is ignored (never stored); logged once per process like `promptLayout`.
+  let enabledFlagIgnoredLogged = false;
+  const noteIgnoredEnabledFlag = (rawBody: unknown, scope: "server" | "channel"): void => {
+    if (enabledFlagIgnoredLogged || !isPlainRecord(rawBody)) return;
+    const channelsCarryIt =
+      scope === "server" &&
+      isPlainRecord(rawBody.channels) &&
+      Object.values(rawBody.channels).some((channel) => isPlainRecord(channel) && "enabled" in channel);
+    if (!("enabled" in rawBody) && !channelsCarryIt) return;
+    enabledFlagIgnoredLogged = true;
+    logger.warn(
+      `Ignoring \`enabled\` in a ${scope} request body: the server/channel enabled flags were removed; use \`paused\` and a channel's enabledWaifuIds.`
+    );
+  };
   if (options.updateActivity) installUpdateActivity(app, options.updateActivity);
   const globalEvents = new EventStream<unknown>();
   const publishGlobalEvent = (event: string, data: unknown): void => {
@@ -435,6 +548,14 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
         message: "Record has changed since it was read.",
         latest: error.latestVersion
       });
+      return;
+    }
+    if (error instanceof MemoryRecordConflictError) {
+      void reply.status(409).send(redactApiPayload(
+        request.principal,
+        { error: "Conflict", message: error.message, latest: error.latest, record: error.record ?? null },
+        options.dataRoot
+      ));
       return;
     }
     if (error instanceof ApiError) {
@@ -508,16 +629,42 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     statusResponse(options.runtime, request.principal, options.dataRoot)
   );
 
+  const reconcileDmIntents = async () => {
+    const orchestrator = options.runtimeControl?.getOrchestrator?.() ?? options.runtimeOrchestrator;
+    if (!orchestrator) return;
+    try {
+      const { relogged } = await orchestrator.reconcileDmIntents();
+      if (relogged.length > 0) logger.info("Re-logged waifu bots for DM intent changes", { botIds: relogged });
+    } catch (error) {
+      logger.warn("DM intent reconcile failed", { message: error instanceof Error ? error.message : String(error) });
+    }
+  };
+
   app.get("/api/runtime", async (request) => {
     const orchestrator = options.runtimeControl?.getOrchestrator?.() ?? options.runtimeOrchestrator;
     const live = orchestrator?.permissionWarnings.list() ?? [];
-    const runtime = live.length === 0
-      ? options.runtime
-      : {
-          ...options.runtime,
-          discord: { ...options.runtime.discord, warnings: [...options.runtime.discord.warnings, ...live] }
-        };
-    return runtimeResponse(runtime, request.principal, options.dataRoot);
+    // Guild directory status (spec 9.6): is the member list endpoint usable, when did it last refresh.
+    const directoryStatus = (options.directory ?? orchestrator?.directory)?.status() ?? {
+      memberListAvailable: null,
+      lastRefreshAt: null,
+      warnings: []
+    };
+    // DM eligibility and intent state (spec 9.6); without a live runtime nothing has DM intents.
+    const dmStatus = orchestrator
+      ? await orchestrator.dmStatus().catch(() => ({ eligibleWaifus: [], warnings: [] }))
+      : await offlineDmStatus(storage);
+    const runtime = {
+      ...options.runtime,
+      discord: {
+        ...options.runtime.discord,
+        warnings: [...options.runtime.discord.warnings, ...live],
+        directory: directoryStatus,
+        dm: dmStatus
+      }
+    };
+    // Active quota/billing cooldowns (spec 8.10); empty when every provider is available.
+    const providerAlerts = (orchestrator?.providerAlerts ?? sharedProviderAlerts(options.dataRoot)).snapshot();
+    return { ...runtimeResponse(runtime, request.principal, options.dataRoot), providerAlerts };
   });
 
   registerAdminOperationRoutes(app, operationStore);
@@ -606,8 +753,14 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   });
   app.get("/api/orchestrator/history", async (request) => {
     const query = HistoryQuerySchema.parse(request.query);
-    const history = await readOrchestratorHistory(storage);
-    return { ...history, decisions: filterHistoryEntries(history.decisions, query) };
+    // Decisions are stored per guild (spec 9.3): a guildId reads that guild's file, otherwise every
+    // guild file plus the legacy no-guild decisions are merged, newest first.
+    if (query.guildId) assertSnowflakeId(query.guildId);
+    const history = query.guildId
+      ? await readOrchestratorHistoryForGuild(storage, query.guildId)
+      : await readMergedOrchestratorHistory(storage, logger);
+    // Bounded by default (200, spec 9.3), on the merged and the per-guild path alike.
+    return { ...history, decisions: filterHistoryEntries(history.decisions, { ...query, limit: query.limit ?? 200 }) };
   });
 
   app.get("/api/stage-manager/config", async () => readAgentConfig(storage, "stage-manager"));
@@ -683,6 +836,12 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     };
   });
 
+  // A saved/removed key (or topped-up account) must not stay blocked by a stale quota/billing cooldown.
+  const clearProviderCooldown = (providerId: string) => {
+    sharedProviderAlerts(options.dataRoot).clear(providerId);
+    (options.runtimeControl?.getOrchestrator?.() ?? options.runtimeOrchestrator)?.providerAlerts?.clear(providerId);
+  };
+
   app.put("/api/providers/:providerId/credentials", async (request) => {
     const { providerId } = z.object({ providerId: ProviderIdSchema }).parse(request.params);
     assertKnownProvider(providerId);
@@ -708,6 +867,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
         }
       })
     });
+    clearProviderCooldown(providerId);
     return providerCredentialsResponse(updated, providerId);
   });
 
@@ -724,12 +884,14 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
         return { ...current, providers: rest };
       }
     });
+    clearProviderCooldown(providerId);
     return providerCredentialsResponse(updated, providerId);
   });
 
   app.get("/api/waifus", async () => ({ waifus: await listWaifus(storage) }));
   app.post("/api/waifus", async (request, reply) => {
     const body = CreateWaifuBodySchema.parse(request.body);
+    noteIgnoredPromptLayout(request.body);
     const id = body.id ?? slugId(body.name);
     assertSafeId(id);
     const relativePath = waifuRelativePath(id);
@@ -749,6 +911,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
       waifu.modelId = target.modelId;
     }
     const saved = await storage.writeJson(`waifu:${id}`, relativePath, WaifuConfigSchema, waifu);
+    await reconcileDmIntents();
     return reply.status(201).send(saved);
   });
 
@@ -760,6 +923,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   app.put("/api/waifus/:waifuId", async (request) => {
     const { waifuId } = parseIdParam(request.params, "waifuId");
     const body = UpdateWaifuBodySchema.parse(request.body);
+    noteIgnoredPromptLayout(request.body);
     requireRevision(request, body);
     const saved = await storage.updateRevisionedJson({
       resourceKey: `waifu:${waifuId}`,
@@ -768,13 +932,21 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
       fallback: await readWaifu(storage, waifuId),
       expectedRevision: expectedRevision(request, body),
       transform: (current) => {
-        const { revision: _revision, schemaVersion: _schemaVersion, updatedAt: _updatedAt, id: _id, ...patch } = body;
+        const {
+          revision: _revision,
+          schemaVersion: _schemaVersion,
+          updatedAt: _updatedAt,
+          id: _id,
+          promptLayout: _ignoredPromptLayout,
+          ...patch
+        } = body;
         const next = pruneUndefined({
           ...current,
           ...patch,
           params: mergeParamsPatch(current.params, patch.params) ?? current.params,
           availability: mergeNestedPatch(current.availability, patch.availability),
           tools: mergeNestedPatch(current.tools, patch.tools),
+          dm: mergeNestedPatch(current.dm, patch.dm),
           id: current.id,
           // personaDigest is server-managed; always carry it forward from current.
           personaDigest: current.personaDigest
@@ -789,6 +961,8 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
         return next;
       }
     });
+    // Intents are fixed at login (spec 9.1): re-log only bots whose DM intents changed.
+    await reconcileDmIntents();
     // Fire-and-forget: regenerate persona digest when persona text changed.
     void generatePersonaDigestIfStale(storage, saved, logger, options).catch(() => {
       // Errors are handled inside generatePersonaDigestIfStale with logger.warn.
@@ -835,6 +1009,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
       transform: (current) => ({ ...current, botId: id })
     });
     const entry = bots.waifus.find((bot) => bot.id === id);
+    await reconcileDmIntents();
     return {
       linked: savedWaifu.botId === id,
       botId: id,
@@ -890,6 +1065,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
         force: true
       })
     );
+    await reconcileDmIntents();
     return reply.status(204).send();
   });
 
@@ -916,6 +1092,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   app.put("/api/servers/:guildId", async (request) => {
     const { guildId } = parseIdParam(request.params, "guildId");
     const body = ServerConfigBodySchema.parse(request.body);
+    noteIgnoredEnabledFlag(request.body, "server");
     const fallback = ServerConfigSchema.parse({
       ...createRevisionedBase(),
       guildId
@@ -927,11 +1104,19 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
       fallback,
       expectedRevision: expectedRevision(request, body),
       transform: (current) => {
-        const { revision: _revision, schemaVersion: _schemaVersion, updatedAt: _updatedAt, guildId: _guildId, ...patch } = body;
+        const {
+          revision: _revision,
+          schemaVersion: _schemaVersion,
+          updatedAt: _updatedAt,
+          guildId: _guildId,
+          enabled: _enabled,
+          ...patch
+        } = body;
         return {
           ...current,
           ...patch,
-          contextWindows: mergeNestedPatch(current.contextWindows, patch.contextWindows),
+          contextWindows: mergeOverridePatch(current.contextWindows, patch.contextWindows) ?? {},
+          compaction: mergeOverridePatch(current.compaction, patch.compaction),
           tools: mergeNestedPatch(current.tools, patch.tools),
           guildId
         };
@@ -967,8 +1152,19 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
         return reply.code(404).send({ error: "NotFound", message: `Server ${guildId} is not configured.` });
       }
       await rm(serverPath, { recursive: true, force: true });
-      return { accepted: true, message: `Server ${guildId} configuration removed (sessions and rosters included).` };
+      return { accepted: true, message: `Server ${guildId} configuration removed (sessions, rosters and decision history included).` };
     });
+  });
+
+  // Spec 9.5: the threads and forum posts the bot has seen under this server (guild id: snowflake).
+  registerDmRoutes(app, {
+    storage,
+    orchestrator: () => options.runtimeControl?.getOrchestrator?.() ?? options.runtimeOrchestrator
+  });
+
+  app.get("/api/servers/:guildId/threads", async (request) => {
+    const { guildId } = parseIdParam(request.params, "guildId");
+    return readThreads(storage, guildId);
   });
 
   app.get("/api/servers/:guildId/members", async (request) => {
@@ -977,7 +1173,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   });
   app.post("/api/servers/:guildId/members/refresh", async (request, reply) => {
     const { guildId } = parseIdParam(request.params, "guildId");
-    const refreshed = await refreshDiscordMembers(storage, guildId);
+    const refreshed = await refreshDirectory(guildId, "members", async () => ({ members: await readMembers(storage, guildId) }));
     return reply.status(200).send(refreshed);
   });
 
@@ -987,7 +1183,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   });
   app.post("/api/servers/:guildId/emojis/refresh", async (request, reply) => {
     const { guildId } = parseIdParam(request.params, "guildId");
-    const refreshed = await refreshDiscordEmojis(storage, guildId);
+    const refreshed = await refreshDirectory(guildId, "emojis", async () => ({ emojis: await readEmojis(storage, guildId) }));
     return reply.status(200).send(refreshed);
   });
 
@@ -997,7 +1193,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   });
   app.post("/api/servers/:guildId/roles/refresh", async (request, reply) => {
     const { guildId } = parseIdParam(request.params, "guildId");
-    const refreshed = await refreshDiscordRoles(storage, guildId);
+    const refreshed = await refreshDirectory(guildId, "roles", async () => ({ roles: await readRoles(storage, guildId) }));
     return reply.status(200).send(refreshed);
   });
 
@@ -1005,6 +1201,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     const { guildId } = parseIdParam(request.params, "guildId");
     const { channelId } = parseIdParam(request.params, "channelId");
     const body = ChannelConfigBodySchema.parse(request.body);
+    noteIgnoredEnabledFlag(request.body, "channel");
     return storage.updateRevisionedJson({
       resourceKey: `server:${guildId}`,
       relativePath: serverRelativePath(guildId),
@@ -1021,8 +1218,10 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
           [channelId]: {
             channelId,
             name: body.name ?? current.channels[channelId]?.name,
-            enabled: body.enabled ?? current.channels[channelId]?.enabled ?? true,
-            enabledWaifuIds: body.enabledWaifuIds ?? current.channels[channelId]?.enabledWaifuIds ?? []
+            enabledWaifuIds: body.enabledWaifuIds ?? current.channels[channelId]?.enabledWaifuIds ?? [],
+            ...((body.threads ?? current.channels[channelId]?.threads)
+              ? { threads: body.threads ?? current.channels[channelId]!.threads }
+              : {})
           }
         }
       })
@@ -1032,7 +1231,10 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   app.get("/api/memories", async (request) => {
     const query = z
       .object({
+        // Provenance filters: where a memory was learned (never a visibility rule).
         guildId: z.string().optional(),
+        origin: z.enum(["dm"]).optional(),
+        subjectUserId: z.string().optional(),
         waifuId: z.string().optional(),
         q: z.string().optional(),
         status: z.string().optional(),
@@ -1040,10 +1242,14 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
       })
       .parse(request.query ?? {});
     const store = await readMemoryStore(storage);
-    if (!query.guildId && !query.waifuId && !query.q && !query.status && !query.limit) return store;
+    if (Object.values(query).every((value) => value === undefined)) return store;
     const q = query.q?.toLowerCase();
     const memories = store.memories
-      .filter((memory) => (query.guildId ? memory.guildId === query.guildId : true))
+      .filter((memory) => (query.guildId ? memory.origin.guildId === query.guildId : true))
+      .filter((memory) => (query.origin === "dm" ? memory.origin.dm === true : true))
+      .filter((memory) =>
+        query.subjectUserId ? memory.subjects.some((subject) => subject.discordUserId === query.subjectUserId) : true
+      )
       .filter((memory) => (query.waifuId ? memory.waifuId === query.waifuId : true))
       .filter((memory) => (query.status ? memory.status === query.status : true))
       .filter((memory) => (q ? memory.content.toLowerCase().includes(q) : true))
@@ -1052,70 +1258,82 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   });
   app.post("/api/memories", async (request, reply) => {
     const body = CreateMemoryBodySchema.parse(request.body);
-    const now = nowIso();
-    const updated = await storage.updateRevisionedJson({
-      resourceKey: "memories:global",
-      relativePath: "user/memories.json",
-      schema: MemoryStoreSchema,
-      fallback: emptyMemoryStore(),
-      expectedRevision: expectedRevision(request, body),
-      transform: (current) => ({
-        ...current,
-        memories: [
-          ...current.memories,
+    const now = new Date();
+    // "global" was the dashboard's placeholder guild before memories became global.
+    const guildId = body.guildId && body.guildId !== "global" ? body.guildId : undefined;
+    const origin = {
+      ...(guildId ? { guildId } : {}),
+      ...(guildId && body.channelId ? { channelId: body.channelId } : {})
+    };
+    const subjects = body.subjects ?? resolveSubjectsInText(body.content, await loadSubjectDirectory(storage, guildId));
+    let duplicateOf: string | undefined;
+    const updated = await updateMemoryStore(
+      storage,
+      (current) => {
+        // The dedupe gate is report-only for user writes: it never blocks, it reports duplicateOf.
+        const result = applyMemoryCandidate(
+          current.memories,
           {
-            id: randomUUID(),
             waifuId: body.waifuId,
-            guildId: body.guildId,
-            content: body.content,
             kind: body.kind ?? "fact",
-            source: "user" as const,
-            // User-created memories are pinned by default (only the user manages them).
-            pinned: body.pinned ?? true,
-            strength: body.strength ?? 5,
-            entities: extractEntities(body.content),
-            createdAt: now,
-            updatedAt: now,
-            status: "active" as const
-          }
-        ]
-      })
-    });
-    return reply.status(201).send(updated);
+            content: body.content,
+            subjects,
+            origin,
+            source: "user"
+          },
+          // User-created memories are pinned by default (only the user manages them).
+          { writer: "user", now, pinned: body.pinned ?? true, strength: body.strength ?? 5 }
+        );
+        duplicateOf = result.duplicateOf;
+        return { ...current, memories: result.memories };
+      },
+      expectedRevision(request, body)
+    );
+    return reply.status(201).send(duplicateOf ? { ...updated, duplicateOf } : updated);
   });
 
   app.put("/api/memories/:memoryId", async (request) => {
     const { memoryId } = parseIdParam(request.params, "memoryId");
     const body = UpdateMemoryBodySchema.parse(request.body);
-    requireRevision(request, body);
-    return storage.updateRevisionedJson({
-      resourceKey: "memories:global",
-      relativePath: "user/memories.json",
-      schema: MemoryStoreSchema,
-      fallback: emptyMemoryStore(),
-      expectedRevision: expectedRevision(request, body),
-      transform: (current) => updateMemoryOrThrow(current, memoryId, body)
-    });
+    const storeRevision = body.recordRevision === undefined ? expectedRevision(request, body) : undefined;
+    if (body.recordRevision === undefined && storeRevision === undefined) {
+      throw preconditionRequired("PUT /api/memories/:memoryId requires recordRevision, revision or If-Match.");
+    }
+    return withMemoryConflicts(memoryId, () =>
+      updateMemoryStore(storage, (current) => updateMemoryOrThrow(current, memoryId, body), storeRevision)
+    );
   });
 
   app.delete("/api/memories/:memoryId", async (request) => {
     const { memoryId } = parseIdParam(request.params, "memoryId");
-    const body = z.object({ revision: z.number().int().nonnegative().optional() }).optional().parse(request.body);
-    const revision = expectedRevision(request, body);
-    if (revision === undefined) {
-      throw preconditionRequired("DELETE /api/memories/:memoryId requires revision or If-Match.");
+    const body = DeleteMemoryBodySchema.parse(request.body);
+    const storeRevision = body?.recordRevision === undefined ? expectedRevision(request, body) : undefined;
+    if (body?.recordRevision === undefined && storeRevision === undefined) {
+      throw preconditionRequired("DELETE /api/memories/:memoryId requires recordRevision, revision or If-Match.");
     }
-    return storage.updateRevisionedJson({
-      resourceKey: "memories:global",
-      relativePath: "user/memories.json",
-      schema: MemoryStoreSchema,
-      fallback: emptyMemoryStore(),
-      expectedRevision: revision,
-      transform: (current) => ({
-        ...current,
-        memories: current.memories.filter((memory) => memory.id !== memoryId)
-      })
-    });
+    return withMemoryConflicts(memoryId, () =>
+      updateMemoryStore(
+        storage,
+        (current) => {
+          const record = current.memories.find((memory) => memory.id === memoryId);
+          if (record && body?.recordRevision !== undefined && record.revision !== body.recordRevision) {
+            throw new MemoryRecordConflictError(current, record);
+          }
+          return { ...current, memories: current.memories.filter((memory) => memory.id !== memoryId) };
+        },
+        storeRevision
+      )
+    );
+  });
+
+  // Owner privacy affordance (spec 8.8): forget one Discord user everywhere memory reaches.
+  app.post("/api/memories/forget-user", async (request) => {
+    const body = ForgetUserBodySchema.parse(request.body);
+    assertSnowflakeId(body.discordUserId);
+    const input = { discordUserId: body.discordUserId, dryRun: body.dryRun === true };
+    // The live runtime also aborts DM runs and drops cached DM messages/images (spec 9.1.4).
+    const orchestrator = options.runtimeControl?.getOrchestrator?.() ?? options.runtimeOrchestrator;
+    return orchestrator ? orchestrator.forgetUser(input) : forgetUser(storage, input);
   });
 
   // B2: pause used to live only in memory, so the next config save/reload (which re-reads
@@ -1327,6 +1545,9 @@ function remoteAppConfig(config: AppConfig) {
     runtime: config.runtime,
     frontend: {},
     ocr: config.ocr,
+    compaction: config.compaction,
+    memory: config.memory,
+    discord: config.discord,
     updates: config.updates
   };
 }
@@ -1454,14 +1675,6 @@ async function updateAgentConfig(
       return next;
     }
   });
-}
-
-async function readOrchestratorHistory(storage: StorageService): Promise<OrchestratorHistoryFile> {
-  return storage.readJson("user/orchestrator/history.json", OrchestratorHistoryFileSchema, emptyOrchestratorHistory());
-}
-
-function emptyOrchestratorHistory(): OrchestratorHistoryFile {
-  return OrchestratorHistoryFileSchema.parse(createEmptyRevisionedFile({ decisions: [] }));
 }
 
 async function readStageManagerHistory(storage: StorageService): Promise<StageManagerHistoryFile> {
@@ -1609,12 +1822,17 @@ async function readRoles(storage: StorageService, guildId: string): Promise<Guil
   );
 }
 
-async function readMemoryStore(storage: StorageService): Promise<MemoryStore> {
-  return storage.readJson("user/memories.json", MemoryStoreSchema, emptyMemoryStore());
-}
-
-function emptyMemoryStore(): MemoryStore {
-  return MemoryStoreSchema.parse(createEmptyRevisionedFile({ memories: [] }));
+// A store-wide (legacy `revision`) conflict on a memory route still answers with the record.
+async function withMemoryConflicts<T>(memoryId: string, run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (error) {
+    if (error instanceof StorageConflictError) {
+      const latest = error.latest as MemoryStore;
+      throw new MemoryRecordConflictError(latest, latest.memories.find((memory) => memory.id === memoryId));
+    }
+    throw error;
+  }
 }
 
 function updateMemoryOrThrow(
@@ -1622,30 +1840,25 @@ function updateMemoryOrThrow(
   memoryId: string,
   patch: z.infer<typeof UpdateMemoryBodySchema>
 ): MemoryStore {
-  let found = false;
-  const now = nowIso();
-  const memories = current.memories.map((memory): MemoryRecord => {
-    if (memory.id !== memoryId) {
-      return memory;
-    }
-    found = true;
-    const { revision: _revision, ...editable } = patch;
-    const next: MemoryRecord = {
-      ...memory,
-      ...editable,
-      updatedAt: now
-    };
-    if (editable.content !== undefined) {
-      next.entities = extractEntities(editable.content);
-    }
-    return next;
-  });
-  if (!found) {
+  const existing = current.memories.find((memory) => memory.id === memoryId);
+  if (!existing) {
     throw notFound(`Memory ${memoryId} was not found.`);
+  }
+  if (patch.recordRevision !== undefined && existing.revision !== patch.recordRevision) {
+    throw new MemoryRecordConflictError(current, existing);
+  }
+  const { revision: _revision, recordRevision: _recordRevision, status, ...editable } = patch;
+  let next: MemoryRecord = bumpMemoryRecord(existing, editable, nowIso());
+  if (status === "active" && existing.status !== "active") {
+    // Restore: back to active, provenance of the archival dropped.
+    const { archivedReason: _reason, mergedInto: _mergedInto, ...rest } = next;
+    next = { ...rest, status: "active" };
+  } else if (status === "archived" && existing.status !== "archived") {
+    next = { ...next, status: "archived", archivedReason: "user" };
   }
   return {
     ...current,
-    memories
+    memories: current.memories.map((memory) => (memory.id === memoryId ? next : memory))
   };
 }
 
@@ -1654,23 +1867,6 @@ function parseIdParam(params: unknown, key: string): Record<string, string> {
   if (key === "guildId" || key === "channelId") assertSnowflakeId(parsed[key]);
   else assertSafeId(parsed[key]);
   return parsed;
-}
-
-// Ids become path segments under the data root. The character class alone admitted "." and
-// "..", so `DELETE /api/servers/%2E%2E` (Fastify decodes it to "..") resolved to `user/` and
-// removed every user file. Dot-only ids are rejected here; resolveDataPath also refuses any
-// path that escapes the data root as a second line of defence.
-function assertSafeId(id: string): void {
-  if (typeof id !== "string" || !/^[A-Za-z0-9._:-]+$/.test(id) || /^\.+$/.test(id)) {
-    throw badRequest(`Invalid id: ${id}`);
-  }
-}
-
-// Guild and channel ids always come from Discord, so anything but a snowflake is malformed.
-function assertSnowflakeId(id: string): void {
-  if (typeof id !== "string" || !/^\d{17,20}$/.test(id)) {
-    throw badRequest(`Invalid Discord id: ${id}`);
-  }
 }
 
 function slugId(name: string): string {
@@ -1719,209 +1915,6 @@ async function saveWaifuAsset(
     bytes: body.byteLength,
     relativePath
   });
-}
-
-async function refreshDiscordMembers(storage: StorageService, guildId: string) {
-  const token = await readDiscordBotToken(storage);
-  if (!token) {
-    return {
-      accepted: false,
-      guildId,
-      message: "Discord bot token is not configured. Save the orchestrator bot first.",
-      members: await readMembers(storage, guildId)
-    };
-  }
-  const rawMembers = await fetchAllDiscordGuildMembers(token, guildId);
-  const now = nowIso();
-  const bots = await readDiscordBots(storage);
-  const members: GuildMemberCacheEntry[] = mergeConfiguredBotsIntoMembers(
-    rawMembers.map((member) => ({
-      userId: member.user.id,
-      username: member.user.username,
-      globalDisplayName: member.user.global_name ?? undefined,
-      guildDisplayName: member.nick ?? member.user.global_name ?? member.user.username,
-      bot: member.user.bot ?? false,
-      lastSeenAt: now,
-      perChannelLastSeenAt: {}
-    })),
-    bots
-  );
-  const file = await storage.updateRevisionedJson({
-    resourceKey: `members:${guildId}`,
-    relativePath: path.join("user", "servers", guildId, "members.json"),
-    schema: GuildMembersFileSchema,
-    fallback: GuildMembersFileSchema.parse(createEmptyRevisionedFile({ guildId, members: [] })),
-    transform: (current) => ({
-      ...current,
-      guildId,
-      members
-    })
-  });
-  return {
-    accepted: true,
-    guildId,
-    message: `Fetched ${members.length} members from Discord.`,
-    members: file
-  };
-}
-
-async function fetchAllDiscordGuildMembers(token: string, guildId: string) {
-  const MemberSchema = z.object({
-    nick: z.string().nullable().optional(),
-    user: z.object({
-      id: z.string(),
-      username: z.string().optional(),
-      global_name: z.string().nullable().optional(),
-      bot: z.boolean().optional()
-    })
-  });
-  const members: Array<z.infer<typeof MemberSchema>> = [];
-  let after = "0";
-  for (;;) {
-    const response = await discordApiFetch(
-      token,
-      `/guilds/${guildId}/members?limit=1000&after=${encodeURIComponent(after)}`
-    );
-    const page = z.array(MemberSchema).parse(response);
-    members.push(...page);
-    if (page.length < 1000) {
-      return members;
-    }
-    after = page[page.length - 1]?.user.id ?? after;
-  }
-}
-
-async function refreshDiscordEmojis(storage: StorageService, guildId: string) {
-  const token = await readDiscordBotToken(storage);
-  if (!token) {
-    return {
-      accepted: false,
-      guildId,
-      message: "Discord bot token is not configured. Save the orchestrator bot first.",
-      emojis: await readEmojis(storage, guildId)
-    };
-  }
-  const response = await discordApiFetch(token, `/guilds/${guildId}/emojis`);
-  const rawEmojis = z
-    .array(
-      z.object({
-        id: z.string(),
-        name: z.string().nullable(),
-        animated: z.boolean().optional(),
-        available: z.boolean().optional(),
-        roles: z.array(z.string()).optional()
-      })
-    )
-    .parse(response);
-  const now = nowIso();
-  const emojis: GuildEmojiCacheEntry[] = rawEmojis
-    .filter((emoji) => emoji.name)
-    .map((emoji) => ({
-      id: emoji.id,
-      name: emoji.name ?? "emoji",
-      animated: emoji.animated ?? false,
-      available: emoji.available ?? true,
-      roles: emoji.roles ?? [],
-      fetchedAt: now
-    }));
-  const file = await storage.updateRevisionedJson({
-    resourceKey: `emojis:${guildId}`,
-    relativePath: path.join("user", "servers", guildId, "emojis.json"),
-    schema: GuildEmojisFileSchema,
-    fallback: GuildEmojisFileSchema.parse(createEmptyRevisionedFile({ guildId, emojis: [] })),
-    transform: (current) => ({
-      ...current,
-      guildId,
-      emojis
-    })
-  });
-  return {
-    accepted: true,
-    guildId,
-    message: `Fetched ${emojis.length} server emojis from Discord.`,
-    emojis: file
-  };
-}
-
-async function refreshDiscordRoles(storage: StorageService, guildId: string) {
-  const token = await readDiscordBotToken(storage);
-  if (!token) {
-    return {
-      accepted: false,
-      guildId,
-      message: "Discord bot token is not configured. Save the orchestrator bot first.",
-      roles: await readRoles(storage, guildId)
-    };
-  }
-  const rawRoles = await fetchAllDiscordGuildRoles(token, guildId);
-  const roles = mapDiscordRoles(rawRoles);
-  const file = await storage.updateRevisionedJson({
-    resourceKey: `roles:${guildId}`,
-    relativePath: path.join("user", "servers", guildId, "roles.json"),
-    schema: GuildRolesFileSchema,
-    fallback: GuildRolesFileSchema.parse(createEmptyRevisionedFile({ guildId, roles: [] })),
-    transform: (current) => ({
-      ...current,
-      guildId,
-      roles
-    })
-  });
-  return {
-    accepted: true,
-    guildId,
-    message: `Fetched ${roles.length} server roles from Discord.`,
-    roles: file
-  };
-}
-
-async function fetchAllDiscordGuildRoles(token: string, guildId: string) {
-  const response = await discordApiFetch(token, `/guilds/${guildId}/roles`);
-  return z
-    .array(
-      z.object({
-        id: z.string(),
-        name: z.string(),
-        color: z.number().int().nonnegative().optional(),
-        hoist: z.boolean().optional(),
-        mentionable: z.boolean().optional(),
-        managed: z.boolean().optional()
-      })
-    )
-    .parse(response);
-}
-
-function mapDiscordRoles(rawRoles: Awaited<ReturnType<typeof fetchAllDiscordGuildRoles>>): GuildRoleCacheEntry[] {
-  const now = nowIso();
-  return rawRoles
-    .filter((role) => role.name !== "@everyone")
-    .map((role) => ({
-      id: role.id,
-      name: role.name,
-      color: role.color ?? 0,
-      hoist: role.hoist ?? false,
-      mentionable: role.mentionable ?? false,
-      managed: role.managed ?? false,
-      fetchedAt: now
-    }));
-}
-
-async function readDiscordBotToken(storage: StorageService): Promise<string | undefined> {
-  const bots = await readDiscordBots(storage);
-  return bots.orchestrator?.enabled === false
-    ? bots.waifus.find((bot) => bot.enabled && bot.token)?.token
-    : bots.orchestrator?.token ?? bots.waifus.find((bot) => bot.enabled && bot.token)?.token;
-}
-
-// discord.js REST client: per-bucket queueing, 429 backoff and a compliant User-Agent.
-async function discordApiFetch(token: string, pathAndQuery: string): Promise<unknown> {
-  try {
-    return await discordRestGet(discordRestForToken(token), pathAndQuery);
-  } catch (error) {
-    if (error instanceof DiscordAPIError || error instanceof HTTPError) {
-      throw badRequest(`Discord API request failed (${error.status}): ${error.message || "unknown error"}`);
-    }
-    throw error;
-  }
 }
 
 async function diagnosticBundle(
@@ -2284,5 +2277,18 @@ async function generatePersonaDigestIfStale(
       modelId: resolvedModelId,
       error: error instanceof Error ? error.message : String(error)
     });
+  }
+}
+
+async function offlineDmStatus(storage: StorageService) {
+  try {
+    const [waifus, bots] = await Promise.all([listWaifus(storage), readDiscordBots(storage)]);
+    const eligibility = computeDmEligibility(waifus, bots);
+    return {
+      eligibleWaifus: eligibility.eligible.map((entry) => ({ ...entry, intentActive: false })),
+      warnings: eligibility.warnings
+    };
+  } catch {
+    return { eligibleWaifus: [], warnings: [] };
   }
 }

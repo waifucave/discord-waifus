@@ -3,7 +3,7 @@
 // All casts are INVENTED (Yuki / Mika / Riko / Kevin). No real chat content.
 // Each scenario has a compact synthetic context (4-8 messages) and an expectation record.
 
-import type { ContextMessage } from "../../src/orchestration/context.js";
+import type { ContextMessage } from "../../src/orchestration/contextMessages.js";
 
 // ---------------------------------------------------------------------------
 // Roster entry
@@ -189,7 +189,7 @@ export const EVAL_SCENARIOS: EvalScenario[] = [
     messages: [
       msg("m1", "waifu", "Yuki", "yuki-bot", "gonna bring up the game later when Riko's back", 0),
       msg("m2", "waifu", "Mika", "mika-bot", "sure", 5),
-      // Simulate a wake marker via message content (the real harness injects OrchestratorWakeMarker)
+      // Simulates the wake via message content; the real director gets a <wake> line in its status tail
       msg("m3", "user", "Kevin", "u1", "[wake: plan was to discuss the game with Riko]", 1800)
     ],
     expect: {

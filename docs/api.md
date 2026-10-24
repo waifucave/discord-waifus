@@ -165,7 +165,7 @@ device must be activated and paired again.
 - `PUT /api/discord-bots`
 - `GET /api/orchestrator/config`
 - `PUT /api/orchestrator/config`
-- `GET /api/orchestrator/history`
+- `GET /api/orchestrator/history` — decisions are stored per guild (`user/servers/<guildId>/orchestrator-history.json`, 300 per guild). `?guildId=` reads that guild; without it every guild plus the no-guild `history-legacy.json` is merged, newest first. Same response shape either way.
 - `GET /api/orchestrator/one-shot/models` — native-choice model catalog, provider/local setup status,
   and upstream availability. Safe read, available to authorized paired remotes; never returns keys.
 
@@ -270,7 +270,7 @@ Asset uploads accept raw `image/png`, `image/jpeg`, `image/webp`, or `image/gif`
 - `PUT /api/servers/:guildId/channels/:channelId`
 - `DELETE /api/servers/:guildId/channels/:channelId`
 
-`:guildId` and `:channelId` must be Discord snowflakes (17–20 digits). A channel is active when its `enabledWaifuIds` list is non-empty; the stored channel `enabled` flag is not read by the runtime, and the server `enabled` flag only gates restart catch-up. Use the server's `paused` flag to silence a whole guild.
+`:guildId` and `:channelId` must be Discord snowflakes (17–20 digits). A channel is active when its `enabledWaifuIds` list is non-empty; a server is live unless its `paused` flag is set, and restart catch-up skips paused servers and channels without waifus. The old server and channel `enabled` flags were removed; request bodies may still carry them for one release, where they are ignored (and logged). Use the server's `paused` flag to silence a whole guild.
 
 Member and emoji refresh endpoints use the configured orchestrator bot token. Member refresh requires Discord permissions/intents that allow member listing. Emoji refresh caches guild custom emojis in `user/servers/<guild-id>/emojis.json`.
 

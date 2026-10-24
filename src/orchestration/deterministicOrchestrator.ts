@@ -8,7 +8,7 @@
 // Pure module: no side effects, no imports from runtime. Interval helpers come from the shared
 // timeOfDay.ts. Schedules are server-local time, same convention as currentlyDoingForWaifu.
 
-import type { ContextMessage } from "./context.js";
+import type { ContextMessage } from "./contextMessages.js";
 import { DIRECTIVE_GOAL_MAX_CHARS, type OrchestratorDecision } from "./decisions.js";
 import type { WaifuAvailability } from "../shared/schemas/domain.js";
 import { dailyIntervalContains, localTimeOfDayMinutes } from "./timeOfDay.js";
@@ -234,6 +234,27 @@ export function enforceWakePlan(input: {
     action: "reply",
     respondingWaifus: [{ waifuId: member.waifuId, delaySeconds: 2, directive: { intent: "change_topic", goal } }],
     reasoning: `deterministic wake-plan enforcement: the model deferred its own plan twice; ${member.waifuId} executes it`
+  };
+}
+
+/**
+ * Reply-required enforcement (manual /run, spec 8.7): the orchestrator tool schema no longer
+ * forbids no_reply, so a pause on a reply-required pass becomes a structural reply — the
+ * deterministic pick when it has one, else the stalest available (or, failing that, any) cast
+ * member. Undefined only for an empty cast.
+ */
+export function forceReplyDecision(input: DeterministicDecisionInput): OrchestratorDecision | undefined {
+  const structural = decideDeterministically(input);
+  if (structural.action === "reply") {
+    return { ...structural, reasoning: `${structural.reasoning}; reply required` };
+  }
+  const available = input.cast.filter((member) => isAvailable(member.availability, input.now));
+  const member = stalestMember(available, input.messages) ?? stalestMember(input.cast, input.messages);
+  if (!member) return undefined;
+  return {
+    action: "reply",
+    respondingWaifus: [{ waifuId: member.waifuId, delaySeconds: 2 }],
+    reasoning: `deterministic: reply required; ${member.waifuId} picked (stalest speaker)`
   };
 }
 

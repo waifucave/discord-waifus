@@ -160,6 +160,18 @@ export type DiscordRuntime = {
   lastError?: string;
   lastErrorAt?: string;
   bots?: DiscordBotConnectionStatus[];
+  /** `GET /api/runtime` only (spec 9.6): the guild directory's member list status. */
+  directory?: {
+    memberListAvailable: boolean | null;
+    lastRefreshAt: string | null;
+    warnings: string[];
+  };
+  /** `GET /api/runtime` only (spec 9.6): DM-eligible waifus and DM warnings. */
+  dm?: {
+    eligibleWaifus: Array<{ waifuId: string; botId: string; intentActive: boolean }>;
+    /** `dm_bot_shared:<botId>`, `dm_missing_model:<waifuId>`, `dm_intent_pending_reconnect:<botId>`. */
+    warnings: string[];
+  };
 };
 
 export type DiscordBotConnectionStatus = {
@@ -220,6 +232,14 @@ export type RuntimeState = {
   };
 };
 
+export type CompactionSettings = {
+  enabled: boolean;
+  triggerRatio: number;
+  maxMessages: number;
+  keepRecent: number;
+  waitTimeoutMs: number;
+};
+
 export type AppConfig = {
   schemaVersion: number;
   http: { host: string; port: number };
@@ -234,6 +254,25 @@ export type AppConfig = {
     maxImageBytes: number;
     maxImagesPerModelCall: number;
     maxTextCharsPerImage: number;
+  };
+  compaction: CompactionSettings;
+  memory: {
+    dreamHourLocal: number;
+    maxPinnedInjected: number;
+    maxMemoryNotesPerEpoch: number;
+    maxInlineImagesPerEpoch: number;
+    dmInjectionLimit: number;
+  };
+  discord: {
+    images: {
+      maxBytes: number;
+      fetchTimeoutMs: number;
+      memoryCacheMb: number;
+      diskCacheMb: number;
+      diskCacheTtlHours: number;
+    };
+    guildMembersIntent: boolean;
+    memberListRefreshHours: number;
   };
 };
 
@@ -377,31 +416,6 @@ export type WaifuToolSettings = {
   toolUse: boolean;
 };
 
-// Mirror of WaifuPromptLayoutSchema in src/shared/schemas/domain.ts. Controls which prompt blocks
-// land in each of the three model-message slots, their order, and how they are grouped. Block
-// wording is fixed in code (see src/orchestration/promptBlocks.ts).
-export type PromptLayoutBlockNode = {
-  kind: "block";
-  blockId: string;
-  enabled: boolean;
-};
-
-export type PromptLayoutGroupNode = {
-  kind: "group";
-  id: string;
-  tag: string;
-  enabled: boolean;
-  children: PromptLayoutBlockNode[];
-};
-
-export type PromptLayoutNode = PromptLayoutBlockNode | PromptLayoutGroupNode;
-
-export type WaifuPromptLayout = {
-  top: PromptLayoutNode[];
-  mid: PromptLayoutNode[];
-  trailing: PromptLayoutNode[];
-};
-
 export type ServerToolSettings = {
   pickNextWaifu: boolean;
   shortTermMemory: boolean;
@@ -450,12 +464,25 @@ export type WaifuConfig = Revisioned & {
   params: Record<string, unknown>;
   availability: WaifuAvailability;
   tools: WaifuToolSettings;
-  promptLayout: WaifuPromptLayout;
+  verbosity: WaifuVerbosity;
+  customInstructions: string;
+  scheduleInPrompt: boolean;
+  dm: WaifuDmSettings;
   personaDigest?: {
     voice: string;
     role: string;
     personaHash: string;
   };
+};
+
+export type WaifuVerbosity = "terse" | "chatty" | "expressive";
+
+// rateLimit null = unlimited.
+export type WaifuDmSettings = {
+  allowDms: boolean;
+  rateLimit: { maxReplies: number; windowMinutes: number } | null;
+  notifyWhenLimited: boolean;
+  limitNotice: string;
 };
 
 export type WaifusResponse = { waifus: WaifuConfig[] };
@@ -473,7 +500,10 @@ export type CreateWaifuBody = {
   params?: Record<string, unknown>;
   availability?: WaifuAvailability;
   tools?: WaifuToolSettings;
-  promptLayout?: WaifuPromptLayout;
+  verbosity?: WaifuVerbosity;
+  customInstructions?: string;
+  scheduleInPrompt?: boolean;
+  dm?: Partial<Omit<WaifuDmSettings, "rateLimit">> & { rateLimit?: WaifuDmSettings["rateLimit"] };
 };
 
 // Gateway P6 Task 4: providerId/modelId accept explicit `null` on write to mean "unset" (see
@@ -490,37 +520,58 @@ export type UpdateWaifuBody = Partial<
 export type ChannelConfig = {
   channelId: string;
   name?: string;
-  enabled: boolean;
   enabledWaifuIds: string[];
+  /** Threads and forum posts under this channel: inherit its cast (default) or stay silent. */
+  threads?: "inherit" | "off";
+};
+
+export type ThreadRecord = {
+  threadId: string;
+  parentId: string;
+  name: string;
+  kind: "public_thread" | "private_thread" | "announcement_thread" | "forum_post";
+  archived: boolean;
+  locked: boolean;
+  lastActivityAt: string;
+};
+
+export type ThreadsFile = Revisioned & {
+  guildId: string;
+  threads: Record<string, ThreadRecord>;
 };
 
 export type ServerConfig = Revisioned & {
   guildId: string;
   name?: string;
-  enabled: boolean;
   orchestratorMode?: "model" | "deterministic" | "one-shot";
   oneShot?: { target: string };
   stageManagerEnabled?: boolean;
   paused?: boolean;
+  // Optional overrides (B29): absent = inherit the agent/waifu `contextWindow`.
   contextWindows: {
-    orchestrator: number;
-    waifu: number;
-    stageManager: number;
+    orchestrator?: number;
+    waifu?: number;
+    stageManager?: number;
   };
+  compaction?: Partial<CompactionSettings>;
   tools: ServerToolSettings;
   channels: Record<string, ChannelConfig>;
 };
 
 export type ServersResponse = { servers: ServerConfig[] };
 
-export type UpdateServerBody = Partial<Omit<ServerConfig, "schemaVersion" | "updatedAt" | "guildId">> & {
+// `null` per key in contextWindows/compaction = inherit (unset the stored override).
+export type UpdateServerBody = Partial<
+  Omit<ServerConfig, "schemaVersion" | "updatedAt" | "guildId" | "contextWindows" | "compaction">
+> & {
   revision: number;
+  contextWindows?: { [K in keyof ServerConfig["contextWindows"]]?: number | null };
+  compaction?: { [K in keyof CompactionSettings]?: CompactionSettings[K] | null };
 };
 
 export type ChannelBody = {
   revision: number;
   name?: string;
-  enabled: boolean;
   enabledWaifuIds?: string[];
 };
 
@@ -574,22 +625,30 @@ export const MEMORY_KINDS: MemoryKind[] = ["fact", "preference", "relationship",
 export type MemorySource = "waifu_tool" | "stage_manager" | "dream" | "user";
 export const MEMORY_SOURCES: MemorySource[] = ["waifu_tool", "stage_manager", "dream", "user"];
 
+// Memories are global per waifu (spec 8.8): `origin` is provenance only.
+export type MemoryOrigin = { guildId?: string; channelId?: string; dm?: true; userId?: string };
+export type MemorySubject = { discordUserId?: string; waifuId?: string; name: string };
+export type MemoryArchivedReason = "merged" | "expired" | "deduped" | "user" | "unknown_waifu";
+
 export type MemoryRecord = {
   id: string;
-  guildId: string;
-  channelId?: string;
   waifuId: string;
   content: string;
   kind: MemoryKind;
   source: MemorySource;
   pinned: boolean;
   strength: number;
-  entities: string[];
+  origin: MemoryOrigin;
+  subjects: MemorySubject[];
+  /** Per-record revision: send it back as `recordRevision` on PUT/DELETE. */
+  revision: number;
   expiresAt?: string;
   createdAt: string;
   updatedAt: string;
   lastRetrievedAt?: string;
   status: MemoryStatus;
+  archivedReason?: MemoryArchivedReason;
+  mergedInto?: string;
 };
 
 export type MemoryStore = Revisioned & {
@@ -599,16 +658,43 @@ export type MemoryStore = Revisioned & {
 export type CreateMemoryBody = {
   revision?: number;
   waifuId: string;
-  guildId: string;
+  guildId?: string;
+  channelId?: string;
   content: string;
   strength?: number;
   pinned?: boolean;
   kind?: MemoryKind;
+  subjects?: MemorySubject[];
 };
 
-export type UpdateMemoryBody = Partial<CreateMemoryBody> & {
-  revision: number;
+/** POST /api/memories answers the full store, plus `duplicateOf` when the write looked like one. */
+export type CreateMemoryResponse = MemoryStore & { duplicateOf?: string };
+
+export type UpdateMemoryBody = {
+  /** Preferred: the record's own revision. */
+  recordRevision?: number;
+  /** Legacy store-wide revision. */
+  revision?: number;
+  content?: string;
+  strength?: number;
+  pinned?: boolean;
+  kind?: MemoryKind;
+  subjects?: MemorySubject[];
   status?: MemoryStatus;
+};
+
+export type ForgetUserResult = {
+  discordUserId: string;
+  dryRun: boolean;
+  memories: number;
+  observations: number;
+  ledgers: number;
+  ledgerEntries: number;
+  /** Spec 9.1.4: DM conversations, DM state files and rate-limit counter files removed. */
+  dmContexts: number;
+  dmStates: number;
+  dmLimits: number;
+  cachedImages: number;
 };
 
 export type ProviderCredentialsBody = {

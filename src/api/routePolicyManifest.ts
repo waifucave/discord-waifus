@@ -232,6 +232,7 @@ export const ROUTE_POLICY_MANIFEST: readonly RoutePolicyDefinition[] = Object.fr
     "server.channel.delete"
   ),
   mutation("DELETE", "/api/servers/:guildId", "transactional", "server.delete"),
+  safe("/api/servers/:guildId/threads"),
   safe("/api/servers/:guildId/members"),
   mutation(
     "POST",
@@ -261,6 +262,10 @@ export const ROUTE_POLICY_MANIFEST: readonly RoutePolicyDefinition[] = Object.fr
   ),
   safe("/api/memories"),
   mutation("POST", "/api/memories", "transactional", "memory.create"),
+  mutation("POST", "/api/memories/forget-user", "transactional", "memory.forget_user"),
+  safe("/api/dms"),
+  safe("/api/dms/:waifuId/:userId"),
+  mutation("POST", "/api/dms/:waifuId/:userId/forget", "transactional", "dm.forget"),
   mutation("PUT", "/api/memories/:memoryId", "transactional", "memory.update"),
   mutation("DELETE", "/api/memories/:memoryId", "transactional", "memory.delete"),
   mutation("POST", "/api/runtime/pause", "reconciled", "runtime.pause"),

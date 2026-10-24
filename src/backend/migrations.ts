@@ -4,13 +4,11 @@ import path from "node:path";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 import { ensureDataLayout, readPackageVersion } from "../config/layout.js";
 import { RETRIGGER_MAX_SECONDS, RETRIGGER_MIN_SECONDS } from "../orchestration/decisions.js";
-import { extractEntities, WAIFU_NOTE_STRENGTH } from "../orchestration/memoryEntities.js";
+import { WAIFU_NOTE_STRENGTH } from "../orchestration/memorySubjects.js";
+import { extractLegacyEntities as extractEntities } from "./migrationSteps/memorySupport.js";
 import { resolveModelTarget } from "../orchestration/pipeline/resolveTarget.js";
 import { MEMORY_KINDS } from "../shared/schemas/domain.js";
 import {
-  PromptLayoutNode,
-  WaifuPromptLayout,
-  defaultWaifuPromptLayout
 } from "../shared/schemas/domain.js";
 import { CURRENT_SCHEMA_VERSION } from "../shared/schemas/common.js";
 import { legacyToParams, LegacyGeneration, LegacyReasoning } from "../shared/paramsCompat.js";
@@ -22,6 +20,17 @@ import {
 } from "../shared/schemas/remoteAccess.js";
 import { RemoteAccessConfigV1Schema } from "../shared/schemas/remoteLifecycle.js";
 import { remoteStatePaths } from "../remote/paths.js";
+import { migrateDreamCursorGlobal } from "./migrationSteps/dreamCursorGlobal.js";
+import { migrateMemoriesCrossGuildDedupe } from "./migrationSteps/memoriesCrossGuildDedupe.js";
+import { migrateMemoriesGlobalOriginSubjects } from "./migrationSteps/memoriesGlobalOriginSubjects.js";
+import { migrateOcrCacheTtlDefault168 } from "./migrationSteps/ocrCacheTtlDefault168.js";
+import { migrateOrchestratorHistoryPerGuild } from "./migrationSteps/orchestratorHistoryPerGuild.js";
+import { migrateServerDropEnabledFlags } from "./migrationSteps/serverDropEnabledFlags.js";
+import { migrateOcrCacheUrlKeysCleanup } from "./migrationSteps/ocrCacheUrlKeysCleanup.js";
+import { migratePendingObservationsGlobal } from "./migrationSteps/pendingObservationsGlobal.js";
+import { migrateServerContextWindowsExplicit } from "./migrationSteps/serverContextWindowsExplicit.js";
+import { migrateWaifuDropPromptLayout } from "./migrationSteps/waifuDropPromptLayout.js";
+import { migrateWaifuParamsGateway040 } from "./migrationSteps/waifuParamsGateway040.js";
 import {
   emptyMigrationLedger,
   readTrustedMigrationLedger,
@@ -41,7 +50,7 @@ export type MigrationResult = {
 //   steps whose outcome depends on code shipped with the app (e.g. the gateway model registry).
 type MigrationStepFrequency = "every-boot" | "once" | "once-per-app-version";
 
-type MigrationStep = {
+export type MigrationStep = {
   id: string;
   frequency: MigrationStepFrequency;
   // Returns the label reported in MigrationResult.applied when the step changed anything.
@@ -53,7 +62,7 @@ const countLabel = (count: number, prefix: string) => (count > 0 ? `${prefix}-${
 
 // Order matters and is the historical boot order. Every step is idempotent, so re-running all of
 // them (missing/corrupt ledger, 1.x → 2.x manual upgrades) is always safe.
-const MIGRATION_STEPS: readonly MigrationStep[] = [
+export const MIGRATION_STEPS: readonly MigrationStep[] = [
   {
     id: "harden-remote-access-state-v1",
     frequency: "every-boot",
@@ -95,21 +104,9 @@ const MIGRATION_STEPS: readonly MigrationStep[] = [
     run: async (dataRoot) =>
       label(await archiveMemoriesWithUnknownWaifus(dataRoot), "archive-memories-with-unknown-waifus")
   },
-  {
-    id: "waifu-prompt-sections-to-layout",
-    frequency: "once",
-    run: async (dataRoot) => countLabel(await migrateWaifuPromptSections(dataRoot), "migrate-waifu-prompt-layout")
-  },
-  {
-    id: "waifu-prompt-layout-w2",
-    frequency: "once",
-    run: async (dataRoot) => countLabel(await migrateWaifuPromptLayoutW2(dataRoot), "migrate-waifu-prompt-layout-w2")
-  },
-  {
-    id: "waifu-memories-to-mid",
-    frequency: "once",
-    run: async (dataRoot) => countLabel(await migrateWaifuPromptMemoriesToMid(dataRoot), "migrate-waifu-memories-to-mid")
-  },
+  // The legacy prompt-layout steps (waifu-prompt-sections-to-layout, waifu-prompt-layout-w2,
+  // waifu-memories-to-mid) were removed with the layout editor (spec 8.6). Their ids may remain in
+  // existing ledgers as history; waifu-drop-prompt-layout-v1 below handles every legacy shape.
   {
     // W3: collapse the two-store memory model into one unified MemoryRecord store. This MUST run
     // after the legacy memory steps above (they mutate the old shape) and before any read, because
@@ -129,11 +126,32 @@ const MIGRATION_STEPS: readonly MigrationStep[] = [
     run: async (dataRoot) => label(await migrateConfigsToGatewayParams(dataRoot), "migrate-configs-to-gateway-params")
   },
   {
+    // Phase 4 (spec 8.2/8.10): drops stored params the gateway 0.4.0 catalog rejects. Owned by T7a.
+    id: "waifu-params-gateway-040-v1",
+    frequency: "once-per-app-version",
+    run: migrateWaifuParamsGateway040
+  },
+  {
     // Has its own one-time marker; the cheap missing-`enabled` fill keeps running every boot.
     id: "enable-discord-bots-v1",
     frequency: "every-boot",
     run: async (dataRoot) => label(await enableDiscordBotsForUpgrade(dataRoot), "enable-discord-bots-v1")
   },
+  // Phase 4 steps (spec 8.2). They must stay before the schema-version stamp and keep this
+  // relative order.
+  { id: "waifu-drop-prompt-layout-v1", frequency: "once", run: migrateWaifuDropPromptLayout }, // T4
+  { id: "server-context-windows-explicit-v1", frequency: "once", run: migrateServerContextWindowsExplicit }, // T5
+  { id: "memories-global-origin-subjects-v1", frequency: "once", run: migrateMemoriesGlobalOriginSubjects }, // T6
+  // Guarded by its own marker file (user/.memories-dedupe-v1.json) so ledger loss never re-runs it.
+  { id: "memories-cross-guild-dedupe-v1", frequency: "once", run: migrateMemoriesCrossGuildDedupe }, // T6
+  { id: "pending-observations-global-v1", frequency: "once", run: migratePendingObservationsGlobal }, // T6
+  { id: "dream-cursor-global-v1", frequency: "once", run: migrateDreamCursorGlobal }, // T6
+  { id: "ocr-cache-url-keys-cleanup-v1", frequency: "once", run: migrateOcrCacheUrlKeysCleanup }, // T2
+  { id: "ocr-cache-ttl-168-v1", frequency: "once", run: migrateOcrCacheTtlDefault168 }, // acceptance M5
+  // Phase 5 steps (spec 9.3, 9.7). The history split must stay after orchestrator-history-responding-waifus
+  // above, which still normalizes legacy decision shapes in the global file it splits.
+  { id: "orchestrator-history-per-guild-v1", frequency: "every-boot", run: migrateOrchestratorHistoryPerGuild },
+  { id: "server-drop-enabled-flags-v1", frequency: "once", run: migrateServerDropEnabledFlags },
   {
     // Runs LAST: every step above may still leave a file's schemaVersion at 1 even once its shape
     // is current. Stamping here — after all shape conversions — is what lets the next boot's
@@ -153,7 +171,7 @@ function stepIsRecorded(step: MigrationStep, ledger: MigrationLedger, appVersion
 
 export async function runMigrations(
   dataRoot: string,
-  options: { appVersion?: string } = {}
+  options: { appVersion?: string; steps?: readonly MigrationStep[] } = {}
 ): Promise<MigrationResult> {
   await ensureDataLayout(dataRoot);
   const appVersion = options.appVersion ?? (await readPackageVersion());
@@ -170,7 +188,7 @@ export async function runMigrations(
   };
 
   try {
-    for (const step of MIGRATION_STEPS) {
+    for (const step of options.steps ?? MIGRATION_STEPS) {
       if (stepIsRecorded(step, ledger, appVersion)) continue;
       const result = await step.run(dataRoot);
       if (result) applied.push(result);
@@ -532,68 +550,6 @@ async function migrateSessionFiles(dataRoot: string): Promise<number> {
   return count;
 }
 
-// Legacy waifus stored a flat boolean `promptSections` toggle set. Convert each into the new
-// ordered `promptLayout` tree, preserving the user's on/off choices by disabling the matching
-// blocks on top of the default arrangement. Always-on and conditional blocks stay enabled.
-const LEGACY_PROMPT_SECTION_TO_BLOCK: Record<string, string> = {
-  directorNotes: "directorNotes",
-  hardRules: "hardRules",
-  mentionPolicy: "mentionPolicy",
-  replyTargeting: "replyTargeting",
-  environmentInstructions: "environment",
-  inputFormat: "contextStructure",
-  styleConstraints: "styleConstraints",
-  personality: "personalityReminder"
-};
-
-function setBlockEnabled(layout: WaifuPromptLayout, blockId: string, enabled: boolean): void {
-  const visit = (nodes: PromptLayoutNode[]) => {
-    for (const node of nodes) {
-      if (node.kind === "block") {
-        if (node.blockId === blockId) node.enabled = enabled;
-      } else {
-        for (const child of node.children) {
-          if (child.blockId === blockId) child.enabled = enabled;
-        }
-      }
-    }
-  };
-  visit(layout.top);
-  visit(layout.mid);
-  visit(layout.trailing);
-}
-
-async function migrateWaifuPromptSections(dataRoot: string): Promise<number> {
-  const waifusRoot = path.join(dataRoot, "user", "waifus");
-  let entries: string[];
-  try {
-    entries = await readdir(waifusRoot);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0;
-    throw error;
-  }
-  let count = 0;
-  for (const entry of entries) {
-    const filePath = path.join(waifusRoot, entry, "waifu.json");
-    const data = await readJsonOrUndefined(filePath);
-    if (!isObject(data)) continue;
-    const legacy = data.promptSections;
-    if (!isObject(legacy)) continue; // already migrated or never had the legacy field
-
-    const layout = defaultWaifuPromptLayout();
-    for (const [legacyKey, blockId] of Object.entries(LEGACY_PROMPT_SECTION_TO_BLOCK)) {
-      if (legacy[legacyKey] === false) {
-        setBlockEnabled(layout, blockId, false);
-      }
-    }
-    data.promptLayout = layout;
-    delete data.promptSections;
-    await atomicWriteJson(filePath, data);
-    count += 1;
-  }
-  return count;
-}
-
 async function migrateLegacyMemories(dataRoot: string): Promise<boolean> {
   const filePath = path.join(dataRoot, "user", "memories.json");
   const data = await readJsonOrUndefined(filePath);
@@ -623,13 +579,10 @@ async function migrateLegacyMemories(dataRoot: string): Promise<boolean> {
     const historyGuildId = memoryId ? singleValue(historyGuilds.get(memoryId)) : undefined;
     const guildId = existingGuildId ?? historyGuildId ?? onlyConfiguredGuildId;
 
-    if (guildId) {
-      if (memory.guildId !== guildId) {
-        memory.guildId = guildId;
-        changed = true;
-      }
-    } else if (memory.status !== "archived") {
-      memory.status = "archived";
+    // Phase 4: memories are global, so a record whose guild cannot be recovered stays active
+    // without one (memories-global-origin-subjects-v1 gives it `origin: {}`).
+    if (guildId && memory.guildId !== guildId) {
+      memory.guildId = guildId;
       changed = true;
     }
   }
@@ -652,6 +605,9 @@ async function archiveMemoriesWithUnknownWaifus(dataRoot: string): Promise<boole
     const waifuId = typeof memory.waifuId === "string" ? memory.waifuId : undefined;
     if (memory.status === "active" && (!waifuId || !configuredWaifuIds.has(waifuId))) {
       memory.status = "archived";
+      memory.archivedReason = "unknown_waifu";
+      // Before memories-global-origin-subjects-v1 has run a record has no revision yet.
+      if (typeof memory.revision === "number") memory.revision += 1;
       memory.updatedAt = now;
       changed = true;
     }
@@ -719,13 +675,12 @@ async function migrateMemoryStoreV2(dataRoot: string): Promise<boolean> {
     const guildId = typeof raw.guildId === "string" ? raw.guildId : "";
     const waifuId = typeof raw.waifuId === "string" ? raw.waifuId : "";
     const kind = typeof raw.kind === "string" && VALID_MEMORY_KINDS.has(raw.kind) ? raw.kind : "fact";
-    // The new schema requires non-empty guildId/waifuId/content for every record (the old schema
-    // tolerated guildId-less archived memories). Drop orphans rather than emit a record that would
-    // fail MemoryStoreSchema parse on the next read.
-    if (!guildId || !waifuId || !content) continue;
+    // waifuId/content are required; a guild-less record is kept (Phase 4: memories are global and
+    // memories-global-origin-subjects-v1 gives it `origin: {}`).
+    if (!waifuId || !content) continue;
     const next: Record<string, unknown> = {
       id: typeof raw.id === "string" && raw.id.length > 0 ? raw.id : randomUUID(),
-      guildId,
+      ...(guildId ? { guildId } : {}),
       waifuId,
       content,
       kind,
@@ -753,10 +708,10 @@ async function migrateMemoryStoreV2(dataRoot: string): Promise<boolean> {
       const content = typeof raw.content === "string" ? raw.content : "";
       const guildId = typeof raw.guildId === "string" ? raw.guildId : "";
       const waifuId = typeof raw.waifuId === "string" ? raw.waifuId : "";
-      if (!content || !guildId || !waifuId) continue;
+      if (!content || !waifuId) continue;
       const note: Record<string, unknown> = {
         id: typeof raw.id === "string" && raw.id.length > 0 ? raw.id : randomUUID(),
-        guildId,
+        ...(guildId ? { guildId } : {}),
         waifuId,
         content,
         kind: "context",
@@ -850,103 +805,6 @@ async function listConfiguredWaifuIds(dataRoot: string): Promise<string[]> {
 function singleValue(values: Set<string> | undefined): string | undefined {
   if (!values || values.size !== 1) return undefined;
   return [...values][0];
-}
-
-// Block IDs that existed in the W1 (pre-W2) registry. Any waifu whose promptLayout contains one
-// of these IDs is using the old registry and must be reset wholesale to the new default so the
-// new blocks are enabled by default (reconcileWaifuPromptLayout would only append them disabled).
-const LEGACY_WAIFU_BLOCK_IDS = new Set([
-  "personality",
-  "contextStructure",
-  "environment",
-  "replyTargeting",
-  "mentionPolicy",
-  "styleConstraints",
-  "hardRules",
-  "directorNotes",
-  "activeParticipants",
-  "serverEmojis",
-  "personalityReminder",
-  "sceneDirection",
-  "toolUse"
-]);
-
-function layoutContainsLegacyIds(layout: unknown): boolean {
-  if (!isObject(layout)) return false;
-  const sections = ["top", "mid", "trailing"] as const;
-  for (const section of sections) {
-    const nodes = layout[section];
-    if (!Array.isArray(nodes)) continue;
-    for (const node of nodes) {
-      if (!isObject(node)) continue;
-      if (node.kind === "block" && typeof node.blockId === "string" && LEGACY_WAIFU_BLOCK_IDS.has(node.blockId)) {
-        return true;
-      }
-      if (node.kind === "group" && Array.isArray(node.children)) {
-        for (const child of node.children) {
-          if (isObject(child) && typeof child.blockId === "string" && LEGACY_WAIFU_BLOCK_IDS.has(child.blockId)) {
-            return true;
-          }
-        }
-      }
-    }
-  }
-  return false;
-}
-
-async function migrateWaifuPromptLayoutW2(dataRoot: string): Promise<number> {
-  const waifusRoot = path.join(dataRoot, "user", "waifus");
-  let entries: string[];
-  try {
-    entries = await readdir(waifusRoot);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0;
-    throw error;
-  }
-  let count = 0;
-  for (const entry of entries) {
-    const filePath = path.join(waifusRoot, entry, "waifu.json");
-    const data = await readJsonOrUndefined(filePath);
-    if (!isObject(data)) continue;
-    // Only migrate waifus that have a promptLayout with legacy block IDs.
-    if (!layoutContainsLegacyIds(data.promptLayout)) continue;
-    data.promptLayout = defaultWaifuPromptLayout();
-    await atomicWriteJson(filePath, data);
-    count += 1;
-  }
-  return count;
-}
-
-// Fix-2 (recency layout): relevantMemories moved from the trailing slot to the mid slot so the
-// newest messages keep the final prompt positions. Moves the top-level trailing node (keeping
-// its enabled flag) to the end of mid. A node the user placed inside a custom group stays put —
-// that arrangement was deliberate.
-async function migrateWaifuPromptMemoriesToMid(dataRoot: string): Promise<number> {
-  const waifusRoot = path.join(dataRoot, "user", "waifus");
-  let entries: string[];
-  try {
-    entries = await readdir(waifusRoot);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0;
-    throw error;
-  }
-  let count = 0;
-  for (const entry of entries) {
-    const filePath = path.join(waifusRoot, entry, "waifu.json");
-    const data = await readJsonOrUndefined(filePath);
-    if (!isObject(data) || !isObject(data.promptLayout)) continue;
-    const layout = data.promptLayout as { mid?: unknown; trailing?: unknown };
-    if (!Array.isArray(layout.mid) || !Array.isArray(layout.trailing)) continue;
-    const index = layout.trailing.findIndex(
-      (node) => isObject(node) && node.kind === "block" && node.blockId === "relevantMemories"
-    );
-    if (index < 0) continue;
-    const [node] = layout.trailing.splice(index, 1);
-    layout.mid.push(node);
-    await atomicWriteJson(filePath, data);
-    count += 1;
-  }
-  return count;
 }
 
 // §7.3: fold legacy reasoning/generation config shapes into the unified gateway `params` record,

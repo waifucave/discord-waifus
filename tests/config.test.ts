@@ -19,8 +19,7 @@ import {
 } from "../src/remote/paths.js";
 import {
   ServerConfigSchema,
-  WaifuConfigSchema,
-  defaultWaifuPromptLayout
+  WaifuConfigSchema
 } from "../src/shared/schemas/domain.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
 
@@ -43,7 +42,7 @@ describe("data root and config", () => {
 
     await expect(access(path.join(root, "app", "logs"))).resolves.toBeUndefined();
     await expect(access(path.join(root, "app", "cache"))).resolves.toBeUndefined();
-    await expect(access(path.join(root, "app", "cache", "ocr", "results"))).resolves.toBeUndefined();
+    await expect(access(path.join(root, "app", "cache", "ocr", "results-v2"))).resolves.toBeUndefined();
     await expect(access(path.join(root, "app", "tmp", "ocr"))).resolves.toBeUndefined();
     await expect(access(path.join(root, "user", "waifus"))).resolves.toBeUndefined();
     await expect(access(path.join(root, "user", "servers"))).resolves.toBeUndefined();
@@ -92,7 +91,7 @@ describe("data root and config", () => {
     expect(config.ocr).toMatchObject({
       enabled: true,
       engine: "auto",
-      cacheTtlHours: 24,
+      cacheTtlHours: 168,
       timeoutMs: 1500,
       maxImageBytes: 8 * 1024 * 1024,
       maxImagesPerModelCall: 4,
@@ -246,7 +245,7 @@ describe("data root and config", () => {
     expect(seeded.availability.sleep.enabled).toBe(true);
     expect(seeded.availability.busy.length).toBeGreaterThan(0);
     expect(seeded.tools).toEqual({ toolUse: true });
-    expect(seeded.promptLayout).toEqual(defaultWaifuPromptLayout());
+    expect(seeded).not.toHaveProperty("promptLayout");
     expect(seeded.modelId).toBeUndefined();
     expect(seeded.botId).toBeUndefined();
 
@@ -293,7 +292,7 @@ describe("data root and config", () => {
       }
     });
     expect(waifu.tools).toEqual({ toolUse: false });
-    expect(waifu.promptLayout).toEqual(defaultWaifuPromptLayout());
+    expect(waifu).not.toHaveProperty("promptLayout");
   });
 
   it("rejects overlapping busy intervals in waifu availability", () => {

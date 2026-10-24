@@ -1,6 +1,13 @@
 import {
+  ActionRowBuilder,
   ApplicationCommandOptionType,
+  ApplicationIntegrationType,
+  ButtonBuilder,
+  ButtonStyle,
+  ChannelType,
   Client,
+  ComponentType,
+  InteractionContextType,
   Events,
   GatewayIntentBits,
   MessageFlags,
@@ -10,16 +17,27 @@ import {
 } from "discord.js";
 import type { AutocompleteInteraction, ChatInputCommandInteraction, ClientOptions } from "discord.js";
 import { Logger } from "../backend/logger.js";
-import { ContextMessage } from "../orchestration/context.js";
+import { ContextMessage } from "../orchestration/contextMessages.js";
 import {
   DiscordBotConfig,
   GuildEmojiCacheEntry,
   GuildMemberCacheEntry,
   GuildRoleCacheEntry
 } from "../shared/schemas/domain.js";
+import type { RawDiscordMessage } from "../shared/schemas/discordMessage.js";
+import type { ThreadKind } from "../shared/schemas/threads.js";
 import { buildNormalizedDiscordContext } from "./contextBuilder.js";
 import { unresolvedMentionIdsByType } from "./memberCache.js";
 import { denormalizeModelContentForDiscord } from "./normalization.js";
+import { pageMessagesSince, toRawDiscordMessage, withoutAuthors, type DiscordMessageLike } from "./rawMessage.js";
+import { attachGatewayFeed, guildSnapshotEvent } from "./gatewayFeed.js";
+import type {
+  DiscordConnectionScope,
+  DiscordConversationEvent,
+  DiscordConversationEventListener,
+  DiscordDirectoryEvent,
+  DiscordDirectoryEventListener
+} from "./gatewayEvents.js";
 
 export type DiscordRuntimeStatus = {
   connected: boolean;
@@ -90,6 +108,10 @@ export interface DiscordGatewayFacade {
   connect(): Promise<DiscordRuntimeStatus>;
   disconnect(): Promise<void>;
   onMessage?(listener: DiscordMessageListener): () => void;
+  /** Spec 9.5: a thread or forum post was created, changed (archived, locked, renamed) or deleted. */
+  onThreadChange?(listener: DiscordThreadListener): () => void;
+  /** Best-effort: join a (public) thread so its messages are delivered. */
+  joinThread?(input: { guildId: string; threadId: string }): Promise<void>;
   onReviewCommand?(listener: DiscordReviewCommandListener): () => void;
   onClearCommand?(listener: DiscordClearCommandListener): () => void;
   onRunCommand?(listener: DiscordRunCommandListener): () => void;
@@ -99,6 +121,48 @@ export interface DiscordGatewayFacade {
   onPrintCommand?(listener: DiscordPrintCommandListener): () => void;
   onPrintWaifuAutocomplete?(listener: DiscordPrintWaifuAutocompleteListener): () => void;
   onDebugCommand?(listener: DiscordDebugCommandListener): () => void;
+  /**
+   * Phase 5 caches (spec 9.4): gateway events as plain data. Conversation events carry messages,
+   * reactions and connection state (trust); own sends are published before sendWaifuMessage returns.
+   * Fakes without them leave the ConversationMessageCache permanently untrusted (always REST).
+   */
+  onConversationEvent?(listener: DiscordConversationEventListener): () => void;
+  /**
+   * Roles, emojis, channels, threads and (opt-in intent) members, for the GuildDirectory. A late
+   * subscriber is replayed a snapshot of every guild the connected orchestrator already sees.
+   */
+  onDirectoryEvent?(listener: DiscordDirectoryEventListener): () => void;
+  /** Discord user ids of our own bots (orchestrator and waifus): their messages are "own" sends. */
+  ownAuthorIds?(): string[];
+  /**
+   * DM transport (spec 9.1): a waifu bot's DM channel with one user, same contract as
+   * fetchContextSince. Fakes without it make the cache return an empty, fully-reached result.
+   */
+  fetchDmContextSince?(input: {
+    waifuId: string;
+    userId: string;
+    afterMessageId: string | null;
+    maxMessages: number;
+    signal?: AbortSignal;
+  }): Promise<{ messages: RawDiscordMessage[]; reachedCursor: boolean }>;
+  /** Spec 9.1: a human's DM to a DM-eligible waifu bot (group DMs, bots and self are dropped). */
+  onDirectMessage?(listener: DiscordDirectMessageListener): () => void;
+  /** Spec 9.1.5: a confirmed DM `/forget`; the listener returns the text shown to the user. */
+  onDmForgetCommand?(listener: DiscordDmForgetCommandListener): () => void;
+  sendDirectMessage?(input: {
+    waifuId: string;
+    userId: string;
+    content: string;
+    replyToMessageId?: string;
+  }): Promise<{ messageId: string }>;
+  sendDirectTyping?(input: { waifuId: string; userId: string }): Promise<void>;
+  /**
+   * Intents are fixed at login: after a waifu write that changes `dm.allowDms`, `botId` or
+   * `enabled`, re-log only the bots whose DM intents changed (spec 9.1).
+   */
+  reconcileDmIntents?(): Promise<{ relogged: string[] }>;
+  /** Per waifu bot: the waifu whose DMs it carries and whether its live session has DM intents. */
+  dmIntentStatus?(): DiscordDmIntentStatus[];
   listGuilds?(): Promise<Array<{ guildId: string; name: string }>>;
   fetchChannelMetadata?(input: {
     guildId: string;
@@ -110,6 +174,18 @@ export interface DiscordGatewayFacade {
     limit: number;
     signal?: AbortSignal;
   }): Promise<ContextMessage[]>;
+  /**
+   * Phase 4 context engine (spec 8.3): raw messages newer than `afterMessageId` (null = newest
+   * `maxMessages`), one record per Discord message, oldest-first; pages `before` in batches of
+   * 100. Fakes without it fall back to fetchFreshContext + cursor filter (fetchTranscript.ts).
+   */
+  fetchContextSince?(input: {
+    guildId: string;
+    channelId: string;
+    afterMessageId: string | null;
+    maxMessages: number;
+    signal?: AbortSignal;
+  }): Promise<{ messages: RawDiscordMessage[]; reachedCursor: boolean }>;
   sendWaifuMessage(input: {
     guildId: string;
     channelId: string;
@@ -145,6 +221,15 @@ export interface DiscordGatewayFacade {
   }): Promise<DiscordDeleteChannelMessagesResult>;
 }
 
+/** What the gateway knows about a thread or forum post a message lives in (spec 9.5). */
+export type DiscordThreadInfo = {
+  parentId: string;
+  name: string;
+  kind: ThreadKind;
+  archived: boolean;
+  locked: boolean;
+};
+
 export type DiscordMessageEvent = {
   guildId: string;
   channelId: string;
@@ -152,9 +237,45 @@ export type DiscordMessageEvent = {
   authorId: string;
   authorDisplayName?: string;
   authorBot: boolean;
+  /** Set when `channelId` is a thread or forum post (its parent is `thread.parentId`). */
+  thread?: DiscordThreadInfo;
 };
 
 export type DiscordMessageListener = (event: DiscordMessageEvent) => void | Promise<void>;
+
+export type DiscordDirectMessageEvent = {
+  waifuId: string;
+  botId: string;
+  userId: string;
+  userDisplayName?: string;
+  channelId: string;
+  messageId: string;
+  createdAt: string;
+};
+export type DiscordDirectMessageListener = (event: DiscordDirectMessageEvent) => void | Promise<void>;
+
+export type DiscordDmForgetScope = "conversation" | "everything";
+export type DiscordDmForgetCommandEvent = { waifuId: string; botId: string; userId: string; scope: DiscordDmForgetScope };
+export type DiscordDmForgetCommandListener = (event: DiscordDmForgetCommandEvent) => Promise<string>;
+
+export type DiscordDmIntentStatus = {
+  botId: string;
+  /** The waifu this bot should carry DMs for (eligibility), if any. */
+  waifuId?: string;
+  /** The live session was logged in with the DM intents. */
+  intentActive: boolean;
+  connected: boolean;
+};
+
+export type DiscordThreadEvent = {
+  change: "create" | "update" | "delete";
+  guildId: string;
+  threadId: string;
+  thread: DiscordThreadInfo;
+  /** For `update`: the state before (when Discord had it cached). */
+  previous?: Pick<DiscordThreadInfo, "archived" | "locked" | "name">;
+};
+export type DiscordThreadListener = (event: DiscordThreadEvent) => void | Promise<void>;
 
 export type DiscordSlashCommandEvent = {
   guildId: string;
@@ -188,6 +309,8 @@ export type DiscordMemoriesCommandEvent = DiscordSlashCommandEvent;
 export type DiscordPrintCommandEvent = DiscordSlashCommandEvent & {
   type?: DiscordPrintCommandType;
   waifuId?: string;
+  /** Ephemeral follow-up visible only to the invoker (prompt prints never post publicly). */
+  followUp?: (content: string) => Promise<void>;
 };
 export type DiscordPrintWaifuAutocompleteEvent = {
   guildId?: string;
@@ -238,6 +361,8 @@ export type DiscordChannelMetadata = {
   guildName?: string;
   channelId: string;
   channelName?: string;
+  /** Set when the channel is a thread or forum post (spec 9.5). */
+  thread?: DiscordThreadInfo;
 };
 
 type DiscordCache = {
@@ -264,6 +389,12 @@ export type DiscordJsGatewayOptions = {
   waifus?: DiscordBotConfig[];
   members?: GuildMemberCacheEntry[];
   emojis?: GuildEmojiCacheEntry[];
+  /**
+   * Opt-in privileged GuildMembers intent (`discord.guildMembersIntent`, O7): member events keep
+   * the directory fresh. Needs the toggle in the Discord developer portal, else login is
+   * rejected with `disallowed_intents`.
+   */
+  guildMembersIntent?: boolean;
   cacheForGuild?: (guildId: string) => Promise<DiscordCache>;
   refreshMembersForGuild?: (guildId: string) => Promise<DiscordCache>;
   refreshRolesForGuild?: (guildId: string) => Promise<DiscordCache>;
@@ -272,6 +403,11 @@ export type DiscordJsGatewayOptions = {
   onStatusChange?: (status: DiscordRuntimeStatus) => void | Promise<void>;
   /** Backoff for re-logging a waifu bot whose login failed on a network error. */
   botRetryDelaysMs?: number[];
+  /**
+   * DM-eligible (bot, waifu) pairs (spec 9.1), read at connect and by reconcileDmIntents. Bots in
+   * this list log in with the DM intents; every other waifu bot keeps `[Guilds]`.
+   */
+  dmBots?: () => Promise<Array<{ botId: string; waifuId: string }>>;
   /** Test seam: build the discord.js client for a bot. */
   createClient?: (input: { bot: DiscordBotConfig; kind: DiscordBotKind; options: ClientOptions }) => Client;
   logger?: Logger;
@@ -283,6 +419,10 @@ type ConnectableBot = {
   token: string;
 };
 
+export const GUILD_MEMBERS_INTENT_REJECTED = "guild_members_intent_rejected";
+const GUILD_MEMBERS_INTENT_REJECTED_MESSAGE =
+  "Discord rejected the Server Members intent, so the bot connected without it. Enable it in the Developer Portal or turn off discord.guildMembersIntent.";
+
 export class DiscordJsGateway implements DiscordGatewayFacade {
   private readonly clients = new Map<string, Client>();
   private readonly pendingClients = new Set<Client>();
@@ -292,7 +432,12 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   // Bumped by every disconnect so logins that finish afterwards are destroyed instead of adopted.
   private generation = 0;
   private connectAbort = new AbortController();
+  // Discord refused the privileged GuildMembers intent: connected without it (M6).
+  private membersIntentRejected = false;
   private readonly listeners = new Set<DiscordMessageListener>();
+  private readonly threadListeners = new Set<DiscordThreadListener>();
+  private readonly conversationListeners = new Set<DiscordConversationEventListener>();
+  private readonly directoryListeners = new Set<DiscordDirectoryEventListener>();
   private readonly reviewListeners = new Set<DiscordReviewCommandListener>();
   private readonly clearListeners = new Set<DiscordClearCommandListener>();
   private readonly runListeners = new Set<DiscordRunCommandListener>();
@@ -304,10 +449,30 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   private readonly debugListeners = new Set<DiscordDebugCommandListener>();
   private readonly recentMentionRefreshes = new Map<string, number>();
   private readonly runCooldowns = new Map<string, number>();
+  // DMs (spec 9.1): wanted (bot → waifu, from eligibility) and what each live client was built with.
+  private dmWaifuByBot = new Map<string, string>();
+  private readonly clientDmWaifu = new Map<string, string>();
+  private readonly dmChannels = new Map<string, string>(); // `${botId}:${userId}` → DM channel id
+  private readonly dmListeners = new Set<DiscordDirectMessageListener>();
+  private readonly dmForgetListeners = new Set<DiscordDmForgetCommandListener>();
 
   constructor(private readonly options: DiscordJsGatewayOptions) {}
 
+  private async refreshDmBots(): Promise<void> {
+    if (!this.options.dmBots) return;
+    try {
+      const pairs = await this.options.dmBots();
+      this.dmWaifuByBot = new Map(pairs.map((pair) => [pair.botId, pair.waifuId]));
+    } catch (error) {
+      this.options.logger?.warn("Could not resolve DM-eligible bots; keeping the previous set", {
+        message: errorMessage(error)
+      });
+    }
+  }
+
   async connect(): Promise<DiscordRuntimeStatus> {
+    this.membersIntentRejected = false; // the portal setting may have changed since the last attempt
+    await this.refreshDmBots();
     const generation = this.generation;
     const signal = this.connectAbort.signal;
     this.botStatuses.clear();
@@ -360,6 +525,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   }
 
   async disconnect(): Promise<void> {
+    if (this.clients.size > 0) this.emitConversationEvent({ type: "connection", scope: "guild", state: "disconnected" });
     this.generation += 1;
     this.connectAbort.abort();
     this.connectAbort = new AbortController();
@@ -369,6 +535,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
     const clients = [...this.clients.values(), ...this.pendingClients];
     this.clients.clear();
     this.pendingClients.clear();
+    this.clientDmWaifu.clear();
     await Promise.all(clients.map((client) => destroyClientQuietly(client)));
   }
 
@@ -376,6 +543,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   status(): DiscordRuntimeStatus {
     const bots = [...this.botStatuses.values()].map((status) => ({ ...status }));
     const warnings: string[] = [];
+    if (this.membersIntentRejected) warnings.push(`${GUILD_MEMBERS_INTENT_REJECTED}: ${GUILD_MEMBERS_INTENT_REJECTED_MESSAGE}`);
     if (this.clients.size === 0 && !bots.some((status) => status.state === "error" || status.state === "connecting")) {
       warnings.push("No enabled Discord bot tokens are configured.");
     }
@@ -418,6 +586,24 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
     } catch (error) {
       this.pendingClients.delete(client);
       await destroyClientQuietly(client);
+      if (
+        generation === this.generation &&
+        kind === "orchestrator" &&
+        this.options.guildMembersIntent === true &&
+        !this.membersIntentRejected &&
+        classifyDiscordConnectionError(error) === "disallowed_intents"
+      ) {
+        // The opt-in privileged intent is not enabled for this application: Discord would
+        // otherwise stay offline. Connect without it once and tell the user.
+        this.membersIntentRejected = true;
+        this.reportRuntimeIssue({
+          source: "warn",
+          botId: bot.id,
+          code: GUILD_MEMBERS_INTENT_REJECTED,
+          message: GUILD_MEMBERS_INTENT_REJECTED_MESSAGE
+        });
+        return this.connectBot(entry, generation, signal);
+      }
       if (generation === this.generation) {
         const errorCode = classifyDiscordConnectionError(error);
         this.setBotStatus(bot, kind, { state: "error", errorCode, error: errorMessage(error) });
@@ -446,6 +632,8 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
     this.setBotStatus(bot, kind, { state: "connected" });
     if (kind === "orchestrator") {
       await registerOrchestratorCommands(client, this.options.logger);
+    } else {
+      await registerDmCommands(client, this.clientDmWaifu.has(bot.id), this.options.logger);
     }
     this.options.logger?.info("Discord bot connected", {
       botId: bot.id,
@@ -495,25 +683,346 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   }
 
   private createClient(bot: DiscordBotConfig, kind: DiscordBotKind): Client {
-    const options = discordClientOptions(kind);
+    const dmWaifu = kind === "waifu" ? this.dmWaifuByBot.get(bot.id) : undefined;
+    const options = discordClientOptions(kind, {
+      guildMembersIntent: this.options.guildMembersIntent === true && !this.membersIntentRejected,
+      dm: dmWaifu !== undefined
+    });
     const client = this.options.createClient?.({ bot, kind, options }) ?? new Client(options);
     this.attachClientRuntimeHandlers(client, bot.id);
     if (kind === "orchestrator") {
       this.attachOrchestratorListeners(client);
     }
+    if (dmWaifu !== undefined) {
+      this.clientDmWaifu.set(bot.id, dmWaifu);
+      this.attachDmListeners(client, bot.id, dmWaifu);
+    } else if (kind === "waifu") {
+      this.clientDmWaifu.delete(bot.id);
+    }
     return client;
   }
 
+  // ---- DMs (spec 9.1) --------------------------------------------------------------------------
+
+  private attachDmListeners(client: Client, botId: string, waifuId: string): void {
+    // Before the intake listener: the cache holds the message when the DM runner reads it.
+    attachGatewayFeed(client, `dm:${waifuId}`, {
+      conversation: (event) => this.emitConversationEvent(event),
+      directory: () => undefined,
+      ignoredAuthorIds: () => new Set<string>(),
+      dm: {
+        waifuId,
+        userForChannel: (channelId) => {
+          for (const [key, id] of this.dmChannels) {
+            if (id === channelId && key.startsWith(`${botId}:`)) return key.slice(botId.length + 1);
+          }
+          return undefined;
+        },
+        noteChannel: (channelId, userId) => {
+          this.dmChannels.set(`${botId}:${userId}`, channelId);
+        }
+      }
+    });
+    client.on(Events.MessageCreate, (message) => {
+      if (message.guildId || message.channel?.type !== ChannelType.DM) return;
+      if (message.author.bot || message.author.id === client.user?.id) return;
+      if (this.clients.get(botId) !== client) return;
+      this.dmChannels.set(`${botId}:${message.author.id}`, message.channelId);
+      const event: DiscordDirectMessageEvent = {
+        waifuId,
+        botId,
+        userId: message.author.id,
+        userDisplayName: message.author.globalName ?? message.author.username,
+        channelId: message.channelId,
+        messageId: message.id,
+        createdAt: new Date(message.createdTimestamp).toISOString()
+      };
+      // Ids only: DM content is never logged (spec 9.1.3).
+      this.options.logger?.info("Discord gateway received DM", { botId, waifuId, messageId: event.messageId });
+      for (const listener of this.dmListeners) {
+        this.dispatchListener("Discord DM listener failed", listener, event, { botId, waifuId, messageId: event.messageId });
+      }
+    });
+    client.on(Events.InteractionCreate, (interaction) => {
+      if (!interaction.isChatInputCommand() || interaction.commandName !== DM_FORGET_COMMAND_NAME || interaction.guildId) return;
+      this.runBackground("Discord DM forget interaction failed", { botId, waifuId }, () =>
+        this.handleDmForgetInteraction(interaction, botId)
+      );
+    });
+  }
+
+  private async handleDmForgetInteraction(interaction: ChatInputCommandInteraction, botId: string): Promise<void> {
+    const waifuId = this.clientDmWaifu.get(botId);
+    if (!waifuId || this.dmForgetListeners.size === 0) {
+      await replyEphemeral(interaction, `/${DM_FORGET_COMMAND_NAME} is not ready yet: Discord Waifus is still starting up. Try again in a moment.`);
+      return;
+    }
+    const scope: DiscordDmForgetScope =
+      interaction.options.getString(DM_FORGET_WHAT_OPTION_NAME) === "everything" ? "everything" : "conversation";
+    const confirmId = `dm-forget:${interaction.id}:confirm`;
+    const cancelId = `dm-forget:${interaction.id}:cancel`;
+    const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder().setCustomId(confirmId).setLabel("Confirm").setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId(cancelId).setLabel("Cancel").setStyle(ButtonStyle.Secondary)
+    );
+    const question =
+      scope === "everything"
+        ? "Forget everything about you: our private chat and every memory I have of you? This can't be undone."
+        : "Forget our private chat? This can't be undone.";
+    const response = await interaction.reply({
+      content: question,
+      components: [row],
+      flags: MessageFlags.Ephemeral,
+      withResponse: true
+    });
+    const message = response.resource?.message;
+    if (!message) return;
+    let click;
+    try {
+      click = await message.awaitMessageComponent({
+        componentType: ComponentType.Button,
+        time: DM_FORGET_CONFIRM_MS,
+        filter: (candidate) =>
+          candidate.user.id === interaction.user.id && (candidate.customId === confirmId || candidate.customId === cancelId)
+      });
+    } catch {
+      await interaction.editReply({ content: "Timed out: nothing was forgotten.", components: [] }).catch(() => undefined);
+      return;
+    }
+    if (click.customId === cancelId) {
+      await click.update({ content: "Cancelled: nothing was forgotten.", components: [] });
+      return;
+    }
+    const [listener] = this.dmForgetListeners;
+    let text: string;
+    try {
+      text = await listener!({ waifuId, botId, userId: interaction.user.id, scope });
+    } catch (error) {
+      this.options.logger?.error("DM forget failed", { botId, waifuId, message: errorMessage(error) });
+      text = "Something went wrong, so nothing may have been forgotten. Try again later.";
+    }
+    await click.update({ content: text, components: [] });
+  }
+
+  onDirectMessage(listener: DiscordDirectMessageListener): () => void {
+    this.dmListeners.add(listener);
+    return () => this.dmListeners.delete(listener);
+  }
+
+  onDmForgetCommand(listener: DiscordDmForgetCommandListener): () => void {
+    this.dmForgetListeners.add(listener);
+    return () => this.dmForgetListeners.delete(listener);
+  }
+
+  dmIntentStatus(): DiscordDmIntentStatus[] {
+    return (this.options.waifus ?? [])
+      .filter((bot) => bot.id !== this.options.orchestrator.id)
+      .map((bot) => {
+        const connected = this.clients.has(bot.id);
+        const waifuId = this.dmWaifuByBot.get(bot.id);
+        return {
+          botId: bot.id,
+          ...(waifuId ? { waifuId } : {}),
+          intentActive: connected && this.clientDmWaifu.has(bot.id),
+          connected
+        };
+      });
+  }
+
+  async reconcileDmIntents(): Promise<{ relogged: string[] }> {
+    await this.refreshDmBots();
+    const relogged: string[] = [];
+    const generation = this.generation;
+    for (const { bot, kind } of this.configuredBots()) {
+      if (kind !== "waifu" || !bot.token) continue;
+      const client = this.clients.get(bot.id);
+      if (!client) continue; // not online: its next login uses the new intents
+      const want = this.dmWaifuByBot.get(bot.id);
+      const have = this.clientDmWaifu.get(bot.id);
+      if (want === have) continue;
+      relogged.push(bot.id);
+      this.options.logger?.info("Re-logging waifu bot for a DM intent change", { botId: bot.id, dm: want !== undefined });
+      this.clients.delete(bot.id);
+      this.clientDmWaifu.delete(bot.id);
+      if (have) this.emitConversationEvent({ type: "connection", scope: `dm:${have}`, state: "disconnected" });
+      await destroyClientQuietly(client);
+      if (generation !== this.generation) break;
+      await this.connectBot({ bot, kind, token: bot.token }, generation, this.connectAbort.signal).catch(() => undefined);
+    }
+    if (relogged.length > 0) this.emitStatusChange(generation);
+    return { relogged };
+  }
+
+  private dmClient(waifuId: string): { client: Client; botId: string } {
+    for (const [botId, candidate] of this.clientDmWaifu) {
+      if (candidate !== waifuId) continue;
+      const client = this.clients.get(botId);
+      if (client) return { client, botId };
+    }
+    throw new Error(`No connected bot carries DMs for waifu ${waifuId}.`);
+  }
+
+  private async dmChannel(client: Client, botId: string, userId: string) {
+    const known = this.dmChannels.get(`${botId}:${userId}`);
+    if (known) {
+      const channel = await client.channels.fetch(known).catch(() => null);
+      if (channel && channel.type === ChannelType.DM) return channel;
+    }
+    const channel = await client.users.createDM(userId);
+    this.dmChannels.set(`${botId}:${userId}`, channel.id);
+    return channel;
+  }
+
+  async fetchDmContextSince(input: {
+    waifuId: string;
+    userId: string;
+    afterMessageId: string | null;
+    maxMessages: number;
+    signal?: AbortSignal;
+  }): Promise<{ messages: RawDiscordMessage[]; reachedCursor: boolean }> {
+    throwIfAborted(input.signal);
+    const { client, botId } = this.dmClient(input.waifuId);
+    const channel = await this.dmChannel(client, botId, input.userId);
+    const result = await pageMessagesSince(
+      async (before) => (await channel.messages.fetch(before ? { limit: 100, before } : { limit: 100 })).values(),
+      { afterMessageId: input.afterMessageId, maxMessages: input.maxMessages, signal: input.signal }
+    );
+    return {
+      messages: (result.messages as unknown as DiscordMessageLike[]).map((message) => toRawDiscordMessage(message)),
+      reachedCursor: result.reachedCursor
+    };
+  }
+
+  async sendDirectMessage(input: {
+    waifuId: string;
+    userId: string;
+    content: string;
+    replyToMessageId?: string;
+  }): Promise<{ messageId: string }> {
+    const { client, botId } = this.dmClient(input.waifuId);
+    const channel = await this.dmChannel(client, botId, input.userId);
+    const denormalized = denormalizeModelContentForDiscord(input.content, { activeAuthorIds: [input.userId] });
+    const replyToMessageId = sanitizeReplyTarget(input.replyToMessageId);
+    const sent = await channel.send({
+      content: denormalized.content,
+      allowedMentions: denormalized.allowedMentions,
+      reply: replyToMessageId ? { messageReference: replyToMessageId, failIfNotExists: false } : undefined
+    });
+    // Visible to the next read before this returns, like a guild send.
+    try {
+      const message = toRawDiscordMessage(sent as unknown as DiscordMessageLike);
+      this.emitConversationEvent({
+        type: "create",
+        own: true,
+        conversation: { kind: "dm", waifuId: input.waifuId, userId: input.userId },
+        message
+      });
+    } catch (error) {
+      this.options.logger?.warn("Could not publish an own DM send to the conversation cache", {
+        messageId: sent.id,
+        message: errorMessage(error)
+      });
+    }
+    return { messageId: sent.id };
+  }
+
+  async sendDirectTyping(input: { waifuId: string; userId: string }): Promise<void> {
+    try {
+      const { client, botId } = this.dmClient(input.waifuId);
+      const channel = await this.dmChannel(client, botId, input.userId);
+      await channel.sendTyping();
+    } catch (error) {
+      this.options.logger?.warn("Failed to send DM typing indicator", { waifuId: input.waifuId, message: errorMessage(error) });
+    }
+  }
+
+  private emitConversationEvent(event: DiscordConversationEvent): void {
+    for (const listener of this.conversationListeners) {
+      try {
+        listener(event);
+      } catch (error) {
+        this.options.logger?.error("Discord conversation event listener failed", {
+          type: event.type,
+          message: error instanceof Error ? error.message : String(error)
+        });
+      }
+    }
+  }
+
+  private emitDirectoryEvent(event: DiscordDirectoryEvent): void {
+    for (const listener of this.directoryListeners) {
+      try {
+        listener(event);
+      } catch (error) {
+        this.options.logger?.error("Discord directory event listener failed", {
+          type: event.type,
+          guildId: event.guildId,
+          message: error instanceof Error ? error.message : String(error)
+        });
+      }
+    }
+  }
+
+  onConversationEvent(listener: DiscordConversationEventListener): () => void {
+    this.conversationListeners.add(listener);
+    // A subscriber that arrives after the orchestrator connected missed its `ready`: replay it,
+    // otherwise its buffers could never be trusted.
+    if (this.clients.has(this.options.orchestrator.id)) {
+      this.dispatchTo(listener, { type: "connection", scope: "guild", state: "ready" });
+    }
+    // Same for every DM transport that is already online (its scope must turn live to be trusted).
+    for (const [botId, waifuId] of this.clientDmWaifu) {
+      if (this.clients.has(botId)) {
+        this.dispatchTo(listener, { type: "connection", scope: `dm:${waifuId}` as DiscordConnectionScope, state: "ready" });
+      }
+    }
+    return () => this.conversationListeners.delete(listener);
+  }
+
+  onDirectoryEvent(listener: DiscordDirectoryEventListener): () => void {
+    this.directoryListeners.add(listener);
+    // discord.js emits GuildCreate only for guilds joined later; replay what is already there.
+    const client = this.clients.get(this.options.orchestrator.id);
+    if (client) {
+      for (const guild of client.guilds.cache.values()) this.dispatchTo(listener, guildSnapshotEvent(guild));
+    }
+    return () => this.directoryListeners.delete(listener);
+  }
+
+  ownAuthorIds(): string[] {
+    const ids = new Set<string>();
+    for (const client of this.clients.values()) if (client.user?.id) ids.add(client.user.id);
+    return [...ids];
+  }
+
+  private dispatchTo<E>(listener: (event: E) => void, event: E): void {
+    try {
+      listener(event);
+    } catch (error) {
+      this.options.logger?.error("Discord event listener failed", { message: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
   private attachOrchestratorListeners(client: Client): void {
+    // Registered before the intake listener below: when a handler reads the conversation, the
+    // cache has already seen the message that woke it (trusted reads make no REST calls).
+    attachGatewayFeed(client, "guild", {
+      conversation: (event) => this.emitConversationEvent(event),
+      directory: (event) => this.emitDirectoryEvent(event),
+      ignoredAuthorIds: () =>
+        new Set([...botAuthorIds([this.options.orchestrator]), ...(client.user?.id ? [client.user.id] : [])])
+    });
     client.on("messageCreate", (message) => {
       if (!message.guildId) return;
+      const thread = threadInfoOf(message.channel);
       const event: DiscordMessageEvent = {
         guildId: message.guildId,
         channelId: message.channelId,
         messageId: message.id,
         authorId: message.author.id,
         authorDisplayName: message.member?.displayName ?? message.author.globalName ?? message.author.username,
-        authorBot: message.author.bot
+        authorBot: message.author.bot,
+        ...(thread ? { thread } : {})
       };
       this.options.logger?.info("Discord gateway received message", {
         guildId: event.guildId,
@@ -529,6 +1038,28 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
         });
       }
     });
+    // Spec 9.5: edits and deletes reach the ledger through the conversation feed above; only thread
+    // lifecycle is emitted here.
+    const emitThread = (change: DiscordThreadEvent["change"], thread: unknown, previous?: unknown) => {
+      const info = threadInfoOf(thread);
+      const threadId = (thread as { id?: string } | undefined)?.id;
+      const guildId = (thread as { guildId?: string | null } | undefined)?.guildId;
+      if (!info || !threadId || !guildId) return;
+      const before = previous ? threadInfoOf(previous) : undefined;
+      const event: DiscordThreadEvent = {
+        change,
+        guildId,
+        threadId,
+        thread: info,
+        ...(before ? { previous: { archived: before.archived, locked: before.locked, name: before.name } } : {})
+      };
+      for (const listener of this.threadListeners) {
+        this.dispatchListener("Discord thread listener failed", listener, event, { guildId, threadId, change });
+      }
+    };
+    client.on(Events.ThreadCreate, (thread) => emitThread("create", thread));
+    client.on(Events.ThreadUpdate, (oldThread, newThread) => emitThread("update", newThread, oldThread));
+    client.on(Events.ThreadDelete, (thread) => emitThread("delete", thread));
     client.on(Events.InteractionCreate, (interaction) => {
       if (interaction.isAutocomplete()) {
         if (interaction.commandName === RUN_COMMAND_NAME) {
@@ -582,6 +1113,16 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   onMessage(listener: DiscordMessageListener): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  onThreadChange(listener: DiscordThreadListener): () => void {
+    this.threadListeners.add(listener);
+    return () => this.threadListeners.delete(listener);
+  }
+
+  async joinThread(input: { guildId: string; threadId: string }): Promise<void> {
+    const channel = await this.orchestratorClient().channels.fetch(input.threadId);
+    if (channel && channel.isThread() && channel.joinable && !channel.archived) await channel.join();
   }
 
   onReviewCommand(listener: DiscordReviewCommandListener): () => void {
@@ -659,7 +1200,8 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
       guildId: guild.id,
       guildName: guild.name,
       channelId: channel.id,
-      channelName: "name" in channel && typeof channel.name === "string" ? channel.name : undefined
+      channelName: "name" in channel && typeof channel.name === "string" ? channel.name : undefined,
+      ...(threadInfoOf(channel) ? { thread: threadInfoOf(channel)! } : {})
     };
   }
 
@@ -745,6 +1287,33 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
     ).messages;
   }
 
+  async fetchContextSince(input: {
+    guildId: string;
+    channelId: string;
+    afterMessageId: string | null;
+    maxMessages: number;
+    signal?: AbortSignal;
+  }): Promise<{ messages: RawDiscordMessage[]; reachedCursor: boolean }> {
+    throwIfAborted(input.signal);
+    const client = this.orchestratorClient();
+    const channel = await client.channels.fetch(input.channelId);
+    if (!channel || !("messages" in channel)) {
+      return { messages: [], reachedCursor: true };
+    }
+    const result = await pageMessagesSince(
+      async (before) => (await channel.messages.fetch(before ? { limit: 100, before } : { limit: 100 })).values(),
+      { afterMessageId: input.afterMessageId, maxMessages: input.maxMessages, signal: input.signal }
+    );
+    // The orchestrator bot's own posts (debug logs, /print fallbacks) are never conversation.
+    const orchestratorIds = [...botAuthorIds(this.options.orchestrator ? [this.options.orchestrator] : []), client.user?.id];
+    return {
+      messages: withoutAuthors(result.messages as unknown as DiscordMessageLike[], orchestratorIds).map((message) =>
+        toRawDiscordMessage(message, input.guildId)
+      ),
+      reachedCursor: result.reachedCursor
+    };
+  }
+
   async sendWaifuMessage(input: {
     guildId: string;
     channelId: string;
@@ -783,6 +1352,26 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
       // then instead of letting Discord reject the whole reply.
       reply: replyToMessageId ? { messageReference: replyToMessageId, failIfNotExists: false } : undefined
     });
+    // Visible to the next reader before this call returns (responder i+1 sees responder i).
+    if (input.guildId) {
+      try {
+        const message = ownSentMessage(sent, { guildId: input.guildId, channelId: input.channelId });
+        if (message) {
+          this.emitConversationEvent({
+            type: "create",
+            own: true,
+            conversation: { kind: "guild", guildId: input.guildId, channelId: input.channelId },
+            message
+          });
+        }
+      } catch (error) {
+        // The send already succeeded; a cache that misses it re-syncs on its next catch-up.
+        this.options.logger?.warn("Could not publish an own send to the conversation cache", {
+          messageId: sent.id,
+          message: error instanceof Error ? error.message : String(error)
+        });
+      }
+    }
     return { messageId: sent.id };
   }
 
@@ -1406,6 +1995,9 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
       waifuId: sanitizeRunString(interaction.options.getString(PRINT_WAIFU_OPTION_NAME)),
       respond: async (content) => {
         await interaction.editReply(content);
+      },
+      followUp: async (content) => {
+        await interaction.followUp({ content, flags: MessageFlags.Ephemeral });
       }
     };
     for (const listener of this.printListeners) {
@@ -1476,20 +2068,55 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
  * Waifu clients never listen: they only fetch a channel, send, type and delete their own messages,
  * all over REST, so they need just `Guilds` (channel cache) and keep no message/member caches.
  */
-function discordClientOptions(kind: DiscordBotKind): ClientOptions {
+/**
+ * Thread facts of a channel-like object (structural, so test doubles work): undefined when it is
+ * not a thread. A thread whose parent is a forum or media channel is a "forum_post".
+ */
+export function threadInfoOf(channel: unknown): DiscordThreadInfo | undefined {
+  const c = channel as
+    | {
+        isThread?: () => boolean;
+        parentId?: string | null;
+        parent?: { type?: number } | null;
+        name?: string | null;
+        type?: number;
+        archived?: boolean | null;
+        locked?: boolean | null;
+      }
+    | null
+    | undefined;
+  if (!c || typeof c.isThread !== "function" || !c.isThread() || !c.parentId) return undefined;
+  const parentType = c.parent?.type;
+  let kind: ThreadKind = "public_thread";
+  if (parentType === ChannelType.GuildForum || parentType === ChannelType.GuildMedia) kind = "forum_post";
+  else if (c.type === ChannelType.PrivateThread) kind = "private_thread";
+  else if (c.type === ChannelType.AnnouncementThread) kind = "announcement_thread";
+  return { parentId: c.parentId, name: c.name ?? "", kind, archived: c.archived === true, locked: c.locked === true };
+}
+
+function discordClientOptions(kind: DiscordBotKind, o: { guildMembersIntent?: boolean; dm?: boolean } = {}): ClientOptions {
   if (kind === "orchestrator") {
     return {
       intents: [
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.GuildMessageReactions,
-        GatewayIntentBits.MessageContent
+        GatewayIntentBits.MessageContent,
+        // Non-privileged: emoji/sticker create/update/delete events for the GuildDirectory.
+        GatewayIntentBits.GuildExpressions,
+        // Privileged, opt-in (`discord.guildMembersIntent`): member add/update/remove events.
+        ...(o.guildMembersIntent ? [GatewayIntentBits.GuildMembers] : [])
       ],
       partials: [Partials.Channel, Partials.Message, Partials.Reaction]
     };
   }
   return {
-    intents: [GatewayIntentBits.Guilds],
+    // DM-eligible waifu bots (spec 9.1) add the non-privileged DM intents; DM content needs no
+    // Message Content intent. Partials: DM channels and uncached messages (reactions, deletes).
+    intents: o.dm
+      ? [GatewayIntentBits.Guilds, GatewayIntentBits.DirectMessages, GatewayIntentBits.DirectMessageReactions]
+      : [GatewayIntentBits.Guilds],
+    ...(o.dm ? { partials: [Partials.Channel, Partials.Message, Partials.Reaction] } : {}),
     makeCache: Options.cacheWithLimits({
       MessageManager: 0,
       ReactionManager: 0,
@@ -1581,6 +2208,22 @@ function nestedErrorCode(error: unknown, depth = 0): string | undefined {
   const code = (error as { code?: unknown }).code;
   if (typeof code === "string") return code;
   return nestedErrorCode((error as { cause?: unknown }).cause, depth + 1);
+}
+
+/** The message we just sent as a raw record; undefined when discord.js gave back too little to build one. */
+function ownSentMessage(
+  sent: unknown,
+  fallback: { guildId: string; channelId: string }
+): RawDiscordMessage | undefined {
+  const message = sent as Partial<DiscordMessageLike> | undefined;
+  if (!message || typeof message.id !== "string") return undefined;
+  if (message.author && typeof message.createdTimestamp === "number") {
+    return toRawDiscordMessage(
+      { channelId: fallback.channelId, type: 0, content: "", ...message } as DiscordMessageLike,
+      fallback.guildId
+    );
+  }
+  return undefined;
 }
 
 function botAuthorIds(bots: DiscordBotConfig[]): string[] {
@@ -1730,6 +2373,9 @@ const UNRECOVERABLE_CLOSE_CODE_DESCRIPTIONS: Record<number, string> = {
   4014: "disallowed intents: enable Message Content for this bot in the Discord Developer Portal"
 };
 const REVIEW_COMMAND_NAME = "review";
+const DM_FORGET_COMMAND_NAME = "forget";
+const DM_FORGET_WHAT_OPTION_NAME = "what";
+const DM_FORGET_CONFIRM_MS = 30_000;
 const CLEAR_COMMAND_NAME = "clear";
 const RUN_COMMAND_NAME = "run";
 const STOP_COMMAND_NAME = "stop";
@@ -1877,8 +2523,53 @@ async function registerOrchestratorCommands(client: Client, logger?: Logger): Pr
   }
 }
 
-export function buildOrchestratorCommandPayloads() {
+/** DM-eligible waifu bots register one global `/forget` usable only in DMs with the bot (spec 9.1.5). */
+export function buildDmCommandPayloads() {
   return [
+    {
+      name: DM_FORGET_COMMAND_NAME,
+      description: "Make her forget our private chat (or everything about you).",
+      contexts: [InteractionContextType.BotDM],
+      integrationTypes: [ApplicationIntegrationType.GuildInstall],
+      options: [
+        {
+          type: ApplicationCommandOptionType.String as ApplicationCommandOptionType.String,
+          name: DM_FORGET_WHAT_OPTION_NAME,
+          description: "What to forget.",
+          required: true,
+          choices: [
+            { name: "this conversation", value: "conversation" },
+            { name: "everything about me", value: "everything" }
+          ]
+        }
+      ]
+    }
+  ];
+}
+
+/** Register `/forget` on a DM-eligible bot; remove a stale one from a bot that lost DMs. */
+async function registerDmCommands(client: Client, dm: boolean, logger?: Logger): Promise<void> {
+  try {
+    const manager = client.application?.commands;
+    if (!manager) return;
+    const commands = await manager.fetch();
+    const existing = commands.find((command) => command.name === DM_FORGET_COMMAND_NAME);
+    if (dm) {
+      const [payload] = buildDmCommandPayloads();
+      if (existing) await manager.edit(existing.id, payload!);
+      else await manager.create(payload!);
+    } else if (existing) {
+      await manager.delete(existing.id);
+    }
+  } catch (error) {
+    logger?.warn("Failed to register waifu DM slash commands", {
+      message: error instanceof Error ? error.message : String(error)
+    });
+  }
+}
+
+export function buildOrchestratorCommandPayloads() {
+  return withGuildContext([
     {
       name: REVIEW_COMMAND_NAME,
       description: "Review and remove the latest waifu message if it leaked hallucinated internals.",
@@ -1989,7 +2680,12 @@ export function buildOrchestratorCommandPayloads() {
         }
       ]
     }
-  ];
+  ]);
+}
+
+/** Orchestrator commands exist only in servers (spec 9.1.5). */
+function withGuildContext<T extends object>(payloads: T[]): Array<T & { contexts: InteractionContextType[] }> {
+  return payloads.map((payload) => ({ ...payload, contexts: [InteractionContextType.Guild] }));
 }
 
 function parseClearType(value: string | null): DiscordClearType | undefined {

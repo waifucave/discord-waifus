@@ -52,6 +52,16 @@ export function mergeAppConfigPatch(
     runtime: { ...current.runtime, ...patch.runtime },
     frontend,
     ocr: { ...current.ocr, ...patch.ocr },
+    compaction: { ...current.compaction, ...patch.compaction },
+    memory: { ...current.memory, ...patch.memory },
+    discord: {
+      ...current.discord,
+      ...patch.discord,
+      images: { ...current.discord.images, ...patch.discord?.images },
+      deletedMessages: { ...current.discord.deletedMessages, ...patch.discord?.deletedMessages },
+      debounce: { ...current.discord.debounce, ...patch.discord?.debounce },
+      dm: { ...current.discord.dm, ...patch.discord?.dm }
+    },
     updates: { ...current.updates, ...patch.updates }
   });
 }

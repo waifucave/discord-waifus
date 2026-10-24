@@ -91,6 +91,19 @@ async function revisionedPut(
   return "Conflict: the resource changed twice while I was writing. Try again.";
 }
 
+// The current record (per-record `revision` drives memory writes), or an error text for the model.
+async function readMemoryRecord(
+  ctx: AssistantToolContext,
+  memoryId: string
+): Promise<{ revision: number } | string> {
+  const store = await inject(ctx, { method: "GET", url: "/api/memories" });
+  if (store.status !== 200) return store.body;
+  const { memories } = JSON.parse(store.body) as { memories: Array<{ id: string; revision?: number }> };
+  const record = memories.find((memory) => memory.id === memoryId);
+  if (!record) return `Memory ${memoryId} was not found.`;
+  return { revision: record.revision ?? 0 };
+}
+
 const NO_ARGS = { type: "object", properties: {}, additionalProperties: false } as const;
 
 const AGENT_CONFIG_URLS: Record<string, string> = {
@@ -310,7 +323,11 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
   },
   {
     name: "update_waifu",
-    description: "Update fields on an existing waifu. Pass only the fields to change under `changes`.",
+    description:
+      "Update fields on an existing waifu. Pass only the fields to change under `changes`. " +
+      "Style fields: `verbosity` (terse | chatty | expressive, how long her messages are), " +
+      "`customInstructions` (extra prompt text, max 4000 chars) and `scheduleInPrompt` (boolean, whether her " +
+      "schedule is mentioned in the prompt). The prompt layout editor no longer exists; there is nothing to send for it.",
     parameters: {
       type: "object",
       properties: { id: { type: "string" }, changes: { type: "object" } },
@@ -375,13 +392,12 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
   },
   {
     name: "update_channel",
-    description: "Update a channel's settings: enabled flag and enabledWaifuIds (which waifus may speak).",
+    description: "Update a channel's settings: enabledWaifuIds (which waifus may speak; a channel is live when the list is non-empty).",
     parameters: {
       type: "object",
       properties: {
         guildId: { type: "string" },
         channelId: { type: "string" },
-        enabled: { type: "boolean" },
         enabledWaifuIds: { type: "array", items: { type: "string" } }
       },
       required: ["guildId", "channelId"],
@@ -507,29 +523,41 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
   },
   {
     name: "search_memories",
-    description: "Search memory records by text, optionally filtered by guildId and waifuId. Returns up to 30 matches.",
+    description:
+      "Search memory records by text. Memories are global per waifu (every server and DM); guildId and " +
+      "origin filter by provenance (where it was learned), subjectUserId by who it is about. Returns up to 30 matches.",
     parameters: {
       type: "object",
-      properties: { q: { type: "string" }, guildId: { type: "string" }, waifuId: { type: "string" } },
+      properties: {
+        q: { type: "string" },
+        waifuId: { type: "string" },
+        guildId: { type: "string", description: "Only memories learned in this server." },
+        origin: { type: "string", enum: ["dm"], description: "dm = only memories learned in private chats." },
+        subjectUserId: { type: "string", description: "Only memories about this Discord user id." }
+      },
       additionalProperties: false
     },
     execute: async (ctx, args) => {
-      const result = await inject(ctx, { method: "GET", url: "/api/memories" });
+      const query = new URLSearchParams();
+      for (const key of ["waifuId", "guildId", "origin", "subjectUserId"] as const) {
+        if (typeof args[key] === "string" && args[key]) query.set(key, String(args[key]));
+      }
+      const result = await inject(ctx, { method: "GET", url: `/api/memories${query.size ? `?${query}` : ""}` });
       if (result.status !== 200) return result.body;
       const store = JSON.parse(result.body) as { memories: Array<Record<string, unknown>> };
       const q = args.q ? String(args.q).toLowerCase() : undefined;
       const matches = store.memories
         .filter((memory) => memory.status !== "archived")
-        .filter((memory) => (args.guildId ? memory.guildId === args.guildId : true))
-        .filter((memory) => (args.waifuId ? memory.waifuId === args.waifuId : true))
         .filter((memory) => (q ? String(memory.content).toLowerCase().includes(q) : true))
         .slice(0, 30)
         .map((memory) => ({
           id: memory.id,
           waifuId: memory.waifuId,
-          guildId: memory.guildId,
+          origin: memory.origin,
+          subjects: memory.subjects,
           kind: memory.kind,
           pinned: memory.pinned,
+          recordRevision: memory.revision,
           content: memory.content
         }));
       return JSON.stringify(matches);
@@ -537,17 +565,30 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
   },
   {
     name: "add_memory",
-    description: "Add a memory record for a waifu in a guild. User-created memories are pinned by default.",
+    description:
+      "Add a memory record for a waifu. Memories are global (she remembers it in every server); guildId is " +
+      "optional provenance. User-created memories are pinned by default. A near-duplicate is still added and " +
+      "reported as duplicateOf.",
     parameters: {
       type: "object",
       properties: {
         waifuId: { type: "string" },
-        guildId: { type: "string" },
         content: { type: "string" },
+        guildId: { type: "string", description: "Optional: the server it was learned in." },
+        subjects: {
+          type: "array",
+          description: "Optional: who the memory is about.",
+          items: {
+            type: "object",
+            properties: { discordUserId: { type: "string" }, waifuId: { type: "string" }, name: { type: "string" } },
+            required: ["name"],
+            additionalProperties: false
+          }
+        },
         pinned: { type: "boolean" },
         kind: { type: "string" }
       },
-      required: ["waifuId", "guildId", "content"],
+      required: ["waifuId", "content"],
       additionalProperties: false
     },
     execute: async (ctx, args) => {
@@ -557,7 +598,7 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
   },
   {
     name: "update_memory",
-    description: "Update a memory record's content, kind, pinned flag, or archive it (status: archived).",
+    description: "Update a memory record's content, kind, pinned flag, subjects, or archive/restore it (status).",
     parameters: {
       type: "object",
       properties: { memoryId: { type: "string" }, changes: { type: "object" } },
@@ -565,18 +606,19 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
       additionalProperties: false
     },
     execute: async (ctx, args) => {
+      const memoryId = String(args.memoryId);
       for (let attempt = 0; attempt < 2; attempt++) {
-        const store = await inject(ctx, { method: "GET", url: "/api/memories" });
-        if (store.status !== 200) return store.body;
-        const { revision } = JSON.parse(store.body) as { revision: number };
+        const record = await readMemoryRecord(ctx, memoryId);
+        if (typeof record === "string") return record;
+        const { revision: _revision, recordRevision: _recordRevision, ...changes } = (args.changes ?? {}) as Record<string, unknown>;
         const result = await inject(ctx, {
           method: "PUT",
-          url: `/api/memories/${encodeURIComponent(String(args.memoryId))}`,
-          payload: { ...(args.changes as Record<string, unknown>), revision }
+          url: `/api/memories/${encodeURIComponent(memoryId)}`,
+          payload: { ...changes, recordRevision: record.revision }
         });
         if (result.status !== 409) return result.body;
       }
-      return "Conflict: the memory store changed twice while I was writing. Try again.";
+      return "Conflict: the memory changed twice while I was writing. Try again.";
     }
   },
   {
@@ -589,19 +631,119 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
       additionalProperties: false
     },
     execute: async (ctx, args) => {
+      const memoryId = String(args.memoryId);
       for (let attempt = 0; attempt < 2; attempt++) {
-        const store = await inject(ctx, { method: "GET", url: "/api/memories" });
-        if (store.status !== 200) return store.body;
-        const { revision } = JSON.parse(store.body) as { revision: number };
+        const record = await readMemoryRecord(ctx, memoryId);
+        if (typeof record === "string") return record;
         const result = await inject(ctx, {
           method: "DELETE",
-          url: `/api/memories/${encodeURIComponent(String(args.memoryId))}`,
-          payload: { revision }
+          url: `/api/memories/${encodeURIComponent(memoryId)}`,
+          payload: { recordRevision: record.revision }
         });
-        if (result.status < 300) return `Memory ${args.memoryId} deleted.`;
+        if (result.status < 300) return `Memory ${memoryId} deleted.`;
         if (result.status !== 409) return result.body;
       }
-      return "Conflict: the memory store changed twice while I was deleting. Try again.";
+      return "Conflict: the memory changed twice while I was deleting. Try again.";
+    }
+  },
+  {
+    name: "forget_user",
+    description:
+      "Propose forgetting a Discord user everywhere: deletes every memory about them, their queued observations, " +
+      "and replaces their messages with (removed) in stored conversation transcripts. Destructive: it runs only " +
+      "if the user accepts the separate secure dashboard confirmation card.",
+    parameters: {
+      type: "object",
+      properties: { discordUserId: { type: "string", description: "The Discord user id (snowflake)." } },
+      required: ["discordUserId"],
+      additionalProperties: false
+    },
+    execute: async (ctx, args) => {
+      const discordUserId = String(args.discordUserId);
+      // Dry run first so the card states exactly what will be deleted.
+      const preview = await inject(ctx, {
+        method: "POST",
+        url: "/api/memories/forget-user",
+        payload: { discordUserId, confirm: true, dryRun: true }
+      });
+      if (preview.status !== 200) return preview.body;
+      const counts = JSON.parse(preview.body) as { memories: number; observations: number; ledgerEntries: number };
+      const action = await actionController(ctx).propose({
+        category: "memory_forget_user",
+        summary:
+          `Forget Discord user ${discordUserId}: delete ${counts.memories} memor${counts.memories === 1 ? "y" : "ies"} ` +
+          `and ${counts.observations} queued observation${counts.observations === 1 ? "" : "s"}, and remove ` +
+          `${counts.ledgerEntries} stored message${counts.ledgerEntries === 1 ? "" : "s"}.`,
+        resource: { type: "discord_user", identifier: discordUserId },
+        operation: {
+          kind: "exact_http",
+          method: "POST",
+          canonicalTarget: "/api/memories/forget-user",
+          payload: { discordUserId, confirm: true }
+        }
+      });
+      return JSON.stringify({ ...JSON.parse(confirmationResult(action)), preview: counts });
+    }
+  },
+  {
+    name: "list_dms",
+    description:
+      "Read-only: private DM conversations between waifus and Discord users (newest first): last inbound/reply times, " +
+      "the per-user rate limit (used/max, freesAt), the latest run outcome (sent, rate_limited, undeliverable, ...) and the " +
+      "context epoch. Never returns message text. THE tool for 'why didn't she answer my DM'. Optional waifuId/userId filters.",
+    parameters: {
+      type: "object",
+      properties: {
+        waifuId: { type: "string" },
+        userId: { type: "string", description: "Discord user id (snowflake)." },
+        limit: { type: "number", description: "Max conversations (default 20, max 200)." }
+      },
+      additionalProperties: false
+    },
+    execute: async (ctx, args) => {
+      const query = new URLSearchParams();
+      if (args.waifuId) query.set("waifuId", String(args.waifuId));
+      if (args.userId) query.set("userId", String(args.userId));
+      query.set("limit", String(Math.min(Number(args.limit) || 20, 200)));
+      const result = await inject(ctx, { method: "GET", url: `/api/dms?${query.toString()}` });
+      return result.body;
+    }
+  },
+  {
+    name: "forget_dm",
+    description:
+      "Propose forgetting one waifu's DMs with one Discord user. scope 'conversation' deletes the DM transcript and run " +
+      "records; 'all' also deletes the DM state, her memories about that user and cached images. Never resets the rate " +
+      "limit. Destructive: it runs only if the user accepts the separate secure dashboard confirmation card.",
+    parameters: {
+      type: "object",
+      properties: {
+        waifuId: { type: "string" },
+        userId: { type: "string", description: "The Discord user id (snowflake)." },
+        scope: { type: "string", enum: ["conversation", "all"] }
+      },
+      required: ["waifuId", "userId", "scope"],
+      additionalProperties: false
+    },
+    execute: async (ctx, args) => {
+      const waifuId = String(args.waifuId);
+      const userId = String(args.userId);
+      const scope = args.scope === "all" ? "all" : "conversation";
+      const target = `/api/dms/${encodeURIComponent(waifuId)}/${encodeURIComponent(userId)}/forget`;
+      const preview = await inject(ctx, { method: "POST", url: target, payload: { confirm: true, scope, dryRun: true } });
+      if (preview.status !== 200) return preview.body;
+      const counts = (JSON.parse(preview.body) as { deleted: Record<string, number> }).deleted;
+      const memories = counts.memories ?? 0;
+      const action = await actionController(ctx).propose({
+        category: "dm_forget",
+        summary:
+          `Forget ${waifuId}'s DMs with Discord user ${userId} (${scope}): delete ${counts.dmContexts ?? 0} conversation(s)` +
+          (scope === "all" ? `, ${memories} memor${memories === 1 ? "y" : "ies"} and ${counts.cachedImages ?? 0} cached image(s)` : "") +
+          ". The rate limit is kept.",
+        resource: { type: "dm_conversation", identifier: `${waifuId}:${userId}` },
+        operation: { kind: "exact_http", method: "POST", canonicalTarget: target, payload: { confirm: true, scope } }
+      });
+      return JSON.stringify({ ...JSON.parse(confirmationResult(action)), preview: counts });
     }
   },
   {
@@ -647,7 +789,8 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
       additionalProperties: false
     },
     execute: async (ctx, args) => {
-      const result = await inject(ctx, { method: "GET", url: "/api/orchestrator/history" });
+      const guildQuery = args.guildId ? `?guildId=${encodeURIComponent(String(args.guildId))}` : "";
+      const result = await inject(ctx, { method: "GET", url: `/api/orchestrator/history${guildQuery}` });
       if (result.status !== 200) return result.body;
       const history = JSON.parse(result.body) as { decisions: Array<Record<string, unknown>> };
       const limit = Math.min(Number(args.limit) || 10, 25);
@@ -671,7 +814,7 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
   {
     name: "update_server",
     description:
-      "Update server-level settings for a guild: enabled, contextWindows {orchestrator,waifu,stageManager}, " +
+      "Update server-level settings for a guild: paused (the kill switch), contextWindows {orchestrator,waifu,stageManager}, " +
       "memoryInjectionLimit, tools {pickNextWaifu, shortTermMemory}, orchestratorMode (model, deterministic, one-shot), " +
       "oneShot {target} from list_one_shot_models. One shot does not change the global LLM config. For per-channel toggles use update_channel.",
     parameters: {

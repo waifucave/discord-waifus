@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { readDmLimit, readDmState, updateDmLimit, updateDmState } from "../src/orchestration/dm/dmStore.js";
 import type { ModelPipeline } from "../src/providers/types.js";
 import {
   ASSISTANT_ACTION_TTL_MS,
@@ -365,7 +366,7 @@ async function makeActionApp(pipeline: ModelPipeline, state: FakeRemoteState) {
       modelId: "deepseek-v4-pro"
     }
   });
-  return { app, auditStore };
+  return { app, auditStore, storage };
 }
 
 async function createRemoteActionConversation(app: Awaited<ReturnType<typeof makeActionApp>>["app"]) {
@@ -774,6 +775,98 @@ describe("assistant action API", () => {
       conversationId,
       pendingActionId: actionId
     });
+  });
+
+  it("forget_user proposes a confirmation card with dry-run counts and forgets only once confirmed", async () => {
+    let toolResult = "";
+    const state: FakeRemoteState = {
+      authorized: true,
+      enabled: false,
+      updateInputs: [],
+      approvalInputs: [],
+      invitationActors: [],
+      pairingRequest: undefined
+    };
+    const userId = "100000000000000042";
+    const { app, auditStore } = await makeActionApp(
+      scriptedToolPipeline("forget_user", { discordUserId: userId }, (value) => {
+        toolResult = value;
+      }),
+      state
+    );
+    const seeded = await app.inject({
+      method: "POST",
+      url: "/api/memories",
+      headers: { "idempotency-key": bytes32(0x91) },
+      payload: { waifuId: "yuki", content: "Kevin is allergic to peanuts.", subjects: [{ discordUserId: userId, name: "Kevin" }] }
+    });
+    expect(seeded.statusCode, seeded.body).toBe(201);
+
+    await createRemoteActionConversation(app);
+    const proposed = JSON.parse(toolResult) as { status: string; actionId: string; category: string; preview: Record<string, number> };
+    expect(proposed).toMatchObject({ status: "confirmation_required", category: "memory_forget_user", preview: { memories: 1, observations: 0 } });
+    // Nothing is deleted until the user confirms the card.
+    const before = await app.inject({ method: "GET", url: "/api/memories" });
+    expect(before.json().memories).toHaveLength(1);
+
+    const detailTarget = `/api/assistant/actions/${proposed.actionId}`;
+    const detail = await dispatchInternal(app, remotePrincipal({ method: "GET", canonicalTarget: detailTarget }), undefined, {
+      method: "GET",
+      url: detailTarget
+    });
+    expect(detail.json()).toMatchObject({ category: "memory_forget_user", summary: expect.stringContaining("delete 1 memory") });
+
+    const confirmTarget = `${detailTarget}/confirm`;
+    const confirmed = await dispatchInternal(app, remotePrincipal({ method: "POST", canonicalTarget: confirmTarget }), undefined, {
+      method: "POST",
+      url: confirmTarget,
+      headers: { "idempotency-key": bytes32(0x92) }
+    });
+    expect(confirmed.statusCode, confirmed.body).toBe(200);
+    expect(confirmed.json()).toMatchObject({ status: "completed", category: "memory_forget_user" });
+    const after = await app.inject({ method: "GET", url: "/api/memories" });
+    expect(after.json().memories).toHaveLength(0);
+    const audit = await auditStore.list();
+    expect(audit.some((record) => record.action === "memory.forget_user")).toBe(true);
+  });
+
+  it("forget_dm proposes a confirmation card with dry-run counts and forgets the DM only once confirmed", async () => {
+    let toolResult = "";
+    const state: FakeRemoteState = {
+      authorized: true,
+      enabled: false,
+      updateInputs: [],
+      approvalInputs: [],
+      invitationActors: [],
+      pairingRequest: undefined
+    };
+    const userId = "100000000000000043";
+    const { app, auditStore, storage } = await makeActionApp(
+      scriptedToolPipeline("forget_dm", { waifuId: "yuki", userId, scope: "all" }, (value) => {
+        toolResult = value;
+      }),
+      state
+    );
+    await updateDmState(storage, { userId, waifuId: "yuki", botId: "yuki-bot" }, (current) => ({ ...current, lastInboundMessageId: "1" }));
+    await updateDmLimit(storage, userId, "yuki", (current) => ({ ...current, replyTimestamps: [new Date().toISOString()] }));
+
+    await createRemoteActionConversation(app);
+    const proposed = JSON.parse(toolResult) as { status: string; actionId: string; category: string; preview: Record<string, number> };
+    expect(proposed).toMatchObject({ status: "confirmation_required", category: "dm_forget", preview: { dmStates: 1 } });
+    expect(await readDmState(storage, userId, "yuki")).toBeDefined();
+
+    const confirmTarget = `/api/assistant/actions/${proposed.actionId}/confirm`;
+    const confirmed = await dispatchInternal(app, remotePrincipal({ method: "POST", canonicalTarget: confirmTarget }), undefined, {
+      method: "POST",
+      url: confirmTarget,
+      headers: { "idempotency-key": bytes32(0x93) }
+    });
+    expect(confirmed.statusCode, confirmed.body).toBe(200);
+    expect(confirmed.json()).toMatchObject({ status: "completed", category: "dm_forget" });
+    expect(await readDmState(storage, userId, "yuki")).toBeUndefined();
+    // Never the limiter.
+    expect((await readDmLimit(storage, userId, "yuki")).replyTimestamps).toHaveLength(1);
+    expect((await auditStore.list()).some((record) => record.action === "dm.forget")).toBe(true);
   });
 
   it("keeps pairing proof out of tools, transcripts, receipts, and audit while showing it to the secure card", async () => {

@@ -1,10 +1,11 @@
 // Resolves model targets into gateway pipelines and enriches context with OCR text for models
 // without image input.
 
+import type { ResolvedModel } from "@waifucave/gateway";
 import { ModelPipeline } from "../providers/types.js";
 import { resolveModelTarget, sharedRegistry } from "./pipeline/resolveTarget.js";
 import { QueryRole } from "../shared/queryLog.js";
-import type { ContextMessage } from "./context.js";
+import type { ContextMessage } from "./contextMessages.js";
 import type { RuntimeOrchestratorOptions } from "./runtimeShared.js";
 
 type CreatePipeline = (target: { providerId: string; modelId: string; queryRole: QueryRole }) => ModelPipeline;
@@ -31,6 +32,16 @@ export class ModelAccess {
       modelId: target.modelId,
       queryRole
     });
+  }
+
+  /** The gateway capability record for a stored model config; undefined when it does not resolve. */
+  resolvedModel(config: { providerId?: string; modelId: string }): ResolvedModel | undefined {
+    try {
+      const target = resolveModelTarget(config);
+      return sharedRegistry().resolve(target.providerId, target.modelId) ?? undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   async messagesForModel(

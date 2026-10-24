@@ -1,65 +1,12 @@
-import type { ChatMessage } from "@waifucave/gateway";
-import { ContextMessage, formatOrchestratorMessageBlock, formatTimestamp, OrchestratorWakeMarker } from "../context.js";
-import { OrchestratorDecisionHistoryEntry } from "../../shared/schemas/domain.js";
-import { ORCHESTRATOR_TOOL_NAME } from "../tools.js";
+// Orchestrator decision serializers (spec 8.7). A past decision reaches the director's context as
+// a `decision` ContextNote written once the decision is final: `call` is the (lossy) serialized
+// tool-call arguments, `outcome` the final-state result text, `at` the decision time. The
+// director renders it as a text line `[decision 14:02] reply → aria · sent → #a4` (never as an
+// assistant tool_use turn: thinking models reject those without a thinking block, and the
+// JSON-schema fallback sends no tools). No relative ages anywhere.
 
-export type OrchestratorTimelineItem =
-  | { kind: "message"; message: ContextMessage; timestamp: string }
-  | { kind: "decision"; decision: OrchestratorDecisionHistoryEntry; timestamp: string }
-  | { kind: "note"; text: string; timestamp: string };
-
-const GAP_NOTE_MIN_MS = 15 * 60 * 1000;
-
-function formatGapLabel(gapMs: number): string {
-  const minutes = Math.round(gapMs / 60_000);
-  if (minutes < 90) return `[${minutes}m pass]`;
-  const hours = Math.round(gapMs / 3_600_000);
-  return `[${hours}h pass]`;
-}
-
-function gapNotes(messages: ContextMessage[]): OrchestratorTimelineItem[] {
-  const notes: OrchestratorTimelineItem[] = [];
-  for (let i = 1; i < messages.length; i += 1) {
-    const gapMs = Date.parse(messages[i].timestamp) - Date.parse(messages[i - 1].timestamp);
-    if (gapMs >= GAP_NOTE_MIN_MS) {
-      // timestamp matches the following message; kindRank places the note before it
-      notes.push({ kind: "note", text: formatGapLabel(gapMs), timestamp: messages[i].timestamp });
-    }
-  }
-  return notes;
-}
-
-function formatWakeMarker(marker: OrchestratorWakeMarker): string {
-  const plan = marker.wakePlan ? ` Your plan was: "${marker.wakePlan}".` : "";
-  return (
-    `[wake: the ${marker.scheduledSeconds}s pause you scheduled has elapsed with no new messages.${plan}` +
-    " Execute the plan now, or if the room state changed, decide fresh. Do not schedule another identical pause — either act, or back off with a longer pause.]"
-  );
-}
-
-function buildOrchestratorTimeline(
-  messages: ContextMessage[],
-  decisions: OrchestratorDecisionHistoryEntry[],
-  markers: OrchestratorWakeMarker[]
-): OrchestratorTimelineItem[] {
-  const oldestMessageTimestamp = messages.length ? messages[0].timestamp : undefined;
-  const kindRank = { note: 0, message: 1, decision: 2 } as const;
-  const items: OrchestratorTimelineItem[] = [
-    ...messages.map((message): OrchestratorTimelineItem => ({ kind: "message", message, timestamp: message.timestamp })),
-    ...gapNotes(messages),
-    ...decisions
-      .filter((decision) =>
-        oldestMessageTimestamp === undefined ? false : decision.createdAt >= oldestMessageTimestamp
-      )
-      .map((decision): OrchestratorTimelineItem => ({ kind: "decision", decision, timestamp: decision.createdAt })),
-    ...markers.map((marker): OrchestratorTimelineItem => ({ kind: "note", text: formatWakeMarker(marker), timestamp: marker.timestamp }))
-  ];
-  items.sort((a, b) => {
-    if (a.timestamp === b.timestamp) return kindRank[a.kind] - kindRank[b.kind];
-    return a.timestamp < b.timestamp ? -1 : 1;
-  });
-  return items;
-}
+import type { OrchestratorDecisionHistoryEntry } from "../../shared/schemas/domain.js";
+import type { NewContextNote } from "../context/types.js";
 
 function clipReplayText(value: string, maxLength: number): string {
   const normalized = value.replace(/\s+/g, " ").trim();
@@ -82,67 +29,86 @@ export function serializeOrchestratorDecisionArguments(decision: OrchestratorDec
   };
 }
 
-export function formatDecisionOutcome(decision: OrchestratorDecisionHistoryEntry): string {
+/**
+ * Final-state outcome text. With `refFor`, the refs of the messages the decision produced are
+ * named (`sent → #a3, #a4`), so the note reads correctly wherever it sits in the transcript.
+ */
+export function formatDecisionOutcome(
+  decision: OrchestratorDecisionHistoryEntry,
+  refFor: (messageId: string) => string | undefined = () => undefined
+): string {
   if (decision.action === "no_reply") {
     return `paused ${decision.retriggerAfterSeconds ?? "?"}s`;
   }
+  const sentRefs = decision.responderOutcomes
+    .filter((outcome) => outcome.status === "sent")
+    .flatMap((outcome) => outcome.messageIds)
+    .map(refFor)
+    .filter((ref): ref is string => Boolean(ref))
+    .map((ref) => `#${ref}`);
   const deviations = decision.responderOutcomes
     // "pending" means the chain was cut before this responder fired — the interrupted arm covers it
     .filter((outcome) => outcome.status !== "sent" && outcome.status !== "pending")
     .map((outcome) => `${outcome.waifuId}: ${outcome.status}`);
   if (decision.status === "interrupted") {
     deviations.push("interrupted by new activity");
+  } else if (decision.status === "failed") {
+    deviations.push("failed");
   }
-  return deviations.length ? deviations.join("; ") : "sent";
+  const sent = sentRefs.length ? `sent → ${sentRefs.join(", ")}` : deviations.length ? undefined : "sent";
+  return [sent, ...deviations].filter(Boolean).join("; ");
 }
 
-export type OrchestratorTimelineInputs = {
-  systemPrompt?: string;
-  trailingPrompt?: string;
-  messages: ContextMessage[];
-  pastDecisions?: OrchestratorDecisionHistoryEntry[];
-  decisionMarkers?: OrchestratorWakeMarker[];
-  /** When set, each message gets a relative age tag and the timeline ends with a now anchor. */
-  now?: Date;
-};
+/** True once nothing about the decision's outcome can change any more. */
+export function isDecisionFinal(decision: Pick<OrchestratorDecisionHistoryEntry, "status">): boolean {
+  return decision.status !== "pending";
+}
 
-export function buildOrchestratorChatMessages(inputs: OrchestratorTimelineInputs): ChatMessage[] {
-  const timeline = buildOrchestratorTimeline(
-    inputs.messages,
-    inputs.pastDecisions ?? [],
-    inputs.decisionMarkers ?? []
-  );
-  const out: ChatMessage[] = [];
-  if (inputs.systemPrompt) out.push({ role: "system", content: inputs.systemPrompt });
-  let callCounter = 0;
-  for (const item of timeline) {
-    if (item.kind === "decision") {
-      const id = `past_decision_${++callCounter}`;
-      out.push({
-        role: "assistant",
-        content: [
-          {
-            type: "toolCall",
-            id,
-            name: ORCHESTRATOR_TOOL_NAME,
-            arguments: JSON.stringify(serializeOrchestratorDecisionArguments(item.decision))
-          }
-        ]
-      });
-      out.push({ role: "tool", toolCallId: id, content: formatDecisionOutcome(item.decision) });
-    } else if (item.kind === "message") {
-      out.push({ role: "user", content: formatOrchestratorMessageBlock(item.message, inputs.now) });
-    } else {
-      // note (gap or wake marker)
-      out.push({ role: "user", content: item.text });
-    }
+/** The frozen `decision` note for a final decision; undefined while it is still pending. */
+export function decisionNoteFor(
+  decision: OrchestratorDecisionHistoryEntry,
+  refFor?: (messageId: string) => string | undefined
+): NewContextNote | undefined {
+  if (!isDecisionFinal(decision)) return undefined;
+  return {
+    kind: "decision",
+    decisionId: decision.id,
+    call: JSON.stringify(serializeOrchestratorDecisionArguments(decision)),
+    outcome: formatDecisionOutcome(decision, refFor),
+    at: decision.createdAt
+  };
+}
+
+/**
+ * Compact text of a serialized decision call for the no-tools path: `reply → aria, riko
+ * (change_topic)` or `no_reply 420s · plan: "…"`. Falls back to the raw text when it is not JSON.
+ */
+export function formatDecisionCallText(call: string): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(call);
+  } catch {
+    return call;
   }
-  if (inputs.now) {
-    out.push({
-      role: "user",
-      content: `[now: ${formatTimestamp(inputs.now)} — the [ages] on messages are relative to this moment]`
+  if (!parsed || typeof parsed !== "object") return call;
+  const args = parsed as {
+    action?: unknown;
+    respondingWaifus?: Array<{ waifuId?: unknown; directive?: { intent?: unknown } | null }>;
+    retriggerAfterSeconds?: unknown;
+    wakePlan?: unknown;
+  };
+  if (args.action === "reply") {
+    const responders = (Array.isArray(args.respondingWaifus) ? args.respondingWaifus : []).map((responder) => {
+      const id = typeof responder?.waifuId === "string" ? responder.waifuId : "?";
+      const intent = responder?.directive && typeof responder.directive.intent === "string" ? responder.directive.intent : undefined;
+      return intent ? `${id} (${intent})` : id;
     });
+    return `reply → ${responders.join(", ") || "?"}`;
   }
-  if (inputs.trailingPrompt) out.push({ role: "user", content: inputs.trailingPrompt });
-  return out;
+  if (args.action === "no_reply") {
+    const seconds = typeof args.retriggerAfterSeconds === "number" ? ` ${args.retriggerAfterSeconds}s` : "";
+    const plan = typeof args.wakePlan === "string" && args.wakePlan ? ` · plan: "${args.wakePlan}"` : "";
+    return `no_reply${seconds}${plan}`;
+  }
+  return call;
 }

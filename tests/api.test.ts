@@ -8,7 +8,6 @@ import { createApiServer, resolveStaticDir, type ApiServerOptions } from "../src
 import { createRuntimeState } from "../src/backend/runtime.js";
 import { ensureDataLayout } from "../src/config/layout.js";
 import { CURRENT_SCHEMA_VERSION } from "../src/shared/schemas/common.js";
-import { defaultWaifuPromptLayout } from "../src/shared/schemas/domain.js";
 import { oneShotCatalog } from "../src/orchestration/oneShot/catalog.js";
 import { StorageService } from "../src/storage/storageService.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
@@ -70,6 +69,20 @@ describe("Backend API", () => {
       const unrelated = await app.inject({ method: "PUT", url: "/api/config", payload: { ocr: { enabled: false } } });
       expect(unrelated.json().updates).toEqual(saved.json().updates);
       expect(reload).toHaveBeenCalledExactlyOnceWith("config-updated");
+    } finally { await app.close(); }
+  });
+  it("persists the opt-in GuildMembers intent and member-list refresh interval, defaulting to off and 24 h", async () => {
+    const { app } = await makeApp();
+    try {
+      const current = (await app.inject({ method: "GET", url: "/api/config" })).json();
+      expect(current.discord).toMatchObject({ guildMembersIntent: false, memberListRefreshHours: 24 });
+      const saved = await app.inject({ method: "PUT", url: "/api/config", payload: { discord: { guildMembersIntent: true, memberListRefreshHours: 6 } } });
+      expect(saved.statusCode).toBe(200);
+      expect(saved.json().discord).toMatchObject({ guildMembersIntent: true, memberListRefreshHours: 6 });
+      const other = await app.inject({ method: "PUT", url: "/api/config", payload: { discord: { memberListRefreshHours: 0 } } });
+      expect(other.json().discord).toMatchObject({ guildMembersIntent: true, memberListRefreshHours: 0 });
+      const bad = await app.inject({ method: "PUT", url: "/api/config", payload: { discord: { memberListRefreshHours: 500 } } });
+      expect(bad.statusCode).toBe(400);
     } finally { await app.close(); }
   });
   it("persists One shot independently of the global LLM and preserves it on unrelated server updates", async () => {
@@ -612,7 +625,7 @@ describe("Backend API", () => {
       }
     });
 
-    it("PUT waifu with only {revision, displayName} leaves contextWindow/tools/promptLayout untouched", async () => {
+    it("PUT waifu with only {revision, displayName} leaves contextWindow/tools untouched and ignores a client-sent promptLayout", async () => {
       const { app } = await makeApp();
       try {
         await app.inject({
@@ -621,7 +634,8 @@ describe("Backend API", () => {
           payload: { id: "patch-true", name: "PatchTrue", displayName: "PatchTrue" }
         });
 
-        const customLayout = {
+        // Spec 8.6: the layout editor is gone; a stale client may still send one. It is ignored.
+        const staleLayout = {
           top: [{ kind: "block", blockId: "identity", enabled: false }],
           mid: [],
           trailing: []
@@ -633,13 +647,13 @@ describe("Backend API", () => {
             revision: 0,
             contextWindow: 77,
             tools: { toolUse: false },
-            promptLayout: customLayout
+            promptLayout: staleLayout
           }
         });
         expect(seeded.statusCode).toBe(200);
         expect(seeded.json().contextWindow).toBe(77);
         expect(seeded.json().tools).toEqual({ toolUse: false });
-        expect(seeded.json().promptLayout).toEqual(customLayout);
+        expect(seeded.json()).not.toHaveProperty("promptLayout");
 
         const renamed = await app.inject({
           method: "PUT",
@@ -650,13 +664,13 @@ describe("Backend API", () => {
         expect(renamed.json().displayName).toBe("New Display Name");
         expect(renamed.json().contextWindow).toBe(77);
         expect(renamed.json().tools).toEqual({ toolUse: false });
-        expect(renamed.json().promptLayout).toEqual(customLayout);
+        expect(renamed.json()).not.toHaveProperty("promptLayout");
 
         const get = await app.inject({ method: "GET", url: "/api/waifus/patch-true" });
         expect(get.statusCode).toBe(200);
         expect(get.json().contextWindow).toBe(77);
         expect(get.json().tools).toEqual({ toolUse: false });
-        expect(get.json().promptLayout).toEqual(customLayout);
+        expect(get.json()).not.toHaveProperty("promptLayout");
       } finally {
         await app.close();
       }
@@ -701,7 +715,7 @@ describe("Backend API", () => {
         expect(created.persona).toBe("");
         expect(created.contextWindow).toBe(50);
         expect(created.tools).toEqual({ toolUse: true });
-        expect(created.promptLayout).toEqual(defaultWaifuPromptLayout());
+        expect(created).not.toHaveProperty("promptLayout");
       } finally {
         await app.close();
       }
@@ -775,30 +789,83 @@ describe("Backend API", () => {
       }
     });
 
+    it("orchestrator history defaults to 200 entries on the merged and the per-guild path (I2)", async () => {
+      const { app, root } = await makeApp();
+      try {
+        const guildId = "100000000000000101";
+        const decisions = Array.from({ length: 250 }, (_, i) => ({
+          id: `d${i}`, guildId, channelId: "c1", action: "no_reply", respondingWaifus: [], reasoning: "x",
+          status: "completed", waifuMessageIds: [], responderOutcomes: [],
+          createdAt: new Date(Date.UTC(2026, 9, 1, 0, 0, 250 - i)).toISOString()
+        }));
+        await mkdir(path.join(root, "user", "servers", guildId), { recursive: true });
+        await writeFile(
+          path.join(root, "user", "servers", guildId, "orchestrator-history.json"),
+          JSON.stringify({ schemaVersion: CURRENT_SCHEMA_VERSION, revision: 1, updatedAt: new Date().toISOString(), decisions })
+        );
+        const count = async (url: string) => (JSON.parse((await app.inject({ method: "GET", url })).body) as { decisions: unknown[] }).decisions.length;
+        expect(await count("/api/orchestrator/history")).toBe(200);
+        expect(await count(`/api/orchestrator/history?guildId=${guildId}`)).toBe(200);
+        expect(await count("/api/orchestrator/history?limit=10")).toBe(10);
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("DELETE /api/servers/:guildId says decision history is removed too, and removes it (I1)", async () => {
+      const { app, root } = await makeApp();
+      try {
+        const guildId = "100000000000000101";
+        await app.inject({ method: "PUT", url: `/api/servers/${guildId}`, payload: { paused: false } });
+        await writeFile(path.join(root, "user", "servers", guildId, "orchestrator-history.json"), "{}");
+        const res = await app.inject({ method: "DELETE", url: `/api/servers/${guildId}` });
+        expect(res.statusCode).toBe(200);
+        expect(res.json().message).toMatch(/decision history/);
+        expect(await readFile(path.join(root, "user", "servers", guildId, "orchestrator-history.json"), "utf8").catch(() => "gone")).toBe("gone");
+      } finally {
+        await app.close();
+      }
+    });
+
     it("history endpoints accept guildId/channelId/limit filters", async () => {
       const { app, root } = await makeApp();
       try {
-        const decision = (id: string) => ({
+        // Decisions are stored per guild (spec 9.3), newest first; no-guild ones live in the legacy file.
+        const decision = (id: string, guildId: string | undefined, channelId: string, minute: number) => ({
           id,
+          ...(guildId ? { guildId } : {}),
+          channelId,
           action: "no_reply",
           respondingWaifus: [],
           reasoning: "seeded",
           status: "completed",
           waifuMessageIds: [],
           responderOutcomes: [],
-          createdAt: new Date().toISOString()
+          createdAt: `2026-10-01T12:${String(minute).padStart(2, "0")}:00.000Z`
         });
-        await writeFile(
-          path.join(root, "user", "orchestrator", "history.json"),
-          JSON.stringify({ schemaVersion: CURRENT_SCHEMA_VERSION, revision: 1, updatedAt: new Date().toISOString(), decisions: [decision("d2"), decision("d1")] })
-        );
-        const all = JSON.parse((await app.inject({ method: "GET", url: "/api/orchestrator/history" })).body) as { decisions: unknown[] };
-        expect(all.decisions.length).toBe(2);
-        const limited = JSON.parse((await app.inject({ method: "GET", url: "/api/orchestrator/history?limit=1" })).body) as { decisions: unknown[] };
-        expect(limited.decisions.length).toBe(1);
-        const filtered = JSON.parse((await app.inject({ method: "GET", url: "/api/orchestrator/history?guildId=g-none" })).body) as { decisions: unknown[] };
+        const seed = async (relativePath: string, decisions: unknown[]) => {
+          await mkdir(path.dirname(path.join(root, relativePath)), { recursive: true });
+          await writeFile(
+            path.join(root, relativePath),
+            JSON.stringify({ schemaVersion: CURRENT_SCHEMA_VERSION, revision: 1, updatedAt: new Date().toISOString(), decisions })
+          );
+        };
+        await seed("user/servers/100000000000000101/orchestrator-history.json", [decision("a2", "100000000000000101", "c1", 30), decision("a1", "100000000000000101", "c2", 10)]);
+        await seed("user/servers/100000000000000102/orchestrator-history.json", [decision("b1", "100000000000000102", "c1", 20)]);
+        await seed("user/orchestrator/history-legacy.json", [decision("old", undefined, "c9", 5)]);
+        const ids = (body: string) => (JSON.parse(body) as { decisions: Array<{ id: string }> }).decisions.map((d) => d.id);
+        const all = await app.inject({ method: "GET", url: "/api/orchestrator/history" });
+        expect(ids(all.body)).toEqual(["a2", "b1", "a1", "old"]);
+        // unchanged response shape: the revisioned envelope plus `decisions`
+        expect(Object.keys(JSON.parse(all.body)).sort()).toEqual(["decisions", "revision", "schemaVersion", "updatedAt"]);
+        expect(ids((await app.inject({ method: "GET", url: "/api/orchestrator/history?limit=2" })).body)).toEqual(["a2", "b1"]);
+        expect(ids((await app.inject({ method: "GET", url: "/api/orchestrator/history?guildId=100000000000000101" })).body)).toEqual(["a2", "a1"]);
+        expect(ids((await app.inject({ method: "GET", url: "/api/orchestrator/history?guildId=100000000000000101&channelId=c2" })).body)).toEqual(["a1"]);
+        expect(ids((await app.inject({ method: "GET", url: "/api/orchestrator/history?channelId=c1" })).body)).toEqual(["a2", "b1"]);
+        const filtered = JSON.parse((await app.inject({ method: "GET", url: "/api/orchestrator/history?guildId=100000000000000999" })).body) as { decisions: unknown[] };
         expect(filtered.decisions.length).toBe(0);
-        const sm = await app.inject({ method: "GET", url: "/api/stage-manager/history?limit=1&guildId=g-none" });
+        expect((await app.inject({ method: "GET", url: "/api/orchestrator/history?guildId=g-bad" })).statusCode).toBe(400);
+        const sm = await app.inject({ method: "GET", url: "/api/stage-manager/history?limit=1&guildId=100000000000000999" });
         expect(sm.statusCode).toBe(200);
         const rv = await app.inject({ method: "GET", url: "/api/reviewer/history?limit=1" });
         expect(rv.statusCode).toBe(200);
@@ -1011,9 +1078,11 @@ describe("Backend API", () => {
         strength: 5,
         kind: "fact"
       });
-      expect(createdMemory.entities).toContain("Kevin");
+      // Memories are global: the guild is provenance only.
+      expect(createdMemory).toMatchObject({ origin: { guildId: "guild-1" }, subjects: [], revision: 0 });
+      expect(createdMemory).not.toHaveProperty("guildId");
 
-      // Editing the content keeps the pinned state and re-derives entities.
+      // Editing the content keeps the pinned state and bumps the record revision.
       const edited = await app.inject({
         method: "PUT",
         url: `/api/memories/${createdMemory.id}`,
@@ -1028,7 +1097,7 @@ describe("Backend API", () => {
         content: "Riko owes Ali tacos since Thursday.",
         pinned: true
       });
-      expect(editedMemory.entities).toEqual(expect.arrayContaining(["Ali", "Thursday"]));
+      expect(editedMemory.revision).toBe(1);
     } finally {
       await app.close();
     }
@@ -1728,6 +1797,7 @@ describe("LLM gateway mount (/api/llm)", () => {
         jsonMode: true,
         jsonSchema: false,
         imageInput: false,
+        promptCaching: "implicit",
         deprecated: false,
         confidence: "verified"
       });

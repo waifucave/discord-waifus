@@ -1,20 +1,18 @@
 import { chmod, mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { runMigrations } from "../src/backend/migrations.js";
+import { MIGRATION_STEPS, runMigrations } from "../src/backend/migrations.js";
 import { ensureDataLayout } from "../src/config/layout.js";
 import { loadAppConfig } from "../src/config/appConfig.js";
 import { RuntimeStateSchema } from "../src/backend/runtime.js";
 import { CURRENT_SCHEMA_VERSION } from "../src/shared/schemas/common.js";
-import type { PromptLayoutNode as LayoutNode } from "../src/shared/schemas/domain.js";
 import {
   AgentConfigSchema,
   DiscordBotsFileSchema,
   MemoryStoreSchema,
   ProviderCredentialsFileSchema,
   ServerConfigSchema,
-  WaifuConfigSchema,
-  defaultWaifuPromptLayout
+  WaifuConfigSchema
 } from "../src/shared/schemas/domain.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
 import {
@@ -107,6 +105,12 @@ describe("runMigrations", () => {
     const root = await makeTempRoot();
     roots.push(root);
 
+    await writeJson(root, "user/servers/guild-1/server.json", {
+      schemaVersion: 1,
+      revision: 0,
+      updatedAt: "2026-05-16T12:00:00.000Z",
+      guildId: "guild-1"
+    });
     await writeJson(root, "user/orchestrator/history.json", {
       schemaVersion: 1,
       revision: 0,
@@ -169,12 +173,15 @@ describe("runMigrations", () => {
       "migrate-orchestrator-history-to-responding-waifus",
       "migrate-retrigger-pacing-1",
       "migrate-scheduled-retrigger-at-1",
+      "migrate-orchestrator-history-per-guild-2",
       "stamp-schema-version-2"
     ]);
-    const history = await readJson<{ decisions: Array<Record<string, unknown>> }>(
+    // The legacy shapes were converted, then the file was split per guild (newest first).
+    const split = await readJson<{ decisions: Array<Record<string, unknown>> }>(
       root,
-      "user/orchestrator/history.json"
+      "user/servers/guild-1/orchestrator-history.json"
     );
+    const history = { decisions: [...split.decisions].reverse() };
     expect(history.decisions[0]).toMatchObject({
       id: "reply-chain",
       action: "reply",
@@ -222,10 +229,12 @@ describe("runMigrations", () => {
     expect(session).not.toHaveProperty("cachedWaifuContinuation");
   });
 
-  it("converts legacy waifu prompt-section booleans into the new default prompt layout", async () => {
+  // The legacy layout steps (waifu-prompt-sections-to-layout, waifu-prompt-layout-w2,
+  // waifu-memories-to-mid) are gone (spec 8.6); waifu-drop-prompt-layout-v1 takes every legacy
+  // shape straight to the final one.
+  it("drops legacy flat prompt-section toggles, keeping a disabled schedule as scheduleInPrompt: false", async () => {
     const root = await makeTempRoot();
     roots.push(root);
-
     await writeJson(root, "user/waifus/yuki/waifu.json", {
       schemaVersion: 1,
       revision: 0,
@@ -234,92 +243,21 @@ describe("runMigrations", () => {
       name: "Yuki",
       displayName: "Yuki",
       persona: "kind",
-      promptSections: {
-        directorNotes: true,
-        hardRules: false,
-        mentionPolicy: true,
-        replyTargeting: true,
-        environmentInstructions: true,
-        inputFormat: false,
-        styleConstraints: true,
-        personality: false
-      }
+      promptSections: { directorNotes: true, hardRules: false, schedule: false, personality: false }
     });
 
     const result = await runMigrations(root);
-    expect(result.applied).toContain("migrate-waifu-prompt-layout-1");
-
-    const config = await readJson<{
-      promptSections?: unknown;
-      promptLayout: { top: LayoutNode[]; mid: LayoutNode[]; trailing: LayoutNode[] };
-    }>(root, "user/waifus/yuki/waifu.json");
-    expect(config).not.toHaveProperty("promptSections");
-
-    const enabledById = new Map<string, boolean>();
-    const collect = (nodes: LayoutNode[]) => {
-      for (const node of nodes) {
-        if (node.kind === "block") enabledById.set(node.blockId, node.enabled);
-        else for (const child of node.children) enabledById.set(child.blockId, child.enabled);
-      }
-    };
-    collect(config.promptLayout.top);
-    collect(config.promptLayout.mid);
-    collect(config.promptLayout.trailing);
-
-    // The legacy promptSections migration now produces the W2 default layout (new block IDs).
-    // The old toggle booleans have no matching blocks in the new registry, so they are silently
-    // ignored — the result is simply the new default with all blocks enabled.
-    expect(enabledById.get("identity")).toBe(true);
-    expect(enabledById.get("persona")).toBe(true);
-    expect(enabledById.get("ioFormat")).toBe(true);
-    expect(enabledById.get("outputContract")).toBe(true);
-    expect(enabledById.get("roomInfo")).toBe(true);
-    expect(enabledById.get("anchor")).toBe(true);
-    expect(enabledById.get("directorNote")).toBe(true);
-    // Old block IDs are not in the new layout.
-    expect(enabledById.get("hardRules")).toBeUndefined();
-    expect(enabledById.get("personalityReminder")).toBeUndefined();
+    expect(result.applied).toContain("waifu-drop-prompt-layout-1");
+    const raw = await readJson<Record<string, unknown>>(root, "user/waifus/yuki/waifu.json");
+    expect(raw).not.toHaveProperty("promptSections");
+    expect(raw).not.toHaveProperty("promptLayout");
+    expect(raw.scheduleInPrompt).toBe(false);
+    expect(WaifuConfigSchema.parse(raw).scheduleInPrompt).toBe(false);
   });
 
-  it("resets a waifu whose promptLayout contains W1 block IDs to the W2 default", async () => {
+  it("drops a W1 layout tree; a schedule disabled inside a group survives as scheduleInPrompt: false", async () => {
     const root = await makeTempRoot();
     roots.push(root);
-
-    // Seed a waifu with the old (W1) default layout — inline to avoid coupling to deleted code.
-    const oldLayout = {
-      top: [
-        { kind: "block", blockId: "identity", enabled: true },
-        {
-          kind: "group",
-          id: "behavior",
-          tag: "{name}_behavior",
-          enabled: true,
-          children: [
-            { kind: "block", blockId: "personality", enabled: true },
-            { kind: "block", blockId: "schedule", enabled: true },
-            { kind: "block", blockId: "contextStructure", enabled: true },
-            { kind: "block", blockId: "environment", enabled: true },
-            { kind: "block", blockId: "replyTargeting", enabled: true },
-            { kind: "block", blockId: "mentionPolicy", enabled: true },
-            { kind: "block", blockId: "styleConstraints", enabled: false },
-            { kind: "block", blockId: "hardRules", enabled: true },
-            { kind: "block", blockId: "toolUse", enabled: true }
-          ]
-        }
-      ],
-      mid: [
-        { kind: "block", blockId: "directorNotes", enabled: true },
-        { kind: "block", blockId: "activeParticipants", enabled: true },
-        { kind: "block", blockId: "serverEmojis", enabled: true }
-      ],
-      trailing: [
-        { kind: "block", blockId: "relevantMemories", enabled: true },
-        { kind: "block", blockId: "personalityReminder", enabled: false },
-        { kind: "block", blockId: "currentlyDoing", enabled: true },
-        { kind: "block", blockId: "sceneDirection", enabled: true }
-      ]
-    };
-
     await writeJson(root, "user/waifus/yuki/waifu.json", {
       schemaVersion: 1,
       revision: 0,
@@ -328,43 +266,33 @@ describe("runMigrations", () => {
       name: "Yuki",
       displayName: "Yuki",
       persona: "kind",
-      promptLayout: oldLayout
+      promptLayout: {
+        top: [
+          { kind: "block", blockId: "identity", enabled: true },
+          {
+            kind: "group",
+            id: "behavior",
+            tag: "{name}_behavior",
+            enabled: true,
+            children: [
+              { kind: "block", blockId: "personality", enabled: true },
+              { kind: "block", blockId: "schedule", enabled: false },
+              { kind: "block", blockId: "hardRules", enabled: true }
+            ]
+          }
+        ],
+        mid: [{ kind: "block", blockId: "activeParticipants", enabled: true }],
+        trailing: [{ kind: "block", blockId: "relevantMemories", enabled: true }]
+      }
     });
 
-    const result = await runMigrations(root);
-    expect(result.applied).toContain("migrate-waifu-prompt-layout-w2-1");
-
-    const config = await readJson<{
-      promptLayout: { top: LayoutNode[]; mid: LayoutNode[]; trailing: LayoutNode[] };
-    }>(root, "user/waifus/yuki/waifu.json");
-
-    const enabledById = new Map<string, boolean>();
-    const collect = (nodes: LayoutNode[]) => {
-      for (const node of nodes) {
-        if (node.kind === "block") enabledById.set(node.blockId, node.enabled);
-        else for (const child of node.children) enabledById.set(child.blockId, child.enabled);
-      }
-    };
-    collect(config.promptLayout.top);
-    collect(config.promptLayout.mid);
-    collect(config.promptLayout.trailing);
-
-    // After W2 migration the layout is the new default — new blocks enabled, old ones gone.
-    expect(enabledById.get("identity")).toBe(true);
-    expect(enabledById.get("persona")).toBe(true);
-    expect(enabledById.get("ioFormat")).toBe(true);
-    expect(enabledById.get("outputContract")).toBe(true);
-    expect(enabledById.get("roomInfo")).toBe(true);
-    expect(enabledById.get("anchor")).toBe(true);
-    expect(enabledById.get("directorNote")).toBe(true);
-    // Old IDs should no longer be present.
-    expect(enabledById.get("personality")).toBeUndefined();
-    expect(enabledById.get("hardRules")).toBeUndefined();
-    expect(enabledById.get("sceneDirection")).toBeUndefined();
-    expect(enabledById.get("directorNotes")).toBeUndefined();
+    await runMigrations(root);
+    const raw = await readJson<Record<string, unknown>>(root, "user/waifus/yuki/waifu.json");
+    expect(raw).not.toHaveProperty("promptLayout");
+    expect(raw.scheduleInPrompt).toBe(false);
   });
 
-  it("moves a stored relevantMemories block from trailing to mid", async () => {
+  it("drops a W2 layout with everything enabled and leaves scheduleInPrompt at its default", async () => {
     const root = await makeTempRoot();
     roots.push(root);
     await writeJson(root, "user/waifus/yuki/waifu.json", {
@@ -377,66 +305,22 @@ describe("runMigrations", () => {
       enabled: true,
       persona: "kind",
       promptLayout: {
-        top: [{ kind: "block", blockId: "identity", enabled: true }],
+        top: [{ kind: "block", blockId: "identity", enabled: true }, { kind: "block", blockId: "schedule", enabled: true }],
         mid: [{ kind: "block", blockId: "roomInfo", enabled: true }],
-        trailing: [
-          { kind: "block", blockId: "relevantMemories", enabled: false },
-          { kind: "block", blockId: "anchor", enabled: true }
-        ]
+        trailing: [{ kind: "block", blockId: "relevantMemories", enabled: false }]
       }
     });
 
     const first = await runMigrations(root);
-    expect(first.applied).toContain("migrate-waifu-memories-to-mid-1");
+    expect(first.applied).toContain("waifu-drop-prompt-layout-1");
+    const raw = await readJson<Record<string, unknown>>(root, "user/waifus/yuki/waifu.json");
+    expect(raw).not.toHaveProperty("promptLayout");
+    expect(raw).not.toHaveProperty("scheduleInPrompt");
+    expect(WaifuConfigSchema.parse(raw).scheduleInPrompt).toBe(true);
 
-    const raw = await readJson<{
-      promptLayout: { mid: LayoutNode[]; trailing: LayoutNode[] };
-    }>(root, "user/waifus/yuki/waifu.json");
-    expect(raw.promptLayout.mid).toEqual([
-      { kind: "block", blockId: "roomInfo", enabled: true },
-      { kind: "block", blockId: "relevantMemories", enabled: false }
-    ]);
-    expect(raw.promptLayout.trailing).toEqual([{ kind: "block", blockId: "anchor", enabled: true }]);
-
-    // Idempotent: a second run finds nothing to move.
+    // Idempotent: a second run finds nothing to drop.
     const second = await runMigrations(root);
-    expect(second.applied.filter((tag) => tag.startsWith("migrate-waifu-memories-to-mid"))).toEqual([]);
-  });
-
-  it("leaves relevantMemories alone when the user moved it into a custom group", async () => {
-    const root = await makeTempRoot();
-    roots.push(root);
-    const layout = {
-      top: [{ kind: "block", blockId: "identity", enabled: true }],
-      mid: [{ kind: "block", blockId: "roomInfo", enabled: true }],
-      trailing: [
-        {
-          kind: "group",
-          id: "g1",
-          tag: "{name}_extras",
-          enabled: true,
-          children: [{ kind: "block", blockId: "relevantMemories", enabled: true }]
-        }
-      ]
-    };
-    await writeJson(root, "user/waifus/yuki/waifu.json", {
-      schemaVersion: CURRENT_SCHEMA_VERSION,
-      revision: 3,
-      updatedAt: "2026-07-01T12:00:00.000Z",
-      id: "yuki",
-      name: "Yuki",
-      displayName: "Yuki",
-      enabled: true,
-      persona: "kind",
-      promptLayout: layout
-    });
-
-    const result = await runMigrations(root);
-    expect(result.applied.filter((tag) => tag.startsWith("migrate-waifu-memories-to-mid"))).toEqual([]);
-    const raw = await readJson<{
-      promptLayout: { trailing: LayoutNode[] };
-    }>(root, "user/waifus/yuki/waifu.json");
-    expect(raw.promptLayout.trailing).toEqual(layout.trailing);
+    expect(second.applied.filter((tag) => tag.startsWith("waifu-drop-prompt-layout"))).toEqual([]);
   });
 
   it("assigns legacy memories to guilds from stage-manager history", async () => {
@@ -507,11 +391,11 @@ describe("runMigrations", () => {
     expect(result.applied).toContain("migrate-memories-to-guild-scope");
     expect(result.applied).toContain("migrate-memory-store-v2");
     const store = await readJson<{ memories: Array<Record<string, unknown>> }>(root, "user/memories.json");
-    // The guild-resolvable memory survives into the new unified shape.
-    expect(store.memories).toHaveLength(1);
+    // The guild-resolvable memory survives into the new unified (Phase 4: global) shape.
+    expect(store.memories).toHaveLength(2);
     expect(store.memories[0]).toMatchObject({
       id: "memory-1",
-      guildId: "guild-2",
+      origin: { guildId: "guild-2" },
       waifuId: "yuki",
       source: "stage_manager",
       pinned: false,
@@ -521,9 +405,10 @@ describe("runMigrations", () => {
     expect(store.memories[0]).not.toHaveProperty("scope");
     expect(store.memories[0]).not.toHaveProperty("importance");
     expect(store.memories[0]).not.toHaveProperty("permanent");
-    // memory-2 had no resolvable guild → legacy step archived it without a guildId, so the V2
-    // step drops it (the new schema requires a non-empty guildId).
-    expect(store.memories.find((memory) => memory.id === "memory-2")).toBeUndefined();
+    // memory-2 had no resolvable guild: Phase 4 keeps it active with an empty origin (memories
+    // are global; the guild was provenance only).
+    expect(store.memories.find((memory) => memory.id === "memory-2")).toMatchObject({ status: "active", origin: {} });
+    expect(store.memories[0]).not.toHaveProperty("guildId");
   });
 
   it("assigns legacy memories to the only configured guild when history cannot infer one", async () => {
@@ -560,7 +445,7 @@ describe("runMigrations", () => {
 
     const store = await readJson<{ memories: Array<Record<string, unknown>> }>(root, "user/memories.json");
     expect(store.memories[0]).toMatchObject({
-      guildId: "guild-1",
+      origin: { guildId: "guild-1" },
       waifuId: "yuki",
       source: "stage_manager",
       pinned: false,
@@ -613,6 +498,21 @@ describe("runMigrations", () => {
     const store = await readJson<{ memories: Array<Record<string, unknown>> }>(root, "user/memories.json");
     expect(store.memories.find((memory) => memory.id === "valid")).toMatchObject({ status: "active" });
     expect(store.memories.find((memory) => memory.id === "invalid-user")).toMatchObject({ status: "archived" });
+
+    // A Phase 4 record of a deleted waifu is archived with a reason and a revision bump.
+    const phase4 = await readJson<{ memories: Array<Record<string, unknown>> }>(root, "user/memories.json");
+    phase4.memories.push({
+      id: "gone", waifuId: "deleted-waifu", content: "x", kind: "fact", source: "user", pinned: false, strength: 3,
+      origin: {}, subjects: [], revision: 2, createdAt: "2026-05-16T12:00:00.000Z", updatedAt: "2026-05-16T12:00:00.000Z", status: "active"
+    });
+    await writeJson(root, "user/memories.json", phase4);
+    await runMigrations(root);
+    const after = await readJson<{ memories: Array<Record<string, unknown>> }>(root, "user/memories.json");
+    expect(after.memories.find((memory) => memory.id === "gone")).toMatchObject({
+      status: "archived",
+      archivedReason: "unknown_waifu",
+      revision: 3
+    });
   });
 
   it("migrates the two-store memory model into one unified MemoryRecord store (W3)", async () => {
@@ -694,8 +594,9 @@ describe("runMigrations", () => {
     expect(perm).not.toHaveProperty("permanent");
     expect(perm).not.toHaveProperty("scope");
     expect(perm).not.toHaveProperty("sourceMessageIds");
-    expect(Array.isArray(perm?.entities)).toBe(true);
-    expect(perm?.entities).toContain("Kevin");
+    // Legacy entities became subjects only where they resolve; none of these names do.
+    expect(perm).not.toHaveProperty("entities");
+    expect(perm?.subjects).toEqual([]);
 
     const lib = store.memories.find((memory) => memory.id === "lib-1");
     expect(lib).toMatchObject({ pinned: false, strength: 3, source: "stage_manager" });
@@ -706,7 +607,7 @@ describe("runMigrations", () => {
       kind: "context",
       strength: 2,
       pinned: false,
-      channelId: "channel-1",
+      origin: { guildId: "guild-1", channelId: "channel-1" },
       expiresAt: "2026-05-17T12:00:00.000Z"
     });
 
@@ -736,14 +637,15 @@ describe("runMigrations", () => {
       memories: [
         {
           id: "new-1",
-          guildId: "guild-1",
           waifuId: "yuki",
           content: "Kevin enjoys green tea.",
           kind: "preference",
           source: "stage_manager",
           pinned: false,
           strength: 3,
-          entities: ["Kevin"],
+          origin: { guildId: "guild-1" },
+          subjects: [{ discordUserId: "111", name: "Kevin" }],
+          revision: 0,
           createdAt: "2026-06-12T12:00:00.000Z",
           updatedAt: "2026-06-12T12:00:00.000Z",
           status: "active"
@@ -786,31 +688,6 @@ describe("runMigrations", () => {
     expect(second.applied).not.toContain("remove-guild-wide-active-participants-1");
   });
 
-  it("leaves a waifu whose promptLayout is already the W2 default unchanged", async () => {
-    const root = await makeTempRoot();
-    roots.push(root);
-
-    const layout = defaultWaifuPromptLayout();
-    await writeJson(root, "user/waifus/yuki/waifu.json", {
-      schemaVersion: 1,
-      revision: 0,
-      updatedAt: "2026-05-16T12:00:00.000Z",
-      id: "yuki",
-      name: "Yuki",
-      displayName: "Yuki",
-      persona: "kind",
-      promptLayout: layout
-    });
-
-    const before = await readJson<{ promptLayout: unknown }>(root, "user/waifus/yuki/waifu.json");
-    const result = await runMigrations(root);
-    const after = await readJson<{ promptLayout: unknown }>(root, "user/waifus/yuki/waifu.json");
-
-    // The W2 migration must not have fired (no legacy block IDs present).
-    expect(result.applied).not.toContain("migrate-waifu-prompt-layout-w2-1");
-    // The stored layout must be byte-for-byte identical (deep equal).
-    expect(after.promptLayout).toEqual(before.promptLayout);
-  });
 });
 
 describe("schema v2 migration (§7.3)", () => {
@@ -917,7 +794,11 @@ describe("schema v2 migration (§7.3)", () => {
     });
 
     const result = await runMigrations(root);
-    expect(result.applied).toEqual(["migrate-configs-to-gateway-params", "stamp-schema-version-2"]);
+    expect(result.applied).toEqual([
+      "migrate-configs-to-gateway-params",
+      "migrate-memories-global-origin-subjects-1",
+      "stamp-schema-version-2"
+    ]);
 
     const orchestratorConfig = await readJson<Record<string, unknown>>(root, "user/orchestrator/config.json");
     expect(orchestratorConfig.params).toEqual({ "reasoning.effort": "medium" });
@@ -1151,6 +1032,25 @@ describe("migration ledger", () => {
     expect(await exists(root, LEGACY_PARTICIPANTS)).toBe(true);
   });
 
+  it("keeps ids of removed steps (the legacy prompt-layout steps) as history and boots normally", async () => {
+    const root = await freshRoot();
+    const removed = ["waifu-prompt-sections-to-layout", "waifu-prompt-layout-w2", "waifu-memories-to-mid"];
+    await writeJson(root, LEDGER, {
+      ledgerVersion: 1,
+      appVersion: "2.200.0",
+      updatedAt: "2026-10-01T00:00:00.000Z",
+      steps: Object.fromEntries(removed.map((id) => [id, { appliedAt: "2026-10-01T00:00:00.000Z", appVersion: "2.200.0" }]))
+    });
+    expect(MIGRATION_STEPS.some((step) => removed.includes(step.id))).toBe(false);
+
+    await runMigrations(root, { appVersion: "2.200.0" });
+    const ledger = await readJson<Ledger>(root, LEDGER);
+    for (const id of removed) expect(ledger.steps[id], id).toBeDefined();
+    expect(ledger.steps["waifu-drop-prompt-layout-v1"]).toBeDefined();
+    // Re-running every migration is a no-op.
+    expect((await runMigrations(root, { appVersion: "2.200.0" })).applied).toEqual([]);
+  });
+
   it("keeps running every-boot steps when the ledger is complete", async () => {
     const root = await freshRoot();
     await runMigrations(root, { appVersion: "2.200.0" });
@@ -1166,6 +1066,160 @@ describe("migration ledger", () => {
     expect(result.applied).toEqual(["archive-memories-with-unknown-waifus"]);
     const store = await readJson<{ memories: Array<Record<string, unknown>> }>(root, "user/memories.json");
     expect(store.memories[0]).toMatchObject({ status: "archived" });
+  });
+
+  describe("Phase 4 steps", () => {
+    // `waifu-params-gateway-040-v1` is checked in tests/waifuParamsGateway040.test.ts.
+    const PHASE4_STEP_IDS = [
+      "waifu-drop-prompt-layout-v1",
+      "server-context-windows-explicit-v1",
+      "memories-global-origin-subjects-v1",
+      "memories-cross-guild-dedupe-v1",
+      "pending-observations-global-v1",
+      "dream-cursor-global-v1",
+      "ocr-cache-url-keys-cleanup-v1",
+      "ocr-cache-ttl-168-v1"
+    ];
+
+    it("registers the Phase 4 steps in spec order, before the schema-version stamp", () => {
+      const ids = MIGRATION_STEPS.map((step) => step.id);
+      const positions = PHASE4_STEP_IDS.map((id) => ids.indexOf(id));
+      expect(positions.every((index) => index >= 0)).toBe(true);
+      expect([...positions].sort((a, b) => a - b)).toEqual(positions);
+      expect(positions[0]).toBeGreaterThan(ids.indexOf("waifu-params-gateway-040-v1"));
+      expect(ids.indexOf("waifu-params-gateway-040-v1")).toBe(ids.indexOf("configs-to-gateway-params") + 1);
+      expect(positions[positions.length - 1]).toBeLessThan(ids.indexOf(`stamp-schema-version-${CURRENT_SCHEMA_VERSION}`));
+      expect(ids.at(-1)).toBe(`stamp-schema-version-${CURRENT_SCHEMA_VERSION}`);
+      for (const id of PHASE4_STEP_IDS) expect(MIGRATION_STEPS.find((step) => step.id === id)!.frequency, id).toBe("once");
+      expect(MIGRATION_STEPS.find((step) => step.id === "waifu-params-gateway-040-v1")!.frequency).toBe(
+        "once-per-app-version"
+      );
+    });
+
+    it("the real boot runs and records every Phase 4 step", async () => {
+      const root = await freshRoot();
+      await expect(runMigrations(root, { appVersion: "2.200.0" })).resolves.toBeDefined();
+      const ledger = await readJson<Ledger>(root, LEDGER);
+      for (const id of PHASE4_STEP_IDS) expect(ledger.steps[id], id).toBeDefined();
+      expect(ledger.steps["configs-to-gateway-params"]).toBeDefined();
+      expect(ledger.steps[`stamp-schema-version-${CURRENT_SCHEMA_VERSION}`]).toBeDefined();
+    });
+  });
+
+  describe("server-context-windows-explicit-v1", () => {
+    const step = () => MIGRATION_STEPS.find((candidate) => candidate.id === "server-context-windows-explicit-v1")!;
+
+    it("drops keys equal to the old defaults and keeps explicit overrides", async () => {
+      const root = await freshRoot();
+      await writeJson(root, "user/servers/111/server.json", {
+        guildId: "111",
+        contextWindows: { orchestrator: 20, waifu: 50, stageManager: 80 }
+      });
+      await writeJson(root, "user/servers/222/server.json", {
+        guildId: "222",
+        name: "Bake Club",
+        contextWindows: { orchestrator: 35, waifu: 50, stageManager: 120 }
+      });
+      await writeJson(root, "user/servers/333/server.json", { guildId: "333", contextWindows: { waifu: 64 } });
+
+      expect(await step().run(root)).toBe("server-context-windows-explicit-2");
+
+      expect((await readJson<Record<string, unknown>>(root, "user/servers/111/server.json")).contextWindows).toEqual({});
+      expect(await readJson<Record<string, unknown>>(root, "user/servers/222/server.json")).toEqual({
+        guildId: "222",
+        name: "Bake Club",
+        contextWindows: { orchestrator: 35, stageManager: 120 }
+      });
+      expect((await readJson<Record<string, unknown>>(root, "user/servers/333/server.json")).contextWindows).toEqual({ waifu: 64 });
+    });
+
+    it("is idempotent and tolerates missing roots, missing keys and unparsable files", async () => {
+      const empty = await freshRoot();
+      expect(await step().run(empty)).toBeUndefined();
+
+      const root = await freshRoot();
+      await writeJson(root, "user/servers/111/server.json", { guildId: "111", contextWindows: { orchestrator: 20, waifu: 7 } });
+      await writeJson(root, "user/servers/222/server.json", { guildId: "222" });
+      await mkdir(path.join(root, "user/servers/333"), { recursive: true });
+      await writeFile(path.join(root, "user/servers/333/server.json"), "{ not json", "utf8");
+
+      expect(await step().run(root)).toBe("server-context-windows-explicit-1");
+      const once = await readFile(path.join(root, "user/servers/111/server.json"), "utf8");
+      expect(JSON.parse(once).contextWindows).toEqual({ waifu: 7 });
+
+      expect(await step().run(root)).toBeUndefined();
+      expect(await readFile(path.join(root, "user/servers/111/server.json"), "utf8")).toBe(once);
+      expect(await readJson<Record<string, unknown>>(root, "user/servers/222/server.json")).toEqual({ guildId: "222" });
+      expect(await readFile(path.join(root, "user/servers/333/server.json"), "utf8")).toBe("{ not json");
+    });
+  });
+
+  it("ocr-cache-url-keys-cleanup-v1 removes the URL-keyed OCR results and keeps results-v2", async () => {
+    const root = await freshRoot();
+    await writeJson(root, "app/cache/ocr/results/abc.json", { schemaVersion: 1, text: "old" });
+    await writeJson(root, "app/cache/ocr/results-v2/def.json", { schemaVersion: 1, text: "new" });
+    const step = MIGRATION_STEPS.find((candidate) => candidate.id === "ocr-cache-url-keys-cleanup-v1")!;
+
+    expect(await step.run(root)).toBe("ocr-cache-url-keys-cleanup-v1");
+    expect(await exists(root, "app/cache/ocr/results")).toBe(false);
+    expect(await exists(root, "app/cache/ocr/results-v2/def.json")).toBe(true);
+    // Idempotent: nothing left to remove.
+    expect(await step.run(root)).toBeUndefined();
+  });
+
+  // Acceptance M5: saved configs spell out the old 24h OCR cache TTL, so the new 168h default never
+  // applied to them.
+  describe("ocr-cache-ttl-168-v1", () => {
+    const step = () => MIGRATION_STEPS.find((candidate) => candidate.id === "ocr-cache-ttl-168-v1")!;
+    const writeConfig = (root: string, ttl: number) =>
+      writeFile(
+        path.join(root, "config.toml"),
+        `schemaVersion = 2\n\n[http]\nhost = "127.0.0.1"\nport = 3999\n\n[ocr]\nenabled = true\ncacheTtlHours = ${ttl}\ntimeoutMs = 2000\n`,
+        "utf8"
+      );
+
+    it("is a once step registered before the schema-version stamp", () => {
+      const ids = MIGRATION_STEPS.map((candidate) => candidate.id);
+      expect(step().frequency).toBe("once");
+      expect(ids.indexOf("ocr-cache-ttl-168-v1")).toBeLessThan(ids.indexOf(`stamp-schema-version-${CURRENT_SCHEMA_VERSION}`));
+    });
+
+    it("rewrites exactly 24 to 168, keeps the rest of the config, and is idempotent", async () => {
+      const root = await freshRoot();
+      await writeConfig(root, 24);
+      expect(await step().run(root)).toBe("ocr-cache-ttl-168-v1");
+      const config = await loadAppConfig(root);
+      expect(config.ocr).toMatchObject({ cacheTtlHours: 168, timeoutMs: 2000, enabled: true });
+      expect(config.http.port).toBe(3999);
+      const once = await readFile(path.join(root, "config.toml"), "utf8");
+      expect(await step().run(root)).toBeUndefined();
+      expect(await readFile(path.join(root, "config.toml"), "utf8")).toBe(once);
+    });
+
+    it.each([12, 48, 168])("leaves an owner-chosen %ih alone", async (ttl) => {
+      const root = await freshRoot();
+      await writeConfig(root, ttl);
+      const before = await readFile(path.join(root, "config.toml"), "utf8");
+      expect(await step().run(root)).toBeUndefined();
+      expect(await readFile(path.join(root, "config.toml"), "utf8")).toBe(before);
+    });
+
+    it("tolerates a missing config, a config without [ocr] and an unparsable config", async () => {
+      const root = await freshRoot();
+      await rm(path.join(root, "config.toml"));
+      expect(await step().run(root)).toBeUndefined();
+      await writeFile(path.join(root, "config.toml"), "schemaVersion = 2\n", "utf8");
+      expect(await step().run(root)).toBeUndefined();
+      await writeFile(path.join(root, "config.toml"), "[ocr\ncacheTtlHours = 24", "utf8");
+      expect(await step().run(root)).toBeUndefined();
+    });
+
+    it("runs on boot", async () => {
+      const root = await freshRoot();
+      await writeConfig(root, 24);
+      expect((await runMigrations(root, { appVersion: "2.200.0" })).applied).toContain("ocr-cache-ttl-168-v1");
+      expect((await loadAppConfig(root)).ocr.cacheTtlHours).toBe(168);
+    });
   });
 
   it("runs a step missing from the ledger and records it, leaving recorded steps skipped", async () => {

@@ -24,7 +24,7 @@ const DATA_LAYOUT_DIRS = [
   "app/cache",
   "app/cache/ocr",
   "app/cache/ocr/bin",
-  "app/cache/ocr/results",
+  "app/cache/ocr/results-v2",
   "app/cache/remote-dashboard",
   "app/tmp",
   "app/tmp/ocr",
@@ -85,13 +85,8 @@ const DEFAULT_JSON_FILES: Array<{ relativePath: string; content: unknown }> = [
       prompt: ""
     }
   },
-  {
-    relativePath: "user/orchestrator/history.json",
-    content: {
-      ...createRevisionedBase(),
-      decisions: []
-    }
-  },
+  // Decision history is per guild (user/servers/<guildId>/orchestrator-history.json, spec 9.3);
+  // the old global history.json is no longer seeded.
   {
     relativePath: "user/orchestrator/debug.json",
     content: {

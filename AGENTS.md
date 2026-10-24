@@ -58,11 +58,11 @@ The `--suite=loops` benchmark measures blind semantic repetition and scene/topic
 
 ## Coding Style & Naming Conventions
 
-Use strict TypeScript with ES modules. Follow the existing style: two-space indentation, double quotes, semicolons, named exports, and explicit `.js` extensions in local imports compiled by `NodeNext`. Use `camelCase` for functions and variables, `PascalCase` for React components and classes, and descriptive file names such as `messageSplit.ts` or `ReasoningControls.tsx`. Keep shared validation in `src/shared/schemas/`.
+Use strict TypeScript with ES modules. Follow the existing style: two-space indentation, double quotes, semicolons, named exports, and explicit `.js` extensions in local imports compiled by `NodeNext`. Use `camelCase` for functions and variables, `PascalCase` for React components and classes, and descriptive file names such as `outputValidator.ts` or `ReasoningControls.tsx`. Keep shared validation in `src/shared/schemas/`.
 
 ## Testing Guidelines
 
-Vitest runs in the Node environment and includes `tests/**/*.test.ts`. Name tests after the behavior or module under test, for example `storage.test.ts` or `messageSplit.test.ts`. Prefer isolated temp data roots using helpers from `tests/testUtils.ts`, and clean them up in `afterEach`. Add tests for API behavior, storage concurrency, orchestration decisions, CLI parsing, and regression-prone fixes.
+Vitest runs in the Node environment and includes `tests/**/*.test.ts`. Name tests after the behavior or module under test, for example `storage.test.ts` or `outputValidator.test.ts`. Prefer isolated temp data roots using helpers from `tests/testUtils.ts`, and clean them up in `afterEach`. Add tests for API behavior, storage concurrency, orchestration decisions, CLI parsing, and regression-prone fixes.
 
 For remote changes, cover the relevant lifecycle, revocation/re-pairing, direct readiness, route authorization, session/origin/CSRF, and helper verification regressions. Tests under `tests/e2e/` cover the connection shell, remote settings/dashboard, and assistant actions. Distinguish fixture tests, native installed-helper CI, and actual two-device network tests in reported results.
 

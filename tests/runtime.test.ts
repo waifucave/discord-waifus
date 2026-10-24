@@ -1,6 +1,9 @@
+import { readFile, rm, writeFile } from "node:fs/promises";
+import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RuntimeOrchestrator, currentlyDoingForWaifu, DreamPassResult } from "../src/orchestration/runtime.js";
-import { ContextMessage } from "../src/orchestration/context.js";
+import { redactPrivateMemories } from "../src/orchestration/commands.js";
+import { ContextMessage } from "../src/orchestration/contextMessages.js";
 import { OrchestratorDecision, RETRIGGER_MAX_SECONDS } from "../src/orchestration/decisions.js";
 import {
   DiscordGatewayFacade,
@@ -31,16 +34,24 @@ import {
   WaifuGenerationRequest
 } from "../src/providers/types.js";
 import { GatewayPipelineError } from "../src/orchestration/pipeline/params.js";
+import type { BuiltPrompt } from "../src/orchestration/context/types.js";
 import { ensureDataLayout } from "../src/config/layout.js";
+import {
+  decisionHistoryPath,
+  decisionHistoryResourceKey,
+  readOrchestratorHistoryForGuild
+} from "../src/orchestration/stores/decisionHistory.js";
 import { StorageService } from "../src/storage/storageService.js";
 import {
   ActiveChatParticipantsFileSchema,
   AgentConfigSchema,
   DiscordBotConfig,
   DiscordBotsFileSchema,
+  GuildEmojisFileSchema,
   GuildMembersFileSchema,
   MemoryStoreSchema,
   OrchestratorDebugConfigFileSchema,
+  OrchestratorHistoryFile,
   OrchestratorHistoryFileSchema,
   PendingObservationsFileSchema,
   ProviderCredentialsFileSchema,
@@ -49,8 +60,7 @@ import {
   StageManagerHistoryFileSchema,
   WaifuConfig,
   WaifuConfigSchema,
-  createEmptyRevisionedFile,
-  defaultWaifuPromptLayout
+  createEmptyRevisionedFile
 } from "../src/shared/schemas/domain.js";
 import { createRevisionedBase } from "../src/shared/schemas/common.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
@@ -84,6 +94,10 @@ class FakeDiscord implements DiscordGatewayFacade {
     failedCount: 0,
     failedMessageIds: [] as Array<{ messageId: string; message: string }>
   };
+  /** When set, sendWaifuMessage rejects with it (a Discord API error such as { code: 50083 }). */
+  sendError: unknown;
+  /** sendWaifuMessage succeeds `count` times, then rejects with `error` (a reply cut off mid-way). */
+  failAfterSends: { count: number; error: unknown } | undefined;
   debugMessages: Array<{ channelId: string; content: string }> = [];
   debugChannelInfo = new Map<string, { channelId: string; guildId?: string; name?: string }>();
   guilds: Array<{ guildId: string; name: string }> = [];
@@ -292,6 +306,8 @@ class FakeDiscord implements DiscordGatewayFacade {
     senderBotId?: string;
     replyToMessageId?: string;
   }): Promise<{ messageId: string }> {
+    if (this.sendError) throw this.sendError;
+    if (this.failAfterSends && this.sent.length >= this.failAfterSends.count) throw this.failAfterSends.error;
     this.sent.push(input);
     return { messageId: `sent-${this.sent.length}` };
   }
@@ -357,82 +373,48 @@ class FakePipeline implements ModelPipeline {
   ];
 
   async generateWaifu(request: WaifuGenerationRequest) {
-    // W2 block structure assertions
-    expect(request.systemPrompt).toContain("You are Yuki");
-    // identity block: W2 format with roster
-    expect(request.systemPrompt).toMatch(
-      /^<yuki_identity>\nYou are Yuki, chatting in a live Discord text channel[\s\S]*<\/yuki_identity>/
+    // Spec 8.5 waifu harness through the context engine (one system message, epoch header,
+    // append-only transcript with this turn's direction note, ephemeral tail).
+    const prompt = promptOf(request);
+    expect(prompt.messages.filter((message) => message.role === "system")).toHaveLength(1);
+    expect(prompt.messages[0]!.role).toBe("system");
+    expect(prompt.debug.system).toMatch(/^<harness>\nYou are chatting in a live Discord text channel/);
+    expect(prompt.debug.system).toContain("<identity>\nYou are Yuki.");
+    expect(prompt.debug.system).toContain("<persona>\nkind\n</persona>");
+    expect(prompt.debug.system).toMatch(
+      /<schedule>[\s\S]*Sleep: 23:00-07:00 daily[\s\S]*09:00-10:00: school focus block[\s\S]*<\/schedule>/
     );
-    // persona block: raw persona (no "You are X. Stay in character." prefix)
-    expect(request.systemPrompt).toMatch(/<yuki_persona>\nkind\n<\/yuki_persona>/);
-    // schedule block: renamed from _shedule to _schedule
-    expect(request.systemPrompt).toMatch(
-      /<yuki_schedule>[\s\S]*configured routine[\s\S]*changes only when your schedule is edited[\s\S]*Sleep: 23:00-07:00 daily[\s\S]*09:00-10:00: school focus block[\s\S]*<\/yuki_schedule>/
-    );
-    expect(request.systemPrompt).not.toContain("<yuki_shedule>");
-    // ioFormat replaces contextStructure + replyTargeting + mentionPolicy
-    expect(request.systemPrompt).toMatch(/<io_format>[\s\S]*DisplayName: <body>[\s\S]*<\/io_format>/);
-    // outputContract replaces styleConstraints + hardRules + environment + directorNotes
-    expect(request.systemPrompt).toMatch(
-      /<output_contract>[\s\S]*You are typing into a real Discord chat box[\s\S]*<\/output_contract>/
-    );
-    expect(request.systemPrompt).toMatch(/<\/output_contract>$/);
-    // Old blocks removed
-    expect(request.systemPrompt).not.toContain("<yuki_behavior>");
-    expect(request.systemPrompt).not.toContain("<context_message_structure>");
-    expect(request.systemPrompt).not.toContain("<environment_instructions>");
-    expect(request.systemPrompt).not.toContain("<style_constraints>");
-    expect(request.systemPrompt).not.toContain("<hard_rules>");
-    expect(request.systemPrompt).not.toMatch(/<memories>/);
-    expect(request.systemPrompt).not.toMatch(/<short_term_memory>/);
-    expect(request.systemPrompt).not.toMatch(/<available_emojis>/);
-    expect(request.systemPrompt).not.toMatch(/<server_emojis>/);
-    expect(request.systemPrompt).not.toMatch(/<current_time>/);
-    // mid: roomInfo combines participants + emojis
-    expect(request.midSystemBlock).toBeDefined();
-    expect(request.midSystemBlock).toMatch(
-      /^<room_info>\n<active_chat_participants>[\s\S]*- Kevin[\s\S]*<\/active_chat_participants>\n<server_emojis>[\s\S]*<\/server_emojis>\n<\/room_info>/
-    );
-    expect(request.midSystemBlock).toMatch(
-      /<yuki_relevant_memories>\n- \(fact\) Yuki remembers Kevin likes tea\.\n<\/yuki_relevant_memories>/
-    );
-    expect(request.midSystemBlock).not.toContain("<director_notes>");
-    // trailing: anchor (not full persona duplicate); memories now live in mid
-    expect(request.trailingSystemBlock).toBeDefined();
-    expect(request.trailingSystemBlock).not.toMatch(/<yuki_relevant_memories>/);
-    expect(request.trailingSystemBlock).toContain("<yuki_anchor>");
-    expect(request.trailingSystemBlock).not.toContain("<yuki_persona>");
-    expect(request.trailingSystemBlock).toContain(
-      expectedDirectorNote("(spotlight) answer Kevin, then pull in Mira")
-    );
+    expect(prompt.debug.system).toContain("<style>\nKeep messages short");
+    expect(prompt.debug.system).not.toContain("replying to >");
+    expect(prompt.debug.header).toContain("<memories>\n- Yuki remembers Kevin likes tea (fact");
+    expect(prompt.debug.header).toContain("<place>");
+    expect(prompt.debug.transcript).toMatch(/\[\d\d:\d\d #a0\] Kevin: hello/);
+    // This turn's direction rides in the tail of the call it steers (persisted only at commit).
+    expect(prompt.debug.tail).toContain("<direction>(spotlight) answer Kevin, then pull in Mira</direction>");
+    expect(prompt.debug.transcript).not.toContain("<direction>(spotlight)");
+    expect(prompt.debug.tail).toMatch(/Write Yuki's next message\.$/);
+    expect(request.stopSequences).toEqual(["\n[", "\nYuki:"]);
     return { content: "hello <@Kevin> <:cutecat:>" };
   }
 
   async decideOrchestrator(request: ProviderRequest): Promise<OrchestratorDecision> {
-    // System prompt: identity + rules + chat_message_structure + server info; no trailing-prompt content
-    expect(request.systemPrompt).toContain("director");
-    expect(request.systemPrompt).not.toMatch(/<active_waifus>\n[\s\S]*<\/active_waifus>/);
-    expect(request.systemPrompt).not.toMatch(/<task_instructions>\n[\s\S]*<\/task_instructions>/);
-    expect(request.systemPrompt).not.toMatch(/<current_time>\n[\s\S]*<\/current_time>/);
-    expect(request.systemPrompt).toContain("<orchestrator_identity>");
-    expect(request.systemPrompt).toContain("<orchestrator_rules>");
-    expect(request.systemPrompt).not.toContain("<orchestrator_behavior>");
-    expect(request.systemPrompt).toContain("<chat_message_structure>");
-    expect(request.systemPrompt).not.toContain("<identity>");
-    expect(request.systemPrompt).not.toContain("<behavior>");
-    expect(request.systemPrompt).not.toContain("<message_structure>");
-    // New rules text (not the old verbatim strings)
-    expect(request.systemPrompt).toContain("soft signals");
-    expect(request.systemPrompt).toContain("respondingWaifus non-empty");
-    // Trailing prompt: task_instructions + pause_planning + active_waifus (casting cards) + current_time
-    expect(request.trailingPrompt).toBeTruthy();
-    expect(request.trailingPrompt).toMatch(/<task_instructions>\n[\s\S]*<\/task_instructions>/);
-    expect(request.trailingPrompt).toMatch(/<pause_planning>\n[\s\S]*<\/pause_planning>/);
-    expect(request.trailingPrompt).toMatch(
-      /<active_waifus>\n<yuki>\nID: yuki · Yuki · sees images natively\nAbout: kind\nNow: [\s\S]*<\/yuki>\n<\/active_waifus>/
-    );
-    expect(request.trailingPrompt).not.toMatch(/<active_waifus>[\s\S]*Persona:/);
-    expect(request.trailingPrompt).toMatch(/<current_time>\n[\s\S]*<\/current_time>/);
+    // Spec 8.7: the context engine builds the director's prompt — one system message (director
+    // rules + static casting cards), the epoch header, the transcript and the ephemeral tail.
+    const prompt = request.prompt!;
+    expect(prompt).toBeDefined();
+    expect(prompt.promptCacheKey).toBe("orchestrator:g_guild-1_channel-1");
+    expect(prompt.messages.filter((message) => message.role === "system")).toHaveLength(1);
+    expect(prompt.debug.system).toContain("<director>");
+    expect(prompt.debug.system).toContain("<policy>");
+    expect(prompt.debug.system).toMatch(/<cast>\n<waifu>\nid: yuki · Yuki · sees images natively\nAbout: kind\n<\/waifu>\n<\/cast>/);
+    // Static: no clock, no availability, no per-pass state in the system prompt.
+    expect(prompt.debug.system).not.toMatch(/Now:|Reply required|Directive budget/);
+    // Availability lives only in the tail (it changes mid-epoch); the header is the place.
+    expect(prompt.debug.header).toMatch(/^<place>.*<\/place>$/);
+    expect(prompt.debug.tail).toMatch(/Cast right now:\n- yuki \(Yuki\): /);
+    expect(prompt.debug.transcript).toMatch(/\[\d\d:\d\d #a0\] Kevin: hello/);
+    expect(prompt.debug.tail).toMatch(/^<status>\nNow: [\s\S]*Reply required: no\.[\s\S]*Directive budget: [\s\S]*<\/status>\nCall orchestrator_decision\.$/);
+    expect(prompt.tools.map((tool) => tool.name)).toEqual(["orchestrator_decision"]);
     expect(request.availableWaifuIds).toEqual(["yuki"]);
     const decision = this.decisions.shift();
     if (!decision) throw new Error("No fake decision left.");
@@ -463,8 +445,25 @@ describe("RuntimeOrchestrator", () => {
         expect(s.native).toHaveBeenCalledTimes(1);
         expect(s.native.mock.calls[0][0]).toMatchObject({ target: "openrouter:cloudflare/clef" });
         expect(s.discord.sent).toHaveLength(1); expect(s.generate).toHaveBeenCalledTimes(1);
-        const history = await s.storage.readJson("user/orchestrator/history.json", OrchestratorHistoryFileSchema);
+        const history = await readTestHistory(s.storage);
         expect(history.decisions[0].reasoning).toBe("one_shot: fixture");
+      } finally { await s.runtime.stop(); }
+    });
+    // T5 review C1: one-shot keeps its old input size even though the transcript may be longer.
+    it("hands one-shot only the newest window of the transcript", async () => {
+      const s = await setup();
+      s.discord.contexts = [
+        Array.from({ length: 30 }, (_, i) => ({
+          ...contextMessage(`m${i}`, "user", "Kevin", `message ${i}`),
+          timestamp: new Date(Date.parse("2026-05-16T12:00:00Z") + i * 60_000).toISOString()
+        }))
+      ];
+      try {
+        await s.runtime.triggerChannel("guild-1", "channel-1");
+        const input = s.native.mock.calls[0][0] as { messages: Array<{ content: string }>; timeZone?: string };
+        expect(input.messages.length).toBeLessThanOrEqual(20);
+        expect(input.messages.at(-1)?.content).toBe("message 29");
+        expect(input.timeZone).toBeDefined();
       } finally { await s.runtime.stop(); }
     });
     it("uses the existing deterministic fallback automatically without logging unrestricted errors", async () => {
@@ -590,10 +589,7 @@ describe("RuntimeOrchestrator", () => {
       }
     ]);
 
-    const history = await storage.readJson(
-      "user/orchestrator/history.json",
-      OrchestratorHistoryFileSchema
-    );
+    const history = await readTestHistory(storage);
     expect(
       history.decisions.map((entry) => ({
         action: entry.action,
@@ -613,6 +609,89 @@ describe("RuntimeOrchestrator", () => {
     expect(session.guildId).toBe("guild-1");
   });
 
+  it.each([
+    { code: 50083, status: "unavailable", reason: "thread_archived" },
+    { code: 200000, status: "blocked", reason: "automod" },
+    { code: 200001, status: "blocked", reason: "automod" }
+  ])("records a Discord send error $code as $status/$reason instead of crashing the decision", async ({ code, status, reason }) => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.sendError = Object.assign(new Error(`Discord error ${code}`), { code });
+    await seedRuntimeConfig(storage);
+    const now = new Date().toISOString();
+    await storage.writeJson(
+      "memories:global",
+      "user/memories.json",
+      MemoryStoreSchema,
+      MemoryStoreSchema.parse(
+        createEmptyRevisionedFile({
+          memories: [
+            {
+              id: "memory-1",
+              waifuId: "yuki",
+              guildId: "guild-1",
+              content: "Yuki remembers Kevin likes tea.",
+              strength: 3,
+              createdAt: now,
+              updatedAt: now,
+              status: "active"
+            }
+          ]
+        })
+      )
+    );
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 3,
+      createPipeline: () => new FakePipeline(),
+      logger: quietLogger()
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    expect(discord.sent).toEqual([]);
+    const history = await readTestHistory(storage);
+    const reply = history.decisions.find((entry) => entry.action === "reply");
+    expect(reply?.responderOutcomes[0]).toMatchObject({ waifuId: "yuki", status, reason });
+  });
+
+  it("a reply cut off after its first chunk keeps the delivered ids and is recorded as sent with a note (M3)", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.failAfterSends = { count: 1, error: Object.assign(new Error("Unknown Message"), { code: 50083 }) };
+    await seedRuntimeConfig(storage);
+    class TwoPartPipeline extends FakePipeline {
+      override async generateWaifu() {
+        return { content: "first part\n\nsecond part\n\nthird part" };
+      }
+    }
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 3,
+      createPipeline: () => new TwoPartPipeline(),
+      logger: quietLogger()
+    });
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    expect(discord.sent.map((entry) => entry.content)).toEqual(["first part"]);
+    const history = await readTestHistory(storage);
+    const sent = history.decisions.flatMap((entry) => entry.responderOutcomes).find((outcome) => outcome.status === "sent");
+    expect(sent).toMatchObject({ waifuId: "yuki", messageIds: ["sent-1"] });
+    expect(sent?.reason).toMatch(/^partial_send: 1 of \d parts delivered \(thread_archived\)$/);
+  });
+
   it("adds OCR text before non-vision model calls", async () => {
     const root = await makeTempRoot();
     roots.push(root);
@@ -624,19 +703,21 @@ describe("RuntimeOrchestrator", () => {
     await seedRuntimeConfig(storage);
     await setPrimaryRuntimeModel(storage, "deepseek", "deepseek-v4-pro");
 
-    let orchestratorMessages: ContextMessage[] = [];
-    let waifuMessages: ContextMessage[] = [];
+    let orchestratorTranscript = "";
+    let waifuTranscript = "";
     const ocr = {
       enrichMessages: vi.fn(async (messages: ContextMessage[]) =>
         messages.map((message) => ({
           ...message,
           images: message.images?.map((image) => ({ ...image, ocrText: "Start chatting with Instant" }))
         }))
-      )
+      ),
+      // Both contexts freeze a non-inline image to its cached OCR text (spec 8.4).
+      cachedText: vi.fn(async () => "Start chatting with Instant")
     };
     const pipeline: ModelPipeline = {
       async decideOrchestrator(request) {
-        orchestratorMessages = request.messages;
+        orchestratorTranscript = request.prompt!.debug.transcript;
         return {
           action: "reply",
           respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }],
@@ -644,7 +725,7 @@ describe("RuntimeOrchestrator", () => {
         };
       },
       async generateWaifu(request) {
-        waifuMessages = request.messages;
+        waifuTranscript = promptOf(request).debug.transcript;
         return { content: "Got it." };
       }
     };
@@ -662,10 +743,55 @@ describe("RuntimeOrchestrator", () => {
     await runtime.triggerChannel("guild-1", "channel-1");
     await runtime.stop();
 
-    expect(ocr.enrichMessages).toHaveBeenCalledTimes(2);
-    expect(orchestratorMessages[0].images?.[0].ocrText).toBe("Start chatting with Instant");
-    expect(waifuMessages[0].images?.[0].ocrText).toBe("Start chatting with Instant");
+    // Both context-engine prompts read the frozen image text.
+    expect(orchestratorTranscript).toContain("[image: Start chatting with Instant]");
+    expect(waifuTranscript).toContain("[image: Start chatting with Instant]");
     expect(discord.sent[0].content).toBe("Got it.");
+  });
+
+  it("runs bounded OCR (ocr.textFor) for text-only models when nothing is cached yet", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    const imageMessage = imageContextMessage();
+    discord.contexts = [[imageMessage], [imageMessage]];
+    await seedRuntimeConfig(storage);
+    await setPrimaryRuntimeModel(storage, "deepseek", "deepseek-v4-pro");
+
+    let orchestratorTranscript = "";
+    let waifuTranscript = "";
+    const ocr = {
+      enrichMessages: vi.fn(async (messages: ContextMessage[]) => messages),
+      cachedText: vi.fn(async () => undefined),
+      textFor: vi.fn(async (_ref: unknown, o: { timeoutMs: number }) => (o.timeoutMs > 0 ? "Fresh OCR text" : undefined))
+    };
+    const pipeline: ModelPipeline = {
+      async decideOrchestrator(request) {
+        orchestratorTranscript = request.prompt!.debug.transcript;
+        return { action: "reply", respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }], reasoning: "image" };
+      },
+      async generateWaifu(request) {
+        waifuTranscript = promptOf(request).debug.transcript;
+        return { content: "Got it." };
+      }
+    };
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 1,
+      ocr,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    expect(ocr.textFor).toHaveBeenCalled();
+    expect(orchestratorTranscript).toContain("[image: Fresh OCR text]");
+    expect(waifuTranscript).toContain("[image: Fresh OCR text]");
   });
 
   it("skips OCR for vision-capable model calls", async () => {
@@ -723,7 +849,7 @@ describe("RuntimeOrchestrator", () => {
     await setPrimaryRuntimeModel(storage, "deepseek", "deepseek-v4-pro");
 
     const warn = vi.fn();
-    let waifuMessages: ContextMessage[] = [];
+    let waifuTranscript = "";
     const pipeline: ModelPipeline = {
       async decideOrchestrator() {
         return {
@@ -733,7 +859,7 @@ describe("RuntimeOrchestrator", () => {
         };
       },
       async generateWaifu(request) {
-        waifuMessages = request.messages;
+        waifuTranscript = promptOf(request).debug.transcript;
         return { content: "Still works." };
       }
     };
@@ -758,12 +884,11 @@ describe("RuntimeOrchestrator", () => {
     await runtime.triggerChannel("guild-1", "channel-1");
     await runtime.stop();
 
-    expect(waifuMessages[0].images?.[0].ocrText).toBeUndefined();
+    // No cached OCR text (and no textFor): the image freezes to the bare placeholder. The legacy
+    // enrichment no longer runs on the reply path (both prompts use the context engine).
+    expect(waifuTranscript).toContain("[image]");
     expect(discord.sent[0].content).toBe("Still works.");
-    expect(warn).toHaveBeenCalledWith(
-      "OCR enrichment failed; continuing without OCR text",
-      expect.objectContaining({ modelId: "deepseek-v4-pro" })
-    );
+    expect(warn).not.toHaveBeenCalledWith("OCR enrichment failed; continuing without OCR text", expect.anything());
   });
 
   it("lets PickNextWaifu hand off once before orchestration resumes", async () => {
@@ -843,11 +968,11 @@ describe("RuntimeOrchestrator", () => {
       ];
 
       async generateWaifu(request: WaifuGenerationRequest) {
-        if (request.systemPrompt.includes("You are Yuki")) {
+        if (promptOf(request).debug.system.includes("You are Yuki")) {
           this.events.push("waifu:yuki");
           expect(request.availableWaifuIds).toEqual(["mika"]);
-          expect(request.pickNextWaifuToolEnabled).toBe(true);
-          expect(request.systemPrompt).toContain("<tools>");
+          expect(promptOf(request).tools.some((tool) => tool.name === "PickNextWaifu")).toBe(true);
+          expect(promptOf(request).debug.system).toContain("<tools>");
           return { content: "mika should take this", pickedNextWaifuId: "mika" };
         }
         this.events.push("waifu:mika");
@@ -913,16 +1038,16 @@ describe("RuntimeOrchestrator", () => {
         };
       },
       async generateWaifu(request) {
-        if (request.systemPrompt.includes("You are Yuki")) {
+        if (promptOf(request).debug.system.includes("You are Yuki")) {
           events.push("yuki");
           return { content: "Aria, jump in.", pickedNextWaifuId: "aria" };
         }
-        if (request.systemPrompt.includes("You are Aria")) {
+        if (promptOf(request).debug.system.includes("You are Aria")) {
           events.push("aria");
           return { content: "I am here." };
         }
         events.push("mika");
-        expect(request.trailingSystemBlock).toContain(
+        expect(promptText(request)).toContain(
           expectedDirectorNote("(spotlight) finish the beat")
         );
         return { content: "Finished." };
@@ -947,7 +1072,7 @@ describe("RuntimeOrchestrator", () => {
       "aria-bot",
       "mika-bot"
     ]);
-    const history = await storage.readJson("user/orchestrator/history.json", OrchestratorHistoryFileSchema);
+    const history = await readTestHistory(storage);
     const decision = history.decisions.find((entry) => entry.action === "reply");
     expect(decision?.respondingWaifus.map((responder) => responder.waifuId)).toEqual(["yuki", "mika"]);
     expect(decision?.responderOutcomes.map((outcome) => ({
@@ -1014,13 +1139,13 @@ describe("RuntimeOrchestrator", () => {
         };
       },
       async generateWaifu(request) {
-        if (request.systemPrompt.includes("You are Yuki")) {
+        if (promptOf(request).debug.system.includes("You are Yuki")) {
           events.push("yuki");
           return { content: "Aria should answer now.", pickedNextWaifuId: "aria" };
         }
-        if (request.systemPrompt.includes("You are Aria")) {
+        if (promptOf(request).debug.system.includes("You are Aria")) {
           events.push("aria");
-          expect(request.trailingSystemBlock).toContain(
+          expect(promptText(request)).toContain(
             expectedDirectorNote("(spotlight) keep the planned direction")
           );
           return { content: "Right away." };
@@ -1046,7 +1171,7 @@ describe("RuntimeOrchestrator", () => {
 
     expect(events).toEqual(["yuki", "aria", "mika"]);
     expect(sleepCalls).toEqual([]);
-    const history = await storage.readJson("user/orchestrator/history.json", OrchestratorHistoryFileSchema);
+    const history = await readTestHistory(storage);
     const decision = history.decisions.find((entry) => entry.action === "reply");
     expect(decision?.responderOutcomes.map((outcome) => ({
       waifuId: outcome.waifuId,
@@ -1098,8 +1223,8 @@ describe("RuntimeOrchestrator", () => {
       async generateWaifu(request: WaifuGenerationRequest) {
         checked = true;
         expect(request.availableWaifuIds).toEqual(["mika"]);
-        expect(request.pickNextWaifuToolEnabled).toBe(false);
-        expect(request.systemPrompt).not.toContain("PickNextWaifu");
+        expect(promptOf(request).tools.some((tool) => tool.name === "PickNextWaifu")).toBe(false);
+        expect(promptOf(request).debug.system).not.toContain("PickNextWaifu");
         return { content: "plain reply" };
       }
     };
@@ -1142,8 +1267,9 @@ describe("RuntimeOrchestrator", () => {
       async decideOrchestrator(request) {
         checked = true;
         expect(request.availableWaifuIds).toEqual(["yuki"]);
-        expect(request.trailingPrompt).toContain("ID: yuki");
-        expect(request.trailingPrompt).not.toContain("ID: mika");
+        // Casting cards are static system content now (spec 8.7).
+        expect(request.prompt!.debug.system).toContain("id: yuki");
+        expect(request.prompt!.debug.system).not.toContain("id: mika");
         return {
           action: "reply",
           respondingWaifus: [
@@ -1172,7 +1298,7 @@ describe("RuntimeOrchestrator", () => {
 
     expect(checked).toBe(true);
     expect(discord.sent.map((message) => message.senderBotId)).toEqual(["yuki-bot"]);
-    const history = await storage.readJson("user/orchestrator/history.json", OrchestratorHistoryFileSchema);
+    const history = await readTestHistory(storage);
     const decision = history.decisions.find((entry) => entry.action === "reply");
     expect(decision?.responderOutcomes.map((outcome) => ({
       waifuId: outcome.waifuId,
@@ -1208,9 +1334,9 @@ describe("RuntimeOrchestrator", () => {
       },
       async generateWaifu(request: WaifuGenerationRequest) {
         checked = true;
-        expect(request.pickNextWaifuToolEnabled).toBe(true);
-        expect(request.shortTermMemoryToolEnabled).toBe(true);
-        expect(request.systemPrompt).not.toContain("<tools>");
+        expect(promptOf(request).tools.some((tool) => tool.name === "PickNextWaifu")).toBe(true);
+        expect(promptOf(request).tools.some((tool) => tool.name === "add_memory")).toBe(true);
+        expect(promptOf(request).debug.system).not.toContain("<tools>");
         return { content: "plain reply" };
       }
     };
@@ -1230,71 +1356,7 @@ describe("RuntimeOrchestrator", () => {
     expect(checked).toBe(true);
   });
 
-  it("honors per-waifu prompt-layout block toggles", async () => {
-    const root = await makeTempRoot();
-    roots.push(root);
-    await ensureDataLayout(root);
-    const storage = new StorageService(root);
-    const discord = new FakeDiscord();
-
-    await seedRuntimeConfig(storage);
-    // Disable the ioFormat and outputContract blocks in the W2 layout.
-    await setWaifuBlocksEnabled(storage, "yuki", { ioFormat: false, outputContract: false });
-
-    let checked = false;
-    const pipeline: ModelPipeline = {
-      async decideOrchestrator() {
-        return {
-          action: "reply",
-          respondingWaifus: [
-            {
-              waifuId: "yuki",
-              delaySeconds: 0,
-
-              directive: { intent: "spotlight", goal: "answer Kevin" }
-            }
-          ],
-          reasoning: "Yuki starts."
-        };
-      },
-      async generateWaifu(request: WaifuGenerationRequest) {
-        checked = true;
-        // Identity and persona still render.
-        expect(request.systemPrompt).toContain("<yuki_identity>");
-        expect(request.systemPrompt).toContain("<yuki_persona>");
-        // Disabled blocks are omitted.
-        expect(request.systemPrompt).not.toContain("<io_format>");
-        expect(request.systemPrompt).not.toContain("<output_contract>");
-        // Mid: roomInfo still renders active_chat_participants and server_emojis.
-        expect(request.midSystemBlock).toContain("<active_chat_participants>");
-        expect(request.midSystemBlock).toContain("<server_emojis>");
-        // No old block names.
-        expect(request.midSystemBlock).not.toContain("<director_notes>");
-        expect(request.trailingSystemBlock).not.toContain("<yuki_persona>");
-        expect(request.trailingSystemBlock).toContain("<yuki_anchor>");
-        expect(request.trailingSystemBlock).toContain(
-          expectedDirectorNote("(spotlight) answer Kevin")
-        );
-        return { content: "plain reply" };
-      }
-    };
-
-    const runtime = new RuntimeOrchestrator({
-      sleep: async () => undefined,
-      storage,
-      discord,
-      maxAutomaticTurns: 1,
-      createPipeline: () => pipeline,
-      logger: quietLogger()
-    });
-
-    await runtime.triggerChannel("guild-1", "channel-1");
-    await runtime.stop();
-
-    expect(checked).toBe(true);
-  });
-
-  it("truncates casting-card persona to 200 chars in trailing prompt and excludes raw persona from system prompt", async () => {
+  it("truncates the casting-card persona to 200 chars and never sends the rest of the raw persona", async () => {
     const root = await makeTempRoot();
     roots.push(root);
     await ensureDataLayout(root);
@@ -1327,11 +1389,11 @@ describe("RuntimeOrchestrator", () => {
     );
 
     let trailingPrompt: string | undefined;
-    let systemPrompt: string | undefined;
+    let wholePrompt: string | undefined;
     const pipeline: ModelPipeline = {
       async decideOrchestrator(request: ProviderRequest) {
-        trailingPrompt = request.trailingPrompt;
-        systemPrompt = request.systemPrompt;
+        trailingPrompt = request.prompt!.debug.system;
+        wholePrompt = JSON.stringify(request.prompt!.messages);
         return { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, reasoning: "done" };
       },
       async generateWaifu() {
@@ -1360,9 +1422,9 @@ describe("RuntimeOrchestrator", () => {
     // The tail of the long persona (past 200 chars) must NOT appear in trailing prompt
     const normalised = longPersona.trim().replace(/\s+/g, " ");
     expect(trailingPrompt).not.toContain(normalised.slice(200));
-    // System prompt must not contain the raw persona at all
-    expect(systemPrompt).toBeDefined();
-    expect(systemPrompt).not.toContain(normalised.slice(0, 50));
+    // Nothing in the request carries the persona beyond the card's 200 chars
+    expect(wholePrompt).toBeDefined();
+    expect(wholePrompt).not.toContain(normalised.slice(200));
   });
 
   it("uses Voice/Cast-her-when lines in casting card when personaDigest is set", async () => {
@@ -1401,7 +1463,7 @@ describe("RuntimeOrchestrator", () => {
     let trailingPrompt: string | undefined;
     const pipeline: ModelPipeline = {
       async decideOrchestrator(request: ProviderRequest) {
-        trailingPrompt = request.trailingPrompt;
+        trailingPrompt = request.prompt!.debug.system;
         return { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, reasoning: "done" };
       },
       async generateWaifu() {
@@ -1473,7 +1535,7 @@ describe("RuntimeOrchestrator", () => {
     let trailingPrompt: string | undefined;
     const pipeline: ModelPipeline = {
       async decideOrchestrator(request: ProviderRequest) {
-        trailingPrompt = request.trailingPrompt;
+        trailingPrompt = request.prompt!.debug.system;
         return { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, reasoning: "done" };
       },
       async generateWaifu() {
@@ -1495,7 +1557,7 @@ describe("RuntimeOrchestrator", () => {
 
     expect(trailingPrompt).toBeDefined();
     expect(trailingPrompt).toContain("Yuki · sees images natively");
-    expect(trailingPrompt).toContain("ID: mika · Mika\n");
+    expect(trailingPrompt).toContain("id: mika · Mika\n");
     expect(trailingPrompt).not.toContain("Mika · sees images natively");
   });
 
@@ -1699,7 +1761,8 @@ describe("RuntimeOrchestrator", () => {
       )
     );
 
-    let checked = false;
+    let header = "";
+    let system = "";
     const pipeline: ModelPipeline = {
       async decideOrchestrator() {
         return {
@@ -1709,12 +1772,8 @@ describe("RuntimeOrchestrator", () => {
         };
       },
       async generateWaifu(request: WaifuGenerationRequest) {
-        checked = true;
-        expect(request.midSystemBlock).toMatch(
-          /<active_chat_participants>\n- Kevin\n- Mika\n- Mira\n- Yuki\n<\/active_chat_participants>/
-        );
-        expect(request.midSystemBlock).not.toContain("Old User");
-        expect(request.midSystemBlock).not.toContain("Other Channel User");
+        header = promptOf(request).debug.header;
+        system = promptOf(request).debug.system;
         return { content: "ok" };
       }
     };
@@ -1731,7 +1790,12 @@ describe("RuntimeOrchestrator", () => {
     await runtime.triggerChannel("guild-1", "channel-1");
     await runtime.stop();
 
-    expect(checked).toBe(true);
+    // Humans present (characters are in her identity roster; a human named like a character is
+    // folded into the character, as before).
+    expect(header).toContain("People here: Kevin, Mira\n");
+    expect(system).toContain("The other character here is Mika, who writes their own messages; you write only yours.");
+    expect(header).not.toContain("Old User");
+    expect(header).not.toContain("Other Channel User");
   });
 
   it("logs invalid PickNextWaifu calls, sends the normal message, and returns to orchestration", async () => {
@@ -1868,10 +1932,7 @@ describe("RuntimeOrchestrator", () => {
     await runtime.stop();
 
     expect(sleepCalls[0]).toBe(30_000);
-    const history = await storage.readJson(
-      "user/orchestrator/history.json",
-      OrchestratorHistoryFileSchema
-    );
+    const history = await readTestHistory(storage);
     expect(history.decisions.find((entry) => entry.action === "reply")?.respondingWaifus[0].delaySeconds).toBe(30);
   });
 
@@ -1914,12 +1975,12 @@ describe("RuntimeOrchestrator", () => {
       }
 
       async generateWaifu(request: WaifuGenerationRequest) {
-        if (request.systemPrompt.includes("You are Yuki")) {
+        if (promptOf(request).debug.system.includes("You are Yuki")) {
           this.events.push("yuki");
           nowMs = 107_000;
           return { content: "one" };
         }
-        if (request.systemPrompt.includes("You are Mika")) {
+        if (promptOf(request).debug.system.includes("You are Mika")) {
           this.events.push("mika");
           return { content: "two" };
         }
@@ -1962,10 +2023,11 @@ describe("RuntimeOrchestrator", () => {
     const discord = new FakeDiscord();
     discord.contexts = [
       [
-        contextMessage("waifu-1", "waifu", "Yuki", "one"),
-        contextMessage("waifu-2", "waifu", "Mika", "two"),
-        contextMessage("waifu-3", "waifu", "Yuki", "three"),
-        contextMessage("waifu-4", "waifu", "Mika", "four")
+        // History text differs from the replies below (her own "one" again would be a self-repeat).
+        contextMessage("waifu-1", "waifu", "Yuki", "first"),
+        contextMessage("waifu-2", "waifu", "Mika", "second"),
+        contextMessage("waifu-3", "waifu", "Yuki", "third"),
+        contextMessage("waifu-4", "waifu", "Mika", "fourth")
       ]
     ];
     const sleepCalls: number[] = [];
@@ -1987,7 +2049,7 @@ describe("RuntimeOrchestrator", () => {
       }
 
       async generateWaifu(request: WaifuGenerationRequest) {
-        return { content: request.systemPrompt.includes("You are Yuki") ? "one" : "two" };
+        return { content: promptOf(request).debug.system.includes("You are Yuki") ? "one" : "two" };
       }
     }
 
@@ -2046,7 +2108,7 @@ describe("RuntimeOrchestrator", () => {
         };
       },
       async generateWaifu(request: WaifuGenerationRequest) {
-        return { content: request.systemPrompt.includes("You are Yuki") ? "first line" : "second line" };
+        return { content: promptOf(request).debug.system.includes("You are Yuki") ? "first line" : "second line" };
       }
     };
 
@@ -2067,91 +2129,81 @@ describe("RuntimeOrchestrator", () => {
     expect(sleepCalls).toEqual([3000, 4000]);
   });
 
-  it("passes completed past orchestrator decisions to the pipeline", async () => {
+  // Decisions replay as text lines, never assistant tool_use turns: with thinking on, Anthropic
+  // rejects (400) a replayed tool_use that has no thinking block (T3 review).
+  it("replays the director's own final decisions as frozen text lines, even for a thinking model", async () => {
     const root = await makeTempRoot();
     roots.push(root);
     await ensureDataLayout(root);
     const storage = new StorageService(root);
     const discord = new FakeDiscord();
-    discord.contexts = [
-      [
-        {
-          ...contextMessage("m1", "user", "Kevin", "latest user message"),
-          timestamp: "2026-05-16T12:10:00Z"
-        }
-      ]
-    ];
+    const first = { ...contextMessage("m1", "user", "Kevin", "anyone around?"), timestamp: "2026-05-16T12:10:00Z" };
+    const second = { ...contextMessage("m2", "user", "Kevin", "hello??"), timestamp: "2026-05-16T12:20:00Z" };
+    discord.contexts = [[first], [first, second]];
 
-    class MarkerCapturePipeline implements ModelPipeline {
-      capturedDecisions: ProviderRequest["pastDecisions"] = [];
-
+    const prompts: NonNullable<ProviderRequest["prompt"]>[] = [];
+    const pipeline: ModelPipeline = {
       async generateWaifu() {
         return { content: "unused" };
-      }
-
+      },
       async decideOrchestrator(request: ProviderRequest) {
-        this.capturedDecisions = request.pastDecisions ?? [];
-        return { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, reasoning: "done" };
+        prompts.push(request.prompt!);
+        return { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, wakePlan: "re-check", reasoning: "quiet" };
       }
-    }
+    };
 
     await seedRuntimeConfig(storage);
-    await storage.writeJson(
-      "orchestrator:history",
-      "user/orchestrator/history.json",
-      OrchestratorHistoryFileSchema,
+    const orchestratorConfig = await storage.readJson("user/orchestrator/config.json", AgentConfigSchema);
+    await storage.writeJson("orchestrator", "user/orchestrator/config.json", AgentConfigSchema, {
+      ...orchestratorConfig,
+      params: { ...orchestratorConfig.params, "reasoning.enabled": true, "reasoning.budgetTokens": 2048 }
+    });
+    // A stale history entry that predates this context never leaks into the prompt.
+    await writeTestHistory(
+      storage,
       OrchestratorHistoryFileSchema.parse(
         createEmptyRevisionedFile({
           decisions: [
             {
-              id: "before-latest-chat",
+              id: "old-history",
               guildId: "guild-1",
               channelId: "channel-1",
               action: "no_reply",
               respondingWaifus: [],
               retriggerAfterSeconds: 300,
-              reasoning: "before latest user message",
+              reasoning: "from before the context existed",
               createdAt: "2026-05-16T12:09:00.000Z"
-            },
-            {
-              id: "after-latest-chat",
-              guildId: "guild-1",
-              channelId: "channel-1",
-              action: "no_reply",
-              respondingWaifus: [],
-              retriggerAfterSeconds: 1800,
-              reasoning: "after latest user message",
-              createdAt: "2026-05-16T12:11:00.000Z"
             }
           ]
         })
       )
     );
-
-    const pipeline = new MarkerCapturePipeline();
     const runtime = new RuntimeOrchestrator({
       sleep: async () => undefined,
       storage,
       discord,
       maxAutomaticTurns: 1,
       createPipeline: () => pipeline,
-      logger: {
-        debug: () => undefined,
-        info: () => undefined,
-        warn: () => undefined,
-        error: () => undefined
-      }
+      logger: quietLogger()
     });
 
     await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.triggerChannel("guild-1", "channel-1");
     await runtime.stop();
 
-    expect(pipeline.capturedDecisions?.map((d) => d.id).sort()).toEqual(
-      ["after-latest-chat", "before-latest-chat"].sort()
-    );
-    for (const decision of pipeline.capturedDecisions ?? []) {
-      expect(decision.status).toBe("completed");
+    expect(prompts).toHaveLength(2);
+    expect(prompts[0]!.debug.transcript).not.toContain("[decision");
+    expect(JSON.stringify(prompts[0]!.messages)).not.toContain("from before the context existed");
+    // No assistant tool_use (nor tool result) can reach a thinking model's request.
+    for (const prompt of prompts) {
+      expect(prompt.messages.some((message) => message.role === "assistant" || message.role === "tool")).toBe(false);
     }
+    // Append-only: the decision renders after the message it answered and before the new one.
+    const transcript = prompts[1]!.debug.transcript;
+    const line = transcript.match(/\[decision \d\d:\d\d\] no_reply 180s · plan: "re-check" · paused 180s/);
+    expect(line).not.toBeNull();
+    expect(transcript.indexOf("anyone around?")).toBeLessThan(transcript.indexOf(line![0]));
+    expect(transcript.indexOf(line![0])).toBeLessThan(transcript.indexOf("hello??"));
   });
 
   it("heals leftover pending decisions to interrupted on startup", async () => {
@@ -2162,10 +2214,8 @@ describe("RuntimeOrchestrator", () => {
     const discord = new FakeDiscord();
 
     await seedRuntimeConfig(storage);
-    await storage.writeJson(
-      "orchestrator:history",
-      "user/orchestrator/history.json",
-      OrchestratorHistoryFileSchema,
+    await writeTestHistory(
+      storage,
       OrchestratorHistoryFileSchema.parse(
         createEmptyRevisionedFile({
           decisions: [
@@ -2210,10 +2260,7 @@ describe("RuntimeOrchestrator", () => {
     await runtime.start();
     await runtime.stop();
 
-    const history = await storage.readJson(
-      "user/orchestrator/history.json",
-      OrchestratorHistoryFileSchema
-    );
+    const history = await readTestHistory(storage);
     const healed = history.decisions.find((entry) => entry.id === "leftover-pending");
     expect(healed?.status).toBe("interrupted");
     expect(healed?.responderOutcomes).toMatchObject([
@@ -2236,8 +2283,10 @@ describe("RuntimeOrchestrator", () => {
         return { content: "unused" };
       },
       async decideStageManagerObservations(request: StageManagerObserveRequest) {
-        expect(request.systemPrompt).toBeUndefined();
+        // B28: the stage manager's custom prompt reaches the observer.
+        expect(request.systemPrompt).toBe("memories");
         expect(request.availableWaifuIds).toEqual(["yuki"]);
+        expect(request.observerInput).toContain("Transcript:");
         return [
           { waifuId: "yuki", content: "Kevin likes tea.", importance: 3, kind: "preference" as const }
         ];
@@ -2275,7 +2324,7 @@ describe("RuntimeOrchestrator", () => {
     const memories = await storage.readJson("user/memories.json", MemoryStoreSchema);
     expect(memories.memories[0].content).toBe("Kevin likes tea.");
     expect(memories.memories[0]).toMatchObject({
-      guildId: "guild-1",
+      origin: { guildId: "guild-1", channelId: "channel-1" },
       pinned: false,
       source: "dream",
       kind: "preference",
@@ -2294,6 +2343,136 @@ describe("RuntimeOrchestrator", () => {
     // Most recent entry is the dream add (mapped onto add_memory); the observer's queue summary is older.
     expect(history.edits[0].tool).toBe("add_memory");
     expect(history.edits[0].summary).toContain("[dream:add]");
+  });
+
+  it("observer cursor never re-reads: an unchanged window costs no model call, new messages are read once", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    await seedRuntimeConfig(storage);
+    discord.contexts = [
+      [contextMessage("m1", "user", "Kevin", "I adopted a cat"), contextMessage("m2", "user", "Kevin", "her name is Miso")],
+      [contextMessage("m1", "user", "Kevin", "I adopted a cat"), contextMessage("m2", "user", "Kevin", "her name is Miso")],
+      [contextMessage("m1", "user", "Kevin", "I adopted a cat"), contextMessage("m2", "user", "Kevin", "her name is Miso"), contextMessage("m3", "user", "Kevin", "she is two")]
+    ];
+    const seen: string[][] = [];
+    const pipeline: ModelPipeline = {
+      async generateWaifu() {
+        return { content: "unused" };
+      },
+      async decideStageManagerObservations(request: StageManagerObserveRequest) {
+        seen.push(request.messages.map((message) => message.content));
+        return [];
+      }
+    };
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    expect((await runtime.memoryJobs.startStageManagerRun("guild-1", "channel-1")).status).toBe("no_change");
+    expect((await runtime.memoryJobs.startStageManagerRun("guild-1", "channel-1")).status).toBe("no_change");
+    await runtime.memoryJobs.startStageManagerRun("guild-1", "channel-1");
+    expect(seen).toEqual([["I adopted a cat", "her name is Miso"], ["she is two"]]);
+    const state = await storage.readJson(
+      "user/conversations/g_guild-1_channel-1/contexts/stage-manager.json",
+      (await import("../src/shared/schemas/context.js")).ContextStateSchema
+    );
+    expect(state).toMatchObject({ agentId: "stage-manager", cursorSeq: null, cursorMessageId: "m3" });
+  });
+
+  it("requestObserveThrough reads the ledger through a seq in cursor-bounded batches (compaction handoff)", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    await seedRuntimeConfig(storage);
+    const server = await storage.readJson("user/servers/guild-1/server.json", ServerConfigSchema);
+    await storage.writeJson("server:guild-1", "user/servers/guild-1/server.json", ServerConfigSchema, {
+      ...server,
+      contextWindows: { ...server.contextWindows, stageManager: 2 }
+    });
+    const { ConversationLedgerSchema } = await import("../src/shared/schemas/context.js");
+    const entries = Object.fromEntries([1, 2, 3, 4, 5].map((seq) => [`10${seq}`, {
+      id: `10${seq}`, seq, authorId: "u1", authorName: "Kevin", authorIsBot: false, at: "2026-10-23T11:00:00.000Z",
+      kind: "default", body: `line ${seq}`, images: [], state: "live", sealed: false
+    }]));
+    await storage.writeJson("ledger:g_guild-1_channel-1", "user/conversations/g_guild-1_channel-1/ledger.json", ConversationLedgerSchema,
+      ConversationLedgerSchema.parse(createEmptyRevisionedFile({ conversationKey: "g_guild-1_channel-1", nextSeq: 6, entries, events: [] })));
+    const reads: string[] = [];
+    const pipeline: ModelPipeline = {
+      async generateWaifu() {
+        return { content: "unused" };
+      },
+      async decideStageManagerObservations(request: StageManagerObserveRequest) {
+        reads.push((request.observerInput ?? "").split("\n").filter((line) => line.includes("line ")).map((line) => line.replace(/.*: /, "")).join(","));
+        expect(request.messages).toEqual([]);
+        return [];
+      }
+    };
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    await runtime.memoryJobs.requestObserveThrough({ kind: "guild", guildId: "guild-1", channelId: "channel-1" }, 4);
+    expect(reads).toEqual(["line 1,line 2", "line 3,line 4"]);
+    // Already through 4: nothing to do.
+    await runtime.memoryJobs.requestObserveThrough({ kind: "guild", guildId: "guild-1", channelId: "channel-1" }, 3);
+    expect(reads).toHaveLength(2);
+    // A DM without a ledger has nothing to observe: resolves at once.
+    await runtime.memoryJobs.requestObserveThrough({ kind: "dm", waifuId: "yuki", userId: "u1" }, 99);
+    await runtime.memoryJobs.startStageManagerRun("guild-1", "channel-1");
+    expect(reads).toEqual(["line 1,line 2", "line 3,line 4", "line 5"]);
+  });
+
+  it("an observer response with no valid op fails the run and keeps the cursor, so the messages are re-read", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    await seedRuntimeConfig(storage);
+    const window = [contextMessage("m1", "user", "Kevin", "I am allergic to peanuts")];
+    discord.contexts = [window, window];
+    const reads: number[] = [];
+    let call = 0;
+    const pipeline: ModelPipeline = {
+      async generateWaifu() {
+        return { content: "unused" };
+      },
+      async decideStageManagerObservations(request: StageManagerObserveRequest) {
+        reads.push(request.messages.length);
+        call += 1;
+        // First response is entirely malformed; the second is valid.
+        return call === 1
+          ? ([{ op: "update" }, { garbage: true }] as never)
+          : [{ op: "add" as const, waifuId: "yuki", content: "Kevin is allergic to peanuts.", kind: "fact" as const, importance: 5 as const, subjects: ["p1"] }];
+      }
+    };
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    expect((await runtime.memoryJobs.startStageManagerRun("guild-1", "channel-1")).status).toBe("failed");
+    expect((await runtime.memoryJobs.startStageManagerRun("guild-1", "channel-1")).status).toBe("updated");
+    // The same message was offered again after the failed parse.
+    expect(reads).toEqual([1, 1]);
+    const memories = await storage.readJson("user/memories.json", MemoryStoreSchema);
+    expect(memories.memories.map((memory) => memory.content)).toEqual(["Kevin is allergic to peanuts."]);
   });
 
   it("ignores a stale persisted stage-manager running flag left by a crash", async () => {
@@ -2404,8 +2583,9 @@ describe("RuntimeOrchestrator", () => {
 
     const pending = await storage.readJson("user/memory/pending-observations.json", PendingObservationsFileSchema);
     expect(pending.observations).toHaveLength(2);
-    expect(pending.observations.every((obs) => obs.guildId === "guild-1")).toBe(true);
-    expect(pending.observations.every((obs) => obs.channelId === "channel-1")).toBe(true);
+    expect(pending.observations.every((obs) => obs.origin.guildId === "guild-1")).toBe(true);
+    expect(pending.observations.every((obs) => obs.origin.channelId === "channel-1")).toBe(true);
+    expect(pending.observations.every((obs) => obs.conversationKey === "g_guild-1_channel-1")).toBe(true);
     expect(pending.observations.map((obs) => obs.content).sort()).toEqual(
       ["Kevin drinks tea.", "Kevin owns a cat."].sort()
     );
@@ -2594,7 +2774,7 @@ describe("RuntimeOrchestrator", () => {
     expect(history.edits[0].summary).toContain("Dropped 1 observation");
   });
 
-  it("dream pass on a seeded store: rewrites, archives, and adds within the current guild only", async () => {
+  it("dream pass is global: one waifu chunk spans memories from every guild", async () => {
     const root = await makeTempRoot();
     roots.push(root);
     await ensureDataLayout(root);
@@ -2610,13 +2790,12 @@ describe("RuntimeOrchestrator", () => {
       MemoryStoreSchema.parse(
         createEmptyRevisionedFile({
           memories: [
-            { id: "same-guild", waifuId: "yuki", guildId: "guild-1", content: "Kevin likes tea.", strength: 3, createdAt: now, updatedAt: now, status: "active" },
-            { id: "other-guild", waifuId: "yuki", guildId: "guild-2", content: "Other guild secret.", strength: 3, createdAt: now, updatedAt: now, status: "active" }
+            { id: "guild-1-memory", waifuId: "yuki", origin: { guildId: "guild-1" }, content: "Kevin likes tea.", strength: 3, createdAt: now, updatedAt: now, status: "active" },
+            { id: "guild-2-memory", waifuId: "yuki", origin: { guildId: "guild-2" }, content: "Alice likes coffee.", strength: 3, createdAt: now, updatedAt: now, status: "active" }
           ]
         })
       )
     );
-    // Seed a queued observation so the dream pass has work to do.
     await storage.writeJson(
       "memory:pending",
       "user/memory/pending-observations.json",
@@ -2624,7 +2803,7 @@ describe("RuntimeOrchestrator", () => {
       PendingObservationsFileSchema.parse(
         createEmptyRevisionedFile({
           observations: [
-            { id: "obs-1", guildId: "guild-1", channelId: "channel-1", waifuId: "yuki", content: "Kevin enjoys tea regularly.", kind: "preference", importance: 3, entities: ["Kevin"], createdAt: now }
+            { id: "obs-1", origin: { guildId: "guild-3", channelId: "channel-9" }, waifuId: "yuki", content: "Kevin enjoys tea regularly.", kind: "preference", importance: 3, createdAt: now }
           ]
         })
       )
@@ -2634,18 +2813,12 @@ describe("RuntimeOrchestrator", () => {
       async generateWaifu() {
         return { content: "unused" };
       },
-      async decideStageManagerObservations() {
-        return [];
-      },
       async decideDream(request) {
-        // Only guild-1's single non-pinned record is in the chunk (other-guild is excluded).
-        expect(request.memories).toEqual([
-          { memoryIndex: 1, waifuId: "yuki", content: "Kevin likes tea.", kind: "fact", strength: 3, ageDays: 0, daysSinceRetrieved: 0 }
-        ]);
+        expect(request.memories.map((memory) => memory.content)).toEqual(["Kevin likes tea.", "Alice likes coffee."]);
         expect(request.observations.map((observation) => observation.content)).toEqual(["Kevin enjoys tea regularly."]);
         return [
           { op: "rewrite", memoryIndex: 1, content: "Kevin enjoys tea regularly, especially in the mornings.", entities: ["Kevin"] },
-          { op: "add", memory: { waifuId: "yuki", content: "Kevin enjoys tea regularly.", kind: "preference", strength: 3, entities: ["Kevin"] } }
+          { op: "add", memory: { waifuId: "yuki", content: "Alice drinks espresso.", kind: "preference", strength: 3, entities: [] } }
         ];
       }
     };
@@ -2658,25 +2831,23 @@ describe("RuntimeOrchestrator", () => {
       logger: quietLogger()
     });
 
-    await runtime.memoryJobs.startDreamRun("guild-1");
+    await runtime.memoryJobs.startDreamRun();
 
     const memories = await storage.readJson("user/memories.json", MemoryStoreSchema);
-    // Other-guild record is untouched.
-    expect(memories.memories.find((memory) => memory.id === "other-guild")).toMatchObject({ content: "Other guild secret.", status: "active" });
-    // The rewrite landed on the same-guild record.
-    expect(memories.memories.find((memory) => memory.id === "same-guild")?.content).toContain("especially in the mornings");
-    // The add produced a new dream-sourced record.
-    expect(memories.memories.find((memory) => memory.source === "dream" && memory.content === "Kevin enjoys tea regularly.")).toBeDefined();
-    // The queue is drained.
+    expect(memories.memories.find((memory) => memory.id === "guild-1-memory")).toMatchObject({
+      content: "Kevin enjoys tea regularly, especially in the mornings.",
+      revision: 1
+    });
+    expect(memories.memories.find((memory) => memory.id === "guild-2-memory")?.content).toBe("Alice likes coffee.");
+    expect(memories.memories.find((memory) => memory.source === "dream" && memory.content === "Alice drinks espresso.")).toBeDefined();
     const pending = await storage.readJson("user/memory/pending-observations.json", PendingObservationsFileSchema);
     expect(pending.observations).toEqual([]);
-    // History records the dream ops.
     const history = await storage.readJson("user/stage-manager/history.json", StageManagerHistoryFileSchema);
     expect(history.edits.some((edit) => edit.summary.includes("[dream:rewrite]"))).toBe(true);
     expect(history.edits.some((edit) => edit.summary.includes("[dream:add]"))).toBe(true);
   });
 
-  it("dream passes rotate through every chunk (incl. orphan observations) across nights", async () => {
+  it("dream round-robin over 3 nights reaches every waifu (budget per night, persisted cursor)", async () => {
     const root = await makeTempRoot();
     roots.push(root);
     await ensureDataLayout(root);
@@ -2684,56 +2855,100 @@ describe("RuntimeOrchestrator", () => {
     const discord = new FakeDiscord();
     const now = new Date().toISOString();
     await seedRuntimeConfig(storage);
-    const waifuIds = ["a", "b", "c", "d", "e", "f", "g"];
+    const cast = ["ann", "bea", "cyd", "dot", "eve"];
+    for (const id of cast) await seedWaifu(storage, id, id.toUpperCase(), `${id}-bot`, "direct");
     await storage.writeJson(
       "memories:global",
       "user/memories.json",
       MemoryStoreSchema,
       MemoryStoreSchema.parse(
         createEmptyRevisionedFile({
-          memories: waifuIds.flatMap((waifuId) =>
-            Array.from({ length: 13 }, (_, index) => ({
-              id: `${waifuId}-${index}`, waifuId, guildId: "guild-1", content: `${waifuId} fact ${index}`, strength: 3, createdAt: now, updatedAt: now, status: "active"
-            }))
-          )
+          memories: cast.map((waifuId) => ({
+            id: `${waifuId}-1`, waifuId, origin: { guildId: "guild-1" }, content: `${waifuId} fact`, strength: 3, createdAt: now, updatedAt: now, status: "active"
+          }))
         })
       )
     );
-    await storage.writeJson(
-      "memory:pending",
-      "user/memory/pending-observations.json",
-      PendingObservationsFileSchema,
-      PendingObservationsFileSchema.parse(
-        createEmptyRevisionedFile({
-          observations: [
-            { id: "obs-zed", guildId: "guild-1", channelId: "channel-1", waifuId: "zed", content: "Kevin met zed.", kind: "fact", importance: 3, entities: [], createdAt: now }
-          ]
-        })
-      )
-    );
-    const seen: string[] = [];
+    const nights: string[][] = [];
     const pipeline: ModelPipeline = {
       async generateWaifu() {
         return { content: "unused" };
       },
       async decideDream(request) {
-        seen.push(request.memories[0]?.waifuId ?? "orphan");
-        return [];
+        nights.at(-1)!.push(request.memories[0]!.waifuId);
+        return [{ op: "none" as const }];
       }
     };
-    const runtime = new RuntimeOrchestrator({
+    const makeRuntime = () => new RuntimeOrchestrator({
       sleep: async () => undefined,
       storage,
       discord,
       createPipeline: () => pipeline,
-      logger: quietLogger()
+      logger: quietLogger(),
+      memory: { dreamChunksPerNight: 2 }
     });
 
-    await runtime.memoryJobs.startDreamRun("guild-1");
-    expect(seen).toEqual(["a", "b", "c", "d", "e"]);
-    seen.length = 0;
-    await runtime.memoryJobs.startDreamRun("guild-1");
-    expect(seen).toEqual(["f", "g", "orphan", "a", "b"]);
+    for (let night = 0; night < 3; night += 1) {
+      nights.push([]);
+      // A fresh runtime each night: the cursor is persisted, not in memory.
+      await makeRuntime().memoryJobs.startDreamRun();
+    }
+    expect(nights).toEqual([["ann", "bea"], ["cyd", "dot"], ["eve", "ann"]]);
+    expect(new Set(nights.flat())).toEqual(new Set(cast));
+    // yuki (seeded by the runtime config) has no memories, so she costs no call.
+  });
+
+  it("a waifu needing more chunks than one night's budget resumes mid-waifu instead of blocking the cast", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    const base = Date.parse("2026-10-01T00:00:00.000Z");
+    await seedRuntimeConfig(storage);
+    await seedWaifu(storage, "ann", "ANN", "ann-bot", "direct");
+    await seedWaifu(storage, "bea", "BEA", "bea-bot", "direct");
+    // ann: 170 memories = 3 chunks of 80; bea: 1 memory. Budget 2 chunks a night.
+    const memories = [
+      ...Array.from({ length: 170 }, (_, index) => {
+        const at = new Date(base + index * 60_000).toISOString();
+        return { id: `ann-${index}`, waifuId: "ann", origin: {}, content: `ann fact ${index}`, strength: 3, createdAt: at, updatedAt: at, status: "active" };
+      }),
+      { id: "bea-1", waifuId: "bea", origin: {}, content: "bea fact", strength: 3, createdAt: new Date(base).toISOString(), updatedAt: new Date(base).toISOString(), status: "active" }
+    ];
+    await storage.writeJson("memories:global", "user/memories.json", MemoryStoreSchema, MemoryStoreSchema.parse(createEmptyRevisionedFile({ memories })));
+    const nights: string[][] = [];
+    const pipeline: ModelPipeline = {
+      async generateWaifu() {
+        return { content: "unused" };
+      },
+      async decideDream(request) {
+        nights.at(-1)!.push(`${request.memories[0]!.waifuId}:${request.memories[0]!.content}`);
+        return [{ op: "none" as const }];
+      }
+    };
+    for (let night = 0; night < 3; night += 1) {
+      nights.push([]);
+      await new RuntimeOrchestrator({
+        sleep: async () => undefined,
+        storage,
+        discord,
+        createPipeline: () => pipeline,
+        logger: quietLogger(),
+        memory: { dreamChunksPerNight: 2 }
+      }).memoryJobs.startDreamRun();
+    }
+    expect(nights).toEqual([
+      ["ann:ann fact 0", "ann:ann fact 80"],
+      ["ann:ann fact 160", "bea:bea fact"],
+      ["ann:ann fact 0", "ann:ann fact 80"]
+    ]);
+    const { DreamCursorFileSchema } = await import("../src/orchestration/dream.js");
+    expect(await storage.readJson("user/memory/dream-cursor.json", DreamCursorFileSchema)).toMatchObject({
+      // Night 3 passed yuki (no memories, no call) before re-entering ann.
+      cursor: "yuki",
+      resume: { waifuId: "ann", chunkIndex: 2 }
+    });
   });
 
   it("dream ops may only assign memories to waifus the chunk is about", async () => {
@@ -2778,7 +2993,7 @@ describe("RuntimeOrchestrator", () => {
       logger: quietLogger()
     });
 
-    await runtime.memoryJobs.startDreamRun("guild-1");
+    await runtime.memoryJobs.startDreamRun();
     expect(availableIds).toEqual([["mika"], ["yuki"]]);
     const memories = await storage.readJson("user/memories.json", MemoryStoreSchema);
     expect(memories.memories.some((memory) => memory.content === "Misattributed to mika.")).toBe(false);
@@ -2815,13 +3030,13 @@ describe("RuntimeOrchestrator", () => {
         })
       )
     );
-    let offered: string[] | undefined;
+    const offered: string[][] = [];
     const pipeline: ModelPipeline = {
       async generateWaifu() {
         return { content: "unused" };
       },
       async decideDream(request) {
-        offered = request.availableWaifuIds;
+        offered.push(request.availableWaifuIds ?? []);
         return [{ op: "add", memory: { waifuId: "mika", content: "Kevin paints.", kind: "fact", strength: 3, entities: [] } }];
       }
     };
@@ -2833,8 +3048,9 @@ describe("RuntimeOrchestrator", () => {
       logger: quietLogger()
     });
 
-    await runtime.memoryJobs.startDreamRun("guild-1");
-    expect(offered).toEqual(["mika", "yuki"]);
+    await runtime.memoryJobs.startDreamRun();
+    // Per-waifu chunks: mika (observation only) gets her own call, owned by her alone.
+    expect(offered).toEqual([["mika"], ["yuki"]]);
     const memories = await storage.readJson("user/memories.json", MemoryStoreSchema);
     expect(memories.memories.find((memory) => memory.content === "Kevin paints.")?.waifuId).toBe("mika");
   });
@@ -2896,7 +3112,7 @@ describe("RuntimeOrchestrator", () => {
       logger: quietLogger()
     });
 
-    await runtime.memoryJobs.startDreamRun("guild-1");
+    await runtime.memoryJobs.startDreamRun();
 
     const memories = await storage.readJson("user/memories.json", MemoryStoreSchema);
     expect(memories.memories.find((memory) => memory.id === "pinned-1")).toMatchObject({ status: "active", pinned: true });
@@ -3002,11 +3218,11 @@ describe("RuntimeOrchestrator", () => {
 
     // Fire first run without awaiting. dreamingGuilds.add("guild-1") fires synchronously
     // inside startDreamRun before any async work begins.
-    const firstRun = runtime.memoryJobs.startDreamRun("guild-1");
+    const firstRun = runtime.memoryJobs.startDreamRun();
 
     // Second call: the guard is already set synchronously, so this returns immediately
     // with already_running without touching runDreamPass at all.
-    const secondResult = await runtime.memoryJobs.startDreamRun("guild-1");
+    const secondResult = await runtime.memoryJobs.startDreamRun();
     expect(secondResult.status).toBe("already_running");
 
     // Release the first run and let it complete.
@@ -3019,7 +3235,7 @@ describe("RuntimeOrchestrator", () => {
     expect(decideDreamCalls).toBe(1);
   });
 
-  it("dream pass reentrancy: two DIFFERENT guilds can dream concurrently — decideDream called once per guild", async () => {
+  it("dream pass is one global single flight: a concurrent run returns already_running", async () => {
     const root = await makeTempRoot();
     roots.push(root);
     await ensureDataLayout(root);
@@ -3028,7 +3244,6 @@ describe("RuntimeOrchestrator", () => {
     const now = new Date().toISOString();
 
     await seedRuntimeConfig(storage);
-    // Seed memories for two distinct guilds.
     await storage.writeJson(
       "memories:global",
       "user/memories.json",
@@ -3036,28 +3251,22 @@ describe("RuntimeOrchestrator", () => {
       MemoryStoreSchema.parse(
         createEmptyRevisionedFile({
           memories: [
-            { id: "mem-g1", waifuId: "yuki", guildId: "guild-1", content: "Kevin likes tea.", strength: 3, createdAt: now, updatedAt: now, status: "active" },
-            { id: "mem-g2", waifuId: "yuki", guildId: "guild-2", content: "Alice likes coffee.", strength: 3, createdAt: now, updatedAt: now, status: "active" }
+            { id: "mem-g1", waifuId: "yuki", origin: { guildId: "guild-1" }, content: "Kevin likes tea.", strength: 3, createdAt: now, updatedAt: now, status: "active" },
+            { id: "mem-g2", waifuId: "yuki", origin: { guildId: "guild-2" }, content: "Alice likes coffee.", strength: 3, createdAt: now, updatedAt: now, status: "active" }
           ]
         })
       )
     );
-
     let decideDreamCalls = 0;
-
     const pipeline: ModelPipeline = {
       async generateWaifu() {
         return { content: "unused" };
-      },
-      async decideStageManagerObservations() {
-        return [];
       },
       async decideDream() {
         decideDreamCalls += 1;
         return [{ op: "none" as const }];
       }
     };
-
     const runtime = new RuntimeOrchestrator({
       sleep: async () => undefined,
       storage,
@@ -3066,21 +3275,14 @@ describe("RuntimeOrchestrator", () => {
       logger: quietLogger()
     });
 
-    // Launch both guilds concurrently. Different guild IDs: guard allows both.
-    const [result1, result2] = await Promise.all([
-      runtime.memoryJobs.startDreamRun("guild-1"),
-      runtime.memoryJobs.startDreamRun("guild-2")
-    ]);
-
-    // Both runs completed (no_change: each guild had one memory and no pending ops).
+    const [result1, result2] = await Promise.all([runtime.memoryJobs.startDreamRun(), runtime.memoryJobs.startDreamRun()]);
     expect(result1.status, JSON.stringify(result1)).toBe("no_change");
-    expect(result2.status, JSON.stringify(result2)).toBe("no_change");
-
-    // decideDream was called once per guild — two total, no deduplication across guilds.
-    expect(decideDreamCalls).toBe(2);
+    expect(result2.status).toBe("already_running");
+    // One waifu chunk covering both guilds' memories.
+    expect(decideDreamCalls).toBe(1);
   });
 
-  it("hides cross-guild memories from waifu prompts", async () => {
+  it("a memory learned in guild A is retrieved for the same waifu in guild B (global memory)", async () => {
     const root = await makeTempRoot();
     roots.push(root);
     await ensureDataLayout(root);
@@ -3096,31 +3298,14 @@ describe("RuntimeOrchestrator", () => {
       MemoryStoreSchema.parse(
         createEmptyRevisionedFile({
           memories: [
-            {
-              id: "same",
-              waifuId: "yuki",
-              guildId: "guild-1",
-              content: "Kevin likes tea.",
-              strength: 3,
-              createdAt: now,
-              updatedAt: now,
-              status: "active"
-            },
-            {
-              id: "cross",
-              waifuId: "yuki",
-              guildId: "guild-2",
-              content: "Kevin hates tea.",
-              strength: 3,
-              createdAt: now,
-              updatedAt: now,
-              status: "active"
-            }
+            { id: "learned-in-a", waifuId: "yuki", origin: { guildId: "guild-a", channelId: "chan-a" }, content: "Kevin is allergic to peanuts.", strength: 4, createdAt: now, updatedAt: now, status: "active" },
+            { id: "other-waifu", waifuId: "mika", origin: { guildId: "guild-1" }, content: "Mika-only secret.", strength: 3, createdAt: now, updatedAt: now, status: "active" }
           ]
         })
       )
     );
 
+    const trailing: string[] = [];
     const pipeline: ModelPipeline = {
       async decideOrchestrator() {
         return {
@@ -3130,9 +3315,7 @@ describe("RuntimeOrchestrator", () => {
         };
       },
       async generateWaifu(request: WaifuGenerationRequest) {
-        expect(request.systemPrompt).not.toContain("Kevin likes tea.");
-        expect(request.trailingSystemBlock).toContain("Kevin likes tea.");
-        expect(request.trailingSystemBlock).not.toContain("Kevin hates tea.");
+        trailing.push(promptText(request));
         return { content: "noted" };
       }
     };
@@ -3143,16 +3326,15 @@ describe("RuntimeOrchestrator", () => {
       discord,
       maxAutomaticTurns: 1,
       createPipeline: () => pipeline,
-      logger: {
-        debug: () => undefined,
-        info: () => undefined,
-        warn: () => undefined,
-        error: () => undefined
-      }
+      logger: quietLogger()
     });
 
+    // guild-1 is "guild B": the memory was learned in guild-a.
     await runtime.triggerChannel("guild-1", "channel-1");
     await runtime.stop();
+    expect(trailing).toHaveLength(1);
+    expect(trailing[0]).toContain("Kevin is allergic to peanuts");
+    expect(trailing[0]).not.toContain("Mika-only secret.");
   });
 
   it("schedules stage-manager runs after activity and once after silence", async () => {
@@ -3364,8 +3546,7 @@ describe("RuntimeOrchestrator", () => {
       ServerConfigSchema.parse({
         ...createRevisionedBase(),
         guildId: "guild-1",
-        name: "Stale server name",
-        enabled: true
+        name: "Stale server name"
       })
     );
     discord.channelMetadata.set("guild-1:channel-1", {
@@ -3403,7 +3584,6 @@ describe("RuntimeOrchestrator", () => {
     expect(server.channels["channel-1"]).toMatchObject({
       channelId: "channel-1",
       name: "聊天频道",
-      enabled: false,
       enabledWaifuIds: []
     });
   });
@@ -4133,18 +4313,92 @@ describe("RuntimeOrchestrator", () => {
     await runtime.stop();
 
     expect(responses).toEqual(["Printed system prompt for Yuki."]);
-    expect(discord.debugMessages.length).toBeGreaterThan(3);
+    expect(discord.debugMessages.length).toBeGreaterThan(2);
     expect(discord.debugMessages.every((message) => message.channelId === "channel-1")).toBe(true);
     const printed = discord.debugMessages.map((message) => message.content).join("\n");
-    expect(printed).toContain("## System prompt block 1 (Yuki)");
-    expect(printed).toContain("## System prompt block 2 (Yuki)");
-    expect(printed).toContain("## System prompt block 3 (Yuki)");
+    // No live turn in this channel yet: her static system prompt (the harness), freshly rendered.
+    expect(discord.debugMessages[0]!.content).toContain("has not replied in this channel since the backend started");
+    expect(printed).toContain("## System prompt (Yuki)");
     expect(printed).not.toContain("(continued");
     expect(printed).not.toMatch(/`{3,}xml/);
-    expect(printed).toContain("<yuki_identity>");
-    expect(printed).toContain("<active_chat_participants>");
+    // The longer harness pushes the chunk split right after `<identity>`; check both pieces.
+    expect(printed).toContain("<identity>");
+    expect(printed).toContain("You are Yuki.\n</identity>");
+    expect(printed).toContain("<persona>\nkind\nlong detail line");
     expect(printed).not.toContain("<scene_direction>");
     expect(printed).not.toContain("\\n");
+  });
+
+  it("/print system_prompt replies ephemerally when it can, with the channel's cast as the roster", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    await seedRuntimeConfig(storage);
+    await seedWaifu(storage, "yuki", "Yuki", "yuki-bot", "kind");
+    await seedWaifu(storage, "mika", "Mika", "mika-bot", "sharp");
+    const server = await storage.readJson("user/servers/guild-1/server.json", ServerConfigSchema);
+    await storage.writeJson("server:guild-1", "user/servers/guild-1/server.json", ServerConfigSchema, {
+      ...server,
+      channels: {
+        ...server.channels,
+        "channel-2": { ...server.channels["channel-1"]!, channelId: "channel-2", enabledWaifuIds: ["yuki", "mika"] }
+      }
+    });
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      createPipeline: () => ({ async generateWaifu() { return { content: "unused" }; } }),
+      logger: quietLogger()
+    });
+    await runtime.start();
+
+    const printed: Record<string, string[]> = { "channel-1": [], "channel-2": [] };
+    for (const channelId of ["channel-1", "channel-2"] as const) {
+      await discord.emitPrintCommand({
+        guildId: "guild-1",
+        channelId,
+        userId: "admin-user",
+        type: "system_prompt",
+        waifuId: "yuki",
+        followUp: async (content) => {
+          printed[channelId]!.push(content);
+        }
+      });
+    }
+    await waitFor(() => printed["channel-2"]!.length > 0, "ephemeral print");
+    await runtime.stop();
+
+    // Invoker-only follow-ups: nothing is posted to the channel (where the ledger would pick it up).
+    expect(discord.debugMessages).toEqual([]);
+    const one = printed["channel-1"]!.join("\n");
+    const two = printed["channel-2"]!.join("\n");
+    expect(one).toContain("You are Yuki.");
+    expect(one).not.toContain("Mika");
+    expect(two).toContain("The other character here is Mika, who writes their own messages; you write only yours.");
+  });
+
+  it("redacts DM-origin memory lines from a printed prompt", () => {
+    const debug = {
+      system: "<harness>…</harness>",
+      header: [
+        "<memories>",
+        "- Kevin: allergic to peanuts (fact · learned in Bake Club #general · 3 weeks ago)",
+        "- Kevin is moving to Osaka (fact · learned in a private chat with Kevin · 5 days ago)",
+        "</memories>"
+      ].join("\n"),
+      transcript: "[14:02 #a0] Mina: hi\n<memory_note>Mina is pregnant (fact · learned in a private chat with Mina · 2 days ago)</memory_note>",
+      tail: "Now: …"
+    };
+    const redacted = redactPrivateMemories(debug);
+    expect(redacted.header).toContain("allergic to peanuts");
+    expect(redacted.header).not.toContain("Osaka");
+    expect(redacted.transcript).not.toContain("pregnant");
+    expect(redacted.header).toContain("- (a memory from a private chat — not shown here)");
+    expect(redacted.system).toBe(debug.system);
+    expect(redacted.tail).toBe(debug.tail);
   });
 
   it("prints model-visible memories for the selected waifu in the current guild and channel", async () => {
@@ -4200,9 +4454,19 @@ describe("RuntimeOrchestrator", () => {
             {
               id: "other-guild",
               waifuId: "yuki",
-              guildId: "guild-2",
+              origin: { guildId: "guild-2" },
               content: "Other guild memory.",
               strength: 2,
+              createdAt,
+              updatedAt: createdAt,
+              status: "active"
+            },
+            {
+              id: "private-chat",
+              waifuId: "yuki",
+              origin: { dm: true },
+              content: "Secret told in a DM.",
+              strength: 3,
               createdAt,
               updatedAt: createdAt,
               status: "active"
@@ -4297,22 +4561,23 @@ describe("RuntimeOrchestrator", () => {
     expect(responses).toEqual(["Printed memories for Yuki."]);
     const printed = discord.debugMessages.map((message) => message.content).join("\n");
     expect(printed).toContain("## Memories (Yuki)");
-    // Full listing with status/kind flags — active AND archived, same guild only.
-    expect(printed).toContain("- [fact|active|s3]");
-    expect(printed).toContain("Yuki knows Kevin likes green tea.");
-    expect(printed).toContain("Yuki always remembers Kevin is allergic to peanuts.");
+    // Full listing with status flags — active AND archived, every guild (memories are global).
+    expect(printed).toContain("[active|s3] Yuki knows Kevin likes green tea (fact · just now)");
+    expect(printed).toContain("Yuki always remembers Kevin is allergic to peanuts");
     expect(printed).toContain("pinned");
-    expect(printed).toContain("Kevin is leaving at 5pm.");
-    expect(printed).toContain("Other channel short-term memory.");
+    expect(printed).toContain("Kevin is leaving at 5pm (note");
+    expect(printed).toContain("Other channel short-term memory");
     // Archived records in the SAME guild now appear, flagged as archived.
-    expect(printed).toContain("Archived current guild memory.");
-    expect(printed).toContain("[fact|archived|s2]");
+    expect(printed).toContain("Archived current guild memory");
+    expect(printed).toContain("[archived|s2]");
     // Expired notes appear too, flagged — this is the everything view.
-    expect(printed).toContain("Expired short-term memory.");
-    expect(printed).toMatch(/\[context\|active\|expired[^\]]*\]/);
-    // Other guilds stay invisible.
-    expect(printed).not.toContain("Other guild memory.");
-    expect(printed).not.toContain("Mika-only memory.");
+    expect(printed).toContain("Expired short-term memory");
+    expect(printed).toMatch(/\[active\|expired[^\]]*\]/);
+    // Other guilds are visible; DM-origin memories never print into a guild channel.
+    expect(printed).toContain("Other guild memory");
+    expect(printed).not.toContain("Secret told in a DM");
+    expect(printed).toContain("(1 memory from private chats not shown)");
+    expect(printed).not.toContain("Mika-only memory");
   });
 
   it("prints the selected waifu raw personality", async () => {
@@ -4360,7 +4625,7 @@ describe("RuntimeOrchestrator", () => {
     expect(printed).not.toContain("You are Mika");
   });
 
-  it("prints personality as raw persona plus trailing-anchor summary blocks", async () => {
+  it("prints personality as raw persona plus persona digest blocks", async () => {
     const root = await makeTempRoot();
     roots.push(root);
     await ensureDataLayout(root);
@@ -4410,7 +4675,7 @@ describe("RuntimeOrchestrator", () => {
     const joined = discord.debugMessages.map((m) => m.content).join("\n");
     expect(joined).toContain("Personality block 1 — raw persona (Yuki)");
     expect(joined).toContain("kind and bubbly");
-    expect(joined).toContain("Personality block 2 — trailing-anchor summary (Yuki)");
+    expect(joined).toContain("Personality block 2 — persona digest (Yuki)");
     expect(joined).toContain("Voice: Speaks warmly and briefly.");
     expect(joined).toContain("Drives: Gentle energy.");
   });
@@ -4461,8 +4726,8 @@ describe("RuntimeOrchestrator", () => {
 
     const joined = discord.debugMessages.map((m) => m.content).join("\n");
     expect(joined).toContain("2 total (1 active, 1 archived)");
-    expect(joined).toContain("Kevin likes tea.");
-    expect(joined).toContain("Old trivia about socks.");
+    expect(joined).toContain("Kevin likes tea");
+    expect(joined).toContain("Old trivia about socks");
     expect(joined).toContain("archived");
   });
 
@@ -4504,7 +4769,7 @@ describe("RuntimeOrchestrator", () => {
     });
     await waitFor(() => early.length === 1, "early system prompt print");
     const earlyJoined = discord.debugMessages.map((m) => m.content).join("\n");
-    expect(earlyJoined).toContain("has not replied since the backend started");
+    expect(earlyJoined).toContain("has not replied in this channel since the backend started");
 
     discord.debugMessages.length = 0;
     await runtime.triggerChannel("guild-1", "channel-1", "manual");
@@ -4520,7 +4785,9 @@ describe("RuntimeOrchestrator", () => {
 
     const lateJoined = discord.debugMessages.map((m) => m.content).join("\n");
     expect(lateJoined).toContain("Captured from Yuki's last reply at");
-    expect(lateJoined).toContain("System prompt block 1 (Yuki)");
+    expect(lateJoined).toContain("## System prompt (Yuki)");
+    expect(lateJoined).toContain("## Transcript (Yuki)");
+    expect(lateJoined).toContain("## Tail (Yuki)");
     expect(lateJoined).toContain("You are Yuki");
   });
 
@@ -4814,6 +5081,221 @@ describe("RuntimeOrchestrator", () => {
     expect(responses).toEqual(["Started orchestrator run."]);
   });
 
+  it("enforces reply-required in code: a manual pass that pauses still gets a voice", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.contexts = [[contextMessage("m1", "user", "Kevin", "hello")]];
+    const tails: string[] = [];
+    const tools: string[] = [];
+    const pipeline: ModelPipeline = {
+      async generateWaifu() {
+        return { content: "forced hello" };
+      },
+      async decideOrchestrator(request) {
+        tails.push(request.prompt!.debug.tail);
+        tools.push(JSON.stringify(request.prompt!.tools));
+        return { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 300, wakePlan: "wait", reasoning: "too quiet" };
+      }
+    };
+    await seedRuntimeConfig(storage);
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 2,
+      createPipeline: () => pipeline,
+      logger: quietLogger()
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1", "manual", { firstOrchestratorMustReply: true });
+    await runtime.stop();
+
+    expect(tails[0]).toContain("Reply required: yes.");
+    expect(tails[1]).toContain("Reply required: no.");
+    // The schema never changes with the per-pass state (prefix stability).
+    expect(tools[1]).toBe(tools[0]);
+    expect(discord.sent.map((message) => [message.senderBotId, message.content])).toEqual([["yuki-bot", "forced hello"]]);
+    const history = await readTestHistory(storage);
+    const forced = history.decisions.find((entry) => entry.action === "reply");
+    expect(forced?.respondingWaifus.map((responder) => responder.waifuId)).toEqual(["yuki"]);
+    expect(forced?.reasoning).toContain("reply required");
+  });
+
+  // T7b call-site contract: the director's summarizer mirrors its decision call.
+  it("gives the director's context its own-model summarizer (forced tool choice, attribution with conversationKey)", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.contexts = [[contextMessage("m1", "user", "Kevin", "hello")]];
+    const summarizeRequests: unknown[] = [];
+    const pipeline: ModelPipeline = {
+      async generateWaifu() {
+        return { content: "unused" };
+      },
+      async decideOrchestrator() {
+        return { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 300, wakePlan: "wait", reasoning: "quiet" };
+      },
+      async summarizeContext(request) {
+        summarizeRequests.push(request);
+        return { text: "summary" };
+      }
+    };
+    await seedRuntimeConfig(storage);
+    const runtime = new RuntimeOrchestrator({ sleep: async () => undefined, storage, discord, maxAutomaticTurns: 1, createPipeline: () => pipeline, logger: quietLogger() });
+    const prepare = vi.spyOn(runtime.contexts, "prepare");
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+    const input = prepare.mock.calls[0]![0];
+    expect(input.summarize).toBeDefined();
+    expect(input.truncateKeep).toBeUndefined();
+    await input.summarize!({ promptCacheKey: "k" } as never, "summarize please");
+    expect(summarizeRequests[0]).toMatchObject({
+      instruction: "summarize please",
+      toolChoice: { name: "orchestrator_decision" },
+      temperature: 0.2,
+      attribution: { agentId: "orchestrator", guildId: "guild-1", channelId: "channel-1", conversationKey: "g_guild-1_channel-1" }
+    });
+  });
+
+  // T5 review M6: an unusable decision on /run still produces the promised reply.
+  it("replies on a reply-required /run when the decision cannot be parsed", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.contexts = [[contextMessage("m1", "user", "Kevin", "hello")]];
+    let calls = 0;
+    const pipeline: ModelPipeline = {
+      async generateWaifu() {
+        return { content: "still here" };
+      },
+      async decideOrchestrator() {
+        calls += 1;
+        if (calls === 1) throw new GatewayPipelineError("decideOrchestrator: malformed orchestrator_decision arguments");
+        return { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 300, wakePlan: "wait", reasoning: "done" };
+      }
+    };
+    await seedRuntimeConfig(storage);
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const runtime = new RuntimeOrchestrator({ sleep: async () => undefined, storage, discord, maxAutomaticTurns: 2, createPipeline: () => pipeline, logger });
+    await runtime.triggerChannel("guild-1", "channel-1", "manual", { firstOrchestratorMustReply: true });
+    await runtime.stop();
+    expect(logger.error).not.toHaveBeenCalledWith("Channel runtime loop failed", expect.anything());
+    expect(discord.sent.map((message) => message.content)).toEqual(["still here"]);
+  });
+
+  it("still surfaces a provider failure on a reply-required /run", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.contexts = [[contextMessage("m1", "user", "Kevin", "hello")]];
+    const pipeline: ModelPipeline = {
+      async generateWaifu() {
+        return { content: "unused" };
+      },
+      async decideOrchestrator() {
+        throw new Error("network down");
+      }
+    };
+    await seedRuntimeConfig(storage);
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const runtime = new RuntimeOrchestrator({ sleep: async () => undefined, storage, discord, maxAutomaticTurns: 1, createPipeline: () => pipeline, logger });
+    await runtime.triggerChannel("guild-1", "channel-1", "manual", { firstOrchestratorMustReply: true });
+    await runtime.stop();
+    expect(logger.error).toHaveBeenCalledWith("Channel runtime loop failed", expect.objectContaining({ message: "network down" }));
+    expect(discord.sent).toEqual([]);
+  });
+
+  // T5 review I2: policy 2 is enforced as the prompt states it, with no cadence precondition.
+  it("overrides a pause on a waiting human's fresh message, without any cadence signal", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    const fresh = new Date(Date.now() - 2 * 60_000).toISOString();
+    discord.contexts = [[{ ...contextMessage("m1", "user", "Kevin", "Yuki, you around?"), timestamp: fresh }]];
+    const pipeline: ModelPipeline = {
+      async generateWaifu() {
+        return { content: "yep!" };
+      },
+      async decideOrchestrator() {
+        return { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 300, wakePlan: "wait", reasoning: "let it breathe" };
+      }
+    };
+    await seedRuntimeConfig(storage);
+    // Always available, whatever the host clock says (the structural decider reads her schedule).
+    const yuki = await storage.readJson("user/waifus/yuki/waifu.json", WaifuConfigSchema);
+    await storage.writeJson("waifu:yuki", "user/waifus/yuki/waifu.json", WaifuConfigSchema, {
+      ...yuki,
+      availability: { sleep: { enabled: false, start: "00:00", end: "00:00" }, busy: [] }
+    });
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const runtime = new RuntimeOrchestrator({ sleep: async () => undefined, storage, discord, maxAutomaticTurns: 1, createPipeline: () => pipeline, logger });
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+    expect(logger.warn).toHaveBeenCalledWith(
+      "Waiting-human override: the model paused on a human's message; deterministic reply used",
+      expect.anything()
+    );
+    expect(discord.sent.map((message) => message.content)).toEqual(["yep!"]);
+  });
+
+  it("leaves a pause alone when the human's message is older than 15 minutes", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    const stale = new Date(Date.now() - 40 * 60_000).toISOString();
+    discord.contexts = [[{ ...contextMessage("m1", "user", "Kevin", "Yuki, you around?"), timestamp: stale }]];
+    const pipeline: ModelPipeline = {
+      async generateWaifu() {
+        return { content: "unused" };
+      },
+      async decideOrchestrator() {
+        return { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 300, wakePlan: "wait", reasoning: "quiet" };
+      }
+    };
+    await seedRuntimeConfig(storage);
+    const runtime = new RuntimeOrchestrator({ sleep: async () => undefined, storage, discord, maxAutomaticTurns: 1, createPipeline: () => pipeline, logger: quietLogger() });
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+    expect(discord.sent).toEqual([]);
+  });
+
+  // T5 review M5: without a config file the director backfills 20 messages (the API default).
+  it("backfills the API's default 20 messages when the orchestrator has no config file", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.contexts = [
+      Array.from({ length: 30 }, (_, i) => ({
+        ...contextMessage(`m${i}`, "user", "Kevin", `message ${i}`),
+        timestamp: new Date(Date.parse("2026-05-16T12:00:00Z") + i * 60_000).toISOString()
+      }))
+    ];
+    await seedRuntimeConfig(storage);
+    await rm(path.join(root, "user", "orchestrator", "config.json"), { force: true });
+    const runtime = new RuntimeOrchestrator({ sleep: async () => undefined, storage, discord, maxAutomaticTurns: 1, createPipeline: () => new FakePipeline(), logger: quietLogger() });
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+    const state = JSON.parse(
+      await readFile(path.join(root, "user", "conversations", "g_guild-1_channel-1", "contexts", "orchestrator.json"), "utf8")
+    ) as { cursorSeq: number };
+    expect(state.cursorSeq).toBe(10);
+  });
+
   it("runs a selected waifu first from /run, preserves scene direction and handoffs, then resumes orchestration", async () => {
     const root = await makeTempRoot();
     roots.push(root);
@@ -4834,15 +5316,15 @@ describe("RuntimeOrchestrator", () => {
     const waifuCalls: string[] = [];
     const pipeline: ModelPipeline = {
       async generateWaifu(request) {
-        if (request.systemPrompt.includes("You are Mika")) {
+        if (promptOf(request).debug.system.includes("You are Mika")) {
           waifuCalls.push("mika");
-          expect(request.trailingSystemBlock).toContain(
+          expect(promptText(request)).toContain(
             expectedDirectorNote("start topic")
           );
           return { content: "mika first", pickedNextWaifuId: "yuki" };
         }
         waifuCalls.push("yuki");
-        expect(request.trailingSystemBlock ?? "").not.toMatch(/<director_note>/);
+        expect(promptOf(request).debug.transcript).not.toMatch(/<direction>/);
         return { content: "yuki next" };
       },
       async decideOrchestrator(request) {
@@ -5062,11 +5544,8 @@ describe("RuntimeOrchestrator", () => {
         };
       },
       async generateWaifu(request) {
-        const waifuId = request.systemPrompt.includes("You are Mika") ? "mika" : "yuki";
-        const directiveMatch = request.trailingSystemBlock?.match(
-          /<director_note>\nDirector's goal for this one message: ([^\n]+)\n/
-        );
-        waifuCalls.push({ waifuId, directiveText: directiveMatch?.[1] });
+        const waifuId = promptOf(request).debug.system.includes("You are Mika") ? "mika" : "yuki";
+        waifuCalls.push({ waifuId, directiveText: latestDirection(request) });
         if (waifuCalls.length === 2) {
           resolveGenerated();
         }
@@ -5119,7 +5598,7 @@ describe("RuntimeOrchestrator", () => {
       ])
     ]);
 
-    const history = await storage.readJson("user/orchestrator/history.json", OrchestratorHistoryFileSchema);
+    const history = await readTestHistory(storage);
     await runtime.stop();
 
     expect(responses).toEqual(["Started orchestrator run with scene direction."]);
@@ -5395,6 +5874,8 @@ describe("RuntimeOrchestrator", () => {
     }
 
     await seedRuntimeConfig(storage);
+    // Three lines fit the chatty profile (terse allows two).
+    await setWaifuVerbosity(storage, "yuki", "chatty");
 
     const pipeline = new MultiChunkPipeline();
     const runtime = new RuntimeOrchestrator({
@@ -5467,6 +5948,8 @@ describe("RuntimeOrchestrator", () => {
     }
 
     await seedRuntimeConfig(storage);
+    // Four lines fit the expressive profile.
+    await setWaifuVerbosity(storage, "yuki", "expressive");
 
     const pipeline = new FullChunkPipeline();
     const runtime = new RuntimeOrchestrator({
@@ -5554,7 +6037,7 @@ describe("RuntimeOrchestrator", () => {
     expect(discord.sent[0].replyToMessageId).toBe("m1");
   });
 
-  it("derives the reply target from a leading `>` quote in the waifu output", async () => {
+  it("derives the reply target from a leading ↩#ref marker in the waifu output", async () => {
     const root = await makeTempRoot();
     roots.push(root);
     await ensureDataLayout(root);
@@ -5582,7 +6065,7 @@ describe("RuntimeOrchestrator", () => {
         { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, reasoning: "done" }
       ];
       async generateWaifu() {
-        return { content: "> Kevin: older question\nhere is the answer" };
+        return { content: "↩#a0 here is the answer" };
       }
       async decideOrchestrator() {
         const next = this.decisions.shift();
@@ -5614,67 +6097,7 @@ describe("RuntimeOrchestrator", () => {
     expect(discord.sent[0].content).toBe("here is the answer");
   });
 
-  it("salvages an implicit `Name: text` quote (missing `>`) into a real Discord reply", async () => {
-    const root = await makeTempRoot();
-    roots.push(root);
-    await ensureDataLayout(root);
-    const storage = new StorageService(root);
-    const discord = new FakeDiscord();
-    discord.contexts = [
-      [
-        contextMessage("m1", "user", "Kevin", "hello there"),
-        contextMessage("m2", "user", "Kevin", "anyone home")
-      ],
-      [
-        contextMessage("m1", "user", "Kevin", "hello there"),
-        contextMessage("m2", "user", "Kevin", "anyone home")
-      ],
-      [contextMessage("m3", "waifu", "Yuki", "done")]
-    ];
-
-    class ImplicitQuotePipeline implements ModelPipeline {
-      decisions: OrchestratorDecision[] = [
-        {
-          action: "reply",
-          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0, directive: { intent: "spotlight", goal: "answer" } }],
-          reasoning: "Yuki replies with an implicit quote."
-        },
-        { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, reasoning: "done" }
-      ];
-      async generateWaifu() {
-        return { content: "Kevin: hello there\nthats your victory lap" };
-      }
-      async decideOrchestrator() {
-        const next = this.decisions.shift();
-        if (!next) throw new Error("no decision");
-        return next;
-      }
-    }
-
-    await seedRuntimeConfig(storage);
-
-    const runtime = new RuntimeOrchestrator({
-      sleep: async () => undefined,
-      storage,
-      discord,
-      maxAutomaticTurns: 3,
-      createPipeline: () => new ImplicitQuotePipeline(),
-      logger: {
-        debug: () => undefined,
-        info: () => undefined,
-        warn: () => undefined,
-        error: () => undefined
-      }
-    });
-
-    await runtime.triggerChannel("guild-1", "channel-1");
-    await runtime.stop();
-
-    expect(discord.sent[0].replyToMessageId).toBe("m1");
-    expect(discord.sent[0].content).toBe("thats your victory lap");
-  });
-
-  it("derives the reply target from the preferred `replying to >` quote in waifu output", async () => {
+  it("strips an unknown ↩#ref marker and sends unthreaded", async () => {
     const root = await makeTempRoot();
     roots.push(root);
     await ensureDataLayout(root);
@@ -5702,7 +6125,7 @@ describe("RuntimeOrchestrator", () => {
         { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, reasoning: "done" }
       ];
       async generateWaifu() {
-        return { content: "replying to > K: older question\nthats your victory lap" };
+        return { content: "↩#zz9 thats your victory lap" };
       }
       async decideOrchestrator() {
         const next = this.decisions.shift();
@@ -5730,75 +6153,11 @@ describe("RuntimeOrchestrator", () => {
     await runtime.triggerChannel("guild-1", "channel-1");
     await runtime.stop();
 
-    expect(discord.sent[0].replyToMessageId).toBe("m1");
+    expect(discord.sent[0].replyToMessageId).toBeUndefined();
     expect(discord.sent[0].content).toBe("thats your victory lap");
   });
 
-  it("strips an embedded hallucinated reply control without creating a Discord reply", async () => {
-    const root = await makeTempRoot();
-    roots.push(root);
-    await ensureDataLayout(root);
-    const storage = new StorageService(root);
-    const discord = new FakeDiscord();
-    discord.contexts = [
-      [contextMessage("m1", "user", "K", "You guys talk a lot", undefined, { authorId: "k-user" })],
-      [contextMessage("m1", "user", "K", "You guys talk a lot", undefined, { authorId: "k-user" })],
-      [contextMessage("m2", "waifu", "Yuki", "done")]
-    ];
-
-    class HallucinatedEmbeddedQuotePipeline implements ModelPipeline {
-      decisions: OrchestratorDecision[] = [
-        {
-          action: "reply",
-          respondingWaifus: [
-            { waifuId: "yuki", delaySeconds: 0, directive: { intent: "spotlight", goal: "answer" } }
-          ],
-          reasoning: "Yuki answers without a real reply target."
-        },
-        { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, reasoning: "done" }
-      ];
-      async generateWaifu() {
-        const repeated = "fr babe i knew u were up to something 💀";
-        return {
-          content:
-            `${repeated}\n` +
-            "replying to > K: bro been getting caught up in too much po\n" +
-            repeated
-        };
-      }
-      async decideOrchestrator() {
-        const next = this.decisions.shift();
-        if (!next) throw new Error("no decision");
-        return next;
-      }
-    }
-
-    await seedRuntimeConfig(storage);
-
-    const pipeline = new HallucinatedEmbeddedQuotePipeline();
-    const runtime = new RuntimeOrchestrator({
-      sleep: async () => undefined,
-      storage,
-      discord,
-      maxAutomaticTurns: 3,
-      createPipeline: () => pipeline,
-      logger: {
-        debug: () => undefined,
-        info: () => undefined,
-        warn: () => undefined,
-        error: () => undefined
-      }
-    });
-
-    await runtime.triggerChannel("guild-1", "channel-1");
-    await runtime.stop();
-
-    expect(discord.sent).toHaveLength(1);
-    expect(discord.sent[0].content).toBe("fr babe i knew u were up to something 💀");
-    expect(discord.sent[0].replyToMessageId).toBeUndefined();
-  });
-
-  it("strips recent human speaker impersonation lines and includes human names in stop sequences", async () => {
+  it("strips recent human speaker impersonation lines; stop sequences are the header guard plus her name", async () => {
     const root = await makeTempRoot();
     roots.push(root);
     await ensureDataLayout(root);
@@ -5860,7 +6219,7 @@ describe("RuntimeOrchestrator", () => {
     expect(discord.sent.map((message) => message.content)).toEqual([
       "There was a pause that lasted indefinite."
     ]);
-    expect(pipeline.receivedStopSequences).toEqual(expect.arrayContaining(["\nYuki:", "\nK:"]));
+    expect(pipeline.receivedStopSequences).toEqual(["\n[", "\nYuki:"]);
   });
 
   it("strips an indented human speaker block before sending to Discord", async () => {
@@ -5952,91 +6311,7 @@ describe("RuntimeOrchestrator", () => {
 
     expect(discord.sent.map((message) => message.content)).toEqual(["actual reply"]);
     expect(discord.sent[0].replyToMessageId).toBeUndefined();
-    expect(receivedStopSequences).toEqual(expect.arrayContaining(["\nMira:"]));
-  });
-
-  it("strips a nonexistent preferred reply directive and sends the remaining body normally", async () => {
-    const root = await makeTempRoot();
-    roots.push(root);
-    await ensureDataLayout(root);
-    const storage = new StorageService(root);
-    const discord = new FakeDiscord();
-    discord.contexts = [
-      [contextMessage("m1", "user", "Kevin", "real message")],
-      [contextMessage("m1", "user", "Kevin", "real message")]
-    ];
-
-    const pipeline: ModelPipeline = {
-      async decideOrchestrator() {
-        return {
-          action: "reply",
-          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }],
-          reasoning: "Yuki answers."
-        };
-      },
-      async generateWaifu() {
-        return { content: "replying to > Ghost: message that never existed\nclean body" };
-      }
-    };
-
-    await seedRuntimeConfig(storage);
-
-    const runtime = new RuntimeOrchestrator({
-      sleep: async () => undefined,
-      storage,
-      discord,
-      maxAutomaticTurns: 1,
-      createPipeline: () => pipeline,
-      logger: quietLogger()
-    });
-
-    await runtime.triggerChannel("guild-1", "channel-1");
-    await runtime.stop();
-
-    expect(discord.sent.map((message) => message.content)).toEqual(["clean body"]);
-    expect(discord.sent[0].replyToMessageId).toBeUndefined();
-  });
-
-  it("strips an unmatched blockquote reply directive and sends the remaining body normally", async () => {
-    const root = await makeTempRoot();
-    roots.push(root);
-    await ensureDataLayout(root);
-    const storage = new StorageService(root);
-    const discord = new FakeDiscord();
-    discord.contexts = [
-      [contextMessage("m1", "user", "Kevin", "real message")],
-      [contextMessage("m1", "user", "Kevin", "real message")]
-    ];
-
-    const pipeline: ModelPipeline = {
-      async decideOrchestrator() {
-        return {
-          action: "reply",
-          respondingWaifus: [{ waifuId: "yuki", delaySeconds: 0 }],
-          reasoning: "Yuki answers."
-        };
-      },
-      async generateWaifu() {
-        return { content: "> fabricated message that never existed\nclean body" };
-      }
-    };
-
-    await seedRuntimeConfig(storage);
-
-    const runtime = new RuntimeOrchestrator({
-      sleep: async () => undefined,
-      storage,
-      discord,
-      maxAutomaticTurns: 1,
-      createPipeline: () => pipeline,
-      logger: quietLogger()
-    });
-
-    await runtime.triggerChannel("guild-1", "channel-1");
-    await runtime.stop();
-
-    expect(discord.sent.map((message) => message.content)).toEqual(["clean body"]);
-    expect(discord.sent[0].replyToMessageId).toBeUndefined();
+    expect(receivedStopSequences).toEqual(["\n[", "\nYuki:"]);
   });
 
   it("omits an orchestrator-provided reply target that is not in fetched context", async () => {
@@ -6088,7 +6363,7 @@ describe("RuntimeOrchestrator", () => {
     expect(discord.sent[0].replyToMessageId).toBeUndefined();
   });
 
-  it("strips a leading other-waifu name prefix and passes participant stop sequences", async () => {
+  it("strips an other-waifu impersonation line; stop sequences stay the header guard plus her name", async () => {
     const root = await makeTempRoot();
     roots.push(root);
     await ensureDataLayout(root);
@@ -6176,7 +6451,7 @@ describe("RuntimeOrchestrator", () => {
     await runtime.stop();
 
     expect(discord.sent.map((message) => message.content)).toEqual(["hello there", "okay"]);
-    expect(pipeline.receivedStopSequences).toEqual(expect.arrayContaining(["\nYuki:", "\nMika:"]));
+    expect(pipeline.receivedStopSequences).toEqual(["\n[", "\nYuki:"]);
   });
 
   it("retries once when the entire reply is stripped as impersonation, and sends the recovered reply", async () => {
@@ -6244,7 +6519,7 @@ describe("RuntimeOrchestrator", () => {
       ];
       async generateWaifu(request: WaifuGenerationRequest) {
         this.waifuCalls += 1;
-        this.retryUserMessages.push(request.retryUserMessage);
+        this.retryUserMessages.push(retryNoteOf(request));
         if (this.waifuCalls === 1) {
           return { content: "Mika: i meant to let Yuki go first" };
         }
@@ -6280,7 +6555,7 @@ describe("RuntimeOrchestrator", () => {
     await runtime.stop();
 
     expect(pipeline.waifuCalls).toBe(3);
-    expect(pipeline.retryUserMessages).toEqual([undefined, "Yuki:", undefined]);
+    expect(pipeline.retryUserMessages).toEqual([undefined, expect.stringContaining("Your last draft was rejected"), undefined]);
     expect(discord.sent.map((m) => m.content)).toEqual([
       "oh wait that was me sorry",
       "I can add something too"
@@ -6288,171 +6563,10 @@ describe("RuntimeOrchestrator", () => {
     expect(warnings).toContainEqual(
       expect.objectContaining({
         message: "Waifu reply was entirely removed during cleaning; retrying once",
-        meta: expect.objectContaining({
-          waifuId: "yuki",
-          metadataStripped: false,
-          replyQuoteExtracted: false,
-          impersonationStripped: true
-        })
+        meta: expect.objectContaining({ waifuId: "yuki" })
       })
     );
     expect(warnings.some((w) => w.message === "Waifu reply was empty after cleaning; nothing sent")).toBe(false);
-  });
-
-  it("retries once when reply-quote extraction removes the entire reply, and sends the recovered reply", async () => {
-    const root = await makeTempRoot();
-    roots.push(root);
-    await ensureDataLayout(root);
-    const storage = new StorageService(root);
-    const discord = new FakeDiscord();
-    const quotedContent = "back off riko nobody asked for your commentary fr";
-    discord.contexts = [
-      [contextMessage("m1", "waifu", "Aria", quotedContent)],
-      [contextMessage("m1", "waifu", "Aria", quotedContent)],
-      [contextMessage("m2", "waifu", "Stupid hoe", "I have my own reply")]
-    ];
-
-    await seedRuntimeConfig(storage);
-    await seedWaifu(storage, "stupid-hoe", "Stupid hoe", "stupid-hoe-bot", "blunt");
-    await enableWaifus(storage, ["stupid-hoe"]);
-
-    class QuoteOnlyRetryPipeline implements ModelPipeline {
-      waifuCalls = 0;
-      retryUserMessages: Array<string | undefined> = [];
-      decisions: OrchestratorDecision[] = [
-        {
-          action: "reply",
-          respondingWaifus: [
-            { waifuId: "stupid-hoe", delaySeconds: 0, directive: { intent: "spotlight", goal: "answer" } }
-          ],
-          reasoning: "Stupid hoe answers."
-        },
-        { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, reasoning: "done" }
-      ];
-      async generateWaifu(request: WaifuGenerationRequest) {
-        this.waifuCalls += 1;
-        this.retryUserMessages.push(request.retryUserMessage);
-        return this.waifuCalls === 1
-          ? { content: `Aria: ${quotedContent}` }
-          : { content: "I have my own reply" };
-      }
-      async decideOrchestrator() {
-        const next = this.decisions.shift();
-        if (!next) throw new Error("no decision");
-        return next;
-      }
-    }
-
-    const pipeline = new QuoteOnlyRetryPipeline();
-    const warnings: Array<{ message: string; meta?: Record<string, unknown> }> = [];
-    const runtime = new RuntimeOrchestrator({
-      sleep: async () => undefined,
-      storage,
-      discord,
-      maxAutomaticTurns: 3,
-      createPipeline: () => pipeline,
-      logger: {
-        debug: () => undefined,
-        info: () => undefined,
-        warn: (message, meta) => warnings.push({ message, meta }),
-        error: () => undefined
-      }
-    });
-
-    await runtime.triggerChannel("guild-1", "channel-1");
-    await runtime.stop();
-
-    expect(pipeline.waifuCalls).toBe(2);
-    expect(pipeline.retryUserMessages).toEqual([undefined, "Stupid hoe:"]);
-    expect(discord.sent.map((message) => message.content)).toEqual(["I have my own reply"]);
-    expect(warnings).toContainEqual(
-      expect.objectContaining({
-        message: "Waifu reply was entirely removed during cleaning; retrying once",
-        meta: expect.objectContaining({
-          waifuId: "stupid-hoe",
-          metadataStripped: false,
-          replyQuoteExtracted: true,
-          impersonationStripped: false
-        })
-      })
-    );
-    expect(warnings.some((warning) => warning.message === "Waifu reply was empty after cleaning; nothing sent"))
-      .toBe(false);
-  });
-
-  it("gives up after one retry when both replies contain only a matching reply quote", async () => {
-    const root = await makeTempRoot();
-    roots.push(root);
-    await ensureDataLayout(root);
-    const storage = new StorageService(root);
-    const discord = new FakeDiscord();
-    const quotedContent = "back off riko nobody asked for your commentary fr";
-    discord.contexts = [
-      [contextMessage("m1", "waifu", "Aria", quotedContent)],
-      [contextMessage("m1", "waifu", "Aria", quotedContent)],
-      [contextMessage("m1", "waifu", "Aria", quotedContent)]
-    ];
-
-    await seedRuntimeConfig(storage);
-    await seedWaifu(storage, "stupid-hoe", "Stupid hoe", "stupid-hoe-bot", "blunt");
-    await enableWaifus(storage, ["stupid-hoe"]);
-
-    class AlwaysQuotesPipeline implements ModelPipeline {
-      waifuCalls = 0;
-      retryUserMessages: Array<string | undefined> = [];
-      decisions: OrchestratorDecision[] = [
-        {
-          action: "reply",
-          respondingWaifus: [
-            { waifuId: "stupid-hoe", delaySeconds: 0, directive: { intent: "spotlight", goal: "answer" } }
-          ],
-          reasoning: "Stupid hoe answers."
-        },
-        { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, reasoning: "done" }
-      ];
-      async generateWaifu(request: WaifuGenerationRequest) {
-        this.waifuCalls += 1;
-        this.retryUserMessages.push(request.retryUserMessage);
-        return { content: `Aria: ${quotedContent}` };
-      }
-      async decideOrchestrator() {
-        const next = this.decisions.shift();
-        if (!next) throw new Error("no decision");
-        return next;
-      }
-    }
-
-    const pipeline = new AlwaysQuotesPipeline();
-    const warnings: Array<{ message: string; meta?: Record<string, unknown> }> = [];
-    const runtime = new RuntimeOrchestrator({
-      sleep: async () => undefined,
-      storage,
-      discord,
-      maxAutomaticTurns: 3,
-      createPipeline: () => pipeline,
-      logger: {
-        debug: () => undefined,
-        info: () => undefined,
-        warn: (message, meta) => warnings.push({ message, meta }),
-        error: () => undefined
-      }
-    });
-
-    await runtime.triggerChannel("guild-1", "channel-1");
-    await runtime.stop();
-
-    expect(pipeline.waifuCalls).toBe(2);
-    expect(pipeline.retryUserMessages).toEqual([undefined, "Stupid hoe:"]);
-    expect(discord.sent).toEqual([]);
-    expect(warnings).toContainEqual(
-      expect.objectContaining({
-        message: "Waifu reply was empty after cleaning; nothing sent",
-        meta: expect.objectContaining({
-          waifuId: "stupid-hoe",
-          attempts: 2
-        })
-      })
-    );
   });
 
   it("gives up after one retry when the second attempt is also full impersonation", async () => {
@@ -6577,7 +6691,7 @@ describe("RuntimeOrchestrator", () => {
         };
       },
       async generateWaifu(request) {
-        if (request.systemPrompt.includes("You are Yuki")) {
+        if (promptOf(request).debug.system.includes("You are Yuki")) {
           yukiAttempts += 1;
           return { content: `Mika: impersonation attempt ${yukiAttempts}` };
         }
@@ -6599,7 +6713,7 @@ describe("RuntimeOrchestrator", () => {
 
     expect(yukiAttempts).toBe(2);
     expect(discord.sent.map((message) => message.content)).toEqual(["Mika still responds."]);
-    const history = await storage.readJson("user/orchestrator/history.json", OrchestratorHistoryFileSchema);
+    const history = await readTestHistory(storage);
     const decision = history.decisions.find((entry) => entry.action === "reply");
     expect(decision?.status).toBe("completed");
     expect(decision?.responderOutcomes.map((outcome) => ({
@@ -6645,9 +6759,9 @@ describe("RuntimeOrchestrator", () => {
       async generateWaifu(request: WaifuGenerationRequest) {
         attempts += 1;
         if (attempts === 2) {
-          retryMessageOnAttempt2 = request.retryUserMessage;
+          retryMessageOnAttempt2 = retryNoteOf(request);
         }
-        return { content: "<director_note>goal</director_note>" };
+        return { content: "<direction>goal</direction>" };
       }
     };
 
@@ -6667,7 +6781,7 @@ describe("RuntimeOrchestrator", () => {
     expect(discord.sent).toEqual([]);
     expect(retryMessageOnAttempt2).toContain("rejected");
 
-    const history = await storage.readJson("user/orchestrator/history.json", OrchestratorHistoryFileSchema);
+    const history = await readTestHistory(storage);
     const decision = history.decisions.find((entry) => entry.action === "reply");
     expect(decision?.status).toBe("completed");
     expect(decision?.responderOutcomes.map((outcome) => ({
@@ -6699,7 +6813,7 @@ describe("RuntimeOrchestrator", () => {
       async generateWaifu() {
         attempts += 1;
         return attempts === 1
-          ? { content: "<director_note>goal</director_note>" }
+          ? { content: "<direction>goal</direction>" }
           : { content: "sure, sounds good" };
       }
     };
@@ -6719,7 +6833,7 @@ describe("RuntimeOrchestrator", () => {
     expect(attempts).toBe(2);
     expect(discord.sent.map((message) => message.content)).toEqual(["sure, sounds good"]);
 
-    const history = await storage.readJson("user/orchestrator/history.json", OrchestratorHistoryFileSchema);
+    const history = await readTestHistory(storage);
     const decision = history.decisions.find((entry) => entry.action === "reply");
     expect(decision?.responderOutcomes.map((outcome) => outcome.status)).toEqual(["sent"]);
   });
@@ -6763,7 +6877,7 @@ describe("RuntimeOrchestrator", () => {
     expect(attempts).toBe(1);
     expect(discord.sent).toEqual([]);
 
-    const history = await storage.readJson("user/orchestrator/history.json", OrchestratorHistoryFileSchema);
+    const history = await readTestHistory(storage);
     const decision = history.decisions.find((entry) => entry.action === "reply");
     expect(decision?.responderOutcomes[0]?.status).toBe("blocked");
     expect(decision?.responderOutcomes[0]?.reason).toContain("mass-ping");
@@ -6831,7 +6945,7 @@ describe("RuntimeOrchestrator", () => {
     });
   });
 
-  it("includes the directive-restatement line in the reviewer system prompt", async () => {
+  it("sends the reviewer one message and no custom prompt when none is configured", async () => {
     const root = await makeTempRoot();
     roots.push(root);
     await ensureDataLayout(root);
@@ -6845,7 +6959,7 @@ describe("RuntimeOrchestrator", () => {
     ];
 
     await seedRuntimeConfig(storage);
-    // Clear the seeded reviewer prompt so the runtime falls back to DEFAULT_REVIEWER_PROMPT.
+    // Clear the seeded reviewer prompt: the fixed instruction (tools.ts) needs no default text.
     await storage.writeJson(
       "reviewer",
       "user/reviewer/config.json",
@@ -6860,13 +6974,13 @@ describe("RuntimeOrchestrator", () => {
       })
     );
 
-    let reviewerSystemPrompt = "";
+    let reviewerRequest: (ProviderRequest & { message: string; authorName?: string }) | undefined;
     const pipeline: ModelPipeline = {
       async generateWaifu() {
         return { content: "unused" };
       },
       async decideReviewer(request) {
-        reviewerSystemPrompt = request.systemPrompt;
+        reviewerRequest = request;
         return { hallucination: false };
       }
     };
@@ -6882,9 +6996,8 @@ describe("RuntimeOrchestrator", () => {
     await runtime.triggerReviewer("guild-1", "channel-1", "reviewer-user");
     await runtime.stop();
 
-    expect(reviewerSystemPrompt).toContain(
-      "a message that primarily restates an instruction or goal it was given (reads as a directive, not as chat)"
-    );
+    expect(reviewerRequest).toMatchObject({ message: "hi", authorName: "Yuki" });
+    expect(reviewerRequest!.systemPrompt).toBeUndefined();
   });
 
   it("marks the active responder failed and later responders not run after a provider error", async () => {
@@ -6926,7 +7039,7 @@ describe("RuntimeOrchestrator", () => {
     await runtime.triggerChannel("guild-1", "channel-1");
     await runtime.stop();
 
-    const history = await storage.readJson("user/orchestrator/history.json", OrchestratorHistoryFileSchema);
+    const history = await readTestHistory(storage);
     const decision = history.decisions.find((entry) => entry.action === "reply");
     expect(decision?.status).toBe("failed");
     expect(decision?.responderOutcomes.map((outcome) => ({
@@ -6966,6 +7079,7 @@ describe("RuntimeOrchestrator", () => {
     }
 
     await seedRuntimeConfig(storage);
+    await setWaifuVerbosity(storage, "yuki", "chatty");
 
     const pipeline = new StubPipeline();
     const runtime = new RuntimeOrchestrator({
@@ -7045,6 +7159,7 @@ describe("RuntimeOrchestrator", () => {
     }
 
     await seedRuntimeConfig(storage);
+    await setWaifuVerbosity(storage, "yuki", "chatty");
     await seedWaifu(storage, "mika", "Mika", "mika-bot", "direct");
     await enableWaifus(storage, ["yuki", "mika"]);
 
@@ -7085,7 +7200,7 @@ describe("RuntimeOrchestrator", () => {
 
     expect(discord.sent.length).toBeLessThan(3);
     expect(discord.sent[0].content).toBe("Hi");
-    const history = await storage.readJson("user/orchestrator/history.json", OrchestratorHistoryFileSchema);
+    const history = await readTestHistory(storage);
     const interruptedDecision = history.decisions.find(
       (entry) => entry.action === "reply" && entry.status === "interrupted"
     );
@@ -7165,7 +7280,7 @@ describe("RuntimeOrchestrator", () => {
     await runtime.stop();
 
     expect(discord.sent).toEqual([]);
-    const history = await storage.readJson("user/orchestrator/history.json", OrchestratorHistoryFileSchema);
+    const history = await readTestHistory(storage);
     const decision = history.decisions.find((entry) => entry.action === "reply");
     expect(decision?.responderOutcomes).toMatchObject([
       {
@@ -7201,22 +7316,24 @@ describe("RuntimeOrchestrator", () => {
         };
       },
       async generateWaifu(request: WaifuGenerationRequest) {
-        capturedSystemPrompts.push(request.systemPrompt);
-        capturedMidBlocks.push(request.midSystemBlock);
-        capturedTrailingBlocks.push(request.trailingSystemBlock);
+        capturedSystemPrompts.push(promptOf(request).debug.system);
+        capturedMidBlocks.push(promptOf(request).debug.header);
+        capturedTrailingBlocks.push(promptText(request));
         waifuRun += 1;
         if (waifuRun === 1) {
+          const entries = [
+            "Kevin is heading out at 5pm.",
+            "Kevin prefers green tea today.",
+            "extra 3",
+            "extra 4",
+            "extra 5",
+            "extra 6 should be dropped",
+            "extra 7 should be dropped"
+          ];
           return {
             content: "noted",
-            shortTermMemoryEntries: [
-              "Kevin is heading out at 5pm.",
-              "Kevin prefers green tea today.",
-              "extra 3",
-              "extra 4",
-              "extra 5",
-              "extra 6 should be dropped",
-              "extra 7 should be dropped"
-            ]
+            toolCalls: entries.map((content, index) => ({ id: `call_mem_${index + 1}`, name: "add_memory", arguments: JSON.stringify({ content }) })),
+            shortTermMemoryEntries: entries
           };
         }
         return { content: "ok" };
@@ -7245,8 +7362,7 @@ describe("RuntimeOrchestrator", () => {
       "extra 5"
     ]);
     expect(notes[0]).toMatchObject({
-      guildId: "guild-1",
-      channelId: "channel-1",
+      origin: { guildId: "guild-1", channelId: "channel-1" },
       waifuId: "yuki",
       kind: "context",
       source: "waifu_tool",
@@ -7256,17 +7372,15 @@ describe("RuntimeOrchestrator", () => {
     await runtime.triggerChannel("guild-1", "channel-1");
     await runtime.stop();
 
+    // The system prompt (breakpoint A) and the epoch header never change mid-epoch; her own
+    // add_memory call is in the transcript as a recorded tool turn (spec 8.5).
     const secondPrompt = capturedSystemPrompts[1];
-    expect(secondPrompt).not.toMatch(/<short_term_memory>/);
-    expect(secondPrompt).not.toContain("<memories>");
-    expect(secondPrompt).not.toContain("<relevant_memories>\n");
-    expect(secondPrompt).not.toContain("<yuki_relevant_memories>\n");
-    const secondMemoriesBlock = capturedMidBlocks[1];
-    expect(secondMemoriesBlock).toBeDefined();
-    expect(secondMemoriesBlock).toMatch(/<yuki_relevant_memories>[\s\S]*Kevin is heading out at 5pm\.[\s\S]*Kevin prefers green tea today\.[\s\S]*<\/yuki_relevant_memories>/);
-    expect(secondMemoriesBlock).not.toMatch(/<short_term>/);
-    expect(secondMemoriesBlock).not.toMatch(/<long_term>/);
-    expect(capturedTrailingBlocks[1]).not.toMatch(/<yuki_relevant_memories>/);
+    expect(secondPrompt).toBe(capturedSystemPrompts[0]);
+    expect(secondPrompt).not.toContain("Kevin is heading out");
+    expect(capturedMidBlocks[1]).toBe(capturedMidBlocks[0]);
+    // Tool notes render as user-role text lines (no tool_use/tool_result blocks), with accurate results.
+    expect(capturedTrailingBlocks[1]).toContain('[tool add_memory] {"content":"Kevin is heading out at 5pm."} → saved');
+    expect(capturedTrailingBlocks[1]).toContain('[tool add_memory] {"content":"extra 6 should be dropped"} → over limit');
   });
 
   it("does not expose or persist add_memory when the server toggle is disabled", async () => {
@@ -7291,8 +7405,8 @@ describe("RuntimeOrchestrator", () => {
       },
       async generateWaifu(request: WaifuGenerationRequest) {
         checked = true;
-        expect(request.shortTermMemoryToolEnabled).toBe(false);
-        expect(request.systemPrompt).not.toContain("add_memory");
+        expect(promptOf(request).tools.some((tool) => tool.name === "add_memory")).toBe(false);
+        expect(promptOf(request).debug.system).not.toContain("add_memory");
         return {
           content: "noted",
           shortTermMemoryEntries: ["Kevin is heading out at 5pm."]
@@ -7372,9 +7486,9 @@ describe("RuntimeOrchestrator", () => {
         };
       },
       async generateWaifu(request: WaifuGenerationRequest) {
-        // Identity block: "You are {Name}, chatting..." — match the name before the comma.
-        const match = request.systemPrompt.match(/You are (\w+),/);
-        if (match) memoriesByWaifu.set(match[1], request.trailingSystemBlock);
+        // Identity block: "You are {Name}." — match the name before the period.
+        const match = promptOf(request).debug.system.match(/<identity>\nYou are (\w+)\./);
+        if (match) memoriesByWaifu.set(match[1], promptText(request));
         return { content: "ok" };
       }
     };
@@ -7449,8 +7563,8 @@ describe("RuntimeOrchestrator", () => {
         };
       },
       async generateWaifu(request: WaifuGenerationRequest) {
-        capturedSystemPrompt = request.systemPrompt;
-        capturedTrailingBlock = request.trailingSystemBlock;
+        capturedSystemPrompt = promptOf(request).debug.system;
+        capturedTrailingBlock = promptText(request);
         return {
           content: "fresh",
           shortTermMemoryEntries: ["Kevin is back from lunch."]
@@ -7520,7 +7634,7 @@ describe("RuntimeOrchestrator", () => {
         return decision;
       },
       async generateWaifu(request) {
-        waifuTrailingBlocks.push(request.trailingSystemBlock ?? "");
+        waifuTrailingBlocks.push(directionView(request));
         return { content: "ok" };
       }
     } as ModelPipeline & { decisions: OrchestratorDecision[] };
@@ -7538,11 +7652,11 @@ describe("RuntimeOrchestrator", () => {
     await runtime.stop();
 
     expect(waifuTrailingBlocks).toHaveLength(2);
-    expect(waifuTrailingBlocks[0]).toContain("director_note");
-    expect(waifuTrailingBlocks[0]).toContain("(change topic) talk about food");
-    expect(waifuTrailingBlocks[1]).not.toContain("director_note");
+    expect(waifuTrailingBlocks[0]).toContain("<direction>(change topic) talk about food</direction>");
+    // The second (stripped) directive adds no note; the first one stays in her transcript.
+    expect(waifuTrailingBlocks[1].match(/<direction>/g)).toHaveLength(1);
 
-    const history = await storage.readJson("user/orchestrator/history.json", OrchestratorHistoryFileSchema);
+    const history = await readTestHistory(storage);
     const replyDecisions = history.decisions.filter((entry) => entry.action === "reply");
     // Newest first: index 0 is the second (stripped) decision.
     expect(replyDecisions[0]?.responderOutcomes[0]?.directiveStripped).toBe("cooldown");
@@ -7575,7 +7689,7 @@ describe("RuntimeOrchestrator", () => {
         };
       },
       async generateWaifu(request) {
-        waifuTrailing = request.trailingSystemBlock ?? "";
+        waifuTrailing = directionView(request);
         return { content: "ok" };
       }
     };
@@ -7592,8 +7706,8 @@ describe("RuntimeOrchestrator", () => {
     await runtime.triggerChannel("guild-1", "channel-1");
     await runtime.stop();
 
-    expect(waifuTrailing).not.toContain("director_note");
-    const history = await storage.readJson("user/orchestrator/history.json", OrchestratorHistoryFileSchema);
+    expect(waifuTrailing).not.toContain("<direction>");
+    const history = await readTestHistory(storage);
     const reply = history.decisions.find((entry) => entry.action === "reply");
     expect(reply?.responderOutcomes[0]?.directiveStripped).toBe("over_cap");
   });
@@ -7616,7 +7730,7 @@ describe("RuntimeOrchestrator", () => {
     });
     const pipeline: ModelPipeline = {
       async generateWaifu(request) {
-        waifuTrailing = request.trailingSystemBlock ?? "";
+        waifuTrailing = directionView(request);
         resolveGenerated();
         return { content: "ok" };
       },
@@ -7649,7 +7763,7 @@ describe("RuntimeOrchestrator", () => {
     ]);
     await runtime.stop();
 
-    expect(waifuTrailing).toContain("director_note");
+    expect(waifuTrailing).toContain("<direction>");
     expect(waifuTrailing).toContain(longDirection);
   });
 
@@ -7679,10 +7793,10 @@ describe("RuntimeOrchestrator", () => {
       }
     ]);
 
-    let capturedMarkers: ProviderRequest["decisionMarkers"];
+    let capturedTail = "";
     const pipeline: ModelPipeline = {
       async decideOrchestrator(request) {
-        capturedMarkers = request.decisionMarkers;
+        capturedTail = request.prompt!.debug.tail;
         return { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 200, reasoning: "still quiet" };
       },
       async generateWaifu() {
@@ -7702,9 +7816,9 @@ describe("RuntimeOrchestrator", () => {
     await runtime.triggerChannel("guild-1", "channel-1", "scheduled-retrigger", { trigger: "retrigger" });
     await runtime.stop();
 
-    expect(capturedMarkers?.[0]?.kind).toBe("wake");
-    expect(capturedMarkers?.[0]?.scheduledSeconds).toBe(600);
-    expect(capturedMarkers?.[0]?.wakePlan).toBe("have yuki answer");
+    // B8 wake marker lives in the ephemeral tail (spec 8.7).
+    expect(capturedTail).toMatch(/<wake>This pass is the wake you scheduled at \d\d:\d\d: the 600s pause has elapsed/);
+    expect(capturedTail).toContain('Your plan was: "have yuki answer".');
   });
 
   it("suppresses a timer wake when the cast already stacked unanswered messages", async () => {
@@ -7998,7 +8112,7 @@ describe("RuntimeOrchestrator", () => {
       await until(() => started, "waifu generation to start");
       await halt(runtime);
       await run;
-      const history = await storage.readJson("user/orchestrator/history.json", OrchestratorHistoryFileSchema);
+      const history = await readTestHistory(storage);
       return { storage, decision: history.decisions[0] };
     }
 
@@ -8065,6 +8179,100 @@ describe("RuntimeOrchestrator", () => {
         await until(() => resumed.discord.sent.length === 1, "resumed reply after unpause");
       } finally {
         await resumed.runtime.stop();
+      }
+    });
+
+    it("spec 9.7: an unpaused server with no enabled flag resumes after a restart", async () => {
+      const { storage } = await interruptMidReply((runtime) => runtime.stop());
+      const stored = JSON.parse(await readFile(serverFilePath(storage), "utf8")) as Record<string, unknown>;
+      expect(stored).not.toHaveProperty("enabled");
+      expect(stored.paused).toBe(false);
+      const next = await bootAgain(storage);
+      try {
+        await until(() => next.discord.sent.length === 1, "resumed reply");
+        expect(next.discord.sent[0].content).toBe("sorry, where was I");
+      } finally {
+        await next.runtime.stop();
+      }
+    });
+
+    it("spec 9.7: a pre-Phase-5 server file with enabled: false (the old default) resumes too", async () => {
+      const { storage } = await interruptMidReply((runtime) => runtime.stop());
+      const stored = JSON.parse(await readFile(serverFilePath(storage), "utf8")) as Record<string, unknown>;
+      await writeFile(serverFilePath(storage), JSON.stringify({ ...stored, enabled: false }));
+      const next = await bootAgain(storage);
+      try {
+        await until(() => next.discord.sent.length === 1, "resumed reply");
+      } finally {
+        await next.runtime.stop();
+      }
+    });
+
+    it("spec 9.7: a paused server does not resume after a restart until it is unpaused", async () => {
+      const { storage } = await interruptMidReply((runtime) => runtime.stop());
+      await storage.updateRevisionedJson({
+        resourceKey: "server:guild-1",
+        relativePath: "user/servers/guild-1/server.json",
+        schema: ServerConfigSchema,
+        fallback: ServerConfigSchema.parse({ ...createRevisionedBase(), guildId: "guild-1" }),
+        transform: (current) => ({ ...current, paused: true })
+      });
+      const paused = await bootAgain(storage);
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        expect(paused.discord.sent).toEqual([]);
+      } finally {
+        await paused.runtime.stop();
+      }
+      await storage.updateRevisionedJson({
+        resourceKey: "server:guild-1",
+        relativePath: "user/servers/guild-1/server.json",
+        schema: ServerConfigSchema,
+        fallback: ServerConfigSchema.parse({ ...createRevisionedBase(), guildId: "guild-1" }),
+        transform: (current) => ({ ...current, paused: false })
+      });
+      const live = await bootAgain(storage);
+      try {
+        await until(() => live.discord.sent.length === 1, "resumed reply once unpaused");
+      } finally {
+        await live.runtime.stop();
+      }
+    });
+
+    it("review I1: restart resume never resurrects a deleted server from its leftover history folder", async () => {
+      const { storage } = await interruptMidReply((runtime) => runtime.stop());
+      const serverDir = path.join(storage.dataRoot, "user", "servers", "guild-1");
+      await rm(serverFilePath(storage));
+      // history (and sessions) remain, server.json is gone: the server was deleted/departed
+      const next = await bootAgain(storage);
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        expect(next.discord.sent).toEqual([]);
+        await expect(readFile(serverFilePath(storage), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+        expect((await import("node:fs/promises")).stat(serverDir)).resolves.toBeDefined();
+      } finally {
+        await next.runtime.stop();
+      }
+    });
+
+    it("spec 9.7: restart resume skips channels without enabled waifus", async () => {
+      const { storage } = await interruptMidReply((runtime) => runtime.stop());
+      await storage.updateRevisionedJson({
+        resourceKey: "server:guild-1",
+        relativePath: "user/servers/guild-1/server.json",
+        schema: ServerConfigSchema,
+        fallback: ServerConfigSchema.parse({ ...createRevisionedBase(), guildId: "guild-1" }),
+        transform: (current) => ({
+          ...current,
+          channels: { ...current.channels, "channel-1": { ...current.channels["channel-1"]!, enabledWaifuIds: [] } }
+        })
+      });
+      const next = await bootAgain(storage);
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        expect(next.discord.sent).toEqual([]);
+      } finally {
+        await next.runtime.stop();
       }
     });
 
@@ -8151,7 +8359,7 @@ describe("RuntimeOrchestrator", () => {
           status: "completed", waifuMessageIds: [], responderOutcomes: [], createdAt: new Date(Date.now() - 3_600_000).toISOString()
         }
       ]);
-      let capturedMarkers: ProviderRequest["decisionMarkers"] = [];
+      let capturedTail: string | undefined;
       const runtime = new RuntimeOrchestrator({
         sleep: async () => undefined,
         storage,
@@ -8159,7 +8367,7 @@ describe("RuntimeOrchestrator", () => {
         maxAutomaticTurns: 1,
         createPipeline: () => ({
           async decideOrchestrator(request) {
-            capturedMarkers = request.decisionMarkers;
+            capturedTail = request.prompt!.debug.tail;
             return { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 200, reasoning: "still quiet" };
           },
           generateWaifu: async () => ({ content: "unused" })
@@ -8172,10 +8380,11 @@ describe("RuntimeOrchestrator", () => {
         wake: { source: "turn_limit", seconds: 900 }
       });
       await runtime.stop();
-      expect(capturedMarkers).toBeUndefined();
+      expect(capturedTail).toBeDefined();
+      expect(capturedTail).not.toContain("<wake>");
       const session = await readSession(storage);
       expect((Date.parse(session.scheduledRetriggerAt!) - before) / 1000).toBeLessThan(300);
-      const history = await storage.readJson("user/orchestrator/history.json", OrchestratorHistoryFileSchema);
+      const history = await readTestHistory(storage);
       expect(session.scheduledRetrigger).toEqual({ source: "no_reply", seconds: 200, decisionId: history.decisions[0].id });
     });
 
@@ -8193,7 +8402,7 @@ describe("RuntimeOrchestrator", () => {
         waifuMessageIds: [], responderOutcomes: [], createdAt: new Date(Date.now() - minutesAgo * 60_000).toISOString()
       });
       await seedOrchestratorHistory(storage, [noReply("newer", "newer plan", 120, 1), noReply("armer", "armed plan", 400, 10)]);
-      let capturedMarkers: ProviderRequest["decisionMarkers"];
+      let capturedTail = "";
       const runtime = new RuntimeOrchestrator({
         sleep: async () => undefined,
         storage,
@@ -8201,7 +8410,7 @@ describe("RuntimeOrchestrator", () => {
         maxAutomaticTurns: 1,
         createPipeline: () => ({
           async decideOrchestrator(request) {
-            capturedMarkers = request.decisionMarkers;
+            capturedTail = request.prompt!.debug.tail;
             return { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 100, reasoning: "still quiet" };
           },
           generateWaifu: async () => ({ content: "unused" })
@@ -8213,7 +8422,8 @@ describe("RuntimeOrchestrator", () => {
         wake: { source: "no_reply", seconds: 600, decisionId: "armer" }
       });
       await runtime.stop();
-      expect(capturedMarkers?.[0]).toMatchObject({ kind: "wake", scheduledSeconds: 600, wakePlan: "armed plan" });
+      expect(capturedTail).toMatch(/<wake>[^<]*the 600s pause has elapsed[^<]*Your plan was: "armed plan"\./);
+      expect(capturedTail).not.toContain("newer plan");
       const session = await readSession(storage);
       expect(session.scheduledRetrigger?.seconds).toBe(900);
     });
@@ -8719,12 +8929,13 @@ describe("RuntimeOrchestrator", () => {
     const discord = new FakeDiscord();
     // First decision honors a directive (closing the budget). The second turn's context trips the
     // loop detector, which should reopen the budget so the second directive is honored anyway.
+    // Separate replies a minute apart (quick consecutive chunks of one reply are joined).
     const loopyContext = [
       contextMessage("c1", "user", "Kevin", "what about the weekend trip plans"),
-      contextMessage("w1", "waifu", "Yuki", "the weekend trip plans sound fun and exciting"),
-      contextMessage("w2", "waifu", "Yuki", "the weekend trip plans sound fun and exciting"),
-      contextMessage("w3", "waifu", "Yuki", "the weekend trip plans sound fun and exciting"),
-      contextMessage("w4", "waifu", "Yuki", "the weekend trip plans sound fun and exciting")
+      { ...contextMessage("w1", "waifu", "Yuki", "the weekend trip plans sound fun and exciting"), timestamp: "2026-05-16T12:01:00Z" },
+      { ...contextMessage("w2", "waifu", "Yuki", "the weekend trip plans sound fun and exciting"), timestamp: "2026-05-16T12:02:00Z" },
+      { ...contextMessage("w3", "waifu", "Yuki", "the weekend trip plans sound fun and exciting"), timestamp: "2026-05-16T12:03:00Z" },
+      { ...contextMessage("w4", "waifu", "Yuki", "the weekend trip plans sound fun and exciting"), timestamp: "2026-05-16T12:04:00Z" }
     ];
     discord.contexts = [
       [contextMessage("m1", "user", "Kevin", "hello there")],
@@ -8756,13 +8967,13 @@ describe("RuntimeOrchestrator", () => {
         { action: "no_reply", respondingWaifus: [], retriggerAfterSeconds: 180, reasoning: "done" }
       ] as OrchestratorDecision[],
       async decideOrchestrator(request) {
-        trailingPrompts.push(request.trailingPrompt ?? "");
+        trailingPrompts.push(request.prompt!.debug.tail);
         const decision = (this as unknown as { decisions: OrchestratorDecision[] }).decisions.shift();
         if (!decision) throw new Error("No fake decision left.");
         return decision;
       },
       async generateWaifu(request) {
-        waifuTrailingBlocks.push(request.trailingSystemBlock ?? "");
+        waifuTrailingBlocks.push(directionView(request));
         return { content: "ok" };
       }
     } as ModelPipeline & { decisions: OrchestratorDecision[] };
@@ -8781,10 +8992,10 @@ describe("RuntimeOrchestrator", () => {
 
     expect(waifuTrailingBlocks).toHaveLength(2);
     // Budget was closed after the first honored directive, but the loop notice reopened it.
-    expect(waifuTrailingBlocks[1]).toContain("director_note");
-    expect(waifuTrailingBlocks[1]).toContain("(break loop) switch gears entirely");
-    // The second orchestrator turn saw the loop notice in its trailing prompt.
-    expect(trailingPrompts[1]).toContain("runtime_notice");
+    expect(waifuTrailingBlocks[1]).toContain("<direction>(break loop) switch gears entirely</direction>");
+    // The second orchestrator turn saw the loop notice and the open budget in its tail.
+    expect(trailingPrompts[1]).toContain("<runtime_notice>");
+    expect(trailingPrompts[1]).toContain("Directive budget: open (a loop is forming");
   });
 
   it("W2: strips a guild-nickname self-prefix from the reply and sends the cleaned content", async () => {
@@ -8851,8 +9062,8 @@ describe("RuntimeOrchestrator", () => {
     // The prefix must be stripped — not dropped entirely
     expect(discord.sent).toHaveLength(1);
     expect(discord.sent[0].content).toBe("my actual reply");
-    // selfAuthorIds must include Aria's botId
-    expect(capturedRequest?.selfAuthorIds).toContain("aria-bot");
+    // Her own prior message (authored by her bot id) is an assistant turn in her transcript.
+    expect(promptOf(capturedRequest!).debug.transcript).toContain("(you) hi Kevin");
   });
 
   it("resolves selfAuthorIds through the discord-bots entry so snowflake authorIds match", async () => {
@@ -8908,8 +9119,9 @@ describe("RuntimeOrchestrator", () => {
     await runtime.triggerChannel("guild-1", "channel-1");
     await runtime.stop();
 
-    expect(capturedRequest?.selfAuthorIds).toContain("111222333444555666");
-    expect(capturedRequest?.selfAuthorIds).toContain("aria");
+    // The snowflake-authored message is recognized as hers (assistant turn, not a user line).
+    expect(promptOf(capturedRequest!).debug.transcript).toContain("(you) hi Kevin");
+    expect(promptOf(capturedRequest!).debug.transcript).not.toContain("Aria: hi Kevin");
   });
 
   it("self-repeat guard catches a repeat when own prior messages carry snowflake authorIds", async () => {
@@ -8967,6 +9179,64 @@ describe("RuntimeOrchestrator", () => {
     // Identical to her own prior message: one corrective retry, then block — nothing sent.
     expect(generateCalls).toBe(2);
     expect(discord.sent).toHaveLength(0);
+  });
+
+  // Acceptance M2: the orchestrator usually reconciles a new message first, freezing its ledger
+  // render for every agent, so its prepare must resolve mentions and custom emoji too.
+  it("the orchestrator's prepare freezes mentions and custom emoji with the guild directory", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.contexts = [[contextMessage("m1", "user", "Kevin", "hey <@555000111> look <:cat:777000111>")]];
+    await seedRuntimeConfig(storage);
+    await seedDiscordBots(storage, [{ id: "aria", displayName: "Aria", applicationId: "111222333444555666", enabled: true }]);
+    await storage.writeJson(
+      "members:guild-1",
+      "user/servers/guild-1/members.json",
+      GuildMembersFileSchema,
+      GuildMembersFileSchema.parse(
+        createEmptyRevisionedFile({
+          guildId: "guild-1",
+          members: [{ userId: "555000111", guildDisplayName: "Bob", bot: false, perChannelLastSeenAt: {} }]
+        })
+      )
+    );
+    await storage.writeJson(
+      "emojis:guild-1",
+      "user/servers/guild-1/emojis.json",
+      GuildEmojisFileSchema,
+      GuildEmojisFileSchema.parse(
+        createEmptyRevisionedFile({ guildId: "guild-1", emojis: [{ id: "777000111", name: "cutecat", fetchedAt: "2026-10-24T00:00:00.000Z" }] })
+      )
+    );
+    await seedWaifu(storage, "aria", "Aria", "aria", "playful");
+    await enableWaifus(storage, ["aria"]);
+    let transcript = "";
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 1,
+      createPipeline: () => ({
+        async decideOrchestrator(request) {
+          transcript = promptOf(request).debug.transcript;
+          return { action: "no_reply", respondingWaifus: [], reasoning: "Wait." };
+        },
+        async generateWaifu() {
+          throw new Error("no waifu turn expected");
+        }
+      }),
+      logger: quietLogger()
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    expect(transcript).toContain("Kevin: hey <@Bob> look <:cutecat:>");
+    const ledger = JSON.parse(await readFile(path.join(root, "user/conversations/g_guild-1_channel-1/ledger.json"), "utf8"));
+    expect(ledger.entries.m1.body).toContain("hey <@Bob> look <:cutecat:>");
   });
 
   it("resolves serverNickname and roster names via the bots entry applicationId", async () => {
@@ -9027,8 +9297,8 @@ describe("RuntimeOrchestrator", () => {
     await runtime.triggerChannel("guild-1", "channel-1");
     await runtime.stop();
 
-    expect(capturedRequest?.systemPrompt).toContain(`shown in this server as "K的小娇妻"`);
-    expect(capturedRequest?.systemPrompt).toContain("Yuki-chan (Yuki)");
+    expect(promptOf(capturedRequest!).debug.system).toContain(`shown in this server as "K的小娇妻"`);
+    expect(promptOf(capturedRequest!).debug.system).toContain("Yuki-chan (Yuki)");
   });
 
   it("uses guild display name from members.json for serverNickname in identity block", async () => {
@@ -9070,7 +9340,7 @@ describe("RuntimeOrchestrator", () => {
       },
       async generateWaifu(request: WaifuGenerationRequest) {
         checked = true;
-        expect(request.systemPrompt).toContain(`shown in this server as "K的小娇妻"`);
+        expect(promptOf(request).debug.system).toContain(`shown in this server as "K的小娇妻"`);
         return { content: "hi" };
       }
     };
@@ -9184,6 +9454,12 @@ async function setServerTools(
   );
 }
 
+async function setWaifuVerbosity(storage: StorageService, waifuId: string, verbosity: "terse" | "chatty" | "expressive") {
+  const path = `user/waifus/${waifuId}/waifu.json`;
+  const config = await storage.readJson(path, WaifuConfigSchema);
+  await storage.writeJson(`waifu:${waifuId}`, path, WaifuConfigSchema, WaifuConfigSchema.parse({ ...config, verbosity }));
+}
+
 async function setWaifuToolUse(storage: StorageService, waifuId: string, toolUse: boolean) {
   const path = `user/waifus/${waifuId}/waifu.json`;
   const config = await storage.readJson(path, WaifuConfigSchema);
@@ -9194,42 +9470,6 @@ async function setWaifuToolUse(storage: StorageService, waifuId: string, toolUse
     WaifuConfigSchema.parse({
       ...config,
       tools: { ...config.tools, toolUse }
-    })
-  );
-}
-
-// Helper to disable specific W2 block IDs in a waifu's stored prompt layout.
-async function setWaifuBlocksEnabled(
-  storage: StorageService,
-  waifuId: string,
-  blockEnabled: Record<string, boolean>
-) {
-  const filePath = `user/waifus/${waifuId}/waifu.json`;
-  const config = await storage.readJson(filePath, WaifuConfigSchema);
-  const layout = defaultWaifuPromptLayout();
-  const setEnabled = (blockId: string, enabled: boolean) => {
-    for (const section of [layout.top, layout.mid, layout.trailing]) {
-      for (const node of section) {
-        if (node.kind === "block") {
-          if (node.blockId === blockId) node.enabled = enabled;
-        } else {
-          for (const child of node.children) {
-            if (child.blockId === blockId) child.enabled = enabled;
-          }
-        }
-      }
-    }
-  };
-  for (const [blockId, enabled] of Object.entries(blockEnabled)) {
-    setEnabled(blockId, enabled);
-  }
-  await storage.writeJson(
-    `waifu:${waifuId}`,
-    filePath,
-    WaifuConfigSchema,
-    WaifuConfigSchema.parse({
-      ...config,
-      promptLayout: layout
     })
   );
 }
@@ -9343,14 +9583,37 @@ async function seedRuntimeConfig(storage: StorageService, orchestratorConfig: Re
   );
 }
 
+function serverFilePath(storage: StorageService, guildId = "guild-1"): string {
+  return path.join(storage.dataRoot, "user", "servers", guildId, "server.json");
+}
+
+/** Decision history is per guild (spec 9.3): the tests' decisions live under guild-1 unless they say otherwise. */
+async function readTestHistory(storage: StorageService, guildId = "guild-1") {
+  return readOrchestratorHistoryForGuild(storage, guildId);
+}
+
+async function writeTestHistory(storage: StorageService, file: OrchestratorHistoryFile) {
+  const byGuild = new Map<string, OrchestratorHistoryFile["decisions"]>();
+  for (const decision of file.decisions) {
+    const guildId = decision.guildId ?? "guild-1";
+    byGuild.set(guildId, [...(byGuild.get(guildId) ?? []), decision]);
+  }
+  for (const [guildId, decisions] of byGuild) {
+    await storage.writeJson(
+      decisionHistoryResourceKey(guildId),
+      decisionHistoryPath(guildId),
+      OrchestratorHistoryFileSchema,
+      { ...file, decisions }
+    );
+  }
+}
+
 async function seedOrchestratorHistory(
   storage: StorageService,
   decisions: Array<Record<string, unknown>>
 ) {
-  await storage.writeJson(
-    "orchestrator:history",
-    "user/orchestrator/history.json",
-    OrchestratorHistoryFileSchema,
+  await writeTestHistory(
+    storage,
     OrchestratorHistoryFileSchema.parse(createEmptyRevisionedFile({ decisions }))
   );
 }
@@ -9482,8 +9745,9 @@ async function seedWaifu(
   );
 }
 
+/** This turn's orchestrator directive as a transcript `direction` note (spec 8.5). */
 function expectedDirectorNote(text: string): string {
-  return `<director_note>\nDirector's goal for this one message: ${text}\nPursue it in your own voice and words; never quote or restate this note.\n</director_note>`;
+  return `<direction>${text}</direction>`;
 }
 
 function contextMessage(
@@ -9552,4 +9816,33 @@ function quietLogger() {
     warn: () => undefined,
     error: () => undefined
   };
+}
+
+/** The context-engine prompt of a waifu generation request (spec 8.5). */
+function promptOf(request: WaifuGenerationRequest): BuiltPrompt {
+  if (!request.prompt) throw new Error("waifu request without a context-engine prompt");
+  return request.prompt;
+}
+
+/** Everything the waifu model saw, as plain text (system, header, transcript, tail). */
+function promptText(request: WaifuGenerationRequest): string {
+  const { debug } = promptOf(request);
+  return [debug.system, debug.header, debug.transcript, debug.tail].join("\n");
+}
+
+/** The retry note in the ephemeral tail (spec 6.3: never a user turn written as the waifu). */
+function retryNoteOf(request: WaifuGenerationRequest): string | undefined {
+  return promptOf(request)
+    .debug.tail.split("\n")
+    .find((line) => line.startsWith("Your last"));
+}
+
+/** Her transcript plus the tail: where earlier directions (notes) and this turn's (tail) appear. */
+function directionView(request: WaifuGenerationRequest): string {
+  return `${promptOf(request).debug.transcript}\n${promptOf(request).debug.tail}`;
+}
+
+/** This turn's direction (in the tail), if any. */
+function latestDirection(request: WaifuGenerationRequest): string | undefined {
+  return [...promptOf(request).debug.tail.matchAll(/<direction>([^<]*)<\/direction>/g)].at(-1)?.[1];
 }
