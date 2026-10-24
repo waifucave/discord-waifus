@@ -655,7 +655,8 @@ export class ChannelRunner {
             target: server.oneShot.target, messages: recent, cast: deterministicCast, waifus: availableWaifus, now: new Date(),
             timeZone: prepared.state.timeZone,
             replyRequired: requireReply, directiveBudgetOpen, loopSuspected: loop.suspected, timerWakeSeconds,
-            policy: orchestrator.prompt, signal
+            policy: orchestrator.prompt, signal,
+            attribution: { guildId, channelId, conversationKey: attribution.conversationKey }
           });
           decision = result.decision;
           semanticLoopDetected = result.loopDetected;

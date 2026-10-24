@@ -13,7 +13,8 @@ export const USAGE_PURPOSES = [
   "reviewer",
   "persona_digest",
   "compaction",
-  "assistant"
+  "assistant",
+  "one_shot" // native-choice orchestrator decisions (oneShot/decider.ts)
 ] as const;
 export const UsagePurposeSchema = z.enum(USAGE_PURPOSES);
 export type UsagePurpose = z.infer<typeof UsagePurposeSchema>;
