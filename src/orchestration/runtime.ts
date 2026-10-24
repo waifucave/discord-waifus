@@ -1,9 +1,7 @@
 // The runtime facade: Discord lifecycle around the House bot and the waifu bots (spec 9.4, 9.5),
-// thread tracking, DM eligibility and forget, pause/resume.
-//
-// Living cast L1 removed the director, the reply path and the memory jobs. Until L2 wires the
-// intake, wake router and life loop (Living cast spec §3, §4), accepted guild messages and DMs are
-// only logged: nobody replies between L1 and L2.
+// thread tracking, DM eligibility and forget, pause/resume, and the Living cast host (spec §3):
+// accepted guild messages, DMs and cache events go to its intake; the owner's forget and a DM
+// /forget run its life scrub (§7.5).
 
 import type {
   DiscordDirectMessageEvent,
@@ -31,6 +29,11 @@ import { forgetUser, type ForgetUserResult } from "./dm/forgetUser.js";
 import { queuePendingScrub } from "./dm/forgotten.js";
 import { forgetConversationImageIndex } from "../discord/imageIndex.js";
 import { computeDmEligibility, dmFloorAt } from "./dm/dmStore.js";
+import { LivingCast } from "../life/livingCast.js";
+import type { ForgetScrubResult } from "../life/forget.js";
+import { sharedModelClient } from "../models/client.js";
+import { DEFAULT_APP_CONFIG } from "../shared/schemas/config.js";
+import { withThreadChannels } from "./stores/threads.js";
 
 export type { RuntimeOrchestratorOptions } from "./runtimeShared.js";
 export { currentlyDoingForWaifu } from "./timeOfDay.js";
@@ -41,8 +44,8 @@ export type DmRuntimeStatus = {
   warnings: string[];
 };
 
-/** Logged for every message the runtime accepts until L2 wires Living cast. */
-export const LIVING_CAST_NOT_WIRED = "Living cast not yet wired (L2)";
+/** The owner's forget-user: the DM part (§7.5 step 1) plus every life's scrub (steps 2–5). */
+export type OwnerForgetResult = ForgetUserResult & { lives?: ForgetScrubResult[] };
 
 export class RuntimeOrchestrator {
   readonly permissionWarnings = new PermissionWarningTracker();
@@ -52,8 +55,10 @@ export class RuntimeOrchestrator {
   readonly providerAlerts: ProviderAlerts;
   /** Event-maintained names for mentions, roles, channels, emojis (spec 9.4); `/api/runtime` reads its status. */
   readonly directory: GuildDirectory;
-  /** The conversation message cache (spec 9.4): `read_messages`' backend in L2. */
+  /** The conversation message cache (spec 9.4): `read_messages`' backend. */
   readonly conversations: ConversationMessageCache;
+  /** Every life on this host (Living cast spec §3). */
+  readonly cast: LivingCast;
   private unsubscribes: Array<() => void> = [];
   private readonly background = new Set<Promise<unknown>>();
   private stopping = false;
@@ -72,6 +77,30 @@ export class RuntimeOrchestrator {
       new ConversationMessageCache({ discord: () => this.options.discord, logger: options.logger, directory: this.directory });
     this.usageLedger = options.usageLedger ?? sharedUsageLedger(options.storage.dataRoot);
     this.providerAlerts = options.providerAlerts ?? sharedProviderAlerts(options.storage.dataRoot);
+    const appConfig = options.appConfig ?? DEFAULT_APP_CONFIG;
+    this.cast = new LivingCast({
+      storage: options.storage,
+      logger: options.logger,
+      discord: () => this.options.discord,
+      conversations: this.conversations,
+      directory: this.directory,
+      models: options.models ?? sharedModelClient(options.storage.dataRoot),
+      config: () => appConfig,
+      isPaused: () => this.stopping || (this.options.isPaused?.() ?? false),
+      usageLedger: this.usageLedger,
+      ...(options.images ? { images: options.images } : {}),
+      ...(options.ocr?.cachedText ? { ocr: { cachedText: (ref) => options.ocr!.cachedText!(ref), ...(options.ocr.textFor ? { textFor: (ref, o) => options.ocr!.textFor!(ref, o) } : {}) } } : {}),
+      ...options.livingCast
+    });
+  }
+
+  /** The enabled cast of a channel or tracked thread (inherited casts included). */
+  private async castOf(guildId: string, channelId: string): Promise<string[]> {
+    const server = await this.options.storage.readJson(path.join("user", "servers", guildId, "server.json"), ServerConfigSchema).catch(() => undefined);
+    if (!server) return [];
+    const withThreads = await withThreadChannels(this.options.storage, server).catch(() => server);
+    const channel = withThreads.channels[channelId];
+    return channelHasWaifus(channel) ? [...(channel.enabledWaifuIds ?? [])] : [];
   }
 
   async start(): Promise<void> {
@@ -94,14 +123,22 @@ export class RuntimeOrchestrator {
           this.handleDirectMessage(event)
         );
       }),
-      discord.onDmForgetCommand?.((event) => this.handleDmForgetCommand(event))
+      discord.onDmForgetCommand?.((event) => this.handleDmForgetCommand(event)),
+      // Edits and deletes in a life (§10.3); a newly added mention under 2 minutes wakes (§4.2).
+      this.conversations.onEvent((event) => this.cast.onCacheEvent(event, (guildId, channelId) => this.castOf(guildId, channelId))),
+      // Bot roles refetch after role changes (§10.2).
+      discord.onDirectoryEvent?.((event) => {
+        if (event.type === "roleUpsert" || event.type === "roleDelete" || event.type === "guildDelete") this.cast.onRolesChanged(event.guildId);
+        else if (event.type === "memberUpsert" && (discord.ownAuthorIds?.() ?? []).includes(event.member.userId)) this.cast.onRolesChanged(event.guildId);
+      })
     ].filter((unsubscribe): unsubscribe is () => void => Boolean(unsubscribe));
     if (discord.listGuilds) await syncGuilds(this.options);
+    await this.cast.start();
   }
 
-  /** Re-run boot catch-up after an explicit user resume (L2: the life catch-up). */
+  /** After an explicit user resume: the life catch-up (§5.7) and queued wakes. */
   resumeAfterPause(): void {
-    // Nothing to catch up until L2 wires lives.
+    this.cast.resume();
   }
 
   async stop(): Promise<void> {
@@ -109,6 +146,7 @@ export class RuntimeOrchestrator {
     for (const unsubscribe of this.unsubscribes) unsubscribe();
     this.unsubscribes = [];
     await this.settleBackground();
+    await this.cast.stop();
     await this.options.ocr?.dispose?.();
     // Model calls queue their ledger lines fire-and-forget; wait for them so a following process
     // exit cannot lose them.
@@ -117,8 +155,9 @@ export class RuntimeOrchestrator {
     this.options.onActiveRunsChange?.(0);
   }
 
-  /** Explicit user pause. */
+  /** Explicit user pause: in-flight turns are aborted, queues stay (§5.2). */
   async pause(): Promise<void> {
+    this.cast.pause();
     this.options.onActiveRunsChange?.(0);
   }
 
@@ -153,9 +192,9 @@ export class RuntimeOrchestrator {
   }
 
   /**
-   * Guild message intake. Keeps the bookkeeping later layers rely on (active participants, server
-   * and channel entries, thread tracking) and drops what Living cast would never wake for; an
-   * accepted message is only logged until L2.
+   * Guild message intake. Keeps the bookkeeping (active participants, server and channel entries,
+   * thread tracking), drops what Living cast would never wake for, and hands an accepted message to
+   * the life intake (§4.2).
    */
   async handleDiscordMessage(event: DiscordMessageEvent): Promise<void> {
     if (!event.guildId || !event.channelId) return;
@@ -184,19 +223,20 @@ export class RuntimeOrchestrator {
       : await ensureChannelConfig(this.options, server, event.channelId, facts.metadata);
     const channel = serverWithChannel.channels[event.channelId];
     if (!channelHasWaifus(channel)) return;
-    if (event.authorBot && !(await isKnownWaifuAuthor(this.options.storage, event.authorId))) return;
-    this.options.logger.info(LIVING_CAST_NOT_WIRED, {
+    const authorIsWaifu = event.authorBot && (await isKnownWaifuAuthor(this.options.storage, event.authorId));
+    if (event.authorBot && !authorIsWaifu) return;
+    await this.cast.onGuildMessage({
       guildId: event.guildId,
       channelId: event.channelId,
       messageId: event.messageId,
-      authorBot: event.authorBot
+      castWaifuIds: [...(channel.enabledWaifuIds ?? [])],
+      authorIsWaifu
     });
   }
 
-  /** DM intake: logged only until L2 (the DM wake, spec §4.1 `dm`). */
+  /** DM intake (§4.1 `dm`): the DM state is updated even while paused; the wake is not. */
   async handleDirectMessage(event: DiscordDirectMessageEvent): Promise<void> {
-    if (this.options.isPaused?.()) return;
-    this.options.logger.info(LIVING_CAST_NOT_WIRED, { waifuId: event.waifuId, messageId: event.messageId, dm: true });
+    await this.cast.onDirectMessage(event);
   }
 
   /** Thread facts for a message event that carries none: a tracked thread, else Discord's channel metadata. */
@@ -357,14 +397,31 @@ export class RuntimeOrchestrator {
     return { eligibleWaifus, warnings };
   }
 
-  /** dmForget with the runtime's side effects: cached messages and images dropped. */
-  async forgetDm(input: DmForgetInput): Promise<DmForgetResult> {
-    return dmForget(this.options.storage, input, this.dmForgetHooks());
+  /**
+   * dmForget with the runtime's side effects (cached messages and images dropped), then her life:
+   * a conversation forget rewrites her summary without the person (§7.5 steps 0–2), a full one runs
+   * the whole scrub (steps 2–5).
+   */
+  async forgetDm(input: DmForgetInput, o: { source?: "owner" | "dm"; background?: boolean } = {}): Promise<DmForgetResult> {
+    const result = await dmForget(this.options.storage, input, this.dmForgetHooks());
+    if (!input.dryRun && input.waifuId) {
+      const life = this.cast
+        .forgetInLife({ waifuId: input.waifuId, userId: input.userId, source: o.source ?? "owner", scope: input.scope === "all" ? "everything" : "conversation" })
+        .catch((error: unknown) => {
+          this.options.logger.warn("Life forget scrub failed", { waifuId: input.waifuId, message: error instanceof Error ? error.message : String(error) });
+        });
+      if (o.background) this.trackBackground(life);
+      else await life;
+    }
+    return result;
   }
 
-  /** The owner's forget-user, DM part (spec 9.1.4), with the same runtime side effects. */
-  async forgetUser(input: { discordUserId: string; dryRun?: boolean }): Promise<ForgetUserResult> {
-    return forgetUser(this.options.storage, input, this.dmForgetHooks());
+  /** The owner's forget-user (§7.5): the DM part (spec 9.1.4), then every life's scrub. */
+  async forgetUser(input: { discordUserId: string; dryRun?: boolean }): Promise<OwnerForgetResult> {
+    const result = await forgetUser(this.options.storage, input, this.dmForgetHooks());
+    if (input.dryRun) return result;
+    const lives = await this.cast.forgetPerson(input.discordUserId);
+    return { ...result, lives: lives.scrubbed };
   }
 
   private dmForgetHooks(): DmForgetHooks {
@@ -391,18 +448,20 @@ export class RuntimeOrchestrator {
   }
 
   /**
-   * A confirmed DM `/forget` (spec 9.1.5, O3). Never touches the rate-limit counters. "everything"
-   * also queues a scrub of the user for her (spec §7.3, §7.5): until the life loop runs it, her old
-   * memories stay archived and are left out when they become notes.
+   * A confirmed DM `/forget` (spec 9.1.5, O3; Living cast §7.5). Never touches the rate-limit
+   * counters. The DM part runs at once; her life's scrub runs in the background ("everything": the
+   * whole scrub, at most once per 6 hours per user, later requests queue as a pending scrub).
    */
   async handleDmForgetCommand(event: DiscordDmForgetCommandEvent): Promise<string> {
     const everything = event.scope === "everything";
-    if (everything) await queuePendingScrub(this.options.storage, event.waifuId, event.userId, new Date(), { logger: this.options.logger });
-    const result = await this.forgetDm({
-      userId: event.userId,
-      waifuId: event.waifuId,
-      scope: everything ? "all" : "conversation"
-    });
+    const result = await this.forgetDm(
+      {
+        userId: event.userId,
+        waifuId: event.waifuId,
+        scope: everything ? "all" : "conversation"
+      },
+      { source: "dm", background: true }
+    );
     this.options.logger.info("DM forget command handled", { waifuId: event.waifuId, scope: result.scope, ...result.deleted });
     return everything
       ? "Done: I deleted our private chat, and everything else I remember about you is marked to be forgotten."

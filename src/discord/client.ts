@@ -29,7 +29,8 @@ import type { ThreadKind } from "../shared/schemas/threads.js";
 import { buildNormalizedDiscordContext } from "./contextBuilder.js";
 import { unresolvedMentionIdsByType } from "./memberCache.js";
 import { denormalizeModelContentForDiscord } from "./normalization.js";
-import { pageMessagesSince, toRawDiscordMessage, withoutAuthors, type DiscordMessageLike } from "./rawMessage.js";
+import { compareIds, pageMessagesSince, toRawDiscordMessage, withoutAuthors, type DiscordMessageLike } from "./rawMessage.js";
+import type { ConversationRef } from "../orchestration/context/keys.js";
 import { attachGatewayFeed, guildSnapshotEvent } from "./gatewayFeed.js";
 import type {
   DiscordConnectionScope,
@@ -156,6 +157,16 @@ export interface DiscordGatewayFacade {
     replyToMessageId?: string;
   }): Promise<{ messageId: string }>;
   sendDirectTyping?(input: { waifuId: string; userId: string }): Promise<void>;
+  /**
+   * Living cast §6.2: up to `limit` messages older than `beforeId` (oldest first), read with the House
+   * bot (guild channels) or the waifu's own bot (DMs). The conversation cache's `readPage` uses it for
+   * older pages.
+   */
+  fetchMessagesBefore?(input: { conversation: ConversationRef; beforeId: string; limit: number; signal?: AbortSignal }): Promise<RawDiscordMessage[]>;
+  /** Living cast §6.4: a reaction from the waifu's own bot (guild channel or her DM with the user). */
+  addReaction?(input: { waifuId: string; botId: string; conversation: ConversationRef; messageId: string; emoji: string }): Promise<void>;
+  /** Living cast §10.2: the role ids of a waifu bot's own member in a guild (single-member fetch). */
+  fetchBotMemberRoles?(input: { botId: string; guildId: string }): Promise<string[] | undefined>;
   /**
    * Intents are fixed at login: after a waifu write that changes `dm.allowDms`, `botId` or
    * `enabled`, re-log only the bots whose DM intents changed (spec 9.1).
@@ -934,6 +945,54 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
     } catch (error) {
       this.options.logger?.warn("Failed to send DM typing indicator", { waifuId: input.waifuId, message: errorMessage(error) });
     }
+  }
+
+  async fetchMessagesBefore(input: { conversation: ConversationRef; beforeId: string; limit: number; signal?: AbortSignal }): Promise<RawDiscordMessage[]> {
+    throwIfAborted(input.signal);
+    const limit = Math.max(1, Math.min(100, Math.floor(input.limit)));
+    if (input.conversation.kind === "dm") {
+      const { client, botId } = this.dmClient(input.conversation.waifuId);
+      const channel = await this.dmChannel(client, botId, input.conversation.userId);
+      const page = await channel.messages.fetch({ limit, before: input.beforeId });
+      return [...page.values()]
+        .map((message) => toRawDiscordMessage(message as unknown as DiscordMessageLike))
+        .sort((a, b) => compareIds(a.id, b.id));
+    }
+    const client = this.orchestratorClient();
+    const channel = await client.channels.fetch(input.conversation.channelId);
+    if (!channel || !("messages" in channel)) return [];
+    const page = await channel.messages.fetch({ limit, before: input.beforeId });
+    const houseIds = [...botAuthorIds([this.options.orchestrator]), client.user?.id];
+    const guildId = input.conversation.guildId;
+    return withoutAuthors([...page.values()] as unknown as DiscordMessageLike[], houseIds)
+      .map((message) => toRawDiscordMessage(message, guildId))
+      .sort((a, b) => compareIds(a.id, b.id));
+  }
+
+  async addReaction(input: { waifuId: string; botId: string; conversation: ConversationRef; messageId: string; emoji: string }): Promise<void> {
+    if (input.conversation.kind === "dm") {
+      const { client, botId } = this.dmClient(input.conversation.waifuId);
+      const channel = await this.dmChannel(client, botId, input.conversation.userId);
+      const message = await channel.messages.fetch(input.messageId);
+      await message.react(input.emoji);
+      return;
+    }
+    const client = this.clients.get(input.botId);
+    if (!client) throw new Error(`Waifu Discord bot ${input.botId} is not connected.`);
+    const channel = await client.channels.fetch(input.conversation.channelId);
+    if (!channel || !("messages" in channel)) throw new Error("That channel has no messages.");
+    const message = await channel.messages.fetch(input.messageId);
+    await message.react(input.emoji);
+  }
+
+  async fetchBotMemberRoles(input: { botId: string; guildId: string }): Promise<string[] | undefined> {
+    const client = this.clients.get(input.botId);
+    if (!client) return undefined;
+    const guild = client.guilds.cache.get(input.guildId) ?? (await client.guilds.fetch(input.guildId).catch(() => undefined));
+    if (!guild) return undefined;
+    const me = await guild.members.fetchMe().catch(() => undefined);
+    if (!me) return undefined;
+    return [...me.roles.cache.keys()].filter((roleId) => roleId !== input.guildId);
   }
 
   private emitConversationEvent(event: DiscordConversationEvent): void {

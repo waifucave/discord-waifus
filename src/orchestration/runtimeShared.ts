@@ -47,6 +47,12 @@ export type RuntimeOrchestratorOptions = {
   dm?: Partial<import("../shared/schemas/config.js").DmRuntimeConfig>;
   /** `AppConfig.discord.memberListRefreshHours` (default 24, 0 = never). */
   memberListRefreshHours?: number;
+  /** The whole app configuration (lives read `life`, `search`, `detector`, `compaction`, `models`). */
+  appConfig?: import("../shared/schemas/config.js").AppConfig;
+  /** The model client lives use (default: the shared client of the data root). */
+  models?: import("../models/client.js").ModelClient;
+  /** Test seams for the Living cast host. */
+  livingCast?: Partial<import("../life/livingCast.js").LivingCastOptions>;
 };
 
 /** The narrow I/O services the store helpers need. */

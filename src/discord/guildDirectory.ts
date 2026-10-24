@@ -333,6 +333,22 @@ export class GuildDirectory implements CacheDirectoryHooks {
     return this.guilds.get(guildId)?.emojis.get(emojiId)?.name;
   }
 
+  /** A usable server emoji by name (case-insensitive), for `react` (Living cast §6.4). */
+  async findEmoji(guildId: string, name: string): Promise<GuildEmojiCacheEntry | undefined> {
+    const state = await this.ensureLoaded(guildId);
+    const wanted = name.toLowerCase();
+    const matches = [...state.emojis.values()].filter((emoji) => emoji.available && emoji.name.toLowerCase() === wanted);
+    return matches.find((emoji) => emoji.name === name) ?? matches[0];
+  }
+
+  /**
+   * Known members of a guild (people she may name in `watch_for`, Living cast §6.5; names for the
+   * forget scrub, §7.5). Files are loaded first.
+   */
+  async members(guildId: string): Promise<GuildMemberCacheEntry[]> {
+    return [...(await this.ensureLoaded(guildId)).members.values()];
+  }
+
   /** Channel or thread metadata (`parentId`, `kind`) for task C's thread handling. */
   channel(guildId: string, channelId: string): DiscordChannelEntry | undefined {
     return this.guilds.get(guildId)?.channels.get(channelId);

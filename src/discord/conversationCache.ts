@@ -278,6 +278,52 @@ export class ConversationMessageCache implements ConversationMessageSource {
     return this.rest(i);
   }
 
+  /** Ids of messages known to be deleted in a conversation (recent tombstones; no fetch). */
+  deletedIds(conversation: ConversationRef): string[] {
+    return [...(this.buffers.get(conversationKey(conversation))?.tombstones ?? [])];
+  }
+
+  // ---- pages (Living cast §6.2) ----------------------------------------------------------------
+
+  /**
+   * One page of a conversation's current messages for `read_messages`: the newest `limit` messages
+   * older than `beforeId` (the newest overall without it), oldest first, and whether older ones
+   * exist. Stateless: served from the buffer when the conversation is trusted and the buffer covers
+   * the page, otherwise from REST; it never touches `fetchSince`'s late-message state or the buffer.
+   * The forget floor applies.
+   */
+  async readPage(input: { conversation: ConversationRef; beforeId?: string; limit: number; signal?: AbortSignal }): Promise<{ messages: RawDiscordMessage[]; hasMore: boolean }> {
+    throwIfAborted(input.signal);
+    const limit = Math.max(1, Math.min(100, Math.floor(input.limit)));
+    const floor = this.floors.get(conversationKey(input.conversation));
+    const keep = (message: RawDiscordMessage) =>
+      (floor === undefined || compareIds(message.id, floor) > 0) && (input.beforeId === undefined || compareIds(message.id, input.beforeId) < 0);
+    const page = (messages: RawDiscordMessage[]) => {
+      const sorted = messages.filter(keep).sort((a, b) => compareIds(a.id, b.id));
+      return { messages: sorted.slice(-limit), more: sorted.length > limit };
+    };
+    const buf = this.attached ? this.buffers.get(conversationKey(input.conversation)) : undefined;
+    if (buf && this.trusted(buf) && !this.tailCheckDue(buf) && buf.coversFrom !== undefined) {
+      const served = page([...buf.messages.values()]);
+      const complete = buf.coversFrom === "0" || (floor !== undefined && compareIds(floor, buf.coversFrom) >= 0);
+      if (served.more || complete) return { messages: served.messages, hasMore: served.more };
+    }
+    const discord = this.d.discord();
+    if (!discord) return { messages: [], hasMore: false };
+    let fetched: RawDiscordMessage[];
+    if (input.beforeId === undefined) {
+      const result = await this.rest({ conversation: input.conversation, afterMessageId: floor ?? null, maxMessages: limit + 1, ...(input.signal ? { signal: input.signal } : {}) });
+      fetched = result.messages;
+    } else if (discord.fetchMessagesBefore) {
+      fetched = await discord.fetchMessagesBefore({ conversation: input.conversation, beforeId: input.beforeId, limit: limit + 1, ...(input.signal ? { signal: input.signal } : {}) });
+    } else {
+      fetched = buf ? [...buf.messages.values()] : [];
+    }
+    await this.resolveMentions(input.conversation, fetched, input.signal);
+    const served = page(fetched);
+    return { messages: served.messages, hasMore: served.more };
+  }
+
   // ---- reactions -------------------------------------------------------------------------------
 
   reactionsFor(conversation: ConversationRef, messageId: string): ReactionSummary[] {

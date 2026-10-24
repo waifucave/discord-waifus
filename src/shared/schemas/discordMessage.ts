@@ -61,6 +61,8 @@ export const RawDiscordMessageSchema = z.object({
     users: z.record(z.string(), z.string()),
     roles: z.record(z.string(), z.string()),
     channels: z.record(z.string(), z.string())
-  })
+  }),
+  // Living cast §10.2: `@everyone` / `@here` (discord.js `message.mentions.everyone`). Absent = false.
+  mentionsEveryone: z.boolean().optional()
 });
 export type RawDiscordMessage = z.infer<typeof RawDiscordMessageSchema>;

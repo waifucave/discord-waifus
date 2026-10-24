@@ -219,6 +219,7 @@ async function startLockedBackend(options: StartBackendOptions): Promise<Running
         images,
         directory,
         memberListRefreshHours: currentConfig.discord.memberListRefreshHours,
+        appConfig: currentConfig,
         compaction: currentConfig.compaction,
         debounce: { ...currentConfig.discord.debounce },
         dm: { ...currentConfig.discord.dm },

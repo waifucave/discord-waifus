@@ -70,6 +70,11 @@ export type ModelCallRequest = {
   signal?: AbortSignal;
   /** Wall-clock cap for the whole call, retries included. Default 180 s. */
   timeoutMs?: number;
+  /**
+   * Thinking blocks the caller already stripped from this request's history (a new epoch's kept
+   * turns, §5.6); added to what winter's renderer drops and recorded as `thinkingBlocksDropped`.
+   */
+  thinkingBlocksStripped?: number;
   attribution: ModelCallAttribution;
 };
 
@@ -87,6 +92,8 @@ export type ModelCallResult = {
   costUsd?: number;
   responseId?: string;
   reasoningSummary?: string;
+  /** Thinking blocks dropped from the replayed history (renderer + caller-stripped). */
+  thinkingBlocksDropped: number;
   durationMs: number;
 };
 
@@ -148,7 +155,8 @@ const QUERY_ROLE: Record<UsagePurpose, QueryRole> = {
   maintenance: "maintenance",
   detector: "detector",
   compaction: "compaction",
-  assistant: "assistant"
+  assistant: "assistant",
+  web: "web"
 };
 
 function finishReasonOf(stop: WinterStopReason | undefined, toolCalls: number): ModelFinishReason {
@@ -264,7 +272,7 @@ export class ModelClient {
       const adapter = resolved.adapter;
       descriptor = resolved.descriptor;
       const capabilities = descriptor ? adapter.capabilities(descriptor) : undefined;
-      const rendered = this.winter.renderer.render([...request.messages], new Map(), {
+      const { messages: rendered, report } = this.winter.renderer.renderWithReport([...request.messages], new Map(), {
         family: adapter.family,
         ...(resolved.continuationDomain !== undefined ? { continuationDomain: resolved.continuationDomain } : {}),
         readableState: capabilities?.readableState ?? "none",
@@ -325,10 +333,14 @@ export class ModelClient {
       const toolCalls = messageToolCalls(assembled.message);
       const finishReason = finishReasonOf(assembled.stopReason, toolCalls.length);
       const durationMs = this.now() - startedMs;
+      // The provider's own count (winter's usage event), what winter's renderer stripped, and what the
+      // caller stripped before the call (a new epoch's kept turns).
+      const thinkingBlocksDropped = (usage?.thinkingBlocksDropped ?? 0) + report.strippedInDialectBlocks + (request.thinkingBlocksStripped ?? 0);
       void this.ledger.record({
         ...entryBase,
         status: "ok",
         ...usageFields(usage, priced),
+        ...(thinkingBlocksDropped > 0 ? { thinkingBlocksDropped } : {}),
         finishReason,
         durationMs
       });
@@ -342,6 +354,7 @@ export class ModelClient {
         ...(priced !== undefined ? { costUsd: priced } : {}),
         ...(assembled.responseId !== undefined ? { responseId: assembled.responseId } : {}),
         ...(assembled.reasoningSummary !== undefined ? { reasoningSummary: assembled.reasoningSummary } : {}),
+        thinkingBlocksDropped,
         durationMs
       };
     } catch (raw) {

@@ -39,10 +39,7 @@ afterEach(async () => {
 const KEY = conversationKey({ kind: "dm", waifuId: "aria", userId: USER });
 const exists = (file: string) => access(file).then(() => true, () => false);
 
-/**
- * One answered DM: the conversation directory, the DM state with one run record and one
- * rate-limit stamp. Written directly: the DM life that produces them arrives in L2.
- */
+/** One answered DM: the conversation directory, the DM state and one rate-limit stamp, written directly. */
 async function world() {
   const { root, storage } = await dmRoot(roots);
   await seedDmWorld(storage);
@@ -55,8 +52,7 @@ async function world() {
     lastInboundMessageId: "1300000000000000001",
     lastInboundAt: now,
     lastRepliedMessageId: "1300000000000000002",
-    lastReplyAt: now,
-    recentRuns: [{ id: "run-1", at: now, triggerMessageId: "1300000000000000001", status: "sent", messageIds: ["1300000000000000002"] }]
+    lastReplyAt: now
   }));
   await updateDmLimit(storage, USER, "aria", (current) => ({ ...current, replyTimestamps: [now] }));
   const dir = path.join(root, "user", "conversations", KEY);
@@ -66,17 +62,16 @@ async function world() {
 }
 
 describe("dmForget scopes", () => {
-  it("conversation: deletes the transcript and run records, keeps state and the limiter", async () => {
+  it("conversation: deletes the transcript, keeps state and the limiter", async () => {
     const { root, storage, runtime } = await world();
     const dry = await dmForget(storage, { userId: USER, waifuId: "aria", scope: "conversation", dryRun: true });
-    expect(dry.deleted).toMatchObject({ dmContexts: 1, recentRuns: 1, dmStates: 0 });
+    expect(dry.deleted).toMatchObject({ dmContexts: 1, dmStates: 0 });
     expect(await exists(path.join(root, "user", "conversations", KEY))).toBe(true);
 
     const done = await runtime.forgetDm({ userId: USER, waifuId: "aria", scope: "conversation" });
-    expect(done.deleted).toMatchObject({ dmContexts: 1, recentRuns: 1 });
+    expect(done.deleted).toMatchObject({ dmContexts: 1 });
     expect(await exists(path.join(root, "user", "conversations", KEY))).toBe(false);
     const state = await readDmState(storage, USER, "aria");
-    expect(state?.recentRuns).toEqual([]);
     expect(state?.lastInboundMessageId).toBeDefined();
     expect((await readDmLimit(storage, USER, "aria")).replyTimestamps).toHaveLength(1);
     await runtime.stop();
@@ -123,8 +118,10 @@ describe("dmForget scopes", () => {
     expect(await runtime.handleDmForgetCommand({ waifuId: "aria", botId: "aria-bot", userId: USER, scope: "everything" })).toMatch(/marked to be forgotten/);
     expect(await readDmState(storage, USER, "aria")).toBeUndefined();
     expect((await readDmLimit(storage, USER, "aria")).replyTimestamps).toHaveLength(1);
-    // L1 cannot scrub her memories yet: the request is queued for her (spec §7.3), durably.
-    expect(await readPendingScrubs(storage, "aria")).toEqual([{ userId: USER, at: expect.any(String), source: "dm_forget_everything" }]);
+    // She has no life or notes yet, so there is nothing to scrub and nothing is queued (the life
+    // scrub and its 6-hour rate limit are covered in tests/lifeForget.test.ts).
+    await runtime.settleBackground();
+    expect(await readPendingScrubs(storage, "aria")).toEqual([]);
     expect(await readForgottenPeople(storage)).toEqual([]);
     await runtime.stop();
   });
@@ -259,8 +256,7 @@ describe("/api/dms", () => {
       waifuId: "aria",
       userId: USER,
       userDisplayName: "Kevin",
-      rateLimit: { used: 1, max: 30, windowMinutes: 60, limited: false },
-      lastRun: { status: "sent" }
+      rateLimit: { used: 1, max: 30, windowMinutes: 60, limited: false }
     });
     expect(list.body).not.toContain("\"hi\"");
     expect((await app.inject({ method: "GET", url: "/api/dms?waifuId=mina" })).json().conversations).toEqual([]);

@@ -51,7 +51,7 @@ export function withoutReasoningPayloads(value: unknown, depth = 0): unknown {
 }
 
 /** Which caller made a model call (the usage purposes, spec §9.3). */
-export type QueryRole = "life" | "maintenance" | "detector" | "compaction" | "assistant";
+export type QueryRole = "life" | "maintenance" | "detector" | "compaction" | "assistant" | "web";
 
 export type CapturedQuery = {
   id: number;

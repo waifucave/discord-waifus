@@ -55,6 +55,7 @@ export type DiscordMessageLike = {
     members?: { get(id: string): { displayName?: string | null } | undefined } | null;
     roles?: KeyedIter<{ name: string }>;
     channels?: KeyedIter<{ name?: string | null }>;
+    everyone?: boolean;
   };
 };
 
@@ -144,7 +145,8 @@ export function toRawDiscordMessage(m: DiscordMessageLike, fallbackGuildId?: str
     })),
     ...(referenceId ? { referenceMessageId: referenceId } : {}),
     ...(m.interaction?.commandName ? { commandName: m.interaction.commandName } : {}),
-    mentions: { users, roles, channels }
+    mentions: { users, roles, channels },
+    ...(m.mentions?.everyone === true ? { mentionsEveryone: true } : {})
   };
 }
 

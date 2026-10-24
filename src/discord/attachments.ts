@@ -211,6 +211,7 @@ export class DiscordImageFetcher implements ImageFetcher {
   private readonly allowedHosts: ReadonlySet<string>;
   private readonly now: () => number;
   private diskBytes: number | undefined;
+  private readonly pins = new Map<string, ReadonlySet<string>>();
 
   constructor(private readonly options: DiscordImageFetcherOptions) {
     this.config = { ...DEFAULT_APP_CONFIG.discord.images, ...options.config };
@@ -274,6 +275,12 @@ export class DiscordImageFetcher implements ImageFetcher {
     return found;
   }
 
+  /** Replaces one owner's pinned image keys (a waifu's current epoch, Living cast §5.3). */
+  setPins(owner: string, keys: readonly string[]): void {
+    if (keys.length === 0) this.pins.delete(owner);
+    else this.pins.set(owner, new Set(keys));
+  }
+
   async purge(keys: readonly string[]): Promise<void> {
     for (const key of new Set(keys)) {
       const cached = this.memory.get(key);
@@ -319,8 +326,10 @@ export class DiscordImageFetcher implements ImageFetcher {
     }
     let total = 0;
     const live: typeof entries = [];
+    // Living cast §5.3: images an epoch shows inline are pinned, exempt from the TTL and the cap.
+    const pinned = new Set([...this.pins.values()].flatMap((keys) => [...keys].map((key) => this.diskBase(key))));
     for (const entry of entries) {
-      if (entry.expired) await this.removeDisk(entry.base);
+      if (entry.expired && !pinned.has(entry.base)) await this.removeDisk(entry.base);
       else {
         live.push(entry);
         total += entry.bytes;
@@ -330,6 +339,7 @@ export class DiscordImageFetcher implements ImageFetcher {
     live.sort((a, b) => a.mtimeMs - b.mtimeMs);
     for (const entry of live) {
       if (total <= cap) break;
+      if (pinned.has(entry.base)) continue;
       await this.removeDisk(entry.base);
       total -= entry.bytes;
     }
