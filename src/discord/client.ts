@@ -1252,7 +1252,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
       async (before) => (await channel.messages.fetch(before ? { limit: 100, before } : { limit: 100 })).values(),
       { afterMessageId: input.afterMessageId, maxMessages: input.maxMessages, signal: input.signal }
     );
-    // The House bot's own posts (debug logs, /print fallbacks) are never conversation.
+    // The House bot's own posts (debug logs) are never conversation.
     const houseIds = [...botAuthorIds(this.options.house ? [this.options.house] : []), client.user?.id];
     return {
       messages: withoutAuthors(result.messages as unknown as DiscordMessageLike[], houseIds).map((message) =>

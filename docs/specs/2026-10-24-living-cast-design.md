@@ -981,7 +981,10 @@ than 10 minutes; a failed fetch keeps the last list, and with no list nobody is 
 Administrator is not enough: Administrator stays the commands' default member permission only so
 the Discord UI hides them from others. The command defers its ephemeral reply before the check.
 `/print` output longer than 1,900 characters is sent as an attached `<type>.md` file, still
-ephemeral.
+ephemeral. Every `/print` reply (and every refusal) is ephemeral: only the owner who ran it sees it.
+Open for L3 (D14): `/print life` still shows her own replies in a DM turn (her assistant text), and
+`/print system_prompt` shows `<life_so_far>`, whose summary can carry DM content; L3 decides whether
+`/print` follows the dashboard's DM reveal toggle.
 
 ## 11. Retirements and migrations
 

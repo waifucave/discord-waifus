@@ -547,16 +547,28 @@ describe("DiscordJsGateway slash commands", () => {
     expect(calls.editReply).toEqual(["Woke Aria."]);
   });
 
-  it("sends a long /print as an attached file", async () => {
+  it("answers /print only ephemerally: a short print inline, a long one as an attached file", async () => {
     const gateway = makeGateway({ house: bot("house"), applicationOwners: { isOwner: async () => true } });
+    let size = 100;
     gateway.onPrintCommand(async (event) => {
-      await event.respond("x".repeat(5_000));
+      await event.respond("x".repeat(size));
     });
+    const short = fakeInteraction({ commandName: "print", strings: { type: "notes", waifu: "aria" } });
+    await slashHandler(gateway, "handlePrintInteraction")(short.interaction);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(short.calls.deferReply).toEqual([{ flags: MessageFlags.Ephemeral }]);
+    expect(short.calls.reply).toEqual([]);
+    expect(short.calls.editReply).toEqual(["x".repeat(100)]);
+
+    size = 5_000;
     const { interaction, calls } = fakeInteraction({ commandName: "print", strings: { type: "system_prompt", waifu: "aria" } });
 
     await slashHandler(gateway, "handlePrintInteraction")(interaction);
     await new Promise((resolve) => setTimeout(resolve, 0));
 
+    // The reply was deferred as ephemeral; every later edit stays on that private reply.
+    expect(calls.deferReply).toEqual([{ flags: MessageFlags.Ephemeral }]);
+    expect(calls.reply).toEqual([]);
     expect(calls.editReply).toEqual([{ content: "Attached as system_prompt.md.", files: [{ attachment: expect.any(Buffer), name: "system_prompt.md" }] }]);
   });
 });
