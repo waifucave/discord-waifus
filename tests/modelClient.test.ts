@@ -320,10 +320,11 @@ describe("ModelClient errors and alerts", () => {
   });
 
   it("Anthropic's credit-balance 400 opens the billing cooldown (review I7)", async () => {
+    // winter 0.0.57 reports this refusal as its own `billing` code.
     const anthropic = fakeAdapter(ANTHROPIC_MESSAGES, [
       () =>
         errorTurn({
-          code: "bad_request",
+          code: "billing",
           status: 400,
           providerCode: "invalid_request_error",
           message: "HTTP 400 — Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.",

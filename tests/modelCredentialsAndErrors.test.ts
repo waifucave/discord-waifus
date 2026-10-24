@@ -52,30 +52,15 @@ describe("winter error → app error kind (spec §9.1)", () => {
     ["insufficient_quota on a 429", error({ code: "rate_limit", status: 429, providerCode: "insufficient_quota" }), undefined, "quota"],
     ["usage window code", error({ code: "rate_limit", status: 429, providerCode: "usage_limit_reached" }), undefined, "quota"],
     ["429 after a subscription-quota event", error({ code: "rate_limit", status: 429 }), { subscriptionQuota: true }, "quota"],
-    ["billing provider code", error({ code: "bad_request", status: 400, providerCode: "billing_error" }), undefined, "billing"],
+    ["winter's billing code (0.0.57)", error({ code: "billing", status: 400, providerCode: "billing_error" }), undefined, "billing"],
     ["HTTP 402", error({ code: "bad_request", status: 402 }), undefined, "billing"],
-    // Anthropic's "credit balance is too low" is an HTTP 400 invalid_request_error (review I7).
-    [
-      "Anthropic credit balance too low (400)",
-      error({ code: "bad_request", status: 400, providerCode: "invalid_request_error", message: "HTTP 400 — Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits." }),
-      undefined,
-      "billing"
-    ],
-    [
-      "credit balance too low in a stream error frame",
-      error({ code: "bad_request", providerCode: "invalid_request_error", message: "the provider ended the stream with an error frame (invalid_request_error): Your credit balance is too low" }),
-      undefined,
-      "billing"
-    ],
+    ["OpenRouter's in-flight budget 402 with Retry-After stays a rate limit", error({ code: "rate_limit", status: 402, retryable: true }), undefined, "rate_limit"],
     ["insufficient credits phrase", error({ code: "bad_request", status: 400, message: "HTTP 400 — Insufficient credits for this request" }), undefined, "billing"],
     ["insufficient balance phrase (DeepSeek)", error({ code: "bad_request", status: 400, message: "HTTP 400 — Insufficient Balance" }), undefined, "billing"],
     ["insufficient funds phrase", error({ code: "server", status: 500, message: "HTTP 500 — insufficient funds" }), undefined, "billing"],
     ["requires more credits phrase (OpenRouter)", error({ code: "bad_request", status: 400, message: "HTTP 400 — This request requires more credits, or fewer max_tokens." }), undefined, "billing"],
-    ["billing_hard_limit_reached code", error({ code: "bad_request", status: 400, providerCode: "billing_hard_limit_reached" }), undefined, "billing"],
-    ["billing_not_active code", error({ code: "bad_request", status: 400, providerCode: "billing_not_active" }), undefined, "billing"],
-    ["credit_balance_too_low code", error({ code: "bad_request", status: 400, providerCode: "credit_balance_too_low" }), undefined, "billing"],
     ["insufficient_credits code on a 429", error({ code: "rate_limit", status: 429, providerCode: "insufficient_credits" }), undefined, "billing"],
-    ["a billing phrase on an auth failure stays auth", error({ code: "auth", status: 401, message: "HTTP 401 — credit balance is too low" }), undefined, "auth"],
+    ["a billing phrase on an auth failure stays auth", error({ code: "auth", status: 401, message: "HTTP 401 — insufficient credits" }), undefined, "auth"],
     ["quota code on a 429 (gateway rule)", error({ code: "rate_limit", status: 429, providerCode: "monthly_quota_exceeded" }), undefined, "quota"],
     ["usage_limit_* code on a 429", error({ code: "rate_limit", status: 429, providerCode: "usage_limit_hit" }), undefined, "quota"],
     ["a quota-looking code on a 400 is not a quota", error({ code: "bad_request", status: 400, providerCode: "quota_project_missing" }), undefined, "other"],
@@ -101,6 +86,25 @@ describe("winter error → app error kind (spec §9.1)", () => {
     expect(fromProviderError(retryable, { committed: true })).toMatchObject({ retryable: false, committed: true });
     expect(fromProviderError(error({ code: "rate_limit", status: 429, providerCode: "insufficient_quota", retryable: true }))).toMatchObject({ kind: "quota", retryable: false });
     expect(new ModelCallError("other", "timed out", { retryable: true, committed: true }).retryable).toBe(false);
+  });
+
+  // winter 0.0.57 classifies the account-cannot-pay answers itself (`code: "billing"`); these run real
+  // provider bodies through winter's own normalizer, then the app mapping.
+  it.each<[string, number, unknown, string]>([
+    ["Anthropic credit balance too low (400)", 400, { type: "error", error: { type: "invalid_request_error", message: "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits." } }, "billing"],
+    ["Anthropic billing_error", 400, { type: "error", error: { type: "billing_error", message: "billing" } }, "billing"],
+    ["DeepSeek 402 Insufficient Balance", 402, { error: { message: "Insufficient Balance", type: "unknown_error" } }, "billing"],
+    ["OpenAI insufficient_quota stays the app's quota", 429, { error: { code: "insufficient_quota", message: "You exceeded your current quota", type: "insufficient_quota" } }, "quota"],
+    ["OpenAI billing_hard_limit_reached", 429, { error: { code: "billing_hard_limit_reached", message: "Billing hard limit has been reached" } }, "billing"],
+    ["OpenAI billing_not_active", 400, { error: { code: "billing_not_active", message: "billing not active" } }, "billing"],
+    // Not covered by winter: the app fallback keeps these.
+    ["insufficient_credits code on a 400 (fallback)", 400, { error: { code: "insufficient_credits", message: "x" } }, "billing"],
+    ["insufficient balance phrase on a 400 (fallback)", 400, { error: { message: "Insufficient Balance" } }, "billing"],
+    ["requires more credits phrase on a 400 (fallback)", 400, { error: { message: "This request requires more credits, or fewer max_tokens." } }, "billing"],
+    ["a plain bad request stays other", 400, { error: { message: "messages: field required" } }, "other"]
+  ])("%s, through winter's normalizer", async (_name, status, body, kind) => {
+    const { normalizeHttpError } = await import("@yanlinglabs/winter-provider-runtime");
+    expect(modelErrorKind(normalizeHttpError(status, new Headers(), JSON.stringify(body)))).toBe(kind);
   });
 
   it("carries winter's image refusal", () => {

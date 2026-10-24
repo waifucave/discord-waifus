@@ -71,8 +71,10 @@ OpenRouter reasoning-replay feature check); `credentials.ts` reads keys live fro
 `user/providers.json` and passes them inline per call (the gateway-era provider ids
 `google-ai-studio`/`qwen` map to `google`/`alibaba`); `errors.ts` maps winter errors to app kinds
 (`context_overflow`, `quota`, `billing`, `rate_limit`, `auth`, `aborted`, `other`; quota/billing
-open provider cooldowns in `providerAlerts.ts`; the retired gateway's billing codes and phrases are
-ported, so Anthropic's 400 "credit balance is too low" is `billing`). A `ModelCallError` carries
+open provider cooldowns in `providerAlerts.ts`; winter's own `billing` code (0.0.57: 402s, Anthropic's
+400 "credit balance is too low", OpenAI spend/billing limits) maps to `billing`, OpenAI
+`insufficient_quota` and usage-window codes stay `quota`, and a small fallback list covers what winter
+still leaves as `bad_request`). A `ModelCallError` carries
 `committed` (part of the answer — text, a tool call or reasoning — had arrived, as the assembler's
 tap saw it; a bare `message_start` or role-only chunk is not) and is `retryable` only when winter
 says so and nothing was committed; `imageOverflow` marks an image refusal. `summarize.ts` is the compaction
@@ -285,7 +287,7 @@ Fixture coverage is separate from native Windows/Linux updater-cycle validation.
 ## Model dependency (winter)
 
 - The app pins `@yanlinglabs/winter-provider-runtime` and `@yanlinglabs/winter-provider-catalog`
-  **exactly**, both to the same version (currently 0.0.56; winter's READMEs make that the supported
+  **exactly**, both to the same version (currently 0.0.57; winter's READMEs make that the supported
   rule). Edit only those lines in `package.json` and the lockfile when bumping. The
   `@waifucave/gateway` dependency, its `/api/llm/*` mount and `npm run gateway:local` are gone; the
   gateway repo is no longer used by this app. Read winter's CHANGELOG ("Breaking for

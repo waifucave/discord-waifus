@@ -3,9 +3,11 @@
 // - `context_overflow`: the adapter's own `contextOverflow` verdict (never parsed from text).
 // - `quota`: a subscription-quota `rate_limit` stream event, `insufficient_quota` / a usage-window
 //   code, or (the gateway's rule) a 429 whose code names a quota, an insufficiency or a usage limit.
-// - `billing`: what winter itself classifies as `billing_error` (402, billing codes), plus the
-//   retired gateway's billing codes and phrases on any non-auth refusal (Anthropic answers "Your
-//   credit balance is too low" with a 400 `invalid_request_error`, which winter calls `bad_request`).
+// - `billing`: winter's own `billing` code (0.0.57: any 402, Anthropic's 400 "credit balance is too
+//   low" direct or through OpenRouter, OpenRouter `payment_required`, OpenAI's spend/billing-limit
+//   codes, also as mid-stream frames), plus a small fallback for what winter still leaves as
+//   `bad_request`/`rate_limit`/`server` (see BILLING_FALLBACK_*). OpenAI `insufficient_quota` is
+//   `billing` in winter but stays app `quota` here: the quota check runs first.
 // - `rate_limit`, `auth`: winter's own codes.
 // - `aborted`: the caller's signal (never retried, never a provider alert).
 // - `other`: everything else (server, network, stall, timeout, bad request, capability refusals).
@@ -17,20 +19,25 @@ export type ModelErrorKind = "context_overflow" | "quota" | "billing" | "rate_li
 /** Provider codes that mean "the account's quota is used up", not "slow down". */
 const QUOTA_PROVIDER_CODES = new Set(["insufficient_quota", "usage_limit_reached", "usage_limit_exceeded"]);
 
-// Ported in full from the retired gateway's classifier (its errors.ts isBillingError / isQuotaError):
-// codes and message phrases meaning "the account cannot pay", distinct from "going too fast". The
-// phrases are matched on winter's message, which carries the provider's own error message
-// (`HTTP 400 — <message>`, or the stream error frame's detail).
-const BILLING_CODES = new Set(["billing_error", "billing_hard_limit_reached", "billing_not_active", "credit_balance_too_low", "insufficient_credits"]);
-const BILLING_PHRASES = [/credit balance is too low/i, /insufficient (credits|balance|funds)/i, /requires more credits/i];
+// The fallback left from the retired gateway's classifier, for what winter 0.0.57 still does not
+// call `billing` (measured against its `normalizeHttpError`, tests/modelCredentialsAndErrors.test.ts):
+// the `insufficient_credits` code (a 400 or a retryable 429 in winter), and the "insufficient
+// credits/balance/funds" and "requires more credits" phrases on a status other than 402. winter now
+// covers `billing_error`, `billing_hard_limit_reached`, `billing_not_active`, `credit_balance_too_low`
+// and "credit balance is too low", which left this list. Phrases are matched on winter's message,
+// which carries the provider's own error message (`HTTP 400 — <message>` or the stream frame's).
+const BILLING_FALLBACK_CODES = new Set(["insufficient_credits"]);
+const BILLING_FALLBACK_PHRASES = [/insufficient (credits|balance|funds)/i, /requires more credits/i];
 
 /** True when a failure means the provider account cannot pay. */
 export function isBillingFailure(error: ProviderError): boolean {
   if (error.code === "auth" || error.code === "aborted") return false;
+  if (error.code === "billing") return true;
   if (toSdkAssistantMessageError(error) === "billing_error") return true;
-  if (error.status === 402) return true;
-  if (error.providerCode !== undefined && BILLING_CODES.has(error.providerCode)) return true;
-  return BILLING_PHRASES.some((phrase) => phrase.test(error.message));
+  // OpenRouter's in-flight-budget 402 (sent with Retry-After) is winter's retryable `rate_limit`.
+  if (error.status === 402 && error.code !== "rate_limit") return true;
+  if (error.providerCode !== undefined && BILLING_FALLBACK_CODES.has(error.providerCode)) return true;
+  return BILLING_FALLBACK_PHRASES.some((phrase) => phrase.test(error.message));
 }
 
 /** The gateway's quota code rule: on a 429, a code naming a quota, an insufficiency or a usage limit. */
