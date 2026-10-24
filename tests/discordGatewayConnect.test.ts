@@ -457,7 +457,7 @@ type FakeInteractionCalls = {
   editReply: unknown[];
 };
 
-function fakeInteraction(input: { commandName: string; userId?: string; admin?: boolean; strings?: Record<string, string> }) {
+function fakeInteraction(input: { commandName: string; userId?: string; admin?: boolean; strings?: Record<string, string>; booleans?: Record<string, boolean> }) {
   const calls: FakeInteractionCalls = { reply: [], deferReply: [], editReply: [] };
   const interaction = {
     commandName: input.commandName,
@@ -469,7 +469,8 @@ function fakeInteraction(input: { commandName: string; userId?: string; admin?: 
     },
     options: {
       getString: (name: string) => input.strings?.[name] ?? null,
-      getInteger: () => null
+      getInteger: () => null,
+      getBoolean: (name: string) => input.booleans?.[name] ?? null
     },
     async reply(payload: { content?: string; flags?: unknown }) {
       calls.reply.push(payload);
@@ -570,6 +571,23 @@ describe("DiscordJsGateway slash commands", () => {
     expect(calls.deferReply).toEqual([{ flags: MessageFlags.Ephemeral }]);
     expect(calls.reply).toEqual([]);
     expect(calls.editReply).toEqual([{ content: "Attached as system_prompt.md.", files: [{ attachment: expect.any(Buffer), name: "system_prompt.md" }] }]);
+  });
+});
+
+describe("DiscordJsGateway /print private option", () => {
+  it("passes private:true through and defaults to redacted output", async () => {
+    const gateway = makeGateway({ house: bot("house"), applicationOwners: { isOwner: async () => true } });
+    const seen: Array<boolean | undefined> = [];
+    gateway.onPrintCommand(async (event) => {
+      seen.push(event.private);
+      await event.respond("ok");
+    });
+    for (const booleans of [{ private: true }, {}]) {
+      const { interaction } = fakeInteraction({ commandName: "print", strings: { type: "life", waifu: "aria" }, booleans });
+      await slashHandler(gateway, "handlePrintInteraction")(interaction);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    expect(seen).toEqual([true, false]);
   });
 });
 

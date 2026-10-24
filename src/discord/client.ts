@@ -293,6 +293,8 @@ export type DiscordWakeCommandEvent = DiscordSlashCommandEvent & {
 export type DiscordPrintCommandEvent = DiscordSlashCommandEvent & {
   type?: DiscordPrintCommandType;
   waifuId?: string;
+  /** `private: true`: show DM content too (it is redacted by default, §10.4, D14). */
+  private?: boolean;
 };
 export type DiscordWaifuAutocompleteEvent = {
   /** `wake` offers this server's cast only; `print` offers every waifu. */
@@ -1595,6 +1597,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
       userId: interaction.user.id,
       type: parsePrintCommandType(interaction.options.getString(PRINT_TYPE_OPTION_NAME)),
       waifuId: sanitizeOptionString(interaction.options.getString(WAIFU_OPTION_NAME)),
+      private: interaction.options.getBoolean(PRINT_PRIVATE_OPTION_NAME) === true,
       // A print longer than one message goes as a text file on the same ephemeral reply.
       respond: async (content) => {
         if (content.length <= PRINT_INLINE_MAX_CHARS) {
@@ -1967,6 +1970,7 @@ const PRINT_COMMAND_NAME = "print";
 const WAIFU_OPTION_NAME = "waifu";
 const WAKE_NOTE_OPTION_NAME = "note";
 const PRINT_TYPE_OPTION_NAME = "type";
+const PRINT_PRIVATE_OPTION_NAME = "private";
 /** Commands earlier releases registered on the House bot; removed at registration (§10.4). */
 const RETIRED_COMMAND_NAMES = ["run", "stop", "review", "memories", "console", "clear", "debug"];
 const MAX_AUTOCOMPLETE_CHOICES = 25;
@@ -2150,6 +2154,12 @@ export function buildHouseCommandPayloads() {
           description: "Which waifu.",
           required: true,
           autocomplete: true
+        },
+        {
+          type: ApplicationCommandOptionType.Boolean as ApplicationCommandOptionType.Boolean,
+          name: PRINT_PRIVATE_OPTION_NAME,
+          description: "Also show what came from private chats (hidden by default; only you see the reply).",
+          required: false
         }
       ]
     }

@@ -7,7 +7,7 @@ import type { Logger } from "../backend/logger.js";
 import type { DiscordDirectMessageEvent, DiscordGatewayFacade } from "../discord/client.js";
 import type { ConversationCacheEvent, ConversationMessageCache } from "../discord/conversationCache.js";
 import type { GuildDirectory } from "../discord/guildDirectory.js";
-import { curatedCatalog, type CuratedCatalog } from "../models/catalog.js";
+import { curatedCatalog, findCuratedModel, type CuratedCatalog } from "../models/catalog.js";
 import { createProviderCredentialsLookup, type ProviderKeyLookup } from "../models/credentials.js";
 import type { ModelClient } from "../models/client.js";
 import { hostTimeZone } from "../orchestration/context/timeFormat.js";
@@ -47,7 +47,8 @@ import { IntakeMarks } from "./intakeMarks.js";
 import { Notes, MEMORY_INDEX } from "./notes.js";
 import { lifeLocks } from "./paths.js";
 import { collectPlaces } from "./places.js";
-import { lifeSystem } from "./request.js";
+import { printLifeLines, printSystemPromptText } from "./lifeView.js";
+import { compactLife, currentHarness, startEpoch } from "./compaction.js";
 import { repairLife } from "./repair.js";
 import { Scheduler } from "./scheduler.js";
 import { WebTools } from "./search.js";
@@ -326,6 +327,7 @@ export class LivingCast {
     // behind a turn, and only the turn's abort lets it go (N1). Maintenance runs are waited for, so
     // none overlaps the next runtime's (M3).
     this.scheduler.abortMaintenance();
+    this.abortOwnerRuns("shutdown");
     for (const life of this.lives.values()) life.stop();
     await this.scheduler.stop();
     await Promise.all([...this.lives.values()].map((life) => life.whenIdle()));
@@ -343,6 +345,7 @@ export class LivingCast {
     // Kept on disk, so a reload or a restart while paused still catches up from here (N4).
     void this.track(this.marks.setPausedAt(this.pausedAt).catch(() => undefined));
     this.scheduler.abortMaintenance();
+    this.abortOwnerRuns("pause");
     for (const life of this.lives.values()) life.abort("pause");
   }
 
@@ -605,77 +608,120 @@ export class LivingCast {
     return { scrubbed };
   }
 
+  // ---- owner actions on a life (Living cast §14.1) -------------------------------------------------------
+
+  private readonly ownerRuns = new Set<AbortController>();
+
+  /**
+   * A manual compaction (`POST /api/waifus/:id/life/compact`, §5.6 "a manual compact"): under her life
+   * lock, so it runs between turns. The summary uses the model her epoch runs on (else hers now).
+   * Pause and shutdown abort it; an aborted summary changes nothing.
+   */
+  async compactNow(waifuId: string): Promise<{ epoch: number; summarized: boolean; aborted: boolean }> {
+    const deps = this.deps;
+    const waifu = await readWaifu(deps.storage, waifuId);
+    const model = lifeModelOf(deps, waifu);
+    if (!model) throw new LifeActionError("no_model", `${waifu.displayName} has no offered model; pick one before compacting her life.`);
+    if (!(await readLifeState(deps.storage, waifuId)).systemSnapshot) throw new LifeActionError("not_started", `${waifu.displayName}'s life has not started yet; there is nothing to compact.`);
+    const controller = new AbortController();
+    this.ownerRuns.add(controller);
+    const lease = this.activity.begin("maintenance");
+    try {
+      return await this.mutex.run(lifeLocks.life(waifuId), async () => {
+        const state = await readLifeState(deps.storage, waifuId);
+        const lines = await readLifeLog(deps.storage, waifuId, state.epoch);
+        const harness = await currentHarness(deps, waifu, model);
+        const old = state.modelRoute ? findCuratedModel(state.modelRoute, deps.catalog()) : undefined;
+        const outcome = await compactLife(deps, {
+          waifu,
+          state,
+          lines,
+          summaryRoute: old ?? model,
+          ...(state.modelRoute?.effort ? { effort: state.modelRoute.effort } : {}),
+          nextHarness: harness,
+          reason: "manual",
+          omit: { deleted: state.deletedReadIds.map((id) => `message ${id}`), people: [] },
+          signal: controller.signal
+        });
+        return { epoch: outcome.state.epoch, summarized: outcome.summarized, aborted: outcome.aborted === true };
+      });
+    } finally {
+      lease?.();
+      this.ownerRuns.delete(controller);
+      this.life(waifuId).poke();
+    }
+  }
+
+  /**
+   * Reset her short-term memory (`POST /api/waifus/:id/life/reset`): her turn is aborted, then a
+   * fresh epoch starts with no summary and no kept turns. Notes, queued wakes, watches, reminders and
+   * read cursors stay; the old epoch's log is kept the usual 7 days. Without a model the new epoch
+   * starts at her next turn (the summary is cleared now).
+   */
+  async resetLife(waifuId: string): Promise<{ epoch: number; deferred: boolean }> {
+    const deps = this.deps;
+    const waifu = await readWaifu(deps.storage, waifuId);
+    const model = lifeModelOf(deps, waifu);
+    const life = this.life(waifuId);
+    life.abort("reset");
+    const lease = this.activity.begin("maintenance");
+    try {
+      return await this.mutex.run(lifeLocks.life(waifuId), async () => {
+        const state = await readLifeState(deps.storage, waifuId);
+        if (model && state.systemSnapshot) {
+          const harness = await currentHarness(deps, waifu, model);
+          const next = await startEpoch(deps, waifuId, { harness, summary: null, kept: [], readIds: [], reason: "reset", summarized: false, strippedBlocks: 0 });
+          deps.logger.info("Life reset by the owner", { category: "life", waifuId, epoch: next.epoch });
+          return { epoch: next.epoch, deferred: false };
+        }
+        const next = await updateLifeState(deps.storage, waifuId, (current) => ({ ...current, summary: null, ...(current.systemSnapshot ? { pendingEpochStart: true } : {}) }));
+        deps.logger.info("Life reset by the owner; the fresh epoch starts at her next turn", { category: "life", waifuId });
+        return { epoch: next.epoch, deferred: true };
+      });
+    } finally {
+      lease?.();
+      life.poke();
+    }
+  }
+
+  /** Aborts the owner's running compactions (pause, shutdown). */
+  private abortOwnerRuns(reason: string): void {
+    for (const controller of this.ownerRuns) controller.abort(new Error(reason));
+  }
+
+  /** Whether a turn cycle of hers runs now. */
+  lifeBusy(waifuId: string): boolean {
+    return this.lives.get(waifuId)?.busy ?? false;
+  }
+
   // ---- /print -------------------------------------------------------------------------------------------
 
-  async printSystemPrompt(waifuId: string): Promise<string> {
-    const state = await readLifeState(this.deps.storage, waifuId);
-    if (!state.systemSnapshot) return "(no system prompt yet: her life has not started)";
-    return lifeSystem(state).join("\n\n");
+  /** Blocks A and B; `<life_so_far>` (her summary) is hidden unless `private` (§10.4, D14). */
+  async printSystemPrompt(waifuId: string, o: { private?: boolean } = {}): Promise<string> {
+    return printSystemPromptText(await readLifeState(this.deps.storage, waifuId), { private: o.private === true });
   }
 
   async printNotes(waifuId: string): Promise<string> {
     return (await new Notes(this.deps.storage, waifuId).read(MEMORY_INDEX)) ?? "(no MEMORY.md yet)";
   }
 
-  /** The last 20 life-log lines with DM tool results and DM send arguments redacted (§10.4). */
-  async printLife(waifuId: string): Promise<string> {
+  /**
+   * The last 20 life-log lines. Unless `private`: DM tool results and arguments, every quoted part of
+   * a DM notification line and her own text in a turn that touched a DM are redacted (§10.4, D14).
+   */
+  async printLife(waifuId: string, o: { private?: boolean } = {}): Promise<string> {
     const state = await readLifeState(this.deps.storage, waifuId);
     const all = await readLifeLog(this.deps.storage, waifuId, state.epoch);
-    // DM tool calls of the whole epoch (a result's call may sit before the last 20 lines).
-    const dmCalls = new Set<string>();
-    for (const line of all) {
-      const content = line.message?.["content"];
-      if (!Array.isArray(content)) continue;
-      for (const block of content as Array<Record<string, unknown>>) {
-        if (block["type"] !== "tool_use") continue;
-        const place = ((block["input"] ?? {}) as Record<string, unknown>)["place"];
-        if (typeof place === "string" && isDmPlace(place)) dmCalls.add(String(block["id"]));
-      }
-    }
-    const lines = all.slice(-20);
-    return lines.map((line) => `${line.at.slice(11, 16)} ${line.kind}: ${redactLine(line.message, dmCalls)}`).join("\n") || "(her life log is empty)";
+    return printLifeLines(all, { private: o.private === true });
   }
 }
 
-const REDACTED = "[private chat redacted]";
-
-function isDmPlace(place: string): boolean {
-  return place.startsWith("dm/") || place.startsWith("dm_");
-}
-
-/**
- * Notification lines about a DM keep their reason, place and sender but lose every quoted part (the
- * preview, a matched watch word, a note), wherever they appear: a turn's notification block, or
- * notifications folded into a tool result (D14: DM content stays private from the owner too).
- */
-export function redactDmNotifications(text: string): string {
-  return text
-    .split("\n")
-    .map((line) => (/^\s*[-·] .*(?:· |\()dm[/_]/u.test(line) ? line.replace(/"[^"\n]*"/gu, `"${REDACTED}"`) : line))
-    .join("\n");
-}
-
-/** One log line for `/print life`: DM tool results, DM send arguments and DM previews redacted. */
-export function redactLine(message: Record<string, unknown> | null, dmCalls: ReadonlySet<string>): string {
-  if (!message) return "—";
-  const content = message["content"];
-  if (typeof content === "string") return redactDmNotifications(content).slice(0, 300);
-  if (!Array.isArray(content)) return "";
-  const parts: string[] = [];
-  for (const block of content as Array<Record<string, unknown>>) {
-    if (block["type"] === "text") parts.push(redactDmNotifications(String(block["text"])).slice(0, 300));
-    else if (block["type"] === "tool_use") {
-      const input = (block["input"] ?? {}) as Record<string, unknown>;
-      parts.push(dmCalls.has(String(block["id"])) ? `${String(block["name"])}(${REDACTED})` : `${String(block["name"])}(${JSON.stringify(input).slice(0, 200)})`);
-    } else if (block["type"] === "tool_result") {
-      const raw = block["content"];
-      const text = typeof raw === "string"
-        ? raw
-        : Array.isArray(raw)
-          ? (raw as Array<Record<string, unknown>>).map((part) => (part["type"] === "text" ? String(part["text"]) : `[${String(part["type"])}]`)).join("\n")
-          : JSON.stringify(raw);
-      parts.push(dmCalls.has(String(block["tool_use_id"])) ? `result: ${REDACTED}` : `result: ${redactDmNotifications(text).slice(0, 200)}`);
-    }
+/** An owner action on a life that cannot run now (`no_model`, `not_started`). */
+export class LifeActionError extends Error {
+  override name = "LifeActionError";
+  constructor(readonly code: "no_model" | "not_started", message: string) {
+    super(message);
   }
-  return parts.join(" | ");
 }
+
+export { redactDmNotifications } from "./lifeView.js";

@@ -224,7 +224,7 @@ describe("House bot slash command payloads (Living cast §10.4)", () => {
     for (const payload of payloads) expect(payload.defaultMemberPermissions).toBe(8n);
   });
 
-  it("/wake takes a waifu (autocomplete) and an optional note; /print takes system_prompt, notes or life", () => {
+  it("/wake takes a waifu (autocomplete) and an optional note; /print takes system_prompt, notes or life, and private", () => {
     const byName = new Map(buildHouseCommandPayloads().map((payload) => [payload.name, payload]));
     expect(byName.get("wake")?.options).toEqual([
       expect.objectContaining({ name: "waifu", required: true, autocomplete: true }),
@@ -240,7 +240,8 @@ describe("House bot slash command payloads (Living cast §10.4)", () => {
           { name: "life (last 20 lines)", value: "life" }
         ]
       }),
-      expect.objectContaining({ name: "waifu", required: true, autocomplete: true })
+      expect.objectContaining({ name: "waifu", required: true, autocomplete: true }),
+      expect.objectContaining({ name: "private", required: false })
     ]);
   });
 });

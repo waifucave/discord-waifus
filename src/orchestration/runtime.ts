@@ -540,7 +540,7 @@ export class CastRuntime {
     );
   }
 
-  /** `/print system_prompt|notes|life <waifu>` (§10.4), only to the owner. */
+  /** `/print system_prompt|notes|life <waifu> [private]` (§10.4), only to the owner; DM content only with `private`. */
   async handlePrintCommand(event: DiscordPrintCommandEvent): Promise<void> {
     const waifu = await this.findWaifu(event.waifuId);
     if (!waifu) return event.respond("I don't know that waifu.");
@@ -548,9 +548,9 @@ export class CastRuntime {
       event.type === "notes"
         ? await this.cast.printNotes(waifu.id)
         : event.type === "life"
-          ? await this.cast.printLife(waifu.id)
+          ? await this.cast.printLife(waifu.id, { private: event.private === true })
           : event.type === "system_prompt"
-            ? await this.cast.printSystemPrompt(waifu.id)
+            ? await this.cast.printSystemPrompt(waifu.id, { private: event.private === true })
             : undefined;
     if (text === undefined) return event.respond("Pick what to print: system_prompt, notes or life.");
     await event.respond(text);
