@@ -1,7 +1,7 @@
 import { chmod, mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { MIGRATION_STEPS, runMigrations } from "../src/backend/migrations.js";
+import { LIVING_CAST_L2_STEP_IDS, MIGRATION_STEPS, runMigrations } from "../src/backend/migrations.js";
 import { ensureDataLayout } from "../src/config/layout.js";
 import { loadAppConfig } from "../src/config/appConfig.js";
 import { RuntimeStateSchema } from "../src/backend/runtime.js";
@@ -19,6 +19,10 @@ import {
   RemoteAccessTrustIndexV1Schema
 } from "../src/shared/schemas/remoteAccess.js";
 import { remoteStatePaths } from "../src/remote/paths.js";
+
+// These tests pin the legacy steps' own output, which the Living cast L2 data steps then convert and
+// archive (covered end to end in livingCastMigrations.test.ts): they run every step but those.
+const PRE_LIVING_CAST_L2_STEPS = MIGRATION_STEPS.filter((step) => !LIVING_CAST_L2_STEP_IDS.has(step.id));
 
 const roots: string[] = [];
 
@@ -166,7 +170,7 @@ describe("runMigrations", () => {
       }
     });
 
-    const result = await runMigrations(root);
+    const result = await runMigrations(root, { steps: PRE_LIVING_CAST_L2_STEPS });
 
     expect(result.applied).toEqual([
       "migrate-orchestrator-history-to-responding-waifus",
@@ -385,7 +389,7 @@ describe("runMigrations", () => {
       guildId: "guild-2"
     });
 
-    const result = await runMigrations(root);
+    const result = await runMigrations(root, { steps: PRE_LIVING_CAST_L2_STEPS });
 
     expect(result.applied).toContain("migrate-memories-to-guild-scope");
     expect(result.applied).toContain("migrate-memory-store-v2");
@@ -440,7 +444,7 @@ describe("runMigrations", () => {
       guildId: "guild-1"
     });
 
-    await runMigrations(root);
+    await runMigrations(root, { steps: PRE_LIVING_CAST_L2_STEPS });
 
     const store = await readJson<{ memories: Array<Record<string, unknown>> }>(root, "user/memories.json");
     expect(store.memories[0]).toMatchObject({
@@ -491,7 +495,7 @@ describe("runMigrations", () => {
       ]
     });
 
-    const result = await runMigrations(root);
+    const result = await runMigrations(root, { steps: PRE_LIVING_CAST_L2_STEPS });
 
     expect(result.applied).toContain("archive-memories-with-unknown-waifus");
     const store = await readJson<{ memories: Array<Record<string, unknown>> }>(root, "user/memories.json");
@@ -505,7 +509,7 @@ describe("runMigrations", () => {
       origin: {}, subjects: [], revision: 2, createdAt: "2026-05-16T12:00:00.000Z", updatedAt: "2026-05-16T12:00:00.000Z", status: "active"
     });
     await writeJson(root, "user/memories.json", phase4);
-    await runMigrations(root);
+    await runMigrations(root, { steps: PRE_LIVING_CAST_L2_STEPS });
     const after = await readJson<{ memories: Array<Record<string, unknown>> }>(root, "user/memories.json");
     expect(after.memories.find((memory) => memory.id === "gone")).toMatchObject({
       status: "archived",
@@ -575,7 +579,7 @@ describe("runMigrations", () => {
       ]
     });
 
-    const result = await runMigrations(root);
+    const result = await runMigrations(root, { steps: PRE_LIVING_CAST_L2_STEPS });
     expect(result.applied).toContain("migrate-memory-store-v2");
 
     const store = await readJson<{ memories: Array<Record<string, unknown>> }>(root, "user/memories.json");
@@ -616,7 +620,7 @@ describe("runMigrations", () => {
     });
 
     // Idempotent: a second run does not re-apply.
-    const second = await runMigrations(root);
+    const second = await runMigrations(root, { steps: PRE_LIVING_CAST_L2_STEPS });
     expect(second.applied).not.toContain("migrate-memory-store-v2");
     const after = await readJson<{ memories: Array<Record<string, unknown>> }>(root, "user/memories.json");
     expect(after.memories).toHaveLength(3);
@@ -653,7 +657,7 @@ describe("runMigrations", () => {
     });
 
     const before = await readFile(path.join(root, "user/memories.json"), "utf8");
-    const result = await runMigrations(root);
+    const result = await runMigrations(root, { steps: PRE_LIVING_CAST_L2_STEPS });
     const afterRaw = await readFile(path.join(root, "user/memories.json"), "utf8");
 
     expect(result.applied).not.toContain("migrate-memory-store-v2");
@@ -792,7 +796,7 @@ describe("schema v2 migration (§7.3)", () => {
       ]
     });
 
-    const result = await runMigrations(root);
+    const result = await runMigrations(root, { steps: PRE_LIVING_CAST_L2_STEPS });
     expect(result.applied).toEqual([
       "migrate-configs-to-gateway-params",
       "migrate-memories-global-origin-subjects-1",
@@ -852,7 +856,7 @@ describe("schema v2 migration (§7.3)", () => {
     expect(memories.schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
     expect(() => MemoryStoreSchema.parse(memories)).not.toThrow();
 
-    const second = await runMigrations(root);
+    const second = await runMigrations(root, { steps: PRE_LIVING_CAST_L2_STEPS });
     expect(second.applied).toEqual([]);
   });
 

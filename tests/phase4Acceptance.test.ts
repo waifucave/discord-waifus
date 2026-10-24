@@ -143,10 +143,19 @@ describe("migrations re-run", () => {
     ]);
     expect(migrated.has("app/cache/ocr/results/abc.json")).toBe(false);
     expect(migrated.has("app/cache/ocr/results-v2/def.json")).toBe(true);
-    expect(JSON.parse(migrated.get("user/memory/dream-cursor.json")!)).not.toHaveProperty("cursors");
-    for (const memory of JSON.parse(migrated.get("user/memories.json")!).memories as Array<Record<string, unknown>>) {
+    // The Phase 4 memory steps ran first; living-cast-memories-to-notes-v1 then archived the store.
+    expect(JSON.parse(migrated.get("user/.archive/living-cast/memory/dream-cursor.json")!)).not.toHaveProperty("cursors");
+    for (const memory of JSON.parse(migrated.get("user/.archive/living-cast/memories.json")!).memories as Array<Record<string, unknown>>) {
       expect(memory).not.toHaveProperty("guildId");
     }
+    expect(migrated.has("user/memories.json")).toBe(false);
+    expect(migrated.get("user/waifus/yuki/notes/MEMORY.md")).toMatch(/^# Memory\n- \[Kev\]\(people\/kev\.md\) — Kevin is allergic to peanuts\.\n/u);
+    // (The cross-guild dedupe kept the guild-b copy, where the member is called "Kev".)
+    expect(migrated.get("user/waifus/yuki/notes/misc.md")).toBe("# Misc\n\n- The bake sale is on Saturday.\n");
+    // living-cast-archive-director-v1 and living-cast-server-fields-v1.
+    expect(migrated.has("user/orchestrator/config.json")).toBe(false);
+    expect(migrated.has("user/.archive/living-cast/orchestrator/config.json")).toBe(true);
+    expect(JSON.parse(migrated.get("user/servers/guild-a/server.json")!)).not.toHaveProperty("contextWindows");
 
     // Same version, ledger intact: nothing runs.
     const second = await runMigrations(root, { appVersion: APP_VERSION });

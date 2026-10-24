@@ -79,7 +79,7 @@ function upsert<T extends { userId: string; at: string }>(entries: T[], next: T)
   return [...others, kept];
 }
 
-export async function readForgottenPeople(storage: StorageService): Promise<ForgottenPerson[]> {
+export async function readForgottenPeople(storage: Pick<StorageService, "dataRoot">): Promise<ForgottenPerson[]> {
   return readEntries<ForgottenPerson>(resolveDataPath(storage.dataRoot, ...FORGOTTEN_PEOPLE_PATH), "forgotten");
 }
 
@@ -96,7 +96,7 @@ export function pendingScrubsPath(dataRoot: string, waifuId: string): string {
   return resolveDataPath(dataRoot, "user", "waifus", waifuId, "life", "pending-scrubs.json");
 }
 
-export async function readPendingScrubs(storage: StorageService, waifuId: string): Promise<PendingScrub[]> {
+export async function readPendingScrubs(storage: Pick<StorageService, "dataRoot">, waifuId: string): Promise<PendingScrub[]> {
   return readEntries<PendingScrub>(pendingScrubsPath(storage.dataRoot, waifuId), "scrubs");
 }
 

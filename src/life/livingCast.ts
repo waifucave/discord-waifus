@@ -258,6 +258,9 @@ export class LivingCast {
         const cursor = cursors.get(waifu.id)?.[placeKey]?.lastReadMessageId;
         if (cursor && compareIds(state.lastInboundMessageId, cursor) <= 0) continue;
         if (!state.lastInboundAt || Date.parse(state.lastInboundAt) < cutoff) continue;
+        // Already queued (living-cast-dm-state-v1 turns a DM in flight at upgrade into a wake).
+        const queued = (await readLifeFile(deps.storage, waifu.id, "wakes")).immediate;
+        if (queued.some((wake) => wake.placeKey === placeKey && wake.messageId === state.lastInboundMessageId)) continue;
         await this.intake.onDirectMessage({
           waifuId: state.waifuId,
           botId: state.botId,

@@ -28,6 +28,11 @@ import { migrateServerContextWindowsExplicit } from "./migrationSteps/serverCont
 import { migrateWaifuDropPromptLayout } from "./migrationSteps/waifuDropPromptLayout.js";
 import { migrateLivingCastModels } from "./migrationSteps/livingCastModels.js";
 import { checkStoredModelEfforts } from "./migrationSteps/modelEffortCheck.js";
+import { migrateLivingCastMemoriesToNotes } from "./migrationSteps/livingCastMemoriesToNotes.js";
+import { migrateLivingCastArchiveDirector } from "./migrationSteps/livingCastArchiveDirector.js";
+import { migrateLivingCastDmState } from "./migrationSteps/livingCastDmState.js";
+import { migrateLivingCastServerFields } from "./migrationSteps/livingCastServerFields.js";
+import { migrateLivingCastAppConfig } from "./migrationSteps/livingCastAppConfig.js";
 import { installedCatalog, routeKey } from "../models/catalog.js";
 import {
   emptyMigrationLedger,
@@ -152,6 +157,14 @@ export const MIGRATION_STEPS: readonly MigrationStep[] = [
   // the effort check re-validates stored efforts against the installed winter catalog every boot.
   { id: "living-cast-models-v1", frequency: "once", run: migrateLivingCastModels },
   { id: "living-cast-model-effort-check", frequency: "every-boot", run: (dataRoot) => checkStoredModelEfforts(dataRoot) },
+  // Living cast L2 (spec §7.4, §11.2): the memory store becomes notes, the director's data is
+  // archived, an in-flight DM becomes a wake, and server files and config.toml lose the retired
+  // settings. Each is idempotent; everything retired lands in user/.archive/living-cast/.
+  { id: "living-cast-memories-to-notes-v1", frequency: "once", run: (dataRoot) => migrateLivingCastMemoriesToNotes(dataRoot) },
+  { id: "living-cast-archive-director-v1", frequency: "once", run: migrateLivingCastArchiveDirector },
+  { id: "living-cast-dm-state-v1", frequency: "once", run: (dataRoot) => migrateLivingCastDmState(dataRoot) },
+  { id: "living-cast-server-fields-v1", frequency: "once", run: migrateLivingCastServerFields },
+  { id: "living-cast-app-config-v1", frequency: "once", run: migrateLivingCastAppConfig },
   {
     // Runs LAST: every step above may still leave a file's schemaVersion at 1 even once its shape
     // is current. Stamping here — after all shape conversions — is what lets the next boot's
@@ -161,6 +174,15 @@ export const MIGRATION_STEPS: readonly MigrationStep[] = [
     run: async (dataRoot) => label(await stampSchemaVersion2(dataRoot), "stamp-schema-version-2")
   }
 ];
+
+/** The Living cast L2 data steps (spec §11.2), registered above just before the schema stamp. */
+export const LIVING_CAST_L2_STEP_IDS: ReadonlySet<string> = new Set([
+  "living-cast-memories-to-notes-v1",
+  "living-cast-archive-director-v1",
+  "living-cast-dm-state-v1",
+  "living-cast-server-fields-v1",
+  "living-cast-app-config-v1"
+]);
 
 function stepIsRecorded(step: MigrationStep, ledger: MigrationLedger, appVersion: string): boolean {
   if (step.frequency === "every-boot") return false;

@@ -1,13 +1,17 @@
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { runMigrations } from "../src/backend/migrations.js";
+import { LIVING_CAST_L2_STEP_IDS, MIGRATION_STEPS, runMigrations } from "../src/backend/migrations.js";
 import { migrateDreamCursorGlobal } from "../src/backend/migrationSteps/dreamCursorGlobal.js";
 import { MEMORIES_DEDUPE_AUDIT, MEMORIES_DEDUPE_MARKER, migrateMemoriesCrossGuildDedupe } from "../src/backend/migrationSteps/memoriesCrossGuildDedupe.js";
 import { migrateMemoriesGlobalOriginSubjects } from "../src/backend/migrationSteps/memoriesGlobalOriginSubjects.js";
 import { migratePendingObservationsGlobal } from "../src/backend/migrationSteps/pendingObservationsGlobal.js";
 import { MemoryStoreSchema, PendingObservationsFileSchema } from "../src/shared/schemas/domain.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
+
+// These tests pin the legacy steps' own output, which the Living cast L2 data steps then convert and
+// archive (covered end to end in livingCastMigrations.test.ts): they run every step but those.
+const PRE_LIVING_CAST_L2_STEPS = MIGRATION_STEPS.filter((step) => !LIVING_CAST_L2_STEP_IDS.has(step.id));
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -279,13 +283,13 @@ describe("memories-global-origin-subjects-v1 on an unreadable store", () => {
     await writeFile(path.join(dir, "user/memories.json"), "{ broken", "utf8");
     await expect(migrateMemoriesGlobalOriginSubjects(dir)).rejects.toThrow(/not a readable memory store/);
     // (Earlier legacy memory steps already refuse a corrupt store; either way the boot fails.)
-    await expect(runMigrations(dir, { appVersion: "2.200.0" })).rejects.toThrow();
+    await expect(runMigrations(dir, { appVersion: "2.200.0", steps: PRE_LIVING_CAST_L2_STEPS })).rejects.toThrow();
     const ledger = await readJson<{ steps: Record<string, unknown> }>(dir, "app/migrations.json");
     expect(ledger.steps["memories-global-origin-subjects-v1"]).toBeUndefined();
     expect(await readFile(path.join(dir, "user/memories.json"), "utf8")).toBe("{ broken");
 
     await writeStore(dir, [legacyMemory("m1")]);
-    const repaired = await runMigrations(dir, { appVersion: "2.200.0" });
+    const repaired = await runMigrations(dir, { appVersion: "2.200.0", steps: PRE_LIVING_CAST_L2_STEPS });
     expect(repaired.applied).toContain("migrate-memories-global-origin-subjects-1");
     expect(MemoryStoreSchema.parse(await readJson(dir, "user/memories.json")).memories[0]!.origin).toEqual({ guildId: "guild-a", channelId: "chan-1" });
   });
@@ -304,18 +308,18 @@ describe("full boot", () => {
       legacyMemory("dup-b", { guildId: "guild-b", channelId: "chan-9", entities: ["Kev"], createdAt: "2026-09-01T00:00:00.000Z" }),
       legacyMemory("solo", { content: "Riko owes Kevin a rematch.", waifuId: "riko", entities: ["Riko", "Kevin"] })
     ]);
-    const first = await runMigrations(dir, { appVersion: "2.200.0" });
+    const first = await runMigrations(dir, { appVersion: "2.200.0", steps: PRE_LIVING_CAST_L2_STEPS });
     expect(first.applied).toEqual(expect.arrayContaining(["migrate-memories-global-origin-subjects-3", "memories-cross-guild-dedupe-1"]));
     const store = MemoryStoreSchema.parse(await readJson(dir, "user/memories.json"));
     expect(store.memories.find((memory) => memory.id === "dup-b")!.status).toBe("active");
     expect(store.memories.find((memory) => memory.id === "dup-a")).toMatchObject({ status: "archived", mergedInto: "dup-b" });
 
     const snapshot = await readFile(path.join(dir, "user/memories.json"), "utf8");
-    const second = await runMigrations(dir, { appVersion: "2.200.0" });
+    const second = await runMigrations(dir, { appVersion: "2.200.0", steps: PRE_LIVING_CAST_L2_STEPS });
     expect(second.applied).toEqual([]);
     // Even with the ledger gone every step is idempotent.
     await rm(path.join(dir, "app/migrations.json"), { force: true });
-    const third = await runMigrations(dir, { appVersion: "2.200.0" });
+    const third = await runMigrations(dir, { appVersion: "2.200.0", steps: PRE_LIVING_CAST_L2_STEPS });
     expect(third.applied).toEqual([]);
     expect(await readFile(path.join(dir, "user/memories.json"), "utf8")).toBe(snapshot);
   });

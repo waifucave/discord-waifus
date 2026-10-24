@@ -113,6 +113,8 @@ export async function dmForget(storage: StorageService, input: DmForgetInput, ho
       if (images.length > 0) await purge(images);
     }
     deleted.cachedImages += cached.size;
+    // The retired context engine's copy of this chat (living-cast-archive-director-v1) goes too.
+    if (!dryRun) await rm(storage.dataPath("user", ".archive", "living-cast", "conversations", key), { recursive: true, force: true });
     if (hasConversation) {
       deleted.dmContexts += 1;
       if (!dryRun) {
