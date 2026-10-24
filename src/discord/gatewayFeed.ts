@@ -217,10 +217,15 @@ export function attachGatewayFeed(client: Client, scope: DiscordConnectionScope,
   client.on(Events.ShardReconnecting, () => sink.conversation(connectionEvent(scope, "reconnecting")));
   client.on(Events.ShardResume, () => sink.conversation(connectionEvent(scope, "resumed")));
   client.on(Events.ShardDisconnect, () => sink.conversation(connectionEvent(scope, "disconnected")));
-  client.on(Events.Invalidated, () => sink.conversation(connectionEvent(scope, "invalidated")));
 
   // ---- guild directory ------------------------------------------------------------------------
+  // GuildCreate only fires for guilds joined (or becoming available) later; guilds the bot is
+  // already in arrive with the READY payload, so seed them from the cache once the client is ready.
   client.on(Events.GuildCreate, (guild) => sink.directory(guildSnapshotEvent(guild)));
+  client.on(Events.GuildAvailable, (guild) => sink.directory(guildSnapshotEvent(guild)));
+  client.on(Events.ClientReady, (ready) => {
+    for (const guild of ready.guilds.cache.values()) sink.directory(guildSnapshotEvent(guild));
+  });
   client.on(Events.GuildDelete, (guild) => sink.directory({ type: "guildDelete", guildId: guild.id }));
   client.on(Events.GuildRoleCreate, (role) => sink.directory({ type: "roleUpsert", guildId: role.guild.id, role: roleEntry(role) }));
   client.on(Events.GuildRoleUpdate, (_old, role) => sink.directory({ type: "roleUpsert", guildId: role.guild.id, role: roleEntry(role) }));

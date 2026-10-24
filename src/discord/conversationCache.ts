@@ -19,6 +19,7 @@ import type { RawDiscordMessage } from "../shared/schemas/discordMessage.js";
 import type { DiscordGatewayFacade } from "./client.js";
 import type {
   DiscordConnectionScope,
+  DiscordConnectionState,
   DiscordConversationEvent,
   DiscordMessagePatch,
   DiscordReactionEmoji
@@ -118,7 +119,14 @@ type Buffer = {
   reactions: Map<string, Map<string, ReactionSummary>>;
   reactionLog: ReactionLogEntry[];
   flight: Promise<void> | undefined;
+  /** Highest id handed to a caller (or used as its cursor): anything inserted below it arrives late. */
+  maxServed: string | undefined;
+  /** Ids inserted below `maxServed` since the last serve; the next serve returns them whatever the cursor. */
+  late: Set<string>;
 };
+
+/** Per gateway scope: a unique generation per connection epoch, and whether the feed is live. */
+type ScopeState = { gen: number; counter: number; resumeTo: number | undefined; live: boolean };
 
 function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : new Error("Request aborted.");
@@ -153,7 +161,7 @@ function sameVersion(a: RawDiscordMessage, b: RawDiscordMessage): boolean {
 
 export class ConversationMessageCache implements ConversationMessageSource {
   private readonly buffers = new Map<string, Buffer>();
-  private readonly generations = new Map<DiscordConnectionScope, number>();
+  private readonly scopes = new Map<DiscordConnectionScope, ScopeState>();
   private readonly listeners = new Set<(event: ConversationCacheEvent) => void>();
   private readonly seenCreates = new Set<string>();
   private readonly fallback: DiscordConversationSource;
@@ -238,7 +246,7 @@ export class ConversationMessageCache implements ConversationMessageSource {
       await raceAbort(promise, i.signal);
       // Our own REST round answered this request: when the fetch cap cut it short (the page
       // did not reach the cursor) the buffer holds exactly what that page held.
-      const synced = buf.coversFrom !== undefined && buf.syncedGen === this.generation(buf.scope);
+      const synced = this.synced(buf);
       if (synced && (own || this.covers(buf, i))) return this.serveAndTrim(buf, i, { allowGap: true });
     }
     throwIfAborted(i.signal);
@@ -292,8 +300,7 @@ export class ConversationMessageCache implements ConversationMessageSource {
   private handle(event: DiscordConversationEvent): void {
     switch (event.type) {
       case "connection":
-        // A resume replays what was missed; every other transition may have lost events.
-        if (event.state !== "resumed") this.generations.set(event.scope, this.generation(event.scope) + 1);
+        this.onConnection(event.scope, event.state);
         return;
       case "create":
         this.onCreate(event.conversation, event.message, event.own === true);
@@ -316,23 +323,80 @@ export class ConversationMessageCache implements ConversationMessageSource {
     }
   }
 
+  /**
+   * discord.js emits ShardReconnecting before every resume, so `reconnecting` only parks the
+   * current generation: `resumed` restores it (the gateway replayed what was missed), while
+   * `ready` (fresh session) and `disconnected` leave a new, untrusted one in place.
+   */
+  private onConnection(scope: DiscordConnectionScope, state: DiscordConnectionState): void {
+    const s = this.scopeState(scope);
+    switch (state) {
+      case "ready":
+        s.gen = ++s.counter;
+        s.resumeTo = undefined;
+        s.live = true;
+        return;
+      case "reconnecting":
+        if (s.resumeTo === undefined) s.resumeTo = s.gen;
+        s.gen = ++s.counter;
+        s.live = false;
+        return;
+      case "resumed":
+        if (s.resumeTo !== undefined) s.gen = s.resumeTo;
+        s.resumeTo = undefined;
+        s.live = true;
+        return;
+      default:
+        s.gen = ++s.counter;
+        s.resumeTo = undefined;
+        s.live = false;
+    }
+  }
+
+  private scopeState(scope: DiscordConnectionScope): ScopeState {
+    let s = this.scopes.get(scope);
+    if (!s) {
+      s = { gen: 0, counter: 0, resumeTo: undefined, live: false };
+      this.scopes.set(scope, s);
+    }
+    return s;
+  }
+
   /** Public so a DM transport that already holds the raw message can record its own send. */
   recordOwnSend(conversation: ConversationRef, message: RawDiscordMessage): void {
     this.onCreate(conversation, message, true);
   }
 
-  private onCreate(conversation: ConversationRef, message: RawDiscordMessage, own: boolean): void {
+  private onCreate(conversation: ConversationRef, message: RawDiscordMessage, ownHint: boolean): void {
     // Our own send arrives twice (published by the sender, then by the orchestrator's gateway).
     if (this.seenCreates.has(message.id)) return;
+    // Own = authored by one of our bots, whichever of the two deliveries came first.
+    const own = ownHint || this.ownAuthorIds().has(message.authorId);
     this.seenCreates.add(message.id);
     if (this.seenCreates.size > 1000) this.seenCreates.delete(this.seenCreates.values().next().value as string);
     const buf = this.peek(conversation);
     if (buf && !buf.tombstones.has(message.id) && !buf.messages.has(message.id)) {
-      buf.messages.set(message.id, message);
+      this.put(buf, message);
       this.trim(buf);
     }
     this.observe(conversation, [message]);
     this.emit({ type: "create", conversation, message, own });
+  }
+
+  private ownAuthorIds(): ReadonlySet<string> {
+    try {
+      return new Set(this.d.discord()?.ownAuthorIds?.() ?? []);
+    } catch {
+      return new Set();
+    }
+  }
+
+  /** Insert a message; a new id below what callers were already served is marked late (C1). */
+  private put(buf: Buffer, message: RawDiscordMessage): void {
+    if (!buf.messages.has(message.id) && buf.maxServed !== undefined && compareIds(message.id, buf.maxServed) < 0) {
+      buf.late.add(message.id);
+    }
+    buf.messages.set(message.id, message);
   }
 
   private onUpdate(event: Extract<DiscordConversationEvent, { type: "update" }>): void {
@@ -346,7 +410,7 @@ export class ConversationMessageCache implements ConversationMessageSource {
     }
     if (!message) return; // a partial update for a message we do not hold cannot be applied
     if (buf && !buf.tombstones.has(message.id) && (previous || this.inCoverage(buf, message.id))) {
-      buf.messages.set(message.id, message);
+      this.put(buf, message);
     }
     this.observe(event.conversation, [message]);
     this.emit({
@@ -374,6 +438,7 @@ export class ConversationMessageCache implements ConversationMessageSource {
     buf.messages.delete(messageId);
     buf.reactions.delete(messageId);
     buf.reactionLog = buf.reactionLog.filter((entry) => entry.messageId !== messageId);
+    buf.late.delete(messageId);
     buf.tombstones.add(messageId);
     if (buf.tombstones.size > MAX_TOMBSTONES) {
       const oldest = buf.tombstones.values().next().value;
@@ -384,7 +449,7 @@ export class ConversationMessageCache implements ConversationMessageSource {
 
   private onReaction(event: Extract<DiscordConversationEvent, { type: "reaction" }>): void {
     const buf = this.peek(event.conversation);
-    if (buf) {
+    if (buf && !this.belowCoverage(buf, event.messageId)) {
       const byEmoji = buf.reactions.get(event.messageId) ?? new Map<string, ReactionSummary>();
       const key = event.emoji ? emojiKeyOf(event.emoji) : undefined;
       if (event.action === "add" && event.emoji && key) {
@@ -475,15 +540,33 @@ export class ConversationMessageCache implements ConversationMessageSource {
   }
 
   private generation(scope: DiscordConnectionScope): number {
-    return this.generations.get(scope) ?? 0;
+    return this.scopeState(scope).gen;
   }
 
+  /** A sync of the current connection epoch happened (whether or not the feed is live right now). */
+  private synced(buf: Buffer): boolean {
+    return buf.coversFrom !== undefined && buf.syncedGen === this.generation(buf.scope);
+  }
+
+  /** Trusted = synced, and the scope's event feed has reported a live connection (M2). */
   private trusted(buf: Buffer): boolean {
-    return this.attached && buf.coversFrom !== undefined && buf.syncedGen === this.generation(buf.scope);
+    return this.attached && this.scopeState(buf.scope).live && this.synced(buf);
   }
 
   private tailCheckDue(buf: Buffer): boolean {
     return this.now() - buf.trustedAt >= this.tailCheckAfterMs;
+  }
+
+  private belowCoverage(buf: Buffer, id: string): boolean {
+    return buf.coversFrom !== undefined && compareIds(id, buf.coversFrom) < 0;
+  }
+
+  /** Reactions only live for messages the buffer still covers. */
+  private pruneReactions(buf: Buffer): void {
+    for (const id of [...buf.reactions.keys()]) if (this.belowCoverage(buf, id)) buf.reactions.delete(id);
+    if (buf.reactionLog.some((entry) => this.belowCoverage(buf, entry.messageId))) {
+      buf.reactionLog = buf.reactionLog.filter((entry) => !this.belowCoverage(buf, entry.messageId));
+    }
   }
 
   private inCoverage(buf: Buffer, id: string): boolean {
@@ -509,8 +592,21 @@ export class ConversationMessageCache implements ConversationMessageSource {
     const sorted = [...buf.messages.values()].sort((a, b) => compareIds(a.id, b.id));
     const after = i.afterMessageId === null ? sorted : sorted.filter((m) => compareIds(m.id, i.afterMessageId!) > 0);
     const gap = o.allowGap === true && !this.covers(buf, i);
-    if (after.length > max) return { messages: after.slice(-max), reachedCursor: false };
-    return { messages: after, reachedCursor: gap ? false : i.afterMessageId !== null || buf.coversFrom === "0" };
+    // Messages that showed up below what callers already saw are returned whatever the cursor, once.
+    const afterIds = new Set(after.map((m) => m.id));
+    const late = [...buf.late].flatMap((id) => {
+      const message = buf.messages.get(id);
+      return message && !afterIds.has(id) ? [message] : [];
+    });
+    buf.late.clear();
+    const capped = after.length > max;
+    const messages = [...late, ...(capped ? after.slice(-max) : after)].sort((a, b) => compareIds(a.id, b.id));
+    const last = messages[messages.length - 1]?.id;
+    for (const candidate of [last, i.afterMessageId ?? undefined]) {
+      if (candidate !== undefined && (buf.maxServed === undefined || compareIds(candidate, buf.maxServed) > 0)) buf.maxServed = candidate;
+    }
+    if (capped) return { messages, reachedCursor: false };
+    return { messages, reachedCursor: gap ? false : i.afterMessageId !== null || buf.coversFrom === "0" };
   }
 
   // ---- REST sync -------------------------------------------------------------------------------
@@ -546,15 +642,27 @@ export class ConversationMessageCache implements ConversationMessageSource {
     // The flight outlives a caller that aborts; the data it fetches still warms the buffer.
     const request = { conversation: i.conversation };
     if (this.trusted(buf) && this.tailCheckDue(buf) && this.covers(buf, i)) {
-      await this.tailCheck(buf, request, gen);
-      return;
+      if (await this.tailCheck(buf, request, gen)) return;
+      // The newest page cannot be stitched onto the buffer without losing messages in between:
+      // distrust it and rebuild from the caller's cursor.
+      buf.syncedGen = undefined;
     }
     await this.catchUp(buf, { ...request, afterMessageId: i.afterMessageId, maxMessages: i.maxMessages }, gen);
   }
 
   /** Re-validate the newest 10 messages; drift is repaired from the page and announced as catch-up events. */
-  private async tailCheck(buf: Buffer, request: { conversation: ConversationRef }, gen: number): Promise<void> {
+  private async tailCheck(buf: Buffer, request: { conversation: ConversationRef }, gen: number): Promise<boolean> {
     const page = await this.rest({ ...request, afterMessageId: null, maxMessages: TAIL_CHECK_SIZE });
+    const bufferNewest = [...buf.messages.keys()].sort(compareIds).pop();
+    if (bufferNewest !== undefined && !page.reachedCursor && page.messages.length > 0) {
+      // No overlap with the buffer (more than a page of messages went missing), or an unbuffered
+      // id older than the newest buffered one (a hole): patching the page would hide messages.
+      const noOverlap = compareIds(page.messages[0]!.id, bufferNewest) > 0;
+      const hole = page.messages.some(
+        (m) => !buf.messages.has(m.id) && !buf.tombstones.has(m.id) && compareIds(m.id, bufferNewest) < 0
+      );
+      if (noOverlap || hole) return false;
+    }
     const lowest = page.messages[0]?.id;
     const inWindow = (id: string) => (page.reachedCursor || lowest === undefined ? true : compareIds(id, lowest) >= 0);
     const fetched = new Map(page.messages.map((m) => [m.id, m]));
@@ -569,12 +677,13 @@ export class ConversationMessageCache implements ConversationMessageSource {
     for (const id of fetched.keys()) if (!buf.messages.has(id) && !buf.tombstones.has(id)) matches = false;
     if (matches) {
       buf.trustedAt = this.now();
-      return;
+      return true;
     }
     this.d.logger.warn("Conversation cache tail check found drift; repairing from REST", {
       conversationKey: conversationKey(buf.conversation)
     });
     this.apply(buf, page, { inWindow, emit: true, gen });
+    return true;
   }
 
   private async catchUp(buf: Buffer, i: ConversationFetchInput, gen: number): Promise<void> {
@@ -623,7 +732,7 @@ export class ConversationMessageCache implements ConversationMessageSource {
       if (buf.tombstones.has(message.id)) continue;
       const existing = buf.messages.get(message.id);
       if (existing && existing.editedAt && (!message.editedAt || message.editedAt <= existing.editedAt)) continue; // an event is newer
-      buf.messages.set(message.id, message);
+      this.put(buf, message);
       if (existing && o.emit && !sameVersion(existing, message)) {
         this.emit({ type: "update", conversation: buf.conversation, message, previous: existing, source: "catchup" });
       }
@@ -634,6 +743,7 @@ export class ConversationMessageCache implements ConversationMessageSource {
     }
     buf.syncedGen = o.gen;
     buf.trustedAt = this.now();
+    this.pruneReactions(buf);
     this.observe(buf.conversation, page.messages);
   }
 
@@ -641,9 +751,13 @@ export class ConversationMessageCache implements ConversationMessageSource {
     if (buf.messages.size <= this.maxMessages) return;
     const ids = [...buf.messages.keys()].sort(compareIds);
     const drop = ids.slice(0, ids.length - this.maxMessages);
-    for (const id of drop) buf.messages.delete(id);
+    for (const id of drop) {
+      buf.messages.delete(id);
+      buf.late.delete(id);
+    }
     // Everything from the oldest remaining message on is still contiguous.
     buf.coversFrom = ids[ids.length - this.maxMessages];
+    this.pruneReactions(buf);
   }
 
   // ---- LRU -------------------------------------------------------------------------------------
@@ -668,7 +782,9 @@ export class ConversationMessageCache implements ConversationMessageSource {
         tombstones: new Set(),
         reactions: new Map(),
         reactionLog: [],
-        flight: undefined
+        flight: undefined,
+        maxServed: undefined,
+        late: new Set()
       };
     }
     this.buffers.set(key, buf);

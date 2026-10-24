@@ -92,6 +92,8 @@ export type GuildDirectoryOptions = {
   flushDelayMs?: number;
   /** Maintenance tick that drives the periodic member list refresh (default 15 min). */
   maintenanceIntervalMs?: number;
+  /** Delay before the first maintenance pass after start() / the first snapshot (default 5 s). */
+  bootCheckDelayMs?: number;
   mentionFetchLimit?: number;
   mentionWaitMs?: number;
   negativeCacheMs?: number;
@@ -99,6 +101,7 @@ export type GuildDirectoryOptions = {
 
 const DEFAULT_FLUSH_DELAY_MS = 5_000;
 const DEFAULT_MAINTENANCE_INTERVAL_MS = 15 * 60 * 1000;
+const DEFAULT_BOOT_CHECK_DELAY_MS = 5_000;
 const DEFAULT_MENTION_FETCH_LIMIT = 5;
 const DEFAULT_MENTION_WAIT_MS = 1_500;
 const DEFAULT_NEGATIVE_CACHE_MS = 10 * 60 * 1000;
@@ -125,6 +128,8 @@ type GuildState = {
   pendingEvents: DiscordDirectoryEvent[];
   memberListAvailable: boolean | null;
   lastMemberRefreshAt: number | undefined;
+  /** When the list was last refused (403); retried once per memberListRefreshHours. */
+  memberListFailedAt: number | undefined;
   refreshing: Promise<unknown> | undefined;
 };
 
@@ -256,6 +261,7 @@ export class GuildDirectory implements CacheDirectoryHooks {
   private readonly transport: () => Promise<DirectoryTransport | undefined>;
   private readonly settings: () => { memberListRefreshHours: number };
   private maintenanceTimer: NodeJS.Timeout | undefined;
+  private bootTimer: NodeJS.Timeout | undefined;
   private detach: (() => void) | undefined;
   private closed = false;
 
@@ -275,6 +281,7 @@ export class GuildDirectory implements CacheDirectoryHooks {
   start(subscribe?: (listener: (event: DiscordDirectoryEvent) => void) => () => void): void {
     this.closed = false;
     if (subscribe && !this.detach) this.detach = subscribe((event) => this.handle(event));
+    this.scheduleBootCheck();
     if (!this.maintenanceTimer) {
       const timer = setInterval(() => {
         void this.runMaintenance().catch((error: unknown) => {
@@ -291,6 +298,8 @@ export class GuildDirectory implements CacheDirectoryHooks {
     this.closed = true;
     this.detach?.();
     this.detach = undefined;
+    if (this.bootTimer) clearTimeout(this.bootTimer);
+    this.bootTimer = undefined;
     if (this.maintenanceTimer) clearInterval(this.maintenanceTimer);
     this.maintenanceTimer = undefined;
     await this.flush();
@@ -415,6 +424,7 @@ export class GuildDirectory implements CacheDirectoryHooks {
         if (message.mentions.users[id] !== undefined || state.members.has(id) || wanted.includes(id)) continue;
         const until = state.negative.get(id);
         if (until !== undefined && until > now) continue;
+        if (until !== undefined) state.negative.delete(id);
         wanted.push(id);
       }
     }
@@ -474,6 +484,7 @@ export class GuildDirectory implements CacheDirectoryHooks {
       });
       return;
     }
+    if (event.type === "snapshot") this.scheduleBootCheck();
     if (!state.ready) {
       state.pendingEvents.push(event);
       void this.ensureLoaded(event.guildId);
@@ -588,6 +599,7 @@ export class GuildDirectory implements CacheDirectoryHooks {
         for (const member of members) state.members.set(member.userId, member);
         await this.mergeBots(state);
         state.memberListAvailable = true;
+        state.memberListFailedAt = undefined;
         state.lastMemberRefreshAt = this.now();
         this.markDirty(state, "members");
         await this.flushGuild(state);
@@ -598,6 +610,7 @@ export class GuildDirectory implements CacheDirectoryHooks {
             this.d.logger.warn("Guild member list is unavailable", { guildId: state.guildId, code: MEMBER_LIST_UNAVAILABLE, message: error.message });
           }
           state.memberListAvailable = false;
+          state.memberListFailedAt = this.now();
         }
         throw error;
       }
@@ -615,11 +628,16 @@ export class GuildDirectory implements CacheDirectoryHooks {
    * 0 = off) and still works. A 403 turns the guild off until a manual refresh succeeds.
    */
   async runMaintenance(): Promise<void> {
+    if (this.closed) return;
+    for (const state of this.guilds.values()) this.pruneNegative(state);
     const hours = this.settings().memberListRefreshHours;
-    if (hours <= 0 || this.closed) return;
+    if (hours <= 0) return;
     const dueMs = hours * 60 * 60 * 1000;
     for (const state of [...this.guilds.values()]) {
-      if (!state.ready || state.memberListAvailable === false) continue;
+      this.pruneNegative(state);
+      if (!state.ready) continue;
+      // A refused list (no privileged intent) is retried once per interval, not every tick.
+      if (state.memberListAvailable === false && state.memberListFailedAt !== undefined && this.now() - state.memberListFailedAt < dueMs) continue;
       if (state.lastMemberRefreshAt !== undefined && this.now() - state.lastMemberRefreshAt < dueMs) continue;
       try {
         await this.refresh(state.guildId, "members");
@@ -633,6 +651,23 @@ export class GuildDirectory implements CacheDirectoryHooks {
         // Other failures are retried on the next tick; a 403 is remembered inside refreshMembers.
       }
     }
+  }
+
+  private pruneNegative(state: GuildState): void {
+    const now = this.now();
+    for (const [id, until] of state.negative) if (until <= now) state.negative.delete(id);
+  }
+
+  /** First maintenance pass shortly after boot, so `memberListAvailable` is known without waiting 15 minutes. */
+  private scheduleBootCheck(): void {
+    if (this.bootTimer || this.closed) return;
+    this.bootTimer = setTimeout(() => {
+      this.bootTimer = undefined;
+      void this.runMaintenance().catch((error: unknown) => {
+        this.d.logger.warn("Guild directory maintenance failed", { message: error instanceof Error ? error.message : String(error) });
+      });
+    }, this.d.bootCheckDelayMs ?? DEFAULT_BOOT_CHECK_DELAY_MS);
+    this.bootTimer.unref?.();
   }
 
   // ---- state, loading, write-through ----------------------------------------------------------------
@@ -656,6 +691,7 @@ export class GuildDirectory implements CacheDirectoryHooks {
         pendingEvents: [],
         memberListAvailable: null,
         lastMemberRefreshAt: undefined,
+        memberListFailedAt: undefined,
         refreshing: undefined
       };
       this.guilds.set(guildId, state);

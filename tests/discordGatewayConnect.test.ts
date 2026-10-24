@@ -592,3 +592,119 @@ function quietLogger() {
     error: () => undefined
   };
 }
+
+describe("DiscordJsGateway seeds the guild directory and trust (I2)", () => {
+  const fakeGuild = {
+    id: "100",
+    name: "Bake Club",
+    roles: { cache: new Map([["r1", { id: "r1", name: "Bakers", color: 1 }]]) },
+    emojis: { cache: new Map() },
+    channels: {
+      cache: new Map([
+        ["c1", { id: "c1", name: "general", guildId: "100" }],
+        ["t1", { id: "t1", name: "Best brownies", parentId: "c1", isThread: () => true }]
+      ])
+    },
+    members: { cache: new Map() }
+  };
+
+  function withGuild(clients: FakeClients): FakeClients["factory"] {
+    return (input) => {
+      const client = clients.factory(input);
+      if (input.kind === "orchestrator") (client.guilds.cache as unknown as Map<string, unknown>).set("100", fakeGuild);
+      return client;
+    };
+  }
+
+  it("emits a snapshot for guilds the bot is already in when it becomes ready, to a subscriber registered before connect", async () => {
+    const clients = fakeClients({});
+    const gateway = makeGateway({ orchestrator: bot("orchestrator"), createClient: withGuild(clients) });
+    const events: Array<{ type: string; guildId: string }> = [];
+    gateway.onDirectoryEvent((event) => events.push(event));
+    await gateway.connect();
+    expect(events.filter((e) => e.type === "snapshot")).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      type: "snapshot",
+      guildId: "100",
+      roles: [{ id: "r1", name: "Bakers" }],
+      channels: [{ id: "c1", kind: "channel" }, { id: "t1", kind: "thread", parentId: "c1" }]
+    });
+  });
+
+  it("replays the snapshots and the live connection state to a subscriber that arrives after connect", async () => {
+    const clients = fakeClients({});
+    const gateway = makeGateway({ orchestrator: bot("orchestrator"), createClient: withGuild(clients) });
+    await gateway.connect();
+    const directory: Array<{ type: string; guildId: string }> = [];
+    const conversation: Array<{ type: string; state?: string }> = [];
+    gateway.onDirectoryEvent((event) => directory.push(event));
+    gateway.onConversationEvent((event) => conversation.push(event));
+    expect(directory.map((e) => e.type)).toEqual(["snapshot"]);
+    expect(conversation).toEqual([{ type: "connection", scope: "guild", state: "ready" }]);
+  });
+
+  it("feeds a real GuildDirectory so Task C can look up an existing thread", async () => {
+    const { GuildDirectory } = await import("../src/discord/guildDirectory.js");
+    const { StorageService } = await import("../src/storage/storageService.js");
+    const { makeTempRoot, removeTempRoot } = await import("./testUtils.js");
+    const root = await makeTempRoot();
+    try {
+      const clients = fakeClients({});
+      const gateway = makeGateway({ orchestrator: bot("orchestrator"), createClient: withGuild(clients) });
+      await gateway.connect();
+      const directory = new GuildDirectory({ storage: new StorageService(root), logger: quietLogger() });
+      directory.start((listener) => gateway.onDirectoryEvent(listener));
+      const view = await directory.view("100");
+      expect(view.roleName("r1")).toBe("Bakers");
+      expect(directory.channel("100", "t1")).toMatchObject({ kind: "thread", parentId: "c1" });
+      await directory.close();
+    } finally {
+      await removeTempRoot(root);
+    }
+  });
+
+  it("also snapshots a guild that becomes available later", async () => {
+    const clients = fakeClients({});
+    const gateway = makeGateway({ orchestrator: bot("orchestrator"), createClient: clients.factory });
+    const events: Array<{ type: string; guildId: string }> = [];
+    gateway.onDirectoryEvent((event) => events.push(event));
+    await gateway.connect();
+    clients.created.get("orchestrator")!.emit(Events.GuildAvailable, fakeGuild as never);
+    expect(events.map((e) => e.type)).toEqual(["snapshot"]);
+  });
+});
+
+describe("DiscordJsGateway falls back when the GuildMembers intent is refused (M6)", () => {
+  it("retries once without the intent, keeps Discord online and raises guild_members_intent_rejected", async () => {
+    const clients = fakeClients({ orchestrator: [new Error("Used disallowed intents"), "ok"] });
+    const issues: DiscordRuntimeIssue[] = [];
+    const gateway = makeGateway({
+      orchestrator: bot("orchestrator"),
+      guildMembersIntent: true,
+      createClient: clients.factory,
+      onRuntimeIssue: (issue) => {
+        issues.push(issue);
+      }
+    });
+    const status = await gateway.connect();
+    expect(status.orchestratorConnected).toBe(true);
+    expect(clients.loginAttempts.get("orchestrator")).toBe(2);
+    expect(new IntentsBitField(clients.createdOptions.get("orchestrator")!.intents).has(GatewayIntentBits.GuildMembers)).toBe(false);
+    await vi.waitFor(() => expect(issues).toHaveLength(1));
+    expect(issues[0]).toMatchObject({ source: "warn", code: "guild_members_intent_rejected" });
+    expect(gateway.status().warnings.join(" ")).toContain("guild_members_intent_rejected");
+  });
+
+  it("does not retry when the intent was not requested, and gives up after one retry", async () => {
+    const plain = fakeClients({ orchestrator: new Error("Used disallowed intents") });
+    const gateway = makeGateway({ orchestrator: bot("orchestrator"), createClient: plain.factory });
+    await expect(gateway.connect()).rejects.toMatchObject({ name: "DiscordConnectError" });
+    expect(plain.loginAttempts.get("orchestrator")).toBe(1);
+
+    const both = fakeClients({ orchestrator: new Error("Used disallowed intents") });
+    const optIn = makeGateway({ orchestrator: bot("orchestrator"), guildMembersIntent: true, createClient: both.factory });
+    const error = await optIn.connect().catch((caught: unknown) => caught);
+    expect(botStatus((error as { status: DiscordRuntimeStatus }).status, "orchestrator")).toMatchObject({ errorCode: "disallowed_intents" });
+    expect(both.loginAttempts.get("orchestrator")).toBe(2);
+  });
+});

@@ -22,7 +22,7 @@ import { buildNormalizedDiscordContext } from "./contextBuilder.js";
 import { unresolvedMentionIdsByType } from "./memberCache.js";
 import { denormalizeModelContentForDiscord } from "./normalization.js";
 import { pageMessagesSince, toRawDiscordMessage, withoutAuthors, type DiscordMessageLike } from "./rawMessage.js";
-import { attachGatewayFeed } from "./gatewayFeed.js";
+import { attachGatewayFeed, guildSnapshotEvent } from "./gatewayFeed.js";
 import type {
   DiscordConversationEvent,
   DiscordConversationEventListener,
@@ -114,8 +114,13 @@ export interface DiscordGatewayFacade {
    * Fakes without them leave the ConversationMessageCache permanently untrusted (always REST).
    */
   onConversationEvent?(listener: DiscordConversationEventListener): () => void;
-  /** Roles, emojis, channels, threads and (opt-in intent) members, for the GuildDirectory. */
+  /**
+   * Roles, emojis, channels, threads and (opt-in intent) members, for the GuildDirectory. A late
+   * subscriber is replayed a snapshot of every guild the connected orchestrator already sees.
+   */
   onDirectoryEvent?(listener: DiscordDirectoryEventListener): () => void;
+  /** Discord user ids of our own bots (orchestrator and waifus): their messages are "own" sends. */
+  ownAuthorIds?(): string[];
   /**
    * DM transport (wave 2, spec 9.1): a waifu bot's DM channel with one user, same contract as
    * fetchContextSince. Not implemented by DiscordJsGateway yet; the cache returns an empty,
@@ -332,6 +337,10 @@ type ConnectableBot = {
   token: string;
 };
 
+export const GUILD_MEMBERS_INTENT_REJECTED = "guild_members_intent_rejected";
+const GUILD_MEMBERS_INTENT_REJECTED_MESSAGE =
+  "Discord rejected the Server Members intent, so the bot connected without it. Enable it in the Developer Portal or turn off discord.guildMembersIntent.";
+
 export class DiscordJsGateway implements DiscordGatewayFacade {
   private readonly clients = new Map<string, Client>();
   private readonly pendingClients = new Set<Client>();
@@ -341,6 +350,8 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   // Bumped by every disconnect so logins that finish afterwards are destroyed instead of adopted.
   private generation = 0;
   private connectAbort = new AbortController();
+  // Discord refused the privileged GuildMembers intent: connected without it (M6).
+  private membersIntentRejected = false;
   private readonly listeners = new Set<DiscordMessageListener>();
   private readonly conversationListeners = new Set<DiscordConversationEventListener>();
   private readonly directoryListeners = new Set<DiscordDirectoryEventListener>();
@@ -359,6 +370,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   constructor(private readonly options: DiscordJsGatewayOptions) {}
 
   async connect(): Promise<DiscordRuntimeStatus> {
+    this.membersIntentRejected = false; // the portal setting may have changed since the last attempt
     const generation = this.generation;
     const signal = this.connectAbort.signal;
     this.botStatuses.clear();
@@ -428,6 +440,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   status(): DiscordRuntimeStatus {
     const bots = [...this.botStatuses.values()].map((status) => ({ ...status }));
     const warnings: string[] = [];
+    if (this.membersIntentRejected) warnings.push(`${GUILD_MEMBERS_INTENT_REJECTED}: ${GUILD_MEMBERS_INTENT_REJECTED_MESSAGE}`);
     if (this.clients.size === 0 && !bots.some((status) => status.state === "error" || status.state === "connecting")) {
       warnings.push("No enabled Discord bot tokens are configured.");
     }
@@ -470,6 +483,24 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
     } catch (error) {
       this.pendingClients.delete(client);
       await destroyClientQuietly(client);
+      if (
+        generation === this.generation &&
+        kind === "orchestrator" &&
+        this.options.guildMembersIntent === true &&
+        !this.membersIntentRejected &&
+        classifyDiscordConnectionError(error) === "disallowed_intents"
+      ) {
+        // The opt-in privileged intent is not enabled for this application: Discord would
+        // otherwise stay offline. Connect without it once and tell the user.
+        this.membersIntentRejected = true;
+        this.reportRuntimeIssue({
+          source: "warn",
+          botId: bot.id,
+          code: GUILD_MEMBERS_INTENT_REJECTED,
+          message: GUILD_MEMBERS_INTENT_REJECTED_MESSAGE
+        });
+        return this.connectBot(entry, generation, signal);
+      }
       if (generation === this.generation) {
         const errorCode = classifyDiscordConnectionError(error);
         this.setBotStatus(bot, kind, { state: "error", errorCode, error: errorMessage(error) });
@@ -547,7 +578,9 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   }
 
   private createClient(bot: DiscordBotConfig, kind: DiscordBotKind): Client {
-    const options = discordClientOptions(kind, { guildMembersIntent: this.options.guildMembersIntent === true });
+    const options = discordClientOptions(kind, {
+      guildMembersIntent: this.options.guildMembersIntent === true && !this.membersIntentRejected
+    });
     const client = this.options.createClient?.({ bot, kind, options }) ?? new Client(options);
     this.attachClientRuntimeHandlers(client, bot.id);
     if (kind === "orchestrator") {
@@ -585,12 +618,36 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
 
   onConversationEvent(listener: DiscordConversationEventListener): () => void {
     this.conversationListeners.add(listener);
+    // A subscriber that arrives after the orchestrator connected missed its `ready`: replay it,
+    // otherwise its buffers could never be trusted.
+    if (this.clients.has(this.options.orchestrator.id)) {
+      this.dispatchTo(listener, { type: "connection", scope: "guild", state: "ready" });
+    }
     return () => this.conversationListeners.delete(listener);
   }
 
   onDirectoryEvent(listener: DiscordDirectoryEventListener): () => void {
     this.directoryListeners.add(listener);
+    // discord.js emits GuildCreate only for guilds joined later; replay what is already there.
+    const client = this.clients.get(this.options.orchestrator.id);
+    if (client) {
+      for (const guild of client.guilds.cache.values()) this.dispatchTo(listener, guildSnapshotEvent(guild));
+    }
     return () => this.directoryListeners.delete(listener);
+  }
+
+  ownAuthorIds(): string[] {
+    const ids = new Set<string>();
+    for (const client of this.clients.values()) if (client.user?.id) ids.add(client.user.id);
+    return [...ids];
+  }
+
+  private dispatchTo<E>(listener: (event: E) => void, event: E): void {
+    try {
+      listener(event);
+    } catch (error) {
+      this.options.logger?.error("Discord event listener failed", { message: error instanceof Error ? error.message : String(error) });
+    }
   }
 
   private attachOrchestratorListeners(client: Client): void {

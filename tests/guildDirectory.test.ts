@@ -346,9 +346,13 @@ describe("GuildDirectory refresh and member list status", () => {
     expect(transport.listMembersCalls).toBe(1);
     expect(directory.status()).toEqual({ memberListAvailable: false, lastRefreshAt: null, warnings: [MEMBER_LIST_UNAVAILABLE] });
 
-    clock.now += 48 * 3_600_000;
+    clock.now += 23 * 3_600_000;
     await directory.runMaintenance();
-    expect(transport.listMembersCalls).toBe(1); // not retried while it does not work
+    expect(transport.listMembersCalls).toBe(1); // not retried every tick while it does not work
+    clock.now += 2 * 3_600_000;
+    await directory.runMaintenance();
+    expect(transport.listMembersCalls).toBe(2); // once per memberListRefreshHours
+    expect(directory.status().memberListAvailable).toBe(false);
 
     // A manual refresh after the intent was granted brings it back.
     transport.listError = undefined;
@@ -453,5 +457,49 @@ describe("GuildDirectory in the API", () => {
     } finally {
       await app.close();
     }
+  });
+});
+
+describe("GuildDirectory boot check and negative cache pruning", () => {
+  it("learns memberListAvailable shortly after boot instead of after the first 15-minute tick (M5)", async () => {
+    const transport = new FakeTransport();
+    transport.listError = new MemberListUnavailableError("Missing Access");
+    const root = await makeTempRoot();
+    roots.push(root);
+    const directory = new GuildDirectory({
+      storage: new StorageService(root),
+      logger: quietLogger(),
+      transport: async () => transport,
+      bootCheckDelayMs: 10,
+      maintenanceIntervalMs: 3_600_000
+    });
+    let push: ((event: Parameters<GuildDirectory["handle"]>[0]) => void) | undefined;
+    directory.start((listener) => {
+      push = listener;
+      return () => undefined;
+    });
+    push!({ type: "snapshot", guildId: GUILD, roles: [], emojis: [], channels: [], members: [] });
+    await vi.waitFor(() => expect(directory.status().memberListAvailable).toBe(false), { timeout: 2_000 });
+    expect(directory.status().warnings).toEqual([MEMBER_LIST_UNAVAILABLE]);
+    await directory.close();
+  });
+
+  it("drops expired negative-cache entries (M7)", async () => {
+    const clock = { now: 0 };
+    const transport = new FakeTransport();
+    const { directory } = await setup({ transport, now: () => clock.now });
+    const negativeSize = () => (directory as unknown as { guilds: Map<string, { negative: Map<string, number> }> }).guilds.get(GUILD)!.negative.size;
+    await directory.resolveMentions(GUILD, [raw({ content: "<@1> <@2> <@3>" })]);
+    expect(negativeSize()).toBe(3);
+    clock.now += 11 * 60_000;
+    await directory.runMaintenance();
+    expect(negativeSize()).toBe(0);
+
+    await directory.resolveMentions(GUILD, [raw({ content: "<@4>" })]);
+    expect(negativeSize()).toBe(1);
+    clock.now += 11 * 60_000;
+    await directory.resolveMentions(GUILD, [raw({ content: "<@4>" })]); // expired: fetched again, re-added fresh
+    expect(transport.fetchMemberCalls.filter((id) => id === "4")).toHaveLength(2);
+    expect(negativeSize()).toBe(1);
   });
 });

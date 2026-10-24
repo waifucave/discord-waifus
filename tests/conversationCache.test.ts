@@ -19,6 +19,9 @@ class FakeGateway {
   readonly usersFetch = vi.fn();
   /** Runs inside every REST call, before the page is returned (to land a reconnect mid-flight). */
   onRest: (() => void) | undefined;
+  /** Replay `ready` to a new subscriber, as DiscordJsGateway does once the orchestrator is connected. */
+  announceReady = true;
+  ownIds = ["aria-bot"];
   private listeners = new Set<DiscordConversationEventListener>();
   private counter = 0n;
 
@@ -52,8 +55,10 @@ class FakeGateway {
 
   facade(): DiscordGatewayFacade {
     return {
+      ownAuthorIds: () => this.ownIds,
       onConversationEvent: (listener: DiscordConversationEventListener) => {
         this.listeners.add(listener);
+        if (this.announceReady) listener({ type: "connection", scope: "guild", state: "ready" });
         return () => this.listeners.delete(listener);
       },
       fetchContextSince: async (input: { channelId: string; afterMessageId: string | null; maxMessages: number }) => {
@@ -74,10 +79,20 @@ class FakeGateway {
   }
 }
 
-function setup(o: { directory?: CacheDirectoryHooks; now?: () => number; tailCheckAfterMs?: number; maxMessagesPerConversation?: number } = {}) {
+function setup(
+  o: {
+    directory?: CacheDirectoryHooks;
+    now?: () => number;
+    tailCheckAfterMs?: number;
+    maxMessagesPerConversation?: number;
+    before?: (gateway: FakeGateway) => void;
+  } = {}
+) {
   const gateway = new FakeGateway();
+  o.before?.(gateway);
   const facade = gateway.facade();
-  const cache = new ConversationMessageCache({ discord: () => facade, logger: quietLogger(), ...o });
+  const { before: _before, ...cacheOptions } = o;
+  const cache = new ConversationMessageCache({ discord: () => facade, logger: quietLogger(), ...cacheOptions });
   cache.attach();
   const events: ConversationCacheEvent[] = [];
   cache.onEvent((event) => events.push(event));
@@ -123,20 +138,23 @@ describe("ConversationMessageCache trust", () => {
     expect(events.filter((e) => e.type === "create").map((e) => (e as { own: boolean }).own)).toEqual([false, true]);
   });
 
-  it("a reconnect, an invalidated session or a fresh ready forces one catch-up; a resume keeps trust", async () => {
+  it("a resume after reconnecting keeps trust; a fresh ready or a disconnect forces one catch-up", async () => {
     const { gateway, cache, read } = setup();
     const first = gateway.post("200");
     await read();
     expect(gateway.restCalls).toHaveLength(1);
 
+    // discord.js emits ShardReconnecting before every resume: the buffer is only parked.
+    gateway.connection("reconnecting");
+    expect(cache.isTrusted(GUILD)).toBe(false);
     gateway.connection("resumed");
     expect(cache.isTrusted(GUILD)).toBe(true);
     await read(first.id);
     expect(gateway.restCalls).toHaveLength(1);
 
-    for (const state of ["reconnecting", "invalidated", "ready", "disconnected"] as const) {
+    for (const states of [["ready"], ["disconnected", "ready"], ["reconnecting", "ready"]] as const) {
       const missed = gateway.post("200"); // arrives while the socket is down: no event
-      gateway.connection(state);
+      for (const state of states) gateway.connection(state);
       expect(cache.isTrusted(GUILD)).toBe(false);
       const before = gateway.restCalls.length;
       const result = await read(first.id);
@@ -149,6 +167,36 @@ describe("ConversationMessageCache trust", () => {
     }
   });
 
+  it("a sync that completed while reconnecting is not trusted after the resume", async () => {
+    const { gateway, cache, read } = setup();
+    gateway.post("200");
+    gateway.connection("reconnecting");
+    await read(); // answered by REST while the socket is down
+    expect(cache.isTrusted(GUILD)).toBe(false);
+    gateway.connection("resumed");
+    expect(cache.isTrusted(GUILD)).toBe(false);
+    await read();
+    expect(cache.isTrusted(GUILD)).toBe(true);
+  });
+
+  it("never trusts a scope that has not reported a live connection (M2)", async () => {
+    const { gateway, cache, read } = setup({ before: (g) => (g.announceReady = false) });
+    const posted = gateway.post("200");
+    await read();
+    await read(posted.id);
+    expect(cache.isTrusted(GUILD)).toBe(false);
+    expect(gateway.restCalls).toHaveLength(2); // every read is REST
+    gateway.connection("ready");
+    await read();
+    expect(cache.isTrusted(GUILD)).toBe(true);
+    await read(posted.id);
+    expect(gateway.restCalls).toHaveLength(3);
+
+    // A DM scope has no feed until wave 2: never trusted.
+    const dm: ConversationRef = { kind: "dm", waifuId: "aria", userId: "kevin" };
+    expect(cache.isTrusted(dm)).toBe(false);
+  });
+
   it("a reconnect that lands during the sync leaves the conversation untrusted", async () => {
     const { gateway, cache, read } = setup();
     const posted = gateway.post("200");
@@ -159,6 +207,7 @@ describe("ConversationMessageCache trust", () => {
     expect(cache.isTrusted(GUILD)).toBe(false);
 
     gateway.onRest = undefined;
+    gateway.connection("ready"); // the socket is back with a fresh session
     await read();
     expect(cache.isTrusted(GUILD)).toBe(true);
     await read();
@@ -509,5 +558,101 @@ describe("ConversationMessageCache directory hooks and DMs", () => {
     expect(cache.isTrusted(GUILD)).toBe(false);
     await read();
     expect(gateway.restCalls).toHaveLength(2);
+  });
+});
+
+describe("ConversationMessageCache late messages (C1)", () => {
+  it("returns a human message whose gateway event lagged behind our own send", async () => {
+    const { gateway, read } = setup();
+    const m1 = gateway.live("200", { content: "hello" });
+    await read();
+    const human = gateway.post("200", { content: "human, gateway lagging" });
+    const own = gateway.post("200", { authorId: "aria-bot", authorName: "Aria", authorIsBot: true, content: "own send" });
+    gateway.emit({ type: "create", own: true, conversation: GUILD, message: own });
+
+    const pass1 = await read(m1.id);
+    expect(pass1.messages.map((m) => m.content)).toEqual(["own send"]);
+
+    gateway.emit({ type: "create", conversation: GUILD, message: human });
+    // The ledger's newest is now the own send, which has a higher id than the human message.
+    const pass2 = await read(own.id);
+    expect(pass2.messages.map((m) => m.content)).toEqual(["human, gateway lagging"]);
+    expect(gateway.restCalls).toHaveLength(1);
+    // Returned once only.
+    expect((await read(own.id)).messages).toEqual([]);
+  });
+
+  it("also catches a message that a catch-up or tail repair inserts below what was served", async () => {
+    let now = 0;
+    const { gateway, read } = setup({ now: () => now });
+    const m1 = gateway.live("200");
+    await read();
+    const human = gateway.post("200", { content: "missed by the feed" });
+    const own = gateway.post("200", { authorId: "aria-bot", authorIsBot: true, content: "own" });
+    gateway.emit({ type: "create", own: true, conversation: GUILD, message: own });
+    expect((await read(m1.id)).messages.map((m) => m.content)).toEqual(["own"]);
+    now = 11 * 60_000; // tail check due: the REST page shows the missed human message
+    const repaired = await read(own.id);
+    expect(repaired.messages.map((m) => m.content)).toEqual(["missed by the feed"]);
+    expect(repaired.messages[0]!.id).toBe(human.id);
+  });
+});
+
+describe("ConversationMessageCache tail check holes (I1)", () => {
+  it("rebuilds from the caller's cursor when more than a page of messages went missing", async () => {
+    let now = 0;
+    const { gateway, read } = setup({ now: () => now });
+    const start = gateway.live("200", { content: "start" });
+    await read();
+    const missed = Array.from({ length: 30 }, (_, k) => gateway.post("200", { content: `missed ${k}` })); // no events
+    now = 11 * 60_000;
+    const result = await read(start.id);
+    expect(ids(result.messages)).toEqual(ids(missed));
+    expect(result.reachedCursor).toBe(true);
+    // The buffer is whole again: a later read from the middle needs no REST.
+    const before = gateway.restCalls.length;
+    expect(ids((await read(missed[9]!.id)).messages)).toEqual(ids(missed.slice(10)));
+    expect(gateway.restCalls).toHaveLength(before);
+  });
+
+  it("treats an unbuffered id below the newest buffered one as a hole", async () => {
+    let now = 0;
+    const { gateway, read } = setup({ now: () => now });
+    const a = gateway.live("200", { content: "a" });
+    await read();
+    const hole = gateway.post("200", { content: "hole" }); // never delivered
+    const c = gateway.live("200", { content: "c" });
+    now = 11 * 60_000;
+    const result = await read(a.id);
+    expect(ids(result.messages)).toEqual([hole.id, c.id]);
+  });
+});
+
+describe("ConversationMessageCache own sends and reactions", () => {
+  it("flags a gateway-delivered message from one of our bots as own, even when it arrives first (M4)", async () => {
+    const { gateway, events, read } = setup();
+    await read();
+    const sent = gateway.post("200", { authorId: "aria-bot", authorIsBot: true });
+    gateway.emit({ type: "create", conversation: GUILD, message: sent }); // the gateway echo wins the race
+    gateway.emit({ type: "create", own: true, conversation: GUILD, message: sent });
+    const human = gateway.live("200");
+    const creates = events.filter((e) => e.type === "create");
+    expect(creates.map((e) => (e as { own: boolean }).own)).toEqual([true, false]);
+    expect((creates[1] as { message: RawDiscordMessage }).message.id).toBe(human.id);
+  });
+
+  it("drops reactions of trimmed messages and ignores reactions below the coverage floor (M3)", async () => {
+    const { gateway, cache, read } = setup({ maxMessagesPerConversation: 3 });
+    const old = gateway.post("200");
+    gateway.post("200");
+    await read();
+    gateway.emit({ type: "reaction", conversation: GUILD, action: "add", messageId: old.id, emoji: { name: "😂" }, userId: "kevin" });
+    expect(cache.reactionsFor(GUILD, old.id)).toHaveLength(1);
+    for (let n = 0; n < 4; n++) gateway.live("200");
+    await read();
+    expect(cache.reactionsFor(GUILD, old.id)).toEqual([]);
+    gateway.emit({ type: "reaction", conversation: GUILD, action: "add", messageId: old.id, emoji: { name: "😂" }, userId: "riko" });
+    expect(cache.reactionsFor(GUILD, old.id)).toEqual([]);
+    expect(cache.recentReactions(GUILD, { sinceMs: 0, refs: new Map([[old.id, "k1"]]) })).toEqual([]);
   });
 });

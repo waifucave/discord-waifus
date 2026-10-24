@@ -106,10 +106,9 @@ describe("gateway feed: connection state", () => {
     emit(Events.ShardReady, 0);
     emit(Events.ShardReconnecting, 0);
     emit(Events.ShardResume, 0, 5);
-    emit(Events.Invalidated);
     emit(Events.ShardDisconnect, { code: 4014 }, 0);
     expect(conversation).toEqual(
-      ["ready", "reconnecting", "resumed", "invalidated", "disconnected"].map((state) => ({ type: "connection", scope: "guild", state }))
+      ["ready", "reconnecting", "resumed", "disconnected"].map((state) => ({ type: "connection", scope: "guild", state }))
     );
   });
 });
