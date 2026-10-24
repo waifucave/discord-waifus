@@ -1600,6 +1600,9 @@ forget) deviates as follows; later phases build on this.
 
 ## 10. Phase 6 — Settings registry, CLI, HTTP and help (detailed design)
 
+> **Superseded (2026-10-24)** by `2026-10-24-living-cast-design.md` §13. The orchestrator, stage-manager and
+> gateway concepts below no longer exist; the settings-registry, help and CLI mechanism is reused there.
+
 Implements D4 and I17 on top of Phases 4–5. Corrections to the original inventory: `--help` no
 longer starts anything (Phase 1), pause already persists (B2), `availability`/`tools`/
 `contextWindows`/`promptSections` deep-merge (only arrays, `server.channels` and
@@ -1938,6 +1941,9 @@ flags may break scripts (hidden aliases; release note); hidden prompt needs a TT
 help payload size (memoized, < 64 KiB index); redaction exemption scoped and tested.
 
 ## 11. Phase 7 — Dashboard and assistant (detailed design)
+
+> **Superseded (2026-10-24)** by `2026-10-24-living-cast-design.md` §13. The orchestrator, stage-manager and
+> gateway concepts below no longer exist; the settings-registry, help and CLI mechanism is reused there.
 
 Covers B15–B20, B26, I3, I4, I13, I14 and the UI for every Phase 4–6 setting. Consumes: Phase 1
 `bots[]`; Phase 4 memory/usage/alerts/contexts; Phase 5 DMs, threads, `/api/runtime.discord.dm`;
