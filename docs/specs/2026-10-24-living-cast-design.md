@@ -604,7 +604,8 @@ web_search({ query: string (≤300), num_results?: number = 5 (1–8) }) → num
   tier is rate-limited (a 429 or rate-limit error closes the keyless tier for 10 minutes). The
   client is `@yanlinglabs/winter-web`'s `createExaSearchClient` (pinned with the other winter
   packages) behind the thin `WebBackend` adapter in `src/life/web/`: one process-wide breaker and
-  pacer state, a new client when the saved key changes, closed on shutdown.
+  pacer state, a new client when the saved key changes (the old one closes once its in-flight
+  searches settle), closed on shutdown.
 - Caps (owner decision D-d; config): `search.maxPerSecond` 2 (host-wide, a rolling window of call
   starts, paced rather than refused; winter's pacer also spaces keyless starts 500 ms apart, which
   only adds a wait), `search.maxPerDay` 50 (host-wide), `search.maxPerWaifuPerDay` 20; any of them

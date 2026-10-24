@@ -39,6 +39,65 @@ export function fakeResolver(map: Record<string, string[]> = {}): (host: string)
   return async (host) => map[host] ?? ["93.184.216.34"];
 }
 
+/**
+ * Each name the SSRF tables use, mapped to its own non-public answer: a refusal is then the guard
+ * judging that answer, never a resolver failure.
+ */
+export const PRIVATE_ANSWERS: Record<string, string[]> = {
+  "localhost.": ["127.0.0.1"],
+  "foo.localhost": ["127.0.0.1"],
+  "metadata.google.internal": ["169.254.169.254"],
+  "printer.local": ["192.168.1.20"],
+  "loop6.test": ["::1"],
+  "unspecified6.test": ["::"],
+  "mapped.test": ["::ffff:7f00:1"],
+  "translated.test": ["::ffff:0:10.0.0.1"],
+  "nat64.test": ["64:ff9b::7f00:1"],
+  "sixtofour.test": ["2002:7f00:1::"],
+  "linklocal6.test": ["fe80::1"],
+  "ula.test": ["fd00::1"],
+  "mixed.test": ["93.184.216.34", "10.0.0.7"],
+  "cgnat.test": ["100.64.0.1"]
+};
+
+/** URLs the guard must refuse as `private_address`: IPv4 literals in every spelling, and names with a private answer. */
+export const PRIVATE_FORMS = [
+  "http://127.0.0.1:3888/api/runtime",
+  "http://0.0.0.0/",
+  "http://0/",
+  "http://100.64.0.1/",
+  "http://169.254.169.254/",
+  "http://0251.0376.0251.0376/",
+  "http://0xa9fea9fe/",
+  "http://2852039166/",
+  "http://169.254.43518/",
+  "http://127.000.000.001/",
+  "http://127.1/",
+  "http://0x7f000001/",
+  ...Object.keys(PRIVATE_ANSWERS).map((host) => `https://${host}/`)
+];
+
+/**
+ * URLs refused as `invalid_url` before any lookup: other schemes, embedded credentials, and every
+ * bracketed IPv6 literal (winter-web refuses a single-label hostname, which an IPv6 literal is).
+ */
+export const INVALID_FORMS = [
+  "http://[::]/",
+  "http://[::1]:3888/",
+  "http://[::ffff:7f00:1]/",
+  "http://[::ffff:0:7f00:1]/",
+  "http://[::ffff:0:10.0.0.1]/",
+  "http://[64:ff9b::7f00:1]/",
+  "http://[2002:7f00:1::]/",
+  "http://[fe80::1]/",
+  "http://[fd00::1]/",
+  "https://example.com@127.0.0.1/",
+  "https://user@example.com/",
+  "file:///etc/passwd",
+  "gopher://127.0.0.1/",
+  "data:text/html,hi"
+];
+
 export type PageRoute = { status?: number; type?: string; body: string | Buffer; headers?: Record<string, string> };
 
 export async function pageServer(routes: Record<string, PageRoute>, servers: http.Server[]): Promise<{ port: number; hits: string[] }> {
@@ -54,7 +113,13 @@ export async function pageServer(routes: Record<string, PageRoute>, servers: htt
   return { port: (server.address() as AddressInfo).port, hits };
 }
 
-export type ExaMode = { anonymous: "ok" | "429" | "rate-text" | "tool-error"; keyed: "ok" | "429" | "quota"; sse: boolean };
+export type ExaMode = {
+  anonymous: "ok" | "429" | "rate-text" | "tool-error";
+  keyed: "ok" | "429" | "quota";
+  sse: boolean;
+  /** Keyed searches answer this late (an in-flight search while the key changes). */
+  keyedDelayMs?: number;
+};
 export type ExaSeen = { method: string; apiKey?: string; session?: string; url: string; args?: Record<string, unknown> };
 
 export const EXA_RESULTS_TEXT = [
@@ -107,6 +172,10 @@ export async function fakeExa(mode: ExaMode, servers: http.Server[]): Promise<{ 
         return;
       }
       const state = apiKey ? mode.keyed : mode.anonymous;
+      if (apiKey && mode.keyedDelayMs && state === "ok") {
+        setTimeout(() => answer({ content: [{ type: "text", text: EXA_RESULTS_TEXT }] }), mode.keyedDelayMs);
+        return;
+      }
       if (state === "429") {
         response.writeHead(429, { "content-type": "text/plain" });
         response.end("Too Many Requests");

@@ -3,8 +3,8 @@
 //
 // - Search: winter-web's Exa client (Exa's hosted MCP server, keyless tier first, the `exa` provider
 //   credential as the fallback key, sent only as the `x-api-key` header). One process-wide breaker and
-//   pacer state (`sharedExaBackendState`); the client is rebuilt when the saved key changes and closed
-//   on shutdown. The app's own caps (`search.*`) stay in src/life/search.ts; winter's pacer only spaces
+//   pacer state (`sharedExaBackendState`); the client is rebuilt when the saved key changes (the
+//   old one closes once its in-flight searches settle) and closed on shutdown. The app's own caps (`search.*`) stay in src/life/search.ts; winter's pacer only spaces
 //   keyless call starts 500 ms apart, which never contradicts them.
 // - Fetch: winter-web's `fetchWebPage` with its SSRF guard. Production always passes
 //   `privateAddressPolicy: "deny"`; only tests inject a resolver and a transport.
@@ -55,33 +55,60 @@ export type WebBackendOptions = {
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
 };
 
+type ExaSlot = { client: ExaSearchClient; key: string | undefined; inFlight: Set<Promise<unknown>> };
+
 export function createWebBackend(o: WebBackendOptions = {}): WebBackend {
-  let client: ExaSearchClient | undefined;
-  let clientKey: string | undefined;
-  // winter keeps a found key for the client's lifetime: a changed key gets a new client.
-  const clientFor = (): ExaSearchClient => {
+  let current: ExaSlot | undefined;
+  /** Replaced clients still finishing a search; each closes once its searches settle. */
+  const retired = new Set<ExaSlot>();
+  const closeWhenIdle = (slot: ExaSlot): void => {
+    retired.add(slot);
+    void Promise.allSettled([...slot.inFlight])
+      .then(() => {
+        if (!retired.delete(slot)) return;
+        return slot.client.close();
+      })
+      .catch(() => undefined);
+  };
+  // winter keeps a found key for the client's lifetime: a changed key gets a new client. The old
+  // one is closed only after the searches it is running settle, so a key change never cuts one off.
+  const slotFor = (): ExaSlot => {
     const key = o.resolveExaKey?.() || undefined;
-    if (!client || key !== clientKey) {
-      void client?.close();
-      clientKey = key;
-      client = createExaSearchClient({
-        state: o.exaState ?? sharedExaBackendState,
-        resolveKey: () => key,
-        ...(o.exaEndpoint ? { endpoint: o.exaEndpoint } : {}),
-        ...(o.exaTransport ? { transport: o.exaTransport } : {}),
-        ...(o.now ? { now: o.now } : {}),
-        ...(o.sleep ? { sleep: o.sleep } : {})
-      });
+    if (!current || key !== current.key) {
+      if (current) closeWhenIdle(current);
+      current = {
+        key,
+        inFlight: new Set(),
+        client: createExaSearchClient({
+          state: o.exaState ?? sharedExaBackendState,
+          resolveKey: () => key,
+          ...(o.exaEndpoint ? { endpoint: o.exaEndpoint } : {}),
+          ...(o.exaTransport ? { transport: o.exaTransport } : {}),
+          ...(o.now ? { now: o.now } : {}),
+          ...(o.sleep ? { sleep: o.sleep } : {})
+        })
+      };
     }
-    return client;
+    return current;
   };
   return {
-    search: (params, opts) => clientFor().search(params, opts),
+    search: (params, opts) => {
+      const slot = slotFor();
+      const running = slot.client.search(params, opts);
+      slot.inFlight.add(running);
+      void running.then(
+        () => slot.inFlight.delete(running),
+        () => slot.inFlight.delete(running)
+      );
+      return running;
+    },
     fetchPage: (url, opts) => fetchWebPage(url, { userAgent: WEB_USER_AGENT, ...opts }),
+    // Shutdown closes everything at once (the turns using them were aborted first).
     close: async () => {
-      const open = client;
-      client = undefined;
-      await open?.close();
+      const open = [...(current ? [current] : []), ...retired];
+      current = undefined;
+      retired.clear();
+      await Promise.allSettled(open.map((slot) => slot.client.close()));
     }
   };
 }

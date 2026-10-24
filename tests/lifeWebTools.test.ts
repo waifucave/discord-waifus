@@ -17,7 +17,7 @@ import { quietLogger } from "./contextFixtures.js";
 import { Clock, MemoryLedger, TZ } from "./lifeFixtures.js";
 import { ANTHROPIC_MESSAGES, errorTurn, fakeAdapter, fakeWinter, textTurn, type FakeAdapter } from "./modelFakes.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
-import { fakeResolver, loopbackTransport, pageServer } from "./webFakes.js";
+import { fakeResolver, INVALID_FORMS, loopbackTransport, pageServer, PRIVATE_ANSWERS, PRIVATE_FORMS, type TransportCall } from "./webFakes.js";
 
 const roots: string[] = [];
 const servers: http.Server[] = [];
@@ -59,7 +59,7 @@ type Harness = {
   setSearch(outcome: ExaSearchResult): void;
 };
 
-async function harness(o: { catalog?: CuratedModel[]; keyed?: (providerId: string) => boolean } = {}): Promise<Harness> {
+async function harness(o: { catalog?: CuratedModel[]; keyed?: (providerId: string) => boolean; resolve?: Record<string, string[]>; calls?: TransportCall[] } = {}): Promise<Harness> {
   const root = await makeTempRoot("dc-waifus-web-");
   roots.push(root);
   await ensureDataLayout(root);
@@ -108,7 +108,7 @@ async function harness(o: { catalog?: CuratedModel[]; keyed?: (providerId: strin
     timeZone: TZ,
     logger: quietLogger() as never,
     sleep: async () => undefined,
-    fetchOptions: { resolveHost: fakeResolver(), transport: loopbackTransport(page.port) }
+    fetchOptions: { resolveHost: fakeResolver(o.resolve), transport: loopbackTransport(page.port, o.calls) }
   });
   return {
     tools,
@@ -184,6 +184,27 @@ describe("web_fetch tool", () => {
     expect(missing).toEqual({ isError: true, content: "error: the page answered with an error (404)" });
     h.setConfig((config) => ({ ...config, life: { ...config.life, webFetch: { ...config.life.webFetch, maxPerTurn: 0 } } }));
     expect(h.tools.fetchOffered()).toBe(false);
+  });
+});
+
+describe("web_fetch's own policy path (review F14)", () => {
+  it("refuses every private form as not public, and every malformed one as not an address, before any request", async () => {
+    const calls: TransportCall[] = [];
+    // Each name answers its own private address (a host resolving to ::ffff:0:10.0.0.1 included):
+    // the refusal is the tool's "deny" policy judging it, never a lookup failure.
+    const h = await harness({ resolve: PRIVATE_ANSWERS, calls });
+    h.setConfig((config) => ({ ...config, life: { ...config.life, webFetch: { ...config.life.webFetch, maxPerTurn: 20, maxPerWaifuPerDay: 500 } } }));
+    let n = 0;
+    for (const url of PRIVATE_FORMS) {
+      const result = await h.tools.fetch({ waifuId: "aria", turn: turn(`p${(n += 1)}`), route: HAIKU }, { url, prompt: "?" });
+      expect(result, url).toEqual({ isError: true, content: "error: that address is not on the public internet" });
+    }
+    for (const url of INVALID_FORMS) {
+      const result = await h.tools.fetch({ waifuId: "aria", turn: turn(`i${(n += 1)}`), route: HAIKU }, { url, prompt: "?" });
+      expect(result, url).toEqual({ isError: true, content: "error: that is not a web address I can open" });
+    }
+    expect(calls).toEqual([]);
+    expect(h.page.hits).toEqual([]);
   });
 });
 

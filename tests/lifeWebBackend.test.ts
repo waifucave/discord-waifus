@@ -8,12 +8,13 @@ import { spawn } from "node:child_process";
 import http from "node:http";
 import net from "node:net";
 import path from "node:path";
+import { monitorEventLoopDelay } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
 import { createExaBackendState } from "@yanlinglabs/winter-web";
 import { afterEach, describe, expect, it } from "vitest";
 import { createWebBackend } from "../src/life/web/index.js";
-import { fakeExa, fakeResolver, loopbackTransport, pageServer, type TransportCall } from "./webFakes.js";
+import { fakeExa, fakeResolver, INVALID_FORMS, loopbackTransport, pageServer, PRIVATE_ANSWERS, PRIVATE_FORMS, type TransportCall } from "./webFakes.js";
 
 const servers: Array<http.Server | net.Server> = [];
 afterEach(async () => {
@@ -25,44 +26,18 @@ const noDns = async (): Promise<readonly string[]> => {
 };
 
 describe("the fetch guard through the adapter (deny)", () => {
-  it("refuses every private, loopback, metadata and malformed form before any request", async () => {
+  it("refuses every private, loopback, metadata and malformed form before any request, each for its own reason", async () => {
     const calls: TransportCall[] = [];
     const backend = createWebBackend();
-    const forms = [
-      "http://127.0.0.1:3888/api/runtime",
-      "http://0.0.0.0/",
-      "http://0/",
-      "http://[::]/",
-      "http://[::ffff:7f00:1]/",
-      "http://[64:ff9b::7f00:1]/",
-      "http://[fe80::1]/",
-      "http://[fd00::1]/",
-      "http://100.64.0.1/",
-      "http://169.254.169.254/",
-      "http://0251.0376.0251.0376/",
-      "http://0xa9fea9fe/",
-      "http://2852039166/",
-      "http://169.254.43518/",
-      "http://localhost./",
-      "http://foo.localhost/",
-      "http://[::1]:3888/",
-      "http://127.000.000.001/",
-      "http://[2002:7f00:1::]/",
-      "http://metadata.google.internal/",
-      "http://printer.local/",
-      "https://example.com@127.0.0.1/",
-      "https://user@example.com/",
-      "file:///etc/passwd",
-      "gopher://127.0.0.1/",
-      "data:text/html,hi",
-      "http://127.1/",
-      "http://0x7f000001/",
-      "http://[::ffff:0:7f00:1]/",
-      "http://[::ffff:0:10.0.0.1]/"
-    ];
-    for (const form of forms) {
+    // Each name answers its own private address, so the refusal is the guard's verdict on it.
+    const resolveHost = fakeResolver(PRIVATE_ANSWERS);
+    for (const form of PRIVATE_FORMS) {
+      const result = await backend.fetchPage(form, { privateAddressPolicy: "deny", resolveHost, transport: loopbackTransport(1, calls), timeoutMs: 2_000 });
+      expect(result, form).toMatchObject({ ok: false, code: "private_address" });
+    }
+    for (const form of INVALID_FORMS) {
       const result = await backend.fetchPage(form, { privateAddressPolicy: "deny", resolveHost: noDns, transport: loopbackTransport(1, calls), timeoutMs: 2_000 });
-      expect(result.ok, form).toBe(false);
+      expect(result, form).toMatchObject({ ok: false, code: "invalid_url" });
     }
     expect(calls).toEqual([]);
   });
@@ -116,13 +91,9 @@ describe("hostile pages", () => {
     );
     const backend = createWebBackend();
     for (const route of ["/lt", "/drop"]) {
-      let maxGap = 0;
-      let last = performance.now();
-      const ticker = setInterval(() => {
-        const now = performance.now();
-        maxGap = Math.max(maxGap, now - last);
-        last = now;
-      }, 5);
+      // Node's own event-loop delay histogram, sampled every 5 ms: its max is the longest stall.
+      const lag = monitorEventLoopDelay({ resolution: 5 });
+      lag.enable();
       const started = performance.now();
       const result = await backend.fetchPage(`https://public.test${route}`, {
         privateAddressPolicy: "deny",
@@ -131,10 +102,10 @@ describe("hostile pages", () => {
         maxBytes: 6 * 1024 * 1024
       });
       const elapsed = performance.now() - started;
-      clearInterval(ticker);
+      lag.disable();
       expect(result.ok, route).toBe(true);
       expect(elapsed, route).toBeLessThan(1_000);
-      expect(maxGap, route).toBeLessThan(250);
+      expect(lag.max / 1e6, route).toBeLessThan(250);
     }
   });
 
@@ -230,6 +201,20 @@ describe("Exa search through the adapter", () => {
     const keys = seen.filter((entry) => entry.method === "tools/call" && entry.apiKey).map((entry) => entry.apiKey);
     expect(keys).toEqual(["exa-key-one", "exa-key-two"]);
     expect(seen.every((entry) => !entry.url.includes("exa-key"))).toBe(true);
+    await backend.close();
+  });
+
+  it("a key change while a search is in flight lets that search finish on the old client (review F15)", async () => {
+    const { endpoint, seen } = await fakeExa({ anonymous: "429", keyed: "ok", sse: false, keyedDelayMs: 150 }, servers as http.Server[]);
+    let key = "exa-key-one";
+    const backend = createWebBackend({ exaEndpoint: endpoint, exaState: createExaBackendState(), resolveExaKey: () => key, sleep: async () => undefined });
+    const first = backend.search({ query: "q1" });
+    const deadline = Date.now() + 5_000;
+    while (!seen.some((entry) => entry.method === "tools/call" && entry.apiKey === "exa-key-one") && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
+    key = "exa-key-two";
+    const second = backend.search({ query: "q2" });
+    expect(await first).toMatchObject({ ok: true, tier: "key" });
+    expect(await second).toMatchObject({ ok: true, tier: "key" });
     await backend.close();
   });
 
