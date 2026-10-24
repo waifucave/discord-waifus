@@ -11,7 +11,7 @@ import type { ServerConfig } from "../../shared/schemas/domain.js";
 import type { StorageService } from "../../storage/storageService.js";
 import { createStorageMemorySnapshotProvider } from "../memorySnapshot.js";
 import { FileContextStore } from "./contextStore.js";
-import { DiscordConversationSource } from "./fetchTranscript.js";
+import { ConversationMessageCache, type CacheDirectoryHooks } from "../../discord/conversationCache.js";
 import type { OcrTextLookup } from "./images.js";
 import { ContextRuntime, type CalibrationHook } from "./runtime.js";
 import { createCompactionService, emaTokenCalibration } from "./compaction.js";
@@ -33,6 +33,14 @@ export type AppContextRuntimeOptions = {
   memory?: Partial<MemoryConfig>;
   /** Cached OCR text lookup (ImageOcrService.cachedText) for the image freeze rule. */
   ocr?: OcrTextLookup;
+  /**
+   * The Phase 5 message source (spec 9.4). The facade builds it so it can attach the gateway feed
+   * and hand its events to the ledger; a runtime built without one gets an unattached cache,
+   * which is the plain REST adapter.
+   */
+  cache?: ConversationMessageCache;
+  /** Directory hooks for a cache built here (ignored when `cache` is given). */
+  directory?: CacheDirectoryHooks;
   /** Defaults to the real per-context compaction service over the same store. */
   compaction?: CompactionService;
   /** Defaults to the per-model EMA calibration (spec 8.9). */
@@ -85,7 +93,7 @@ export function createAppContextRuntime(o: AppContextRuntimeOptions): ContextRun
         })
     }),
     compaction,
-    messages: new DiscordConversationSource(o.discord),
+    messages: o.cache ?? new ConversationMessageCache({ discord: o.discord, logger: o.logger, ...(o.directory ? { directory: o.directory } : {}) }),
     images,
     settings: (server) => resolveCompactionSettings(o.compactionSettings, server),
     logger: o.logger,

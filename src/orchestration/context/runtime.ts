@@ -107,7 +107,12 @@ export type PrepareInput = {
   summarize?: Summarize;
   waifuIdForAuthor?: (authorId: string) => string | undefined;
   memoryLimit?: number; // snapshot size (memoryInjectionLimit), default 12
-  recentReactions?: string[];
+  /**
+   * Tail lines for recent reactions (spec 9.4), never part of the cached prefix. A function is
+   * evaluated per build with the message refs and the entries being rendered, because a line like
+   * `Kevin reacted 😂 to #k3` needs the refs that only exist once the ledger is reconciled.
+   */
+  recentReactions?: string[] | ((c: { refs: ReadonlyMap<string, string>; transcript: readonly LedgerEntry[] }) => string[]);
   /** Additive (T3): user ids the caller considers present; frozen with the epoch alongside the window's authors. */
   participantIds?: string[];
   renderToolTurnsAsText?: boolean; // default: true when render.tools() is empty
@@ -538,7 +543,13 @@ export class ContextRuntime {
             transcript: entries,
             selfAuthorIds: i.selfAuthorIds,
             refs: currentView.refs,
-            tail: i.render.tail(s, startedAt, { recentReactions: i.recentReactions, transcript: entries }),
+            tail: i.render.tail(s, startedAt, {
+              recentReactions:
+                typeof i.recentReactions === "function"
+                  ? i.recentReactions({ refs: currentView.refs, transcript: entries })
+                  : i.recentReactions,
+              transcript: entries
+            }),
             tools,
             renderToolTurnsAsText: i.renderToolTurnsAsText ?? tools.length === 0,
             lookup: currentView.lookup

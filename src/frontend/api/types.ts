@@ -160,6 +160,12 @@ export type DiscordRuntime = {
   lastError?: string;
   lastErrorAt?: string;
   bots?: DiscordBotConnectionStatus[];
+  /** `GET /api/runtime` only (spec 9.6): the guild directory's member list status. */
+  directory?: {
+    memberListAvailable: boolean | null;
+    lastRefreshAt: string | null;
+    warnings: string[];
+  };
 };
 
 export type DiscordBotConnectionStatus = {
@@ -259,6 +265,8 @@ export type AppConfig = {
       diskCacheMb: number;
       diskCacheTtlHours: number;
     };
+    guildMembersIntent: boolean;
+    memberListRefreshHours: number;
   };
 };
 

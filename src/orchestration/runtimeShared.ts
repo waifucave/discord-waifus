@@ -15,6 +15,8 @@ import type { CompactionSettings } from "../shared/schemas/compaction.js";
 import type { MemoryConfig } from "../shared/schemas/config.js";
 import type { ContextRuntime } from "./context/runtime.js";
 import type { CompactionService } from "./context/types.js";
+import type { ConversationMessageCache } from "../discord/conversationCache.js";
+import type { GuildDirectory } from "../discord/guildDirectory.js";
 
 export type RuntimeOrchestratorOptions = {
   updateActivity?: import("../backend/updates/activity.js").UpdateActivity;
@@ -47,6 +49,12 @@ export type RuntimeOrchestratorOptions = {
   contextCompaction?: CompactionService;
   /** Prebuilt context runtime (tests); otherwise createAppContextRuntime builds one. */
   contexts?: ContextRuntime;
+  /** Prebuilt guild directory (tests); otherwise one is built over the data root (spec 9.4). */
+  directory?: GuildDirectory;
+  /** Prebuilt conversation cache (tests); otherwise one is built over the Discord facade (spec 9.4). */
+  conversationCache?: ConversationMessageCache;
+  /** `AppConfig.discord.memberListRefreshHours` (default 24, 0 = never). */
+  memberListRefreshHours?: number;
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   stageManagerIdleDelayMs?: number;
   /** Delay before boot catch-up runs (lets Discord bots finish connecting). Default 5000. */
@@ -59,13 +67,19 @@ export type RuntimeOrchestratorOptions = {
  * Collaborator deps: the orchestrator options plus the one ContextRuntime the facade builds
  * (spec 8.3). Every collaborator (ResponderExecutor, ChannelRunner, ...) reads `options.contexts`.
  */
-export type RuntimeCollaboratorOptions = RuntimeOrchestratorOptions & { contexts: ContextRuntime };
+export type RuntimeCollaboratorOptions = RuntimeOrchestratorOptions & {
+  contexts: ContextRuntime;
+  /** Names for mentions/roles/channels/emojis, maintained from gateway events (spec 9.4). */
+  directory: GuildDirectory;
+  /** Message source of `contexts`; also carries reactions and message events (spec 9.4). */
+  conversationCache: ConversationMessageCache;
+};
 
 /** The narrow I/O services most runtime collaborators need. */
 export type RuntimeServices = Pick<RuntimeOrchestratorOptions, "storage" | "discord" | "logger" | "isPaused" | "memory">;
 
 /** RuntimeServices plus the shared context engine (reply path, orchestrator). */
-export type RuntimeContextServices = RuntimeServices & Pick<RuntimeCollaboratorOptions, "contexts">;
+export type RuntimeContextServices = RuntimeServices & Pick<RuntimeCollaboratorOptions, "contexts" | "directory" | "conversationCache">;
 
 /** Facade-owned lifecycle hooks shared with the collaborators. */
 export type RuntimeHooks = {

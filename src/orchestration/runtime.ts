@@ -1,4 +1,6 @@
 import { DiscordMessageEvent } from "../discord/client.js";
+import { ConversationMessageCache } from "../discord/conversationCache.js";
+import { GuildDirectory } from "../discord/guildDirectory.js";
 import { createGatewayModelPipeline } from "./pipeline/gatewayPipeline.js";
 import { sharedProviderAlerts, type ProviderAlerts } from "./providerAlerts.js";
 import { sharedUsageLedger, type UsageLedger } from "./usageLedger.js";
@@ -22,7 +24,7 @@ import {
   runKey,
   timerKey
 } from "./runtimeShared.js";
-import { channelHasWaifus, ensureChannelConfig, ensureServer, isKnownWaifuAuthor, syncGuilds } from "./stores/config.js";
+import { channelHasWaifus, ensureChannelConfig, ensureServer, isKnownWaifuAuthor, readDiscordBotsFile, syncGuilds } from "./stores/config.js";
 import { healPendingOrchestratorDecisions } from "./stores/decisionHistory.js";
 import { noteActiveChatParticipant } from "./stores/participants.js";
 import { clearScheduledRetrigger, ensureChannelSession, persistShutdownWake } from "./stores/sessions.js";
@@ -53,15 +55,34 @@ export class RuntimeOrchestrator {
   private readonly commands: RuntimeCommands;
   /** The one context engine for this runtime (spec 8.3); collaborators get it as `options.contexts`. */
   readonly contexts: ContextRuntime;
+  /** Event-maintained names for mentions, roles, channels, emojis (spec 9.4); `/api/runtime` reads its status. */
+  readonly directory: GuildDirectory;
+  /**
+   * The message source behind `contexts` (spec 9.4). Subscribe with `conversations.onEvent` for
+   * message update/delete/reaction events (edits and deletes, DM traffic).
+   */
+  readonly conversations: ConversationMessageCache;
 
   constructor(private readonly options: RuntimeOrchestratorOptions) {
     const ocr = options.ocr;
+    this.directory =
+      options.directory ??
+      new GuildDirectory({
+        storage: options.storage,
+        logger: options.logger,
+        settings: () => ({ memberListRefreshHours: options.memberListRefreshHours ?? 24 }),
+        bots: () => readDiscordBotsFile(options.storage)
+      });
+    this.conversations =
+      options.conversationCache ??
+      new ConversationMessageCache({ discord: () => this.options.discord, logger: options.logger, directory: this.directory });
     this.contexts =
       options.contexts ??
       createAppContextRuntime({
         storage: options.storage,
         discord: () => this.options.discord,
         logger: options.logger,
+        cache: this.conversations,
         ...(options.images ? { images: options.images } : {}),
         ...(options.imageConfig ? { imageConfig: options.imageConfig } : {}),
         ...(options.compaction ? { compactionSettings: options.compaction } : {}),
@@ -85,7 +106,12 @@ export class RuntimeOrchestrator {
           });
         }
       });
-    const services: RuntimeCollaboratorOptions = { ...options, contexts: this.contexts };
+    const services: RuntimeCollaboratorOptions = {
+      ...options,
+      contexts: this.contexts,
+      directory: this.directory,
+      conversationCache: this.conversations
+    };
     const hooks: RuntimeHooks = {
       runBackground: (label, context, task) => this.runBackground(label, context, task),
       isStopping: () => this.stopping
@@ -145,7 +171,12 @@ export class RuntimeOrchestrator {
   }
 
   async start(): Promise<void> {
+    // Before any handler can read a conversation: the feed marks conversations untrusted until
+    // their first REST sync, and keeps names fresh from then on.
+    const discord = this.options.discord;
+    this.directory.start(discord.onDirectoryEvent ? (listener) => discord.onDirectoryEvent!(listener) : undefined);
     this.unsubscribes = [
+      this.conversations.attach(),
       this.options.discord.onMessage?.((event) => {
         this.runBackground("Discord message handler failed", discordMessageLogContext(event), () =>
           this.handleDiscordMessage(event)
@@ -247,6 +278,7 @@ export class RuntimeOrchestrator {
     // Calls aborted by the halt above queue their `aborted` ledger lines fire-and-forget; wait for
     // them so a following process exit cannot lose them.
     await this.usageLedger.flush();
+    await this.directory.close();
   }
 
   /** Explicit user pause: interrupted replies are never resumed later (see restartResume.ts). */

@@ -97,9 +97,21 @@ const DiscordImagesConfigSchema = z
     diskCacheTtlHours: DISCORD_IMAGE_FIELDS.diskCacheTtlHours.default(DEFAULT_DISCORD_IMAGES.diskCacheTtlHours)
   })
   .default({ ...DEFAULT_DISCORD_IMAGES });
+// Guild directory (spec 9.4/9.8): the privileged GuildMembers intent is opt-in (O7) and re-logs
+// the orchestrator when changed; the full member list is re-fetched every N hours (0 = never).
+const DEFAULT_GUILD_MEMBERS_INTENT = false;
+const DEFAULT_MEMBER_LIST_REFRESH_HOURS = 24;
 export const DiscordConfigSchema = z
-  .object({ images: DiscordImagesConfigSchema })
-  .default({ images: { ...DEFAULT_DISCORD_IMAGES } });
+  .object({
+    images: DiscordImagesConfigSchema,
+    guildMembersIntent: z.boolean().default(DEFAULT_GUILD_MEMBERS_INTENT),
+    memberListRefreshHours: z.number().int().min(0).max(168).default(DEFAULT_MEMBER_LIST_REFRESH_HOURS)
+  })
+  .default({
+    images: { ...DEFAULT_DISCORD_IMAGES },
+    guildMembersIntent: DEFAULT_GUILD_MEMBERS_INTENT,
+    memberListRefreshHours: DEFAULT_MEMBER_LIST_REFRESH_HOURS
+  });
 export type DiscordConfig = z.infer<typeof DiscordConfigSchema>;
 
 export const AppConfigSchema = z.object({
@@ -171,7 +183,9 @@ export const UpdateAppConfigBodySchema = z.object({
       memoryCacheMb: DISCORD_IMAGE_FIELDS.memoryCacheMb.optional(),
       diskCacheMb: DISCORD_IMAGE_FIELDS.diskCacheMb.optional(),
       diskCacheTtlHours: DISCORD_IMAGE_FIELDS.diskCacheTtlHours.optional()
-    }).strict().optional()
+    }).strict().optional(),
+    guildMembersIntent: z.boolean().optional(),
+    memberListRefreshHours: z.number().int().min(0).max(168).optional()
   }).strict().optional()
 }).strict();
 

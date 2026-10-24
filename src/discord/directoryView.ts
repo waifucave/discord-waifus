@@ -1,17 +1,9 @@
-// Phase 4 GuildDirectoryView (spec 8.1): names for mentions/roles/channels/emojis over the
-// members/emojis/roles.json caches plus a channel-name lookup (the discord.js channel cache).
-// Phase 5 replaces it with the in-memory GuildDirectory (spec 9.4).
+// A static GuildDirectoryView over plain arrays (spec 8.1), for tests and tools. The runtime uses
+// the event-maintained GuildDirectory (guildDirectory.ts, spec 9.4), which replaced the Phase 4
+// `loadGuildDirectoryView` file adapter that lived here.
 
-import {
-  GuildEmojisFileSchema,
-  GuildMembersFileSchema,
-  GuildRolesFileSchema,
-  type GuildEmojiCacheEntry,
-  type GuildMemberCacheEntry,
-  type GuildRoleCacheEntry
-} from "../shared/schemas/domain.js";
+import type { GuildEmojiCacheEntry, GuildMemberCacheEntry, GuildRoleCacheEntry } from "../shared/schemas/domain.js";
 import type { GuildDirectoryView } from "../orchestration/context/types.js";
-import type { StorageService } from "../storage/storageService.js";
 
 export type DirectoryCaches = {
   members?: GuildMemberCacheEntry[];
@@ -55,33 +47,4 @@ export class CachedGuildDirectoryView implements GuildDirectoryView {
     const emoji = this.emojis.get(id);
     return emoji && emoji.available ? emoji.name : undefined;
   }
-}
-
-/** Load the three per-guild cache files (missing files → empty) into a directory view. */
-export async function loadGuildDirectoryView(
-  storage: StorageService,
-  guildId: string,
-  o: { channelName?: (channelId: string) => string | undefined; extraMembers?: GuildMemberCacheEntry[] } = {}
-): Promise<GuildDirectoryView> {
-  const read = async <T>(file: string, schema: { parse(v: unknown): T }, pick: (v: T) => unknown[]) => {
-    try {
-      return pick(await storage.readJson(`user/servers/${guildId}/${file}`, schema as never));
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-      throw error;
-    }
-  };
-  const [members, emojis, roles] = await Promise.all([
-    read("members.json", GuildMembersFileSchema, (v) => v.members),
-    read("emojis.json", GuildEmojisFileSchema, (v) => v.emojis),
-    read("roles.json", GuildRolesFileSchema, (v) => v.roles)
-  ]);
-  return new CachedGuildDirectoryView(
-    {
-      members: [...(members as GuildMemberCacheEntry[]), ...(o.extraMembers ?? [])],
-      emojis: emojis as GuildEmojiCacheEntry[],
-      roles: roles as GuildRoleCacheEntry[]
-    },
-    o.channelName
-  );
 }
