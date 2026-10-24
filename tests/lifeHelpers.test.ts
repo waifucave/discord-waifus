@@ -1,12 +1,9 @@
 // Helpers kept from the retired reply path for the Living cast (L2 is their caller): outbound
-// checks and typing delay, availability, name matching.
+// checks and typing delay, name matching.
 import { describe, expect, it } from "vitest";
-import { isAvailable } from "../src/life/availability.js";
 import { isOnlyToolCallSyntax, stripCopiedHeader, stripLeadingTranscriptHeader, typingDelayMs } from "../src/life/outbound.js";
 import { foldName, isWeakName, namesSomeone, normalizeName, wordBoundaryIncludes } from "../src/life/text.js";
-import { entryHeader, entryLine, lineMessageOf, type LineMessage } from "../src/life/render.js";
-import { EMPTY_GUILD_DIRECTORY } from "../src/orchestration/context/messageRender.js";
-import type { RawDiscordMessage } from "../src/shared/schemas/discordMessage.js";
+import { entryHeader, entryLine, type LineMessage } from "../src/life/render.js";
 
 describe("outbound checks (spec §6.3)", () => {
   it("typing delay is 30 ms per character, clamped to 0.6–4.5 s", () => {
@@ -33,17 +30,7 @@ describe("outbound checks (spec §6.3)", () => {
   });
 });
 
-describe("availability and names", () => {
-  it("isAvailable follows the sleep window (across midnight) and busy blocks, in local time", () => {
-    const sleeping = { sleep: { enabled: true, start: "23:00", end: "07:00" }, busy: [] };
-    expect(isAvailable(sleeping, new Date(2026, 9, 24, 3, 0))).toBe(false);
-    expect(isAvailable(sleeping, new Date(2026, 9, 24, 12, 0))).toBe(true);
-    expect(isAvailable({ ...sleeping, sleep: { ...sleeping.sleep, enabled: false } }, new Date(2026, 9, 24, 3, 0))).toBe(true);
-    const busy = { sleep: { enabled: false, start: "23:00", end: "07:00" }, busy: [{ start: "11:00", end: "13:00", reason: "work" }] };
-    expect(isAvailable(busy, new Date(2026, 9, 24, 12, 0))).toBe(false);
-    expect(isAvailable(busy, new Date(2026, 9, 24, 14, 0))).toBe(true);
-  });
-
+describe("names", () => {
   it("forget matching folds Latin diacritics both ways and keeps other scripts' marks; weak names are short or generic", () => {
     expect(namesSomeone("jose taught me flan", "José")).toBe(true);
     expect(namesSomeone("José taught me flan", "jose")).toBe(true);
@@ -89,25 +76,8 @@ describe("message lines (moved from the context engine's transcript renderer, sp
     expect(entryHeader({ ...kevin, id: "10", replyToId: "404" }, view)).toBe("[14:02]");
   });
 
-  it("works on conversation cache messages, in the owner's time zone", () => {
-    const raw: RawDiscordMessage = {
-      id: "2",
-      channelId: "c",
-      authorId: "kevin",
-      authorName: "Kevin",
-      authorIsBot: false,
-      createdAt: at,
-      type: 19,
-      content: "agreed",
-      attachments: [],
-      embeds: [],
-      stickers: [],
-      snapshots: [],
-      referenceMessageId: "1",
-      mentions: { users: {}, roles: {}, channels: {} }
-    };
-    const message = lineMessageOf(raw, EMPTY_GUILD_DIRECTORY, "UTC")!;
-    expect(message).toEqual({ id: "2", authorId: "kevin", authorName: "Kevin", at, body: "agreed", replyToId: "1" });
+  it("shows times in the owner's time zone", () => {
+    const message: LineMessage = { ...reply, body: "agreed" };
     expect(entryLine(message, view)).toBe("[14:02 #k4 ↩#k3] Kevin: agreed");
     expect(entryHeader(message, { ...view, timeZone: "Europe/Berlin" })).toBe("[16:02 #k4 ↩#k3]");
   });

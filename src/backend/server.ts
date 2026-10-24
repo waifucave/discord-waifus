@@ -220,9 +220,6 @@ async function startLockedBackend(options: StartBackendOptions): Promise<Running
         directory,
         memberListRefreshHours: currentConfig.discord.memberListRefreshHours,
         appConfig: currentConfig,
-        compaction: currentConfig.compaction,
-        debounce: { ...currentConfig.discord.debounce },
-        dm: { ...currentConfig.discord.dm },
         updateActivity,
         isPaused: () => runtime.paused || closing,
         onActiveRunsChange: (activeRuns) => {

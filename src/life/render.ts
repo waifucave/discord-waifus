@@ -8,10 +8,7 @@
 //   `[14:02 #k5 ↩you]`                   a reply to one of her own messages
 //   `[14:02 #k6 ↩Kevin]`                 a reply to an older message by Kevin (no ref)
 
-import { renderDiscordMessage } from "../orchestration/context/messageRender.js";
 import { formatClock } from "../orchestration/context/timeFormat.js";
-import type { GuildDirectoryView } from "../orchestration/context/types.js";
-import type { RawDiscordMessage } from "../shared/schemas/discordMessage.js";
 
 /** The fields a line needs: a cache message reduced to who, when, what and what it replies to. */
 export type LineMessage = {
@@ -53,18 +50,4 @@ export function entryHeader(message: LineMessage, view: LineView): string {
 export function entryLine(message: LineMessage, view: LineView): string {
   const head = `${entryHeader(message, view)} ${message.authorName || "Unknown"}:`;
   return message.body ? `${head} ${message.body}` : head;
-}
-
-/** A conversation cache message as a line message (the body through the shared renderer). */
-export function lineMessageOf(raw: RawDiscordMessage, dir: GuildDirectoryView, timeZone: string): LineMessage | undefined {
-  const rendered = renderDiscordMessage(raw, dir, timeZone);
-  if (!rendered) return undefined;
-  return {
-    id: raw.id,
-    authorId: raw.authorId,
-    authorName: raw.authorName,
-    at: raw.createdAt,
-    body: rendered.body,
-    ...(raw.referenceMessageId ? { replyToId: raw.referenceMessageId } : {})
-  };
 }

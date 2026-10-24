@@ -163,31 +163,6 @@ export function sleepWindowContaining(availability: WaifuAvailability, now: Date
   return minutes >= start ? { start: today(start, 0), end: today(end, 1) } : { start: today(start, -1), end: today(end, 0) };
 }
 
-/** The next sleep window that starts after `now` (undefined without a sleep schedule). */
-export function nextSleepStart(availability: WaifuAvailability, now: Date, timeZone: string): Date | undefined {
-  const sleep = availability.sleep;
-  if (!sleep.enabled || sleep.start === sleep.end) return undefined;
-  const start = hhmmMinutes(sleep.start);
-  const p = localParts(now, timeZone);
-  for (let shift = 0; shift <= 1; shift += 1) {
-    const d = new Date(Date.UTC(p.year, p.month - 1, p.day + shift));
-    const candidate = instantOfLocal(timeZone, d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate(), Math.floor(start / 60), start % 60);
-    if (candidate.getTime() > now.getTime()) return candidate;
-  }
-  return undefined;
-}
-
-/** The next local occurrence of `hour`:00 after `now`. */
-export function nextLocalHour(now: Date, hour: number, timeZone: string): Date {
-  const p = localParts(now, timeZone);
-  for (let shift = 0; shift <= 1; shift += 1) {
-    const d = new Date(Date.UTC(p.year, p.month - 1, p.day + shift));
-    const candidate = instantOfLocal(timeZone, d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate(), hour, 0);
-    if (candidate.getTime() > now.getTime()) return candidate;
-  }
-  return new Date(now.getTime() + 24 * 3_600_000);
-}
-
 export const MEMORY_WARNING = "your memory of today will be summarised soon; save anything worth keeping to your notes";
 
 /** The permanent time line every appended user message ends with (§5.4). */
