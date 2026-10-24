@@ -987,7 +987,7 @@ This replaces the Phase 5 "recent deletes redacted in place" rule.
 | Command | Who | What |
 |---|---|---|
 | `/wake <waifu> [note]` | owner (House bot, guild) | Queue an `owner` wake. Only a waifu cast in this server (any channel or thread); the autocomplete offers this server's cast. |
-| `/print system_prompt|notes|life` | owner (ephemeral) | Any waifu. Her system prompt, `MEMORY.md`, or the last 20 life-log lines with DM tool results, DM send arguments and every quoted part of a DM notification line (also when folded into a tool result) redacted. |
+| `/print system_prompt|notes|life [private]` | owner (ephemeral) | Any waifu. Her system prompt, `MEMORY.md`, or the last 20 life-log lines, with DM content redacted by the §14.4 rule unless `private:true`. |
 | `/forget conversation|everything` | DM user (waifu bot) | §7.5, existing confirm button. |
 
 Retired: `/run`, `/stop`, `/review`, `/memories`, `/console`, `/clear`, `/debug` (deleted from
@@ -1001,9 +1001,11 @@ Administrator is not enough: Administrator stays the commands' default member pe
 the Discord UI hides them from others. The command defers its ephemeral reply before the check.
 `/print` output longer than 1,900 characters is sent as an attached `<type>.md` file, still
 ephemeral. Every `/print` reply (and every refusal) is ephemeral: only the owner who ran it sees it.
-Open for L3 (D14): `/print life` still shows her own replies in a DM turn (her assistant text), and
-`/print system_prompt` shows `<life_so_far>`, whose summary can carry DM content; L3 decides whether
-`/print` follows the dashboard's DM reveal toggle.
+DM content (D14, decided in L3): `/print life` and `/print system_prompt` follow the dashboard's
+rule (§14.4): by default they leave out every DM tool call and result, every quoted part of a DM
+notification line (also when folded into a tool result), her own assistant text in a turn whose
+wakes or tool calls touched a DM place, and her `<life_so_far>` summary. The boolean option
+`private:true` shows everything; the reply stays ephemeral, so only the owner who ran it sees it.
 
 ## 11. Retirements and migrations
 
@@ -1119,6 +1121,39 @@ Bounds (validated by the config schema):
 3.0.0, together with Phases 4–5 (D14). Idle updates never install a major version; the owner
 upgrades each host by hand. Downgrade is unsupported.
 
+Draft release notes for 3.0.0 (the repo keeps none of its own; `release:beta --details-file` takes
+them):
+
+> **Discord Waifus 3.0.0 — the Living cast.** Each waifu is now an autonomous agent with one
+> continuous life: mentions, replies, her name, DMs, her own reminders and watches, and the
+> addressee detector wake her; she reads the room, decides whether to answer, keeps notes as her
+> memory and tidies them nightly. There is no director any more.
+>
+> - **Models** come from a curated list on winter's provider runtime (at most $10 per million output
+>   tokens); each waifu and the assistant pick a route and an effort. Old model settings are mapped
+>   at upgrade; anything without an equivalent shows as a notice to pick again.
+> - **Web search** through Exa (keyless by default; an `exa` key is the fallback) and page reading,
+>   both capped per day.
+> - **Sleep, budgets and DMs**: a sleep window with a morning summary, an optional daily budget,
+>   DMs with per-person rate limits and an optional sleep notice.
+> - **Forget**: `POST /api/people/:userId/forget`, `waifus forget` or the Life screen remove a
+>   person from DMs, member lists, the archive and every life; it is a best-effort scrub (Discord
+>   history, usage lines, cached guild images until the disk cache expires them, and anything off
+>   this host stay).
+> - **Dashboard**: a new Life screen (live timeline with private chats hidden unless revealed on the
+>   host, Wake / Compact / Reset, review lines), a live Home, usage by day, and Settings tabs for
+>   models, search, the detector and life limits.
+> - **CLI and help**: every setting is readable and writable with `waifus get|set|unset|list`, and
+>   documented by `waifus help <topic>` and `GET /api/help/<topic>`; `waifus wake`, `waifus life`,
+>   `waifus forget` and `waifus usage` manage lives.
+> - **Upgrading**: install 3.0.0 by hand (`npm install -g @waifucave/discord-waifus@3.0.0`, then
+>   `waifus restart`). The upgrade migrates memories to notes and archives the director's data under
+>   `user/.archive/living-cast/`. Downgrade is unsupported. `waifus doctor` reports any step that
+>   left unreadable data alone.
+> - **Removed**: the director, stage manager, reviewer and memory store with their routes and
+>   tools, `/api/llm/*`, and the slash commands `/run`, `/stop`, `/review`, `/memories`,
+>   `/console`, `/clear`, `/debug`.
+
 ## 12. Testing and acceptance
 
 - **Fakes**: a Node fake `ProviderAdapter` implementing `streamTurn` with scripted events (winter's
@@ -1221,7 +1256,7 @@ an ignored one 1.
 |---|---|
 | `GET/POST /api/waifus`, `GET/PUT/DELETE /api/waifus/:id` | Fields per §11.3. |
 | `GET /api/waifus/:id/life` | Status, current turn, queue, epoch, today's usage and cost. |
-| `GET /api/waifus/:id/life/log?epoch&before&limit` | Life log lines without `nativeState`. DM tool results and DM send arguments are redacted unless `includePrivate=1` (local requests only). Her private text, notes, summary and room sends are not redacted and are labelled "may include things from private chats". |
+| `GET /api/waifus/:id/life/log?epoch&before&limit` | Life log lines without `nativeState` (reasoning blocks show only that they exist), newest last, default 50, at most 200; old epochs 7 days. DM content is left out by the §14.4 rule unless `includePrivate=1`, which only a request on the host itself may send (403 `PrivateContentLocalOnly` over Remote Access and for the dashboard assistant). Room sends are not redacted; a line of a DM-touching turn is marked `dm: true` ("may include things from private chats"). |
 | `POST /api/waifus/:id/wake {note}`, `POST …/life/compact`, `POST …/life/reset` | |
 | `GET /api/waifus/:id/notes`, `GET/PUT/DELETE /api/waifus/:id/notes/*path` | Revision by content hash; path rules §6.7. |
 | `GET/DELETE /api/waifus/:id/watches[/:wid]`, `GET/DELETE /api/waifus/:id/schedule[/:rid]` | |
@@ -1229,7 +1264,10 @@ an ignored one 1.
 | `GET/PUT /api/detector/config`, `GET /api/detector/history?guildId` | |
 | `GET /api/search/usage` | Today's counts and recent queries. |
 | `GET /api/usage?from&to&groupBy=waifu|purpose|model|day|turn|place` | Reads the usage ledger (local-day boundaries, `tz` override). |
-| `POST /api/people/:userId/forget {confirm, dryRun?}` | Replaces `/api/memories/forget-user`; returns the §7.5 result. |
+| `POST /api/people/:userId/forget {confirm, dryRun?}` | Replaces `/api/memories/forget-user`; returns the §7.5 result (202 with `pending` when a part did not finish). |
+| `GET /api/waifus/:id/life/needs-review`, `DELETE …/life/needs-review/:itemId` | The forget review lines (§7.5) per waifu; dismiss one by its id (L3, §14.4). |
+| `GET /api/people/forget-jobs`, `GET /api/owner-notices` | Unfinished owner forgets; everything that needs the owner (L3, §14.4). |
+| `GET /api/help`, `GET /api/help/:topic` | The settings registry, topics, commands and every route's summary (§14.2). |
 | Kept | runtime, config, servers/channels/threads, DMs, discord-bots, providers, assistant, docs, remote access |
 | Removed | orchestrator/stage-manager/reviewer config and history, `/api/memories*`, `/api/llm/*`, `POST /api/waifus/:id/digest`, `trigger/orchestrator`, `trigger/stage-manager`, `runtime/stop`, `/api/orchestrator/one-shot/models` (→ `GET /api/detector/models`) |
 
@@ -1257,6 +1295,52 @@ Removed: Direction and Memory. The dashboard assistant drops orchestrator, stage
 one-shot tools and gains `get_life`, `wake_waifu`, `list_notes`, `read_note`, `write_note`,
 `list_watches`, `list_schedule`, `get_usage`, `list_models`, `forget_person` (confirmation card).
 The assistant KB is rewritten.
+
+### 14.4 L3 decisions
+
+Choices L3 made where the sections above leave room (owner review welcome):
+
+- **DM content rule (D14)**, one rule for the dashboard, the CLI (`waifus life --private`) and
+  `/print`: a tool call is a DM call when any of its string arguments is a DM place reference
+  (`dm/…` or `dm_…`), whatever the tool is called; its call and its result are left out. A turn whose
+  wakes or calls touched a DM place is a DM turn: her assistant text in it is left out too (stricter
+  than labelling it), and so is her compaction summary (`<life_so_far>`, `summary.hidden`). Quoted
+  parts of DM notification lines are replaced by `[private chat redacted]`; DM wake previews and
+  notes in the queue are hidden. `includePrivate=1` / `private:true` show everything, local only;
+  the dashboard assistant never gets it.
+- **Owner wake with Discord offline** is queued in her `wakes.json` (`outcome: "queued_offline"`) and
+  runs when the cast connects.
+- **Compact and reset** need the live cast (409 `RuntimeOffline` otherwise) and, for compact, a model
+  (409). Compact waits up to 10 seconds, then answers 202 `{state: "running"}` and finishes on its
+  own. Reset starts a fresh epoch with no summary and keeps no turns; notes, plans, the queue and the
+  intake cursors stay, the old log is kept 7 days. Without a model, reset only clears the summary
+  and the fresh epoch starts at her next turn (`deferred: true`).
+- **Needs review**: each review line's id is the first 16 hex characters of the SHA-256 of
+  `where` and `line`; `DELETE` removes that one line.
+- **Incomplete migrations** are also written to `app/migrations-incomplete.json` (removed once every
+  step completes), so `waifus doctor`/`status` and `GET /api/owner-notices` report them with no host
+  running.
+- **Owner notices** add a waifu linked to a bot that is missing, turned off or has no token (her
+  sends fail). A waifu with no bot linked speaks through the House bot and is not a notice.
+- **Usage**: `groupBy` also takes `provider` and `server`, one or two keys; totals carry
+  `failedCalls`; ranges are at most 366 days; `waifus usage` reads the ledger directly (works with
+  the host stopped).
+- **CLI**: `waifus get|set|unset|list|help` over the verified host (identity handshake on
+  `GET /api/runtime`); `app` keys also offline in `config.toml`, except `updates.enabled`, which
+  stays with `waifus update --auto`. Targets are `group[:id]` plus the dotted shorthand for
+  singleton groups (`app.life.maxSendsPerTurn`). `waifus forget` asks for the word "forget" on a
+  terminal and refuses without one unless `--yes`. `waifus notes` is deferred with the tool-surface
+  redesign.
+- **Assistant**: `forget_user` is renamed `forget_person` (its card states the scrub limits);
+  `get_setting_help` and `update_app_config` from the overhaul's §10.7 are added. `list_notes`,
+  `read_note`, `write_note`, `list_watches` and `list_schedule` wait for the tool-surface redesign.
+- **Dashboard**: a Life section (mosaic of every waifu, then one life); Activity gains a Usage tab;
+  Settings gains Models, Search, Detector and Life-limits tabs whose forms come from
+  `GET /api/help/<topic>` and send only changed keys. The Life screen's notes browser, watches and
+  reminders wait for the tool-surface redesign.
+- **I17**: the runtime state's non-remote part moves to `src/shared/schemas/runtime.ts`; the
+  dashboard's remaining hand-mirrored shapes are those the server builds by hand (curated models,
+  provider status, assistant events, help payloads) and Remote Access (D5).
 
 ## 15. Implementation order
 

@@ -86,9 +86,8 @@ details.
 `docs/specs/2026-10-24-living-cast-design.md`). The director, stage manager, reviewer, memory store
 and their routes (`/api/orchestrator/*`, `/api/stage-manager/*`, `/api/reviewer/*`,
 `/api/memories*`, `/api/runtime/trigger/*`, `/api/runtime/stop`, `/api/waifus/:id/digest`,
-`/api/llm/*`) were removed. The life's own API (timeline, notes, wakes, settings registry) comes
-with the dashboard work (spec §14); until then the owner uses the House bot's `/wake` and `/print`
-(Administrator only) and the routes below.
+`/api/llm/*`) were removed. Each life has its own routes (status, log, wake, compact, reset, review
+lines; see Lives below), and the House bot keeps `/wake` and `/print` for the application's owner.
 
 `GET /api/runtime` adds `models.warnings`: `{scope, label, code, detail, at?, previous?, dismissible}`
 entries (`label` is the waifu's name, `previous` the model before) for model choices that need
@@ -97,6 +96,13 @@ attention (`model_unmapped`, `effort_dropped` from the upgrade and boot checks, 
 persisted notices clear when its model is changed to an offered one, when the waifu is deleted, or
 with `DELETE /api/runtime/model-warnings/:scope` (`waifu:<id>` or `assistant`, URL-encoded) →
 `{scope, dismissed}`. A save that leaves the model as it was never clears them.
+
+`GET /api/runtime` → `discord.warnings` holds the owner notices: channel permission failures, Living
+cast notices (an unreadable forget record), forget parts given up after three tries, and a waifu
+linked to a bot that is missing, turned off or has no token. `GET /api/owner-notices` returns them
+with the Living cast's own state: `{notices, forgetJobs, incompleteMigrations, corruptForgetCopies,
+pendingScrubs, intake: {paused, pausedAt, marks}, waifusWithoutBot}` (`waifus doctor` and
+`waifus status` report the same).
 
 Normal configuration changes apply at runtime. `PUT /api/config`, `PUT /api/discord-bots`, and `POST /api/runtime/reload` rebuild Discord clients and the cast runtime in-process without restarting HTTP. Only HTTP host/port changes require the next process start.
 
@@ -346,6 +352,69 @@ Member and emoji refresh endpoints use the configured House bot token. Member re
   already said in rooms, usage-ledger lines and app logs (ids only), cached guild images, and any
   DM image no image index recorded, until the disk cache expires them (168 hours by default), data
   outside this host, and the 15-minute web page cache.
+
+- `GET /api/people/forget-jobs` — `{jobs: [{userId, at, pending: [{part, error?, failures, retried}]}]}`:
+  owner forgets with parts still to run (or given up).
+
+## Lives
+
+Every route validates `:waifuId` (`assertSafeId`); an unknown waifu is 404.
+
+- `GET /api/waifus/:waifuId/life[?includePrivate=1]` — her status: `availability`
+  (`awake | busy | asleep`, with `reason`/`until`), `runtime` (`running`: Discord connected and her
+  life hosted; `busy`; `paused`), `status` (`idle | turn`), `currentTurn`, `epoch`,
+  `epochStartedAt`, `logLines`, `lastTurnEndedAt`, `lastCompaction`, `lastMaintenanceAt`,
+  `failedTurnAt`, `queue` (`immediate`, `deferred`, `quiet`, the first 50 `wakes`), `today` (`day`,
+  `costUsd`, `calls`, `budgetUsd`, `searches`, `fetches`), `summary` (`{text, hidden}`) and
+  `counts` (`needsReview`, `pendingScrubs`).
+- `GET /api/waifus/:waifuId/life/log?epoch&before&limit&includePrivate` — her life log, newest
+  last (`limit` default 50, at most 200; `before` pages back by `seq`; old epochs are kept 7 days,
+  404 after). Lines carry `{seq, at, kind, turnId?, role?, blocks, dm, origin?, boundary?}`; blocks
+  are `text`, `tool_use` (`id`, `name`, `input`), `tool_result` (`toolUseId`, `isError?`, `text`),
+  `image`, `reasoning` (only that it exists) and `other`. `nativeState` is never returned.
+- **DM content (D14)** is left out unless `includePrivate=1`: every tool call whose arguments name a
+  DM place and its result, the quoted parts of DM notification lines, her own text in a turn that
+  touched a DM, DM wake previews and notes, and her summary. A redacted block keeps its type (and a
+  call its name) with `redacted: true`; `redactedBlocks` counts them. `includePrivate=1` works only
+  for a request on the host itself: over Remote Access, and for the dashboard assistant, it is
+  **403** `PrivateContentLocalOnly`.
+- `POST /api/waifus/:waifuId/wake` `{note?}` (≤ 500 characters) — an owner wake (skips her sleep
+  and budget) → `{waifuId, outcome: queued | deferred | quiet | dropped | queued_offline, wakeId?}`;
+  with Discord offline the wake waits in her queue (`queued_offline`).
+- `POST /api/waifus/:waifuId/life/compact` — summarise her life now and start a new epoch → `{state:
+  "done", epoch, summarized}`, or **202** `{state: "running"}` after 10 seconds (it finishes on its
+  own). **409** without a live cast (`RuntimeOffline`), without a model or before her life started.
+- `POST /api/waifus/:waifuId/life/reset` `{confirm: true}` — a fresh epoch with no summary (notes,
+  plans, queued wakes and intake cursors stay; the old log is kept 7 days) → `{epoch, deferred}`
+  (`deferred`: she has no model now; the epoch starts at her next turn). **409** without a live cast.
+- `GET /api/waifus/:waifuId/life/needs-review` → `{items: [{id, at, source, where, line}]}`: lines a
+  forget only listed (a name someone else also has). `DELETE …/needs-review/:itemId` dismisses one.
+
+## Usage, search and the detector
+
+- `GET /api/usage?from&to&groupBy&tz&waifuId&purpose&guildId` — the usage ledger by local day of
+  the host's time zone (or `tz`, an IANA zone); default the last 7 days, at most 366. `groupBy` is
+  one or two of `day`, `waifu`, `purpose`, `model`, `provider`, `turn`, `place`, `server` →
+  `{from, to, timeZone, groupBy, totals, groups: [{key, label?, calls, inputTokens, outputTokens,
+  cacheReadTokens, cacheWriteTokens, reasoningTokens, costUsd, costKnownCalls, unpricedCalls,
+  failedCalls}], skippedLines}`.
+- `GET /api/search/usage` — today's web searches and page fetches, the caps, whether an Exa key is
+  saved, and the newest queries.
+- `GET /api/detector/config` → `{target, default}`; `PUT /api/detector/config` `{target}` sets the
+  app-wide addressee detector (`""` = none; a server overrides it with `PUT /api/servers/:guildId`
+  `{detector}`). `GET /api/detector/history?guildId` — the detector's recent decisions there,
+  newest first. `GET /api/detector/models` — its decision models.
+
+## Help
+
+- `GET /api/help` — every settings group, topic and command, and every route of the policy manifest
+  with a one-line summary and its help topic.
+- `GET /api/help/:topic` — one group (`app`, `waifu`, `server`, `channel`, `assistant`, `bot`,
+  `provider`, `remote-access`), part of one (`app.life`), a key (`app.life.maxSendsPerTurn`, or
+  `life.maxSendsPerTurn` for app keys), a topic (`life`, `forget`, `usage`, `detector`, `runtime`,
+  `environment`) or a command (`cli.wake`): each key with its type, bounds, default, help and CLI
+  lines. `?format=md` (or `Accept: text/markdown`) answers Markdown. An unknown topic is **404**
+  with `details.suggestions`. `waifus help <topic>` prints the same help offline.
 
 ## Conflict Semantics
 
