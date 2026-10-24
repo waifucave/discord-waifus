@@ -1068,6 +1068,8 @@ export type WaifuReplyAttemptInput = {
   logger: Logger;
   /** Leading fields of every log entry (guildId, channelId, waifuId). */
   logContext: Record<string, unknown>;
+  /** Leave reply text out of every log entry (DMs, spec 9.1.3): ids, counts and checks only. */
+  redactPreviews?: boolean;
 };
 
 export type WaifuReplyAttemptResult = {
@@ -1093,6 +1095,7 @@ const EMPTY_AFTER_CLEANING_NOTE =
 export async function generateValidatedWaifuReply(input: WaifuReplyAttemptInput): Promise<WaifuReplyAttemptResult> {
   const MAX_GENERATE_ATTEMPTS = 2;
   const { selfDisplayNames, participantDisplayNames, profile } = input;
+  const previews = (fields: Record<string, string>): Record<string, string> => (input.redactPreviews ? {} : fields);
   let result: WaifuGenerationResult = { content: "" };
   let marker: ParsedReplyMarker = { content: "" };
   let chunks: string[] = [];
@@ -1112,8 +1115,7 @@ export async function generateValidatedWaifuReply(input: WaifuReplyAttemptInput)
       input.logger.warn("Waifu reply hit the output limit; trimmed to complete sentences", {
         ...input.logContext,
         attempt,
-        before: result.content.slice(0, 80),
-        after: raw.slice(0, 80)
+        ...previews({ before: result.content.slice(0, 80), after: raw.slice(0, 80) })
       });
       if (!raw && !hasToolCall) {
         if (finalAttempt) break;
@@ -1135,8 +1137,7 @@ export async function generateValidatedWaifuReply(input: WaifuReplyAttemptInput)
       input.logger.info("Cleaned waifu reply before validation", {
         ...input.logContext,
         attempt,
-        before: raw.slice(0, 80),
-        after: text.slice(0, 80),
+        ...previews({ before: raw.slice(0, 80), after: text.slice(0, 80) }),
         replyRef: marker.ref ?? marker.unknownRef ?? null
       });
     }
@@ -1144,7 +1145,7 @@ export async function generateValidatedWaifuReply(input: WaifuReplyAttemptInput)
       if (raw.trim() && !finalAttempt) {
         input.logger.warn("Waifu reply was entirely removed during cleaning; retrying once", {
           ...input.logContext,
-          originalPreview: raw.slice(0, 120)
+          ...previews({ originalPreview: raw.slice(0, 120) })
         });
         note = EMPTY_AFTER_CLEANING_NOTE;
         continue;

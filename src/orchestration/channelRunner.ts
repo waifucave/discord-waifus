@@ -130,6 +130,13 @@ export class ChannelRunner {
   private readonly directiveDecisionCounts = new Map<string, number>();
   /** Spec 9.2: true while a debounced message burst is pending for the channel (set by the facade). */
   pendingBurst?: (guildId: string, channelId: string) => boolean;
+  /** True while any channel of the guild has a pending burst (holds the preempted-channel retrigger). */
+  pendingBurstInGuild?: (guildId: string) => boolean;
+
+  /** A held preempted channel gets its turn back (a pending burst was cancelled). */
+  releasePreempted(guildId: string): void {
+    this.hooks.runBackground("Re-triggering a preempted channel failed", { guildId }, () => this.retriggerPreemptedChannel(guildId));
+  }
 
   constructor(
     private readonly options: ChannelRunnerOptions,
@@ -475,6 +482,9 @@ export class ChannelRunner {
   // The guild's run slot just freed: give the oldest preempted channel its turn back.
   private async retriggerPreemptedChannel(guildId: string): Promise<void> {
     if (this.hooks.isStopping() || this.options.isPaused?.() || this.activeRuns.has(runKey(guildId))) return;
+    // Spec 9.2: a pending burst in this guild is about to take the slot (and would preempt the
+    // queued channel's pass again); its run gives the queued channel its turn when it ends.
+    if (this.pendingBurstInGuild?.(guildId)) return;
     const entry = this.preemptedChannels.get(guildId)?.entries().next().value;
     if (entry === undefined) return;
     const [next, wake] = entry;

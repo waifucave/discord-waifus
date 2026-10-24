@@ -3,6 +3,7 @@
 
 import type { DiscordDirectMessageEvent, DiscordGatewayFacade } from "../src/discord/client.js";
 import type { ContextMessage } from "../src/orchestration/contextMessages.js";
+import { dmFloorAt } from "../src/orchestration/dm/dmStore.js";
 import type { OrchestratorDecision } from "../src/orchestration/decisions.js";
 import { RuntimeOrchestrator } from "../src/orchestration/runtime.js";
 import type { ModelPipeline, WaifuGenerationRequest, WaifuGenerationResult } from "../src/providers/types.js";
@@ -47,11 +48,13 @@ export class DmDiscord implements DiscordGatewayFacade {
   sendErrors: unknown[] = [];
   /** When set, every send waits for it (to hold a run in its sending phase). */
   sendGate: Promise<void> | undefined;
-  private counter = 800_000_000_000_000_000n;
+  // Real-time snowflakes (a forget floor is the snowflake of "now", spec 9.1.4).
+  private counter = 0n;
   clock = Date.parse("2026-10-24T14:00:00.000Z");
 
   post(userId: string, content: string, o: { bot?: boolean } = {}): RawDiscordMessage {
-    this.counter += 1n;
+    const now = BigInt(dmFloorAt(new Date()));
+    this.counter = this.counter >= now ? this.counter + 1n : now;
     this.clock += 1_000;
     const message: RawDiscordMessage = {
       id: this.counter.toString(),
@@ -105,8 +108,7 @@ export class DmDiscord implements DiscordGatewayFacade {
 
   async fetchDmContextSince(i: { userId: string; afterMessageId: string | null; maxMessages: number }) {
     const all = this.messages.get(i.userId) ?? [];
-    const index = i.afterMessageId === null ? -1 : all.findIndex((m) => m.id === i.afterMessageId);
-    const after = all.slice(index + 1);
+    const after = i.afterMessageId === null ? all : all.filter((m) => BigInt(m.id) > BigInt(i.afterMessageId!));
     return { messages: after.slice(-i.maxMessages), reachedCursor: after.length <= i.maxMessages };
   }
 

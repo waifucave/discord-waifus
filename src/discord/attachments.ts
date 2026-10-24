@@ -243,6 +243,20 @@ export class DiscordImageFetcher implements ImageFetcher {
     return this.wait(ref.key, flight, o.signal);
   }
 
+  /** The keys that have cached bytes (memory or disk), for an exact deletion count. */
+  async cachedKeys(keys: readonly string[]): Promise<string[]> {
+    const found: string[] = [];
+    for (const key of new Set(keys)) {
+      if (this.memory.has(key)) {
+        found.push(key);
+        continue;
+      }
+      const exists = await stat(path.join(this.diskDir(), `${this.diskBase(key)}.bin`)).then(() => true, () => false);
+      if (exists) found.push(key);
+    }
+    return found;
+  }
+
   async purge(keys: readonly string[]): Promise<void> {
     for (const key of new Set(keys)) {
       const cached = this.memory.get(key);

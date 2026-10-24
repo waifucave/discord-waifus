@@ -206,3 +206,28 @@ export function computeDmEligibility(
   }
   return { eligible: eligible.sort((a, b) => a.waifuId.localeCompare(b.waifuId)), warnings: [...warnings].sort() };
 }
+
+// ---- forget floor (spec 9.1.4) ---------------------------------------------------------------
+
+const DISCORD_EPOCH_MS = 1_420_070_400_000n;
+
+/** The smallest snowflake Discord could assign at `at`: every earlier message's id is below it. */
+export function dmFloorAt(at: Date): string {
+  return ((BigInt(at.getTime()) - DISCORD_EPOCH_MS) << 22n).toString();
+}
+
+/** Snowflake order (numeric strings: longer is larger). */
+export function compareSnowflakes(a: string, b: string): number {
+  if (a.length !== b.length) return a.length - b.length;
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/** True when the message is newer than the floor (or there is none). */
+export function aboveFloor(messageId: string, floor: string | undefined): boolean {
+  return floor === undefined || compareSnowflakes(messageId, floor) > 0;
+}
+
+/** The forget floor of a DM conversation (undefined when it was never forgotten). */
+export async function readDmFloor(storage: StorageService, userId: string, waifuId: string): Promise<string | undefined> {
+  return (await readDmLimitIfExists(storage, userId, waifuId))?.floorMessageId;
+}

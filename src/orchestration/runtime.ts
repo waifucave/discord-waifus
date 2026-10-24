@@ -43,7 +43,7 @@ import { observeThread, parentSharesCast, readThreads, removeThread } from "./st
 import { KeyedDebouncer } from "./debounce.js";
 import { DmRunner } from "./dm/dmRunner.js";
 import { dmForget, type DmForgetInput, type DmForgetResult } from "./dm/dmForget.js";
-import { computeDmEligibility } from "./dm/dmStore.js";
+import { computeDmEligibility, dmFloorAt } from "./dm/dmStore.js";
 import { listWaifus } from "./stores/config.js";
 import { forgetUser, type ForgetUserResult } from "./memoryForget.js";
 import { DEFAULT_DEBOUNCE, DEFAULT_DM_RUNTIME } from "../shared/schemas/config.js";
@@ -210,6 +210,7 @@ export class RuntimeOrchestrator {
       options.stageManagerIdleDelayMs
     );
     this.runner.pendingBurst = (guildId, channelId) => this.bursts.has(timerKey(guildId, channelId));
+    this.runner.pendingBurstInGuild = (guildId) => this.bursts.keys().some((key) => key.startsWith(`${guildId}:`));
     this.dm = new DmRunner({
       storage: options.storage,
       discord: options.discord,
@@ -853,8 +854,8 @@ export class RuntimeOrchestrator {
     const versionKey = timerKey(guildId, channelId);
     this.runner.channelRunVersions.set(versionKey, (this.runner.channelRunVersions.get(versionKey) ?? 0) + 1);
 
-    // Spec 9.2: /stop also cancels a burst that has not fired yet.
-    this.bursts.cancel(versionKey);
+    // Spec 9.2: /stop also cancels a burst that has not fired yet (and releases a channel held behind it).
+    if (this.bursts.cancel(versionKey)) this.runner.releasePreempted(guildId);
     const clearedRetrigger = this.runner.clearRetriggerTimer(guildId, channelId);
     if (clearedRetrigger) {
       await clearScheduledRetrigger(this.options.storage, guildId, channelId);
@@ -926,8 +927,12 @@ export class RuntimeOrchestrator {
   private dmForgetHooks() {
     return {
       beforeDelete: async (conversation: { kind: "dm"; waifuId: string; userId: string }) => {
+        // Nothing may write into the conversation after this: no DM run, no observer (its cursor
+        // write would recreate the folder), no cached messages from before the forget.
         await this.dm.forgetConversation(conversation);
+        await this.memoryJobs.quiesceDmObserver(conversation);
         this.conversations.forget(conversation);
+        this.conversations.setFloor(conversation, dmFloorAt(new Date()));
       },
       purgeImages: (keys: string[]) => this.contexts.purgeImageKeys(keys)
     };

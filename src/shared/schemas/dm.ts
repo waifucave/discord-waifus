@@ -71,6 +71,12 @@ export const DmLimitStateSchema = RevisionedRecordSchema.extend({
   waifuId: z.string().min(1),
   userId: z.string().min(1),
   replyTimestamps: z.array(IsoDateStringSchema).max(1000).default([]),
-  limitNoticeSentAt: IsoDateStringSchema.optional()
+  limitNoticeSentAt: IsoDateStringSchema.optional(),
+  /**
+   * Forget floor (spec 9.1.4): Discord message ids at or below it predate the last DM /forget and
+   * are never read again (the bot cannot delete the user's messages). Kept here because forgetting
+   * never deletes this file.
+   */
+  floorMessageId: z.string().min(1).optional()
 });
 export type DmLimitState = z.infer<typeof DmLimitStateSchema>;

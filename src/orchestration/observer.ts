@@ -324,7 +324,9 @@ export function applyObserverOps(
             content: op.content,
             ...(op.kind ? { kind: op.kind } : {}),
             ...(op.importance !== undefined ? { strength: op.importance } : {}),
-            ...(subjects && subjects.length > 0 ? { subjects } : {})
+            ...(subjects && subjects.length > 0 ? { subjects } : {}),
+            // A DM observer's edit is private content: the record becomes DM-origin.
+            ...(c.origin.dm ? { origin: c.origin } : {})
           },
           now
         )
@@ -348,7 +350,9 @@ export function applyObserverOps(
           {
             content: op.content,
             strength: Math.max(into.strength, ...resolved.map((source) => source.strength)),
-            subjects: dedupeSubjects([...into.subjects, ...resolved.flatMap((source) => source.subjects)])
+            subjects: dedupeSubjects([...into.subjects, ...resolved.flatMap((source) => source.subjects)]),
+            // Merging private content in keeps it private (spec 9.1, O4).
+            ...(mergedDmOrigin(c.origin, into, resolved) ? { origin: mergedDmOrigin(c.origin, into, resolved)! } : {})
           },
           now
         )
@@ -377,4 +381,15 @@ export function applyObserverOps(
     });
   }
   return { memories: working, queued, history, applied, skipped };
+}
+
+/** The DM origin a merge result must keep, if any part of it came from a private chat. */
+export function mergedDmOrigin(
+  context: MemoryOrigin,
+  into: Pick<MemoryRecord, "origin">,
+  sources: ReadonlyArray<Pick<MemoryRecord, "origin">>
+): MemoryOrigin | undefined {
+  if (context.dm) return context;
+  if (into.origin.dm) return undefined; // already private
+  return sources.find((source) => source.origin.dm)?.origin;
 }

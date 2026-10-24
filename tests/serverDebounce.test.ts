@@ -222,6 +222,29 @@ describe("server debounce", () => {
     await runtime.stop();
   });
 
+  it("holds a preempted channel's retrigger while a burst is pending in the guild", async () => {
+    const { discord, pipeline, runtime } = await setup({ debounce: DEBOUNCE });
+    const hold = deferred();
+    pipeline.gate = () => hold.promise;
+    const runner = (runtime as unknown as { runner: { retriggerTimers: Map<string, unknown>; preemptedChannels: Map<string, Map<string, unknown>> } }).runner;
+    await runtime.handleDiscordMessage(discord.post(B, "B talks"));
+    await until(() => pipeline.passes === 1, "B's pass");
+    await runtime.handleDiscordMessage(discord.post(A, "A talks"));
+    await until(() => pipeline.passes === 2, "A's pass (B preempted)");
+    expect(runner.preemptedChannels.get(GUILD)?.has(B)).toBe(true);
+    // A new message in A aborts A's pass; its slot frees while A's burst is pending: B must wait.
+    await runtime.handleDiscordMessage(discord.post(A, "A again"));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(runtime.hasPendingBurst(GUILD, A)).toBe(true);
+    expect(runner.retriggerTimers.has(`${GUILD}:${B}`)).toBe(false);
+    expect(runner.preemptedChannels.get(GUILD)?.has(B)).toBe(true);
+    // The burst's run ends: now B gets its turn back.
+    await until(() => pipeline.passes === 3, "A's burst pass");
+    hold.resolve();
+    await until(() => runner.retriggerTimers.has(`${GUILD}:${B}`), "B's retrigger");
+    await runtime.stop();
+  });
+
   it("drops a timer wake while a burst is pending", async () => {
     const { discord, pipeline, runtime } = await setup({ debounce: { serverMs: 60_000, serverMaxWaitMs: 60_000 } });
     await runtime.handleDiscordMessage(discord.post(A, "hey"));

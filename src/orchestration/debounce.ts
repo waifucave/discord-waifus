@@ -67,6 +67,10 @@ export class KeyedDebouncer<K> {
     return keys;
   }
 
+  keys(): K[] {
+    return [...this.pending.keys()];
+  }
+
   get size(): number {
     return this.pending.size;
   }

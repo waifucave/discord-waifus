@@ -287,7 +287,8 @@ export class MemoryJobs {
     }
     const participants = observerParticipants(transcript.entries, (authorId) => waifuByAuthor.get(authorId));
     const now = new Date();
-    const existing = existingMemoriesFor(store.memories, { allowedWaifuIds, participants, now });
+    // DM-origin memories never reach a server observer (it could rewrite or merge them into guild records).
+    const existing = existingMemoriesFor(store.memories.filter((record) => !record.origin.dm), { allowedWaifuIds, participants, now });
     const input = renderObserverInput({
       participants,
       memories: existing,
@@ -400,6 +401,15 @@ export class MemoryJobs {
     schedule.idleTimer.unref?.();
   }
 
+  /** DM forget: cancel the conversation's idle observer and wait for a run in flight. */
+  async quiesceDmObserver(conversation: Extract<ConversationRef, { kind: "dm" }>): Promise<void> {
+    const timerKey = `dm:${conversationKey(conversation)}`;
+    const schedule = this.stageManagerSchedules.get(timerKey);
+    if (schedule?.idleTimer) clearTimeout(schedule.idleTimer);
+    this.stageManagerSchedules.delete(timerKey);
+    await this.activeDmObservers.get(conversationKey(conversation))?.catch(() => undefined);
+  }
+
   startDmObserverRun(conversation: Extract<ConversationRef, { kind: "dm" }>): Promise<StageManagerRunResult> {
     const key = conversationKey(conversation);
     if (this.activeDmObservers.has(key)) return Promise.resolve({ status: "already_running" });
@@ -449,7 +459,12 @@ export class MemoryJobs {
     }
     const participants = observerParticipants(batch.entries, (authorId) => waifuByAuthor.get(authorId));
     const now = new Date();
-    const existing = existingMemoriesFor(store.memories, { allowedWaifuIds, participants, now });
+    // Only this user's DM-origin memories: the DM observer may never rewrite a server memory with
+    // private content (or another user's DM).
+    const existing = existingMemoriesFor(
+      store.memories.filter((record) => record.origin.dm === true && record.origin.userId === conversation.userId),
+      { allowedWaifuIds, participants, now }
+    );
     const input = renderObserverInput({ participants, memories: existing, entries: batch.entries, nameFor: subjectNameResolver([directory]) });
     const rawOps = await pipeline.decideStageManagerObservations({
       modelId: config.modelId,
@@ -464,7 +479,7 @@ export class MemoryJobs {
       handles: input.handles,
       memoryHandles: input.memoryHandles,
       allowedWaifuIds,
-      origin: { dm: true as const },
+      origin: { dm: true as const, userId: conversation.userId },
       conversationKey: conversationKey(conversation)
     };
     let result: ApplyObserverOpsResult = { memories: [], queued: [], history: [], applied: 0, skipped: 0 };

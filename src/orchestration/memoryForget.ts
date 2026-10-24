@@ -1,8 +1,10 @@
 // Owner privacy affordance (spec 6.5, 8.8, 9.1.4, 12.10): forget one Discord user.
 // First every DM with the user goes (`dmForget(scope: "all")` per waifu: DM contexts, ledgers and
 // state, her memories of the user, cached images), then the whole `user/dms/<userId>/` directory
-// including the rate-limit counters (only the owner can reset those). Then every memory whose
-// subjects include the user (multi-subject memories included), their pending observations, and
+// including the rate-limit counters (only the owner can reset those); a fresh limits file keeps only
+// the forget floor, so the old chat is never read back from Discord. Then every memory whose
+// subjects include the user (multi-subject memories included) or that was learned in their DMs,
+// their pending observations, and
 // the user's message bodies in every remaining conversation ledger become "(removed)". Context
 // summaries keep the user until their next compaction (documented limitation). The usage ledger is
 // never rewritten (O5).
@@ -11,10 +13,9 @@ import { readdir, rm } from "node:fs/promises";
 import { ConversationLedgerSchema } from "../shared/schemas/context.js";
 import type { StorageService } from "../storage/storageService.js";
 import { type ConversationKey, conversationLedgerPath, parseConversationKey } from "./context/keys.js";
-import { subjectIncludesUser } from "./memorySubjects.js";
 import { readMemoryStore, readPendingObservations, updateMemoryStore, updatePendingObservations } from "./stores/memories.js";
-import { dmForget, type DmForgetHooks } from "./dm/dmForget.js";
-import { dmUserDir, listDmLimitWaifuIds, listDmUserIds } from "./dm/dmStore.js";
+import { dmForget, isAboutDmUser, type DmForgetHooks } from "./dm/dmForget.js";
+import { dmFloorAt, dmUserDir, listDmLimitWaifuIds, listDmUserIds, updateDmLimit } from "./dm/dmStore.js";
 
 export const REMOVED_MESSAGE_BODY = "(removed)";
 
@@ -70,6 +71,14 @@ export async function forgetUser(
   if (!dryRun && hasDmDir) {
     await rm(storage.dataPath(dmUserDir(discordUserId)), { recursive: true, force: true });
   }
+  if (!dryRun) {
+    // The counters are gone, but the forget floors stay: the bot cannot delete the user's own
+    // messages, so without them the next DM would read the forgotten chat back from Discord.
+    const floor = dmFloorAt((hooks.now ?? (() => new Date()))());
+    for (const waifuId of dm.waifuIds) {
+      await updateDmLimit(storage, discordUserId, waifuId, (current) => ({ ...current, floorMessageId: floor }));
+    }
+  }
   const isTarget = (entry: { authorId: string; body: string; images: unknown[] }) =>
     entry.authorId === discordUserId && (entry.body !== REMOVED_MESSAGE_BODY || entry.images.length > 0);
 
@@ -77,18 +86,18 @@ export async function forgetUser(
   let observations = dm.deleted.observations;
   if (dryRun) {
     // The DM dry run counted the same records per waifu: count the store once instead.
-    memories = (await readMemoryStore(storage)).memories.filter((record) => subjectIncludesUser(record.subjects, discordUserId)).length;
+    memories = (await readMemoryStore(storage)).memories.filter((record) => isAboutDmUser(record, discordUserId)).length;
     observations = (await readPendingObservations(storage)).observations.filter((observation) =>
-      subjectIncludesUser(observation.subjects, discordUserId)
+      isAboutDmUser(observation, discordUserId)
     ).length;
   } else {
     await updateMemoryStore(storage, (current) => {
-      const kept = current.memories.filter((record) => !subjectIncludesUser(record.subjects, discordUserId));
+      const kept = current.memories.filter((record) => !isAboutDmUser(record, discordUserId));
       memories = dm.deleted.memories + current.memories.length - kept.length;
       return { ...current, memories: kept };
     });
     await updatePendingObservations(storage, (current) => {
-      const kept = current.observations.filter((observation) => !subjectIncludesUser(observation.subjects, discordUserId));
+      const kept = current.observations.filter((observation) => !isAboutDmUser(observation, discordUserId));
       observations = dm.deleted.observations + current.observations.length - kept.length;
       return { ...current, observations: kept };
     });

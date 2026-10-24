@@ -626,7 +626,7 @@ export type MemorySource = "waifu_tool" | "stage_manager" | "dream" | "user";
 export const MEMORY_SOURCES: MemorySource[] = ["waifu_tool", "stage_manager", "dream", "user"];
 
 // Memories are global per waifu (spec 8.8): `origin` is provenance only.
-export type MemoryOrigin = { guildId?: string; channelId?: string; dm?: true };
+export type MemoryOrigin = { guildId?: string; channelId?: string; dm?: true; userId?: string };
 export type MemorySubject = { discordUserId?: string; waifuId?: string; name: string };
 export type MemoryArchivedReason = "merged" | "expired" | "deduped" | "user" | "unknown_waifu";
 

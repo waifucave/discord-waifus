@@ -356,7 +356,10 @@ export type MemorySource = z.infer<typeof MemorySourceSchema>;
 export const MemoryOriginSchema = z.object({
   guildId: z.string().min(1).optional(),
   channelId: z.string().min(1).optional(),
-  dm: z.literal(true).optional()
+  dm: z.literal(true).optional(),
+  // DM provenance (spec 9.1.4): the Discord user of the private chat, so forgetting a user
+  // finds every DM-origin record and the same-origin boost stays inside that user's own DM.
+  userId: z.string().min(1).optional()
 });
 export type MemoryOrigin = z.infer<typeof MemoryOriginSchema>;
 

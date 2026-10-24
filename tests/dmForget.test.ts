@@ -78,13 +78,17 @@ describe("dmForget scopes", () => {
     await runtime.stop();
   });
 
-  it("the owner's forget-user removes every DM file of the user, counters included", async () => {
+  it("the owner's forget-user removes every DM file of the user, counters included (the floor stays)", async () => {
     const { root, storage, runtime } = await world();
     const dry = await forgetUser(storage, { discordUserId: USER, dryRun: true });
     expect(dry).toMatchObject({ dmContexts: 1, dmStates: 1, dmLimits: 1, memories: 2, observations: 2 });
     const done = await runtime.forgetUser({ discordUserId: USER });
     expect(done).toMatchObject({ dmContexts: 1, dmStates: 1, dmLimits: 1, memories: 2, observations: 2 });
-    expect(await exists(path.join(root, "user", "dms", USER))).toBe(false);
+    // Counters and state are gone; only the forget floor is written back.
+    expect(await exists(path.join(root, "user", "dms", USER, "aria.json"))).toBe(false);
+    const limits = await readDmLimit(storage, USER, "aria");
+    expect(limits.replyTimestamps).toEqual([]);
+    expect(limits.floorMessageId).toBeDefined();
     expect(await exists(path.join(root, "user", "conversations", KEY))).toBe(false);
     expect((await readMemoryStore(storage)).memories).toEqual([]);
     await runtime.stop();

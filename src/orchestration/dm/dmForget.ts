@@ -1,19 +1,28 @@
 // DM deletion (spec 9.1.4).
 //
-// `conversation`: the DM conversation directory (ledger, refs, every agent context) and the DM
-// run records. `all`: also the DM state file, that waifu's memories whose subjects include the
-// user, the user's pending observations for her, and the cached images of the conversation.
-// Neither scope touches `user/dms/<userId>/limits/` (users can never reset the limiter); only the
-// owner's forget-user removes the whole `user/dms/<userId>/` directory.
+// `conversation`: the DM conversation directory (ledger, refs, every agent context, observer
+// cursor), the DM run records and the conversation's cached images and OCR text. `all`: also the
+// DM state file, that waifu's memories and pending observations about the user (by subject, or
+// DM-origin from this user's chat). Neither scope touches the rate-limit counters in
+// `user/dms/<userId>/limits/` (users can never reset the limiter); only the owner's forget-user
+// removes the whole `user/dms/<userId>/` directory.
+//
+// The bot cannot delete the user's own messages, so a forget also writes a floor message id into
+// the limits file (which survives): nothing at or below it is ever read back into the
+// conversation (reconcile, conversation cache, observer, resume tail check).
 
 import { readdir, rm } from "node:fs/promises";
+import { DiscordImageFetcher } from "../../discord/attachments.js";
 import { ConversationLedgerSchema } from "../../shared/schemas/context.js";
+import { DEFAULT_APP_CONFIG } from "../../shared/schemas/config.js";
+import type { MemoryOrigin, MemorySubject } from "../../shared/schemas/domain.js";
 import type { StorageService } from "../../storage/storageService.js";
 import { FileContextStore } from "../context/contextStore.js";
 import { conversationKey, conversationLedgerPath, type ConversationKey } from "../context/keys.js";
 import { subjectIncludesUser } from "../memorySubjects.js";
+import { ImageOcrService } from "../ocr.js";
 import { readMemoryStore, readPendingObservations, updateMemoryStore, updatePendingObservations } from "../stores/memories.js";
-import { dmStatePath, dmStateResource, listDmUserIds, readDmState, updateExistingDmState } from "./dmStore.js";
+import { dmFloorAt, dmStatePath, dmStateResource, listDmUserIds, readDmState, updateDmLimit, updateExistingDmState } from "./dmStore.js";
 
 export type DmForgetScope = "conversation" | "all";
 
@@ -31,17 +40,21 @@ export type DmForgetDeleted = {
   recentRuns: number;
   memories: number;
   observations: number;
+  /** Images whose cached bytes existed (and were, or would be, deleted). */
   cachedImages: number;
 };
 
 export type DmForgetResult = { dryRun: boolean; scope: DmForgetScope; waifuIds: string[]; deleted: DmForgetDeleted };
 
 export type DmForgetHooks = {
-  /** Drop cached image bytes and OCR text (ContextRuntime.purgeImageKeys). */
+  /** Drop cached image bytes and OCR text (ContextRuntime.purgeImageKeys). Default: on disk. */
   purgeImages?: (keys: string[]) => Promise<void>;
-  /** Abort the live DM slot and drop cached messages before files go (runtime side effects). */
+  /** Abort the live DM slot, quiesce its observer and drop cached messages before files go. */
   beforeDelete?: (conversation: { kind: "dm"; waifuId: string; userId: string }) => Promise<void>;
+  now?: () => Date;
 };
+
+const silentLogger = { debug: () => undefined, info: () => undefined, warn: () => undefined, error: () => undefined };
 
 async function exists(storage: StorageService, ...segments: string[]): Promise<boolean> {
   try {
@@ -80,18 +93,44 @@ async function imageKeys(storage: StorageService, key: ConversationKey): Promise
   }
 }
 
+/** A record about this user for this waifu: by subject, or learned in this user's DM. */
+export function isAboutDmUser(
+  record: { waifuId: string; subjects: MemorySubject[]; origin?: MemoryOrigin },
+  userId: string,
+  waifuId?: string
+): boolean {
+  if (waifuId !== undefined && record.waifuId !== waifuId) return false;
+  return subjectIncludesUser(record.subjects, userId) || (record.origin?.dm === true && record.origin.userId === userId);
+}
+
 export async function dmForget(storage: StorageService, input: DmForgetInput, hooks: DmForgetHooks = {}): Promise<DmForgetResult> {
   const dryRun = input.dryRun === true;
   const waifuIds = input.waifuId ? [input.waifuId] : await dmWaifuIdsForUser(storage, input.userId);
   const deleted: DmForgetDeleted = { dmContexts: 0, dmStates: 0, recentRuns: 0, memories: 0, observations: 0, cachedImages: 0 };
   const store = new FileContextStore(storage);
+  const diskImages = new DiscordImageFetcher({ dataRoot: storage.dataRoot, logger: silentLogger });
+  const purge =
+    hooks.purgeImages ??
+    (async (keys: string[]) => {
+      await diskImages.purge(keys);
+      await new ImageOcrService({ dataRoot: storage.dataRoot, config: DEFAULT_APP_CONFIG.ocr, logger: silentLogger, fetcher: diskImages }).purge(keys);
+    });
   for (const waifuId of waifuIds) {
     const conversation = { kind: "dm" as const, waifuId, userId: input.userId };
     const key = conversationKey(conversation);
     const hasConversation = await exists(storage, "user", "conversations", key);
     const state = await readDmState(storage, input.userId, waifuId);
-    const images = input.scope === "all" && hasConversation ? await imageKeys(storage, key) : [];
-    if (!dryRun) await hooks.beforeDelete?.(conversation);
+    const images = hasConversation ? await imageKeys(storage, key) : [];
+    const cached = images.length > 0 ? await diskImages.cachedKeys(images) : [];
+    if (!dryRun) {
+      await hooks.beforeDelete?.(conversation);
+      // The floor first: whatever happens next, old messages are never read back.
+      const floor = dmFloorAt((hooks.now ?? (() => new Date()))());
+      await updateDmLimit(storage, input.userId, waifuId, (current) => ({ ...current, floorMessageId: floor }));
+      // Images and OCR text before the ledger that names them goes.
+      if (images.length > 0) await purge(images);
+    }
+    deleted.cachedImages += cached.length;
     if (hasConversation) {
       deleted.dmContexts += 1;
       if (!dryRun) await store.deleteConversation(key);
@@ -113,10 +152,8 @@ export async function dmForget(storage: StorageService, input: DmForgetInput, ho
         );
       }
     }
-    deleted.cachedImages += images.length;
-    if (!dryRun && images.length > 0) await hooks.purgeImages?.(images);
-    const aboutUser = (record: { waifuId: string; subjects: Parameters<typeof subjectIncludesUser>[0] }) =>
-      record.waifuId === waifuId && subjectIncludesUser(record.subjects, input.userId);
+    const aboutUser = (record: { waifuId: string; subjects: MemorySubject[]; origin?: MemoryOrigin }) =>
+      isAboutDmUser(record, input.userId, waifuId);
     if (dryRun) {
       deleted.memories += (await readMemoryStore(storage)).memories.filter(aboutUser).length;
       deleted.observations += (await readPendingObservations(storage)).observations.filter(aboutUser).length;
