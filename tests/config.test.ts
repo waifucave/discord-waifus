@@ -269,15 +269,17 @@ describe("data root and config", () => {
     expect(redacted.safe).toBe("visible");
   });
 
-  it("defaults server-level waifu tools and drops legacy per-waifu tool gates", () => {
+  it("has no server-level tool gates and drops legacy per-waifu tool gates", () => {
     const now = "2026-05-16T12:00:00.000Z";
     const server = ServerConfigSchema.parse({
       schemaVersion: CURRENT_SCHEMA_VERSION,
       revision: 0,
       updatedAt: now,
-      guildId: "guild-1"
+      guildId: "guild-1",
+      tools: { pickNextWaifu: false, shortTermMemory: true }
     });
-    expect(server.tools).toEqual({ pickNextWaifu: false, shortTermMemory: true });
+    // Living cast §11.2: server `tools` retired (living-cast-server-fields-v1 removes stored ones).
+    expect(server).not.toHaveProperty("tools");
 
     const waifu = WaifuConfigSchema.parse({
       schemaVersion: CURRENT_SCHEMA_VERSION,

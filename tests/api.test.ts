@@ -7,7 +7,7 @@ import { createApiServer, resolveStaticDir, type ApiServerOptions } from "../src
 import { createRuntimeState } from "../src/backend/runtime.js";
 import { ensureDataLayout } from "../src/config/layout.js";
 import { CURRENT_SCHEMA_VERSION } from "../src/shared/schemas/common.js";
-import { oneShotCatalog } from "../src/life/detector/catalog.js";
+import { decisionModelCatalog } from "../src/life/detector/catalog.js";
 import { StorageService } from "../src/storage/storageService.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
 
@@ -83,19 +83,23 @@ describe("Backend API", () => {
       expect(bad.statusCode).toBe(400);
     } finally { await app.close(); }
   });
-  it("persists One shot independently of the global LLM and preserves it on unrelated server updates", async () => {
+  it("persists a server detector override, keeps it on unrelated server updates, and null removes it", async () => {
     const { app } = await makeApp();
     try {
-      const selected = await app.inject({ method: "PUT", url: "/api/servers/100000000000000001", payload: { orchestratorMode: "one-shot", oneShot: { target: "openrouter:typesafe/jev-1.13" } } });
+      const selected = await app.inject({ method: "PUT", url: "/api/servers/100000000000000001", payload: { detector: { target: "openrouter:typesafe/jev-1.13" } } });
       expect(selected.statusCode).toBe(200);
-      expect(selected.json().orchestratorMode).toBe("one-shot");
+      expect(selected.json().detector).toEqual({ target: "openrouter:typesafe/jev-1.13" });
       const updated = await app.inject({ method: "PUT", url: "/api/servers/100000000000000001", payload: { name: "renamed" } });
-      expect(updated.json()).toMatchObject({ orchestratorMode: "one-shot", oneShot: { target: "openrouter:typesafe/jev-1.13" } });
-      expect((await app.inject({ method: "PUT", url: "/api/servers/100000000000000001", payload: { oneShot: { target: "openrouter:respan/span-01" } } })).statusCode).toBe(400);
+      expect(updated.json()).toMatchObject({ detector: { target: "openrouter:typesafe/jev-1.13" } });
+      expect((await app.inject({ method: "PUT", url: "/api/servers/100000000000000001", payload: { detector: { target: "openrouter:respan/span-01" } } })).statusCode).toBe(400);
+      const off = await app.inject({ method: "PUT", url: "/api/servers/100000000000000001", payload: { detector: { target: "" } } });
+      expect(off.json().detector).toEqual({ target: "" });
+      const inherited = await app.inject({ method: "PUT", url: "/api/servers/100000000000000001", payload: { detector: null } });
+      expect(inherited.json().detector).toBeUndefined();
     } finally { await app.close(); }
   });
   it("lists decision models and credential presence without exposing credentials", async () => {
-    vi.spyOn(oneShotCatalog, "list").mockResolvedValue({ unavailable: false, models: [{ target: "openai:gpt-6-luna", label: "OpenAI Decisions", provider: "openai", local: false }] });
+    vi.spyOn(decisionModelCatalog, "list").mockResolvedValue({ unavailable: false, models: [{ target: "openai:gpt-6-luna", label: "OpenAI Decisions", provider: "openai", local: false }] });
     const { app } = await makeApp();
     try {
       await app.inject({ method: "PUT", url: "/api/providers/openai/credentials", payload: { apiKey: "fixture-secret" } });
@@ -402,21 +406,19 @@ describe("Backend API", () => {
       }
     });
 
-    it("per-server orchestratorMode and stageManagerEnabled round-trip with sane defaults", async () => {
+    it("retired server fields (Living cast §11.2) are ignored on PUT and never returned", async () => {
       const { app } = await makeApp();
       try {
         await app.inject({ method: "PUT", url: "/api/servers/100000000000000002", payload: { name: "Modes", enabled: true } });
-        let server = JSON.parse((await app.inject({ method: "GET", url: "/api/servers/100000000000000002" })).body) as Record<string, unknown>;
-        expect(server.orchestratorMode).toBe("model");
-        expect(server.stageManagerEnabled).toBe(true);
-        await app.inject({
+        const saved = await app.inject({
           method: "PUT",
           url: "/api/servers/100000000000000002",
-          payload: { revision: server.revision, orchestratorMode: "deterministic", stageManagerEnabled: false }
+          payload: { stageManagerEnabled: false, memoryInjectionLimit: 30, contextWindows: { waifu: 50 }, tools: { shortTermMemory: true } }
         });
-        server = JSON.parse((await app.inject({ method: "GET", url: "/api/servers/100000000000000002" })).body) as Record<string, unknown>;
-        expect(server.orchestratorMode).toBe("deterministic");
-        expect(server.stageManagerEnabled).toBe(false);
+        expect(saved.statusCode).toBe(200);
+        const server = saved.json() as Record<string, unknown>;
+        for (const key of ["stageManagerEnabled", "memoryInjectionLimit", "contextWindows", "tools", "compaction"]) expect(server).not.toHaveProperty(key);
+        expect(server).not.toHaveProperty("detector");
       } finally {
         await app.close();
       }
@@ -488,80 +490,19 @@ describe("Backend API", () => {
       }
     });
 
-    it("PUT server config omitting memoryInjectionLimit (real ServersView save body) leaves it untouched (reviewer repro)", async () => {
+    it("a partial server PUT keeps the stored detector override and channels (no manufactured defaults)", async () => {
       const { app } = await makeApp();
       try {
         const guildId = "100000000000000005";
         const seeded = await app.inject({
           method: "PUT",
           url: `/api/servers/${guildId}`,
-          payload: {
-            revision: 0,
-            name: "Test Guild",
-            enabled: true,
-            contextWindows: { orchestrator: 20, waifu: 50, stageManager: 80 },
-            memoryInjectionLimit: 30,
-            tools: { pickNextWaifu: false, shortTermMemory: true },
-            channels: {}
-          }
+          payload: { revision: 0, name: "Test Guild", detector: { target: "openai:gpt-6-luna" }, channels: {} }
         });
         expect(seeded.statusCode).toBe(200);
-        expect(seeded.json().memoryInjectionLimit).toBe(30);
-        expect(seeded.json().revision).toBe(1);
-
-        // The real ServersView save body (src/frontend/views/ServersView.tsx): no UI exists for
-        // memoryInjectionLimit, so it is never sent.
-        const patched = await app.inject({
-          method: "PUT",
-          url: `/api/servers/${guildId}`,
-          payload: {
-            revision: 1,
-            name: "Test Guild",
-            enabled: true,
-            contextWindows: { orchestrator: 20, waifu: 50, stageManager: 80 },
-            tools: { pickNextWaifu: false, shortTermMemory: true },
-            channels: {}
-          }
-        });
+        const patched = await app.inject({ method: "PUT", url: `/api/servers/${guildId}`, payload: { revision: 1, name: "Renamed" } });
         expect(patched.statusCode).toBe(200);
-        expect(patched.json().memoryInjectionLimit).toBe(30);
-
-        const list = await app.inject({ method: "GET", url: "/api/servers" });
-        expect(list.statusCode).toBe(200);
-        const server = (list.json().servers as Array<{ guildId: string; memoryInjectionLimit: number }>).find(
-          (entry) => entry.guildId === guildId
-        );
-        expect(server?.memoryInjectionLimit).toBe(30);
-      } finally {
-        await app.close();
-      }
-    });
-
-    it("PUT server config with an explicit memoryInjectionLimit still stores the new value", async () => {
-      const { app } = await makeApp();
-      try {
-        const guildId = "100000000000000006";
-        const seeded = await app.inject({
-          method: "PUT",
-          url: `/api/servers/${guildId}`,
-          payload: { revision: 0, memoryInjectionLimit: 30 }
-        });
-        expect(seeded.statusCode).toBe(200);
-        expect(seeded.json().memoryInjectionLimit).toBe(30);
-
-        const updated = await app.inject({
-          method: "PUT",
-          url: `/api/servers/${guildId}`,
-          payload: { revision: 1, memoryInjectionLimit: 45 }
-        });
-        expect(updated.statusCode).toBe(200);
-        expect(updated.json().memoryInjectionLimit).toBe(45);
-
-        const list = await app.inject({ method: "GET", url: "/api/servers" });
-        const server = (list.json().servers as Array<{ guildId: string; memoryInjectionLimit: number }>).find(
-          (entry) => entry.guildId === guildId
-        );
-        expect(server?.memoryInjectionLimit).toBe(45);
+        expect(patched.json()).toMatchObject({ name: "Renamed", detector: { target: "openai:gpt-6-luna" } });
       } finally {
         await app.close();
       }

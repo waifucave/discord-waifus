@@ -2,7 +2,7 @@
 // Living cast addressee detector (src/life/detector/, spec §4.3). The decider itself was retired
 // in L1; L3 builds the detector on these.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { OneShotCatalog, OneShotTargetSchema } from "../src/life/detector/catalog.js";
+import { DecisionModelCatalog, DetectorTargetSchema } from "../src/life/detector/catalog.js";
 import { decisionAnswers, decisionRequest, readDecisionJson, type ChoiceQuestions } from "../src/life/detector/protocol.js";
 
 afterEach(() => {
@@ -29,8 +29,8 @@ function payload(questions: ChoiceQuestions, choices: Record<string, string>, op
 describe("detector decision protocol", () => {
   it("rejects predicate-only models and arbitrary endpoints or executables", () => {
     for (const t of ["openrouter:respan/span-01", "openrouter:respan/span-01-lite:free", "https://evil.test", "laya:/tmp/executable", "openai:unknown"])
-      expect(OneShotTargetSchema.safeParse(t).success).toBe(false);
-    expect(OneShotTargetSchema.safeParse("openai:gpt-6-luna").success).toBe(true);
+      expect(DetectorTargetSchema.safeParse(t).success).toBe(false);
+    expect(DetectorTargetSchema.safeParse("openai:gpt-6-luna").success).toBe(true);
   });
 
   it("uses native OpenAI choice arrays and router choice maps", () => {
@@ -65,7 +65,7 @@ describe("detector model catalog", () => {
   it("discovers choice candidates without exposing chat-only or known predicate-only models, caching concurrent reads", async () => {
     const model = (id: string, output: string[]) => ({ id, context_length: id.startsWith("respan/") ? 0 : 32768, architecture: { input_modalities: ["text"], output_modalities: output } });
     const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ data: [model("typesafe/jev-1.13", ["decisions"]), model("respan/span-01", ["decisions"]), model("chat/model", ["text"])] })));
-    const catalog = new OneShotCatalog(fetchImpl);
+    const catalog = new DecisionModelCatalog(fetchImpl);
     const [a, b] = await Promise.all([catalog.list(), catalog.list()]);
     expect(a).toEqual(b);
     expect(fetchImpl).toHaveBeenCalledTimes(1);
@@ -76,7 +76,7 @@ describe("detector model catalog", () => {
     const fetchImpl = vi.fn(async () => {
       throw new Error("private network detail");
     });
-    const catalog = new OneShotCatalog(fetchImpl);
+    const catalog = new DecisionModelCatalog(fetchImpl);
     const result = await catalog.list();
     expect(result.unavailable).toBe(true);
     expect(result.models).toHaveLength(4);

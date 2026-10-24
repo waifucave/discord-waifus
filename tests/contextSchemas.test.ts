@@ -4,7 +4,6 @@ import { ConversationRefsSchema, REF_COUNTER_START } from "../src/shared/schemas
 import { ImageRefSchema, RawDiscordMessageSchema } from "../src/shared/schemas/discordMessage.js";
 import {
   DmLimitStateSchema,
-  DmRunRecordSchema,
   DmStateSchema,
   WaifuDmSettingsSchema
 } from "../src/shared/schemas/dm.js";
@@ -147,7 +146,8 @@ describe("DM schemas", () => {
       allowDms: false,
       rateLimit: { maxReplies: 30, windowMinutes: 60 },
       notifyWhenLimited: true,
-      limitNotice: ""
+      limitNotice: "",
+      sleepNotice: ""
     });
   });
 
@@ -159,13 +159,17 @@ describe("DM schemas", () => {
     expect(() => WaifuDmSettingsSchema.parse({ rateLimit: { maxReplies: 0, windowMinutes: 60 } })).toThrow();
     expect(() => WaifuDmSettingsSchema.parse({ rateLimit: { maxReplies: 5, windowMinutes: 10081 } })).toThrow();
     expect(() => WaifuDmSettingsSchema.parse({ limitNotice: "x".repeat(301) })).toThrow();
+    expect(() => WaifuDmSettingsSchema.parse({ sleepNotice: "x".repeat(301) })).toThrow();
   });
 
-  it("parses DM state, run records and limiter counters", () => {
-    expect(DmRunRecordSchema.parse({ id: "r", at: AT, triggerMessageId: "1", status: "sent" }).messageIds).toEqual([]);
-    expect(() => DmRunRecordSchema.parse({ id: "r", at: AT, triggerMessageId: "1", status: "ghosted" })).toThrow();
-    expect(DmStateSchema.parse({ ...base, waifuId: "aria", userId: "3", botId: "aria" }).recentRuns).toEqual([]);
-    expect(DmLimitStateSchema.parse({ ...base, waifuId: "aria", userId: "3" }).replyTimestamps).toEqual([]);
+  it("parses DM state and limiter counters (Living cast: no run records; sleep notice and auto ids)", () => {
+    const state = DmStateSchema.parse({ ...base, waifuId: "aria", userId: "3", botId: "aria", recentRuns: [], pendingTriggerMessageId: "1" });
+    expect(state).not.toHaveProperty("recentRuns");
+    expect(state).not.toHaveProperty("pendingTriggerMessageId");
+    const limits = DmLimitStateSchema.parse({ ...base, waifuId: "aria", userId: "3" });
+    expect(limits.replyTimestamps).toEqual([]);
+    expect(limits.autoMessageIds).toEqual([]);
+    expect(DmLimitStateSchema.parse({ ...base, waifuId: "aria", userId: "3", sleepNoticeSentFor: AT }).sleepNoticeSentFor).toBe(AT);
     expect(() =>
       DmLimitStateSchema.parse({ ...base, waifuId: "aria", userId: "3", replyTimestamps: Array(1001).fill(AT) })
     ).toThrow();

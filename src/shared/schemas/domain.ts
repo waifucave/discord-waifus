@@ -1,7 +1,6 @@
 import { z } from "zod";
-import { OneShotConfigSchema } from "./oneShot.js";
+import { ServerDetectorOverrideSchema } from "./detector.js";
 import { CURRENT_SCHEMA_VERSION, IsoDateStringSchema, RevisionedRecordSchema } from "./common.js";
-import { CompactionOverrideSchema } from "./compaction.js";
 import { WaifuDmSettingsSchema, defaultWaifuDmSettings } from "./dm.js";
 import { ChannelThreadsModeSchema } from "./threads.js";
 
@@ -122,17 +121,6 @@ export const WaifuAvailabilitySchema = z
   });
 export type WaifuAvailability = z.infer<typeof WaifuAvailabilitySchema>;
 
-export const ServerToolSettingsSchema = z
-  .object({
-    pickNextWaifu: z.boolean().default(false),
-    shortTermMemory: z.boolean().default(true)
-  })
-  .default({
-    pickNextWaifu: false,
-    shortTermMemory: true
-  });
-export type ServerToolSettings = z.infer<typeof ServerToolSettingsSchema>;
-
 const ProviderCredentialsSchema = z.object({
   providerId: ProviderIdSchema,
   apiKey: z.string().min(1),
@@ -172,6 +160,12 @@ export const AssistantConfigSchema = RevisionedRecordSchema.extend({
 });
 export type AssistantConfig = z.infer<typeof AssistantConfigSchema>;
 
+/** Per-waifu life settings (Living cast §4.4, §11.3). */
+export const WaifuLifeSettingsSchema = z.object({
+  dailyBudgetUsd: z.number().positive().max(10_000).nullable().default(null)
+});
+export type WaifuLifeSettings = z.infer<typeof WaifuLifeSettingsSchema>;
+
 export const WAIFU_VERBOSITIES = ["terse", "chatty", "expressive"] as const;
 export type WaifuVerbosity = (typeof WAIFU_VERBOSITIES)[number];
 
@@ -189,11 +183,16 @@ export const WaifuConfigSchema = RevisionedRecordSchema.extend({
     .optional()
     .transform((value) => value ?? undefined),
   availability: WaifuAvailabilitySchema,
-  // Phase 4 prompt settings (spec 8.2); Living cast's life harness (L2) reads them.
+  // Prompt settings the life harness reads (Living cast §8).
   verbosity: z.enum(WAIFU_VERBOSITIES).default("terse"),
   customInstructions: z.string().max(4000).default(""),
   scheduleInPrompt: z.boolean().default(true),
-  // Phase 5 DM settings (spec 9.1).
+  // Her name, display name and server nicknames wake her as whole words (Living cast §4.1 `name`);
+  // off for names that are common words.
+  wakeOnName: z.boolean().default(true),
+  // Living cast §4.4: her daily budget (local day, USD); null = none.
+  life: WaifuLifeSettingsSchema.default(() => ({ dailyBudgetUsd: null })),
+  // Phase 5 DM settings (spec 9.1); Living cast adds `sleepNotice` (§4.5).
   dm: WaifuDmSettingsSchema.default(() => defaultWaifuDmSettings())
 });
 export type WaifuConfig = z.infer<typeof WaifuConfigSchema>;
@@ -201,30 +200,13 @@ export type WaifuConfig = z.infer<typeof WaifuConfigSchema>;
 export const ServerConfigSchema = RevisionedRecordSchema.extend({
   guildId: z.string().min(1),
   name: z.string().optional(),
-  // B29: optional overrides (precedence: explicit server override > agent/waifu `contextWindow`).
-  // Files written before Phase 4 carry all three keys; they parse unchanged until the
-  // server-context-windows-explicit-v1 migration drops keys equal to the old defaults.
-  contextWindows: z
-    .object({
-      orchestrator: z.number().int().min(1).max(200).optional(),
-      waifu: z.number().int().min(1).max(200).optional(),
-      stageManager: z.number().int().min(1).max(200).optional()
-    })
-    .default({}),
-  // Per-server override of AppConfig.compaction; absent keys inherit.
-  compaction: CompactionOverrideSchema.optional(),
-  memoryInjectionLimit: z.number().int().min(1).max(50).default(12),
-  // "model" uses the globally configured orchestrator model; "deterministic" forces the
-  // model-free structural decider for every channel of this guild (zero orchestration spend).
-  orchestratorMode: z.enum(["model", "deterministic", "one-shot"]).default("model"),
-  oneShot: OneShotConfigSchema,
-  // Per-guild kill switch for the stage manager's automatic work (idle observers + dreams).
-  stageManagerEnabled: z.boolean().default(true),
-  // Temporary per-guild mute: messages are observed (sessions stay warm) but nothing runs
-  // and nothing is scheduled until unpaused. This is the server's kill switch (spec 9.7): the
-  // old server/channel `enabled` flags are gone, a channel is live when it has an enabled waifu.
+  // The addressee detector's per-server override of `[detector] target` (Living cast §4.3); absent
+  // inherits, "" turns the detector off for this server.
+  detector: ServerDetectorOverrideSchema.optional(),
+  // Temporary per-guild mute: messages are observed but they wake nobody until unpaused (Living
+  // cast §4.4). This is the server's kill switch (spec 9.7): the old server/channel `enabled` flags
+  // are gone, a channel is live when it has an enabled waifu.
   paused: z.boolean().default(false),
-  tools: ServerToolSettingsSchema,
   channels: z.record(
     z.string(),
     z.object({

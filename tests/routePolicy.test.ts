@@ -1,6 +1,6 @@
 import fastify from "fastify";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { oneShotCatalog } from "../src/life/detector/catalog.js";
+import { decisionModelCatalog } from "../src/life/detector/catalog.js";
 import { createApiServer } from "../src/api/server.js";
 import { BrowserSecurity } from "../src/api/browserSecurity.js";
 import { dispatchInternal } from "../src/api/internalDispatch.js";
@@ -118,16 +118,16 @@ describe("route policy inventory", () => {
 });
 
 describe("remote route authorization", () => {
-  it("allows authorized remotes to discover detector models and save One shot settings without credentials or executable inputs", async () => {
-    vi.spyOn(oneShotCatalog, "list").mockResolvedValue({ unavailable: false, models: [{ target: "openai:gpt-6-luna", label: "OpenAI Decisions", provider: "openai", local: false }] });
+  it("allows authorized remotes to discover detector models and save a server detector override without credentials or executable inputs", async () => {
+    vi.spyOn(decisionModelCatalog, "list").mockResolvedValue({ unavailable: false, models: [{ target: "openai:gpt-6-luna", label: "OpenAI Decisions", provider: "openai", local: false }] });
     const app = await makeApp(); const actor = remote();
     const catalog = await dispatchInternal(app, actor, undefined, { method: "GET", url: "/api/detector/models" });
     expect(catalog.statusCode).toBe(200);
     expect(catalog.json().models[0].configured).toBe(false);
-    const selected = await dispatchInternal(app, actor, undefined, { method: "PUT", url: "/api/servers/100000000000000001", headers: { "idempotency-key": Buffer.alloc(32, 0x31).toString("base64url") }, payload: { revision: 0, orchestratorMode: "one-shot", oneShot: { target: "openai:gpt-6-luna" } } });
+    const selected = await dispatchInternal(app, actor, undefined, { method: "PUT", url: "/api/servers/100000000000000001", headers: { "idempotency-key": Buffer.alloc(32, 0x31).toString("base64url") }, payload: { revision: 0, detector: { target: "openai:gpt-6-luna" } } });
     expect(selected.statusCode).toBe(200);
-    expect(selected.json().orchestratorMode).toBe("one-shot");
-    const invalid = await dispatchInternal(app, actor, undefined, { method: "PUT", url: "/api/servers/100000000000000001", headers: { "idempotency-key": Buffer.alloc(32, 0x32).toString("base64url") }, payload: { oneShot: { target: "laya:/tmp/executable" } } });
+    expect(selected.json().detector).toEqual({ target: "openai:gpt-6-luna" });
+    const invalid = await dispatchInternal(app, actor, undefined, { method: "PUT", url: "/api/servers/100000000000000001", headers: { "idempotency-key": Buffer.alloc(32, 0x32).toString("base64url") }, payload: { detector: { target: "laya:/tmp/executable" } } });
     expect(invalid.statusCode).toBe(400);
   });
   it("allows reviewed APIs but denies local static routes and never-proxy client context", async () => {

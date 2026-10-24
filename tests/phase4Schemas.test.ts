@@ -79,21 +79,19 @@ describe("pre-Phase-4 files still parse", () => {
     expect(WaifuConfigSchema.parse(input).dm.rateLimit).toEqual({ maxReplies: 30, windowMinutes: 60 });
   });
 
-  it("server: old files with all three windows keep them; missing keys are simply unset", () => {
+  it("server: retired fields in old files (windows, compaction, tools, modes) are dropped on parse", () => {
     const old = ServerConfigSchema.parse({
       ...base,
       guildId: GUILD,
-      contextWindows: { orchestrator: 20, waifu: 50, stageManager: 80 }
+      contextWindows: { orchestrator: 20, waifu: 50, stageManager: 80 },
+      compaction: { maxMessages: 100 },
+      memoryInjectionLimit: 7,
+      stageManagerEnabled: false,
+      tools: { pickNextWaifu: true }
     });
-    expect(old.contextWindows).toEqual({ orchestrator: 20, waifu: 50, stageManager: 80 });
-    expect(old.compaction).toBeUndefined();
-    expect(ServerConfigSchema.parse({ ...base, guildId: GUILD }).contextWindows).toEqual({});
-  });
-
-  it("server: compaction override is a validated partial", () => {
-    const parsed = ServerConfigSchema.parse({ ...base, guildId: GUILD, compaction: { maxMessages: 100 } });
-    expect(parsed.compaction).toEqual({ maxMessages: 100 });
-    expect(() => ServerConfigSchema.parse({ ...base, guildId: GUILD, compaction: { triggerRatio: 2 } })).toThrow();
+    for (const key of ["contextWindows", "compaction", "memoryInjectionLimit", "stageManagerEnabled", "tools"]) expect(old).not.toHaveProperty(key);
+    expect(ServerConfigSchema.parse({ ...base, guildId: GUILD, detector: { target: "" } }).detector).toEqual({ target: "" });
+    expect(() => ServerConfigSchema.parse({ ...base, guildId: GUILD, detector: { target: "https://evil.test" } })).toThrow();
   });
 
   it("app config: an old config.toml gets the Phase 4 sections with spec defaults", async () => {
@@ -116,13 +114,8 @@ describe("pre-Phase-4 files still parse", () => {
     expect(config.http.port).toBe(4000);
     expect(config.ocr.enabled).toBe(false);
     expect(config.compaction).toEqual({ enabled: true, triggerRatio: 0.7, maxMessages: 150, keepRecent: 30, waitTimeoutMs: 6000 });
-    expect(config.memory).toEqual({
-      dreamHourLocal: 5,
-      maxPinnedInjected: 6,
-      maxMemoryNotesPerEpoch: 6,
-      maxInlineImagesPerEpoch: 8,
-      dmInjectionLimit: 12
-    });
+    expect(config).not.toHaveProperty("memory");
+    expect(config.life).toMatchObject({ maxConcurrentTurns: 4, maxToolRounds: 12, maxContextTokens: 96000, maintenanceHourLocal: 5, maxInlineImagesPerEpoch: 8 });
     expect(config.discord.images).toEqual({
       maxBytes: 5 * 1024 * 1024,
       fetchTimeoutMs: 5000,
@@ -136,37 +129,37 @@ describe("pre-Phase-4 files still parse", () => {
   it("app config: ranges are enforced", () => {
     expect(() => AppConfigSchema.parse({ compaction: { triggerRatio: 0.1 } })).toThrow();
     expect(() => AppConfigSchema.parse({ compaction: { keepRecent: 4 } })).toThrow();
-    expect(() => AppConfigSchema.parse({ memory: { dreamHourLocal: 24 } })).toThrow();
-    expect(() => AppConfigSchema.parse({ memory: { dmInjectionLimit: 0 } })).toThrow();
+    expect(() => AppConfigSchema.parse({ life: { maintenanceHourLocal: 24 } })).toThrow();
+    expect(() => AppConfigSchema.parse({ life: { maxContextTokens: 100001 } })).toThrow();
     expect(() => AppConfigSchema.parse({ discord: { images: { maxBytes: 1024 } } })).toThrow();
   });
 });
 
 describe("partial PUTs never manufacture Phase 4 defaults", () => {
-  it("app config merge keeps stored compaction/memory/discord values", () => {
+  it("app config merge keeps stored compaction/life/discord values", () => {
     const seeded = mergeAppConfigPatch(DEFAULT_APP_CONFIG, {
       compaction: { maxMessages: 90, enabled: false },
-      memory: { dreamHourLocal: 3 },
+      life: { maintenanceHourLocal: 3 },
       discord: { images: { maxBytes: 1024 * 1024 } }
     });
     expect(seeded.compaction).toMatchObject({ maxMessages: 90, enabled: false, keepRecent: 30 });
 
     const unrelated = mergeAppConfigPatch(seeded, { ocr: { enabled: false } });
     expect(unrelated.compaction).toEqual(seeded.compaction);
-    expect(unrelated.memory).toEqual(seeded.memory);
+    expect(unrelated.life).toEqual(seeded.life);
     expect(unrelated.discord).toEqual(seeded.discord);
 
     const sibling = mergeAppConfigPatch(seeded, { compaction: { keepRecent: 10 }, discord: { images: { diskCacheMb: 8 } } });
     expect(sibling.compaction).toMatchObject({ maxMessages: 90, enabled: false, keepRecent: 10 });
     expect(sibling.discord.images).toMatchObject({ maxBytes: 1024 * 1024, diskCacheMb: 8, fetchTimeoutMs: 5000 });
-    expect(sibling.memory.dreamHourLocal).toBe(3);
+    expect(sibling.life.maintenanceHourLocal).toBe(3);
   });
 
   it("the app config body schema declares no defaults for the new sections", () => {
     expect(UpdateAppConfigBodySchema.parse({})).toEqual({});
     expect(UpdateAppConfigBodySchema.parse({ compaction: {} })).toEqual({ compaction: {} });
-    expect(UpdateAppConfigBodySchema.parse({ memory: {}, discord: { images: {} } })).toEqual({
-      memory: {},
+    expect(UpdateAppConfigBodySchema.parse({ life: {}, discord: { images: {} } })).toEqual({
+      life: {},
       discord: { images: {} }
     });
     expect(() => UpdateAppConfigBodySchema.parse({ compaction: { bogus: 1 } })).toThrow();
@@ -178,13 +171,13 @@ describe("partial PUTs never manufacture Phase 4 defaults", () => {
       const first = await app.inject({
         method: "PUT",
         url: "/api/config",
-        payload: { compaction: { triggerRatio: 0.5 }, memory: { maxPinnedInjected: 2 } }
+        payload: { compaction: { triggerRatio: 0.5 }, life: { maxToolRounds: 6 } }
       });
       expect(first.statusCode).toBe(200);
       const second = await app.inject({ method: "PUT", url: "/api/config", payload: { ocr: { enabled: false } } });
       expect(second.statusCode).toBe(200);
       expect(second.json().compaction).toMatchObject({ triggerRatio: 0.5, maxMessages: 150 });
-      expect(second.json().memory).toMatchObject({ maxPinnedInjected: 2, dreamHourLocal: 5 });
+      expect(second.json().life).toMatchObject({ maxToolRounds: 6, maintenanceHourLocal: 5 });
       const got = (await app.inject({ method: "GET", url: "/api/config" })).json();
       expect(got.compaction.triggerRatio).toBe(0.5);
       expect(got.discord.images.maxBytes).toBe(5 * 1024 * 1024);
@@ -238,7 +231,7 @@ describe("partial PUTs never manufacture Phase 4 defaults", () => {
         url,
         payload: { revision: waifu.revision, dm: { notifyWhenLimited: false } }
       });
-      expect(dm.json().dm).toEqual({ allowDms: true, rateLimit: null, notifyWhenLimited: false, limitNotice: "slow down" });
+      expect(dm.json().dm).toEqual({ allowDms: true, rateLimit: null, notifyWhenLimited: false, limitNotice: "slow down", sleepNotice: "" });
 
       // rateLimit is a replace-wholesale leaf; null is a real value.
       const limited = await app.inject({
@@ -258,66 +251,23 @@ describe("partial PUTs never manufacture Phase 4 defaults", () => {
     }
   });
 
-  it("server PUT: contextWindows and compaction are optional overrides, null = inherit", async () => {
+  it("server PUT: retired overrides are ignored, the detector override merges", async () => {
     const { app } = await makeApp();
     try {
       const url = `/api/servers/${GUILD}`;
-      const created = await app.inject({ method: "PUT", url, payload: { paused: false } });
+      const created = await app.inject({ method: "PUT", url, payload: { paused: false, contextWindows: { waifu: 50 }, compaction: { maxMessages: 90 } } });
       expect(created.statusCode).toBe(200);
-      expect(created.json().contextWindows).toEqual({});
-      expect(created.json().compaction).toBeUndefined();
-
-      const seeded = await app.inject({
-        method: "PUT",
-        url,
-        payload: { contextWindows: { orchestrator: 11, waifu: 200 }, compaction: { maxMessages: 90, enabled: false } }
-      });
-      expect(seeded.json().contextWindows).toEqual({ orchestrator: 11, waifu: 200 });
-      expect(seeded.json().compaction).toEqual({ maxMessages: 90, enabled: false });
-
-      // An unrelated PUT keeps every override.
-      const unrelated = await app.inject({ method: "PUT", url, payload: { memoryInjectionLimit: 7 } });
-      expect(unrelated.json().contextWindows).toEqual({ orchestrator: 11, waifu: 200 });
-      expect(unrelated.json().compaction).toEqual({ maxMessages: 90, enabled: false });
-
-      // Sibling patches merge.
-      const merged = await app.inject({
-        method: "PUT",
-        url,
-        payload: { contextWindows: { stageManager: 40 }, compaction: { keepRecent: 12 } }
-      });
-      expect(merged.json().contextWindows).toEqual({ orchestrator: 11, waifu: 200, stageManager: 40 });
-      expect(merged.json().compaction).toEqual({ maxMessages: 90, enabled: false, keepRecent: 12 });
-
-      // null unsets one key; the others stay.
-      const unset = await app.inject({
-        method: "PUT",
-        url,
-        payload: { contextWindows: { waifu: null }, compaction: { enabled: null } }
-      });
-      expect(unset.json().contextWindows).toEqual({ orchestrator: 11, stageManager: 40 });
-      expect(unset.json().compaction).toEqual({ maxMessages: 90, keepRecent: 12 });
-
-      // Clearing everything leaves no stale empty override object behind.
-      const cleared = await app.inject({
-        method: "PUT",
-        url,
-        payload: {
-          contextWindows: { orchestrator: null, stageManager: null },
-          compaction: { maxMessages: null, keepRecent: null }
-        }
-      });
-      expect(cleared.json().contextWindows).toEqual({});
-      expect(cleared.json().compaction).toBeUndefined();
-
-      expect((await app.inject({ method: "PUT", url, payload: { contextWindows: { waifu: 201 } } })).statusCode).toBe(400);
-      expect((await app.inject({ method: "PUT", url, payload: { compaction: { triggerRatio: 0.99 } } })).statusCode).toBe(400);
+      expect(created.json()).not.toHaveProperty("contextWindows");
+      expect(created.json()).not.toHaveProperty("compaction");
+      const seeded = await app.inject({ method: "PUT", url, payload: { detector: { target: "openai:gpt-6-luna" } } });
+      expect(seeded.json().detector).toEqual({ target: "openai:gpt-6-luna" });
+      expect((await app.inject({ method: "PUT", url, payload: { detector: { target: "laya:/bin/sh" } } })).statusCode).toBe(400);
     } finally {
       await app.close();
     }
   });
 
-  it("server PUT reads a legacy file that stored all three windows", async () => {
+  it("server PUT reads a legacy file that stored all three windows (they are dropped)", async () => {
     const { root, app } = await makeApp();
     try {
       const dir = path.join(root, "user", "servers", GUILD);
@@ -334,9 +284,10 @@ describe("partial PUTs never manufacture Phase 4 defaults", () => {
         "utf8"
       );
       const read = await app.inject({ method: "GET", url: `/api/servers/${GUILD}` });
-      expect(read.json().contextWindows).toEqual({ orchestrator: 20, waifu: 50, stageManager: 80 });
-      const patched = await app.inject({ method: "PUT", url: `/api/servers/${GUILD}`, payload: { contextWindows: { waifu: 30 } } });
-      expect(patched.json().contextWindows).toEqual({ orchestrator: 20, waifu: 30, stageManager: 80 });
+      expect(read.statusCode).toBe(200);
+      expect(read.json()).not.toHaveProperty("contextWindows");
+      const patched = await app.inject({ method: "PUT", url: `/api/servers/${GUILD}`, payload: { name: "Kept" } });
+      expect(patched.json()).toMatchObject({ guildId: GUILD, name: "Kept" });
     } finally {
       await app.close();
     }

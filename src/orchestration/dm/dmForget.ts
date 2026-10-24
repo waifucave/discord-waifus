@@ -1,8 +1,7 @@
 // DM deletion (spec 9.1.4; Living cast §7.5 step 1).
 //
 // `conversation`: the DM conversation directory (`user/conversations/dm_<user>_<waifu>/`: refs and
-// whatever earlier versions kept there), the DM run records and the conversation's cached images
-// and OCR text. `all`: also the DM state file. Neither scope touches the rate-limit counters in
+// whatever earlier versions kept there) and the conversation's cached images and OCR text. `all`: also the DM state file. Neither scope touches the rate-limit counters in
 // `user/dms/<userId>/limits/` (users can never reset the limiter); only the owner's forget-user
 // removes the whole `user/dms/<userId>/` directory.
 //
@@ -22,7 +21,7 @@ import type { StorageService } from "../../storage/storageService.js";
 import { forgetConversationImageIndex, readConversationImageKeys } from "../../discord/imageIndex.js";
 import { conversationDirPath, conversationKey } from "../context/keys.js";
 import { ImageOcrService } from "../ocr.js";
-import { dmFloorAt, dmStatePath, dmStateResource, listDmUserIds, readDmState, updateDmLimit, updateExistingDmState } from "./dmStore.js";
+import { dmFloorAt, dmStatePath, dmStateResource, listDmUserIds, readDmState, updateDmLimit } from "./dmStore.js";
 
 export type DmForgetScope = "conversation" | "all";
 
@@ -37,7 +36,6 @@ export type DmForgetInput = {
 export type DmForgetDeleted = {
   dmContexts: number;
   dmStates: number;
-  recentRuns: number;
   /** Images whose cached bytes or OCR text existed (and were, or would be, deleted). */
   cachedImages: number;
 };
@@ -91,7 +89,7 @@ async function dmWaifuIdsForUser(storage: StorageService, userId: string): Promi
 export async function dmForget(storage: StorageService, input: DmForgetInput, hooks: DmForgetHooks = {}): Promise<DmForgetResult> {
   const dryRun = input.dryRun === true;
   const waifuIds = input.waifuId ? [input.waifuId] : await dmWaifuIdsForUser(storage, input.userId);
-  const deleted: DmForgetDeleted = { dmContexts: 0, dmStates: 0, recentRuns: 0, cachedImages: 0 };
+  const deleted: DmForgetDeleted = { dmContexts: 0, dmStates: 0, cachedImages: 0 };
   const diskImages = new DiscordImageFetcher({ dataRoot: storage.dataRoot, logger: silentLogger });
   const diskOcr = new ImageOcrService({ dataRoot: storage.dataRoot, config: DEFAULT_APP_CONFIG.ocr, logger: silentLogger, fetcher: diskImages });
   const purge =
@@ -124,17 +122,10 @@ export async function dmForget(storage: StorageService, input: DmForgetInput, ho
         );
       }
     }
-    if (input.scope === "conversation") {
-      if (state && state.recentRuns.length > 0) {
-        deleted.recentRuns += state.recentRuns.length;
-        if (!dryRun) await updateExistingDmState(storage, input.userId, waifuId, (current) => ({ ...current, recentRuns: [] }));
-      }
-      continue;
-    }
+    if (input.scope === "conversation") continue;
     // scope "all"
     if (state) {
       deleted.dmStates += 1;
-      deleted.recentRuns += state.recentRuns.length;
       if (!dryRun) {
         await storage.withLocks([dmStateResource(input.userId, waifuId)], () =>
           rm(storage.dataPath(dmStatePath(input.userId, waifuId)), { force: true })

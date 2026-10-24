@@ -66,7 +66,6 @@ export function registerDmRoutes(app: FastifyInstance, o: DmRouteOptions): void 
       .slice(0, query.data.limit ?? 200);
     const conversations = [];
     for (const state of states) {
-      const lastRun = state.recentRuns[state.recentRuns.length - 1];
       conversations.push({
         conversationKey: conversationKey({ kind: "dm", waifuId: state.waifuId, userId: state.userId }),
         waifuId: state.waifuId,
@@ -74,8 +73,7 @@ export function registerDmRoutes(app: FastifyInstance, o: DmRouteOptions): void 
         ...(state.userDisplayName ? { userDisplayName: state.userDisplayName } : {}),
         ...(state.lastInboundAt ? { lastInboundAt: state.lastInboundAt } : {}),
         ...(state.lastReplyAt ? { lastReplyAt: state.lastReplyAt } : {}),
-        rateLimit: await rateLimitView(o.storage, state),
-        ...(lastRun ? { lastRun } : {})
+        rateLimit: await rateLimitView(o.storage, state)
       });
     }
     return { conversations };

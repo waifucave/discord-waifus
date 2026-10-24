@@ -8,8 +8,8 @@ import { createProviderCredentialsLookup } from "../models/credentials.js";
 import { curatedCatalog, installedCatalog } from "../models/catalog.js";
 import type { AssistantModelClient } from "./assistant/service.js";
 import { clearModelWarnings, readModelWarnings } from "../models/modelWarnings.js";
-import { oneShotCatalog } from "../life/detector/catalog.js";
-import { OneShotConfigSchema } from "../shared/schemas/oneShot.js";
+import { decisionModelCatalog } from "../life/detector/catalog.js";
+import { ServerDetectorOverrideSchema } from "../shared/schemas/detector.js";
 import { loadAppConfig, updateAppConfig } from "../config/appConfig.js";
 import { resolveDataPath, userDataPath } from "../config/paths.js";
 import { Logger, createLogger, type LogEntry } from "../backend/logger.js";
@@ -44,7 +44,6 @@ import {
   ProviderIdSchema,
   ServerConfig,
   ServerConfigSchema,
-  ServerToolSettingsSchema,
   WaifuAvailabilitySchema,
   WaifuConfig,
   WaifuConfigSchema,
@@ -52,7 +51,6 @@ import {
   createEmptyRevisionedFile
 } from "../shared/schemas/domain.js";
 import { WaifuDmSettingsSchema } from "../shared/schemas/dm.js";
-import { CompactionOverrideBodySchema } from "../shared/schemas/compaction.js";
 import { UpdateAppConfigBodySchema, type AppConfig } from "../shared/schemas/config.js";
 import { createRevisionedBase, nowIso } from "../shared/schemas/common.js";
 import { StorageConflictError } from "../storage/errors.js";
@@ -185,22 +183,6 @@ function mergeNestedPatch<T>(current: T, patch: NoInfer<DeepPartial<T>> | undefi
   return merged as T;
 }
 
-// Optional-override maps (ServerConfig.contextWindows/compaction): a number/boolean sets the key,
-// an explicit `null` unsets it (= inherit), an omitted key is kept. An emptied map is dropped.
-function mergeOverridePatch<T extends Record<string, unknown>>(
-  current: T | undefined,
-  patch: { [K in keyof T]?: T[K] | null } | undefined
-): T | undefined {
-  if (patch === undefined) return current;
-  const merged: Record<string, unknown> = { ...(current ?? {}) };
-  for (const [key, value] of Object.entries(patch)) {
-    if (value === undefined) continue;
-    if (value === null) delete merged[key];
-    else merged[key] = value;
-  }
-  return Object.keys(merged).length > 0 ? (merged as T) : undefined;
-}
-
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -228,35 +210,17 @@ const UpdateWaifuBodySchema = WaifuConfigSchema.partial().extend({
   promptLayout: z.unknown().optional()
 });
 
-// P5 Task 4 review fix (3rd instance): same `.partial()`-does-not-suppress-`.default()` gotcha as
-// UpdateWaifuBodySchema/AgentConfigBodySchema above, applied to ServerConfigSchema's defaulted
-// fields (enabled, contextWindows, memoryInjectionLimit, tools, channels). LIVE bug: ServersView's
-// save body has no UI for memoryInjectionLimit, so every server save was silently resetting a
-// hand-configured value back to the schema default (12) — runtime.ts reads memoryInjectionLimit
-// for memory injection. contextWindows/channels have no separately-exported sub-schema, so their
-// `.unwrap()` is pulled straight off `ServerConfigSchema.shape` to avoid duplicating (and risking
-// drift on) their inline definitions.
+// Server writes are partial (`.partial()` alone still lets ZodDefault manufacture values for absent
+// keys, which would reset stored state on unrelated PUTs). Fields retired by Living cast
+// (`orchestratorMode`, `oneShot`, `contextWindows`, `compaction`, `memoryInjectionLimit`, `tools`,
+// `stageManagerEnabled`) are stripped like any unknown key.
 const ServerConfigBodySchema = ServerConfigSchema.partial().extend({
   revision: z.number().int().nonnegative().optional(),
   // Spec 9.7: the server `enabled` flag was removed. Accepted and ignored for one release (logged).
   enabled: z.boolean().optional(),
-  // Truly-optional re-declarations: .partial() alone still lets ZodDefault manufacture
-  // values for absent keys, which would reset stored state on unrelated PUTs
-  // (live-caught 2026-08-05: a PUT sending only `enabled` flipped orchestratorMode back
-  // to "model" and re-enabled the stage manager).
-  orchestratorMode: z.enum(["model", "deterministic", "one-shot"]).optional(),
-  oneShot: OneShotConfigSchema.unwrap().optional(),
-  stageManagerEnabled: z.boolean().optional(),
   paused: z.boolean().optional(),
-  // B29: `null` per key = inherit (unset the stored override); omitted keys are kept.
-  contextWindows: z.object({
-    orchestrator: z.number().int().min(1).max(200).nullable().optional(),
-    waifu: z.number().int().min(1).max(200).nullable().optional(),
-    stageManager: z.number().int().min(1).max(200).nullable().optional()
-  }).optional(),
-  compaction: CompactionOverrideBodySchema.optional(),
-  memoryInjectionLimit: z.number().int().min(1).max(50).optional(),
-  tools: partialWithoutDefaults(ServerToolSettingsSchema).optional(),
+  // Living cast §4.3: the per-server detector override; `null` removes it (inherit the global target).
+  detector: ServerDetectorOverrideSchema.nullable().optional(),
   // channels is a documented wholesale replace; per-channel edits use the channel route.
   // `thread` marks the runtime-only overlay entries and is never accepted from a client.
   channels: z.record(z.string(), ServerConfigSchema.shape.channels.unwrap().valueType.omit({ thread: true })).optional()
@@ -643,7 +607,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   // The addressee detector's native-choice decision models (Living cast §4.3): a separate
   // decision-only catalog, never offered as waifu models.
   app.get("/api/detector/models", async () => {
-    const result = await oneShotCatalog.list();
+    const result = await decisionModelCatalog.list();
     const credentials = createProviderCredentialsLookup(options.dataRoot);
     return { ...result, models: result.models.map((m) => ({ ...m, configured: m.local ? Boolean(process.env.DC_WAIFUS_LAYA_PYTHON) : Boolean(credentials(m.provider)) })) };
   });
@@ -945,14 +909,11 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
           enabled: _enabled,
           ...patch
         } = body;
-        return {
-          ...current,
-          ...patch,
-          contextWindows: mergeOverridePatch(current.contextWindows, patch.contextWindows) ?? {},
-          compaction: mergeOverridePatch(current.compaction, patch.compaction),
-          tools: mergeNestedPatch(current.tools, patch.tools),
-          guildId
-        };
+        const { detector, ...rest } = patch;
+        const next: ServerConfig = { ...current, ...rest, guildId };
+        if (detector === null) delete next.detector;
+        else if (detector !== undefined) next.detector = detector;
+        return next;
       }
     });
   });
@@ -1222,9 +1183,11 @@ function remoteAppConfig(config: AppConfig) {
     frontend: {},
     ocr: config.ocr,
     compaction: config.compaction,
-    memory: config.memory,
     discord: config.discord,
     models: config.models,
+    life: config.life,
+    search: config.search,
+    detector: config.detector,
     updates: config.updates
   };
 }

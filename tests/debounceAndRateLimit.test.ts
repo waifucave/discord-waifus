@@ -162,9 +162,13 @@ describe("DM eligibility", () => {
 describe("Phase 5 settings", () => {
   it("defaults discord.debounce and discord.dm and accepts partial updates without defaults", () => {
     const config = AppConfigSchema.parse({});
-    expect(config.discord.debounce).toEqual({ serverMs: 1200, serverMaxWaitMs: 4000, dmMs: 1500, dmMaxWaitMs: 8000 });
-    expect(config.discord.dm).toEqual({ maxConcurrentRuns: 4, resumeWindowMinutes: 60 });
+    // Living cast §11.3: the DM quiet timer is 30 s, capped at 180 s (max 300 s).
+    expect(config.discord.debounce).toEqual({ serverMs: 1200, serverMaxWaitMs: 4000, dmMs: 30000, dmMaxWaitMs: 180000 });
+    expect(config.discord.dm).toEqual({ resumeWindowMinutes: 60 });
     expect(UpdateAppConfigBodySchema.parse({ discord: { debounce: { serverMs: 0 } } })).toEqual({ discord: { debounce: { serverMs: 0 } } });
-    expect(() => UpdateAppConfigBodySchema.parse({ discord: { dm: { maxConcurrentRuns: 0 } } })).toThrow();
+    expect(() => UpdateAppConfigBodySchema.parse({ discord: { debounce: { dmMaxWaitMs: 300001 } } })).toThrow();
+    expect(() => UpdateAppConfigBodySchema.parse({ discord: { debounce: { dmMs: 120001 } } })).toThrow();
+    // maxConcurrentRuns moved to life.maxConcurrentTurns.
+    expect(() => UpdateAppConfigBodySchema.parse({ discord: { dm: { maxConcurrentRuns: 4 } } })).toThrow();
   });
 });

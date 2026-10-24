@@ -34,28 +34,17 @@ async function makeApp(logger?: Parameters<typeof createApiServer>[0]["logger"])
 }
 
 describe("B17: partial PUT bodies never re-materialize nested defaults", () => {
-  it("server tools and contextWindows merge with stored values", async () => {
+  it("a server detector override survives partial PUTs; null clears it", async () => {
     const app = await makeApp();
     try {
       const url = `/api/servers/${GUILD}`;
-      const seeded = await app.inject({
-        method: "PUT",
-        url,
-        payload: {
-          tools: { pickNextWaifu: false, shortTermMemory: false },
-          contextWindows: { orchestrator: 11, waifu: 22, stageManager: 33 }
-        }
-      });
+      const seeded = await app.inject({ method: "PUT", url, payload: { detector: { target: "laya:english" } } });
       expect(seeded.statusCode).toBe(200);
-
-      const tools = await app.inject({ method: "PUT", url, payload: { tools: { pickNextWaifu: true } } });
-      expect(tools.statusCode).toBe(200);
-      expect(tools.json().tools).toEqual({ pickNextWaifu: true, shortTermMemory: false });
-
-      const windows = await app.inject({ method: "PUT", url, payload: { contextWindows: { waifu: 30 } } });
-      expect(windows.statusCode).toBe(200);
-      expect(windows.json().contextWindows).toEqual({ orchestrator: 11, waifu: 30, stageManager: 33 });
-      expect(windows.json().tools).toEqual({ pickNextWaifu: true, shortTermMemory: false });
+      const paused = await app.inject({ method: "PUT", url, payload: { paused: true } });
+      expect(paused.json()).toMatchObject({ paused: true, detector: { target: "laya:english" } });
+      const cleared = await app.inject({ method: "PUT", url, payload: { detector: null } });
+      expect(cleared.json().detector).toBeUndefined();
+      expect(cleared.json().paused).toBe(true);
     } finally {
       await app.close();
     }

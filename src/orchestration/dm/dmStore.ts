@@ -8,11 +8,9 @@
 
 import { readdir } from "node:fs/promises";
 import path from "node:path";
-import { DmLimitStateSchema, DmStateSchema, type DmLimitState, type DmRunRecord, type DmState } from "../../shared/schemas/dm.js";
+import { DmLimitStateSchema, DmStateSchema, type DmLimitState, type DmState } from "../../shared/schemas/dm.js";
 import { createEmptyRevisionedFile, type DiscordBotsFile, type WaifuConfig } from "../../shared/schemas/domain.js";
 import type { StorageService } from "../../storage/storageService.js";
-
-export const MAX_RECENT_DM_RUNS = 50;
 
 // Same alphabets as conversation keys: a user id is a Discord id, a waifu id the API's safe id.
 const USER_ID = /^[A-Za-z0-9-]+$/;
@@ -89,15 +87,6 @@ export async function updateExistingDmState(
   const current = await readDmState(storage, userId, waifuId);
   if (!current) return undefined;
   return updateDmState(storage, { userId, waifuId, botId: current.botId }, transform);
-}
-
-export function withRunRecord(state: DmState, run: DmRunRecord): DmState {
-  return { ...state, recentRuns: [...state.recentRuns, run].slice(-MAX_RECENT_DM_RUNS) };
-}
-
-export function withoutPending(state: DmState): DmState {
-  const { pendingTriggerMessageId: _trigger, pendingSince: _since, ...rest } = state;
-  return rest as DmState;
 }
 
 export async function readDmLimit(storage: StorageService, userId: string, waifuId: string): Promise<DmLimitState> {
