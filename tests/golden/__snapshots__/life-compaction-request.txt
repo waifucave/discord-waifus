@@ -1,0 +1,5 @@
+(system and the old epoch's turn: see life-system-prompt.txt and life-wake-turn.txt; 6 earlier messages)
+=== 6 user ===
+[system] Time to summarise. Write notes for your future self about your life since the last summary: what happened in each place, who you talked to and how it went, plans and promises, open threads, things you meant to do. Carry over anything from your previous summary that still matters. Anything that should last longer belongs in your notes; this summary is replaced next time. Reply with text only; do not call any tool.
+
+[Sat 24 Oct 14:00 · awake]

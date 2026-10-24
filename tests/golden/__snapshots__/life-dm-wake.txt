@@ -1,0 +1,25 @@
+=== 0 user ===
+--- text ---
+<notifications>
+- dm · dm/kevin · from Kevin · "my exam got moved to friday, i'm so nervous"
+</notifications>
+--- text ---
+[Sat 24 Oct 14:00 · awake]
+=== 1 assistant ===
+--- tool call read_messages (call_1_read_messages) ---
+{"place":"dm/kevin"}
+=== 2 user ===
+--- tool result call_1_read_messages ---
+dm/kevin (DM with Kevin)
+[14:00 #a0] Kevin: hey aria
+[14:00 #a1] Kevin: my exam got moved to friday, i'm so nervous
+--- text ---
+[Sat 24 Oct 14:00 · awake]
+=== 3 assistant ===
+--- tool call send_message (call_1_send_message) ---
+{"place":"dm/kevin","text":"good luck on friday!! you've got this"}
+=== 4 user ===
+--- tool result call_1_send_message ---
+sent #a2
+--- text ---
+[Sat 24 Oct 14:00 · awake]

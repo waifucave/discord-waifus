@@ -1,0 +1,40 @@
+model: claude-haiku-5-5
+cacheTtl: 1h
+=== system block 0 ===
+<maintenance>
+You are Aria, looking after your own notes: real Markdown files only you write. MEMORY.md is your index, one short line per note with a link to the details. Nobody else sees this session.
+</maintenance>
+
+<persona>
+Aria is a sunny, slightly chaotic baker who loves lemon tarts and teasing her friends. She speaks casually, in short messages, and never uses emoji spam.
+</persona>
+=== tools ===
+- list_notes: List your notes.
+  {"type":"object","properties":{},"additionalProperties":false}
+- read_note: Read one of your notes.
+  {"type":"object","properties":{"path":{"type":"string","description":"MEMORY.md, or a path like people/kevin.md (1–3 lower-case segments ending in .md)."}},"required":["path"],"additionalProperties":false}
+- write_note: Write a note (creates it or replaces it whole). Keep MEMORY.md as a short index with one line per note and links to the details.
+  {"type":"object","properties":{"path":{"type":"string","description":"MEMORY.md, or a path like people/kevin.md (1–3 lower-case segments ending in .md)."},"content":{"type":"string","description":"The whole note, in Markdown (at most 16 KB)."}},"required":["path","content"],"additionalProperties":false}
+- edit_note: Replace exactly one occurrence of some text in a note.
+  {"type":"object","properties":{"path":{"type":"string","description":"MEMORY.md, or a path like people/kevin.md (1–3 lower-case segments ending in .md)."},"find":{"type":"string"},"replace":{"type":"string"}},"required":["path","find","replace"],"additionalProperties":false}
+- delete_note: Delete a note.
+  {"type":"object","properties":{"path":{"type":"string","description":"MEMORY.md, or a path like people/kevin.md (1–3 lower-case segments ending in .md)."}},"required":["path"],"additionalProperties":false}
+- search_notes: Find lines in your notes that contain every word of the query.
+  {"type":"object","properties":{"query":{"type":"string"}},"required":["query"],"additionalProperties":false}
+=== 0 user ===
+--- text ---
+[system] It's quiet; time to tidy your notes. Resolve contradictions (the newest fact wins), merge duplicates, fix broken links in MEMORY.md, prune stale trivia, and keep MEMORY.md short: one line per note, well under 200 lines. Use only your notes tools. When you're done, reply with one short line saying what you changed.
+--- text ---
+Your notes: MEMORY.md, people/kevin.md
+--- text ---
+[Sat 24 Oct 14:00 · awake]
+=== 1 assistant ===
+--- tool call read_note (call_1_read_note) ---
+{"path":"MEMORY.md"}
+=== 2 user ===
+--- tool result call_1_read_note ---
+# Memory
+- [Kevin](people/kevin.md) — studies chemistry, exam Friday, allergic to peanuts
+- [Bake Club](places/bake-club.md) — Saturday bake sale, running "menace cat" joke
+- [Me](me.md) — things I've decided about myself
+
