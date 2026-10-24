@@ -162,12 +162,26 @@ function describeLeaf(schema: unknown): Pick<KeyInfo, "type" | "enum" | "min" | 
   }
 }
 
+/** A leaf with no default, not optional and not nullable (an id or a name every record must carry). */
+function requiredLeaf(schema: unknown): boolean {
+  let node = schema;
+  for (let guard = 0; guard < 20; guard += 1) {
+    const d = def(node);
+    if (d.type === "default" || d.type === "optional" || d.type === "nullable") return false;
+    if (!WRAPPERS.has(d.type)) return true;
+    node = d["innerType"];
+  }
+  return true;
+}
+
 export function keyInfo(group: SettingGroup, path: string): KeyInfo | undefined {
   const help = group.keys[path];
   const schema = schemaAt(group.schema, path);
   if (!help || !schema) return undefined;
   const { help: text, example, unit, ...flags } = help;
-  const defaults = group.defaults?.();
+  // A record's defaults are parsed from a seed (an example id and name): its required fields have none.
+  const seeded = group.target.kind === "id" && (flags.readOnly === true || requiredLeaf(schema));
+  const defaults = seeded ? undefined : group.defaults?.();
   const fallback = defaults !== undefined ? getPath(defaults, path) : undefined;
   return {
     group: group.id,

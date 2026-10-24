@@ -38,6 +38,12 @@ describe("settings registry", () => {
     }
   });
 
+  it("a record's identity fields have no default (its defaults are parsed from an example seed)", () => {
+    for (const id of ["waifu.id", "waifu.name", "waifu.displayName", "bot.displayName"]) expect(findKey(id)?.default, id).toBeUndefined();
+    expect(findKey("waifu.enabled")?.default).toBe(true);
+    expect(findKey("waifu.life.dailyBudgetUsd")?.default).toBeNull();
+  });
+
   it("app defaults come from the parsed default config", () => {
     for (const info of groupKeyInfos(SETTING_GROUPS.find((group) => group.id === "app")!)) {
       expect(info.default, info.id).toEqual(getPath(DEFAULT_APP_CONFIG, info.path));

@@ -89,9 +89,9 @@ Target `waifu:<waifuId>` (e.g. `waifu:aria`) · stored in `user/waifus/<waifuId>
 
 | Key | Type | Default | What it does |
 |---|---|---|---|
-| `id` | string | `example` | Her id (the folder name; fixed when she is created). (read-only) |
-| `name` | string | `Example` | Her name (also a wake word when wakeOnName is on). |
-| `displayName` | string | `Example` | The name shown in the dashboard and her prompt. |
+| `id` | string |  | Her id (the folder name; fixed when she is created). (read-only) |
+| `name` | string |  | Her name (also a wake word when wakeOnName is on). |
+| `displayName` | string |  | The name shown in the dashboard and her prompt. |
 | `enabled` | boolean | `true` | In the cast (off: she is benched and never wakes). |
 | `persona` | string | `""` | Who she is: voice, history, quirks, relationships. |
 | `model` | JSON or null |  | Her model: {providerId, modelId, effort?} from GET /api/models (or `provider/model[@effort]` on the command line). Contributor variants share prompts for training; pick one only on purpose. |
@@ -125,7 +125,7 @@ Target `server:<guildId>` (e.g. `server:100000000000000001`) · stored in `user/
 
 | Key | Type | Default | What it does |
 |---|---|---|---|
-| `guildId` | string | `100000000000000001` | The server's Discord id. (read-only) |
+| `guildId` | string |  | The server's Discord id. (read-only) |
 | `name` | string |  | The server's name (refreshed from Discord). |
 | `paused` | boolean | `false` | The server's kill switch: messages are observed but wake nobody until it is switched back on. |
 | `detector.target` | string |  | This server's addressee detector target, overriding the app's detector.target ("" = no detector here). Unset to inherit. |
@@ -144,7 +144,7 @@ Target `channel:<guildId/channelId>` (e.g. `channel:100000000000000001/200000000
 
 | Key | Type | Default | What it does |
 |---|---|---|---|
-| `channelId` | string | `200000000000000002` | The channel's Discord id. (read-only) |
+| `channelId` | string |  | The channel's Discord id. (read-only) |
 | `name` | string |  | The channel's name (refreshed from Discord). |
 | `enabledWaifuIds` | list of strings | `[]` | The waifus cast in this channel (a JSON list of ids, or ids separated by commas). Empty = silent. |
 | `threads` | one of inherit \| off |  | Threads and forum posts under this channel inherit its cast (inherit) or stay silent (off). |
@@ -178,8 +178,8 @@ Target `bot:<botId>` (e.g. `bot:house`) · stored in `user/discord-bots.json` ·
 
 | Key | Type | Default | What it does |
 |---|---|---|---|
-| `id` | string | `example` | The bot entry's id (`house` for the House bot; a waifu's bot usually has her id). (read-only) |
-| `displayName` | string | `Example` | Name shown in the dashboard. |
+| `id` | string |  | The bot entry's id (`house` for the House bot; a waifu's bot usually has her id). (read-only) |
+| `displayName` | string |  | Name shown in the dashboard. |
 | `applicationId` | string |  | The Discord application id (not secret; from the Developer Portal). |
 | `token` | string |  | The bot token. Never on the command line: `waifus set bot:<id> token --from-env VAR` or pipe it on stdin. Never shown again. (secret, write-only) |
 | `enabled` | boolean | `true` | Log this bot in (off keeps it offline). |
