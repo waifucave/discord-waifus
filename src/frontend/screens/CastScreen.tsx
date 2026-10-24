@@ -8,6 +8,8 @@ import { ModelPicker } from "../components/ModelPicker";
 import { WaifuStyleFields, waifuStyleBlocksSave } from "../components/WaifuStyleFields";
 import { Notice } from "../components/Notice";
 import { violationsFromApiError, type SaveErrorViolation } from "../api/violations";
+import { WaifuDmFields, WaifuLifeFields } from "../components/WaifuLifeFields";
+import { waifuDirty, waifuPatch, waifuProblems } from "./castEdit";
 
 export function CastScreen({
   characterId,
@@ -38,7 +40,8 @@ function CastMosaic({ onNavigate }: { onNavigate: (view: ViewId, tab?: string, i
   const notices = runtime.data?.models?.warnings;
 
   const talking = cast.filter((w) => w.enabled && w.model).length;
-  const unconfigured = cast.filter((w) => !w.model || !w.botId).length;
+  // A waifu without her own bot speaks through the House bot; a link to a missing bot needs setup.
+  const unconfigured = cast.filter((w) => !w.model || (w.botId !== undefined && !botIds.has(w.botId))).length;
 
   return (
     <div className="screen">
@@ -59,7 +62,7 @@ function CastMosaic({ onNavigate }: { onNavigate: (view: ViewId, tab?: string, i
         >
           {cast.map((waifu, index) => {
             const hue = characterHue(index);
-            const missing = !waifu.model || !waifu.botId || !botIds.has(waifu.botId ?? "");
+            const missing = !waifu.model || (waifu.botId !== undefined && !botIds.has(waifu.botId));
             const previous = previousModelFor(notices, waifu.id);
             const wide = index === 0;
             return (
@@ -76,7 +79,7 @@ function CastMosaic({ onNavigate }: { onNavigate: (view: ViewId, tab?: string, i
                 <div>
                   <span className="nm" style={{ fontSize: wide ? 52 : 34 }}>{waifu.displayName || waifu.name}</span>
                   <div className="t-micro" style={{ marginTop: 8, textTransform: "none", letterSpacing: "0.04em" }}>
-                    {waifu.model?.modelId ?? "no model"}{waifu.botId ? " · bot linked" : " · no bot"}
+                    {waifu.model?.modelId ?? "no model"}{waifu.botId ? " · own bot" : " · via the House bot"}
                   </div>
                   {previous && (
                     <div className="t-micro t-mute" style={{ marginTop: 4, textTransform: "none", letterSpacing: "0.04em" }}>
@@ -145,7 +148,9 @@ function CharacterEditor({
         enabled: true,
         verbosity: "terse",
         customInstructions: "",
-        scheduleInPrompt: true
+        scheduleInPrompt: true,
+        wakeOnName: true,
+        life: { dailyBudgetUsd: null }
       });
     } else if (remote.data) {
       setDraft(remote.data);
@@ -168,25 +173,17 @@ function CharacterEditor({
           ...(draft.model ? { model: draft.model } : {}),
           verbosity: draft.verbosity,
           customInstructions: draft.customInstructions,
-          scheduleInPrompt: draft.scheduleInPrompt
+          scheduleInPrompt: draft.scheduleInPrompt,
+          ...(draft.wakeOnName !== undefined ? { wakeOnName: draft.wakeOnName } : {}),
+          ...(draft.life ? { life: draft.life } : {}),
+          ...(draft.availability ? { availability: draft.availability } : {}),
+          ...(draft.dm ? { dm: draft.dm } : {})
         });
         onNavigate("cast", undefined, created.id);
         setMessage("Character created.");
       } else if (remote.data) {
-        const saved = await api.updateWaifu(remote.data.id, {
-          revision: remote.data.revision,
-          name: draft.name,
-          displayName: draft.displayName,
-          persona: draft.persona,
-          enabled: draft.enabled,
-          // `null` unsets the model; omitting it would keep the stored one
-          model: draft.model ?? null,
-          botId: draft.botId ?? null,
-          availability: draft.availability,
-          verbosity: draft.verbosity,
-          customInstructions: draft.customInstructions,
-          scheduleInPrompt: draft.scheduleInPrompt
-        });
+        // Only what changed, with her revision (`null` unsets the model or the bot).
+        const saved = await api.updateWaifu(remote.data.id, waifuPatch(remote.data, draft));
         remote.setData(saved);
         setMessage("Saved.");
       }
@@ -209,6 +206,8 @@ function CharacterEditor({
   };
 
   const title = creating ? "New character" : draft.displayName || draft.name || characterId;
+  const problems = waifuProblems(draft);
+  const unchanged = !creating && !waifuDirty(remote.data, draft);
 
   return (
     <div className="screen">
@@ -221,9 +220,9 @@ function CharacterEditor({
             className="cell clickable actioncell"
             style={{ background: "var(--mint)" }}
             onClick={save}
-            disabled={saving || waifuStyleBlocksSave(draft)}
+            disabled={saving || waifuStyleBlocksSave(draft) || problems.length > 0 || unchanged}
           >
-            {saving ? "Saving…" : "Save"}
+            {saving ? "Saving…" : unchanged ? "Saved" : "Save"}
           </button>
         }
       />
@@ -245,6 +244,15 @@ function CharacterEditor({
           </div>
         )}
 
+        {problems.length > 0 && (
+          <div className="cell" style={{ padding: 16, flex: "none" }}>
+            <Notice tone="warn">
+              {problems.map((problem) => (
+                <div key={problem}>{problem}</div>
+              ))}
+            </Notice>
+          </div>
+        )}
         <div className="fgrid" style={{ flex: "none", gridTemplateColumns: creating ? "1fr 1fr 1fr" : "1fr 1fr" }}>
           {creating && (
             <div className="fcell">
@@ -327,8 +335,17 @@ function CharacterEditor({
             </label>
             <span className="field-hint">When on, she knows what she is doing right now (sleeping, busy) and can say so.</span>
           </div>
-          <div className="cell" />
+          {!creating ? (
+            <button className="cell clickable" data-hue style={{ ["--hover-hue" as string]: "var(--lavender)", padding: "18px 26px" }} onClick={() => onNavigate("life", undefined, characterId)}>
+              <div className="t-body">Open her life →</div>
+              <div className="t-micro" style={{ marginTop: 4 }}>timeline · wake · compact · reset</div>
+            </button>
+          ) : (
+            <div className="cell" />
+          )}
         </div>
+        <WaifuLifeFields draft={draft} onChange={set} />
+        <WaifuDmFields draft={draft} onChange={set} />
 
         {!creating && remote.data && (
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "var(--line)", background: "var(--ink)", flex: "none" }}>

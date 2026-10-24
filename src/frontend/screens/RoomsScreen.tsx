@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { api } from "../api/client";
 import { useApi } from "../api/useApi";
-import type { ServerConfig, ServersResponse, WaifusResponse } from "../api/types";
+import type { DetectorConfigResponse, DetectorHistoryEntry, ServerConfig, ServersResponse, WaifusResponse } from "../api/types";
 import { characterHue, type ViewId } from "../nav";
 import { FootRow, HeadRow } from "./scaffold";
 import { Notice } from "../components/Notice";
@@ -27,7 +27,7 @@ function GuildMosaic({ onNavigate }: { onNavigate: (view: ViewId, tab?: string, 
         {guilds.length === 0 && (
           <div className="cell growcell" style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: 40 }}>
             <span className="t-mute t-small" style={{ maxWidth: 460, textAlign: "center", lineHeight: 1.6 }}>
-              No servers yet. When the director bot connects to Discord and lands in a guild, it appears here.
+              No servers yet. When the House bot connects to Discord and is in a server, it appears here.
             </span>
           </div>
         )}
@@ -65,6 +65,9 @@ function GuildMosaic({ onNavigate }: { onNavigate: (view: ViewId, tab?: string, 
 function GuildScreen({ guildId, onNavigate }: { guildId: string; onNavigate: (view: ViewId, tab?: string, id?: string) => void }) {
   const server = useApi<ServerConfig>((s) => api.server(guildId, s), [guildId]);
   const waifus = useApi<WaifusResponse>((s) => api.waifus(s), []);
+  const detector = useApi<DetectorConfigResponse>((s) => api.detectorConfig(s), []);
+  const history = useApi<{ guildId: string; entries: DetectorHistoryEntry[] }>((s) => api.detectorHistory(guildId, s), [guildId]);
+  const [detectorDraft, setDetectorDraft] = useState<string | undefined>(undefined);
   const [message, setMessage] = useState<string | undefined>(undefined);
 
   const cast = waifus.data?.waifus ?? [];
@@ -75,12 +78,14 @@ function GuildScreen({ guildId, onNavigate }: { guildId: string; onNavigate: (vi
     const channel = server.data.channels[channelId];
     const current = channel?.enabledWaifuIds ?? [];
     const next = current.includes(waifuId) ? current.filter((id) => id !== waifuId) : [...current, waifuId];
+    await saveChannel(channelId, { enabledWaifuIds: next });
+  };
+
+  // A channel write sends only the field that changed (the others keep their values).
+  const saveChannel = async (channelId: string, patch: { enabledWaifuIds?: string[]; threads?: "inherit" | "off" }) => {
+    if (!server.data) return;
     try {
-      const saved = await api.updateChannel(guildId, channelId, {
-        revision: server.data.revision,
-        name: channel?.name,
-        enabledWaifuIds: next
-      });
+      const saved = await api.updateChannel(guildId, channelId, { revision: server.data.revision, ...patch });
       server.setData(saved);
       setMessage(undefined);
     } catch (err) {
@@ -101,6 +106,8 @@ function GuildScreen({ guildId, onNavigate }: { guildId: string; onNavigate: (vi
     }
   };
   const serverPaused = server.data?.paused ?? false;
+  const override = server.data?.detector?.target;
+  const detectorMode = detectorDraft ?? (override === undefined ? "__inherit__" : override);
 
   return (
     <div className="screen">
@@ -119,6 +126,39 @@ function GuildScreen({ guildId, onNavigate }: { guildId: string; onNavigate: (vi
           <span className="field-hint">
             The one switch for this server. Off mutes every channel: messages are still observed, but nothing
             replies, and nothing resumes after a restart. A channel is live when at least one waifu is enabled in it.
+          </span>
+        </div>
+        <div className="fcell">
+          <label className="field-label">Addressee detector here</label>
+          <div style={{ display: "flex", gap: 8 }}>
+            <select
+              className="select"
+              value={detectorMode === "__inherit__" || detectorMode === "" ? detectorMode : "__custom__"}
+              onChange={(e) => setDetectorDraft(e.target.value === "__custom__" ? detector.data?.target || "laya:english" : e.target.value)}
+            >
+              <option value="__inherit__">Inherit ({detector.data?.target || "none"})</option>
+              <option value="">Off in this server</option>
+              <option value="__custom__">Another target…</option>
+            </select>
+            {detectorMode !== "__inherit__" && detectorMode !== "" && (
+              <input className="input" value={detectorMode} onChange={(e) => setDetectorDraft(e.target.value)} placeholder="openrouter:… or laya:english" />
+            )}
+            {detectorDraft !== undefined && (
+              <button
+                className="btn sm"
+                onClick={async () => {
+                  await saveServerField({ detector: detectorDraft === "__inherit__" ? null : { target: detectorDraft } });
+                  setDetectorDraft(undefined);
+                  history.reload();
+                }}
+              >
+                Save
+              </button>
+            )}
+          </div>
+          <span className="field-hint">
+            Picks who a message nobody addressed is for. Off: a first message in 10 minutes or a question wakes one waifu at random.
+            {history.data && history.data.entries.length > 0 ? ` Last decision ${new Date(history.data.entries[0]!.at).toLocaleString()}.` : ""}
           </span>
         </div>
       </div>
@@ -140,6 +180,14 @@ function GuildScreen({ guildId, onNavigate }: { guildId: string; onNavigate: (vi
               <span className="t-micro">
                 {(channel.enabledWaifuIds?.length ?? 0) > 0 ? `${channel.enabledWaifuIds.length} talking` : "silent"}
               </span>
+              <label className="checkbox-chip" style={{ marginLeft: "auto" }} title="Threads and forum posts under this channel">
+                <input
+                  type="checkbox"
+                  checked={(channel.threads ?? "inherit") === "inherit"}
+                  onChange={(e) => void saveChannel(channel.channelId, { threads: e.target.checked ? "inherit" : "off" })}
+                />
+                {(channel.threads ?? "inherit") === "inherit" ? "Threads share this cast" : "Threads stay silent"}
+              </label>
             </div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
               {cast.map((waifu, index) => {

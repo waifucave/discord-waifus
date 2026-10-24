@@ -361,6 +361,42 @@ export type LifeResetResult = z.output<typeof LifeResetResponseSchema>;
 export type NeedsReviewItem = z.output<typeof NeedsReviewItemSchema>;
 export type NeedsReviewResponse = z.output<typeof NeedsReviewResponseSchema>;
 
+/** `GET /api/logs`: newest first. */
+export type LogsResponse = { entries: Array<{ time: string; level: string; message: string; context?: unknown }> };
+
+// --- Help (the settings registry over HTTP; server-built, so mirrored here) ---
+export type HelpKey = {
+  id: string;
+  group: string;
+  path: string;
+  type: "boolean" | "integer" | "number" | "string" | "enum" | "string-list" | "json";
+  typeLabel: string;
+  enum?: string[];
+  min?: number;
+  max?: number;
+  maxLength?: number;
+  nullable: boolean;
+  default?: unknown;
+  help: string;
+  flags: Array<"secret" | "readOnly" | "localOnlyWrite" | "remoteHidden" | "nullUnset" | "nullIsValue" | "leaf">;
+  applies: "live" | "reload" | "restart";
+  example?: string;
+  unit?: string;
+  cli: string[];
+};
+export type HelpTopic =
+  | { kind: "group"; id: string; title: string; summary: string; description: string; keys: HelpKey[]; notes: string[] }
+  | { kind: "subtree"; id: string; group: string; keys: HelpKey[] }
+  | { kind: "key"; id: string; group: string; key: HelpKey }
+  | { kind: "resource"; id: string; title: string; summary: string; description: string }
+  | { kind: "command"; id: string; name: string; summary: string; usage: string[] };
+
+/** `GET /api/detector/models`: the addressee detector's decision models. */
+export type DetectorModelsResponse = {
+  models: Array<{ target: string; label: string; provider: string; local: boolean; configured: boolean }>;
+  unavailable: boolean;
+};
+
 // --- Usage, search, detector ---
 export type UsageResponse = z.output<typeof UsageResponseSchema>;
 export type SearchUsage = z.output<typeof SearchUsageResponseSchema>;

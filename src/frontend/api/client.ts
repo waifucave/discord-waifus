@@ -12,7 +12,24 @@ import type {
   ChannelBody,
   ClientContext,
   ForgetUserResult,
+  ForgetJobsResponse,
   CreateWaifuBody,
+  DetectorConfigResponse,
+  DetectorHistoryEntry,
+  DetectorModelsResponse,
+  HelpTopic,
+  LifeCompactResult,
+  LifeLog,
+  LifeResetResult,
+  LifeStatus,
+  LogsResponse,
+  NeedsReviewResponse,
+  OwnerNotices,
+  SearchUsage,
+  UpdateAppConfigBody,
+  UsageGroupKey,
+  UsageResponse,
+  WakeResult,
   DiscordBotsFile,
   ModelsResponse,
   OperationAccepted,
@@ -348,7 +365,11 @@ export const api = {
   getConfig: (signal?: AbortSignal) => request<AppConfig>("GET", "/api/config", { signal }),
   updates: (signal?: AbortSignal) => request<AutoUpdateStatus>("GET", "/api/updates", { signal }),
   putUpdateSettings: (updates: AppConfig["updates"]) => request<AppConfig>("PUT", "/api/config", { body: { updates } }),
-  putConfig: (config: AppConfig) => request<AppConfig>("PUT", "/api/config", { body: config }),
+  /** A partial patch: send only the keys that changed (omitted keys keep their values). */
+  putConfig: (patch: UpdateAppConfigBody) => request<AppConfig>("PUT", "/api/config", { body: patch }),
+  logs: (limit: number, signal?: AbortSignal) => request<LogsResponse>("GET", `/api/logs?limit=${Math.min(Math.max(1, limit), 500)}`, { signal }),
+  /** Registry help for a group, a part of one or a key (`app.life`), as JSON. */
+  help: (topic: string, signal?: AbortSignal) => request<HelpTopic>("GET", `/api/help/${encodeURIComponent(topic)}`, { signal }),
   clearOcrCache: () =>
     request<{ accepted: boolean; message: string }>("POST", "/api/cache/ocr/clear"),
   discordBots: (signal?: AbortSignal) =>
@@ -397,6 +418,8 @@ export const api = {
       providerId: ProviderId;
       credentials: ProvidersResponse["providers"][number]["credentials"];
     }>("PUT", `/api/providers/${providerId}/credentials`, { body }),
+  deleteProviderCredentials: (providerId: ProviderId) =>
+    request<{ revision: number; providerId: ProviderId }>("DELETE", `/api/providers/${encodeURIComponent(providerId)}/credentials`),
 
   // Waifus
   waifus: (signal?: AbortSignal) => request<WaifusResponse>("GET", "/api/waifus", { signal }),
@@ -426,7 +449,48 @@ export const api = {
 
   // People (Living cast §14.1)
   forgetUser: (discordUserId: string, dryRun = false) =>
-    request<ForgetUserResult>("POST", `/api/people/${encodeURIComponent(discordUserId)}/forget`, { body: { confirm: true, dryRun } })
+    request<ForgetUserResult>("POST", `/api/people/${encodeURIComponent(discordUserId)}/forget`, { body: { confirm: true, dryRun } }),
+  forgetJobs: (signal?: AbortSignal) => request<ForgetJobsResponse>("GET", "/api/people/forget-jobs", { signal }),
+  ownerNotices: (signal?: AbortSignal) => request<OwnerNotices>("GET", "/api/owner-notices", { signal }),
+
+  // Lives (Living cast §14.1). `includePrivate` reveals DM content and works only on the host itself.
+  life: (waifuId: string, includePrivate: boolean, signal?: AbortSignal) =>
+    request<LifeStatus>("GET", `/api/waifus/${encodeURIComponent(waifuId)}/life${includePrivate ? "?includePrivate=1" : ""}`, { signal }),
+  lifeLog: (waifuId: string, query: { epoch?: number; before?: number; limit?: number; includePrivate?: boolean }, signal?: AbortSignal) => {
+    const params = new URLSearchParams();
+    if (query.epoch !== undefined) params.set("epoch", String(query.epoch));
+    if (query.before !== undefined) params.set("before", String(query.before));
+    if (query.limit !== undefined) params.set("limit", String(query.limit));
+    if (query.includePrivate) params.set("includePrivate", "1");
+    const qs = params.toString();
+    return request<LifeLog>("GET", `/api/waifus/${encodeURIComponent(waifuId)}/life/log${qs ? `?${qs}` : ""}`, { signal });
+  },
+  wake: (waifuId: string, note?: string) =>
+    request<WakeResult>("POST", `/api/waifus/${encodeURIComponent(waifuId)}/wake`, { body: note ? { note } : {} }),
+  compactLife: (waifuId: string) => request<LifeCompactResult>("POST", `/api/waifus/${encodeURIComponent(waifuId)}/life/compact`),
+  resetLife: (waifuId: string) => request<LifeResetResult>("POST", `/api/waifus/${encodeURIComponent(waifuId)}/life/reset`, { body: { confirm: true } }),
+  needsReview: (waifuId: string, signal?: AbortSignal) =>
+    request<NeedsReviewResponse>("GET", `/api/waifus/${encodeURIComponent(waifuId)}/life/needs-review`, { signal }),
+  dismissNeedsReview: (waifuId: string, itemId: string) =>
+    request<void>("DELETE", `/api/waifus/${encodeURIComponent(waifuId)}/life/needs-review/${encodeURIComponent(itemId)}`),
+
+  // Usage, search, detector
+  usage: (query: { from?: string; to?: string; groupBy?: UsageGroupKey[]; waifuId?: string; tz?: string }, signal?: AbortSignal) => {
+    const params = new URLSearchParams();
+    if (query.from) params.set("from", query.from);
+    if (query.to) params.set("to", query.to);
+    if (query.groupBy?.length) params.set("groupBy", query.groupBy.join(","));
+    if (query.waifuId) params.set("waifuId", query.waifuId);
+    if (query.tz) params.set("tz", query.tz);
+    const qs = params.toString();
+    return request<UsageResponse>("GET", `/api/usage${qs ? `?${qs}` : ""}`, { signal });
+  },
+  searchUsage: (signal?: AbortSignal) => request<SearchUsage>("GET", "/api/search/usage", { signal }),
+  detectorConfig: (signal?: AbortSignal) => request<DetectorConfigResponse>("GET", "/api/detector/config", { signal }),
+  putDetectorConfig: (target: string) => request<DetectorConfigResponse>("PUT", "/api/detector/config", { body: { target } }),
+  detectorModels: (signal?: AbortSignal) => request<DetectorModelsResponse>("GET", "/api/detector/models", { signal }),
+  detectorHistory: (guildId: string, signal?: AbortSignal) =>
+    request<{ guildId: string; entries: DetectorHistoryEntry[] }>("GET", `/api/detector/history?guildId=${encodeURIComponent(guildId)}`, { signal })
 };
 
 export type EventFeedOptions = Omit<

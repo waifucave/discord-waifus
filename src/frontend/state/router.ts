@@ -5,6 +5,7 @@ const DEFAULT: ViewId = "home";
 const VALID: ReadonlySet<ViewId> = new Set<ViewId>([
   "home",
   "cast",
+  "life",
   "rooms",
   "activity",
   "settings"
@@ -18,10 +19,10 @@ const LEGACY: Record<string, { view: ViewId; tab?: string }> = {
   servers: { view: "rooms" },
   // Living cast L1 retired Direction and Memory; their links land somewhere still meaningful.
   direction: { view: "settings", tab: "assistant" },
-  memory: { view: "home" },
+  memory: { view: "life" },
   "stage-manager": { view: "home" },
   reviewer: { view: "home" },
-  memories: { view: "home" },
+  memories: { view: "life" },
   logs: { view: "activity", tab: "logs" },
   queries: { view: "activity", tab: "queries" },
   replies: { view: "activity", tab: "replies" },

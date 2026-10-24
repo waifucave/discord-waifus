@@ -5,11 +5,14 @@ import type {
   AppConfig,
   AssistantConfig,
   AutoUpdateStatus,
+  DetectorConfigResponse,
+  DetectorModelsResponse,
   DiscordBotConfig,
   DiscordBotsFile,
   ModelChoice,
   ModelsResponse,
   ProvidersResponse,
+  SearchUsage,
   WaifusResponse
 } from "../api/types";
 import { useClientContext } from "../state/clientContext";
@@ -20,6 +23,7 @@ import { DiscordBotGuide } from "../components/DiscordBotGuide";
 import { ContextExternalLink } from "../components/ContextExternalLink";
 import { RemoteAccessTab } from "../components/remoteAccess/RemoteAccessTab";
 import { ModelPicker } from "../components/ModelPicker";
+import { RegistryForm } from "../components/RegistryForm";
 
 export function SettingsScreen({
   tab,
@@ -33,15 +37,25 @@ export function SettingsScreen({
   const active = tab ?? "providers";
   return (
     <div className="screen">
-      <HeadRow onBack={() => onNavigate("home")} title="Settings" sub="providers · assistant · app · remote access" />
+      <HeadRow onBack={() => onNavigate("home")} title="Settings" sub="every setting is also in waifus help and GET /api/help" />
       <TabCells view="settings" active={active} onTab={onTab} />
-      {active === "providers"
-        ? <ProvidersTab />
-        : active === "assistant"
-          ? <AssistantTab />
-          : active === "remote-access"
-            ? <RemoteAccessTab />
-            : <AppTab />}
+      {active === "providers" ? (
+        <ProvidersTab />
+      ) : active === "models" ? (
+        <ModelsTab />
+      ) : active === "search" ? (
+        <SearchTab />
+      ) : active === "detector" ? (
+        <DetectorTab />
+      ) : active === "life" ? (
+        <LifeLimitsTab />
+      ) : active === "assistant" ? (
+        <AssistantTab />
+      ) : active === "remote-access" ? (
+        <RemoteAccessTab />
+      ) : (
+        <AppTab />
+      )}
       <FootRow />
     </div>
   );
@@ -99,6 +113,23 @@ function ProvidersTab() {
               >
                 {provider.credentials.configured ? "Replace key" : "Add key"}
               </button>
+              {provider.credentials.configured && (
+                <button
+                  className="btn ghost sm"
+                  style={{ marginLeft: 8 }}
+                  onClick={async () => {
+                    if (!window.confirm(`Remove the ${provider.displayName} key?`)) return;
+                    try {
+                      await api.deleteProviderCredentials(provider.id);
+                      providers.reload();
+                    } catch (err) {
+                      setMessage((err as Error).message);
+                    }
+                  }}
+                >
+                  Remove
+                </button>
+              )}
             </span>
           </div>
           {editing === provider.id && (
@@ -257,7 +288,17 @@ function AppTab() {
       </div>
 
       {config.data && <UpdatesSection config={config} onResult={(ok, text) => { setTone(ok ? "ok" : "err"); setMessage(text); }} />}
-      {config.data && <OcrSection config={config} onResult={(ok, text) => { setTone(ok ? "ok" : "err"); setMessage(text); }} />}
+      <RegistryForm topic="app.runtime" title="Runtime" config={config.data} onSaved={config.setData} />
+      <RegistryForm
+        topic="app.discord"
+        title="Discord"
+        config={config.data}
+        onSaved={config.setData}
+        filter={(key) => !key.path.startsWith("discord.debounce.") && !key.path.startsWith("discord.dm.")}
+      />
+      <RegistryForm topic="app.ocr" title="OCR · image text for models without image input" config={config.data} onSaved={config.setData} />
+      <RegistryForm topic="app.http" title="Dashboard and API" config={config.data} onSaved={config.setData} />
+      <RegistryForm topic="app.frontend" title="Dashboard build" config={config.data} onSaved={config.setData} />
       <div className="cell growcell" />
     </div>
   );
@@ -306,65 +347,6 @@ function UpdatesSection({ config, onResult }: {
     <p className="t-mute t-small">Local control only. Global npm installs only; source checkouts are not modified. On macOS, remote-enabled processes wait for an unlocked keychain without asking for a password. A restarted remote gateway ends its browser sessions, but preserves saved pairing.</p>
     {context?.mode === "remote" && <Notice>Change these settings on the host locally; remote management cannot schedule host process restarts.</Notice>}
   </section>;
-}
-
-function OcrSection({
-  config,
-  onResult
-}: {
-  config: ReturnType<typeof useApi<AppConfig>>;
-  onResult: (ok: boolean, text: string) => void;
-}) {
-  const [draft, setDraft] = useState<AppConfig | undefined>(config.data);
-  useEffect(() => setDraft(config.data), [config.data]);
-  if (!draft) return null;
-  return (
-    <div className="fused" style={{ flex: "none" }}>
-      <div className="frow" style={{ gridTemplateColumns: "200px 260px 1fr" }}>
-        <div className="field">
-          <label className="field-label">OCR · image text fallback</label>
-          <label className="checkbox-chip">
-            <input
-              type="checkbox"
-              checked={draft.ocr.enabled}
-              onChange={(e) => setDraft({ ...draft, ocr: { ...draft.ocr, enabled: e.target.checked } })}
-            />
-            {draft.ocr.enabled ? "On" : "Off"}
-          </label>
-        </div>
-        <div className="field">
-          <label className="field-label">Engine</label>
-          <select
-            className="select"
-            value={draft.ocr.engine}
-            onChange={(e) => setDraft({ ...draft, ocr: { ...draft.ocr, engine: e.target.value as AppConfig["ocr"]["engine"] } })}
-          >
-            <option value="auto">auto</option>
-            <option value="apple-vision">apple-vision</option>
-            <option value="bundled-tesseract">bundled-tesseract</option>
-            <option value="system-tesseract">system-tesseract</option>
-          </select>
-        </div>
-        <div className="field" style={{ justifyContent: "flex-end" }}>
-          <button
-            className="btn primary"
-            style={{ alignSelf: "flex-start" }}
-            onClick={async () => {
-              try {
-                const saved = await api.putConfig(draft);
-                config.setData(saved);
-                onResult(true, "App config saved.");
-              } catch (err) {
-                onResult(false, (err as Error).message);
-              }
-            }}
-          >
-            Save app config
-          </button>
-        </div>
-      </div>
-    </div>
-  );
 }
 
 function BotsSection({
@@ -463,6 +445,209 @@ function BotsSection({
           </div>
         );
       })}
+    </div>
+  );
+}
+
+/* ================= models ================= */
+
+function ModelsTab() {
+  const config = useApi<AppConfig>((s) => api.getConfig(s), []);
+  const models = useApi<ModelsResponse>((s) => api.models(s), [config.data?.models?.allowed.join(","), config.data?.models?.maxOutputUsdPerMTok]);
+  return (
+    <div className="content">
+      <div className="cell" style={{ padding: "14px 26px", flex: "none" }}>
+        <span className="t-mute t-small">
+          The curated list every model picker offers: the allowed routes the installed catalog has, at most the price cap per million
+          output tokens. Contributor variants share your prompts for training and are only ever an explicit choice.
+        </span>
+      </div>
+      <RegistryForm topic="app.models" title="Allowed models" config={config.data} onSaved={config.setData} columns={2} />
+      <div className="cell" style={{ padding: "12px 26px", flex: "none", overflowX: "auto" }}>
+        <table className="t-small" style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr className="t-micro" style={{ textAlign: "left" }}>
+              <th style={{ padding: "6px 8px" }}>model</th>
+              <th style={{ padding: "6px 8px" }}>route</th>
+              <th style={{ padding: "6px 8px", textAlign: "right" }}>$ in / out per M</th>
+              <th style={{ padding: "6px 8px" }}>efforts</th>
+              <th style={{ padding: "6px 8px" }}>key</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(models.data?.models ?? []).map((model) => (
+              <tr key={model.id} style={{ borderTop: "1px solid #e6e6e6" }}>
+                <td style={{ padding: "6px 8px" }}>
+                  {model.displayName}
+                  {model.contributor && <span className="chip butter" style={{ marginLeft: 6 }}>contributor</span>}
+                </td>
+                <td style={{ padding: "6px 8px" }} className="mono">{model.id}</td>
+                <td style={{ padding: "6px 8px", textAlign: "right" }}>{model.pricing ? `${model.pricing.inputPerMTokUsd} / ${model.pricing.outputPerMTokUsd}` : "—"}</td>
+                <td style={{ padding: "6px 8px" }}>{model.efforts.join(", ") || "—"}</td>
+                <td style={{ padding: "6px 8px" }}>{model.credentialsConfigured ? "yes" : "no key"}</td>
+              </tr>
+            ))}
+            {(models.data?.hidden ?? []).map((hidden) => (
+              <tr key={hidden.id} style={{ borderTop: "1px solid #e6e6e6", color: "var(--mute)" }}>
+                <td style={{ padding: "6px 8px" }}>hidden</td>
+                <td style={{ padding: "6px 8px" }} className="mono">{hidden.id}</td>
+                <td style={{ padding: "6px 8px" }} colSpan={3}>{hidden.reason}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="cell growcell" />
+    </div>
+  );
+}
+
+/* ================= web search ================= */
+
+function SearchTab() {
+  const config = useApi<AppConfig>((s) => api.getConfig(s), []);
+  const usage = useApi<SearchUsage>((s) => api.searchUsage(s), []);
+  const [key, setKey] = useState("");
+  const [message, setMessage] = useState<{ tone: "ok" | "err"; text: string } | undefined>(undefined);
+  const saveKey = async () => {
+    try {
+      await api.putProviderCredentials("exa", { apiKey: key.trim() });
+      setKey("");
+      setMessage({ tone: "ok", text: "Exa key saved." });
+      usage.reload();
+    } catch (err) {
+      setMessage({ tone: "err", text: (err as Error).message });
+    }
+  };
+  return (
+    <div className="content">
+      {message && (
+        <div className="cell" style={{ padding: 16, flex: "none" }}>
+          <Notice tone={message.tone}>{message.text}</Notice>
+        </div>
+      )}
+      <div className="cell" style={{ padding: "18px 26px", flex: "none" }}>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 14, marginBottom: 8 }}>
+          <span className="t-title">Exa</span>
+          <span className="t-micro">{usage.data ? (usage.data.exaKeyConfigured ? "key set" : "keyless") : "…"}</span>
+        </div>
+        <p className="t-small t-mute" style={{ margin: "0 0 10px", lineHeight: 1.5 }}>
+          Waifus search the web through Exa. It works without a key; a key is used when the keyless service is busy or limited.
+        </p>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <input className="input" type="password" style={{ maxWidth: 360 }} placeholder="Exa API key (optional)" value={key} onChange={(e) => setKey(e.target.value)} />
+          <button className="btn" disabled={!key.trim()} onClick={() => void saveKey()}>
+            Save key
+          </button>
+          {usage.data?.exaKeyConfigured && (
+            <button
+              className="btn ghost"
+              onClick={async () => {
+                try {
+                  await api.deleteProviderCredentials("exa");
+                  usage.reload();
+                  setMessage({ tone: "ok", text: "Exa key removed; search stays keyless." });
+                } catch (err) {
+                  setMessage({ tone: "err", text: (err as Error).message });
+                }
+              }}
+            >
+              Remove key
+            </button>
+          )}
+        </div>
+        {usage.data && (
+          <p className="t-micro" style={{ marginTop: 12, textTransform: "none", letterSpacing: "0.04em" }}>
+            Today ({usage.data.day}): {usage.data.searches} searches of {usage.data.limits.maxPerDay} · {usage.data.fetches} pages read
+          </p>
+        )}
+      </div>
+      <RegistryForm topic="app.search" title="Search caps (0 turns search off)" config={config.data} onSaved={(saved) => { config.setData(saved); usage.reload(); }} />
+      <RegistryForm topic="app.life.webFetch" title="Reading web pages" config={config.data} onSaved={config.setData} />
+      <div className="cell growcell" />
+    </div>
+  );
+}
+
+/* ================= addressee detector ================= */
+
+function DetectorTab() {
+  const detector = useApi<DetectorConfigResponse>((s) => api.detectorConfig(s), []);
+  const models = useApi<DetectorModelsResponse>((s) => api.detectorModels(s), []);
+  const [draft, setDraft] = useState<string | undefined>(undefined);
+  const [message, setMessage] = useState<{ tone: "ok" | "err"; text: string } | undefined>(undefined);
+  const value = draft ?? detector.data?.target ?? "";
+  const known = (models.data?.models ?? []).some((model) => model.target === value);
+  const save = async () => {
+    try {
+      const saved = await api.putDetectorConfig(value.trim());
+      detector.setData(saved);
+      setDraft(undefined);
+      setMessage({ tone: "ok", text: saved.target ? `The detector is ${saved.target}.` : "The detector is off." });
+    } catch (err) {
+      setMessage({ tone: "err", text: (err as Error).message });
+    }
+  };
+  return (
+    <div className="content">
+      {message && (
+        <div className="cell" style={{ padding: 16, flex: "none" }}>
+          <Notice tone={message.tone}>{message.text}</Notice>
+        </div>
+      )}
+      <div className="cell" style={{ padding: "14px 26px", flex: "none" }}>
+        <span className="t-mute t-small">
+          A message nobody addressed (no mention, reply or name) goes to the addressee detector, which picks the waifu it is for, if any.
+          Off: a first message in 10 minutes or a question wakes one waifu at random. A server can override this in Rooms.
+        </span>
+      </div>
+      <div className="fgrid" style={{ gridTemplateColumns: "1fr 1fr 140px", flex: "none" }}>
+        <div className="fcell">
+          <label className="field-label">Detector</label>
+          <select className="select" value={known || value === "" ? value : "__custom__"} onChange={(e) => setDraft(e.target.value === "__custom__" ? value : e.target.value)}>
+            <option value="">Off</option>
+            {(models.data?.models ?? []).map((model) => (
+              <option key={model.target} value={model.target}>
+                {model.label}
+                {model.configured ? "" : " (needs setup)"}
+              </option>
+            ))}
+            {!known && value !== "" && <option value="__custom__">{value}</option>}
+          </select>
+          <span className="field-hint">
+            Default {detector.data?.default ?? "…"}.{models.data?.unavailable ? " The online model list is unavailable right now; the built-in ones are shown." : ""}
+          </span>
+        </div>
+        <div className="fcell">
+          <label className="field-label">Or a target</label>
+          <input className="input" value={value} onChange={(e) => setDraft(e.target.value)} placeholder="openrouter:… · openai:… · laya:english" />
+        </div>
+        <button className="cell clickable btn" disabled={draft === undefined} onClick={() => void save()}>
+          Save
+        </button>
+      </div>
+      <div className="cell growcell" />
+    </div>
+  );
+}
+
+/* ================= life limits ================= */
+
+function LifeLimitsTab() {
+  const config = useApi<AppConfig>((s) => api.getConfig(s), []);
+  return (
+    <div className="content">
+      <div className="cell" style={{ padding: "14px 26px", flex: "none" }}>
+        <span className="t-mute t-small">
+          Host-wide limits on every life: how long a turn runs, how much she may send, how big her context grows before compaction,
+          and when nightly maintenance runs. A waifu&apos;s own budget, schedule and DMs are in Cast.
+        </span>
+      </div>
+      <RegistryForm topic="app.life" title="Turns and lives" config={config.data} onSaved={config.setData} filter={(key) => !key.path.startsWith("life.webFetch.")} />
+      <RegistryForm topic="app.compaction" title="Compaction" config={config.data} onSaved={config.setData} />
+      <RegistryForm topic="app.discord.debounce" title="Waiting before a wake" config={config.data} onSaved={config.setData} />
+      <RegistryForm topic="app.discord.dm" title="After a restart" config={config.data} onSaved={config.setData} />
+      <div className="cell growcell" />
     </div>
   );
 }

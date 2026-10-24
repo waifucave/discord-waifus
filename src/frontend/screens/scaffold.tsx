@@ -30,7 +30,7 @@ export function HeadRow({
   );
 }
 
-/** Tab cells for sections with tabs (Direction, Activity, Settings). */
+/** Tab cells for sections with tabs (Activity, Settings). */
 export function TabCells({
   view,
   active,

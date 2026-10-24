@@ -3,6 +3,7 @@ import { useRoute } from "./state/router";
 import type { ViewId } from "./nav";
 import { HomeScreen } from "./screens/HomeScreen";
 import { CastScreen } from "./screens/CastScreen";
+import { LifeScreen } from "./screens/LifeScreen";
 import { RoomsScreen } from "./screens/RoomsScreen";
 import { ActivityScreen } from "./screens/ActivityScreen";
 import { SettingsScreen } from "./screens/SettingsScreen";
@@ -78,6 +79,8 @@ function Screen({
       return <HomeScreen onNavigate={goto} onAssistant={onAssistant} />;
     case "cast":
       return <CastScreen characterId={route.id} onNavigate={goto} />;
+    case "life":
+      return <LifeScreen waifuId={route.id} onNavigate={goto} />;
     case "rooms":
       return <RoomsScreen guildId={route.id} onNavigate={goto} />;
     case "activity":

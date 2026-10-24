@@ -14,8 +14,8 @@
   /* the pastel family — different colors for different kinds of things */
   --mint:     #5ef2c1;  /* cast / replies / confirm */
   --sky:      #8fd8f8;  /* rooms / discord / input focus */
-  --lavender: #cabfff;  /* direction / decisions */
-  --butter:   #ffe97a;  /* memory / warnings / needs-setup */
+  --lavender: #cabfff;  /* lives / decisions */
+  --butter:   #ffe97a;  /* warnings / needs-setup */
   --peach:    #ffc9a3;  /* activity / logs */
   --pink:     #ffb8dc;  /* Norma */
   --danger:   #ffb3b3;  /* destructive hover — the one non-pastel exception */

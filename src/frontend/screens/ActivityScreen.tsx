@@ -1,6 +1,9 @@
 import { useEffect, useState } from "react";
-import { openEventStream } from "../api/client";
+import { api, openEventStream } from "../api/client";
+import { useApi } from "../api/useApi";
+import type { UsageGroupKey, UsageResponse } from "../api/types";
 import type { ViewId } from "../nav";
+import { usd } from "./lifeView";
 import { FootRow, HeadRow, TabCells } from "./scaffold";
 
 type StreamEntry = { receivedAt: string; data: Record<string, unknown> };
@@ -88,17 +91,37 @@ function pick(data: Record<string, unknown>, keys: string[]): string {
     .join(" · ");
 }
 
+/**
+ * A captured model call's one-line form. Calls of a life, maintenance, compaction or web digest are
+ * metadata only (the server never keeps their content): their line shows counts, usage and cost.
+ */
+export function entrySummary(data: Record<string, unknown>): { title: string; metadataOnly: boolean; line: string | undefined } {
+  const title = [pick(data, ["role", "agent", "source", "waifuId", "kind"]), typeof data.modelId === "string" ? data.modelId : ""].filter(Boolean).join(" · ");
+  const metadataOnly = data.metadataOnly === true;
+  const payload = (data.payload && typeof data.payload === "object" ? data.payload : {}) as Record<string, unknown>;
+  if (metadataOnly) {
+    const parts: string[] = [];
+    if (typeof payload.messageCount === "number") parts.push(`${payload.messageCount} messages`);
+    if (typeof payload.toolCount === "number") parts.push(`${payload.toolCount} tools`);
+    if (typeof payload.finishReason === "string") parts.push(`stop: ${payload.finishReason}`);
+    const usage = payload.usage && typeof payload.usage === "object" ? (payload.usage as Record<string, unknown>) : undefined;
+    if (usage && typeof usage.inputTokens === "number" && typeof usage.outputTokens === "number") parts.push(`${usage.inputTokens} in / ${usage.outputTokens} out`);
+    if (typeof payload.costUsd === "number") parts.push(usd(payload.costUsd, 4));
+    if (typeof payload.durationMs === "number") parts.push(`${(payload.durationMs / 1000).toFixed(1)} s`);
+    return { title, metadataOnly, line: parts.length ? parts.join(" · ") : "content not kept" };
+  }
+  return { title, metadataOnly, line: typeof data.content === "string" ? data.content : undefined };
+}
+
 function ExpandableEntry({ entry, hue }: { entry: StreamEntry; hue: string }) {
   const [open, setOpen] = useState(false);
-  const summary =
-    pick(entry.data, ["agent", "source", "waifuId", "kind"]) +
-    (entry.data.modelId ? ` · ${String(entry.data.modelId)}` : "");
-  const body = typeof entry.data.content === "string" ? entry.data.content : undefined;
+  const { title: summary, metadataOnly, line: body } = entrySummary(entry.data);
   return (
     <div className="cell" style={{ padding: "12px 26px", flex: "none" }}>
       <button className="clickable" style={{ background: "transparent", width: "100%" }} onClick={() => setOpen((v) => !v)}>
         <div className="t-micro" style={{ marginBottom: 3 }}>
           {entry.receivedAt} · <span className={`chip ${hue}`}>{summary || "event"}</span>
+          {metadataOnly && <span className="chip butter" style={{ marginLeft: 6 }} title="A life, maintenance, compaction or web call: only its metadata is kept">metadata only</span>}
           <span style={{ float: "right" }}>{open ? "−" : "+"}</span>
         </div>
         {body && !open && (
@@ -125,8 +148,10 @@ export function ActivityScreen({
     active === "logs"
       ? `${logs.length} recent lines · live`
       : active === "queries"
-        ? `${queries.length} captured queries · live`
-        : `${replies.length} captured replies · live`;
+        ? `${queries.length} model calls · live`
+        : active === "usage"
+          ? "model calls and cost by local day"
+          : `${replies.length} captured replies · live`;
 
   return (
     <div className="screen">
@@ -157,10 +182,93 @@ export function ActivityScreen({
           ) : (
             replies.map((entry, index) => <ExpandableEntry key={index} entry={entry} hue="mint" />)
           ))}
+        {(active === "queries" || active === "replies") && (
+          <div className="cell" style={{ padding: "10px 26px", flex: "none" }}>
+            <span className="t-mute t-small">
+              The assistant&apos;s and the detector&apos;s calls keep their content. A waifu&apos;s life, maintenance, compaction and web calls
+              keep metadata only; her own turns are on the Life screen.
+            </span>
+          </div>
+        )}
+        {active === "usage" && <UsagePanel />}
         <div className="cell growcell" />
       </div>
       <FootRow />
     </div>
+  );
+}
+
+const GROUPINGS: Array<{ id: UsageGroupKey[]; label: string }> = [
+  { id: ["day"], label: "By day" },
+  { id: ["waifu"], label: "By waifu" },
+  { id: ["day", "waifu"], label: "By day and waifu" },
+  { id: ["purpose"], label: "By purpose" },
+  { id: ["model"], label: "By model" },
+  { id: ["provider"], label: "By provider" }
+];
+
+/** The usage ledger, grouped (GET /api/usage; the host's time zone, last 7 days by default). */
+function UsagePanel() {
+  const [grouping, setGrouping] = useState(0);
+  const [range, setRange] = useState<{ from?: string; to?: string }>({});
+  const groupBy = GROUPINGS[grouping]!.id;
+  const usage = useApi<UsageResponse>((s) => api.usage({ ...range, groupBy }, s), [grouping, range.from, range.to]);
+  const report = usage.data;
+  return (
+    <>
+      <div className="fgrid" style={{ gridTemplateColumns: "1fr 180px 180px", flex: "none" }}>
+        <div className="fcell">
+          <label className="field-label">Group</label>
+          <select className="select" value={grouping} onChange={(e) => setGrouping(Number(e.target.value))}>
+            {GROUPINGS.map((option, index) => (
+              <option key={option.label} value={index}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="fcell">
+          <label className="field-label">From</label>
+          <input className="input" type="date" value={range.from ?? report?.from ?? ""} onChange={(e) => setRange((r) => ({ ...r, from: e.target.value || undefined }))} />
+        </div>
+        <div className="fcell">
+          <label className="field-label">To</label>
+          <input className="input" type="date" value={range.to ?? report?.to ?? ""} onChange={(e) => setRange((r) => ({ ...r, to: e.target.value || undefined }))} />
+        </div>
+      </div>
+      {usage.error && <EmptyCell text={usage.error.message} />}
+      {report && (
+        <div className="cell" style={{ padding: "12px 26px", flex: "none", overflowX: "auto" }}>
+          <table className="t-small" style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr className="t-micro" style={{ textAlign: "left" }}>
+                <th style={{ padding: "6px 8px" }}>{groupBy.join(" · ")}</th>
+                <th style={{ padding: "6px 8px", textAlign: "right" }}>calls</th>
+                <th style={{ padding: "6px 8px", textAlign: "right" }}>tokens in</th>
+                <th style={{ padding: "6px 8px", textAlign: "right" }}>tokens out</th>
+                <th style={{ padding: "6px 8px", textAlign: "right" }}>cost</th>
+              </tr>
+            </thead>
+            <tbody>
+              {[...report.groups, { ...report.totals, key: ["total"], label: "Total" }].map((group) => (
+                <tr key={group.key.join("|")} style={{ borderTop: "1px solid #e6e6e6", fontWeight: group.key[0] === "total" ? 600 : undefined }}>
+                  <td style={{ padding: "6px 8px" }}>{group.label ?? group.key.join(" · ")}</td>
+                  <td style={{ padding: "6px 8px", textAlign: "right" }}>{group.calls}{group.failedCalls ? ` (${group.failedCalls} failed)` : ""}</td>
+                  <td style={{ padding: "6px 8px", textAlign: "right" }}>{(group.inputTokens + group.cacheReadTokens + group.cacheWriteTokens).toLocaleString()}</td>
+                  <td style={{ padding: "6px 8px", textAlign: "right" }}>{group.outputTokens.toLocaleString()}</td>
+                  <td style={{ padding: "6px 8px", textAlign: "right" }}>{usd(group.costUsd, 4)}{group.unpricedCalls ? "*" : ""}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div className="t-micro" style={{ marginTop: 8, textTransform: "none", letterSpacing: "0.04em" }}>
+            {report.from} … {report.to} · {report.timeZone}
+            {report.totals.unpricedCalls ? " · * some calls have no known price" : ""}
+            {report.skippedLines ? ` · ${report.skippedLines} unreadable ledger line(s) skipped` : ""}
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 
