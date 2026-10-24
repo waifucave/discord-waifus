@@ -2429,7 +2429,7 @@ describe("RuntimeOrchestrator", () => {
     // Already through 4: nothing to do.
     await runtime.memoryJobs.requestObserveThrough({ kind: "guild", guildId: "guild-1", channelId: "channel-1" }, 3);
     expect(reads).toHaveLength(2);
-    // DM observers arrive in Phase 5: resolves immediately.
+    // A DM without a ledger has nothing to observe: resolves at once.
     await runtime.memoryJobs.requestObserveThrough({ kind: "dm", waifuId: "yuki", userId: "u1" }, 99);
     await runtime.memoryJobs.startStageManagerRun("guild-1", "channel-1");
     expect(reads).toEqual(["line 1,line 2", "line 3,line 4", "line 5"]);

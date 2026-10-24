@@ -128,6 +128,8 @@ export class ChannelRunner {
   // Per-channel directive budget counter. Increments each decision a directive is not honored,
   // resets to 0 when one is honored; the budget opens once it reaches directiveCooldown.
   private readonly directiveDecisionCounts = new Map<string, number>();
+  /** Spec 9.2: true while a debounced message burst is pending for the channel (set by the facade). */
+  pendingBurst?: (guildId: string, channelId: string) => boolean;
 
   constructor(
     private readonly options: ChannelRunnerOptions,
@@ -415,7 +417,7 @@ export class ChannelRunner {
           await this.retriggerPreemptedChannel(guildId);
         }
       });
-    const triggerMessageId = /^message:(\d+)$/.exec(reason)?.[1];
+    const triggerMessageId = /^message(?:-burst)?:(\d+)$/.exec(reason)?.[1];
     this.activeRuns.set(key, {
       guildId,
       channelId,
@@ -1173,6 +1175,11 @@ export class ChannelRunner {
     }
     const timer = setTimeout(() => {
       this.retriggerTimers.delete(key);
+      // Spec 9.2: a human burst is about to fire for this channel; its run covers the wake.
+      if (this.pendingBurst?.(guildId, channelId)) {
+        this.options.logger.info("Dropped channel wake; a message burst is pending", { guildId, channelId });
+        return;
+      }
       this.startChannelRunBackground(guildId, channelId, "scheduled-retrigger", { trigger: "retrigger", wake: scheduled });
     }, bounded * 1000);
     this.retriggerTimers.set(key, timer);

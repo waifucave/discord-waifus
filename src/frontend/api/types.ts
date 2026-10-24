@@ -166,6 +166,12 @@ export type DiscordRuntime = {
     lastRefreshAt: string | null;
     warnings: string[];
   };
+  /** `GET /api/runtime` only (spec 9.6): DM-eligible waifus and DM warnings. */
+  dm?: {
+    eligibleWaifus: Array<{ waifuId: string; botId: string; intentActive: boolean }>;
+    /** `dm_bot_shared:<botId>`, `dm_missing_model:<waifuId>`, `dm_intent_pending_reconnect:<botId>`. */
+    warnings: string[];
+  };
 };
 
 export type DiscordBotConnectionStatus = {
@@ -684,6 +690,11 @@ export type ForgetUserResult = {
   observations: number;
   ledgers: number;
   ledgerEntries: number;
+  /** Spec 9.1.4: DM conversations, DM state files and rate-limit counter files removed. */
+  dmContexts: number;
+  dmStates: number;
+  dmLimits: number;
+  cachedImages: number;
 };
 
 export type ProviderCredentialsBody = {

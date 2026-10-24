@@ -427,6 +427,11 @@ export class ContextRuntime {
     await this.d.store.deleteConversation(conversationKey(conversation));
   }
 
+  /** Drop cached image bytes and OCR text by attachment key (DM forget, spec 9.1.4). */
+  async purgeImageKeys(keys: readonly string[]): Promise<void> {
+    await this.purgeImages(keys.map((key) => ({ key, url: key })));
+  }
+
   private async purgeImages(images: ReadonlyArray<ImageRef>): Promise<void> {
     if (images.length === 0) return;
     const keys = images.map((image) => image.key);
