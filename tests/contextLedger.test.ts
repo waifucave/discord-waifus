@@ -213,6 +213,27 @@ describe("FileContextStore", () => {
     expect(await s.pruneConversation(key)).toEqual({ removed: 0 });
   });
 
+  // Acceptance M1: a decision note names the replies it sent by refs assigned before those
+  // messages reach the ledger; pruning must not drop (and later reassign) those refs.
+  it("pruning keeps refs assigned to messages that have not reached the ledger yet", async () => {
+    let now = BASE_TIME;
+    const { store: s } = await store(() => new Date(now));
+    await s.reconcileLedger(key, Array.from({ length: 6 }, (_, i) => raw({ id: String(7000 + i) })), discordMessageRenderer);
+    await s.assignRefs(key, Array.from({ length: 6 }, (_, i) => String(7000 + i)));
+    const sent = await s.assignRefs(key, ["9001"]);
+    const result = await s.commitPrepare(key, waifu, {
+      sealIds: [],
+      update: (st) => ({ ...st, cursorSeq: 3, lastUsedAt: new Date(now).toISOString() })
+    });
+    expect(result.ok).toBe(true);
+    const refs = (await s.loadRefs(key)).refs;
+    expect(Object.keys(refs).sort()).toEqual(["7002", "7003", "7004", "7005", "9001"]);
+    expect(refs["9001"]).toBe(sent.get("9001"));
+    // Once it arrives the message keeps that ref.
+    await s.reconcileLedger(key, [raw({ id: "9001" })], discordMessageRenderer);
+    expect((await s.assignRefs(key, ["9001"])).get("9001")).toBe(sent.get("9001"));
+  });
+
   it("commitPrepare aborts the whole write on a state or ledger conflict", async () => {
     const { store: s } = await store();
     await s.reconcileLedger(key, [raw({ id: "1", content: "v1" })], discordMessageRenderer);

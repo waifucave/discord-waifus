@@ -35,7 +35,6 @@ import {
 import {
   ACTIVE_CONTEXT_MS,
   entryRenderHash,
-  isGapEntry,
   newestSeq,
   orderedEntries,
   pruneLedgerEntries,
@@ -303,8 +302,7 @@ export class FileContextStore implements ContextEngineStore {
     });
     if (!result) return undefined;
     const refs = await this.loadRefs(k);
-    const keepIds = new Set(Object.values(result.ledger.entries).filter((e) => !isGapEntry(e)).map((e) => e.id));
-    const nextRefs = pruneRefs(refs, keepIds);
+    const nextRefs = pruneRefs(refs, result.removedIds);
     if (nextRefs) await this.writeRecord(conversationRefsPath(k), ConversationRefsSchema, nextRefs);
     return result.ledger;
   }

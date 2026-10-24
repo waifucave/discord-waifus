@@ -80,10 +80,10 @@ describe("refs", () => {
     expect(assignRefsTo(first, ["m1", "m2"])).toBeUndefined();
     const second = assignRefsTo(first, ["m2", "m3", "m3"])!;
     expect(second.refs).toEqual({ m1: "a0", m2: "a1", m3: "a2" });
-    const pruned = pruneRefs(second, new Set(["m3"]))!;
+    const pruned = pruneRefs(second, ["m1", "m2"])!;
     expect(pruned.refs).toEqual({ m3: "a2" });
     expect(pruned.counter).toBe(363);
     expect(assignRefsTo(pruned, ["m4"])!.refs.m4).toBe("a3");
-    expect(pruneRefs(pruned, new Set(["m3"]))).toBeUndefined();
+    expect(pruneRefs(pruned, ["m1", "m2"])).toBeUndefined();
   });
 });
