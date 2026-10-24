@@ -39,10 +39,11 @@ import {
   type ForgetScrubResult
 } from "./forget.js";
 import { Intake, type GuildMessageInput } from "./intake.js";
-import { Life, lifeModelOf } from "./lifeLoop.js";
+import { Life, lifeModelOf, type LifeActivity } from "./lifeLoop.js";
 import { lifeStateExists, readLifeFile, readLifeLog, readLifeState, updateLifeState } from "./lifeStore.js";
 import { runMaintenance } from "./maintenance.js";
 import { OwnerNotices } from "./ownerNotices.js";
+import { IntakeMarks } from "./intakeMarks.js";
 import { Notes, MEMORY_INDEX } from "./notes.js";
 import { lifeLocks } from "./paths.js";
 import { collectPlaces } from "./places.js";
@@ -79,6 +80,10 @@ export type LivingCastOptions = {
   tickMs?: number;
   /** Tests: do not start the periodic scheduler. */
   manualScheduler?: boolean;
+  /** The idle updater's activity: each turn cycle, maintenance run and forget scrub holds a lease. */
+  updateActivity?: { begin(): (() => void) | undefined };
+  /** Busy work (turns, maintenance, forget scrubs) for `/api/runtime` `queues.active`. */
+  onActiveRunsChange?: (activeRuns: number) => void;
 };
 
 export type OwnerForgetResult = { scrubbed: ForgetScrubResult[] };
@@ -104,6 +109,10 @@ export class LivingCast {
   readonly web: WebTools;
   /** Notices for the owner (`/api/runtime` `discord.warnings`). */
   readonly notices = new OwnerNotices();
+  /** Intake high-water marks per place (catch-up, review I3). */
+  readonly marks: IntakeMarks;
+  /** When an explicit pause began: the resume catch-up starts there. */
+  private pausedAt: Date | undefined;
   private readonly webBackend: WebBackend;
   private readonly lives = new Map<string, Life>();
   private readonly background = new Set<Promise<unknown>>();
@@ -157,14 +166,19 @@ export class LivingCast {
     this.botRoles = new BotRoles({ discord: o.discord, refreshHours: () => config().discord.memberListRefreshHours });
     this.router = new WakeRouter({ deps, cost: this.cost, poke: (waifuId) => this.life(waifuId).poke() });
     this.detector = o.detector ?? new AddresseeDetector({ credentials, usage: o.usageLedger });
-    this.intake = new Intake({ deps, router: this.router, botRoles: this.botRoles, cost: this.cost, detector: this.detector });
+    this.marks = new IntakeMarks(o.storage);
+    this.intake = new Intake({ deps, router: this.router, botRoles: this.botRoles, cost: this.cost, detector: this.detector, marks: this.marks });
     this.scheduler = new Scheduler({
       deps,
       router: this.router,
       cost: this.cost,
       mutex: this.mutex,
       ...(o.tickMs ? { tickMs: o.tickMs } : {}),
-      hooks: { poke: (waifuId) => this.life(waifuId).poke(), maintain: (waifu) => this.maintain(waifu) }
+      hooks: {
+        poke: (waifuId) => this.life(waifuId).poke(),
+        maintain: (waifu, signal) => this.maintain(waifu, signal),
+        begin: () => this.activity.begin("maintenance")
+      }
     });
   }
 
@@ -172,15 +186,38 @@ export class LivingCast {
   life(waifuId: string): Life {
     let life = this.lives.get(waifuId);
     if (!life) {
-      life = new Life(waifuId, {
-        deps: this.deps,
-        mutex: this.mutex,
-        turns: this.turns,
-        hooks: { scheduleChanged: () => undefined }
-      });
+      life = new Life(waifuId, { deps: this.deps, mutex: this.mutex, turns: this.turns, activity: this.activity });
       this.lives.set(waifuId, life);
     }
     return life;
+  }
+
+  private activeRuns = 0;
+
+  /**
+   * One lease of busy work (review I7): the idle updater sees it through `updateActivity` and
+   * `/api/runtime` through `onActiveRunsChange`. `undefined` when the app is sealed for an update.
+   */
+  readonly activity: LifeActivity = {
+    begin: () => {
+      const release = this.o.updateActivity?.begin();
+      if (this.o.updateActivity && !release) return undefined;
+      this.activeRuns += 1;
+      this.o.onActiveRunsChange?.(this.activeRuns);
+      let done = false;
+      return () => {
+        if (done) return;
+        done = true;
+        this.activeRuns -= 1;
+        release?.();
+        this.o.onActiveRunsChange?.(this.activeRuns);
+      };
+    }
+  };
+
+  /** Turns, maintenance runs and forget scrubs running now. */
+  get active(): number {
+    return this.activeRuns;
   }
 
   private track<T>(work: Promise<T>): Promise<T> {
@@ -194,12 +231,16 @@ export class LivingCast {
   /** Boot: repair every life, load DM forget floors, start the scheduler, catch up, resume queued wakes. */
   async start(): Promise<void> {
     const deps = this.deps;
+    await this.marks.load();
     const waifus = await listWaifus(deps.storage).catch(() => [] as WaifuConfig[]);
     for (const waifu of waifus) {
       if (!(await lifeStateExists(deps.storage, waifu.id))) continue;
       try {
         const repaired = await repairLife(deps, waifu.id);
         if (repaired.closedCalls > 0 || repaired.wasInTurn || repaired.tornLines) deps.logger.info("Life repaired after a restart", { category: "life", waifuId: waifu.id, ...repaired });
+        // A failed turn's follow-up that never ran is armed again (review M13).
+        const failed = (await readLifeState(deps.storage, waifu.id)).failedTurn;
+        if (failed && !failed.followUpDone) this.life(waifu.id).armFollowUp(Date.parse(failed.at));
       } catch (error) {
         deps.logger.error("Life boot repair failed", { waifuId: waifu.id, message: error instanceof Error ? error.message : String(error) });
       }
@@ -262,36 +303,50 @@ export class LivingCast {
 
   async stop(): Promise<void> {
     this.stopped = true;
-    this.scheduler.stop();
+    // Maintenance runs are aborted and waited for, so none overlaps the next runtime's (M3).
+    await this.scheduler.stop();
     this.intake.close();
     this.router.close();
     for (const life of this.lives.values()) life.stop();
     await Promise.all([...this.lives.values()].map((life) => life.whenIdle()));
     while (this.background.size > 0) await Promise.allSettled([...this.background]);
     await this.intake.settle();
+    await this.marks.flush();
     this.detector.close();
     await this.webBackend.close().catch(() => undefined);
   }
 
-  /** Explicit pause: abort in-flight calls; queues stay. */
+  /** Explicit pause: abort in-flight calls (maintenance too); queues stay. */
   pause(): void {
+    this.pausedAt ??= this.deps.now();
+    this.scheduler.abortMaintenance();
     for (const life of this.lives.values()) life.abort("pause");
   }
 
-  /** After a resume: catch up what arrived while paused and restart queued lives. */
+  /** After a resume: catch up what arrived while paused (from the pause start) and restart queued lives. */
   resume(): void {
-    void this.track(this.catchUpAndResume());
+    const since = this.pausedAt;
+    this.pausedAt = undefined;
+    void this.track(this.catchUpAndResume(since ? { since } : {}));
   }
 
-  /** §5.7 catch-up: messages newer than her read cursors and at most `resumeWindowMinutes` old go through intake. */
-  async catchUpAndResume(): Promise<void> {
+  /**
+   * §5.7 catch-up: messages newer than both her read cursor and the intake mark of their place go
+   * through intake: at boot those at most `resumeWindowMinutes` old, after a resume those since the
+   * pause began. A message intake already took (live delivery since connect) is never taken twice.
+   */
+  async catchUpAndResume(o: { since?: Date } = {}): Promise<void> {
     const deps = this.deps;
+    await this.marks.load();
     const windowMs = deps.config().discord.dm.resumeWindowMinutes * 60_000;
-    const cutoff = deps.now().getTime() - windowMs;
+    const cutoff = o.since ? o.since.getTime() : deps.now().getTime() - windowMs;
     const waifus = (await listWaifus(deps.storage).catch(() => [])).filter((waifu) => waifu.enabled);
     const cursors = new Map<string, Record<string, { lastReadMessageId: string }>>();
     for (const waifu of waifus) cursors.set(waifu.id, (await readLifeFile(deps.storage, waifu.id, "reads")).cursors);
-    if (windowMs > 0) {
+    const queuedIds = new Set<string>();
+    for (const waifu of waifus) for (const wake of (await readLifeFile(deps.storage, waifu.id, "wakes")).immediate) if (wake.messageId) queuedIds.add(wake.messageId);
+    const newer = (id: string, ...marks: Array<string | undefined>) => marks.every((mark) => !mark || compareIds(id, mark) > 0);
+    if (windowMs > 0 || o.since) {
       const rooms = new Map<string, { guildId: string; channelId: string; cast: string[] }>();
       for (const waifu of waifus) {
         for (const place of await collectPlaces(deps.storage, waifu.id)) {
@@ -304,12 +359,10 @@ export class LivingCast {
       for (const [placeKey, room] of rooms) {
         try {
           const page = await deps.conversations.readPage({ conversation: { kind: "guild", guildId: room.guildId, channelId: room.channelId }, limit: 50 });
+          const mark = this.marks.get(placeKey);
           for (const message of page.messages) {
-            if (Date.parse(message.createdAt) < cutoff) continue;
-            const castWaifuIds = room.cast.filter((waifuId) => {
-              const cursor = cursors.get(waifuId)?.[placeKey]?.lastReadMessageId;
-              return !cursor || compareIds(message.id, cursor) > 0;
-            });
+            if (Date.parse(message.createdAt) < cutoff || !newer(message.id, mark) || queuedIds.has(message.id)) continue;
+            const castWaifuIds = room.cast.filter((waifuId) => newer(message.id, cursors.get(waifuId)?.[placeKey]?.lastReadMessageId));
             if (castWaifuIds.length === 0) continue;
             const ownWaifu = await this.isWaifuAuthor(message.authorId);
             if (message.authorIsBot && !ownWaifu) continue;
@@ -323,12 +376,11 @@ export class LivingCast {
         const waifu = waifus.find((candidate) => candidate.id === state.waifuId);
         if (!waifu || !state.lastInboundMessageId) continue;
         const placeKey = conversationKey({ kind: "dm", waifuId: state.waifuId, userId: state.userId });
-        const cursor = cursors.get(waifu.id)?.[placeKey]?.lastReadMessageId;
-        if (cursor && compareIds(state.lastInboundMessageId, cursor) <= 0) continue;
+        const floor = await readDmFloor(deps.storage, state.userId, state.waifuId).catch(() => undefined);
+        if (!newer(state.lastInboundMessageId, cursors.get(waifu.id)?.[placeKey]?.lastReadMessageId, this.marks.get(placeKey), floor)) continue;
         if (!state.lastInboundAt || Date.parse(state.lastInboundAt) < cutoff) continue;
         // Already queued (living-cast-dm-state-v1 turns a DM in flight at upgrade into a wake).
-        const queued = (await readLifeFile(deps.storage, waifu.id, "wakes")).immediate;
-        if (queued.some((wake) => wake.placeKey === placeKey && wake.messageId === state.lastInboundMessageId)) continue;
+        if (queuedIds.has(state.lastInboundMessageId)) continue;
         await this.intake.onDirectMessage({
           waifuId: state.waifuId,
           botId: state.botId,
@@ -341,7 +393,7 @@ export class LivingCast {
       }
     }
     // Late reminders fire once; queued wakes start turns.
-    await this.scheduler.tick();
+    await this.scheduler.tick({ waitForMaintenance: false });
     for (const waifu of waifus) if ((await pendingWakeCount(deps.storage, waifu.id)) > 0) this.life(waifu.id).poke();
   }
 
@@ -374,6 +426,7 @@ export class LivingCast {
   async settle(): Promise<void> {
     while (this.background.size > 0) await Promise.allSettled([...this.background]);
     await this.intake.settle();
+    await this.scheduler.settle();
   }
 
   // ---- owner actions ------------------------------------------------------------------------------------
@@ -385,12 +438,13 @@ export class LivingCast {
   }
 
   /** Nightly maintenance plus pending scrubs (the scheduler holds her life lock). */
-  private async maintain(waifu: WaifuConfig): Promise<void> {
+  private async maintain(waifu: WaifuConfig, signal: AbortSignal): Promise<void> {
     const model = lifeModelOf(this.deps, waifu);
     if (!model) return;
-    const pending = await readPendingScrubs(this.deps.storage, waifu.id).catch(() => []);
+    const pending = await readPendingScrubs(this.deps.storage, waifu.id, { logger: this.deps.logger });
     if (pending.length > 0) await this.runPendingScrubs(waifu, pending, "pending");
-    await runMaintenance(this.deps, { waifu, model });
+    if (signal.aborted) return;
+    await runMaintenance(this.deps, { waifu, model, signal });
   }
 
   /** `/forget conversation` (steps 0–2 for the DM), then the epoch starts at once so the old log goes too. */
@@ -443,6 +497,8 @@ export class LivingCast {
     }
     const life = this.life(waifu.id);
     life.abort("forget");
+    // Busy for the updater while it runs; a sealed app still runs it (it is queued durably anyway).
+    const lease = this.activity.begin("forget");
     return this.mutex
       .run(lifeLocks.life(waifu.id), async () => {
         if (prepared.scope === "conversation") {
@@ -452,9 +508,15 @@ export class LivingCast {
         }
         const { complete, ...result } = await scrubPerson(deps, waifu, identity, { source: prepared.source });
         if (complete) await removePendingScrubs(deps.storage, waifu.id, [scrub], { logger: deps.logger, now: deps.now() });
+        // Her DM's intake mark names the person (the DM floor keeps old messages out from now on).
+        const dmKey = conversationKey({ kind: "dm", waifuId: waifu.id, userId: identity.userId });
+        this.marks.drop((key) => key === dmKey);
         return result;
       })
-      .finally(() => life.poke({ delayMs: 0 }));
+      .finally(() => {
+        lease?.();
+        life.poke({ delayMs: 0 });
+      });
   }
 
   /** §7.5 for a life, after the DM part (step 1) is done by the caller: `prepareForget` + `runForget`. */

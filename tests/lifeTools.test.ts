@@ -104,6 +104,26 @@ describe("send_message (§6.3, D11)", () => {
     });
     expect(await run("send_message", { place: "bake-club/#general", text: "still here?" }, await ctxFor(w))).toEqual({ content: "error: you can't post there", isError: true });
   });
+
+  it("caps messages per turn at life.maxSendsPerTurn (M7)", async () => {
+    const w = await lifeWorld(roots, { config: (config) => ({ ...config, life: { ...config.life, maxSendsPerTurn: 2 } }) });
+    const ctx = await ctxFor(w);
+    expect(text(await run("send_message", { place: "bake-club/#general", text: "one" }, ctx))).toMatch(/^sent/u);
+    expect(text(await run("send_message", { place: "bake-club/#general", text: "two" }, ctx))).toMatch(/^sent/u);
+    expect(await run("send_message", { place: "bake-club/#general", text: "three" }, ctx)).toEqual({ content: "error: you've already sent 2 messages this turn; wait for replies", isError: true });
+    expect(w.discord.sent.map((message) => message.content)).toEqual(["one", "two"]);
+    expect(text(await run("send_message", { place: "bake-club/#general", text: "next turn" }, await ctxFor(w)))).toMatch(/^sent/u);
+  });
+
+  it("a waifu without her own bot cannot post (never through the House bot); the owner is told (M12)", async () => {
+    const w = await lifeWorld(roots, { waifus: [{ id: "aria", name: "Aria" }] });
+    const result = await run("send_message", { place: "bake-club/#general", text: "hello?" }, await ctxFor(w));
+    expect(result.isError).toBe(true);
+    expect(text(result)).toMatch(/no Discord bot of your own/u);
+    expect(w.discord.sent).toEqual([]);
+    expect(w.discord.typing).toEqual([]);
+    expect(w.cast.notices.list()).toEqual([expect.stringMatching(/has no Discord bot of her own/u)]);
+  });
 });
 
 describe("read_messages (§6.2) and react (§6.4)", () => {

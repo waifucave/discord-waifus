@@ -143,21 +143,28 @@ export class FakeDiscord implements DiscordGatewayFacade {
     return { authorId: ARIA_BOT, authorName: "Aria" };
   }
 
-  async sendWaifuMessage(input: { guildId: string; channelId: string; content: string; senderBotId?: string; replyToMessageId?: string }) {
+  /** What Discord's side does to outgoing content (the real facade resolves `<@Name>`, `:emoji:`). */
+  rewrite: (content: string) => string = (content) => content;
+
+  async sendWaifuMessage(input: { guildId: string; channelId: string; content: string; senderBotId?: string; replyToMessageId?: string; onFinalContent?: (content: string) => void | Promise<void> }) {
     const error = this.sendErrors.shift();
     if (error) throw error;
+    const content = this.rewrite(input.content);
+    await input.onFinalContent?.(content);
     const conversation: ConversationRef = { kind: "guild", guildId: input.guildId, channelId: input.channelId };
-    const message = this.post(conversation, input.content, { ...this.botAuthor(input.senderBotId), bot: true, ...(input.replyToMessageId ? { replyTo: input.replyToMessageId } : {}) });
-    this.sent.push({ placeKey: conversationKey(conversation), content: input.content, ...(input.senderBotId ? { senderBotId: input.senderBotId } : {}), ...(input.replyToMessageId ? { replyToMessageId: input.replyToMessageId } : {}), messageId: message.id });
+    const message = this.post(conversation, content, { ...this.botAuthor(input.senderBotId), bot: true, ...(input.replyToMessageId ? { replyTo: input.replyToMessageId } : {}) });
+    this.sent.push({ placeKey: conversationKey(conversation), content, ...(input.senderBotId ? { senderBotId: input.senderBotId } : {}), ...(input.replyToMessageId ? { replyToMessageId: input.replyToMessageId } : {}), messageId: message.id });
     return { messageId: message.id };
   }
 
-  async sendDirectMessage(input: { waifuId: string; userId: string; content: string; replyToMessageId?: string }) {
+  async sendDirectMessage(input: { waifuId: string; userId: string; content: string; replyToMessageId?: string; onFinalContent?: (content: string) => void | Promise<void> }) {
     const error = this.sendErrors.shift();
     if (error) throw error;
+    const content = this.rewrite(input.content);
+    await input.onFinalContent?.(content);
     const conversation: ConversationRef = { kind: "dm", waifuId: input.waifuId, userId: input.userId };
-    const message = this.post(conversation, input.content, { ...this.botAuthor(input.waifuId === "mina" ? "mina-bot" : "aria-bot"), bot: true });
-    this.sent.push({ placeKey: conversationKey(conversation), content: input.content, messageId: message.id });
+    const message = this.post(conversation, content, { ...this.botAuthor(input.waifuId === "mina" ? "mina-bot" : "aria-bot"), bot: true });
+    this.sent.push({ placeKey: conversationKey(conversation), content, messageId: message.id });
     return { messageId: message.id };
   }
 

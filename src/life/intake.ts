@@ -36,6 +36,7 @@ import type { LifeDeps } from "./deps.js";
 import { AddresseeDetector, detectorQuestion, drawAnyone, fallbackIsAnyone, type DetectorCastMember, type DetectorMessage } from "./detector/decider.js";
 import { readLifeState, updateLifeState } from "./lifeStore.js";
 import { messagePreview } from "./notifications.js";
+import type { IntakeMarks } from "./intakeMarks.js";
 import { FORGET_RECORDS_NOTICE, FORGET_RECORDS_UNREADABLE } from "./ownerNotices.js";
 import { forgottenPeople, isRemovedMessage, selfAuthorIds } from "./people.js";
 import type { ForgottenPerson } from "../orchestration/dm/forgotten.js";
@@ -56,6 +57,8 @@ export type IntakeOptions = {
   botRoles: BotRoles;
   cost: DailyCost;
   detector?: AddresseeDetector;
+  /** Intake high-water marks (catch-up never takes a routed message again, review I3). */
+  marks?: IntakeMarks;
   /** Test seam: the detector debouncer's clock. */
   now?: () => number;
 };
@@ -93,7 +96,24 @@ export class Intake {
   private readonly editMentions = new Set<string>();
   private readonly lastHumanAt = new Map<string, string>();
   private readonly inflight = new Set<Promise<unknown>>();
+  /** Message ids intake already took (live delivery and catch-up never both route one). */
+  private readonly seen = new Set<string>();
   private closed = false;
+
+  /** True when `messageId` was taken before; otherwise remembers it (the newest 5,000). */
+  private alreadySeen(messageId: string): boolean {
+    if (this.seen.has(messageId)) return true;
+    this.seen.add(messageId);
+    if (this.seen.size > 5_000) this.seen.delete(this.seen.values().next().value!);
+    return false;
+  }
+
+  /** The intake high-water mark moves past routed messages (not while the app is paused). */
+  private mark(placeKey: string, messageIds: readonly string[]): void {
+    if (!this.o.marks || this.deps.isPaused() || messageIds.length === 0) return;
+    const newest = messageIds.reduce((a, b) => (compareIds(a, b) >= 0 ? a : b));
+    this.o.marks.advance(placeKey, newest);
+  }
 
   constructor(private readonly o: IntakeOptions) {
     this.detectorDebounce = new KeyedDebouncer(o.now);
@@ -163,12 +183,14 @@ export class Intake {
   // ---- guild messages -------------------------------------------------------------------------------
 
   async onGuildMessage(input: GuildMessageInput): Promise<void> {
-    if (this.closed) return;
+    // While paused nothing is taken (no wakes, no watch fires): the resume catch-up takes it then.
+    if (this.closed || this.deps.isPaused()) return;
     const deps = this.deps;
     const conversation: ConversationRef = { kind: "guild", guildId: input.guildId, channelId: input.channelId };
     const placeKey = conversationKey(conversation);
+    if (this.seen.has(input.messageId)) return;
     const raw = input.raw ?? (await this.findMessage(conversation, input.messageId));
-    if (!raw) return;
+    if (!raw || this.alreadySeen(raw.id)) return;
     const human = !raw.authorIsBot && !input.authorIsWaifu;
     const waifus = await this.castWaifus(input.castWaifuIds);
     if (waifus.length === 0) return;
@@ -230,6 +252,8 @@ export class Intake {
       if (stagger) void this.track(routed);
       else await routed;
     }
+    // Routed now: a waifu's message, or a direct one (its burst never reaches the detector).
+    if (!human || directWakes.length > 0) this.mark(placeKey, [raw.id]);
     if (!human) return;
     // Every human message joins the place's burst. A burst with any direct message in it (before or
     // after the others, M9) never reaches the detector; a waifu whose watch fired for a message in it
@@ -250,8 +274,18 @@ export class Intake {
     this.detectorDebounce.schedule(placeKey, { quietMs: debounce.serverMs, maxWaitMs: debounce.serverMaxWaitMs }, () => {
       const done = this.bursts.get(placeKey);
       this.bursts.delete(placeKey);
-      if (done && !done.direct && !this.closed) void this.track(this.runDetector(placeKey, done));
+      if (done) this.fireBurst(placeKey, done);
     });
+  }
+
+  /** A burst is done: the detector runs for it (unless direct); its messages are marked once routed. */
+  private fireBurst(placeKey: string, burst: Burst): void {
+    if (this.closed) return;
+    if (burst.direct) {
+      this.mark(placeKey, burst.messageIds);
+      return;
+    }
+    void this.track(this.runDetector(placeKey, burst).finally(() => this.mark(placeKey, burst.messageIds)));
   }
 
   private async serverOf(guildId: string): Promise<ServerConfig | undefined> {
@@ -400,7 +434,7 @@ export class Intake {
 
   /** A human's DM: DM state updated now; the `dm` wake 30 s after their last message (cap 180 s). */
   async onDirectMessage(event: DiscordDirectMessageEvent): Promise<void> {
-    if (this.closed) return;
+    if (this.closed || this.seen.has(event.messageId)) return;
     const deps = this.deps;
     await updateDmState(deps.storage, { userId: event.userId, waifuId: event.waifuId, botId: event.botId }, (state) => {
       const newer = !state.lastInboundMessageId || compareIds(event.messageId, state.lastInboundMessageId) > 0;
@@ -413,7 +447,8 @@ export class Intake {
         undeliverableSince: undefined
       };
     });
-    if (deps.isPaused()) return;
+    // While paused nothing is taken: the resume catch-up takes it then.
+    if (deps.isPaused() || this.alreadySeen(event.messageId)) return;
     const key = `${event.waifuId}\u0000${event.userId}`;
     const burst = this.dmBursts.get(key) ?? { messageIds: [] };
     burst.messageIds.push(event.messageId);
@@ -444,6 +479,7 @@ export class Intake {
       at: deps.now().toISOString()
     };
     await this.o.router.route(waifuId, wake, { dmUserId: userId });
+    this.mark(conversationKey(conversation), burst.messageIds);
   }
 
   /** Fires every pending DM wake now (tests; the boot catch-up after a long pause). */
@@ -463,7 +499,7 @@ export class Intake {
       this.detectorDebounce.cancel(key);
       const burst = this.bursts.get(key);
       this.bursts.delete(key);
-      if (burst && !burst.direct) void this.track(this.runDetector(key, burst));
+      if (burst) this.fireBurst(key, burst);
     }
   }
 

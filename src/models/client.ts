@@ -232,6 +232,11 @@ export class ModelClient {
     return resolved;
   }
 
+  /** How long a provider still cools down after a quota/billing error (ms), or undefined when available. */
+  cooldownRemainingMs(providerId: string): number | undefined {
+    return this.alerts?.remainingMs(providerId);
+  }
+
   /** One model call; returns the assembled assistant message. */
   call(request: ModelCallRequest): Promise<ModelCallResult> {
     return this.run(request, undefined);

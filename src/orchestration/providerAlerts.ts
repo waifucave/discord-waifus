@@ -59,6 +59,12 @@ export class ProviderAlerts {
     return undefined;
   }
 
+  /** How long `providerId` still cools down (ms), or undefined when it is available. */
+  remainingMs(providerId: string): number | undefined {
+    const error = this.check(providerId);
+    return error ? Math.max(0, Date.parse(error.alert.until) - this.now()) : undefined;
+  }
+
   assertAvailable(providerId: string): void {
     const error = this.check(providerId);
     if (error) throw error;

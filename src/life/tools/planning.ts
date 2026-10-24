@@ -81,7 +81,6 @@ async function watchFor(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
     return { ...file, nextId: file.nextId + 1, watches: [...active, created] };
   });
   if (full || !created) return toolError(`you already have ${MAX_ACTIVE_WATCHES} watches; cancel one first`);
-  ctx.hooks?.scheduleChanged?.(waifu.id);
   return { content: `watching ${created.id} until ${dayTimeText(new Date(created.expiresAt), deps.timeZone)}` };
 }
 
@@ -120,7 +119,6 @@ async function cancelWatch(input: unknown, ctx: ToolContext): Promise<ToolOutput
     return found ? { ...file, watches } : file;
   });
   if (!found) return toolError(`no watch ${id}; use list_watches`);
-  ctx.hooks?.scheduleChanged?.(ctx.waifu.id);
   return { content: `cancelled ${id}` };
 }
 
@@ -168,7 +166,6 @@ async function scheduleWake(input: unknown, ctx: ToolContext): Promise<ToolOutpu
     return { ...file, nextId: file.nextId + 1, reminders: [...file.reminders, created] };
   });
   if (full || !created) return toolError(`you already have ${MAX_PENDING_REMINDERS} reminders; cancel one first`);
-  ctx.hooks?.scheduleChanged?.(waifu.id);
   return { content: `set ${created.id} for ${dayTimeText(due, deps.timeZone)}${created.repeat ? `, then ${created.repeat}` : ""}` };
 }
 
@@ -192,7 +189,6 @@ async function cancelWake(input: unknown, ctx: ToolContext): Promise<ToolOutput>
     return found ? { ...file, reminders } : file;
   });
   if (!found) return toolError(`no reminder ${id}; use list_schedule`);
-  ctx.hooks?.scheduleChanged?.(ctx.waifu.id);
   return { content: `cancelled ${id}` };
 }
 

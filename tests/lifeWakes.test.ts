@@ -419,6 +419,16 @@ describe("guards in order (§4.4, §4.5)", () => {
     await say(w, "<@aria> three", { ...asMina, mentions: { [ARIA_BOT]: "Aria" } });
     expect(await reasons(w, "aria")).toEqual(["mention", "mention"]);
   });
+
+  it("6. the loop guard counts each waifu message once, however many waifus it wakes (M16)", async () => {
+    const w = await world({ config: (config) => ({ ...config, life: { ...config.life, maxWaifuTriggeredTurns: 1 } }) });
+    const wake = (messageId: string) => ({ id: newWakeId(), reason: "mention" as const, placeKey: ROOM_KEY, waifuAuthored: true, messageId, fromUserId: MINA_BOT, fromName: "Mina", at: w.clock.now().toISOString() });
+    // One message from a third waifu wakes both: one step of the loop.
+    expect(await w.cast.router.route("aria", wake("900000000000000101"), { guildId: GUILD })).toBe("queued");
+    expect(await w.cast.router.route("mina", wake("900000000000000101"), { guildId: GUILD })).toBe("queued");
+    // The next waifu message is the second step: over the limit.
+    expect(await w.cast.router.route("aria", wake("900000000000000102"), { guildId: GUILD })).toBe("dropped");
+  });
 });
 
 describe("edits and deletes (§4.2, §10.3)", () => {

@@ -34,9 +34,22 @@ const DAY_MS = 24 * 3_600_000;
 
 export type SchedulerHooks = {
   poke(waifuId: string): void;
-  /** Runs maintenance (and pending scrubs) for her under her life lock. */
-  maintain(waifu: WaifuConfig): Promise<void>;
+  /** Runs maintenance (and pending scrubs) for her under her life lock; `signal` aborts it. */
+  maintain(waifu: WaifuConfig, signal: AbortSignal): Promise<void>;
+  /** A lease of busy work for the idle updater; undefined while the app is sealed for an update. */
+  begin?(): (() => void) | undefined;
 };
+
+/**
+ * Maintenance running anywhere in this process, by data root and waifu: a reload's new scheduler
+ * never starts one while the old one's is still finishing (review M3).
+ */
+const RUNNING_MAINTENANCE = new Map<string, Promise<void>>();
+
+/** One wake id per reminder occurrence (its id and due time). */
+export function reminderWakeId(reminder: Pick<Reminder, "id" | "dueAt">): string {
+  return `w-reminder-${reminder.id}-${Date.parse(reminder.dueAt).toString(36)}`;
+}
 
 /** The next future occurrence of a repeating reminder. */
 export function nextOccurrence(reminder: Reminder, now: Date): string | undefined {
@@ -64,7 +77,8 @@ export function maintenanceDue(waifu: WaifuConfig, now: Date, timeZone: string, 
 export class Scheduler {
   private timer: ReturnType<typeof setInterval> | undefined;
   private ticking: Promise<void> | undefined;
-  private readonly maintaining = new Set<string>();
+  /** Maintenance runs in the background (a tick never waits for one): abortable, awaited by stop(). */
+  private readonly maintenanceRuns = new Map<string, { controller: AbortController; done: Promise<void> }>();
 
   constructor(
     private readonly o: {
@@ -79,22 +93,38 @@ export class Scheduler {
 
   start(): void {
     if (this.timer) return;
-    this.timer = setInterval(() => void this.tick(), this.o.tickMs ?? DEFAULT_TICK_MS);
+    this.timer = setInterval(() => void this.tick({ waitForMaintenance: false }), this.o.tickMs ?? DEFAULT_TICK_MS);
     this.timer.unref?.();
   }
 
-  stop(): void {
+  /** Stops the timer, aborts running maintenance and waits for it to end. */
+  async stop(): Promise<void> {
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
+    this.abortMaintenance();
+    await this.settle();
   }
 
-  /** One pass (tests call it directly). Overlapping ticks join the running one. */
-  tick(): Promise<void> {
-    if (this.ticking) return this.ticking;
-    this.ticking = this.runTick().finally(() => {
+  /** Pause: running maintenance is aborted (it runs again at its next window). */
+  abortMaintenance(): void {
+    for (const run of this.maintenanceRuns.values()) run.controller.abort(new Error("stop"));
+  }
+
+  /** Waits for the maintenance runs started so far. */
+  async settle(): Promise<void> {
+    while (this.maintenanceRuns.size > 0) await Promise.allSettled([...this.maintenanceRuns.values()].map((run) => run.done));
+  }
+
+  /**
+   * One pass. Overlapping ticks join the running one. The periodic tick never waits for the
+   * maintenance it starts; a direct call (tests) does unless told not to.
+   */
+  async tick(o: { waitForMaintenance?: boolean } = {}): Promise<void> {
+    this.ticking ??= this.runTick().finally(() => {
       this.ticking = undefined;
     });
-    return this.ticking;
+    await this.ticking;
+    if (o.waitForMaintenance !== false) await this.settle();
   }
 
   private async runTick(): Promise<void> {
@@ -113,29 +143,30 @@ export class Scheduler {
     }
   }
 
+  /**
+   * Due reminders are routed first, under a wake id made from the reminder and its due time, and
+   * only then removed (or moved to their next occurrence): a crash in between routes the same wake
+   * again, which the queue does not add twice (review M4).
+   */
   private async reminders(waifu: WaifuConfig): Promise<void> {
     const deps = this.o.deps;
     const now = deps.now();
-    const due: Reminder[] = [];
-    await updateLifeFile(deps.storage, waifu.id, "schedule", (file) => {
-      const reminders: Reminder[] = [];
-      let changed = false;
-      for (const reminder of file.reminders) {
-        if (Date.parse(reminder.dueAt) > now.getTime()) {
-          reminders.push(reminder);
-          continue;
-        }
-        changed = true;
-        due.push(reminder);
-        const next = nextOccurrence(reminder, now);
-        if (next) reminders.push({ ...reminder, dueAt: next });
-      }
-      return changed ? { ...file, reminders } : file;
-    });
+    const file = await readLifeFile(deps.storage, waifu.id, "schedule");
+    const due = file.reminders.filter((reminder) => Date.parse(reminder.dueAt) <= now.getTime());
+    if (due.length === 0) return;
     for (const reminder of due) {
-      const wake: Wake = { id: newWakeId(), reason: "reminder", note: reminder.note, setAt: reminder.createdAt, at: reminder.dueAt };
+      const wake: Wake = { id: reminderWakeId(reminder), reason: "reminder", note: reminder.note, setAt: reminder.createdAt, at: reminder.dueAt };
       await this.o.router.route(waifu.id, wake);
     }
+    const fired = new Set(due.map((reminder) => `${reminder.id}\0${reminder.dueAt}`));
+    await updateLifeFile(deps.storage, waifu.id, "schedule", (current) => ({
+      ...current,
+      reminders: current.reminders.flatMap((reminder): Reminder[] => {
+        if (!fired.has(`${reminder.id}\0${reminder.dueAt}`)) return [reminder];
+        const next = nextOccurrence(reminder, now);
+        return next ? [{ ...reminder, dueAt: next }] : [];
+      })
+    }));
   }
 
   /** Deferred wakes → one `morning` wake when she is awake (and, for a budget pause, under budget again). */
@@ -200,18 +231,31 @@ export class Scheduler {
     return out;
   }
 
+  /** Starts her maintenance in the background when it is due (one per waifu in the whole process). */
   private async maintenance(waifu: WaifuConfig): Promise<void> {
     const deps = this.o.deps;
-    if (this.maintaining.has(waifu.id)) return;
+    const key = `${deps.storage.dataRoot}\0${waifu.id}`;
+    if (this.maintenanceRuns.has(waifu.id) || RUNNING_MAINTENANCE.has(key)) return;
     const state = await readLifeState(deps.storage, waifu.id);
     const due = maintenanceDue(waifu, deps.now(), deps.timeZone, deps.config().life.maintenanceHourLocal, state.lastMaintenanceAt);
-    if (!due) return;
-    this.maintaining.add(waifu.id);
-    try {
-      await this.o.mutex.run(lifeLocks.life(waifu.id), () => this.o.hooks.maintain(waifu));
-      await updateLifeState(deps.storage, waifu.id, (current) => ({ ...current, lastMaintenanceAt: deps.now().toISOString() }));
-    } finally {
-      this.maintaining.delete(waifu.id);
-    }
+    if (!due || this.maintenanceRuns.has(waifu.id) || RUNNING_MAINTENANCE.has(key)) return;
+    const lease = this.o.hooks.begin?.();
+    if (this.o.hooks.begin && !lease) return;
+    const controller = new AbortController();
+    const done = (async () => {
+      try {
+        await this.o.mutex.run(lifeLocks.life(waifu.id), () => this.o.hooks.maintain(waifu, controller.signal));
+        // An aborted run (pause, shutdown, reload) runs again at its next chance.
+        if (!controller.signal.aborted) await updateLifeState(deps.storage, waifu.id, (current) => ({ ...current, lastMaintenanceAt: deps.now().toISOString() }));
+      } catch (error) {
+        deps.logger.warn("Life maintenance failed", { waifuId: waifu.id, message: error instanceof Error ? error.message : String(error) });
+      } finally {
+        lease?.();
+        this.maintenanceRuns.delete(waifu.id);
+        RUNNING_MAINTENANCE.delete(key);
+      }
+    })();
+    this.maintenanceRuns.set(waifu.id, { controller, done });
+    RUNNING_MAINTENANCE.set(key, done);
   }
 }

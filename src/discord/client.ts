@@ -153,6 +153,8 @@ export interface DiscordGatewayFacade {
     userId: string;
     content: string;
     replyToMessageId?: string;
+    /** Called with the final content just before it is sent. */
+    onFinalContent?: (content: string) => void | Promise<void>;
   }): Promise<{ messageId: string }>;
   sendDirectTyping?(input: { waifuId: string; userId: string }): Promise<void>;
   /**
@@ -202,6 +204,8 @@ export interface DiscordGatewayFacade {
     senderBotId?: string;
     replyToMessageId?: string;
     allowedUserMentionIds: string[];
+    /** Called with the final content (mentions and emoji resolved) just before it is sent. */
+    onFinalContent?: (content: string) => void | Promise<void>;
   }): Promise<{ messageId: string }>;
   sendTyping(input: {
     guildId: string;
@@ -837,11 +841,13 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
     userId: string;
     content: string;
     replyToMessageId?: string;
+    onFinalContent?: (content: string) => void | Promise<void>;
   }): Promise<{ messageId: string }> {
     const { client, botId } = this.dmClient(input.waifuId);
     const channel = await this.dmChannel(client, botId, input.userId);
     const denormalized = denormalizeModelContentForDiscord(input.content, { activeAuthorIds: [input.userId] });
     const replyToMessageId = sanitizeReplyTarget(input.replyToMessageId);
+    await input.onFinalContent?.(denormalized.content);
     const sent = await channel.send({
       content: denormalized.content,
       allowedMentions: denormalized.allowedMentions,
@@ -1252,6 +1258,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
     senderBotId?: string;
     replyToMessageId?: string;
     allowedUserMentionIds: string[];
+    onFinalContent?: (content: string) => void | Promise<void>;
   }): Promise<{ messageId: string }> {
     const client = input.senderBotId ? this.clients.get(input.senderBotId) : this.houseClient();
     if (!client) {
@@ -1276,6 +1283,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
         value: input.replyToMessageId
       });
     }
+    await input.onFinalContent?.(denormalized.content);
     const sent = await channel.send({
       content: denormalized.content,
       allowedMentions: denormalized.allowedMentions,

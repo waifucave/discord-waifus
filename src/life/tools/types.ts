@@ -24,15 +24,12 @@ export type TurnScratch = {
   id: string;
   /** Places she sent to this turn (`life.maxSendPlacesPerTurn`). */
   sentPlaces: Set<string>;
+  /** Messages she sent this turn (`life.maxSendsPerTurn`). */
+  sends?: number;
   /** DM users she already sent to this turn: they may keep getting messages past the rate limit. */
   dmUsersSent: Set<string>;
   /** web_fetch calls this turn (`life.webFetch.maxPerTurn`). */
   fetches: number;
-};
-
-export type ToolHooks = {
-  /** Her schedule or watches changed (the scheduler re-arms its timers). */
-  scheduleChanged?(waifuId: string): void;
 };
 
 export type ToolContext = {
@@ -46,7 +43,8 @@ export type ToolContext = {
   selfAuthorIds: readonly string[];
   /** Every tool name offered this epoch (the outbound tool-call-syntax check). */
   toolNames: readonly string[];
-  hooks?: ToolHooks;
+  /** A side-effect tool's intent (§5.7): the tool may add lines to it (send: the content digest). */
+  intent?: { turnId: string; toolCallId: string; tool: string; argsDigest: string };
 };
 
 export type LifeTool = {

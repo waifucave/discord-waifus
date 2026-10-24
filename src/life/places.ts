@@ -9,6 +9,7 @@
 // place: a handle is never reassigned, a rename adds the new slug as the primary handle and keeps
 // the old one as an alias, and collisions get `-2`, `-3` in creation order.
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { readdir } from "node:fs/promises";
 import path from "node:path";
 import { conversationKey, parseConversationKey, type ConversationRef } from "../orchestration/context/keys.js";
@@ -115,8 +116,31 @@ async function listServerIds(storage: StorageService): Promise<string[]> {
   }
 }
 
+const placeCache = new AsyncLocalStorage<Map<string, Promise<PlaceInfo[]>>>();
+
+/**
+ * Runs `work` with one place list per waifu (review M5): a turn reads server files and DM states
+ * once, not for every handle and tool call. Outside it every call reads afresh.
+ */
+export function withPlaceCache<T>(work: () => Promise<T>): Promise<T> {
+  return placeCache.run(new Map(), work);
+}
+
 /** Every place she can use: rooms and threads where she is cast, and DMs with people who DMed her. */
 export async function collectPlaces(storage: StorageService, waifuId: string): Promise<PlaceInfo[]> {
+  const cache = placeCache.getStore();
+  if (!cache) return readPlaces(storage, waifuId);
+  const key = `${storage.dataRoot}\0${waifuId}`;
+  let cached = cache.get(key);
+  if (!cached) {
+    cached = readPlaces(storage, waifuId);
+    cache.set(key, cached);
+    cached.catch(() => cache.delete(key));
+  }
+  return [...(await cached)];
+}
+
+async function readPlaces(storage: StorageService, waifuId: string): Promise<PlaceInfo[]> {
   const places: PlaceInfo[] = [];
   for (const guildId of (await listServerIds(storage)).sort()) {
     const server = await readServer(storage, guildId);

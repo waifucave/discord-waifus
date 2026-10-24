@@ -33,12 +33,12 @@ import { appendIntent, appendLifeLog, compactIntents, readLifeFile, readLifeLog,
 import { renderNotifications, type NotificationView } from "./notifications.js";
 import { lifeLocks } from "./paths.js";
 import { selfAuthorIds } from "./people.js";
-import { handleOf } from "./places.js";
+import { handleOf, withPlaceCache } from "./places.js";
 import { buildLifeRequest, estimateRequest, lifeBudget, PinnedImageMissingError } from "./request.js";
 import type { KeyedMutex, Semaphore } from "./sync.js";
 import { lifeTool } from "./tools/index.js";
-import { toolError, type ToolHooks, type ToolOutput, type TurnScratch } from "./tools/types.js";
-import { DIRECT_REASONS, pendingWakeCount, takeImmediate, withImmediate } from "./wakeQueue.js";
+import { toolError, type ToolOutput, type TurnScratch } from "./tools/types.js";
+import { DIRECT_REASONS, pendingWakeCount, requeueWakes, takeImmediate } from "./wakeQueue.js";
 import { readDmFloor } from "../orchestration/dm/dmStore.js";
 import { compareIds } from "../discord/rawMessage.js";
 import { parseConversationKey } from "../orchestration/context/keys.js";
@@ -51,18 +51,31 @@ export const FOLLOW_UP_NOTE = "[system] your last turn failed; the notifications
 export const MEMORY_SUMMARISED_NOTE = "[system] memory summarised";
 export const CUT_OFF_RESULT = "error: your message was cut off; try shorter";
 export const INTERRUPTED_RESULT = "[interrupted]";
+export const REFUSED_RESULT = "error: not run (your reply ended in a refusal)";
 
-export type LifeHostHooks = ToolHooks & {
+export type LifeHostHooks = {
   /** A turn ended (tests, dashboard). */
   onTurnEnd?(waifuId: string, info: { turnId: string; rounds: number; reason: string; sent: boolean }): void;
 };
+
+/**
+ * Work the host reports as busy (§3, review I7): one lease per turn cycle, maintenance run or forget
+ * scrub; `undefined` means the app is about to restart for an update and nothing new may start.
+ */
+export type LifeActivity = { begin(kind: "turn" | "maintenance" | "forget"): (() => void) | undefined };
 
 export type LifeHost = {
   deps: LifeDeps;
   mutex: KeyedMutex;
   turns: Semaphore;
   hooks?: LifeHostHooks;
+  activity?: LifeActivity;
 };
+
+/** How long a life waits before trying again when the app was sealed for an update. */
+const SEALED_RETRY_MS = 30_000;
+/** Quota and billing errors open a provider cooldown: her wakes wait for it (review I6). */
+const COOLDOWN_KINDS = new Set(["quota", "billing"]);
 
 /** Her curated route, or undefined when she has no offered model. */
 export function lifeModelOf(deps: Pick<LifeDeps, "catalog">, waifu: WaifuConfig): CuratedModel | undefined {
@@ -89,6 +102,7 @@ type TurnOutcome = "idle" | "again";
 export class Life {
   private coalesceTimer: ReturnType<typeof setTimeout> | undefined;
   private followUpTimer: ReturnType<typeof setTimeout> | undefined;
+  private retryTimer: ReturnType<typeof setTimeout> | undefined;
   private cycle: Promise<void> | undefined;
   private controller: AbortController | undefined;
   private rerun = false;
@@ -163,23 +177,52 @@ export class Life {
 
   stop(): void {
     this.stopped = true;
-    if (this.coalesceTimer) clearTimeout(this.coalesceTimer);
-    if (this.followUpTimer) clearTimeout(this.followUpTimer);
+    for (const timer of [this.coalesceTimer, this.followUpTimer, this.retryTimer]) if (timer) clearTimeout(timer);
     this.coalesceTimer = undefined;
     this.followUpTimer = undefined;
+    this.retryTimer = undefined;
     this.abort("shutdown");
   }
 
+  /** A poke after `ms` (a provider cooldown ending, an update seal lifting). */
+  private retryAfter(ms: number): void {
+    if (this.stopped) return;
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = undefined;
+      this.poke({ delayMs: 0 });
+    }, Math.max(0, ms));
+    this.retryTimer.unref?.();
+  }
+
+  /**
+   * After a restart: a failed turn's follow-up (§5.2) that has not run yet is armed again, due 60 s
+   * after the failure (at once when that is past). Review M13.
+   */
+  armFollowUp(failedAtMs: number): void {
+    if (this.stopped) return;
+    this.scheduleFollowUp(Math.max(0, failedAtMs + FOLLOW_UP_DELAY_MS - this.deps.now().getTime()));
+  }
+
   private async runCycle(): Promise<void> {
-    const release = await this.host.turns.acquire();
-    try {
-      await this.host.mutex.run(lifeLocks.life(this.waifuId), async () => {
+    // The life lock first, then a turn slot: a life waiting for her own maintenance or a forget
+    // never holds one of the host's turn slots (review M6).
+    await this.host.mutex.run(lifeLocks.life(this.waifuId), async () => {
+      const lease = this.host.activity?.begin("turn");
+      if (this.host.activity && !lease) {
+        // The app is sealed for an update restart: her wakes stay queued.
+        this.retryAfter(SEALED_RETRY_MS);
+        return;
+      }
+      const release = await this.host.turns.acquire();
+      try {
         this.compactionsThisCycle = 0;
         for (let guard = 0; guard < 8 && !this.stopped; guard += 1) {
           this.controller = new AbortController();
           let outcome: TurnOutcome;
           try {
-            outcome = await this.turn(this.controller.signal);
+            const signal = this.controller.signal;
+            outcome = await withPlaceCache(() => this.turn(signal));
           } catch (error) {
             this.deps.logger.error("Life turn failed", { waifuId: this.waifuId, message: error instanceof Error ? error.message : String(error) });
             await updateLifeState(this.deps.storage, this.waifuId, (state) => ({ ...state, status: "idle", currentTurn: undefined })).catch(() => undefined);
@@ -189,10 +232,11 @@ export class Life {
           }
           if (outcome !== "again") break;
         }
-      });
-    } finally {
-      release();
-    }
+      } finally {
+        release();
+        lease?.();
+      }
+    });
   }
 
   // ---- one turn -----------------------------------------------------------------------------------
@@ -288,6 +332,8 @@ export class Life {
       reason,
       ...(o.openTurnId ? { openTurnId: o.openTurnId } : {}),
       ...(o.truncate ? { truncate: true } : {}),
+      // Over budget: the summary request leaves the last results out instead of resending them (M1).
+      ...(reason === "budget" || reason === "overflow" ? { shrinkLastResults: true } : {}),
       omit: { deleted: await this.deletedOmissions(state), people: [] },
       signal
     });
@@ -316,7 +362,17 @@ export class Life {
     const followUpDue = state.failedTurn !== undefined && !state.failedTurn.followUpDone && nowMs - Date.parse(state.failedTurn.at) >= FOLLOW_UP_DELAY_MS;
     const queued = await pendingWakeCount(deps.storage, this.waifuId);
     if (queued === 0 && !followUpDue) return "idle";
+    // Her provider is cooling down after a quota or billing error: the wakes wait in the queue and
+    // she is poked again when the cooldown ends (review I6).
+    const cooling = deps.models.cooldownRemainingMs?.(model.providerId);
+    if (cooling !== undefined) {
+      deps.logger.info("Life waits for a provider cooldown", { category: "life", waifuId: this.waifuId, providerId: model.providerId, waitMs: cooling });
+      this.retryAfter(cooling + 1_000);
+      return "idle";
+    }
     state = await this.prepareEpoch(waifu, model, state, signal);
+    // An interrupted compaction (pause, shutdown, a reload) changed nothing; no wakes are taken.
+    if (signal.aborted) return "idle";
     const { wakes, quiet } = await takeImmediate(deps.storage, this.waifuId);
     if (wakes.length === 0 && !followUpDue) {
       if (quiet.length > 0) await updateLifeFile(deps.storage, this.waifuId, "wakes", (queue) => ({ ...queue, quiet: [...quiet, ...queue.quiet] }));
@@ -359,7 +415,8 @@ export class Life {
   private async rounds(run: TurnRun): Promise<TurnOutcome> {
     const deps = this.deps;
     const config = () => deps.config();
-    const direct = run.wakes.some((wake) => (wake.reasons ?? [wake.reason]).some((reason) => DIRECT_REASONS.has(reason)));
+    // Recomputed each time: a direct wake folded in mid-turn counts too (review I1).
+    const direct = () => run.wakes.some((wake) => (wake.reasons ?? [wake.reason]).some((reason) => DIRECT_REASONS.has(reason)));
     let unsentChecked = false;
     let rounds = 0;
     let badRequests = 0;
@@ -421,10 +478,23 @@ export class Life {
           currentTurn: current.currentTurn ? { ...current.currentTurn, rounds } : current.currentTurn
         };
       });
-      if (result.finishReason === "refusal") return this.endTurn(run, rounds, "refusal");
+      if (result.finishReason === "refusal") {
+        // A refusal in the middle of tool calls: they are closed with error results, so the log
+        // never holds an unanswered call (review M8).
+        if (result.toolCalls.length > 0) {
+          await this.append(run, "tool_results", {
+            role: "user",
+            content: [
+              ...result.toolCalls.map((call) => ({ type: "tool_result" as const, tool_use_id: call.id, content: REFUSED_RESULT, is_error: true })),
+              { type: "text", text: this.timeLineText(run.waifu, estimate, run.model) }
+            ]
+          });
+        }
+        return this.endTurn(run, rounds, "refusal");
+      }
       const calls = result.toolCalls;
       if (calls.length === 0) {
-        if (!unsentChecked && direct && result.text.trim() && run.scratch.sentPlaces.size === 0) {
+        if (!unsentChecked && direct() && result.text.trim() && run.scratch.sentPlaces.size === 0) {
           unsentChecked = true;
           await this.append(run, "system_note", { role: "user", content: [{ type: "text", text: UNSENT_REPLY_NOTE }, { type: "text", text: this.timeLineText(run.waifu, estimate, run.model) }] });
           deps.logger.info("Life unsent-reply check", { category: "life", waifuId: this.waifuId, turnId: run.turnId });
@@ -434,13 +504,15 @@ export class Life {
       }
       const executed = await this.runTools(run, calls, result.finishReason === "length");
       const capped = rounds >= config().life.maxToolRounds ? "max tool rounds" : deps.now().getTime() - run.startedMs >= config().life.maxTurnMs ? "max turn time" : undefined;
-      const folded = run.signal.aborted ? [] : await this.foldWakes(run);
+      // A turn that ends here (capped or interrupted) never folds new wakes in: she could not answer
+      // them; they stay queued for her next turn (review I1).
+      const folded = run.signal.aborted || capped || executed.interrupted ? [] : await this.foldWakes(run);
       const tail: ContentBlockLike[] = [...folded];
       if (capped) tail.push({ type: "text", text: `[system] turn ended: ${capped}` });
       if (executed.interrupted) tail.push({ type: "text", text: "[system] interrupted" });
       tail.push({ type: "text", text: this.timeLineText(run.waifu, estimate, run.model) });
       await this.append(run, "tool_results", { role: "user", content: [...executed.results, ...tail] }, { messageIds: executed.messageIds });
-      if (executed.interrupted) return this.finishIdle(run, rounds, "interrupted");
+      if (executed.interrupted) return this.endInterrupted(run, rounds);
       if (capped) return this.endTurn(run, rounds, capped);
     }
   }
@@ -479,7 +551,7 @@ export class Life {
             toolCallId: call.id,
             selfAuthorIds: run.selfIds,
             toolNames: run.state.systemSnapshot?.tools ?? [],
-            ...(this.host.hooks ? { hooks: this.host.hooks } : {})
+            ...(tool.sideEffect ? { intent: { turnId: run.turnId, toolCallId: call.id, tool: call.name, argsDigest } } : {})
           });
         } catch (error) {
           if (error instanceof ImageBuildAbortedError || run.signal.aborted) {
@@ -567,24 +639,43 @@ export class Life {
         { type: "text", text: this.timeLineText(run.waifu, run.lastEstimate, run.model) }
       ]
     });
+    // Quota or billing: the provider cools down. Her wakes were never answered, so they go back to
+    // the queue and wait for the cooldown instead of a follow-up (review I6).
+    const cooling = COOLDOWN_KINDS.has(kind) ? deps.models.cooldownRemainingMs?.(run.model.providerId) : undefined;
+    if (cooling !== undefined) {
+      await requeueWakes(deps.storage, this.waifuId, run.wakes);
+      await this.finishIdle(run, 0, "error");
+      this.retryAfter(cooling + 1_000);
+      return "idle";
+    }
     const wasFollowUp = run.wakes.length === 0;
     const now = deps.now();
     await updateLifeState(deps.storage, this.waifuId, (current) => ({
       ...current,
       failedTurn: wasFollowUp ? { at: current.failedTurn?.at ?? now.toISOString(), followUpDone: true } : { at: now.toISOString(), followUpDone: false }
     }));
-    if (!wasFollowUp) this.scheduleFollowUp();
+    if (!wasFollowUp) this.scheduleFollowUp(FOLLOW_UP_DELAY_MS);
     await this.finishIdle(run, 0, "error");
     return "idle";
   }
 
-  private scheduleFollowUp(): void {
+  private scheduleFollowUp(ms: number): void {
     if (this.followUpTimer) clearTimeout(this.followUpTimer);
     this.followUpTimer = setTimeout(() => {
       this.followUpTimer = undefined;
       this.poke({ delayMs: 0 });
-    }, FOLLOW_UP_DELAY_MS);
+    }, ms);
     this.followUpTimer.unref?.();
+  }
+
+  /**
+   * An interrupted turn (pause, shutdown, a reload, a forget, an aborted tool) ends; its wakes go
+   * back to the queue, so nothing she was woken for is lost (review I4). A forget's scrub then
+   * removes the forgotten person's wakes from the queue like any others.
+   */
+  private async endInterrupted(run: TurnRun, rounds: number): Promise<TurnOutcome> {
+    await requeueWakes(this.deps.storage, this.waifuId, run.wakes);
+    return this.finishIdle(run, rounds, "interrupted");
   }
 
   /** Abort: unanswered tool calls get `[interrupted]` results, then `[system] interrupted` (§5.2). */
@@ -603,11 +694,11 @@ export class Life {
             { type: "text", text: timeText }
           ]
         });
-        return this.finishIdle(run, 0, "interrupted");
+        return this.endInterrupted(run, 0);
       }
     }
     await this.append(run, "system_note", { role: "user", content: [{ type: "text", text: "[system] interrupted" }, { type: "text", text: timeText }] });
-    return this.finishIdle(run, 0, "interrupted");
+    return this.endInterrupted(run, 0);
   }
 
   /**
@@ -628,13 +719,8 @@ export class Life {
     const state = await readLifeState(deps.storage, this.waifuId);
     await this.compact(run.waifu, state, run.lines, harness, reason, run.signal, { openTurnId: run.turnId, ...(o.truncate ? { truncate: true } : {}) });
     // The open turn's wakes come back as the next turn's notifications.
-    if (run.wakes.length > 0) {
-      await updateLifeFile(deps.storage, this.waifuId, "wakes", (queue) => {
-        let next = { ...queue, immediate: [] as Wake[] };
-        for (const wake of [...run.wakes, ...queue.immediate]) next = withImmediate(next, wake);
-        return next;
-      });
-    }
-    return "again";
+    await requeueWakes(deps.storage, this.waifuId, run.wakes);
+    // An interrupted compaction changed nothing: the wakes wait for the next cycle.
+    return run.signal.aborted ? "idle" : "again";
   }
 }

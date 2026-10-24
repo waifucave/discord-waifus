@@ -1,5 +1,6 @@
 // `read_messages`, `send_message`, `react` (Living cast spec §6.2–§6.4, D11).
 
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import { assignConversationRefs, resolveConversationRef, snowflakeTime } from "../../discord/refStore.js";
 import { compareIds } from "../../discord/rawMessage.js";
@@ -12,7 +13,7 @@ import { readActiveChatParticipants } from "../../orchestration/stores/participa
 import type { RawDiscordMessage } from "../../shared/schemas/discordMessage.js";
 import type { LifeImageBlock } from "../../shared/schemas/life.js";
 import { clockText } from "../clock.js";
-import { advanceReadCursor, readLifeState, updateLifeState } from "../lifeStore.js";
+import { advanceReadCursor, appendIntent, readLifeState, updateLifeState } from "../lifeStore.js";
 import { isOnlyToolCallSyntax, stripCopiedHeader, typingDelayMs } from "../outbound.js";
 import { forgottenPeople, isRemovedMessage } from "../people.js";
 import { placeLabel, resolvePlace, type ResolvedPlace } from "../places.js";
@@ -21,6 +22,12 @@ import type { LifeDeps } from "../deps.js";
 import { CANNOT_POST, MESSAGE_TOO_OLD, parseInput, toolError, UNKNOWN_PLACE, type LifeResultBlock, type LifeTool, type ToolContext, type ToolOutput } from "./types.js";
 
 const MAX_INLINE_PER_RESULT = 4;
+const NO_BOT = "you have no Discord bot of your own, so you can't post; the owner has been told";
+
+/** The digest of a message's content as Discord holds it (boot repair matches sends by it, §5.7). */
+export function contentDigest(content: string): string {
+  return createHash("sha256").update(content.trim()).digest("hex").slice(0, 32);
+}
 
 async function directoryFor(deps: LifeDeps, place: ResolvedPlace): Promise<GuildDirectoryView> {
   if (!place.guildId) return EMPTY_GUILD_DIRECTORY;
@@ -240,11 +247,19 @@ export async function sendMessageTool(input: unknown, ctx: ToolContext): Promise
   const args = parsed.value;
   const place = await resolvePlace(deps.storage, waifu.id, args.place);
   if (!place) return toolError(UNKNOWN_PLACE);
+  // Without a bot of her own she cannot post at all (never through the House bot): she is told,
+  // and so is the owner (review M12).
+  if (!waifu.botId) {
+    deps.notices?.set(`no-bot:${waifu.id}`, `${waifu.displayName} has no Discord bot of her own, so she cannot post; link one on the Cast page.`);
+    return toolError(NO_BOT);
+  }
   if (place.kind === "dm" ? !(await dmSendAllowed(deps, ctx, place)) : place.paused === true) return toolError(CANNOT_POST);
-  const maxPlaces = deps.config().life.maxSendPlacesPerTurn;
+  const life = deps.config().life;
+  const maxPlaces = life.maxSendPlacesPerTurn;
   if (!turn.sentPlaces.has(place.placeKey) && turn.sentPlaces.size >= maxPlaces) {
     return toolError(`you've already written in ${maxPlaces} places this turn`);
   }
+  if ((turn.sends ?? 0) >= life.maxSendsPerTurn) return toolError(`you've already sent ${life.maxSendsPerTurn} messages this turn; wait for replies`);
   const text = stripCopiedHeader(args.text, [waifu.name, waifu.displayName]);
   if (!text) return toolError("there is nothing to send");
   if (isOnlyToolCallSyntax(text, ctx.toolNames)) return toolError("that looks like a tool call, not a message; write what you want to say");
@@ -257,22 +272,29 @@ export async function sendMessageTool(input: unknown, ctx: ToolContext): Promise
   if (!discord) return toolError("you can't reach Discord right now");
   // Typing first, for as long as a person would take (§6.3).
   if (place.kind === "dm") await discord.sendDirectTyping?.({ waifuId: waifu.id, userId: place.userId! });
-  else await discord.sendTyping({ guildId: place.guildId!, channelId: place.channelId!, ...(waifu.botId ? { senderBotId: waifu.botId } : {}) });
+  else await discord.sendTyping({ guildId: place.guildId!, channelId: place.channelId!, senderBotId: waifu.botId });
   await deps.sleep(typingDelayMs(text), ctx.signal);
   if (ctx.signal.aborted) return toolError("interrupted before sending");
+  // Just before the Discord call: a digest of the final content (mentions and emoji resolved) goes
+  // into her intents, so boot repair recognises the message after a crash (§5.7, review I5).
+  const onFinalContent = async (final: string) => {
+    if (!ctx.intent) return;
+    await appendIntent(deps.storage, waifu.id, { ...ctx.intent, at: deps.now().toISOString(), contentDigest: contentDigest(final) });
+  };
   let messageId: string;
   try {
     if (place.kind === "dm") {
-      messageId = (await discord.sendDirectMessage!({ waifuId: waifu.id, userId: place.userId!, content: text, ...(replyToId ? { replyToMessageId: replyToId } : {}) })).messageId;
+      messageId = (await discord.sendDirectMessage!({ waifuId: waifu.id, userId: place.userId!, content: text, ...(replyToId ? { replyToMessageId: replyToId } : {}), onFinalContent })).messageId;
     } else {
       messageId = (
         await discord.sendWaifuMessage({
           guildId: place.guildId!,
           channelId: place.channelId!,
           content: text,
-          ...(waifu.botId ? { senderBotId: waifu.botId } : {}),
+          senderBotId: waifu.botId,
           ...(replyToId ? { replyToMessageId: replyToId } : {}),
-          allowedUserMentionIds: await presentPeople(deps, place)
+          allowedUserMentionIds: await presentPeople(deps, place),
+          onFinalContent
         })
       ).messageId;
     }
@@ -298,6 +320,8 @@ export async function sendMessageTool(input: unknown, ctx: ToolContext): Promise
     await updateExistingDmState(deps.storage, userId, waifu.id, (state) => ({ ...state, lastRepliedMessageId: messageId, lastReplyAt: now.toISOString() })).catch(() => undefined);
   }
   turn.sentPlaces.add(place.placeKey);
+  turn.sends = (turn.sends ?? 0) + 1;
+  deps.notices?.clear(`no-bot:${waifu.id}`);
   const refs = await assignConversationRefs(deps.storage, place.placeKey as never, [messageId], now);
   await advanceReadCursor(deps.storage, waifu.id, place.placeKey, messageId, now);
   deps.logger.info("Life message sent", { category: "life", waifuId: waifu.id, placeKey: place.placeKey, messageId });

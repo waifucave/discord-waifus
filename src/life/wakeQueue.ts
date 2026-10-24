@@ -39,8 +39,9 @@ function mergeInto(existing: Wake, wake: Wake): Wake {
   };
 }
 
-/** Adds a wake to `immediate` (pure). */
+/** Adds a wake to `immediate` (pure); a wake whose id is already queued is not added twice. */
 export function withImmediate(queue: WakeQueue, wake: Wake): WakeQueue {
+  if (queue.immediate.some((entry) => entry.id === wake.id)) return queue;
   if (queue.immediate.length >= MAX_IMMEDIATE_WAKES) {
     const index = queue.immediate.findIndex((entry) => entry.placeKey !== undefined && entry.placeKey === wake.placeKey);
     if (index >= 0) {
@@ -56,12 +57,32 @@ export async function enqueueWake(storage: StorageService, waifuId: string, wake
   await updateLifeFile(storage, waifuId, "wakes", (queue) => withImmediate(queue, wake));
 }
 
+/**
+ * A turn's wakes go back in front of the queue (it was interrupted, compacted away or never got to
+ * answer them); ids already queued are not added twice.
+ */
+export async function requeueWakes(storage: StorageService, waifuId: string, wakes: readonly Wake[]): Promise<void> {
+  if (wakes.length === 0) return;
+  await updateLifeFile(storage, waifuId, "wakes", (queue) => {
+    const queued = new Set(queue.immediate.map((wake) => wake.id));
+    let next: WakeQueue = { ...queue, immediate: [] };
+    const seen = new Set<string>();
+    for (const wake of [...wakes.filter((wake) => !queued.has(wake.id)), ...queue.immediate]) {
+      if (seen.has(wake.id)) continue;
+      seen.add(wake.id);
+      next = withImmediate(next, wake);
+    }
+    return next;
+  });
+}
+
 function emptyPlace(): DeferredPlace {
   return { mentions: 0, messages: 0, dms: 0, detector: 0, fromUserIds: [], names: {} };
 }
 
 /** Adds a wake to `deferred` (pure): counters for message wakes, the full entry for notes. */
 export function withDeferred(queue: WakeQueue, wake: Wake, reason: "sleep" | "budget", now: Date): WakeQueue {
+  if (queue.deferred.items.some((item) => item.id === wake.id)) return queue;
   const deferred = {
     ...queue.deferred,
     reason: queue.deferred.reason ?? reason,

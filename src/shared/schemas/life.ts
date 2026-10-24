@@ -166,7 +166,12 @@ export const LifeIntentSchema = z.object({
   at: IsoDateStringSchema,
   done: z.boolean().optional(),
   /** done lines: what the tool returned (send: the Discord message id). */
-  resultRef: z.string().optional()
+  resultRef: z.string().optional(),
+  /**
+   * send_message, written just before the Discord call: a digest of the final outgoing content
+   * (after mentions and emoji were resolved), so boot repair recognises the message (§5.7).
+   */
+  contentDigest: z.string().optional()
 });
 export type LifeIntent = z.infer<typeof LifeIntentSchema>;
 

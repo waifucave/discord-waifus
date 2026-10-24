@@ -168,9 +168,10 @@ Evaluated in this order for every wake candidate:
 5. **Daily budget** (`waifu.life.dailyBudgetUsd`, default none): when her cost for the local day
    reaches it, defer to the next local day.
 6. **Room loop guard** (`life.maxWaifuTriggeredTurns`, default 0 = off): when set, after that many
-   turns in one place woken by waifu-authored messages since the last human message there, further
-   waifu-authored messages in that place stop producing wakes. It limits wakes only; it never
-   blocks a send.
+   waifu-authored messages in one place have woken someone since the last human message there,
+   further waifu-authored messages in that place stop producing wakes. Each message counts once,
+   however many waifus it wakes (one step of an exchange, not one per waifu). It limits wakes only;
+   it never blocks a send.
 
 `owner` wakes skip steps 3–6.
 
@@ -202,6 +203,8 @@ Availability (`waifu.availability.sleep`, busy blocks) stays as configured today
 - During a turn, new wakes are folded into the next model call after the current tool round
   (§5.2). She is never interrupted mid-call.
 - Entries for one place merge into one line with the reasons joined (`mention, watch`).
+- A wake whose id is already queued (immediate or deferred) is not added again, so a catch-up, a
+  reminder re-routed after a crash or a re-queued turn never doubles a wake.
 - Shutdown persists the queue. Boot catch-up is §5.7.
 
 ### 4.7 Notification format
@@ -266,7 +269,7 @@ idle ──wake──► coalesce 2 s ──► turn:
      build request (§5.4) → ModelClient.call (abortable)
      append the assistant message exactly as assembled (§5.3)
      if finish = length and a tool call is truncated → reply to it with an error result ("your message was cut off; try shorter") and continue
-     if finish = refusal → end turn
+     if finish = refusal → close its tool calls with error results ("not run") and end turn
      if no tool calls → end turn
      execute tool calls in order (§5.7 intents for side effects) → append one tool-results user message:
         tool results (errors with is_error) + folded <notifications> for new wakes + time line
@@ -276,7 +279,16 @@ idle ──wake──► coalesce 2 s ──► turn:
 ```
 
 - One turn at a time per waifu; different waifus run in parallel, bounded by
-  `life.maxConcurrentTurns` (default from the old `discord.dm.maxConcurrentRuns`, 4).
+  `life.maxConcurrentTurns` (default from the old `discord.dm.maxConcurrentRuns`, 4). A turn takes
+  her life lock first and only then a turn slot, so a life waiting for her own maintenance or a
+  forget scrub never holds one of the host's slots.
+- **Activity.** Each turn cycle, maintenance run and forget scrub holds an idle-updater lease and
+  counts in `/api/runtime` `queues.active`, so an idle update never restarts the host mid-turn.
+  While the app is sealed for an update restart no turn starts: her wakes stay queued and she
+  tries again 30 s later.
+- **Folding.** A wake is folded into the next tool-results message only when the turn continues;
+  a round that ends the turn (a cap, an interrupt) folds nothing, and the wake starts the next
+  turn. A folded direct wake makes the turn direct (the unsent-reply check runs).
 - **Private text.** Assistant text is kept in her log and never sent anywhere.
 - **Unsent-reply check.** If the turn included a direct wake (`mention`, `name`, `role`, `dm`,
   `owner`), ended with assistant text and made no `send_message`, one extra round is run with
@@ -290,10 +302,16 @@ idle ──wake──► coalesce 2 s ──► turn:
   loops valid on models that require a thinking block before `tool_use`.
 - **Aborts.** Pause, shutdown, reset and a forget scrub abort the in-flight call. The open turn is
   closed with synthetic results for any unanswered tool calls (`[interrupted]`, `is_error`) and a
-  `[system] interrupted` line. Pause and shutdown keep the queue.
+  `[system] interrupted` line, and the turn's wakes go back to the front of her queue (after a
+  forget scrub, the scrub then removes the forgotten person's wakes). Pause and shutdown keep the
+  queue.
 - **Errors.** A model error other than overflow ends the turn with a logged `[system] error: …`
   line. The turn's wakes stay consumed; a follow-up turn starts after 60 s with `[system] your last
   turn failed; the notifications above may still need you`, once. Notifications are not re-rendered.
+  The follow-up is re-armed after a restart (from `failedTurn` in her state).
+- **Provider cooldowns.** A quota or billing error opens a cooldown for that provider (§9). The
+  turn's wakes go back to the queue instead of a follow-up. While her provider is cooling down no
+  turn starts (her wakes stay queued, nothing is consumed) and she is woken again when it ends.
 - **Configuration changes.** Any change to what part A contains (persona, style, schedule, custom
   instructions, name, model route, tools offered) takes effect at the next turn boundary through a
   compaction (§5.6), never by editing A in place. A model change runs that compaction with the
@@ -367,9 +385,18 @@ calibration). It does not reuse the conversation planner, which works on ledger 
   threads, things you meant to do. Anything that should last longer belongs in your notes; this
   summary is replaced next time." It lists deleted messages and forgotten people for omission.
 - **Kept window**: the last 3 complete turns; a cut never separates a tool call from its result.
-  Kept turns are copied into the new epoch through winter's `stripOpaque`, because their thinking
-  blocks are bound to the old prefix. Kept tool results that contain a message in `deletedReadIds`
-  become `[result omitted: deleted message]`.
+  The window shrinks (down to none) while the kept turns alone would take more than half the
+  compaction trigger, so a new epoch never starts over budget. Kept turns are copied into the new
+  epoch through winter's `stripOpaque`, because their thinking blocks are bound to the old prefix.
+  Kept tool results that contain a message in `deletedReadIds` become `[result omitted: deleted
+  message]`. Kept images are frozen as text: the image's cached OCR text (`[image: …]`), else
+  `[image]`.
+- **Over-budget log**: when the log itself is over the budget (the estimate or a provider
+  `context_overflow`), the summary request replaces the last tool results with `[result left out:
+  too large to summarise]` instead of resending what pushed it over. The log is not changed.
+- **Aborted compaction**: a summary call aborted by pause, shutdown, a reload or a reconnect
+  changes nothing (log, summary, epoch, queue, no failure pause); it runs again later. Only a
+  genuine failure falls back to truncation.
 - **Mid-turn overflow**: the open turn is closed first (results appended, then `[system] memory
   summarised`), compaction runs, and the work continues in a new turn whose notifications repeat
   the open turn's wakes. Two consecutive non-transient `bad_request` errors are handled the same way,
@@ -387,17 +414,27 @@ calibration). It does not reuse the conversation planner, which works on ledger 
 - **Intents.** Before a side-effecting tool runs (`send_message`, `react`, `write_note`,
   `edit_note`, `delete_note`, `schedule_wake`, `watch_for`, cancels), an intent line
   `{turnId, toolCallId, tool, args digest, at}` is appended to `intents.jsonl`; after it completes,
-  a matching `done` line.
+  a matching `done` line. A `send_message` also appends, just before the Discord call, a line with
+  a digest of the final outgoing content (after mention rewriting and splitting).
 - **Boot repair**, per waifu, before anything else:
   - A log whose last assistant message has tool calls without results gets synthetic results. For
-    an intent without `done`: a `send_message` is checked against the conversation cache for her
-    own message with the same text after the intent time; found → `sent #ref (recovered)`,
-    otherwise `[interrupted] not sent`. Note and schedule writes are idempotent by content and are
-    re-checked on disk. Then `[system] interrupted by a restart`.
-  - `status: turn` is reset to idle.
+    an intent without `done`: a `send_message` is looked for among her own messages in that place
+    after the intent time (the conversation cache, then Discord history, up to 500 messages),
+    matched by the final-content digest, else loosely by text; found → `sent #ref (recovered)`.
+    Not found → `[interrupted] not sent`; the place gone or Discord failing → `[interrupted] it is
+    unknown whether this was sent; read the place before sending it again`. Note and schedule
+    writes are idempotent by content and are re-checked on disk. Then `[system] interrupted by a
+    restart`.
+  - The interrupted turn's wakes go back to her queue; `status: turn` is reset to idle.
 - **Catch-up**: messages that arrived while the host was down are fed through intake as if live,
   for messages newer than each waifu's read cursors and at most
-  `discord.dm.resumeWindowMinutes` (60) old. Older ones wake nobody but stay readable.
+  `discord.dm.resumeWindowMinutes` (60) old. Older ones wake nobody but stay readable. Intake keeps
+  a high-water mark per place (`app/intake-marks.json`: the newest message it routed or decided
+  about, flushed within a second), and catch-up only takes messages newer than the higher of her
+  read cursor, that mark and the DM forget floor, skipping messages whose wake is already queued.
+  So a message intake already handled (even one it decided to ignore) never wakes anyone again
+  after a restart, a config reload or a reconnect. After an explicit pause, the resume catch-up
+  starts at the pause start; messages that arrive while paused are not routed live.
 - **Late reminders**: due reminders fire once on boot (deferred if she is asleep). Recurring ones
   then continue from the next future occurrence.
 
@@ -455,7 +492,13 @@ send_message({ place: string, text: string (1–2000 chars), reply_to?: string /
   Otherwise `error: you can't post there`.
 - A turn that has already sent to a DM user may keep sending to them even if that first send
   reached the rate limit, so a reply is never cut in half.
-- At most `life.maxSendPlacesPerTurn` (default 3) distinct places per turn.
+- At most `life.maxSendPlacesPerTurn` (default 3) distinct places and `life.maxSendsPerTurn`
+  (default 8) messages per turn (`error: you've already sent 8 messages this turn; wait for
+  replies`).
+- She posts only through her own bot. A waifu without one gets `error: you have no Discord bot of
+  your own, so you can't post; the owner has been told`, and the owner sees a notice in
+  `/api/runtime` warnings until she sends again; nothing goes out through the House bot. She is
+  never DM-eligible either.
 - Shows typing in that place for `typingDelayMs(text)` (30 ms per character, 0.6–4.5 s) before
   sending; the tool call takes that long.
 - Mentions: `<@Name>` resolves through `denormalizeModelContentForDiscord` and pings only people
@@ -500,6 +543,9 @@ schedule_wake({ at?: string /* "2026-10-25 18:00" local */, in_minutes?: number,
 - Exactly one of `at` / `in_minutes`; 5 minutes to 30 days ahead; at most 20 pending. Interpreted
   in the host time zone, stored as ISO instants.
 - Due while she sleeps → deferred to `morning` with its note. Due during downtime → §5.7.
+- A due reminder is routed first, under a wake id fixed by the reminder and its due time, and only
+  then removed (or moved to its next occurrence), so a crash between the two neither loses nor
+  doubles it.
 
 ### 6.7 Notes tools
 
@@ -614,6 +660,10 @@ links. The time line's compaction warning reminds her before her short-term memo
   that were rate-limited (§7.5) are stored in `user/waifus/<id>/life/pending-scrubs.json` and
   executed here.
 - Result: one report line in `maintenance.jsonl`.
+- It runs as a tracked background task: the scheduler tick that starts it does not wait for it, so
+  reminders and watches keep firing. Pause and shutdown abort it (shutdown waits for it to end);
+  an aborted run is not recorded and runs again at the next tick. One process-wide lock per waifu
+  keeps a reloaded runtime from starting a second run while the first is still finishing.
 
 ### 7.4 Migration from the memory store
 
@@ -922,7 +972,7 @@ it. A torn `pending-scrubs.json` is salvaged (every user id that can be read is 
 | `life.maxContextTokens` | 96000 |
 | `life.maxInlineImagesPerEpoch` | 8 |
 | `life.maxInlineImageBytesPerEpoch` | 12582912 (12 MiB raw) |
-| `life.maxSendPlacesPerTurn` | 3 |
+| `life.maxSendPlacesPerTurn` / `life.maxSendsPerTurn` | 3 / 8 |
 | `life.maxWakesPerUserPerHour` | 20 |
 | `life.maxWatchFiresPerDay` | 24 |
 | `life.maxWaifuTriggeredTurns` | 0 (off) |
@@ -950,7 +1000,7 @@ Bounds (validated by the config schema):
 | `life.maxConcurrentTurns` | 1–16 |
 | `life.maxInlineImagesPerEpoch` | 0–20 |
 | `life.maxInlineImageBytesPerEpoch` | 0–20971520 |
-| `life.maxSendPlacesPerTurn` | 1–10 |
+| `life.maxSendPlacesPerTurn` / `life.maxSendsPerTurn` | 1–10 / 1–50 |
 | `life.maxWakesPerUserPerHour` | 1–200 |
 | `life.maxWatchFiresPerDay` | 1–100 |
 | `life.maxWaifuTriggeredTurns` | 0–100 |

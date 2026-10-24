@@ -2,12 +2,14 @@
 //
 // - a torn last log line is dropped (the log is rewritten without it);
 // - a last assistant message with tool calls but no results gets synthetic results. For a
-//   side-effect intent without its `done` line: a `send_message` is checked against the conversation
-//   for her own message with the same text after the intent time (found → `sent #ref (recovered)`,
-//   otherwise `[interrupted] not sent`); note, schedule and watch writes are idempotent by content
-//   and re-checked on disk. Then `[system] interrupted by a restart`;
-// - `status: turn` is reset to idle.
-// Nothing is ever sent twice.
+//   side-effect intent without its `done` line: a `send_message` is checked against every message
+//   of hers in the conversation since the intent time, by the digest of the final content recorded
+//   just before the Discord call (else by its text with mentions and emoji set aside): found →
+//   `sent #ref (recovered)`, not found → `[interrupted] not sent`, the conversation unreadable →
+//   "unknown whether this was sent" (never "not sent"); note, schedule and watch writes are
+//   idempotent by content and re-checked on disk. Then `[system] interrupted by a restart`;
+// - `status: turn` is reset to idle and the turn's wakes go back to the queue.
+// Nothing is ever sent twice by the repair itself.
 
 import { createHash } from "node:crypto";
 import type { ContentBlockLike, ProviderMessageLike } from "@yanlinglabs/winter-provider-runtime";
@@ -21,6 +23,9 @@ import { Notes } from "./notes.js";
 import { stripCopiedHeader } from "./outbound.js";
 import { selfAuthorIds } from "./people.js";
 import { resolvePlace } from "./places.js";
+import { contentDigest } from "./tools/messages.js";
+import { requeueWakes } from "./wakeQueue.js";
+import { dmFloorAt } from "../orchestration/dm/dmStore.js";
 
 export const RESTART_NOTE = "[system] interrupted by a restart";
 
@@ -30,7 +35,22 @@ function argsDigest(input: unknown): string {
   return createHash("sha256").update(JSON.stringify(input ?? {})).digest("hex").slice(0, 32);
 }
 
-async function recoverCall(deps: LifeDeps, waifuId: string, call: Call, intent: { start?: LifeIntent; done?: LifeIntent }): Promise<{ text: string; isError: boolean }> {
+export const UNCERTAIN_SEND = "[interrupted] it is unknown whether this was sent; read the place before sending it again";
+
+/** Content compared loosely: mentions, channel links and custom emoji (resolved by Discord) set aside, spaces collapsed. */
+function loose(content: string): string {
+  return content
+    .replace(/<a?:\w+:\d+>|<[@#][!&]?\d+>|<@[^>\s]+>|:\w+:/gu, "")
+    .replace(/\s+/gu, " ")
+    .trim();
+}
+
+async function recoverCall(
+  deps: LifeDeps,
+  waifuId: string,
+  call: Call,
+  intent: { start?: LifeIntent; done?: LifeIntent; lines: LifeIntent[] }
+): Promise<{ text: string; isError: boolean }> {
   const input = (call.input ?? {}) as Record<string, unknown>;
   const waifu = await readWaifu(deps.storage, waifuId).catch(() => undefined);
   if (intent.done) {
@@ -52,11 +72,22 @@ async function recoverCall(deps: LifeDeps, waifuId: string, call: Call, intent: 
       if (typeof input["place"] !== "string" || typeof input["text"] !== "string" || !waifu) return { text: "[interrupted] not sent", isError: true };
       const place = await resolvePlace(deps.storage, waifuId, input["place"]);
       if (!place) return { text: "[interrupted] not sent", isError: true };
+      // The digest of the final content (written just before the Discord call) matches the message
+      // even when Discord's side rewrote mentions or emoji; the loose text compare is the fallback.
+      const digests = new Set(intent.lines.flatMap((line) => (line.contentDigest ? [line.contentDigest] : [])));
       const self = await selfAuthorIds(deps.storage, waifu);
-      const wanted = stripCopiedHeader(input["text"], [waifu.name, waifu.displayName]).trim();
-      const since = Date.parse(intent.start.at);
-      const page = await deps.conversations.readPage({ conversation: place.ref, limit: 50 }).catch(() => ({ messages: [] }));
-      const found = page.messages.find((message) => self.includes(message.authorId) && Date.parse(message.createdAt) >= since - 1_000 && message.content.trim() === wanted);
+      const wanted = loose(stripCopiedHeader(input["text"], [waifu.name, waifu.displayName]));
+      // Every message after the intent (not only the newest page): a busy room may have moved on.
+      const since = Math.min(...intent.lines.map((line) => Date.parse(line.at)));
+      let messages;
+      try {
+        if (!deps.discord()) throw new Error("Discord is not connected");
+        messages = (await deps.conversations.fetchSince({ conversation: place.ref, afterMessageId: dmFloorAt(new Date(since - 2_000)), maxMessages: 500 })).messages;
+      } catch {
+        // Unknown is not "not sent": she must look before sending again.
+        return { text: UNCERTAIN_SEND, isError: true };
+      }
+      const found = messages.find((message) => self.includes(message.authorId) && (digests.has(contentDigest(message.content)) || loose(message.content) === wanted));
       if (!found) return { text: "[interrupted] not sent", isError: true };
       const refs = await assignConversationRefs(deps.storage, place.placeKey as never, [found.id], deps.now());
       return { text: `sent #${refs.get(found.id) ?? "?"} (recovered)`, isError: false };
@@ -135,7 +166,7 @@ export async function repairLife(deps: LifeDeps, waifuId: string): Promise<Repai
       const results: ContentBlockLike[] = [];
       for (const call of calls) {
         const mine = intents.filter((intent) => intent.toolCallId === call.id && intent.argsDigest === argsDigest(call.input));
-        const recovered = await recoverCall(deps, waifuId, call, { start: mine.find((intent) => !intent.done), done: mine.find((intent) => intent.done) });
+        const recovered = await recoverCall(deps, waifuId, call, { start: mine.find((intent) => !intent.done), done: mine.find((intent) => intent.done), lines: mine.filter((intent) => !intent.done) });
         if (!recovered.isError) outcome.recovered += 1;
         outcome.closedCalls += 1;
         results.push({ type: "tool_result", tool_use_id: call.id, content: recovered.text, ...(recovered.isError ? { is_error: true } : {}) });
@@ -148,6 +179,8 @@ export async function repairLife(deps: LifeDeps, waifuId: string): Promise<Repai
     await append("system_note", tail);
   }
   if (outcome.wasInTurn || outcome.closedCalls > 0) {
+    // The interrupted turn's wakes go back to the queue: nothing she was woken for is lost (I4).
+    if (outcome.wasInTurn) await requeueWakes(deps.storage, waifuId, state.currentTurn?.wakes ?? []);
     await updateLifeState(deps.storage, waifuId, (current) => ({ ...current, status: "idle", currentTurn: undefined, lastTurnEndedAt: deps.now().toISOString() }));
   }
   await compactIntents(deps.storage, waifuId, new Set()).catch(() => undefined);

@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import { CURRENT_SCHEMA_VERSION, RevisionedRecord, bumpRevision } from "../shared/schemas/common.js";
@@ -15,6 +15,13 @@ export type UpdateRevisionedJsonOptions<T extends RevisionedRecord> = {
   expectedRevision?: number;
   transform: (current: T) => Promise<T> | T;
 };
+
+/** Two records with the same content apart from `revision` and `updatedAt` (serialized bytes). */
+function sameContent(a: RevisionedRecord, b: RevisionedRecord): boolean {
+  const { revision: _a1, updatedAt: _a2, ...left } = a;
+  const { revision: _b1, updatedAt: _b2, ...right } = b;
+  return JSON.stringify(left) === JSON.stringify(right);
+}
 
 // Crash leftovers can only predate this process (our own temps are never removed and a live
 // writer's temps must not be), so scanning a file's directory once per process is enough.
@@ -91,6 +98,8 @@ export class StorageService {
     options: UpdateRevisionedJsonOptions<T>
   ): Promise<T> {
     return this.locks.withLock(options.resourceKey, async () => {
+      const filePath = resolveDataPath(this.dataRoot, options.relativePath);
+      const existed = await stat(filePath).then(() => true, () => false);
       const current = await this.readJson(options.relativePath, options.schema, options.fallback);
       if (
         options.expectedRevision !== undefined &&
@@ -100,13 +109,16 @@ export class StorageService {
       }
 
       const transformed = await options.transform(structuredClone(current));
+      // A write that changes nothing on an existing file is skipped: no new revision, no disk write
+      // (a scheduler tick or a message that only re-reads a file never rewrites it).
+      if (existed && sameContent(options.schema.parse({ ...transformed, schemaVersion: CURRENT_SCHEMA_VERSION }), current)) return current;
       const next = options.schema.parse(
         bumpRevision({
           ...transformed,
           schemaVersion: CURRENT_SCHEMA_VERSION
         })
       );
-      await atomicWriteJson(resolveDataPath(this.dataRoot, options.relativePath), next);
+      await atomicWriteJson(filePath, next);
       return next;
     });
   }

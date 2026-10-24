@@ -41,20 +41,30 @@ export type RouteContext = {
 
 export type RouteOutcome = "queued" | "deferred" | "quiet" | "dropped";
 
-/** §4.4 guard 6: wakes from waifu-authored messages per place since the last human message there. */
+/**
+ * §4.4 guard 6: waifu-authored messages per place since the last human message there. Each message
+ * counts once, however many waifus it wakes (review M16): one exchange between two waifus is one
+ * step of the loop, not one per waifu.
+ */
 export class LoopGuard {
-  private readonly counts = new Map<string, number>();
+  private readonly messages = new Map<string, Set<string>>();
 
   human(placeKey: string): void {
-    this.counts.delete(placeKey);
+    this.messages.delete(placeKey);
   }
 
-  allowed(placeKey: string, max: number): boolean {
-    return max <= 0 || (this.counts.get(placeKey) ?? 0) < max;
+  /** May this waifu-authored message still wake someone? (It may when it already counts.) */
+  allowed(placeKey: string, max: number, messageId?: string): boolean {
+    if (max <= 0) return true;
+    const counted = this.messages.get(placeKey);
+    if (messageId && counted?.has(messageId)) return true;
+    return (counted?.size ?? 0) < max;
   }
 
-  count(placeKey: string): void {
-    this.counts.set(placeKey, (this.counts.get(placeKey) ?? 0) + 1);
+  count(placeKey: string, messageId?: string): void {
+    let counted = this.messages.get(placeKey);
+    if (!counted) this.messages.set(placeKey, (counted = new Set()));
+    counted.add(messageId ?? `wake-${counted.size}`);
   }
 }
 
@@ -162,8 +172,8 @@ export class WakeRouter {
     // 6. room loop guard
     if (wake.waifuAuthored && wake.placeKey) {
       const max = deps.config().life.maxWaifuTriggeredTurns;
-      if (!this.loopGuard.allowed(wake.placeKey, max)) return "dropped";
-      if (max > 0) this.loopGuard.count(wake.placeKey);
+      if (!this.loopGuard.allowed(wake.placeKey, max, wake.messageId)) return "dropped";
+      if (max > 0) this.loopGuard.count(wake.placeKey, wake.messageId);
     }
     return this.admit(waifuId, wake);
   }

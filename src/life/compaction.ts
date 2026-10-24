@@ -16,6 +16,8 @@ import { randomBytes } from "node:crypto";
 import { stripOpaque, type ContentBlockLike, type ProviderMessageLike } from "@yanlinglabs/winter-provider-runtime";
 import type { CuratedModel } from "../models/catalog.js";
 import { summarizeWithModel } from "../models/summarize.js";
+import { imageTextFor } from "../orchestration/context/images.js";
+import { estimateTokens } from "../orchestration/context/tokens.js";
 import { COMPACTION_FAILURE_BACKOFF_MS } from "../orchestration/context/compaction.js";
 import { listWaifus } from "../orchestration/stores/config.js";
 import type { WaifuConfig } from "../shared/schemas/domain.js";
@@ -23,10 +25,10 @@ import type { LifeLogLine, LifeModelRoute, LifeState } from "../shared/schemas/l
 import { timeLine } from "./clock.js";
 import type { LifeDeps } from "./deps.js";
 import { buildBlockA, harnessHash } from "./lifeHarness.js";
-import { pruneOldEpochLogs, rewriteLifeLog, updateLifeState } from "./lifeStore.js";
+import { pruneOldEpochLogs, readLifeState, rewriteLifeLog, updateLifeState } from "./lifeStore.js";
 import { Notes } from "./notes.js";
 import { placesWithHandles, renderPlacesBlock } from "./places.js";
-import { buildLifeRequest } from "./request.js";
+import { buildLifeRequest, lifeBudget } from "./request.js";
 import { offeredToolNames } from "./tools/index.js";
 
 export const KEPT_TURNS = 3;
@@ -79,24 +81,44 @@ function contentHasImages(content: ContentBlockLike[]): boolean {
   return content.some((block) => (block as { type: string }).type === "life_image");
 }
 
-/** Kept turns' images render as text in the new epoch (its inline budget starts at zero). */
-function imagesAsText(content: unknown[]): unknown[] {
+/**
+ * Kept turns' images render as text in the new epoch (its inline budget starts at zero): the image's
+ * OCR text frozen in (`textFor`, from the OCR cache), else the plain placeholder.
+ */
+function imagesAsText(content: unknown[], textFor: (key: string) => string): unknown[] {
   return content.map((block) => {
-    const typed = block as { type?: string; mode?: unknown; content?: unknown };
-    if (typed.type === "life_image") return { ...typed, mode: typed.mode === "inline" ? { text: "[image]" } : typed.mode };
-    if (typed.type === "tool_result" && Array.isArray(typed.content)) return { ...typed, content: imagesAsText(typed.content) };
+    const typed = block as { type?: string; mode?: unknown; content?: unknown; attachment?: { key?: string } };
+    if (typed.type === "life_image") return { ...typed, mode: typed.mode === "inline" ? { text: textFor(typed.attachment?.key ?? "") } : typed.mode };
+    if (typed.type === "tool_result" && Array.isArray(typed.content)) return { ...typed, content: imagesAsText(typed.content, textFor) };
     return block;
   });
 }
 
+/** Inline images in some log lines (to look their OCR text up before they are frozen as text). */
+export function inlineImagesOf(lines: readonly LifeLogLine[]): Array<{ key: string; attachment: Record<string, unknown> }> {
+  const out: Array<{ key: string; attachment: Record<string, unknown> }> = [];
+  const visit = (block: unknown) => {
+    const typed = block as { type?: string; mode?: unknown; content?: unknown; attachment?: Record<string, unknown> & { key?: string } };
+    if (typed?.type === "life_image" && typed.mode === "inline" && typeof typed.attachment?.key === "string") out.push({ key: typed.attachment.key, attachment: typed.attachment });
+    if (typed?.type === "tool_result" && Array.isArray(typed.content)) typed.content.forEach(visit);
+  };
+  for (const line of lines) {
+    const content = (line.message as { content?: unknown } | null)?.content;
+    if (Array.isArray(content)) content.forEach(visit);
+  }
+  return out;
+}
+
 /**
  * The last `keep` complete turns, ready for a new epoch: assistant messages stripped of opaque
- * reasoning (winter `stripOpaque`), results that showed a deleted message replaced, images as text.
+ * reasoning (winter `stripOpaque`), results that showed a deleted message replaced, images as text
+ * (their OCR text when `imageText` knows it).
  */
 export function keptTurnLines(
   lines: readonly LifeLogLine[],
-  o: { keep: number; openTurnId?: string; deletedIds: ReadonlySet<string> }
+  o: { keep: number; openTurnId?: string; deletedIds: ReadonlySet<string>; imageText?: ReadonlyMap<string, string> }
 ): { kept: LifeLogLine[]; strippedBlocks: number; readIds: string[] } {
+  const textFor = (key: string) => o.imageText?.get(key) ?? imageTextFor(undefined);
   if (o.keep <= 0) return { kept: [], strippedBlocks: 0, readIds: [] };
   const complete = turnOrder(lines).filter((id) => id !== "" && id !== o.openTurnId);
   const keepIds = new Set(complete.slice(-o.keep));
@@ -122,7 +144,7 @@ export function keptTurnLines(
         for (const id of ids) readIds.add(id);
         return block;
       });
-      const next = contentHasImages(content as ContentBlockLike[]) || content.some((block) => block.type === "tool_result" && Array.isArray(block.content)) ? imagesAsText(content) : content;
+      const next = contentHasImages(content as ContentBlockLike[]) || content.some((block) => block.type === "tool_result" && Array.isArray(block.content)) ? imagesAsText(content, textFor) : content;
       kept.push({ ...line, message: { ...message, content: next } as unknown as Record<string, unknown> });
       continue;
     }
@@ -209,7 +231,32 @@ export function compactionInstruction(omit: CompactionOmissions): string {
   return lines.join("\n");
 }
 
-export type CompactionOutcome = { state: LifeState; summarized: boolean };
+export type CompactionOutcome = { state: LifeState; summarized: boolean; aborted?: boolean };
+
+export const RESULT_LEFT_OUT = "[result left out: too large to summarise]";
+
+/**
+ * The summary request's copy of the log when the log itself is over budget (§5.6 `budget` /
+ * `overflow`): the last tool results (what pushed it over) are replaced by a placeholder, so the
+ * summary call does not resend the over-budget request. The log is not changed.
+ */
+export function withoutLastResults(lines: readonly LifeLogLine[]): LifeLogLine[] {
+  const index = lines.map((line) => line.kind).lastIndexOf("tool_results");
+  if (index < 0) return [...lines];
+  const line = lines[index]!;
+  const message = line.message as unknown as ProviderMessageLike;
+  if (!Array.isArray(message.content)) return [...lines];
+  const content = message.content.map((block) => (block.type === "tool_result" ? { ...block, content: RESULT_LEFT_OUT } : block));
+  const copy = [...lines];
+  copy[index] = { ...line, message: { ...message, content } as unknown as Record<string, unknown> };
+  return copy;
+}
+
+/** A rough size of some log lines in tokens (the same estimator as requests). */
+function linesTokens(lines: readonly LifeLogLine[]): number {
+  const messages = lines.flatMap((line) => (line.message ? [line.message as unknown as ProviderMessageLike] : []));
+  return messages.length > 0 ? estimateTokens(messages, {}) : 0;
+}
 
 /**
  * Compacts her life: summary (unless disabled or truncating), then a new epoch unless `deferEpoch`
@@ -232,6 +279,8 @@ export async function compactLife(
     omit: CompactionOmissions;
     deferEpoch?: boolean;
     emptySummaryOnFailure?: boolean;
+    /** The log is over budget: the summary request leaves the last tool results out (M1). */
+    shrinkLastResults?: boolean;
     signal?: AbortSignal;
   }
 ): Promise<CompactionOutcome> {
@@ -242,7 +291,8 @@ export async function compactLife(
   const canSummarize = settings.enabled && !o.truncate && o.summaryRoute !== undefined && o.state.systemSnapshot !== null;
   if (canSummarize) {
     try {
-      const request = await buildLifeRequest(deps, { state: o.state, lines: o.lines, route: o.summaryRoute!, missing: "text", ...(o.signal ? { signal: o.signal } : {}) });
+      const summaryLines = o.shrinkLastResults ? withoutLastResults(o.lines) : o.lines;
+      const request = await buildLifeRequest(deps, { state: o.state, lines: summaryLines, route: o.summaryRoute!, missing: "text", ...(o.signal ? { signal: o.signal } : {}) });
       const status = o.waifu.availability;
       const instruction = `${compactionInstruction(o.omit)}\n\n${timeLine({ now, timeZone: deps.timeZone, availability: status })}`;
       const result = await summarizeWithModel(deps.models, {
@@ -264,16 +314,35 @@ export async function compactLife(
     } catch (error) {
       deps.logger.warn("Life compaction summary failed", { waifuId: o.waifu.id, reason: o.reason, message: error instanceof Error ? error.message : String(error) });
     }
+    // Aborted (pause, shutdown, a reload or reconnect): nothing changes, her log stays as it is and
+    // the compaction runs again later. Only a genuine failure falls back to truncation.
+    if (!summarized && o.signal?.aborted) {
+      deps.logger.info("Life compaction interrupted; nothing changed", { category: "life", waifuId: o.waifu.id, reason: o.reason });
+      return { state: await readLifeState(deps.storage, o.waifu.id), summarized: false, aborted: true };
+    }
     if (!summarized) {
       await updateLifeState(deps.storage, o.waifu.id, (current) => ({ ...current, compactionPausedUntil: new Date(now.getTime() + COMPACTION_FAILURE_BACKOFF_MS).toISOString() }), now);
     }
   }
   if (!summarized && o.emptySummaryOnFailure) summary = null;
-  const { kept, strippedBlocks, readIds } = keptTurnLines(o.lines, {
-    keep: o.keepTurns ?? KEPT_TURNS,
-    ...(o.openTurnId ? { openTurnId: o.openTurnId } : {}),
-    deletedIds: new Set(o.state.deletedReadIds)
-  });
+  // Images of kept turns are frozen as text: their OCR text when the OCR cache has it.
+  const imageText = new Map<string, string>();
+  for (const image of inlineImagesOf(o.lines)) {
+    if (imageText.has(image.key)) continue;
+    imageText.set(image.key, imageTextFor(await deps.ocr?.cachedText(image.attachment as never).catch(() => undefined)));
+  }
+  // The kept window shrinks (3 → 0 turns) while it alone would take more than half the compaction
+  // trigger, so a new epoch never starts over budget (M2).
+  const limit = o.summaryRoute ? 0.5 * settings.triggerRatio * lifeBudget(o.summaryRoute, deps.config().life.maxContextTokens) : Number.POSITIVE_INFINITY;
+  let keep = o.keepTurns ?? KEPT_TURNS;
+  const keptOf = (count: number) =>
+    keptTurnLines(o.lines, { keep: count, ...(o.openTurnId ? { openTurnId: o.openTurnId } : {}), deletedIds: new Set(o.state.deletedReadIds), imageText });
+  let keptResult = keptOf(keep);
+  while (keep > 0 && linesTokens(keptResult.kept) > limit) {
+    keep -= 1;
+    keptResult = keptOf(keep);
+  }
+  const { kept, strippedBlocks, readIds } = keptResult;
   if (o.deferEpoch) {
     const state = await updateLifeState(deps.storage, o.waifu.id, (current) => ({ ...current, summary, pendingEpochStart: true }), now);
     return { state, summarized };

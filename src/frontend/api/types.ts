@@ -307,6 +307,7 @@ export type AppConfig = {
     maxInlineImagesPerEpoch: number;
     maxInlineImageBytesPerEpoch: number;
     maxSendPlacesPerTurn: number;
+    maxSendsPerTurn: number;
     maxWakesPerUserPerHour: number;
     maxWatchFiresPerDay: number;
     maxWaifuTriggeredTurns: number;

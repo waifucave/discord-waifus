@@ -94,6 +94,9 @@ export class CastRuntime {
       config: () => appConfig,
       isPaused: () => this.stopping || (this.options.isPaused?.() ?? false),
       usageLedger: this.usageLedger,
+      // Turns, maintenance and forget scrubs hold update leases and count as active runs (review I7).
+      ...(options.updateActivity ? { updateActivity: options.updateActivity } : {}),
+      ...(options.onActiveRunsChange ? { onActiveRunsChange: options.onActiveRunsChange } : {}),
       ...(options.images ? { images: options.images } : {}),
       ...(options.ocr?.cachedText ? { ocr: { cachedText: (ref) => options.ocr!.cachedText!(ref), ...(options.ocr.textFor ? { textFor: (ref, o) => options.ocr!.textFor!(ref, o) } : {}) } } : {}),
       ...options.livingCast
@@ -167,8 +170,8 @@ export class CastRuntime {
 
   /** Explicit user pause: in-flight turns are aborted, queues stay (§5.2). */
   async pause(): Promise<void> {
+    // Aborted turns report their own end through the cast's active-run count.
     this.cast.pause();
-    this.options.onActiveRunsChange?.(0);
   }
 
   private runBackground(label: string, context: Record<string, unknown>, task: () => void | Promise<unknown>): void {

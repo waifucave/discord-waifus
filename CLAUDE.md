@@ -53,11 +53,16 @@ roles/watches map straight to wakes, everything else goes to the addressee detec
 `detector/`) → **wake router** (`wakeRouter.ts`, guards in spec order: paused, DM rate limit,
 per-user wake limit, sleep, budget, room loop guard; the owner skips 3–6; `@everyone` wakes are
 staggered) → the persistent **wake queue** (`wakeQueue.ts`, `wakes.json`) → the **life loop**
-(`lifeLoop.ts`: one turn at a time per waifu under the `life:<id>` lock, host-wide
-`life.maxConcurrentTurns`; notifications, the tool loop, the unsent-reply check, caps) →
-`ModelClient`. The prompt (`lifeHarness.ts`, `request.ts`) is system blocks [A, B] snapshotted per
-epoch, the epoch's log with permanent time lines, and compaction (`compaction.ts`) keeps the last
-three complete turns. Tools live in `tools/` (messages, notes, planning, web), web search/fetch in
+(`lifeLoop.ts`: one turn at a time per waifu under the `life:<id>` lock, taken before a host-wide
+`life.maxConcurrentTurns` slot; notifications, the tool loop, the unsent-reply check, caps; an
+interrupted turn, a provider cooldown and boot repair put the turn's wakes back in the queue;
+each turn cycle, maintenance run and forget scrub holds an `UpdateActivity` lease and counts in
+`queues.active`) → `ModelClient`. The prompt (`lifeHarness.ts`, `request.ts`) is system blocks
+[A, B] snapshotted per epoch, the epoch's log with permanent time lines, and compaction
+(`compaction.ts`) keeps the last three complete turns (fewer when they alone would be over half
+the trigger; images frozen with their cached OCR text; an aborted summary changes nothing).
+Intake keeps per-place high-water marks (`app/intake-marks.json`, `intakeMarks.ts`) so catch-up
+never re-wakes a message it already handled. Tools live in `tools/` (messages, notes, planning, web), web search/fetch in
 `search.ts` over `web/` (a thin adapter over `@yanlinglabs/winter-web`: Exa's hosted MCP, keyless
 by default with the `exa` provider credential as fallback, and the SSRF-checked page fetcher, always
 `privateAddressPolicy: "deny"`, with a digest call, purpose `web`). Per-waifu data: `user/waifus/<id>/life/` (`state.json`,
@@ -65,8 +70,10 @@ by default with the `exa` provider credential as fallback, and the SSRF-checked 
 `schedule.json`, `maintenance.jsonl`, `pending-scrubs.json`, `needs-review.json`, `usage.json`) and her notes in
 `user/waifus/<id>/notes/` (`MEMORY.md` index). Boot repairs every life (`repair.ts`), runs queued
 owner forget scrubs, then catches up (`resumeWindowMinutes`); the scheduler (`scheduler.ts`, 15 s tick)
-fires reminders, drops expired watches, sends the `morning` batch when sleep ends and runs nightly
-maintenance with any pending scrubs (`maintenance.ts`). The House bot owns
+fires reminders (routed under a deterministic wake id before removal), drops expired watches,
+sends the `morning` batch when sleep ends and starts nightly maintenance with any pending scrubs
+(`maintenance.ts`) as a tracked background task (abortable; one process-wide run per waifu). The
+storage service skips writes whose content did not change. The House bot owns
 `/wake` and `/print`: only the Discord application's owner or its team members may run them
 (`src/discord/applicationOwners.ts`, refreshed every 6 hours and checked again at run time;
 Administrator is only the commands' default visibility); `/wake` reaches only waifus cast in that

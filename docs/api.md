@@ -357,6 +357,9 @@ Overwriting or destructive requests should send the last seen `revision`. If the
 `latest` never contains resource-specific fields. In particular, stale credential or Discord-bot
 writes cannot return stored API keys or bot tokens.
 
+A write that changes nothing (the same content apart from `revision` and `updatedAt`) is not
+stored: the response carries the unchanged record and its current `revision`.
+
 ## Discord Text Contract
 
 Model context must not expose raw Discord IDs.

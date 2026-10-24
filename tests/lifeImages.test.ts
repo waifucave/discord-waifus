@@ -97,10 +97,10 @@ describe("images in read_messages (§6.2)", () => {
 });
 
 describe("pinned images (§5.3)", () => {
-  it("a pinned image that can no longer be fetched ends the epoch: the turn continues after a compaction", async () => {
+  it("a pinned image that can no longer be fetched ends the epoch: the turn continues after a compaction; the kept image keeps its OCR text", async () => {
     const fetcher = new FakeImageFetcher();
     const w = await lifeWorld(roots, {
-      options: { images: fetcher },
+      options: { images: fetcher, ocr: { cachedText: async (ref) => (ref.key === "att:9301" ? "a chocolate cake with candles" : undefined) } },
       scripts: script(
         toolTurn([{ name: "read_messages", input: { place: "bake-club/#general" } }]),
         textTurn("cute cake"),
@@ -136,6 +136,9 @@ describe("pinned images (§5.3)", () => {
     // Kept as a text-mode image block (its inline budget starts at zero in the new epoch).
     expect(JSON.stringify(log)).toContain('"type":"life_image"');
     expect(JSON.stringify(log)).not.toContain('"mode":"inline"');
+    // Frozen with its OCR text, not a bare placeholder.
+    expect(JSON.stringify(log)).toContain('"mode":{"text":"[image: a chocolate cake with candles]"}');
+    expect(JSON.stringify(lastCall.messages)).toContain("[image: a chocolate cake with candles]");
   });
 });
 
