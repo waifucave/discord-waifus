@@ -535,6 +535,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
     const clients = [...this.clients.values(), ...this.pendingClients];
     this.clients.clear();
     this.pendingClients.clear();
+    this.clientDmWaifu.clear();
     await Promise.all(clients.map((client) => destroyClientQuietly(client)));
   }
 
