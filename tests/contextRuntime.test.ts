@@ -327,7 +327,11 @@ describe("ContextRuntime.prepare hardening", () => {
 });
 
 describe("prefix stability (spec 8.3 acceptance)", () => {
-  it("holds for 20 scripted turns: every block through the previous C is unchanged, one system message", async () => {
+  // 20 sequential prepare/commit rounds on the real file store: ~1s alone, but the cost is disk I/O,
+  // so it grows with machine load (reproduced: 16 concurrent copies blow the 10s default, and the
+  // overrun then also trips the temp-root cleanup with ENOTEMPTY). Its assertions are not timing
+  // dependent (every clock is injected), only its wall time is.
+  it("holds for 20 scripted turns: every block through the previous C is unchanged, one system message", { timeout: 60_000 }, async () => {
     const h = await harness();
     h.channel.post({ content: "hi Aria!" });
     let previous: PreparedContext | undefined;

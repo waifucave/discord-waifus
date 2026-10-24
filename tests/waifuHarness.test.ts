@@ -316,6 +316,25 @@ describe("waifu harness", () => {
     await expect(serializePrompt(p.prompt)).toMatchFileSnapshot("./golden/__snapshots__/waifuHarness-dm.txt");
   });
 
+  it("golden: guild turn with the schedule omitted (scheduleInPrompt: false, spec 8.11)", async () => {
+    const { channel, runtime } = await engine();
+    channel.post({ content: "morning! are you at the bakery today?" }, BASE_TIME);
+    const p = await runtime.prepare({
+      conversation: GUILD,
+      agent: ARIA,
+      model: fakeModel(),
+      backfillCap: 50,
+      selfAuthorIds: SELF,
+      render: createWaifuHarness(guildInput({ waifu: aria({ scheduleInPrompt: false }), activity: () => "morning shift at the bakery" })),
+      renderToolTurnsAsText: true,
+      participantIds: ["kevin"]
+    });
+    expect(p.prompt.debug.system).not.toContain("<schedule>");
+    expect(p.prompt.debug.system).not.toContain("morning shift at the bakery");
+    expect(p.prompt.messages.filter((m) => m.role === "system")).toHaveLength(1);
+    await expect(serializePrompt(p.prompt)).toMatchFileSnapshot("./golden/__snapshots__/waifuHarness-guild-noschedule.txt");
+  });
+
   it("golden: retry tail (spec 8.11)", async () => {
     const { channel, runtime } = await engine();
     channel.post({ content: "what are you baking today?" }, BASE_TIME);

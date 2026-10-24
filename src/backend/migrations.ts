@@ -137,8 +137,8 @@ export const MIGRATION_STEPS: readonly MigrationStep[] = [
     frequency: "every-boot",
     run: async (dataRoot) => label(await enableDiscordBotsForUpgrade(dataRoot), "enable-discord-bots-v1")
   },
-  // Phase 4 steps (spec 8.2), registered pending until their owning tasks land. They must stay
-  // before the schema-version stamp and keep this relative order.
+  // Phase 4 steps (spec 8.2). They must stay before the schema-version stamp and keep this
+  // relative order.
   { id: "waifu-drop-prompt-layout-v1", frequency: "once", run: migrateWaifuDropPromptLayout }, // T4
   { id: "server-context-windows-explicit-v1", frequency: "once", run: migrateServerContextWindowsExplicit }, // T5
   { id: "memories-global-origin-subjects-v1", frequency: "once", run: migrateMemoriesGlobalOriginSubjects }, // T6

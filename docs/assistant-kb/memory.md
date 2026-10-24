@@ -32,6 +32,23 @@ accents and CJK), recency, strength, a small same-place boost, and a penalty for
 already shown in the last 24 h. People who join mid-conversation get a few appended memory
 notes (`memory.maxMemoryNotesPerEpoch`, default 6).
 
+A snapshot line looks like `- Kevin: allergic to peanuts (fact · learned in Bake Club #general ·
+3 weeks ago)`. It sits in the frozen epoch header of her prompt, so it does not change while the
+conversation runs; memories of people who join later arrive as `<memory_note>` lines in the
+transcript. Retrieval is per waifu and global: what Yuki learned in one server is available to
+her in every other server and in her DMs, and a sibling waifu does not inherit it.
+
+## Memory and conversation summaries
+
+They are different things. A **memory** is a durable fact in the store. A **conversation summary**
+is the waifu's own recap of one conversation, written at compaction (see waifus.md) and kept in
+that conversation's header; it is never searched from other servers. After a compaction the
+observer is asked to read everything the summary now replaces (in batches), so facts reach the
+memory store before the original messages leave the prompt. In-chat
+`add_memory` notes (at most 5 per reply) are short-lived (72 h) until the dream promotes them.
+Forgetting a person (`forget-user`) removes their memories at once; summaries that mention them
+disappear at the next compaction.
+
 ## Observer and dreams
 
 - **Observer** (per channel, after an hour of quiet or `/memories`): reads only the messages

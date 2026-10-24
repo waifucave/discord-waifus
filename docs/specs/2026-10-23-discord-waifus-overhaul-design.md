@@ -835,6 +835,11 @@ export interface ImageFetcher {
   `ocr-cache-url-keys-cleanup-v1` removes the old URL-keyed results.
 - Settings `discord.images.*` (§10.3).
 
+- **As built (T8).** The shared fetcher's limits take the max of `discord.images.maxBytes` /
+  `fetchTimeoutMs` and the legacy `ocr.maxImageBytes` / `ocr.timeoutMs` (`sharedImageFetcherConfig`),
+  so nobody loses headroom; a customised legacy value that raised the limit logs one deprecation
+  warning (the `ocr.*` keys no longer drive fetching on their own).
+
 ### 8.5 Waifu prompt and reply path
 
 `src/orchestration/waifuHarness.ts` is the waifu `RoleRenderer`:
@@ -883,6 +888,22 @@ export function retryNote(violations: Violation[], profile: VerbosityProfile): s
   `responderExecutor.ts` moves onto `ContextRuntime.prepare/call/commit`; `/print` reads
   `BuiltPrompt.debug`.
 
+#### 8.5.1 As built (T3/T5, reviewed): deviations later tasks build on
+
+- **Direction.** An orchestrator directive travels in the call's tail (the `pendingNote` idea is
+  dropped for the call itself) and is persisted as a `direction` note only at commit, in the same
+  `updateAnchored` write as the tool notes, so a failed or retried call leaves no note behind.
+- **Tool turns as text.** Waifu prompts use `renderToolTurnsAsText: true`: tool notes render as
+  `[tool add_memory] {…} → saved` lines in the transcript, because Anthropic rejects an assistant
+  `tool_use` that lacks its thinking block when thinking is on. The tool list itself is unchanged.
+- **Reply marker.** The marker accepts `[:,]` after the ref and is case-insensitive (`↩#K3, yes`);
+  a leading `↩you` / `↩Name` copied from a header is stripped and the message is sent unthreaded.
+- **Length.** `maxLines` is applied as a trim (extra lines are dropped, not a retry).
+- **/print.** It is private (ephemeral to the invoker), reads `BuiltPrompt.debug` captured from the
+  waifu's last reply, and redacts DM-origin memories.
+- **Orchestrator bot posts.** The orchestrator bot's own posts (debug logs, /print fallbacks) are
+  excluded from the ledger, so they never become conversation.
+
 ### 8.6 Prompt-layout editor removal
 
 Deleted: `PromptLayoutEditor.tsx`, `src/frontend/utils/promptLayout.ts`, their tests, the
@@ -919,6 +940,20 @@ schedule in the prompt" (full UI polish in Phase 7, §11.3).
 - I7 loop detector compares each author's message with that author's previous ones (A/B/A/B).
 - Migration `server-context-windows-explicit-v1` deletes server `contextWindows` keys equal to the
   old defaults (orchestrator 20, waifu 50, stageManager 80).
+
+#### 8.7.1 As built (T5): deviations later tasks build on
+
+- **Decision notes.** They always render as text lines (never tool turns), with a frozen `at` and
+  the refs of what the decision produced (`sent → #a1`), written once the decision is final.
+- **Roster.** The availability roster is in the tail only, never in the cached header, so a waifu
+  going to sleep does not rewrite B.
+- **Pause override.** A `no_reply` pause chosen while a human spoke within the last 15 minutes is
+  overridden in code (rule 2 of the system text); rule 1 (a human addressing a waifu gets her reply)
+  is guidance for the model, not enforced after the fact.
+- **No summarizer.** Contexts without a summarizer (deterministic and one-shot) truncate durably
+  when over budget: a new epoch with no summary and `truncateKeep` entries kept.
+- **OCR.** Text-only models get bounded OCR text through `ocr.textFor` (the newest-N images within
+  the OCR budget), frozen at first render like any other image mode.
 
 ### 8.8 Global memory
 
@@ -1017,6 +1052,23 @@ schedules a post-reply background check.
   `keepRecent`) while compaction finishes in the background.
 - `gatewayPipeline.ts` gains `summarizeContext(prompt, instruction)`.
 
+#### 8.9.1 As built (T7b, reviewed): deviations later tasks build on
+
+- **Output cap.** The summary's output cap, when thinking can run, is
+  `max(reply cap or model default, thinking budget + 1500, 4000)`; otherwise `max(1500, reply cap)`.
+  A `length` finish is retried once at double the cap and then fails (the text is never stored).
+- **Overflow.** An overflow compaction summarizes a reduced prompt (through the keep boundary,
+  without the tail, trimmed from the front until it fits), never the prompt that overflowed; a
+  summarize call that itself overflows is retried once on a further-reduced prompt.
+- **Wait.** `call()` waits at most `waitTimeoutMs` for an in-flight compaction, then retries on a
+  hard-truncated rebuild while the compaction lands in the background. An abort is not a timeout.
+- **Kept window.** At most `n/2` entries and shrunk until the kept part fits half the token
+  budget, so the next turn does not compact again.
+- **Failure back-off.** A failed compaction pauses automatic triggers for that context for
+  5 minutes (`lastCompaction.ok: false`); manual `compactNow` is never blocked.
+- **Types.** `summarizeContext` returns `SummaryResult = { text, finishReason }`; `compactNow`
+  reports an outcome (`compacted` / `skipped` / `discarded`).
+
 ### 8.10 Gateway 0.4.0 adoption (app side of Phase 3)
 
 - `usageLedger.ts`: append-only `user/usage/YYYY-MM-DD.jsonl` (file date = UTC day; one line per
@@ -1051,6 +1103,35 @@ schedules a post-reply background check.
 - Docs: CLAUDE.md (context module, single-system-message rule, migrations, gateway pin, one-shot
   times), `docs/assistant-kb/{waifus,memory,orchestrator-and-direction,api,troubleshooting}.md`.
 
+#### 8.11.1 As built (T8)
+
+- **Harness.** `tests/eval/anthropicCacheSim.ts` models the cache over the real wire body (at most 4
+  breakpoints, 20-block lookback, 5-minute TTL refreshed on a hit, `tool_choice`/`thinking` in the
+  message-block hash, an optional 1,024-token floor reported alongside). `cacheHit.test.ts` runs the
+  real `FileContextStore`, `ContextRuntime`, compaction service, waifu and orchestrator harnesses
+  and the real gateway pipeline and codec; only `fetch` is fake. Waifu targets count every call she
+  makes (her compaction calls included); the orchestrator target excludes its compaction calls.
+- **Results at default settings** (typical fixture: 350-word persona, four-character cast):
+  quiet room waifu 0.939 / orchestrator 0.924; DM 0.939; deletion 0.898 / 0.877; busy room
+  waifu 0.801 (0.791 without her compaction calls) / orchestrator **0.791**. After a compaction the
+  first request reads 0.714 and the next four 0.965-0.978.
+- **Known gap.** The busy-room orchestrator misses 0.8. It is not a prefix or breakpoint defect:
+  every steady-state request reads exactly what the previous one cached (wire-level assertions in
+  the same test file). About 35 new messages are 17-19% of each prompt, the first call is a cold
+  start, and each `maxMessages = 150` compaction rolls the epoch once. With `maxMessages = 200` the
+  same run reads about 0.806. The test is an `it.fails`, so the 0.8 target stays in place and turns
+  red when it is reached. With a minimal fixture (one-sentence persona, two-character cast) the
+  busy room is 0.769 (waifu) / 0.789 (orchestrator): the ratio depends on how large the static
+  prefix is next to 30+ new messages per turn.
+- **Not built.** The live eval scenarios (`WAIFUS_EVAL_LIVE=1`) need provider keys and are left to
+  the owner's run.
+- **Other acceptance tests.** `tests/singleSystemMessage.test.ts` (one system message across every
+  harness and pipeline path), `tests/phase4Acceptance.test.ts` (memory learned in guild A reaches
+  guild B and a DM through the real `prepare`; re-running every migration, with or without the
+  ledger, is byte-identical), `contextCompaction.test.ts` (200-message compaction; the compaction
+  request equals the reply call), `gatewayPipelineAdoption.test.ts` (one ledger line per call,
+  aborted and failed included).
+
 ### 8.12 Acceptance
 
 - No `replying to >` and no `promptLayout` under `src/`.
@@ -1061,6 +1142,10 @@ schedules a post-reply background check.
   and its tools, tool choice and params equal her reply call's.
 - Every model call writes exactly one usage-ledger line, including aborted and failed calls.
 - Typecheck + full suite green on the bumped 0.4.0 pin; owner has seen the goldens.
+- **As built (T8).** `promptLayout` appears under `src/` only in the `waifu-drop-prompt-layout-v1`
+  migration (which must read it to delete it) and in the one-release waifu PUT shim in
+  `src/api/server.ts` that accepts and ignores it (§8.6); the shim is removed one release later.
+  `replying to >` appears nowhere in `src/`.
 
 ## 9. Phase 5 — Discord features (detailed design)
 

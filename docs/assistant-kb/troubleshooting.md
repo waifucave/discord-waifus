@@ -71,8 +71,64 @@ roles. A trusted remote can manage the app but cannot stop or restart the host O
 ## Messages look wrong (too long, repeated, off-register)
 
 The output harness splits, dedupes, and length-checks replies; persona text should never
-contain length/format rules (they don't work there). Self-repeats are blocked automatically.
-If a waifu misreads recent context, check Queries for what her prompt actually contained.
+contain length/format rules (they don't work there). Use the waifu's `verbosity` (`terse`,
+`chatty`, `expressive`) for length. Self-repeats are blocked automatically. If a waifu misreads
+recent context, run `/print` → system prompt in that channel (private reply) or check Queries
+for what her prompt actually contained: summary and memories in the header, the transcript lines
+`[14:02 #k3] Name: text`, and the per-call tail.
+
+A reply that starts with a stray `[14:02 #k3]` header, a `Name:` prefix or `↩you` is cleaned up
+automatically; if it still leaks, the model is copying the transcript format — lower its
+temperature or use a stronger model.
+
+## She forgot something, or remembers the wrong thing
+
+- A fact she learned elsewhere should appear in her memory snapshot (`/print` → memories lists
+  everything she has, active and archived, except private-chat memories). If it is missing, check
+  `GET /api/memories?waifuId=…&q=…&status=archived`: it may have been merged, expired or deduped.
+- The snapshot is frozen at the start of a conversation epoch. A memory saved mid-conversation
+  shows up after the next compaction, or earlier as a `<memory_note>` when a new person joins or
+  the chat strongly matches it.
+- Her view of an old conversation is the summary plus the newest messages. If the summary lost
+  something important, pin a memory instead of relying on the summary.
+
+## Compaction (long conversations)
+
+- Look for `Context compaction failed` (warning) and `Context compacted` (info) in
+  `GET /api/logs`; `Compaction discarded` just means the conversation moved on meanwhile and the
+  next prepare retries. After a failure that
+  context does not retry automatically for 5 minutes and keeps answering on its current prompt;
+  `lastCompaction` in the context state records `ok: false`.
+- "She replied slowly after a long chat": the reply waited up to `compaction.waitTimeoutMs`
+  (default 6 s) for a summary, then went out on a shortened prompt. Raise or lower it in app
+  config `compaction` or per server (`PUT /api/servers/:guildId` `compaction`).
+- Summaries use the waifu's own model, so a model with very small output limits can return a cut
+  off summary; the app retries once with double the output cap and then keeps the old context
+  instead of storing a truncated one.
+- `compaction: {enabled: false}` (app or server) stops automatic summaries and truncation, so the
+  prompt keeps growing until the model's own limit; use it only to debug.
+
+## Costs look high / prompt caching
+
+Every call writes a line to `user/usage/YYYY-MM-DD.jsonl` (provider, model, tokens, cache read and
+write tokens, cost when known, `status`). A healthy Anthropic conversation reads most of its
+input from cache after the first turn (`cacheReadTokens` close to `inputTokens`). Cache misses are
+expected after more than 5 minutes of quiet, after a compaction (one rewrite, then hits resume)
+and when a waifu's persona, tools or model settings change. The orchestrator in a very busy room
+sits near 80% because dozens of new messages arrive between its calls.
+
+`provider_quota` / `provider_billing` errors mean the provider account is out of quota or credit;
+calls to that provider fail fast for 10 / 30 minutes (see `providerAlerts` in `GET /api/runtime`)
+instead of retrying. Top up the account; no restart is needed.
+
+## After an upgrade
+
+Data shape changes run at start-up and are recorded in `<data-root>/app/migrations.json`.
+Re-running them is always safe (deleting that file just makes them run again with no change).
+Phase 4 migrations: unsupported model params are dropped from waifu/orchestrator/assistant configs,
+the prompt layout is removed (a disabled schedule block becomes `scheduleInPrompt: false`),
+memories become global (guild/channel move into `origin`, names into `subjects`, and duplicates
+across servers are merged once), and the old URL-keyed OCR cache is deleted.
 
 
 ## Fast diagnosis tools
