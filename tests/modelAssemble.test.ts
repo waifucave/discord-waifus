@@ -1,6 +1,6 @@
 import type { MessageOrigin, ProviderEvent } from "@yanlinglabs/winter-provider-runtime";
 import { describe, expect, it } from "vitest";
-import { assembleTurn, ProviderStreamError, messageText, messageToolCalls, stampNativeState, type StreamObservation } from "../src/models/assemble.js";
+import { assembleTurn, newStreamObservation, ProviderStreamError, messageText, messageToolCalls, stampNativeState } from "../src/models/assemble.js";
 
 const OPENAI: MessageOrigin = { providerId: "deepseek", modelKey: "deepseek/deepseek-flash", family: "openai" };
 const ANTHROPIC: MessageOrigin = { providerId: "anthropic", modelKey: "anthropic/claude-sonnet-5-5", family: "anthropic", continuationDomain: "anthropic-claude" };
@@ -97,7 +97,7 @@ describe("assembleTurn (winter's foldProviderStream + assembledToMessage, with t
     const before = await assembleTurn(stream([{ type: "retry", attempt: 1, maxRetries: 3, retryDelayMs: 1, error: "rate_limit" }, { type: "error", error: { code: "rate_limit", message: "429", retryable: true } }]), { origin: OPENAI }).catch((error: unknown) => error);
     expect(before).toBeInstanceOf(ProviderStreamError);
     expect((before as ProviderStreamError).committed).toBe(false);
-    const observation: StreamObservation = { subscriptionQuota: false };
+    const observation = newStreamObservation();
     const after = await assembleTurn(
       stream([
         { type: "rate_limit", kind: "subscription-quota", info: {} },
@@ -108,7 +108,7 @@ describe("assembleTurn (winter's foldProviderStream + assembledToMessage, with t
       { origin: OPENAI, observation }
     ).catch((error: unknown) => error);
     expect(after).toMatchObject({ committed: true, error: { code: "stall" } });
-    expect(observation).toEqual({ usage: { inputTokens: 1, outputTokens: 1 }, subscriptionQuota: true });
+    expect(observation).toEqual({ usage: { inputTokens: 1, outputTokens: 1 }, subscriptionQuota: true, contentArrived: true });
     // An overflow refused before anything was produced is not a committed turn.
     const overflow = await assembleTurn(
       stream([{ type: "message_start" }, { type: "error", error: { code: "bad_request", message: "too long", retryable: false, contextOverflow: true } }]),

@@ -25,8 +25,8 @@ import { NoopUsageLedger, sharedUsageLedger, usageFields, type ModelUsage, type 
 import { sharedProviderAlerts, type ProviderAlerts } from "../orchestration/providerAlerts.js";
 import {
   assembleTurn,
-  messageHasContent,
   messageText,
+  newStreamObservation,
   messageToolCalls,
   ProviderStreamError,
   type AssembledMessage,
@@ -135,14 +135,10 @@ export function callCostUsd(usage: (ModelUsage & { reportedCostUsd?: number }) |
   return estimate && estimate.costBasis === "list" ? estimate.costUsd : undefined;
 }
 
-/** The adapter ended the stream with `done: aborted`: keeps what the fold had counted. */
+/** The adapter ended the stream with `done: aborted`: keeps the usage the fold had counted. */
 class TurnAbortedError extends Error {
   override name = "TurnAbortedError";
-  constructor(
-    readonly usage: WinterUsage | undefined,
-    /** Part of the answer (text, a tool call or reasoning) had arrived. */
-    readonly committed: boolean
-  ) {
+  constructor(readonly usage: WinterUsage | undefined) {
     super("The model call was aborted.");
   }
 }
@@ -257,7 +253,7 @@ export class ModelClient {
     let queryId: number | undefined;
     const role = QUERY_ROLE[attribution.purpose];
     let descriptor: ResolvedModel["descriptor"];
-    const observation: StreamObservation = { subscriptionQuota: false };
+    const observation: StreamObservation = newStreamObservation();
 
     try {
       const resolved = this.resolve(route);
@@ -323,7 +319,7 @@ export class ModelClient {
       const assembled = await assembleTurn(stream, { origin, signal, observation, ...(sink ? { sink } : {}) });
       // Only the stream decides: a call whose stream completed is a completed call, even when the
       // caller aborts right after.
-      if (assembled.stopReason === "aborted") throw new TurnAbortedError(assembled.usage, messageHasContent(assembled.message));
+      if (assembled.stopReason === "aborted") throw new TurnAbortedError(assembled.usage);
       const usage = assembled.usage;
       const priced = callCostUsd(usage, listPricedEstimate(usage, descriptor));
       const toolCalls = messageToolCalls(assembled.message);
@@ -350,16 +346,16 @@ export class ModelClient {
       };
     } catch (raw) {
       let error: ModelCallError;
-      let committed = false;
+      // One meaning of "committed" on every path: part of the answer (text, a tool call or
+      // reasoning) arrived, as the observation tap saw it. winter's own first-byte flag also counts
+      // a bare `message_start` or role-only chunk, after which a retry is still safe.
+      const committed = observation.contentArrived;
       if (raw instanceof ProviderStreamError) {
-        committed = raw.committed;
         error = fromProviderError(raw.error, { subscriptionQuota: observation.subscriptionQuota, committed });
       } else if (raw instanceof TurnAbortedError) {
-        committed = raw.committed;
         error = new ModelCallError("aborted", raw.message, { code: "aborted", committed });
       } else {
-        error = toModelCallError(raw);
-        committed = error.committed;
+        error = toModelCallError(raw, { committed });
       }
       if (request.signal?.aborted && error.kind !== "aborted") {
         error = new ModelCallError("aborted", "The model call was aborted.", { code: "aborted", committed });

@@ -236,6 +236,7 @@ export const ROUTE_POLICY_MANIFEST: readonly RoutePolicyDefinition[] = Object.fr
   mutation("POST", "/api/runtime/pause", "reconciled", "runtime.pause"),
   mutation("POST", "/api/runtime/resume", "reconciled", "runtime.resume"),
   mutation("POST", "/api/runtime/reload", "reconciled", "runtime.reload"),
+  mutation("DELETE", "/api/runtime/model-warnings/:scope", "reconciled", "runtime.model_warnings.dismiss"),
   safe("/api/diagnostics/bundle"),
   safe("/api/events"),
   safe("/api/client-context", "never_proxy"),

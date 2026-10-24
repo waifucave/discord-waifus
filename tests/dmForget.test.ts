@@ -11,7 +11,14 @@ import { DiscordImageFetcher } from "../src/discord/attachments.js";
 import { readConversationImageKeys } from "../src/discord/imageIndex.js";
 import { conversationKey } from "../src/orchestration/context/keys.js";
 import { OCR_RESULTS_DIR, ocrCacheKey } from "../src/orchestration/ocr.js";
-import { readForgottenPeople, readPendingScrubs } from "../src/orchestration/dm/forgotten.js";
+import {
+  ForgetRecordCorruptError,
+  pendingScrubsPath,
+  queuePendingScrub,
+  readForgottenPeople,
+  readPendingScrubs,
+  recordForgottenPerson
+} from "../src/orchestration/dm/forgotten.js";
 import { dmForget } from "../src/orchestration/dm/dmForget.js";
 import { readDmLimit, readDmState, updateDmLimit, updateDmState } from "../src/orchestration/dm/dmStore.js";
 import { forgetUser } from "../src/orchestration/dm/forgetUser.js";
@@ -137,6 +144,37 @@ describe("dmForget scopes", () => {
     expect(second).toHaveLength(1);
     expect(second[0]!.at > first[0]!.at).toBe(true);
     await runtime.stop();
+  });
+});
+
+describe("forget record files", () => {
+  it("only a missing file reads as empty; an unreadable one is moved aside with a warning before a fresh start", async () => {
+    const { root, storage } = await dmRoot(roots);
+    expect(await readForgottenPeople(storage)).toEqual([]);
+
+    const file = path.join(root, "user", "people", "forgotten.json");
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, '{"forgotten": [{"userId": "1"'); // truncated
+    // A read never pretends nobody was forgotten.
+    await expect(readForgottenPeople(storage)).rejects.toBeInstanceOf(ForgetRecordCorruptError);
+
+    const warn = vi.fn();
+    const at = new Date("2026-10-24T12:00:00.000Z");
+    await recordForgottenPerson(storage, USER, at, { logger: { warn } });
+    expect(await readForgottenPeople(storage)).toEqual([{ userId: USER, at: at.toISOString() }]);
+    const aside = (await readdir(path.dirname(file))).filter((name) => name.startsWith("forgotten.json.corrupt-"));
+    expect(aside).toHaveLength(1);
+    expect(await readFile(path.join(path.dirname(file), aside[0]!), "utf8")).toBe('{"forgotten": [{"userId": "1"');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("moved aside"), expect.objectContaining({ file, movedTo: path.join(path.dirname(file), aside[0]!) }));
+
+    // The wrong shape is unreadable too.
+    const scrubs = pendingScrubsPath(root, "aria");
+    await mkdir(path.dirname(scrubs), { recursive: true });
+    await writeFile(scrubs, JSON.stringify({ scrubs: "nope" }));
+    await expect(readPendingScrubs(storage, "aria")).rejects.toBeInstanceOf(ForgetRecordCorruptError);
+    await queuePendingScrub(storage, "aria", USER, at, { logger: { warn } });
+    expect(await readPendingScrubs(storage, "aria")).toEqual([{ userId: USER, at: at.toISOString(), source: "dm_forget_everything" }]);
+    expect(warn).toHaveBeenCalledTimes(2);
   });
 });
 

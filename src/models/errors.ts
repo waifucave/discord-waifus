@@ -49,10 +49,13 @@ export class ModelCallError extends Error {
   readonly code: string;
   readonly status?: number;
   readonly providerCode?: string;
-  /** winter's verdict AND nothing was committed: a partly streamed call is never retried. */
+  /** winter's verdict AND nothing was committed: a call that produced part of its answer is never retried. */
   readonly retryable: boolean;
   readonly retryAfterMs?: number;
-  /** The stream had begun (bytes of the answer reached us) before the failure. */
+  /**
+   * Part of the answer (text, a tool call or reasoning) had arrived before the failure. A bare
+   * `message_start` or a role-only chunk does not commit a call.
+   */
   readonly committed: boolean;
   /** The request was refused for its images (too many, or one past a limit): compaction does not fix it. */
   readonly imageOverflow: boolean;

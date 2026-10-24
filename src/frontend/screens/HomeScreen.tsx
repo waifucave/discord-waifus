@@ -148,9 +148,25 @@ export function HomeScreen({
               style={{ padding: "12px 20px", flex: index === shownWarnings.length - 1 && hiddenNotices === 0 && !allNotices ? 1 : "none" }}
               key={`${warning.scope}-${warning.code}-${index}`}
             >
-              <div className="t-micro" style={{ marginBottom: 3 }}>
-                {warning.label ?? warning.scope}
-                <span className="chip butter" style={{ marginLeft: 8 }}>{warning.code}</span>
+              <div className="t-micro" style={{ marginBottom: 3, display: "flex", alignItems: "baseline", gap: 8 }}>
+                <span>{warning.label ?? warning.scope}</span>
+                <span className="chip butter">{warning.code}</span>
+                {warning.dismissible && (
+                  <button
+                    className="btn ghost sm"
+                    style={{ marginLeft: "auto" }}
+                    title="Dismiss this notice"
+                    onClick={async () => {
+                      try {
+                        await api.dismissModelWarnings(warning.scope);
+                      } finally {
+                        void runtime.reload();
+                      }
+                    }}
+                  >
+                    dismiss
+                  </button>
+                )}
               </div>
               <div className="t-small" style={allNotices ? undefined : { overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>
                 {warning.detail}

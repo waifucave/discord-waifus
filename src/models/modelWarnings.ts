@@ -1,7 +1,9 @@
 // Model warnings the owner must act on (Living cast spec §9.2, §9.4): a migrated model with no
 // curated equivalent, or a stored effort the route no longer lists. Persisted in
 // `app/model-warnings.json` by the migration and the boot check, shown in `/api/runtime`, and
-// cleared for a scope when the owner saves an offered model for it (never by unsetting one).
+// cleared for a scope when the owner changes its model to an offered one (never by unsetting it or
+// by a save that leaves the model as it was), when the waifu is deleted, or when dismissed
+// (`DELETE /api/runtime/model-warnings/:scope`).
 
 import { readFile } from "node:fs/promises";
 import path from "node:path";
@@ -47,9 +49,10 @@ export async function appendModelWarnings(dataRoot: string, warnings: ReadonlyAr
   await atomicWriteJson(modelWarningsPath(dataRoot), { warnings: [...kept, ...incoming].slice(-MAX_WARNINGS) });
 }
 
-/** Drops every warning for a scope (the owner picked a model for it). */
-export async function clearModelWarnings(dataRoot: string, scope: string): Promise<void> {
+/** Drops every warning for a scope (a new model picked, the record deleted, or dismissed). Returns how many went. */
+export async function clearModelWarnings(dataRoot: string, scope: string): Promise<number> {
   const current = await readModelWarnings(dataRoot);
   const kept = current.filter((warning) => warning.scope !== scope);
   if (kept.length !== current.length) await atomicWriteJson(modelWarningsPath(dataRoot), { warnings: kept });
+  return current.length - kept.length;
 }

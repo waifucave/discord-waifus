@@ -191,6 +191,47 @@ describe("editing records whose model is no longer offered (review I3)", () => {
 });
 
 describe("/api/runtime models.warnings", () => {
+  it("a save that leaves the model as it was keeps the notices; dismissing removes them (persisted ones only)", async () => {
+    const { app, root } = await makeApp();
+    const SONNET = { providerId: "anthropic", modelId: "claude-sonnet-5-5" };
+    await writeWaifu(root, "aria", { model: SONNET });
+    await appendModelWarnings(root, [
+      { scope: "waifu:aria", code: "effort_dropped", detail: "Effort \"turbo\" is not listed.", previous: "anthropic/claude-sonnet-5-5 (effort turbo)" }
+    ]);
+    // The Cast editor's persona-only save resends the (offered) model unchanged.
+    const persona = await app.inject({ method: "PUT", url: "/api/waifus/aria", payload: { revision: 1, persona: "edited", model: SONNET, botId: null } });
+    expect(persona.statusCode, persona.body).toBe(200);
+    expect(await readModelWarnings(root)).toHaveLength(1);
+    const view = (await app.inject({ method: "GET", url: "/api/runtime" })).json<{ models: { warnings: Array<Record<string, unknown>> } }>().models.warnings;
+    expect(view).toContainEqual(expect.objectContaining({ scope: "waifu:aria", label: "Aria", dismissible: true }));
+
+    expect(ROUTE_POLICY_MANIFEST.find((entry) => entry.method === "DELETE" && entry.path === "/api/runtime/model-warnings/:scope")).toBeDefined();
+    const dismissed = await app.inject({ method: "DELETE", url: `/api/runtime/model-warnings/${encodeURIComponent("waifu:aria")}` });
+    expect(dismissed.statusCode, dismissed.body).toBe(200);
+    expect(dismissed.json()).toEqual({ scope: "waifu:aria", dismissed: 1 });
+    expect(await readModelWarnings(root)).toEqual([]);
+    expect((await app.inject({ method: "DELETE", url: "/api/runtime/model-warnings/assistant" })).json()).toEqual({ scope: "assistant", dismissed: 0 });
+    expect((await app.inject({ method: "DELETE", url: "/api/runtime/model-warnings/nonsense" })).statusCode).toBe(400);
+    expect((await app.inject({ method: "DELETE", url: `/api/runtime/model-warnings/${encodeURIComponent("waifu:..")}` })).statusCode).toBe(400);
+
+    // A live notice is not dismissible: it holds while its cause does.
+    await writeWaifu(root, "riko", { model: { providerId: "anthropic", modelId: "claude-opus-4-7" } });
+    const live = (await app.inject({ method: "GET", url: "/api/runtime" })).json<{ models: { warnings: Array<Record<string, unknown>> } }>().models.warnings;
+    expect(live).toContainEqual(expect.objectContaining({ scope: "waifu:riko", code: "model_unavailable", dismissible: false }));
+  });
+
+  it("deleting a waifu clears her model notices", async () => {
+    const { app, root } = await makeApp();
+    await writeWaifu(root, "opus");
+    await appendModelWarnings(root, [
+      { scope: "waifu:opus", code: "model_unmapped", detail: "x", previous: "anthropic/claude-opus-4-7" },
+      { scope: "assistant", code: "model_unmapped", detail: "y" }
+    ]);
+    const deleted = await app.inject({ method: "DELETE", url: "/api/waifus/opus", payload: { revision: 1 } });
+    expect(deleted.statusCode, deleted.body).toBe(204);
+    expect((await readModelWarnings(root)).map((warning) => warning.scope)).toEqual(["assistant"]);
+  });
+
   it("keeps an unmapped model's record until a real model is saved; shows her name and the old model (review I4)", async () => {
     const { app, root } = await makeApp();
     await writeWaifu(root, "opus");

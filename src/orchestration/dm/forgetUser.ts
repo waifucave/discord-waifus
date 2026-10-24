@@ -36,7 +36,7 @@ export async function forgetUser(
   const dryRun = input.dryRun === true;
   const now = (hooks.now ?? (() => new Date()))();
   // The record first: whatever fails next, L2 still leaves the person out.
-  if (!dryRun) await recordForgottenPerson(storage, discordUserId, now);
+  if (!dryRun) await recordForgottenPerson(storage, discordUserId, now, hooks.logger ? { logger: hooks.logger } : {});
   const dm = await dmForget(storage, { userId: discordUserId, scope: "all", dryRun }, hooks);
   const hasDmDir = (await listDmUserIds(storage)).includes(discordUserId);
   const dmLimits = hasDmDir ? (await listDmLimitWaifuIds(storage, discordUserId)).length : 0;

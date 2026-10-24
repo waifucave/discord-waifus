@@ -37,7 +37,8 @@ does goes through these endpoints, so any agent can drive the app with plain HTT
 |---|---|---|
 | GET | /api/health | Liveness. |
 | GET | /api/status | Runtime + Discord connection state. |
-| GET | /api/runtime | Runtime state incl. pause state, queues, `providerAlerts` (`[{providerId, kind: "quota"\|"billing", until, lastMessage}]`, active provider cooldowns during which calls fail fast) and `models.warnings` (`[{scope, code, detail}]`: `model_unmapped`, `effort_dropped`, `model_unavailable`, `model_unpriced`); host paths/process fields are local-only. |
+| GET | /api/runtime | Runtime state incl. pause state, queues, `providerAlerts` (`[{providerId, kind: "quota"\|"billing", until, lastMessage}]`, active provider cooldowns during which calls fail fast) and `models.warnings` (`[{scope, label, code, detail, previous?, dismissible}]`: `model_unmapped`, `effort_dropped`, `model_unavailable`, `model_unpriced`); host paths/process fields are local-only. |
+| DELETE | /api/runtime/model-warnings/:scope | Dismiss the persisted model notices of `waifu:<id>` or `assistant` → `{scope, dismissed}`. Live notices stay while their cause holds. |
 | GET | /api/admin/operations/:operationId | Principal-scoped mutation recovery status; no response body/result. |
 | POST | /api/runtime/pause · /resume | Pause/resume the cast (takes effect in memory immediately, then persisted as `runtime.paused` in config.toml so it survives reloads/restarts; if that write fails the response carries a `warning`). |
 | POST | /api/runtime/reload | Reload configs into the running runtime. |
@@ -112,8 +113,10 @@ curl -s -X PUT http://127.0.0.1:3888/api/waifus/riko \
   last-writer-wins.
 - **Models**: a waifu's or the assistant's `model` is replaced as a whole; omit it to keep the
   stored one, send `null` to unset it. A stored model is only re-validated when the write changes
-  it, so a record whose model is no longer offered can still be edited. Saving an offered model
-  clears that scope's `models.warnings` (unsetting never does). The
+  it, so a record whose model is no longer offered can still be edited. Changing the model to an
+  offered one clears that scope's persisted `models.warnings`; a save that leaves the model as it was,
+  or unsets it, never does. Deleting a waifu clears hers, and
+  `DELETE /api/runtime/model-warnings/:scope` (`waifu:<id>` or `assistant`) dismisses them. The
   curated list is `config.toml` `[models]` `allowed` (route keys) filtered by the installed winter
   catalog and `maxOutputUsdPerMTok` (default and maximum 10); an OpenRouter route is hidden only when
   its model keeps reasoning state the installed winter cannot replay through OpenRouter (none is,

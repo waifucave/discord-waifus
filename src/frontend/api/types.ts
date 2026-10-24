@@ -40,9 +40,10 @@ export type ModelsResponse = {
 
 /**
  * A model notice from `/api/runtime`: `scope` is `waifu:<id>`, `assistant` or `models`; `label` names
- * it for people (her display name); `previous` is the model it had before (`provider/model`).
+ * it for people (her display name); `previous` is the model it had before (`provider/model`);
+ * `dismissible` notices can be removed with `api.dismissModelWarnings(scope)`.
  */
-export type ModelWarning = { scope: string; label?: string; code: string; detail: string; at?: string; previous?: string };
+export type ModelWarning = { scope: string; label?: string; code: string; detail: string; at?: string; previous?: string; dismissible?: boolean };
 
 export type Revisioned = {
   schemaVersion: number;

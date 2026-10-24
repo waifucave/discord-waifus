@@ -36,7 +36,9 @@ must list her in `eligibleWaifus` with `intentActive: true`. Its warnings name w
   does.
 - `models.warnings` in `GET /api/runtime`: `model_unmapped` (the upgrade found no curated
   equivalent of her old model), `effort_dropped` (the installed catalog stopped listing her
-  effort), `model_unavailable` (her route is no longer offered): pick a model again.
+  effort), `model_unavailable` (her route is no longer offered): pick a model again. The first two
+  can also be dismissed (Home → Model notices → dismiss, or
+  `DELETE /api/runtime/model-warnings/:scope`).
 - DeepSeek "Insufficient Balance": the provider account is out of credits — top up.
 
 ## Bot connects but a waifu never speaks

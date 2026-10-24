@@ -15,6 +15,7 @@
 // Memories, notes and life state are not this module's: the life scrub (L2) handles them.
 
 import { readdir, rm } from "node:fs/promises";
+import type { Logger } from "../../backend/logger.js";
 import { DiscordImageFetcher } from "../../discord/attachments.js";
 import { DEFAULT_APP_CONFIG } from "../../shared/schemas/config.js";
 import type { StorageService } from "../../storage/storageService.js";
@@ -53,6 +54,8 @@ export type DmForgetHooks = {
   /** Abort live work in the DM and drop cached messages before files go. */
   beforeDelete?: (conversation: DmConversation) => Promise<void>;
   now?: () => Date;
+  /** Where a moved-aside, unreadable forget record is reported. */
+  logger?: Pick<Logger, "warn">;
 };
 
 const silentLogger = { debug: () => undefined, info: () => undefined, warn: () => undefined, error: () => undefined };
@@ -115,8 +118,10 @@ export async function dmForget(storage: StorageService, input: DmForgetInput, ho
     if (hasConversation) {
       deleted.dmContexts += 1;
       if (!dryRun) {
-        await storage.withLocks([`refs:${key}`], () => rm(storage.dataPath(conversationDirPath(key)), { recursive: true, force: true }));
-        forgetConversationImageIndex(storage.dataRoot, key);
+        // On the image index's queue: index writes queued before drain first, later ones are skipped.
+        await storage.withLocks([`refs:${key}`], () =>
+          forgetConversationImageIndex(storage.dataRoot, key, () => rm(storage.dataPath(conversationDirPath(key)), { recursive: true, force: true }))
+        );
       }
     }
     if (input.scope === "conversation") {

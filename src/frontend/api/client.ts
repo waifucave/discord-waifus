@@ -269,6 +269,9 @@ export const api = {
   pause: () => request<RuntimeState>("POST", "/api/runtime/pause"),
   resume: () => request<RuntimeState>("POST", "/api/runtime/resume"),
   reload: () => request<{ accepted: boolean; message: string }>("POST", "/api/runtime/reload"),
+  /** Dismisses the persisted model notices of one scope (`waifu:<id>`, `assistant`). */
+  dismissModelWarnings: (scope: string) =>
+    request<{ scope: string; dismissed: number }>("DELETE", `/api/runtime/model-warnings/${encodeURIComponent(scope)}`),
 
   // Remote access
   remoteAccessStatus: (signal?: AbortSignal) =>

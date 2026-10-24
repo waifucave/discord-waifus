@@ -364,21 +364,14 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     const config = await loadAppConfig(options.dataRoot);
     assertModelChoiceValid(choice, { allowed: config.models.allowed, maxOutputUsdPerMTok: config.models.maxOutputUsdPerMTok });
   };
-  const modelOffered = async (choice: ModelChoice): Promise<boolean> =>
-    assertModelAllowed(choice).then(
-      () => true,
-      () => false
-    );
-  // A model patch is validated only when it changes the stored model, so a record whose model is no
-  // longer offered can still be edited (and resent unchanged). Returns whether the saved model is a
-  // real, offered choice: only then does the write clear that scope's model warnings.
+  // A model patch is validated only when it changes the stored model (route or effort), so a record
+  // whose model is no longer offered can still be edited and resent unchanged. Returns whether the
+  // write changes the model to an offered, non-null choice: only that clears the scope's model
+  // warnings (a persona-only save never does; `DELETE /api/runtime/model-warnings/:scope` dismisses).
   const checkModelPatch = async (current: ModelChoice | undefined, patch: ModelChoice | null | undefined): Promise<boolean> => {
-    if (!patch) return false;
-    if (!sameModelChoice(current, patch)) {
-      await assertModelAllowed(patch);
-      return true;
-    }
-    return modelOffered(patch);
+    if (!patch || sameModelChoice(current, patch)) return false;
+    await assertModelAllowed(patch);
+    return true;
   };
   // Spec 8.6: waifu bodies may still carry the removed `promptLayout`; it is ignored. Log it once
   // per process so a stale client is findable without flooding the log on every save.
@@ -531,6 +524,18 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
       logger.warn("DM intent reconcile failed", { message: error instanceof Error ? error.message : String(error) });
     }
   };
+
+  // Dismiss the persisted model notices of one scope (`waifu:<id>`, `assistant`). Live notices
+  // (`model_unavailable`, `model_unpriced`) are computed from the current state and stay while it holds.
+  app.delete("/api/runtime/model-warnings/:scope", async (request) => {
+    const { scope } = z.object({ scope: z.string().min(1).max(200) }).parse(request.params);
+    if (scope !== "assistant" && scope !== "models") {
+      const match = /^waifu:(.+)$/u.exec(scope);
+      if (!match) throw badRequest(`Unknown model warning scope: ${scope}`);
+      assertSafeId(match[1]!);
+    }
+    return { scope, dismissed: await clearModelWarnings(options.dataRoot, scope) };
+  });
 
   app.get("/api/runtime", async (request) => {
     const orchestrator = options.runtimeControl?.getOrchestrator?.() ?? options.runtimeOrchestrator;
@@ -891,6 +896,8 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
         force: true
       })
     );
+    // Her model notices go with her.
+    await clearModelWarnings(options.dataRoot, `waifu:${waifuId}`);
     await reconcileDmIntents();
     return reply.status(204).send();
   });
@@ -1064,7 +1071,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     const input = { discordUserId: userId, dryRun: body.dryRun === true };
     // The live runtime also drops cached DM messages and images (spec 9.1.4).
     const orchestrator = options.runtimeControl?.getOrchestrator?.() ?? options.runtimeOrchestrator;
-    return orchestrator ? orchestrator.forgetUser(input) : forgetUser(storage, input);
+    return orchestrator ? orchestrator.forgetUser(input) : forgetUser(storage, input, { logger });
   });
 
   // B2: pause used to live only in memory, so the next config save/reload (which re-reads
@@ -1305,8 +1312,11 @@ async function modelsResponse(dataRoot: string) {
   };
 }
 
-/** A model warning as `/api/runtime` shows it: `label` names the scope for people (her name, not `waifu:<id>`). */
-type ModelWarningView = { scope: string; label: string; code: string; detail: string; at?: string; previous?: string };
+/**
+ * A model warning as `/api/runtime` shows it: `label` names the scope for people (her name, not
+ * `waifu:<id>`); `dismissible` marks a persisted notice `DELETE /api/runtime/model-warnings/:scope` removes.
+ */
+type ModelWarningView = { scope: string; label: string; code: string; detail: string; at?: string; previous?: string; dismissible: boolean };
 
 /** Persisted model warnings plus live ones: unpriced curated routes and stored choices the catalog no longer offers. */
 async function modelWarnings(storage: StorageService, dataRoot: string): Promise<ModelWarningView[]> {
@@ -1326,17 +1336,17 @@ async function modelWarnings(storage: StorageService, dataRoot: string): Promise
   };
   const live: ModelWarningView[] = curated.models
     .filter((model) => !model.pricing)
-    .map((model) => ({ scope: "models", label: labelOf("models"), code: "model_unpriced", detail: `${model.id} has no price; its cost counts as 0 toward budgets.` }));
+    .map((model) => ({ scope: "models", label: labelOf("models"), code: "model_unpriced", detail: `${model.id} has no price; its cost counts as 0 toward budgets.`, dismissible: false }));
   const unavailable = (scope: string, model: ModelChoice | undefined) => {
     if (!model) return;
     const id = `${model.providerId}/${model.modelId}`;
     if (offered.has(id)) return;
     const hidden = curated.hidden.find((entry) => entry.id === id);
-    live.push({ scope, label: labelOf(scope), code: "model_unavailable", detail: `${id} is not offered${hidden ? ` (${hidden.reason})` : ""}.`, previous: id });
+    live.push({ scope, label: labelOf(scope), code: "model_unavailable", detail: `${id} is not offered${hidden ? ` (${hidden.reason})` : ""}.`, previous: id, dismissible: false });
   };
   for (const waifu of waifus) unavailable(`waifu:${waifu.id}`, waifu.model);
   unavailable("assistant", assistant?.model);
-  return [...persisted.map((warning) => ({ ...warning, label: labelOf(warning.scope) })), ...live];
+  return [...persisted.map((warning) => ({ ...warning, label: labelOf(warning.scope), dismissible: true })), ...live];
 }
 
 async function readProviderCredentials(storage: StorageService): Promise<ProviderCredentialsFile> {

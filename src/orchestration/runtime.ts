@@ -230,8 +230,10 @@ export class RuntimeOrchestrator {
       try {
         const conversation: ConversationRef = { kind: "guild", guildId, channelId: threadId };
         this.conversations.forget(conversation);
-        await rm(this.options.storage.dataPath(conversationDirPath(conversationKey(conversation))), { recursive: true, force: true });
-        forgetConversationImageIndex(this.options.storage.dataRoot, conversationKey(conversation));
+        const key = conversationKey(conversation);
+        await forgetConversationImageIndex(this.options.storage.dataRoot, key, () =>
+          rm(this.options.storage.dataPath(conversationDirPath(key)), { recursive: true, force: true })
+        );
         if (o.removeEntry) await this.removeStoredChannelEntry(guildId, threadId);
       } catch (error) {
         this.options.logger.warn("Failed to forget a thread", {
@@ -367,6 +369,7 @@ export class RuntimeOrchestrator {
 
   private dmForgetHooks(): DmForgetHooks {
     return {
+      logger: this.options.logger,
       imageKeys: (conversation: DmConversation) =>
         this.conversations
           .bufferedMessages(conversation)
@@ -394,7 +397,7 @@ export class RuntimeOrchestrator {
    */
   async handleDmForgetCommand(event: DiscordDmForgetCommandEvent): Promise<string> {
     const everything = event.scope === "everything";
-    if (everything) await queuePendingScrub(this.options.storage, event.waifuId, event.userId, new Date());
+    if (everything) await queuePendingScrub(this.options.storage, event.waifuId, event.userId, new Date(), { logger: this.options.logger });
     const result = await this.forgetDm({
       userId: event.userId,
       waifuId: event.waifuId,

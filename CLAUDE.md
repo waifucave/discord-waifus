@@ -73,8 +73,9 @@ OpenRouter reasoning-replay feature check); `credentials.ts` reads keys live fro
 (`context_overflow`, `quota`, `billing`, `rate_limit`, `auth`, `aborted`, `other`; quota/billing
 open provider cooldowns in `providerAlerts.ts`; the retired gateway's billing codes and phrases are
 ported, so Anthropic's 400 "credit balance is too low" is `billing`). A `ModelCallError` carries
-`committed` (part of the answer had arrived) and is `retryable` only when winter says so and
-nothing was committed; `imageOverflow` marks an image refusal. `summarize.ts` is the compaction
+`committed` (part of the answer — text, a tool call or reasoning — had arrived, as the assembler's
+tap saw it; a bare `message_start` or role-only chunk is not) and is `retryable` only when winter
+says so and nothing was committed; `imageOverflow` marks an image refusal. `summarize.ts` is the compaction
 summarize helper;
 `modelWarnings.ts` persists upgrade/boot warnings (`app/model-warnings.json`). Usage purposes are
 `life`, `maintenance`, `detector`, `compaction`, `assistant` (older lines keep their legacy
@@ -139,10 +140,15 @@ PUT shim in `src/api/server.ts`.
   DM bots register a BotDM-only `/forget`. DMs get no replies until L2. Forget records for L2
   (`dm/forgotten.ts`): the owner's forget-user adds `{userId, at}` to `user/people/forgotten.json`
   (spec §7.5); a DM `/forget everything` queues `{userId, at, source}` in
-  `user/waifus/<id>/life/pending-scrubs.json` (spec §7.3). Images a conversation showed are indexed
-  durably in `user/conversations/<key>/images.json` (`src/discord/imageIndex.ts`: the fetcher and
-  OCR record refs that carry `conversationKey`), so a forget purges cached bytes and OCR text with
-  or without the runtime (a legacy `ledger.json`'s image refs are read too).
+  `user/waifus/<id>/life/pending-scrubs.json` (spec §7.3); only a missing record file reads as
+  empty, an unreadable one is moved aside to `<name>.corrupt-<ts>` with a warning. Images a
+  conversation showed are indexed durably in `user/conversations/<key>/images.json` (+ an
+  append-only overflow past 5,000 keys; `src/discord/imageIndex.ts`), so a forget purges cached
+  bytes and OCR text with or without the runtime (a legacy `ledger.json`'s image refs are read
+  too). The fetcher and OCR record only refs that carry `conversationKey`, and nothing in L1 sets
+  it: L2's life image path must render with `renderDiscordMessage(..., { conversationKey })`. Index
+  writes and the directory's removal share one per-conversation queue
+  (`forgetConversationImageIndex`), and a write never recreates a missing conversation directory.
 
 **Storage** (`src/storage/storageService.ts`, `src/shared/schemas/domain.ts`): everything user-owned is a revisioned JSON file under `~/.dc-waifus/user/` (providers, discord-bots, waifus, the assistant config, servers incl. `threads.json`, `dms/<userId>/` DM state and rate-limit counters), except `user/usage/YYYY-MM-DD.jsonl`, the append-only usage ledger. Writes use atomic temp-file swap with per-resource locks. Zod schemas in `src/shared/schemas/` are the authority for both on-disk format and API I/O — change them and the migrations together. `resolveDataPath` throws if the joined path escapes the data root, but that is a backstop — any route that builds a path from a request id must still validate it first (`src/api/ids.ts`: `assertSafeId` rejects dot-only ids; guild/channel/user ids must be Discord snowflakes via `assertSnowflakeId`).
 
@@ -299,8 +305,8 @@ Fixture coverage is separate from native Windows/Linux updater-cycle validation.
   failures throw winter's `ProviderStreamError` with `error` and `committed`). A plain-text turn
   keeps string content. The app adds a tap in front of the fold: it drives the app sink (text, tool
   call start/end, readable reasoning, retries; a throwing app sink is dropped, never ends a turn)
-  and keeps the last usage and the subscription-quota flag in a `StreamObservation`, because a
-  failed fold returns no usage. `tests/modelFakes.ts` plays scripted turns through winter's
+  and keeps the last usage, the subscription-quota flag and `contentArrived` (the app's one meaning
+  of committed) in a `StreamObservation`, because a failed fold returns no usage. `tests/modelFakes.ts` plays scripted turns through winter's
   `createFakeProviderAdapter` (`.../testing`) behind a thin wrapper with the shipped adapter's
   capabilities.
 - Usage convention: `inputTokens` is the non-cached prompt; cache reads and cache writes are

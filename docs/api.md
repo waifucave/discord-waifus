@@ -82,9 +82,13 @@ routes (`/api/orchestrator/*`, `/api/stage-manager/*`, `/api/reviewer/*`, `/api/
 removed. Discord intake connects and logs `Living cast not yet wired (L2)` for each accepted
 message; nothing replies until the life loop ships.
 
-`GET /api/runtime` adds `models.warnings`: `{scope, label, code, detail, at?, previous?}` entries (`label` is the waifu's name, `previous` the model before) for model choices
-that need attention (`model_unmapped`, `effort_dropped` from the upgrade and boot checks;
-`model_unavailable` and `model_unpriced` computed live).
+`GET /api/runtime` adds `models.warnings`: `{scope, label, code, detail, at?, previous?, dismissible}`
+entries (`label` is the waifu's name, `previous` the model before) for model choices that need
+attention (`model_unmapped`, `effort_dropped` from the upgrade and boot checks, `dismissible: true`;
+`model_unavailable` and `model_unpriced` computed live, shown while their cause holds). A scope's
+persisted notices clear when its model is changed to an offered one, when the waifu is deleted, or
+with `DELETE /api/runtime/model-warnings/:scope` (`waifu:<id>` or `assistant`, URL-encoded) →
+`{scope, dismissed}`. A save that leaves the model as it was never clears them.
 
 Normal configuration changes apply at runtime. `PUT /api/config`, `PUT /api/discord-bots`, and `POST /api/runtime/reload` rebuild Discord clients and the runtime orchestrator in-process without restarting HTTP. Only HTTP host/port changes require the next process start.
 
