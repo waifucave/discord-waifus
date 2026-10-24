@@ -59,7 +59,7 @@ does goes through these endpoints, so any agent can drive the app with plain HTT
 | GET | /api/servers | Guilds with channels and their waifu lists. |
 | GET | /api/servers/:guildId | One guild. |
 | PUT | /api/servers/:guildId | Partial server settings: `paused`, `orchestratorMode`, `oneShot`, `stageManagerEnabled`, `contextWindows`, `compaction`, `memoryInjectionLimit`, `tools`, `channels` (wholesale). |
-| DELETE | /api/servers/:guildId | Remove the guild config incl. sessions and rosters. |
+| DELETE | /api/servers/:guildId | Remove the guild config incl. sessions, rosters and the guild's decision history. |
 | PUT | /api/servers/:guildId/channels/:channelId | `{enabledWaifuIds?, name?}` — one channel; omitted fields keep their value. |
 | DELETE | /api/servers/:guildId/channels/:channelId | Remove one channel entry. |
 | GET/POST | /api/servers/:guildId/members·roles·emojis(/refresh) | Guild caches. |

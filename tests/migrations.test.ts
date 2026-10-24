@@ -105,6 +105,12 @@ describe("runMigrations", () => {
     const root = await makeTempRoot();
     roots.push(root);
 
+    await writeJson(root, "user/servers/guild-1/server.json", {
+      schemaVersion: 1,
+      revision: 0,
+      updatedAt: "2026-05-16T12:00:00.000Z",
+      guildId: "guild-1"
+    });
     await writeJson(root, "user/orchestrator/history.json", {
       schemaVersion: 1,
       revision: 0,

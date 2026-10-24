@@ -1,4 +1,4 @@
-import { rename } from "node:fs/promises";
+import { rename, stat } from "node:fs/promises";
 import path from "node:path";
 import { CURRENT_SCHEMA_VERSION } from "../../shared/schemas/common.js";
 import { atomicWriteJson } from "../../storage/atomic.js";
@@ -17,14 +17,20 @@ const SAFE_GUILD_DIR = /^[A-Za-z0-9._:-]+$/;
 // to `history.json.migrated` last. A missing source is a no-op; an unreadable one fails the boot
 // (like the memory steps) so the ledger never records the step as applied over data it could not
 // read: after the user repairs or removes the file it still converts.
+// CHANGED (review I3): an unreadable source (or target) must not fail boot. It is renamed to
+// `<file>.corrupt-<timestamp>` with one warning and the step carries on, so the broken bytes stay
+// available for manual repair. The step runs on every boot (a missing source is a no-op), so a
+// rollback to an older build that reseeds `history.json` is split again on the next upgrade.
+// Entries of guilds without a `server.json` (deleted or departed servers) go to the legacy file:
+// they must never recreate a server folder.
 export async function migrateOrchestratorHistoryPerGuild(dataRoot: string): Promise<string | undefined> {
   const sourcePath = path.join(dataRoot, SOURCE);
   const read = await readJsonFile(sourcePath);
   if (read.kind === "missing") return undefined;
   if (read.kind === "invalid" || !isObject(read.value) || !Array.isArray(read.value.decisions)) {
-    throw new Error(
-      "user/orchestrator/history.json is not a readable decision history; repair or remove it to finish splitting it per guild."
-    );
+    const quarantined = await quarantine(sourcePath);
+    console.warn(`user/orchestrator/history.json is not a readable decision history; moved it to ${path.basename(quarantined)} and continuing.`);
+    return undefined;
   }
 
   const byGuild = new Map<string, Record<string, unknown>[]>();
@@ -32,7 +38,7 @@ export async function migrateOrchestratorHistoryPerGuild(dataRoot: string): Prom
   for (const entry of read.value.decisions) {
     if (!isObject(entry) || !nonEmptyString(entry.id) || !nonEmptyString(entry.createdAt)) continue;
     const guildId = nonEmptyString(entry.guildId);
-    if (guildId && SAFE_GUILD_DIR.test(guildId) && !/^\.+$/.test(guildId)) {
+    if (guildId && SAFE_GUILD_DIR.test(guildId) && !/^\.+$/.test(guildId) && (await hasServerFile(dataRoot, guildId))) {
       const list = byGuild.get(guildId) ?? [];
       list.push(entry);
       byGuild.set(guildId, list);
@@ -53,10 +59,13 @@ export async function migrateOrchestratorHistoryPerGuild(dataRoot: string): Prom
 
 async function mergeInto(filePath: string, incoming: Record<string, unknown>[], cap: number | undefined): Promise<number> {
   const read = await readJsonFile(filePath);
+  let existing: (Record<string, unknown> & { decisions: unknown[] }) | undefined;
   if (read.kind === "invalid" || (read.kind === "ok" && (!isObject(read.value) || !Array.isArray(read.value.decisions)))) {
-    throw new Error(`${path.basename(path.dirname(filePath))}/${path.basename(filePath)} is unreadable; repair or remove it to finish splitting the decision history.`);
+    const quarantined = await quarantine(filePath);
+    console.warn(`${path.basename(path.dirname(filePath))}/${path.basename(filePath)} is unreadable; moved it to ${path.basename(quarantined)} and writing a fresh history.`);
+  } else if (read.kind === "ok") {
+    existing = read.value as Record<string, unknown> & { decisions: unknown[] };
   }
-  const existing = read.kind === "ok" ? (read.value as Record<string, unknown> & { decisions: unknown[] }) : undefined;
   const seen = new Set<string>();
   const merged: Record<string, unknown>[] = [];
   for (const entry of [...(existing?.decisions ?? []), ...incoming]) {
@@ -76,4 +85,14 @@ async function mergeInto(filePath: string, incoming: Record<string, unknown>[], 
     decisions
   });
   return incoming.length;
+}
+
+async function hasServerFile(dataRoot: string, guildId: string): Promise<boolean> {
+  return stat(path.join(dataRoot, "user", "servers", guildId, "server.json")).then((info) => info.isFile(), () => false);
+}
+
+async function quarantine(filePath: string): Promise<string> {
+  const target = `${filePath}.corrupt-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+  await rename(filePath, target);
+  return target;
 }

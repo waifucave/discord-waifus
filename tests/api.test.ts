@@ -775,6 +775,44 @@ describe("Backend API", () => {
       }
     });
 
+    it("orchestrator history defaults to 200 entries on the merged and the per-guild path (I2)", async () => {
+      const { app, root } = await makeApp();
+      try {
+        const guildId = "100000000000000101";
+        const decisions = Array.from({ length: 250 }, (_, i) => ({
+          id: `d${i}`, guildId, channelId: "c1", action: "no_reply", respondingWaifus: [], reasoning: "x",
+          status: "completed", waifuMessageIds: [], responderOutcomes: [],
+          createdAt: new Date(Date.UTC(2026, 9, 1, 0, 0, 250 - i)).toISOString()
+        }));
+        await mkdir(path.join(root, "user", "servers", guildId), { recursive: true });
+        await writeFile(
+          path.join(root, "user", "servers", guildId, "orchestrator-history.json"),
+          JSON.stringify({ schemaVersion: CURRENT_SCHEMA_VERSION, revision: 1, updatedAt: new Date().toISOString(), decisions })
+        );
+        const count = async (url: string) => (JSON.parse((await app.inject({ method: "GET", url })).body) as { decisions: unknown[] }).decisions.length;
+        expect(await count("/api/orchestrator/history")).toBe(200);
+        expect(await count(`/api/orchestrator/history?guildId=${guildId}`)).toBe(200);
+        expect(await count("/api/orchestrator/history?limit=10")).toBe(10);
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("DELETE /api/servers/:guildId says decision history is removed too, and removes it (I1)", async () => {
+      const { app, root } = await makeApp();
+      try {
+        const guildId = "100000000000000101";
+        await app.inject({ method: "PUT", url: `/api/servers/${guildId}`, payload: { paused: false } });
+        await writeFile(path.join(root, "user", "servers", guildId, "orchestrator-history.json"), "{}");
+        const res = await app.inject({ method: "DELETE", url: `/api/servers/${guildId}` });
+        expect(res.statusCode).toBe(200);
+        expect(res.json().message).toMatch(/decision history/);
+        expect(await readFile(path.join(root, "user", "servers", guildId, "orchestrator-history.json"), "utf8").catch(() => "gone")).toBe("gone");
+      } finally {
+        await app.close();
+      }
+    });
+
     it("history endpoints accept guildId/channelId/limit filters", async () => {
       const { app, root } = await makeApp();
       try {
@@ -798,8 +836,8 @@ describe("Backend API", () => {
             JSON.stringify({ schemaVersion: CURRENT_SCHEMA_VERSION, revision: 1, updatedAt: new Date().toISOString(), decisions })
           );
         };
-        await seed("user/servers/g-a/orchestrator-history.json", [decision("a2", "g-a", "c1", 30), decision("a1", "g-a", "c2", 10)]);
-        await seed("user/servers/g-b/orchestrator-history.json", [decision("b1", "g-b", "c1", 20)]);
+        await seed("user/servers/100000000000000101/orchestrator-history.json", [decision("a2", "100000000000000101", "c1", 30), decision("a1", "100000000000000101", "c2", 10)]);
+        await seed("user/servers/100000000000000102/orchestrator-history.json", [decision("b1", "100000000000000102", "c1", 20)]);
         await seed("user/orchestrator/history-legacy.json", [decision("old", undefined, "c9", 5)]);
         const ids = (body: string) => (JSON.parse(body) as { decisions: Array<{ id: string }> }).decisions.map((d) => d.id);
         const all = await app.inject({ method: "GET", url: "/api/orchestrator/history" });
@@ -807,13 +845,13 @@ describe("Backend API", () => {
         // unchanged response shape: the revisioned envelope plus `decisions`
         expect(Object.keys(JSON.parse(all.body)).sort()).toEqual(["decisions", "revision", "schemaVersion", "updatedAt"]);
         expect(ids((await app.inject({ method: "GET", url: "/api/orchestrator/history?limit=2" })).body)).toEqual(["a2", "b1"]);
-        expect(ids((await app.inject({ method: "GET", url: "/api/orchestrator/history?guildId=g-a" })).body)).toEqual(["a2", "a1"]);
-        expect(ids((await app.inject({ method: "GET", url: "/api/orchestrator/history?guildId=g-a&channelId=c2" })).body)).toEqual(["a1"]);
+        expect(ids((await app.inject({ method: "GET", url: "/api/orchestrator/history?guildId=100000000000000101" })).body)).toEqual(["a2", "a1"]);
+        expect(ids((await app.inject({ method: "GET", url: "/api/orchestrator/history?guildId=100000000000000101&channelId=c2" })).body)).toEqual(["a1"]);
         expect(ids((await app.inject({ method: "GET", url: "/api/orchestrator/history?channelId=c1" })).body)).toEqual(["a2", "b1"]);
-        const filtered = JSON.parse((await app.inject({ method: "GET", url: "/api/orchestrator/history?guildId=g-none" })).body) as { decisions: unknown[] };
+        const filtered = JSON.parse((await app.inject({ method: "GET", url: "/api/orchestrator/history?guildId=100000000000000999" })).body) as { decisions: unknown[] };
         expect(filtered.decisions.length).toBe(0);
-        expect((await app.inject({ method: "GET", url: "/api/orchestrator/history?guildId=../x" })).statusCode).toBe(400);
-        const sm = await app.inject({ method: "GET", url: "/api/stage-manager/history?limit=1&guildId=g-none" });
+        expect((await app.inject({ method: "GET", url: "/api/orchestrator/history?guildId=g-bad" })).statusCode).toBe(400);
+        const sm = await app.inject({ method: "GET", url: "/api/stage-manager/history?limit=1&guildId=100000000000000999" });
         expect(sm.statusCode).toBe(200);
         const rv = await app.inject({ method: "GET", url: "/api/reviewer/history?limit=1" });
         expect(rv.statusCode).toBe(200);

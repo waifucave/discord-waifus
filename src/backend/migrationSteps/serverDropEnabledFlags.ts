@@ -28,6 +28,9 @@ export async function dropServerEnabledFlags(dataRoot: string): Promise<number> 
     if (!isObject(data)) continue;
     let changed = false;
     if ("enabled" in data) {
+      if (data.enabled === false) {
+        console.warn(`Server ${entry}: the removed \`enabled: false\` flag was dropped and does not pause it; set \`paused\` to silence the server.`);
+      }
       delete data.enabled;
       changed = true;
     }

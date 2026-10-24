@@ -8150,6 +8150,22 @@ describe("RuntimeOrchestrator", () => {
       }
     });
 
+    it("review I1: restart resume never resurrects a deleted server from its leftover history folder", async () => {
+      const { storage } = await interruptMidReply((runtime) => runtime.stop());
+      const serverDir = path.join(storage.dataRoot, "user", "servers", "guild-1");
+      await rm(serverFilePath(storage));
+      // history (and sessions) remain, server.json is gone: the server was deleted/departed
+      const next = await bootAgain(storage);
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        expect(next.discord.sent).toEqual([]);
+        await expect(readFile(serverFilePath(storage), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+        expect((await import("node:fs/promises")).stat(serverDir)).resolves.toBeDefined();
+      } finally {
+        await next.runtime.stop();
+      }
+    });
+
     it("spec 9.7: restart resume skips channels without enabled waifus", async () => {
       const { storage } = await interruptMidReply((runtime) => runtime.stop());
       await storage.updateRevisionedJson({

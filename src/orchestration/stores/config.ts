@@ -1,7 +1,7 @@
 // Read/ensure helpers for user-owned config files the runtime consults: servers, channels,
 // waifus, agent configs and the Discord bots file.
 
-import { readdir } from "node:fs/promises";
+import { readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import {
   AgentConfig,
@@ -165,7 +165,18 @@ export async function listKnownGuildIds(storage: StorageService): Promise<string
     const entries = await readdir(path.join(storage.dataRoot, "user", "servers"), {
       withFileTypes: true
     });
-    return entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+    // Only directories that hold a server.json are servers: a leftover history/session folder of a
+    // deleted or departed server must not bring it back (restart resume would recreate it).
+    const known: string[] = [];
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const hasServer = await stat(path.join(storage.dataRoot, "user", "servers", entry.name, "server.json")).then(
+        (info) => info.isFile(),
+        () => false
+      );
+      if (hasServer) known.push(entry.name);
+    }
+    return known;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
     throw error;
@@ -179,8 +190,7 @@ export async function syncGuilds(services: RuntimeServices): Promise<void> {
     const fallback = ServerConfigSchema.parse({
       ...createRevisionedBase(),
       guildId: guild.guildId,
-      name: guild.name,
-      enabled: true
+      name: guild.name
     });
     const existing = await services.storage.readJson(relativePath, ServerConfigSchema, fallback);
     const channelNames = new Map<string, string>();

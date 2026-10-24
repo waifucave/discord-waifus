@@ -702,11 +702,12 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     const query = HistoryQuerySchema.parse(request.query);
     // Decisions are stored per guild (spec 9.3): a guildId reads that guild's file, otherwise every
     // guild file plus the legacy no-guild decisions are merged, newest first.
-    if (query.guildId) assertSafeId(query.guildId);
+    if (query.guildId) assertSnowflakeId(query.guildId);
     const history = query.guildId
       ? await readOrchestratorHistoryForGuild(storage, query.guildId)
-      : await readMergedOrchestratorHistory(storage);
-    return { ...history, decisions: filterHistoryEntries(history.decisions, query) };
+      : await readMergedOrchestratorHistory(storage, logger);
+    // Bounded by default (200, spec 9.3), on the merged and the per-guild path alike.
+    return { ...history, decisions: filterHistoryEntries(history.decisions, { ...query, limit: query.limit ?? 200 }) };
   });
 
   app.get("/api/stage-manager/config", async () => readAgentConfig(storage, "stage-manager"));
@@ -1093,7 +1094,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
         return reply.code(404).send({ error: "NotFound", message: `Server ${guildId} is not configured.` });
       }
       await rm(serverPath, { recursive: true, force: true });
-      return { accepted: true, message: `Server ${guildId} configuration removed (sessions and rosters included).` };
+      return { accepted: true, message: `Server ${guildId} configuration removed (sessions, rosters and decision history included).` };
     });
   });
 

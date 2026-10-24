@@ -150,7 +150,7 @@ export const MIGRATION_STEPS: readonly MigrationStep[] = [
   { id: "ocr-cache-ttl-168-v1", frequency: "once", run: migrateOcrCacheTtlDefault168 }, // acceptance M5
   // Phase 5 steps (spec 9.3, 9.7). The history split must stay after orchestrator-history-responding-waifus
   // above, which still normalizes legacy decision shapes in the global file it splits.
-  { id: "orchestrator-history-per-guild-v1", frequency: "once", run: migrateOrchestratorHistoryPerGuild },
+  { id: "orchestrator-history-per-guild-v1", frequency: "every-boot", run: migrateOrchestratorHistoryPerGuild },
   { id: "server-drop-enabled-flags-v1", frequency: "once", run: migrateServerDropEnabledFlags },
   {
     // Runs LAST: every step above may still leave a file's schemaVersion at 1 even once its shape

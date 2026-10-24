@@ -1,3 +1,4 @@
+import path from "node:path";
 // Per-channel run loop: one run slot per guild with human/manual preemption and a deduped
 // preemption queue, orchestrator decisions (model / deterministic / one-shot) with guardrails and
 // overrides, decision recording, retrigger timers, crash-recovery wakes and restart resume.
@@ -34,7 +35,8 @@ import {
   OrchestratorDecisionHistoryEntry,
   OrchestratorDecisionStatus,
   OrchestratorResponderOutcome,
-  ServerConfig
+  ServerConfig,
+  ServerConfigSchema
 } from "../shared/schemas/domain.js";
 import { nowIso } from "../shared/schemas/common.js";
 import { ChannelSessionStateSchema, type RetriggerWake, createEmptyChannelSessionState } from "./session.js";
@@ -147,9 +149,13 @@ export class ChannelRunner {
     if (this.hooks.isStopping() || this.options.isPaused?.()) return;
     const guildIds = await listKnownGuildIds(this.options.storage);
     for (const guildId of guildIds) {
+      // Read-only: resume must never (re)create a server that was deleted or has no server.json.
       let server: ServerConfig;
       try {
-        server = await ensureServer(this.options.storage, guildId);
+        server = await this.options.storage.readJson(
+          path.join("user", "servers", guildId, "server.json"),
+          ServerConfigSchema
+        );
       } catch {
         continue;
       }
@@ -1004,7 +1010,7 @@ export class ChannelRunner {
         messageIds: []
       })
     );
-    await appendOrchestratorHistory(this.options.storage, {
+    const recorded = await appendOrchestratorHistory(this.options.storage, {
       id: input.decisionId,
       guildId: input.guildId,
       channelId: input.channelId,
@@ -1018,6 +1024,12 @@ export class ChannelRunner {
       responderOutcomes,
       createdAt: nowIso()
     });
+    if (!recorded) {
+      this.options.logger.warn("Orchestrator decision not recorded: the server's folder is gone", {
+        guildId: input.guildId,
+        channelId: input.channelId
+      });
+    }
     this.options.logger.info("Orchestrator decision recorded", {
       guildId: input.guildId,
       channelId: input.channelId,

@@ -7,7 +7,7 @@
 // never contend. Decisions with no guild (untargeted manual triggers) live in the read-only
 // `user/orchestrator/history-legacy.json` that the per-guild migration produces.
 
-import { readdir } from "node:fs/promises";
+import { readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import {
   OrchestratorDecisionHistoryEntry,
@@ -21,6 +21,8 @@ import {
   createEmptyRevisionedFile
 } from "../../shared/schemas/domain.js";
 import { StorageService } from "../../storage/storageService.js";
+
+type WarnLogger = { warn: (message: string, context?: unknown) => void };
 
 /** Decisions kept per guild. */
 export const DECISION_HISTORY_CAP_PER_GUILD = 300;
@@ -48,13 +50,22 @@ async function updateGuildHistory(
   storage: StorageService,
   guildId: string,
   transform: (decisions: OrchestratorDecisionHistoryEntry[]) => OrchestratorDecisionHistoryEntry[]
-): Promise<void> {
-  await storage.updateRevisionedJson({
-    resourceKey: decisionHistoryResourceKey(guildId),
-    relativePath: decisionHistoryPath(guildId),
-    schema: OrchestratorHistoryFileSchema,
-    fallback: emptyHistory(),
-    transform: (current) => ({ ...current, decisions: transform(current.decisions) })
+): Promise<boolean> {
+  // Under the server's lock (the one DELETE /api/servers/:guildId holds while removing the folder)
+  // and only while server.json exists: a history write must never recreate a deleted server's
+  // directory. Lock order is always server -> history.
+  decisionHistoryPath(guildId); // validates the id before it touches a path
+  return storage.withLocks([`server:${guildId}`], async () => {
+    const serverFile = path.join(storage.dataRoot, "user", "servers", guildId, "server.json");
+    if (!(await stat(serverFile).then((info) => info.isFile(), () => false))) return false;
+    await storage.updateRevisionedJson({
+      resourceKey: decisionHistoryResourceKey(guildId),
+      relativePath: decisionHistoryPath(guildId),
+      schema: OrchestratorHistoryFileSchema,
+      fallback: emptyHistory(),
+      transform: (current) => ({ ...current, decisions: transform(current.decisions) })
+    });
+    return true;
   });
 }
 
@@ -105,13 +116,19 @@ export async function readOrchestratorDecision(
  * The envelope takes the highest revision and latest update of the files read. An unreadable file
  * is skipped: one broken guild file must not take the whole history view down.
  */
-export async function readMergedOrchestratorHistory(storage: StorageService): Promise<OrchestratorHistoryFile> {
+export async function readMergedOrchestratorHistory(
+  storage: StorageService,
+  logger?: WarnLogger
+): Promise<OrchestratorHistoryFile> {
   const files: OrchestratorHistoryFile[] = [];
   const tryRead = async (relativePath: string): Promise<void> => {
     try {
       files.push(await storage.readJson(relativePath, OrchestratorHistoryFileSchema, emptyHistory()));
-    } catch {
-      // skipped, see above
+    } catch (error) {
+      logger?.warn("Skipping an unreadable decision-history file", {
+        relativePath,
+        message: error instanceof Error ? error.message : String(error)
+      });
     }
   };
   for (const guildId of await listHistoryGuildIds(storage)) {
@@ -142,8 +159,8 @@ export async function appendOrchestratorHistory(storage: StorageService, entry: 
   waifuMessageIds: string[];
   responderOutcomes: OrchestratorResponderOutcome[];
   createdAt: string;
-}) {
-  await updateGuildHistory(storage, entry.guildId, (decisions) =>
+}): Promise<boolean> {
+  return updateGuildHistory(storage, entry.guildId, (decisions) =>
     [entry, ...decisions].slice(0, DECISION_HISTORY_CAP_PER_GUILD)
   );
 }
@@ -306,11 +323,19 @@ function healPending(decisions: OrchestratorDecisionHistoryEntry[]): Orchestrato
  * Restart heal: a decision still `pending` belongs to a run the restart killed. Walks every known
  * guild (and the legacy file) and only writes a file that actually has something to heal.
  */
-export async function healPendingOrchestratorDecisions(storage: StorageService): Promise<void> {
+export async function healPendingOrchestratorDecisions(storage: StorageService, logger?: WarnLogger): Promise<void> {
   for (const guildId of await listHistoryGuildIds(storage)) {
-    const history = await readOrchestratorHistoryForGuild(storage, guildId);
-    if (!history.decisions.some((decision) => decision.status === "pending")) continue;
-    await updateGuildHistory(storage, guildId, healPending);
+    // One corrupt guild file must not abort runtime.start (or the other guilds' heal).
+    try {
+      const history = await readOrchestratorHistoryForGuild(storage, guildId);
+      if (!history.decisions.some((decision) => decision.status === "pending")) continue;
+      await updateGuildHistory(storage, guildId, healPending);
+    } catch (error) {
+      logger?.warn("Could not heal pending decisions for a guild", {
+        guildId,
+        message: error instanceof Error ? error.message : String(error)
+      });
+    }
   }
   const legacy = await storage
     .readJson(LEGACY_DECISION_HISTORY_PATH, OrchestratorHistoryFileSchema, emptyHistory())
