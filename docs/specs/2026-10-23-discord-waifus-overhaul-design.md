@@ -1430,6 +1430,32 @@ threads active within 24 h. Send errors: 50083 → `unavailable/thread_archived`
 | `</cmd:id>` | `/cmd` |
 | `<t:unix:style>` | always absolute in the app time zone via `formatClock` (`R` is never relative, so frozen text stays true) |
 
+**As built (Phase 5 task C).**
+- Edits: `ContextRuntime.recordMessageEdit` (store `applyMessageEdit`) replaces an unsealed entry in
+  place and, for a sealed one, keeps the body, moves `editedAt`/`state: "edited"` and appends the
+  `edit` event (a not-yet-converted event of the same message is replaced under a fresh seq so every
+  context converts the newest text; at most 3 events per message, later edits only move
+  `editedAt`; embed-only updates that leave the rendered text unchanged are ignored). Downtime
+  edits come from `reconcileEntries` (newer `editedAt` on a sealed entry) via
+  `ContextRuntime.reconcileRecent`, which restart resume runs over the channel's newest 50 messages;
+  the same call finds gap deletes (`detectGapDeletes`, only valid for a page without holes).
+- Deletes: `recordMessageDeletes` / `applyDeletes`. An in-memory tombstone set in the store covers a
+  delete that arrives before its message was reconciled (a stale fetch cannot resurrect it). The
+  old-delete rule is per context: each `ContextState` freezes `redactedIds` (deleted entries newer
+  than its cursor) when its epoch starts or compaction produces the next epoch, and only those
+  render as `(message deleted)`; a running epoch keeps its bytes, so contexts with different epochs
+  stay consistent. The prune cap also drops the events of pruned entries.
+- Threads: the `threads` channel field is optional (absent means `"inherit"`) so zod never
+  manufactures a default into PUT merges. Instead of threading `resolveChannelConfig` through every
+  reader, `ensureServer` returns the server with a virtual channel entry (`thread: { parentId }`,
+  never persisted) for each live tracked thread whose parent has a cast and `threads !== "off"`, so
+  all `server.channels[id]` readers work unchanged; an explicit entry with waifus wins. A message
+  in a thread marks it unarchived (Discord unarchives on send). Thread delete removes the record and
+  the conversation. `joinThread` is best effort for newly created or unarchived public threads.
+- Send errors are classified in `responderExecutor` (`classifyDiscordSendError`); the other
+  permission codes keep the old warning path, with the thread wording for threads.
+- Rendering table: every row already matched `messageRender.ts`; no change was needed.
+
 ### 9.6 Runtime status additions
 
 `/api/runtime` gains `discord.dm: { eligibleWaifus: [{ waifuId, botId, intentActive }], warnings }`
