@@ -110,12 +110,16 @@ export class FakeChannel implements ConversationMessageSource {
 export class FakeImageFetcher implements ImageFetcher {
   calls: ImageRef[] = [];
   failKeys = new Map<string, Exclude<ImageFetchResult, { ok: true }>["reason"]>();
+  /** Byte size to serve for a key (zero-filled), instead of the tiny default body. */
+  sizes = new Map<string, number>();
 
   async get(ref: ImageRef): Promise<ImageFetchResult> {
     this.calls.push(ref);
     const reason = this.failKeys.get(ref.key);
     if (reason) return { ok: false, reason };
-    return { ok: true, mimeType: "image/png", data: Buffer.from(`png:${ref.key}`), source: "network" };
+    const size = this.sizes.get(ref.key);
+    const data = size === undefined ? Buffer.from(`png:${ref.key}`) : Buffer.alloc(size);
+    return { ok: true, mimeType: "image/png", data, source: "network" };
   }
 }
 

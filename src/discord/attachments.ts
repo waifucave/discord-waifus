@@ -117,31 +117,34 @@ export type ImageCacheConfig = DiscordConfig["images"];
 
 /**
  * The shared fetcher's limits (spec 8.4: OCR and inline images use one fetcher). Before Phase 4
- * the OCR service fetched with `ocr.maxImageBytes` / `ocr.timeoutMs`; take the max of those and
- * `discord.images` so nobody loses headroom, and log once when a customised legacy OCR value is
- * what raised the limit (those keys are deprecated for fetching).
+ * the OCR service fetched with `ocr.maxImageBytes` / `ocr.timeoutMs`. A legacy value counts only
+ * when the owner customised it (it differs from its own default): then the max of it and
+ * `discord.images` applies so nobody loses headroom, and a warning is logged because those keys
+ * are deprecated for fetching. A legacy value left at its default never raises the limit, so
+ * `discord.images.maxBytes` / `fetchTimeoutMs` stay authoritative and lowering them takes effect.
+ * (Inline images have their own provider-safe cap on top, see `MAX_INLINE_IMAGE_BYTES`.)
  */
 export function sharedImageFetcherConfig(
   app: { discord: { images: ImageCacheConfig }; ocr: { maxImageBytes: number; timeoutMs: number } },
   logger?: Pick<Logger, "warn">
 ): ImageCacheConfig {
   const images = app.discord.images;
-  const legacyBytes = app.ocr.maxImageBytes;
-  const legacyTimeout = Math.max(500, app.ocr.timeoutMs);
   const defaults = DEFAULT_APP_CONFIG.ocr;
+  const legacyBytesSet = app.ocr.maxImageBytes !== defaults.maxImageBytes;
+  const legacyTimeoutSet = app.ocr.timeoutMs !== defaults.timeoutMs;
+  const maxBytes = legacyBytesSet ? Math.max(images.maxBytes, app.ocr.maxImageBytes) : images.maxBytes;
+  const fetchTimeoutMs = legacyTimeoutSet
+    ? Math.max(images.fetchTimeoutMs, Math.max(500, app.ocr.timeoutMs))
+    : images.fetchTimeoutMs;
   const raised: string[] = [];
-  if (legacyBytes > images.maxBytes && legacyBytes !== defaults.maxImageBytes) raised.push("ocr.maxImageBytes");
-  if (legacyTimeout > images.fetchTimeoutMs && app.ocr.timeoutMs !== defaults.timeoutMs) raised.push("ocr.timeoutMs");
+  if (maxBytes > images.maxBytes) raised.push("ocr.maxImageBytes");
+  if (fetchTimeoutMs > images.fetchTimeoutMs) raised.push("ocr.timeoutMs");
   if (raised.length > 0) {
     logger?.warn(
       `Deprecated: ${raised.join(" and ")} still raise the shared image fetch limits; set discord.images.maxBytes / fetchTimeoutMs instead.`
     );
   }
-  return {
-    ...images,
-    maxBytes: Math.max(images.maxBytes, legacyBytes),
-    fetchTimeoutMs: Math.max(images.fetchTimeoutMs, legacyTimeout)
-  };
+  return { ...images, maxBytes, fetchTimeoutMs };
 }
 
 export type DiscordImageFetcherOptions = {
