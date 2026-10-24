@@ -15,7 +15,7 @@ afterEach(async () => {
   roots = [];
 });
 
-async function makeApp() {
+async function makeApp(logger?: Parameters<typeof createApiServer>[0]["logger"]) {
   const root = await makeTempRoot();
   roots.push(root);
   await ensureDataLayout(root);
@@ -30,7 +30,7 @@ async function makeApp() {
     discord: { connected: false, orchestratorConnected: false, waifuBotCount: 0, warnings: [] },
     queues: { active: 0, configuredGuilds: 0 }
   });
-  return createApiServer({ dataRoot: root, runtime, storage: new StorageService(root) });
+  return createApiServer({ dataRoot: root, runtime, storage: new StorageService(root), logger });
 }
 
 describe("B17: partial PUT bodies never re-materialize nested defaults", () => {
@@ -135,24 +135,70 @@ describe("B17: partial PUT bodies never re-materialize nested defaults", () => {
     }
   });
 
-  it("channel PUT omitting enabled keeps the stored value", async () => {
+  it("channel PUT keeps omitted fields and accepts but ignores the removed enabled flag (spec 9.7)", async () => {
     const app = await makeApp();
     try {
       const url = `/api/servers/${GUILD}/channels/${CHANNEL}`;
       const created = await app.inject({ method: "PUT", url, payload: { enabledWaifuIds: ["a"] } });
       expect(created.statusCode).toBe(200);
-      // A brand-new channel written through this route is enabled unless told otherwise.
-      expect(created.json().channels[CHANNEL].enabled).toBe(true);
+      expect(created.json().channels[CHANNEL]).toEqual({ channelId: CHANNEL, enabledWaifuIds: ["a"] });
 
-      const disabled = await app.inject({ method: "PUT", url, payload: { enabled: false } });
-      expect(disabled.json().channels[CHANNEL]).toMatchObject({ enabled: false, enabledWaifuIds: ["a"] });
+      // `enabled` is accepted for one release but never stored and never silences the channel.
+      const ignored = await app.inject({ method: "PUT", url, payload: { enabled: false } });
+      expect(ignored.statusCode).toBe(200);
+      expect(ignored.json().channels[CHANNEL]).toEqual({ channelId: CHANNEL, enabledWaifuIds: ["a"] });
 
       const renamed = await app.inject({ method: "PUT", url, payload: { name: "general", enabledWaifuIds: ["a", "b"] } });
-      expect(renamed.json().channels[CHANNEL]).toMatchObject({
-        enabled: false,
+      expect(renamed.json().channels[CHANNEL]).toEqual({
+        channelId: CHANNEL,
         name: "general",
         enabledWaifuIds: ["a", "b"]
       });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("logs once when a body still carries the removed enabled flag, and not when it does not", async () => {
+    const warnings: string[] = [];
+    const logger = {
+      debug: () => undefined,
+      info: () => undefined,
+      warn: (message: string) => void warnings.push(message),
+      error: () => undefined
+    };
+    const app = await makeApp(logger);
+    try {
+      const url = `/api/servers/${GUILD}`;
+      await app.inject({ method: "PUT", url, payload: { paused: false } });
+      await app.inject({ method: "PUT", url: `${url}/channels/${CHANNEL}`, payload: { enabledWaifuIds: ["a"] } });
+      expect(warnings).toEqual([]);
+      await app.inject({ method: "PUT", url, payload: { enabled: true } });
+      await app.inject({ method: "PUT", url: `${url}/channels/${CHANNEL}`, payload: { enabled: false } });
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toMatch(/Ignoring `enabled`/);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("server PUT accepts but ignores the removed enabled flag, on the server and on wholesale channels", async () => {
+    const app = await makeApp();
+    try {
+      const url = `/api/servers/${GUILD}`;
+      const saved = await app.inject({
+        method: "PUT",
+        url,
+        payload: {
+          enabled: true,
+          paused: true,
+          channels: { [CHANNEL]: { channelId: CHANNEL, enabled: false, enabledWaifuIds: ["a"] } }
+        }
+      });
+      expect(saved.statusCode).toBe(200);
+      expect(saved.json()).not.toHaveProperty("enabled");
+      expect(saved.json().paused).toBe(true);
+      expect(saved.json().channels[CHANNEL]).toEqual({ channelId: CHANNEL, enabledWaifuIds: ["a"] });
     } finally {
       await app.close();
     }

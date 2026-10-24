@@ -506,14 +506,12 @@ export type UpdateWaifuBody = Partial<
 export type ChannelConfig = {
   channelId: string;
   name?: string;
-  enabled: boolean;
   enabledWaifuIds: string[];
 };
 
 export type ServerConfig = Revisioned & {
   guildId: string;
   name?: string;
-  enabled: boolean;
   orchestratorMode?: "model" | "deterministic" | "one-shot";
   oneShot?: { target: string };
   stageManagerEnabled?: boolean;
@@ -543,7 +541,6 @@ export type UpdateServerBody = Partial<
 export type ChannelBody = {
   revision: number;
   name?: string;
-  enabled: boolean;
   enabledWaifuIds?: string[];
 };
 

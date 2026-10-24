@@ -778,26 +778,41 @@ describe("Backend API", () => {
     it("history endpoints accept guildId/channelId/limit filters", async () => {
       const { app, root } = await makeApp();
       try {
-        const decision = (id: string) => ({
+        // Decisions are stored per guild (spec 9.3), newest first; no-guild ones live in the legacy file.
+        const decision = (id: string, guildId: string | undefined, channelId: string, minute: number) => ({
           id,
+          ...(guildId ? { guildId } : {}),
+          channelId,
           action: "no_reply",
           respondingWaifus: [],
           reasoning: "seeded",
           status: "completed",
           waifuMessageIds: [],
           responderOutcomes: [],
-          createdAt: new Date().toISOString()
+          createdAt: `2026-10-01T12:${String(minute).padStart(2, "0")}:00.000Z`
         });
-        await writeFile(
-          path.join(root, "user", "orchestrator", "history.json"),
-          JSON.stringify({ schemaVersion: CURRENT_SCHEMA_VERSION, revision: 1, updatedAt: new Date().toISOString(), decisions: [decision("d2"), decision("d1")] })
-        );
-        const all = JSON.parse((await app.inject({ method: "GET", url: "/api/orchestrator/history" })).body) as { decisions: unknown[] };
-        expect(all.decisions.length).toBe(2);
-        const limited = JSON.parse((await app.inject({ method: "GET", url: "/api/orchestrator/history?limit=1" })).body) as { decisions: unknown[] };
-        expect(limited.decisions.length).toBe(1);
+        const seed = async (relativePath: string, decisions: unknown[]) => {
+          await mkdir(path.dirname(path.join(root, relativePath)), { recursive: true });
+          await writeFile(
+            path.join(root, relativePath),
+            JSON.stringify({ schemaVersion: CURRENT_SCHEMA_VERSION, revision: 1, updatedAt: new Date().toISOString(), decisions })
+          );
+        };
+        await seed("user/servers/g-a/orchestrator-history.json", [decision("a2", "g-a", "c1", 30), decision("a1", "g-a", "c2", 10)]);
+        await seed("user/servers/g-b/orchestrator-history.json", [decision("b1", "g-b", "c1", 20)]);
+        await seed("user/orchestrator/history-legacy.json", [decision("old", undefined, "c9", 5)]);
+        const ids = (body: string) => (JSON.parse(body) as { decisions: Array<{ id: string }> }).decisions.map((d) => d.id);
+        const all = await app.inject({ method: "GET", url: "/api/orchestrator/history" });
+        expect(ids(all.body)).toEqual(["a2", "b1", "a1", "old"]);
+        // unchanged response shape: the revisioned envelope plus `decisions`
+        expect(Object.keys(JSON.parse(all.body)).sort()).toEqual(["decisions", "revision", "schemaVersion", "updatedAt"]);
+        expect(ids((await app.inject({ method: "GET", url: "/api/orchestrator/history?limit=2" })).body)).toEqual(["a2", "b1"]);
+        expect(ids((await app.inject({ method: "GET", url: "/api/orchestrator/history?guildId=g-a" })).body)).toEqual(["a2", "a1"]);
+        expect(ids((await app.inject({ method: "GET", url: "/api/orchestrator/history?guildId=g-a&channelId=c2" })).body)).toEqual(["a1"]);
+        expect(ids((await app.inject({ method: "GET", url: "/api/orchestrator/history?channelId=c1" })).body)).toEqual(["a2", "b1"]);
         const filtered = JSON.parse((await app.inject({ method: "GET", url: "/api/orchestrator/history?guildId=g-none" })).body) as { decisions: unknown[] };
         expect(filtered.decisions.length).toBe(0);
+        expect((await app.inject({ method: "GET", url: "/api/orchestrator/history?guildId=../x" })).statusCode).toBe(400);
         const sm = await app.inject({ method: "GET", url: "/api/stage-manager/history?limit=1&guildId=g-none" });
         expect(sm.statusCode).toBe(200);
         const rv = await app.inject({ method: "GET", url: "/api/reviewer/history?limit=1" });

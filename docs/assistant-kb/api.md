@@ -58,15 +58,15 @@ does goes through these endpoints, so any agent can drive the app with plain HTT
 | POST | /api/waifus/:id/assets/pfp · /banner | Upload raw image bytes (png/jpeg/webp/gif, max 8 MB). Stored under `user/waifus/:id/` only — nothing applies it to the Discord bot or shows it yet. |
 | GET | /api/servers | Guilds with channels and their waifu lists. |
 | GET | /api/servers/:guildId | One guild. |
-| PUT | /api/servers/:guildId | Partial server settings: `paused`, `orchestratorMode`, `oneShot`, `stageManagerEnabled`, `contextWindows`, `compaction`, `memoryInjectionLimit`, `tools`, `enabled`, `channels` (wholesale). |
+| PUT | /api/servers/:guildId | Partial server settings: `paused`, `orchestratorMode`, `oneShot`, `stageManagerEnabled`, `contextWindows`, `compaction`, `memoryInjectionLimit`, `tools`, `channels` (wholesale). |
 | DELETE | /api/servers/:guildId | Remove the guild config incl. sessions and rosters. |
-| PUT | /api/servers/:guildId/channels/:channelId | `{enabledWaifuIds?, name?, enabled?}` — one channel; omitted fields keep their value. |
+| PUT | /api/servers/:guildId/channels/:channelId | `{enabledWaifuIds?, name?}` — one channel; omitted fields keep their value. |
 | DELETE | /api/servers/:guildId/channels/:channelId | Remove one channel entry. |
 | GET/POST | /api/servers/:guildId/members·roles·emojis(/refresh) | Guild caches. |
 | GET | /api/discord-bots | Bot entries (tokens redacted). |
 | PUT | /api/discord-bots | `{orchestrator?, waifus?}` — each entry needs `enabled`; a sent `waifus` array replaces the list, omitted tokens are kept per id. |
 | GET/PUT | /api/orchestrator/config | Director model/prompt/params (revisioned). |
-| GET | /api/orchestrator/history | Recent decisions, newest first. |
+| GET | /api/orchestrator/history | Recent decisions, newest first, merged across guilds (or one guild with `?guildId=`). |
 | GET | /api/orchestrator/one-shot/models | Native-choice decision catalog and credential/local-setup presence; no secrets or inference. |
 | GET/PUT | /api/stage-manager/config | Observer/librarian agent config. |
 | GET | /api/stage-manager/history | Observer history. |
@@ -158,9 +158,9 @@ curl -s -X PUT http://127.0.0.1:3888/api/waifus/riko \
   with `usageKnown: false` when the provider reported none), cache read/write tokens, cost when
   known and status `ok | aborted | failed`. One-shot orchestrator decisions are logged with purpose
   `one_shot`. There is no HTTP endpoint for it yet.
-- **Channel and server `enabled`**: a channel is active exactly when its `enabledWaifuIds` is
-  non-empty; its stored `enabled` flag is not read by the runtime. A server's `enabled` flag only
-  gates restart catch-up after a reboot, not live messages — use `paused` to silence a server.
+- **No channel or server `enabled` flag**: a channel is live exactly when its `enabledWaifuIds` is
+  non-empty, and `paused` is the server's kill switch (restart catch-up honours it too). The old
+  flags were removed; bodies that still send `enabled` are accepted for one release and ignored.
 - **Unlink a bot**: `PUT /api/waifus/:id` with `"botId": null`.
 - **Link a bot**: `POST /api/waifus/:id/link-bot {applicationId?}` — one call ensures the
   discord-bots entry, sets the application id, and links the waifu's botId.

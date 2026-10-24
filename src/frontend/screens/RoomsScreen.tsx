@@ -49,7 +49,7 @@ function GuildMosaic({ onNavigate }: { onNavigate: (view: ViewId, tab?: string, 
                     <div className="t-micro" style={{ marginTop: 8 }}>{guild.guildId}</div>
                   </div>
                   <span className="meta">
-                    {live.length} of {channels.length} channels live{!guild.enabled && " · server disabled"}
+                    {live.length} of {channels.length} channels live{guild.paused && " · paused"}
                   </span>
                 </button>
               );
@@ -79,7 +79,6 @@ function GuildScreen({ guildId, onNavigate }: { guildId: string; onNavigate: (vi
       const saved = await api.updateChannel(guildId, channelId, {
         revision: server.data.revision,
         name: channel?.name,
-        enabled: next.length > 0,
         enabledWaifuIds: next
       });
       server.setData(saved);
@@ -112,18 +111,19 @@ function GuildScreen({ guildId, onNavigate }: { guildId: string; onNavigate: (vi
       <HeadRow onBack={() => onNavigate("rooms")} title={server.data?.name ?? guildId} sub="toggle who may speak, per channel" />
       <div className="fgrid" style={{ flex: "none", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 240px), 1fr))", maxHeight: "65vh", overflow: "auto" }}>
         <div className="fcell">
-          <label className="field-label">Server</label>
+          <label className="field-label">Server switch</label>
           <label className="checkbox-chip">
             <input
               type="checkbox"
-              checked={serverPaused}
-              onChange={(e) => void saveServerField({ paused: e.target.checked })}
+              checked={!serverPaused}
+              onChange={(e) => void saveServerField({ paused: !e.target.checked })}
             />
-            {serverPaused ? "Paused — nothing speaks until unpaused" : "Live"}
+            {serverPaused ? "Paused — nothing speaks until switched back on" : "Live"}
           </label>
           <span className="field-hint">
-            Pause mutes every channel of this server: messages are still observed, but no replies, wakes, or
-            memory passes run.
+            The one switch for this server. Off mutes every channel: messages are still observed, but no
+            replies, wakes, or memory passes run, and nothing resumes after a restart. A channel is live when
+            at least one waifu is enabled in it.
           </span>
         </div>
         <div className="fcell">

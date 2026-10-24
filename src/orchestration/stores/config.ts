@@ -86,7 +86,7 @@ export async function ensureServer(storage: StorageService, guildId: string): Pr
     resourceKey: `server:${guildId}`,
     relativePath: path.join("user", "servers", guildId, "server.json"),
     schema: ServerConfigSchema,
-    fallback: ServerConfigSchema.parse({ ...createRevisionedBase(), guildId, enabled: true }),
+    fallback: ServerConfigSchema.parse({ ...createRevisionedBase(), guildId }),
     transform: (current) => current
   });
 }
@@ -133,7 +133,6 @@ export async function ensureChannelConfig(services: RuntimeServices, server: Ser
             : {
                 channelId,
                 name: metadata?.channelName,
-                enabled: false,
                 enabledWaifuIds: []
               }
         }
