@@ -1211,7 +1211,8 @@ function mergeDiscordBots(
   current: DiscordBotsFile,
   patch: Partial<DiscordBotsFile>
 ): DiscordBotsFile {
-  const orchestrator =
+  // The House bot lives under the bots file's `orchestrator` key.
+  const house =
     patch.orchestrator === undefined
       ? current.orchestrator
       : patch.orchestrator === null
@@ -1229,7 +1230,7 @@ function mergeDiscordBots(
     : current.waifus;
   return {
     ...current,
-    orchestrator,
+    orchestrator: house,
     waifus
   };
 }
