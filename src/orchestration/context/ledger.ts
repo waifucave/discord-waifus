@@ -21,6 +21,24 @@ export const LEDGER_ENTRY_CAP = 2000;
 export const LEDGER_PROTECT_NEWEST = 200;
 export const ACTIVE_CONTEXT_MS = 7 * 24 * 60 * 60 * 1000;
 
+/**
+ * The pruning floor an active stage-manager observer holds (spec 8.7): it has read everything up
+ * to and including its cursor, so entries from the cursor on must stay or the observer would
+ * skip them (memory loss). A cursor that names no ledger entry yet (only a legacy message id, or
+ * none) holds nothing, and the hold never reaches further back than `cap` entries from the head,
+ * so a lagging observer cannot pin the ledger (a stale one is dropped by ACTIVE_CONTEXT_MS).
+ */
+export function observerPruneCursor(
+  ledger: ConversationLedger,
+  cursor: { cursorSeq: number | null; cursorMessageId: string | null },
+  cap: number = LEDGER_ENTRY_CAP
+): number | undefined {
+  const seq = cursor.cursorSeq ?? (cursor.cursorMessageId ? ledger.entries[cursor.cursorMessageId]?.seq : undefined);
+  if (seq === undefined) return undefined;
+  const ordered = orderedEntries(ledger);
+  return ordered.length > cap ? Math.max(seq, ordered[ordered.length - cap]!.seq) : seq;
+}
+
 export function isGapEntry(entry: Pick<LedgerEntry, "id">): boolean {
   return entry.id.startsWith(GAP_ENTRY_PREFIX);
 }

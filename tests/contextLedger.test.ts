@@ -2,10 +2,12 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { FileContextStore } from "../src/orchestration/context/contextStore.js";
+import { advanceObserverCursor } from "../src/orchestration/observerCursor.js";
 import { conversationKey, contextStatePath, conversationLedgerPath } from "../src/orchestration/context/keys.js";
 import {
   EARLIER_MESSAGES_NOT_LOADED,
   entryRenderHash,
+  observerPruneCursor,
   orderedEntries,
   pruneLedgerEntries,
   reconcileEntries,
@@ -143,6 +145,17 @@ describe("ledger pruning (spec 8.1)", () => {
     const pruned = pruneLedgerEntries(ledgerOf(10), { activeCursors: [], cap: 4, protectNewest: 0 })!;
     expect(orderedEntries(pruned.ledger).map((e) => e.seq)).toEqual([7, 8, 9, 10]);
   });
+
+  it("the observer holds from its read-through cursor, mapped from a message id when needed, capped", () => {
+    const ledger = ledgerOf(10);
+    expect(observerPruneCursor(ledger, { cursorSeq: 3, cursorMessageId: "1002" })).toBe(3);
+    expect(observerPruneCursor(ledger, { cursorSeq: null, cursorMessageId: "1004" })).toBe(5);
+    // Nothing read from this ledger yet: no hold (a null would block all pruning).
+    expect(observerPruneCursor(ledger, { cursorSeq: null, cursorMessageId: "999" })).toBeUndefined();
+    expect(observerPruneCursor(ledger, { cursorSeq: null, cursorMessageId: null })).toBeUndefined();
+    // A lagging observer never holds more than `cap` entries from the head.
+    expect(observerPruneCursor(ledger, { cursorSeq: 1, cursorMessageId: "1000" }, 4)).toBe(7);
+  });
 });
 
 describe("FileContextStore", () => {
@@ -232,6 +245,31 @@ describe("FileContextStore", () => {
     // Once it arrives the message keeps that ref.
     await s.reconcileLedger(key, [raw({ id: "9001" })], discordMessageRenderer);
     expect((await s.assignRefs(key, ["9001"])).get("9001")).toBe(sent.get("9001"));
+  });
+
+  // Acceptance M3: messages the stage-manager observer has not read yet must survive pruning, but
+  // an observer that stopped running (> 7 days since it last advanced) never pins the ledger.
+  it("pruning keeps what an active observer has not read, and ignores a stale observer", async () => {
+    let now = BASE_TIME;
+    const { storage, store: s } = await store(() => new Date(now));
+    const ref = { kind: "guild", guildId: "100", channelId: "200" } as const;
+    await s.reconcileLedger(key, Array.from({ length: 8 }, (_, i) => raw({ id: String(7000 + i) })), discordMessageRenderer);
+    await advanceObserverCursor(storage, ref, { cursorSeq: 2, cursorMessageId: "7001" }, new Date(now));
+    await s.commitPrepare(key, waifu, { sealIds: [], update: (st) => ({ ...st, cursorSeq: 6, lastUsedAt: new Date(now).toISOString() }) });
+    expect(orderedEntries(await s.loadLedger(key)).map((e) => e.seq)).toEqual([2, 3, 4, 5, 6, 7, 8]);
+    // Eight days later the observer has not advanced (disabled or dead); the waifu is active.
+    now = BASE_TIME + 8 * 86_400_000;
+    await s.commitPrepare(key, waifu, { sealIds: [], update: (st) => ({ ...st, cursorSeq: 6, lastUsedAt: new Date(now).toISOString() }) });
+    expect(orderedEntries(await s.loadLedger(key)).map((e) => e.seq)).toEqual([6, 7, 8]);
+  });
+
+  it("an active observer that has not read a ledger yet does not block pruning", async () => {
+    const { storage, store: s } = await store();
+    const ref = { kind: "guild", guildId: "100", channelId: "200" } as const;
+    await s.reconcileLedger(key, Array.from({ length: 8 }, (_, i) => raw({ id: String(7000 + i) })), discordMessageRenderer);
+    await advanceObserverCursor(storage, ref, { cursorMessageId: "6999" }, new Date(BASE_TIME));
+    await s.commitPrepare(key, waifu, { sealIds: [], update: (st) => ({ ...st, cursorSeq: 6, lastUsedAt: new Date(BASE_TIME).toISOString() }) });
+    expect(orderedEntries(await s.loadLedger(key)).map((e) => e.seq)).toEqual([6, 7, 8]);
   });
 
   it("commitPrepare aborts the whole write on a state or ledger conflict", async () => {

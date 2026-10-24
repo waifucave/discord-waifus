@@ -36,6 +36,7 @@ import {
   ACTIVE_CONTEXT_MS,
   entryRenderHash,
   newestSeq,
+  observerPruneCursor,
   orderedEntries,
   pruneLedgerEntries,
   reconcileEntries,
@@ -49,6 +50,8 @@ import type { ContextStore, GuildDirectoryView, MessageRenderer } from "./types.
 export const contextResourceKey = (k: ConversationKey, a: ContextAgent) => `context:${k}:${contextAgentId(a)}`;
 export const refsResourceKey = (k: ConversationKey) => `refs:${k}`;
 export const ledgerResourceKey = (k: ConversationKey) => `ledger:${k}`;
+/** The stage-manager observer's cursor file (observerCursor.ts) sits beside the agent contexts. */
+const OBSERVER_AGENT_ID = contextAgentId({ kind: "stage-manager" });
 
 export type ReconcileLedgerOptions = {
   dir?: GuildDirectoryView;
@@ -281,7 +284,9 @@ export class FileContextStore implements ContextEngineStore {
   }
 
   // Caller holds the ledger and refs locks. Returns the pruned ledger (not yet written) or
-  // undefined; refs are written here.
+  // undefined; refs are written here. Active cursors are every context used in the last 7 days
+  // plus the stage-manager observer's (its state lives beside them, same activity rule, but its
+  // cursor is "read through" and its hold is capped, see observerPruneCursor).
   private async pruneLocked(
     k: ConversationKey,
     ledger: ConversationLedger,
@@ -294,6 +299,11 @@ export class FileContextStore implements ContextEngineStore {
       const state = overrides[agentId] ?? (await this.readStateFile(k, agentId));
       if (!state) continue;
       if (now - Date.parse(state.lastUsedAt) > ACTIVE_CONTEXT_MS) continue;
+      if (agentId === OBSERVER_AGENT_ID) {
+        const observer = observerPruneCursor(ledger, state);
+        if (observer !== undefined) cursors.push(observer);
+        continue;
+      }
       cursors.push(state.cursorSeq);
     }
     const result = pruneLedgerEntries(ledger, {
