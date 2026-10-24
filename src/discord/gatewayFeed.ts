@@ -26,6 +26,19 @@ type Sink = {
   directory(event: DiscordDirectoryEvent): void;
   /** Our own bots' user ids (orchestrator included): its debug posts are never conversation. */
   ignoredAuthorIds(): ReadonlySet<string>;
+  /** Required for a `dm:<waifuId>` scope: whose DMs this client carries (spec 9.1). */
+  dm?: DmFeedOptions;
+};
+
+/**
+ * A waifu bot's DM feed (spec 9.1): one waifu per DM-eligible bot, so every DM channel of the
+ * client is the conversation `dm_<user>_<waifu>`. Partial events (deletes, reactions on uncached
+ * messages) carry only the channel id; `userForChannel` maps it back to the user.
+ */
+export type DmFeedOptions = {
+  waifuId: string;
+  userForChannel(channelId: string): string | undefined;
+  noteChannel(channelId: string, userId: string): void;
 };
 
 // Structural views of the discord.js objects we read, so a malformed event cannot throw here.
@@ -112,6 +125,11 @@ export function guildSnapshotEvent(guild: Guild): DiscordDirectoryEvent {
 }
 
 export function attachGatewayFeed(client: Client, scope: DiscordConnectionScope, sink: Sink): void {
+  if (scope !== "guild") {
+    if (!sink.dm) throw new Error(`A DM feed (${scope}) needs its waifu.`);
+    attachDmFeed(client, scope, sink, sink.dm);
+    return;
+  }
   const guildConversation = (guildId: string, channelId: string) => ({ kind: "guild" as const, guildId, channelId });
 
   // ---- messages -------------------------------------------------------------------------------
@@ -257,4 +275,95 @@ export function attachGatewayFeed(client: Client, scope: DiscordConnectionScope,
   client.on(Events.GuildMemberAdd, (member) => sink.directory({ type: "memberUpsert", guildId: member.guild.id, member: memberEntry(member) }));
   client.on(Events.GuildMemberUpdate, (_old, member) => sink.directory({ type: "memberUpsert", guildId: member.guild.id, member: memberEntry(member) }));
   client.on(Events.GuildMemberRemove, (member) => sink.directory({ type: "memberRemove", guildId: member.guild.id, userId: member.id }));
+}
+
+type DmChannelLike = { id?: string; type?: number; recipientId?: string | null } | null | undefined;
+// discord.js ChannelType.DM; group DMs (3) never reach bots and are dropped anyway.
+const DM_CHANNEL_TYPE = 1;
+
+function attachDmFeed(client: Client, scope: DiscordConnectionScope, sink: Sink, dm: DmFeedOptions): void {
+  const conversation = (userId: string) => ({ kind: "dm" as const, waifuId: dm.waifuId, userId });
+  const selfId = () => client.user?.id;
+  /** The user of a DM channel: its recipient, else (our own message) the channel we noted. */
+  const userOf = (channelId: string | undefined, channel: DmChannelLike, author?: { id: string } | null): string | undefined => {
+    if (channel?.type !== undefined && channel.type !== DM_CHANNEL_TYPE) return undefined;
+    const fromChannel = channel?.recipientId ?? undefined;
+    const fromAuthor = author && author.id !== selfId() ? author.id : undefined;
+    const userId = fromChannel ?? fromAuthor ?? (channelId ? dm.userForChannel(channelId) : undefined);
+    if (userId && channelId) dm.noteChannel(channelId, userId);
+    return userId;
+  };
+  type MessageView = { id: string; guildId?: string | null; channelId: string; channel?: DmChannelLike; author?: { id: string } | null };
+
+  client.on(Events.MessageCreate, (message) => {
+    const m = message as unknown as MessageView;
+    if (m.guildId) return;
+    const userId = userOf(m.channelId, m.channel, m.author);
+    if (!userId) return;
+    sink.conversation({ type: "create", conversation: conversation(userId), message: toRawDiscordMessage(message as unknown as DiscordMessageLike) });
+  });
+  client.on(Events.MessageUpdate, (_old, updated) => {
+    const m = updated as unknown as MessageView;
+    if (m.guildId) return;
+    const userId = userOf(m.channelId, m.channel, m.author);
+    if (!userId) return;
+    const like = updated as unknown as Partial<DiscordMessageLike>;
+    if (isCompleteDiscordMessage(like)) {
+      sink.conversation({ type: "update", conversation: conversation(userId), messageId: updated.id, message: toRawDiscordMessage(like) });
+      return;
+    }
+    const patch = rawMessagePatch(like);
+    if (Object.keys(patch).length > 0) sink.conversation({ type: "update", conversation: conversation(userId), messageId: updated.id, patch });
+  });
+  client.on(Events.MessageDelete, (message) => {
+    const m = message as unknown as MessageView;
+    if (m.guildId) return;
+    const userId = userOf(m.channelId, m.channel);
+    if (userId) sink.conversation({ type: "delete", conversation: conversation(userId), messageId: m.id });
+  });
+  client.on(Events.MessageBulkDelete, (messages, channel) => {
+    const c = channel as unknown as DmChannelLike & { guildId?: string | null };
+    if (c?.guildId) return;
+    const userId = userOf(c?.id, c);
+    if (userId) sink.conversation({ type: "deleteBulk", conversation: conversation(userId), messageIds: [...messages.keys()] });
+  });
+  const reactionUser = (message: unknown) => {
+    const m = message as MessageView;
+    if (m.guildId) return undefined;
+    return userOf(m.channelId, m.channel);
+  };
+  client.on(Events.MessageReactionAdd, (reaction, user) => {
+    const userId = reactionUser(reaction.message);
+    if (!userId) return;
+    const u = user as UserLike;
+    const name = u.globalName ?? u.username ?? undefined;
+    sink.conversation({
+      type: "reaction",
+      conversation: conversation(userId),
+      action: "add",
+      messageId: reaction.message.id,
+      emoji: emojiOf(reaction.emoji),
+      ...(typeof reaction.count === "number" ? { count: reaction.count } : {}),
+      userId: u.id,
+      ...(name ? { userName: name } : {})
+    });
+  });
+  client.on(Events.MessageReactionRemove, (reaction, user) => {
+    const userId = reactionUser(reaction.message);
+    if (!userId) return;
+    sink.conversation({
+      type: "reaction",
+      conversation: conversation(userId),
+      action: "remove",
+      messageId: reaction.message.id,
+      emoji: emojiOf(reaction.emoji),
+      ...(typeof reaction.count === "number" ? { count: reaction.count } : {}),
+      userId: (user as UserLike).id
+    });
+  });
+
+  client.on(Events.ShardReady, () => sink.conversation(connectionEvent(scope, "ready")));
+  client.on(Events.ShardReconnecting, () => sink.conversation(connectionEvent(scope, "reconnecting")));
+  client.on(Events.ShardResume, () => sink.conversation(connectionEvent(scope, "resumed")));
+  client.on(Events.ShardDisconnect, () => sink.conversation(connectionEvent(scope, "disconnected")));
 }
