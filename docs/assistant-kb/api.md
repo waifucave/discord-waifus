@@ -38,7 +38,7 @@ does goes through these endpoints, so any agent can drive the app with plain HTT
 |---|---|---|
 | GET | /api/health | Liveness. |
 | GET | /api/status | Runtime + Discord connection state. |
-| GET | /api/runtime | Runtime state incl. pause state and queues; host paths/process fields are local-only. |
+| GET | /api/runtime | Runtime state incl. pause state, queues and `providerAlerts` (`[{providerId, kind: "quota"\|"billing", until, lastMessage}]`, active provider cooldowns during which calls fail fast); host paths/process fields are local-only. |
 | GET | /api/admin/operations/:operationId | Principal-scoped mutation recovery status; no response body/result. |
 | POST | /api/runtime/pause · /resume | Pause/resume all orchestration (takes effect in memory immediately, then persisted as `runtime.paused` in config.toml so it survives reloads/restarts; if that write fails the response carries a `warning`). |
 | POST | /api/runtime/reload | Reload configs into the running orchestrator. |
@@ -58,7 +58,7 @@ does goes through these endpoints, so any agent can drive the app with plain HTT
 | POST | /api/waifus/:id/assets/pfp · /banner | Upload raw image bytes (png/jpeg/webp/gif, max 8 MB). Stored under `user/waifus/:id/` only — nothing applies it to the Discord bot or shows it yet. |
 | GET | /api/servers | Guilds with channels and their waifu lists. |
 | GET | /api/servers/:guildId | One guild. |
-| PUT | /api/servers/:guildId | Partial server settings: `paused`, `orchestratorMode`, `oneShot`, `stageManagerEnabled`, `contextWindows`, `memoryInjectionLimit`, `tools`, `enabled`, `channels` (wholesale). |
+| PUT | /api/servers/:guildId | Partial server settings: `paused`, `orchestratorMode`, `oneShot`, `stageManagerEnabled`, `contextWindows`, `compaction`, `memoryInjectionLimit`, `tools`, `enabled`, `channels` (wholesale). |
 | DELETE | /api/servers/:guildId | Remove the guild config incl. sessions and rosters. |
 | PUT | /api/servers/:guildId/channels/:channelId | `{enabledWaifuIds?, name?, enabled?}` — one channel; omitted fields keep their value. |
 | DELETE | /api/servers/:guildId/channels/:channelId | Remove one channel entry. |
@@ -129,6 +129,21 @@ curl -s -X PUT http://127.0.0.1:3888/api/waifus/riko \
   Waifu `verbosity`, `customInstructions` and `scheduleInPrompt` are plain optional fields: omit
   them and the stored value is kept. A waifu body may still carry `promptLayout`; it is accepted,
   ignored and logged once (the layout editor was removed). A channel PUT that omits a field keeps its current value.
+- **Context windows and compaction (servers)**: `contextWindows.{orchestrator,waifu,stageManager}`
+  only set how many recent messages a conversation loads when it starts or after downtime. An
+  unset key falls back to the agent's or waifu's own `contextWindow`; `null` removes an override
+  (older versions stored the defaults 20 / 50 / 80 explicitly; a migration removed those). Whether and
+  when a conversation is summarized is `compaction` (`enabled`, `triggerRatio` 0.3-0.95,
+  `maxMessages` 20-200, `keepRecent` 5-120, `waitTimeoutMs` 0-30000), which merges key by key over
+  the app-level `compaction` config; send `null` for a key to inherit again. `keepRecent` is capped
+  at 60% of `maxMessages`.
+- **Memory origin**: memory records carry `origin: {guildId?, channelId?, dm?}` (where learned)
+  and `subjects` (who it is about); the old top-level `guildId`/`channelId`/`entities` fields no
+  longer exist. `POST /api/memories` still accepts `guildId`/`channelId` and stores them as `origin`.
+- **Usage ledger**: every model call (including aborted and failed ones) appends one line to
+  `user/usage/YYYY-MM-DD.jsonl` (UTC day) with purpose, ids, provider/model, token counts (zero
+  with `usageKnown: false` when the provider reported none), cache read/write tokens, cost when
+  known and status `ok | aborted | failed`. There is no HTTP endpoint for it yet.
 - **Channel and server `enabled`**: a channel is active exactly when its `enabledWaifuIds` is
   non-empty; its stored `enabled` flag is not read by the runtime. A server's `enabled` flag only
   gates restart catch-up after a reboot, not live messages — use `paused` to silence a server.
