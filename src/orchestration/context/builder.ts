@@ -45,7 +45,7 @@ export function modelKeyFor(model: Pick<ResolvedModel, "providerId" | "modelId">
   return `${model.providerId}:${model.modelId}`;
 }
 
-type AnyAddress = { kind: string; seq: number }; // stored breakpoints may carry the legacy "event" kind
+type AnyAddress = { kind: string; seq: number };
 function sameAddress(a: AnyAddress | null | undefined, b: AnyAddress | null | undefined): boolean {
   return !!a && !!b && a.kind === b.kind && a.seq === b.seq;
 }

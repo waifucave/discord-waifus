@@ -173,11 +173,8 @@ type BreakpointAddress = ContextState["lastBreakpoint"];
 /** Transcript position of a block address: an entry, then the notes anchored after it by seq. */
 function breakpointPosition(state: ContextState, address: NonNullable<BreakpointAddress>): [number, number] | undefined {
   if (address.kind === "entry") return [address.seq, -1];
-  if (address.kind === "note") {
-    const note = state.notes.find((candidate) => candidate.seq === address.seq);
-    return note ? [note.anchorSeq, note.seq] : undefined;
-  }
-  return undefined; // legacy "event" addresses carry no comparable position
+  const note = state.notes.find((candidate) => candidate.seq === address.seq);
+  return note ? [note.anchorSeq, note.seq] : undefined;
 }
 
 /** True when `next` is at or after `current` in the transcript (or `current` cannot be placed). */

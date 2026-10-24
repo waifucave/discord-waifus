@@ -50,10 +50,18 @@ export const ContextNoteSchema = z.discriminatedUnion("kind", [
 export type ContextNote = z.infer<typeof ContextNoteSchema>;
 
 const BreakpointSchema = z.object({
-  kind: z.enum(["entry", "note", "event"]),
+  kind: z.enum(["entry", "note"]),
   seq: z.number().int().nonnegative()
 });
 export type ContextBreakpoint = z.infer<typeof BreakpointSchema>;
+
+// Early Phase 4 builds could store a breakpoint on an `event` block, a kind that no longer exists
+// (edits render as notes). Such a stored breakpoint reads as null (no previous C): the next request
+// simply re-marks; new data can never carry it.
+const StoredBreakpointSchema = z.preprocess(
+  (value) => (typeof value === "object" && value !== null && (value as { kind?: unknown }).kind === "event" ? null : value),
+  BreakpointSchema.nullable()
+);
 
 const ImageModeSchema = z.discriminatedUnion("mode", [
   z.object({ mode: z.literal("inline") }),
@@ -74,7 +82,7 @@ export const ContextStateSchema = RevisionedRecordSchema.extend({
   cursorSeq: z.number().int().nonnegative().nullable().default(null), // transcript = ledger entries with seq > cursorSeq
   cursorMessageId: z.string().nullable().default(null), // display only
   timeZone: z.string().min(1), // IANA zone frozen per epoch (host zone at epoch start)
-  lastBreakpoint: BreakpointSchema.nullable().default(null), // block that carried the previous request's C
+  lastBreakpoint: StoredBreakpointSchema.default(null), // block that carried the previous request's C
   summary: z.string().nullable().default(null),
   headerText: z.string().nullable().default(null), // rendered breakpoint-B text, frozen per epoch
   memorySnapshotIds: z.array(z.string()).default([]),
