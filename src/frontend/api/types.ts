@@ -1,15 +1,62 @@
-// Types mirror docs/api.md and src/shared/schemas/*.ts.
-// They are hand-aligned, not generated. Keep narrow and tolerant.
+// The dashboard's API types (overhaul spec §10.6, I17). Domain, config, runtime, life, usage and
+// request-body types are derived from the shared zod schemas with type-only imports (erased at
+// build; `tests/frontendSharedImports.test.ts` keeps it that way). What the server builds by hand
+// (the curated model list, provider status, assistant events) and the Remote Access shapes (their
+// schemas need Node, D5) are mirrored here and kept narrow.
 
-// A winter catalog provider id (`anthropic`, `openrouter`, …): a plain string, the server validates.
-export type ProviderId = string;
+import type { z } from "zod";
+import type {
+  CreateWaifuBodySchema,
+  DetectorConfigResponseSchema,
+  ForgetJobsResponseSchema,
+  LifeCompactResponseSchema,
+  LifeLogBlockSchema,
+  LifeLogLineViewSchema,
+  LifeLogResponseSchema,
+  LifeResetResponseSchema,
+  LifeStatusResponseSchema,
+  LifeWakeViewSchema,
+  NeedsReviewItemSchema,
+  NeedsReviewResponseSchema,
+  OwnerNoticesResponseSchema,
+  PeopleForgetResponseSchema,
+  ProviderCredentialsBodySchema,
+  SearchUsageResponseSchema,
+  UpdateAssistantConfigBodySchema,
+  UpdateChannelBodySchema,
+  UpdateServerBodySchema,
+  UpdateWaifuBodySchema,
+  UsageResponseSchema,
+  WakeResponseSchema
+} from "../../shared/schemas/api";
+import type { AppConfig as SharedAppConfig, UpdateAppConfigBody as SharedUpdateAppConfigBody } from "../../shared/schemas/config";
+import type { CompactionSettings as SharedCompactionSettings } from "../../shared/schemas/compaction";
+import type { DetectorHistoryEntry as SharedDetectorHistoryEntry } from "../../shared/schemas/detector";
+import type { DiscordBotConfig as SharedDiscordBotConfig, ServerConfig as SharedServerConfig, WaifuConfig as SharedWaifuConfig } from "../../shared/schemas/domain";
+import type { RevisionedRecord } from "../../shared/schemas/common";
+import type { ProviderId } from "../../shared/schemas/domain";
+import type { DiscordBotConnectionStatusSchema, DiscordRuntimeStatusSchema, QueueRuntimeSchema, RuntimeStateBaseSchema } from "../../shared/schemas/runtime";
 
-/** A curated model route plus an optional reasoning effort from the route's own list (Living cast §9.2). */
-export type ModelChoice = {
-  providerId: ProviderId;
-  modelId: string;
-  effort?: string;
-};
+export type {
+  AssistantConfig,
+  GuildEmojiCacheEntry,
+  GuildEmojisFile,
+  GuildMemberCacheEntry,
+  GuildMembersFile,
+  GuildRoleCacheEntry,
+  GuildRolesFile,
+  ModelChoice,
+  ProviderId,
+  WaifuAvailability,
+  WaifuBusyInterval,
+  WaifuConfig,
+  WaifuSleepSchedule,
+  WaifuVerbosity
+} from "../../shared/schemas/domain";
+export type { WaifuDmSettings } from "../../shared/schemas/dm";
+export type { ThreadRecord, ThreadsFile } from "../../shared/schemas/threads";
+export type { RevisionedRecord as Revisioned } from "../../shared/schemas/common";
+export type { UsageGroupKey } from "../../shared/schemas/api";
 
 /** One row of GET /api/models (mirrors src/models/catalog.ts CuratedModel). */
 export type CuratedModel = {
@@ -44,12 +91,6 @@ export type ModelsResponse = {
  * `dismissible` notices can be removed with `api.dismissModelWarnings(scope)`.
  */
 export type ModelWarning = { scope: string; label?: string; code: string; detail: string; at?: string; previous?: string; dismissible?: boolean };
-
-export type Revisioned = {
-  schemaVersion: number;
-  revision: number;
-  updatedAt: string;
-};
 
 export type HealthResponse = {
   ok: boolean;
@@ -187,18 +228,8 @@ export type TrustedDeviceList = {
   devices: TrustedDevice[];
 };
 
-export type DiscordRuntime = {
-  connected: boolean;
-  houseConnected: boolean;
-  waifuBotCount: number;
-  warnings: string[];
-  connecting?: boolean;
-  retrying?: boolean;
-  retryAttempt?: number;
-  nextRetryAt?: string;
-  lastError?: string;
-  lastErrorAt?: string;
-  bots?: DiscordBotConnectionStatus[];
+/** `GET /api/runtime` adds the guild directory and DM status to the stored Discord runtime. */
+export type DiscordRuntime = z.output<typeof DiscordRuntimeStatusSchema> & {
   /** `GET /api/runtime` only (spec 9.6): the guild directory's member list status. */
   directory?: {
     memberListAvailable: boolean | null;
@@ -213,29 +244,8 @@ export type DiscordRuntime = {
   };
 };
 
-export type DiscordBotConnectionStatus = {
-  botId: string;
-  displayName: string;
-  kind: "house" | "waifu";
-  state: "connected" | "connecting" | "error" | "disabled" | "missing_token";
-  errorCode?:
-    | "invalid_token"
-    | "disallowed_intents"
-    | "invalid_intents"
-    | "gateway_rejected"
-    | "network"
-    | "house_unavailable"
-    | "unknown";
-  error?: string;
-  closeCode?: number;
-  nextRetryAt?: string;
-  updatedAt: string;
-};
-
-export type QueueRuntime = {
-  active: number;
-  configuredGuilds: number;
-};
+export type DiscordBotConnectionStatus = z.output<typeof DiscordBotConnectionStatusSchema>;
+export type QueueRuntime = z.output<typeof QueueRuntimeSchema>;
 
 export type StatusResponse = {
   running: boolean;
@@ -246,20 +256,11 @@ export type StatusResponse = {
   queues: QueueRuntime;
 };
 
-export type RuntimeState = {
-  schemaVersion: number;
-  pid: number;
-  startedAt: string;
-  updatedAt: string;
-  packageVersion: string;
-  port: number;
-  dataRoot: string;
-  mode: string;
-  paused: boolean;
+export type RuntimeState = Omit<z.output<typeof RuntimeStateBaseSchema>, "discord"> & {
   discord: DiscordRuntime;
-  queues: QueueRuntime;
   /** Living cast §9.2: unmapped/unavailable model choices and unpriced routes. */
   models?: { warnings: ModelWarning[] };
+  /** Remote Access summary (hand-mirrored: its schema needs Node, D5). */
   remoteAccess?: {
     version: 1;
     enabled: boolean;
@@ -273,70 +274,10 @@ export type RuntimeState = {
   };
 };
 
-export type CompactionSettings = {
-  enabled: boolean;
-  triggerRatio: number;
-  maxMessages: number;
-  keepRecent: number;
-  waitTimeoutMs: number;
-};
-
-export type AppConfig = {
-  schemaVersion: number;
-  http: { host: string; port: number };
-  runtime: { autoConnectDiscord: boolean; paused: boolean };
-  frontend: { staticDir?: string };
-  updates: { enabled: boolean; checkIntervalMinutes: number; idleMinutes: number };
-  ocr: {
-    enabled: boolean;
-    engine: "auto" | "apple-vision" | "bundled-tesseract" | "system-tesseract";
-    cacheTtlHours: number;
-    timeoutMs: number;
-    maxImageBytes: number;
-    maxImagesPerModelCall: number;
-    maxTextCharsPerImage: number;
-  };
-  compaction: CompactionSettings;
-  models?: { allowed: string[]; maxOutputUsdPerMTok: number };
-  life: {
-    maxConcurrentTurns: number;
-    maxToolRounds: number;
-    maxTurnMs: number;
-    maxLogMessages: number;
-    maxContextTokens: number;
-    maxInlineImagesPerEpoch: number;
-    maxInlineImageBytesPerEpoch: number;
-    maxSendPlacesPerTurn: number;
-    maxSendsPerTurn: number;
-    maxWakesPerUserPerHour: number;
-    maxWatchFiresPerDay: number;
-    maxWaifuTriggeredTurns: number;
-    maintenanceHourLocal: number;
-    webFetch: {
-      model: string;
-      maxPerWaifuPerDay: number;
-      maxPerTurn: number;
-      directMaxChars: number;
-      maxBytes: number;
-      timeoutMs: number;
-      maxRedirects: number;
-      cacheMinutes: number;
-    };
-  };
-  search: { maxPerSecond: number; maxPerDay: number; maxPerWaifuPerDay: number };
-  detector: { target: string };
-  discord: {
-    images: {
-      maxBytes: number;
-      fetchTimeoutMs: number;
-      memoryCacheMb: number;
-      diskCacheMb: number;
-      diskCacheTtlHours: number;
-    };
-    guildMembersIntent: boolean;
-    memberListRefreshHours: number;
-  };
-};
+export type CompactionSettings = SharedCompactionSettings;
+export type AppConfig = SharedAppConfig;
+/** `PUT /api/config`: a partial patch; send only what changed. */
+export type UpdateAppConfigBody = SharedUpdateAppConfigBody;
 
 export type AutoUpdateStatus = {
   state: "disabled" | "unsupported" | "checking" | "current" | "waiting_idle" | "installing" | "updated" | "rolled_back" | "failed";
@@ -344,31 +285,23 @@ export type AutoUpdateStatus = {
   reason: "none" | "busy" | "disabled" | "credentials_locked" | "check_failed" | "update_failed" | "restart_failed" | "source_checkout";
 };
 
-export type DiscordBotConfig = {
-  id: string;
-  displayName: string;
-  applicationId?: string;
+/** A bot entry as `GET /api/discord-bots` returns it: the token is never sent back, only whether one is set. */
+export type DiscordBotConfig = Omit<SharedDiscordBotConfig, "token"> & {
+  /** Write-only: send it to set or replace the token. */
   token?: string;
   tokenConfigured?: boolean;
   tokenHint?: string;
-  enabled: boolean;
 };
 
-export type DiscordBotsFile = Revisioned & {
+export type DiscordBotsFile = {
+  schemaVersion: number;
+  revision: number;
+  updatedAt: string;
   orchestrator: DiscordBotConfig | null;
   waifus: DiscordBotConfig[];
 };
 
-/** `user/assistant/config.json`: the assistant's own model (unset = first configured waifu's). */
-export type AssistantConfig = Revisioned & {
-  model?: ModelChoice;
-};
-
-export type UpdateAssistantConfigBody = {
-  revision?: number;
-  /** `null` unsets. */
-  model: ModelChoice | null;
-};
+export type UpdateAssistantConfigBody = z.input<typeof UpdateAssistantConfigBodySchema>;
 
 export type ProviderCredentialStatus =
   | { configured: false }
@@ -395,190 +328,44 @@ export type ProvidersResponse = {
   providers: ProviderMetadata[];
 };
 
-export type WaifuSleepSchedule = {
-  enabled: boolean;
-  start: string;
-  end: string;
-};
+export type WaifusResponse = { waifus: SharedWaifuConfig[] };
 
-export type WaifuBusyInterval = {
-  start: string;
-  end: string;
-  reason: string;
-};
-
-export type WaifuAvailability = {
-  sleep: WaifuSleepSchedule;
-  busy: WaifuBusyInterval[];
-};
-
-export type WaifuConfig = Revisioned & {
-  id: string;
-  name: string;
-  displayName: string;
-  enabled: boolean;
-  persona: string;
-  model?: ModelChoice;
-  botId?: string;
-  availability: WaifuAvailability;
-  verbosity: WaifuVerbosity;
-  customInstructions: string;
-  scheduleInPrompt: boolean;
-  /** Her names wake her as whole words (Living cast §4.1). */
-  wakeOnName: boolean;
-  /** Her daily budget in USD for her local day; null = none (Living cast §4.4). */
-  life: { dailyBudgetUsd: number | null };
-  dm: WaifuDmSettings;
-};
-
-export type WaifuVerbosity = "terse" | "chatty" | "expressive";
-
-// rateLimit null = unlimited.
-export type WaifuDmSettings = {
-  allowDms: boolean;
-  rateLimit: { maxReplies: number; windowMinutes: number } | null;
-  notifyWhenLimited: boolean;
-  limitNotice: string;
-  /** Sent once per sleep window when a DM waits for her morning ("" = none, Living cast §4.5). */
-  sleepNotice: string;
-};
-
-export type WaifusResponse = { waifus: WaifuConfig[] };
-
-export type CreateWaifuBody = {
-  name: string;
-  displayName: string;
-  id?: string;
-  enabled?: boolean;
-  persona?: string;
-  model?: ModelChoice;
-  botId?: string;
-  availability?: WaifuAvailability;
-  verbosity?: WaifuVerbosity;
-  customInstructions?: string;
-  scheduleInPrompt?: boolean;
-  dm?: Partial<Omit<WaifuDmSettings, "rateLimit">> & { rateLimit?: WaifuDmSettings["rateLimit"] };
-};
+export type CreateWaifuBody = z.input<typeof CreateWaifuBodySchema>;
 
 // `model`/`botId` accept explicit `null` on write to mean "unset" (a bare `undefined` field is
 // dropped by JSON.stringify and is indistinguishable from "field omitted, leave untouched").
-export type UpdateWaifuBody = Partial<
-  Omit<WaifuConfig, "schemaVersion" | "updatedAt" | "model" | "botId" | "dm" | "life">
-> & {
-  revision: number;
-  model?: ModelChoice | null;
-  botId?: string | null;
-  /** Merged into the stored settings: omitted keys keep their value. */
-  dm?: Partial<Omit<WaifuDmSettings, "rateLimit">> & { rateLimit?: WaifuDmSettings["rateLimit"] };
-  life?: { dailyBudgetUsd?: number | null };
-};
+export type UpdateWaifuBody = z.input<typeof UpdateWaifuBodySchema> & { revision: number };
 
-export type ChannelConfig = {
-  channelId: string;
-  name?: string;
-  enabledWaifuIds: string[];
-  /** Threads and forum posts under this channel: inherit its cast (default) or stay silent. */
-  threads?: "inherit" | "off";
-};
-
-export type ThreadRecord = {
-  threadId: string;
-  parentId: string;
-  name: string;
-  kind: "public_thread" | "private_thread" | "announcement_thread" | "forum_post";
-  archived: boolean;
-  locked: boolean;
-  lastActivityAt: string;
-};
-
-export type ThreadsFile = Revisioned & {
-  guildId: string;
-  threads: Record<string, ThreadRecord>;
-};
-
-export type ServerConfig = Revisioned & {
-  guildId: string;
-  name?: string;
-  /** The addressee detector's per-server override: absent inherits, "" turns it off here. */
-  detector?: { target: string };
-  paused?: boolean;
-  channels: Record<string, ChannelConfig>;
-};
-
+export type ServerConfig = SharedServerConfig;
+export type ChannelConfig = SharedServerConfig["channels"][string];
 export type ServersResponse = { servers: ServerConfig[] };
+export type UpdateServerBody = z.input<typeof UpdateServerBodySchema> & { revision: number };
+export type ChannelBody = z.input<typeof UpdateChannelBodySchema>;
 
-export type UpdateServerBody = Partial<Omit<ServerConfig, "schemaVersion" | "updatedAt" | "guildId">> & {
-  revision: number;
-};
+/** POST /api/people/:userId/forget (Living cast §7.5, §14.1): HTTP 202 when `pending` is not empty. */
+export type ForgetUserResult = z.output<typeof PeopleForgetResponseSchema>;
+export type ForgetJobsResponse = z.output<typeof ForgetJobsResponseSchema>;
+export type OwnerNotices = z.output<typeof OwnerNoticesResponseSchema>;
 
-export type ChannelBody = {
-  revision: number;
-  name?: string;
-  enabledWaifuIds?: string[];
-};
+export type ProviderCredentialsBody = z.input<typeof ProviderCredentialsBodySchema>;
 
-export type GuildMemberCacheEntry = {
-  userId: string;
-  username?: string;
-  globalDisplayName?: string;
-  guildDisplayName?: string;
-  bot: boolean;
-  lastSeenAt?: string;
-  perChannelLastSeenAt: Record<string, string>;
-};
+// --- Lives (Living cast §14.1) ---
+export type LifeStatus = z.output<typeof LifeStatusResponseSchema>;
+export type LifeWakeView = z.output<typeof LifeWakeViewSchema>;
+export type LifeLog = z.output<typeof LifeLogResponseSchema>;
+export type LifeLogLineView = z.output<typeof LifeLogLineViewSchema>;
+export type LifeLogBlock = z.output<typeof LifeLogBlockSchema>;
+export type WakeResult = z.output<typeof WakeResponseSchema>;
+export type LifeCompactResult = z.output<typeof LifeCompactResponseSchema>;
+export type LifeResetResult = z.output<typeof LifeResetResponseSchema>;
+export type NeedsReviewItem = z.output<typeof NeedsReviewItemSchema>;
+export type NeedsReviewResponse = z.output<typeof NeedsReviewResponseSchema>;
 
-export type GuildMembersFile = Revisioned & {
-  guildId: string;
-  members: GuildMemberCacheEntry[];
-};
-
-export type GuildEmojiCacheEntry = {
-  id: string;
-  name: string;
-  animated: boolean;
-  available: boolean;
-  roles: string[];
-  fetchedAt: string;
-};
-
-export type GuildEmojisFile = Revisioned & {
-  guildId: string;
-  emojis: GuildEmojiCacheEntry[];
-};
-
-export type GuildRoleCacheEntry = {
-  id: string;
-  name: string;
-  color: number;
-  hoist: boolean;
-  mentionable: boolean;
-  managed: boolean;
-  fetchedAt: string;
-};
-
-export type GuildRolesFile = Revisioned & {
-  guildId: string;
-  roles: GuildRoleCacheEntry[];
-};
-
-/** POST /api/people/:userId/forget (Living cast §14.1; L1 runs the DM part). */
-export type ForgetUserResult = {
-  discordUserId: string;
-  dryRun: boolean;
-  /** Spec 9.1.4: DM conversations, DM state files and rate-limit counter files removed. */
-  dmContexts: number;
-  dmStates: number;
-  dmLimits: number;
-  cachedImages: number;
-  /** Parts of the DM/archive job that did not finish (HTTP 202): retried at the next start unless `retried` is false. */
-  pending?: Array<{ part: string; error?: string; failures: number; retried: boolean }>;
-};
-
-export type ProviderCredentialsBody = {
-  apiKey: string;
-  label?: string;
-  revision?: number;
-};
+// --- Usage, search, detector ---
+export type UsageResponse = z.output<typeof UsageResponseSchema>;
+export type SearchUsage = z.output<typeof SearchUsageResponseSchema>;
+export type DetectorConfigResponse = z.output<typeof DetectorConfigResponseSchema>;
+export type DetectorHistoryEntry = SharedDetectorHistoryEntry;
 
 export type RemoteAccessDiagnostics = {
   version: 1;
@@ -640,7 +427,7 @@ export type ApiErrorBody = {
   error: string;
   message?: string;
   details?: unknown;
-  latest?: Pick<Revisioned, "schemaVersion" | "revision" | "updatedAt">;
+  latest?: Pick<RevisionedRecord, "schemaVersion" | "revision" | "updatedAt">;
   issues?: unknown;
 };
 

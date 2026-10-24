@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { CURRENT_SCHEMA_VERSION, IsoDateStringSchema } from "../shared/schemas/common.js";
+import { CURRENT_SCHEMA_VERSION } from "../shared/schemas/common.js";
+import { RuntimeStateBaseSchema } from "../shared/schemas/runtime.js";
 import {
   ActivationLifecycleStateSchema,
   ControlConnectionStateSchema,
@@ -39,68 +40,8 @@ export const RemoteAccessRuntimeSummarySchema = z.object({
 
 export type RemoteAccessRuntimeSummary = z.infer<typeof RemoteAccessRuntimeSummarySchema>;
 
-// Mirrors `DiscordBotConnectionStatus` in src/discord/client.ts (assignment there is type-checked).
-const DiscordBotConnectionStatusSchema = z.object({
-  botId: z.string(),
-  displayName: z.string(),
-  kind: z.enum(["house", "waifu"]),
-  state: z.enum(["connected", "connecting", "error", "disabled", "missing_token"]),
-  errorCode: z
-    .enum([
-      "invalid_token",
-      "disallowed_intents",
-      "invalid_intents",
-      "gateway_rejected",
-      "network",
-      "house_unavailable",
-      "unknown"
-    ])
-    .optional(),
-  error: z.string().optional(),
-  closeCode: z.number().int().optional(),
-  nextRetryAt: IsoDateStringSchema.optional(),
-  updatedAt: IsoDateStringSchema
-});
-
-export const RuntimeStateSchema = z.object({
-  schemaVersion: z.literal(CURRENT_SCHEMA_VERSION),
-  pid: z.number().int().positive(),
-  startedAt: IsoDateStringSchema,
-  updatedAt: IsoDateStringSchema,
-  packageVersion: z.string(),
-  port: z.number().int().min(1).max(65_535),
-  dataRoot: z.string(),
-  mode: z.string(),
-  paused: z.boolean().default(false),
-  discord: z
-    .object({
-      connected: z.boolean(),
-      houseConnected: z.boolean(),
-      waifuBotCount: z.number().int().nonnegative(),
-      warnings: z.array(z.string()),
-      connecting: z.boolean().optional(),
-      retrying: z.boolean().optional(),
-      retryAttempt: z.number().int().positive().optional(),
-      nextRetryAt: IsoDateStringSchema.optional(),
-      lastError: z.string().optional(),
-      lastErrorAt: IsoDateStringSchema.optional(),
-      bots: z.array(DiscordBotConnectionStatusSchema).optional()
-    })
-    .default({
-      connected: false,
-      houseConnected: false,
-      waifuBotCount: 0,
-      warnings: []
-    }),
-  queues: z
-    .object({
-      active: z.number().int().nonnegative(),
-      configuredGuilds: z.number().int().nonnegative()
-    })
-    .default({
-      active: 0,
-      configuredGuilds: 0
-    }),
+/** The runtime state plus its Remote Access summary (the rest lives in src/shared/schemas/runtime.ts). */
+export const RuntimeStateSchema = RuntimeStateBaseSchema.extend({
   remoteAccess: RemoteAccessRuntimeSummarySchema.optional()
 });
 
