@@ -41,11 +41,10 @@ import { dmForget, dmWaifuIdsForUser, type DmForgetHooks } from "./dmForget.js";
 import { aboveFloor, dmFloorAt, dmStatePath, dmUserDir, laterFloor, listDmLimitWaifuIds, listDmUserIds, readDmState, updateDmLimit } from "./dmStore.js";
 import { recordForgottenPerson, scrubForgetRecordCopies } from "./forgotten.js";
 
-/** The parts of one owner forget, in the order they run. */
-export const FORGET_JOB_PARTS = ["record", "floors", "dms", "dm-directory", "member-lists", "archive", "record-copies"] as const;
-export type ForgetJobPart = (typeof FORGET_JOB_PARTS)[number];
-/** A part that failed this many times (the request's run plus boots) is no longer retried. */
-export const FORGET_PART_MAX_FAILURES = 3;
+// The parts of one owner forget (in the order they run) and the retry cap live with the zod-free
+// constants the dashboard and the CLI share.
+import { FORGET_JOB_PARTS, FORGET_PART_MAX_FAILURES, type ForgetJobPart } from "../../shared/constants/forget.js";
+export { FORGET_JOB_PARTS, FORGET_PART_MAX_FAILURES, type ForgetJobPart };
 
 export type ForgetPartFailure = { count: number; error: string; at: string };
 

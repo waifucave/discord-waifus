@@ -10,7 +10,6 @@ import type { AssistantModelClient } from "./assistant/service.js";
 import { clearModelWarnings, readModelWarnings } from "../models/modelWarnings.js";
 import { decisionModelCatalog } from "../life/detector/catalog.js";
 import { queueOwnerScrubs } from "../life/forget.js";
-import { ServerDetectorOverrideSchema } from "../shared/schemas/detector.js";
 import { loadAppConfig, updateAppConfig } from "../config/appConfig.js";
 import { resolveDataPath, userDataPath } from "../config/paths.js";
 import { Logger, createLogger, type LogEntry } from "../backend/logger.js";
@@ -20,13 +19,11 @@ import { CastRuntime } from "../orchestration/runtime.js";
 import { clearOcrArtifacts } from "../orchestration/ocr.js";
 import { forgetJobNotices, forgetUser, unqueuedForgetResult } from "../orchestration/dm/forgetUser.js";
 import { readThreads } from "../orchestration/stores/threads.js";
-import { ChannelThreadsModeSchema } from "../shared/schemas/threads.js";
 import { providerStatuses, keyHint } from "./providerStatus.js";
 import { sharedProviderAlerts } from "../orchestration/providerAlerts.js";
 import {
   AssistantConfig,
   AssistantConfigSchema,
-  DiscordBotConfigSchema,
   DiscordBotsFile,
   DiscordBotsFileSchema,
   GuildEmojisFile,
@@ -38,22 +35,28 @@ import {
   GuildRoleCacheEntry,
   GuildRolesFile,
   GuildRolesFileSchema,
-  ModelChoiceSchema,
   type ModelChoice,
   ProviderCredentialsFile,
   ProviderCredentialsFileSchema,
   ProviderIdSchema,
   ServerConfig,
   ServerConfigSchema,
-  WaifuAvailabilitySchema,
-  WaifuLifeSettingsSchema,
   WaifuConfig,
   WaifuConfigSchema,
-  WAIFU_VERBOSITIES,
   createEmptyRevisionedFile
 } from "../shared/schemas/domain.js";
-import { WaifuDmSettingsSchema } from "../shared/schemas/dm.js";
 import { UpdateAppConfigBodySchema, type AppConfig } from "../shared/schemas/config.js";
+import {
+  CreateWaifuBodySchema as CreateWaifuBodySchemaShared,
+  PeopleForgetBodySchema as PeopleForgetBodySchemaShared,
+  ProviderCredentialsBodySchema as ProviderCredentialsBodySchemaShared,
+  UpdateAssistantConfigBodySchema,
+  UpdateChannelBodySchema,
+  UpdateDiscordBotsBodySchema,
+  UpdateServerBodySchema,
+  UpdateWaifuBodySchema as UpdateWaifuBodySchemaShared
+} from "../shared/schemas/api.js";
+import type { DeepPartial } from "../shared/schemas/partial.js";
 import { createRevisionedBase, nowIso } from "../shared/schemas/common.js";
 import { StorageConflictError } from "../storage/errors.js";
 import { StorageService } from "../storage/storageService.js";
@@ -131,48 +134,15 @@ export type ApiServerOptions = {
 // Serializes config.toml read-modify-write between PUT /api/config and runtime pause/resume.
 const APP_CONFIG_LOCK = "app-config";
 
-const ProviderCredentialsBodySchema = z.object({
-  apiKey: z.string().min(1),
-  label: z.string().optional(),
-  revision: z.number().int().nonnegative().optional()
-});
-
-// `model` is validated against the curated catalog on write (Living cast §9.2).
-const CreateWaifuBodySchema = WaifuConfigSchema.omit({
-  schemaVersion: true,
-  revision: true,
-  updatedAt: true
-})
-  .partial({ id: true, enabled: true, persona: true })
-  .required({ name: true, displayName: true });
-
-/** `null` unsets the model; omitted leaves it untouched. */
-const ModelChoicePatchSchema = z.union([ModelChoiceSchema, z.null()]).optional();
-
-// B17: `.unwrap().optional()` only strips a sub-schema's outer default — zod still fills the
-// inner field defaults, so `{tools:{pickNextWaifu:true}}` used to reset `shortTermMemory` and a
-// lone `{availability:{sleep:{enabled:true}}}` wiped busy intervals. Nested settings objects are
-// therefore declared through this deep partial without defaults (and without refinements: the
-// merged record is re-validated by the full schema in updateRevisionedJson), then deep-merged
-// into stored state by mergeNestedPatch. Arrays and non-object leaves replace wholesale.
-type DeepPartial<T> = T extends readonly unknown[]
-  ? T
-  : T extends Record<string, unknown>
-    ? { [K in keyof T]?: DeepPartial<T[K]> }
-    : T;
-
-function partialWithoutDefaults<T extends z.ZodType>(schema: T): z.ZodType<DeepPartial<z.output<T>>> {
-  let inner: z.ZodType = schema;
-  while (inner instanceof z.ZodDefault || inner instanceof z.ZodOptional) {
-    inner = inner.unwrap() as z.ZodType;
-  }
-  if (!(inner instanceof z.ZodObject)) return inner as never;
-  const shape: Record<string, z.ZodType> = {};
-  for (const [key, field] of Object.entries(inner.shape as Record<string, z.ZodType>)) {
-    shape[key] = partialWithoutDefaults(field).optional();
-  }
-  return z.object(shape) as never;
-}
+// Request bodies live with the shared API schemas (overhaul §10.6): the dashboard's types derive from them.
+const ProviderCredentialsBodySchema = ProviderCredentialsBodySchemaShared;
+const CreateWaifuBodySchema = CreateWaifuBodySchemaShared;
+const UpdateWaifuBodySchema = UpdateWaifuBodySchemaShared;
+const ServerConfigBodySchema = UpdateServerBodySchema;
+const ChannelConfigBodySchema = UpdateChannelBodySchema;
+const PeopleForgetBodySchema = PeopleForgetBodySchemaShared;
+const AssistantConfigBodySchema = UpdateAssistantConfigBodySchema;
+const DiscordBotsBodySchema = UpdateDiscordBotsBodySchema;
 
 function mergeNestedPatch<T>(current: T, patch: NoInfer<DeepPartial<T>> | undefined): T {
   if (patch === undefined) return current;
@@ -188,83 +158,6 @@ function mergeNestedPatch<T>(current: T, patch: NoInfer<DeepPartial<T>> | undefi
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-
-// P5 Task 4 review fix: every WaifuConfigSchema field below carries a `.default(...)` (directly or
-// baked into a shared sub-schema, like availability/dm). `.partial()` does not suppress those
-// defaults — zod still fills in the default when the field is absent from the request body, even
-// though "absent" should mean "leave it alone" for a PATCH-style update. Re-declared here without a
-// default so an omitted field parses to `undefined` and the PUT transform's `{...current, ...patch}`
-// merge leaves the stored value alone instead of resetting it.
-const UpdateWaifuBodySchema = WaifuConfigSchema.partial().extend({
-  revision: z.number().int().nonnegative().optional(),
-  enabled: z.boolean().optional(),
-  persona: z.string().optional(),
-  model: ModelChoicePatchSchema,
-  availability: partialWithoutDefaults(WaifuAvailabilitySchema).optional(),
-  // Phase 4/5 additions: truly optional so a partial PUT never resets a stored value.
-  // dm.rateLimit is a leaf whose `null` (unlimited) is a real value, replaced wholesale.
-  verbosity: z.enum(WAIFU_VERBOSITIES).optional(),
-  customInstructions: z.string().max(4000).optional(),
-  scheduleInPrompt: z.boolean().optional(),
-  dm: partialWithoutDefaults(WaifuDmSettingsSchema).optional(),
-  // Living cast §4.1 / §4.4: `wakeOnName` and `life.dailyBudgetUsd` (null = no budget, a real
-  // value) are kept when a PUT leaves them out.
-  wakeOnName: z.boolean().optional(),
-  life: partialWithoutDefaults(WaifuLifeSettingsSchema).optional(),
-  // Spec 8.6: the layout editor is gone. `promptLayout` is still accepted (any shape) for one
-  // release so older dashboards/scripts do not fail, but it is ignored and never written.
-  promptLayout: z.unknown().optional()
-});
-
-// Server writes are partial (`.partial()` alone still lets ZodDefault manufacture values for absent
-// keys, which would reset stored state on unrelated PUTs). Fields retired by Living cast
-// (the director mode and its one-shot target, `contextWindows`, `compaction`, `memoryInjectionLimit`, `tools`,
-// `stageManagerEnabled`) are stripped like any unknown key.
-const ServerConfigBodySchema = ServerConfigSchema.partial().extend({
-  revision: z.number().int().nonnegative().optional(),
-  // Spec 9.7: the server `enabled` flag was removed. Accepted and ignored for one release (logged).
-  enabled: z.boolean().optional(),
-  paused: z.boolean().optional(),
-  // Living cast §4.3: the per-server detector override; `null` removes it (inherit the global target).
-  detector: ServerDetectorOverrideSchema.nullable().optional(),
-  // channels is a documented wholesale replace; per-channel edits use the channel route.
-  // `thread` marks the runtime-only overlay entries and is never accepted from a client.
-  channels: z.record(z.string(), ServerConfigSchema.shape.channels.unwrap().valueType.omit({ thread: true })).optional()
-});
-
-const ChannelConfigBodySchema = z.object({
-  revision: z.number().int().nonnegative().optional(),
-  name: z.string().optional(),
-  // Spec 9.7: the channel `enabled` flag was removed. Accepted and ignored for one release (logged).
-  enabled: z.boolean().optional(),
-  enabledWaifuIds: z.array(z.string()).optional(),
-  // Spec 9.5 / O2: "inherit" (default) lets threads and forum posts under this channel share its
-  // cast; "off" silences them. Omitted keeps the stored value.
-  threads: ChannelThreadsModeSchema.optional()
-});
-
-// Owner forget (Living cast §14.1; replaces /api/memories/forget-user). L1 runs the DM part.
-const PeopleForgetBodySchema = z.object({
-  confirm: z.literal(true),
-  dryRun: z.boolean().optional()
-});
-
-const AssistantConfigBodySchema = z.object({
-  revision: z.number().int().nonnegative().optional(),
-  model: ModelChoicePatchSchema
-});
-
-// Gateway P6 Task 4: `enabled` is required (not defaulted) in write bodies — the dashboard sends
-// it explicitly, so a missing `enabled` is a malformed request. DiscordBotConfigSchema itself
-// defaults a missing flag to `true` on reads (a stored bot without the key stays enabled); only
-// the write path tightens this.
-const DiscordBotBodySchema = DiscordBotConfigSchema.extend({ enabled: z.boolean() });
-
-const DiscordBotsBodySchema = DiscordBotsFileSchema.partial().extend({
-  revision: z.number().int().nonnegative().optional(),
-  orchestrator: DiscordBotBodySchema.nullable().optional(),
-  waifus: z.array(DiscordBotBodySchema).optional()
-});
 
 const ASSET_EXT_BY_MIME: Record<string, string> = {
   "image/png": "png",
