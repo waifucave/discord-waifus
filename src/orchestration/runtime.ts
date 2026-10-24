@@ -486,10 +486,19 @@ export class CastRuntime {
     return waifus.find((waifu) => waifu.id.toLowerCase() === wanted) ?? waifus.find((waifu) => waifu.displayName.toLowerCase() === wanted);
   }
 
-  /** `/wake <waifu> [note]` (§10.4): an `owner` wake, which skips sleep and budget (§4.5). */
+  /** Waifus cast anywhere in a server (any channel or thread entry). */
+  private async guildCast(guildId: string): Promise<Set<string>> {
+    const server = await this.options.storage.readJson(path.join("user", "servers", guildId, "server.json"), ServerConfigSchema).catch(() => undefined);
+    const ids = new Set<string>();
+    for (const channel of Object.values(server?.channels ?? {})) for (const id of channel.enabledWaifuIds ?? []) ids.add(id);
+    return ids;
+  }
+
+  /** `/wake <waifu> [note]` (§10.4): an `owner` wake, which skips sleep and budget (§4.5). Only this server's cast. */
   async handleWakeCommand(event: DiscordWakeCommandEvent): Promise<void> {
     const waifu = await this.findWaifu(event.waifuId);
     if (!waifu) return event.respond("I don't know that waifu.");
+    if (!(await this.guildCast(event.guildId)).has(waifu.id)) return event.respond(`${waifu.displayName} isn't cast in this server.`);
     const outcome = await this.cast.ownerWake(waifu.id, event.note);
     await event.respond(
       outcome === "queued"
@@ -516,12 +525,16 @@ export class CastRuntime {
     await event.respond(text);
   }
 
-  /** The `waifu` option: this channel's cast first, then every other enabled waifu. */
+  /**
+   * The `waifu` option: this channel's cast first. `/wake` offers only this server's cast; `/print`
+   * offers every waifu.
+   */
   async handleWaifuAutocomplete(event: DiscordWaifuAutocompleteEvent): Promise<void> {
     const wanted = event.focusedValue.trim().toLowerCase();
     const here = event.guildId && event.channelId ? new Set(await this.castOf(event.guildId, event.channelId).catch(() => [])) : new Set<string>();
+    const server = event.commandName === "wake" && event.guildId ? await this.guildCast(event.guildId) : undefined;
     const waifus = (await listWaifus(this.options.storage).catch(() => []))
-      .filter((waifu) => waifu.enabled || here.has(waifu.id))
+      .filter((waifu) => (server ? server.has(waifu.id) : event.commandName === "print" || waifu.enabled || here.has(waifu.id)))
       .filter((waifu) => !wanted || waifu.id.toLowerCase().includes(wanted) || waifu.displayName.toLowerCase().includes(wanted))
       .sort((a, b) => Number(here.has(b.id)) - Number(here.has(a.id)) || a.displayName.localeCompare(b.displayName));
     await event.respond(waifus.map((waifu) => ({ name: waifu.displayName.slice(0, 100), value: waifu.id })));

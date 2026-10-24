@@ -447,21 +447,38 @@ function isDmPlace(place: string): boolean {
   return place.startsWith("dm/") || place.startsWith("dm_");
 }
 
-/** One log line for `/print life`: DM tool results and DM send arguments redacted. */
+/**
+ * Notification lines about a DM keep their reason, place and sender but lose every quoted part (the
+ * preview, a matched watch word, a note), wherever they appear: a turn's notification block, or
+ * notifications folded into a tool result (D14: DM content stays private from the owner too).
+ */
+export function redactDmNotifications(text: string): string {
+  return text
+    .split("\n")
+    .map((line) => (/^\s*[-·] .*(?:· |\()dm[/_]/u.test(line) ? line.replace(/"[^"\n]*"/gu, `"${REDACTED}"`) : line))
+    .join("\n");
+}
+
+/** One log line for `/print life`: DM tool results, DM send arguments and DM previews redacted. */
 export function redactLine(message: Record<string, unknown> | null, dmCalls: ReadonlySet<string>): string {
   if (!message) return "—";
   const content = message["content"];
-  if (typeof content === "string") return content.slice(0, 300);
+  if (typeof content === "string") return redactDmNotifications(content).slice(0, 300);
   if (!Array.isArray(content)) return "";
   const parts: string[] = [];
   for (const block of content as Array<Record<string, unknown>>) {
-    if (block["type"] === "text") parts.push(String(block["text"]).slice(0, 300));
+    if (block["type"] === "text") parts.push(redactDmNotifications(String(block["text"])).slice(0, 300));
     else if (block["type"] === "tool_use") {
       const input = (block["input"] ?? {}) as Record<string, unknown>;
       parts.push(dmCalls.has(String(block["id"])) ? `${String(block["name"])}(${REDACTED})` : `${String(block["name"])}(${JSON.stringify(input).slice(0, 200)})`);
     } else if (block["type"] === "tool_result") {
-      const text = typeof block["content"] === "string" ? block["content"] : JSON.stringify(block["content"]);
-      parts.push(dmCalls.has(String(block["tool_use_id"])) ? `result: ${REDACTED}` : `result: ${text.slice(0, 200)}`);
+      const raw = block["content"];
+      const text = typeof raw === "string"
+        ? raw
+        : Array.isArray(raw)
+          ? (raw as Array<Record<string, unknown>>).map((part) => (part["type"] === "text" ? String(part["text"]) : `[${String(part["type"])}]`)).join("\n")
+          : JSON.stringify(raw);
+      parts.push(dmCalls.has(String(block["tool_use_id"])) ? `result: ${REDACTED}` : `result: ${redactDmNotifications(text).slice(0, 200)}`);
     }
   }
   return parts.join(" | ");

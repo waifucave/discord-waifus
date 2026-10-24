@@ -506,25 +506,32 @@ describe("DiscordJsGateway slash commands", () => {
     ]);
   });
 
-  it("requires Administrator for /wake at runtime as well as by default permissions", async () => {
-    const gateway = makeGateway({ house: bot("house") });
-    const wakes: unknown[] = [];
-    gateway.onWakeCommand((event) => {
-      wakes.push(event);
-    });
-    const { interaction, calls } = fakeInteraction({ commandName: "wake", admin: false });
+  it.each([
+    ["wake", "handleWakeInteraction"],
+    ["print", "handlePrintInteraction"]
+  ])("only the application's owner may run /%s: a server Administrator is not enough", async (commandName, handler) => {
+    const asked: string[] = [];
+    const gateway = makeGateway({ house: bot("house"), applicationOwners: { isOwner: async (userId) => (asked.push(userId), userId === "owner-1") } });
+    const events: unknown[] = [];
+    gateway.onWakeCommand((event) => void events.push(event));
+    gateway.onPrintCommand((event) => void events.push(event));
+    const admin = fakeInteraction({ commandName, userId: "admin-1", admin: true, strings: { waifu: "aria", type: "notes" } });
 
-    await slashHandler(gateway, "handleWakeInteraction")(interaction);
+    await slashHandler(gateway, handler)(admin.interaction);
 
-    expect(wakes).toEqual([]);
-    expect(calls.deferReply).toEqual([]);
-    expect(calls.reply).toEqual([
-      { content: expect.stringContaining("Administrator"), flags: MessageFlags.Ephemeral }
-    ]);
+    expect(events).toEqual([]);
+    expect(admin.calls.deferReply).toEqual([{ flags: MessageFlags.Ephemeral }]);
+    expect(admin.calls.editReply).toEqual([expect.stringContaining("Only the owner of this bot's Discord application")]);
+    // The owner gets through even without Administrator in this server.
+    const owner = fakeInteraction({ commandName, userId: "owner-1", admin: false, strings: { waifu: "aria", type: "notes" } });
+    await slashHandler(gateway, handler)(owner.interaction);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(events).toHaveLength(1);
+    expect(asked).toEqual(["admin-1", "owner-1"]);
   });
 
   it("hands /wake's waifu and note to the listener, ephemerally", async () => {
-    const gateway = makeGateway({ house: bot("house") });
+    const gateway = makeGateway({ house: bot("house"), applicationOwners: { isOwner: async () => true } });
     const wakes: Array<{ waifuId?: string; note?: string }> = [];
     gateway.onWakeCommand(async (event) => {
       wakes.push({ waifuId: event.waifuId, note: event.note });
@@ -541,7 +548,7 @@ describe("DiscordJsGateway slash commands", () => {
   });
 
   it("sends a long /print as an attached file", async () => {
-    const gateway = makeGateway({ house: bot("house") });
+    const gateway = makeGateway({ house: bot("house"), applicationOwners: { isOwner: async () => true } });
     gateway.onPrintCommand(async (event) => {
       await event.respond("x".repeat(5_000));
     });

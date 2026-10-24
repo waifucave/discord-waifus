@@ -106,14 +106,20 @@ describe("runtime facade", () => {
     const respond = async (content: string) => void replies.push(content);
     await runtime.handleWakeCommand({ guildId: GUILD, channelId: CHANNEL, userId: "1", waifuId: "ARIA", note: "say hi", respond });
     await runtime.handleWakeCommand({ guildId: GUILD, channelId: CHANNEL, userId: "1", waifuId: "nobody", respond });
+    // /wake reaches only this server's cast (Mina is cast nowhere here).
+    await runtime.handleWakeCommand({ guildId: GUILD, channelId: CHANNEL, userId: "1", waifuId: "mina", respond });
     expect(wake.mock.calls).toEqual([["aria", "say hi"]]);
+    // /print may target any waifu.
     vi.spyOn(runtime.cast, "printNotes").mockResolvedValue("# Memory");
     await runtime.handlePrintCommand({ guildId: GUILD, channelId: CHANNEL, userId: "1", waifuId: "Mina", type: "notes", respond });
-    expect(replies).toEqual(["Woke Aria.", "I don't know that waifu.", "# Memory"]);
+    expect(replies).toEqual(["Woke Aria.", "I don't know that waifu.", "Mina isn't cast in this server.", "# Memory"]);
     const choices: unknown[] = [];
-    await runtime.handleWaifuAutocomplete({ guildId: GUILD, channelId: CHANNEL, focusedValue: "A", respond: async (list) => void choices.push(list) });
-    // This channel's cast first, then the other enabled matches (the layout seeds Mira too).
-    expect(choices).toEqual([[{ name: "Aria", value: "aria" }, { name: "Mina", value: "mina" }, { name: "Mira", value: "mira" }]]);
+    const collect = async (list: unknown) => void choices.push(list);
+    await runtime.handleWaifuAutocomplete({ commandName: "wake", guildId: GUILD, channelId: CHANNEL, focusedValue: "A", respond: collect });
+    await runtime.handleWaifuAutocomplete({ commandName: "print", guildId: GUILD, channelId: CHANNEL, focusedValue: "MI", respond: collect });
+    await runtime.handleWaifuAutocomplete({ commandName: "print", guildId: GUILD, channelId: CHANNEL, focusedValue: "old", respond: collect });
+    // /wake: this server's cast only. /print: every waifu, a disabled one too (the layout seeds Lumi and Mira).
+    expect(choices).toEqual([[{ name: "Aria", value: "aria" }], [{ name: "Lumi", value: "lumi" }, { name: "Mina", value: "mina" }, { name: "Mira", value: "mira" }], [{ name: "Old", value: "old" }]]);
     await runtime.stop();
   });
 });

@@ -32,6 +32,7 @@ import { denormalizeModelContentForDiscord } from "./normalization.js";
 import { compareIds, pageMessagesSince, toRawDiscordMessage, withoutAuthors, type DiscordMessageLike } from "./rawMessage.js";
 import type { ConversationRef } from "../orchestration/context/keys.js";
 import { attachGatewayFeed, guildSnapshotEvent } from "./gatewayFeed.js";
+import { ApplicationOwners, ownerIdsOf, type ApplicationOwnerLike, type OwnerCheck } from "./applicationOwners.js";
 import type {
   DiscordConnectionScope,
   DiscordConversationEvent,
@@ -285,6 +286,8 @@ export type DiscordPrintCommandEvent = DiscordSlashCommandEvent & {
   waifuId?: string;
 };
 export type DiscordWaifuAutocompleteEvent = {
+  /** `wake` offers this server's cast only; `print` offers every waifu. */
+  commandName?: string;
   guildId?: string;
   channelId?: string;
   focusedValue: string;
@@ -337,6 +340,8 @@ export type DiscordJsGatewayOptions = {
   dmBots?: () => Promise<Array<{ botId: string; waifuId: string }>>;
   /** Test seam: build the discord.js client for a bot. */
   createClient?: (input: { bot: DiscordBotConfig; kind: DiscordBotKind; options: ClientOptions }) => Client;
+  /** Test seam: who owns the application (default: fetched from Discord by the House bot). */
+  applicationOwners?: OwnerCheck & { start?(): void; stop?(): void };
   logger?: Logger;
 };
 
@@ -369,6 +374,8 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   private readonly printListeners = new Set<DiscordPrintCommandListener>();
   private readonly waifuAutocompleteListeners = new Set<DiscordWaifuAutocompleteListener>();
   private readonly recentMentionRefreshes = new Map<string, number>();
+  // Living cast §10.4 (D-a): the application's owner or team members run /wake and /print.
+  private readonly owners: OwnerCheck & { start?(): void; stop?(): void };
   // DMs (spec 9.1): wanted (bot → waifu, from eligibility) and what each live client was built with.
   private dmWaifuByBot = new Map<string, string>();
   private readonly clientDmWaifu = new Map<string, string>();
@@ -376,7 +383,17 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   private readonly dmListeners = new Set<DiscordDirectMessageListener>();
   private readonly dmForgetListeners = new Set<DiscordDmForgetCommandListener>();
 
-  constructor(private readonly options: DiscordJsGatewayOptions) {}
+  constructor(private readonly options: DiscordJsGatewayOptions) {
+    this.owners =
+      options.applicationOwners ??
+      new ApplicationOwners({
+        fetch: async () => {
+          const application = await this.houseClient().application?.fetch();
+          return ownerIdsOf(application?.owner as ApplicationOwnerLike);
+        },
+        ...(options.logger ? { logger: options.logger } : {})
+      });
+  }
 
   private async refreshDmBots(): Promise<void> {
     if (!this.options.dmBots) return;
@@ -449,6 +466,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
     this.generation += 1;
     this.connectAbort.abort();
     this.connectAbort = new AbortController();
+    this.owners.stop?.();
     for (const timer of this.botRetryTimers.values()) clearTimeout(timer);
     this.botRetryTimers.clear();
     this.botRetryAttempts.clear();
@@ -552,6 +570,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
     this.setBotStatus(bot, kind, { state: "connected" });
     if (kind === "house") {
       await registerHouseCommands(client, this.options.logger);
+      this.owners.start?.();
     } else {
       await registerDmCommands(client, this.clientDmWaifu.has(bot.id), this.options.logger);
     }
@@ -1504,24 +1523,27 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
       });
   }
 
-  /** Living cast §10.4: `/wake` and `/print` are the owner's (Administrator), checked here too. */
-  private async replyIfNotOwner(interaction: ChatInputCommandInteraction, commandName: string): Promise<boolean> {
+  /**
+   * Living cast §10.4 (D-a): `/wake` and `/print` belong to the Discord application's owner (or its
+   * team members), checked here at run time. The Administrator default member permission only hides
+   * the commands in the Discord UI. Defers first: the owner list may need a fetch.
+   */
+  private async deferIfOwner(interaction: ChatInputCommandInteraction, commandName: string): Promise<boolean> {
     if (!interaction.guildId || !interaction.channelId) {
       await replyEphemeral(interaction, `/${commandName} can only be used in a server channel.`);
-      return true;
+      return false;
     }
-    // Default member permissions can be overridden per server, so the permission is enforced here.
-    if (!interaction.memberPermissions?.has(OWNER_COMMAND_PERMISSIONS)) {
-      await replyEphemeral(interaction, `You need the Administrator permission to use /${commandName}.`);
-      return true;
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    if (!(await this.owners.isOwner(interaction.user.id))) {
+      await interaction.editReply(`Only the owner of this bot's Discord application can use /${commandName}.`);
+      return false;
     }
-    return false;
+    return true;
   }
 
   private async handleWakeInteraction(interaction: ChatInputCommandInteraction): Promise<void> {
     if (await this.replyIfNotReady(interaction, this.wakeListeners, WAKE_COMMAND_NAME)) return;
-    if (await this.replyIfNotOwner(interaction, WAKE_COMMAND_NAME)) return;
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    if (!(await this.deferIfOwner(interaction, WAKE_COMMAND_NAME))) return;
     const note = sanitizeOptionString(interaction.options.getString(WAKE_NOTE_OPTION_NAME));
     const event: DiscordWakeCommandEvent = {
       guildId: interaction.guildId!,
@@ -1540,8 +1562,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
 
   private async handlePrintInteraction(interaction: ChatInputCommandInteraction): Promise<void> {
     if (await this.replyIfNotReady(interaction, this.printListeners, PRINT_COMMAND_NAME)) return;
-    if (await this.replyIfNotOwner(interaction, PRINT_COMMAND_NAME)) return;
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    if (!(await this.deferIfOwner(interaction, PRINT_COMMAND_NAME))) return;
     const event: DiscordPrintCommandEvent = {
       guildId: interaction.guildId!,
       channelId: interaction.channelId,
@@ -1585,6 +1606,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
       return;
     }
     const event: DiscordWaifuAutocompleteEvent = {
+      commandName: interaction.commandName,
       guildId: interaction.guildId ?? undefined,
       channelId: interaction.channelId ?? undefined,
       focusedValue: typeof focused.value === "string" ? focused.value : String(focused.value ?? ""),

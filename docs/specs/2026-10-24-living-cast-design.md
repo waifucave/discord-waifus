@@ -797,17 +797,21 @@ This replaces the Phase 5 "recent deletes redacted in place" rule.
 
 | Command | Who | What |
 |---|---|---|
-| `/wake <waifu> [note]` | owner (House bot, guild) | Queue an `owner` wake. |
-| `/print system_prompt|notes|life` | owner (ephemeral) | Her system prompt, `MEMORY.md`, or the last 20 life-log lines with DM tool results and DM send arguments redacted. |
+| `/wake <waifu> [note]` | owner (House bot, guild) | Queue an `owner` wake. Only a waifu cast in this server (any channel or thread); the autocomplete offers this server's cast. |
+| `/print system_prompt|notes|life` | owner (ephemeral) | Any waifu. Her system prompt, `MEMORY.md`, or the last 20 life-log lines with DM tool results, DM send arguments and every quoted part of a DM notification line (also when folded into a tool result) redacted. |
 | `/forget conversation|everything` | DM user (waifu bot) | §7.5, existing confirm button. |
 
 Retired: `/run`, `/stop`, `/review`, `/memories`, `/console`, `/clear`, `/debug` (deleted from
 Discord when the House bot registers its commands).
 
-"Owner" (L2): a server member with the Administrator permission. `/wake` and `/print` are
-registered with Administrator as their default member permission and checked again when run.
+"Owner" (owner decision D-a): the owner of the House bot's Discord application, or the accepted
+members of the team that owns it, as `client.application.fetch()` reports them. The list is fetched
+when the House bot comes online, refreshed every 6 hours and re-fetched at run time when it is older
+than 10 minutes; a failed fetch keeps the last list, and with no list nobody is the owner. Server
+Administrator is not enough: Administrator stays the commands' default member permission only so
+the Discord UI hides them from others. The command defers its ephemeral reply before the check.
 `/print` output longer than 1,900 characters is sent as an attached `<type>.md` file, still
-ephemeral. `/wake` autocompletes the channel's enabled cast first.
+ephemeral.
 
 ## 11. Retirements and migrations
 
