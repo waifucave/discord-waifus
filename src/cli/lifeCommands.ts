@@ -102,7 +102,7 @@ function statusLines(status: LifeStatus): string[] {
   const model = status.model ? `${status.model.providerId}/${status.model.modelId}${status.model.effort ? `@${status.model.effort}` : ""}` : "(none)";
   const lines = [
     `${status.displayName} (${status.waifuId})${status.enabled ? "" : " [disabled]"}`,
-    `  model:        ${model}${status.hasBot ? "" : "  (no Discord bot linked)"}`,
+    `  model:        ${model}${status.hasBot ? "" : "  (speaks through the House bot)"}`,
     `  state:        ${availability}; ${status.status === "turn" ? "mid-turn" : "idle"}${status.runtime.paused ? "; cast paused" : ""}${status.runtime.running ? "" : "; Discord offline"}`,
     `  life:         ${status.started ? `epoch ${status.epoch} since ${status.epochStartedAt}, ${status.logLines} log lines` : "not started yet"}`,
     `  last turn:    ${status.lastTurnEndedAt ?? "never"}${status.failedTurnAt ? `  (last failed turn ${status.failedTurnAt})` : ""}`,
@@ -113,7 +113,9 @@ function statusLines(status: LifeStatus): string[] {
   if (status.counts.needsReview > 0) lines.push(`  needs review: ${status.counts.needsReview} line(s) a forget could not remove for sure (dashboard → Life)`);
   if (status.counts.pendingScrubs > 0) lines.push(`  forget scrubs waiting: ${status.counts.pendingScrubs}`);
   for (const wake of status.queue.wakes.slice(0, 10)) {
-    lines.push(`  · ${wake.reason}${wake.place ? ` in ${wake.place}` : ""}${wake.from ? ` from ${wake.from}` : ""}${wake.preview ? `: ${oneLine(wake.preview, 120)}` : wake.dm ? " [private chat]" : ""}`);
+    const place = wake.place ? (wake.dm ? " in a DM" : ` in ${wake.place}`) : "";
+    const text = wake.preview ? `: ${oneLine(wake.preview, 120)}` : wake.note ? `: "${oneLine(wake.note, 120)}"` : wake.dm ? " [private chat]" : "";
+    lines.push(`  · ${wake.reason}${place}${wake.from ? ` from ${wake.from}` : ""}${text}`);
   }
   if (status.summary.hidden) lines.push("  summary:      hidden (it may hold private-chat content; --private shows it)");
   else if (status.summary.text) lines.push("  summary:", ...status.summary.text.split("\n").map((line) => `    ${line}`));
