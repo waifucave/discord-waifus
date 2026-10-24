@@ -219,13 +219,13 @@ export function subscribeReplies(listener: ReplyListener): () => void {
   return () => replyListeners.delete(listener);
 }
 
-/** Whether a serialized entry carries the person (their id or a name only they have). */
-export type TrafficMatch = (serialized: string) => boolean;
+/** Whether an entry (walked as a value, never as JSON) carries the person: their id or a name only they have. */
+export type TrafficMatch = (entry: unknown) => boolean;
 
 const forgetListeners = new Set<(matches: TrafficMatch) => void>();
 
 function dropMatching<T>(entries: T[], matches: TrafficMatch): number {
-  const kept = entries.filter((entry) => !matches(JSON.stringify(entry)));
+  const kept = entries.filter((entry) => !matches(entry));
   const removed = entries.length - kept.length;
   if (removed > 0) entries.splice(0, entries.length, ...kept);
   return removed;

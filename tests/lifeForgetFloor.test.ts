@@ -156,7 +156,7 @@ describe("an unfinished owner forget (review F1, F8)", () => {
     expect(limits).toMatchObject({ replyTimestamps: [], autoMessageIds: [], floorMessageId: dmFloorAt(at) });
     expect(limits.limitNoticeSentAt).toBeUndefined();
     expect(await pendingForgetJobs(storage)).toEqual([]);
-    forgetCapturedTraffic((entry) => entry.includes(OTHER));
+    forgetCapturedTraffic((entry) => JSON.stringify(entry).includes(OTHER));
   });
 
   it("a crash after the job was written: the boot resume runs every part, with the job's time", async () => {

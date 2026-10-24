@@ -315,20 +315,22 @@ export async function scrubOtherState(deps: LifeDeps, waifu: WaifuConfig, identi
     return { ...current, pendingNotices, scrubbedAt: recentScrubs(current.scrubbedAt, deps.now()) };
   });
   await updateLifeFile(deps.storage, waifu.id, "watches", (file) => {
+    // A watch goes when its word names the person ("kevin's exam" for Kevin). A word that is only a
+    // part of one of their names ("bake sale" in "Kevin from the Bake Sale") may be anyone's: listed.
+    const namesThem = (word: string) => names.some((name) => namesSomeone(word, name));
+    const partOfName = (word: string) => names.some((name) => namesSomeone(name, word));
     const watches = file.watches
-      .filter(
-        (watch) =>
-          !watch.bindings.some(
-            (binding) => binding.fromUserId === identity.userId || binding.placeKey === dmKey || (binding.words ?? []).some((word) => names.some((name) => namesSomeone(word, name) || namesSomeone(name, word)))
-          )
-      )
+      .filter((watch) => !watch.bindings.some((binding) => binding.fromUserId === identity.userId || binding.placeKey === dmKey || (binding.words ?? []).some(namesThem)))
       .map((watch) => {
+        for (const binding of watch.bindings) {
+          for (const word of binding.words ?? []) if (o.review && partOfName(word)) o.review({ where: "watches", line: word.trim().slice(0, 300) });
+        }
         if (mentions(watch.note)) {
           removed += 1;
           return { ...watch, note: REMOVED_TEXT };
         }
         review("watches")(watch.note);
-        for (const binding of watch.bindings) for (const word of binding.words ?? []) review("watches")(word);
+        for (const binding of watch.bindings) for (const word of binding.words ?? []) if (!partOfName(word)) review("watches")(word);
         return watch;
       });
     removed += file.watches.length - watches.length;
@@ -568,7 +570,7 @@ export async function recordNeedsReview(storage: StorageService, waifuId: string
 async function scrubNeedsReview(storage: StorageService, waifuId: string, carries: (text: string) => boolean): Promise<number> {
   let removed = 0;
   await updateNeedsReview(storage, waifuId, (items) => {
-    const kept = items.filter((item) => !carries(JSON.stringify(item)));
+    const kept = items.filter((item) => !Object.values(item && typeof item === "object" ? item : {}).some((value) => typeof value === "string" && carries(value)));
     removed = items.length - kept.length;
     return kept;
   });

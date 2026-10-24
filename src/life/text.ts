@@ -88,12 +88,28 @@ export function wordBoundaryIncludes(text: string, name: string): boolean {
   return false;
 }
 
+const MAX_MATCH_DEPTH = 64;
+
 /**
- * Forget's matcher for in-memory traffic (the captured query log, the `/api/events` replay): an
- * entry carries the person when it holds their id or a name only they have. Weak names never
+ * Forget's matcher for in-memory traffic (the captured query log, the `/api/events` replay) and
+ * kept record lines: an entry carries the person when it holds their id (in a value or a key, such
+ * as a mention map) or a name only they have (in a string value). It walks the value itself, never
+ * its JSON, so a name after a newline is found and a key never matches a name. Weak names never
  * match, so other people's entries stay.
  */
-export function personMatcher(userId: string, names: readonly string[] = []): (text: string) => boolean {
+export function personMatcher(userId: string, names: readonly string[] = []): (value: unknown) => boolean {
   const strong = [...new Set(names)].filter((name) => !isWeakName(name));
-  return (text) => text.includes(userId) || strong.some((name) => namesSomeone(text, name));
+  // Raw JSON text (a torn record copy's lines) keeps its escapes: `\n` before a name is a break.
+  const text = (value: string) => {
+    if (value.includes(userId)) return true;
+    const plain = value.replace(/\\[nrtbf]/gu, " ");
+    return strong.some((name) => namesSomeone(plain, name));
+  };
+  const walk = (value: unknown, depth: number): boolean => {
+    if (typeof value === "string") return text(value);
+    if (value === null || typeof value !== "object" || depth >= MAX_MATCH_DEPTH) return false;
+    if (Array.isArray(value)) return value.some((item) => walk(item, depth + 1));
+    return Object.entries(value).some(([key, item]) => key.includes(userId) || walk(item, depth + 1));
+  };
+  return (value) => walk(value, 0);
 }

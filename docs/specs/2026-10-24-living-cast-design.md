@@ -755,15 +755,17 @@ conversation` runs steps 0–2 only.
    times (the request's run and two starts) is given up: it is not retried, and `/api/runtime`
    lists an owner notice naming the part and its error code until a new forget of that person
    replaces the job. Every forget (owner or DM, with or without a runtime) drops the
-   in-memory captured traffic and `/api/events` replay records that carry the person (the id or a
-   unique name, never a weak one); everyone else's entries stay.
+   in-memory captured traffic and `/api/events` replay records that carry the person (the id in a
+   value or a key, or a unique name in a string value, never a weak one; the entry is walked as a
+   value, not matched as JSON, so a name after a line break counts); everyone else's entries stay.
 2. **Summary without the person**: abort her turn; write the compaction summary with **no kept
    turns** and every name (unique and shared) listed for omission (on failure, an empty summary).
    The new epoch does **not** start yet (`pendingEpochStart`); no turn can run in between because
    the per-waifu lock is held.
 3. **Other state** (the id and removable names): remove the person's own wakes (theirs, or in
    their DM) and `pendingNotices` naming them, watches whose `from` is the person, bound to their
-   DM or watching for words that name them, her DM read cursor and handle, `maintenance.jsonl`
+   DM or watching for a word that names them (a word that is only part of one of their names, such
+   as "bake sale" in "Kevin from the Bake Sale", is listed for review), her DM read cursor and handle, `maintenance.jsonl`
    lines, earlier `needs-review.json` lines carrying them, the host's recent web queries naming
    them (`user/search/usage.json`), and her slice of the archive. Someone else's entry that names
    them keeps its place and loses only the text: another person's wake loses its preview, match or

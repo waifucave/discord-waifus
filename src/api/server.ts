@@ -380,7 +380,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     logger.subscribe?.((entry) => publishGlobalEvent("log", entry)),
     subscribeQueries((entry) => publishGlobalEvent("query", entry)),
     subscribeReplies((entry) => publishGlobalEvent("reply", entry)),
-    onCapturedTrafficForgotten((matches) => void globalEvents.dropReplay((record) => matches(JSON.stringify(record.data))))
+    onCapturedTrafficForgotten((matches) => void globalEvents.dropReplay((record) => matches(record.data)))
   ].filter((unsubscribe): unsubscribe is () => void => unsubscribe !== undefined);
   app.addHook("onClose", async () => {
     for (const unsubscribe of sourceUnsubscribers) unsubscribe();

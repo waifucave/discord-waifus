@@ -9,7 +9,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { NOTES_SCRUB_SKIPPED, recordNeedsReview, scrubOtherState, scrubText, type ReviewLine } from "../src/life/forget.js";
 import { readLifeFile, readLifeState, readMaintenanceReports, updateLifeFile, updateLifeState } from "../src/life/lifeStore.js";
 import { Notes } from "../src/life/notes.js";
-import { isWeakName, namesSomeone } from "../src/life/text.js";
+import { isWeakName, namesSomeone, personMatcher } from "../src/life/text.js";
+import { EventStream } from "../src/api/eventStream.js";
+import { forgetCapturedTraffic, recentQueries, recordProviderQuery } from "../src/shared/queryLog.js";
 import { enqueueWake, newWakeId } from "../src/life/wakeQueue.js";
 import { updateDmState } from "../src/orchestration/dm/dmStore.js";
 import { forgetUser } from "../src/orchestration/dm/forgetUser.js";
@@ -103,6 +105,50 @@ describe("step 3 with weak and unique names (F3)", () => {
     expect(wakes[0]).toMatchObject({ fromUserId: MINA_USER, messageId: "900000000000000111" });
     expect(wakes[0]!.preview).toBeUndefined();
     expect((await readLifeFile(w.storage, "aria", "schedule")).reminders.map((reminder) => [reminder.id, reminder.note])).toEqual([["r1", "(removed)"]]);
+  });
+});
+
+describe("the traffic matcher and watch words (third review, minor 1 and 4)", () => {
+  it("finds a name after a line break or tab in a value, an id in a key, and never a name in a key", () => {
+    const match = personMatcher(KEVIN, ["Kevinator"]);
+    expect(match({ prompt: "[transcript]\nKevinator: my address is 12 Elm St" })).toBe(true);
+    expect(match({ text: "a\tKevinator" })).toBe(true);
+    expect(match({ text: "x\r\nKevinator wrote" })).toBe(true);
+    expect(match([{ nested: [{ deeper: "said Kevinator" }] }])).toBe(true);
+    expect(match({ mentions: { users: { [KEVIN]: "someone" } } })).toBe(true);
+    expect(match({ Kevinator: "a key is not a name" })).toBe(false);
+    expect(match({ text: "Kevinators unite" })).toBe(false);
+    // Raw JSON text (a torn record copy's line) keeps its escapes.
+    expect(match('{"text":"hi\\nKevinator"}')).toBe(true);
+  });
+
+  it("the captured traffic and the replay lose an entry whose name follows a line break", () => {
+    const stream = new EventStream<unknown>();
+    stream.publish("query", { prompt: "[transcript]\nKevinator: my address is 12 Elm St" });
+    stream.publish("query", { prompt: "[transcript] Kevinator: my phone is 555" });
+    stream.publish("query", { prompt: "[transcript]\nMina: the bake sale is on" });
+    const match = personMatcher(KEVIN, ["Kevinator"]);
+    expect(stream.dropReplay((record) => match(record.data))).toBe(2);
+    recordProviderQuery("assistant", { messages: [{ role: "user", content: "[transcript]\nKevinator: hi" }] });
+    forgetCapturedTraffic(match);
+    expect(JSON.stringify(recentQueries())).not.toContain("Kevinator");
+  });
+
+  it("a watch goes only when its word names the person; a word inside one of their names is listed", async () => {
+    const w = await lifeWorld(roots);
+    const now = w.clock.now();
+    const watch = (id: string, word: string, note: string) => ({ id, note, createdAt: now.toISOString(), expiresAt: new Date(now.getTime() + 3_600_000).toISOString(), once: false, bindings: [{ words: [word] }], fires: [] });
+    await updateLifeFile(w.storage, "aria", "watches", (file) => ({
+      ...file,
+      nextId: 5,
+      watches: [watch("w1", "sourdough", "Mina's sourdough question"), watch("w2", "bake sale", "the bake sale plan"), watch("w3", "kevin", "an exam"), watch("w4", "kevin from the bake sale", "him")]
+    }));
+    const deps = (w.cast as unknown as { deps: Parameters<typeof scrubOtherState>[0] }).deps;
+    const waifu = { id: "aria", name: "Aria", displayName: "Aria" } as Parameters<typeof scrubOtherState>[1];
+    const review: ReviewLine[] = [];
+    await scrubOtherState(deps, waifu, { userId: KEVIN, names: ["Kevin from the Bake Sale"], sharedNames: [] }, { review: (item) => review.push(item) });
+    expect((await readLifeFile(w.storage, "aria", "watches")).watches.map((entry) => entry.id)).toEqual(["w1", "w2", "w3"]);
+    expect(review).toEqual(expect.arrayContaining([{ where: "watches", line: "bake sale" }, { where: "watches", line: "kevin" }]));
   });
 });
 
