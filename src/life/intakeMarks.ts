@@ -18,7 +18,7 @@ export class IntakeMarks {
   private pause: string | undefined;
   private timer: ReturnType<typeof setTimeout> | undefined;
   private saving: Promise<void> = Promise.resolve();
-  private loaded = false;
+  private loading: Promise<void> | undefined;
 
   constructor(private readonly storage: Pick<StorageService, "dataPath">) {}
 
@@ -26,10 +26,17 @@ export class IntakeMarks {
     return this.storage.dataPath(...INTAKE_MARKS_PATH);
   }
 
-  /** Reads the saved marks (a missing or unreadable file is no marks: catch-up then uses the cursors). */
-  async load(): Promise<void> {
-    if (this.loaded) return;
-    this.loaded = true;
+  /**
+   * Reads the saved marks once (a missing or unreadable file is no marks: catch-up then uses the
+   * cursors). Every write waits for it, so a pause or a forget that comes before `start()` never
+   * writes the file from empty marks.
+   */
+  load(): Promise<void> {
+    this.loading ??= this.read();
+    return this.loading;
+  }
+
+  private async read(): Promise<void> {
     try {
       const parsed = JSON.parse(await readFile(this.file, "utf8")) as { marks?: Record<string, unknown>; pausedAt?: unknown };
       for (const [key, id] of Object.entries(parsed.marks ?? {})) {
@@ -55,6 +62,7 @@ export class IntakeMarks {
 
   /** Forget: the marks of places `drop` matches (the person's DM keys), written at once. */
   async drop(drop: (placeKey: string) => boolean): Promise<void> {
+    await this.load();
     let changed = false;
     for (const key of [...this.marks.keys()]) {
       if (!drop(key)) continue;
@@ -78,6 +86,7 @@ export class IntakeMarks {
 
   /** Records (or clears) the pause start; written at once. */
   async setPausedAt(at: Date | undefined): Promise<void> {
+    await this.load();
     const next = at?.toISOString();
     if (next === this.pause) return;
     this.pause = next;
@@ -103,6 +112,8 @@ export class IntakeMarks {
       clearTimeout(this.timer);
       this.timer = undefined;
     }
+    // Never write before the saved marks are in: they would be lost.
+    await this.load();
     if (!this.dirty) return this.saving.catch(() => undefined);
     this.dirty = false;
     const snapshot = Object.fromEntries([...this.marks.entries()].sort(([a], [b]) => a.localeCompare(b)));

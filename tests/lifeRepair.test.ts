@@ -2,6 +2,7 @@
 // result, and between a Discord send and its result, recovers without a duplicate send; boot catch-up
 // takes what arrived during downtime within the window; queued wakes start turns again.
 import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { appendIntent, appendLifeLog, readLifeFile, readLifeLog, readLifeState, updateLifeFile, updateLifeState } from "../src/life/lifeStore.js";
 import { RESTART_NOTE, UNCERTAIN_SEND } from "../src/life/repair.js";
@@ -208,6 +209,62 @@ describe("catch-up never takes a routed message twice (review I3)", () => {
     restarted.resume();
     await restarted.settle();
     expect((await readLifeFile(w.storage, "aria", "wakes")).immediate.map((wake) => wake.messageId)).toEqual([ping.id]);
+  });
+
+  it("a pause before the new runtime has loaded its marks keeps every saved mark (third review, minor 2)", async () => {
+    let paused = false;
+    const w = await lifeWorld(roots, { paused: () => paused });
+    vi.spyOn(w.cast.life("aria"), "poke").mockImplementation(() => undefined);
+    // A waifu's message is routed and marked at once.
+    const message = w.discord.post(ROOM, "good morning", { authorId: "400000000000000005", authorName: "Mina", bot: true });
+    await w.cast.onGuildMessage({ guildId: GUILD, channelId: CHANNEL, messageId: message.id, castWaifuIds: ["aria"], authorIsWaifu: true, raw: message });
+    await w.cast.stop();
+    const saved = JSON.parse(await readFile(`${w.root}/app/intake-marks.json`, "utf8")) as { marks: Record<string, string> };
+    expect(saved.marks[ROOM_KEY]).toBe(message.id);
+    // A config save rebuilds the runtime, and the owner presses Pause before it has started.
+    const restarted = w.restart();
+    vi.spyOn(restarted.life("aria"), "poke").mockImplementation(() => undefined);
+    paused = true;
+    restarted.pause();
+    await restarted.settle();
+    await restarted.start();
+    const after = JSON.parse(await readFile(`${w.root}/app/intake-marks.json`, "utf8")) as { marks: Record<string, string>; pausedAt?: string };
+    expect(after.marks[ROOM_KEY]).toBe(message.id);
+    expect(after.pausedAt).toBeDefined();
+    expect(restarted.marks.get(ROOM_KEY)).toBe(message.id);
+  });
+
+  it("a pause during a resume's catch-up keeps the earlier start; a reload then still catches up (third review, minor 3)", async () => {
+    let paused = false;
+    const w = await lifeWorld(roots, { paused: () => paused, config: (config) => ({ ...config, discord: { ...config.discord, dm: { ...config.discord.dm, resumeWindowMinutes: 10 } } }) });
+    vi.spyOn(w.cast.life("aria"), "poke").mockImplementation(() => undefined);
+    paused = true;
+    w.cast.pause();
+    const firstStart = w.clock.now().toISOString();
+    w.clock.advance(60_000);
+    paused = false;
+    w.cast.resume();
+    // Paused again while that resume still catches up.
+    paused = true;
+    w.cast.pause();
+    await w.cast.settle();
+    const saved = JSON.parse(await readFile(`${w.root}/app/intake-marks.json`, "utf8")) as { pausedAt?: string };
+    expect(saved.pausedAt).toBe(firstStart);
+    w.clock.advance(5 * 60_000);
+    const ping = w.discord.post(ROOM, `<@${ARIA_BOT}> are you there?`, { mentions: { [ARIA_BOT]: "Aria" } });
+    await w.cast.onGuildMessage({ guildId: GUILD, channelId: CHANNEL, messageId: ping.id, castWaifuIds: ["aria"], authorIsWaifu: false, raw: ping });
+    w.clock.advance(30 * 60_000);
+    await w.cast.stop();
+    const restarted = w.restart();
+    vi.spyOn(restarted.life("aria"), "poke").mockImplementation(() => undefined);
+    await restarted.start();
+    w.clock.advance(2 * 3_600_000);
+    paused = false;
+    restarted.resume();
+    await restarted.settle();
+    expect((await readLifeFile(w.storage, "aria", "wakes")).immediate.map((wake) => wake.messageId)).toEqual([ping.id]);
+    // That resume finished undisturbed: the saved start goes.
+    expect((JSON.parse(await readFile(`${w.root}/app/intake-marks.json`, "utf8")) as { pausedAt?: string }).pausedAt).toBeUndefined();
   });
 
   it("a staggered @everyone wake a reload drops is taken again by the catch-up (N3)", async () => {

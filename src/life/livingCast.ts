@@ -113,6 +113,8 @@ export class LivingCast {
   readonly marks: IntakeMarks;
   /** When an explicit pause began: the resume catch-up starts there. */
   private pausedAt: Date | undefined;
+  /** The start a running resume's catch-up began from (cleared when it ends). */
+  private resumingSince: Date | undefined;
   private readonly webBackend: WebBackend;
   private readonly lives = new Map<string, Life>();
   private readonly background = new Set<Promise<unknown>>();
@@ -269,7 +271,7 @@ export class LivingCast {
     } else {
       // A pause that ended with the process (a reload, a crash): catch up from its start.
       await this.catchUpAndResume(pausedAt ? { since: pausedAt } : {});
-      if (pausedAt) await this.marks.setPausedAt(undefined).catch(() => undefined);
+      if (pausedAt) await this.clearPauseStart(pausedAt);
     }
   }
 
@@ -336,7 +338,8 @@ export class LivingCast {
 
   /** Explicit pause: abort in-flight calls (maintenance too); queues stay. */
   pause(): void {
-    this.pausedAt ??= this.marks.pausedAt ?? this.deps.now();
+    // A pause while a resume still catches up starts where that catch-up started.
+    this.pausedAt ??= this.resumingSince ?? this.marks.pausedAt ?? this.deps.now();
     // Kept on disk, so a reload or a restart while paused still catches up from here (N4).
     void this.track(this.marks.setPausedAt(this.pausedAt).catch(() => undefined));
     this.scheduler.abortMaintenance();
@@ -347,7 +350,24 @@ export class LivingCast {
   resume(): void {
     const since = this.pausedAt ?? this.marks.pausedAt;
     this.pausedAt = undefined;
-    void this.track(this.catchUpAndResume(since ? { since } : {}).then(() => this.marks.setPausedAt(undefined).catch(() => undefined)));
+    this.resumingSince = since;
+    void this.track(
+      this.catchUpAndResume(since ? { since } : {}).then(async () => {
+        if (this.resumingSince === since) this.resumingSince = undefined;
+        await this.clearPauseStart(since);
+      })
+    );
+  }
+
+  /**
+   * After a catch-up from `since`: the saved pause start goes, unless she was paused again
+   * meanwhile. That pause keeps the earlier start (`pause()` takes the running resume's), so a
+   * reload catches up the whole gap.
+   */
+  private async clearPauseStart(since: Date | undefined): Promise<void> {
+    if (this.pausedAt !== undefined || this.deps.isPaused()) return;
+    if (this.marks.pausedAt?.getTime() !== since?.getTime()) return;
+    await this.marks.setPausedAt(undefined).catch(() => undefined);
   }
 
   /**

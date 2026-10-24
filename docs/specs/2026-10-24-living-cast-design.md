@@ -462,7 +462,10 @@ calibration). It does not reuse the conversation planner, which works on ledger 
   again too). After an explicit pause, the resume catch-up starts at the pause start; messages
   that arrive while paused are not routed live. The pause start is kept in `intake-marks.json`
   (`pausedAt`), so a reload or a restart while paused still catches up from it; booting paused
-  without one records the boot window's start instead.
+  without one records the boot window's start instead. A resume clears it only once its catch-up
+  ends and only if she was not paused again meanwhile; a pause during that catch-up keeps the
+  earlier start. Every write of the file waits for the saved marks to be read first, so a pause or
+  a forget that reaches a runtime before it started never writes the file from empty marks.
 - **Late reminders**: due reminders fire once on boot (deferred if she is asleep). Recurring ones
   then continue from the next future occurrence.
 
