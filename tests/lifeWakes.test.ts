@@ -1,7 +1,7 @@
 // Waking (Living cast spec §4.1–§4.4, §4.6, §10.3): every wake reason, waifu authors, the detector
 // mapping and fallback, staggering, and the guards in order. Fake Discord, fake detector, temp data
 // root; no live calls. Lives never run here (the wake queue is read directly).
-import { appendFile, mkdir } from "node:fs/promises";
+import { appendFile, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { readLifeFile, updateLifeFile, updateLifeState } from "../src/life/lifeStore.js";
@@ -286,6 +286,27 @@ describe("addressee detector (§4.3)", () => {
     await say(w, "brownie pans are overrated, right?");
     expect(await reasons(w, "mina")).toEqual(["detector", "detector"]);
     expect((await queued(w, "aria")).immediate.every((wake) => wake.reason === "watch")).toBe(true);
+  });
+
+  it("unreadable forget records fail closed: previews hidden, no detector, an owner notice until repaired", async () => {
+    const w = await world();
+    w.detector.answer = { choice: "anyone", probabilities: { anyone: 1 } };
+    const file = path.join(w.root, "user/people/forgotten.json");
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, '{"forgotten": [{"userId": "3000');
+    await say(w, `<@${ARIA_BOT}> my secret is cardamom`, { mentions: { [ARIA_BOT]: "Aria" } });
+    await say(w, "anyone around?");
+    expect(w.detector.calls).toEqual([]);
+    const [wake] = (await queued(w, "aria")).immediate;
+    expect(wake).toMatchObject({ reason: "mention", fromName: "someone" });
+    expect(JSON.stringify(wake)).not.toContain("cardamom");
+    expect(w.cast.notices.list()).toEqual([expect.stringContaining("forgotten.json is unreadable")]);
+    // Repaired: the notice clears and the detector runs again.
+    await writeFile(file, JSON.stringify({ forgotten: [] }));
+    w.clock.advance(11 * 60_000);
+    await say(w, "anyone around now?");
+    expect(w.detector.calls).toHaveLength(1);
+    expect(w.cast.notices.list()).toEqual([]);
   });
 
   it("on failure: anyone for a question or the first human message in 10 minutes, else nothing; never retried", async () => {

@@ -36,7 +36,9 @@ import type { LifeDeps } from "./deps.js";
 import { AddresseeDetector, detectorQuestion, drawAnyone, fallbackIsAnyone, type DetectorCastMember, type DetectorMessage } from "./detector/decider.js";
 import { readLifeState, updateLifeState } from "./lifeStore.js";
 import { messagePreview } from "./notifications.js";
+import { FORGET_RECORDS_NOTICE, FORGET_RECORDS_UNREADABLE } from "./ownerNotices.js";
 import { forgottenPeople, isRemovedMessage, selfAuthorIds } from "./people.js";
+import type { ForgottenPerson } from "../orchestration/dm/forgotten.js";
 import { handleOf } from "./places.js";
 import { wordBoundaryIncludes } from "./text.js";
 import { fireWatches } from "./watches.js";
@@ -131,6 +133,18 @@ export class Intake {
     return page.messages.find((message) => message.id === messageId);
   }
 
+  /** The forget records; an unreadable file is reported to the owner and fails closed (§7.5). */
+  private async forgetRecords(): Promise<{ forgotten: ForgottenPerson[]; unreadable: boolean }> {
+    try {
+      const forgotten = await forgottenPeople(this.deps.storage);
+      this.deps.notices?.clear(FORGET_RECORDS_NOTICE);
+      return { forgotten, unreadable: false };
+    } catch {
+      this.deps.notices?.set(FORGET_RECORDS_NOTICE, FORGET_RECORDS_UNREADABLE);
+      return { forgotten: [], unreadable: true };
+    }
+  }
+
   private async castWaifus(ids: readonly string[]): Promise<WaifuConfig[]> {
     const out: WaifuConfig[] = [];
     for (const id of ids) {
@@ -158,8 +172,9 @@ export class Intake {
     const human = !raw.authorIsBot && !input.authorIsWaifu;
     const waifus = await this.castWaifus(input.castWaifuIds);
     if (waifus.length === 0) return;
-    const forgotten = await forgottenPeople(deps.storage).catch(() => []);
-    const removed = isRemovedMessage(raw, forgotten);
+    const records = await this.forgetRecords();
+    // Unreadable forget records fail closed: every human message is treated as possibly forgotten.
+    const removed = records.unreadable ? human : isRemovedMessage(raw, records.forgotten);
     const dir = await this.view(input.guildId);
     const rendered = renderDiscordMessage(raw, dir, deps.timeZone);
     const text = removed ? "(removed)" : rendered?.body ?? "";
@@ -264,7 +279,10 @@ export class Intake {
     const newestId = burst.messageIds[burst.messageIds.length - 1]!;
     const page = await deps.conversations.readPage({ conversation, limit: 12 }).catch(() => ({ messages: [] as RawDiscordMessage[] }));
     const dir = await this.view(burst.guildId);
-    const forgotten = await forgottenPeople(deps.storage).catch(() => []);
+    const records = await this.forgetRecords();
+    // Unreadable forget records: the transcript could hold a forgotten person's words; no detector.
+    if (records.unreadable) return [];
+    const forgotten = records.forgotten;
     const allWaifus = await listWaifus(deps.storage).catch(() => []);
     const waifuAuthors = new Map<string, string>();
     for (const waifu of allWaifus) for (const id of await selfAuthorIds(deps.storage, waifu)) waifuAuthors.set(id, waifu.id);

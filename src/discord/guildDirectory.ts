@@ -349,6 +349,22 @@ export class GuildDirectory implements CacheDirectoryHooks {
     return [...(await this.ensureLoaded(guildId)).members.values()];
   }
 
+  /**
+   * Forget (Living cast §7.5): the person leaves the member list of every guild this directory has
+   * loaded, written through at once (the files of the others are filtered by the caller). They come
+   * back only if they speak again.
+   */
+  async forgetMember(userId: string): Promise<void> {
+    for (const state of this.guilds.values()) {
+      if (!state.ready) await this.ensureLoaded(state.guildId);
+      state.negative.delete(userId);
+      if (state.members.delete(userId)) {
+        state.dirty.add("members");
+        await this.flushGuild(state);
+      }
+    }
+  }
+
   /** Channel or thread metadata (`parentId`, `kind`) for task C's thread handling. */
   channel(guildId: string, channelId: string): DiscordChannelEntry | undefined {
     return this.guilds.get(guildId)?.channels.get(channelId);

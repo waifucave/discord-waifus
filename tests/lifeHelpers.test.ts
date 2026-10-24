@@ -3,7 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { isAvailable } from "../src/life/availability.js";
 import { isOnlyToolCallSyntax, stripCopiedHeader, stripLeadingTranscriptHeader, typingDelayMs } from "../src/life/outbound.js";
-import { normalizeName, wordBoundaryIncludes } from "../src/life/text.js";
+import { foldName, isWeakName, namesSomeone, normalizeName, wordBoundaryIncludes } from "../src/life/text.js";
 import { entryHeader, entryLine, lineMessageOf, type LineMessage } from "../src/life/render.js";
 import { EMPTY_GUILD_DIRECTORY } from "../src/orchestration/context/messageRender.js";
 import type { RawDiscordMessage } from "../src/shared/schemas/discordMessage.js";
@@ -42,6 +42,17 @@ describe("availability and names", () => {
     const busy = { sleep: { enabled: false, start: "23:00", end: "07:00" }, busy: [{ start: "11:00", end: "13:00", reason: "work" }] };
     expect(isAvailable(busy, new Date(2026, 9, 24, 12, 0))).toBe(false);
     expect(isAvailable(busy, new Date(2026, 9, 24, 14, 0))).toBe(true);
+  });
+
+  it("forget matching folds Latin diacritics both ways and keeps other scripts' marks; weak names are short or generic", () => {
+    expect(namesSomeone("jose taught me flan", "José")).toBe(true);
+    expect(namesSomeone("José taught me flan", "jose")).toBe(true);
+    expect(namesSomeone("Zoë said hi", "zoe")).toBe(true);
+    expect(namesSomeone("josefina said hi", "José")).toBe(false);
+    expect(foldName("が")).toBe("が");
+    expect(namesSomeone("さくらが来た", "さくら")).toBe(true);
+    for (const weak of ["Al", "Kev", "user", "Admin", "you", "さ"]) expect(isWeakName(weak), weak).toBe(true);
+    for (const strong of ["Kevin", "José", "さくら", "kevbaker"]) expect(isWeakName(strong), strong).toBe(false);
   });
 
   it("matches names on word boundaries, case-insensitively", () => {

@@ -126,6 +126,12 @@ export class EventStream<T> {
     return cursor;
   }
 
+  /** Drops the replay buffer (forget): a client resuming from an older cursor gets a fresh snapshot. */
+  clearReplay(): void {
+    this.records.length = 0;
+    this.replayBytes = 0;
+  }
+
   recover(lastEventId?: string): EventStreamRecovery<T> {
     const latestCursor = this.latestCursor();
     if (!lastEventId) {

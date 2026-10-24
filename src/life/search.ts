@@ -31,6 +31,25 @@ import { toolError } from "./tools/types.js";
 
 export const SEARCH_USAGE_PATH = "user/search/usage.json";
 const MAX_RECENT = 100;
+
+/** Forget (§7.5 step 3): recent queries and URLs naming the person leave the dashboard list. Returns how many went. */
+export async function scrubSearchUsage(storage: StorageService, drop: (query: string) => boolean): Promise<number> {
+  const current = await storage.readJson(SEARCH_USAGE_PATH, SearchUsageSchema, SearchUsageSchema.parse({ ...createRevisionedBase() })).catch(() => undefined);
+  if (!current || !current.recent.some((entry) => drop(entry.query))) return 0;
+  let removed = 0;
+  await storage.updateRevisionedJson({
+    resourceKey: "search-usage",
+    relativePath: SEARCH_USAGE_PATH,
+    schema: SearchUsageSchema,
+    fallback: SearchUsageSchema.parse({ ...createRevisionedBase() }),
+    transform: (usage: SearchUsage) => {
+      const recent = usage.recent.filter((entry) => !drop(entry.query));
+      removed = usage.recent.length - recent.length;
+      return { ...usage, recent };
+    }
+  });
+  return removed;
+}
 const HIGHLIGHT_CHARS = 300;
 const DIGEST_MAX_OUTPUT_TOKENS = 1_024;
 const DIGEST_TIMEOUT_MS = 60_000;

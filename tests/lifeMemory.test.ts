@@ -9,11 +9,13 @@ import { readLifeFile, readLifeLog, readLifeState, readMaintenanceReports, updat
 import { MAINTENANCE_INSTRUCTION } from "../src/life/maintenance.js";
 import { Notes } from "../src/life/notes.js";
 import { newWakeId, enqueueWake } from "../src/life/wakeQueue.js";
-import { queueOwnerScrubs } from "../src/life/forget.js";
+import { queueOwnerScrubs, waifusWithLife } from "../src/life/forget.js";
 import { pendingScrubsPath, queuePendingScrub, readPendingScrubs } from "../src/orchestration/dm/forgotten.js";
 import { GuildMembersFileSchema } from "../src/shared/schemas/domain.js";
+import { SearchUsageSchema } from "../src/shared/schemas/life.js";
 import { createRevisionedBase } from "../src/shared/schemas/common.js";
-import { textTurn } from "./modelFakes.js";
+import { dmForget } from "../src/orchestration/dm/dmForget.js";
+import { errorTurn, textTurn } from "./modelFakes.js";
 import { ARIA_BOT, CHANNEL, closeWorlds, dmOf, GUILD, KEVIN, lifeWorld, MINA_USER, ROOM, ROOM_KEY, script, toolTurn, type LifeWorld } from "./lifeFixtures.js";
 import { removeTempRoot } from "./testUtils.js";
 
@@ -121,13 +123,16 @@ describe("forget (§7.5)", () => {
     await updateLifeState(w.storage, "aria", (state) => ({ ...state, pendingNotices: ["(Kevin deleted a message you read in bake-club/#general)"] }));
 
     const result = await w.cast.forgetPerson(KEVIN);
+    // A bullet naming him goes whole (the piping line), so do id lines and the summary's sentence.
     expect(result.scrubbed).toEqual([
-      { waifuId: "aria", removedLines: 3, removedSentences: 1, needsReview: [{ where: "notes/me.md", line: "- Sam is funny." }] }
+      { waifuId: "aria", removedLines: 4, removedSentences: 0, removedNotes: 0, needsReview: [{ where: "notes/me.md", line: "- Sam is funny." }] }
     ]);
-    // Step 2: one summary call told to leave him out, with no kept turns.
+    // Step 2: one summary call told to leave him out, with no kept turns, by every name (the shared one too).
     const summaryCall = w.anthropic.calls[3]!.request;
     const lastMessage = JSON.stringify(summaryCall.messages[summaryCall.messages.length - 1]);
-    expect(lastMessage).toContain("Leave out everything about these people, who asked to be forgotten: Kevin");
+    expect(lastMessage).toContain("Leave out everything about these people, who asked to be forgotten: Kevin, kevbaker, Sam");
+    // Step 4's instruction names him the same way.
+    expect(JSON.stringify(w.anthropic.calls[4]!.request.messages[0])).toContain('\\"Kevin\\", \\"kevbaker\\", \\"Sam\\"');
     // Step 4: the scrub session had only the notes tools.
     expect(w.anthropic.calls[4]!.request.tools?.map((tool) => tool.name).sort()).toEqual([...NOTE_TOOLS].sort());
     // Step 5: a new epoch with every old log deleted, a summary and notes without him.
@@ -139,7 +144,7 @@ describe("forget (§7.5)", () => {
     await expect(readFile(path.join(w.root, "user/waifus/aria/life/log/1.jsonl"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     expect(await notes.read("people/kevin.md")).toBeUndefined();
     expect(await notes.read("MEMORY.md")).toBe("# Memory\n- [Me](me.md) — about me\n");
-    expect(await notes.read("me.md")).toBe("# Me\n- I love lemon tarts.\n- Sam is funny.\n");
+    expect(await notes.read("me.md")).toBe("# Me\n- Sam is funny.\n");
     // Step 3: wakes, notices, watches and reminders about him are gone; others stay.
     expect((await readLifeFile(w.storage, "aria", "wakes")).immediate).toEqual([]);
     expect(state.pendingNotices).toEqual([]);
@@ -147,7 +152,10 @@ describe("forget (§7.5)", () => {
     expect((await readLifeFile(w.storage, "aria", "schedule")).reminders.map((reminder) => reminder.id)).toEqual(["r2"]);
     // The report keeps counts only.
     const report = (await readMaintenanceReports(w.storage, "aria")).find((line) => line.kind === "forget")!;
-    expect(report).toMatchObject({ source: "owner", removedLines: 3, removedSentences: 1, needsReview: 1 });
+    expect(report).toMatchObject({ source: "owner", removedLines: 4, removedSentences: 0, needsReview: 1 });
+    // The review line is kept for the owner (no id in it).
+    const review = JSON.parse(await readFile(path.join(w.root, "user/waifus/aria/life/needs-review.json"), "utf8")) as { items: unknown[] };
+    expect(review.items).toEqual([{ at: w.clock.now().toISOString(), source: "owner", where: "notes/me.md", line: "- Sam is funny." }]);
     const raw = await readFile(path.join(w.root, "user/waifus/aria/life/maintenance.jsonl"), "utf8");
     expect(raw).not.toContain("Kevin");
     expect(raw).not.toContain(KEVIN);
@@ -244,8 +252,144 @@ describe("forget (§7.5)", () => {
     await w.cast.forgetInLife({ waifuId: "aria", userId: KEVIN, source: "dm", scope: "conversation" });
     const state = await readLifeState(w.storage, "aria");
     expect(state.summary).toBe("A quiet day.");
-    expect(state.pendingEpochStart).toBe(true);
+    // The epoch starts at once: the old log with the chat is gone now, not at her next turn.
+    expect(state.pendingEpochStart).toBeFalsy();
+    expect(state.epoch).toBe(2);
+    await expect(readFile(path.join(w.root, "user/waifus/aria/life/log/1.jsonl"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     expect(await notes.read("people/kevin.md")).toBe("# Kevin\n- says hi\n");
     expect(w.anthropic.calls).toHaveLength(3);
+    expect(await readPendingScrubs(w.storage, "aria")).toEqual([]);
+  });
+
+  it("the DM rate limit holds for both scopes and comes before any abort: inside 6 hours nothing of her life is touched", async () => {
+    const w = await lifeWorld(roots, { scripts: script(textTurn("hello!"), textTurn("no need to reply"), textTurn("A quiet day.")) });
+    vi.spyOn(w.cast.life("aria"), "poke").mockImplementation(() => undefined);
+    const dm = w.discord.post(dmOf("aria"), "hi");
+    await w.cast.onDirectMessage({ waifuId: "aria", botId: "aria-bot", userId: KEVIN, userDisplayName: "Kevin", channelId: "dm", messageId: dm.id, createdAt: dm.createdAt });
+    w.cast.intake.flushDms();
+    await w.cast.settle();
+    await w.cast.life("aria").runNow();
+    await w.cast.forgetInLife({ waifuId: "aria", userId: KEVIN, source: "dm", scope: "conversation" });
+    const abort = vi.spyOn(w.cast.life("aria"), "abort");
+    const callsBefore = w.anthropic.calls.length;
+    w.clock.advance(30 * 60_000);
+    for (const scope of ["conversation", "everything", "conversation"] as const) {
+      expect(await w.cast.forgetInLife({ waifuId: "aria", userId: KEVIN, source: "dm", scope })).toMatchObject({ queued: true });
+    }
+    expect(abort).not.toHaveBeenCalled();
+    expect(w.anthropic.calls).toHaveLength(callsBefore);
+    // One queued entry, never weakened back to the conversation scope, with his names kept.
+    expect(await readPendingScrubs(w.storage, "aria")).toEqual([{ userId: KEVIN, at: w.clock.now().toISOString(), source: "dm_forget_everything", names: ["Kevin"] }]);
+    // Past the window it runs again.
+    w.clock.advance(6 * 3_600_000);
+    expect((await w.cast.forgetInLife({ waifuId: "aria", userId: KEVIN, source: "dm", scope: "conversation" })).queued).toBeUndefined();
+    expect(abort).toHaveBeenCalledWith("forget");
+  });
+
+  it("identity: names are read before the DM data goes; a user-<tail> handle is no name; José and jose match both ways", async () => {
+    const w = await lifeWorld(roots, { scripts: script(textTurn("Summary."), textTurn("done")) });
+    vi.spyOn(w.cast.life("aria"), "poke").mockImplementation(() => undefined);
+    const dmKey = `dm_${KEVIN}_aria`;
+    await updateLifeFile(w.storage, "aria", "handles", (file) => ({ ...file, handles: { "dm/user-4321": dmKey }, primary: { [dmKey]: "dm/user-4321" } }));
+    expect(await w.cast.forgetIdentity("aria", KEVIN)).toEqual({ userId: KEVIN, names: [], sharedNames: [] });
+    const notes = new Notes(w.storage, "aria");
+    await notes.write("people/mina.md", "# Mina\n- Mina is a user of the bake club app.\n- Loves lemon tarts.\n");
+    await notes.write("me.md", "# Me\n- jose taught me flan.\n- I love flan.\n");
+    await updateLifeFile(w.storage, "aria", "handles", (file) => ({ ...file, handles: { "dm/jose": dmKey }, primary: { [dmKey]: "dm/jose" } }));
+    await w.cast.onDirectMessage({ waifuId: "aria", botId: "aria-bot", userId: KEVIN, userDisplayName: "José", channelId: "dm", messageId: "900000000000000123", createdAt: w.clock.now().toISOString() });
+    const prepared = (await w.cast.prepareForget({ waifuId: "aria", userId: KEVIN, source: "owner", scope: "everything" }))!;
+    // DM state "José" and the handle's "jose" are one name (diacritics folded); the first spelling stays.
+    expect(prepared.identity.names).toEqual(["José"]);
+    // The names travel with the queued scrub, so a later run (after the DM state is gone) still has them.
+    expect((await readPendingScrubs(w.storage, "aria"))[0]).toMatchObject({ source: "owner_forget", names: ["José"] });
+    await dmForget(w.storage, { userId: KEVIN, waifuId: "aria", scope: "all" });
+    // Collected now, only the handle's slug is left: the display name went with the DM state.
+    expect((await w.cast.forgetIdentity("aria", KEVIN))!.names).toEqual(["jose"]);
+    await w.cast.runForget(prepared);
+    expect(await notes.read("me.md")).toBe("# Me\n- I love flan.\n");
+    expect(await notes.read("people/mina.md")).toBe("# Mina\n- Mina is a user of the bake club app.\n- Loves lemon tarts.\n");
+  });
+});
+
+describe("forget: person notes, failures and the archive (§7.5, D-b)", () => {
+  it("leaves nothing keyed by him: word watches naming him, his DM cursor, recent web queries; scrubbedAt only within 6 hours", async () => {
+    const w = await lifeWorld(roots, { scripts: script(textTurn("done")) });
+    vi.spyOn(w.cast.life("aria"), "poke").mockImplementation(() => undefined);
+    await seedMembers(w);
+    await new Notes(w.storage, "aria").write("MEMORY.md", "# Memory\n");
+    const now = w.clock.now().toISOString();
+    const expiresAt = new Date(w.clock.ms + 86_400_000).toISOString();
+    await updateLifeFile(w.storage, "aria", "watches", (file) => ({
+      ...file,
+      watches: [
+        { id: "w1", note: "", createdAt: now, expiresAt, once: false, bindings: [{ placeKey: ROOM_KEY, words: ["kevin's exam"] }], fires: [] },
+        { id: "w2", note: "", createdAt: now, expiresAt, once: false, bindings: [{ placeKey: ROOM_KEY, words: ["brownies"] }], fires: [] }
+      ]
+    }));
+    await updateLifeFile(w.storage, "aria", "reads", (file) => ({ ...file, cursors: { [`dm_${KEVIN}_aria`]: { lastReadMessageId: "900000000000000001", at: now }, [ROOM_KEY]: { lastReadMessageId: "900000000000000002", at: now } } }));
+    await updateLifeState(w.storage, "aria", (state) => ({ ...state, scrubbedAt: { "300000000000000111": new Date(w.clock.ms - 7 * 3_600_000).toISOString() } }));
+    await w.storage.writeJson("search-usage", "user/search/usage.json", SearchUsageSchema, SearchUsageSchema.parse({
+      ...createRevisionedBase(),
+      recent: [
+        { at: now, waifuId: "aria", kind: "search", query: "kevbaker chemistry results", ok: true },
+        { at: now, waifuId: "aria", kind: "search", query: "lemon tart recipe", ok: true }
+      ]
+    }));
+    await w.cast.forgetPerson(KEVIN);
+    expect((await readLifeFile(w.storage, "aria", "watches")).watches.map((watch) => watch.id)).toEqual(["w2"]);
+    expect(Object.keys((await readLifeFile(w.storage, "aria", "reads")).cursors)).toEqual([ROOM_KEY]);
+    const usage = JSON.parse(await readFile(path.join(w.root, "user/search/usage.json"), "utf8")) as { recent: Array<{ query: string }> };
+    expect(usage.recent.map((entry) => entry.query)).toEqual(["lemon tart recipe"]);
+    expect(Object.keys((await readLifeState(w.storage, "aria")).scrubbedAt)).toEqual([KEVIN]);
+  });
+
+  it("a waifu with only queued wakes (no state yet) is scrubbed too: her life folder counts", async () => {
+    const w = await lifeWorld(roots, { waifus: [{ id: "aria", name: "Aria", botId: "aria-bot" }, { id: "mina", name: "Mina", botId: "mina-bot" }] });
+    await enqueueWake(w.storage, "mina", { id: newWakeId(), reason: "dm", placeKey: `dm_${KEVIN}_mina`, fromUserId: KEVIN, fromName: "Kevin", at: w.clock.now().toISOString() });
+    expect((await waifusWithLife(w.storage)).map((waifu) => waifu.id)).toEqual(["mina"]);
+    const queued = await queueOwnerScrubs(w.storage, KEVIN, w.clock.now());
+    expect(queued.map((entry) => entry.waifu.id)).toEqual(["mina"]);
+  });
+
+  it("a note marked as his is deleted whole with its index links; a people/ note headed by his unique name too; a shared heading is reviewed", async () => {
+    const w = await lifeWorld(roots, { scripts: script(textTurn("Summary."), textTurn("nothing else")) });
+    vi.spyOn(w.cast.life("aria"), "poke").mockImplementation(() => undefined);
+    await seedMembers(w);
+    const notes = new Notes(w.storage, "aria");
+    await notes.write("people/kevin-0003.md", `# Kev\n<!-- user:${KEVIN} -->\n\n- Allergic to peanuts.\n- Studies chemistry.\n`);
+    await notes.write("people/kevin.md", "# Kevin\n\n- Is going through a divorce.\n");
+    await notes.write("people/sam.md", "# Sam\n\n- Likes jazz.\n");
+    await notes.write("people/mina.md", `# Mina\n<!-- user:${MINA_USER} -->\n\n- Runs the bake sale.\n`);
+    await notes.write("misc.md", "# Misc\n\n## Kevin\n- the exam is on Friday\n");
+    await notes.write("MEMORY.md", "# Memory\n- [Kev](people/kevin-0003.md) — peanuts\n- [Kev's other note](people/kevin.md) — divorce\n- [Mina](people/mina.md) — bake sale\n- [Sam](people/sam.md) — jazz\n");
+    const result = await w.cast.forgetPerson(KEVIN);
+    expect(result.scrubbed[0]).toMatchObject({ removedNotes: 2 });
+    expect(await notes.read("people/kevin-0003.md")).toBeUndefined();
+    expect(await notes.read("people/kevin.md")).toBeUndefined();
+    expect(await notes.read("people/mina.md")).toContain("Runs the bake sale.");
+    expect(await notes.read("people/sam.md")).toBe("# Sam\n\n- Likes jazz.\n");
+    expect(await notes.read("MEMORY.md")).toBe("# Memory\n- [Mina](people/mina.md) — bake sale\n- [Sam](people/sam.md) — jazz\n");
+    expect(await notes.read("misc.md")).toBe("# Misc\n\n- the exam is on Friday\n");
+    expect(result.scrubbed[0]!.needsReview).toEqual(
+      expect.arrayContaining([
+        { where: "notes/people/sam.md", line: '(a note headed "Sam" may be about them)' },
+        { where: "notes/misc.md", line: "(a heading naming them was removed; check the rest of this note)" }
+      ])
+    );
+  });
+
+  it("a failed notes scrub keeps the scrub queued; it runs again (and clears) at maintenance", async () => {
+    const w = await lifeWorld(roots, { scripts: script(errorTurn({ code: "server", message: "overloaded", status: 500, retryable: false })) });
+    vi.spyOn(w.cast.life("aria"), "poke").mockImplementation(() => undefined);
+    await new Notes(w.storage, "aria").write("me.md", "# Me\n- likes tea\n");
+    const result = await w.cast.forgetPerson(KEVIN);
+    expect(result.scrubbed[0]).toMatchObject({ queued: true });
+    expect((await readPendingScrubs(w.storage, "aria")).map((scrub) => scrub.source)).toEqual(["owner_forget"]);
+    expect((await readMaintenanceReports(w.storage, "aria")).find((report) => report.kind === "forget")).toMatchObject({ notesScrub: "pending" });
+    // Her nightly maintenance runs it again; this time the notes scrub works and the queue clears.
+    w.anthropic.scripts.splice(0, w.anthropic.scripts.length, ...script(textTurn("nothing about him"), textTurn("all tidy")));
+    w.clock.ms = Date.parse("2026-10-25T05:30:00.000Z");
+    await w.cast.scheduler.tick();
+    expect(await readPendingScrubs(w.storage, "aria")).toEqual([]);
   });
 });

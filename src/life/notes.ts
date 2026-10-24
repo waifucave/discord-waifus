@@ -20,6 +20,19 @@ export const MEMORY_PROMPT_MAX_LINES = 200;
 export const MEMORY_PROMPT_MAX_BYTES = 8 * 1024;
 export const MEMORY_PROMPT_CUT_NOTE = "(…your index is longer than this; tidy MEMORY.md so it stays short, with links to the details.)";
 
+/**
+ * The marker a person's own note carries (`<!-- user:<id> -->`, written by the memories→notes
+ * migration under the heading): the forget scrub deletes a marked file whole (§7.5 step 5).
+ */
+export function personMarker(userId: string): string {
+  return `<!-- user:${userId} -->`;
+}
+
+/** The user ids a note's person markers name. */
+export function markedUserIds(text: string): string[] {
+  return [...text.matchAll(/<!--\s*user:(\d{5,25})\s*-->/gu)].map((match) => match[1]!);
+}
+
 const SEGMENT = /^[a-z0-9_-]+$/;
 /** Names Windows reserves for devices (`con.md` would open the console, not a file). */
 const WINDOWS_DEVICE = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/;

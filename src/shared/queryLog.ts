@@ -161,3 +161,27 @@ export function subscribeReplies(listener: ReplyListener): () => void {
   replyListeners.add(listener);
   return () => replyListeners.delete(listener);
 }
+
+const clearListeners = new Set<() => void>();
+
+/**
+ * Forget (Living cast §7.5): the in-memory traffic buffers go — the captured queries and replies
+ * and, through the listeners, the `/api/events` replay — so nothing a forgotten person said is
+ * replayed to a reconnecting dashboard.
+ */
+export function clearCapturedTraffic(): void {
+  recentQueryEntries.length = 0;
+  recentReplyEntries.length = 0;
+  for (const listener of clearListeners) {
+    try {
+      listener();
+    } catch {
+      // a listener never stops the others
+    }
+  }
+}
+
+export function onCapturedTrafficCleared(listener: () => void): () => void {
+  clearListeners.add(listener);
+  return () => clearListeners.delete(listener);
+}

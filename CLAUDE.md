@@ -62,12 +62,15 @@ three complete turns. Tools live in `tools/` (messages, notes, planning, web), w
 by default with the `exa` provider credential as fallback, and the SSRF-checked page fetcher, always
 `privateAddressPolicy: "deny"`, with a digest call, purpose `web`). Per-waifu data: `user/waifus/<id>/life/` (`state.json`,
 `log/<epoch>.jsonl`, `intents.jsonl`, `reads.json`, `handles.json`, `wakes.json`, `watches.json`,
-`schedule.json`, `maintenance.jsonl`, `pending-scrubs.json`, `usage.json`) and her notes in
+`schedule.json`, `maintenance.jsonl`, `pending-scrubs.json`, `needs-review.json`, `usage.json`) and her notes in
 `user/waifus/<id>/notes/` (`MEMORY.md` index). Boot repairs every life (`repair.ts`), runs queued
 owner forget scrubs, then catches up (`resumeWindowMinutes`); the scheduler (`scheduler.ts`, 15 s tick)
 fires reminders, drops expired watches, sends the `morning` batch when sleep ends and runs nightly
 maintenance with any pending scrubs (`maintenance.ts`). The House bot owns
-`/wake` and `/print` (Administrator only, checked again at run time); DM bots keep `/forget`.
+`/wake` and `/print`: only the Discord application's owner or its team members may run them
+(`src/discord/applicationOwners.ts`, refreshed every 6 hours and checked again at run time;
+Administrator is only the commands' default visibility); `/wake` reaches only waifus cast in that
+server. DM bots keep `/forget`.
 Tests: `tests/life*.test.ts` over `tests/lifeFixtures.ts` (fake Discord, fixed clock, scripted
 winter fakes), goldens in `tests/golden/__snapshots__/` (owner review), the cache simulation in
 `tests/eval/cacheHit.test.ts`, and the live eval `tests/eval/lifeLive.eval.test.ts` (skipped unless
@@ -166,14 +169,18 @@ PUT shim in `src/api/server.ts`.
   `POST /api/dms/:waifuId/:userId/forget` (`src/api/dms.ts`) and the owner's
   `POST /api/people/:userId/forget` (the DM part in `dm/forgetUser.ts`, then the life scrub of
   every waifu with a life or notes, `src/life/forget.ts`). DM bots register a BotDM-only `/forget`.
-  Forget records (`dm/forgotten.ts`): the owner's forget-user adds `{userId, at}` to
-  `user/people/forgotten.json` (spec §7.5) and queues an `owner_forget` entry in each life's
-  `pending-scrubs.json` before scrubbing, cleared once the scrub ran; without a running runtime
-  (Discord offline) the entries stay queued and run when that life next starts. A DM
-  `/forget everything` inside the 6-hour window queues a `dm_forget_everything` entry for nightly
-  maintenance (spec §7.3). Only a missing record file reads as empty; an unreadable one is moved
-  aside to `<name>.corrupt-<ts>` with a warning on update and stops readers that must not guess
-  (`ForgetRecordCorruptError`). Images a
+  Forget records (`dm/forgotten.ts`): every forget first collects the person's names and queues
+  the life scrub in `pending-scrubs.json` (with the names, before any DM data goes): the owner's
+  forget-user an `owner_forget` entry per life (runs now, or when that life next starts if Discord
+  is offline), a DM `/forget` a `dm_forget_everything` / `dm_forget_conversation` entry (runs now,
+  or at nightly maintenance inside the 6-hour window, spec §7.3); an entry is cleared only when
+  its scrub finished (a failed notes scrub keeps it). The owner's forget-user also adds `{userId,
+  at}` to `user/people/forgotten.json`, drops the person from member/participant lists, scrubs the
+  Living cast archive (`src/life/archiveScrub.ts`, D-b) and clears the captured traffic. Only a
+  missing record file reads as empty; an unreadable `forgotten.json` stops readers that must not
+  guess (`ForgetRecordCorruptError`; intake then hides previews and skips the detector, with an
+  owner notice), and an update keeps a `<name>.corrupt-<ts>` copy and carries over every entry it
+  can still read; a torn `pending-scrubs.json` is salvaged on read. Images a
   conversation showed are indexed durably in `user/conversations/<key>/images.json` (+ an
   append-only overflow past 5,000 keys; `src/discord/imageIndex.ts`), so a forget purges cached
   bytes and OCR text with or without the runtime (a legacy `ledger.json`'s image refs are read

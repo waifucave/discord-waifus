@@ -6,7 +6,8 @@
 //   when known (another waifu by her id, else the name); two people whose names slug alike get
 //   `<slug>-<last 4 of the id>.md`. A record about several people is written to each of their files.
 //   Records only about the waifu herself go to `me.md`, the rest to `misc.md`. A DM-origin record
-//   gets `(from a private chat with <name>)`.
+//   gets `(from a private chat with <name>)`. A person's own file carries `<!-- user:<id> -->`
+//   under its heading, so a later forget deletes the file whole (§7.5 step 5).
 // - Within a file: pinned first, then strength, then newest. Lines past the 16 KB note limit are
 //   left out and listed in the archive. Beyond the 200-file limit (MEMORY.md included) the people
 //   with the least total strength are merged into `people/others.md`; the notes' 1 MB total is kept
@@ -18,7 +19,8 @@
 //   (`life/pending-scrubs.json`, a DM `/forget everything`) for her. Their records are not kept in
 //   the archive either. An unreadable forget record fails the step (it is never read as "nobody").
 // - `user/memories.json` (minus forgotten people), `user/memory/` (pending observations, dream
-//   cursor) and the omitted lines move to `user/.archive/living-cast/`.
+//   cursor; forgotten people's observations and keys left out first) and the omitted lines move to
+//   `user/.archive/living-cast/`.
 //
 // Crash safety: each waifu's notes are written to `notes.migrating/` and renamed into place, the
 // archive copy is written before `user/memories.json` is removed (last), so a re-run after a crash
@@ -28,7 +30,8 @@ import { mkdir, readdir, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { atomicWriteJson, atomicWriteText } from "../../storage/atomic.js";
 import { readForgottenPeople, readPendingScrubs } from "../../orchestration/dm/forgotten.js";
-import { MAX_NOTE_BYTES, MAX_NOTE_FILES, MAX_NOTES_TOTAL_BYTES, MEMORY_INDEX } from "../../life/notes.js";
+import { scrubJsonForPerson } from "../../life/archiveScrub.js";
+import { MAX_NOTE_BYTES, MAX_NOTE_FILES, MAX_NOTES_TOTAL_BYTES, MEMORY_INDEX, personMarker } from "../../life/notes.js";
 import { slugify } from "../../life/places.js";
 import { archivePath, moveToArchive } from "./livingCastArchive.js";
 import { isObject, nonEmptyString, readJsonFile } from "./memorySupport.js";
@@ -51,7 +54,8 @@ type MemoryEntry = {
   dmUserId?: string;
 };
 type Line = { record: MemoryEntry; text: string };
-type NoteFile = { path: string; title: string; lines: Line[]; strength: number };
+/** `userId`: the Discord user a person file is about (written as a marker the forget scrub finds). */
+type NoteFile = { path: string; title: string; lines: Line[]; strength: number; userId?: string };
 type Omitted = { path: string; recordId: string; line: string; why: "note_limit" | "notes_full" };
 
 function parseRecord(raw: unknown): MemoryEntry | undefined {
@@ -116,14 +120,19 @@ const byRank = (a: Line, b: Line) =>
 
 const bytes = (text: string) => Buffer.byteLength(text, "utf8");
 
+/** The heading, plus the person marker (`<!-- user:<id> -->`, spec §7.5 step 5) on a person's own file. */
+function header(file: NoteFile): string {
+  return `# ${file.title}\n${file.userId ? `${personMarker(file.userId)}\n` : ""}\n`;
+}
+
 function render(file: NoteFile): string {
-  return `# ${file.title}\n\n${file.lines.map((line) => `- ${line.text}`).join("\n")}\n`;
+  return `${header(file)}${file.lines.map((line) => `- ${line.text}`).join("\n")}\n`;
 }
 
 /** Keeps the lines that fit in `budget` bytes (in rank order); the rest are reported. */
 function fit(file: NoteFile, budget: number, why: Omitted["why"], omitted: Omitted[]): void {
   const kept: Line[] = [];
-  let size = bytes(`# ${file.title}\n\n`);
+  let size = bytes(header(file));
   for (const line of file.lines) {
     const cost = bytes(`- ${line.text}\n`);
     if (size + cost <= budget) {
@@ -234,6 +243,7 @@ export function notesForWaifu(
   let files: NoteFile[] = [...people.entries()].map(([key, lines]) => ({
     path: `people/${slugs.get(key)}.md`,
     title: names.get(key)?.name ?? "Someone",
+    ...(key.startsWith("u:") ? { userId: key.slice(2) } : {}),
     lines: [...lines].sort(byRank),
     strength: lines.reduce((sum, line) => sum + line.record.strength, 0)
   }));
@@ -329,26 +339,56 @@ async function writeNotes(dataRoot: string, waifuId: string, files: NoteFile[]):
   await rename(staging, path.join(waifuDir, "notes"));
 }
 
+/**
+ * The memory folder leaves out forgotten people before it moves to the archive: pending observations
+ * about a forgotten user (or a user of her pending scrubs), and any other record or key naming a
+ * forgotten user's id (the dream cursor's DM keys).
+ */
+async function leaveOutForgotten(memoryDir: string, forgotten: ReadonlySet<string>, leftOut: (raw: unknown) => boolean): Promise<void> {
+  const users = [...forgotten];
+  for (const name of (await readdir(memoryDir).catch(() => [] as string[])).sort()) {
+    if (!name.endsWith(".json")) continue;
+    const file = path.join(memoryDir, name);
+    const read = await readJsonFile(file);
+    if (read.kind !== "ok") continue;
+    let value: unknown = read.value;
+    let removed = 0;
+    if (name === "pending-observations.json" && isObject(value) && Array.isArray(value.observations)) {
+      const observations = value.observations.filter((observation) => !leftOut(observation));
+      removed += value.observations.length - observations.length;
+      value = { ...value, observations };
+    }
+    for (const userId of users) {
+      const scrubbed = scrubJsonForPerson(value, userId);
+      removed += scrubbed.removed;
+      value = scrubbed.value;
+    }
+    if (removed > 0) await atomicWriteJson(file, value);
+  }
+}
+
 export async function migrateLivingCastMemoriesToNotes(dataRoot: string, o: { now?: () => Date } = {}): Promise<string | undefined> {
   const now = (o.now ?? (() => new Date()))();
   const read = await readJsonFile(path.join(dataRoot, MEMORIES));
   if (read.kind === "invalid" || (read.kind === "ok" && (!isObject(read.value) || !Array.isArray(read.value.memories)))) {
     throw new Error("user/memories.json is not a readable memory store; repair it to finish migrating memories to notes.");
   }
+  const memoryDir = path.join(dataRoot, MEMORY_DIR);
+  if (read.kind === "missing" && !(await exists(memoryDir))) return undefined;
+  // Throws ForgetRecordCorruptError on an unreadable record: never treated as "nobody forgotten".
+  const forgotten = new Set((await readForgottenPeople({ dataRoot })).map((entry) => entry.userId));
+  const ids = await waifuIds(dataRoot);
+  const scrubbed = new Map<string, Set<string>>();
+  for (const waifuId of ids) scrubbed.set(waifuId, new Set((await readPendingScrubs({ dataRoot }, waifuId)).map((entry) => entry.userId)));
+  const leftOut = (raw: unknown) => {
+    const users = userIdsOf(raw);
+    const waifuId = isObject(raw) ? nonEmptyString(raw.waifuId) : undefined;
+    const pending = waifuId ? scrubbed.get(waifuId) : undefined;
+    return users.some((userId) => forgotten.has(userId) || pending?.has(userId) === true);
+  };
   let written = 0;
   if (read.kind === "ok") {
     const store = read.value as { memories: unknown[] } & Record<string, unknown>;
-    // Throws ForgetRecordCorruptError on an unreadable record: never treated as "nobody forgotten".
-    const forgotten = new Set((await readForgottenPeople({ dataRoot })).map((entry) => entry.userId));
-    const ids = await waifuIds(dataRoot);
-    const scrubbed = new Map<string, Set<string>>();
-    for (const waifuId of ids) scrubbed.set(waifuId, new Set((await readPendingScrubs({ dataRoot }, waifuId)).map((entry) => entry.userId)));
-    const leftOut = (raw: unknown) => {
-      const users = userIdsOf(raw);
-      const waifuId = isObject(raw) ? nonEmptyString(raw.waifuId) : undefined;
-      const pending = waifuId ? scrubbed.get(waifuId) : undefined;
-      return users.some((userId) => forgotten.has(userId) || pending?.has(userId) === true);
-    };
 
     // The archive copy first (without forgotten people), so nothing is lost if a write below fails.
     const archiveFile = archivePath(dataRoot, "memories.json");
@@ -372,6 +412,7 @@ export async function migrateLivingCastMemoriesToNotes(dataRoot: string, o: { no
       await atomicWriteJson(archivePath(dataRoot, "notes-omitted", `${waifuId.replace(/[^A-Za-z0-9._-]/gu, "-")}.json`), { waifuId, omitted });
     }
   }
+  await leaveOutForgotten(memoryDir, forgotten, leftOut);
   const movedMemoryDir = await moveToArchive(dataRoot, MEMORY_DIR);
   if (read.kind === "ok") await rm(path.join(dataRoot, MEMORIES), { force: true });
   if (read.kind === "missing" && !movedMemoryDir) return undefined;

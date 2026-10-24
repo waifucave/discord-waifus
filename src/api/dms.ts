@@ -7,6 +7,9 @@ import { z } from "zod";
 import type { CastRuntime } from "../orchestration/runtime.js";
 import { conversationKey } from "../orchestration/context/keys.js";
 import { dmForget } from "../orchestration/dm/dmForget.js";
+import { queuePendingScrub } from "../orchestration/dm/forgotten.js";
+import { storedIdentity, waifusWithLife } from "../life/forget.js";
+import { clearCapturedTraffic } from "../shared/queryLog.js";
 import { assessDmLimit } from "../orchestration/dm/rateLimit.js";
 import { listDmStates, readDmLimitIfExists, readDmState } from "../orchestration/dm/dmStore.js";
 import { readWaifu } from "../orchestration/stores/config.js";
@@ -91,7 +94,25 @@ export function registerDmRoutes(app: FastifyInstance, o: DmRouteOptions): void 
     const body = ForgetBodySchema.parse(request.body);
     const input = { userId, waifuId, scope: body.scope, dryRun: body.dryRun === true };
     const runtime = o.runtime();
-    const result = runtime ? await runtime.forgetDm(input) : await dmForget(o.storage, input);
+    if (runtime) {
+      const result = await runtime.forgetDm(input);
+      return { dryRun: result.dryRun, scope: result.scope, deleted: result.deleted };
+    }
+    // No cast runtime: her life scrub is queued (names read before the DM state goes) and runs when
+    // her life next starts (`all`) or at her nightly maintenance (`conversation`).
+    if (!input.dryRun) {
+      const waifu = await readWaifu(o.storage, waifuId).catch(() => undefined);
+      if (waifu && (await waifusWithLife(o.storage)).some((candidate) => candidate.id === waifuId)) {
+        const identity = await storedIdentity(o.storage, waifu, userId);
+        await queuePendingScrub(o.storage, waifuId, userId, new Date(), {
+          source: body.scope === "all" ? "owner_forget" : "dm_forget_conversation",
+          names: identity.names,
+          sharedNames: identity.sharedNames
+        });
+      }
+    }
+    const result = await dmForget(o.storage, input);
+    if (!input.dryRun) clearCapturedTraffic();
     return { dryRun: result.dryRun, scope: result.scope, deleted: result.deleted };
   });
 }

@@ -12,6 +12,7 @@ import type { CuratedCatalog } from "../models/catalog.js";
 import type { OcrTextLookup } from "../orchestration/context/images.js";
 import type { AppConfig } from "../shared/schemas/config.js";
 import type { StorageService } from "../storage/storageService.js";
+import type { OwnerNotices } from "./ownerNotices.js";
 import type { WebTools } from "./search.js";
 
 /** The image fetcher plus the pin hook (images an epoch shows inline are exempt from cache eviction, §5.3). */
@@ -40,4 +41,6 @@ export type LifeDeps = {
   /** Typing delays and pacing; tests pass an instant one. */
   sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
   isPaused: () => boolean;
+  /** Notices for the owner (`/api/runtime`); absent in some tests. */
+  notices?: OwnerNotices;
 };

@@ -13,7 +13,7 @@ import type { ModelClient } from "../models/client.js";
 import { hostTimeZone } from "../orchestration/context/timeFormat.js";
 import { conversationKey, type ConversationRef } from "../orchestration/context/keys.js";
 import { listDmLimitWaifuIds, listDmStates, listDmUserIds, readDmFloor } from "../orchestration/dm/dmStore.js";
-import { queuePendingScrub, readPendingScrubs, removePendingScrubs, type PendingScrub } from "../orchestration/dm/forgotten.js";
+import { queuePendingScrub, readPendingScrubs, removePendingScrubs, type PendingScrub, type PendingScrubSource } from "../orchestration/dm/forgotten.js";
 import { isKnownWaifuAuthor, listWaifus, readWaifu } from "../orchestration/stores/config.js";
 import type { UsageLedger } from "../orchestration/usageLedger.js";
 import type { AppConfig } from "../shared/schemas/config.js";
@@ -24,11 +24,25 @@ import { DailyCost } from "./budget.js";
 import { BotRoles } from "./botRoles.js";
 import type { LifeDeps, LifeImageFetcher } from "./deps.js";
 import { AddresseeDetector } from "./detector/decider.js";
-import { collectIdentity, DM_SCRUB_RATE_MS, queueOwnerScrubs, scrubOtherState, scrubPerson, summaryWithoutPerson, type ForgetScrubResult } from "./forget.js";
+import {
+  collectIdentity,
+  insideDmScrubWindow,
+  mergeIdentity,
+  queueOwnerScrubs,
+  recentScrubs,
+  scrubOtherState,
+  scrubPerson,
+  startEpochNow,
+  summaryWithoutPerson,
+  waifusWithLife,
+  type ForgetIdentity,
+  type ForgetScrubResult
+} from "./forget.js";
 import { Intake, type GuildMessageInput } from "./intake.js";
 import { Life, lifeModelOf } from "./lifeLoop.js";
 import { lifeStateExists, readLifeFile, readLifeLog, readLifeState, updateLifeState } from "./lifeStore.js";
 import { runMaintenance } from "./maintenance.js";
+import { OwnerNotices } from "./ownerNotices.js";
 import { Notes, MEMORY_INDEX } from "./notes.js";
 import { lifeLocks } from "./paths.js";
 import { collectPlaces } from "./places.js";
@@ -68,6 +82,15 @@ export type LivingCastOptions = {
 };
 
 export type OwnerForgetResult = { scrubbed: ForgetScrubResult[] };
+export type PreparedForget = {
+  waifu: WaifuConfig;
+  identity: ForgetIdentity;
+  scrub: PendingScrub;
+  scope: "everything" | "conversation";
+  source: "owner" | "dm";
+  rateLimited: boolean;
+};
+export type PreparedOwnerForget = Array<{ waifu: WaifuConfig; scrub: PendingScrub; identity: ForgetIdentity }>;
 
 export class LivingCast {
   readonly deps: LifeDeps;
@@ -79,6 +102,8 @@ export class LivingCast {
   readonly cost: DailyCost;
   readonly botRoles: BotRoles;
   readonly web: WebTools;
+  /** Notices for the owner (`/api/runtime` `discord.warnings`). */
+  readonly notices = new OwnerNotices();
   private readonly webBackend: WebBackend;
   private readonly lives = new Map<string, Life>();
   private readonly background = new Set<Promise<unknown>>();
@@ -110,7 +135,8 @@ export class LivingCast {
       timeZone,
       random: o.random ?? Math.random,
       sleep: o.sleep ?? abortableSleep,
-      isPaused: o.isPaused
+      isPaused: o.isPaused,
+      notices: this.notices
     };
     this.web = new WebTools({
       storage: o.storage,
@@ -195,15 +221,24 @@ export class LivingCast {
     if (!deps.isPaused()) await this.catchUpAndResume();
   }
 
-  /** Runs queued scrubs (her life lock held by the caller) and clears the ones that finished. */
+  /**
+   * Runs queued scrubs (her life lock held by the caller) and clears the ones that finished. The
+   * identity is the stored one (collected before the DM data went) plus what is known now.
+   */
   private async runPendingScrubs(waifu: WaifuConfig, scrubs: readonly PendingScrub[], source: string): Promise<ForgetScrubResult[]> {
     const done: PendingScrub[] = [];
     const results: ForgetScrubResult[] = [];
     for (const scrub of scrubs) {
       try {
-        const identity = await collectIdentity(this.deps, waifu, scrub.userId);
-        results.push(await scrubPerson(this.deps, waifu, identity, { source }));
-        done.push(scrub);
+        const identity = mergeIdentity(await collectIdentity(this.deps, waifu, scrub.userId), scrub);
+        if (scrub.source === "dm_forget_conversation") {
+          await this.forgetConversation(waifu, identity);
+          done.push(scrub);
+          continue;
+        }
+        const outcome = await scrubPerson(this.deps, waifu, identity, { source });
+        results.push(outcome);
+        if (outcome.complete) done.push(scrub);
       } catch (error) {
         this.deps.logger.warn("Pending scrub failed", { waifuId: waifu.id, message: error instanceof Error ? error.message : String(error) });
       }
@@ -358,48 +393,95 @@ export class LivingCast {
     await runMaintenance(this.deps, { waifu, model });
   }
 
-  /**
-   * §7.5 for a life, after the DM part (step 1) is done by the caller. `everything` runs 2–5 (the
-   * DM source at most once per 6 hours per user, later requests queue 2–5 as a pending scrub);
-   * `conversation` runs step 2 only.
-   */
-  async forgetInLife(o: { waifuId: string; userId: string; source: "owner" | "dm"; scope: "everything" | "conversation" }): Promise<ForgetScrubResult> {
-    const deps = this.deps;
-    const none: ForgetScrubResult = { waifuId: o.waifuId, removedLines: 0, removedSentences: 0, needsReview: [] };
-    const waifu = await readWaifu(deps.storage, o.waifuId).catch(() => undefined);
-    // No life and no notes: there is nothing of the person to scrub.
-    if (!waifu || (!(await lifeStateExists(deps.storage, o.waifuId)) && !(await new Notes(deps.storage, o.waifuId).exists()))) return none;
-    const identity = await collectIdentity(deps, waifu, o.userId);
-    const life = this.life(o.waifuId);
-    life.abort("forget");
-    return this.mutex.run(lifeLocks.life(o.waifuId), async () => {
-      if (o.scope === "conversation") {
-        await summaryWithoutPerson(deps, waifu, identity);
-        await scrubOtherState(deps, waifu, { ...identity, names: [], sharedNames: [] });
-        return { waifuId: o.waifuId, removedLines: 0, removedSentences: 0, needsReview: [] };
-      }
-      if (o.source === "dm") {
-        const state = await readLifeState(deps.storage, o.waifuId);
-        const last = state.scrubbedAt[o.userId];
-        if (last && deps.now().getTime() - Date.parse(last) < DM_SCRUB_RATE_MS) {
-          await queuePendingScrub(deps.storage, o.waifuId, o.userId, deps.now(), { logger: deps.logger });
-          return { waifuId: o.waifuId, removedLines: 0, removedSentences: 0, needsReview: [], queued: true };
-        }
-      }
-      return scrubPerson(deps, waifu, identity, { source: o.source });
-    }).finally(() => life.poke({ delayMs: 0 }));
+  /** `/forget conversation` (steps 0–2 for the DM), then the epoch starts at once so the old log goes too. */
+  private async forgetConversation(waifu: WaifuConfig, identity: ForgetIdentity): Promise<void> {
+    await summaryWithoutPerson(this.deps, waifu, identity);
+    await scrubOtherState(this.deps, waifu, identity, { dmOnly: true });
+    if ((await readLifeState(this.deps.storage, waifu.id)).pendingEpochStart) await startEpochNow(this.deps, waifu, "forget");
+  }
+
+  /** Step 0 for one life, before the caller deletes any DM data (undefined: no life and no notes). */
+  async forgetIdentity(waifuId: string, userId: string): Promise<ForgetIdentity | undefined> {
+    const waifu = await readWaifu(this.deps.storage, waifuId).catch(() => undefined);
+    if (!waifu || !(await waifusWithLife(this.deps.storage)).some((candidate) => candidate.id === waifuId)) return undefined;
+    return collectIdentity(this.deps, waifu, userId);
   }
 
   /**
-   * The owner's forget-user: every waifu with a life, steps 2–5 now. Each is queued first as an
-   * `owner_forget` pending scrub and cleared once it ran, so a failure or a crash resumes at boot.
+   * The first half of §7.5 for one life, before the DM data goes: the identity is collected and the
+   * scrub queued (durable, with the names), and a DM user's request inside the 6-hour window is
+   * marked to stay queued for her nightly maintenance.
    */
-  async forgetPerson(userId: string): Promise<OwnerForgetResult> {
+  async prepareForget(o: { waifuId: string; userId: string; source: "owner" | "dm"; scope: "everything" | "conversation"; identity?: ForgetIdentity }): Promise<PreparedForget | undefined> {
+    const deps = this.deps;
+    const waifu = await readWaifu(deps.storage, o.waifuId).catch(() => undefined);
+    // No life and no notes: there is nothing of the person to scrub.
+    if (!waifu || !(await waifusWithLife(deps.storage)).some((candidate) => candidate.id === o.waifuId)) return undefined;
+    const identity = o.identity ?? (await collectIdentity(deps, waifu, o.userId));
+    const source: PendingScrubSource = o.source === "owner" && o.scope === "everything" ? "owner_forget" : o.scope === "everything" ? "dm_forget_everything" : "dm_forget_conversation";
+    const now = deps.now();
+    // A DM user's forget runs at most once per 6 hours (either scope); inside the window it is only queued.
+    const rateLimited = o.source === "dm" && insideDmScrubWindow(await readLifeState(deps.storage, o.waifuId), o.userId, now);
+    const scrub = await queuePendingScrub(deps.storage, o.waifuId, o.userId, now, { source, names: identity.names, sharedNames: identity.sharedNames, logger: deps.logger });
+    return { waifu, identity, scrub, scope: o.scope, source: o.source, rateLimited };
+  }
+
+  /**
+   * The second half (the caller has done step 1): steps 2–5 (`everything`) or 0–2 for the DM
+   * (`conversation`) under her life lock, then the queued scrub is cleared, unless the DM rate
+   * limit holds it for maintenance (her turn is then never aborted) or the notes scrub failed.
+   */
+  async runForget(prepared: PreparedForget): Promise<ForgetScrubResult> {
+    const deps = this.deps;
+    const { waifu, identity, scrub } = prepared;
+    const none: ForgetScrubResult = { waifuId: waifu.id, removedLines: 0, removedSentences: 0, needsReview: [] };
+    if (prepared.rateLimited) return { ...none, queued: true };
+    if (prepared.source === "dm") {
+      // Recorded before the abort, so a burst of requests cannot abort her turns again and again.
+      const now = deps.now();
+      await updateLifeState(deps.storage, waifu.id, (current) => ({ ...current, scrubbedAt: recentScrubs({ ...current.scrubbedAt, [identity.userId]: now.toISOString() }, now) }));
+    }
+    const life = this.life(waifu.id);
+    life.abort("forget");
+    return this.mutex
+      .run(lifeLocks.life(waifu.id), async () => {
+        if (prepared.scope === "conversation") {
+          await this.forgetConversation(waifu, identity);
+          await removePendingScrubs(deps.storage, waifu.id, [scrub], { logger: deps.logger, now: deps.now() });
+          return none;
+        }
+        const { complete, ...result } = await scrubPerson(deps, waifu, identity, { source: prepared.source });
+        if (complete) await removePendingScrubs(deps.storage, waifu.id, [scrub], { logger: deps.logger, now: deps.now() });
+        return result;
+      })
+      .finally(() => life.poke({ delayMs: 0 }));
+  }
+
+  /** §7.5 for a life, after the DM part (step 1) is done by the caller: `prepareForget` + `runForget`. */
+  async forgetInLife(o: { waifuId: string; userId: string; source: "owner" | "dm"; scope: "everything" | "conversation"; identity?: ForgetIdentity }): Promise<ForgetScrubResult> {
+    const prepared = await this.prepareForget(o);
+    if (!prepared) return { waifuId: o.waifuId, removedLines: 0, removedSentences: 0, needsReview: [] };
+    return this.runForget(prepared);
+  }
+
+  /**
+   * The owner's forget-user, before the DM data goes: an `owner_forget` pending scrub for every
+   * waifu with a life folder or notes, each with the identity collected now.
+   */
+  async prepareOwnerForget(userId: string): Promise<PreparedOwnerForget> {
+    return queueOwnerScrubs(this.deps.storage, userId, this.deps.now(), { logger: this.deps.logger, identityOf: (waifu) => collectIdentity(this.deps, waifu, userId) });
+  }
+
+  /**
+   * The owner's forget-user: every waifu with a life, steps 2–5 now. Each was queued first as an
+   * `owner_forget` pending scrub (`prepareOwnerForget`) and is cleared once it ran, so a failure or
+   * a crash resumes at boot.
+   */
+  async forgetPerson(userId: string, prepared?: PreparedOwnerForget): Promise<OwnerForgetResult> {
     const scrubbed: ForgetScrubResult[] = [];
-    for (const { waifu, scrub } of await queueOwnerScrubs(this.deps.storage, userId, this.deps.now(), { logger: this.deps.logger })) {
+    for (const { waifu, identity } of prepared ?? (await this.prepareOwnerForget(userId))) {
       try {
-        scrubbed.push(await this.forgetInLife({ waifuId: waifu.id, userId, source: "owner", scope: "everything" }));
-        await removePendingScrubs(this.deps.storage, waifu.id, [scrub], { logger: this.deps.logger, now: this.deps.now() });
+        scrubbed.push(await this.forgetInLife({ waifuId: waifu.id, userId, source: "owner", scope: "everything", identity }));
       } catch (error) {
         this.deps.logger.warn("Owner forget scrub failed; it runs again when her life next starts", { waifuId: waifu.id, message: error instanceof Error ? error.message : String(error) });
         scrubbed.push({ waifuId: waifu.id, removedLines: 0, removedSentences: 0, needsReview: [], queued: true });

@@ -58,7 +58,7 @@ import { StorageConflictError } from "../storage/errors.js";
 import { StorageService } from "../storage/storageService.js";
 import { AuditStore } from "../storage/auditStore.js";
 import { OperationStore } from "../storage/operationStore.js";
-import { recentQueries, recentReplies, subscribeQueries, subscribeReplies } from "../shared/queryLog.js";
+import { onCapturedTrafficCleared, recentQueries, recentReplies, subscribeQueries, subscribeReplies } from "../shared/queryLog.js";
 import { listDocs, readDoc } from "./docsKb.js";
 import { registerAssistantRoutes } from "./assistant/routes.js";
 import { registerDmRoutes } from "./dms.js";
@@ -374,7 +374,8 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   const sourceUnsubscribers = [
     logger.subscribe?.((entry) => publishGlobalEvent("log", entry)),
     subscribeQueries((entry) => publishGlobalEvent("query", entry)),
-    subscribeReplies((entry) => publishGlobalEvent("reply", entry))
+    subscribeReplies((entry) => publishGlobalEvent("reply", entry)),
+    onCapturedTrafficCleared(() => globalEvents.clearReplay())
   ].filter((unsubscribe): unsubscribe is () => void => unsubscribe !== undefined);
   app.addHook("onClose", async () => {
     for (const unsubscribe of sourceUnsubscribers) unsubscribe();
@@ -504,7 +505,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
 
   app.get("/api/runtime", async (request) => {
     const cast = options.runtimeControl?.getCastRuntime?.() ?? options.castRuntime;
-    const live = cast?.permissionWarnings.list() ?? [];
+    const live = [...(cast?.permissionWarnings.list() ?? []), ...(cast?.cast?.notices.list() ?? [])];
     // Guild directory status (spec 9.6): is the member list endpoint usable, when did it last refresh.
     const directoryStatus = (options.directory ?? cast?.directory)?.status() ?? {
       memberListAvailable: null,
@@ -1036,9 +1037,12 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     // The live runtime also drops cached DM messages and images (spec 9.1.4).
     const cast = options.runtimeControl?.getCastRuntime?.() ?? options.castRuntime;
     if (cast) return cast.forgetUser(input);
-    const result = await forgetUser(storage, input, { logger });
-    if (input.dryRun) return result;
+    if (input.dryRun) return forgetUser(storage, input, { logger });
+    // The life scrubs are queued first, with the names read before the DM data goes.
     const queued = await queueOwnerScrubs(storage, userId, new Date(), { logger });
+    const names = [...new Set(queued.flatMap((entry) => entry.identity.names))];
+    const avoidNames = [...new Set(queued.flatMap((entry) => entry.identity.sharedNames))];
+    const result = await forgetUser(storage, { ...input, names, avoidNames }, { logger });
     return { ...result, livesQueued: queued.map((entry) => entry.waifu.id) };
   });
 

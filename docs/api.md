@@ -305,15 +305,24 @@ Member and emoji refresh endpoints use the configured House bot token. Member re
 ## People
 
 - `POST /api/people/:userId/forget` — `{ "confirm": true, "dryRun"?: boolean }`. Forgets one
-  Discord user (spec §7.5): the DM part (DM history and state, rate-limit counters, cached images
-  and OCR text; the DM floor message ids are kept so old messages stay out of context), a record in
-  `user/people/forgotten.json`, then a scrub of every waifu with a life or notes (her summary
-  rewritten without him, his wakes, watches, reminders and DM handle removed, her notes cleaned by a
-  notes session, a new epoch, then a verification pass). The response adds `lives`:
-  `[{ waifuId, removedLines, removedSentences, needsReview: [{ where, line }], queued? }]`. With
-  Discord offline (no cast runtime) the scrubs are queued and run when each life next starts; the
-  response then lists those waifus in `livesQueued`. `dryRun` reports the DM counts without
-  deleting or scrubbing. Discord history itself is not deleted.
+  Discord user (spec §7.5), best effort. First every waifu with a life folder or notes gets a
+  queued scrub carrying the names collected now. Then the DM part (DM history and state, rate-limit
+  counters, cached images and OCR text; the DM floor message ids are kept so old messages stay out
+  of context), a record in `user/people/forgotten.json`, the user's removal from every server's
+  member and active-chat participant lists (`memberLists`), a scrub of the whole Living cast
+  archive under `user/.archive/living-cast/` (`archive: { files, removed, unreadable, skipped }`;
+  keys and model choices are never touched), and the in-memory captured traffic (Activity, the
+  `/api/events` replay) is cleared. Then each life's scrub: her summary rewritten without him, his
+  wakes, watches, reminders, DM cursor and handle removed, her notes cleaned by a notes session,
+  notes that are his deleted whole, a new epoch, then a verification pass. The response adds
+  `lives`: `[{ waifuId, removedLines, removedSentences, removedNotes, needsReview: [{ where, line }],
+  queued? }]`; review lines are also kept in `user/waifus/<id>/life/needs-review.json`. A scrub
+  whose notes session failed stays queued (`queued: true`) and runs again at her next start or
+  nightly maintenance. With Discord offline (no cast runtime) the scrubs are queued and run when
+  each life next starts; the response then lists those waifus in `livesQueued`. `dryRun` reports
+  the DM counts without deleting or scrubbing. Not covered: Discord history itself, what she
+  already said in rooms, usage-ledger lines and app logs (ids only), cached guild images until
+  their TTL, data outside this host, and the 15-minute web page cache.
 
 ## Conflict Semantics
 

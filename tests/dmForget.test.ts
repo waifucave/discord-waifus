@@ -146,33 +146,58 @@ describe("dmForget scopes", () => {
 });
 
 describe("forget record files", () => {
-  it("only a missing file reads as empty; an unreadable one is moved aside with a warning before a fresh start", async () => {
+  it("only a missing file reads as empty; an unreadable one keeps a copy and carries over what can still be read", async () => {
     const { root, storage } = await dmRoot(roots);
     expect(await readForgottenPeople(storage)).toEqual([]);
 
     const file = path.join(root, "user", "people", "forgotten.json");
     await mkdir(path.dirname(file), { recursive: true });
-    await writeFile(file, '{"forgotten": [{"userId": "1"'); // truncated
+    const torn = '{"forgotten": [{"userId": "300000000000000777", "at": "2026-10-01T00:00:00.000Z"}, {"userId": "300000000000000778"';
+    await writeFile(file, torn);
     // A read never pretends nobody was forgotten.
     await expect(readForgottenPeople(storage)).rejects.toBeInstanceOf(ForgetRecordCorruptError);
 
     const warn = vi.fn();
     const at = new Date("2026-10-24T12:00:00.000Z");
     await recordForgottenPerson(storage, USER, at, { logger: { warn } });
-    expect(await readForgottenPeople(storage)).toEqual([{ userId: USER, at: at.toISOString() }]);
+    // Whole entries keep their time; a bare id is forgotten as of now; the new one is added.
+    expect(await readForgottenPeople(storage)).toEqual([
+      { userId: "300000000000000777", at: "2026-10-01T00:00:00.000Z" },
+      { userId: "300000000000000778", at: at.toISOString() },
+      { userId: USER, at: at.toISOString() }
+    ]);
     const aside = (await readdir(path.dirname(file))).filter((name) => name.startsWith("forgotten.json.corrupt-"));
     expect(aside).toHaveLength(1);
-    expect(await readFile(path.join(path.dirname(file), aside[0]!), "utf8")).toBe('{"forgotten": [{"userId": "1"');
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining("moved aside"), expect.objectContaining({ file, movedTo: path.join(path.dirname(file), aside[0]!) }));
+    expect(await readFile(path.join(path.dirname(file), aside[0]!), "utf8")).toBe(torn);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("a copy was kept"), expect.objectContaining({ file, movedTo: path.join(path.dirname(file), aside[0]!), salvaged: 2 }));
 
-    // The wrong shape is unreadable too.
+    // A torn pending-scrubs file never loses a queued scrub: reads salvage it, an unknown source runs as the owner's.
     const scrubs = pendingScrubsPath(root, "aria");
     await mkdir(path.dirname(scrubs), { recursive: true });
-    await writeFile(scrubs, JSON.stringify({ scrubs: "nope" }));
-    await expect(readPendingScrubs(storage, "aria")).rejects.toBeInstanceOf(ForgetRecordCorruptError);
+    await writeFile(scrubs, '{"scrubs": [{"userId": "300000000000000779", "at": "2026-10-20T00:00:00.000Z", "source": "dm_forget_everything", "names": ["Zed"]}, {"userId": "300000000000000780"');
+    const salvaged = await readPendingScrubs(storage, "aria", { logger: { warn } });
+    expect(salvaged[0]).toEqual({ userId: "300000000000000779", at: "2026-10-20T00:00:00.000Z", source: "dm_forget_everything", names: ["Zed"] });
+    expect(salvaged[1]).toMatchObject({ userId: "300000000000000780", source: "owner_forget" });
     await queuePendingScrub(storage, "aria", USER, at, { logger: { warn } });
-    expect(await readPendingScrubs(storage, "aria")).toEqual([{ userId: USER, at: at.toISOString(), source: "dm_forget_everything" }]);
-    expect(warn).toHaveBeenCalledTimes(2);
+    expect((await readPendingScrubs(storage, "aria")).map((scrub) => [scrub.userId, scrub.source])).toEqual([
+      ["300000000000000779", "dm_forget_everything"],
+      ["300000000000000780", "owner_forget"],
+      [USER, "dm_forget_everything"]
+    ]);
+    // The wrong shape salvages nothing, and is still never an error for a queued scrub.
+    await writeFile(scrubs, JSON.stringify({ scrubs: "nope" }));
+    expect(await readPendingScrubs(storage, "aria", { logger: { warn } })).toEqual([]);
+    expect(warn).toHaveBeenCalledTimes(4);
+  });
+
+  it("a later forget never weakens a queued scrub's source and keeps every name", async () => {
+    const { storage } = await dmRoot(roots);
+    const at = new Date("2026-10-24T12:00:00.000Z");
+    await queuePendingScrub(storage, "aria", USER, at, { source: "owner_forget", names: ["Kevin"] });
+    await queuePendingScrub(storage, "aria", USER, new Date(at.getTime() + 1_000), { source: "dm_forget_conversation", names: ["kevbaker"], sharedNames: ["Sam"] });
+    expect(await readPendingScrubs(storage, "aria")).toEqual([
+      { userId: USER, at: new Date(at.getTime() + 1_000).toISOString(), source: "owner_forget", names: ["Kevin", "kevbaker"], sharedNames: ["Sam"] }
+    ]);
   });
 });
 
@@ -275,10 +300,13 @@ describe("/api/dms", () => {
     expect(noConfirm.statusCode).toBe(400);
     const dry = await app.inject({ method: "POST", url: `/api/dms/aria/${USER}/forget`, payload: { confirm: true, scope: "all", dryRun: true } });
     expect(dry.json()).toMatchObject({ dryRun: true, scope: "all", deleted: { dmContexts: 1, dmStates: 1 } });
+    await new Notes(storage, "aria").write("MEMORY.md", "# Memory\n");
     const done = await app.inject({ method: "POST", url: `/api/dms/aria/${USER}/forget`, payload: { confirm: true, scope: "all" } });
     expect(done.statusCode, done.body).toBe(200);
     expect(done.json()).toMatchObject({ dryRun: false, deleted: { dmStates: 1 } });
     expect(await readDmState(storage, USER, "aria")).toBeUndefined();
+    // No cast runtime: her life scrub is queued (with his name) for her next start.
+    expect(await readPendingScrubs(storage, "aria")).toMatchObject([{ userId: USER, source: "owner_forget", names: ["Kevin"] }]);
     expect((await readDmLimit(storage, USER, "aria")).replyTimestamps).toHaveLength(1);
     expect((await auditStore.list()).some((record) => record.action === "dm.forget")).toBe(true);
   });
@@ -312,7 +340,8 @@ describe("POST /api/people/:userId/forget (Living cast §14.1, DM part)", () => 
     const done = await app.inject({ method: "POST", url: `/api/people/${USER}/forget`, payload: { confirm: true } });
     expect(done.statusCode, done.body).toBe(200);
     expect(done.json()).toMatchObject({ livesQueued: ["aria"] });
-    expect(await readPendingScrubs(storage, "aria")).toMatchObject([{ userId: USER, source: "owner_forget" }]);
+    // Queued before the DM state went, so it carries the name only the DM state knew.
+    expect(await readPendingScrubs(storage, "aria")).toMatchObject([{ userId: USER, source: "owner_forget", names: ["Kevin"] }]);
     expect(await readDmState(storage, USER, "aria")).toBeUndefined();
     expect(await exists(path.join(root, "user", "conversations", KEY))).toBe(false);
     expect((await readDmLimit(storage, USER, "aria")).replyTimestamps).toEqual([]);

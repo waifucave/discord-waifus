@@ -29,7 +29,7 @@ import { noteActiveChatParticipant } from "./stores/participants.js";
 import { observeThread, parentSharesCast, readThreads, removeThread } from "./stores/threads.js";
 import { dmForget, type DmConversation, type DmForgetHooks, type DmForgetInput, type DmForgetResult } from "./dm/dmForget.js";
 import { forgetUser, type ForgetUserResult } from "./dm/forgetUser.js";
-import { queuePendingScrub } from "./dm/forgotten.js";
+import { clearCapturedTraffic } from "../shared/queryLog.js";
 import { forgetConversationImageIndex } from "../discord/imageIndex.js";
 import { computeDmEligibility, dmFloorAt } from "./dm/dmStore.js";
 import { LivingCast } from "../life/livingCast.js";
@@ -413,24 +413,44 @@ export class CastRuntime {
    * the whole scrub (steps 2–5).
    */
   async forgetDm(input: DmForgetInput, o: { source?: "owner" | "dm"; background?: boolean } = {}): Promise<DmForgetResult> {
+    // Step 0 and the durable queue first: the identity is read before the DM state goes, and a
+    // crash or failure from here on leaves the scrub queued.
+    const prepared =
+      !input.dryRun && input.waifuId
+        ? await this.cast
+            .prepareForget({ waifuId: input.waifuId, userId: input.userId, source: o.source ?? "owner", scope: input.scope === "all" ? "everything" : "conversation" })
+            .catch((error: unknown) => {
+              this.options.logger.warn("Life forget could not be queued", { waifuId: input.waifuId, message: error instanceof Error ? error.message : String(error) });
+              return undefined;
+            })
+        : undefined;
     const result = await dmForget(this.options.storage, input, this.dmForgetHooks());
-    if (!input.dryRun && input.waifuId) {
-      const life = this.cast
-        .forgetInLife({ waifuId: input.waifuId, userId: input.userId, source: o.source ?? "owner", scope: input.scope === "all" ? "everything" : "conversation" })
-        .catch((error: unknown) => {
-          this.options.logger.warn("Life forget scrub failed", { waifuId: input.waifuId, message: error instanceof Error ? error.message : String(error) });
-        });
+    if (prepared) {
+      const life = this.cast.runForget(prepared).catch((error: unknown) => {
+        this.options.logger.warn("Life forget scrub failed; it stays queued", { waifuId: input.waifuId, message: error instanceof Error ? error.message : String(error) });
+      });
       if (o.background) this.trackBackground(life);
       else await life;
     }
+    if (!input.dryRun) clearCapturedTraffic();
     return result;
   }
 
-  /** The owner's forget-user (§7.5): the DM part (spec 9.1.4), then every life's scrub. */
+  /**
+   * The owner's forget-user (§7.5): every life's scrub queued with the identity collected now, then
+   * the DM part and the archive (spec 9.1.4, D-b), the directory's member lists, then the scrubs.
+   */
   async forgetUser(input: { discordUserId: string; dryRun?: boolean }): Promise<OwnerForgetResult> {
-    const result = await forgetUser(this.options.storage, input, this.dmForgetHooks());
+    const prepared = input.dryRun ? undefined : await this.cast.prepareOwnerForget(input.discordUserId);
+    const identities = prepared?.map((entry) => entry.identity) ?? [];
+    const names = [...new Set(identities.flatMap((identity) => identity.names))];
+    const avoidNames = [...new Set(identities.flatMap((identity) => identity.sharedNames))];
+    const result = await forgetUser(this.options.storage, { ...input, names, avoidNames }, this.dmForgetHooks());
     if (input.dryRun) return result;
-    const lives = await this.cast.forgetPerson(input.discordUserId);
+    await this.directory.forgetMember(input.discordUserId).catch((error: unknown) => {
+      this.options.logger.warn("Guild directory forget failed", { message: error instanceof Error ? error.message : String(error) });
+    });
+    const lives = await this.cast.forgetPerson(input.discordUserId, prepared);
     return { ...result, lives: lives.scrubbed };
   }
 

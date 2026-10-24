@@ -1,18 +1,24 @@
-// Durable forget records (Living cast spec §7.5 step 1, §7.3). L1 has no notes or lives to scrub
-// yet, so a forget leaves a record that L2 acts on:
+// Durable forget records (Living cast spec §7.5 step 1, §7.3):
 //
 // - The owner's forget-user adds `{userId, at}` to `user/people/forgotten.json` (§7.5 step 1): that
 //   user's messages written at or before `at` render as `(removed)`, and the memories→notes
 //   migration leaves out every record about them.
-// - A DM user's `/forget everything` queues a scrub for that waifu in
-//   `user/waifus/<id>/life/pending-scrubs.json` (§7.3): the memories→notes migration leaves out her
-//   records about that user, and her maintenance runs the scrub.
+// - A life scrub that has not run yet is queued in `user/waifus/<id>/life/pending-scrubs.json`: the
+//   owner's forget-user (run now, or when her life next starts), a DM user's `/forget everything` or
+//   `/forget conversation` (run now, or at her nightly maintenance inside the 6-hour window). The
+//   entry keeps the names collected before the DM data went, so a later run still knows them. The
+//   memories→notes migration leaves out her records about a queued user.
 //
-// One entry per user (per waifu for scrubs); a later forget moves `at` forward.
+// One entry per user (per waifu for scrubs); a later forget moves `at` forward and never weakens the
+// source (owner > everything > conversation).
 //
-// Only a missing file reads as empty. An unreadable one (bad JSON, wrong shape) is never treated as
-// "nobody forgotten": reads throw `ForgetRecordCorruptError`, and a write first moves the file aside
-// to `<name>.corrupt-<timestamp>` (kept for the owner) with a warning, then starts a fresh one.
+// Only a missing file reads as empty. An unreadable `forgotten.json` is never treated as "nobody
+// forgotten": reads throw `ForgetRecordCorruptError` (callers fail closed). A write keeps a copy of
+// the unreadable file (`<name>.corrupt-<timestamp>`, with a warning) and starts from every entry
+// that can still be read out of it: whole entries when the JSON parses, else each `{…}` object
+// with a user id, else each bare `"userId": "<id>"` (forgotten as of now, queued as an owner
+// scrub). Pending scrubs are salvaged the same way on read, so a queued scrub is never lost to a
+// torn file.
 
 import { readFile, rename } from "node:fs/promises";
 import type { Logger } from "../../backend/logger.js";
@@ -22,24 +28,57 @@ import { atomicWriteJson } from "../../storage/atomic.js";
 
 export const FORGOTTEN_PEOPLE_PATH = ["user", "people", "forgotten.json"] as const;
 const FORGOTTEN_LOCK = "people-forgotten";
+const USER_ID = /^\d{5,25}$/u;
 
 export type ForgottenPerson = { userId: string; at: string };
 /**
- * A queued life scrub of one person. `dm_forget_everything`: a DM user's `/forget everything` inside
- * the 6-hour window, run at nightly maintenance (§7.3). `owner_forget`: the owner's forget-user while
- * no cast runtime was running (Discord offline), run when her life next starts (§7.5).
+ * A queued life scrub of one person. `owner_forget`: the owner's forget-user (run now, or when her
+ * life next starts). `dm_forget_everything` / `dm_forget_conversation`: a DM user's `/forget`
+ * (run now, or at nightly maintenance inside the 6-hour window, §7.3).
  */
-export type PendingScrubSource = "dm_forget_everything" | "owner_forget";
-export type PendingScrub = { userId: string; at: string; source: PendingScrubSource };
+export type PendingScrubSource = "dm_forget_conversation" | "dm_forget_everything" | "owner_forget";
+export type PendingScrub = { userId: string; at: string; source: PendingScrubSource; names?: string[]; sharedNames?: string[] };
+
+const SOURCE_RANK: Record<PendingScrubSource, number> = { dm_forget_conversation: 0, dm_forget_everything: 1, owner_forget: 2 };
 
 export type ForgetRecordLogger = Pick<Logger, "warn">;
 
 /** A forget record file exists but cannot be read as one. */
 export class ForgetRecordCorruptError extends Error {
   override name = "ForgetRecordCorruptError";
-  constructor(readonly file: string, reason: string) {
+  constructor(
+    readonly file: string,
+    reason: string,
+    /** Whatever could still be read out of it. */
+    readonly salvaged: Array<Record<string, unknown>> = []
+  ) {
     super(`Forget record ${file} is unreadable: ${reason}`);
   }
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+const withUser = (entry: unknown): entry is Record<string, unknown> & { userId: string } => isRecord(entry) && typeof entry.userId === "string" && USER_ID.test(entry.userId);
+
+/** Entries that can still be read out of a broken record file. */
+function salvage(raw: string, field: string): Array<Record<string, unknown>> {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    const entries = isRecord(parsed) ? parsed[field] : undefined;
+    if (Array.isArray(entries)) return entries.filter(withUser);
+  } catch {
+    // not JSON: scan for objects and bare ids below
+  }
+  const out = new Map<string, Record<string, unknown>>();
+  for (const match of raw.matchAll(/\{[^{}]*\}/gu)) {
+    try {
+      const entry = JSON.parse(match[0]) as unknown;
+      if (withUser(entry)) out.set(entry.userId, entry);
+    } catch {
+      // a torn object: its id may still be found below
+    }
+  }
+  for (const match of raw.matchAll(/"userId"\s*:\s*"(\d{5,25})"/gu)) if (!out.has(match[1]!)) out.set(match[1]!, { userId: match[1]! });
+  return [...out.values()];
 }
 
 async function readEntries<T>(file: string, field: string): Promise<T[]> {
@@ -54,27 +93,37 @@ async function readEntries<T>(file: string, field: string): Promise<T[]> {
   try {
     parsed = JSON.parse(raw);
   } catch (error) {
-    throw new ForgetRecordCorruptError(file, error instanceof Error ? error.message : String(error));
+    throw new ForgetRecordCorruptError(file, error instanceof Error ? error.message : String(error), salvage(raw, field));
   }
-  const entries = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>)[field] : undefined;
-  if (!Array.isArray(entries)) throw new ForgetRecordCorruptError(file, `no "${field}" list`);
+  const entries = isRecord(parsed) ? parsed[field] : undefined;
+  if (!Array.isArray(entries)) throw new ForgetRecordCorruptError(file, `no "${field}" list`, salvage(raw, field));
   return entries.filter((entry) => entry && typeof entry === "object") as T[];
 }
 
-/** The entries to update: a corrupt file is moved aside (with a warning) and the update starts fresh. */
-async function entriesForUpdate<T>(file: string, field: string, logger: ForgetRecordLogger | undefined, now: Date): Promise<T[]> {
+/**
+ * The entries to update. An unreadable file is moved aside (kept for the owner, with a warning)
+ * and the update starts from what could be salvaged from it (`complete` fills missing fields).
+ */
+async function entriesForUpdate<T>(
+  file: string,
+  field: string,
+  logger: ForgetRecordLogger | undefined,
+  now: Date,
+  complete: (entry: Record<string, unknown> & { userId: string }) => T
+): Promise<T[]> {
   try {
     return await readEntries<T>(file, field);
   } catch (error) {
     if (!(error instanceof ForgetRecordCorruptError)) throw error;
     const aside = `${file}.corrupt-${now.toISOString().replace(/[:.]/gu, "-")}`;
     await rename(file, aside);
-    (logger ?? console).warn("A forget record file was unreadable; it was moved aside and a fresh one started", {
+    (logger ?? console).warn("A forget record file was unreadable; a copy was kept and the entries that could be read carried over", {
       file,
       movedTo: aside,
+      salvaged: error.salvaged.length,
       reason: error.message
     });
-    return [];
+    return error.salvaged.filter(withUser).map(complete);
   }
 }
 
@@ -93,7 +142,12 @@ export async function readForgottenPeople(storage: Pick<StorageService, "dataRoo
 export async function recordForgottenPerson(storage: StorageService, userId: string, at: Date, o: { logger?: ForgetRecordLogger } = {}): Promise<void> {
   const file = resolveDataPath(storage.dataRoot, ...FORGOTTEN_PEOPLE_PATH);
   await storage.withLocks([FORGOTTEN_LOCK], async () => {
-    const forgotten = upsert(await entriesForUpdate<ForgottenPerson>(file, "forgotten", o.logger, at), { userId, at: at.toISOString() });
+    // A salvaged entry without a readable time is forgotten as of now (the conservative choice).
+    const salvaged = await entriesForUpdate<ForgottenPerson>(file, "forgotten", o.logger, at, (entry) => ({
+      userId: entry.userId,
+      at: typeof entry.at === "string" && Number.isFinite(Date.parse(entry.at)) ? entry.at : at.toISOString()
+    }));
+    const forgotten = upsert(salvaged, { userId, at: at.toISOString() });
     await atomicWriteJson(file, { forgotten });
   });
 }
@@ -102,38 +156,74 @@ export function pendingScrubsPath(dataRoot: string, waifuId: string): string {
   return resolveDataPath(dataRoot, "user", "waifus", waifuId, "life", "pending-scrubs.json");
 }
 
-export async function readPendingScrubs(storage: Pick<StorageService, "dataRoot">, waifuId: string): Promise<PendingScrub[]> {
-  return readEntries<PendingScrub>(pendingScrubsPath(storage.dataRoot, waifuId), "scrubs");
+const stringList = (value: unknown): string[] | undefined => (Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : undefined);
+
+/** A salvaged scrub: an unknown source runs as the owner's (at the next start, the safe choice). */
+function completeScrub(now: Date) {
+  return (entry: Record<string, unknown> & { userId: string }): PendingScrub => {
+    const source = typeof entry.source === "string" && entry.source in SOURCE_RANK ? (entry.source as PendingScrubSource) : "owner_forget";
+    const names = stringList(entry.names);
+    const sharedNames = stringList(entry.sharedNames);
+    return {
+      userId: entry.userId,
+      at: typeof entry.at === "string" && Number.isFinite(Date.parse(entry.at)) ? entry.at : now.toISOString(),
+      source,
+      ...(names ? { names } : {}),
+      ...(sharedNames ? { sharedNames } : {})
+    };
+  };
+}
+
+/** Queued scrubs; a torn file yields what can be salvaged from it (logged), never an error. */
+export async function readPendingScrubs(storage: Pick<StorageService, "dataRoot">, waifuId: string, o: { logger?: ForgetRecordLogger } = {}): Promise<PendingScrub[]> {
+  try {
+    return await readEntries<PendingScrub>(pendingScrubsPath(storage.dataRoot, waifuId), "scrubs");
+  } catch (error) {
+    if (!(error instanceof ForgetRecordCorruptError)) throw error;
+    (o.logger ?? console).warn("Pending scrubs file is unreadable; running the scrubs that could be read from it", { waifuId, salvaged: error.salvaged.length });
+    return error.salvaged.filter(withUser).map(completeScrub(new Date()));
+  }
+}
+
+function mergeNames(...lists: Array<string[] | undefined>): string[] | undefined {
+  const all = lists.flatMap((list) => list ?? []);
+  return all.length > 0 ? [...new Set(all)] : undefined;
 }
 
 /**
- * A scrub of that user queued for her: a DM user's `/forget everything` (spec §7.3), or the owner's
- * forget-user while the cast runtime is not running. One entry per user; an `owner_forget` entry is
- * never downgraded to the nightly DM source.
+ * Queues a scrub of that user for her. One entry per user: `at` moves forward, the source never
+ * weakens (owner > everything > conversation) and the names add up. Returns the stored entry.
  */
 export async function queuePendingScrub(
   storage: StorageService,
   waifuId: string,
   userId: string,
   at: Date,
-  o: { logger?: ForgetRecordLogger; source?: PendingScrubSource } = {}
-): Promise<void> {
+  o: { logger?: ForgetRecordLogger; source?: PendingScrubSource; names?: string[]; sharedNames?: string[] } = {}
+): Promise<PendingScrub> {
   const file = pendingScrubsPath(storage.dataRoot, waifuId);
+  let stored!: PendingScrub;
   await storage.withLocks([`pending-scrubs:${waifuId}`], async () => {
-    const existing = await entriesForUpdate<PendingScrub>(file, "scrubs", o.logger, at);
-    const owner = o.source === "owner_forget" || existing.some((entry) => entry.userId === userId && entry.source === "owner_forget");
-    const merged = upsert(existing, { userId, at: at.toISOString(), source: o.source ?? "dm_forget_everything" });
-    const scrubs = merged.map((entry) => (entry.userId === userId && owner ? { ...entry, source: "owner_forget" as const } : entry));
-    await atomicWriteJson(file, { scrubs });
+    const existing = await entriesForUpdate<PendingScrub>(file, "scrubs", o.logger, at, completeScrub(at));
+    const previous = existing.find((entry) => entry.userId === userId);
+    const wanted = o.source ?? "dm_forget_everything";
+    const source = previous && SOURCE_RANK[previous.source] > SOURCE_RANK[wanted] ? previous.source : wanted;
+    const names = mergeNames(previous?.names, o.names);
+    const sharedNames = mergeNames(previous?.sharedNames, o.sharedNames);
+    const later = previous && previous.at > at.toISOString() ? previous.at : at.toISOString();
+    stored = { userId, at: later, source, ...(names ? { names } : {}), ...(sharedNames ? { sharedNames } : {}) };
+    await atomicWriteJson(file, { scrubs: [...existing.filter((entry) => entry.userId !== userId), stored] });
   });
+  return stored;
 }
 
 /** Drops the scrubs that ran (same user and time); entries queued meanwhile stay. */
-export async function removePendingScrubs(storage: StorageService, waifuId: string, done: readonly PendingScrub[], o: { logger?: ForgetRecordLogger; now?: Date } = {}): Promise<void> {
+export async function removePendingScrubs(storage: StorageService, waifuId: string, done: readonly Pick<PendingScrub, "userId" | "at">[], o: { logger?: ForgetRecordLogger; now?: Date } = {}): Promise<void> {
   if (done.length === 0) return;
   const file = pendingScrubsPath(storage.dataRoot, waifuId);
+  const now = o.now ?? new Date();
   await storage.withLocks([`pending-scrubs:${waifuId}`], async () => {
-    const existing = await entriesForUpdate<PendingScrub>(file, "scrubs", o.logger, o.now ?? new Date());
+    const existing = await entriesForUpdate<PendingScrub>(file, "scrubs", o.logger, now, completeScrub(now));
     const scrubs = existing.filter((entry) => !done.some((ran) => ran.userId === entry.userId && ran.at === entry.at));
     await atomicWriteJson(file, { scrubs });
   });

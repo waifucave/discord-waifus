@@ -198,12 +198,13 @@ describe("Living cast L2 data migrations on a main-era root", () => {
 
     // memories → notes (§7.4).
     const notes = (file: string) => migrated.get(`user/waifus/aria/notes/${file}`);
+    // A person's own file carries their id marker, so a later forget deletes it whole (§7.5 step 5).
     expect(notes("people/kevin-0003.md")).toBe(
-      "# Kevin\n\n- Kevin is allergic to peanuts.\n- Kevin studies chemistry.\n- Kevin and Mina run the bake sale.\n"
+      `# Kevin\n<!-- user:${KEVIN} -->\n\n- Kevin is allergic to peanuts.\n- Kevin studies chemistry.\n- Kevin and Mina run the bake sale.\n`
     );
-    expect(notes("people/kevin-9999.md")).toBe("# Kevin\n\n- The other Kevin likes jazz.\n");
+    expect(notes("people/kevin-9999.md")).toBe(`# Kevin\n<!-- user:${KEVIN_2} -->\n\n- The other Kevin likes jazz.\n`);
     expect(notes("people/mina.md")).toBe(
-      "# Mina\n\n- Mina is nervous about her exam. (from a private chat with Mina)\n- Wants to learn baking. (from a private chat with Mina)\n- Kevin and Mina run the bake sale.\n"
+      `# Mina\n<!-- user:${MINA} -->\n\n- Mina is nervous about her exam. (from a private chat with Mina)\n- Wants to learn baking. (from a private chat with Mina)\n- Kevin and Mina run the bake sale.\n`
     );
     expect(notes("me.md")).toBe("# Me\n\n- I prefer lemon tarts.\n");
     expect(notes("misc.md")).toBe("# Misc\n\n- The bake sale is on Saturday.\n");
@@ -222,7 +223,7 @@ describe("Living cast L2 data migrations on a main-era root", () => {
     const everything = [...migrated.entries()].filter(([file]) => !file.endsWith("forgotten.json") && !file.endsWith("pending-scrubs.json")).map(([, text]) => text).join("\n");
     for (const secret of ["Forgotten person's secret.", "Said in a forgotten DM.", "Scrubbed user's hobby."]) expect(everything).not.toContain(secret);
     // Her pending scrub only concerns her: Mina's record about Sam is kept.
-    expect(migrated.get("user/waifus/mina/notes/people/sam.md")).toBe("# Sam\n\n- Mina's view of Sam.\n");
+    expect(migrated.get("user/waifus/mina/notes/people/sam.md")).toBe(`# Sam\n<!-- user:${SCRUBBED} -->\n\n- Mina's view of Sam.\n`);
     // Archived, expired and already-noted waifus' records are not carried over.
     expect(everything).not.toContain("- Old news.");
     expect(everything).not.toContain("- Short-lived.");
