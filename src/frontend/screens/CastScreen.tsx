@@ -375,15 +375,16 @@ function CharacterEditor({
               <div className="cell" />
             )}
             <div className="fcell">
-              <label className="field-label">Context window</label>
+              <label className="field-label">Messages loaded at start</label>
               <input
                 className="input"
                 type="number"
                 min={1}
-                max={100}
+                max={200}
                 value={draft.contextWindow ?? 50}
                 onChange={(e) => set({ contextWindow: Number(e.target.value) })}
               />
+              <span className="field-hint">Backfill when she first joins a conversation; compaction keeps the context bounded after that.</span>
             </div>
         </div>
         {draft.modelId && (

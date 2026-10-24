@@ -222,8 +222,9 @@ function AgentForm({ agent }: { agent: AgentTab }) {
             <div className="cell" />
           )}
           <div className="fcell">
-            <label className="field-label">Context window</label>
-            <input className="input" type="number" min={1} max={100} value={draft.contextWindow ?? 20} onChange={(e) => set({ contextWindow: Number(e.target.value) })} />
+            <label className="field-label">Messages loaded at start</label>
+            <input className="input" type="number" min={1} max={200} value={draft.contextWindow ?? 20} onChange={(e) => set({ contextWindow: Number(e.target.value) })} />
+            <span className="field-hint">Backfill when this agent first reads a conversation; compaction keeps the context bounded after that.</span>
           </div>
           <div className="fcell">
             <label className="field-label">Enabled</label>
