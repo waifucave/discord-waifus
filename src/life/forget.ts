@@ -17,16 +17,23 @@
 //
 // `/forget conversation` runs steps 0–2 only. A DM user's `/forget everything` runs step 2 at most
 // once per 6 hours per user; later requests queue steps 2–5 as a pending scrub (§7.3).
+//
+// The owner's forget-user first queues an `owner_forget` pending scrub for every waifu with a life
+// or notes, then runs and clears them. A scrub that fails, or that could not run because no cast
+// runtime was up (Discord offline), stays queued and runs when her life next starts.
 
+import type { Logger } from "../backend/logger.js";
 import { listWaifus } from "../orchestration/stores/config.js";
 import { readDmFloor, readDmState } from "../orchestration/dm/dmStore.js";
+import { queuePendingScrub, type PendingScrub } from "../orchestration/dm/forgotten.js";
 import type { WaifuConfig } from "../shared/schemas/domain.js";
 import type { LifeState } from "../shared/schemas/life.js";
+import type { StorageService } from "../storage/storageService.js";
 import { conversationKey } from "../orchestration/context/keys.js";
 import { memberDisplayName } from "../discord/directoryView.js";
 import { compactLife, currentHarness, startEpoch } from "./compaction.js";
 import type { LifeDeps } from "./deps.js";
-import { readLifeFile, readLifeLog, readLifeState, scrubMaintenanceReports, setReadCursor, updateLifeFile, updateLifeState, appendMaintenanceReport } from "./lifeStore.js";
+import { lifeStateExists, readLifeFile, readLifeLog, readLifeState, scrubMaintenanceReports, setReadCursor, updateLifeFile, updateLifeState, appendMaintenanceReport } from "./lifeStore.js";
 import { lifeModelOf } from "./lifeLoop.js";
 import { runNotesSession, scrubInstruction } from "./maintenance.js";
 import { Notes } from "./notes.js";
@@ -52,6 +59,25 @@ export type ForgetScrubResult = {
   /** Steps 2–5 were queued as a pending scrub (the DM rate limit). */
   queued?: boolean;
 };
+
+/** Waifus with something of a person to scrub: a life or notes. */
+export async function waifusWithLife(storage: StorageService): Promise<WaifuConfig[]> {
+  const out: WaifuConfig[] = [];
+  for (const waifu of await listWaifus(storage).catch(() => [] as WaifuConfig[])) {
+    if ((await lifeStateExists(storage, waifu.id)) || (await new Notes(storage, waifu.id).exists())) out.push(waifu);
+  }
+  return out;
+}
+
+/** The owner's forget-user, before any scrub runs: one `owner_forget` pending scrub per life. */
+export async function queueOwnerScrubs(storage: StorageService, userId: string, at: Date, o: { logger?: Pick<Logger, "warn"> } = {}): Promise<Array<{ waifu: WaifuConfig; scrub: PendingScrub }>> {
+  const queued: Array<{ waifu: WaifuConfig; scrub: PendingScrub }> = [];
+  for (const waifu of await waifusWithLife(storage)) {
+    await queuePendingScrub(storage, waifu.id, userId, at, { source: "owner_forget", ...(o.logger ? { logger: o.logger } : {}) });
+    queued.push({ waifu, scrub: { userId, at: at.toISOString(), source: "owner_forget" } });
+  }
+  return queued;
+}
 
 /** Step 0: the person's id and names. */
 export async function collectIdentity(deps: LifeDeps, waifu: WaifuConfig, userId: string): Promise<ForgetIdentity> {

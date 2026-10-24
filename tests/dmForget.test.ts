@@ -22,6 +22,7 @@ import {
 import { dmForget } from "../src/orchestration/dm/dmForget.js";
 import { readDmLimit, readDmState, updateDmLimit, updateDmState } from "../src/orchestration/dm/dmStore.js";
 import { forgetUser } from "../src/orchestration/dm/forgetUser.js";
+import { Notes } from "../src/life/notes.js";
 import { AuditStore } from "../src/storage/auditStore.js";
 import type { StorageService } from "../src/storage/storageService.js";
 import { DmDiscord, USER, dmRoot, dmRuntime, seedDmWorld } from "./dmFixtures.js";
@@ -305,8 +306,13 @@ describe("POST /api/people/:userId/forget (Living cast §14.1, DM part)", () => 
     const dry = await app.inject({ method: "POST", url: `/api/people/${USER}/forget`, payload: { confirm: true, dryRun: true } });
     expect(dry.json()).toMatchObject({ discordUserId: USER, dryRun: true, dmContexts: 1, dmStates: 1, dmLimits: 1 });
     expect(await readDmState(storage, USER, "aria")).toBeDefined();
+    // She has notes: with no cast runtime running, her life scrub is queued for her next start.
+    await new Notes(storage, "aria").write("MEMORY.md", "# Memory\n");
+    expect(await readPendingScrubs(storage, "aria")).toEqual([]);
     const done = await app.inject({ method: "POST", url: `/api/people/${USER}/forget`, payload: { confirm: true } });
     expect(done.statusCode, done.body).toBe(200);
+    expect(done.json()).toMatchObject({ livesQueued: ["aria"] });
+    expect(await readPendingScrubs(storage, "aria")).toMatchObject([{ userId: USER, source: "owner_forget" }]);
     expect(await readDmState(storage, USER, "aria")).toBeUndefined();
     expect(await exists(path.join(root, "user", "conversations", KEY))).toBe(false);
     expect((await readDmLimit(storage, USER, "aria")).replyTimestamps).toEqual([]);

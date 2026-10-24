@@ -13,19 +13,18 @@ import type { ModelClient } from "../models/client.js";
 import { hostTimeZone } from "../orchestration/context/timeFormat.js";
 import { conversationKey, type ConversationRef } from "../orchestration/context/keys.js";
 import { listDmStates, readDmFloor } from "../orchestration/dm/dmStore.js";
-import { pendingScrubsPath, queuePendingScrub, readPendingScrubs } from "../orchestration/dm/forgotten.js";
+import { queuePendingScrub, readPendingScrubs, removePendingScrubs, type PendingScrub } from "../orchestration/dm/forgotten.js";
 import { isKnownWaifuAuthor, listWaifus, readWaifu } from "../orchestration/stores/config.js";
 import type { UsageLedger } from "../orchestration/usageLedger.js";
 import type { AppConfig } from "../shared/schemas/config.js";
 import type { WaifuConfig } from "../shared/schemas/domain.js";
 import type { StorageService } from "../storage/storageService.js";
-import { atomicWriteJson } from "../storage/atomic.js";
 import { compareIds } from "../discord/rawMessage.js";
 import { DailyCost } from "./budget.js";
 import { BotRoles } from "./botRoles.js";
 import type { LifeDeps, LifeImageFetcher } from "./deps.js";
 import { AddresseeDetector } from "./detector/decider.js";
-import { collectIdentity, DM_SCRUB_RATE_MS, scrubOtherState, scrubPerson, summaryWithoutPerson, type ForgetScrubResult } from "./forget.js";
+import { collectIdentity, DM_SCRUB_RATE_MS, queueOwnerScrubs, scrubOtherState, scrubPerson, summaryWithoutPerson, type ForgetScrubResult } from "./forget.js";
 import { Intake, type GuildMessageInput } from "./intake.js";
 import { Life, lifeModelOf } from "./lifeLoop.js";
 import { lifeStateExists, readLifeFile, readLifeLog, readLifeState, updateLifeState } from "./lifeStore.js";
@@ -180,9 +179,40 @@ export class LivingCast {
         deps.logger.error("Life boot repair failed", { waifuId: waifu.id, message: error instanceof Error ? error.message : String(error) });
       }
     }
+    // Owner forgets that could not run (no runtime, a failure, a crash) run before her next turn:
+    // the life lock is queued here, ahead of anything catch-up or the scheduler starts.
+    for (const waifu of waifus) {
+      let owner: PendingScrub[];
+      try {
+        owner = (await readPendingScrubs(deps.storage, waifu.id)).filter((scrub) => scrub.source === "owner_forget");
+      } catch (error) {
+        deps.logger.warn("Pending scrubs unreadable", { waifuId: waifu.id, message: error instanceof Error ? error.message : String(error) });
+        continue;
+      }
+      if (owner.length > 0) void this.track(this.mutex.run(lifeLocks.life(waifu.id), () => this.runPendingScrubs(waifu, owner, "owner")));
+    }
     await this.loadDmFloors();
     if (!this.o.manualScheduler) this.scheduler.start();
     if (!deps.isPaused()) await this.catchUpAndResume();
+  }
+
+  /** Runs queued scrubs (her life lock held by the caller) and clears the ones that finished. */
+  private async runPendingScrubs(waifu: WaifuConfig, scrubs: readonly PendingScrub[], source: string): Promise<ForgetScrubResult[]> {
+    const done: PendingScrub[] = [];
+    const results: ForgetScrubResult[] = [];
+    for (const scrub of scrubs) {
+      try {
+        const identity = await collectIdentity(this.deps, waifu, scrub.userId);
+        results.push(await scrubPerson(this.deps, waifu, identity, { source }));
+        done.push(scrub);
+      } catch (error) {
+        this.deps.logger.warn("Pending scrub failed", { waifuId: waifu.id, message: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    await removePendingScrubs(this.deps.storage, waifu.id, done, { logger: this.deps.logger, now: this.deps.now() }).catch((error: unknown) =>
+      this.deps.logger.warn("Pending scrubs could not be cleared", { waifuId: waifu.id, message: error instanceof Error ? error.message : String(error) })
+    );
+    return results;
   }
 
   /** DM forget floors are loaded for every DM conversation at boot (and on every forget, §6.2). */
@@ -321,15 +351,7 @@ export class LivingCast {
     const model = lifeModelOf(this.deps, waifu);
     if (!model) return;
     const pending = await readPendingScrubs(this.deps.storage, waifu.id).catch(() => []);
-    for (const scrub of pending) {
-      try {
-        const identity = await collectIdentity(this.deps, waifu, scrub.userId);
-        await scrubPerson(this.deps, waifu, identity, { source: "pending" });
-      } catch (error) {
-        this.deps.logger.warn("Pending scrub failed", { waifuId: waifu.id, message: error instanceof Error ? error.message : String(error) });
-      }
-    }
-    if (pending.length > 0) await atomicWriteJson(pendingScrubsPath(this.deps.storage.dataRoot, waifu.id), { scrubs: [] });
+    if (pending.length > 0) await this.runPendingScrubs(waifu, pending, "pending");
     await runMaintenance(this.deps, { waifu, model });
   }
 
@@ -365,12 +387,20 @@ export class LivingCast {
     }).finally(() => life.poke({ delayMs: 0 }));
   }
 
-  /** The owner's forget-user: every waifu with a life, steps 2–5 now. */
+  /**
+   * The owner's forget-user: every waifu with a life, steps 2–5 now. Each is queued first as an
+   * `owner_forget` pending scrub and cleared once it ran, so a failure or a crash resumes at boot.
+   */
   async forgetPerson(userId: string): Promise<OwnerForgetResult> {
     const scrubbed: ForgetScrubResult[] = [];
-    for (const waifu of await listWaifus(this.deps.storage).catch(() => [])) {
-      if (!(await lifeStateExists(this.deps.storage, waifu.id)) && !(await new Notes(this.deps.storage, waifu.id).exists())) continue;
-      scrubbed.push(await this.forgetInLife({ waifuId: waifu.id, userId, source: "owner", scope: "everything" }));
+    for (const { waifu, scrub } of await queueOwnerScrubs(this.deps.storage, userId, this.deps.now(), { logger: this.deps.logger })) {
+      try {
+        scrubbed.push(await this.forgetInLife({ waifuId: waifu.id, userId, source: "owner", scope: "everything" }));
+        await removePendingScrubs(this.deps.storage, waifu.id, [scrub], { logger: this.deps.logger, now: this.deps.now() });
+      } catch (error) {
+        this.deps.logger.warn("Owner forget scrub failed; it runs again when her life next starts", { waifuId: waifu.id, message: error instanceof Error ? error.message : String(error) });
+        scrubbed.push({ waifuId: waifu.id, removedLines: 0, removedSentences: 0, needsReview: [], queued: true });
+      }
     }
     await this.loadDmFloors();
     return { scrubbed };

@@ -9,7 +9,8 @@ import { readLifeFile, readLifeLog, readLifeState, readMaintenanceReports, updat
 import { MAINTENANCE_INSTRUCTION } from "../src/life/maintenance.js";
 import { Notes } from "../src/life/notes.js";
 import { newWakeId, enqueueWake } from "../src/life/wakeQueue.js";
-import { pendingScrubsPath, readPendingScrubs } from "../src/orchestration/dm/forgotten.js";
+import { queueOwnerScrubs } from "../src/life/forget.js";
+import { pendingScrubsPath, queuePendingScrub, readPendingScrubs } from "../src/orchestration/dm/forgotten.js";
 import { GuildMembersFileSchema } from "../src/shared/schemas/domain.js";
 import { createRevisionedBase } from "../src/shared/schemas/common.js";
 import { textTurn } from "./modelFakes.js";
@@ -150,6 +151,47 @@ describe("forget (§7.5)", () => {
     const raw = await readFile(path.join(w.root, "user/waifus/aria/life/maintenance.jsonl"), "utf8");
     expect(raw).not.toContain("Kevin");
     expect(raw).not.toContain(KEVIN);
+    // It was queued as an owner scrub first and cleared once it ran.
+    expect(await readPendingScrubs(w.storage, "aria")).toEqual([]);
+  });
+
+  it("an owner forget with no cast runtime is queued and runs when her life next starts, before any turn", async () => {
+    const w = await lifeWorld(roots, {
+      scripts: script(
+        toolTurn([{ name: "read_messages", input: { place: "bake-club/#general" } }]),
+        toolTurn([{ name: "send_message", input: { place: "bake-club/#general", text: "congrats Kevin!!" } }]),
+        textTurn("so happy for him"),
+        textTurn("We celebrated in Bake Club."),
+        textTurn("nothing about him in my notes"),
+        // Boot catch-up then runs today's missed nightly maintenance, after the scrub.
+        textTurn("all tidy")
+      )
+    });
+    vi.spyOn(w.cast.life("aria"), "poke").mockImplementation(() => undefined);
+    await liveATurn(w);
+    await w.cast.stop();
+    // The route's offline path: the DM part ran elsewhere; the life scrub is only queued.
+    const queued = await queueOwnerScrubs(w.storage, KEVIN, w.clock.now());
+    expect(queued.map((entry) => entry.waifu.id)).toEqual(["aria"]);
+    expect(await readPendingScrubs(w.storage, "aria")).toEqual([{ userId: KEVIN, at: w.clock.now().toISOString(), source: "owner_forget" }]);
+    // A later DM /forget never downgrades it to the nightly source.
+    await queuePendingScrub(w.storage, "aria", KEVIN, new Date(w.clock.ms + 1_000));
+    expect((await readPendingScrubs(w.storage, "aria"))[0]!.source).toBe("owner_forget");
+    await queueOwnerScrubs(w.storage, KEVIN, w.clock.now());
+
+    const restarted = w.restart();
+    await restarted.start();
+    await restarted.settle();
+    const state = await readLifeState(w.storage, "aria");
+    expect(state.epoch).toBe(2);
+    expect(state.summary).toBe("We celebrated in Bake Club.");
+    expect(state.scrubbedAt[KEVIN]).toBeDefined();
+    expect(await readPendingScrubs(w.storage, "aria")).toEqual([]);
+    expect((await readMaintenanceReports(w.storage, "aria")).map((report) => [report.kind, report.source ?? report.summary])).toEqual([
+      ["forget", "owner"],
+      ["maintenance", "all tidy"]
+    ]);
+    expect(w.ledger.lines.map((line) => line.purpose)).toEqual(["life", "life", "life", "compaction", "maintenance", "maintenance"]);
   });
 
   it("a DM user's /forget everything runs at most once per 6 hours; later ones queue a pending scrub for maintenance", async () => {

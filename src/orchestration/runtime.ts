@@ -48,7 +48,8 @@ export type DmRuntimeStatus = {
 };
 
 /** The owner's forget-user: the DM part (§7.5 step 1) plus every life's scrub (steps 2–5). */
-export type OwnerForgetResult = ForgetUserResult & { lives?: ForgetScrubResult[] };
+/** `lives`: each life scrubbed now; `livesQueued`: waifus whose scrub waits for her next start (no runtime). */
+export type OwnerForgetResult = ForgetUserResult & { lives?: ForgetScrubResult[]; livesQueued?: string[] };
 
 export class CastRuntime {
   readonly permissionWarnings = new PermissionWarningTracker();

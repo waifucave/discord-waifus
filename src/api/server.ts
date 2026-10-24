@@ -9,6 +9,7 @@ import { curatedCatalog, installedCatalog } from "../models/catalog.js";
 import type { AssistantModelClient } from "./assistant/service.js";
 import { clearModelWarnings, readModelWarnings } from "../models/modelWarnings.js";
 import { decisionModelCatalog } from "../life/detector/catalog.js";
+import { queueOwnerScrubs } from "../life/forget.js";
 import { ServerDetectorOverrideSchema } from "../shared/schemas/detector.js";
 import { loadAppConfig, updateAppConfig } from "../config/appConfig.js";
 import { resolveDataPath, userDataPath } from "../config/paths.js";
@@ -1022,9 +1023,11 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     });
   });
 
-  // Owner privacy affordance (Living cast §7.5, §14.1): forget one Discord user. L1 runs the DM
-  // part (DM history and state, rate-limit counters, cached images; floors kept); L2 adds the
-  // life scrub and returns the full §7.5 result.
+  // Owner privacy affordance (Living cast §7.5, §14.1): forget one Discord user. The DM part (DM
+  // history and state, rate-limit counters, cached images; floors kept) and the
+  // `user/people/forgotten.json` record, then the life scrub of every waifu with a life or notes
+  // (`lives`). Without a running cast runtime (Discord offline) the scrubs are queued and run when
+  // each life next starts (`livesQueued`).
   app.post("/api/people/:userId/forget", async (request) => {
     const { userId } = z.object({ userId: z.string().min(1) }).parse(request.params);
     assertSnowflakeId(userId);
@@ -1032,7 +1035,11 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     const input = { discordUserId: userId, dryRun: body.dryRun === true };
     // The live runtime also drops cached DM messages and images (spec 9.1.4).
     const cast = options.runtimeControl?.getCastRuntime?.() ?? options.castRuntime;
-    return cast ? cast.forgetUser(input) : forgetUser(storage, input, { logger });
+    if (cast) return cast.forgetUser(input);
+    const result = await forgetUser(storage, input, { logger });
+    if (input.dryRun) return result;
+    const queued = await queueOwnerScrubs(storage, userId, new Date(), { logger });
+    return { ...result, livesQueued: queued.map((entry) => entry.waifu.id) };
   });
 
   // B2: pause used to live only in memory, so the next config save/reload (which re-reads

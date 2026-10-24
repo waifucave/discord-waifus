@@ -24,7 +24,13 @@ export const FORGOTTEN_PEOPLE_PATH = ["user", "people", "forgotten.json"] as con
 const FORGOTTEN_LOCK = "people-forgotten";
 
 export type ForgottenPerson = { userId: string; at: string };
-export type PendingScrub = { userId: string; at: string; source: "dm_forget_everything" };
+/**
+ * A queued life scrub of one person. `dm_forget_everything`: a DM user's `/forget everything` inside
+ * the 6-hour window, run at nightly maintenance (§7.3). `owner_forget`: the owner's forget-user while
+ * no cast runtime was running (Discord offline), run when her life next starts (§7.5).
+ */
+export type PendingScrubSource = "dm_forget_everything" | "owner_forget";
+export type PendingScrub = { userId: string; at: string; source: PendingScrubSource };
 
 export type ForgetRecordLogger = Pick<Logger, "warn">;
 
@@ -100,18 +106,35 @@ export async function readPendingScrubs(storage: Pick<StorageService, "dataRoot"
   return readEntries<PendingScrub>(pendingScrubsPath(storage.dataRoot, waifuId), "scrubs");
 }
 
-/** A DM user's `/forget everything`: a scrub of that user queued for her (spec §7.3). */
+/**
+ * A scrub of that user queued for her: a DM user's `/forget everything` (spec §7.3), or the owner's
+ * forget-user while the cast runtime is not running. One entry per user; an `owner_forget` entry is
+ * never downgraded to the nightly DM source.
+ */
 export async function queuePendingScrub(
   storage: StorageService,
   waifuId: string,
   userId: string,
   at: Date,
-  o: { logger?: ForgetRecordLogger } = {}
+  o: { logger?: ForgetRecordLogger; source?: PendingScrubSource } = {}
 ): Promise<void> {
   const file = pendingScrubsPath(storage.dataRoot, waifuId);
   await storage.withLocks([`pending-scrubs:${waifuId}`], async () => {
     const existing = await entriesForUpdate<PendingScrub>(file, "scrubs", o.logger, at);
-    const scrubs = upsert(existing, { userId, at: at.toISOString(), source: "dm_forget_everything" as const });
+    const owner = o.source === "owner_forget" || existing.some((entry) => entry.userId === userId && entry.source === "owner_forget");
+    const merged = upsert(existing, { userId, at: at.toISOString(), source: o.source ?? "dm_forget_everything" });
+    const scrubs = merged.map((entry) => (entry.userId === userId && owner ? { ...entry, source: "owner_forget" as const } : entry));
+    await atomicWriteJson(file, { scrubs });
+  });
+}
+
+/** Drops the scrubs that ran (same user and time); entries queued meanwhile stay. */
+export async function removePendingScrubs(storage: StorageService, waifuId: string, done: readonly PendingScrub[], o: { logger?: ForgetRecordLogger; now?: Date } = {}): Promise<void> {
+  if (done.length === 0) return;
+  const file = pendingScrubsPath(storage.dataRoot, waifuId);
+  await storage.withLocks([`pending-scrubs:${waifuId}`], async () => {
+    const existing = await entriesForUpdate<PendingScrub>(file, "scrubs", o.logger, o.now ?? new Date());
+    const scrubs = existing.filter((entry) => !done.some((ran) => ran.userId === entry.userId && ran.at === entry.at));
     await atomicWriteJson(file, { scrubs });
   });
 }
