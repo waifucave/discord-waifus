@@ -173,6 +173,30 @@ describe("turn endings", () => {
     expect(w.anthropic.calls).toHaveLength(2);
   });
 
+  it("a life aborted while she waits for a turn slot takes no wake (a forget gets her lock next)", async () => {
+    const w = await lifeWorld(roots, {
+      waifus: [
+        { id: "aria", name: "Aria", botId: "aria-bot" },
+        { id: "mina", name: "Mina", botId: "mina-bot" }
+      ],
+      config: (config) => ({ ...config, life: { ...config.life, maxConcurrentTurns: 1 } }),
+      scripts: [hangingTurn(), () => textTurn("should not run")]
+    });
+    for (const id of ["aria", "mina"]) vi.spyOn(w.cast.life(id), "poke").mockImplementation(() => undefined);
+    await enqueueWake(w.storage, "mina", { id: newWakeId(), reason: "reminder", note: "hi", at: w.clock.now().toISOString() });
+    await mentionWake(w, "w-aria");
+    const mina = w.cast.life("mina").runNow();
+    await untilCalls(w, 1);
+    // Aria holds her lock and waits for Mina's slot; a forget scrub aborts her meanwhile.
+    const aria = w.cast.life("aria").runNow();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    w.cast.life("aria").abort("forget");
+    w.cast.life("mina").abort("pause");
+    await Promise.all([mina, aria]);
+    expect(w.anthropic.calls).toHaveLength(1);
+    expect(await queuedIds(w)).toEqual(["w-aria"]);
+  });
+
   it("a life waiting for her own lock holds no turn slot (M6)", async () => {
     const w = await lifeWorld(roots, {
       waifus: [

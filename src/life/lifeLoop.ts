@@ -221,11 +221,16 @@ export class Life {
         this.retryAfter(SEALED_RETRY_MS);
         return;
       }
+      // Abortable while it waits for a slot too: a forget or a pause that comes meanwhile stops the
+      // cycle before it takes any wake (and the forget gets her lock right after).
+      this.controller = new AbortController();
+      const waiting = this.controller;
       const release = await this.host.turns.acquire();
       try {
         this.compactionsThisCycle = 0;
         for (let guard = 0; guard < 8 && !this.stopped; guard += 1) {
-          this.controller = new AbortController();
+          if (guard === 0 && waiting.signal.aborted) break;
+          this.controller = guard === 0 ? waiting : new AbortController();
           let outcome: TurnOutcome;
           try {
             const signal = this.controller.signal;
@@ -240,6 +245,7 @@ export class Life {
           if (outcome !== "again") break;
         }
       } finally {
+        this.controller = undefined;
         release();
         lease?.();
       }
