@@ -1,6 +1,6 @@
 import type { MessageOrigin, ProviderEvent } from "@yanlinglabs/winter-provider-runtime";
 import { describe, expect, it } from "vitest";
-import { assembleTurn, ProviderStreamError, messageText, messageToolCalls, stampNativeState } from "../src/models/assemble.js";
+import { assembleTurn, ProviderStreamError, messageText, messageToolCalls, stampNativeState, type StreamObservation } from "../src/models/assemble.js";
 
 const OPENAI: MessageOrigin = { providerId: "deepseek", modelKey: "deepseek/deepseek-flash", family: "openai" };
 const ANTHROPIC: MessageOrigin = { providerId: "anthropic", modelKey: "anthropic/claude-sonnet-5-5", family: "anthropic", continuationDomain: "anthropic-claude" };
@@ -9,7 +9,7 @@ async function* stream(events: ProviderEvent[]): AsyncIterable<ProviderEvent> {
   for (const event of events) yield event;
 }
 
-describe("assembleTurn (local stand-in for winter W8)", () => {
+describe("assembleTurn (winter's foldProviderStream + assembledToMessage, with the app's tap)", () => {
   it("non-Anthropic families: the joined text, then the calls, whatever the stream order", async () => {
     const turn = await assembleTurn(
       stream([
@@ -55,7 +55,9 @@ describe("assembleTurn (local stand-in for winter W8)", () => {
   it("stamps the last native_state with the family and the continuation domain (else the model key)", async () => {
     const anthropic = await assembleTurn(stream([{ type: "native_state", items: [1] }, { type: "native_state", items: [2] }]), { origin: ANTHROPIC });
     expect(anthropic.message.nativeState).toEqual({ family: "anthropic", continuationDomain: "anthropic-claude", items: [2] });
-    expect(stampNativeState(["x"], OPENAI)).toEqual({ family: "openai", continuationDomain: "deepseek/deepseek-flash", items: ["x"] });
+    expect(stampNativeState({ nativeState: { family: "", continuationDomain: "", items: ["x"] } }, OPENAI)).toEqual({
+      nativeState: { family: "openai", continuationDomain: "deepseek/deepseek-flash", items: ["x"] }
+    });
     const none = await assembleTurn(stream([{ type: "text_delta", text: "x" }]), { origin: OPENAI });
     expect(none.message).not.toHaveProperty("nativeState");
   });
@@ -74,7 +76,9 @@ describe("assembleTurn (local stand-in for winter W8)", () => {
       ]),
       { origin: OPENAI }
     );
-    expect(turn.message.content).toEqual([{ type: "text", text: "answer" }]);
+    // A plain-text turn keeps its content as a string, as winter's engine history does.
+    expect(turn.message.content).toBe("answer");
+    expect(messageText(turn.message)).toBe("answer");
     expect(turn).toMatchObject({ responseId: "resp_9", reasoningSummary: "sum", exposedReasoning: "raw", subscriptionQuota: true, usage: { inputTokens: 3, outputTokens: 4, reasoningTokens: 2 } });
   });
 
@@ -89,19 +93,22 @@ describe("assembleTurn (local stand-in for winter W8)", () => {
     expect(messageToolCalls(turn.message)).toEqual([{ id: "x", name: "send", input: { __winter_unparsed_arguments: '{"text": "unterminated' } }]);
   });
 
-  it("an error event ends the fold with the typed error, committed once bytes arrived", async () => {
+  it("an error event ends the fold with winter's typed error, committed once bytes arrived; the observation keeps usage", async () => {
     const before = await assembleTurn(stream([{ type: "retry", attempt: 1, maxRetries: 3, retryDelayMs: 1, error: "rate_limit" }, { type: "error", error: { code: "rate_limit", message: "429", retryable: true } }]), { origin: OPENAI }).catch((error: unknown) => error);
     expect(before).toBeInstanceOf(ProviderStreamError);
     expect((before as ProviderStreamError).committed).toBe(false);
+    const observation: StreamObservation = { subscriptionQuota: false };
     const after = await assembleTurn(
       stream([
+        { type: "rate_limit", kind: "subscription-quota", info: {} },
         { type: "text_delta", text: "partial" },
         { type: "usage", inputTokens: 1, outputTokens: 1 },
         { type: "error", error: { code: "stall", message: "stalled", retryable: false } }
       ]),
-      { origin: OPENAI }
+      { origin: OPENAI, observation }
     ).catch((error: unknown) => error);
-    expect(after).toMatchObject({ committed: true, providerError: { code: "stall" }, usage: { inputTokens: 1, outputTokens: 1 } });
+    expect(after).toMatchObject({ committed: true, error: { code: "stall" } });
+    expect(observation).toEqual({ usage: { inputTokens: 1, outputTokens: 1 }, subscriptionQuota: true });
     // An overflow refused before anything was produced is not a committed turn.
     const overflow = await assembleTurn(
       stream([{ type: "message_start" }, { type: "error", error: { code: "bad_request", message: "too long", retryable: false, contextOverflow: true } }]),

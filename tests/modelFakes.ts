@@ -1,10 +1,14 @@
-// A Node fake of winter's ProviderAdapter for ModelClient tests (not a test file itself). It wraps
-// the shipped adapter of the same id (capabilities, effort mapping and identity stay real) and
-// replaces `streamTurn` with a script: no HTTP, no credentials leave the process.
-// winter 0.0.56 ships a stable, Node-safe `createFakeProviderAdapter` in
-// `@yanlinglabs/winter-provider-runtime/testing`; `fakeAdapter` switches to it with the pin bump.
+// Fake winter adapters for ModelClient tests (not a test file itself), over winter's own Node-safe
+// `createFakeProviderAdapter` (`@yanlinglabs/winter-provider-runtime/testing`, 0.0.56).
+//
+// The thin app wrapper adds what these tests need on top of winter's fake: the shipped adapter's
+// id, family, protocol, capabilities and effort mapping (so the history renderer and capability
+// checks behave as in production), per-call scripts computed from the request and context, a
+// "last script repeats" rule, and async-generator scripts for streams that wait on the caller's
+// signal (`hangingTurn`). Array scripts are played by winter's fake, abort handling included.
 
 import { createShippedAdapters, type ProviderAdapter, type ProviderContext, type ProviderEvent, type TurnRequest } from "@yanlinglabs/winter-provider-runtime";
+import { createFakeProviderAdapter, fakeErrorTurn, fakeTextTurn } from "@yanlinglabs/winter-provider-runtime/testing";
 import { installedCatalog } from "../src/models/catalog.js";
 import { createWinterRuntime, type WinterRuntime } from "../src/models/winter.js";
 
@@ -36,12 +40,10 @@ export function fakeAdapter(adapterId: string, scripts: ScriptedTurn[] = []): Fa
       const script = fake.scripts.length > 1 ? fake.scripts.shift()! : fake.scripts[0];
       if (!script) throw new Error("FakeAdapter: no script");
       const produced = script(request, context);
-      if (Array.isArray(produced)) {
-        return (async function* () {
-          for (const event of produced) yield event;
-        })();
-      }
-      return produced;
+      if (!Array.isArray(produced)) return produced;
+      // A scripted turn is played by winter's own fake adapter.
+      const played = createFakeProviderAdapter({ id: real.id, family: real.family, protocol: real.protocol, turns: [produced] });
+      return played.streamTurn(request, context);
     }
   };
   return fake;
@@ -57,19 +59,17 @@ export function fakeWinter(...adapters: FakeAdapter[]): WinterRuntime {
   return createWinterRuntime({ adapters });
 }
 
-export const textTurn = (text: string, usage: { inputTokens: number; outputTokens: number } = { inputTokens: 100, outputTokens: 20 }): ProviderEvent[] => [
-  { type: "message_start", id: "resp-1" },
-  { type: "text_delta", text },
-  { type: "usage", ...usage },
-  { type: "done", stopReason: "end_turn" }
-];
+/** winter's `fakeTextTurn` with this suite's defaults (response id `resp-1`, 100 in / 20 out). */
+export const textTurn = (text: string, usage: { inputTokens: number; outputTokens: number; reportedCostUsd?: number } = { inputTokens: 100, outputTokens: 20 }): ProviderEvent[] =>
+  fakeTextTurn(text, { usage, id: "resp-1" });
 
+/** `before`, then winter's `fakeErrorTurn`. */
 export const errorTurn = (error: Extract<ProviderEvent, { type: "error" }>["error"], before: ProviderEvent[] = []): ProviderEvent[] => [
   ...before,
-  { type: "error", error }
+  ...fakeErrorTurn(error)
 ];
 
-/** A stream that yields `start`, then waits until the request's signal aborts and ends `aborted`. */
+/** A stream that yields `start`, then waits until the request's signal aborts and ends `done: aborted`. */
 export function hangingTurn(start: ProviderEvent[] = [{ type: "message_start" }]): ScriptedTurn {
   return (request) =>
     (async function* () {

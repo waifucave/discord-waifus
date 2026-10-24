@@ -119,8 +119,17 @@ export type ModelUsage = {
 };
 
 /**
+ * The whole prompt of one call: winter's `inputTokens` (the non-cached part) plus cache reads and
+ * cache writes, which are disjoint from it (winter 0.0.56 moved OpenRouter's cache writes out of
+ * `inputTokens` too). `cacheWrite1hTokens` is a part of `cacheWriteTokens`, never added again.
+ */
+export function promptTokensOf(usage: Pick<ModelUsage, "inputTokens" | "cacheReadTokens" | "cacheWriteTokens">): number {
+  return tokens(usage.inputTokens) + tokens(usage.cacheReadTokens) + tokens(usage.cacheWriteTokens);
+}
+
+/**
  * winter usage (+ the call's cost) -> ledger token fields. `usageKnown` is false when there is no
- * usage at all (aborted/failed call) or the provider reported nothing (zero input and output).
+ * usage at all (aborted/failed call) or the provider reported nothing (no prompt or output tokens).
  * winter's convention: `inputTokens` is the non-cached prompt, disjoint from the cache counts.
  * `costUsd` is absent for an unpriced route (it counts as 0 toward budgets).
  */
@@ -142,7 +151,8 @@ export function usageFields(
   const inputTokens = tokens(usage.inputTokens);
   const outputTokens = tokens(usage.outputTokens);
   const fields: ReturnType<typeof usageFields> = {
-    usageKnown: inputTokens > 0 || outputTokens > 0,
+    // A fully cached prompt (all cache reads or writes) is known usage too.
+    usageKnown: inputTokens > 0 || outputTokens > 0 || tokens(usage.cacheReadTokens) > 0 || tokens(usage.cacheWriteTokens) > 0,
     inputTokens,
     outputTokens
   };

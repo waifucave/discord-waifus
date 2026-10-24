@@ -279,8 +279,11 @@ Fixture coverage is separate from native Windows/Linux updater-cycle validation.
 ## Model dependency (winter)
 
 - The app pins `@yanlinglabs/winter-provider-runtime` and `@yanlinglabs/winter-provider-catalog`
-  **exactly** (currently 0.0.55). The `@waifucave/gateway` dependency, its `/api/llm/*` mount and
-  `npm run gateway:local` are gone; the gateway repo is no longer used by this app.
+  **exactly**, both to the same version (currently 0.0.56; winter's READMEs make that the supported
+  rule). Edit only those lines in `package.json` and the lockfile when bumping. The
+  `@waifucave/gateway` dependency, its `/api/llm/*` mount and `npm run gateway:local` are gone; the
+  gateway repo is no longer used by this app. Read winter's CHANGELOG ("Breaking for
+  provider-package hosts") before a bump.
 - winter is the source of truth for model facts (context window, output cap, image input, reasoning
   efforts, continuation, prices). There is no in-app model table: `src/models/catalog.ts` only
   filters the installed catalog through the curated allow list (`[models] allowed`), the price cap
@@ -292,12 +295,21 @@ Fixture coverage is separate from native Windows/Linux updater-cycle validation.
   cap, ledger costs and the `model_unpriced` notice.
 - Meta Muse Spark contributor variants enable training and must remain an explicit user choice; the
   picker labels them and the assistant only picks one when asked.
-- `src/models/assemble.ts` folds `streamTurn` events into one `ProviderMessageLike` (text, tool
-  calls and reasoning blocks in order, `origin`, opaque `nativeState`). On 0.0.55 it carries local
-  copies of `foldProviderStream` / `assembledToMessage` / `ProviderStreamError`; when winter 0.0.56
-  ships them, delete the local definitions and import winter's (a one-file change), drop the
-  `WinterTurnRequest` cast in `client.ts` (`messageCacheTtl` becomes native) and switch
-  `tests/modelFakes.ts` to `createFakeProviderAdapter` from `.../testing`.
+- `src/models/assemble.ts` uses winter's own assembler (`foldProviderStream` + `assembledToMessage`;
+  failures throw winter's `ProviderStreamError` with `error` and `committed`). A plain-text turn
+  keeps string content. The app adds a tap in front of the fold: it drives the app sink (text, tool
+  call start/end, readable reasoning, retries; a throwing app sink is dropped, never ends a turn)
+  and keeps the last usage and the subscription-quota flag in a `StreamObservation`, because a
+  failed fold returns no usage. `tests/modelFakes.ts` plays scripted turns through winter's
+  `createFakeProviderAdapter` (`.../testing`) behind a thin wrapper with the shipped adapter's
+  capabilities.
+- Usage convention: `inputTokens` is the non-cached prompt; cache reads and cache writes are
+  disjoint from it (since 0.0.56 also on OpenRouter, whose `cache_write_tokens` became
+  `cacheWriteTokens`). The whole prompt is `promptTokensOf(usage)` in `usageLedger.ts`; never add
+  `cacheWrite1hTokens` (a part of `cacheWriteTokens`).
+- The provider identity on the wire is `discord-waifus/<app version>` (`installWinterIdentity` in
+  `src/models/winter.ts`); winter refuses a bad token with `TypeError` (the codex originator is a
+  lowercase hyphenated token).
 - Provider keys are read live per call from `user/providers.json` and passed inline; never log or
   echo them. `/api/providers` serves credential status (redacted key hints) for the curated
   providers, the detector's providers and any provider with a stored key.

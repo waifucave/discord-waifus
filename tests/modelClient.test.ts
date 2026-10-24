@@ -1,4 +1,6 @@
-import type { ProviderEvent, ProviderMessageLike } from "@yanlinglabs/winter-provider-runtime";
+import { readFileSync } from "node:fs";
+import { activeWinterIdentity, setWinterIdentity, type ProviderEvent, type ProviderMessageLike } from "@yanlinglabs/winter-provider-runtime";
+import { DISCORD_WAIFUS_IDENTITY, discordWaifusIdentity } from "../src/models/winter.js";
 import { describe, expect, it } from "vitest";
 import { callCostUsd, DEFAULT_OUTPUT_CAP_TOKENS, ModelClient, type ModelCallRequest } from "../src/models/client.js";
 import { isContextOverflowError, ModelCallError } from "../src/models/errors.js";
@@ -35,6 +37,19 @@ function request(over: Partial<ModelCallRequest> = {}): ModelCallRequest {
     ...over
   };
 }
+
+describe("winter identity (0.0.56 W9)", () => {
+  it("names Discord Waifus and its own release; winter accepts it", () => {
+    const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
+    expect(discordWaifusIdentity()).toEqual({ ...DISCORD_WAIFUS_IDENTITY, version: pkg.version });
+    const restore = setWinterIdentity(discordWaifusIdentity());
+    try {
+      expect(activeWinterIdentity()).toMatchObject({ product: "discord-waifus", version: pkg.version });
+    } finally {
+      restore();
+    }
+  });
+});
 
 describe("ModelClient request shape (spec §5.4, §9.1)", () => {
   it("passes system blocks as system + systemBlocks with a 1h TTL, never as a system message, and the key inline", async () => {

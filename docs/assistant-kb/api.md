@@ -115,8 +115,9 @@ curl -s -X PUT http://127.0.0.1:3888/api/waifus/riko \
   it, so a record whose model is no longer offered can still be edited. Saving an offered model
   clears that scope's `models.warnings` (unsetting never does). The
   curated list is `config.toml` `[models]` `allowed` (route keys) filtered by the installed winter
-  catalog and `maxOutputUsdPerMTok` (default 10); OpenRouter routes stay hidden until the installed
-  winter can replay reasoning through OpenRouter. Contributor (training) variants are only ever an
+  catalog and `maxOutputUsdPerMTok` (default and maximum 10); an OpenRouter route is hidden only when
+  its model keeps reasoning state the installed winter cannot replay through OpenRouter (none is,
+  with the installed winter). Contributor (training) variants are only ever an
   explicit choice. Gateway-era `params`, `contextWindow` and `tools` fields are ignored on write.
 - **Nested settings merge**: waifu `availability`/`dm` deep-merge. Arrays (e.g.
   `availability.busy`) and server `channels` replace wholesale.

@@ -6,6 +6,7 @@ import { ROUTE_POLICY_MANIFEST } from "../src/api/routePolicyManifest.js";
 import { createRuntimeState } from "../src/backend/runtime.js";
 import { ensureDataLayout } from "../src/config/layout.js";
 import { appendModelWarnings, readModelWarnings } from "../src/models/modelWarnings.js";
+import { DEFAULT_ALLOWED_ROUTES } from "../src/models/catalog.js";
 import { CURRENT_SCHEMA_VERSION } from "../src/shared/schemas/common.js";
 import { StorageService } from "../src/storage/storageService.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
@@ -58,17 +59,12 @@ describe("GET /api/models (Living cast §9.2)", () => {
     const first = (await app.inject({ method: "GET", url: "/api/models" })).json<ModelsBody>();
     expect(first.maxOutputUsdPerMTok).toBe(10);
     expect(first.catalogVersion).toMatch(/winter/);
-    expect(first.models.map((model) => model.id)).toEqual([
-      "meta/muse-spark-1.3-contributor",
-      "anthropic/claude-sonnet-5-5",
-      "deepseek/deepseek-flash",
-      "openai/gpt-6-luna",
-      "openai/gpt-6.1-sol"
-    ]);
+    // winter 0.0.56 carries every curated route, direct and through OpenRouter.
+    expect(first.models.map((model) => model.id)).toEqual([...DEFAULT_ALLOWED_ROUTES]);
+    expect(first.hidden).toEqual([]);
     expect(first.models.every((model) => model.credentialsConfigured === false)).toBe(true);
     expect(first.models.find((model) => model.id === "meta/muse-spark-1.3-contributor")?.contributor).toBe(true);
-    expect(first.hidden).toContainEqual({ id: "openrouter/openai/gpt-6-luna", reason: "openrouter_reasoning_replay" });
-    expect(first.hidden).toContainEqual({ id: "anthropic/claude-haiku-5-5", reason: "not_in_catalog" });
+    expect(first.models.find((model) => model.id === "openrouter/meta/muse-spark-1.3-contributor")?.contributor).toBe(true);
 
     await app.inject({ method: "PUT", url: "/api/providers/deepseek/credentials", payload: { apiKey: "sk-test-models" } });
     const after = await app.inject({ method: "GET", url: "/api/models" });
@@ -128,8 +124,10 @@ describe("model writes (waifus and the assistant)", () => {
     const unknown = await put({ providerId: "openai", modelId: "gpt-4o" }, 0);
     expect(unknown.statusCode).toBe(400);
     expect(unknown.json()).toMatchObject({ details: { error: "model_not_available", providerId: "openai", modelId: "gpt-4o" } });
-    const hidden = await put({ providerId: "openrouter", modelId: "openai/gpt-6-luna" }, 0);
-    expect(hidden.json()).toMatchObject({ details: { error: "model_not_available", reason: "openrouter_reasoning_replay" } });
+    await app.inject({ method: "PUT", url: "/api/config", payload: { models: { maxOutputUsdPerMTok: 1 } } });
+    const hidden = await put({ providerId: "openrouter", modelId: "openai/gpt-6.1-sol" }, 0);
+    expect(hidden.json()).toMatchObject({ details: { error: "model_not_available", reason: "over_price_cap" } });
+    await app.inject({ method: "PUT", url: "/api/config", payload: { models: { maxOutputUsdPerMTok: 10 } } });
     const effort = await put({ providerId: "deepseek", modelId: "deepseek-flash", effort: "medium" }, 0);
     expect(effort.statusCode).toBe(400);
     expect(effort.json()).toMatchObject({ details: { error: "unsupported_effort", effort: "medium", efforts: ["low", "high", "max"] } });
@@ -147,7 +145,7 @@ describe("model writes (waifus and the assistant)", () => {
     const initial = await app.inject({ method: "GET", url: "/api/assistant/config" });
     expect(initial.statusCode).toBe(200);
     expect(initial.json()).not.toHaveProperty("model");
-    expect((await app.inject({ method: "PUT", url: "/api/assistant/config", payload: { model: { providerId: "anthropic", modelId: "claude-haiku-5-5" } } })).statusCode).toBe(400);
+    expect((await app.inject({ method: "PUT", url: "/api/assistant/config", payload: { model: { providerId: "anthropic", modelId: "claude-opus-4-7" } } })).statusCode).toBe(400);
     const saved = await app.inject({ method: "PUT", url: "/api/assistant/config", payload: { model: { providerId: "openai", modelId: "gpt-6-luna", effort: "none" } } });
     expect(saved.statusCode, saved.body).toBe(200);
     expect(saved.json().model).toEqual({ providerId: "openai", modelId: "gpt-6-luna", effort: "none" });
@@ -215,10 +213,10 @@ describe("/api/runtime models.warnings", () => {
   it("shows persisted migration warnings and live unavailable choices; saving a model clears that scope", async () => {
     const { app, root } = await makeApp();
     await appendModelWarnings(root, [{ scope: "waifu:opus", code: "model_unmapped", detail: "anthropic/claude-opus-4-7 has no curated equivalent; pick a model again." }]);
-    // A stored choice the installed catalog does not carry (Haiku 5.5 before winter 0.0.56).
+    // A stored choice the curated list does not offer.
     const file = path.join(root, "user", "waifus", "riko", "waifu.json");
     await mkdir(path.dirname(file), { recursive: true });
-    await writeFile(file, JSON.stringify({ schemaVersion: CURRENT_SCHEMA_VERSION, revision: 0, updatedAt: new Date().toISOString(), id: "riko", name: "Riko", displayName: "Riko", model: { providerId: "anthropic", modelId: "claude-haiku-5-5" } }));
+    await writeFile(file, JSON.stringify({ schemaVersion: CURRENT_SCHEMA_VERSION, revision: 0, updatedAt: new Date().toISOString(), id: "riko", name: "Riko", displayName: "Riko", model: { providerId: "anthropic", modelId: "claude-opus-4-7" } }));
     const opusFile = path.join(root, "user", "waifus", "opus", "waifu.json");
     await mkdir(path.dirname(opusFile), { recursive: true });
     await writeFile(opusFile, JSON.stringify({ schemaVersion: CURRENT_SCHEMA_VERSION, revision: 0, updatedAt: new Date().toISOString(), id: "opus", name: "Opus", displayName: "Opus" }));

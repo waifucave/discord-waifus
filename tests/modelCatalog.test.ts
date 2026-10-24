@@ -1,6 +1,3 @@
-import { readFileSync } from "node:fs";
-import { createRequire } from "node:module";
-import path from "node:path";
 import type { WinterCatalog } from "@yanlinglabs/winter-provider-catalog";
 import { describe, expect, it } from "vitest";
 import { FAMILY_ROUTES } from "../src/backend/migrationSteps/livingCastModels.js";
@@ -25,25 +22,6 @@ function cloneCatalog(): WinterCatalog {
   return structuredClone(installedCatalog());
 }
 
-/** The installed `@yanlinglabs/winter-provider-catalog` package version (not the catalog data version). */
-function installedWinterCatalogVersion(): string {
-  const entry = createRequire(import.meta.url).resolve("@yanlinglabs/winter-provider-catalog");
-  let dir = path.dirname(entry);
-  for (let i = 0; i < 4; i += 1) {
-    try {
-      const pkg = JSON.parse(readFileSync(path.join(dir, "package.json"), "utf8")) as { name?: string; version?: string };
-      if (pkg.name === "@yanlinglabs/winter-provider-catalog" && pkg.version) return pkg.version;
-    } catch {
-      // keep walking up
-    }
-    dir = path.dirname(dir);
-  }
-  throw new Error("installed winter catalog package.json not found");
-}
-
-/** winter 0.0.55 predates W2 (Haiku 5.5, OpenRouter Muse/Haiku/Sol rows) and W7 (OpenRouter continuation). */
-const WINTER_BEFORE_W2_W7 = installedWinterCatalogVersion() === "0.0.55";
-
 function row(catalog: WinterCatalog, key: string) {
   const found = catalog.models.find((model) => model.key === key);
   if (!found) throw new Error(`no row ${key}`);
@@ -61,32 +39,18 @@ describe("route keys", () => {
   });
 });
 
-describe("curated catalog over the installed winter 0.0.55 catalog (spec §9.2)", () => {
+describe("curated catalog over the installed winter 0.0.56 catalog (spec §9.2)", () => {
   const curated = curatedCatalog();
 
-  it("offers the direct routes the catalog carries, in allow-list order", () => {
+  it("offers every allowed route, direct and through OpenRouter, in allow-list order (W2 rows, W7 continuation)", () => {
     expect(curated.catalogVersion).toBe(installedCatalog().catalogVersion);
-    expect(curated.models.map((model) => model.id)).toEqual([
-      "meta/muse-spark-1.3-contributor",
-      "anthropic/claude-sonnet-5-5",
-      "deepseek/deepseek-flash",
-      "openai/gpt-6-luna",
-      "openai/gpt-6.1-sol"
-    ]);
+    expect(curated.models.map((model) => model.id)).toEqual([...DEFAULT_ALLOWED_ROUTES]);
+    expect(curated.hidden).toEqual([]);
   });
 
-  it("hides routes the installed catalog lacks (W2) and OpenRouter routes until W7", () => {
-    const hidden = Object.fromEntries(curated.hidden.map((entry) => [entry.id, entry.reason]));
-    expect(hidden).toEqual({
-      "openrouter/meta/muse-spark-1.3-contributor": "not_in_catalog",
-      "anthropic/claude-haiku-5-5": "not_in_catalog",
-      "openrouter/anthropic/claude-haiku-5.5": "not_in_catalog",
-      "openrouter/anthropic/claude-sonnet-5.5": "openrouter_reasoning_replay",
-      "openrouter/deepseek/deepseek-v4.1-flash": "openrouter_reasoning_replay",
-      "openrouter/openai/gpt-6-luna": "openrouter_reasoning_replay",
-      "openrouter/openai/gpt-6.1-sol": "not_in_catalog"
-    });
-    expect(curated.models.length + curated.hidden.length).toBe(DEFAULT_ALLOWED_ROUTES.length);
+  it("applies our own output cap where a row names none (W2: the direct Muse Spark contributor row)", () => {
+    expect(findCuratedModel({ providerId: "meta", modelId: "muse-spark-1.3-contributor" }, curated)).not.toHaveProperty("maxOutputTokens");
+    expect(findCuratedModel({ providerId: "openrouter", modelId: "meta/muse-spark-1.3-contributor" }, curated)?.maxOutputTokens).toBeGreaterThan(0);
   });
 
   it("describes each route: efforts from the catalog, pricing, image input, contributor label", () => {
@@ -108,12 +72,20 @@ describe("curated catalog over the installed winter 0.0.55 catalog (spec §9.2)"
 
   it("the output price cap hides routes above it", () => {
     const cheap = curatedCatalog({ maxOutputUsdPerMTok: 1 });
-    expect(cheap.models.map((model) => model.id)).toEqual(["meta/muse-spark-1.3-contributor", "openai/gpt-6-luna"]);
-    expect(cheap.hidden.filter((entry) => entry.reason === "over_price_cap" && !entry.id.startsWith("openrouter/")).map((entry) => entry.id)).toEqual([
-      "anthropic/claude-sonnet-5-5",
-      "deepseek/deepseek-flash",
-      "openai/gpt-6.1-sol"
+    expect(cheap.models.map((model) => model.id)).toEqual([
+      "meta/muse-spark-1.3-contributor",
+      "openrouter/meta/muse-spark-1.3-contributor",
+      "anthropic/claude-haiku-5-5",
+      "openrouter/anthropic/claude-haiku-5.5",
+      "openrouter/deepseek/deepseek-v4.1-flash",
+      "openai/gpt-6-luna",
+      "openrouter/openai/gpt-6-luna"
     ]);
+    expect(cheap.hidden).toEqual(
+      ["anthropic/claude-sonnet-5-5", "openrouter/anthropic/claude-sonnet-5.5", "deepseek/deepseek-flash", "openai/gpt-6.1-sol", "openrouter/openai/gpt-6.1-sol"].map(
+        (id) => ({ id, reason: "over_price_cap" })
+      )
+    );
   });
 
   it("hides blocked providers, deprecated rows and rows without native tool calling", () => {
@@ -148,16 +120,23 @@ describe("curated catalog over the installed winter 0.0.55 catalog (spec §9.2)"
 });
 
 describe("the W7 feature check (OpenRouter reasoning replay)", () => {
-  it("is false for every OpenRouter reasoning row in winter 0.0.55 (continuation none)", () => {
-    for (const model of installedCatalog().models.filter((candidate) => candidate.providerId === "openrouter" && candidate.reasoning?.supported.value === true)) {
-      expect(openRouterReasoningReplaySupported(model), model.key).toBe(false);
+  it("winter 0.0.56 replays reasoning on every curated OpenRouter row that needs it; Muse Spark needs none", () => {
+    const catalog = installedCatalog();
+    for (const routes of Object.values(CURATED_FAMILY_ROUTES)) {
+      const openrouter = row(catalog, routeKey(routes.openrouter));
+      const direct = row(catalog, routeKey(routes.direct));
+      const needsReplay = direct.reasoning?.supported.value === true && direct.reasoning.continuation !== "none";
+      expect(openRouterReasoningReplaySupported(openrouter), openrouter.key).toBe(needsReplay);
+      expect(openRouterRouteOffered(openrouter, catalog), openrouter.key).toBe(true);
     }
   });
 
   it("turns an OpenRouter route on once its row carries a continuation (as W7 ships it)", () => {
     const catalog = cloneCatalog();
     const sonnet = row(catalog, "openrouter/anthropic/claude-sonnet-5.5");
-    sonnet.reasoning = { ...sonnet.reasoning!, continuation: "native-state" as never };
+    sonnet.reasoning = { ...sonnet.reasoning!, continuation: "none" };
+    expect(curatedCatalog({ catalog }).hidden).toContainEqual({ id: "openrouter/anthropic/claude-sonnet-5.5", reason: "openrouter_reasoning_replay" });
+    sonnet.reasoning = { ...sonnet.reasoning!, continuation: "opaque-provider-state" };
     expect(openRouterReasoningReplaySupported(sonnet)).toBe(true);
     expect(curatedCatalog({ catalog }).models.map((model) => model.id)).toContain("openrouter/anthropic/claude-sonnet-5.5");
   });
@@ -186,6 +165,8 @@ describe("the W7 feature check (OpenRouter reasoning replay)", () => {
   it("hides an OpenRouter route when the vendor's own route needs replay and the row cannot replay it", () => {
     const catalog = cloneCatalog();
     const sonnet = row(catalog, "openrouter/anthropic/claude-sonnet-5.5");
+    // As winter 0.0.55 shipped the row: no OpenRouter continuation.
+    sonnet.reasoning = { ...sonnet.reasoning!, continuation: "none" };
     expect(row(catalog, "anthropic/claude-sonnet-5-5").reasoning?.continuation).not.toBe("none");
     expect(openRouterRouteOffered(sonnet, catalog)).toBe(false);
     // Once the direct route keeps no reasoning state, the OpenRouter twin has nothing to replay.
@@ -197,7 +178,12 @@ describe("the W7 feature check (OpenRouter reasoning replay)", () => {
   it("assumes replay is needed when an OpenRouter row has no known direct counterpart", () => {
     const catalog = cloneCatalog();
     const template = row(catalog, "openrouter/anthropic/claude-sonnet-5.5");
-    const stranger = { ...structuredClone(template), key: "openrouter/acme/thinker-1", upstreamId: "acme/thinker-1" };
+    const stranger = {
+      ...structuredClone(template),
+      key: "openrouter/acme/thinker-1",
+      upstreamId: "acme/thinker-1",
+      reasoning: { ...template.reasoning!, continuation: "none" as const }
+    };
     catalog.models.push(stranger);
     expect(openRouterRouteOffered(stranger, catalog)).toBe(false);
   });
@@ -206,10 +192,8 @@ describe("the W7 feature check (OpenRouter reasoning replay)", () => {
     expect(FAMILY_ROUTES).toBe(CURATED_FAMILY_ROUTES);
   });
 
-  // Every route the models migration can map to must be offered once winter carries W2 and W7.
-  // winter 0.0.55 lacks Haiku 5.5 and the OpenRouter Muse/Haiku/Sol rows and has no OpenRouter
-  // continuation, so this runs from the 0.0.56 pin on.
-  it.skipIf(WINTER_BEFORE_W2_W7)("offers every curated family route, direct and through OpenRouter, in the installed catalog", () => {
+  // Every route the models migration can map to is offered by the installed catalog (winter W2, W7).
+  it("offers every curated family route, direct and through OpenRouter, in the installed catalog", () => {
     const offered = new Set(curatedCatalog().models.map((model) => model.id));
     for (const [family, routes] of Object.entries(CURATED_FAMILY_ROUTES)) {
       expect(offered.has(routeKey(routes.direct)), `${family} direct`).toBe(true);

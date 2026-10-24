@@ -319,20 +319,41 @@ describe("living-cast-model-effort-check (every boot)", () => {
     await writeJson(dataRoot, "user/waifus/aria/waifu.json", waifu("aria", { model: { providerId: "anthropic", modelId: "claude-sonnet-5-5", effort: "turbo" } }));
     await writeJson(dataRoot, "user/waifus/mina/waifu.json", waifu("mina", { model: { providerId: "anthropic", modelId: "claude-sonnet-5-5", effort: "low" } }));
     await writeJson(dataRoot, "user/waifus/haiku/waifu.json", waifu("haiku", { model: { providerId: "anthropic", modelId: "claude-haiku-5-5", effort: "turbo" } }));
+    await writeJson(dataRoot, "user/waifus/retired/waifu.json", waifu("retired", { model: { providerId: "anthropic", modelId: "claude-opus-4-7", effort: "turbo" } }));
     await writeJson(dataRoot, "user/assistant/config.json", { schemaVersion: CURRENT_SCHEMA_VERSION, revision: 0, updatedAt: T, model: { providerId: "deepseek", modelId: "deepseek-flash", effort: "nope" } });
 
-    expect(await checkStoredModelEfforts(dataRoot)).toBe("model-effort-check-2");
+    expect(await checkStoredModelEfforts(dataRoot)).toBe("model-effort-check-3");
     expect((await readJson(dataRoot, "user/waifus/aria/waifu.json")).model).toEqual({ providerId: "anthropic", modelId: "claude-sonnet-5-5" });
     expect((await readJson(dataRoot, "user/waifus/mina/waifu.json")).model).toEqual({ providerId: "anthropic", modelId: "claude-sonnet-5-5", effort: "low" });
-    // Not in the installed 0.0.55 catalog: left for the live "unavailable" warning instead.
-    expect((await readJson(dataRoot, "user/waifus/haiku/waifu.json")).model).toEqual({ providerId: "anthropic", modelId: "claude-haiku-5-5", effort: "turbo" });
+    expect((await readJson(dataRoot, "user/waifus/haiku/waifu.json")).model).toEqual({ providerId: "anthropic", modelId: "claude-haiku-5-5" });
+    // Not in the installed catalog: left for the live "unavailable" warning instead.
+    expect((await readJson(dataRoot, "user/waifus/retired/waifu.json")).model).toEqual({ providerId: "anthropic", modelId: "claude-opus-4-7", effort: "turbo" });
     expect((await readJson(dataRoot, "user/assistant/config.json")).model).toEqual({ providerId: "deepseek", modelId: "deepseek-flash" });
     expect((await readModelWarnings(dataRoot)).map((warning) => [warning.scope, warning.code]).sort()).toEqual([
       ["assistant", "effort_dropped"],
-      ["waifu:aria", "effort_dropped"]
+      ["waifu:aria", "effort_dropped"],
+      ["waifu:haiku", "effort_dropped"]
     ]);
     // Every boot: nothing left to drop.
     expect(await checkStoredModelEfforts(dataRoot)).toBeUndefined();
+  });
+
+  it("a boot after the upgrade corrects the stale `minimal` carried onto Haiku 5.5, with a warning (review, winter 0.0.56 rows)", async () => {
+    const dataRoot = await root();
+    await writeJson(dataRoot, "user/waifus/haiku/waifu.json", {
+      ...waifu("haiku", { providerId: "anthropic", modelId: "claude-haiku-4-5-20251001", params: { "reasoning.effort": "minimal" } }),
+      schemaVersion: 1
+    });
+    await runMigrations(dataRoot);
+    const haiku = await readJson(dataRoot, "user/waifus/haiku/waifu.json");
+    // Mapped to the curated family, and the effort Haiku 5.5 does not list is dropped at once.
+    expect(haiku.model).toEqual({ providerId: "anthropic", modelId: "claude-haiku-5-5" });
+    expect(installedCatalog().models.find((model) => model.key === "anthropic/claude-haiku-5-5")?.reasoning?.efforts).not.toContain("minimal");
+    expect(await readModelWarnings(dataRoot)).toEqual([
+      expect.objectContaining({ scope: "waifu:haiku", code: "effort_dropped", previous: "anthropic/claude-haiku-5-5 (effort minimal)" })
+    ]);
+    // The resulting choice is one the write path accepts.
+    expect(() => WaifuConfigSchema.parse(haiku)).not.toThrow();
   });
 
   it("re-validates against the catalog it is given (a winter upgrade can remove an effort)", async () => {

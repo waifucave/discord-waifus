@@ -23,7 +23,18 @@ import { recordProviderQuery, recordProviderReply, type QueryRole } from "../sha
 import type { UsagePurpose } from "../shared/schemas/usage.js";
 import { NoopUsageLedger, sharedUsageLedger, usageFields, type ModelUsage, type UsageLedger } from "../orchestration/usageLedger.js";
 import { sharedProviderAlerts, type ProviderAlerts } from "../orchestration/providerAlerts.js";
-import { assembleTurn, ProviderStreamError, messageText, messageToolCalls, type AssemblySink, type WinterStopReason, type WinterUsage } from "./assemble.js";
+import {
+  assembleTurn,
+  messageHasContent,
+  messageText,
+  messageToolCalls,
+  ProviderStreamError,
+  type AssembledMessage,
+  type AssemblySink,
+  type StreamObservation,
+  type WinterStopReason,
+  type WinterUsage
+} from "./assemble.js";
 import { listPricedEstimate, routeKey, type ModelRoute } from "./catalog.js";
 import { createProviderCredentialsLookup, inlineAuthRef, type ProviderKeyLookup } from "./credentials.js";
 import { fromProviderError, ModelCallError, toModelCallError } from "./errors.js";
@@ -67,7 +78,7 @@ export type ModelFinishReason = "stop" | "tool_use" | "length" | "refusal" | "co
 
 export type ModelCallResult = {
   /** The assistant message exactly as assembled: append it to the log unchanged. */
-  message: ProviderMessageLike & { role: "assistant"; content: ContentBlockLike[]; origin: MessageOrigin };
+  message: AssembledMessage;
   text: string;
   toolCalls: Array<{ id: string; name: string; input: unknown }>;
   finishReason: ModelFinishReason;
@@ -107,14 +118,11 @@ export const DEFAULT_STALL_TIMEOUT_MS = 120_000;
 export const DEFAULT_OUTPUT_CAP_TOKENS = 8_192;
 
 /**
- * winter W3 (0.0.56): the message-level cache TTLs. `lookback` defaults to `rolling`, and a request
- * whose TTLs increase from system to lookback to rolling is refused, so with `cacheTtl: "1h"` the
- * rolling TTL is 1h too. 0.0.55 adapters ignore the field.
+ * winter W3: the message-level cache TTLs. `lookback` defaults to `rolling`, and a request whose TTLs
+ * increase from system to lookback to rolling is refused, so with `cacheTtl: "1h"` the rolling TTL is
+ * 1h too.
  */
 export const MESSAGE_CACHE_TTL = Object.freeze({ rolling: "1h" as const });
-
-/** `TurnRequest` plus the 0.0.56 field, until the pin moves (then plain `TurnRequest`). */
-type WinterTurnRequest = TurnRequest & { messageCacheTtl?: { rolling?: "5m" | "1h"; lookback?: "5m" | "1h" } };
 
 /**
  * The call's cost: the provider's own reported figure when there is one (winter W5: OpenRouter's
@@ -249,6 +257,7 @@ export class ModelClient {
     let queryId: number | undefined;
     const role = QUERY_ROLE[attribution.purpose];
     let descriptor: ResolvedModel["descriptor"];
+    const observation: StreamObservation = { subscriptionQuota: false };
 
     try {
       const resolved = this.resolve(route);
@@ -269,7 +278,7 @@ export class ModelClient {
       });
       const system = request.system.filter((block) => block.length > 0);
       const maxOutputTokens = request.maxOutputTokens ?? (descriptor?.maxOutputTokens ? undefined : DEFAULT_OUTPUT_CAP_TOKENS);
-      const turn: WinterTurnRequest = {
+      const turn: TurnRequest = {
         model: resolved.providerModelId,
         ...(system.length > 0
           ? { system: system.join("\n\n"), systemBlocks: system.map((text) => ({ text, cacheScope: "org" as const })) }
@@ -311,10 +320,10 @@ export class ModelClient {
       } catch (error) {
         throw toModelCallError(error);
       }
-      const assembled = await assembleTurn(stream, { origin, signal, ...(sink ? { sink } : {}) });
+      const assembled = await assembleTurn(stream, { origin, signal, observation, ...(sink ? { sink } : {}) });
       // Only the stream decides: a call whose stream completed is a completed call, even when the
       // caller aborts right after.
-      if (assembled.stopReason === "aborted") throw new TurnAbortedError(assembled.usage, assembled.message.content.length > 0);
+      if (assembled.stopReason === "aborted") throw new TurnAbortedError(assembled.usage, messageHasContent(assembled.message));
       const usage = assembled.usage;
       const priced = callCostUsd(usage, listPricedEstimate(usage, descriptor));
       const toolCalls = messageToolCalls(assembled.message);
@@ -344,7 +353,7 @@ export class ModelClient {
       let committed = false;
       if (raw instanceof ProviderStreamError) {
         committed = raw.committed;
-        error = fromProviderError(raw.providerError, { subscriptionQuota: raw.subscriptionQuota, committed });
+        error = fromProviderError(raw.error, { subscriptionQuota: observation.subscriptionQuota, committed });
       } else if (raw instanceof TurnAbortedError) {
         committed = raw.committed;
         error = new ModelCallError("aborted", raw.message, { code: "aborted", committed });
@@ -359,7 +368,8 @@ export class ModelClient {
         error = new ModelCallError("other", "The model call timed out.", { code: "timeout", retryable: true, committed });
       }
       this.alerts?.report(route.providerId, error);
-      const partialUsage = raw instanceof ProviderStreamError || raw instanceof TurnAbortedError ? raw.usage : undefined;
+      // winter's failure carries no usage: the stream observation keeps the last usage event.
+      const partialUsage = raw instanceof TurnAbortedError ? raw.usage : raw instanceof ProviderStreamError ? observation.usage : undefined;
       const partialCost = callCostUsd(partialUsage, listPricedEstimate(partialUsage, descriptor));
       void this.ledger.record({
         ...entryBase,
