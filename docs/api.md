@@ -69,6 +69,12 @@ live events carry `v1:<128-bit epoch>:<uint64 sequence>` IDs. Reconnects send `L
 receive the authorized replay suffix. An epoch mismatch or replay gap emits `snapshot_required`
 before a replacement snapshot. Authorization is rechecked for every protected event and heartbeat.
 
+Captured model traffic (`query` and `reply` events, the snapshot's `queries`/`replies`, the
+diagnostics bundle) never carries reasoning. A waifu's life, maintenance, compaction and web digest
+calls are captured as metadata only (`metadataOnly: true`: `providerId`, `modelId`, `payload`
+`{messageCount, toolCount}`; replies `{finishReason, usage, costUsd, durationMs}` or an error's
+`{kind, code}`); dashboard assistant and addressee detector calls keep their content.
+
 API responses are marked `Cache-Control: no-store`. Credential material, Discord tokens, private
 keys, pairing/internal-capability material, and direct endpoint candidates are scrubbed from
 errors, logs, diagnostics, captured model traffic, and event serialization. A remote device gets

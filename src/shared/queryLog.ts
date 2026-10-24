@@ -53,11 +53,29 @@ export function withoutReasoningPayloads(value: unknown, depth = 0): unknown {
 /** Which caller made a model call (the usage purposes, spec §9.3). */
 export type QueryRole = "life" | "maintenance" | "detector" | "compaction" | "assistant" | "web";
 
+/**
+ * Callers whose captured traffic keeps metadata only (Living cast; review M14): a life's requests
+ * carry her whole private log, her notes, DMs and the people she talks to, and so do her
+ * maintenance, compaction and web digest calls. Activity, `/api/events` and the diagnostics bundle
+ * see the route, sizes, stop reason, usage, cost and timing, never the content. The private view
+ * of a life is L3's Life timeline.
+ */
+export const METADATA_ONLY_ROLES: ReadonlySet<QueryRole> = new Set<QueryRole>(["life", "maintenance", "compaction", "web"]);
+
+/** The reply fields a metadata-only entry keeps. */
+const REPLY_METADATA_KEYS = ["finishReason", "usage", "costUsd", "durationMs"] as const;
+
 export type CapturedQuery = {
   id: number;
   time: string;
   role: QueryRole;
+  providerId?: string;
+  modelId?: string;
+  /** Content left out (METADATA_ONLY_ROLES): `payload` holds counts only. */
+  metadataOnly?: true;
   payload: {
+    messageCount?: number;
+    toolCount?: number;
     system?: unknown;
     instructions?: unknown;
     systemInstruction?: unknown;
@@ -81,6 +99,8 @@ export type CapturedReply = {
   queryId: number;
   status: number;
   ok: boolean;
+  /** Content left out (METADATA_ONLY_ROLES). */
+  metadataOnly?: true;
   payload: unknown;
 };
 
@@ -95,7 +115,24 @@ const replyListeners = new Set<ReplyListener>();
 let nextQueryId = 1;
 let nextReplyId = 1;
 
-export function recordProviderQuery(role: QueryRole, body: Record<string, unknown>): CapturedQuery {
+export function recordProviderQuery(role: QueryRole, body: Record<string, unknown>, route: { providerId?: string; modelId?: string } = {}): CapturedQuery {
+  const routeFields = {
+    ...(route.providerId !== undefined ? { providerId: route.providerId } : {}),
+    ...(route.modelId !== undefined ? { modelId: route.modelId } : {})
+  };
+  if (METADATA_ONLY_ROLES.has(role)) {
+    const count = (value: unknown) => (Array.isArray(value) ? value.length : undefined);
+    const messageCount = count(body.messages) ?? count(body.input) ?? count(body.contents);
+    const toolCount = count(body.tools);
+    return keepQuery({
+      id: nextQueryId++,
+      time: new Date().toISOString(),
+      role,
+      ...routeFields,
+      metadataOnly: true,
+      payload: { ...(messageCount !== undefined ? { messageCount } : {}), ...(toolCount !== undefined ? { toolCount } : {}) }
+    });
+  }
   const payload: CapturedQuery["payload"] = {};
   if (body.system !== undefined) payload.system = body.system;
   if (body.instructions !== undefined) payload.instructions = body.instructions;
@@ -110,16 +147,34 @@ export function recordProviderQuery(role: QueryRole, body: Record<string, unknow
   if (body.safetySettings !== undefined) payload.safetySettings = body.safetySettings;
   if (body.stop !== undefined) payload.stop = body.stop;
   if (body.stop_sequences !== undefined) payload.stop_sequences = body.stop_sequences;
-  const entry: CapturedQuery = {
+  return keepQuery({
     id: nextQueryId++,
     time: new Date().toISOString(),
     role,
+    ...routeFields,
     payload: redactSecrets(withoutReasoningPayloads(payload) as CapturedQuery["payload"])
-  };
+  });
+}
+
+function keepQuery(entry: CapturedQuery): CapturedQuery {
   recentQueryEntries.push(entry);
   if (recentQueryEntries.length > MAX_RECENT) recentQueryEntries.shift();
   for (const listener of queryListeners) listener(entry);
   return entry;
+}
+
+/** A metadata-only reply: the stop reason, usage, cost and timing; an error's kind and code. */
+function replyMetadata(payload: unknown): Record<string, unknown> {
+  if (payload === null || typeof payload !== "object") return {};
+  const record = payload as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const key of REPLY_METADATA_KEYS) if (record[key] !== undefined) out[key] = record[key];
+  const error = record.error;
+  if (error !== null && typeof error === "object") {
+    const { kind, code } = error as Record<string, unknown>;
+    out.error = { ...(kind !== undefined ? { kind } : {}), ...(code !== undefined ? { code } : {}) };
+  }
+  return out;
 }
 
 export function recordProviderReply(
@@ -129,6 +184,7 @@ export function recordProviderReply(
   ok: boolean,
   payload: unknown
 ): CapturedReply {
+  const metadataOnly = METADATA_ONLY_ROLES.has(role);
   const entry: CapturedReply = {
     id: nextReplyId++,
     time: new Date().toISOString(),
@@ -136,7 +192,8 @@ export function recordProviderReply(
     queryId,
     status,
     ok,
-    payload: redactSecrets(withoutReasoningPayloads(payload))
+    ...(metadataOnly ? { metadataOnly: true as const } : {}),
+    payload: metadataOnly ? replyMetadata(payload) : redactSecrets(withoutReasoningPayloads(payload))
   };
   recentReplyEntries.push(entry);
   if (recentReplyEntries.length > MAX_RECENT) recentReplyEntries.shift();

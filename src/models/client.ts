@@ -308,7 +308,7 @@ export class ModelClient {
         messages: turn.messages,
         ...(turn.tools ? { tools: turn.tools } : {}),
         ...(turn.toolChoice ? { tool_choice: turn.toolChoice } : {})
-      }).id;
+      }, { providerId: route.providerId, modelId: route.modelId }).id;
       const connection: ConnectionProfile = { ...(this.options.connection?.(resolved.providerId) ?? {}), providerId: resolved.providerId };
       const context: ProviderContext = {
         connection,
@@ -349,7 +349,7 @@ export class ModelClient {
         finishReason,
         durationMs
       });
-      recordProviderReply(role, queryId, 200, true, { content: assembled.message.content, finishReason, usage });
+      recordProviderReply(role, queryId, 200, true, { content: assembled.message.content, finishReason, usage, ...(priced !== undefined ? { costUsd: priced } : {}), durationMs });
       return {
         message: assembled.message,
         text: messageText(assembled.message),
@@ -392,7 +392,7 @@ export class ModelClient {
         errorKind: error.kind,
         durationMs: this.now() - startedMs
       });
-      if (queryId !== undefined) recordProviderReply(role, queryId, error.status ?? 0, false, { error: { kind: error.kind, code: error.code, message: error.message } });
+      if (queryId !== undefined) recordProviderReply(role, queryId, error.status ?? 0, false, { error: { kind: error.kind, code: error.code, message: error.message }, durationMs: this.now() - startedMs });
       throw error;
     }
   }

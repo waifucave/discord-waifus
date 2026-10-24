@@ -101,6 +101,33 @@ describe("query log reasoning safety", () => {
     expect(snapshot).not.toContain("nativeState");
   });
 
+  it("a life, maintenance, compaction or web call is captured as metadata only; the assistant keeps its content (M14)", async () => {
+    const reply = (): ProviderEvent[] => [
+      { type: "message_start", id: "r2" },
+      { type: "text_delta", text: "PRIVATE-REPLY" },
+      { type: "usage", inputTokens: 12, outputTokens: 3 },
+      { type: "done", stopReason: "end_turn" }
+    ];
+    const anthropic = fakeAdapter(ANTHROPIC_MESSAGES, [reply, reply, reply, reply, reply]);
+    const client = new ModelClient({ winter: fakeWinter(anthropic), credentials: () => "sk-test" });
+    const route = { providerId: "anthropic", modelId: "claude-sonnet-5-5" };
+    const messages = [{ role: "user" as const, content: "PRIVATE-DM from Kevin" }];
+    for (const purpose of ["life", "maintenance", "compaction", "web"] as const) {
+      const before = recentQueries().length;
+      await client.call({ route, system: ["PRIVATE-NOTES"], messages, attribution: { purpose, waifuId: "aria" } });
+      const query = recentQueries().at(-1)!;
+      const answer = recentReplies().at(-1)!;
+      expect(recentQueries().length).toBe(before + 1);
+      expect(query).toMatchObject({ role: purpose, providerId: "anthropic", modelId: "claude-sonnet-5-5", metadataOnly: true, payload: { messageCount: 1 } });
+      expect(answer).toMatchObject({ metadataOnly: true, ok: true, payload: { finishReason: "stop", usage: { inputTokens: 12, outputTokens: 3 } } });
+      expect(typeof (answer.payload as { durationMs?: unknown }).durationMs).toBe("number");
+      expect(JSON.stringify([query, answer])).not.toMatch(/PRIVATE/u);
+    }
+    await client.call({ route, system: ["A"], messages, attribution: { purpose: "assistant" } });
+    expect(JSON.stringify(recentQueries().at(-1))).toContain("PRIVATE-DM from Kevin");
+    expect(JSON.stringify(recentReplies().at(-1))).toContain("PRIVATE-REPLY");
+  });
+
   it("strips opaque keys at any depth and keeps everything else", () => {
     expect(
       withoutReasoningPayloads({
