@@ -301,6 +301,14 @@ describe("addressee detector (§4.3)", () => {
     expect(wake).toMatchObject({ reason: "mention", fromName: "someone" });
     expect(JSON.stringify(wake)).not.toContain("cardamom");
     expect(w.cast.notices.list()).toEqual([expect.stringContaining("forgotten.json is unreadable")]);
+    // A DM's preview and name are hidden too (review F11).
+    const dm = w.discord.post(dmOf("aria"), "my other secret is saffron");
+    await w.cast.onDirectMessage({ waifuId: "aria", botId: "aria-bot", userId: KEVIN, userDisplayName: "Kevin", channelId: "dm", messageId: dm.id, createdAt: dm.createdAt });
+    w.cast.intake.flushDms();
+    await w.cast.settle();
+    const dmWake = (await queued(w, "aria")).immediate.find((entry) => entry.reason === "dm");
+    expect(dmWake).toMatchObject({ fromName: "someone", preview: "(removed)" });
+    expect(JSON.stringify(await queued(w, "aria"))).not.toContain("saffron");
     // Repaired: the notice clears and the detector runs again.
     await writeFile(file, JSON.stringify({ forgotten: [] }));
     w.clock.advance(11 * 60_000);

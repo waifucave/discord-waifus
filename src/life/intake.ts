@@ -549,14 +549,17 @@ export class Intake {
     const conversation: ConversationRef = { kind: "dm", waifuId, userId };
     const newestId = [...burst.messageIds].sort(compareIds).pop()!;
     const message = await this.findMessage(conversation, newestId);
+    // Unreadable forget records fail closed here too: the DM's preview and name are hidden (F11).
+    const records = await this.forgetRecords();
+    const removed = records.unreadable || (message ? isRemovedMessage(message, records.forgotten) : false);
     const wake: Wake = {
       id: newWakeId(),
       reason: "dm",
       placeKey: conversationKey(conversation),
       fromUserId: userId,
-      fromName: burst.userName ?? message?.authorName ?? "someone",
+      fromName: removed ? "someone" : (burst.userName ?? message?.authorName ?? "someone"),
       messageId: newestId,
-      ...(message ? { preview: messagePreview(message, EMPTY_GUILD_DIRECTORY, deps.timeZone) } : {}),
+      ...(message ? { preview: messagePreview(message, EMPTY_GUILD_DIRECTORY, deps.timeZone, { removed }) } : {}),
       ...(burst.messageIds.length > 1 ? { count: burst.messageIds.length } : {}),
       at: deps.now().toISOString()
     };
@@ -607,6 +610,8 @@ export class Intake {
     if (added.length === 0) return;
     const cast = await this.castWaifus(await castOf(conversation.guildId, conversation.channelId));
     const dir = await this.view(conversation.guildId);
+    const records = await this.forgetRecords();
+    const removed = records.unreadable || isRemovedMessage(message, records.forgotten);
     for (const waifu of cast) {
       const selfIds = await selfAuthorIds(deps.storage, waifu);
       if (!selfIds.some((id) => added.includes(id))) continue;
@@ -621,9 +626,9 @@ export class Intake {
           reason: "mention",
           placeKey: conversationKey(conversation),
           fromUserId: message.authorId,
-          fromName: message.authorName,
+          fromName: removed ? "someone" : message.authorName,
           messageId: message.id,
-          preview: messagePreview(message, dir, deps.timeZone),
+          preview: messagePreview(message, dir, deps.timeZone, { removed }),
           at: deps.now().toISOString()
         },
         { guildId: conversation.guildId }
