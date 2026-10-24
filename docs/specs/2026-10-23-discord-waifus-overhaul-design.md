@@ -1563,12 +1563,34 @@ forget) deviates as follows; later phases build on this.
   the DM ledger (no server flags, no stage-manager history, no debug-channel routing);
   `requestObserveThrough` works for DMs, so the compaction handoff covers DMs too. DM edits and
   deletes go to the DM ledger through `applyMessageEvent` (never a trigger).
-- **Forget.** The image cache is not tagged by conversation, so `dmForget(scope: "all")` purges the
-  image keys found in the DM ledger (`ContextRuntime.purgeImageKeys`, OCR text included).
-  `forget-user` returns `dmLimits` as well; its `ledgers` count excludes the user's own DM ledgers
-  (deleted whole, counted in `dmContexts`). With a live runtime, forgets also abort the DM slot and
-  drop the cached DM messages. The DM `/forget` confirm UI (ephemeral reply, 30-second buttons)
-  lives in the gateway; the runtime only receives the confirmed request.
+- **Forget floor (review C1).** The bot cannot delete the user's DM messages, so a forget (either
+  scope, and forget-user) writes `floorMessageId` (the snowflake of the forget time) into the
+  limits file, which forgetting keeps (forget-user removes `user/dms/<userId>/` and writes back a
+  limits file holding only the floor). `ConversationMessageCache.setFloor` (set by the DM runner
+  before every prepare) starts reads at the floor and drops anything at or below it, so reconcile,
+  the ledger, the observer (which reads the ledger) and the resume tail check never see the old
+  chat again.
+- **Forget.** The image cache is not tagged by conversation, so both scopes purge the image keys
+  found in the DM ledger, with their OCR text, before the ledger goes (`ContextRuntime.purgeImageKeys`
+  with a live runtime, the on-disk caches otherwise); `cachedImages` counts only images that were
+  cached. `forget-user` returns `dmLimits` as well; its `ledgers` count excludes the user's own DM
+  ledgers (deleted whole, counted in `dmContexts`). With a live runtime a forget first aborts the DM
+  slot, cancels the DM observer's idle timer and waits for an observer run in flight, and drops the
+  cached DM messages. The DM `/forget` confirm UI (ephemeral reply, 30-second buttons) lives in the
+  gateway; the runtime only receives the confirmed request.
+- **DM provenance (review I2/I3).** DM memories carry `origin: { dm: true, userId }`. Forget deletes
+  by subject or by that origin. The DM observer is shown (and so can only update or merge) this
+  user's DM-origin memories, and its updates keep the DM origin; a guild observer is never shown a
+  DM-origin memory; any observer or dream merge with a DM-origin source keeps the DM origin. The
+  same-origin snapshot boost in a DM counts only that user's own DM.
+- **Runner details (review).** The DM semaphore hands a released slot to the oldest live waiter and
+  drops aborted waiters. A fire re-checks the slot after every wait and claims it synchronously, so
+  two messages during one generation start one rerun. An aborted run never sends the limit notice.
+  The DM `generateValidatedWaifuReply` call passes `redactPreviews`, so no reply text reaches the
+  logs. Boot skips a conversation whose newest message is already hers (a crash after sending).
+- **Server debounce (review).** While any channel of a guild has a pending burst, the
+  preempted-channel retrigger is held (the burst's run would preempt it again); the burst run's end,
+  or `/stop` cancelling the burst, releases it.
 - **API.** `assertSafeId`/`assertSnowflakeId` moved to `src/api/ids.ts`. `GET /api/runtime`
   reports `discord.dm` without a live runtime too (eligibility, `intentActive: false`). The
   assistant's `forget_dm` card uses category `dm_forget`.

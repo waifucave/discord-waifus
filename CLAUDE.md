@@ -136,7 +136,11 @@ PUT shim in `src/api/server.ts`.
   semaphore (`discord.dm.maxConcurrentRuns`), and a per-user rate limit (`dm.rateLimit`, pure math in
   `rateLimit.ts`; one fixed-template notice per limited period, no model call). State lives in
   `user/dms/<userId>/<waifuId>.json` (run records = the DM "why quiet"), counters in
-  `user/dms/<userId>/limits/<waifuId>.json`, which only the owner's forget-user removes. Shutdown
+  `user/dms/<userId>/limits/<waifuId>.json`, which only the owner's forget-user removes. Every
+  forget writes a floor message id there (`floorMessageId`): the bot can't delete the user's
+  messages, so `ConversationMessageCache.setFloor` keeps anything older out of the DM for good.
+  DM memories carry `origin: { dm: true, userId }`; DM and guild observers never see each other's
+  memories, and merges with a DM source stay DM-origin. Shutdown
   keeps `pending*`, pause clears it, boot/resume scans recent DM states and catches up inside
   `discord.dm.resumeWindowMinutes`. DM log lines carry ids and status only. Routes: `GET /api/dms`,
   `GET /api/dms/:waifuId/:userId`, `POST /api/dms/:waifuId/:userId/forget` (`src/api/dms.ts`); DM

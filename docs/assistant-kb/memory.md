@@ -57,7 +57,9 @@ disappear at the next compaction.
   at once; the rest queue for the dream. `stageManagerEnabled: false` on a server turns its
   observers off. Each DM conversation has its own observer (after an hour of quiet, or before a
   compaction), which ignores server flags; what it learns belongs to that waifu, with
-  `origin: { dm: true }`.
+  `origin: { dm: true, userId }`. A DM observer only sees (and edits) memories from that user's
+  DMs, a server observer never sees DM memories, and a merge that includes a DM memory stays a DM
+  memory.
 - **Dream** (once a night at `memory.dreamHourLocal`, default 05:00 local): one global pass that
   visits waifus round-robin (at most 8 model calls a night, continuing where the last night
   stopped): merges duplicates, rewrites stale phrasing, decays trivia, promotes worthwhile notes.
@@ -75,14 +77,18 @@ disappear at the next compaction.
 - `POST /api/memories/forget-user {discordUserId, confirm: true, dryRun?}` — forget a person:
   deletes every memory about them (including shared ones), their queued observations, and
   replaces their stored messages with `(removed)`. It also deletes every DM with them (DM
-  transcripts, DM state and the DM rate-limit counters: the whole `user/dms/<userId>/`) and the
-  cached images of those DMs; the response adds `dmContexts`, `dmStates`, `dmLimits`,
+  transcripts, DM state and the DM rate-limit counters: the whole `user/dms/<userId>/`, except a
+  "forget floor" so the old chat is never read back from Discord), every memory she learned in
+  their DMs, and the cached images of those DMs; the response adds `dmContexts`, `dmStates`, `dmLimits`,
   `cachedImages`. Conversation summaries keep them until their next compaction. The assistant's
   `forget_user` tool always shows a confirmation card first.
 - `POST /api/dms/:waifuId/:userId/forget {confirm: true, scope: "conversation" | "all", dryRun?}`
   — forget one waifu's DMs with one user: `conversation` deletes the DM transcript and run records;
   `all` also deletes the DM state, her memories and queued observations about the user and the
-  DM's cached images. It never touches the rate-limit counters (only forget-user does). The
+  DM's cached images (both scopes drop the DM's cached images). After a forget nothing older than
+  the forget is ever read back into her DM (the bot cannot delete the user's own messages, so the
+  app remembers where the forget happened). It never touches the rate-limit counters (only
+  forget-user does). The
   assistant's `forget_dm` tool shows a confirmation card first; users can do the same from the DM
   with `/forget`.
 
