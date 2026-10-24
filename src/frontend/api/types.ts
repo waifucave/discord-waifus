@@ -189,7 +189,7 @@ export type TrustedDeviceList = {
 
 export type DiscordRuntime = {
   connected: boolean;
-  orchestratorConnected: boolean;
+  houseConnected: boolean;
   waifuBotCount: number;
   warnings: string[];
   connecting?: boolean;
@@ -216,7 +216,7 @@ export type DiscordRuntime = {
 export type DiscordBotConnectionStatus = {
   botId: string;
   displayName: string;
-  kind: "orchestrator" | "waifu";
+  kind: "house" | "waifu";
   state: "connected" | "connecting" | "error" | "disabled" | "missing_token";
   errorCode?:
     | "invalid_token"
@@ -224,7 +224,7 @@ export type DiscordBotConnectionStatus = {
     | "invalid_intents"
     | "gateway_rejected"
     | "network"
-    | "orchestrator_unavailable"
+    | "house_unavailable"
     | "unknown";
   error?: string;
   closeCode?: number;
@@ -298,13 +298,32 @@ export type AppConfig = {
   };
   compaction: CompactionSettings;
   models?: { allowed: string[]; maxOutputUsdPerMTok: number };
-  memory: {
-    dreamHourLocal: number;
-    maxPinnedInjected: number;
-    maxMemoryNotesPerEpoch: number;
+  life: {
+    maxConcurrentTurns: number;
+    maxToolRounds: number;
+    maxTurnMs: number;
+    maxLogMessages: number;
+    maxContextTokens: number;
     maxInlineImagesPerEpoch: number;
-    dmInjectionLimit: number;
+    maxInlineImageBytesPerEpoch: number;
+    maxSendPlacesPerTurn: number;
+    maxWakesPerUserPerHour: number;
+    maxWatchFiresPerDay: number;
+    maxWaifuTriggeredTurns: number;
+    maintenanceHourLocal: number;
+    webFetch: {
+      model: string;
+      maxPerWaifuPerDay: number;
+      maxPerTurn: number;
+      directMaxChars: number;
+      maxBytes: number;
+      timeoutMs: number;
+      maxRedirects: number;
+      cacheMinutes: number;
+    };
   };
+  search: { maxPerSecond: number; maxPerDay: number; maxPerWaifuPerDay: number };
+  detector: { target: string };
   discord: {
     images: {
       maxBytes: number;
@@ -392,11 +411,6 @@ export type WaifuAvailability = {
   busy: WaifuBusyInterval[];
 };
 
-export type ServerToolSettings = {
-  pickNextWaifu: boolean;
-  shortTermMemory: boolean;
-};
-
 export type WaifuConfig = Revisioned & {
   id: string;
   name: string;
@@ -475,30 +489,16 @@ export type ThreadsFile = Revisioned & {
 export type ServerConfig = Revisioned & {
   guildId: string;
   name?: string;
-  orchestratorMode?: "model" | "deterministic" | "one-shot";
-  oneShot?: { target: string };
-  stageManagerEnabled?: boolean;
+  /** The addressee detector's per-server override: absent inherits, "" turns it off here. */
+  detector?: { target: string };
   paused?: boolean;
-  // Optional overrides (B29): absent = inherit the agent/waifu `contextWindow`.
-  contextWindows: {
-    orchestrator?: number;
-    waifu?: number;
-    stageManager?: number;
-  };
-  compaction?: Partial<CompactionSettings>;
-  tools: ServerToolSettings;
   channels: Record<string, ChannelConfig>;
 };
 
 export type ServersResponse = { servers: ServerConfig[] };
 
-// `null` per key in contextWindows/compaction = inherit (unset the stored override).
-export type UpdateServerBody = Partial<
-  Omit<ServerConfig, "schemaVersion" | "updatedAt" | "guildId" | "contextWindows" | "compaction">
-> & {
+export type UpdateServerBody = Partial<Omit<ServerConfig, "schemaVersion" | "updatedAt" | "guildId">> & {
   revision: number;
-  contextWindows?: { [K in keyof ServerConfig["contextWindows"]]?: number | null };
-  compaction?: { [K in keyof CompactionSettings]?: CompactionSettings[K] | null };
 };
 
 export type ChannelBody = {
@@ -615,8 +615,8 @@ export type DiagnosticBundle = {
   };
   discord: {
     revision: number;
-    orchestratorConfigured: boolean;
-    orchestratorApplicationId?: string;
+    houseConfigured: boolean;
+    houseApplicationId?: string;
     waifuBotCount: number;
     configuredWaifuBotCount: number;
   };

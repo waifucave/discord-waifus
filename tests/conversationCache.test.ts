@@ -19,7 +19,7 @@ class FakeGateway {
   readonly usersFetch = vi.fn();
   /** Runs inside every REST call, before the page is returned (to land a reconnect mid-flight). */
   onRest: (() => void) | undefined;
-  /** Replay `ready` to a new subscriber, as DiscordJsGateway does once the orchestrator is connected. */
+  /** Replay `ready` to a new subscriber, as DiscordJsGateway does once the House bot is connected. */
   announceReady = true;
   ownIds = ["aria-bot"];
   private listeners = new Set<DiscordConversationEventListener>();
@@ -130,7 +130,7 @@ describe("ConversationMessageCache trust", () => {
     const human = gateway.live("200", { authorName: "Riko", authorId: "riko" });
     const own = gateway.post("200", { authorId: "aria-bot", authorName: "Aria", authorIsBot: true });
     gateway.emit({ type: "create", own: true, conversation: GUILD, message: own });
-    // The orchestrator's own gateway delivers the same message a moment later: no duplicate.
+    // The House bot's own gateway delivers the same message a moment later: no duplicate.
     gateway.emit({ type: "create", conversation: GUILD, message: own });
 
     expect(ids((await read(first.id)).messages)).toEqual([human.id, own.id]);

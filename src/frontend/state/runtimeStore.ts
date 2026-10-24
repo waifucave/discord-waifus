@@ -33,7 +33,7 @@ export function reduceRuntimeFeed(
     dataRoot: value.dataRoot ?? "",
     discord: value.discord ?? {
       connected: false,
-      orchestratorConnected: false,
+      houseConnected: false,
       waifuBotCount: 0,
       warnings: []
     },

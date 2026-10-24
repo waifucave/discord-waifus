@@ -4,7 +4,7 @@
 
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import type { RuntimeOrchestrator } from "../orchestration/runtime.js";
+import type { CastRuntime } from "../orchestration/runtime.js";
 import { conversationKey } from "../orchestration/context/keys.js";
 import { dmForget } from "../orchestration/dm/dmForget.js";
 import { assessDmLimit } from "../orchestration/dm/rateLimit.js";
@@ -29,7 +29,7 @@ const ForgetBodySchema = z.object({
 
 export type DmRouteOptions = {
   storage: StorageService;
-  orchestrator: () => RuntimeOrchestrator | undefined;
+  runtime: () => CastRuntime | undefined;
 };
 
 async function rateLimitView(storage: StorageService, state: Pick<DmState, "userId" | "waifuId">) {
@@ -90,8 +90,8 @@ export function registerDmRoutes(app: FastifyInstance, o: DmRouteOptions): void 
     const { waifuId, userId } = parseParams(request.params);
     const body = ForgetBodySchema.parse(request.body);
     const input = { userId, waifuId, scope: body.scope, dryRun: body.dryRun === true };
-    const orchestrator = o.orchestrator();
-    const result = orchestrator ? await orchestrator.forgetDm(input) : await dmForget(o.storage, input);
+    const runtime = o.runtime();
+    const result = runtime ? await runtime.forgetDm(input) : await dmForget(o.storage, input);
     return { dryRun: result.dryRun, scope: result.scope, deleted: result.deleted };
   });
 }

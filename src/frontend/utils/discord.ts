@@ -14,10 +14,10 @@ const PERMISSIONS = {
   USE_APPLICATION_COMMANDS: 2147483648
 } as const;
 
-export type BotKind = "orchestrator" | "waifu";
+export type BotKind = "house" | "waifu";
 
 function permissionBitsFor(kind: BotKind): number {
-  if (kind === "orchestrator") {
+  if (kind === "house") {
     return Number(BigInt(PERMISSIONS.ADMINISTRATOR) | BigInt(PERMISSIONS.USE_APPLICATION_COMMANDS));
   }
   const base =
@@ -32,7 +32,7 @@ function permissionBitsFor(kind: BotKind): number {
 }
 
 export function permissionListFor(kind: BotKind): string[] {
-  if (kind === "orchestrator") {
+  if (kind === "house") {
     return ["Administrator", "Use Application Commands (slash)"];
   }
   const names = [
@@ -76,7 +76,7 @@ export function intentListFor(_kind: BotKind): Array<{ name: string; privileged:
 export function buildInviteUrl(applicationId: string, kind: BotKind, guildId?: string): string {
   const params = new URLSearchParams();
   params.set("client_id", applicationId);
-  params.set("scope", kind === "orchestrator" ? "bot applications.commands" : "bot");
+  params.set("scope", kind === "house" ? "bot applications.commands" : "bot");
   params.set("permissions", String(permissionBitsFor(kind)));
   if (guildId) {
     params.set("guild_id", guildId);

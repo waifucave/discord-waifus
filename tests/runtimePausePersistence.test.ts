@@ -28,7 +28,7 @@ describe("B2: runtime pause persists across config saves and reloads", () => {
       dataRoot: root,
       mode: "test",
       paused: false,
-      discord: { connected: false, orchestratorConnected: false, waifuBotCount: 0, warnings: [] },
+      discord: { connected: false, houseConnected: false, waifuBotCount: 0, warnings: [] },
       queues: { active: 0, configuredGuilds: 0 }
     });
     const pause = vi.fn(async () => undefined);
@@ -41,7 +41,7 @@ describe("B2: runtime pause persists across config saves and reloads", () => {
       dataRoot: root,
       runtime,
       storage: new StorageService(root),
-      runtimeControl: { getOrchestrator: () => undefined, pause, resume, reload }
+      runtimeControl: { getCastRuntime: () => undefined, pause, resume, reload }
     });
     try {
       const paused = await app.inject({ method: "POST", url: "/api/runtime/pause" });
@@ -84,7 +84,7 @@ describe("B2: runtime pause persists across config saves and reloads", () => {
       dataRoot: root,
       mode: "test",
       paused: false,
-      discord: { connected: false, orchestratorConnected: false, waifuBotCount: 0, warnings: [] },
+      discord: { connected: false, houseConnected: false, waifuBotCount: 0, warnings: [] },
       queues: { active: 0, configuredGuilds: 0 }
     });
     const pause = vi.fn(async () => undefined);
@@ -95,7 +95,7 @@ describe("B2: runtime pause persists across config saves and reloads", () => {
       runtime,
       storage: new StorageService(root),
       logger: { debug: vi.fn(), info: vi.fn(), warn, error: vi.fn() },
-      runtimeControl: { getOrchestrator: () => undefined, pause, resume, reload: async () => undefined }
+      runtimeControl: { getCastRuntime: () => undefined, pause, resume, reload: async () => undefined }
     });
     try {
       const paused = await app.inject({ method: "POST", url: "/api/runtime/pause" });

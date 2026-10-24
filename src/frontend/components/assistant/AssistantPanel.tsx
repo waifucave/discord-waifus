@@ -57,17 +57,17 @@ function SecretForm({ args, onDone }: { args: SecretArgs; onDone: (outcome: stri
         await api.putProviderCredentials(String(args.providerId), { apiKey: value.trim() });
       } else {
         const bots = await api.discordBots();
-        const isOrchestrator = !args.botId || args.botId === "orchestrator";
-        const entry = isOrchestrator ? bots.orchestrator : bots.waifus.find((bot) => bot.id === args.botId);
+        const isHouse = !args.botId || args.botId === "house" || args.botId === bots.orchestrator?.id;
+        const entry = isHouse ? bots.orchestrator : bots.waifus.find((bot) => bot.id === args.botId);
         const patched = {
-          id: entry?.id ?? (isOrchestrator ? "orchestrator" : String(args.botId)),
-          displayName: entry?.displayName ?? String(args.botId ?? "orchestrator"),
+          id: entry?.id ?? (isHouse ? "house" : String(args.botId)),
+          displayName: entry?.displayName ?? String(args.botId ?? "House"),
           enabled: true,
           ...(entry ?? {}),
           token: value.trim()
         };
         await api.putDiscordBots(
-          isOrchestrator
+          isHouse
             ? { ...bots, orchestrator: patched }
             : { ...bots, waifus: [...bots.waifus.filter((bot) => bot.id !== patched.id), patched] }
         );

@@ -7,7 +7,7 @@ import { createApiServer } from "../src/api/server.js";
 import { startBackend } from "../src/backend/server.js";
 import { createRuntimeState } from "../src/backend/runtime.js";
 import { ensureDataLayout } from "../src/config/layout.js";
-import { RuntimeOrchestrator } from "../src/orchestration/runtime.js";
+import { CastRuntime } from "../src/orchestration/runtime.js";
 import { sharedProviderAlerts } from "../src/orchestration/providerAlerts.js";
 import { sharedUsageLedger, type UsageLedger } from "../src/orchestration/usageLedger.js";
 import type { UsageLedgerEntry } from "../src/shared/schemas/usage.js";
@@ -37,7 +37,7 @@ async function freePort(): Promise<number> {
 }
 
 describe("shutdown flushes pending usage lines", () => {
-  it("RuntimeOrchestrator.stop() waits for queued ledger writes", async () => {
+  it("CastRuntime.stop() waits for queued ledger writes", async () => {
     const root = await makeTempRoot();
     roots.push(root);
     await ensureDataLayout(root);
@@ -50,7 +50,7 @@ describe("shutdown flushes pending usage lines", () => {
       },
       flush: () => pending
     };
-    const runtime = new RuntimeOrchestrator({ storage: new StorageService(root), discord: {} as never, logger: quiet(), usageLedger: slowLedger });
+    const runtime = new CastRuntime({ storage: new StorageService(root), discord: {} as never, logger: quiet(), usageLedger: slowLedger });
     void slowLedger.record(entry()); // an aborted call's line, queued fire-and-forget
     expect(written).toHaveLength(0);
     await runtime.stop();
@@ -79,7 +79,7 @@ describe("saving provider credentials clears the provider's cooldown", () => {
     await ensureDataLayout(root);
     const runtime = createRuntimeState({
       pid: process.pid, startedAt: new Date().toISOString(), packageVersion: "1.0.0", port: 3888, dataRoot: root, mode: "test", paused: false,
-      discord: { connected: false, orchestratorConnected: false, waifuBotCount: 0, warnings: [] },
+      discord: { connected: false, houseConnected: false, waifuBotCount: 0, warnings: [] },
       queues: { active: 0, configuredGuilds: 0 }
     });
     const app = await createApiServer({ dataRoot: root, runtime, storage: new StorageService(root) });

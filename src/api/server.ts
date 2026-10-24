@@ -15,7 +15,7 @@ import { resolveDataPath, userDataPath } from "../config/paths.js";
 import { Logger, createLogger, type LogEntry } from "../backend/logger.js";
 import { RuntimeState } from "../backend/runtime.js";
 import { redactRemoteHostDetails, redactSecrets } from "../backend/redaction.js";
-import { RuntimeOrchestrator } from "../orchestration/runtime.js";
+import { CastRuntime } from "../orchestration/runtime.js";
 import { clearOcrArtifacts } from "../orchestration/ocr.js";
 import { forgetUser } from "../orchestration/dm/forgetUser.js";
 import { readThreads } from "../orchestration/stores/threads.js";
@@ -98,11 +98,11 @@ export type ApiServerOptions = {
   dataRoot: string;
   storage?: StorageService;
   runtime: RuntimeState;
-  runtimeOrchestrator?: RuntimeOrchestrator;
+  castRuntime?: CastRuntime;
   /** The host's guild directory (spec 9.4); the refresh routes go through it. Built over the storage when omitted. */
   directory?: GuildDirectory;
   runtimeControl?: {
-    getOrchestrator: () => RuntimeOrchestrator | undefined;
+    getCastRuntime: () => CastRuntime | undefined;
     pause: () => Promise<void>;
     resume: () => Promise<void>;
     reload: (reason: string) => Promise<void>;
@@ -212,7 +212,7 @@ const UpdateWaifuBodySchema = WaifuConfigSchema.partial().extend({
 
 // Server writes are partial (`.partial()` alone still lets ZodDefault manufacture values for absent
 // keys, which would reset stored state on unrelated PUTs). Fields retired by Living cast
-// (`orchestratorMode`, `oneShot`, `contextWindows`, `compaction`, `memoryInjectionLimit`, `tools`,
+// (the director mode and its one-shot target, `contextWindows`, `compaction`, `memoryInjectionLimit`, `tools`,
 // `stageManagerEnabled`) are stripped like any unknown key.
 const ServerConfigBodySchema = ServerConfigSchema.partial().extend({
   revision: z.number().int().nonnegative().optional(),
@@ -306,7 +306,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   // (tests, no runtime) refreshes through its own, which writes the same files.
   const standaloneDirectory = new GuildDirectory({ storage, logger, bots: () => readDiscordBots(storage) });
   const directoryFor = () =>
-    options.directory ?? (options.runtimeControl?.getOrchestrator?.() ?? options.runtimeOrchestrator)?.directory ?? standaloneDirectory;
+    options.directory ?? (options.runtimeControl?.getCastRuntime?.() ?? options.castRuntime)?.directory ?? standaloneDirectory;
   const refreshDirectory = async <T extends Record<string, unknown>>(
     guildId: string,
     kind: DirectoryKind,
@@ -479,10 +479,10 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   );
 
   const reconcileDmIntents = async () => {
-    const orchestrator = options.runtimeControl?.getOrchestrator?.() ?? options.runtimeOrchestrator;
-    if (!orchestrator) return;
+    const cast = options.runtimeControl?.getCastRuntime?.() ?? options.castRuntime;
+    if (!cast) return;
     try {
-      const { relogged } = await orchestrator.reconcileDmIntents();
+      const { relogged } = await cast.reconcileDmIntents();
       if (relogged.length > 0) logger.info("Re-logged waifu bots for DM intent changes", { botIds: relogged });
     } catch (error) {
       logger.warn("DM intent reconcile failed", { message: error instanceof Error ? error.message : String(error) });
@@ -502,17 +502,17 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   });
 
   app.get("/api/runtime", async (request) => {
-    const orchestrator = options.runtimeControl?.getOrchestrator?.() ?? options.runtimeOrchestrator;
-    const live = orchestrator?.permissionWarnings.list() ?? [];
+    const cast = options.runtimeControl?.getCastRuntime?.() ?? options.castRuntime;
+    const live = cast?.permissionWarnings.list() ?? [];
     // Guild directory status (spec 9.6): is the member list endpoint usable, when did it last refresh.
-    const directoryStatus = (options.directory ?? orchestrator?.directory)?.status() ?? {
+    const directoryStatus = (options.directory ?? cast?.directory)?.status() ?? {
       memberListAvailable: null,
       lastRefreshAt: null,
       warnings: []
     };
     // DM eligibility and intent state (spec 9.6); without a live runtime nothing has DM intents.
-    const dmStatus = orchestrator
-      ? await orchestrator.dmStatus().catch(() => ({ eligibleWaifus: [], warnings: [] }))
+    const dmStatus = cast
+      ? await cast.dmStatus().catch(() => ({ eligibleWaifus: [], warnings: [] }))
       : await offlineDmStatus(storage);
     const runtime = {
       ...options.runtime,
@@ -524,7 +524,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
       }
     };
     // Active quota/billing cooldowns (spec 8.10); empty when every provider is available.
-    const providerAlerts = (orchestrator?.providerAlerts ?? sharedProviderAlerts(options.dataRoot)).snapshot();
+    const providerAlerts = (cast?.providerAlerts ?? sharedProviderAlerts(options.dataRoot)).snapshot();
     // Model choices the owner must revisit (Living cast §9.2, §9.4).
     const models = { warnings: await modelWarnings(storage, options.dataRoot) };
     return { ...runtimeResponse(runtime, request.principal, options.dataRoot), providerAlerts, models };
@@ -678,7 +678,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   // A saved/removed key (or topped-up account) must not stay blocked by a stale quota/billing cooldown.
   const clearProviderCooldown = (providerId: string) => {
     sharedProviderAlerts(options.dataRoot).clear(providerId);
-    (options.runtimeControl?.getOrchestrator?.() ?? options.runtimeOrchestrator)?.providerAlerts?.clear(providerId);
+    (options.runtimeControl?.getCastRuntime?.() ?? options.castRuntime)?.providerAlerts?.clear(providerId);
   };
 
   app.put("/api/providers/:providerId/credentials", async (request) => {
@@ -953,7 +953,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   // Spec 9.5: the threads and forum posts the bot has seen under this server (guild id: snowflake).
   registerDmRoutes(app, {
     storage,
-    orchestrator: () => options.runtimeControl?.getOrchestrator?.() ?? options.runtimeOrchestrator
+    runtime: () => options.runtimeControl?.getCastRuntime?.() ?? options.castRuntime
   });
 
   app.get("/api/servers/:guildId/threads", async (request) => {
@@ -1031,8 +1031,8 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     const body = PeopleForgetBodySchema.parse(request.body);
     const input = { discordUserId: userId, dryRun: body.dryRun === true };
     // The live runtime also drops cached DM messages and images (spec 9.1.4).
-    const orchestrator = options.runtimeControl?.getOrchestrator?.() ?? options.runtimeOrchestrator;
-    return orchestrator ? orchestrator.forgetUser(input) : forgetUser(storage, input, { logger });
+    const cast = options.runtimeControl?.getCastRuntime?.() ?? options.castRuntime;
+    return cast ? cast.forgetUser(input) : forgetUser(storage, input, { logger });
   });
 
   // B2: pause used to live only in memory, so the next config save/reload (which re-reads
@@ -1056,7 +1056,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   };
   const setRuntimePaused = async (request: FastifyRequest, paused: boolean) => {
     options.runtime.paused = paused;
-    if (paused) await (options.runtimeControl?.pause() ?? options.runtimeOrchestrator?.pause());
+    if (paused) await (options.runtimeControl?.pause() ?? options.castRuntime?.pause());
     else await options.runtimeControl?.resume();
     options.runtime.updatedAt = nowIso();
     const warning = await persistRuntimePaused(paused);
@@ -1522,8 +1522,8 @@ async function diagnosticBundle(
     },
     discord: {
       revision: bots.revision,
-      orchestratorConfigured: Boolean(bots.orchestrator?.token),
-      orchestratorApplicationId: bots.orchestrator?.applicationId,
+      houseConfigured: Boolean(bots.orchestrator?.token),
+      houseApplicationId: bots.orchestrator?.applicationId,
       waifuBotCount: bots.waifus.length,
       configuredWaifuBotCount: bots.waifus.filter((bot) => bot.token).length
     },

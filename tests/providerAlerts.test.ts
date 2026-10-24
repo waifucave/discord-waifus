@@ -66,7 +66,7 @@ describe("GET /api/runtime providerAlerts", () => {
     await ensureDataLayout(root);
     const runtime = createRuntimeState({
       pid: process.pid, startedAt: new Date().toISOString(), packageVersion: "1.0.0", port: 3888, dataRoot: root, mode: "test", paused: false,
-      discord: { connected: false, orchestratorConnected: false, waifuBotCount: 0, warnings: [] },
+      discord: { connected: false, houseConnected: false, waifuBotCount: 0, warnings: [] },
       queues: { active: 0, configuredGuilds: 0 },
       remoteAccess: {
         version: 1, enabled: false, helperState: "disabled", activationState: "activation_required", controlState: "inactive",

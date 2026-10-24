@@ -186,7 +186,7 @@ describe("remote daemon runtime state", () => {
       paused: false,
       discord: {
         connected: false,
-        orchestratorConnected: false,
+        houseConnected: false,
         waifuBotCount: 0,
         warnings: []
       },

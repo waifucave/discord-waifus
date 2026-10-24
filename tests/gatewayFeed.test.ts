@@ -38,7 +38,7 @@ function discordMessage(o: Record<string, unknown> = {}) {
 }
 
 describe("gateway feed: messages", () => {
-  it("turns guild messages into raw create events and skips DMs and the orchestrator's own posts", () => {
+  it("turns guild messages into raw create events and skips DMs and the House bot's own posts", () => {
     const { conversation, emit } = feed();
     emit(Events.MessageCreate, discordMessage());
     emit(Events.MessageCreate, discordMessage({ id: "2", guildId: null }));
@@ -164,7 +164,7 @@ describe("gateway feed: guild directory", () => {
 
 describe("DiscordJsGateway publishes events to its listeners", () => {
   it("publishes our own send before sendWaifuMessage returns, and survives a listener that throws", async () => {
-    const gateway = new DiscordJsGateway({ orchestrator: { id: "orch", displayName: "Orch", token: "t", enabled: true }, logger: quietLogger() });
+    const gateway = new DiscordJsGateway({ house: { id: "house", displayName: "House", token: "t", enabled: true }, logger: quietLogger() });
     const events: DiscordConversationEvent[] = [];
     gateway.onConversationEvent(() => {
       throw new Error("listener bug");
@@ -202,7 +202,7 @@ describe("DiscordJsGateway publishes events to its listeners", () => {
   });
 
   it("returns the send result even when discord.js hands back too little to publish", async () => {
-    const gateway = new DiscordJsGateway({ orchestrator: { id: "orch", displayName: "Orch", token: "t", enabled: true }, logger: quietLogger() });
+    const gateway = new DiscordJsGateway({ house: { id: "house", displayName: "House", token: "t", enabled: true }, logger: quietLogger() });
     const events: DiscordConversationEvent[] = [];
     gateway.onConversationEvent((event) => events.push(event));
     (gateway as unknown as { clients: Map<string, unknown> }).clients.set("aria-bot", {

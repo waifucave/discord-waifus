@@ -65,7 +65,7 @@ function makeRuntime(root: string): RuntimeState {
     paused: false,
     discord: {
       connected: false,
-      orchestratorConnected: false,
+      houseConnected: false,
       waifuBotCount: 0,
       warnings: [
         `Authorization: Bearer ${AUTHORIZATION_SECRET}`,
@@ -128,7 +128,7 @@ async function makeApp(options: {
     ...(options.reload
       ? {
           runtimeControl: {
-            getOrchestrator: () => undefined,
+            getCastRuntime: () => undefined,
             pause: async () => undefined,
             resume: async () => undefined,
             reload: options.reload

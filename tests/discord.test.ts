@@ -5,7 +5,7 @@ import {
   normalizeDiscordContentForModel,
   stripLeakedContextHeader
 } from "../src/discord/normalization.js";
-import { DiscordJsGateway, buildOrchestratorCommandPayloads } from "../src/discord/client.js";
+import { DiscordJsGateway, buildHouseCommandPayloads } from "../src/discord/client.js";
 import type { DiscordRuntimeIssue } from "../src/discord/client.js";
 import { mergeConfiguredBotsIntoMembers, unresolvedMentionIds } from "../src/discord/memberCache.js";
 import { GuildEmojiCacheEntry, GuildMemberCacheEntry } from "../src/shared/schemas/domain.js";
@@ -219,13 +219,13 @@ describe("Discord member cache helpers", () => {
 
 describe("House bot slash command payloads (Living cast §10.4)", () => {
   it("registers only /wake and /print, both for Administrators", () => {
-    const payloads = buildOrchestratorCommandPayloads();
+    const payloads = buildHouseCommandPayloads();
     expect(payloads.map((payload) => payload.name)).toEqual(["wake", "print"]);
     for (const payload of payloads) expect(payload.defaultMemberPermissions).toBe(8n);
   });
 
   it("/wake takes a waifu (autocomplete) and an optional note; /print takes system_prompt, notes or life", () => {
-    const byName = new Map(buildOrchestratorCommandPayloads().map((payload) => [payload.name, payload]));
+    const byName = new Map(buildHouseCommandPayloads().map((payload) => [payload.name, payload]));
     expect(byName.get("wake")?.options).toEqual([
       expect.objectContaining({ name: "waifu", required: true, autocomplete: true }),
       expect.objectContaining({ name: "note", required: false, max_length: 500 })
@@ -250,15 +250,15 @@ describe("DiscordJsGateway channel metadata", () => {
     const guildFetches: string[] = [];
     const channelFetches: string[] = [];
     const gateway = new DiscordJsGateway({
-      orchestrator: {
-        id: "orchestrator",
-        displayName: "Orchestrator",
+      house: {
+        id: "house",
+        displayName: "House",
         token: "token"
       },
       logger: quietLogger()
     });
     const clients = (gateway as unknown as { clients: Map<string, unknown> }).clients;
-    clients.set("orchestrator", {
+    clients.set("house", {
       guilds: {
         async fetch(guildId: string) {
           guildFetches.push(guildId);
@@ -291,9 +291,9 @@ describe("DiscordJsGateway runtime issues", () => {
     const issues: DiscordRuntimeIssue[] = [];
     const errorLogs: Array<Record<string, unknown> | undefined> = [];
     const gateway = new DiscordJsGateway({
-      orchestrator: {
-        id: "orchestrator",
-        displayName: "Orchestrator",
+      house: {
+        id: "house",
+        displayName: "House",
         token: "token"
       },
       logger: {
@@ -311,7 +311,7 @@ describe("DiscordJsGateway runtime issues", () => {
       attachClientRuntimeHandlers(client: Client, botId: string): void;
     }).attachClientRuntimeHandlers.bind(gateway);
 
-    attach(client, "orchestrator");
+    attach(client, "house");
     const error = Object.assign(new Error("getaddrinfo ENOTFOUND discord.com"), { code: "ENOTFOUND" });
 
     expect(() => client.emit(Events.Error, error)).not.toThrow();
@@ -320,12 +320,12 @@ describe("DiscordJsGateway runtime issues", () => {
     expect(issues).toHaveLength(1);
     expect(issues[0]).toMatchObject({
       source: "client-error",
-      botId: "orchestrator",
+      botId: "house",
       message: "getaddrinfo ENOTFOUND discord.com"
     });
     expect(errorLogs[0]).toMatchObject({
       source: "client-error",
-      botId: "orchestrator",
+      botId: "house",
       message: "getaddrinfo ENOTFOUND discord.com"
     });
     client.destroy();

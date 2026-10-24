@@ -67,7 +67,7 @@ async function makeApp() {
     dataRoot: root,
     mode: "test",
     paused: false,
-    discord: { connected: false, orchestratorConnected: false, waifuBotCount: 0, warnings: [] },
+    discord: { connected: false, houseConnected: false, waifuBotCount: 0, warnings: [] },
     queues: { active: 0, configuredGuilds: 0 }
   });
   const app = await createApiServer({
@@ -75,7 +75,7 @@ async function makeApp() {
     storage,
     runtime,
     runtimeControl: {
-      getOrchestrator: () => undefined,
+      getCastRuntime: () => undefined,
       pause: async () => { calls.pause += 1; },
       resume: async () => { calls.resume += 1; },
       reload: async () => { calls.reload += 1; }

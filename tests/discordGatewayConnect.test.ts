@@ -12,7 +12,7 @@ import {
 } from "discord.js";
 import type { ClientOptions } from "discord.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DiscordJsGateway, buildOrchestratorCommandPayloads } from "../src/discord/client.js";
+import { DiscordJsGateway, buildHouseCommandPayloads } from "../src/discord/client.js";
 import type {
   DiscordBotConnectionStatus,
   DiscordJsGatewayOptions,
@@ -116,15 +116,15 @@ describe("DiscordJsGateway per-bot connection", () => {
   it("keeps healthy bots online when one waifu token is invalid and destroys the failed client", async () => {
     const clients = fakeClients({ "waifu-bad": invalidTokenError() });
     const gateway = makeGateway({
-      orchestrator: bot("orchestrator"),
+      house: bot("house"),
       waifus: [bot("waifu-good"), bot("waifu-bad")],
       createClient: clients.factory
     });
 
     const status = await gateway.connect();
 
-    expect(status).toMatchObject({ connected: true, orchestratorConnected: true, waifuBotCount: 1 });
-    expect(connectedBotIds(gateway)).toEqual(["orchestrator", "waifu-good"]);
+    expect(status).toMatchObject({ connected: true, houseConnected: true, waifuBotCount: 1 });
+    expect(connectedBotIds(gateway)).toEqual(["house", "waifu-good"]);
     expect(clients.destroyed).toEqual(["waifu-bad"]);
     expect(botStatus(status, "waifu-bad")).toMatchObject({
       kind: "waifu",
@@ -133,30 +133,30 @@ describe("DiscordJsGateway per-bot connection", () => {
       error: "An invalid token was provided."
     });
     expect(botStatus(status, "waifu-good")).toMatchObject({ kind: "waifu", state: "connected" });
-    expect(botStatus(status, "orchestrator")).toMatchObject({ kind: "orchestrator", state: "connected" });
+    expect(botStatus(status, "house")).toMatchObject({ kind: "house", state: "connected" });
     expect(status.warnings.some((warning) => warning.includes("waifu-bad"))).toBe(true);
   });
 
   it("never logs in bots that are disabled or have no token", async () => {
     const clients = fakeClients({});
     const gateway = makeGateway({
-      orchestrator: bot("orchestrator"),
+      house: bot("house"),
       waifus: [bot("waifu-off", { enabled: false }), bot("waifu-tokenless", { token: undefined })],
       createClient: clients.factory
     });
 
     const status = await gateway.connect();
 
-    expect([...clients.created.keys()]).toEqual(["orchestrator"]);
+    expect([...clients.created.keys()]).toEqual(["house"]);
     expect(status.waifuBotCount).toBe(0);
     expect(botStatus(status, "waifu-off")).toMatchObject({ state: "disabled" });
     expect(botStatus(status, "waifu-tokenless")).toMatchObject({ state: "missing_token" });
   });
 
-  it("fails the whole connect when the orchestrator cannot log in and leaves no client online", async () => {
-    const clients = fakeClients({ orchestrator: invalidTokenError() });
+  it("fails the whole connect when the House bot cannot log in and leaves no client online", async () => {
+    const clients = fakeClients({ house: invalidTokenError() });
     const gateway = makeGateway({
-      orchestrator: bot("orchestrator"),
+      house: bot("house"),
       waifus: [bot("waifu-a")],
       createClient: clients.factory
     });
@@ -168,19 +168,19 @@ describe("DiscordJsGateway per-bot connection", () => {
 
     expect(failure?.message).toBe("An invalid token was provided.");
     expect(failure?.code).toBe("TokenInvalid");
-    expect(failure?.status && botStatus(failure.status, "orchestrator")).toMatchObject({
+    expect(failure?.status && botStatus(failure.status, "house")).toMatchObject({
       state: "error",
       errorCode: "invalid_token"
     });
     expect(connectedBotIds(gateway)).toEqual([]);
-    expect(clients.destroyed.sort()).toEqual(["orchestrator", "waifu-a"]);
+    expect(clients.destroyed.sort()).toEqual(["house", "waifu-a"]);
   });
 
   it("destroys clients that are still logging in when disconnect runs, instead of adopting them later", async () => {
     const pending = deferred();
     const clients = fakeClients({ "waifu-slow": pending });
     const gateway = makeGateway({
-      orchestrator: bot("orchestrator"),
+      house: bot("house"),
       waifus: [bot("waifu-slow")],
       createClient: clients.factory
     });
@@ -195,7 +195,7 @@ describe("DiscordJsGateway per-bot connection", () => {
 
     expect(connectedBotIds(gateway)).toEqual([]);
     expect(clients.destroyed).toContain("waifu-slow");
-    expect(clients.destroyed).toContain("orchestrator");
+    expect(clients.destroyed).toContain("house");
   });
 
   it("retries a waifu whose login failed on a network error and reports the recovery", async () => {
@@ -203,7 +203,7 @@ describe("DiscordJsGateway per-bot connection", () => {
     const clients = fakeClients({ "waifu-a": [networkError, "ok"] });
     const statusChanges: DiscordRuntimeStatus[] = [];
     const gateway = makeGateway({
-      orchestrator: bot("orchestrator"),
+      house: bot("house"),
       waifus: [bot("waifu-a")],
       createClient: clients.factory,
       botRetryDelaysMs: [5],
@@ -216,7 +216,7 @@ describe("DiscordJsGateway per-bot connection", () => {
     expect(botStatus(initial, "waifu-a")).toMatchObject({ state: "error", errorCode: "network" });
     expect(botStatus(initial, "waifu-a")?.nextRetryAt).toBeDefined();
 
-    await vi.waitFor(() => expect(connectedBotIds(gateway)).toEqual(["orchestrator", "waifu-a"]));
+    await vi.waitFor(() => expect(connectedBotIds(gateway)).toEqual(["house", "waifu-a"]));
     const latest = statusChanges.at(-1);
     expect(latest).toMatchObject({ connected: true, waifuBotCount: 1 });
     expect(latest && botStatus(latest, "waifu-a")).toMatchObject({ state: "connected" });
@@ -228,7 +228,7 @@ describe("DiscordJsGateway per-bot connection", () => {
   it("does not retry waifu logins that failed for a permanent reason", async () => {
     const clients = fakeClients({ "waifu-a": invalidTokenError() });
     const gateway = makeGateway({
-      orchestrator: bot("orchestrator"),
+      house: bot("house"),
       waifus: [bot("waifu-a")],
       createClient: clients.factory,
       botRetryDelaysMs: [5]
@@ -246,7 +246,7 @@ describe("DiscordJsGateway client options", () => {
   it("connects waifu-only clients with the Guilds intent and no message caches", async () => {
     const clients = fakeClients({});
     const gateway = makeGateway({
-      orchestrator: bot("orchestrator"),
+      house: bot("house"),
       waifus: [bot("waifu-a")],
       createClient: clients.factory
     });
@@ -259,17 +259,17 @@ describe("DiscordJsGateway client options", () => {
     expect(messageCache).toBeInstanceOf(LimitedCollection);
     expect((messageCache as LimitedCollection<string, unknown>).maxSize).toBe(0);
 
-    const orchestrator = clients.createdOptions.get("orchestrator")!;
-    const orchestratorIntents = new IntentsBitField(orchestrator.intents);
+    const house = clients.createdOptions.get("house")!;
+    const houseIntents = new IntentsBitField(house.intents);
     for (const intent of [
       GatewayIntentBits.Guilds,
       GatewayIntentBits.GuildMessages,
       GatewayIntentBits.GuildMessageReactions,
       GatewayIntentBits.MessageContent
     ]) {
-      expect(orchestratorIntents.has(intent)).toBe(true);
+      expect(houseIntents.has(intent)).toBe(true);
     }
-    expect(orchestrator.makeCache).toBeUndefined();
+    expect(house.makeCache).toBeUndefined();
   });
 });
 
@@ -280,9 +280,9 @@ describe("DiscordJsGateway intents (spec 9.4: GuildExpressions, opt-in GuildMemb
     expect(IntentsBitField.Flags.GuildExpressions).toBe(GatewayIntentBits.GuildExpressions);
 
     const defaults = fakeClients({});
-    const plain = makeGateway({ orchestrator: bot("orchestrator"), waifus: [bot("waifu-a")], createClient: defaults.factory });
+    const plain = makeGateway({ house: bot("house"), waifus: [bot("waifu-a")], createClient: defaults.factory });
     await plain.connect();
-    const plainIntents = new IntentsBitField(defaults.createdOptions.get("orchestrator")!.intents);
+    const plainIntents = new IntentsBitField(defaults.createdOptions.get("house")!.intents);
     expect(plainIntents.has(GatewayIntentBits.GuildExpressions)).toBe(true);
     expect(plainIntents.has(GatewayIntentBits.GuildMembers)).toBe(false);
     // Waifu bots never listen: they keep the single Guilds intent.
@@ -290,21 +290,21 @@ describe("DiscordJsGateway intents (spec 9.4: GuildExpressions, opt-in GuildMemb
 
     const optIn = fakeClients({});
     const privileged = makeGateway({
-      orchestrator: bot("orchestrator"),
+      house: bot("house"),
       guildMembersIntent: true,
       createClient: optIn.factory
     });
     await privileged.connect();
-    const privilegedIntents = new IntentsBitField(optIn.createdOptions.get("orchestrator")!.intents);
+    const privilegedIntents = new IntentsBitField(optIn.createdOptions.get("house")!.intents);
     expect(privilegedIntents.has(GatewayIntentBits.GuildMembers)).toBe(true);
     expect(privilegedIntents.has(GatewayIntentBits.GuildExpressions)).toBe(true);
   });
 
-  it("reports invalid_intents when Discord closes the orchestrator session with 4013", async () => {
+  it("reports invalid_intents when Discord closes the House bot session with 4013", async () => {
     const clients = fakeClients({});
     const statusChanges: DiscordRuntimeStatus[] = [];
     const gateway = makeGateway({
-      orchestrator: bot("orchestrator"),
+      house: bot("house"),
       waifus: [bot("waifu-a")],
       createClient: clients.factory,
       onStatusChange: (status) => {
@@ -314,15 +314,15 @@ describe("DiscordJsGateway intents (spec 9.4: GuildExpressions, opt-in GuildMemb
     await gateway.connect();
 
     // discord.js 14.27 gives up (ShardDisconnect) on 4013 "invalid intents" like it does on 4014.
-    clients.created.get("orchestrator")?.emit(Events.ShardDisconnect, { code: 4013, reason: "Invalid intent(s)", wasClean: true } as never, 0);
+    clients.created.get("house")?.emit(Events.ShardDisconnect, { code: 4013, reason: "Invalid intent(s)", wasClean: true } as never, 0);
 
     await vi.waitFor(() => expect(statusChanges).toHaveLength(1));
-    expect(botStatus(statusChanges[0]!, "orchestrator")).toMatchObject({
+    expect(botStatus(statusChanges[0]!, "house")).toMatchObject({
       state: "error",
       errorCode: "invalid_intents",
       closeCode: 4013
     });
-    expect(botStatus(statusChanges[0]!, "waifu-a")).toMatchObject({ errorCode: "orchestrator_unavailable" });
+    expect(botStatus(statusChanges[0]!, "waifu-a")).toMatchObject({ errorCode: "house_unavailable" });
   });
 
   it("classifies a login rejected for invalid or disallowed intents", async () => {
@@ -330,11 +330,11 @@ describe("DiscordJsGateway intents (spec 9.4: GuildExpressions, opt-in GuildMemb
       ["Invalid intents", "invalid_intents"],
       ["Used disallowed intents", "disallowed_intents"]
     ] as const) {
-      const clients = fakeClients({ orchestrator: new Error(message) });
-      const gateway = makeGateway({ orchestrator: bot("orchestrator"), createClient: clients.factory });
+      const clients = fakeClients({ house: new Error(message) });
+      const gateway = makeGateway({ house: bot("house"), createClient: clients.factory });
       const error = await gateway.connect().catch((caught: unknown) => caught);
       expect(error).toMatchObject({ name: "DiscordConnectError" });
-      expect(botStatus((error as { status: DiscordRuntimeStatus }).status, "orchestrator")).toMatchObject({ state: "error", errorCode });
+      expect(botStatus((error as { status: DiscordRuntimeStatus }).status, "house")).toMatchObject({ state: "error", errorCode });
     }
   });
 });
@@ -345,7 +345,7 @@ describe("DiscordJsGateway unrecoverable gateway closes", () => {
     const statusChanges: DiscordRuntimeStatus[] = [];
     const issues: DiscordRuntimeIssue[] = [];
     const gateway = makeGateway({
-      orchestrator: bot("orchestrator"),
+      house: bot("house"),
       waifus: [bot("waifu-a")],
       createClient: clients.factory,
       onStatusChange: (status) => {
@@ -361,9 +361,9 @@ describe("DiscordJsGateway unrecoverable gateway closes", () => {
     clients.created.get("waifu-a")?.emit(Events.ShardDisconnect, { code: 4004, reason: "", wasClean: true } as never, 0);
 
     await vi.waitFor(() => expect(statusChanges).toHaveLength(1));
-    expect(connectedBotIds(gateway)).toEqual(["orchestrator"]);
+    expect(connectedBotIds(gateway)).toEqual(["house"]);
     expect(clients.destroyed).toEqual(["waifu-a"]);
-    expect(statusChanges[0]).toMatchObject({ connected: true, orchestratorConnected: true, waifuBotCount: 0 });
+    expect(statusChanges[0]).toMatchObject({ connected: true, houseConnected: true, waifuBotCount: 0 });
     expect(botStatus(statusChanges[0]!, "waifu-a")).toMatchObject({
       state: "error",
       errorCode: "invalid_token",
@@ -372,11 +372,11 @@ describe("DiscordJsGateway unrecoverable gateway closes", () => {
     expect(issues).toEqual([expect.objectContaining({ source: "shard-disconnect", botId: "waifu-a", code: 4004 })]);
   });
 
-  it("takes the cast offline when the orchestrator loses its session to disallowed intents", async () => {
+  it("takes the cast offline when the House bot loses its session to disallowed intents", async () => {
     const clients = fakeClients({});
     const statusChanges: DiscordRuntimeStatus[] = [];
     const gateway = makeGateway({
-      orchestrator: bot("orchestrator"),
+      house: bot("house"),
       waifus: [bot("waifu-a")],
       createClient: clients.factory,
       onStatusChange: (status) => {
@@ -385,27 +385,27 @@ describe("DiscordJsGateway unrecoverable gateway closes", () => {
     });
     await gateway.connect();
 
-    clients.created.get("orchestrator")?.emit(Events.ShardDisconnect, { code: 4014, reason: "", wasClean: true } as never, 0);
+    clients.created.get("house")?.emit(Events.ShardDisconnect, { code: 4014, reason: "", wasClean: true } as never, 0);
 
     await vi.waitFor(() => expect(statusChanges).toHaveLength(1));
     expect(connectedBotIds(gateway)).toEqual([]);
-    expect(clients.destroyed.sort()).toEqual(["orchestrator", "waifu-a"]);
-    expect(statusChanges[0]).toMatchObject({ connected: false, orchestratorConnected: false });
-    expect(botStatus(statusChanges[0]!, "orchestrator")).toMatchObject({
+    expect(clients.destroyed.sort()).toEqual(["house", "waifu-a"]);
+    expect(statusChanges[0]).toMatchObject({ connected: false, houseConnected: false });
+    expect(botStatus(statusChanges[0]!, "house")).toMatchObject({
       state: "error",
       errorCode: "disallowed_intents",
       closeCode: 4014
     });
-    expect(botStatus(statusChanges[0]!, "waifu-a")).toMatchObject({ errorCode: "orchestrator_unavailable" });
+    expect(botStatus(statusChanges[0]!, "waifu-a")).toMatchObject({ errorCode: "house_unavailable" });
   });
 
-  it("does not adopt a waifu retry login that finishes after the orchestrator session was lost", async () => {
+  it("does not adopt a waifu retry login that finishes after the House bot session was lost", async () => {
     const networkError = Object.assign(new Error("getaddrinfo ENOTFOUND discord.com"), { code: "ENOTFOUND" });
     const retryLogin = deferred();
     const clients = fakeClients({ "waifu-a": [networkError, retryLogin] });
     const statusChanges: DiscordRuntimeStatus[] = [];
     const gateway = makeGateway({
-      orchestrator: bot("orchestrator"),
+      house: bot("house"),
       waifus: [bot("waifu-a")],
       createClient: clients.factory,
       botRetryDelaysMs: [5],
@@ -414,10 +414,10 @@ describe("DiscordJsGateway unrecoverable gateway closes", () => {
       }
     });
     await gateway.connect();
-    const orchestratorClient = clients.created.get("orchestrator")!;
+    const houseClient = clients.created.get("house")!;
     await vi.waitFor(() => expect(clients.loginAttempts.get("waifu-a")).toBe(2));
 
-    orchestratorClient.emit(Events.ShardDisconnect, { code: 4004, reason: "", wasClean: true } as never, 0);
+    houseClient.emit(Events.ShardDisconnect, { code: 4004, reason: "", wasClean: true } as never, 0);
     retryLogin.resolve();
     await new Promise((resolve) => setTimeout(resolve, 20));
 
@@ -425,8 +425,8 @@ describe("DiscordJsGateway unrecoverable gateway closes", () => {
     // Both waifu clients (failed first attempt, abandoned retry) were destroyed.
     expect(clients.destroyed.filter((id) => id === "waifu-a")).toHaveLength(2);
     const latest = statusChanges.at(-1)!;
-    expect(latest).toMatchObject({ connected: false, orchestratorConnected: false, waifuBotCount: 0 });
-    expect(botStatus(latest, "waifu-a")).toMatchObject({ state: "error", errorCode: "orchestrator_unavailable" });
+    expect(latest).toMatchObject({ connected: false, houseConnected: false, waifuBotCount: 0 });
+    expect(botStatus(latest, "waifu-a")).toMatchObject({ state: "error", errorCode: "house_unavailable" });
     expect(botStatus(latest, "waifu-a")?.nextRetryAt).toBeUndefined();
   });
 
@@ -434,7 +434,7 @@ describe("DiscordJsGateway unrecoverable gateway closes", () => {
     const clients = fakeClients({});
     const statusChanges: DiscordRuntimeStatus[] = [];
     const gateway = makeGateway({
-      orchestrator: bot("orchestrator"),
+      house: bot("house"),
       createClient: clients.factory,
       onStatusChange: (status) => {
         statusChanges.push(status);
@@ -442,10 +442,10 @@ describe("DiscordJsGateway unrecoverable gateway closes", () => {
     });
     await gateway.connect();
 
-    clients.created.get("orchestrator")?.emit(Events.ShardError, new Error("socket hang up"), 0);
+    clients.created.get("house")?.emit(Events.ShardError, new Error("socket hang up"), 0);
     await new Promise((resolve) => setTimeout(resolve, 10));
 
-    expect(connectedBotIds(gateway)).toEqual(["orchestrator"]);
+    expect(connectedBotIds(gateway)).toEqual(["house"]);
     expect(clients.destroyed).toEqual([]);
     expect(statusChanges).toEqual([]);
   });
@@ -495,7 +495,7 @@ describe("DiscordJsGateway slash commands", () => {
     ["wake", "handleWakeInteraction"],
     ["print", "handlePrintInteraction"]
   ])("answers /%s with an ephemeral not-ready message when no listener is attached", async (commandName, handler) => {
-    const gateway = makeGateway({ orchestrator: bot("orchestrator") });
+    const gateway = makeGateway({ house: bot("house") });
     const { interaction, calls } = fakeInteraction({ commandName });
 
     await slashHandler(gateway, handler)(interaction);
@@ -507,7 +507,7 @@ describe("DiscordJsGateway slash commands", () => {
   });
 
   it("requires Administrator for /wake at runtime as well as by default permissions", async () => {
-    const gateway = makeGateway({ orchestrator: bot("orchestrator") });
+    const gateway = makeGateway({ house: bot("house") });
     const wakes: unknown[] = [];
     gateway.onWakeCommand((event) => {
       wakes.push(event);
@@ -524,7 +524,7 @@ describe("DiscordJsGateway slash commands", () => {
   });
 
   it("hands /wake's waifu and note to the listener, ephemerally", async () => {
-    const gateway = makeGateway({ orchestrator: bot("orchestrator") });
+    const gateway = makeGateway({ house: bot("house") });
     const wakes: Array<{ waifuId?: string; note?: string }> = [];
     gateway.onWakeCommand(async (event) => {
       wakes.push({ waifuId: event.waifuId, note: event.note });
@@ -541,7 +541,7 @@ describe("DiscordJsGateway slash commands", () => {
   });
 
   it("sends a long /print as an attached file", async () => {
-    const gateway = makeGateway({ orchestrator: bot("orchestrator") });
+    const gateway = makeGateway({ house: bot("house") });
     gateway.onPrintCommand(async (event) => {
       await event.respond("x".repeat(5_000));
     });
@@ -557,7 +557,7 @@ describe("DiscordJsGateway slash commands", () => {
 describe("DiscordJsGateway replies", () => {
   it("still sends a waifu reply when the message it replies to was deleted mid-generation", async () => {
     const sent: Array<Record<string, unknown>> = [];
-    const gateway = makeGateway({ orchestrator: bot("orchestrator"), waifus: [bot("waifu-a")] });
+    const gateway = makeGateway({ house: bot("house"), waifus: [bot("waifu-a")] });
     (gateway as unknown as { clients: Map<string, unknown> }).clients.set("waifu-a", {
       channels: {
         async fetch() {
@@ -611,14 +611,14 @@ describe("DiscordJsGateway seeds the guild directory and trust (I2)", () => {
   function withGuild(clients: FakeClients): FakeClients["factory"] {
     return (input) => {
       const client = clients.factory(input);
-      if (input.kind === "orchestrator") (client.guilds.cache as unknown as Map<string, unknown>).set("100", fakeGuild);
+      if (input.kind === "house") (client.guilds.cache as unknown as Map<string, unknown>).set("100", fakeGuild);
       return client;
     };
   }
 
   it("emits a snapshot for guilds the bot is already in when it becomes ready, to a subscriber registered before connect", async () => {
     const clients = fakeClients({});
-    const gateway = makeGateway({ orchestrator: bot("orchestrator"), createClient: withGuild(clients) });
+    const gateway = makeGateway({ house: bot("house"), createClient: withGuild(clients) });
     const events: Array<{ type: string; guildId: string }> = [];
     gateway.onDirectoryEvent((event) => events.push(event));
     await gateway.connect();
@@ -633,7 +633,7 @@ describe("DiscordJsGateway seeds the guild directory and trust (I2)", () => {
 
   it("replays the snapshots and the live connection state to a subscriber that arrives after connect", async () => {
     const clients = fakeClients({});
-    const gateway = makeGateway({ orchestrator: bot("orchestrator"), createClient: withGuild(clients) });
+    const gateway = makeGateway({ house: bot("house"), createClient: withGuild(clients) });
     await gateway.connect();
     const directory: Array<{ type: string; guildId: string }> = [];
     const conversation: Array<{ type: string; state?: string }> = [];
@@ -650,7 +650,7 @@ describe("DiscordJsGateway seeds the guild directory and trust (I2)", () => {
     const root = await makeTempRoot();
     try {
       const clients = fakeClients({});
-      const gateway = makeGateway({ orchestrator: bot("orchestrator"), createClient: withGuild(clients) });
+      const gateway = makeGateway({ house: bot("house"), createClient: withGuild(clients) });
       await gateway.connect();
       const directory = new GuildDirectory({ storage: new StorageService(root), logger: quietLogger() });
       directory.start((listener) => gateway.onDirectoryEvent(listener));
@@ -665,21 +665,21 @@ describe("DiscordJsGateway seeds the guild directory and trust (I2)", () => {
 
   it("also snapshots a guild that becomes available later", async () => {
     const clients = fakeClients({});
-    const gateway = makeGateway({ orchestrator: bot("orchestrator"), createClient: clients.factory });
+    const gateway = makeGateway({ house: bot("house"), createClient: clients.factory });
     const events: Array<{ type: string; guildId: string }> = [];
     gateway.onDirectoryEvent((event) => events.push(event));
     await gateway.connect();
-    clients.created.get("orchestrator")!.emit(Events.GuildAvailable, fakeGuild as never);
+    clients.created.get("house")!.emit(Events.GuildAvailable, fakeGuild as never);
     expect(events.map((e) => e.type)).toEqual(["snapshot"]);
   });
 });
 
 describe("DiscordJsGateway falls back when the GuildMembers intent is refused (M6)", () => {
   it("retries once without the intent, keeps Discord online and raises guild_members_intent_rejected", async () => {
-    const clients = fakeClients({ orchestrator: [new Error("Used disallowed intents"), "ok"] });
+    const clients = fakeClients({ house: [new Error("Used disallowed intents"), "ok"] });
     const issues: DiscordRuntimeIssue[] = [];
     const gateway = makeGateway({
-      orchestrator: bot("orchestrator"),
+      house: bot("house"),
       guildMembersIntent: true,
       createClient: clients.factory,
       onRuntimeIssue: (issue) => {
@@ -687,24 +687,24 @@ describe("DiscordJsGateway falls back when the GuildMembers intent is refused (M
       }
     });
     const status = await gateway.connect();
-    expect(status.orchestratorConnected).toBe(true);
-    expect(clients.loginAttempts.get("orchestrator")).toBe(2);
-    expect(new IntentsBitField(clients.createdOptions.get("orchestrator")!.intents).has(GatewayIntentBits.GuildMembers)).toBe(false);
+    expect(status.houseConnected).toBe(true);
+    expect(clients.loginAttempts.get("house")).toBe(2);
+    expect(new IntentsBitField(clients.createdOptions.get("house")!.intents).has(GatewayIntentBits.GuildMembers)).toBe(false);
     await vi.waitFor(() => expect(issues).toHaveLength(1));
     expect(issues[0]).toMatchObject({ source: "warn", code: "guild_members_intent_rejected" });
     expect(gateway.status().warnings.join(" ")).toContain("guild_members_intent_rejected");
   });
 
   it("does not retry when the intent was not requested, and gives up after one retry", async () => {
-    const plain = fakeClients({ orchestrator: new Error("Used disallowed intents") });
-    const gateway = makeGateway({ orchestrator: bot("orchestrator"), createClient: plain.factory });
+    const plain = fakeClients({ house: new Error("Used disallowed intents") });
+    const gateway = makeGateway({ house: bot("house"), createClient: plain.factory });
     await expect(gateway.connect()).rejects.toMatchObject({ name: "DiscordConnectError" });
-    expect(plain.loginAttempts.get("orchestrator")).toBe(1);
+    expect(plain.loginAttempts.get("house")).toBe(1);
 
-    const both = fakeClients({ orchestrator: new Error("Used disallowed intents") });
-    const optIn = makeGateway({ orchestrator: bot("orchestrator"), guildMembersIntent: true, createClient: both.factory });
+    const both = fakeClients({ house: new Error("Used disallowed intents") });
+    const optIn = makeGateway({ house: bot("house"), guildMembersIntent: true, createClient: both.factory });
     const error = await optIn.connect().catch((caught: unknown) => caught);
-    expect(botStatus((error as { status: DiscordRuntimeStatus }).status, "orchestrator")).toMatchObject({ errorCode: "disallowed_intents" });
-    expect(both.loginAttempts.get("orchestrator")).toBe(2);
+    expect(botStatus((error as { status: DiscordRuntimeStatus }).status, "house")).toMatchObject({ errorCode: "disallowed_intents" });
+    expect(both.loginAttempts.get("house")).toBe(2);
   });
 });

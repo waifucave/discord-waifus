@@ -1,4 +1,4 @@
-// discord.js → cache events (spec 9.4). The orchestrator client's gateway events become plain
+// discord.js → cache events (spec 9.4). The House bot client's gateway events become plain
 // `DiscordConversationEvent`s (messages, reactions, connection state) and `DiscordDirectoryEvent`s
 // (roles, emojis, channels, threads, members). Nothing here calls REST: reaction users and message
 // authors come from the event payload and the discord.js caches only.
@@ -24,7 +24,7 @@ import type {
 type Sink = {
   conversation(event: DiscordConversationEvent): void;
   directory(event: DiscordDirectoryEvent): void;
-  /** Our own bots' user ids (orchestrator included): its debug posts are never conversation. */
+  /** Our own bots' user ids (the House bot included): its debug posts are never conversation. */
   ignoredAuthorIds(): ReadonlySet<string>;
   /** Required for a `dm:<waifuId>` scope: whose DMs this client carries (spec 9.1). */
   dm?: DmFeedOptions;

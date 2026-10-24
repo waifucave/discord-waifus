@@ -8,11 +8,11 @@ import { RuntimeStateSchema } from "../src/backend/runtime.js";
 import { CURRENT_SCHEMA_VERSION } from "../src/shared/schemas/common.js";
 import {
   DiscordBotsFileSchema,
-  MemoryStoreSchema,
   ProviderCredentialsFileSchema,
   ServerConfigSchema,
   WaifuConfigSchema
 } from "../src/shared/schemas/domain.js";
+import { MemoryStoreSchema } from "../src/backend/migrationSteps/legacySchemas.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
 import {
   RemoteAccessInstallationStateV1Schema,

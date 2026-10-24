@@ -12,7 +12,7 @@ import type { UsageLedger } from "./usageLedger.js";
 import type { ProviderAlerts } from "./providerAlerts.js";
 import type { UpdateActivity } from "../backend/updates/activity.js";
 
-export type RuntimeOrchestratorOptions = {
+export type CastRuntimeOptions = {
   updateActivity?: UpdateActivity;
   storage: StorageService;
   discord: DiscordGatewayFacade;
@@ -56,4 +56,4 @@ export type RuntimeOrchestratorOptions = {
 };
 
 /** The narrow I/O services the store helpers need. */
-export type RuntimeServices = Pick<RuntimeOrchestratorOptions, "storage" | "discord" | "logger" | "isPaused">;
+export type RuntimeServices = Pick<CastRuntimeOptions, "storage" | "discord" | "logger" | "isPaused">;

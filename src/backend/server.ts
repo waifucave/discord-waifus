@@ -19,7 +19,7 @@ import { mergeConfiguredBotsIntoMembers } from "../discord/memberCache.js";
 import { GuildDirectory } from "../discord/guildDirectory.js";
 import { listWaifus, readDiscordBotsFile } from "../orchestration/stores/config.js";
 import { computeDmEligibility } from "../orchestration/dm/dmStore.js";
-import { RuntimeOrchestrator } from "../orchestration/runtime.js";
+import { CastRuntime } from "../orchestration/runtime.js";
 import { ImageOcrService } from "../orchestration/ocr.js";
 import { DiscordImageFetcher, sharedImageFetcherConfig } from "../discord/attachments.js";
 import {
@@ -178,7 +178,7 @@ async function startLockedBackend(options: StartBackendOptions): Promise<Running
       : [...DEFAULT_DISCORD_RETRY_DELAYS_MS];
 
     let gateway: DiscordGatewayFacade | undefined;
-    let runtimeOrchestrator: RuntimeOrchestrator | undefined;
+    let castRuntime: CastRuntime | undefined;
     let discordRetryTimer: NodeJS.Timeout | undefined;
     let discordRetryAttempt = 0;
     let discordRecoveryInProgress = false;
@@ -197,7 +197,7 @@ async function startLockedBackend(options: StartBackendOptions): Promise<Running
       });
     };
 
-    const makeRuntimeOrchestrator = (nextGateway: DiscordGatewayFacade, currentConfig = config) => {
+    const makeCastRuntime = (nextGateway: DiscordGatewayFacade, currentConfig = config) => {
       memberListRefreshHours = currentConfig.discord.memberListRefreshHours;
       // One image fetcher shared by OCR and the context engine's inline images (spec 8.4).
       const images = new DiscordImageFetcher({
@@ -211,7 +211,7 @@ async function startLockedBackend(options: StartBackendOptions): Promise<Running
         logger,
         fetcher: images
       });
-      return new RuntimeOrchestrator({
+      return new CastRuntime({
         storage,
         discord: nextGateway,
         logger,
@@ -261,7 +261,7 @@ async function startLockedBackend(options: StartBackendOptions): Promise<Running
         runtime.discord = {
           ...withoutDiscordConnecting(runtime.discord),
           connected: false,
-          orchestratorConnected: false,
+          houseConnected: false,
           waifuBotCount: 0,
           retrying: true,
           retryAttempt: attempt,
@@ -291,7 +291,7 @@ async function startLockedBackend(options: StartBackendOptions): Promise<Running
       runtime.discord = {
         ...withoutDiscordConnecting(runtime.discord),
         connected: false,
-        orchestratorConnected: false,
+        houseConnected: false,
         waifuBotCount: 0,
         retrying: true,
         retryAttempt: discordRetryAttempt,
@@ -346,9 +346,9 @@ async function startLockedBackend(options: StartBackendOptions): Promise<Running
       discordRecoveryInProgress = true;
       try {
         logger.warn("Discord runtime issue triggered reconnect", discordRuntimeIssueLogContext(issue));
-        await runtimeOrchestrator?.stop();
+        await castRuntime?.stop();
         await gateway?.disconnect();
-        runtimeOrchestrator = undefined;
+        castRuntime = undefined;
         gateway = undefined;
         runtime.queues.active = 0;
         await scheduleDiscordRetry(pendingLiveDiscordErrorMessage ?? message, {
@@ -377,9 +377,9 @@ async function startLockedBackend(options: StartBackendOptions): Promise<Running
         discordRetryAttempt = 0;
       }
       logger.info("Reloading runtime", { reason });
-      await runtimeOrchestrator?.stop();
+      await castRuntime?.stop();
       await gateway?.disconnect();
-      runtimeOrchestrator = undefined;
+      castRuntime = undefined;
       gateway = undefined;
       runtime.queues.active = 0;
 
@@ -411,15 +411,15 @@ async function startLockedBackend(options: StartBackendOptions): Promise<Running
       if (gateway) {
         clearDiscordRetry();
         discordRetryAttempt = 0;
-        runtimeOrchestrator = makeRuntimeOrchestrator(gateway, currentConfig);
-        await runtimeOrchestrator.start();
+        castRuntime = makeCastRuntime(gateway, currentConfig);
+        await castRuntime.start();
       } else if (connected.retryableFailure) {
         await scheduleDiscordRetry(connected.retryableFailure.message);
       }
       if (closing) {
-        await runtimeOrchestrator?.stop();
+        await castRuntime?.stop();
         await gateway?.disconnect();
-        runtimeOrchestrator = undefined;
+        castRuntime = undefined;
         gateway = undefined;
         return;
       }
@@ -446,17 +446,17 @@ async function startLockedBackend(options: StartBackendOptions): Promise<Running
       runtime,
       updateActivity,
       runtimeControl: {
-        getOrchestrator: () => runtimeOrchestrator,
+        getCastRuntime: () => castRuntime,
         pause: async () => {
           runtime.paused = true;
-          await runtimeOrchestrator?.pause();
+          await castRuntime?.pause();
           runtime.updatedAt = new Date().toISOString();
           await writeRuntimeFiles(options.dataRoot, runtime);
         },
         resume: async () => {
           runtime.paused = false;
           // Re-arm wakes the pause cleared / catch up a paused boot (no-op unless it was paused).
-          runtimeOrchestrator?.resumeAfterPause();
+          castRuntime?.resumeAfterPause();
           runtime.updatedAt = new Date().toISOString();
           await writeRuntimeFiles(options.dataRoot, runtime);
         },
@@ -518,10 +518,10 @@ async function startLockedBackend(options: StartBackendOptions): Promise<Running
         await remoteRuntimeWriteQueue;
         logger.info("Shutdown step done", { step: "remoteAccess.close", ms: Date.now() - stepStartedAt });
 
-        logger.info("Shutdown step start", { step: "orchestrator.stop" });
+        logger.info("Shutdown step start", { step: "runtime.stop" });
         stepStartedAt = Date.now();
-        await runtimeOrchestrator?.stop();
-        logger.info("Shutdown step done", { step: "orchestrator.stop", ms: Date.now() - stepStartedAt });
+        await castRuntime?.stop();
+        logger.info("Shutdown step done", { step: "runtime.stop", ms: Date.now() - stepStartedAt });
 
         await directory.close();
 
@@ -535,7 +535,7 @@ async function startLockedBackend(options: StartBackendOptions): Promise<Running
         await app.close();
         logger.info("Shutdown step done", { step: "fastify.close", ms: Date.now() - stepStartedAt });
 
-        // Usage lines from calls outside the orchestrator (assistant, persona digest) and any still
+        // Usage lines from calls outside the cast runtime (assistant) and any still
         // queued must reach disk before the host lock is released and the process may exit.
         await sharedUsageLedger(options.dataRoot).flush();
 
@@ -604,7 +604,7 @@ async function resolveRemoteDashboard(
 function offlineDiscordStatus(warnings: string[] = []): DiscordRuntimeStatus {
   return {
     connected: false,
-    orchestratorConnected: false,
+    houseConnected: false,
     waifuBotCount: 0,
     warnings
   };
@@ -613,7 +613,7 @@ function offlineDiscordStatus(warnings: string[] = []): DiscordRuntimeStatus {
 function connectingDiscordStatus(): DiscordRuntimeStatus {
   return {
     connected: false,
-    orchestratorConnected: false,
+    houseConnected: false,
     waifuBotCount: 0,
     warnings: [],
     connecting: true
@@ -640,7 +640,7 @@ async function maybeConnectDiscord(
   retryableFailure?: { message: string };
 }> {
   const offline = offlineDiscordStatus(
-    autoConnect ? ["Discord auto-connect is enabled but no orchestrator token is configured."] : []
+    autoConnect ? ["Discord auto-connect is enabled but no House bot token is configured."] : []
   );
   if (!autoConnect) {
     return { status: offline };
@@ -654,8 +654,8 @@ async function maybeConnectDiscord(
     return { status: offline };
   }
   if (bots.orchestrator.enabled === false) {
-    // Waifu bots only speak when the orchestrator casts them, so nothing logs in without it.
-    return { status: offlineDiscordStatus(["Discord auto-connect is enabled but the orchestrator bot is disabled."]) };
+    // Waifu bots need the House bot (it reads the rooms and owns the commands), so nothing logs in without it.
+    return { status: offlineDiscordStatus(["Discord auto-connect is enabled but the House bot is disabled."]) };
   }
   const cacheForGuild = async (guildId: string) => {
       const [members, emojis, roles] = await Promise.all([
@@ -682,7 +682,7 @@ async function maybeConnectDiscord(
       };
   };
   const gateway = createDiscordGateway({
-    orchestrator: bots.orchestrator,
+    house: bots.orchestrator,
     waifus: bots.waifus,
     logger,
     guildMembersIntent: extra.guildMembersIntent,
@@ -716,7 +716,7 @@ async function maybeConnectDiscord(
     return {
       status: {
         connected: false,
-        orchestratorConnected: false,
+        houseConnected: false,
         waifuBotCount: 0,
         warnings: [`Discord auto-connect failed: ${message}`],
         lastError: message,

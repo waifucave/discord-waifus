@@ -26,7 +26,7 @@ import { ContextExternalLink } from "./ContextExternalLink";
 /**
  * Step-by-step Discord developer-portal walkthrough.
  *
- * Used in: Setup view, Orchestrator view, Waifu editor
+ * Used in: onboarding, Settings → Discord bots, the waifu editor
  * (waifu bot section), and Servers view (invite-into-guild helper).
  *
  * `applicationId` and `guildId` are optional. When provided, the invite block
@@ -55,7 +55,7 @@ export function DiscordBotGuide({
     if (!applicationId || !isLikelyApplicationId(applicationId)) return undefined;
     return buildInviteUrl(applicationId, kind, guildId);
   }, [applicationId, kind, guildId]);
-  const niceKind = kind === "orchestrator" ? "orchestrator" : "character";
+  const niceKind = kind === "house" ? "House" : "character";
   const botLabel = botDisplayName ? `"${botDisplayName}"` : `this ${niceKind} bot`;
 
   return (
@@ -96,7 +96,7 @@ export function DiscordBotGuide({
                 </ContextExternalLink>{" "}
                 and click <strong>New Application</strong>. Use the name you want to appear in
                 Discord for {botLabel} — e.g.{" "}
-                <em>{kind === "orchestrator" ? "Orchestrator" : botDisplayName || "Aria"}</em>.
+                <em>{kind === "house" ? "House" : botDisplayName || "Aria"}</em>.
               </>
             }
           />
@@ -125,7 +125,7 @@ export function DiscordBotGuide({
               <>
                 Still on <strong>General Information</strong>, click{" "}
                 <strong>Copy</strong> under <code>APPLICATION ID</code> and paste it into the{" "}
-                <em>Application ID</em> field {kind === "orchestrator" ? "under Direction → Orchestrator" : "on this character"}.
+                <em>Application ID</em> field {kind === "house" ? "under Settings → Discord bots → House bot" : "on this character"}.
                 It's a 17–20 digit number used to build the invite URL and to register slash
                 commands.
                 {applicationId && !isLikelyApplicationId(applicationId) && (
@@ -206,10 +206,10 @@ export function DiscordBotGuide({
                   <li>
                     <strong>REQUIRES OAUTH2 CODE GRANT</strong> — leave <em>off</em>.
                   </li>
-                  {kind === "orchestrator" && (
+                  {kind === "house" && (
                     <li>
                       <strong>SERVER MEMBERS INTENT</strong> only matters if you also want full
-                      member fetches; otherwise the orchestrator falls back to opportunistic
+                      member fetches; otherwise the House bot falls back to opportunistic
                       caching.
                     </li>
                   )}
@@ -229,7 +229,7 @@ export function DiscordBotGuide({
                 <ul style={ul}>
                   <li>
                     <strong>SCOPES:</strong> <code>bot</code>
-                    {kind === "orchestrator" && (
+                    {kind === "house" && (
                       <>
                         {" "}+ <code>applications.commands</code>
                       </>
@@ -346,7 +346,7 @@ function InviteBlock({
           targets guild <code>{guildId}</code>
         </Pill>
       )}
-      {kind === "orchestrator" && <Pill tone="info">includes slash commands</Pill>}
+      {kind === "house" && <Pill tone="info">includes slash commands</Pill>}
     </div>
   );
 }

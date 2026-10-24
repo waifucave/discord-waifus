@@ -17,7 +17,7 @@ type DoctorResult = {
   schema: { unstamped: string[] };
   models: { unresolved: Array<{ scope: string; providerId: string | null; modelId: string }> };
   providersConfigured: string[];
-  discord: { orchestratorConfigured: boolean; waifuBotCount: number };
+  discord: { houseConfigured: boolean; waifuBotCount: number };
   remoteAccess: {
     target: {
       platform: NodeJS.Platform;
@@ -179,7 +179,7 @@ describe("waifus doctor: remote management", () => {
       paused: false,
       discord: {
         connected: true,
-        orchestratorConnected: true,
+        houseConnected: true,
         waifuBotCount: 2,
         warnings: []
       },
@@ -320,9 +320,9 @@ describe("waifus doctor: v1 providers.json / discord-bots.json report real data,
     });
     await writeV1DiscordBotsFile(root, {
       orchestrator: {
-        id: "orchestrator-bot",
-        displayName: "Orchestrator",
-        token: "dummy-orchestrator-token",
+        id: "house-bot",
+        displayName: "House",
+        token: "dummy-house-token",
         enabled: true
       },
       waifus: [
@@ -334,7 +334,7 @@ describe("waifus doctor: v1 providers.json / discord-bots.json report real data,
     expect(code).toBe(0);
     expect(result.warnings).toContain("unmigrated data root — run `waifus start` to migrate");
     expect(result.providersConfigured).toEqual(["openai"]);
-    expect(result.discord.orchestratorConfigured).toBe(true);
+    expect(result.discord.houseConfigured).toBe(true);
     expect(result.discord.waifuBotCount).toBe(1);
   });
 

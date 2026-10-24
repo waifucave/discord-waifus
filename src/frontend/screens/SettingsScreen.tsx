@@ -379,13 +379,13 @@ function BotsSection({
   const [drafts, setDrafts] = useState<Record<string, { applicationId: string; token: string }>>({});
   const [showGuide, setShowGuide] = useState(false);
 
-  const entries: Array<{ key: string; label: string; bot: DiscordBotConfig | null; isOrchestrator: boolean }> = [
-    { key: "orchestrator", label: "Director (orchestrator)", bot: bots.data?.orchestrator ?? null, isOrchestrator: true },
+  const entries: Array<{ key: string; label: string; bot: DiscordBotConfig | null; isHouse: boolean }> = [
+    { key: "house", label: "House bot", bot: bots.data?.orchestrator ?? null, isHouse: true },
     ...(waifus.data?.waifus ?? []).map((waifu) => ({
       key: waifu.botId ?? `waifu-${waifu.id}`,
       label: waifu.displayName || waifu.name,
       bot: (bots.data?.waifus ?? []).find((b) => b.id === (waifu.botId ?? waifu.id)) ?? null,
-      isOrchestrator: false
+      isHouse: false
     }))
   ];
 
@@ -393,7 +393,7 @@ function BotsSection({
     const draft = drafts[entry.key];
     if (!draft || !bots.data) return;
     const patch: DiscordBotConfig = {
-      id: entry.bot?.id ?? (entry.isOrchestrator ? "orchestrator" : entry.key),
+      id: entry.bot?.id ?? (entry.isHouse ? "house" : entry.key),
       displayName: entry.bot?.displayName ?? entry.label,
       enabled: true,
       ...(entry.bot ?? {}),
@@ -402,7 +402,7 @@ function BotsSection({
     };
     try {
       await api.putDiscordBots(
-        entry.isOrchestrator
+        entry.isHouse
           ? { ...bots.data, orchestrator: patch }
           : {
               ...bots.data,
@@ -424,7 +424,7 @@ function BotsSection({
         <span className="t-micro" style={{ color: "var(--ink)" }}>How to create a Discord bot</span>
         <span className="caret">{showGuide ? "▾" : "▸"}</span>
       </button>
-      {showGuide && <div className="cell" style={{ padding: "16px 20px" }}><DiscordBotGuide kind="orchestrator" collapsedByDefault={false} hideHeader /></div>}
+      {showGuide && <div className="cell" style={{ padding: "16px 20px" }}><DiscordBotGuide kind="house" collapsedByDefault={false} hideHeader /></div>}
       {entries.map((entry) => {
         const draft = drafts[entry.key] ?? { applicationId: "", token: "" };
         return (

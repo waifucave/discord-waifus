@@ -59,7 +59,7 @@ async function makeApp(options: {
     paused: false,
     discord: {
       connected: false,
-      orchestratorConnected: false,
+      houseConnected: false,
       waifuBotCount: 0,
       warnings: []
     },

@@ -8,7 +8,7 @@ import { IsoDateStringSchema } from "./common.js";
 export const USAGE_PURPOSES = ["life", "maintenance", "detector", "compaction", "assistant", "web"] as const;
 export type UsagePurpose = (typeof USAGE_PURPOSES)[number];
 
-/** Purposes of the retired orchestrator era: old lines stay readable, nothing writes them. */
+/** Purposes of the retired director era: old lines stay readable, nothing writes them. */
 export const LEGACY_USAGE_PURPOSES = [
   "waifu_reply",
   "waifu_retry",

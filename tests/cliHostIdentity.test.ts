@@ -37,7 +37,7 @@ async function setup(options: { lockStartTime?: number | null; withLock?: boolea
     dataRoot: root,
     mode: "start",
     paused: false,
-    discord: { connected: false, orchestratorConnected: false, waifuBotCount: 0, warnings: [] },
+    discord: { connected: false, houseConnected: false, waifuBotCount: 0, warnings: [] },
     queues: { active: 0, configuredGuilds: 0 }
   });
   await writeFile(appDataPath(root, "pid.json"), JSON.stringify(runtime));

@@ -457,7 +457,7 @@ async function doctorCommand(dataRoot: string, options: CliRuntimeOptions): Prom
     async () => {
       const discordFile = await storage.readJson("user/discord-bots.json", DiscordBotsFileSchema, discordFallback);
       return {
-        orchestratorConfigured: discordFile.orchestrator?.token !== undefined,
+        houseConfigured: discordFile.orchestrator?.token !== undefined,
         waifuBotCount: discordFile.waifus.length
       };
     },
@@ -498,7 +498,7 @@ async function doctorCommand(dataRoot: string, options: CliRuntimeOptions): Prom
     },
     providersConfigured,
     discord: {
-      orchestratorConfigured: discordSummary.orchestratorConfigured,
+      houseConfigured: discordSummary.houseConfigured,
       waifuBotCount: discordSummary.waifuBotCount,
       warnings: [
         "MESSAGE_CONTENT intent must be enabled for complete Discord channel context.",

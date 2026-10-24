@@ -5,7 +5,7 @@ import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 import { ensureDataLayout, readPackageVersion } from "../config/layout.js";
 import { LEGACY_MODEL_MAP, RETRIGGER_MAX_SECONDS, RETRIGGER_MIN_SECONDS, WAIFU_NOTE_STRENGTH } from "./migrationSteps/legacy.js";
 import { extractLegacyEntities as extractEntities } from "./migrationSteps/memorySupport.js";
-import { MEMORY_KINDS } from "../shared/schemas/domain.js";
+import { MEMORY_KINDS } from "./migrationSteps/legacySchemas.js";
 import { CURRENT_SCHEMA_VERSION } from "../shared/schemas/common.js";
 import { legacyToParams, LegacyGeneration, LegacyReasoning } from "../shared/paramsCompat.js";
 import { atomicWriteJson, atomicWriteText } from "../storage/atomic.js";
@@ -1006,19 +1006,19 @@ export async function readProviderIdsLeniently(dataRoot: string): Promise<string
 }
 
 export type LenientDiscordBotsSummary = {
-  orchestratorConfigured: boolean;
+  houseConfigured: boolean;
   waifuBotCount: number;
 };
 
 // Lenient companion to the strict `user/discord-bots.json` read, for `waifus doctor` (T5 fix).
-// Mirrors exactly the two fields the strict path reports (orchestrator token presence, waifu bot
+// Mirrors exactly the two fields the strict path reports (House bot token presence, waifu bot
 // count) by reading the raw structure instead of requiring the full DiscordBotsFileSchema parse.
 export async function readDiscordBotsLeniently(dataRoot: string): Promise<LenientDiscordBotsSummary> {
   const data = await readJsonOrUndefined(path.join(dataRoot, "user", "discord-bots.json"));
-  if (!isObject(data)) return { orchestratorConfigured: false, waifuBotCount: 0 };
+  if (!isObject(data)) return { houseConfigured: false, waifuBotCount: 0 };
   const orchestrator = data.orchestrator;
   return {
-    orchestratorConfigured: isObject(orchestrator) && orchestrator.token !== undefined,
+    houseConfigured: isObject(orchestrator) && orchestrator.token !== undefined,
     waifuBotCount: Array.isArray(data.waifus) ? data.waifus.length : 0
   };
 }

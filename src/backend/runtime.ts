@@ -43,7 +43,7 @@ export type RemoteAccessRuntimeSummary = z.infer<typeof RemoteAccessRuntimeSumma
 const DiscordBotConnectionStatusSchema = z.object({
   botId: z.string(),
   displayName: z.string(),
-  kind: z.enum(["orchestrator", "waifu"]),
+  kind: z.enum(["house", "waifu"]),
   state: z.enum(["connected", "connecting", "error", "disabled", "missing_token"]),
   errorCode: z
     .enum([
@@ -52,7 +52,7 @@ const DiscordBotConnectionStatusSchema = z.object({
       "invalid_intents",
       "gateway_rejected",
       "network",
-      "orchestrator_unavailable",
+      "house_unavailable",
       "unknown"
     ])
     .optional(),
@@ -75,7 +75,7 @@ export const RuntimeStateSchema = z.object({
   discord: z
     .object({
       connected: z.boolean(),
-      orchestratorConnected: z.boolean(),
+      houseConnected: z.boolean(),
       waifuBotCount: z.number().int().nonnegative(),
       warnings: z.array(z.string()),
       connecting: z.boolean().optional(),
@@ -88,7 +88,7 @@ export const RuntimeStateSchema = z.object({
     })
     .default({
       connected: false,
-      orchestratorConnected: false,
+      houseConnected: false,
       waifuBotCount: 0,
       warnings: []
     }),

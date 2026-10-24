@@ -234,7 +234,7 @@ export function createRestDirectoryTransport(token: string, now: () => number = 
   };
 }
 
-/** The token the runtime already uses for REST: orchestrator first, else the first usable waifu bot. */
+/** The token the runtime already uses for REST: the House bot first, else the first usable waifu bot. */
 export async function readDiscordBotToken(storage: StorageService): Promise<string | undefined> {
   const bots = await storage.readJson(
     "user/discord-bots.json",
@@ -588,7 +588,7 @@ export class GuildDirectory implements CacheDirectoryHooks {
     const state = await this.ensureLoaded(guildId);
     const transport = await this.transport();
     if (!transport) {
-      return { accepted: false, message: "Discord bot token is not configured. Save the orchestrator bot first." };
+      return { accepted: false, message: "Discord bot token is not configured. Save the House bot first." };
     }
     if (kind === "members") return this.refreshMembers(state, transport);
     if (kind === "roles") {

@@ -3,7 +3,7 @@ import path from "node:path";
 import { readFile, writeFile } from "node:fs/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { startBackend, type RunningBackend } from "../src/backend/server.js";
-import { RuntimeOrchestrator } from "../src/orchestration/runtime.js";
+import { CastRuntime } from "../src/orchestration/runtime.js";
 import { createRuntimeState, RuntimeStateSchema } from "../src/backend/runtime.js";
 import type { Logger } from "../src/backend/logger.js";
 import { ensureDataLayout } from "../src/config/layout.js";
@@ -291,7 +291,7 @@ function remoteSupervisorSnapshot(
 describe("backend Discord auto-connect retry", () => {
   it("serves HTTP before slow Discord auto-connect completes", async () => {
     vi.useFakeTimers();
-    const root = await initializedRootWithOrchestrator();
+    const root = await initializedRootWithHouseBot();
     const gateway = new FakeDiscordGateway([connectedStatus()], { connectDelayMs: 20_000 });
     const backend = await startTestBackend(root, gateway, [5_000]);
 
@@ -314,7 +314,7 @@ describe("backend Discord auto-connect retry", () => {
   });
 
   it("retries transient Discord DNS failures and clears retry status after recovery", async () => {
-    const root = await initializedRootWithOrchestrator();
+    const root = await initializedRootWithHouseBot();
     const outcomes: Array<DiscordRuntimeStatus | Error> = [
       Object.assign(new Error("getaddrinfo ENOTFOUND discord.com"), { code: "ENOTFOUND" }),
       connectedStatus()
@@ -335,7 +335,7 @@ describe("backend Discord auto-connect retry", () => {
     await waitForConnectCalls(gateway, 2);
     expect(backend.runtime.discord).toMatchObject({
       connected: true,
-      orchestratorConnected: true,
+      houseConnected: true,
       waifuBotCount: 0,
       warnings: []
     });
@@ -345,7 +345,7 @@ describe("backend Discord auto-connect retry", () => {
 
   it("does not retry permanent Discord setup errors", async () => {
     vi.useFakeTimers();
-    const root = await initializedRootWithOrchestrator();
+    const root = await initializedRootWithHouseBot();
     const gateway = new FakeDiscordGateway([new Error("An invalid token was provided.")]);
     const backend = await startTestBackend(root, gateway, [5_000]);
 
@@ -364,7 +364,7 @@ describe("backend Discord auto-connect retry", () => {
 
   it("manual runtime reload clears the pending retry and attempts Discord immediately", async () => {
     vi.useFakeTimers();
-    const root = await initializedRootWithOrchestrator();
+    const root = await initializedRootWithHouseBot();
     const outcomes: Array<DiscordRuntimeStatus | Error> = [
       Object.assign(new Error("getaddrinfo ENOTFOUND discord.com"), { code: "ENOTFOUND" }),
       connectedStatus()
@@ -389,7 +389,7 @@ describe("backend Discord auto-connect retry", () => {
 
   it("shutdown cancels pending Discord retry timers", async () => {
     vi.useFakeTimers();
-    const root = await initializedRootWithOrchestrator();
+    const root = await initializedRootWithHouseBot();
     const outcomes: Array<DiscordRuntimeStatus | Error> = [
       Object.assign(new Error("getaddrinfo ENOTFOUND discord.com"), { code: "ENOTFOUND" }),
       connectedStatus()
@@ -409,7 +409,7 @@ describe("backend Discord auto-connect retry", () => {
 
   it("retries transient live Discord runtime failures after a connected gateway reports them", async () => {
     vi.useFakeTimers();
-    const root = await initializedRootWithOrchestrator();
+    const root = await initializedRootWithHouseBot();
     const gateway = new FakeDiscordGateway([connectedStatus(), connectedStatus()]);
     const backend = await startTestBackend(root, gateway, [5_000]);
 
@@ -434,14 +434,14 @@ describe("backend Discord auto-connect retry", () => {
     await waitForConnectCalls(gateway, 2);
     expect(backend.runtime.discord).toMatchObject({
       connected: true,
-      orchestratorConnected: true,
+      houseConnected: true,
       warnings: []
     });
   });
 
   it("updates live Discord retry errors without postponing a pending retry", async () => {
     vi.useFakeTimers();
-    const root = await initializedRootWithOrchestrator();
+    const root = await initializedRootWithHouseBot();
     const gateway = new FakeDiscordGateway([connectedStatus(), connectedStatus()]);
     const backend = await startTestBackend(root, gateway, [5_000]);
 
@@ -469,7 +469,7 @@ describe("backend Discord auto-connect retry", () => {
 
   it("lets discord.js resume shard socket errors instead of tearing down every bot", async () => {
     vi.useFakeTimers();
-    const root = await initializedRootWithOrchestrator();
+    const root = await initializedRootWithHouseBot();
     const gateway = new FakeDiscordGateway([connectedStatus()]);
     const backend = await startTestBackend(root, gateway, [5_000]);
 
@@ -492,7 +492,7 @@ describe("backend Discord auto-connect retry", () => {
 
   it("does not blindly reconnect after an unrecoverable shard disconnect", async () => {
     vi.useFakeTimers();
-    const root = await initializedRootWithOrchestrator();
+    const root = await initializedRootWithHouseBot();
     const gateway = new FakeDiscordGateway([connectedStatus()]);
     const backend = await startTestBackend(root, gateway, [5_000]);
 
@@ -501,7 +501,7 @@ describe("backend Discord auto-connect retry", () => {
 
     await gateway.emitRuntimeIssue({
       source: "shard-disconnect",
-      botId: "orchestrator",
+      botId: "house",
       shardId: 0,
       code: 4004,
       wasClean: true,
@@ -516,7 +516,7 @@ describe("backend Discord auto-connect retry", () => {
 
   it("logs non-retryable live Discord runtime issues without forcing reconnect", async () => {
     vi.useFakeTimers();
-    const root = await initializedRootWithOrchestrator();
+    const root = await initializedRootWithHouseBot();
     const gateway = new FakeDiscordGateway([connectedStatus()]);
     const backend = await startTestBackend(root, gateway, [5_000]);
 
@@ -539,25 +539,25 @@ describe("backend Discord auto-connect retry", () => {
 });
 
 describe("backend Discord per-bot status", () => {
-  it("does not log in a disabled orchestrator bot", async () => {
-    const root = await initializedRootWithOrchestrator(false);
+  it("does not log in a disabled House bot", async () => {
+    const root = await initializedRootWithHouseBot(false);
     // An explicit disable made after the one-time upgrade pass (which re-enables tokened bots).
     await writeFile(path.join(root, "user", ".discord-bots-enabled-v1.json"), "{}\n");
     const gateway = new FakeDiscordGateway([connectedStatus()]);
     const backend = await startTestBackend(root, gateway, [5_000]);
 
     await vi.waitFor(() => expect(backend.runtime.discord.warnings).toEqual([
-      "Discord auto-connect is enabled but the orchestrator bot is disabled."
+      "Discord auto-connect is enabled but the House bot is disabled."
     ]));
     expect(gateway.connectCalls).toBe(0);
   });
 
-  it("keeps per-bot errors from a failed orchestrator login in the runtime status", async () => {
-    const root = await initializedRootWithOrchestrator();
+  it("keeps per-bot errors from a failed House bot login in the runtime status", async () => {
+    const root = await initializedRootWithHouseBot();
     const bots: DiscordBotConnectionStatus[] = [{
-      botId: "orchestrator",
-      displayName: "Orchestrator",
-      kind: "orchestrator",
+      botId: "house",
+      displayName: "House",
+      kind: "house",
       state: "error",
       errorCode: "invalid_token",
       error: "An invalid token was provided.",
@@ -565,7 +565,7 @@ describe("backend Discord per-bot status", () => {
     }];
     const failure = new DiscordConnectError(
       "An invalid token was provided.",
-      { ...connectedStatus(), connected: false, orchestratorConnected: false, bots },
+      { ...connectedStatus(), connected: false, houseConnected: false, bots },
       Object.assign(new Error("An invalid token was provided."), { code: "TokenInvalid" })
     );
     const gateway = new FakeDiscordGateway([failure]);
@@ -584,7 +584,7 @@ describe("backend Discord per-bot status", () => {
   });
 
   it("applies live per-bot status changes reported by the gateway", async () => {
-    const root = await initializedRootWithOrchestrator();
+    const root = await initializedRootWithHouseBot();
     const gateway = new FakeDiscordGateway([connectedStatus()]);
     const backend = await startTestBackend(root, gateway, [5_000]);
     await vi.waitFor(() => expect(backend.runtime.discord.connected).toBe(true));
@@ -607,9 +607,9 @@ describe("backend Discord per-bot status", () => {
 });
 
 describe("backend runtime pause/resume", () => {
-  it("resuming the runtime asks the orchestrator to re-arm what the pause cleared", async () => {
-    const resumeAfterPause = vi.spyOn(RuntimeOrchestrator.prototype, "resumeAfterPause");
-    const root = await initializedRootWithOrchestrator();
+  it("resuming the runtime asks the cast runtime to re-arm what the pause cleared", async () => {
+    const resumeAfterPause = vi.spyOn(CastRuntime.prototype, "resumeAfterPause");
+    const root = await initializedRootWithHouseBot();
     const gateway = new FakeDiscordGateway([connectedStatus()]);
     const backend = await startTestBackend(root, gateway, [5_000]);
     await waitForConnectCalls(gateway, 1);
@@ -668,7 +668,7 @@ class FakeDiscordGateway implements DiscordGatewayFacade {
   }
 }
 
-async function initializedRootWithOrchestrator(orchestratorEnabled = true): Promise<string> {
+async function initializedRootWithHouseBot(houseEnabled = true): Promise<string> {
   const root = await makeTempRoot();
   roots.push(root);
   await ensureDataLayout(root);
@@ -678,10 +678,10 @@ async function initializedRootWithOrchestrator(orchestratorEnabled = true): Prom
       {
         ...createRevisionedBase(),
         orchestrator: {
-          id: "orchestrator",
-          displayName: "Orchestrator",
+          id: "house",
+          displayName: "House",
           token: "test-token",
-          enabled: orchestratorEnabled
+          enabled: houseEnabled
         },
         waifus: []
       },
@@ -780,7 +780,7 @@ function retryableDiscordIssue(message: string): DiscordRuntimeIssue {
 function connectedStatus(): DiscordRuntimeStatus {
   return {
     connected: true,
-    orchestratorConnected: true,
+    houseConnected: true,
     waifuBotCount: 0,
     warnings: []
   };

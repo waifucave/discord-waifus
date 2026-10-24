@@ -1,4 +1,4 @@
-// Sleep/busy availability (kept from the retired deterministic orchestrator; Living cast spec §4.5).
+// Sleep/busy availability (kept from the retired director; Living cast spec §4.5).
 
 import type { WaifuAvailability } from "../shared/schemas/domain.js";
 import { dailyIntervalContains, localTimeOfDayMinutes } from "../orchestration/timeOfDay.js";

@@ -14,7 +14,7 @@ export function buildNormalizedDiscordContext(
     roles?: ModelVisibleRole[];
   },
   options: {
-    orchestratorAuthorIds?: string[];
+    houseAuthorIds?: string[];
     waifuAuthorIds?: string[];
     now?: Date;
   } = {}

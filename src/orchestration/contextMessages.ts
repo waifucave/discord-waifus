@@ -68,15 +68,15 @@ export const WAIFU_CHUNK_COALESCE_WINDOW_MS = 30_000;
 export function buildContextMessages(
   messages: MessageLikeForContext[],
   options: {
-    orchestratorAuthorIds?: string[];
+    houseAuthorIds?: string[];
     waifuAuthorIds?: string[];
     now?: Date;
   } = {}
 ): ContextMessage[] {
-  const orchestratorIds = new Set(options.orchestratorAuthorIds ?? []);
+  const houseIds = new Set(options.houseAuthorIds ?? []);
   const waifuIds = new Set(options.waifuAuthorIds ?? []);
 
-  const filtered = messages.filter((message) => !orchestratorIds.has(message.authorId));
+  const filtered = messages.filter((message) => !houseIds.has(message.authorId));
   const coalesced = coalesceAdjacentChunks(filtered, waifuIds);
 
   return coalesced.map((message) =>

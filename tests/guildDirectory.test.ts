@@ -331,7 +331,7 @@ describe("GuildDirectory refresh and member list status", () => {
     const none = await setup({ transport: null });
     expect(await none.directory.refresh(GUILD, "members")).toEqual({
       accepted: false,
-      message: "Discord bot token is not configured. Save the orchestrator bot first."
+      message: "Discord bot token is not configured. Save the House bot first."
     });
   });
 
@@ -407,7 +407,7 @@ describe("GuildDirectory in the API", () => {
     await ensureDataLayout(root);
     const runtime = createRuntimeState({
       pid: process.pid, startedAt: AT, packageVersion: "0.1.0", port: 3888, dataRoot: root, mode: "test", paused: false,
-      discord: { connected: false, orchestratorConnected: false, waifuBotCount: 0, warnings: [] },
+      discord: { connected: false, houseConnected: false, waifuBotCount: 0, warnings: [] },
       queues: { active: 0, configuredGuilds: 0 }
     });
     return createApiServer({ dataRoot: root, runtime, storage: new StorageService(root), directory });

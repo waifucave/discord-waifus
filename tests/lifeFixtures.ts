@@ -113,7 +113,7 @@ export class FakeDiscord implements DiscordGatewayFacade {
   }
 
   async connect() {
-    return { connected: true, orchestratorConnected: true, waifuBotCount: 2, warnings: [] };
+    return { connected: true, houseConnected: true, waifuBotCount: 2, warnings: [] };
   }
   async disconnect() {}
   async fetchFreshContext(): Promise<never[]> {

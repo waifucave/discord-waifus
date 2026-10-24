@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ensureDataLayout } from "../src/config/layout.js";
 import type { DiscordGatewayFacade } from "../src/discord/client.js";
 import { conversationKey } from "../src/orchestration/context/keys.js";
-import { RuntimeOrchestrator } from "../src/orchestration/runtime.js";
+import { CastRuntime } from "../src/orchestration/runtime.js";
 import { readThreads } from "../src/orchestration/stores/threads.js";
 import { createRevisionedBase } from "../src/shared/schemas/common.js";
 import { ServerConfigSchema, WaifuConfigSchema } from "../src/shared/schemas/domain.js";
@@ -34,7 +34,7 @@ async function setup() {
   }));
   const sent: unknown[] = [];
   const discord = {
-    connect: async () => ({ connected: true, orchestratorConnected: true, waifuBotCount: 0, warnings: [] }),
+    connect: async () => ({ connected: true, houseConnected: true, waifuBotCount: 0, warnings: [] }),
     disconnect: async () => undefined,
     fetchFreshContext: async () => [],
     sendWaifuMessage: async (input: unknown) => {
@@ -45,7 +45,7 @@ async function setup() {
     joinThread: vi.fn(async () => undefined)
   } as unknown as DiscordGatewayFacade;
   const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
-  const runtime = new RuntimeOrchestrator({ storage, discord, logger });
+  const runtime = new CastRuntime({ storage, discord, logger });
   return { root, storage, runtime, logger, sent, discord };
 }
 
@@ -67,7 +67,7 @@ describe("runtime facade", () => {
   it("hands DMs to the intake (which keeps DM state while paused); a paused runtime takes no guild messages", async () => {
     const { storage, discord, logger } = await setup();
     let paused = false;
-    const runtime = new RuntimeOrchestrator({ storage, discord, logger, isPaused: () => paused });
+    const runtime = new CastRuntime({ storage, discord, logger, isPaused: () => paused });
     const dms = vi.spyOn(runtime.cast, "onDirectMessage").mockResolvedValue(undefined);
     const guild = vi.spyOn(runtime.cast, "onGuildMessage").mockResolvedValue(undefined);
     await runtime.handleDirectMessage({ waifuId: "aria", botId: "aria-bot", userId: "500000000000000005", channelId: "7", messageId: "d1", createdAt: new Date().toISOString() });

@@ -19,7 +19,6 @@ const LEGACY: Record<string, { view: ViewId; tab?: string }> = {
   // Living cast L1 retired Direction and Memory; their links land somewhere still meaningful.
   direction: { view: "settings", tab: "assistant" },
   memory: { view: "home" },
-  orchestrator: { view: "home" },
   "stage-manager": { view: "home" },
   reviewer: { view: "home" },
   memories: { view: "home" },

@@ -24,8 +24,8 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
   const [keyProviderId, setKeyProviderId] = useState("deepseek");
   const [apiKey, setApiKey] = useState("");
   const [waifuModel, setWaifuModel] = useState<ModelChoice | undefined>();
-  const [orchestratorToken, setOrchestratorToken] = useState("");
-  const [orchestratorAppId, setOrchestratorAppId] = useState("");
+  const [houseToken, setHouseToken] = useState("");
+  const [houseAppId, setHouseAppId] = useState("");
   const [botsSaved, setBotsSaved] = useState(false);
 
   const run = async (fn: () => Promise<void>, advance = true) => {
@@ -74,12 +74,12 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
       await api.putDiscordBots({
         ...current,
         orchestrator: {
-          id: current.orchestrator?.id ?? "orchestrator",
-          displayName: current.orchestrator?.displayName ?? "Orchestrator",
+          id: current.orchestrator?.id ?? "house",
+          displayName: current.orchestrator?.displayName ?? "House",
           enabled: true,
           ...(current.orchestrator ?? {}),
-          applicationId: orchestratorAppId || current.orchestrator?.applicationId,
-          ...(orchestratorToken ? { token: orchestratorToken } : {})
+          applicationId: houseAppId || current.orchestrator?.applicationId,
+          ...(houseToken ? { token: houseToken } : {})
         }
       });
       setBotsSaved(true);
@@ -234,19 +234,19 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
               Each character is her own Discord bot. Start with the director's bot; add one per character in Cast
               afterwards.
             </p>
-            <DiscordBotGuide kind="orchestrator" collapsedByDefault={false} applicationId={orchestratorAppId || undefined} />
+            <DiscordBotGuide kind="house" collapsedByDefault={false} applicationId={houseAppId || undefined} />
             <div className="fused" style={{ maxWidth: 640, marginTop: 16 }}><div className="grid grid-2">
               <div className="field">
                 <label className="field-label">Application ID</label>
-                <input className="input" value={orchestratorAppId} onChange={(e) => setOrchestratorAppId(e.target.value)} />
+                <input className="input" value={houseAppId} onChange={(e) => setHouseAppId(e.target.value)} />
               </div>
               <div className="field">
                 <label className="field-label">Bot token</label>
                 <input
                   className="input"
                   type="password"
-                  value={orchestratorToken}
-                  onChange={(e) => setOrchestratorToken(e.target.value)}
+                  value={houseToken}
+                  onChange={(e) => setHouseToken(e.target.value)}
                 />
               </div>
             </div></div>
@@ -255,7 +255,7 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
               <button className="btn ghost" onClick={() => setStep(3)}>
                 <ArrowLeft className="icon" /> Back
               </button>
-              <button className="btn primary" onClick={saveBots} disabled={saving || (!orchestratorToken && !orchestratorAppId)}>
+              <button className="btn primary" onClick={saveBots} disabled={saving || (!houseToken && !houseAppId)}>
                 {saving ? "Saving…" : "Save & continue"}
               </button>
               <button className="btn ghost" onClick={skip}>

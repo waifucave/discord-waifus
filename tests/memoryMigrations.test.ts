@@ -6,7 +6,7 @@ import { migrateDreamCursorGlobal } from "../src/backend/migrationSteps/dreamCur
 import { MEMORIES_DEDUPE_AUDIT, MEMORIES_DEDUPE_MARKER, migrateMemoriesCrossGuildDedupe } from "../src/backend/migrationSteps/memoriesCrossGuildDedupe.js";
 import { migrateMemoriesGlobalOriginSubjects } from "../src/backend/migrationSteps/memoriesGlobalOriginSubjects.js";
 import { migratePendingObservationsGlobal } from "../src/backend/migrationSteps/pendingObservationsGlobal.js";
-import { MemoryStoreSchema, PendingObservationsFileSchema } from "../src/shared/schemas/domain.js";
+import { MemoryStoreSchema, PendingObservationsFileSchema } from "../src/backend/migrationSteps/legacySchemas.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
 
 // These tests pin the legacy steps' own output, which the Living cast L2 data steps then convert and

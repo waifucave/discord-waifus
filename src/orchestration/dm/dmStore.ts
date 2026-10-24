@@ -169,7 +169,7 @@ export type DmEligibility = {
 
 /**
  * Waifu W is DM-eligible on bot B iff W is enabled with `dm.allowDms`, has a model, links to B,
- * B is an enabled waifu bot (not the orchestrator) and exactly one enabled waifu links to B.
+ * B is an enabled waifu bot (not the House bot) and exactly one enabled waifu links to B.
  */
 export function computeDmEligibility(
   waifus: readonly WaifuConfig[],
@@ -177,11 +177,11 @@ export function computeDmEligibility(
 ): DmEligibility {
   const eligible: DmEligibleWaifu[] = [];
   const warnings = new Set<string>();
-  const orchestratorId = bots.orchestrator?.id;
+  const houseId = bots.orchestrator?.id;
   for (const waifu of waifus) {
     if (!waifu.enabled || !waifu.dm?.allowDms || !waifu.botId) continue;
     const bot = bots.waifus.find((candidate) => candidate.id === waifu.botId);
-    if (!bot || bot.enabled === false || bot.id === orchestratorId) continue;
+    if (!bot || bot.enabled === false || bot.id === houseId) continue;
     const linked = waifus.filter((candidate) => candidate.enabled && candidate.botId === bot.id);
     if (linked.length !== 1) {
       warnings.add(`dm_bot_shared:${bot.id}`);

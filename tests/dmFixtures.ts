@@ -3,7 +3,7 @@
 
 import type { DiscordDirectMessageEvent, DiscordGatewayFacade } from "../src/discord/client.js";
 import { dmFloorAt } from "../src/orchestration/dm/dmStore.js";
-import { RuntimeOrchestrator } from "../src/orchestration/runtime.js";
+import { CastRuntime } from "../src/orchestration/runtime.js";
 import { createRevisionedBase } from "../src/shared/schemas/common.js";
 import type { RawDiscordMessage } from "../src/shared/schemas/discordMessage.js";
 import type { WaifuDmSettings } from "../src/shared/schemas/dm.js";
@@ -15,7 +15,7 @@ import {
 } from "../src/shared/schemas/domain.js";
 import { StorageService } from "../src/storage/storageService.js";
 import { ensureDataLayout } from "../src/config/layout.js";
-import type { RuntimeOrchestratorOptions } from "../src/orchestration/runtimeShared.js";
+import type { CastRuntimeOptions } from "../src/orchestration/runtimeShared.js";
 import { quietLogger } from "./contextFixtures.js";
 import { makeTempRoot } from "./testUtils.js";
 
@@ -88,7 +88,7 @@ export class DmDiscord implements DiscordGatewayFacade {
   }
 
   async connect() {
-    return { connected: true, orchestratorConnected: true, waifuBotCount: 1, warnings: [] };
+    return { connected: true, houseConnected: true, waifuBotCount: 1, warnings: [] };
   }
   async disconnect() {}
   async fetchFreshContext(): Promise<never[]> {
@@ -168,9 +168,9 @@ export async function dmRoot(roots: string[]): Promise<{ root: string; storage: 
 export function dmRuntime(
   storage: StorageService,
   discord: DiscordGatewayFacade,
-  o: Partial<RuntimeOrchestratorOptions> = {}
-): RuntimeOrchestrator {
-  return new RuntimeOrchestrator({
+  o: Partial<CastRuntimeOptions> = {}
+): CastRuntime {
+  return new CastRuntime({
     storage,
     discord,
     logger: quietLogger(),

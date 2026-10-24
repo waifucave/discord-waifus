@@ -23,7 +23,7 @@ import { sharedUsageLedger, type UsageLedger } from "./usageLedger.js";
 import { PermissionWarningTracker } from "./permissionWarnings.js";
 import { conversationDirPath, conversationKey, type ConversationRef } from "./context/keys.js";
 import { EMPTY_GUILD_DIRECTORY, renderDiscordMessage } from "./context/messageRender.js";
-import type { RuntimeOrchestratorOptions } from "./runtimeShared.js";
+import type { CastRuntimeOptions } from "./runtimeShared.js";
 import { channelHasWaifus, ensureChannelConfig, ensureServer, isKnownWaifuAuthor, readDiscordBotsFile, syncGuilds, listWaifus } from "./stores/config.js";
 import { noteActiveChatParticipant } from "./stores/participants.js";
 import { observeThread, parentSharesCast, readThreads, removeThread } from "./stores/threads.js";
@@ -38,7 +38,7 @@ import { sharedModelClient } from "../models/client.js";
 import { DEFAULT_APP_CONFIG } from "../shared/schemas/config.js";
 import { withThreadChannels } from "./stores/threads.js";
 
-export type { RuntimeOrchestratorOptions } from "./runtimeShared.js";
+export type { CastRuntimeOptions } from "./runtimeShared.js";
 export { currentlyDoingForWaifu } from "./timeOfDay.js";
 
 /** Spec 9.6: `/api/runtime` `discord.dm`. */
@@ -50,7 +50,7 @@ export type DmRuntimeStatus = {
 /** The owner's forget-user: the DM part (§7.5 step 1) plus every life's scrub (steps 2–5). */
 export type OwnerForgetResult = ForgetUserResult & { lives?: ForgetScrubResult[] };
 
-export class RuntimeOrchestrator {
+export class CastRuntime {
   readonly permissionWarnings = new PermissionWarningTracker();
   /** Per-call usage lines (spec 8.10); shared with every model call this runtime makes. */
   readonly usageLedger: UsageLedger;
@@ -66,7 +66,7 @@ export class RuntimeOrchestrator {
   private readonly background = new Set<Promise<unknown>>();
   private stopping = false;
 
-  constructor(private readonly options: RuntimeOrchestratorOptions) {
+  constructor(private readonly options: CastRuntimeOptions) {
     this.directory =
       options.directory ??
       new GuildDirectory({

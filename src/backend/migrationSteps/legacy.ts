@@ -5,7 +5,8 @@
 // the exact values and logic it ran with live here, owned by the migrations. Never import runtime
 // modules from a migration step; never change what is below.
 
-import type { GuildMemberCacheEntry, MemorySubject } from "../../shared/schemas/domain.js";
+import type { GuildMemberCacheEntry } from "../../shared/schemas/domain.js";
+import type { MemorySubject } from "./legacySchemas.js";
 
 // --- decisions.ts (orchestrator-history-responding-waifus) ------------------------------------
 export const RETRIGGER_MIN_SECONDS = 10;

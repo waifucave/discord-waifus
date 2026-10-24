@@ -228,7 +228,7 @@ async function makeHarness(options: {
     dataRoot: root,
     mode: "test",
     paused: false,
-    discord: { connected: false, orchestratorConnected: false, waifuBotCount: 0, warnings: [] },
+    discord: { connected: false, houseConnected: false, waifuBotCount: 0, warnings: [] },
     queues: { active: 0, configuredGuilds: 0 }
   });
   const supervisor = new ManagementSupervisor();

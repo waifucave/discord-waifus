@@ -4,7 +4,7 @@
 import { ChannelType, Client, Events, IntentsBitField, Partials } from "discord.js";
 import type { ClientOptions } from "discord.js";
 import { afterEach, describe, expect, it } from "vitest";
-import { DiscordJsGateway, buildDmCommandPayloads, buildOrchestratorCommandPayloads } from "../src/discord/client.js";
+import { DiscordJsGateway, buildDmCommandPayloads, buildHouseCommandPayloads } from "../src/discord/client.js";
 import type { DiscordDirectMessageEvent, DiscordJsGatewayOptions } from "../src/discord/client.js";
 import type { DiscordConversationEvent } from "../src/discord/gatewayEvents.js";
 import type { DiscordBotConfig } from "../src/shared/schemas/domain.js";
@@ -58,7 +58,7 @@ afterEach(async () => {
 
 function makeGateway(fakes: Fakes, pairs: () => Array<{ botId: string; waifuId: string }>) {
   const gateway = new DiscordJsGateway({
-    orchestrator: bot("orchestrator"),
+    house: bot("house"),
     waifus: [bot("aria-bot"), bot("mina-bot")],
     createClient: fakes.factory,
     dmBots: async () => pairs(),
@@ -105,7 +105,7 @@ describe("DM intents", () => {
     expect(fakes.destroyed).toEqual(["mina-bot"]);
     expect(fakes.logins.get("mina-bot")).toBe(2);
     expect(fakes.logins.get("aria-bot")).toBe(1);
-    expect(fakes.logins.get("orchestrator")).toBe(1);
+    expect(fakes.logins.get("house")).toBe(1);
     expect(intentsOf(fakes.options.get("mina-bot"))).toContain("DirectMessages");
     expect(gateway.dmIntentStatus().find((s) => s.botId === "mina-bot")).toMatchObject({ intentActive: true, connected: true });
 
@@ -174,8 +174,8 @@ describe("DM intake", () => {
 });
 
 describe("slash command payloads", () => {
-  it("orchestrator commands are guild-only and the DM /forget is BotDM-only", () => {
-    for (const payload of buildOrchestratorCommandPayloads()) expect(payload.contexts).toEqual([0]);
+  it("House bot commands are guild-only and the DM /forget is BotDM-only", () => {
+    for (const payload of buildHouseCommandPayloads()) expect(payload.contexts).toEqual([0]);
     const [forget] = buildDmCommandPayloads();
     expect(forget).toMatchObject({ name: "forget", contexts: [1] });
     expect(forget!.options[0]!.choices.map((choice) => choice.value)).toEqual(["conversation", "everything"]);

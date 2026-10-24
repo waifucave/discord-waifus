@@ -169,8 +169,8 @@ describe("DiscordConversationSource", () => {
   });
 });
 
-describe("withoutAuthors (orchestrator posts never reach the ledger)", () => {
-  it("drops messages by the orchestrator bot (user or application id) and keeps the rest", () => {
+describe("withoutAuthors (the House bot's posts never reach the ledger)", () => {
+  it("drops messages by the House bot (user or application id) and keeps the rest", () => {
     const messages = [
       { id: "1", author: { id: "kevin" } },
       { id: "2", author: { id: "orch-bot" } },

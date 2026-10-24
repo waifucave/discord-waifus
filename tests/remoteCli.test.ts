@@ -60,7 +60,7 @@ function hostState(pid: number, dataRoot: string) {
     paused: false,
     discord: {
       connected: true,
-      orchestratorConnected: true,
+      houseConnected: true,
       waifuBotCount: 2,
       warnings: []
     },

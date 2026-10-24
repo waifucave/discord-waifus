@@ -29,7 +29,7 @@ async function connected(): Promise<{ gateway: DiscordJsGateway; client: Client 
     return client;
   };
   const gateway = new DiscordJsGateway({
-    orchestrator: { id: "orchestrator", displayName: "o", token: "t", enabled: true },
+    house: { id: "house", displayName: "o", token: "t", enabled: true },
     waifus: [],
     createClient,
     logger: quietLogger()

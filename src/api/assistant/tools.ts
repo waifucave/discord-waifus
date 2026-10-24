@@ -185,7 +185,7 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
       "Ask the user for a secret (provider API key or Discord bot token) via a secure input form in the dashboard. " +
       "The secret is posted by the browser directly to storage and NEVER enters this conversation. " +
       "ALWAYS use this instead of asking the user to paste a key or token into chat. " +
-      "For provider_key set providerId; for bot_token set botId (a discord-bots entry id, or 'orchestrator'). " +
+      "For provider_key set providerId; for bot_token set botId (a discord-bots entry id, or 'house' for the House bot). " +
       "Open at most ONE form per reply, and only for a secret the user is ready to provide right now. " +
       "After calling it, tell the user to paste the secret into the form and END your reply — an automated " +
       "[secure-form] receipt message arrives once it is saved. Application IDs are not secret: set them via " +
@@ -381,7 +381,7 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
   },
   {
     name: "list_discord_bots",
-    description: "Discord bot entries (the optional orchestrator bot + waifu bots). Tokens are redacted.",
+    description: "Discord bot entries (the House bot + waifu bots; the House bot is stored under the key `orchestrator`). Tokens are redacted.",
     parameters: NO_ARGS,
     execute: async (ctx) => {
       const result = await inject(ctx, { method: "GET", url: "/api/discord-bots" });
@@ -418,7 +418,7 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
     description:
       "Update Discord bot entries. Entries are merged BY ID: bots you do not mention are left untouched, and stored " +
       "tokens are preserved when omitted from an entry. For wiring a character's bot prefer link_waifu_bot; use this " +
-      "for orchestrator applicationId or display tweaks. Apply directly; no confirmation needed.",
+      "for the House bot's applicationId or display tweaks (key `orchestrator`). Apply directly; no confirmation needed.",
     parameters: {
       // NOTE: keep every "type" a single string — Google's proto-based schema validation
       // rejects JSON-Schema type arrays like ["object", "null"].

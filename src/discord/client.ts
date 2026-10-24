@@ -42,7 +42,7 @@ import type {
 
 export type DiscordRuntimeStatus = {
   connected: boolean;
-  orchestratorConnected: boolean;
+  houseConnected: boolean;
   waifuBotCount: number;
   warnings: string[];
   connecting?: boolean;
@@ -55,7 +55,7 @@ export type DiscordRuntimeStatus = {
   bots?: DiscordBotConnectionStatus[];
 };
 
-export type DiscordBotKind = "orchestrator" | "waifu";
+export type DiscordBotKind = "house" | "waifu";
 export type DiscordBotConnectionState = "connected" | "connecting" | "error" | "disabled" | "missing_token";
 export type DiscordBotConnectionErrorCode =
   | "invalid_token"
@@ -63,7 +63,7 @@ export type DiscordBotConnectionErrorCode =
   | "invalid_intents"
   | "gateway_rejected"
   | "network"
-  | "orchestrator_unavailable"
+  | "house_unavailable"
   | "unknown";
 
 export type DiscordBotConnectionStatus = {
@@ -80,7 +80,7 @@ export type DiscordBotConnectionStatus = {
 };
 
 /**
- * Thrown by `connect()` when the orchestrator bot cannot come online. The orchestrator owns message
+ * Thrown by `connect()` when the House bot cannot come online. The House bot owns message
  * intake, slash commands and context fetches, so waifu clients are torn down too; `status` still
  * carries every bot's outcome for the status API.
  */
@@ -127,10 +127,10 @@ export interface DiscordGatewayFacade {
   onConversationEvent?(listener: DiscordConversationEventListener): () => void;
   /**
    * Roles, emojis, channels, threads and (opt-in intent) members, for the GuildDirectory. A late
-   * subscriber is replayed a snapshot of every guild the connected orchestrator already sees.
+   * subscriber is replayed a snapshot of every guild the connected House bot already sees.
    */
   onDirectoryEvent?(listener: DiscordDirectoryEventListener): () => void;
-  /** Discord user ids of our own bots (orchestrator and waifus): their messages are "own" sends. */
+  /** Discord user ids of our own bots (the House bot and waifus): their messages are "own" sends. */
   ownAuthorIds?(): string[];
   /**
    * DM transport (spec 9.1): a waifu bot's DM channel with one user, same contract as
@@ -312,7 +312,7 @@ type DiscordCache = {
 };
 
 export type DiscordJsGatewayOptions = {
-  orchestrator: DiscordBotConfig;
+  house: DiscordBotConfig;
   waifus?: DiscordBotConfig[];
   members?: GuildMemberCacheEntry[];
   emojis?: GuildEmojiCacheEntry[];
@@ -413,26 +413,26 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
     if (generation !== this.generation) {
       throw new DiscordConnectError("Discord connection was cancelled by a disconnect.", this.status());
     }
-    const orchestratorId = this.options.orchestrator.id;
-    if (!this.clients.has(orchestratorId)) {
-      // Without the orchestrator nothing reads channels or answers commands, so connected waifus
+    const houseId = this.options.house.id;
+    if (!this.clients.has(houseId)) {
+      // Without the House bot nothing reads channels or answers commands, so connected waifus
       // would only be idle sessions. Take everything down and let the caller decide on a retry.
-      const index = connectable.findIndex((entry) => entry.bot.id === orchestratorId);
+      const index = connectable.findIndex((entry) => entry.bot.id === houseId);
       const result = index >= 0 ? results[index] : undefined;
       const cause = result?.status === "rejected" ? result.reason : undefined;
-      const orchestratorStatus = this.botStatuses.get(orchestratorId);
+      const houseStatus = this.botStatuses.get(houseId);
       const message = cause !== undefined
         ? errorMessage(cause)
-        : orchestratorStatus?.state === "disabled"
-          ? "The orchestrator Discord bot is disabled."
-          : "No orchestrator Discord bot token is configured.";
+        : houseStatus?.state === "disabled"
+          ? "The House bot is disabled."
+          : "No House bot token is configured.";
       for (const [botId, status] of this.botStatuses) {
-        if (botId !== orchestratorId && status.state === "connected") {
+        if (botId !== houseId && status.state === "connected") {
           this.botStatuses.set(botId, {
             ...status,
             state: "error",
-            errorCode: "orchestrator_unavailable",
-            error: "Disconnected because the orchestrator bot is offline.",
+            errorCode: "house_unavailable",
+            error: "Disconnected because the House bot is offline.",
             updatedAt: new Date().toISOString()
           });
         }
@@ -475,11 +475,11 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
       }
     }
     const latestError = bots
-      .filter((status) => status.state === "error" && status.errorCode !== "orchestrator_unavailable")
+      .filter((status) => status.state === "error" && status.errorCode !== "house_unavailable")
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
     return {
       connected: this.clients.size > 0,
-      orchestratorConnected: this.clients.has(this.options.orchestrator.id),
+      houseConnected: this.clients.has(this.options.house.id),
       waifuBotCount: (this.options.waifus ?? []).filter((bot) => this.clients.has(bot.id)).length,
       warnings,
       ...(latestError ? { lastError: latestError.error, lastErrorAt: latestError.updatedAt } : {}),
@@ -489,9 +489,9 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
 
   private configuredBots(): Array<{ bot: DiscordBotConfig; kind: DiscordBotKind }> {
     return [
-      { bot: this.options.orchestrator, kind: "orchestrator" as const },
+      { bot: this.options.house, kind: "house" as const },
       ...(this.options.waifus ?? [])
-        .filter((bot) => bot.id !== this.options.orchestrator.id)
+        .filter((bot) => bot.id !== this.options.house.id)
         .map((bot) => ({ bot, kind: "waifu" as const }))
     ];
   }
@@ -508,7 +508,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
       await destroyClientQuietly(client);
       if (
         generation === this.generation &&
-        kind === "orchestrator" &&
+        kind === "house" &&
         this.options.guildMembersIntent === true &&
         !this.membersIntentRejected &&
         classifyDiscordConnectionError(error) === "disallowed_intents"
@@ -534,7 +534,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
           errorCode,
           message: errorMessage(error)
         });
-        // The orchestrator's retry is owned by the backend (it reconnects everything); a waifu on
+        // The House bot's retry is owned by the backend (it reconnects everything); a waifu on
         // a flaky network retries alone so the rest of the cast stays online.
         if (kind === "waifu" && errorCode === "network") {
           this.scheduleBotRetry(entry, generation);
@@ -550,8 +550,8 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
     this.clients.set(bot.id, client);
     this.botRetryAttempts.delete(bot.id);
     this.setBotStatus(bot, kind, { state: "connected" });
-    if (kind === "orchestrator") {
-      await registerOrchestratorCommands(client, this.options.logger);
+    if (kind === "house") {
+      await registerHouseCommands(client, this.options.logger);
     } else {
       await registerDmCommands(client, this.clientDmWaifu.has(bot.id), this.options.logger);
     }
@@ -610,8 +610,8 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
     });
     const client = this.options.createClient?.({ bot, kind, options }) ?? new Client(options);
     this.attachClientRuntimeHandlers(client, bot.id);
-    if (kind === "orchestrator") {
-      this.attachOrchestratorListeners(client);
+    if (kind === "house") {
+      this.attachHouseListeners(client);
     }
     if (dmWaifu !== undefined) {
       this.clientDmWaifu.set(bot.id, dmWaifu);
@@ -736,7 +736,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
 
   dmIntentStatus(): DiscordDmIntentStatus[] {
     return (this.options.waifus ?? [])
-      .filter((bot) => bot.id !== this.options.orchestrator.id)
+      .filter((bot) => bot.id !== this.options.house.id)
       .map((bot) => {
         const connected = this.clients.has(bot.id);
         const waifuId = this.dmWaifuByBot.get(bot.id);
@@ -867,11 +867,11 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
         .map((message) => toRawDiscordMessage(message as unknown as DiscordMessageLike))
         .sort((a, b) => compareIds(a.id, b.id));
     }
-    const client = this.orchestratorClient();
+    const client = this.houseClient();
     const channel = await client.channels.fetch(input.conversation.channelId);
     if (!channel || !("messages" in channel)) return [];
     const page = await channel.messages.fetch({ limit, before: input.beforeId });
-    const houseIds = [...botAuthorIds([this.options.orchestrator]), client.user?.id];
+    const houseIds = [...botAuthorIds([this.options.house]), client.user?.id];
     const guildId = input.conversation.guildId;
     return withoutAuthors([...page.values()] as unknown as DiscordMessageLike[], houseIds)
       .map((message) => toRawDiscordMessage(message, guildId))
@@ -933,9 +933,9 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
 
   onConversationEvent(listener: DiscordConversationEventListener): () => void {
     this.conversationListeners.add(listener);
-    // A subscriber that arrives after the orchestrator connected missed its `ready`: replay it,
+    // A subscriber that arrives after the House bot connected missed its `ready`: replay it,
     // otherwise its buffers could never be trusted.
-    if (this.clients.has(this.options.orchestrator.id)) {
+    if (this.clients.has(this.options.house.id)) {
       this.dispatchTo(listener, { type: "connection", scope: "guild", state: "ready" });
     }
     // Same for every DM transport that is already online (its scope must turn live to be trusted).
@@ -950,7 +950,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   onDirectoryEvent(listener: DiscordDirectoryEventListener): () => void {
     this.directoryListeners.add(listener);
     // discord.js emits GuildCreate only for guilds joined later; replay what is already there.
-    const client = this.clients.get(this.options.orchestrator.id);
+    const client = this.clients.get(this.options.house.id);
     if (client) {
       for (const guild of client.guilds.cache.values()) this.dispatchTo(listener, guildSnapshotEvent(guild));
     }
@@ -971,14 +971,14 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
     }
   }
 
-  private attachOrchestratorListeners(client: Client): void {
+  private attachHouseListeners(client: Client): void {
     // Registered before the intake listener below: when a handler reads the conversation, the
     // cache has already seen the message that woke it (trusted reads make no REST calls).
     attachGatewayFeed(client, "guild", {
       conversation: (event) => this.emitConversationEvent(event),
       directory: (event) => this.emitDirectoryEvent(event),
       ignoredAuthorIds: () =>
-        new Set([...botAuthorIds([this.options.orchestrator]), ...(client.user?.id ? [client.user.id] : [])])
+        new Set([...botAuthorIds([this.options.house]), ...(client.user?.id ? [client.user.id] : [])])
     });
     client.on("messageCreate", (message) => {
       if (!message.guildId) return;
@@ -1063,7 +1063,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   }
 
   async joinThread(input: { guildId: string; threadId: string }): Promise<void> {
-    const channel = await this.orchestratorClient().channels.fetch(input.threadId);
+    const channel = await this.houseClient().channels.fetch(input.threadId);
     if (channel && channel.isThread() && channel.joinable && !channel.archived) await channel.join();
   }
 
@@ -1083,7 +1083,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   }
 
   async listGuilds(): Promise<Array<{ guildId: string; name: string }>> {
-    const client = this.orchestratorClient();
+    const client = this.houseClient();
     await client.guilds.fetch();
     return client.guilds.cache.map((guild) => ({
       guildId: guild.id,
@@ -1095,13 +1095,13 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
     guildId: string;
     channelId: string;
   }): Promise<DiscordChannelMetadata> {
-    const client = this.orchestratorClient();
+    const client = this.houseClient();
     const [guild, channel] = await Promise.all([
       client.guilds.fetch(input.guildId),
       client.channels.fetch(input.channelId)
     ]);
     if (!channel) {
-      throw new Error(`Discord channel ${input.channelId} is not accessible to the orchestrator bot.`);
+      throw new Error(`Discord channel ${input.channelId} is not accessible to the House bot.`);
     }
     const channelGuildId =
       "guildId" in channel && typeof channel.guildId === "string" ? channel.guildId : undefined;
@@ -1124,7 +1124,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
     signal?: AbortSignal;
   }): Promise<ContextMessage[]> {
     throwIfAborted(input.signal);
-    const client = this.orchestratorClient();
+    const client = this.houseClient();
     let cache = await this.cacheForGuild(input.guildId);
     const channel = await client.channels.fetch(input.channelId);
     if (!channel || !("messages" in channel)) {
@@ -1193,7 +1193,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
       messages,
       { ...cache, roles: mergeRoleCaches(cache.roles ?? [], mentionedRoles) },
       {
-        orchestratorAuthorIds: botAuthorIds([this.options.orchestrator]),
+        houseAuthorIds: botAuthorIds([this.options.house]),
         waifuAuthorIds: botAuthorIds(this.options.waifus ?? [])
       }
     ).messages;
@@ -1207,7 +1207,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
     signal?: AbortSignal;
   }): Promise<{ messages: RawDiscordMessage[]; reachedCursor: boolean }> {
     throwIfAborted(input.signal);
-    const client = this.orchestratorClient();
+    const client = this.houseClient();
     const channel = await client.channels.fetch(input.channelId);
     if (!channel || !("messages" in channel)) {
       return { messages: [], reachedCursor: true };
@@ -1216,10 +1216,10 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
       async (before) => (await channel.messages.fetch(before ? { limit: 100, before } : { limit: 100 })).values(),
       { afterMessageId: input.afterMessageId, maxMessages: input.maxMessages, signal: input.signal }
     );
-    // The orchestrator bot's own posts (debug logs, /print fallbacks) are never conversation.
-    const orchestratorIds = [...botAuthorIds(this.options.orchestrator ? [this.options.orchestrator] : []), client.user?.id];
+    // The House bot's own posts (debug logs, /print fallbacks) are never conversation.
+    const houseIds = [...botAuthorIds(this.options.house ? [this.options.house] : []), client.user?.id];
     return {
-      messages: withoutAuthors(result.messages as unknown as DiscordMessageLike[], orchestratorIds).map((message) =>
+      messages: withoutAuthors(result.messages as unknown as DiscordMessageLike[], houseIds).map((message) =>
         toRawDiscordMessage(message, input.guildId)
       ),
       reachedCursor: result.reachedCursor
@@ -1234,11 +1234,11 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
     replyToMessageId?: string;
     allowedUserMentionIds: string[];
   }): Promise<{ messageId: string }> {
-    const client = input.senderBotId ? this.clients.get(input.senderBotId) : this.orchestratorClient();
+    const client = input.senderBotId ? this.clients.get(input.senderBotId) : this.houseClient();
     if (!client) {
       throw new Error(input.senderBotId
         ? `Waifu Discord bot ${input.senderBotId} is not connected.`
-        : "Orchestrator Discord client is not connected.");
+        : "The House bot is not connected.");
     }
     const cache = await this.cacheForGuild(input.guildId);
     const channel = await client.channels.fetch(input.channelId);
@@ -1292,7 +1292,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
     channelId: string;
     senderBotId?: string;
   }): Promise<void> {
-    const client = input.senderBotId ? this.clients.get(input.senderBotId) : this.orchestratorClient();
+    const client = input.senderBotId ? this.clients.get(input.senderBotId) : this.houseClient();
     if (!client) return;
     try {
       const channel = await client.channels.fetch(input.channelId);
@@ -1316,24 +1316,24 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
     };
   }
 
-  private orchestratorClient(): Client {
-    const client = this.clients.get(this.options.orchestrator.id);
+  private houseClient(): Client {
+    const client = this.clients.get(this.options.house.id);
     if (!client) {
-      throw new Error("Orchestrator Discord client is not connected.");
+      throw new Error("The House bot is not connected.");
     }
     return client;
   }
 
   private clientForAuthor(authorId?: string): Client {
     if (authorId) {
-      const bots = [this.options.orchestrator, ...(this.options.waifus ?? [])];
+      const bots = [this.options.house, ...(this.options.waifus ?? [])];
       const bot = bots.find((candidate) => candidate.id === authorId || candidate.applicationId === authorId);
       const client = bot ? this.clients.get(bot.id) : undefined;
       if (client) {
         return client;
       }
     }
-    return this.orchestratorClient();
+    return this.houseClient();
   }
 
   private botIdForClient(client: Client): string | undefined {
@@ -1421,8 +1421,8 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
       error: message,
       ...(closeCode === undefined ? {} : { closeCode })
     });
-    if (entry.kind === "orchestrator") {
-      // Same policy as connect(): waifus cannot be cast without the orchestrator. End this session
+    if (entry.kind === "house") {
+      // Same policy as connect(): waifus cannot be cast without the House bot. End this session
       // like a disconnect (new generation, aborted logins, no retries) so an in-flight waifu retry
       // is destroyed instead of adopted, but keep the statuses for the status API.
       this.generation += 1;
@@ -1442,8 +1442,8 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
         this.botStatuses.set(waifuBotId, {
           ...rest,
           state: "error",
-          errorCode: "orchestrator_unavailable",
-          error: "Disconnected because the orchestrator bot is offline.",
+          errorCode: "house_unavailable",
+          error: "Disconnected because the House bot is offline.",
           updatedAt: new Date().toISOString()
         });
       }
@@ -1603,7 +1603,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
 }
 
 /**
- * The orchestrator reads every channel (messages, reactions, content) and owns slash commands.
+ * The House bot reads every channel (messages, reactions, content) and owns slash commands.
  * Waifu clients never listen: they only fetch a channel, send, type and delete their own messages,
  * all over REST, so they need just `Guilds` (channel cache) and keep no message/member caches.
  */
@@ -1634,7 +1634,7 @@ export function threadInfoOf(channel: unknown): DiscordThreadInfo | undefined {
 }
 
 function discordClientOptions(kind: DiscordBotKind, o: { guildMembersIntent?: boolean; dm?: boolean } = {}): ClientOptions {
-  if (kind === "orchestrator") {
+  if (kind === "house") {
     return {
       intents: [
         GatewayIntentBits.Guilds,
@@ -1987,11 +1987,11 @@ function slashCommandLogContext(event: DiscordSlashCommandEvent): Record<string,
   };
 }
 
-async function registerOrchestratorCommands(client: Client, logger?: Logger): Promise<void> {
+async function registerHouseCommands(client: Client, logger?: Logger): Promise<void> {
   try {
     const manager = client.application?.commands;
     if (!manager) return;
-    const payloads = buildOrchestratorCommandPayloads();
+    const payloads = buildHouseCommandPayloads();
     const commands = await manager.fetch();
     for (const payload of payloads) {
       const existing = commands.find((command) => command.name === payload.name);
@@ -2006,7 +2006,7 @@ async function registerOrchestratorCommands(client: Client, logger?: Logger): Pr
       if (existing) await manager.delete(existing.id);
     }
   } catch (error) {
-    logger?.warn("Failed to register orchestrator slash commands", {
+    logger?.warn("Failed to register the House bot's slash commands", {
       message: error instanceof Error ? error.message : String(error)
     });
   }
@@ -2057,7 +2057,7 @@ async function registerDmCommands(client: Client, dm: boolean, logger?: Logger):
   }
 }
 
-export function buildOrchestratorCommandPayloads() {
+export function buildHouseCommandPayloads() {
   return withGuildContext([
     {
       name: WAKE_COMMAND_NAME,
@@ -2108,7 +2108,7 @@ export function buildOrchestratorCommandPayloads() {
   ]);
 }
 
-/** Orchestrator commands exist only in servers (spec 9.1.5). */
+/** The House bot's commands exist only in servers (spec 9.1.5). */
 function withGuildContext<T extends object>(payloads: T[]): Array<T & { contexts: InteractionContextType[] }> {
   return payloads.map((payload) => ({ ...payload, contexts: [InteractionContextType.Guild] }));
 }

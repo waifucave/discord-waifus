@@ -19,7 +19,7 @@ afterEach(async () => {
   roots = [];
 });
 
-async function makeApp(extra: { runtimeOrchestrator?: unknown; runtimeControl?: ApiServerOptions["runtimeControl"] } = {}) {
+async function makeApp(extra: { castRuntime?: unknown; runtimeControl?: ApiServerOptions["runtimeControl"] } = {}) {
   const root = await makeTempRoot();
   roots.push(root);
   await ensureDataLayout(root);
@@ -33,7 +33,7 @@ async function makeApp(extra: { runtimeOrchestrator?: unknown; runtimeControl?: 
     paused: false,
     discord: {
       connected: false,
-      orchestratorConnected: false,
+      houseConnected: false,
       waifuBotCount: 0,
       warnings: []
     },
@@ -47,7 +47,7 @@ async function makeApp(extra: { runtimeOrchestrator?: unknown; runtimeControl?: 
     runtime,
     storage: new StorageService(root),
     ...(extra.runtimeControl ? { runtimeControl: extra.runtimeControl } : {}),
-    ...(extra.runtimeOrchestrator ? { runtimeOrchestrator: extra.runtimeOrchestrator as never } : {})
+    ...(extra.castRuntime ? { castRuntime: extra.castRuntime as never } : {})
   });
   return { app, root };
 }
@@ -55,7 +55,7 @@ async function makeApp(extra: { runtimeOrchestrator?: unknown; runtimeControl?: 
 describe("Backend API", () => {
   it("persists idle-update settings without reloading or interrupting the runtime", async () => {
     const reload = vi.fn(async () => undefined);
-    const { app } = await makeApp({ runtimeControl: { getOrchestrator: () => undefined,
+    const { app } = await makeApp({ runtimeControl: { getCastRuntime: () => undefined,
       pause: async () => undefined, resume: async () => undefined, reload } });
     try {
       const current = (await app.inject({ method: "GET", url: "/api/config" })).json();
@@ -541,7 +541,7 @@ describe("Backend API", () => {
   it("hot-reloads runtime after config and Discord bot updates", async () => {
     const reloadReasons: string[] = [];
     const runtimeControl = {
-      getOrchestrator: () => undefined,
+      getCastRuntime: () => undefined,
       pause: async () => undefined,
       resume: async () => undefined,
       reload: async (reason: string) => {
@@ -561,7 +561,7 @@ describe("Backend API", () => {
       paused: false,
       discord: {
         connected: false,
-        orchestratorConnected: false,
+        houseConnected: false,
         waifuBotCount: 0,
         warnings: []
       },

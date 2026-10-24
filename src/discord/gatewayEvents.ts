@@ -16,7 +16,7 @@ export type DiscordMessagePatch = Partial<Pick<RawDiscordMessage, "content" | "e
 export type DiscordReactionEmoji = { id?: string; name: string; animated?: boolean };
 
 /**
- * Gateway scope of a connection event: "guild" is the orchestrator client (guild messages); DM
+ * Gateway scope of a connection event: "guild" is the House bot's client (guild messages); DM
  * transports (wave 2) use `dm:<botId>`. A cache trusts a conversation only while its scope has not
  * reconnected since the conversation was synced.
  */

@@ -1,9 +1,9 @@
 // ConversationMessageCache (spec 9.4): the Phase 5 `ConversationMessageSource`.
 //
 // Per conversation it keeps the recent `RawDiscordMessage`s in id order, fed by REST pages, the
-// orchestrator's gateway events and our own sends. A conversation is *trusted* after a REST sync
+// House bot's gateway events and our own sends. A conversation is *trusted* after a REST sync
 // for as long as its gateway scope has not reconnected: trusted reads are served from memory with
-// no REST call, so a pass with several agents (orchestrator + responders) costs at most one
+// no REST call, so a pass with several agents (the House bot and the cast) costs at most one
 // message fetch, usually none. An untrusted conversation (boot, reconnect, invalidated session)
 // runs one single-flight catch-up; a trusted one re-validates its newest 10 messages every
 // `tailCheckAfterMs`. Reactions are event-fed summaries: nothing here ever calls `users.fetch`.
@@ -438,7 +438,7 @@ export class ConversationMessageCache implements ConversationMessageSource {
   }
 
   private onCreate(conversation: ConversationRef, message: RawDiscordMessage, ownHint: boolean): void {
-    // Our own send arrives twice (published by the sender, then by the orchestrator's gateway).
+    // Our own send arrives twice (published by the sender, then by the House bot's gateway).
     if (this.seenCreates.has(message.id)) return;
     // Own = authored by one of our bots, whichever of the two deliveries came first.
     const own = ownHint || this.ownAuthorIds().has(message.authorId);

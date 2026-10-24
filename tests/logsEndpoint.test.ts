@@ -24,7 +24,7 @@ describe("GET /api/logs", () => {
       dataRoot: root,
       mode: "test",
       paused: false,
-      discord: { connected: false, orchestratorConnected: false, waifuBotCount: 0, warnings: [] },
+      discord: { connected: false, houseConnected: false, waifuBotCount: 0, warnings: [] },
       queues: { active: 0, configuredGuilds: 0 }
     });
     // newest-first, like backend/logger.ts (unshift)
