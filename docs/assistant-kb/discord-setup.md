@@ -4,9 +4,10 @@ Creating the bot applications and wiring them to your server.
 
 ## Why several bots
 
-The orchestrator and every waifu each run as their own Discord bot application. That's what
-gives each character her own name, avatar, and presence. For a five-waifu cast you create six
-applications total (1 orchestrator + 5 waifus).
+Every waifu runs as her own Discord bot application. That's what gives each character her own
+name, avatar, and presence. The `orchestrator` entry is one more application: it still hosts the
+server slash commands and directory refreshes and must log in for the waifu bots to connect. For a
+five-waifu cast you create six applications total (1 orchestrator + 5 waifus).
 
 ## Per application (Discord Developer Portal)
 
@@ -15,8 +16,8 @@ applications total (1 orchestrator + 5 waifus).
 3. Reset Token → copy it. Tokens are shown once by Discord and stored write-only here.
 4. Copy the **Application ID** as well.
 5. Invite: OAuth2 → URL Generator → scope `bot`, permissions: View Channels, Send Messages,
-   Read Message History, Add Reactions, Use External Emojis, Manage Messages (orchestrator
-   only, for the reviewer's deletes). Open the generated URL and add it to your server.
+   Read Message History, Add Reactions, Use External Emojis. Open the generated URL and add it
+   to your server.
 
 ## In the app
 
@@ -40,7 +41,7 @@ Without it, member names are learned from messages and mentions, and `GET /api/r
 Rooms → pick the server → per channel, toggle the waifus that may speak there
 (`PUT /api/servers/:guildId/channels/:channelId` with `enabledWaifuIds`; both ids must be
 Discord snowflakes). A channel is active exactly when its `enabledWaifuIds` list is non-empty,
-and a waifu missing from that list never speaks there, whatever the orchestrator wants. There is no
+and a waifu missing from that list never speaks there. There is no
 separate channel or server `enabled` flag: empty the list to silence a channel, or pause the
 server with `PUT /api/servers/:guildId {"paused": true}` (Rooms → the server switch).
 
@@ -56,10 +57,11 @@ missing. `GET /api/servers/:guildId/threads` lists the threads the bot has seen.
 
 ## Direct messages (DMs)
 
-A waifu answers DMs sent to her own bot when her `dm.allowDms` is on (default off; `PUT
+(Living cast in progress: DMs are not answered until the life loop ships; the rules below
+describe what the settings control.) A waifu answers DMs sent to her own bot when her
+`dm.allowDms` is on (default off; `PUT
 /api/waifus/:id {"dm": {"allowDms": true}}`). A DM is a 1:1 chat with that waifu only: no
-orchestrator, no other waifus, but the same prompt rules, model, memories and compaction as in
-servers. Requirements: the waifu is enabled, has a model, and is the ONLY enabled waifu linked to
+other waifus, with the same model and prompt rules as in servers. Requirements: the waifu is enabled, has a model, and is the ONLY enabled waifu linked to
 her bot (a shared bot takes no DMs; `GET /api/runtime` → `discord.dm.warnings` shows
 `dm_bot_shared:<botId>`, `dm_missing_model:<waifuId>` or `dm_intent_pending_reconnect:<botId>`).
 The DM intents (Direct Messages, DM reactions) are not privileged and need no Developer Portal
@@ -77,7 +79,8 @@ the user writes again. Counters survive restarts and a user's `/forget`.
 
 In DMs her bot offers `/forget what:<this conversation|everything about me>`, answered privately
 with a 30-second Confirm button. "this conversation" deletes the DM transcript; "everything"
-also deletes the DM state and her memories about that user. Neither resets the rate limit.
+also deletes the DM state. Neither resets the rate limit. The owner's full forget is
+`POST /api/people/:userId/forget`.
 Server slash commands (`/run`, `/print`, …) exist only in servers.
 
 ## Connection

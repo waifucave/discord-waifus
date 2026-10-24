@@ -12,7 +12,7 @@ specs and plans describe earlier checkpoints and do not establish present releas
 - `npm run build:backend` — backend only. Run this when you change `src/**/*.ts` and want the shipped CLI to pick the change up, since `bin/waifus.mjs` prefers `dist/cli/main.js` over the `tsx` fallback.
 - `npm run typecheck` — type-checks backend and frontend configs separately, no emit.
 - `npm run test` / `npm run test:watch` — Vitest, Node environment, `tests/**/*.test.ts`. Run one file with `npx vitest run tests/<name>.test.ts`; one test with `npx vitest run -t "<name pattern>"`.
-- `npm run benchmark:decisions` — preview bounded orchestrator judgments without inference; `-- --live` runs the benchmark using saved provider settings. Local Laya uses a separate Python environment. See `docs/decision-api-benchmark.md`; this tooling does not enable decision APIs in the production orchestrator.
+- `npm run benchmark:decisions` — preview bounded decision judgments without inference; `-- --live` runs the benchmark through `ModelClient` using saved provider settings. Local Laya uses a separate Python environment. See `docs/decision-api-benchmark.md`; this tooling does not enable anything in production.
 - `npm run waifus -- <cmd>` — invoke the CLI through the local bin (`start`, `dev`, `stop`, `restart`, `status`, `remote`, `doctor`, `clean`, `update`). `remote status` and `remote stop` target only the remote gateway daemon.
 - `npm run dev:frontend` — Vite dashboard on `:5173`, proxies `/api` to `127.0.0.1:3888`. Pair with `npm run waifus -- dev` for end-to-end iteration.
 - `npm run release:beta -- <version> --yes --message "..."` — full release from a clean `main`: validates (tests, build, `check-no-file-deps`), packs, pushes the `v<version>` tag, and the GitHub workflow publishes the tarball to npm (`npm publish <tarball>` runs no lifecycle scripts, so `prepublishOnly` never fires on that path). Deploying to a machine is a separate manual `npm install -g @waifucave/discord-waifus@<version>` + `waifus restart`.
@@ -41,65 +41,68 @@ prebuilt React SPA and Discord runtime. When Remote Access is enabled, that host
 platform-specific `ts-connect` child. `waifus remote` is a separate local Node gateway with no
 Discord runtime and supervises its own remote-role helper child.
 
-**Startup pipeline** (`src/backend/server.ts:startBackend`): acquire the exclusive host lock `app/host.lock` (`src/storage/instanceLock.ts`: pid + OS process start time + nonce; a second host on the same data root fails fast, stale locks are broken; the remote gateway role does not take it) → `runMigrations` (`src/backend/migrations.ts`; legacy shape steps run once and are recorded in the `app/migrations.json` ledger, the gateway-params remap re-runs per app version, and invariant checks such as remote-state hardening run every boot — a missing/corrupt ledger, or an `app/runtime.json` written by a different version than the ledger's, re-runs every idempotent step; new steps get a new id) → `loadAppConfig` → instantiate `StorageService` (per-resource locking JSON store rooted at the data root) → optional Discord connect (`maybeConnectDiscord`, gated by `runtime.autoConnectDiscord`) → build `RuntimeOrchestrator` → mount API via `createApiServer`. Runtime state is persisted to `~/.dc-waifus/runtime.json` so `waifus status`/`stop` can find the live process; they verify the pid against the lock's start time (or pid.json `startedAt`) before reporting or signalling it, so a pid reused after a crash is treated as stale. Start times come from `ps` on macOS/Linux; Windows falls back to pid liveness.
+**Startup pipeline** (`src/backend/server.ts:startBackend`): acquire the exclusive host lock `app/host.lock` (`src/storage/instanceLock.ts`: pid + OS process start time + nonce; a second host on the same data root fails fast, stale locks are broken; the remote gateway role does not take it) → `runMigrations` (`src/backend/migrations.ts`; legacy shape steps run once and are recorded in the `app/migrations.json` ledger, the frozen legacy model-id remap re-runs per app version, and invariant checks such as remote-state hardening and the stored-effort check run every boot — a missing/corrupt ledger, or an `app/runtime.json` written by a different version than the ledger's, re-runs every idempotent step; new steps get a new id) → `loadAppConfig` → instantiate `StorageService` (per-resource locking JSON store rooted at the data root) → optional Discord connect (`maybeConnectDiscord`, gated by `runtime.autoConnectDiscord`) → build `RuntimeOrchestrator` → mount API via `createApiServer`. Runtime state is persisted to `~/.dc-waifus/runtime.json` so `waifus status`/`stop` can find the live process; they verify the pid against the lock's start time (or pid.json `startedAt`) before reporting or signalling it, so a pid reused after a crash is treated as stale. Start times come from `ps` on macOS/Linux; Windows falls back to pid liveness.
 
-**Per-channel orchestration loop** (`src/orchestration/`): `runtime.ts` is the `RuntimeOrchestrator` facade (lifecycle, pause/resume, Discord intake) over collaborators — `channelRunner.ts` (run loop, one-run-per-guild slot, preemption queue, retriggers, restart resume), `responderExecutor.ts` (responder execution, `generateValidatedWaifuReply` retry loop, chunk sending), `commands.ts` (slash commands), `memoryJobs.ts` (observer + dream scheduling), `reviewerRunner.ts`, `waifuHarness.ts` / `orchestratorHarness.ts` (the prompt renderers for the two main agents, see Context engine below), `promptBuilders.ts` (only the deterministic cast, directive text and "currently doing" helpers), and `stores/*` (persistence). Discord activity drives an abortable channel run. Each pass fetches fresh context, plans a `reply` or `no_reply`, records history, and executes responders through their own gateway pipelines. Reply splitting and typing delays live in `responderExecutor.ts` and `verbosity.ts`; reviewer and idle stage-manager work remain separate. Per-server `orchestratorMode` selects LLM (`model`), free structural (`deterministic`), or native choice (`one-shot`). Missing global director LLM falls back to deterministic only outside One shot; One shot has its own independent target. Its speaker/pause choice is indivisible, steering is bounded, optional OCR text is preserved, and failures use safe codes. One-shot state renders messages with absolute local times (`time: "HH:MM"`, a `date` only when not today, plus the state's `now`), never relative ages; only the decision benchmark keeps its age rendering. `stageManagerEnabled: false` independently disables stage-manager/dream work.
+**Living cast (in progress, spec `docs/specs/2026-10-24-living-cast-design.md`)**: the
+director/orchestrator, stage manager, reviewer, memory store, dreams, persona digests, the
+per-channel run loop, restart resume, the epoch context engine and the waifu reply path were
+removed in L1 (spec §11.1, §15). Until L2 wires the intake, wake router and life loop (§3, §4),
+`RuntimeOrchestrator` (`src/orchestration/runtime.ts`) keeps the Discord lifecycle, guild/channel
+sync, thread tracking, DM eligibility, forget and pause/resume, and only logs
+`Living cast not yet wired (L2)` for each accepted guild message or DM: **nobody replies between L1
+and L2**. Pieces kept for L2 per the spec's keep/move table: `src/life/` (outbound text checks in
+`outbound.ts`, availability, text helpers, and the addressee detector's native-choice protocol,
+catalog and local Laya worker in `life/detector/`); `src/orchestration/context/` (message
+rendering, time format, token estimates/calibration, image freeze limits, conversation keys and
+compaction helpers); `debounce.ts`, `dm/` (store, rate limit, forget), `stores/*`,
+`providerAlerts.ts`, `usageLedger.ts`, OCR. Server files still carry `orchestratorMode`, `oneShot`,
+`contextWindows` and `tools` until L2 replaces them; nothing reads them and the Rooms UI no longer
+edits them. Slash commands stay registered.
 
-**Context engine** (`src/orchestration/context/`, spec 8.3): every waifu reply and orchestrator
-decision is built by `ContextRuntime` (`runtime.ts`; production wiring in `appRuntime.ts`) as
-`prepare` -> `call` -> `commit` (+ `compactNow`). Per conversation it keeps one durable `ledger`
-of Discord messages and one set of stable `#ref`s shared by every agent (`contextStore.ts`,
-`ledger.ts`, `refs.ts`); per (conversation, agent) it keeps a `ContextState` (epoch, cursor,
-notes, frozen header). Ledger pruning stays below every context used in the last 7 days and the
-stage-manager observer's read-through cursor (capped); refs are dropped only with the entries
-the ledger removes. The prompt is **epoch-based, append-only and ends with an ephemeral tail**:
-system (A: rules, identity and the cast) + a frozen epoch header (B: summary, memory snapshot,
-place) + the transcript since the epoch's `cursorSeq` + a per-call tail (clock, who is around
-now, direction, retry/wake text) that is never persisted and never marked. Nothing already rendered may move within an epoch: edits, deletes, tool calls and
-decisions are appended as notes (`memory`, `direction`, `tool`, `decision`, `edit`), images and
-OCR text freeze at first render, and a new epoch starts only on compaction. Cache breakpoints sit
-on A, B, the previous C (`lastBreakpoint`) and C (the last transcript text block): at most 4.
-`builder.ts` is the only code that lays a prompt out; `waifuHarness.ts` and
-`orchestratorHarness.ts` supply the role text (system, header, tail, tools). **Exactly one
-`role:"system"` message, always `messages[0]`**: every harness, the reviewer, observer, dream,
-digest and assistant paths obey it, the gateway demotes any late system message, and
-`tests/singleSystemMessage.test.ts` fails on a second one. Agents without a summarizer
-(deterministic/one-shot), and every agent when `compaction.enabled` is false, truncate durably
-(new epoch, no summary) at the same limits, so no prompt grows without bound. Inline images are
-capped at 3,932,160 raw bytes (`MAX_INLINE_IMAGE_BYTES`, Anthropic's 5 MB base64 limit); a larger
-one freezes to text. Compaction
-(`compaction.ts`) is per context and uses that agent's own model: it sends the prompt through C
-with the same tools/tool choice/params as the reply call and only the tail replaced, so it reuses
-the cached prefix (defaults: 150 messages or 70% of the model budget, keep 30). Per-call usage is
-appended to the usage ledger (`usageLedger.ts`), one line per model call including aborted and
-failed ones (one-shot decisions use purpose `one_shot`). `tests/eval/cacheHit.test.ts` simulates
-Anthropic's cache over the real wire body at default settings (targets: 0.8 cache-read ratio for
-quiet rooms, DMs and deletions, 0.75 for busy rooms for both roles, see spec 8.11.1);
-`tests/golden/` pins the rendered prompts and must be reviewed by the owner when it
-changes.
+**Model layer** (`src/models/`, spec §9): every model call goes through `ModelClient`
+(`client.ts`, `call` and `stream`) on winter's provider runtime: winter route resolution → winter's
+history renderer → `adapter.streamTurn` (retries happen inside the adapter, before the first byte)
+→ the stream assembler (`assemble.ts`) → one usage-ledger line per call, including aborted and
+failed ones. System prompts are passed as `system` (blocks joined by a blank line) plus
+`systemBlocks` (cache scope `org`), `cacheTtl: "1h"` and `messageCacheTtl: { rolling: "1h" }`;
+**`messages` never carry a `role: "system"` entry**. `catalog.ts` is the curated view over the
+installed winter catalog (allow list in `defaults.ts`, price cap, hidden routes with reasons, the
+OpenRouter reasoning-replay feature check); `credentials.ts` reads keys live from
+`user/providers.json` and passes them inline per call (the gateway-era provider ids
+`google-ai-studio`/`qwen` map to `google`/`alibaba`); `errors.ts` maps winter errors to app kinds
+(`context_overflow`, `quota`, `billing`, `rate_limit`, `auth`, `aborted`, `other`; quota/billing
+open provider cooldowns in `providerAlerts.ts`); `summarize.ts` is the compaction summarize helper;
+`modelWarnings.ts` persists upgrade/boot warnings (`app/model-warnings.json`). Usage purposes are
+`life`, `maintenance`, `detector`, `compaction`, `assistant` (older lines keep their legacy
+purposes). Without a request cap, a route the catalog gives no `maxOutputTokens` gets
+`DEFAULT_OUTPUT_CAP_TOKENS`. Cost prefers winter's `reportedCostUsd` (0 is a real value) over the
+list-price estimate.
 
 **Migrations** (`src/backend/migrations.ts`, `src/backend/migrationSteps/`): steps are `once`
 (legacy shape conversions, recorded in `app/migrations.json`), `once-per-app-version` (outcome
-depends on code shipped with the app, e.g. the gateway param remap) or `every-boot` (invariants,
+depends on code shipped with the app, e.g. the frozen legacy model-id remap) or `every-boot` (invariants,
 never recorded). Every step is idempotent: re-running all of them (lost ledger, manual upgrades)
 leaves the data root byte-identical (`tests/phase4Acceptance.test.ts`). Phase 4 added the
-gateway-0.4.0 param cleanup, prompt-layout removal, explicit server context windows, global
+gateway-0.4.0 param cleanup (removed in Living cast L1; its id stays in the history comment), prompt-layout removal, explicit server context windows, global
 memory origin/subjects with a one-time cross-guild dedupe (its own marker file survives ledger
 loss), global pending observations and dream cursor, the URL-keyed OCR cache cleanup and the
 `ocr.cacheTtlHours` 24 -> 168 default move. Phase 5 added `orchestrator-history-per-guild-v1` and
-`server-drop-enabled-flags-v1`. Phase 4 must ship as a minor release (2.112.0): its
+`server-drop-enabled-flags-v1`. Living cast L1 added `living-cast-models-v1` (once: gateway
+provider ids → winter ids, each waifu/assistant model → nested `model: {providerId, modelId,
+effort?}` by family, drops `params`, `contextWindow`, `personaDigest`, `tools.toolUse`; unmapped
+models are unset and reported in `GET /api/runtime` → `models.warnings`) and
+`living-cast-model-effort-check` (every boot: drops a stored effort the installed catalog no longer
+lists for that route). Phase 4 must ship as a minor release (2.112.0): its
 memory migrations cannot be read by 2.111.x, and downgrade is unsupported. Never
 change a shipped step's id or meaning: add a new step with a new id, keep the removed steps' ids
 in the history comment, and register it before the schema-version stamp, which stays last.
 `promptLayout` may appear under `src/` only in the layout-removal migration and the one-release
 PUT shim in `src/api/server.ts`.
 
-**Restart resume** (`src/orchestration/restartResume.ts`): at boot, a planner inspects each channel's persisted decisions and timers and schedules catch-up wakes. A human message that arrived while the process was down outranks any restored timer (the executor fetches fresh context best-effort to detect this), so deploy-window messages get a prompt reply instead of waiting out an old idle schedule.
-
 **Discord features (Phase 5, spec 9):**
 - *Conversation cache and guild directory* (`src/discord/conversationCache.ts`,
-  `guildDirectory.ts`, `gatewayFeed.ts`): `ConversationMessageCache` is the context engine's
-  message source. It keeps recent raw messages per conversation, fed by REST pages, gateway events
+  `guildDirectory.ts`, `gatewayFeed.ts`): `ConversationMessageCache` is the message source L2's life
+  loop builds on. It keeps recent raw messages per conversation, fed by REST pages, gateway events
   (messages, edits, deletes, reactions) and our own sends (published before
   `sendWaifuMessage`/`sendDirectMessage` return). A conversation is trusted after a REST sync while
   its gateway scope (`guild`, or `dm:<waifuId>` per DM bot) stays connected; trusted reads make no
@@ -108,53 +111,30 @@ PUT shim in `src/api/server.ts`.
   current from gateway events (members by message authors, single fetches for unknown mentions and a
   periodic list refresh; the privileged GuildMembers intent is opt-in via
   `discord.guildMembersIntent`).
-- *Per-guild decision history*: `user/servers/<guildId>/orchestrator-history.json` (300 per guild);
-  `GET /api/orchestrator/history` merges guilds (plus `history-legacy.json`) unless `guildId` is
-  given. Server/channel `enabled` flags are gone: a channel is live when it has an enabled waifu,
-  server `paused` is the kill switch.
-- *Edits, deletes, threads*: edits of sealed ledger entries become `edit` notes; deletes follow the
-  hybrid rule (`discord.deletedMessages.redactRecent`, recent or unsealed → "(message deleted)",
-  older → marked and left out of the next summary); edits never trigger runs except an edit adding a
-  waifu mention to the newest human message. Threads/forum posts are their own conversations that
-  inherit the parent's cast unless the channel's `threads` is `"off"` (`stores/threads.ts`,
-  `threads.json`).
-- *Debounce* (`src/orchestration/debounce.ts`, `discord.debounce.*`): human messages in a channel
-  are coalesced (`serverMs` 1200 / `serverMaxWaitMs` 4000) into one `message-burst:<id>` run; an
-  arriving message aborts that channel's own pre-send run, another channel's run is only preempted
-  at fire time, timer wakes for a channel with a pending burst are dropped, `/run` and `/stop`
-  cancel it, pause cancels all, shutdown turns pending bursts into persisted wakes.
-  `RuntimeOrchestrator` without a `debounce` option fires at once (`serverMs: 0`, the old
-  behaviour); the backend passes the config.
-- *DMs* (`src/orchestration/dm/`): a waifu with `dm.allowDms` answers DMs to her own bot as a 1:1
-  conversation `dm_<user>_<waifu>` through `DmRunner` (no orchestrator; same waifu harness, model,
-  global memories and compaction; `PickNextWaifu` never listed; `add_memory` iff `tools.toolUse`,
-  saved with `origin: { dm: true }` and the user as subject). Eligibility (`computeDmEligibility`):
-  enabled waifu with a model, the only enabled waifu on an enabled waifu bot. Only eligible bots log
-  in with `[Guilds, DirectMessages, DirectMessageReactions]`; a waifu write calls
-  `reconcileDmIntents()`, which re-logs only bots whose intents changed. Per conversation one slot
-  (`idle | generating | sending`), debounced by `discord.debounce.dmMs`/`dmMaxWaitMs`, a global
-  semaphore (`discord.dm.maxConcurrentRuns`), and a per-user rate limit (`dm.rateLimit`, pure math in
-  `rateLimit.ts`; one fixed-template notice per limited period, no model call). State lives in
-  `user/dms/<userId>/<waifuId>.json` (run records = the DM "why quiet"), counters in
-  `user/dms/<userId>/limits/<waifuId>.json`, which only the owner's forget-user removes. Every
-  forget writes a floor message id there (`floorMessageId`): the bot can't delete the user's
-  messages, so `ConversationMessageCache.setFloor` keeps anything older out of the DM for good.
-  DM memories carry `origin: { dm: true, userId }`; DM and guild observers never see each other's
-  memories, and merges with a DM source stay DM-origin. Shutdown
-  keeps `pending*`, pause clears it, boot/resume scans recent DM states and catches up inside
-  `discord.dm.resumeWindowMinutes`. DM log lines carry ids and status only. Routes: `GET /api/dms`,
-  `GET /api/dms/:waifuId/:userId`, `POST /api/dms/:waifuId/:userId/forget` (`src/api/dms.ts`); DM
-  bots register a BotDM-only `/forget` with a confirm button; orchestrator commands are guild-only.
+- *Server/channel flags*: server/channel `enabled` flags are gone: a channel is live when it has an
+  enabled waifu, server `paused` is the kill switch.
+- *Threads*: threads/forum posts are their own conversations that inherit the parent's cast
+  unless the channel's `threads` is `"off"` (`stores/threads.ts`, `threads.json`).
+- *Debounce* (`src/orchestration/debounce.ts`, `discord.debounce.*`): the keyed debouncer is kept
+  for L2's intake; nothing schedules runs in L1.
+- *DMs* (`src/orchestration/dm/`): eligibility (`computeDmEligibility`: enabled waifu with a model,
+  the only enabled waifu on an enabled waifu bot) decides which bots log in with
+  `[Guilds, DirectMessages, DirectMessageReactions]`; a waifu write calls `reconcileDmIntents()`,
+  which re-logs only bots whose intents changed. DM state lives in `user/dms/<userId>/<waifuId>.json`,
+  rate-limit counters in `user/dms/<userId>/limits/<waifuId>.json` (pure math in `rateLimit.ts`).
+  Every forget writes a floor message id (`floorMessageId`) so `ConversationMessageCache.setFloor`
+  keeps older messages out for good. Routes: `GET /api/dms`, `GET /api/dms/:waifuId/:userId`,
+  `POST /api/dms/:waifuId/:userId/forget` (`src/api/dms.ts`) and the owner's
+  `POST /api/people/:userId/forget` (DM part in L1, `dm/forgetUser.ts`; L2 adds the life scrub).
+  DM bots register a BotDM-only `/forget`. DMs get no replies until L2.
 
-**Model pipeline** (`src/orchestration/pipeline/`): every model call goes through `gatewayPipeline.ts`, which builds and sends requests via `@waifucave/gateway` (see below). `resolveTarget.ts` resolves `(providerId?, modelId)` pairs, `params.ts` leniently conforms stored params to the target model, `timeline.ts` holds the decision-note serializers. Context-engine prompts are sent verbatim; the pipeline only demotes stray system messages and writes the usage-ledger line. `src/providers/` holds only shared request/role types (`types.ts`) — the old in-app catalog/pipelines are gone.
+**Storage** (`src/storage/storageService.ts`, `src/shared/schemas/domain.ts`): everything user-owned is a revisioned JSON file under `~/.dc-waifus/user/` (providers, discord-bots, waifus, the assistant config, servers incl. `threads.json`, `dms/<userId>/` DM state and rate-limit counters), except `user/usage/YYYY-MM-DD.jsonl`, the append-only usage ledger. Writes use atomic temp-file swap with per-resource locks. Zod schemas in `src/shared/schemas/` are the authority for both on-disk format and API I/O — change them and the migrations together. `resolveDataPath` throws if the joined path escapes the data root, but that is a backstop — any route that builds a path from a request id must still validate it first (`src/api/ids.ts`: `assertSafeId` rejects dot-only ids; guild/channel/user ids must be Discord snowflakes via `assertSnowflakeId`).
 
-**Storage** (`src/storage/storageService.ts`, `src/shared/schemas/domain.ts`): everything user-owned is a revisioned JSON file under `~/.dc-waifus/user/` (providers, discord-bots, waifus, servers incl. per-guild decision history and `threads.json`, memories, `dms/<userId>/` DM state and rate-limit counters, and `conversations/<key>/` with the context engine's ledger, refs and per-agent `contexts/*.json`), except `user/usage/YYYY-MM-DD.jsonl`, the append-only usage ledger. Writes use atomic temp-file swap with per-resource locks. Zod schemas in `src/shared/schemas/` are the authority for both on-disk format and API I/O — change them and the migrations together. `resolveDataPath` throws if the joined path escapes the data root, but that is a backstop — any route that builds a path from a request id must still validate it first (`src/api/ids.ts`: `assertSafeId` rejects dot-only ids; guild/channel/user ids must be Discord snowflakes via `assertSnowflakeId`).
+**API conventions** (`src/api/server.ts`, `src/api/errors.ts`): errors carry a machine-readable `code` (`BadRequest`/`NotFound`/`Conflict`/`PreconditionRequired`) via `ApiError`. Revision enforcement is deliberately split: waifu writes require `expectedRevision` (missing → 428, mismatch → 409); other resources accept it optionally and are last-writer-wins otherwise. A waifu's or the assistant's `model` is replaced whole when sent (`null` unsets it, omission keeps it) and must be a route `GET /api/models` offers with an effort that route lists (400 `model_not_available` / `unsupported_effort`). `waifu.botId` uses the same null-to-unset pattern.
 
-**API conventions** (`src/api/server.ts`, `src/api/errors.ts`): errors carry a machine-readable `code` (`BadRequest`/`NotFound`/`Conflict`/`PreconditionRequired`) via `ApiError`. Revision enforcement is deliberately split: waifu and memory writes require `expectedRevision` (missing → 428, mismatch → 409); other resources accept it optionally and are last-writer-wins otherwise. `params` on waifu/agent-config PUTs merge server-side — an explicit `null` value unsets a key, omission keeps it — so dashboard editors must send `null` for keys the user removed (see `mergeParamsPatch`). `waifu.botId` uses the same null-to-unset pattern.
+**Frontend** (`src/frontend/`): React 19 SPA. `screens/` mirrors top-level navigation (`nav.ts`); shared client state lives in `state/` (`runtimeStore.ts` exists but is not wired into any screen yet — Phase 7 uses it for live status). API types are mirrored in `src/frontend/api/types.ts` — these must stay in sync with `src/shared/schemas/domain.ts` manually (no codegen). Every model choice (Cast, Onboarding, Settings → Assistant) uses `components/ModelPicker.tsx` over `GET /api/models` (route + effort); the Direction and Memory screens are gone.
 
-**Frontend** (`src/frontend/`): React 19 SPA. `screens/` mirrors top-level navigation (`nav.ts`); shared client state lives in `state/` (`runtimeStore.ts` exists but is not wired into any screen yet — Phase 7 uses it for live status). API types are mirrored in `src/frontend/api/types.ts` — these must stay in sync with `src/shared/schemas/domain.ts` manually (no codegen).
-
-**Dashboard assistant** (`src/api/assistant/`): a built-in agent reachable from the dashboard chat. `routes.ts` exposes conversations under `/api/assistant/*` with SSE streaming; `service.ts` runs the gateway-pipeline tool loop; `tools.ts` defines self-REST tools that mutate app state by dispatching to the app's own HTTP routes via `app.inject` (with revision-conflict retry). Its knowledge base is `docs/assistant-kb/*.md`, served read-only at `/api/docs` — update those docs when endpoint semantics change.
+**Dashboard assistant** (`src/api/assistant/`): a built-in agent reachable from the dashboard chat. `routes.ts` exposes conversations under `/api/assistant/*` with SSE streaming; `service.ts` runs the tool loop over `ModelClient.stream` (model from `PUT /api/assistant/config`, else the first enabled waifu's model; text deltas stream as `text_delta` events); `tools.ts` defines self-REST tools that mutate app state by dispatching to the app's own HTTP routes via `app.inject` (with revision-conflict retry). Its knowledge base is `docs/assistant-kb/*.md`, served read-only at `/api/docs` — update those docs when endpoint semantics change.
 
 **Remote management** (`src/remote/`, `src/backend/remoteAccess/`): the host and remote gateway both
 use the same signed `ts-connect` helper package resolver and authenticated WIPC supervisor. The
@@ -256,7 +236,7 @@ segment, feature releases increment the middle segment and reset bugfix to zero,
 releases increment the first segment. Store canonical npm SemVer without leading zeroes and
 use matching `v<version>` GitHub tags. The `#.###.#` notation describes the counters, not padded
 wire versions. Upgrading from historical 1.x to 2.x is manual; subsequent idle updates only
-accept bugfixes in the same major/feature series. Gateway/helper package versions are independent.
+accept bugfixes in the same major/feature series. Helper and winter package versions are independent.
 
 **Idle updates** (`src/backend/updates/`): opt-in `[updates]` config, hourly npm-latest checks and
 five-minute quiet default. Only plain newer patch releases within the current major/minor are
@@ -280,15 +260,33 @@ Fixture coverage is separate from native Windows/Linux updater-cycle validation.
 - Backend tsconfig excludes `tests/` and `src/frontend/`; frontend has its own `src/frontend/tsconfig.json`.
 - Tests prefer real on-disk behavior with temp roots over mocks (especially for storage/config concurrency).
 
-## Gateway dependency
+## Model dependency (winter)
 
-- `@waifucave/gateway` is a pinned registry dependency (see `package.json`) installed normally from npm — the migration-era `file:` symlink to the sibling repo is gone. All chat traffic, capability data, and write-side param validation go through it. The app pins gateway **0.4.0** exactly (usage convention, `ChatMessage.cacheControl`, tool-choice and params rules); the code does not work against 0.3.x. To try unpublished gateway changes, `npm run gateway:local` copies the sibling gateway build over `node_modules` without touching `package.json` or the lockfile, and `npm ci` restores the pin.
-- The gateway is the single source of truth for models/providers/param capabilities (declarative registry + constraint rules). There is no in-app model catalog. `resolveModelTarget` (`src/orchestration/pipeline/resolveTarget.ts`) resolves `(providerId?, modelId)` pairs incl. legacy-id remaps; writes normalize legacy ids to the resolved pair.
-- Meta Muse Spark and contributor variants are supplied by the gateway's `meta` provider. Contributor variants enable training and must remain an explicit user choice. Use registry capabilities instead of assuming every variant supports the same reasoning or tool parameters. Keep the current gateway; replacing it with another SDK requires a separate migration.
-- Mandatory decision calls in `gatewayPipeline.ts` use the same argument schema as JSON-schema structured output when the model lacks named tool choice but supports JSON schema. Never silently downgrade a required decision to automatic tool calling. Preserve semantic validation and rejection of incomplete responses.
-- The gateway HTTP API is mounted at `/api/llm/*` (`src/api/server.ts`); the SPA reads models/capability docs/validation from it (`src/frontend/api/llm.ts` — TYPE-ONLY imports from the package in frontend code; value imports are forbidden client-side because the Registry touches `node:fs`). Provider keys are read live per request from `user/providers.json` by `src/api/llmGatewayCredentials.ts` — the gateway never stores keys. `/api/providers` serves credentials-status (redacted key hints) over the full registry plus `gatewayProviders`; there is no `/api/models`.
-- Configs store gateway-native dotted `params` (`temperature`, `reasoning.enabled`, …). Write endpoints validate resolved stored state via `gateway.validate()` → 400 `unsupported_parameter` naming the violated rule; the chat path pre-conforms leniently (`src/orchestration/pipeline/params.ts`). PATCH bodies must never let zod manufacture `.default()` values into merges — defaulted fields are re-declared truly-optional in the body schemas (see the comments in `src/api/server.ts`).
-- To develop against a local gateway checkout: `npm link ../gateway` (build it first: `npm run build` there), and unlink/`npm ci` before committing lock changes. `scripts/check-no-file-deps.mjs` blocks `file:` deps from ever reaching a release (runs in `release:beta`'s validate-and-pack and `prepublishOnly`).
-- The gateway repo has CI (test + live drift check + publish-freshness guard): if you change gateway `data/`/`src/` without bumping its version while that version is already published, CI fails — bump and republish.
-- Experimental per-server `one-shot` mode is implemented in `src/orchestration/oneShot/`. It makes one native-choice request per pass, bounds candidates linearly, combines speaker/pause into one choice, and guards steering before normal waifu generation. The global director LLM config and current gateway stay unchanged. Discovery is a separate upstream decision-only modality catalog at `GET /api/orchestrator/one-shot/models`, not a duplicate chat model catalog. Local Laya uses optional host-only Python configuration and the packaged `assets/laya/worker.py`; never accept executable paths through the API. Existing server files default to LLM mode; unrelated PUTs must preserve mode/target. Include the model-list route in the remote policy manifest and assistant capabilities. Native choices only; no yes/no ranking workarounds. Private benchmarks stay ignored; their results are not guarantees of real-room routing or loop breaking.
-- `benchmark:decisions -- --suite=loops` separately measures blind semantic repetition/scene stagnation against healthy progression. Its wire names are not production speaker/timer semantics. Preserve real-chat message ages and strip runtime loop hints/old decisions; good synthetic detection does not establish real-room reliability or successful loop breaking.
+- The app pins `@yanlinglabs/winter-provider-runtime` and `@yanlinglabs/winter-provider-catalog`
+  **exactly** (currently 0.0.55). The `@waifucave/gateway` dependency, its `/api/llm/*` mount and
+  `npm run gateway:local` are gone; the gateway repo is no longer used by this app.
+- winter is the source of truth for model facts (context window, output cap, image input, reasoning
+  efforts, continuation, prices). There is no in-app model table: `src/models/catalog.ts` only
+  filters the installed catalog through the curated allow list (`[models] allowed`), the price cap
+  (`[models] maxOutputUsdPerMTok`) and feature checks. Routes the installed catalog lacks are
+  hidden, and OpenRouter routes stay hidden until the catalog's reasoning `continuation` is not
+  `none` (winter W7).
+- Meta Muse Spark contributor variants enable training and must remain an explicit user choice; the
+  picker labels them and the assistant only picks one when asked.
+- `src/models/assemble.ts` folds `streamTurn` events into one `ProviderMessageLike` (text, tool
+  calls and reasoning blocks in order, `origin`, opaque `nativeState`). On 0.0.55 it carries local
+  copies of `foldProviderStream` / `assembledToMessage` / `ProviderStreamError`; when winter 0.0.56
+  ships them, delete the local definitions and import winter's (a one-file change), drop the
+  `WinterTurnRequest` cast in `client.ts` (`messageCacheTtl` becomes native) and switch
+  `tests/modelFakes.ts` to `createFakeProviderAdapter` from `.../testing`.
+- Provider keys are read live per call from `user/providers.json` and passed inline; never log or
+  echo them. `/api/providers` serves credential status (redacted key hints) for the curated
+  providers, the detector's providers and any provider with a stored key.
+- The addressee detector's native-choice catalog (`src/life/detector/`, `GET /api/detector/models`,
+  renamed from `/api/orchestrator/one-shot/models`) is a separate decision-only catalog, never
+  offered as waifu models. Local Laya uses optional host-only Python configuration and the packaged
+  `assets/laya/worker.py`; never accept executable paths through the API. Native choices only; no
+  yes/no ranking workarounds. Private benchmarks stay ignored; their results are not guarantees of
+  real-room routing.
+- `benchmark:decisions -- --suite=loops` separately measures blind semantic repetition/scene
+  stagnation against healthy progression. Its wire names are not production semantics.

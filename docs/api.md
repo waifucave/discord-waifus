@@ -61,9 +61,6 @@ return the same `404`. The status resource reports prepared, completed, reconcil
 - `POST /api/runtime/pause`
 - `POST /api/runtime/resume`
 - `POST /api/runtime/reload`
-- `POST /api/runtime/stop`
-- `POST /api/runtime/trigger/orchestrator`
-- `POST /api/runtime/trigger/stage-manager`
 - `GET /api/diagnostics/bundle`
 - `GET /api/events`
 
@@ -79,17 +76,15 @@ the same operational status but not the host process ID, bind port, data root, l
 absolute host paths, or helper IPC path. Local status/runtime responses retain their intended host
 details.
 
-When Discord auto-connect is enabled and an orchestrator token is saved, the backend starts the runtime loop:
+**Living cast is in progress.** The director, stage manager, reviewer, memory store and their
+routes (`/api/orchestrator/*`, `/api/stage-manager/*`, `/api/reviewer/*`, `/api/memories*`,
+`/api/runtime/trigger/*`, `/api/runtime/stop`, `/api/waifus/:id/digest`, `/api/llm/*`) were
+removed. Discord intake connects and logs `Living cast not yet wired (L2)` for each accepted
+message; nothing replies until the life loop ships.
 
-1. Discord `messageCreate` events discover guilds/channels and trigger enabled channel sessions.
-2. The runtime cancels any active orchestrator/waifu request for that channel when a newer message arrives.
-3. It fetches fresh Discord history before each orchestrator, waifu, and stage-manager model request.
-4. Orchestrator decisions are validated, written to history, and executed.
-5. Waifus answer in selected order using their configured model and bot.
-6. `no_reply` decisions schedule bounded retriggers.
-7. Stage-manager runs are background tasks and write memory/history through the shared memory lock.
-
-`POST /api/runtime/trigger/orchestrator` and `POST /api/runtime/trigger/stage-manager` accept optional JSON bodies with `guildId` and `channelId` to run the real channel pipeline manually. Without both ids, or without a live runtime, nothing runs and nothing is recorded: the response is `200` with `accepted: false` and an explanatory `message`.
+`GET /api/runtime` adds `models.warnings`: `{scope, code, detail, at?}` entries for model choices
+that need attention (`model_unmapped`, `effort_dropped` from the upgrade and boot checks;
+`model_unavailable` and `model_unpriced` computed live).
 
 Normal configuration changes apply at runtime. `PUT /api/config`, `PUT /api/discord-bots`, and `POST /api/runtime/reload` rebuild Discord clients and the runtime orchestrator in-process without restarting HTTP. Only HTTP host/port changes require the next process start.
 
@@ -163,20 +158,16 @@ device must be activated and paired again.
 - `POST /api/cache/ocr/clear`
 - `GET /api/discord-bots`
 - `PUT /api/discord-bots`
-- `GET /api/orchestrator/config`
-- `PUT /api/orchestrator/config`
-- `GET /api/orchestrator/history` — decisions are stored per guild (`user/servers/<guildId>/orchestrator-history.json`, 300 per guild). `?guildId=` reads that guild; without it every guild plus the no-guild `history-legacy.json` is merged, newest first. Same response shape either way.
-- `GET /api/orchestrator/one-shot/models` — native-choice model catalog, provider/local setup status,
-  and upstream availability. Safe read, available to authorized paired remotes; never returns keys.
+- `GET /api/detector/models` — the addressee detector's native-choice decision model catalog
+  (renamed from `/api/orchestrator/one-shot/models`), provider/local setup status and upstream
+  availability. Safe read, available to authorized paired remotes; never returns keys. These are
+  decision-only models, never offered as waifu models.
+- `GET /api/assistant/config`
+- `PUT /api/assistant/config` — `{ "model": { "providerId", "modelId", "effort"? } | null }`, the
+  dashboard assistant's model (unset: the first enabled waifu's model).
 
-`PUT /api/servers/:guildId` also accepts `orchestratorMode: "model" | "deterministic" | "one-shot"`
-and `oneShot: {target: string}`. Targets come from the model catalog above. These fields preserve
-their saved values on unrelated updates and do not change the global director LLM configuration.
-Old server files remain compatible: mode defaults to `model`, and the independent One shot target
-defaults to `openrouter:cloudflare/clef` without enabling it. Local executable paths are never accepted.
-- `GET /api/stage-manager/config`
-- `PUT /api/stage-manager/config`
-- `GET /api/stage-manager/history`
+Server files keep their `orchestratorMode`, `oneShot` and `contextWindows` fields untouched until
+the Living cast rebuild replaces them; nothing reads them in this release.
 
 Config is backed by `config.toml` under the data root. Default config:
 
@@ -219,9 +210,24 @@ OCR is used only as a fallback for models that are not marked as vision-capable.
 - `GET /api/providers`
 - `PUT /api/providers/:providerId/credentials`
 
-`GET /api/providers` returns `{ revision, updatedAt, providers, gatewayProviders }`. `providers` covers every provider id the `@waifucave/gateway` registry knows (14, e.g. `xai`, `deepseek`, `anthropic`, `openai`, `google-ai-studio`, `zai`, `openrouter`, ...) as `{ id, displayName, docsUrl?, credentials }`; `gatewayProviders` is the raw gateway `/v1/providers` listing (adds `baseUrl`, `wire`, `credentialEnv`, `credentialConfigured`).
+- `GET /api/models`
 
-Model listings live entirely under the gateway mount: `GET /api/llm/v1/models`, `GET /api/llm/v1/models/:provider/:model`, `POST /api/llm/v1/validate` (see `src/frontend/api/llm.ts`). There is no `/api/models` route.
+`GET /api/providers` returns `{ revision, updatedAt, catalogVersion, providers }`. `providers`
+lists, as `{ id, displayName, docsUrl?, credentials }`, every provider that serves a curated route
+in the installed winter catalog, the detector's decision providers (`openai`, `openrouter`) and any
+provider that already has a stored key. `catalogVersion` is the installed
+`@yanlinglabs/winter-provider-catalog` version.
+
+`GET /api/models` returns the curated model list (Living cast spec 9.2):
+`{ catalogVersion, maxOutputUsdPerMTok, models, hidden }`. Each model is
+`{ id: "<providerId>/<modelId>", providerId, modelId, displayName, providerDisplayName, family,
+contextWindow?, maxOutputTokens?, imageInput, efforts, defaultEffort?, pricing?, contributor,
+promptCaching, credentialsConfigured }`. `hidden` lists allowed routes that are not offered, as
+`{ id, reason }` with `reason` one of `not_in_catalog`, `provider_blocked`, `deprecated`,
+`no_tool_calling`, `over_price_cap` (`config.toml` `[models] maxOutputUsdPerMTok`, default 10) or
+`openrouter_reasoning_replay` (the installed winter cannot replay reasoning through OpenRouter).
+Waifu and assistant writes accept only offered routes (`400 model_not_available`) and only efforts
+the route lists (`400 unsupported_effort`).
 
 Credential writes accept:
 
@@ -245,13 +251,17 @@ Discord bot config responses never include raw bot tokens. They include `tokenCo
 - `PUT /api/waifus/:waifuId`
 - `DELETE /api/waifus/:waifuId`
 - `POST /api/waifus/:waifuId/link-bot`
-- `POST /api/waifus/:waifuId/digest`
 - `POST /api/waifus/:waifuId/assets/pfp`
 - `POST /api/waifus/:waifuId/assets/banner`
 
 `PUT` and `DELETE` require either a `revision` body field or an `If-Match` header. Stale writes
 return `409 Conflict` with only the latest revision metadata; callers re-read the resource before
 merging and retrying.
+
+A waifu's model is `model: { providerId, modelId, effort? }` (or `null`). A `PUT` that sends
+`model` replaces it; omitting it keeps it. The gateway-era `params`, `contextWindow`,
+`tools.toolUse` and `personaDigest` fields were removed by the `living-cast-models-v1` migration;
+request bodies that still carry them are accepted and the fields are ignored.
 
 Asset uploads accept raw `image/png`, `image/jpeg`, `image/webp`, or `image/gif` request bodies up to 8 MB. Files are stored in `user/waifus/<waifu-id>/`. Nothing reads them yet: they are not applied to the Discord bot's avatar/banner and the dashboard neither uploads nor displays them.
 
@@ -274,14 +284,12 @@ Asset uploads accept raw `image/png`, `image/jpeg`, `image/webp`, or `image/gif`
 
 Member and emoji refresh endpoints use the configured orchestrator bot token. Member refresh requires Discord permissions/intents that allow member listing. Emoji refresh caches guild custom emojis in `user/servers/<guild-id>/emojis.json`.
 
-## Memories
+## People
 
-- `GET /api/memories`
-- `POST /api/memories`
-- `PUT /api/memories/:memoryId`
-- `DELETE /api/memories/:memoryId`
-
-Memory writes use the memory store revision. Stage-manager and UI memory edits must share this same lock and revision flow.
+- `POST /api/people/:userId/forget` — `{ "confirm": true, "dryRun"?: boolean }`. Forgets one Discord user: in this
+  release the DM part (DM history and state, rate-limit counters, cached images; the DM floor
+  message ids are kept so old messages stay out of context). The Living cast rebuild adds the life
+  scrub. `dryRun` reports counts without deleting.
 
 ## Conflict Semantics
 

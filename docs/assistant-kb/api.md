@@ -5,20 +5,19 @@ does goes through these endpoints, so any agent can drive the app with plain HTT
 
 ## Conventions
 
-- All user-owned resources are revisioned and reads return a `revision`. Waifu and memory
-  writes (`PUT`/`DELETE /api/waifus/:id`, `PUT`/`DELETE /api/memories/:id`) REQUIRE the expected
-  `revision` in the body (or an `If-Match` header): **428** without it. Every other write accepts
-  it optionally and is last-writer-wins when it is omitted. A sent revision that does not match
-  returns **409** — re-read, merge, retry. The conflict `latest` object contains only
-  `schemaVersion`, `revision`, and `updatedAt`, never the current resource body. Memory writes
-  prefer the per-record `recordRevision` (each memory's own `revision`) over the store-wide
-  `revision`; their 409 additionally carries the current `record`.
-- Validation failures return **400** with a message (zod field errors, or
-  `unsupported_parameter` naming a violated gateway rule).
-- `:guildId`/`:channelId` (and `guildId`/`channelId` in runtime stop/trigger bodies) must be
-  Discord snowflakes (17–20 digits); other ids reject dot-only values such as `.`/`..`.
-- Model params are gateway-native dotted keys inside `params`
-  (e.g. `{"temperature": 0.9, "reasoning.enabled": false}`).
+- All user-owned resources are revisioned and reads return a `revision`. Waifu writes
+  (`PUT`/`DELETE /api/waifus/:id`) REQUIRE the expected `revision` in the body (or an `If-Match`
+  header): **428** without it. Every other write accepts it optionally and is last-writer-wins
+  when it is omitted. A sent revision that does not match returns **409** — re-read, merge,
+  retry. The conflict `latest` object contains only `schemaVersion`, `revision`, and `updatedAt`,
+  never the current resource body.
+- Validation failures return **400** with a message (zod field errors, or `details.error`
+  `model_not_available` / `unsupported_effort` for a model choice, `unknown_provider` for a key).
+- `:guildId`/`:channelId`/`:userId` must be Discord snowflakes (17–20 digits); other ids reject
+  dot-only values such as `.`/`..`.
+- A model is a curated route plus an optional effort: `"model": {"providerId": "anthropic",
+  "modelId": "claude-sonnet-5-5", "effort": "high"}` (list them with `GET /api/models`; the effort
+  must be one the route lists). `null` unsets it.
 - Assistant tool calls inherit the person or paired device that initiated the conversation. Never
   manufacture principal, device, internal-dispatch, browser-session, or CSRF headers.
 - Remote unsafe requests require an `Idempotency-Key`: canonical unpadded base64url for exactly 32
@@ -38,55 +37,43 @@ does goes through these endpoints, so any agent can drive the app with plain HTT
 |---|---|---|
 | GET | /api/health | Liveness. |
 | GET | /api/status | Runtime + Discord connection state. |
-| GET | /api/runtime | Runtime state incl. pause state, queues and `providerAlerts` (`[{providerId, kind: "quota"\|"billing", until, lastMessage}]`, active provider cooldowns during which calls fail fast); host paths/process fields are local-only. |
+| GET | /api/runtime | Runtime state incl. pause state, queues, `providerAlerts` (`[{providerId, kind: "quota"\|"billing", until, lastMessage}]`, active provider cooldowns during which calls fail fast) and `models.warnings` (`[{scope, code, detail}]`: `model_unmapped`, `effort_dropped`, `model_unavailable`, `model_unpriced`); host paths/process fields are local-only. |
 | GET | /api/admin/operations/:operationId | Principal-scoped mutation recovery status; no response body/result. |
-| POST | /api/runtime/pause · /resume | Pause/resume all orchestration (takes effect in memory immediately, then persisted as `runtime.paused` in config.toml so it survives reloads/restarts; if that write fails the response carries a `warning`). |
-| POST | /api/runtime/reload | Reload configs into the running orchestrator. |
-| POST | /api/runtime/stop | Body `{guildId, channelId}` (both required) — abort that channel's run and cancel its wake. |
-| POST | /api/runtime/trigger/orchestrator | Body `{guildId, channelId}` — run a decision pass now. Without both ids or a live runtime: `accepted: false`, nothing runs or is recorded. |
-| POST | /api/runtime/trigger/stage-manager | Body `{guildId, channelId}` — run an observer pass now (same `accepted: false` rule). |
+| POST | /api/runtime/pause · /resume | Pause/resume the cast (takes effect in memory immediately, then persisted as `runtime.paused` in config.toml so it survives reloads/restarts; if that write fails the response carries a `warning`). |
+| POST | /api/runtime/reload | Reload configs into the running runtime. |
 | GET | /api/updates | Sanitized idle-update status/history (closed enums, versions, timestamps). |
-| GET | /api/providers | Credential status per provider (redacted hints only). |
+| GET | /api/providers | `{catalogVersion, providers}`: credential status (redacted hints only) for the providers serving curated routes, the detector's providers, and any provider with a stored key. |
 | PUT | /api/providers/:id/credentials | Body `{apiKey}` — set a key (write-only). |
 | DELETE | /api/providers/:id/credentials | Remove a key. |
-| GET | /api/llm/* | Gateway registry: models, capability docs, validation. |
+| GET | /api/models | The curated model list: `{catalogVersion, maxOutputUsdPerMTok, models: [{id, providerId, modelId, displayName, providerDisplayName, efforts, defaultEffort?, pricing?, contributor, imageInput, credentialsConfigured, ...}], hidden: [{id, reason}]}`. |
+| GET | /api/detector/models | Native-choice decision model catalog for the addressee detector, with credential/local-setup presence; no secrets or inference. |
 | GET | /api/waifus | All waifus. |
-| POST | /api/waifus | Create (body: id, name, persona, providerId, modelId, ...). |
+| POST | /api/waifus | Create (body: id, name, persona, model?, ...). |
 | GET/PUT/DELETE | /api/waifus/:id | Read / update (revisioned) / delete. |
 | POST | /api/waifus/:id/link-bot | Body `{applicationId?}` — ensure her discord-bots entry and set `botId` in one call. |
-| POST | /api/waifus/:id/digest | Regenerate the persona digest. |
 | POST | /api/waifus/:id/assets/pfp · /banner | Upload raw image bytes (png/jpeg/webp/gif, max 8 MB). Stored under `user/waifus/:id/` only — nothing applies it to the Discord bot or shows it yet. |
 | GET | /api/servers | Guilds with channels and their waifu lists. |
 | GET | /api/servers/:guildId | One guild. |
-| PUT | /api/servers/:guildId | Partial server settings: `paused`, `orchestratorMode`, `oneShot`, `stageManagerEnabled`, `contextWindows`, `compaction`, `memoryInjectionLimit`, `tools`, `channels` (wholesale). |
-| DELETE | /api/servers/:guildId | Remove the guild config incl. sessions, rosters and the guild's decision history. |
+| PUT | /api/servers/:guildId | Partial server settings: `paused`, `channels` (wholesale), and settings the Living cast rebuild still carries (`compaction`, ...). |
+| DELETE | /api/servers/:guildId | Remove the guild config incl. rosters. |
 | PUT | /api/servers/:guildId/channels/:channelId | `{enabledWaifuIds?, name?, threads?}` — one channel; omitted fields keep their value. `threads` is `"inherit"` (default: threads and forum posts under it share its cast) or `"off"`. |
 | GET | /api/servers/:guildId/threads | The threads and forum posts the bot has seen (`threadId`, `parentId`, `name`, `kind`, `archived`, `locked`, `lastActivityAt`); guild id must be a snowflake. |
 | DELETE | /api/servers/:guildId/channels/:channelId | Remove one channel entry. |
 | GET/POST | /api/servers/:guildId/members·roles·emojis(/refresh) | Guild caches. |
 | GET | /api/discord-bots | Bot entries (tokens redacted). |
 | PUT | /api/discord-bots | `{orchestrator?, waifus?}` — each entry needs `enabled`; a sent `waifus` array replaces the list, omitted tokens are kept per id. |
-| GET/PUT | /api/orchestrator/config | Director model/prompt/params (revisioned). |
-| GET | /api/orchestrator/history | Recent decisions, newest first, merged across guilds (or one guild with `?guildId=`). |
-| GET | /api/orchestrator/one-shot/models | Native-choice decision catalog and credential/local-setup presence; no secrets or inference. |
-| GET/PUT | /api/stage-manager/config | Observer/librarian agent config. |
-| GET | /api/stage-manager/history | Observer history. |
-| GET/PUT | /api/reviewer/config · GET /api/reviewer/history | Reviewer. |
-| GET/PUT | /api/assistant/config | Dashboard assistant (model falls back to orchestrator). |
+| GET/PUT | /api/assistant/config | The assistant's own `model` (unset: the first configured waifu's model). |
 | GET | /api/assistant/conversations | Conversation list, most recent first. |
 | POST | /api/assistant/conversations | New chat conversation → `{conversationId}`. |
 | DELETE | /api/assistant/conversations/:id | Delete a conversation. |
 | GET/DELETE | /api/assistant/actions/:actionId · POST …/confirm | Pending confirmation card for a destructive assistant action: read, cancel, or confirm. |
 | GET | /api/assistant/conversations/:id | Transcript (messages + events). |
 | POST | /api/assistant/conversations/:id/messages | `{content}` → runs a turn → `{reply}`. |
-| GET | /api/assistant/conversations/:id/stream | SSE: turn/tool events. |
-| GET | /api/memories | Query params: waifuId, q, status, limit, and provenance filters guildId (learned in that server), origin=dm, subjectUserId. |
-| POST | /api/memories | Add a memory record (optional guildId/channelId provenance and subjects); reports `duplicateOf` without blocking. |
-| PUT/DELETE | /api/memories/:memoryId | Edit / remove; body `recordRevision` (preferred) or legacy `revision`. |
-| POST | /api/memories/forget-user | `{discordUserId, confirm: true, dryRun?}` — forget one Discord user: deletes memories about them and their queued observations, replaces their stored messages with `(removed)`, and deletes every DM with them (`user/dms/<userId>/` incl. rate-limit counters); returns counts (`memories`, `observations`, `ledgers`, `ledgerEntries`, `dmContexts`, `dmStates`, `dmLimits`, `cachedImages`). |
-| GET | /api/dms | DM conversations, newest first: `?waifuId&userId&limit≤200` → `{conversations: [{conversationKey, waifuId, userId, userDisplayName?, lastInboundAt?, lastReplyAt?, rateLimit: {used, max, windowMinutes, limited, freesAt?} \| null, lastRun?, context?: {epoch, lastCompaction?}}]}`. Never message text. |
-| GET | /api/dms/:waifuId/:userId | `{state, rateLimit, context?}`: DM state incl. `recentRuns` (status `sent`, `tool_only`, `empty`, `blocked`, `rate_limited`, `notice_sent`, `superseded`, `interrupted`, `failed`, `undeliverable`) — the DM "why quiet". 404 when there is no DM. |
-| POST | /api/dms/:waifuId/:userId/forget | `{confirm: true, scope: "conversation" \| "all", dryRun?}` → `{dryRun, scope, deleted: {dmContexts, dmStates, recentRuns, memories, observations, cachedImages}}`. Never resets the rate limit. Audited `dm.forget`. |
+| GET | /api/assistant/conversations/:id/stream | SSE: turn/tool events and live `text_delta` fragments of the reply (never stored). |
+| POST | /api/people/:userId/forget | `{confirm: true, dryRun?}` — the owner's forget of one Discord user. Today it deletes every DM with them (`user/dms/<userId>/` incl. rate-limit counters, conversations, cached DM images) and returns counts (`dmContexts`, `dmStates`, `dmLimits`, `cachedImages`). Audited `people.forget`. |
+| GET | /api/dms | DM conversations, newest first: `?waifuId&userId&limit≤200` → `{conversations: [{conversationKey, waifuId, userId, userDisplayName?, lastInboundAt?, lastReplyAt?, rateLimit: {used, max, windowMinutes, limited, freesAt?} \| null, lastRun?}]}`. Never message text. |
+| GET | /api/dms/:waifuId/:userId | `{state, rateLimit}`: DM state incl. `recentRuns` (status `sent`, `tool_only`, `empty`, `blocked`, `rate_limited`, `notice_sent`, `superseded`, `interrupted`, `failed`, `undeliverable`) — the DM "why quiet". 404 when there is no DM. |
+| POST | /api/dms/:waifuId/:userId/forget | `{confirm: true, scope: "conversation" \| "all", dryRun?}` → `{dryRun, scope, deleted: {dmContexts, dmStates, recentRuns, cachedImages}}`. Never resets the rate limit. Audited `dm.forget`. |
 | GET | /api/logs?limit=N | Recent backend log entries (max 500). |
 | GET | /api/docs · /api/docs/:slug | This knowledge base. |
 | GET | /api/events | SSE firehose: logs, runtime, captured model queries/replies. |
@@ -120,24 +107,21 @@ curl -s -X PUT http://127.0.0.1:3888/api/waifus/riko \
 
 ## Semantics that matter
 
-- **Revisions**: `PUT/DELETE /api/waifus/:id` REQUIRE `revision` in the body (or If-Match);
-  `PUT/DELETE /api/memories/:id` REQUIRE `recordRevision` (the memory's own `revision`, so edits
-  to different memories never conflict) or the legacy store `revision`/If-Match — 428 without
-  one, 409 on mismatch (with the current `record`). Other writes accept an optional revision;
-  omitting it is last-writer-wins.
-- **`params` merge**: config `params` MERGE with the stored object on write; send a key with
-  value `null` to unset it. A partial params write never wipes the rest.
-- **Nested settings merge**: waifu `availability`/`tools`, server `contextWindows`/`tools` and
-  agent `promptSections` deep-merge, so `{"tools": {"pickNextWaifu": true}}` changes only that
-  flag. Arrays (e.g. `availability.busy`) and server `channels` replace wholesale.
+- **Revisions**: `PUT/DELETE /api/waifus/:id` REQUIRE `revision` in the body (or If-Match) —
+  428 without one, 409 on mismatch. Other writes accept an optional revision; omitting it is
+  last-writer-wins.
+- **Models**: a waifu's or the assistant's `model` is replaced as a whole; omit it to keep the
+  stored one, send `null` to unset it. Saving a model clears that scope's `models.warnings`. The
+  curated list is `config.toml` `[models]` `allowed` (route keys) filtered by the installed winter
+  catalog and `maxOutputUsdPerMTok` (default 10); OpenRouter routes stay hidden until the installed
+  winter can replay reasoning through OpenRouter. Contributor (training) variants are only ever an
+  explicit choice. Gateway-era `params`, `contextWindow` and `tools` fields are ignored on write.
+- **Nested settings merge**: waifu `availability`/`dm` deep-merge. Arrays (e.g.
+  `availability.busy`) and server `channels` replace wholesale.
   Waifu `verbosity`, `customInstructions` and `scheduleInPrompt` are plain optional fields: omit
   them and the stored value is kept. A waifu body may still carry `promptLayout`; it is accepted,
   ignored and logged once (the layout editor was removed). A channel PUT that omits a field keeps its current value.
-- **Context windows and compaction (servers)**: `contextWindows.{orchestrator,waifu,stageManager}`
-  only set how many recent messages a conversation loads when it starts or after downtime. An
-  unset key falls back to the agent's or waifu's own `contextWindow`; `null` removes an override
-  (older versions stored the defaults 20 / 50 / 80 explicitly; a migration removed those). Whether and
-  when a conversation is summarized is `compaction` (`enabled`, `triggerRatio` 0.3-0.95,
+- **Compaction (servers)**: whether and when a conversation is summarized is `compaction` (`enabled`, `triggerRatio` 0.3-0.95,
   `maxMessages` 20-200, `keepRecent` 5-120, `waitTimeoutMs` 0-30000), which merges key by key over
   the app-level `compaction` config; send `null` for a key to inherit again. `keepRecent` is capped
   at 60% of `maxMessages`.
@@ -174,24 +158,19 @@ curl -s -X PUT http://127.0.0.1:3888/api/waifus/riko \
   values to `discord.images.maxBytes` / `fetchTimeoutMs`. `ocr.cacheTtlHours` now defaults to 168
   hours; configs that still said 24 (the old default) were moved to 168 once at upgrade, any other
   value was kept.
-- **Memory origin**: memory records carry `origin: {guildId?, channelId?, dm?}` (where learned)
-  and `subjects` (who it is about); the old top-level `guildId`/`channelId`/`entities` fields no
-  longer exist. `POST /api/memories` still accepts `guildId`/`channelId` and stores them as `origin`.
 - **Usage ledger**: every model call (including aborted and failed ones) appends one line to
   `user/usage/YYYY-MM-DD.jsonl` (UTC day) with purpose, ids, provider/model, token counts (zero
   with `usageKnown: false` when the provider reported none), cache read/write tokens, cost when
-  known and status `ok | aborted | failed`. One-shot orchestrator decisions are logged with purpose
-  `one_shot`. There is no HTTP endpoint for it yet.
+  known and status `ok | aborted | failed`. Purposes: `life`, `maintenance`, `detector`,
+  `compaction`, `assistant` (older lines keep their retired purposes). There is no HTTP endpoint
+  for it yet.
 - **No channel or server `enabled` flag**: a channel is live exactly when its `enabledWaifuIds` is
   non-empty, and `paused` is the server's kill switch (restart catch-up honours it too). The old
   flags were removed; bodies that still send `enabled` are accepted for one release and ignored.
 - **Unlink a bot**: `PUT /api/waifus/:id` with `"botId": null`.
 - **Link a bot**: `POST /api/waifus/:id/link-bot {applicationId?}` — one call ensures the
   discord-bots entry, sets the application id, and links the waifu's botId.
-- **Memory filters**: `GET /api/memories?waifuId=&q=&status=&limit=` plus provenance
-  `guildId=` / `origin=dm` / `subjectUserId=`. Memories are global per waifu: `guildId` only
-  says where a memory was learned, it never hides it elsewhere.
-- **Deletes**: `DELETE /api/servers/:guildId` (whole guild config incl. sessions),
+- **Deletes**: `DELETE /api/servers/:guildId` (whole guild config),
   `DELETE /api/servers/:guildId/channels/:channelId` (one channel entry, body `{revision?}`),
   `DELETE /api/providers/:id/credentials`, `DELETE /api/assistant/conversations/:id`.
 - **Errors**: `{error, message, details?}` where `error` is one of BadRequest, NotFound,
@@ -200,18 +179,9 @@ curl -s -X PUT http://127.0.0.1:3888/api/waifus/riko \
   traffic, and events are serialized through secret redaction; never expect a credential or token
   to be readable after writing it. The only caching exception is a non-HTML asset under the exact
   hash-addressed remote-dashboard build route; it is never a general filesystem endpoint.
-- **Runtime stop**: `POST /api/runtime/stop` body `{guildId, channelId}` (both required)
-  aborts that channel's in-flight run and cancels its scheduled wake. Response
-  `{stoppedRun, clearedRetrigger, activeInAnotherChannel, message}`. Use it to kill a
-  runaway cast burst without pausing the whole runtime.
 - **Per-server pause**: `ServerConfig.paused` (PUT `/api/servers/:guildId` with
-  `{paused: true|false}`). Paused servers still observe messages (sessions stay warm)
-  but run no replies, wakes, stage-manager passes, or dreams. Distinct from the global
-  `POST /api/runtime/pause` and from a channel's `enabledWaifuIds` list.
-- **History filters**: the three history GETs (`/api/orchestrator/history`,
-  `/api/stage-manager/history`, `/api/reviewer/history`) accept
-  `?guildId=&channelId=&limit=` (limit 1–200). Entries without a guild/channel (written by
-  older builds for untargeted manual triggers) never match an explicit filter.
+  `{paused: true|false}`). Paused servers still observe messages but nothing replies. Distinct
+  from the global `POST /api/runtime/pause` and from a channel's `enabledWaifuIds` list.
 - **Conversations list**: `GET /api/assistant/conversations` returns
   `{conversations: [{id, createdAt, messageCount, preview?}]}`, most recently used first.
   Conversations are in-memory only and evicted LRU past 20.

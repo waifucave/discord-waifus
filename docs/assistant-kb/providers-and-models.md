@@ -1,46 +1,57 @@
 # Providers & Models
 
-How API keys, the model registry, and per-model parameters work.
+How API keys, the curated model list and reasoning effort work.
 
 ## Providers
 
-A provider is a model API vendor (deepseek, anthropic, openai, google-ai-studio, xai, mistral,
-qwen, and more). Keys are stored locally in `user/providers.json` and are **write-only** through
-the API: `GET /api/providers` returns configured/not-configured plus a redacted hint, never the
-key itself. Set a key with `PUT /api/providers/:providerId/credentials {"apiKey": "..."}`;
-remove with DELETE on the same path.
+A provider is a model API vendor (anthropic, openai, deepseek, meta, openrouter, and the others the
+winter catalog knows). Keys are stored locally in `user/providers.json` and are **write-only**
+through the API: `GET /api/providers` returns configured/not-configured plus a redacted hint, never
+the key itself. Set a key with `PUT /api/providers/:providerId/credentials {"apiKey": "..."}`;
+remove with DELETE on the same path. An unknown provider id is refused (`unknown_provider`).
+`GET /api/providers` lists the providers that serve curated models, the detector's providers
+(openai, openrouter) and any provider that already has a key.
 
-## The model registry (gateway)
+## The curated model list
 
-The app has no hand-maintained model list. All models, capabilities, and parameter rules come
-from the `@waifucave/gateway` registry, exposed under `/api/llm/*`. For each model the registry
-knows: context window, max output, modalities (text/image), tool support and tool-choice modes,
-reasoning support, sampling parameters with ranges/defaults, and cross-parameter constraint
-rules (for example: Anthropic and DeepSeek models reject forced tool choice while thinking is
-enabled — the app automatically disables thinking on such calls).
+Model facts (context window, output limit, image input, reasoning efforts, prices) come from the
+winter provider catalog installed with the app. The app offers a short curated list on top of it:
+`GET /api/models` returns every offered route as `{providerId, modelId}` with its display name,
+the reasoning efforts it accepts, its price, whether it is a contributor variant, and whether its
+provider has a key. Routes the list names but the installed catalog lacks, routes above the price
+cap (`config.toml` `[models] maxOutputUsdPerMTok`, default $10 per million output tokens) and
+OpenRouter routes (until the installed winter can replay reasoning through OpenRouter) are listed
+under `hidden` with the reason.
 
-## Choosing models per role
+The curated families: Muse Spark (contributor), Claude Haiku and Sonnet, DeepSeek Flash, GPT Luna
+and GPT Sol — each directly from its vendor and through OpenRouter.
 
-- **Orchestrator** — needs solid tool-calling and reasoning about social context; every pass is
-  one forced tool call. Fast, cheap models with good judgment work well.
-- **Waifus** — each waifu has her own `(providerId, modelId)`; personality quality dominates.
-  Only waifus on vision-capable models see images natively; others get OCR transcripts.
-- **Stage-manager** — summarization/observation work, forced tool calls; a small model is fine.
-  Thinking/reasoning buys nothing here (every call forces a tool) — leave it off.
-- **Reviewer** — tiny classification calls; the cheapest reliable model is fine.
-- **Assistant** — the dashboard helper; defaults to the orchestrator's model until set.
+**Contributor variants** (Muse Spark `-contributor`) share prompts with the vendor for training.
+Only pick one when the user explicitly asks for it.
 
-## Params
+## Choosing a model
 
-Configs store gateway-native dotted params, e.g. `temperature`, `topP`,
-`reasoning.enabled`, `reasoning.effort`, `reasoning.budgetTokens`. Writes are validated against
-the registry: an unsupported parameter or value returns HTTP 400 naming the violated rule.
-The chat path is lenient: stored params that conflict with a specific call shape (like thinking
-with a forced tool) are auto-corrected per call rather than failing.
+- **Waifus** — each waifu has her own `model: {providerId, modelId, effort?}`; personality quality
+  dominates. Waifus on image-capable models see images natively; others get OCR text.
+- **Assistant** — the dashboard helper; `PUT /api/assistant/config {"model": ...}`. Unset, it uses
+  the first configured waifu's model.
+
+`effort` must be one of the efforts `GET /api/models` lists for that route (for example
+`low`/`high`/`max`); omit it for the route's default. A stored effort the installed catalog no
+longer lists is dropped at boot and reported in `GET /api/runtime` → `models.warnings`.
+
+## Upgrades from the gateway era
+
+The old per-model `params` (temperature etc.) are gone. At upgrade, each waifu's model was mapped
+to its curated family (for example any Claude Sonnet → `anthropic/claude-sonnet-5-5`, any
+DeepSeek Flash → `deepseek/deepseek-flash`) and a stored reasoning effort carried over. A model with
+no curated family (Opus, `-pro` tiers, other vendors) was unset and is listed in
+`models.warnings` as `model_unmapped`: pick a new model for that waifu.
 
 ## Secrets without exposure
 
 The `request_secret` tool shows the user a secure input form in the dashboard panel. The
 secret (provider API key or bot token) is posted by the browser directly to storage and
 never enters the assistant conversation. Always prefer it over asking for secrets in chat;
-application IDs are not secret and can be set via `link_waifu_bot (for characters) or update_discord_bots (orchestrator only)`.
+application IDs are not secret and can be set via `link_waifu_bot` (for characters) or
+`update_discord_bots`.
