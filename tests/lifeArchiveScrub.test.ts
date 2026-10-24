@@ -175,6 +175,24 @@ describe("the archive scrub (D-b)", () => {
     expect(((await read(root, `${A}/memories.json`)).memories as Array<{ id: string }>).map((record) => record.id)).toEqual(["k1", "k2", "k3", "m1", "k4"]);
   });
 
+  it("scrubs at once run one after the other, so none restores another's removals (third review, Important 3)", async () => {
+    const memories = async (root: string) => ((await read(root, `${A}/memories.json`)).memories as Array<{ id: string }>).map((record) => record.id);
+    // Two owner forgets at once.
+    const root = await archivedRoot();
+    const storage = new StorageService(root);
+    await Promise.all([forgetUser(storage, { discordUserId: KEVIN, names: ["Kevin"] }), forgetUser(storage, { discordUserId: MINA, names: ["Mina"] })]);
+    expect(await memories(root)).toEqual(["s1"]);
+    // An owner forget and two DM users' slices at once give what one after the other gives.
+    const scrubs = [{ userId: KEVIN, names: ["Kevin"] }, { userId: MINA, names: ["Mina"], waifuId: "aria" }, { userId: SAM, names: ["Sam"], waifuId: "aria" }];
+    const together = await archivedRoot();
+    await Promise.all(scrubs.map((input) => scrubArchive(together, input)));
+    const inTurn = await archivedRoot();
+    for (const input of scrubs) await scrubArchive(inTurn, input);
+    expect(await memories(together)).toEqual(await memories(inTurn));
+    expect(await memories(together)).not.toEqual(expect.arrayContaining(["k1"]));
+    expect(await memories(together)).not.toContain("m1");
+  });
+
   it("a file nested too deep is counted unreadable and the scrub carries on (review F8)", async () => {
     const root = await archivedRoot();
     // Our own data is never this deep, but a hand-edited file could be: no stack overflow.

@@ -13,7 +13,7 @@ import { isWeakName, namesSomeone } from "../src/life/text.js";
 import { enqueueWake, newWakeId } from "../src/life/wakeQueue.js";
 import { updateDmState } from "../src/orchestration/dm/dmStore.js";
 import { forgetUser } from "../src/orchestration/dm/forgetUser.js";
-import { readPendingScrubs } from "../src/orchestration/dm/forgotten.js";
+import { pruneForgetRecordCopies, queuePendingScrub, readPendingScrubs } from "../src/orchestration/dm/forgotten.js";
 import { textTurn } from "./modelFakes.js";
 import { closeWorlds, KEVIN, lifeWorld, MINA_USER, ROOM_KEY, script } from "./lifeFixtures.js";
 import { removeTempRoot } from "./testUtils.js";
@@ -187,6 +187,29 @@ describe("review lines and records (F7, F9)", () => {
     expect(scrubsCopy).not.toContain(KEVIN);
     expect(scrubsCopy).not.toContain("Quillon");
     expect(scrubsCopy).toContain(MINA_USER);
+  });
+
+  it("a DM user's forget scrubs her own kept pending-scrubs copies; a copy is named by the time it was made", async () => {
+    const w = await lifeWorld(roots);
+    const life = path.join(w.root, "user/waifus/aria/life");
+    await mkdir(life, { recursive: true });
+    const recent = new Date().toISOString().replace(/[:.]/gu, "-");
+    await writeFile(path.join(life, `pending-scrubs.json.corrupt-${recent}`), `{"scrubs":[\n{"userId":"${KEVIN}","names":["Quillon"]},\n{"userId":"${MINA_USER}"\n`);
+    const deps = (w.cast as unknown as { deps: Parameters<typeof scrubOtherState>[0] }).deps;
+    const waifu = { id: "aria", name: "Aria", displayName: "Aria" } as Parameters<typeof scrubOtherState>[1];
+    await scrubOtherState(deps, waifu, { userId: KEVIN, names: ["Quillon"], sharedNames: [] });
+    const copy = await readFile(path.join(life, `pending-scrubs.json.corrupt-${recent}`), "utf8");
+    expect(copy).not.toContain(KEVIN);
+    expect(copy).toContain(MINA_USER);
+    // A torn file found by a forget dated long ago: its copy carries today's time, so the 7-day
+    // pruning keeps it.
+    await writeFile(path.join(life, "pending-scrubs.json"), '{"scrubs":[{"userId":"3000');
+    await queuePendingScrub(w.storage, "aria", KEVIN, new Date("2026-01-01T00:00:00.000Z"));
+    await pruneForgetRecordCopies(w.storage, new Date());
+    const copies = (await readdir(life)).filter((name) => name.startsWith("pending-scrubs.json.corrupt-") && name !== `pending-scrubs.json.corrupt-${recent}`);
+    expect(copies).toHaveLength(1);
+    const [, day, hh, mm, ss, ms] = /corrupt-(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z$/u.exec(copies[0]!)!;
+    expect(Math.abs(Date.now() - Date.parse(`${day}T${hh}:${mm}:${ss}.${ms}Z`))).toBeLessThan(60_000);
   });
 
   it("a waifu without a model finishes the owner's scrub: the notes session is recorded as skipped, once", async () => {

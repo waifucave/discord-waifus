@@ -27,6 +27,7 @@ import type { Logger } from "../../backend/logger.js";
 import { resolveDataPath } from "../../config/paths.js";
 import type { StorageService } from "../../storage/storageService.js";
 import { atomicWriteJson } from "../../storage/atomic.js";
+import { withArchiveLock } from "../../life/archiveScrub.js";
 
 export const FORGOTTEN_PEOPLE_PATH = ["user", "people", "forgotten.json"] as const;
 const FORGOTTEN_LOCK = "people-forgotten";
@@ -117,7 +118,8 @@ async function entriesForUpdate<T>(
     return await readEntries<T>(file, field);
   } catch (error) {
     if (!(error instanceof ForgetRecordCorruptError)) throw error;
-    const aside = `${file}.corrupt-${now.toISOString().replace(/[:.]/gu, "-")}`;
+    // Named by the real time it was made (never the record's time): its 7-day retention counts from now.
+    const aside = `${file}.corrupt-${new Date().toISOString().replace(/[:.]/gu, "-")}`;
     await rename(file, aside);
     (logger ?? console).warn("A forget record file was unreadable; a copy was kept and the entries that could be read carried over", {
       file,
@@ -263,10 +265,9 @@ async function copyAge(copy: { file: string; madeAt: number | undefined }, now: 
   return now.getTime() - madeAt;
 }
 
-/** Deletes kept copies older than 7 days (boot, and every forget). Returns how many went. */
-export async function pruneForgetRecordCopies(storage: Pick<StorageService, "dataRoot">, now: Date): Promise<number> {
+async function pruneCopies(copies: ReadonlyArray<{ file: string; madeAt: number | undefined }>, now: Date): Promise<number> {
   let removed = 0;
-  for (const copy of await forgetRecordCopies(storage.dataRoot)) {
+  for (const copy of copies) {
     if ((await copyAge(copy, now)) < CORRUPT_COPY_RETENTION_MS) continue;
     await rm(copy.file, { force: true });
     removed += 1;
@@ -274,17 +275,28 @@ export async function pruneForgetRecordCopies(storage: Pick<StorageService, "dat
   return removed;
 }
 
+/** Deletes kept copies older than 7 days (boot, and every forget). Returns how many went. */
+export async function pruneForgetRecordCopies(storage: Pick<StorageService, "dataRoot">, now: Date): Promise<number> {
+  return withArchiveLock(storage.dataRoot, async () => pruneCopies(await forgetRecordCopies(storage.dataRoot), now));
+}
+
 /**
  * Forget (§7.5): the kept copies lose the person. A copy that parses loses the person's entries;
  * one that does not loses every line `carries` matches (their id or a name only they have).
- * Old copies go whole first. Returns the copies changed or deleted.
+ * Old copies go whole first. `waifuId` (a DM user's forget): only her pending-scrubs copies.
+ * Runs under the archive lock, one scrub at a time. Returns the copies changed or deleted.
  */
 export async function scrubForgetRecordCopies(
   storage: Pick<StorageService, "dataRoot">,
-  o: { userId: string; carries: (text: string) => boolean; now: Date }
+  o: { userId: string; carries: (text: string) => boolean; waifuId?: string }
 ): Promise<number> {
-  let changed = await pruneForgetRecordCopies(storage, o.now);
-  for (const copy of await forgetRecordCopies(storage.dataRoot)) {
+  return withArchiveLock(storage.dataRoot, () => scrubCopiesNow(storage, o));
+}
+
+async function scrubCopiesNow(storage: Pick<StorageService, "dataRoot">, o: { userId: string; carries: (text: string) => boolean; waifuId?: string }): Promise<number> {
+  const mine = (copy: { file: string }) => o.waifuId === undefined || path.dirname(copy.file) === path.dirname(pendingScrubsPath(storage.dataRoot, o.waifuId));
+  let changed = await pruneCopies((await forgetRecordCopies(storage.dataRoot)).filter(mine), new Date());
+  for (const copy of (await forgetRecordCopies(storage.dataRoot)).filter(mine)) {
     const raw = await readFile(copy.file, "utf8").catch(() => undefined);
     if (raw === undefined) continue;
     let next: string;

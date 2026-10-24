@@ -47,7 +47,7 @@ import path from "node:path";
 import type { Logger } from "../backend/logger.js";
 import { listWaifus } from "../orchestration/stores/config.js";
 import { readDmFloor, readDmState } from "../orchestration/dm/dmStore.js";
-import { queuePendingScrub, type PendingScrub, type PendingScrubSource } from "../orchestration/dm/forgotten.js";
+import { queuePendingScrub, scrubForgetRecordCopies, type PendingScrub, type PendingScrubSource } from "../orchestration/dm/forgotten.js";
 import type { WaifuConfig } from "../shared/schemas/domain.js";
 import type { LifeState } from "../shared/schemas/life.js";
 import type { StorageService } from "../storage/storageService.js";
@@ -360,6 +360,8 @@ export async function scrubOtherState(deps: LifeDeps, waifu: WaifuConfig, identi
   } catch (error) {
     deps.logger.warn("Her slice of the Living cast archive could not be scrubbed", { category: "life", waifuId: waifu.id, code: (error as NodeJS.ErrnoException)?.code ?? "error" });
   }
+  // The kept copies of her unreadable pending-scrubs file lose the person too.
+  removed += await scrubForgetRecordCopies(deps.storage, { userId: identity.userId, carries: mentions, waifuId: waifu.id }).catch(() => 0);
   return removed;
 }
 

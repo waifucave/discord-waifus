@@ -802,7 +802,9 @@ them go whole, and so does every archived file filed under their id (the origina
 observations, her archived DM with the person and her archived DM state with them. `providers.json`
 and `models/` are never touched; a file that does not parse, or nests deeper than 256 levels, is
 left and counted, and the scrub carries on with the rest. Names without word boundaries remove no
-archived record (records bound to the id still go).
+archived record (records bound to the id still go). Archive scrubs (and the copy scrubs above) run
+one at a time per data root, so two forgets at once never restore each other's removals. A DM
+user's slice is best effort: a file it cannot remove never stops the rest of her scrub.
 
 `/forget conversation` runs steps 0–2 for the DM only (her summary without the chat, the DM's wakes
 and watches, the cursor at the floor), then starts the epoch at once so the old log goes too.
@@ -824,8 +826,10 @@ preview and name (rooms, DMs and edit mentions), turns the detector off and show
 until it is repaired; the next forget keeps a copy of the broken file and carries over every entry
 that can still be read from it. A torn `pending-scrubs.json` is salvaged the same way on read, so
 no queued scrub is lost. A forget removes the person from these kept copies (their entries, or
-every line carrying them when the copy does not parse), and a copy older than 7 days is deleted
-(at boot and at every owner forget): its salvage was merged when it was made.
+every line carrying them when the copy does not parse): the owner's from every copy, a DM user's
+from that waifu's pending-scrubs copies. A copy is named by the time it was made (never the
+record's time) and is deleted after 7 days (at boot and at every forget): its salvage was merged
+when it was made.
 
 ## 8. Life harness (system prompt outline)
 

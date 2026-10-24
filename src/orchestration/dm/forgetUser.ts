@@ -372,7 +372,7 @@ async function runForgetJob(storage: StorageService, initial: ForgetJob, hooks: 
       })
     );
     if (archive) result.archive = archive;
-    await part("record-copies", () => scrubForgetRecordCopies(storage, { userId, carries: personMatcher(userId, job.names), now: clock() }));
+    await part("record-copies", () => scrubForgetRecordCopies(storage, { userId, carries: personMatcher(userId, job.names) }));
   } finally {
     forgetCapturedTraffic(personMatcher(userId, job.names));
   }

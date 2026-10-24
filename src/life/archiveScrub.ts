@@ -171,7 +171,34 @@ export type ArchiveScrubInput = {
   logger?: Pick<Logger, "warn">;
 };
 
+const archiveQueues = new Map<string, Promise<void>>();
+
+/**
+ * One archive scrub (and forget-record copy scrub) at a time per data root: each reads a file,
+ * filters it and writes it back, so two at once (two owner forgets, an owner forget and a DM
+ * forget, one person's DM forget to two waifus) would restore each other's removals.
+ */
+export async function withArchiveLock<T>(dataRoot: string, task: () => Promise<T>): Promise<T> {
+  const key = path.resolve(dataRoot);
+  const previous = archiveQueues.get(key) ?? Promise.resolve();
+  const run = previous.then(task);
+  const tail = run.then(
+    () => undefined,
+    () => undefined
+  );
+  archiveQueues.set(key, tail);
+  try {
+    return await run;
+  } finally {
+    if (archiveQueues.get(key) === tail) archiveQueues.delete(key);
+  }
+}
+
 export async function scrubArchive(dataRoot: string, input: ArchiveScrubInput): Promise<ArchiveScrubResult> {
+  return withArchiveLock(dataRoot, () => scrubArchiveNow(dataRoot, input));
+}
+
+async function scrubArchiveNow(dataRoot: string, input: ArchiveScrubInput): Promise<ArchiveScrubResult> {
   const root = path.join(dataRoot, LIVING_CAST_ARCHIVE_DIR);
   const result: ArchiveScrubResult = { files: 0, removed: 0, unreadable: 0, skipped: 0 };
   if (!(await isDir(root))) return result;
