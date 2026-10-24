@@ -53,8 +53,9 @@ Every reply is one request with exactly ONE system message at the start. Its par
    and is kept in the transcript afterwards as a `<direction>` note once she has replied.
 
 Images are frozen at first sight: inline for models that accept images (up to
-`memory.maxInlineImagesPerEpoch` per conversation epoch), otherwise as `[image: <ocr text>]` or
-`[image]`. A later OCR result never changes what she was already shown.
+`memory.maxInlineImagesPerEpoch` per conversation epoch, and only images up to 3.75 MiB),
+otherwise as `[image: <ocr text>]` or `[image]`. A later OCR result never changes what she was
+already shown. Download limits are app config `discord.images` (see the API notes).
 
 ## Replying to a specific message
 

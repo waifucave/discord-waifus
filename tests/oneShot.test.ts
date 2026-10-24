@@ -7,6 +7,7 @@ import { OneShotTargetSchema } from "../src/shared/schemas/oneShot.js";
 import { OneShotCatalog } from "../src/orchestration/oneShot/catalog.js";
 import { OneShotDecider, prepareOneShot, type OneShotInput } from "../src/orchestration/oneShot/decider.js";
 import { decisionAnswers, decisionRequest, readDecisionJson, type ChoiceQuestions } from "../src/orchestration/oneShot/protocol.js";
+import { UsageLedgerEntrySchema, type UsageLedgerEntry } from "../src/shared/schemas/usage.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
 
 const roots: string[] = [];
@@ -115,6 +116,38 @@ describe("One shot native-choice orchestration", () => {
     expect((await client.decide({ ...input(), cast: [] })).decision.action).toBe("no_reply");
     await expect(client.decide({ ...input(), cast: [], replyRequired: true })).rejects.toThrow("no_available_speaker");
     expect(fetchImpl).not.toHaveBeenCalled(); client.close();
+  });
+  // Acceptance M7: every decision call writes one usage-ledger line, failed ones included.
+  it("records one usage-ledger line per decision call, failures and aborts included", async () => {
+    const lines: UsageLedgerEntry[] = [];
+    const usage = { record: async (entry: UsageLedgerEntry) => void lines.push(entry), flush: async () => undefined };
+    const sample = input(); const prepared = prepareOneShot(sample);
+    const ok = vi.fn(async () => new Response(JSON.stringify({
+      ...payload(prepared.questions, { turn: "speaker_0", loop: "healthy", steering: "none" }),
+      usage: { input_tokens: 812, output_tokens: 6 }
+    })));
+    const r = await root();
+    const attribution = { guildId: "g1", channelId: "c1", conversationKey: "g_g1_c1" };
+    await new OneShotDecider(r, ok as typeof fetch, undefined, usage).decide({ ...sample, attribution });
+    expect(lines).toHaveLength(1);
+    expect(UsageLedgerEntrySchema.parse(lines[0])).toMatchObject({
+      purpose: "one_shot", agentId: "orchestrator", providerId: "openai", modelId: "gpt-6-luna", status: "ok",
+      usageKnown: true, inputTokens: 812, outputTokens: 6, ...attribution
+    });
+    const failing = vi.fn(async () => new Response("nope", { status: 503 }));
+    await expect(new OneShotDecider(r, failing as typeof fetch, undefined, usage).decide(input())).rejects.toThrow("one_shot_http_503");
+    expect(lines[1]).toMatchObject({ purpose: "one_shot", status: "failed", errorKind: "one_shot_http_503", usageKnown: false, inputTokens: 0 });
+    const invalid = vi.fn(async () => new Response(JSON.stringify({ answers: [] })));
+    await expect(new OneShotDecider(r, invalid as typeof fetch, undefined, usage).decide(input())).rejects.toThrow();
+    expect(lines[2]).toMatchObject({ status: "failed", errorKind: "one_shot_invalid_answer" });
+    const controller = new AbortController();
+    const aborting = vi.fn(async () => { controller.abort(); throw new Error("aborted"); });
+    await expect(new OneShotDecider(r, aborting as typeof fetch, undefined, usage).decide({ ...input(), signal: controller.signal })).rejects.toThrow("one_shot_aborted");
+    expect(lines[3]).toMatchObject({ status: "aborted", errorKind: "one_shot_aborted" });
+    // No credentials: no call was made, so nothing is recorded.
+    await writeFile(`${r}/user/providers.json`, "{}");
+    await expect(new OneShotDecider(r, ok as typeof fetch, undefined, usage).decide(input())).rejects.toThrow("credential_missing");
+    expect(lines).toHaveLength(4);
   });
   it("does not expose HTTP errors or retry a failed inference", async () => {
     const fetchImpl = vi.fn(async () => new Response("private provider response", { status: 400 }));

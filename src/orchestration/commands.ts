@@ -32,7 +32,7 @@ import {
 } from "./stores/config.js";
 import { setDebugRoute, unsetDebugRoute } from "./stores/debugRoutes.js";
 import { readMemoryStore } from "./stores/memories.js";
-import { legacyServerContextWindow } from "./contextWindows.js";
+import { LEGACY_SERVER_CONTEXT_WINDOWS } from "./contextWindows.js";
 
 /** What the command handlers need from the runtime facade. */
 export type CommandHost = {
@@ -484,7 +484,8 @@ export class RuntimeCommands {
     const messages = await this.options.discord.fetchFreshContext({
       guildId,
       channelId,
-      limit: Math.max(legacyServerContextWindow("waifu", server), clearCount)
+      // The server's explicit waifu window, else the old 50-message default: enough to find the targets.
+      limit: Math.max(server.contextWindows.waifu ?? LEGACY_SERVER_CONTEXT_WINDOWS.waifu, clearCount)
     });
     const targets = [...messages]
       .reverse()

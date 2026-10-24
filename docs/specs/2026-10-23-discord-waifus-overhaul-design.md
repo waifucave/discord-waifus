@@ -1146,6 +1146,40 @@ schedules a post-reply background check.
   `src/api/server.ts` that accepts and ignores it (§8.6); the shim is removed one release later.
   `replying to >` appears nowhere in `src/`.
 
+### 8.13 As built (whole-branch acceptance fixes)
+
+- **Inline image cap (I1).** `MAX_INLINE_IMAGE_BYTES = 3,932,160` raw bytes
+  (`context/images.ts`): Anthropic rejects an image over 5 MB measured on the base64 payload
+  (5 MiB = 5,242,880 chars), and 3.75 MiB is the most raw data that stays under it. An image over
+  the cap (declared attachment size or fetched bytes) is never frozen inline: a new one freezes to
+  text (`[image: <ocr>]` or `[image]`, logged with reason `too_large`), and one frozen inline by an
+  earlier build renders `[image unavailable]` instead of failing every call of the epoch.
+- **Legacy fetch limits (I1).** `sharedImageFetcherConfig` uses `ocr.maxImageBytes` /
+  `ocr.timeoutMs` only when they differ from their own defaults (then the max with
+  `discord.images`, plus the deprecation warning); at their defaults `discord.images.maxBytes` /
+  `fetchTimeoutMs` apply as set, so lowering them takes effect.
+- **Observer cursor in pruning (M3).** The stage-manager observer's read-through cursor is an
+  active pruning cursor under the same 7-day activity rule as agent contexts. A cursor that names
+  no ledger entry (legacy message id only, or none) holds nothing instead of blocking all pruning,
+  and the hold never reaches back more than `LEDGER_ENTRY_CAP` entries from the head. Refs are
+  pruned only for the ids the ledger removed (M1), so a ref assigned before its message arrives
+  survives.
+- **`compaction.enabled: false` (M4).** Turns off summaries, not the limits: the same triggers
+  run the durable no-summary truncation (new epoch, cursor before the newest `keepRecent`), and a
+  context overflow retries truncated instead of summarizing.
+- **OCR cache TTL (M5).** Once step `ocr-cache-ttl-168-v1` rewrites `ocr.cacheTtlHours` from exactly
+  24 (the old default every saved `config.toml` spelled out) to 168 and leaves any other value;
+  registered before the schema-version stamp.
+- **Smaller fixes.** The orchestrator's `prepare` gets the guild directory like the waifu path
+  (M2); one-shot decisions write one usage-ledger line per call with the new purpose `one_shot`
+  (M7). Removed: the `pending` migration flag and stub, `legacyServerContextWindow`,
+  `BuildInput.events`, `PrepareInput.pendingNotes`, the `event` breakpoint kind (a stored one reads
+  as null) and unused exports. The dashboard calls `contextWindow` "Messages loaded at start" (max
+  200).
+- **Release.** Phase 4 ships as a **minor** release, **2.112.0**: its memory migrations produce a
+  store 2.111.x cannot read, and idle updates only take patch releases, so it must be installed
+  deliberately. Downgrading to 2.111.x is unsupported.
+
 ## 9. Phase 5 — Discord features (detailed design)
 
 Covers §4 (DMs + rate limit), I2, I10, I12 (edits/deletes/threads), I15. I6 image fetching and the

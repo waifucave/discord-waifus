@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   LEGACY_SERVER_CONTEXT_WINDOWS,
-  legacyServerContextWindow,
   resolveContextCap,
   type ContextCapKind
 } from "../src/orchestration/contextWindows.js";
@@ -62,13 +61,8 @@ describe("server contextWindows schema", () => {
   });
 });
 
-describe("legacyServerContextWindow (pre-T5 read sites)", () => {
-  it("keeps the old effective value: explicit key, else the old 20/50/80 default", () => {
+describe("LEGACY_SERVER_CONTEXT_WINDOWS", () => {
+  it("is the old 20/50/80 server fill (the B29 migration drops exactly these)", () => {
     expect(LEGACY_SERVER_CONTEXT_WINDOWS).toEqual({ orchestrator: 20, waifu: 50, stageManager: 80 });
-    const empty = server({});
-    expect(legacyServerContextWindow("orchestrator", empty)).toBe(20);
-    expect(legacyServerContextWindow("waifu", empty)).toBe(50);
-    expect(legacyServerContextWindow("stageManager", empty)).toBe(80);
-    expect(legacyServerContextWindow("waifu", server({ waifu: 7 }))).toBe(7);
   });
 });

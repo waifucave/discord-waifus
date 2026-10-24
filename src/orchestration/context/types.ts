@@ -22,7 +22,7 @@ export type BuiltPrompt = {
   estimatedTokens: number;
   transcriptCount: number;
   cursorSeq: number | null;
-  breakpoint: { kind: "entry" | "note" | "event"; seq: number } | null; // block that carries C
+  breakpoint: { kind: "entry" | "note"; seq: number } | null; // block that carries C
   debug: { system: string; header: string; transcript: string; tail: string }; // /print, inspector
 };
 

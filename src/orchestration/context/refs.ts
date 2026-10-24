@@ -28,9 +28,14 @@ export function assignRefsTo(refs: ConversationRefs, messageIds: readonly string
   return next ? { ...refs, counter, refs: next } : undefined;
 }
 
-/** Drop refs of messages not in `keepIds` (pruned from the ledger). Undefined when unchanged. */
-export function pruneRefs(refs: ConversationRefs, keepIds: ReadonlySet<string>): ConversationRefs | undefined {
-  const kept = Object.entries(refs.refs).filter(([id]) => keepIds.has(id));
+/**
+ * Drop the refs of the messages the ledger just removed. Only removed ids: a ref may be assigned
+ * before its message reaches the ledger (a decision note naming the replies it sent), and that
+ * ref must survive until the message itself is pruned. Undefined when unchanged.
+ */
+export function pruneRefs(refs: ConversationRefs, removedIds: Iterable<string>): ConversationRefs | undefined {
+  const removed = new Set(removedIds);
+  const kept = Object.entries(refs.refs).filter(([id]) => !removed.has(id));
   if (kept.length === Object.keys(refs.refs).length) return undefined;
   return { ...refs, refs: Object.fromEntries(kept) };
 }

@@ -26,10 +26,9 @@ async function freshRoot() {
 }
 
 describe("waifu-params-gateway-040-v1", () => {
-  it("is registered live (not pending), once per app version, right after configs-to-gateway-params", () => {
+  it("is registered once per app version, right after configs-to-gateway-params", () => {
     const ids = MIGRATION_STEPS.map((s) => s.id);
     const step = MIGRATION_STEPS.find((s) => s.id === "waifu-params-gateway-040-v1")!;
-    expect(step.pending).toBeFalsy();
     expect(step.frequency).toBe("once-per-app-version");
     expect(ids.indexOf(step.id)).toBe(ids.indexOf("configs-to-gateway-params") + 1);
   });

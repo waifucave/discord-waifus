@@ -20,11 +20,11 @@ You are Aria. Static harness text.
 --- text ---
 [14:00 #a0] Kevin: morning! Sat 24 Oct 2026 14:00
 
---- text ---
+--- text [cache] ---
 [14:01 #a1] Riko: look at this
 
 --- image image/png · 10 bytes · 128bd9d1e4d6 ---
---- text [cache] ---
+--- text ---
 <direction>Compliment Riko's cake.</direction>
 
 === 3 assistant ===

@@ -22,15 +22,3 @@ export const LEGACY_SERVER_CONTEXT_WINDOWS: Readonly<Record<ContextCapKind, numb
   waifu: 50,
   stageManager: 80
 };
-
-/**
- * Effective server-level window exactly as it behaved before B29 made the keys optional overrides
- * (explicit value, else the old default). Existing read sites use this until T5 moves them to
- * `resolveContextCap`; it keeps Phase 4 contracts landing with zero behaviour change.
- */
-export function legacyServerContextWindow(
-  kind: ContextCapKind,
-  server: Pick<ServerConfig, "contextWindows">
-): number {
-  return server.contextWindows[kind] ?? LEGACY_SERVER_CONTEXT_WINDOWS[kind];
-}

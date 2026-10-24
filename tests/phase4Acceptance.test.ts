@@ -273,8 +273,4 @@ describe("migrations re-run", () => {
     const fourth = await snapshot(root);
     for (const [file, bytes] of migrated) expect(fourth.get(file), file).toBe(bytes);
   });
-
-  it("registers no step as pending (every Phase 4 step is live)", () => {
-    expect(MIGRATION_STEPS.filter((step) => step.pending).map((step) => step.id)).toEqual([]);
-  });
 });

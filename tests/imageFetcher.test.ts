@@ -9,10 +9,10 @@ import {
 import { appDataPath } from "../src/config/paths.js";
 import { sharedImageFetcherConfig } from "../src/discord/attachments.js";
 import { DEFAULT_APP_CONFIG } from "../src/shared/schemas/config.js";
-import { FrozenImageRenderer } from "../src/orchestration/context/images.js";
+import { FrozenImageRenderer, MAX_INLINE_IMAGE_BYTES } from "../src/orchestration/context/images.js";
 import { ContextStateSchema, type LedgerEntry } from "../src/shared/schemas/context.js";
 import type { ImageRef } from "../src/shared/schemas/discordMessage.js";
-import { FakeImageFetcher } from "./contextFixtures.js";
+import { FakeImageFetcher, quietLogger } from "./contextFixtures.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
 
 const roots: string[] = [];
@@ -360,6 +360,59 @@ describe("FrozenImageRenderer freeze rule", () => {
     ]);
     expect(r.decisions().imageModes).toEqual({});
   });
+
+  // Acceptance I1: an inline image over the provider's per-image limit would be frozen into the
+  // epoch prefix and fail every call; it must freeze to text instead.
+  it("freezes an image over the provider-safe inline cap to text (OCR text when available)", async () => {
+    expect(MAX_INLINE_IMAGE_BYTES).toBe(3_932_160);
+    expect(Math.ceil(MAX_INLINE_IMAGE_BYTES / 3) * 4).toBeLessThanOrEqual(5 * 1024 * 1024);
+    const images = new FakeImageFetcher();
+    images.sizes.set("att:1", MAX_INLINE_IMAGE_BYTES + 1);
+    images.sizes.set("att:2", MAX_INLINE_IMAGE_BYTES);
+    images.sizes.set("att:3", 6 * 1024 * 1024);
+    const debug: unknown[] = [];
+    const logger = { ...quietLogger(), debug: (_m: string, context?: unknown) => void debug.push(context) };
+    const r = new FrozenImageRenderer({
+      fetcher: images,
+      acceptsImages: true,
+      maxInlinePerEpoch: 8,
+      logger,
+      ocr: { cachedText: async (image) => (image.key === "att:3" ? "big poster" : undefined) }
+    });
+    const blocks = await r.blocksFor(entry("1", "2", "3"), state());
+    expect(blocks.map((b) => (b.type === "text" ? b.text : "inline"))).toEqual(["[image]", "inline", "[image: big poster]"]);
+    expect(r.decisions()).toEqual({
+      inlineAdded: 1,
+      imageModes: {
+        "att:1": { mode: "text", text: "[image]" },
+        "att:2": { mode: "inline" },
+        "att:3": { mode: "text", text: "[image: big poster]" }
+      }
+    });
+    expect(debug).toEqual([
+      expect.objectContaining({ reason: "too_large", bytes: MAX_INLINE_IMAGE_BYTES + 1 }),
+      expect.objectContaining({ reason: "too_large", bytes: 6 * 1024 * 1024 })
+    ]);
+  });
+
+  it("skips the fetch when the attachment's declared size is over the inline cap", async () => {
+    const images = new FakeImageFetcher();
+    const r = new FrozenImageRenderer({ fetcher: images, acceptsImages: true, maxInlinePerEpoch: 8 });
+    const big = { ...entry(), images: [ref("1", { bytes: MAX_INLINE_IMAGE_BYTES + 1 })] };
+    expect(await r.blocksFor(big, state())).toEqual([{ type: "text", text: "[image]" }]);
+    expect(images.calls).toHaveLength(0);
+    expect(r.decisions().imageModes).toEqual({ "att:1": { mode: "text", text: "[image]" } });
+  });
+
+  it("an image frozen inline before the cap existed renders unavailable instead of breaking the call", async () => {
+    const images = new FakeImageFetcher();
+    images.sizes.set("att:1", 7 * 1024 * 1024);
+    const r = new FrozenImageRenderer({ fetcher: images, acceptsImages: true, maxInlinePerEpoch: 8 });
+    expect(await r.blocksFor(entry("1"), state({ imageModes: { "att:1": { mode: "inline" } }, inlineImageCount: 1 }))).toEqual([
+      { type: "text", text: "[image unavailable]" }
+    ]);
+    expect(r.decisions().imageModes).toEqual({});
+  });
 });
 
 describe("sharedImageFetcherConfig", () => {
@@ -377,6 +430,32 @@ describe("sharedImageFetcherConfig", () => {
     expect(config.fetchTimeoutMs).toBe(20_000);
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toContain("ocr.maxImageBytes and ocr.timeoutMs");
+  });
+
+  // Acceptance I1: at defaults the legacy 8 MiB OCR limit used to win over discord.images (5 MiB),
+  // so lowering discord.images.maxBytes did nothing.
+  it("ignores legacy ocr values left at their defaults, so discord.images is authoritative", () => {
+    const warnings: string[] = [];
+    const logger = { warn: (message: string) => warnings.push(message) };
+    expect(sharedImageFetcherConfig({ discord: { images }, ocr }, logger)).toMatchObject({
+      maxBytes: images.maxBytes,
+      fetchTimeoutMs: images.fetchTimeoutMs
+    });
+    const lowered = sharedImageFetcherConfig({ discord: { images: { ...images, maxBytes: 1_000_000, fetchTimeoutMs: 600 } }, ocr }, logger);
+    expect(lowered.maxBytes).toBe(1_000_000);
+    expect(lowered.fetchTimeoutMs).toBe(600);
+    expect(warnings).toEqual([]);
+  });
+
+  it("a customised legacy value below discord.images neither raises the limit nor warns", () => {
+    const warnings: string[] = [];
+    const config = sharedImageFetcherConfig(
+      { discord: { images }, ocr: { ...ocr, maxImageBytes: 2_000_000, timeoutMs: 1_000 } },
+      { warn: (message: string) => warnings.push(message) }
+    );
+    expect(config.maxBytes).toBe(images.maxBytes);
+    expect(config.fetchTimeoutMs).toBe(images.fetchTimeoutMs);
+    expect(warnings).toEqual([]);
   });
 
   it("keeps discord.images when it is larger, and does not warn for default ocr values", () => {

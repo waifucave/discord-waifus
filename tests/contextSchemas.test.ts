@@ -129,6 +129,13 @@ describe("ContextStateSchema", () => {
     expect(state.lastCompaction).toBeUndefined();
   });
 
+  it("reads a stored legacy `event` breakpoint as null (the type no longer has that kind)", () => {
+    expect(ContextStateSchema.parse({ ...minimal, lastBreakpoint: { kind: "event", seq: 3 } }).lastBreakpoint).toBeNull();
+    expect(ContextStateSchema.parse({ ...minimal, lastBreakpoint: { kind: "note", seq: 3 } }).lastBreakpoint).toEqual({ kind: "note", seq: 3 });
+    expect(ContextStateSchema.parse({ ...minimal, lastBreakpoint: null }).lastBreakpoint).toBeNull();
+    expect(ContextStateSchema.safeParse({ ...minimal, lastBreakpoint: { kind: "other", seq: 3 } }).success).toBe(false);
+  });
+
   it("round-trips a full state", () => {
     const full = {
       ...minimal,

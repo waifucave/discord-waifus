@@ -10,7 +10,7 @@ import {
   OrchestratorDecisionSchema,
   Directive
 } from "./decisions.js";
-import { OBSERVATION_KINDS, DreamOp, DreamOpSchema, ObserverOp, ObserverOpSchema, StageManagerObservation, StageManagerObservationSchema } from "./stageManager.js";
+import { OBSERVATION_KINDS, DreamOp, DreamOpSchema, ObserverOp, ObserverOpSchema } from "./stageManager.js";
 import { MEMORY_KINDS, MemoryKindSchema } from "../shared/schemas/domain.js";
 import type { DreamRequest } from "../providers/types.js";
 
@@ -771,11 +771,6 @@ export function normalizeDreamOps(raw: unknown[]): DreamOp[] {
       ? `No valid dream ops. Invalid ops: ${invalidOps.join("; ")}`
       : "Provider returned no dream ops."
   );
-}
-
-// Parse an array of raw observation items using the coercing Raw schema.
-export function parseRawStageManagerObservations(items: unknown[]): StageManagerObservation[] {
-  return items.map((item) => StageManagerObservationSchema.parse(RawStageManagerObservationSchema.parse(item)));
 }
 
 const RawObserverOpSchema = z.object({

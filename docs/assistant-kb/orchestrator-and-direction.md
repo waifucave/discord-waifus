@@ -17,8 +17,8 @@ first). Manual trigger: `POST /api/runtime/trigger/orchestrator {"guildId","chan
 ### What the orchestrator sees
 
 It reads the same channel transcript the waifus do (`[14:02 #k3] Kevin: text`, with the same
-message refs), one system message of director rules, a frozen header (conversation summary, who
-is on the cast, the place) and a per-call tail: the time now, which waifus are available right now
+message refs), one system message of director rules plus the cast (a short card per waifu, and
+the owner's policy), a frozen header (conversation summary, the place) and a per-call tail: the time now, which waifus are available right now
 (asleep or busy ones are marked; this is in the tail only, so it never invalidates the cached
 prefix), any runtime notice, the recorded plan when it was woken by its own timer, whether a reply
 is required, and whether the directive budget is open. The bot account that posts for the

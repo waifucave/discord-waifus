@@ -442,8 +442,11 @@ describe("ContextCompactionService triggers", () => {
   it("messages: rolls the epoch over with summary, cursor, fresh header and dropped notes (edits included)", async () => {
     const h = await harness({ settings: SMALL });
     post(h, 10);
-    const p1 = await prepare(h, { pendingNotes: [{ kind: "direction", text: "d1" }] });
-    await h.engine.runtime.commit(p1, { modelKey: p1.modelKey, notes: [{ kind: "tool", callId: "c1", name: "add_memory", arguments: "{}", result: "ok" }] });
+    const p1 = await prepare(h);
+    await h.engine.runtime.commit(p1, {
+      modelKey: p1.modelKey,
+      notes: [{ kind: "direction", text: "d1" }, { kind: "tool", callId: "c1", name: "add_memory", arguments: "{}", result: "ok" }]
+    });
     const firstId = p1.transcript[0]!.id;
     post(h, 2, 10);
     await prepare(h, { agent: { kind: "orchestrator" } });
@@ -456,7 +459,7 @@ describe("ContextCompactionService triggers", () => {
 
     post(h, 15, 12); // 27 messages > maxMessages 20
     const s = summarizer();
-    const p3 = await prepare(h, { summarize: s.fn, pendingNotes: [{ kind: "direction", text: "d3" }] });
+    const p3 = await prepare(h, { summarize: s.fn });
 
     expect(s.calls).toHaveLength(1);
     const handed = s.calls[0]!;
@@ -469,8 +472,8 @@ describe("ContextCompactionService triggers", () => {
     expect(p3.state.lastCompaction).toMatchObject({ trigger: "messages", ok: true });
     expect(p3.transcript.map((e) => e.body)).toEqual(["m23", "m24", "m25", "m26", "m27"]);
     expect(p3.prompt.debug.header).toContain("<conversation_summary>summary 1</conversation_summary>");
-    // Notes before the cursor (direction, tool, edit) are gone; only this turn's pending note remains.
-    expect(p3.state.notes).toEqual([expect.objectContaining({ kind: "direction", text: "d3", anchorSeq: 27 })]);
+    // Notes before the cursor (direction, tool, edit) are gone.
+    expect(p3.state.notes).toEqual([]);
     expect(p3.prompt.debug.transcript).not.toContain("<edit>");
     expect(h.observed).toEqual([[GUILD, 22]]);
   });
@@ -902,7 +905,7 @@ describe("review fixes: I2 a compaction landing during prepare", () => {
     const p = await prepare(h, { summarize: s.fn });
     expect(p.state.epoch).toBe(1); // stored state: new epoch
     expect(p.prompt.cursorSeq).toBe(0); // prompt: built on the old one
-    expect(h.logs).toContain("Context compacted during prepare; keeping only this turn's notes");
+    expect(h.logs).toContain("Context compacted during prepare; keeping the new epoch");
 
     // Huge reported usage would trigger a background compaction off the stale prompt.
     await h.engine.runtime.commit(p, { modelKey: p.modelKey, usage: { inputTokens: 10_000_000, outputTokens: 1 } });
@@ -1017,9 +1020,9 @@ describe("review fixes: minor", () => {
     };
     const h = await harness({ deps: { snapshots } });
     post(h, 6);
-    const p0 = await prepare(h, { pendingNotes: [{ kind: "memory", memoryIds: ["mem1"], text: "Kevin likes tea" }] });
+    const p0 = await prepare(h);
     expect(p0.prompt.debug.header).toContain("- L1 tea");
-    await h.engine.runtime.commit(p0, { modelKey: p0.modelKey });
+    await h.engine.runtime.commit(p0, { modelKey: p0.modelKey, notes: [{ kind: "memory", memoryIds: ["mem1"], text: "Kevin likes tea" }] });
     post(h, 1, 6);
     expect(await h.engine.runtime.compactNow(manualInput(h, summarizer()))).toMatchObject({ status: "compacted", cursorSeq: 4 });
     const p1 = await prepare(h);

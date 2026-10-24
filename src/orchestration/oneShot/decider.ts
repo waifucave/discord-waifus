@@ -8,9 +8,24 @@ import { OneShotTargetSchema, oneShotCatalog, type OneShotCatalog } from "./cata
 import { dayKey, formatClock, hostTimeZone } from "../context/timeFormat.js";
 import { decisionAnswers, decisionRequest, readDecisionJson, type ChoiceQuestions } from "./protocol.js";
 import { LocalLayaPool } from "./laya.js";
+import { sharedUsageLedger, usageFields, type UsageLedger } from "../usageLedger.js";
 
 export type OneShotInput = { target: string; messages: ContextMessage[]; cast: DeterministicCastMember[]; waifus: WaifuConfig[];
-  now: Date; timeZone?: string; replyRequired: boolean; directiveBudgetOpen: boolean; loopSuspected: boolean; timerWakeSeconds?: number; policy: string; signal: AbortSignal };
+  now: Date; timeZone?: string; replyRequired: boolean; directiveBudgetOpen: boolean; loopSuspected: boolean; timerWakeSeconds?: number; policy: string; signal: AbortSignal;
+  /** Usage-ledger attribution of the decision call. */
+  attribution?: { guildId?: string; channelId?: string; conversationKey?: string } };
+
+/** Token counts a decisions endpoint may report (OpenAI- or OpenRouter-style); absent → unknown. */
+function decisionUsage(payload: unknown) {
+  const usage = payload && typeof payload === "object" ? (payload as { usage?: unknown }).usage : undefined;
+  if (!usage || typeof usage !== "object") return undefined;
+  const u = usage as Record<string, unknown>;
+  const num = (...keys: string[]) => keys.map((k) => u[k]).find((v): v is number => typeof v === "number");
+  const inputTokens = num("input_tokens", "prompt_tokens");
+  const outputTokens = num("output_tokens", "completion_tokens");
+  const costUsd = num("cost");
+  return { inputTokens: inputTokens ?? 0, outputTokens: outputTokens ?? 0, ...(costUsd !== undefined ? { costUsd } : {}) };
+}
 export type OneShotResult = { decision: OrchestratorDecision; loopDetected: boolean };
 const GOALS = {
   break_loop: "Advance the scene with a concrete new action; do not rephrase the last exchange.",
@@ -62,8 +77,31 @@ export function prepareOneShot(input: OneShotInput) {
 export class OneShotDecider {
   private readonly credentials: ReturnType<typeof createProviderCredentialsLookup>;
   private readonly local = new LocalLayaPool();
-  constructor(dataRoot: string, private readonly fetchImpl: typeof fetch = fetch, private readonly catalog: OneShotCatalog = oneShotCatalog) {
+  private readonly usage: UsageLedger;
+  constructor(dataRoot: string, private readonly fetchImpl: typeof fetch = fetch, private readonly catalog: OneShotCatalog = oneShotCatalog, usage?: UsageLedger) {
     this.credentials = createProviderCredentialsLookup(dataRoot);
+    this.usage = usage ?? sharedUsageLedger(dataRoot);
+  }
+
+  /** One usage-ledger line per decision call (spec 8.10), failed and aborted ones included. */
+  private recordUsage(input: OneShotInput, providerId: string, modelId: string, startedAt: Date, payload: unknown, error?: unknown): void {
+    const attribution = input.attribution ?? {};
+    void this.usage.record({
+      at: startedAt.toISOString(),
+      purpose: "one_shot",
+      agentId: "orchestrator",
+      ...(attribution.guildId ? { guildId: attribution.guildId } : {}),
+      ...(attribution.channelId ? { channelId: attribution.channelId } : {}),
+      ...(attribution.conversationKey ? { conversationKey: attribution.conversationKey } : {}),
+      providerId,
+      modelId,
+      status: error === undefined ? "ok" : input.signal.aborted ? "aborted" : "failed",
+      ...usageFields(decisionUsage(payload)),
+      ...(error !== undefined
+        ? { errorKind: error instanceof Error && /^one_shot_[a-z0-9_]+$/.test(error.message) ? error.message : "one_shot_failed" }
+        : {}),
+      durationMs: Math.max(0, Date.now() - startedAt.getTime())
+    });
   }
   close() { this.local.close(); }
   async decide(input: OneShotInput): Promise<OneShotResult> {
@@ -78,26 +116,37 @@ export class OneShotDecider {
     const local = input.target.startsWith("laya:");
     const model = input.target.slice(input.target.indexOf(":") + 1);
     const body = decisionRequest(model, prepared.state, prepared.questions, openai);
-    let payload: unknown;
-    if (local) payload = await this.local.call(model, body, input.signal);
-    else {
-      const provider = openai ? "openai" : "openrouter";
-      const key = this.credentials(provider);
+    const providerId = local ? "laya" : openai ? "openai" : "openrouter";
+    let key: string | undefined;
+    if (!local) {
+      key = this.credentials(providerId);
       if (!key) throw new Error("one_shot_credential_missing");
       if (!openai) {
         const listed = await this.catalog.list();
         input.signal.throwIfAborted();
         if (!listed.models.some((m) => m.target === input.target)) throw new Error("one_shot_model_unavailable");
       }
-      const response = await this.fetchImpl(openai ? "https://api.openai.com/v1/decisions" : "https://openrouter.ai/api/alpha/decisions", {
-        method: "POST", redirect: "error", headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" }, body: JSON.stringify(body),
-        signal: AbortSignal.any([input.signal, AbortSignal.timeout(30_000)])
-      }).catch(() => { throw new Error(input.signal.aborted ? "one_shot_aborted" : "one_shot_request_failed"); });
-      if (!response.ok) { await response.body?.cancel(); throw new Error(`one_shot_http_${response.status}`); }
-      payload = await readDecisionJson(response);
     }
-    const answers = decisionAnswers(payload, prepared.questions, openai);
-    input.signal.throwIfAborted();
+    const startedAt = new Date();
+    let payload: unknown;
+    let answers: ReturnType<typeof decisionAnswers>;
+    try {
+      if (local) payload = await this.local.call(model, body, input.signal);
+      else {
+        const response = await this.fetchImpl(openai ? "https://api.openai.com/v1/decisions" : "https://openrouter.ai/api/alpha/decisions", {
+          method: "POST", redirect: "error", headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" }, body: JSON.stringify(body),
+          signal: AbortSignal.any([input.signal, AbortSignal.timeout(30_000)])
+        }).catch(() => { throw new Error(input.signal.aborted ? "one_shot_aborted" : "one_shot_request_failed"); });
+        if (!response.ok) { await response.body?.cancel(); throw new Error(`one_shot_http_${response.status}`); }
+        payload = await readDecisionJson(response);
+      }
+      answers = decisionAnswers(payload, prepared.questions, openai);
+      input.signal.throwIfAborted();
+    } catch (error) {
+      this.recordUsage(input, providerId, model, startedAt, payload, error);
+      throw error;
+    }
+    this.recordUsage(input, providerId, model, startedAt, payload);
     const loopDetected = ["repeated_beat", "stalled_scene", "circular_topic"].includes(answers.loop.choice);
     const choice = answers.turn.choice;
     let member: DeterministicCastMember | undefined = choice.startsWith("speaker_") ? prepared.candidates[Number(choice.replace("speaker_", ""))] : undefined;

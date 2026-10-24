@@ -29,6 +29,15 @@ export type OcrTextLookup = {
   textFor?(ref: ImageRef, o: { timeoutMs: number; signal?: AbortSignal }): Promise<string | undefined>;
 };
 
+/**
+ * Provider-safe cap on an inline image's raw bytes. Anthropic's Messages API rejects an image over
+ * 5 MB, measured on the base64 payload (5 MiB = 5,242,880 chars); base64 is 4/3 of the raw size, so
+ * 3.75 MiB of raw bytes is the most that stays under it. An inline image over the cap would be
+ * frozen into the epoch prefix and fail every call (compaction included), so it freezes to text
+ * (reason `too_large`) instead, whatever `discord.images.maxBytes` allows the fetcher.
+ */
+export const MAX_INLINE_IMAGE_BYTES = 3_932_160;
+
 /** Default wait for OCR of a not-yet-frozen image when the model cannot take images. */
 export const DEFAULT_OCR_FREEZE_TIMEOUT_MS = 4_000;
 
@@ -118,14 +127,32 @@ export class FrozenImageRenderer implements FrozenImages {
   }
 
   private async fetch(entry: LedgerEntry, ref: ImageRef): Promise<ImageBlock | undefined> {
+    if (ref.bytes !== undefined && ref.bytes > MAX_INLINE_IMAGE_BYTES) return this.tooLarge(entry, ref.bytes);
     const refresh = this.o.refreshUrl;
     const result = await this.o.fetcher.get(ref, {
       signal: this.o.signal,
       purpose: "inline",
       ...(refresh ? { refreshUrl: (r: ImageRef) => refresh(entry, r) } : {})
     });
-    if (result.ok) return { type: "image", mimeType: result.mimeType, data: result.data.toString("base64") };
+    if (result.ok) {
+      if (result.data.length > MAX_INLINE_IMAGE_BYTES) return this.tooLarge(entry, result.data.length);
+      return { type: "image", mimeType: result.mimeType, data: result.data.toString("base64") };
+    }
     if (result.reason === "aborted") throw new ImageBuildAbortedError("Image fetch aborted; nothing frozen.");
+    return undefined;
+  }
+
+  /**
+   * Over the provider-safe inline cap: never inline. A new image freezes to text; one frozen
+   * inline before the cap existed renders "[image unavailable]" so it cannot break the epoch.
+   */
+  private tooLarge(entry: LedgerEntry, bytes: number): undefined {
+    this.o.logger?.debug("Image over the provider-safe inline cap; using text", {
+      messageId: entry.id,
+      reason: "too_large",
+      bytes,
+      maxInlineBytes: MAX_INLINE_IMAGE_BYTES
+    });
     return undefined;
   }
 }
