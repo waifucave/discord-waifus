@@ -64,7 +64,20 @@ export async function readMessagesTool(input: unknown, ctx: ToolContext): Promis
   } catch {
     return toolError("error: messages can't be read right now");
   }
-  const page = await deps.conversations.readPage({ conversation: place.ref, ...(beforeId ? { beforeId } : {}), limit: args.limit, signal: ctx.signal });
+  // A forgotten DM's floor (§7.5) holds on the read path itself, not only in the cache: after a
+  // restart the cache floor may not be loaded yet, and nothing at or below it may ever be shown.
+  let dmFloor: string | undefined;
+  if (place.kind === "dm" && place.userId) {
+    try {
+      dmFloor = await readDmFloor(deps.storage, place.userId, waifu.id);
+    } catch {
+      return toolError("error: messages can't be read right now");
+    }
+  }
+  const raw = await deps.conversations.readPage({ conversation: place.ref, ...(beforeId ? { beforeId } : {}), limit: args.limit, signal: ctx.signal });
+  const kept = dmFloor ? raw.messages.filter((message) => aboveFloor(message.id, dmFloor)) : raw.messages;
+  // Nothing below the floor is "older" for her.
+  const page = { ...raw, messages: kept, hasMore: raw.hasMore && kept.length === raw.messages.length };
   const now = deps.now();
   const tz = deps.timeZone;
   const dir = await directoryFor(deps, place);
@@ -85,7 +98,7 @@ export async function readMessagesTool(input: unknown, ctx: ToolContext): Promis
   let perResult = 0;
   const added = { count: 0, bytes: 0, keys: [] as string[] };
   const lookup = new Map<string, RawDiscordMessage>();
-  for (const message of [...deps.conversations.bufferedMessages(place.ref), ...page.messages]) lookup.set(message.id, message);
+  for (const message of [...deps.conversations.bufferedMessages(place.ref), ...page.messages]) if (aboveFloor(message.id, dmFloor)) lookup.set(message.id, message);
   const view: LineView = {
     refs,
     lookup: (id) => lookup.get(id),

@@ -12,7 +12,7 @@ import { createProviderCredentialsLookup, type ProviderKeyLookup } from "../mode
 import type { ModelClient } from "../models/client.js";
 import { hostTimeZone } from "../orchestration/context/timeFormat.js";
 import { conversationKey, type ConversationRef } from "../orchestration/context/keys.js";
-import { listDmStates, readDmFloor } from "../orchestration/dm/dmStore.js";
+import { listDmLimitWaifuIds, listDmStates, listDmUserIds, readDmFloor } from "../orchestration/dm/dmStore.js";
 import { queuePendingScrub, readPendingScrubs, removePendingScrubs, type PendingScrub } from "../orchestration/dm/forgotten.js";
 import { isKnownWaifuAuthor, listWaifus, readWaifu } from "../orchestration/stores/config.js";
 import type { UsageLedger } from "../orchestration/usageLedger.js";
@@ -216,9 +216,12 @@ export class LivingCast {
 
   /** DM forget floors are loaded for every DM conversation at boot (and on every forget, §6.2). */
   async loadDmFloors(): Promise<void> {
-    for (const state of await listDmStates(this.deps.storage).catch(() => [])) {
-      const floor = await readDmFloor(this.deps.storage, state.userId, state.waifuId).catch(() => undefined);
-      if (floor) this.deps.conversations.setFloor({ kind: "dm", waifuId: state.waifuId, userId: state.userId }, floor);
+    // A forget deletes the DM state file; the floor lives on in `limits/<waifu>.json`, so walk those.
+    for (const userId of await listDmUserIds(this.deps.storage).catch(() => [] as string[])) {
+      for (const waifuId of await listDmLimitWaifuIds(this.deps.storage, userId).catch(() => [] as string[])) {
+        const floor = await readDmFloor(this.deps.storage, userId, waifuId).catch(() => undefined);
+        if (floor) this.deps.conversations.setFloor({ kind: "dm", waifuId, userId }, floor);
+      }
     }
   }
 
