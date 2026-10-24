@@ -144,7 +144,11 @@ a ledger's image keys are folded into `images.json` first), `living-cast-dm-stat
 `living-cast-server-fields-v1` and `living-cast-app-config-v1`. Retired data shapes the migrations
 still read live in `migrationSteps/legacySchemas.ts`; nothing else imports it. Legacy-step tests
 run `MIGRATION_STEPS` minus the L2 ids; `tests/livingCastMigrations.test.ts` covers the L2 steps on
-a realistic main-era root. Phase 4 must ship as a minor release (2.112.0): its
+a realistic main-era root (`tests/fixtures/main-era-config.toml` is main's config as written). The
+server, config and DM steps archive what they drop first (`servers/<g>/server.json`, `config.toml`,
+`dms/<u>/<w>.json` under the archive). A step whose run returns `{ incomplete }` (it left an
+unparsable file alone) is not recorded and runs again next boot; `runMigrations` returns those in
+`incomplete` and the host logs them. Phase 4 must ship as a minor release (2.112.0): its
 memory migrations cannot be read by 2.111.x, and downgrade is unsupported. Never
 change a shipped step's id or meaning: add a new step with a new id, keep the removed steps' ids
 in the history comment, and register it before the schema-version stamp, which stays last.

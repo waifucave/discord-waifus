@@ -748,10 +748,11 @@ conversation` runs steps 0–2 only.
 manager's and reviewer's histories and sessions, `memories.json`, the `memory/` folder and
 `notes-omitted/`. Records authored by the person or about them (an author, user or subject id), or
 whose own text names them (the id or a unique name), are dropped; archived DM conversations with
-them go whole; a dropped memory record also drops its omitted lines. A waifu's own scrub (a DM
+them go whole, and so does every archived file filed under their id (the original DM states,
+`dms/<userId>/`); a dropped memory record also drops its omitted lines. A waifu's own scrub (a DM
 `/forget everything`) takes her slice: her memory records, her omitted lines, her pending
-observations and her archived DM with the person. `providers.json` and `models/` are never touched;
-a file that does not parse is left and counted.
+observations, her archived DM with the person and her archived DM state with them. `providers.json`
+and `models/` are never touched; a file that does not parse is left and counted.
 
 `/forget conversation` runs steps 0–2 for the DM only (her summary without the chat, the DM's wakes
 and watches, the cursor at the floor), then starts the epoch at once so the old log goes too.
@@ -984,6 +985,17 @@ so a later forget still purges those images. The DM step's wake id is `w-upgrade
 re-run never queues it twice, and a DM whose waifu no longer exists is skipped. A corrupt
 `forgotten.json` stops the memories step (never read as "nobody forgotten"); the next boot retries
 it. A torn `pending-scrubs.json` is salvaged (every user id that can be read is left out).
+
+What a step drops is archived first, the first copy winning on a re-run: the server step copies
+each original server file to `servers/<guildId>/server.json`, the config step the original
+`config.toml` to `config.toml`, the DM step each original DM state to `dms/<userId>/<waifuId>.json`
+(all under `user/.archive/living-cast/`; a forget of that user removes everything filed under their
+id, §7.5). A step that meets a file it cannot parse (a server file, `config.toml`, a DM state or
+her wake queue) leaves it untouched, converts the rest and reports itself **incomplete**: the
+runner does not record it, logs a warning, and runs it again at the next boot (a wake queue that
+cannot be parsed is never replaced; the DM keeps its pending fields until it can be queued). The
+schema stamp still refuses unparsable JSON under `user/`, so such a boot fails until the file is
+repaired, as before; the point is that the repaired file is then converted.
 
 ### 11.3 New and changed configuration
 

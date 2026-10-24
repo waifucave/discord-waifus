@@ -77,6 +77,10 @@ async function archivedRoot(): Promise<string> {
   await write(root, `${A}/conversations/g_${GUILD}_${CHANNEL}/contexts/waifu-aria.json`, { epoch: 3, turns: [{ role: "user", text: `<@${KEVIN}> hi` }, { role: "assistant", text: "hello there" }] });
   await write(root, `${A}/conversations/dm_${KEVIN}_aria/ledger.json`, { entries: { d1: { authorId: KEVIN, content: "secret" } } });
   await write(root, `${A}/conversations/dm_${MINA}_aria/ledger.json`, { entries: { d1: { authorId: MINA, content: "hi" } } });
+  // The L2 DM-state step's copies of the original DM states, filed under each user.
+  await write(root, `${A}/dms/${KEVIN}/aria.json`, { waifuId: "aria", userId: KEVIN, userDisplayName: "Kev", pendingSince: T });
+  await write(root, `${A}/dms/${KEVIN}/mina.json`, { waifuId: "mina", userId: KEVIN, recentRuns: [] });
+  await write(root, `${A}/dms/${MINA}/aria.json`, { waifuId: "aria", userId: MINA, recentRuns: [] });
   await write(root, `${A}/servers/${GUILD}/orchestrator-history.json`, {
     decisions: [
       { id: "d1", createdAt: T, reason: "Kevin asked Aria", speakers: ["aria"] },
@@ -132,6 +136,10 @@ describe("the archive scrub (D-b)", () => {
     expect((await read(root, `${A}/conversations/g_${GUILD}_${CHANNEL}/contexts/waifu-aria.json`)).turns).toEqual([{ role: "assistant", text: "hello there" }]);
     await expect(readFile(path.join(root, A, `conversations/dm_${KEVIN}_aria/ledger.json`))).rejects.toMatchObject({ code: "ENOENT" });
     expect(await read(root, `${A}/conversations/dm_${MINA}_aria/ledger.json`)).toEqual({ entries: { d1: { authorId: MINA, content: "hi" } } });
+    // Everything filed under his id goes whole; Mina's copy stays.
+    await expect(readFile(path.join(root, A, `dms/${KEVIN}/aria.json`))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(path.join(root, A, `dms/${KEVIN}/mina.json`))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await read(root, `${A}/dms/${MINA}/aria.json`)).toMatchObject({ userId: MINA });
     expect(((await read(root, `${A}/servers/${GUILD}/orchestrator-history.json`)).decisions as Array<{ id: string }>).map((entry) => entry.id)).toEqual(["d2"]);
     expect((await read(root, `${A}/servers/${GUILD}/sessions/${CHANNEL}.json`)).participants).toEqual([{ userId: MINA, name: "Mina" }]);
     expect(((await read(root, `${A}/stage-manager/history.json`)).edits as Array<{ id: string }>).map((entry) => entry.id)).toEqual(["e2"]);
@@ -148,6 +156,9 @@ describe("the archive scrub (D-b)", () => {
     const root = await archivedRoot();
     await scrubArchive(root, { userId: KEVIN, names: ["Kevin"], waifuId: "aria" });
     expect(((await read(root, `${A}/memories.json`)).memories as Array<{ id: string }>).map((record) => record.id)).toEqual(["k3", "m1", "s1", "k4"]);
+    // Her archived DM state with him goes; his DM state with Mina is the owner's forget-user's.
+    await expect(readFile(path.join(root, A, `dms/${KEVIN}/aria.json`))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await read(root, `${A}/dms/${KEVIN}/mina.json`)).toMatchObject({ waifuId: "mina" });
     expect((await read(root, `${A}/notes-omitted/aria.json`)).omitted).toHaveLength(1);
     expect((await read(root, `${A}/notes-omitted/mina.json`)).omitted).toHaveLength(1);
     expect(((await read(root, `${A}/memory/pending-observations.json`)).observations as Array<{ id: string }>).map((entry) => entry.id)).toEqual(["o2"]);

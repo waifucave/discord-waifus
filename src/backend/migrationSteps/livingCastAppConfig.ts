@@ -9,13 +9,18 @@
 // - `discord.debounce.dmMs` / `dmMaxWaitMs` still at the old defaults (1500 / 8000) become 30000 /
 //   180000; any other value is the owner's choice and stays.
 //
-// A missing or unparsable config is left for `loadAppConfig` to report. Idempotent: a converted
-// file has none of the old keys and no old defaults, so a re-run leaves it byte-identical.
+// The original file is copied to `user/.archive/living-cast/config.toml` before it is rewritten
+// (the first copy wins). A missing config is a no-op; an unparsable one is left for `loadAppConfig`
+// to report and the step reports itself incomplete, so it converts the file at a later boot once
+// it parses. Idempotent: a converted file has none of the old keys and no old defaults, so a re-run
+// leaves it byte-identical.
 
-import { readFile } from "node:fs/promises";
+import { lstat, readFile } from "node:fs/promises";
 import path from "node:path";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 import { atomicWriteText } from "../../storage/atomic.js";
+import type { MigrationStepOutcome } from "../migrations.js";
+import { archivePath } from "./livingCastArchive.js";
 
 export const LEGACY_DM_DEBOUNCE = { dmMs: 1_500, dmMaxWaitMs: 8_000 };
 export const LIVING_CAST_DM_DEBOUNCE = { dmMs: 30_000, dmMaxWaitMs: 180_000 };
@@ -30,7 +35,7 @@ function integerIn(value: unknown, min: number, max: number): number | undefined
   return typeof value === "number" && Number.isInteger(value) ? Math.min(max, Math.max(min, value)) : undefined;
 }
 
-export async function migrateLivingCastAppConfig(dataRoot: string): Promise<string | undefined> {
+export async function migrateLivingCastAppConfig(dataRoot: string): Promise<MigrationStepOutcome> {
   const filePath = path.join(dataRoot, "config.toml");
   let raw: string;
   try {
@@ -43,9 +48,9 @@ export async function migrateLivingCastAppConfig(dataRoot: string): Promise<stri
   try {
     config = parseToml(raw);
   } catch {
-    return undefined;
+    return { incomplete: "config.toml could not be parsed" };
   }
-  if (!isTable(config)) return undefined;
+  if (!isTable(config)) return { incomplete: "config.toml is not a table" };
 
   let changed = false;
   const life: Table = isTable(config.life) ? config.life : {};
@@ -93,6 +98,8 @@ export async function migrateLivingCastAppConfig(dataRoot: string): Promise<stri
 
   if (!changed) return undefined;
   if (Object.keys(life).length > 0) config.life = life;
+  const archived = archivePath(dataRoot, "config.toml");
+  if (!(await lstat(archived).then(() => true, () => false))) await atomicWriteText(archived, raw, { mode: 0o600 });
   await atomicWriteText(filePath, stringifyToml(config) + "\n", { mode: 0o600 });
   return "living-cast-app-config-v1";
 }

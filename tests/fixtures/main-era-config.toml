@@ -1,0 +1,65 @@
+# config.toml as a main-era install (2.111.x) writes it: that release's DEFAULT_APP_CONFIG.
+# The Living cast L2 migration tests start from it (spec §11.2, §12).
+schemaVersion = 2
+
+[http]
+host = "127.0.0.1"
+port = 3888
+
+[runtime]
+autoConnectDiscord = true
+paused = false
+
+[frontend]
+[ocr]
+enabled = true
+engine = "auto"
+cacheTtlHours = 168
+timeoutMs = 1500
+maxImageBytes = 8388608
+maxImagesPerModelCall = 4
+maxTextCharsPerImage = 1500
+
+[compaction]
+enabled = true
+triggerRatio = 0.7
+maxMessages = 150
+keepRecent = 30
+waitTimeoutMs = 6000
+
+[memory]
+dreamHourLocal = 5
+maxPinnedInjected = 6
+maxMemoryNotesPerEpoch = 6
+maxInlineImagesPerEpoch = 8
+dmInjectionLimit = 12
+
+[discord]
+guildMembersIntent = false
+memberListRefreshHours = 24
+
+[discord.images]
+maxBytes = 5242880
+fetchTimeoutMs = 5000
+memoryCacheMb = 64
+diskCacheMb = 256
+diskCacheTtlHours = 168
+
+[discord.deletedMessages]
+redactRecent = 20
+
+[discord.debounce]
+serverMs = 1200
+serverMaxWaitMs = 4000
+dmMs = 1500
+dmMaxWaitMs = 8000
+
+[discord.dm]
+maxConcurrentRuns = 4
+resumeWindowMinutes = 60
+
+[updates]
+enabled = false
+checkIntervalMinutes = 60
+idleMinutes = 5
+

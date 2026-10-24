@@ -110,12 +110,13 @@ async function startLockedBackend(options: StartBackendOptions): Promise<Running
     requiresCredentials: () => updateNeedsCredentials()
   });
   try {
-    await runMigrations(options.dataRoot);
+    const migrations = await runMigrations(options.dataRoot);
     const config = await loadAppConfig(options.dataRoot);
     const packageVersion = await readPackageVersion();
     const port = options.port ?? config.http.port;
     const host = options.host ?? config.http.host;
     const logger = options.logger ?? createLogger({ dataRoot: options.dataRoot });
+    for (const step of migrations.incomplete) logger.warn("A migration step left unreadable data alone; it runs again at the next start", { step });
     const storage = new StorageService(options.dataRoot, {
       onLockWait: (resourceKey, waitMs) => logger.warn("Storage lock wait exceeded threshold", { resourceKey, waitMs })
     });

@@ -179,6 +179,23 @@ export async function scrubArchive(dataRoot: string, input: ArchiveScrubInput): 
     }
   }
 
+  // Archived files filed under the person (the DM state copies, `dms/<userId>/<waifuId>.json`) go
+  // whole: hers only for her slice; for the whole archive, every file with the id as a path segment.
+  if (input.waifuId) {
+    const file = path.join(root, "dms", userId, `${input.waifuId}.json`);
+    if (await lstat(file).then(() => true, () => false)) {
+      await rm(file, { force: true });
+      result.removed += 1;
+    }
+  } else {
+    for (const file of await walk(root)) {
+      if (!file.split(path.sep).includes(userId)) continue;
+      await rm(path.join(root, file), { force: true });
+      result.removed += 1;
+    }
+    await rm(path.join(root, "dms", userId), { recursive: true, force: true });
+  }
+
   // The memory store copy first: a dropped record's id also drops its omitted lines.
   const droppedRecords = new Set<string>();
   if (memoriesRead.ok && isObject(memoriesRead.value) && Array.isArray(memoriesRead.value.memories)) {

@@ -43,7 +43,16 @@ import {
 
 export type MigrationResult = {
   applied: string[];
+  /** Steps that skipped input they could not read: not recorded, so the next boot runs them again. */
+  incomplete: string[];
 };
+
+/**
+ * What a step's run reports: the label of what it changed (or undefined), or `incomplete` when it
+ * left unreadable input alone. An incomplete step is never recorded as done (a once-step would
+ * otherwise skip that input forever); it runs again at the next boot, and it stays idempotent.
+ */
+export type MigrationStepOutcome = string | undefined | { applied?: string; incomplete: string };
 
 // How often a boot step runs (see the ledger in ./migrationLedger.ts):
 // - "every-boot": invariant checks / housekeeping whose semantics depend on current state; never
@@ -57,7 +66,7 @@ export type MigrationStep = {
   id: string;
   frequency: MigrationStepFrequency;
   // Returns the label reported in MigrationResult.applied when the step changed anything.
-  run: (dataRoot: string) => Promise<string | undefined>;
+  run: (dataRoot: string) => Promise<MigrationStepOutcome>;
 };
 
 const label = (changed: boolean, value: string) => (changed ? value : undefined);
@@ -201,6 +210,7 @@ export async function runMigrations(
   const ledger = trusted ?? emptyMigrationLedger(appVersion);
   let ledgerDirty = trusted === undefined || trusted.appVersion !== appVersion;
   const applied: string[] = [];
+  const incomplete: string[] = [];
 
   const persistLedger = async () => {
     if (!ledgerDirty) return;
@@ -212,8 +222,13 @@ export async function runMigrations(
   try {
     for (const step of options.steps ?? MIGRATION_STEPS) {
       if (stepIsRecorded(step, ledger, appVersion)) continue;
-      const result = await step.run(dataRoot);
+      const outcome = await step.run(dataRoot);
+      const result = typeof outcome === "object" ? outcome.applied : outcome;
       if (result) applied.push(result);
+      if (typeof outcome === "object") {
+        incomplete.push(`${step.id}: ${outcome.incomplete}`);
+        continue;
+      }
       if (step.frequency !== "every-boot") {
         ledger.steps[step.id] = { appliedAt: new Date().toISOString(), appVersion };
         ledgerDirty = true;
@@ -227,7 +242,7 @@ export async function runMigrations(
   }
   await persistLedger();
 
-  return { applied };
+  return { applied, incomplete };
 }
 
 // The runtime used to log in every bot with a token and ignore `enabled`, which earlier writes

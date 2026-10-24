@@ -5,10 +5,14 @@
 
 import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { parse as parseToml } from "smol-toml";
 import { afterEach, describe, expect, it } from "vitest";
 import { runMigrations } from "../src/backend/migrations.js";
 import { migrateLivingCastMemoriesToNotes, notesForWaifu } from "../src/backend/migrationSteps/livingCastMemoriesToNotes.js";
+import { migrateLivingCastServerFields } from "../src/backend/migrationSteps/livingCastServerFields.js";
+import { migrateLivingCastAppConfig } from "../src/backend/migrationSteps/livingCastAppConfig.js";
+import { migrateLivingCastDmState } from "../src/backend/migrationSteps/livingCastDmState.js";
 import { ensureDataLayout } from "../src/config/layout.js";
 import { AppConfigSchema } from "../src/shared/schemas/config.js";
 import { ServerConfigSchema } from "../src/shared/schemas/domain.js";
@@ -88,6 +92,8 @@ async function mainEraRoot(): Promise<string> {
       memory("dm2", { content: "Wants to learn baking.", origin: { dm: true, userId: MINA } }),
       memory("me1", { content: "I prefer lemon tarts.", subjects: [{ waifuId: "aria", name: "Aria" }] }),
       memory("misc1", { content: "The bake sale is on Saturday.", strength: 5 }),
+      // A fact only about a person whose text never names them: filed under them by subject.
+      memory("k5", { content: "Loves rainy days.", subjects: [{ discordUserId: KEVIN, name: "Kevin" }] }),
       memory("gone1", { content: "Old news.", status: "archived", archivedReason: "user" }),
       memory("exp1", { content: "Short-lived.", expiresAt: "2026-10-05T00:00:00.000Z" }),
       memory("f1", { content: "Forgotten person's secret.", subjects: [{ discordUserId: FORGOTTEN, name: "Zed" }] }),
@@ -97,7 +103,21 @@ async function mainEraRoot(): Promise<string> {
       memory("n1", { waifuId: "noted", content: "Never migrated.", subjects: [] })
     ]
   });
-  await writeJson(root, "user/memory/pending-observations.json", { schemaVersion: 2, revision: 1, updatedAt: T, observations: [] });
+  // Main's observer queue: one about Kevin (archived), one about the forgotten person and one about
+  // her pending scrub's user (both left out of the archive).
+  const observation = (id: string, userId: string, name: string, content: string) => ({
+    id, waifuId: "aria", content, kind: "fact", importance: 3, subjects: [{ discordUserId: userId, name }], origin: { guildId: GUILD, channelId: CHANNEL }, conversationKey: `g_${GUILD}_${CHANNEL}`, createdAt: T
+  });
+  await writeJson(root, "user/memory/pending-observations.json", {
+    schemaVersion: 2,
+    revision: 3,
+    updatedAt: T,
+    observations: [
+      observation("o1", KEVIN, "Kevin", "Kevin is baking for the fair."),
+      observation("o2", FORGOTTEN, "Zed", "Zed's pending secret."),
+      observation("o3", SCRUBBED, "Sam", "Sam's pending hobby.")
+    ]
+  });
   await writeJson(root, "user/memory/dream-cursor.json", { schemaVersion: 2, revision: 1, updatedAt: T, lastDreamAt: T });
   await writeJson(root, "user/people/forgotten.json", { forgotten: [{ userId: FORGOTTEN, at: T }] });
   await writeJson(root, "user/waifus/aria/life/pending-scrubs.json", { scrubs: [{ userId: SCRUBBED, at: T, source: "dm_forget_everything" }] });
@@ -120,7 +140,8 @@ async function mainEraRoot(): Promise<string> {
     stageManagerEnabled: true,
     contextWindows: { orchestrator: 20, waifu: 50 },
     memoryInjectionLimit: 12,
-    tools: { webSearch: true },
+    // Main's server tools shape.
+    tools: { pickNextWaifu: true, shortTermMemory: true },
     compaction: { enabled: true },
     paused: false,
     channels: { [CHANNEL]: { channelId: CHANNEL, name: "general", enabledWaifuIds: ["aria"] } }
@@ -138,6 +159,10 @@ async function mainEraRoot(): Promise<string> {
   await writeJson(root, `${conversation}/contexts/waifu-aria.json`, { epoch: 3 });
   await writeJson(root, `${conversation}/refs.json`, { refs: {} });
   await writeJson(root, `${conversation}/images.json`, { keys: ["att:0:old.png"] });
+  // A DM conversation's context-engine ledger and contexts (main kept one per DM).
+  const dmConversation = `user/conversations/dm_${KEVIN}_aria`;
+  await writeJson(root, `${dmConversation}/ledger.json`, { entries: { d1: { text: "a private thing Kevin said", images: [] } } });
+  await writeJson(root, `${dmConversation}/contexts/waifu-aria.json`, { epoch: 1 });
 
   // DMs: one in flight at upgrade (with run records), one idle, one for a deleted waifu.
   await writeJson(root, `user/dms/${MINA}/aria.json`, {
@@ -154,17 +179,17 @@ async function mainEraRoot(): Promise<string> {
   });
   await writeJson(root, `user/dms/${KEVIN}/limits/aria.json`, { schemaVersion: 2, revision: 1, updatedAt: T, waifuId: "aria", userId: KEVIN, replyTimestamps: [] });
 
-  // config.toml as main wrote it (old defaults spelled out).
-  const config = await readFile(path.join(root, "config.toml"), "utf8");
-  const legacy = config
-    .replace(/\[life\][\s\S]*?(?=\n\[)/u, "")
-    .replace("[discord.debounce]", "[discord.deletedMessages]\nredactRecent = 20\n\n[discord.debounce]")
-    .replace(/dmMs = \d+/u, "dmMs = 1500")
-    .replace(/dmMaxWaitMs = \d+/u, "dmMaxWaitMs = 8000")
-    .replace("resumeWindowMinutes = 60", "maxConcurrentRuns = 6\nresumeWindowMinutes = 60");
-  await writeFile(path.join(root, "config.toml"), `${legacy}\n[memory]\ndreamHourLocal = 4\nmaxInlineImagesPerEpoch = 32\nretrievalLimit = 12\n`);
+  // config.toml exactly as main wrote it (no [life], [search], [detector], [models] tables), with
+  // three settings the owner had changed.
+  const config = (await readFile(MAIN_ERA_CONFIG, "utf8"))
+    .replace("dreamHourLocal = 5", "dreamHourLocal = 4")
+    .replace("maxInlineImagesPerEpoch = 8", "maxInlineImagesPerEpoch = 32")
+    .replace("maxConcurrentRuns = 4", "maxConcurrentRuns = 6");
+  await writeFile(path.join(root, "config.toml"), config);
   return root;
 }
+
+const MAIN_ERA_CONFIG = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "main-era-config.toml");
 
 async function snapshot(root: string): Promise<Map<string, string>> {
   const out = new Map<string, string>();
@@ -200,7 +225,7 @@ describe("Living cast L2 data migrations on a main-era root", () => {
     const notes = (file: string) => migrated.get(`user/waifus/aria/notes/${file}`);
     // A person's own file carries their id marker, so a later forget deletes it whole (§7.5 step 5).
     expect(notes("people/kevin-0003.md")).toBe(
-      `# Kevin\n<!-- user:${KEVIN} -->\n\n- Kevin is allergic to peanuts.\n- Kevin studies chemistry.\n- Kevin and Mina run the bake sale.\n`
+      `# Kevin\n<!-- user:${KEVIN} -->\n\n- Kevin is allergic to peanuts.\n- Kevin studies chemistry.\n- Kevin and Mina run the bake sale.\n- Loves rainy days.\n`
     );
     expect(notes("people/kevin-9999.md")).toBe(`# Kevin\n<!-- user:${KEVIN_2} -->\n\n- The other Kevin likes jazz.\n`);
     expect(notes("people/mina.md")).toBe(
@@ -233,7 +258,7 @@ describe("Living cast L2 data migrations on a main-era root", () => {
     expect(migrated.has("user/.archive/living-cast/memory/dream-cursor.json")).toBe(true);
     const archived = JSON.parse(migrated.get("user/.archive/living-cast/memories.json")!) as { revision: number; memories: Array<{ id: string }> };
     expect(archived.revision).toBe(7);
-    expect(archived.memories.map((entry) => entry.id)).toEqual(["k1", "k2", "k3", "k4", "dm1", "dm2", "me1", "misc1", "gone1", "exp1", "s2", "n1"]);
+    expect(archived.memories.map((entry) => entry.id)).toEqual(["k1", "k2", "k3", "k4", "dm1", "dm2", "me1", "misc1", "k5", "gone1", "exp1", "s2", "n1"]);
 
     // The director's data (§11.2).
     for (const gone of ["user/orchestrator/config.json", "user/stage-manager/history.json", "user/reviewer/history.json", `user/servers/${GUILD}/orchestrator-history.json`, `user/servers/${GUILD}/sessions/${CHANNEL}.json`]) {
@@ -284,6 +309,19 @@ describe("Living cast L2 data migrations on a main-era root", () => {
     expect(rawConfig.discord).not.toHaveProperty("deletedMessages");
     expect(rawConfig.discord!["dm"]).toEqual({ resumeWindowMinutes: 60 });
 
+    // What the steps dropped is archived first (§11.2): server files, config.toml, DM states.
+    const archivedServer = JSON.parse(migrated.get(`user/.archive/living-cast/servers/${GUILD}/server.json`)!);
+    expect(archivedServer).toMatchObject({ orchestratorMode: "one-shot", oneShot: { target: "laya:english" }, stageManagerEnabled: true, tools: { pickNextWaifu: true, shortTermMemory: true } });
+    expect(migrated.get("user/.archive/living-cast/config.toml")).toBe((await readFile(MAIN_ERA_CONFIG, "utf8")).replace("dreamHourLocal = 5", "dreamHourLocal = 4").replace("maxInlineImagesPerEpoch = 8", "maxInlineImagesPerEpoch = 32").replace("maxConcurrentRuns = 4", "maxConcurrentRuns = 6"));
+    expect(JSON.parse(migrated.get(`user/.archive/living-cast/dms/${MINA}/aria.json`)!)).toMatchObject({ pendingTriggerMessageId: "900000000000000010", recentRuns: [{ id: "r1" }] });
+    expect(migrated.has(`user/.archive/living-cast/dms/${KEVIN}/aria.json`)).toBe(true);
+    // The DM conversation's ledger and contexts are archived under its key.
+    expect(migrated.has(`user/.archive/living-cast/conversations/dm_${KEVIN}_aria/ledger.json`)).toBe(true);
+    expect(migrated.has(`user/conversations/dm_${KEVIN}_aria/ledger.json`)).toBe(false);
+    // The observer queue is archived without the forgotten person and her pending scrub's user.
+    const pending = JSON.parse(migrated.get("user/.archive/living-cast/memory/pending-observations.json")!) as { observations: Array<{ id: string }> };
+    expect(pending.observations.map((entry) => entry.id)).toEqual(["o1"]);
+
     // Re-runs: same version, then without the ledger, then a new version.
     expect((await runMigrations(root, { appVersion: APP_VERSION })).applied).toEqual([]);
     expect(await snapshot(root)).toEqual(migrated);
@@ -303,6 +341,60 @@ describe("Living cast L2 data migrations on a main-era root", () => {
     await writeJson(root, "user/people/forgotten.json", { forgotten: [{ userId: FORGOTTEN, at: T }] });
     await runMigrations(root, { appVersion: APP_VERSION });
     expect(await readFile(path.join(root, "user/waifus/aria/notes/MEMORY.md"), "utf8")).toContain("people/kevin-0003.md");
+  });
+
+  it("an incomplete step is reported and not recorded; the runner records it once it completes", async () => {
+    const root = await mainEraRoot();
+    let readable = false;
+    const step = { id: "test-incomplete-v1", frequency: "once" as const, run: async () => (readable ? "converted" : { incomplete: "1 file could not be parsed" }) };
+    expect(await runMigrations(root, { appVersion: APP_VERSION, steps: [step] })).toEqual({ applied: [], incomplete: ["test-incomplete-v1: 1 file could not be parsed"] });
+    expect((await readJson<{ steps: Record<string, unknown> }>(root, "app/migrations.json")).steps).not.toHaveProperty("test-incomplete-v1");
+    readable = true;
+    expect(await runMigrations(root, { appVersion: APP_VERSION, steps: [step] })).toEqual({ applied: ["converted"], incomplete: [] });
+    expect((await readJson<{ steps: Record<string, unknown> }>(root, "app/migrations.json")).steps).toHaveProperty("test-incomplete-v1");
+  });
+
+  it("server, DM and config steps leave unparsable files alone and stay unrecorded until they parse", async () => {
+    const root = await mainEraRoot();
+    const serverFile = path.join(root, "user/servers/100000000000000002/server.json");
+    const dmFile = path.join(root, `user/dms/${MINA}/aria.json`);
+    const goodServer = await readFile(serverFile, "utf8");
+    const goodConfig = await readFile(path.join(root, "config.toml"), "utf8");
+    const goodDm = await readFile(dmFile, "utf8");
+    await writeFile(serverFile, "{ half a server");
+    await writeFile(path.join(root, "config.toml"), "[discord\nbroken =");
+    await writeFile(dmFile, "{ half a dm");
+    expect(await migrateLivingCastServerFields(root)).toEqual({ applied: "living-cast-server-fields-2-detector-1", incomplete: "1 server file(s) could not be parsed" });
+    expect(await migrateLivingCastAppConfig(root)).toEqual({ incomplete: "config.toml could not be parsed" });
+    expect(await migrateLivingCastDmState(root)).toEqual({ applied: "living-cast-dm-state-0-of-2", incomplete: "1 DM state or wake queue file(s) could not be parsed" });
+    // Whatever could be read was converted; the unreadable files are untouched.
+    expect(await readJson(root, `user/servers/${GUILD}/server.json`)).not.toHaveProperty("orchestratorMode");
+    expect(await readFile(serverFile, "utf8")).toBe("{ half a server");
+    expect(await readFile(dmFile, "utf8")).toBe("{ half a dm");
+    // A boot in this state fails at the schema stamp (it refuses unparsable JSON, as before), and the
+    // ledger it leaves does not record the three steps.
+    await expect(runMigrations(root, { appVersion: APP_VERSION })).rejects.toThrow(SyntaxError);
+    const ledger = await readJson<{ steps: Record<string, unknown> }>(root, "app/migrations.json");
+    for (const id of ["living-cast-dm-state-v1", "living-cast-server-fields-v1", "living-cast-app-config-v1"]) expect(ledger.steps).not.toHaveProperty(id);
+    // Repaired: the next boot converts them and records the steps.
+    await writeFile(serverFile, goodServer);
+    await writeFile(path.join(root, "config.toml"), goodConfig);
+    await writeFile(dmFile, goodDm);
+    expect((await runMigrations(root, { appVersion: APP_VERSION })).incomplete).toEqual([]);
+    expect(await readJson(root, "user/servers/100000000000000002/server.json")).not.toHaveProperty("orchestratorMode");
+    expect(parseToml(await readFile(path.join(root, "config.toml"), "utf8"))).not.toHaveProperty("memory");
+    expect((await readJson<{ immediate: unknown[] }>(root, "user/waifus/aria/life/wakes.json")).immediate).toHaveLength(1);
+    const recorded = await readJson<{ steps: Record<string, unknown> }>(root, "app/migrations.json");
+    for (const id of ["living-cast-dm-state-v1", "living-cast-server-fields-v1", "living-cast-app-config-v1"]) expect(recorded.steps).toHaveProperty(id);
+  });
+
+  it("an unreadable wake queue is never replaced: the in-flight DM keeps waiting for it", async () => {
+    const root = await mainEraRoot();
+    await mkdir(path.join(root, "user/waifus/aria/life"), { recursive: true });
+    await writeFile(path.join(root, "user/waifus/aria/life/wakes.json"), "{ torn");
+    expect(await migrateLivingCastDmState(root)).toEqual({ applied: "living-cast-dm-state-0-of-2", incomplete: "1 DM state or wake queue file(s) could not be parsed" });
+    expect(await readFile(path.join(root, "user/waifus/aria/life/wakes.json"), "utf8")).toBe("{ torn");
+    expect(await readJson(root, `user/dms/${MINA}/aria.json`)).toHaveProperty("pendingTriggerMessageId");
   });
 
   it("finishes a run that crashed after the notes were written (the store is still there)", async () => {
