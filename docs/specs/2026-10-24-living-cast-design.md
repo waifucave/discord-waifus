@@ -742,9 +742,19 @@ conversation` runs steps 0–2 only.
    alone; every floor (for a DM, a DM state or a limits file) is written or raised first, before
    anything is removed, and a floor is never lowered or lost (two forgets in a row, a DM forget
    then the owner's). This part is a durable job (`user/people/forget-jobs.json`, with the names),
-   written before anything is removed and cleared only when every part succeeded; each part runs
-   on its own, and a job a crash or a failure left behind runs again, whole, at the next start
-   (before Discord connects). Every forget (owner or DM, with or without a runtime) drops the
+   written before anything is removed and cleared only when every part finished. Its parts
+   (`record`, `floors`, `dms`, `dm-directory`, `member-lists`, `archive`, `record-copies`) each
+   run on their own (the DM parts only once the floors are written) and are recorded in the job as
+   they finish (`done`) or fail (`failures`: count, error code, time). A failed part does not stop
+   the rest of the forget: the life scrubs (steps 2–5) still run, and the response lists the part
+   in `pending` (HTTP 202). A job a crash or a failure left behind runs its unfinished parts again
+   at the next start (before Discord connects); finished parts never run twice. Every part removes
+   only what is at or below the job's floor and time, so a resumed part never touches a chat the
+   person started after the forget (a DM state or conversation holding a message above the floor
+   stays; newer reply counters stay; a member seen again later stays). A part that failed three
+   times (the request's run and two starts) is given up: it is not retried, and `/api/runtime`
+   lists an owner notice naming the part and its error code until a new forget of that person
+   replaces the job. Every forget (owner or DM, with or without a runtime) drops the
    in-memory captured traffic and `/api/events` replay records that carry the person (the id or a
    unique name, never a weak one); everyone else's entries stay.
 2. **Summary without the person**: abort her turn; write the compaction summary with **no kept

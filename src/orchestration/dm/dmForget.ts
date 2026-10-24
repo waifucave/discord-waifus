@@ -22,7 +22,8 @@ import type { StorageService } from "../../storage/storageService.js";
 import { forgetConversationImageIndex, readConversationImageKeys } from "../../discord/imageIndex.js";
 import { conversationDirPath, conversationKey } from "../context/keys.js";
 import { ImageOcrService } from "../ocr.js";
-import { dmFloorAt, dmStatePath, dmStateResource, laterFloor, listDmUserIds, readDmState, updateDmLimit } from "./dmStore.js";
+import { readConversationRefs } from "../../discord/refStore.js";
+import { aboveFloor, dmFloorAt, dmStatePath, dmStateResource, laterFloor, listDmUserIds, readDmState, updateDmLimit } from "./dmStore.js";
 
 export type DmForgetScope = "conversation" | "all";
 
@@ -32,6 +33,12 @@ export type DmForgetInput = {
   waifuId?: string;
   scope: DmForgetScope;
   dryRun?: boolean;
+  /**
+   * The owner's forget job (resumable): only data at or below this floor goes. A DM state or a
+   * conversation that holds a message above it belongs to a chat started after the forget and is
+   * kept (its older messages stay below the floor, never read again).
+   */
+  onlyAtOrBelow?: string;
 };
 
 export type DmForgetDeleted = {
@@ -102,21 +109,26 @@ export async function dmForget(storage: StorageService, input: DmForgetInput, ho
   for (const waifuId of waifuIds) {
     const conversation: DmConversation = { kind: "dm", waifuId, userId: input.userId };
     const key = conversationKey(conversation);
+    const limit = input.onlyAtOrBelow;
+    // A chat started after the owner's forget (a message above its floor) is not the forgotten one.
+    const newer = (ids: ReadonlyArray<string | undefined>) => limit !== undefined && ids.some((id) => id !== undefined && aboveFloor(id, limit));
     const hasConversation = await exists(storage, "user", "conversations", key);
+    const keepConversation = hasConversation && limit !== undefined && newer(Object.keys((await readConversationRefs(storage, key).catch(() => undefined))?.refs ?? {}));
     const state = await readDmState(storage, input.userId, waifuId);
-    const images = [...new Set([...(await readConversationImageKeys(storage.dataRoot, key)), ...((await hooks.imageKeys?.(conversation)) ?? [])])];
+    const keepState = state !== undefined && newer([state.lastInboundMessageId, state.lastRepliedMessageId]);
+    const images = keepConversation ? [] : [...new Set([...(await readConversationImageKeys(storage.dataRoot, key)), ...((await hooks.imageKeys?.(conversation)) ?? [])])];
     const cached = images.length > 0 ? new Set([...(await diskImages.cachedKeys(images)), ...(await diskOcr.cachedKeys(images))]) : new Set<string>();
     if (!dryRun) {
-      await hooks.beforeDelete?.(conversation);
+      if (!keepConversation) await hooks.beforeDelete?.(conversation);
       // The floor first: whatever happens next, old messages are never read back.
-      const floor = dmFloorAt((hooks.now ?? (() => new Date()))());
+      const floor = limit ?? dmFloorAt((hooks.now ?? (() => new Date()))());
       await updateDmLimit(storage, input.userId, waifuId, (current) => ({ ...current, floorMessageId: laterFloor(current.floorMessageId, floor) }));
       if (images.length > 0) await purge(images);
     }
     deleted.cachedImages += cached.size;
     // The retired context engine's copy of this chat (living-cast-archive-director-v1) goes too.
     if (!dryRun) await rm(storage.dataPath("user", ".archive", "living-cast", "conversations", key), { recursive: true, force: true });
-    if (hasConversation) {
+    if (hasConversation && !keepConversation) {
       deleted.dmContexts += 1;
       if (!dryRun) {
         // On the image index's queue: index writes queued before drain first, later ones are skipped.
@@ -127,7 +139,7 @@ export async function dmForget(storage: StorageService, input: DmForgetInput, ho
     }
     if (input.scope === "conversation") continue;
     // scope "all"
-    if (state) {
+    if (state && !keepState) {
       deleted.dmStates += 1;
       if (!dryRun) {
         await storage.withLocks([dmStateResource(input.userId, waifuId)], () =>

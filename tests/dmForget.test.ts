@@ -1,7 +1,7 @@
 // DM deletion scopes (spec 9.1.4), the DM /forget command (9.1.5, O3) and the /api/dms routes
 // (9.8): manifest, id validation, listing without message bodies, forget with audit.
 
-import { access, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApiServer } from "../src/api/server.js";
@@ -21,7 +21,7 @@ import {
 } from "../src/orchestration/dm/forgotten.js";
 import { dmForget } from "../src/orchestration/dm/dmForget.js";
 import { readDmLimit, readDmState, updateDmLimit, updateDmState } from "../src/orchestration/dm/dmStore.js";
-import { forgetUser } from "../src/orchestration/dm/forgetUser.js";
+import { forgetUser, pendingForgetJobs, resumeForgetJobs } from "../src/orchestration/dm/forgetUser.js";
 import { Notes } from "../src/life/notes.js";
 import { AuditStore } from "../src/storage/auditStore.js";
 import type { StorageService } from "../src/storage/storageService.js";
@@ -243,7 +243,7 @@ describe("forget purges cached images and OCR without the runtime (review I5)", 
   });
 });
 
-async function api(storage: StorageService, root: string) {
+async function api(storage: StorageService, root: string, castRuntime?: ReturnType<typeof dmRuntime>) {
   const runtime = createRuntimeState({
     pid: process.pid,
     startedAt: new Date().toISOString(),
@@ -256,7 +256,7 @@ async function api(storage: StorageService, root: string) {
     queues: { active: 0, configuredGuilds: 0 }
   });
   const auditStore = new AuditStore(root, { storage });
-  const app = await createApiServer({ dataRoot: root, runtime, storage, administration: { auditStore } });
+  const app = await createApiServer({ dataRoot: root, runtime, storage, administration: { auditStore }, ...(castRuntime ? { castRuntime } : {}) });
   apps.push(app);
   return { app, auditStore };
 }
@@ -347,4 +347,59 @@ describe("POST /api/people/:userId/forget (Living cast §14.1, DM part)", () => 
     expect((await readDmLimit(storage, USER, "aria")).replyTimestamps).toEqual([]);
     expect((await auditStore.list()).some((record) => record.action === "people.forget")).toBe(true);
   });
+
+  // Third review, Important 1 and 2: an archived file the process may not delete (EACCES).
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+    "a part that keeps failing never skips the life scrubs (202, pending); boots retry only it, at most three times, then an owner notice",
+    async () => {
+      const { root, storage } = await dmRoot(roots);
+      await seedDmWorld(storage, { modelId: null });
+      await mkdir(path.join(root, "user", "waifus", "aria", "life"), { recursive: true });
+      await updateDmState(storage, { userId: USER, waifuId: "aria", botId: "aria-bot" }, (current) => ({ ...current, userDisplayName: "Kevin", lastInboundMessageId: "1300000000000000001" }));
+      const locked = path.join(root, "user", ".archive", "living-cast", "dms", USER);
+      await mkdir(locked, { recursive: true });
+      await writeFile(path.join(locked, "aria.json"), JSON.stringify({ userId: USER }));
+      await chmod(locked, 0o555);
+      const runtime = dmRuntime(storage, new DmDiscord());
+      try {
+        const { app } = await api(storage, root, runtime);
+        const done = await app.inject({ method: "POST", url: `/api/people/${USER}/forget`, payload: { confirm: true } });
+        expect(done.statusCode, done.body).toBe(202);
+        expect(done.json()).toMatchObject({ pending: [{ part: "archive", error: "EACCES", failures: 1, retried: true }], lives: [{ waifuId: "aria" }] });
+        // Her life scrub ran all the same (and finished: it is no longer queued).
+        expect(done.json().lives[0].queued).toBeUndefined();
+        expect(await readPendingScrubs(storage, "aria")).toEqual([]);
+        expect(await readDmState(storage, USER, "aria")).toBeUndefined();
+
+        // He writes again after the forget: a new DM state and reply counters.
+        const stamp = new Date(Date.now() + 60_000).toISOString();
+        await updateDmState(storage, { userId: USER, waifuId: "aria", botId: "aria-bot" }, (current) => ({ ...current, lastInboundMessageId: "1990000000000000001" }));
+        await updateDmLimit(storage, USER, "aria", (current) => ({ ...current, replyTimestamps: [stamp] }));
+        for (let boot = 0; boot < 3; boot += 1) {
+          expect(await resumeForgetJobs(storage)).toBe(0);
+          // Only the archive part runs again: the new chat is never touched.
+          expect(await readDmState(storage, USER, "aria")).toBeDefined();
+          expect((await readDmLimit(storage, USER, "aria")).replyTimestamps).toEqual([stamp]);
+        }
+        const [job] = await pendingForgetJobs(storage);
+        expect(job).toMatchObject({ userId: USER, failures: { archive: { count: 3, error: "EACCES" } } });
+        expect(job!.done).toEqual(expect.arrayContaining(["record", "floors", "dms", "dm-directory", "member-lists", "record-copies"]));
+        // Given up after three tries: the owner sees why.
+        const status = await app.inject({ method: "GET", url: "/api/runtime" });
+        expect(status.json().discord.warnings).toEqual(expect.arrayContaining([expect.stringContaining(`"archive" part after 3 tries (EACCES)`)]));
+        expect(JSON.stringify(status.json().discord.warnings)).not.toContain(root);
+
+        // Fixed: forgetting him again starts the job over, it finishes, and the notice goes.
+        await chmod(locked, 0o755);
+        const again = await app.inject({ method: "POST", url: `/api/people/${USER}/forget`, payload: { confirm: true } });
+        expect(again.statusCode, again.body).toBe(200);
+        expect(again.json().pending).toBeUndefined();
+        expect(await pendingForgetJobs(storage)).toEqual([]);
+        expect((await app.inject({ method: "GET", url: "/api/runtime" })).json().discord.warnings).toEqual([]);
+      } finally {
+        await chmod(locked, 0o755).catch(() => undefined);
+        await runtime.stop();
+      }
+    }
+  );
 });

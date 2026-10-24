@@ -192,8 +192,11 @@ PUT shim in `src/api/server.ts`.
   is offline), a DM `/forget` a `dm_forget_everything` / `dm_forget_conversation` entry (runs now,
   or at nightly maintenance inside the 6-hour window, spec §7.3); an entry is cleared only when
   its scrub finished (a failed notes scrub keeps it). The owner's forget-user is a durable job
-  (`user/people/forget-jobs.json`, written before anything is removed, cleared when every part
-  succeeded, resumed whole by `startBackend` before Discord connects): it adds `{userId, at}` to
+  (`user/people/forget-jobs.json`, written before anything is removed; each part is recorded as
+  `done` or in `failures`; `startBackend` runs only the unfinished parts before Discord connects,
+  each removing only data at or below the job's floor and time; a part that failed three times is
+  given up with an owner notice in `/api/runtime`; a failed part makes the route answer 202 with
+  `pending` and never skips the life scrubs): it adds `{userId, at}` to
   `user/people/forgotten.json`, writes or raises every DM floor first (a floor is never lowered or
   lost), removes the DM data and `user/dms/<userId>/` except `limits/`, whose files are reset to
   the floor alone, drops the person from member/participant lists, scrubs the Living cast archive

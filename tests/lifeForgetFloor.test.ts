@@ -108,37 +108,47 @@ describe("an unfinished owner forget (review F1, F8)", () => {
 
   async function seeded() {
     const { root, storage } = await dmRoot(roots);
-    const now = new Date().toISOString();
+    // Counters from before the forgets below (their times are fixed in October 2026).
+    const before = "2026-10-19T00:00:00.000Z";
     await updateDmState(storage, { userId: PERSON, waifuId: "aria", botId: "aria-bot" }, (current) => ({ ...current, userDisplayName: "Quillon" }));
-    await updateDmLimit(storage, PERSON, "aria", (current) => ({ ...current, replyTimestamps: [now], limitNoticeSentAt: now, autoMessageIds: ["1300000000000000009"] }));
+    await updateDmLimit(storage, PERSON, "aria", (current) => ({ ...current, replyTimestamps: [before], limitNoticeSentAt: before, autoMessageIds: ["1300000000000000009"] }));
     await mkdir(path.join(root, "user", "conversations", conversationKey({ kind: "dm", waifuId: "aria", userId: PERSON })), { recursive: true });
     return { root, storage };
   }
 
-  it("a failing part leaves the job queued; the rest runs, the traffic goes, and the next boot finishes it", async () => {
+  it("a failing part is reported pending and recorded; the rest runs, the traffic goes, and the next boot runs only that part", async () => {
     const { root, storage } = await seeded();
     const conversation = path.join(root, "user", "conversations", conversationKey({ kind: "dm", waifuId: "aria", userId: PERSON }));
     recordProviderQuery("assistant", { messages: [{ role: "user", content: `about <@${PERSON}>: hi` }] });
     recordProviderQuery("assistant", { messages: [{ role: "user", content: `about <@${OTHER}>: hello` }] });
     const at = new Date("2026-10-20T10:00:00.000Z");
-    const failing = forgetUser(storage, { discordUserId: PERSON, names: ["Quillon"] }, {
+    const result = await forgetUser(storage, { discordUserId: PERSON, names: ["Quillon"] }, {
       now: () => at,
       beforeDelete: async () => {
         throw new Error("disk went away");
       }
     });
-    await expect(failing).rejects.toThrow("disk went away");
+    // Recorded by its code only: no message, no path.
+    expect(result.pending).toEqual([{ part: "dms", error: "Error", failures: 1, retried: true }]);
     // The floor and the record were written before the failure; the DM conversation is still there.
     expect(await readDmFloor(storage, PERSON, "aria")).toBe(dmFloorAt(at));
     expect((await readForgottenPeople(storage)).map((entry) => entry.userId)).toEqual([PERSON]);
     expect(await readdir(conversation)).toEqual([]);
-    expect(await pendingForgetJobs(storage)).toEqual([{ userId: PERSON, at: at.toISOString(), names: ["Quillon"] }]);
+    expect(await pendingForgetJobs(storage)).toEqual([
+      {
+        userId: PERSON,
+        at: at.toISOString(),
+        names: ["Quillon"],
+        done: ["record", "floors", "dm-directory", "member-lists", "archive", "record-copies"],
+        failures: { dms: { count: 1, error: "Error", at: at.toISOString() } }
+      }
+    ]);
     // Whatever failed, the captured traffic lost the person (and only the person).
     const captured = JSON.stringify(recentQueries());
     expect(captured).not.toContain(PERSON);
     expect(captured).toContain(OTHER);
 
-    // The next boot runs the whole job again.
+    // The next boot runs the unfinished part.
     expect(await resumeForgetJobs(storage)).toBe(1);
     expect(await readDmState(storage, PERSON, "aria")).toBeUndefined();
     await expect(readdir(conversation)).rejects.toMatchObject({ code: "ENOENT" });
@@ -159,6 +169,33 @@ describe("an unfinished owner forget (review F1, F8)", () => {
     expect(await readDmFloor(storage, PERSON, "aria")).toBe(dmFloorAt(new Date(at)));
     expect(await readForgottenPeople(storage)).toEqual([{ userId: PERSON, at }]);
     expect(await readdir(path.join(root, "user", "dms", PERSON))).toEqual(["limits"]);
+    expect(await pendingForgetJobs(storage)).toEqual([]);
+  });
+
+  it("a resumed DM part keeps a chat the person started after the forget", async () => {
+    const { root, storage } = await seeded();
+    const at = new Date("2026-10-21T08:30:00.000Z");
+    // A crash after the record and the floors; days later the person writes again.
+    await mkdir(path.join(root, "user", "people"), { recursive: true });
+    await writeFile(path.join(root, "user", "people", "forget-jobs.json"), JSON.stringify({ jobs: [{ userId: PERSON, at: at.toISOString(), done: ["record", "floors"] }] }));
+    await updateDmLimit(storage, PERSON, "aria", (current) => ({ ...current, floorMessageId: dmFloorAt(at) }));
+    const newer = (BigInt(dmFloorAt(new Date("2026-10-23T09:00:00.000Z"))) + 1n).toString();
+    const key = conversationKey({ kind: "dm", waifuId: "aria", userId: PERSON });
+    await updateDmState(storage, { userId: PERSON, waifuId: "aria", botId: "aria-bot" }, (current) => ({ ...current, lastInboundMessageId: newer }));
+    await writeFile(
+      path.join(root, "user", "conversations", key, "refs.json"),
+      JSON.stringify({ schemaVersion: 2, revision: 1, updatedAt: "2026-10-23T09:00:00.000Z", conversationKey: key, counter: 361, refs: { [newer]: "a0" } })
+    );
+    const stamp = "2026-10-23T09:00:01.000Z";
+    await updateDmLimit(storage, PERSON, "aria", (current) => ({ ...current, replyTimestamps: [...current.replyTimestamps, stamp] }));
+    expect(await resumeForgetJobs(storage)).toBe(1);
+    // The new chat stays whole; only what was at or before the forget went.
+    expect((await readDmState(storage, PERSON, "aria"))?.lastInboundMessageId).toBe(newer);
+    expect(await readdir(path.join(root, "user", "conversations", key))).toEqual(["refs.json"]);
+    const limits = await readDmLimit(storage, PERSON, "aria");
+    expect(limits.replyTimestamps).toEqual([stamp]);
+    expect(limits.limitNoticeSentAt).toBeUndefined();
+    expect(limits.floorMessageId).toBe(dmFloorAt(at));
     expect(await pendingForgetJobs(storage)).toEqual([]);
   });
 

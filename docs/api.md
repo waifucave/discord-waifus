@@ -316,8 +316,8 @@ Member and emoji refresh endpoints use the configured House bot token. Member re
 
 - `POST /api/people/:userId/forget` — `{ "confirm": true, "dryRun"?: boolean }`. Forgets one
   Discord user (spec §7.5), best effort. First every waifu with a life folder or notes gets a
-  queued scrub carrying the names collected now. Then a durable job (resumed whole at the next start
-  if the host stops or a part fails; the request then fails with the first error): a record in
+  queued scrub carrying the names collected now. Then a durable job in
+  `user/people/forget-jobs.json` whose parts each run on their own: a record in
   `user/people/forgotten.json`, the DM floor message ids written or raised first (never lowered, so
   old messages stay out of context), the DM part (DM history and state, cached images and OCR text;
   the rate-limit counters are reset and `dmLimits` counts the limits files that now keep only their
@@ -326,7 +326,15 @@ Member and emoji refresh endpoints use the configured House bot token. Member re
   archive under `user/.archive/living-cast/` (`archive: { files, removed, unreadable, skipped }`;
   keys and model choices are never touched), and the in-memory captured traffic (Activity, the
   `/api/events` replay) loses every entry carrying the user's id or a name only they have (other
-  people's entries stay). Then each life's scrub: her summary rewritten without him, his
+  people's entries stay). A part that fails (`record`, `floors`, `dms`, `dm-directory`,
+  `member-lists`, `archive` or `record-copies`; the DM parts wait for the floors) never stops the
+  rest: the response is **202** with `pending: [{ part, error, failures, retried }]` (`error` is an
+  error code such as `EACCES`, never a path or message). Its unfinished parts run again at the next
+  start, before Discord connects; finished parts never run twice, and a resumed part removes only
+  what is at or below the forget's floor and time (a chat he started since stays). After three
+  failures a part is given up (`retried: false`) and `GET /api/runtime` lists an owner notice in
+  `discord.warnings` until he is forgotten again. If the job cannot even be saved, every part is
+  listed with `retried: false`. Then each life's scrub (also when a part failed): her summary rewritten without him, his
   wakes, watches, reminders, DM cursor and handle removed, her notes cleaned by a notes session,
   notes that are his deleted whole, a new epoch, then a verification pass. The response adds
   `lives`: `[{ waifuId, removedLines, removedSentences, removedNotes, needsReview: [{ where, line }],

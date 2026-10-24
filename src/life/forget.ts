@@ -352,8 +352,14 @@ export async function scrubOtherState(deps: LifeDeps, waifu: WaifuConfig, identi
   removed += await dropPlaceHandles(deps.storage, waifu.id, dmKey);
   removed += await scrubMaintenanceReports(deps.storage, waifu.id, (line) => mentions(line));
   removed += await scrubSearchUsage(deps.storage, mentions);
-  const archived = await scrubArchive(deps.storage.dataRoot, { userId: identity.userId, names: identity.names, avoidNames: identity.sharedNames, waifuId: waifu.id, logger: deps.logger });
-  removed += archived.removed;
+  // Her slice of the archive is best effort: a file it cannot remove never stops her scrub (the
+  // owner's forget job retries the whole archive and raises a notice when it gives up).
+  try {
+    const archived = await scrubArchive(deps.storage.dataRoot, { userId: identity.userId, names: identity.names, avoidNames: identity.sharedNames, waifuId: waifu.id, logger: deps.logger });
+    removed += archived.removed;
+  } catch (error) {
+    deps.logger.warn("Her slice of the Living cast archive could not be scrubbed", { category: "life", waifuId: waifu.id, code: (error as NodeJS.ErrnoException)?.code ?? "error" });
+  }
   return removed;
 }
 

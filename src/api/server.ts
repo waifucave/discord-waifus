@@ -18,7 +18,7 @@ import { RuntimeState } from "../backend/runtime.js";
 import { redactRemoteHostDetails, redactSecrets } from "../backend/redaction.js";
 import { CastRuntime } from "../orchestration/runtime.js";
 import { clearOcrArtifacts } from "../orchestration/ocr.js";
-import { forgetUser } from "../orchestration/dm/forgetUser.js";
+import { forgetJobNotices, forgetUser, unqueuedForgetResult } from "../orchestration/dm/forgetUser.js";
 import { readThreads } from "../orchestration/stores/threads.js";
 import { ChannelThreadsModeSchema } from "../shared/schemas/threads.js";
 import { providerStatuses, keyHint } from "./providerStatus.js";
@@ -510,7 +510,9 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
 
   app.get("/api/runtime", async (request) => {
     const cast = options.runtimeControl?.getCastRuntime?.() ?? options.castRuntime;
-    const live = [...(cast?.permissionWarnings.list() ?? []), ...(cast?.cast?.notices.list() ?? [])];
+    // An owner forget part given up after three tries stays a notice until the person is forgotten again.
+    const forgetNotices = await forgetJobNotices(storage).catch(() => [] as string[]);
+    const live = [...(cast?.permissionWarnings.list() ?? []), ...(cast?.cast?.notices.list() ?? []), ...forgetNotices];
     // Guild directory status (spec 9.6): is the member list endpoint usable, when did it last refresh.
     const directoryStatus = (options.directory ?? cast?.directory)?.status() ?? {
       memberListAvailable: null,
@@ -1034,22 +1036,30 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   // history and state, rate-limit counters, cached images; floors kept) and the
   // `user/people/forgotten.json` record, then the life scrub of every waifu with a life or notes
   // (`lives`). Without a running cast runtime (Discord offline) the scrubs are queued and run when
-  // each life next starts (`livesQueued`).
-  app.post("/api/people/:userId/forget", async (request) => {
+  // each life next starts (`livesQueued`). A part of the DM/archive job that did not finish is
+  // listed in `pending` (202): it runs again at the next start, up to three tries in all.
+  app.post("/api/people/:userId/forget", async (request, reply) => {
     const { userId } = z.object({ userId: z.string().min(1) }).parse(request.params);
     assertSnowflakeId(userId);
     const body = PeopleForgetBodySchema.parse(request.body);
     const input = { discordUserId: userId, dryRun: body.dryRun === true };
+    const answer = <T extends { pending?: unknown[] }>(result: T): T => {
+      if (result.pending && result.pending.length > 0) void reply.code(202);
+      return result;
+    };
     // The live runtime also drops cached DM messages and images (spec 9.1.4).
     const cast = options.runtimeControl?.getCastRuntime?.() ?? options.castRuntime;
-    if (cast) return cast.forgetUser(input);
+    if (cast) return answer(await cast.forgetUser(input));
     if (input.dryRun) return forgetUser(storage, input, { logger });
     // The life scrubs are queued first, with the names read before the DM data goes.
     const queued = await queueOwnerScrubs(storage, userId, new Date(), { logger });
     const names = [...new Set(queued.flatMap((entry) => entry.identity.names))];
     const avoidNames = [...new Set(queued.flatMap((entry) => entry.identity.sharedNames))];
-    const result = await forgetUser(storage, { ...input, names, avoidNames }, { logger });
-    return { ...result, livesQueued: queued.map((entry) => entry.waifu.id) };
+    const result = await forgetUser(storage, { ...input, names, avoidNames }, { logger }).catch((error: unknown) => {
+      logger.warn("The owner's forget could not queue its DM part", { message: error instanceof Error ? error.message : String(error) });
+      return unqueuedForgetResult(userId, error);
+    });
+    return answer({ ...result, livesQueued: queued.map((entry) => entry.waifu.id) });
   });
 
   // B2: pause used to live only in memory, so the next config save/reload (which re-reads

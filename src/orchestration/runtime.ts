@@ -28,7 +28,7 @@ import { channelHasWaifus, ensureChannelConfig, ensureServer, isKnownWaifuAuthor
 import { noteActiveChatParticipant } from "./stores/participants.js";
 import { observeThread, parentSharesCast, readThreads, removeThread } from "./stores/threads.js";
 import { dmForget, type DmConversation, type DmForgetHooks, type DmForgetInput, type DmForgetResult } from "./dm/dmForget.js";
-import { forgetUser, type ForgetUserResult } from "./dm/forgetUser.js";
+import { forgetUser, unqueuedForgetResult, type ForgetUserResult } from "./dm/forgetUser.js";
 import { forgetCapturedTraffic } from "../shared/queryLog.js";
 import { personMatcher } from "../life/text.js";
 import { forgetConversationImageIndex } from "../discord/imageIndex.js";
@@ -444,13 +444,19 @@ export class CastRuntime {
   /**
    * The owner's forget-user (§7.5): every life's scrub queued with the identity collected now, then
    * the DM part and the archive (spec 9.1.4, D-b), the directory's member lists, then the scrubs.
+   * A part of step 1 that did not finish is reported in `pending` (it retries at the next start);
+   * the life scrubs run all the same.
    */
   async forgetUser(input: { discordUserId: string; dryRun?: boolean }): Promise<OwnerForgetResult> {
     const prepared = input.dryRun ? undefined : await this.cast.prepareOwnerForget(input.discordUserId);
     const identities = prepared?.map((entry) => entry.identity) ?? [];
     const names = [...new Set(identities.flatMap((identity) => identity.names))];
     const avoidNames = [...new Set(identities.flatMap((identity) => identity.sharedNames))];
-    const result = await forgetUser(this.options.storage, { ...input, names, avoidNames }, this.dmForgetHooks());
+    const result = await forgetUser(this.options.storage, { ...input, names, avoidNames }, this.dmForgetHooks()).catch((error: unknown) => {
+      if (input.dryRun) throw error;
+      this.options.logger.warn("The owner's forget could not queue its DM part; the life scrubs still run", { message: error instanceof Error ? error.message : String(error) });
+      return unqueuedForgetResult(input.discordUserId, error);
+    });
     if (input.dryRun) return result;
     await this.directory.forgetMember(input.discordUserId).catch((error: unknown) => {
       this.options.logger.warn("Guild directory forget failed", { message: error instanceof Error ? error.message : String(error) });
