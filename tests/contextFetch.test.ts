@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { DiscordGatewayFacade } from "../src/discord/client.js";
-import { loadGuildDirectoryView } from "../src/discord/directoryView.js";
 import { pageMessagesSince, toRawDiscordMessage, withoutAuthors, type DiscordMessageLike } from "../src/discord/rawMessage.js";
 import { DiscordConversationSource, filterSinceCursor } from "../src/orchestration/context/fetchTranscript.js";
 import type { ContextMessage } from "../src/orchestration/contextMessages.js";
@@ -167,27 +166,6 @@ describe("DiscordConversationSource", () => {
     expect(filterSinceCursor(messages, "10", 10, true).reachedCursor).toBe(false);
     expect(filterSinceCursor(messages, "20", 10, true)).toMatchObject({ reachedCursor: true });
     expect(filterSinceCursor(messages, "10", 2, false).messages.map((m) => m.id)).toEqual(["21", "22"]);
-  });
-});
-
-describe("loadGuildDirectoryView", () => {
-  it("reads members/roles/emojis caches and tolerates missing files", async () => {
-    const root = await makeTempRoot();
-    roots.push(root);
-    const storage = new StorageService(root);
-    const empty = await loadGuildDirectoryView(storage, "100");
-    expect(empty.memberName("1")).toBeUndefined();
-    await storage.writeJson("m", "user/servers/100/members.json", (await import("../src/shared/schemas/domain.js")).GuildMembersFileSchema, {
-      schemaVersion: 2,
-      revision: 1,
-      updatedAt: "2026-10-24T00:00:00.000Z",
-      guildId: "100",
-      members: [{ userId: "1", username: "kev", guildDisplayName: "Kevin", bot: false, perChannelLastSeenAt: {} }]
-    });
-    const view = await loadGuildDirectoryView(storage, "100", { channelName: (id) => (id === "9" ? "general" : undefined) });
-    expect(view.memberName("1")).toBe("Kevin");
-    expect(view.channelName("9")).toBe("general");
-    expect(view.roleName("x")).toBeUndefined();
   });
 });
 

@@ -273,6 +273,72 @@ describe("DiscordJsGateway client options", () => {
   });
 });
 
+describe("DiscordJsGateway intents (spec 9.4: GuildExpressions, opt-in GuildMembers)", () => {
+  it("requests the non-privileged GuildExpressions intent and never GuildMembers unless asked", async () => {
+    // discord.js 14.27 / discord-api-types: GuildExpressions replaced GuildEmojisAndStickers (same bit).
+    expect(GatewayIntentBits.GuildExpressions).toBe(1 << 3);
+    expect(IntentsBitField.Flags.GuildExpressions).toBe(GatewayIntentBits.GuildExpressions);
+
+    const defaults = fakeClients({});
+    const plain = makeGateway({ orchestrator: bot("orchestrator"), waifus: [bot("waifu-a")], createClient: defaults.factory });
+    await plain.connect();
+    const plainIntents = new IntentsBitField(defaults.createdOptions.get("orchestrator")!.intents);
+    expect(plainIntents.has(GatewayIntentBits.GuildExpressions)).toBe(true);
+    expect(plainIntents.has(GatewayIntentBits.GuildMembers)).toBe(false);
+    // Waifu bots never listen: they keep the single Guilds intent.
+    expect(new IntentsBitField(defaults.createdOptions.get("waifu-a")!.intents).bitfield).toBe(GatewayIntentBits.Guilds);
+
+    const optIn = fakeClients({});
+    const privileged = makeGateway({
+      orchestrator: bot("orchestrator"),
+      guildMembersIntent: true,
+      createClient: optIn.factory
+    });
+    await privileged.connect();
+    const privilegedIntents = new IntentsBitField(optIn.createdOptions.get("orchestrator")!.intents);
+    expect(privilegedIntents.has(GatewayIntentBits.GuildMembers)).toBe(true);
+    expect(privilegedIntents.has(GatewayIntentBits.GuildExpressions)).toBe(true);
+  });
+
+  it("reports invalid_intents when Discord closes the orchestrator session with 4013", async () => {
+    const clients = fakeClients({});
+    const statusChanges: DiscordRuntimeStatus[] = [];
+    const gateway = makeGateway({
+      orchestrator: bot("orchestrator"),
+      waifus: [bot("waifu-a")],
+      createClient: clients.factory,
+      onStatusChange: (status) => {
+        statusChanges.push(status);
+      }
+    });
+    await gateway.connect();
+
+    // discord.js 14.27 gives up (ShardDisconnect) on 4013 "invalid intents" like it does on 4014.
+    clients.created.get("orchestrator")?.emit(Events.ShardDisconnect, { code: 4013, reason: "Invalid intent(s)", wasClean: true } as never, 0);
+
+    await vi.waitFor(() => expect(statusChanges).toHaveLength(1));
+    expect(botStatus(statusChanges[0]!, "orchestrator")).toMatchObject({
+      state: "error",
+      errorCode: "invalid_intents",
+      closeCode: 4013
+    });
+    expect(botStatus(statusChanges[0]!, "waifu-a")).toMatchObject({ errorCode: "orchestrator_unavailable" });
+  });
+
+  it("classifies a login rejected for invalid or disallowed intents", async () => {
+    for (const [message, errorCode] of [
+      ["Invalid intents", "invalid_intents"],
+      ["Used disallowed intents", "disallowed_intents"]
+    ] as const) {
+      const clients = fakeClients({ orchestrator: new Error(message) });
+      const gateway = makeGateway({ orchestrator: bot("orchestrator"), createClient: clients.factory });
+      const error = await gateway.connect().catch((caught: unknown) => caught);
+      expect(error).toMatchObject({ name: "DiscordConnectError" });
+      expect(botStatus((error as { status: DiscordRuntimeStatus }).status, "orchestrator")).toMatchObject({ state: "error", errorCode });
+    }
+  });
+});
+
 describe("DiscordJsGateway unrecoverable gateway closes", () => {
   it("marks a waifu errored and destroys its client when Discord rejects its token mid-session", async () => {
     const clients = fakeClients({});
