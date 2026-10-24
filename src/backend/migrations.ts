@@ -24,6 +24,8 @@ import { migrateDreamCursorGlobal } from "./migrationSteps/dreamCursorGlobal.js"
 import { migrateMemoriesCrossGuildDedupe } from "./migrationSteps/memoriesCrossGuildDedupe.js";
 import { migrateMemoriesGlobalOriginSubjects } from "./migrationSteps/memoriesGlobalOriginSubjects.js";
 import { migrateOcrCacheTtlDefault168 } from "./migrationSteps/ocrCacheTtlDefault168.js";
+import { migrateOrchestratorHistoryPerGuild } from "./migrationSteps/orchestratorHistoryPerGuild.js";
+import { migrateServerDropEnabledFlags } from "./migrationSteps/serverDropEnabledFlags.js";
 import { migrateOcrCacheUrlKeysCleanup } from "./migrationSteps/ocrCacheUrlKeysCleanup.js";
 import { migratePendingObservationsGlobal } from "./migrationSteps/pendingObservationsGlobal.js";
 import { migrateServerContextWindowsExplicit } from "./migrationSteps/serverContextWindowsExplicit.js";
@@ -146,6 +148,10 @@ export const MIGRATION_STEPS: readonly MigrationStep[] = [
   { id: "dream-cursor-global-v1", frequency: "once", run: migrateDreamCursorGlobal }, // T6
   { id: "ocr-cache-url-keys-cleanup-v1", frequency: "once", run: migrateOcrCacheUrlKeysCleanup }, // T2
   { id: "ocr-cache-ttl-168-v1", frequency: "once", run: migrateOcrCacheTtlDefault168 }, // acceptance M5
+  // Phase 5 steps (spec 9.3, 9.7). The history split must stay after orchestrator-history-responding-waifus
+  // above, which still normalizes legacy decision shapes in the global file it splits.
+  { id: "orchestrator-history-per-guild-v1", frequency: "every-boot", run: migrateOrchestratorHistoryPerGuild },
+  { id: "server-drop-enabled-flags-v1", frequency: "once", run: migrateServerDropEnabledFlags },
   {
     // Runs LAST: every step above may still leave a file's schemaVersion at 1 even once its shape
     // is current. Stamping here — after all shape conversions — is what lets the next boot's

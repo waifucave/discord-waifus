@@ -392,13 +392,12 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
   },
   {
     name: "update_channel",
-    description: "Update a channel's settings: enabled flag and enabledWaifuIds (which waifus may speak).",
+    description: "Update a channel's settings: enabledWaifuIds (which waifus may speak; a channel is live when the list is non-empty).",
     parameters: {
       type: "object",
       properties: {
         guildId: { type: "string" },
         channelId: { type: "string" },
-        enabled: { type: "boolean" },
         enabledWaifuIds: { type: "array", items: { type: "string" } }
       },
       required: ["guildId", "channelId"],
@@ -729,7 +728,8 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
       additionalProperties: false
     },
     execute: async (ctx, args) => {
-      const result = await inject(ctx, { method: "GET", url: "/api/orchestrator/history" });
+      const guildQuery = args.guildId ? `?guildId=${encodeURIComponent(String(args.guildId))}` : "";
+      const result = await inject(ctx, { method: "GET", url: `/api/orchestrator/history${guildQuery}` });
       if (result.status !== 200) return result.body;
       const history = JSON.parse(result.body) as { decisions: Array<Record<string, unknown>> };
       const limit = Math.min(Number(args.limit) || 10, 25);
@@ -753,7 +753,7 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
   {
     name: "update_server",
     description:
-      "Update server-level settings for a guild: enabled, contextWindows {orchestrator,waifu,stageManager}, " +
+      "Update server-level settings for a guild: paused (the kill switch), contextWindows {orchestrator,waifu,stageManager}, " +
       "memoryInjectionLimit, tools {pickNextWaifu, shortTermMemory}, orchestratorMode (model, deterministic, one-shot), " +
       "oneShot {target} from list_one_shot_models. One shot does not change the global LLM config. For per-channel toggles use update_channel.",
     parameters: {

@@ -152,7 +152,7 @@ export class ResponderExecutor {
             channelId: input.channelId,
             selectedWaifuId: responder.waifuId
           });
-          await updateOrchestratorResponderOutcome(this.options.storage, input.decisionId, outcomeId, {
+          await updateOrchestratorResponderOutcome(this.options.storage, input.guildId, input.decisionId, outcomeId, {
             status: "unavailable",
             reason: "not_enabled_for_channel"
           });
@@ -166,7 +166,7 @@ export class ResponderExecutor {
             channelId: input.channelId,
             selectedWaifuId: responder.waifuId
           });
-          await updateOrchestratorResponderOutcome(this.options.storage, input.decisionId, outcomeId, {
+          await updateOrchestratorResponderOutcome(this.options.storage, input.guildId, input.decisionId, outcomeId, {
             status: "unavailable",
             reason: "unknown_waifu"
           });
@@ -179,7 +179,7 @@ export class ResponderExecutor {
             channelId: input.channelId,
             selectedWaifuId: responder.waifuId
           });
-          await updateOrchestratorResponderOutcome(this.options.storage, input.decisionId, outcomeId, {
+          await updateOrchestratorResponderOutcome(this.options.storage, input.guildId, input.decisionId, outcomeId, {
             status: "unavailable",
             reason: "disabled"
           });
@@ -192,7 +192,7 @@ export class ResponderExecutor {
             channelId: input.channelId,
             selectedWaifuId: responder.waifuId
           });
-          await updateOrchestratorResponderOutcome(this.options.storage, input.decisionId, outcomeId, {
+          await updateOrchestratorResponderOutcome(this.options.storage, input.guildId, input.decisionId, outcomeId, {
             status: "unavailable",
             reason: "missing_discord_bot"
           });
@@ -205,7 +205,7 @@ export class ResponderExecutor {
             channelId: input.channelId,
             selectedWaifuId: responder.waifuId
           });
-          await updateOrchestratorResponderOutcome(this.options.storage, input.decisionId, outcomeId, {
+          await updateOrchestratorResponderOutcome(this.options.storage, input.guildId, input.decisionId, outcomeId, {
             status: "unavailable",
             reason: "missing_model"
           });
@@ -386,7 +386,7 @@ export class ResponderExecutor {
             signal: input.signal
           });
           if (sentMessageIds.length > 0) {
-            await updateOrchestratorResponderOutcome(this.options.storage, input.decisionId, outcomeId, {
+            await updateOrchestratorResponderOutcome(this.options.storage, input.guildId, input.decisionId, outcomeId, {
               status: "sent"
             });
             currentOutcomeFinalized = true;
@@ -416,12 +416,12 @@ export class ResponderExecutor {
               // The model's text was rejected by the validator. Record "blocked" even when a tool
               // was also called: the leak channel is the visible reply, not the tool call, but the
               // text was the thing that was refused, so "blocked" takes precedence over "tool_only".
-              await updateOrchestratorResponderOutcome(this.options.storage, input.decisionId, outcomeId, {
+              await updateOrchestratorResponderOutcome(this.options.storage, input.guildId, input.decisionId, outcomeId, {
                 status: "blocked",
                 reason: blockedViolations.map((entry) => entry.check).join(", ")
               });
             } else {
-              await updateOrchestratorResponderOutcome(this.options.storage, input.decisionId, outcomeId, {
+              await updateOrchestratorResponderOutcome(this.options.storage, input.guildId, input.decisionId, outcomeId, {
                 status: usedToolWithoutVisibleMessage ? "tool_only" : "empty",
                 reason: usedToolWithoutVisibleMessage ? undefined : "empty_after_cleaning"
               });
@@ -459,6 +459,7 @@ export class ResponderExecutor {
               responderQueue.unshift(existingQueueEntry);
               await moveOrchestratorResponderOutcomeAfter(
                 this.options.storage,
+                input.guildId,
                 input.decisionId,
                 outcomeId,
                 existingQueueEntry.outcomeId,
@@ -475,6 +476,7 @@ export class ResponderExecutor {
               };
               await insertOrchestratorResponderOutcomeAfter(
                 this.options.storage,
+                input.guildId,
                 input.decisionId,
                 outcomeId,
                 handoffOutcome
@@ -522,7 +524,7 @@ export class ResponderExecutor {
         currentOutcomeId = undefined;
         currentOutcomeFinalized = false;
       }
-      await updateOrchestratorDecisionStatus(this.options.storage, input.decisionId, "completed");
+      await updateOrchestratorDecisionStatus(this.options.storage, input.guildId, input.decisionId, "completed");
       decisionFinalized = true;
     } catch (error) {
       if (!decisionFinalized) {
@@ -538,6 +540,7 @@ export class ResponderExecutor {
               : String(error);
         try {
           await finalizeOrchestratorDecisionAfterError(this.options.storage, {
+            guildId: input.guildId,
             decisionId: input.decisionId,
             status,
             currentOutcomeId: currentOutcomeFinalized ? undefined : currentOutcomeId,
@@ -801,6 +804,7 @@ export class ResponderExecutor {
         if (input.orchestratorDecisionId) {
           await recordOrchestratorDecisionWaifuMessage(
             this.options.storage,
+            input.guildId,
             input.orchestratorDecisionId,
             input.responderOutcomeId,
             sentResult.messageId

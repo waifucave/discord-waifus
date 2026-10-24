@@ -1,4 +1,4 @@
-import { readFile, rm } from "node:fs/promises";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RuntimeOrchestrator, currentlyDoingForWaifu, DreamPassResult } from "../src/orchestration/runtime.js";
@@ -36,6 +36,11 @@ import {
 import { GatewayPipelineError } from "../src/orchestration/pipeline/params.js";
 import type { BuiltPrompt } from "../src/orchestration/context/types.js";
 import { ensureDataLayout } from "../src/config/layout.js";
+import {
+  decisionHistoryPath,
+  decisionHistoryResourceKey,
+  readOrchestratorHistoryForGuild
+} from "../src/orchestration/stores/decisionHistory.js";
 import { StorageService } from "../src/storage/storageService.js";
 import {
   ActiveChatParticipantsFileSchema,
@@ -46,6 +51,7 @@ import {
   GuildMembersFileSchema,
   MemoryStoreSchema,
   OrchestratorDebugConfigFileSchema,
+  OrchestratorHistoryFile,
   OrchestratorHistoryFileSchema,
   PendingObservationsFileSchema,
   ProviderCredentialsFileSchema,
@@ -433,7 +439,7 @@ describe("RuntimeOrchestrator", () => {
         expect(s.native).toHaveBeenCalledTimes(1);
         expect(s.native.mock.calls[0][0]).toMatchObject({ target: "openrouter:cloudflare/clef" });
         expect(s.discord.sent).toHaveLength(1); expect(s.generate).toHaveBeenCalledTimes(1);
-        const history = await s.storage.readJson("user/orchestrator/history.json", OrchestratorHistoryFileSchema);
+        const history = await readTestHistory(s.storage);
         expect(history.decisions[0].reasoning).toBe("one_shot: fixture");
       } finally { await s.runtime.stop(); }
     });
@@ -577,10 +583,7 @@ describe("RuntimeOrchestrator", () => {
       }
     ]);
 
-    const history = await storage.readJson(
-      "user/orchestrator/history.json",
-      OrchestratorHistoryFileSchema
-    );
+    const history = await readTestHistory(storage);
     expect(
       history.decisions.map((entry) => ({
         action: entry.action,
@@ -980,7 +983,7 @@ describe("RuntimeOrchestrator", () => {
       "aria-bot",
       "mika-bot"
     ]);
-    const history = await storage.readJson("user/orchestrator/history.json", OrchestratorHistoryFileSchema);
+    const history = await readTestHistory(storage);
     const decision = history.decisions.find((entry) => entry.action === "reply");
     expect(decision?.respondingWaifus.map((responder) => responder.waifuId)).toEqual(["yuki", "mika"]);
     expect(decision?.responderOutcomes.map((outcome) => ({
@@ -1079,7 +1082,7 @@ describe("RuntimeOrchestrator", () => {
 
     expect(events).toEqual(["yuki", "aria", "mika"]);
     expect(sleepCalls).toEqual([]);
-    const history = await storage.readJson("user/orchestrator/history.json", OrchestratorHistoryFileSchema);
+    const history = await readTestHistory(storage);
     const decision = history.decisions.find((entry) => entry.action === "reply");
     expect(decision?.responderOutcomes.map((outcome) => ({
       waifuId: outcome.waifuId,
@@ -1206,7 +1209,7 @@ describe("RuntimeOrchestrator", () => {
 
     expect(checked).toBe(true);
     expect(discord.sent.map((message) => message.senderBotId)).toEqual(["yuki-bot"]);
-    const history = await storage.readJson("user/orchestrator/history.json", OrchestratorHistoryFileSchema);
+    const history = await readTestHistory(storage);
     const decision = history.decisions.find((entry) => entry.action === "reply");
     expect(decision?.responderOutcomes.map((outcome) => ({
       waifuId: outcome.waifuId,
@@ -1840,10 +1843,7 @@ describe("RuntimeOrchestrator", () => {
     await runtime.stop();
 
     expect(sleepCalls[0]).toBe(30_000);
-    const history = await storage.readJson(
-      "user/orchestrator/history.json",
-      OrchestratorHistoryFileSchema
-    );
+    const history = await readTestHistory(storage);
     expect(history.decisions.find((entry) => entry.action === "reply")?.respondingWaifus[0].delaySeconds).toBe(30);
   });
 
@@ -2070,10 +2070,8 @@ describe("RuntimeOrchestrator", () => {
       params: { ...orchestratorConfig.params, "reasoning.enabled": true, "reasoning.budgetTokens": 2048 }
     });
     // A stale history entry that predates this context never leaks into the prompt.
-    await storage.writeJson(
-      "orchestrator:history",
-      "user/orchestrator/history.json",
-      OrchestratorHistoryFileSchema,
+    await writeTestHistory(
+      storage,
       OrchestratorHistoryFileSchema.parse(
         createEmptyRevisionedFile({
           decisions: [
@@ -2127,10 +2125,8 @@ describe("RuntimeOrchestrator", () => {
     const discord = new FakeDiscord();
 
     await seedRuntimeConfig(storage);
-    await storage.writeJson(
-      "orchestrator:history",
-      "user/orchestrator/history.json",
-      OrchestratorHistoryFileSchema,
+    await writeTestHistory(
+      storage,
       OrchestratorHistoryFileSchema.parse(
         createEmptyRevisionedFile({
           decisions: [
@@ -2175,10 +2171,7 @@ describe("RuntimeOrchestrator", () => {
     await runtime.start();
     await runtime.stop();
 
-    const history = await storage.readJson(
-      "user/orchestrator/history.json",
-      OrchestratorHistoryFileSchema
-    );
+    const history = await readTestHistory(storage);
     const healed = history.decisions.find((entry) => entry.id === "leftover-pending");
     expect(healed?.status).toBe("interrupted");
     expect(healed?.responderOutcomes).toMatchObject([
@@ -3464,8 +3457,7 @@ describe("RuntimeOrchestrator", () => {
       ServerConfigSchema.parse({
         ...createRevisionedBase(),
         guildId: "guild-1",
-        name: "Stale server name",
-        enabled: true
+        name: "Stale server name"
       })
     );
     discord.channelMetadata.set("guild-1:channel-1", {
@@ -3503,7 +3495,6 @@ describe("RuntimeOrchestrator", () => {
     expect(server.channels["channel-1"]).toMatchObject({
       channelId: "channel-1",
       name: "聊天频道",
-      enabled: false,
       enabledWaifuIds: []
     });
   });
@@ -5038,7 +5029,7 @@ describe("RuntimeOrchestrator", () => {
     // The schema never changes with the per-pass state (prefix stability).
     expect(tools[1]).toBe(tools[0]);
     expect(discord.sent.map((message) => [message.senderBotId, message.content])).toEqual([["yuki-bot", "forced hello"]]);
-    const history = await storage.readJson("user/orchestrator/history.json", OrchestratorHistoryFileSchema);
+    const history = await readTestHistory(storage);
     const forced = history.decisions.find((entry) => entry.action === "reply");
     expect(forced?.respondingWaifus.map((responder) => responder.waifuId)).toEqual(["yuki"]);
     expect(forced?.reasoning).toContain("reply required");
@@ -5518,7 +5509,7 @@ describe("RuntimeOrchestrator", () => {
       ])
     ]);
 
-    const history = await storage.readJson("user/orchestrator/history.json", OrchestratorHistoryFileSchema);
+    const history = await readTestHistory(storage);
     await runtime.stop();
 
     expect(responses).toEqual(["Started orchestrator run with scene direction."]);
@@ -6633,7 +6624,7 @@ describe("RuntimeOrchestrator", () => {
 
     expect(yukiAttempts).toBe(2);
     expect(discord.sent.map((message) => message.content)).toEqual(["Mika still responds."]);
-    const history = await storage.readJson("user/orchestrator/history.json", OrchestratorHistoryFileSchema);
+    const history = await readTestHistory(storage);
     const decision = history.decisions.find((entry) => entry.action === "reply");
     expect(decision?.status).toBe("completed");
     expect(decision?.responderOutcomes.map((outcome) => ({
@@ -6701,7 +6692,7 @@ describe("RuntimeOrchestrator", () => {
     expect(discord.sent).toEqual([]);
     expect(retryMessageOnAttempt2).toContain("rejected");
 
-    const history = await storage.readJson("user/orchestrator/history.json", OrchestratorHistoryFileSchema);
+    const history = await readTestHistory(storage);
     const decision = history.decisions.find((entry) => entry.action === "reply");
     expect(decision?.status).toBe("completed");
     expect(decision?.responderOutcomes.map((outcome) => ({
@@ -6753,7 +6744,7 @@ describe("RuntimeOrchestrator", () => {
     expect(attempts).toBe(2);
     expect(discord.sent.map((message) => message.content)).toEqual(["sure, sounds good"]);
 
-    const history = await storage.readJson("user/orchestrator/history.json", OrchestratorHistoryFileSchema);
+    const history = await readTestHistory(storage);
     const decision = history.decisions.find((entry) => entry.action === "reply");
     expect(decision?.responderOutcomes.map((outcome) => outcome.status)).toEqual(["sent"]);
   });
@@ -6797,7 +6788,7 @@ describe("RuntimeOrchestrator", () => {
     expect(attempts).toBe(1);
     expect(discord.sent).toEqual([]);
 
-    const history = await storage.readJson("user/orchestrator/history.json", OrchestratorHistoryFileSchema);
+    const history = await readTestHistory(storage);
     const decision = history.decisions.find((entry) => entry.action === "reply");
     expect(decision?.responderOutcomes[0]?.status).toBe("blocked");
     expect(decision?.responderOutcomes[0]?.reason).toContain("mass-ping");
@@ -6959,7 +6950,7 @@ describe("RuntimeOrchestrator", () => {
     await runtime.triggerChannel("guild-1", "channel-1");
     await runtime.stop();
 
-    const history = await storage.readJson("user/orchestrator/history.json", OrchestratorHistoryFileSchema);
+    const history = await readTestHistory(storage);
     const decision = history.decisions.find((entry) => entry.action === "reply");
     expect(decision?.status).toBe("failed");
     expect(decision?.responderOutcomes.map((outcome) => ({
@@ -7120,7 +7111,7 @@ describe("RuntimeOrchestrator", () => {
 
     expect(discord.sent.length).toBeLessThan(3);
     expect(discord.sent[0].content).toBe("Hi");
-    const history = await storage.readJson("user/orchestrator/history.json", OrchestratorHistoryFileSchema);
+    const history = await readTestHistory(storage);
     const interruptedDecision = history.decisions.find(
       (entry) => entry.action === "reply" && entry.status === "interrupted"
     );
@@ -7200,7 +7191,7 @@ describe("RuntimeOrchestrator", () => {
     await runtime.stop();
 
     expect(discord.sent).toEqual([]);
-    const history = await storage.readJson("user/orchestrator/history.json", OrchestratorHistoryFileSchema);
+    const history = await readTestHistory(storage);
     const decision = history.decisions.find((entry) => entry.action === "reply");
     expect(decision?.responderOutcomes).toMatchObject([
       {
@@ -7576,7 +7567,7 @@ describe("RuntimeOrchestrator", () => {
     // The second (stripped) directive adds no note; the first one stays in her transcript.
     expect(waifuTrailingBlocks[1].match(/<direction>/g)).toHaveLength(1);
 
-    const history = await storage.readJson("user/orchestrator/history.json", OrchestratorHistoryFileSchema);
+    const history = await readTestHistory(storage);
     const replyDecisions = history.decisions.filter((entry) => entry.action === "reply");
     // Newest first: index 0 is the second (stripped) decision.
     expect(replyDecisions[0]?.responderOutcomes[0]?.directiveStripped).toBe("cooldown");
@@ -7627,7 +7618,7 @@ describe("RuntimeOrchestrator", () => {
     await runtime.stop();
 
     expect(waifuTrailing).not.toContain("<direction>");
-    const history = await storage.readJson("user/orchestrator/history.json", OrchestratorHistoryFileSchema);
+    const history = await readTestHistory(storage);
     const reply = history.decisions.find((entry) => entry.action === "reply");
     expect(reply?.responderOutcomes[0]?.directiveStripped).toBe("over_cap");
   });
@@ -8032,7 +8023,7 @@ describe("RuntimeOrchestrator", () => {
       await until(() => started, "waifu generation to start");
       await halt(runtime);
       await run;
-      const history = await storage.readJson("user/orchestrator/history.json", OrchestratorHistoryFileSchema);
+      const history = await readTestHistory(storage);
       return { storage, decision: history.decisions[0] };
     }
 
@@ -8099,6 +8090,100 @@ describe("RuntimeOrchestrator", () => {
         await until(() => resumed.discord.sent.length === 1, "resumed reply after unpause");
       } finally {
         await resumed.runtime.stop();
+      }
+    });
+
+    it("spec 9.7: an unpaused server with no enabled flag resumes after a restart", async () => {
+      const { storage } = await interruptMidReply((runtime) => runtime.stop());
+      const stored = JSON.parse(await readFile(serverFilePath(storage), "utf8")) as Record<string, unknown>;
+      expect(stored).not.toHaveProperty("enabled");
+      expect(stored.paused).toBe(false);
+      const next = await bootAgain(storage);
+      try {
+        await until(() => next.discord.sent.length === 1, "resumed reply");
+        expect(next.discord.sent[0].content).toBe("sorry, where was I");
+      } finally {
+        await next.runtime.stop();
+      }
+    });
+
+    it("spec 9.7: a pre-Phase-5 server file with enabled: false (the old default) resumes too", async () => {
+      const { storage } = await interruptMidReply((runtime) => runtime.stop());
+      const stored = JSON.parse(await readFile(serverFilePath(storage), "utf8")) as Record<string, unknown>;
+      await writeFile(serverFilePath(storage), JSON.stringify({ ...stored, enabled: false }));
+      const next = await bootAgain(storage);
+      try {
+        await until(() => next.discord.sent.length === 1, "resumed reply");
+      } finally {
+        await next.runtime.stop();
+      }
+    });
+
+    it("spec 9.7: a paused server does not resume after a restart until it is unpaused", async () => {
+      const { storage } = await interruptMidReply((runtime) => runtime.stop());
+      await storage.updateRevisionedJson({
+        resourceKey: "server:guild-1",
+        relativePath: "user/servers/guild-1/server.json",
+        schema: ServerConfigSchema,
+        fallback: ServerConfigSchema.parse({ ...createRevisionedBase(), guildId: "guild-1" }),
+        transform: (current) => ({ ...current, paused: true })
+      });
+      const paused = await bootAgain(storage);
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        expect(paused.discord.sent).toEqual([]);
+      } finally {
+        await paused.runtime.stop();
+      }
+      await storage.updateRevisionedJson({
+        resourceKey: "server:guild-1",
+        relativePath: "user/servers/guild-1/server.json",
+        schema: ServerConfigSchema,
+        fallback: ServerConfigSchema.parse({ ...createRevisionedBase(), guildId: "guild-1" }),
+        transform: (current) => ({ ...current, paused: false })
+      });
+      const live = await bootAgain(storage);
+      try {
+        await until(() => live.discord.sent.length === 1, "resumed reply once unpaused");
+      } finally {
+        await live.runtime.stop();
+      }
+    });
+
+    it("review I1: restart resume never resurrects a deleted server from its leftover history folder", async () => {
+      const { storage } = await interruptMidReply((runtime) => runtime.stop());
+      const serverDir = path.join(storage.dataRoot, "user", "servers", "guild-1");
+      await rm(serverFilePath(storage));
+      // history (and sessions) remain, server.json is gone: the server was deleted/departed
+      const next = await bootAgain(storage);
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        expect(next.discord.sent).toEqual([]);
+        await expect(readFile(serverFilePath(storage), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+        expect((await import("node:fs/promises")).stat(serverDir)).resolves.toBeDefined();
+      } finally {
+        await next.runtime.stop();
+      }
+    });
+
+    it("spec 9.7: restart resume skips channels without enabled waifus", async () => {
+      const { storage } = await interruptMidReply((runtime) => runtime.stop());
+      await storage.updateRevisionedJson({
+        resourceKey: "server:guild-1",
+        relativePath: "user/servers/guild-1/server.json",
+        schema: ServerConfigSchema,
+        fallback: ServerConfigSchema.parse({ ...createRevisionedBase(), guildId: "guild-1" }),
+        transform: (current) => ({
+          ...current,
+          channels: { ...current.channels, "channel-1": { ...current.channels["channel-1"]!, enabledWaifuIds: [] } }
+        })
+      });
+      const next = await bootAgain(storage);
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        expect(next.discord.sent).toEqual([]);
+      } finally {
+        await next.runtime.stop();
       }
     });
 
@@ -8210,7 +8295,7 @@ describe("RuntimeOrchestrator", () => {
       expect(capturedTail).not.toContain("<wake>");
       const session = await readSession(storage);
       expect((Date.parse(session.scheduledRetriggerAt!) - before) / 1000).toBeLessThan(300);
-      const history = await storage.readJson("user/orchestrator/history.json", OrchestratorHistoryFileSchema);
+      const history = await readTestHistory(storage);
       expect(session.scheduledRetrigger).toEqual({ source: "no_reply", seconds: 200, decisionId: history.decisions[0].id });
     });
 
@@ -9409,14 +9494,37 @@ async function seedRuntimeConfig(storage: StorageService, orchestratorConfig: Re
   );
 }
 
+function serverFilePath(storage: StorageService, guildId = "guild-1"): string {
+  return path.join(storage.dataRoot, "user", "servers", guildId, "server.json");
+}
+
+/** Decision history is per guild (spec 9.3): the tests' decisions live under guild-1 unless they say otherwise. */
+async function readTestHistory(storage: StorageService, guildId = "guild-1") {
+  return readOrchestratorHistoryForGuild(storage, guildId);
+}
+
+async function writeTestHistory(storage: StorageService, file: OrchestratorHistoryFile) {
+  const byGuild = new Map<string, OrchestratorHistoryFile["decisions"]>();
+  for (const decision of file.decisions) {
+    const guildId = decision.guildId ?? "guild-1";
+    byGuild.set(guildId, [...(byGuild.get(guildId) ?? []), decision]);
+  }
+  for (const [guildId, decisions] of byGuild) {
+    await storage.writeJson(
+      decisionHistoryResourceKey(guildId),
+      decisionHistoryPath(guildId),
+      OrchestratorHistoryFileSchema,
+      { ...file, decisions }
+    );
+  }
+}
+
 async function seedOrchestratorHistory(
   storage: StorageService,
   decisions: Array<Record<string, unknown>>
 ) {
-  await storage.writeJson(
-    "orchestrator:history",
-    "user/orchestrator/history.json",
-    OrchestratorHistoryFileSchema,
+  await writeTestHistory(
+    storage,
     OrchestratorHistoryFileSchema.parse(createEmptyRevisionedFile({ decisions }))
   );
 }
