@@ -570,6 +570,8 @@ export type ForgetUserResult = {
   dmStates: number;
   dmLimits: number;
   cachedImages: number;
+  /** Parts of the DM/archive job that did not finish (HTTP 202): retried at the next start unless `retried` is false. */
+  pending?: Array<{ part: string; error?: string; failures: number; retried: boolean }>;
 };
 
 export type ProviderCredentialsBody = {
