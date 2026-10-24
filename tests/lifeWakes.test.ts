@@ -420,6 +420,56 @@ describe("guards in order (§4.4, §4.5)", () => {
     expect(await reasons(w, "aria")).toEqual(["mention", "mention"]);
   });
 
+  it("combined guards apply in order: the first that matches decides", async () => {
+    const sleeping = { sleep: { enabled: true, start: "13:00", end: "15:00" }, busy: [] };
+    const w = await world({
+      waifus: [
+        {
+          id: "aria",
+          name: "Aria",
+          botId: "aria-bot",
+          availability: sleeping,
+          life: { dailyBudgetUsd: 0.5 },
+          dm: { allowDms: true, rateLimit: { maxReplies: 1, windowMinutes: 60 }, notifyWhenLimited: true, limitNotice: "", sleepNotice: "zzz" }
+        }
+      ],
+      config: (config) => ({ ...config, life: { ...config.life, maxWakesPerUserPerHour: 1 } })
+    });
+    const day = w.clock.now().toISOString().slice(0, 10);
+    await mkdir(path.join(w.root, "user/usage"), { recursive: true });
+    await appendFile(path.join(w.root, "user/usage", `${day}.jsonl`), `${JSON.stringify({ at: w.clock.now().toISOString(), waifuId: "aria", purpose: "life", costUsd: 0.6 })}\n`);
+    // 2 before 4: a rate-limited DM user gets the limit notice, never the sleep notice; nothing is deferred.
+    await updateDmLimit(w.storage, KEVIN, "aria", (current) => ({ ...current, replyTimestamps: [w.clock.now().toISOString()] }));
+    const dm = w.discord.post(dmOf("aria"), "are you there?");
+    await w.cast.onDirectMessage({ waifuId: "aria", botId: "aria-bot", userId: KEVIN, channelId: "dm", messageId: dm.id, createdAt: dm.createdAt });
+    w.cast.intake.flushDms();
+    await w.cast.settle();
+    expect(w.discord.sent.map((sent) => sent.content)).not.toContain("zzz");
+    expect(w.discord.sent).toHaveLength(1);
+    expect((await queued(w, "aria")).deferred.places[`dm_${KEVIN}_aria`]).toBeUndefined();
+    // 4 before 5: asleep and over budget, a mention waits for her morning under "sleep".
+    await say(w, "<@aria> one", { mentions: { [ARIA_BOT]: "Aria" } });
+    let queue = await queued(w, "aria");
+    expect(queue.deferred.reason).toBe("sleep");
+    expect(queue.deferred.places[ROOM_KEY]).toMatchObject({ mentions: 1 });
+    // 3 before 4: past the per-user limit the next mention is a quiet line, not another deferred one.
+    await say(w, "<@aria> two", { mentions: { [ARIA_BOT]: "Aria" } });
+    queue = await queued(w, "aria");
+    expect(queue.deferred.places[ROOM_KEY]).toMatchObject({ mentions: 1 });
+    expect(queue.quiet).toEqual([{ userId: KEVIN, name: "Kevin", count: 1, placeKey: ROOM_KEY }]);
+    // 1 before everything, the owner's wake included: a paused server drops it.
+    await w.storage.updateRevisionedJson({
+      resourceKey: `server:${GUILD}`,
+      relativePath: `user/servers/${GUILD}/server.json`,
+      schema: ServerConfigSchema,
+      fallback: undefined as never,
+      transform: (server) => ({ ...server, paused: true })
+    });
+    expect(await w.cast.router.route("aria", { id: newWakeId(), reason: "owner", note: "x", at: w.clock.now().toISOString() }, { guildId: GUILD })).toBe("dropped");
+    // Outside that server the owner skips 3–6: queued despite sleep, budget and the user limit.
+    expect(await w.cast.ownerWake("aria", "test")).toBe("queued");
+  });
+
   it("6. the loop guard counts each waifu message once, however many waifus it wakes (M16)", async () => {
     const w = await world({ config: (config) => ({ ...config, life: { ...config.life, maxWaifuTriggeredTurns: 1 } }) });
     const wake = (messageId: string) => ({ id: newWakeId(), reason: "mention" as const, placeKey: ROOM_KEY, waifuAuthored: true, messageId, fromUserId: MINA_BOT, fromName: "Mina", at: w.clock.now().toISOString() });

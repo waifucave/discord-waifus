@@ -13,6 +13,8 @@ export type ServerTurn = {
   text?: string;
   toolCalls?: Array<{ name: string; input: unknown }>;
   outputTokens?: number;
+  /** Start the stream and never finish it (the caller aborts: a pause, a shutdown). */
+  hang?: boolean;
 };
 
 export type Exchange = { body: WireBody; usage: CacheUsage; turn: ServerTurn; at: number };
@@ -53,6 +55,11 @@ export class FakeAnthropic {
         const turn = this.next(body);
         this.exchanges.push({ body, usage, turn, at: this.now() });
         response.writeHead(200, { "content-type": "text/event-stream" });
+        if (turn.hang) {
+          // Only the opening frame; the connection stays open until the client goes away.
+          response.write(this.stream(body, usage, {}).split("\n\n")[0] + "\n\n");
+          return;
+        }
         response.end(this.stream(body, usage, turn));
       });
     });

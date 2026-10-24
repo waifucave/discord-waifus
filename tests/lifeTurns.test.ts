@@ -5,7 +5,7 @@ import { appendFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { readLifeFile, readLifeLog, readLifeState, updateLifeState } from "../src/life/lifeStore.js";
-import { FOLLOW_UP_NOTE, REFUSED_RESULT, UNSENT_REPLY_NOTE } from "../src/life/lifeLoop.js";
+import { CUT_OFF_RESULT, FOLLOW_UP_NOTE, REFUSED_RESULT, UNSENT_REPLY_NOTE } from "../src/life/lifeLoop.js";
 import { enqueueWake, newWakeId } from "../src/life/wakeQueue.js";
 import { lifeLocks } from "../src/life/paths.js";
 import { ModelClient } from "../src/models/client.js";
@@ -195,6 +195,68 @@ describe("turn endings", () => {
     expect(w.anthropic.calls).toHaveLength(1);
     release();
     await Promise.all([held, aria]);
+    expect(w.anthropic.calls).toHaveLength(2);
+  });
+
+  it("a length stop: a cut-off tool call gets an error result and the turn goes on; cut-off text ends the turn", async () => {
+    const cutOff: ProviderEvent[] = [
+      ...toolTurn([{ name: "send_message", input: { place: "bake-club/#general", text: "a very long answ" }, id: "call_cut" }]).filter((event) => event.type !== "done"),
+      { type: "done", stopReason: "max_tokens" } as ProviderEvent
+    ];
+    const textCut: ProviderEvent[] = [...textTurn("I was going to say").filter((event) => event.type !== "done"), { type: "done", stopReason: "max_tokens" } as ProviderEvent];
+    const w = await lifeWorld(roots, { scripts: script(cutOff, textCut) });
+    vi.spyOn(w.cast.life("aria"), "poke").mockImplementation(() => undefined);
+    await reminder(w, "x");
+    await w.cast.life("aria").runNow();
+    expect(w.anthropic.calls).toHaveLength(2);
+    expect(w.discord.sent).toEqual([]);
+    const state = await readLifeState(w.storage, "aria");
+    const log = await readLifeLog(w.storage, "aria", state.epoch);
+    const results = log.find((line) => line.kind === "tool_results")!;
+    expect((results.message as { content: unknown[] }).content[0]).toEqual({ type: "tool_result", tool_use_id: "call_cut", content: CUT_OFF_RESULT, is_error: true });
+    expect(log[log.length - 1]!.kind).toBe("assistant");
+    expect(state.status).toBe("idle");
+  });
+
+  it("a turn past life.maxTurnMs ends with the cap line after its round", async () => {
+    let w!: LifeWorld;
+    w = await lifeWorld(roots, {
+      config: (config) => ({ ...config, life: { ...config.life, maxTurnMs: 30_000 } }),
+      scripts: [
+        () => {
+          w.clock.advance(31_000);
+          return toolTurn([{ name: "list_places", input: {} }]);
+        },
+        () => textTurn("should not run")
+      ]
+    });
+    vi.spyOn(w.cast.life("aria"), "poke").mockImplementation(() => undefined);
+    await reminder(w, "x");
+    await w.cast.life("aria").runNow();
+    expect(w.anthropic.calls).toHaveLength(1);
+    expect(JSON.stringify((await lastLine(w)).message)).toContain("[system] turn ended: max turn time");
+  });
+
+  it("a failed turn logs the error, keeps its wakes consumed and follows up once after 60 s", async () => {
+    const w = await lifeWorld(roots, {
+      scripts: [() => errorTurn({ code: "server_error", status: 500, message: "upstream exploded", retryable: false } as never), () => textTurn("following up")]
+    });
+    vi.spyOn(w.cast.life("aria"), "poke").mockImplementation(() => undefined);
+    await mentionWake(w, "w-fail");
+    await w.cast.life("aria").runNow();
+    expect(JSON.stringify((await lastLine(w)).message)).toContain("[system] error:");
+    expect(await queuedIds(w)).toEqual([]);
+    expect((await readLifeState(w.storage, "aria")).failedTurn).toMatchObject({ followUpDone: false });
+    // Not yet due.
+    await w.cast.life("aria").runNow();
+    expect(w.anthropic.calls).toHaveLength(1);
+    w.clock.advance(61_000);
+    await w.cast.life("aria").runNow();
+    expect(JSON.stringify(w.anthropic.calls[1]!.request.messages)).toContain(FOLLOW_UP_NOTE.slice(0, 30));
+    expect((await readLifeState(w.storage, "aria")).failedTurn?.followUpDone).toBe(true);
+    // Once.
+    w.clock.advance(61_000);
+    await w.cast.life("aria").runNow();
     expect(w.anthropic.calls).toHaveLength(2);
   });
 

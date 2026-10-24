@@ -1052,11 +1052,15 @@ upgrades each host by hand. Downgrade is unsupported.
   `nativeState` is sent byte-identically, and `thinkingBlocksDropped` stays 0 except on an epoch's
   first call (kept turns are stripped, §5.6).
 - **Budget inside a turn**: a turn that grows past `life.maxContextTokens` is compacted before the
-  next call, never sent.
+  next call, never sent: measured by the provider, no sent request exceeds the budget by more than
+  the token calibration's lag (characters / 3.5 times an EMA of measured / estimated; 10% in the
+  test, whose turn climbs to about 92% of the budget). The first call of a new epoch reports
+  exactly the thinking blocks its kept turns lost on the wire.
 - **Images**: an image re-read in the same epoch renders as text; per-epoch count and byte caps;
   a pinned image that disappears forces a compaction.
-- **Prefix stability**: every request is a byte prefix of the next within an epoch; exactly one
-  system message.
+- **Prefix stability**: every request is a prefix of the next within an epoch, block by block (a
+  message at a time while no user messages are joined, §5.4), through folded wakes, interrupted
+  turns and inline images; exactly one system message.
 - **Crash repair**: a crash between tool call and result, and between a Discord send and its result,
   recovers without a duplicate send; boot catch-up within the window; late reminders fire once.
 - **Wakes**: every reason in §4.1; waifu authors never reach the detector; stagger; guard order
