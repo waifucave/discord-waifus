@@ -240,8 +240,8 @@ export const NeedsReviewResponseSchema = z.object({ waifuId: z.string(), items: 
 
 export const WakeResponseSchema = z.object({
   waifuId: z.string(),
-  /** queued: a turn starts shortly. deferred: waits in her queue. dropped: paused or disabled. */
-  outcome: z.enum(["queued", "deferred", "dropped", "merged", "queued_offline"]),
+  /** queued: a turn starts shortly. deferred: she is asleep or over budget. quiet: merged into a queued line. dropped: paused or disabled. queued_offline: Discord is offline; it waits in her queue. */
+  outcome: z.enum(["queued", "deferred", "quiet", "dropped", "queued_offline"]),
   wakeId: z.string().optional()
 });
 

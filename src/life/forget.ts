@@ -42,6 +42,7 @@
 // could not run because no cast runtime was up (Discord offline), stays queued and runs when her
 // life next starts.
 
+import { createHash } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import type { Logger } from "../backend/logger.js";
@@ -564,6 +565,47 @@ export async function recordNeedsReview(storage: StorageService, waifuId: string
   await updateNeedsReview(storage, waifuId, (items) =>
     [...items.filter((item) => !fresh.has(reviewKey(item))), ...[...fresh.values()].map((line) => ({ at: at.toISOString(), source, ...line }))].slice(-MAX_REVIEW_FILE)
   );
+}
+
+/** A review line as the dashboard shows it: `id` (a hash of where + line) names it for dismissal. */
+export type NeedsReviewItem = { id: string; at: string; source: string; where: string; line: string };
+
+function reviewItemId(item: unknown): string {
+  return createHash("sha256").update(reviewKey(item)).digest("hex").slice(0, 16);
+}
+
+/** The owner's review lines (newest last). A missing or unreadable file reads as none. */
+export async function readNeedsReview(storage: StorageService, waifuId: string): Promise<NeedsReviewItem[]> {
+  let raw: string;
+  try {
+    raw = await readFile(storage.dataPath(path.join(lifeDir(waifuId), NEEDS_REVIEW_FILE)), "utf8");
+  } catch {
+    return [];
+  }
+  let items: unknown[] = [];
+  try {
+    const parsed = JSON.parse(raw) as { items?: unknown };
+    if (Array.isArray(parsed.items)) items = parsed.items;
+  } catch {
+    return [];
+  }
+  return items.flatMap((item): NeedsReviewItem[] => {
+    if (!item || typeof item !== "object") return [];
+    const record = item as Record<string, unknown>;
+    if (typeof record.where !== "string" || typeof record.line !== "string") return [];
+    return [{ id: reviewItemId(item), at: typeof record.at === "string" ? record.at : "", source: typeof record.source === "string" ? record.source : "", where: record.where, line: record.line }];
+  });
+}
+
+/** The owner dismissed a review line. Returns whether it was there. */
+export async function dismissNeedsReview(storage: StorageService, waifuId: string, id: string): Promise<boolean> {
+  let removed = false;
+  await updateNeedsReview(storage, waifuId, (items) => {
+    const kept = items.filter((item) => reviewItemId(item) !== id);
+    removed = kept.length !== items.length;
+    return kept;
+  });
+  return removed;
 }
 
 /** Forget (step 3): earlier review lines that carry the person go. Returns how many. */

@@ -45,7 +45,7 @@ import {
   WaifuConfigSchema,
   createEmptyRevisionedFile
 } from "../shared/schemas/domain.js";
-import { UpdateAppConfigBodySchema, type AppConfig } from "../shared/schemas/config.js";
+import { UpdateAppConfigBodySchema, type AppConfig, type UpdateAppConfigBody } from "../shared/schemas/config.js";
 import {
   CreateWaifuBodySchema as CreateWaifuBodySchemaShared,
   PeopleForgetBodySchema as PeopleForgetBodySchemaShared,
@@ -66,6 +66,8 @@ import { onCapturedTrafficForgotten, recentQueries, recentReplies, subscribeQuer
 import { listDocs, readDoc } from "./docsKb.js";
 import { registerAssistantRoutes } from "./assistant/routes.js";
 import { registerDmRoutes } from "./dms.js";
+import { registerLifeRoutes } from "./lifeRoutes.js";
+import { registerCastRoutes } from "./castRoutes.js";
 import { computeDmEligibility } from "../orchestration/dm/dmStore.js";
 import { assertSafeId, assertSnowflakeId } from "./ids.js";
 import {
@@ -401,11 +403,18 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     return { scope, dismissed: await clearModelWarnings(options.dataRoot, scope) };
   });
 
-  app.get("/api/runtime", async (request) => {
-    const cast = options.runtimeControl?.getCastRuntime?.() ?? options.castRuntime;
+  const currentCast = () => options.runtimeControl?.getCastRuntime?.() ?? options.castRuntime;
+  /** Live owner notices: permission warnings, Living cast notices, forget parts given up. */
+  const liveNotices = async (): Promise<string[]> => {
+    const cast = currentCast();
     // An owner forget part given up after three tries stays a notice until the person is forgotten again.
     const forgetNotices = await forgetJobNotices(storage).catch(() => [] as string[]);
-    const live = [...(cast?.permissionWarnings.list() ?? []), ...(cast?.cast?.notices.list() ?? []), ...forgetNotices];
+    return [...(cast?.permissionWarnings.list() ?? []), ...(cast?.cast?.notices.list() ?? []), ...forgetNotices];
+  };
+
+  app.get("/api/runtime", async (request) => {
+    const cast = currentCast();
+    const live = await liveNotices();
     // Guild directory status (spec 9.6): is the member list endpoint usable, when did it last refresh.
     const directoryStatus = (options.directory ?? cast?.directory)?.status() ?? {
       memberListAvailable: null,
@@ -440,8 +449,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     const config = await loadAppConfig(options.dataRoot);
     return request.principal.kind === "remote_device" ? remoteAppConfig(config) : config;
   });
-  app.put("/api/config", async (request) => {
-    const patch = UpdateAppConfigBodySchema.parse(request.body);
+  const applyConfigPatch = async (request: FastifyRequest, patch: UpdateAppConfigBody) => {
     const currentConfig = await loadAppConfig(options.dataRoot);
     if (
       request.principal.kind === "remote_device"
@@ -472,6 +480,10 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
       await options.runtimeControl?.reload("config-updated");
     }
     publishGlobalEvent("runtime", structuredClone(options.runtime));
+    return saved;
+  };
+  app.put("/api/config", async (request) => {
+    const saved = await applyConfigPatch(request, UpdateAppConfigBodySchema.parse(request.body));
     return request.principal.kind === "remote_device" ? remoteAppConfig(saved) : saved;
   });
 
@@ -858,6 +870,9 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     storage,
     runtime: () => options.runtimeControl?.getCastRuntime?.() ?? options.castRuntime
   });
+  // Living cast §14.1: lives, usage, search, the detector, forget jobs and owner notices.
+  registerLifeRoutes(app, { storage, cast: () => currentCast()?.cast, isPaused: () => options.runtime.paused });
+  registerCastRoutes(app, { storage, dataRoot: options.dataRoot, isPaused: () => options.runtime.paused, liveNotices, applyConfigPatch });
 
   app.get("/api/servers/:guildId/threads", async (request) => {
     const { guildId } = parseIdParam(request.params, "guildId");
