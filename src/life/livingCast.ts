@@ -259,19 +259,31 @@ export class LivingCast {
     }
     await this.loadDmFloors();
     if (!this.o.manualScheduler) this.scheduler.start();
-    if (!deps.isPaused()) await this.catchUpAndResume();
+    const pausedAt = this.marks.pausedAt;
+    if (deps.isPaused()) {
+      // Booting paused without a recorded start: the resume catches up the boot window it skipped.
+      if (!pausedAt) await this.marks.setPausedAt(new Date(deps.now().getTime() - deps.config().discord.dm.resumeWindowMinutes * 60_000)).catch(() => undefined);
+    } else {
+      // A pause that ended with the process (a reload, a crash): catch up from its start.
+      await this.catchUpAndResume(pausedAt ? { since: pausedAt } : {});
+      if (pausedAt) await this.marks.setPausedAt(undefined).catch(() => undefined);
+    }
   }
 
   /**
    * Runs queued scrubs (her life lock held by the caller) and clears the ones that finished. The
    * identity is the stored one (collected before the DM data went) plus what is known now.
    */
-  private async runPendingScrubs(waifu: WaifuConfig, scrubs: readonly PendingScrub[], source: string): Promise<ForgetScrubResult[]> {
+  private async runPendingScrubs(waifu: WaifuConfig, scrubs: readonly PendingScrub[], source: string, signal?: AbortSignal): Promise<ForgetScrubResult[]> {
     const done: PendingScrub[] = [];
     const results: ForgetScrubResult[] = [];
     for (const scrub of scrubs) {
+      // A shutdown or pause stops between scrubs; the rest stay queued (durable) for next time.
+      if (signal?.aborted) break;
       try {
         const identity = mergeIdentity(await collectIdentity(this.deps, waifu, scrub.userId), scrub);
+        // A boot-time owner scrub or a queued DM forget: her DM's intake mark names the person (F10).
+        await this.dropDmMark(waifu.id, scrub.userId);
         if (scrub.source === "dm_forget_conversation") {
           await this.forgetConversation(waifu, identity);
           done.push(scrub);
@@ -303,11 +315,14 @@ export class LivingCast {
 
   async stop(): Promise<void> {
     this.stopped = true;
-    // Maintenance runs are aborted and waited for, so none overlaps the next runtime's (M3).
-    await this.scheduler.stop();
     this.intake.close();
     this.router.close();
+    // Everything is aborted first, then awaited: a maintenance run may be waiting for her life lock
+    // behind a turn, and only the turn's abort lets it go (N1). Maintenance runs are waited for, so
+    // none overlaps the next runtime's (M3).
+    this.scheduler.abortMaintenance();
     for (const life of this.lives.values()) life.stop();
+    await this.scheduler.stop();
     await Promise.all([...this.lives.values()].map((life) => life.whenIdle()));
     while (this.background.size > 0) await Promise.allSettled([...this.background]);
     await this.intake.settle();
@@ -318,16 +333,18 @@ export class LivingCast {
 
   /** Explicit pause: abort in-flight calls (maintenance too); queues stay. */
   pause(): void {
-    this.pausedAt ??= this.deps.now();
+    this.pausedAt ??= this.marks.pausedAt ?? this.deps.now();
+    // Kept on disk, so a reload or a restart while paused still catches up from here (N4).
+    void this.track(this.marks.setPausedAt(this.pausedAt).catch(() => undefined));
     this.scheduler.abortMaintenance();
     for (const life of this.lives.values()) life.abort("pause");
   }
 
   /** After a resume: catch up what arrived while paused (from the pause start) and restart queued lives. */
   resume(): void {
-    const since = this.pausedAt;
+    const since = this.pausedAt ?? this.marks.pausedAt;
     this.pausedAt = undefined;
-    void this.track(this.catchUpAndResume(since ? { since } : {}));
+    void this.track(this.catchUpAndResume(since ? { since } : {}).then(() => this.marks.setPausedAt(undefined).catch(() => undefined)));
   }
 
   /**
@@ -439,10 +456,12 @@ export class LivingCast {
 
   /** Nightly maintenance plus pending scrubs (the scheduler holds her life lock). */
   private async maintain(waifu: WaifuConfig, signal: AbortSignal): Promise<void> {
+    // Aborted while it waited for her life lock (a shutdown, a pause, a reload): nothing starts (N1).
+    if (signal.aborted) return;
     const model = lifeModelOf(this.deps, waifu);
     if (!model) return;
     const pending = await readPendingScrubs(this.deps.storage, waifu.id, { logger: this.deps.logger });
-    if (pending.length > 0) await this.runPendingScrubs(waifu, pending, "pending");
+    if (pending.length > 0 && !signal.aborted) await this.runPendingScrubs(waifu, pending, "pending", signal);
     if (signal.aborted) return;
     await runMaintenance(this.deps, { waifu, model, signal });
   }
@@ -477,7 +496,15 @@ export class LivingCast {
     // A DM user's forget runs at most once per 6 hours (either scope); inside the window it is only queued.
     const rateLimited = o.source === "dm" && insideDmScrubWindow(await readLifeState(deps.storage, o.waifuId), o.userId, now);
     const scrub = await queuePendingScrub(deps.storage, o.waifuId, o.userId, now, { source, names: identity.names, sharedNames: identity.sharedNames, logger: deps.logger });
+    // The DM data goes now (every scope, rate-limited or not): so does the DM's intake mark (F10).
+    await this.dropDmMark(o.waifuId, o.userId);
     return { waifu, identity, scrub, scope: o.scope, source: o.source, rateLimited };
+  }
+
+  /** Forget: the intake mark of her DM with this person, written at once (F10). */
+  private async dropDmMark(waifuId: string, userId: string): Promise<void> {
+    const dmKey = conversationKey({ kind: "dm", waifuId, userId });
+    await this.marks.drop((key) => key === dmKey).catch(() => undefined);
   }
 
   /**
@@ -509,8 +536,7 @@ export class LivingCast {
         const { complete, ...result } = await scrubPerson(deps, waifu, identity, { source: prepared.source });
         if (complete) await removePendingScrubs(deps.storage, waifu.id, [scrub], { logger: deps.logger, now: deps.now() });
         // Her DM's intake mark names the person (the DM floor keeps old messages out from now on).
-        const dmKey = conversationKey({ kind: "dm", waifuId: waifu.id, userId: identity.userId });
-        this.marks.drop((key) => key === dmKey);
+        await this.dropDmMark(waifu.id, identity.userId);
         return result;
       })
       .finally(() => {
@@ -531,7 +557,10 @@ export class LivingCast {
    * waifu with a life folder or notes, each with the identity collected now.
    */
   async prepareOwnerForget(userId: string): Promise<PreparedOwnerForget> {
-    return queueOwnerScrubs(this.deps.storage, userId, this.deps.now(), { logger: this.deps.logger, identityOf: (waifu) => collectIdentity(this.deps, waifu, userId) });
+    const prepared = await queueOwnerScrubs(this.deps.storage, userId, this.deps.now(), { logger: this.deps.logger, identityOf: (waifu) => collectIdentity(this.deps, waifu, userId) });
+    // Every DM intake mark of the person, whatever waifu (F10).
+    await this.marks.dropUser(userId).catch(() => undefined);
+    return prepared;
   }
 
   /**

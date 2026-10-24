@@ -140,6 +140,18 @@ export async function collectPlaces(storage: StorageService, waifuId: string): P
   return [...(await cached)];
 }
 
+/**
+ * Drops this turn's cached place list (N2): a place that appeared during the turn (someone DMed
+ * her for the first time, a channel was cast) is read the next time it is asked for. True when a
+ * cache was in use (so a second look can find something new).
+ */
+export function refreshPlaces(storage: StorageService, waifuId: string): boolean {
+  const cache = placeCache.getStore();
+  if (!cache) return false;
+  cache.delete(`${storage.dataRoot}\0${waifuId}`);
+  return true;
+}
+
 async function readPlaces(storage: StorageService, waifuId: string): Promise<PlaceInfo[]> {
   const places: PlaceInfo[] = [];
   for (const guildId of (await listServerIds(storage)).sort()) {
@@ -213,11 +225,19 @@ export type ResolvedPlace = PlaceInfo & { handle: string };
  */
 export async function resolvePlace(storage: StorageService, waifuId: string, input: string): Promise<ResolvedPlace | undefined> {
   const wanted = input.trim().replace(/^<|>$/g, "");
-  const places = await placesWithHandles(storage, waifuId);
-  const handles = await readLifeFile(storage, waifuId, "handles");
-  const key = handles.handles[wanted] ?? handles.handles[wanted.toLowerCase()] ?? (parseConversationKey(wanted) ? wanted : undefined);
-  if (!key) return undefined;
-  return places.find((place) => place.placeKey === key);
+  const find = async () => {
+    const places = await placesWithHandles(storage, waifuId);
+    const handles = await readLifeFile(storage, waifuId, "handles");
+    const key = handles.handles[wanted] ?? handles.handles[wanted.toLowerCase()] ?? (parseConversationKey(wanted) ? wanted : undefined);
+    return key ? places.find((place) => place.placeKey === key) : undefined;
+  };
+  // A miss on this turn's cached list looks again at the current one (a place new since the turn began).
+  return (await find()) ?? (refreshPlaces(storage, waifuId) ? await find() : undefined);
+}
+
+/** The label a notification uses for a place that is not (or no longer) hers: never the raw key. */
+export function unknownPlaceLabel(placeKey: string): string {
+  return placeKey.startsWith("dm_") ? "dm/someone" : "a channel you are not in";
 }
 
 /** The handle of a placeKey (assigning one when the place is hers), else a readable fallback. */
@@ -225,8 +245,8 @@ export async function handleOf(storage: StorageService, waifuId: string, placeKe
   const handles = await readLifeFile(storage, waifuId, "handles");
   const known = handles.primary[placeKey];
   if (known) return known;
-  const places = await placesWithHandles(storage, waifuId);
-  return places.find((place) => place.placeKey === placeKey)?.handle ?? placeKey;
+  const lookup = async () => (await placesWithHandles(storage, waifuId)).find((place) => place.placeKey === placeKey)?.handle;
+  return (await lookup()) ?? (refreshPlaces(storage, waifuId) ? await lookup() : undefined) ?? unknownPlaceLabel(placeKey);
 }
 
 /** Block B's `<places>` (§5.4): her places at epoch start, handle and name. */

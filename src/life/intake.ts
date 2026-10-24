@@ -87,6 +87,8 @@ type Burst = {
 };
 
 type DmBurst = { messageIds: string[]; userName?: string };
+/** Why intake still holds a message back from the mark: its routing (wakes, a stagger) or its burst. */
+type HoldKind = "routing" | "burst";
 
 export class Intake {
   private readonly detectorDebounce: KeyedDebouncer<string>;
@@ -108,11 +110,54 @@ export class Intake {
     return false;
   }
 
-  /** The intake high-water mark moves past routed messages (not while the app is paused). */
+  /**
+   * Messages intake took but has not finished routing, per place and id (a count: its routing, its
+   * burst). The mark never passes the oldest of them (N3): a staggered wake, a debouncing burst or a
+   * running detector call that a reload drops is taken again by the next catch-up.
+   */
+  private readonly holds = new Map<string, Map<string, Set<HoldKind>>>();
+  /** Routed messages whose mark waits for an older held message. */
+  private readonly routed = new Map<string, Set<string>>();
+
+  private hold(placeKey: string, messageId: string, kind: HoldKind): void {
+    const held = this.holds.get(placeKey) ?? new Map<string, Set<HoldKind>>();
+    const kinds = held.get(messageId) ?? new Set<HoldKind>();
+    kinds.add(kind);
+    held.set(messageId, kinds);
+    this.holds.set(placeKey, held);
+  }
+
+  private release(placeKey: string, messageIds: readonly string[], kind: HoldKind): void {
+    const held = this.holds.get(placeKey);
+    if (!held) return;
+    for (const id of messageIds) {
+      const kinds = held.get(id);
+      if (!kinds) continue;
+      kinds.delete(kind);
+      if (kinds.size === 0) held.delete(id);
+    }
+    if (held.size === 0) this.holds.delete(placeKey);
+    this.mark(placeKey, []);
+  }
+
+  /**
+   * The intake high-water mark moves past routed messages, never past one still held and never
+   * after a close (a wake the closing router dropped was not routed) or while the app is paused.
+   */
   private mark(placeKey: string, messageIds: readonly string[]): void {
-    if (!this.o.marks || this.deps.isPaused() || messageIds.length === 0) return;
-    const newest = messageIds.reduce((a, b) => (compareIds(a, b) >= 0 ? a : b));
-    this.o.marks.advance(placeKey, newest);
+    if (!this.o.marks || this.closed || this.deps.isPaused()) return;
+    const waiting = this.routed.get(placeKey) ?? new Set<string>();
+    for (const id of messageIds) waiting.add(id);
+    if (waiting.size === 0) return;
+    const held = [...(this.holds.get(placeKey)?.keys() ?? [])];
+    const oldestHeld = held.length > 0 ? held.reduce((a, b) => (compareIds(a, b) <= 0 ? a : b)) : undefined;
+    const markable = [...waiting].filter((id) => oldestHeld === undefined || compareIds(id, oldestHeld) < 0);
+    if (markable.length > 0) {
+      this.o.marks.advance(placeKey, markable.reduce((a, b) => (compareIds(a, b) >= 0 ? a : b)));
+      for (const id of markable) waiting.delete(id);
+    }
+    if (waiting.size > 0) this.routed.set(placeKey, waiting);
+    else this.routed.delete(placeKey);
   }
 
   constructor(private readonly o: IntakeOptions) {
@@ -194,6 +239,31 @@ export class Intake {
     const human = !raw.authorIsBot && !input.authorIsWaifu;
     const waifus = await this.castWaifus(input.castWaifuIds);
     if (waifus.length === 0) return;
+    this.hold(placeKey, raw.id, "routing");
+    let outcome: { staggered: Promise<unknown>[]; direct: boolean };
+    try {
+      outcome = await this.routeGuildMessage(input, { raw, human, waifus, placeKey, conversation });
+    } catch (error) {
+      this.release(placeKey, [raw.id], "routing");
+      throw error;
+    }
+    // Its routing hold goes once every wake for it is routed (a staggered one waits on its timer):
+    // a waifu's message or a direct one is then marked (a direct burst never reaches the detector).
+    const routedAll = () => {
+      if (!human || outcome.direct) this.mark(placeKey, [raw.id]);
+      this.release(placeKey, [raw.id], "routing");
+    };
+    if (outcome.staggered.length > 0) void this.track(Promise.allSettled(outcome.staggered).then(routedAll));
+    else routedAll();
+  }
+
+  /** The wakes of one guild message, its watches and its burst (§4.1–§4.3). */
+  private async routeGuildMessage(
+    input: GuildMessageInput,
+    o: { raw: RawDiscordMessage; human: boolean; waifus: WaifuConfig[]; placeKey: string; conversation: ConversationRef }
+  ): Promise<{ staggered: Promise<unknown>[]; direct: boolean }> {
+    const deps = this.deps;
+    const { raw, human, waifus, placeKey, conversation } = o;
     const records = await this.forgetRecords();
     // Unreadable forget records fail closed: every human message is treated as possibly forgotten.
     const removed = records.unreadable ? human : isRemovedMessage(raw, records.forgotten);
@@ -245,21 +315,23 @@ export class Intake {
     }
     // Several waifus woken by one @everyone / shared role ping are staggered by 0–20 s (§4.1).
     const sharedCount = directWakes.filter((entry) => entry.shared).length;
+    const staggered: Promise<unknown>[] = [];
     for (const entry of directWakes) {
       const stagger = entry.shared && sharedCount > 1;
       const routed = this.o.router.route(entry.waifu.id, entry.wake, { guildId: input.guildId, stagger });
       // A staggered wake waits on its own timer; it never holds up intake or the other waifus.
-      if (stagger) void this.track(routed);
+      if (stagger) staggered.push(this.track(routed));
       else await routed;
     }
-    // Routed now: a waifu's message, or a direct one (its burst never reaches the detector).
-    if (!human || directWakes.length > 0) this.mark(placeKey, [raw.id]);
-    if (!human) return;
+    const outcome = { staggered, direct: directWakes.length > 0 };
+    if (!human) return outcome;
     // Every human message joins the place's burst. A burst with any direct message in it (before or
     // after the others, M9) never reaches the detector; a waifu whose watch fired for a message in it
     // is skipped by the detector for the burst (D-c: one wake per message), others can still be picked.
     const next: Burst = this.bursts.get(placeKey) ?? { messageIds: [], direct: false, watched: [], guildId: input.guildId, channelId: input.channelId, castWaifuIds: input.castWaifuIds };
     next.messageIds.push(raw.id);
+    // A message no wake was routed for waits on its burst (fired, and its detector call answered).
+    if (directWakes.length === 0) this.hold(placeKey, raw.id, "burst");
     if (directWakes.length > 0) {
       next.direct = true;
       this.lastHumanAt.set(placeKey, raw.createdAt);
@@ -276,16 +348,21 @@ export class Intake {
       this.bursts.delete(placeKey);
       if (done) this.fireBurst(placeKey, done);
     });
+    return outcome;
   }
 
   /** A burst is done: the detector runs for it (unless direct); its messages are marked once routed. */
   private fireBurst(placeKey: string, burst: Burst): void {
     if (this.closed) return;
-    if (burst.direct) {
+    const done = () => {
       this.mark(placeKey, burst.messageIds);
+      this.release(placeKey, burst.messageIds, "burst");
+    };
+    if (burst.direct) {
+      done();
       return;
     }
-    void this.track(this.runDetector(placeKey, burst).finally(() => this.mark(placeKey, burst.messageIds)));
+    void this.track(this.runDetector(placeKey, burst).finally(done));
   }
 
   private async serverOf(guildId: string): Promise<ServerConfig | undefined> {
@@ -456,6 +533,7 @@ export class Intake {
     const key = `${event.waifuId}\u0000${event.userId}`;
     const burst = this.dmBursts.get(key) ?? { messageIds: [] };
     burst.messageIds.push(event.messageId);
+    this.hold(conversationKey({ kind: "dm", waifuId: event.waifuId, userId: event.userId }), event.messageId, "routing");
     if (event.userDisplayName) burst.userName = event.userDisplayName;
     this.dmBursts.set(key, burst);
     const debounce = deps.config().discord.debounce;
@@ -482,8 +560,12 @@ export class Intake {
       ...(burst.messageIds.length > 1 ? { count: burst.messageIds.length } : {}),
       at: deps.now().toISOString()
     };
-    await this.o.router.route(waifuId, wake, { dmUserId: userId });
-    this.mark(conversationKey(conversation), burst.messageIds);
+    try {
+      await this.o.router.route(waifuId, wake, { dmUserId: userId });
+      this.mark(conversationKey(conversation), burst.messageIds);
+    } finally {
+      this.release(conversationKey(conversation), burst.messageIds, "routing");
+    }
   }
 
   /** Fires every pending DM wake now (tests; the boot catch-up after a long pause). */

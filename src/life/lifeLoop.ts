@@ -33,7 +33,7 @@ import { appendIntent, appendLifeLog, compactIntents, readLifeFile, readLifeLog,
 import { renderNotifications, type NotificationView } from "./notifications.js";
 import { lifeLocks } from "./paths.js";
 import { selfAuthorIds } from "./people.js";
-import { handleOf, withPlaceCache } from "./places.js";
+import { collectPlaces, handleOf, refreshPlaces, withPlaceCache } from "./places.js";
 import { buildLifeRequest, estimateRequest, lifeBudget, PinnedImageMissingError } from "./request.js";
 import type { KeyedMutex, Semaphore } from "./sync.js";
 import { lifeTool } from "./tools/index.js";
@@ -225,7 +225,15 @@ export class Life {
       // cycle before it takes any wake (and the forget gets her lock right after).
       this.controller = new AbortController();
       const waiting = this.controller;
-      const release = await this.host.turns.acquire();
+      let release: () => void;
+      try {
+        release = await this.host.turns.acquire(waiting.signal);
+      } catch {
+        // Aborted while waiting for a slot: the wait ends at once, nothing was taken (N6).
+        this.controller = undefined;
+        lease?.();
+        return;
+      }
       try {
         this.compactionsThisCycle = 0;
         for (let guard = 0; guard < 8 && !this.stopped; guard += 1) {
@@ -637,6 +645,10 @@ export class Life {
     const state = await readLifeState(deps.storage, this.waifuId);
     const notices = state.pendingNotices;
     if (wakes.length === 0 && quiet.length === 0 && notices.length === 0) return [];
+    // A folded wake can name a place that is new since the turn began (a first DM): the turn's
+    // cached place list is read again, so the notification, list_places and the tools all see it (N2).
+    const cached = await collectPlaces(deps.storage, this.waifuId);
+    if (wakes.some((wake) => wake.placeKey && !cached.some((place) => place.placeKey === wake.placeKey))) refreshPlaces(deps.storage, this.waifuId);
     const view = await this.notificationView(wakes, quiet.flatMap((line) => (line.placeKey ? [line.placeKey] : [])), run.selfIds);
     const block = renderNotifications({ wakes, quiet, notices }, view);
     run.wakes.push(...wakes);

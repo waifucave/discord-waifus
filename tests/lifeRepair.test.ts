@@ -8,7 +8,7 @@ import { RESTART_NOTE, UNCERTAIN_SEND } from "../src/life/repair.js";
 import { contentDigest } from "../src/life/tools/messages.js";
 import type { LifeLogLine } from "../src/shared/schemas/life.js";
 import { textTurn } from "./modelFakes.js";
-import { ARIA_BOT, CHANNEL, closeWorlds, dmOf, GUILD, KEVIN, lifeWorld, ROOM, ROOM_KEY, script, toolTurn, type LifeWorld } from "./lifeFixtures.js";
+import { ARIA_BOT, CHANNEL, closeWorlds, dmOf, GUILD, KEVIN, lifeWorld, MINA_BOT, ROOM, ROOM_KEY, script, toolTurn, type LifeWorld } from "./lifeFixtures.js";
 import { removeTempRoot } from "./testUtils.js";
 
 const roots: string[] = [];
@@ -188,7 +188,118 @@ describe("catch-up never takes a routed message twice (review I3)", () => {
     await w.cast.settle();
     expect((await readLifeFile(w.storage, "aria", "wakes")).immediate.map((wake) => wake.messageId)).toEqual([ping.id]);
   });
+
+  it("a reload while paused keeps the pause start: the resume still catches up from it (N4)", async () => {
+    let paused = false;
+    const w = await lifeWorld(roots, { paused: () => paused, config: (config) => ({ ...config, discord: { ...config.discord, dm: { ...config.discord.dm, resumeWindowMinutes: 10 } } }) });
+    vi.spyOn(w.cast.life("aria"), "poke").mockImplementation(() => undefined);
+    paused = true;
+    w.cast.pause();
+    w.clock.advance(5 * 60_000);
+    const ping = w.discord.post(ROOM, `<@${ARIA_BOT}> are you there?`, { mentions: { [ARIA_BOT]: "Aria" } });
+    await w.cast.onGuildMessage({ guildId: GUILD, channelId: CHANNEL, messageId: ping.id, castWaifuIds: ["aria"], authorIsWaifu: false, raw: ping });
+    // The owner saves a setting while paused: the runtime is rebuilt.
+    await w.cast.stop();
+    const restarted = w.restart();
+    vi.spyOn(restarted.life("aria"), "poke").mockImplementation(() => undefined);
+    await restarted.start();
+    w.clock.advance(2 * 3_600_000);
+    paused = false;
+    restarted.resume();
+    await restarted.settle();
+    expect((await readLifeFile(w.storage, "aria", "wakes")).immediate.map((wake) => wake.messageId)).toEqual([ping.id]);
+  });
+
+  it("a staggered @everyone wake a reload drops is taken again by the catch-up (N3)", async () => {
+    const w = await lifeWorld(roots, {
+      waifus: [
+        { id: "aria", name: "Aria", botId: "aria-bot" },
+        { id: "mina", name: "Mina", botId: "mina-bot" }
+      ],
+      options: { random: () => 0.5 }
+    });
+    for (const id of ["aria", "mina"]) vi.spyOn(w.cast.life(id), "poke").mockImplementation(() => undefined);
+    const ping = w.discord.post(ROOM, "@everyone bake sale tomorrow!", { everyone: true });
+    await w.cast.onGuildMessage({ guildId: GUILD, channelId: CHANNEL, messageId: ping.id, castWaifuIds: ["aria", "mina"], authorIsWaifu: false, raw: ping });
+    // Still inside the 10 s stagger: no mark yet. A reload drops both staggered wakes.
+    expect(w.cast.marks.get(ROOM_KEY)).toBeUndefined();
+    await w.cast.stop();
+    const restarted = w.restart({ random: () => 0 });
+    for (const id of ["aria", "mina"]) vi.spyOn(restarted.life(id), "poke").mockImplementation(() => undefined);
+    await restarted.start();
+    await restarted.settle();
+    for (const id of ["aria", "mina"]) expect((await readLifeFile(w.storage, id, "wakes")).immediate.map((wake) => [wake.reason, wake.messageId])).toEqual([["everyone", ping.id]]);
+    expect(restarted.marks.get(ROOM_KEY)).toBe(ping.id);
+  });
+
+  it("a waifu's message never moves the mark past a human message whose burst is still pending (N3)", async () => {
+    const w = await lifeWorld(roots, {
+      waifus: [
+        { id: "aria", name: "Aria", botId: "aria-bot" },
+        { id: "mina", name: "Mina", botId: "mina-bot" }
+      ]
+    });
+    for (const id of ["aria", "mina"]) vi.spyOn(w.cast.life(id), "poke").mockImplementation(() => undefined);
+    const human = w.discord.post(ROOM, "anyone know a good brownie recipe?");
+    await w.cast.onGuildMessage({ guildId: GUILD, channelId: CHANNEL, messageId: human.id, castWaifuIds: ["aria", "mina"], authorIsWaifu: false, raw: human });
+    w.clock.advance(500);
+    const fromMina = w.discord.post(ROOM, "good morning everyone", { authorId: MINA_BOT, authorName: "Mina", bot: true });
+    await w.cast.onGuildMessage({ guildId: GUILD, channelId: CHANNEL, messageId: fromMina.id, castWaifuIds: ["aria", "mina"], authorIsWaifu: true, raw: fromMina });
+    expect(w.cast.marks.get(ROOM_KEY)).toBeUndefined();
+    // A reload while the human's burst is still debouncing: the catch-up takes the human message again.
+    await w.cast.stop();
+    const restarted = w.restart();
+    const taken: string[] = [];
+    const original = restarted.intake.onGuildMessage.bind(restarted.intake);
+    vi.spyOn(restarted.intake, "onGuildMessage").mockImplementation(async (input) => {
+      taken.push(input.messageId);
+      return original(input);
+    });
+    for (const id of ["aria", "mina"]) vi.spyOn(restarted.life(id), "poke").mockImplementation(() => undefined);
+    await restarted.start();
+    expect(taken).toContain(human.id);
+  });
 });
+
+describe("intake marks and forget (F10)", () => {
+  const marksFile = async (w: LifeWorld) => (await import("node:fs/promises")).readFile(`${w.root}/app/intake-marks.json`, "utf8");
+
+  it("a DM forget, the owner's forget and a boot-time queued scrub each drop the person's DM marks at once", async () => {
+    const w = await lifeWorld(roots, {
+      waifus: [
+        { id: "aria", name: "Aria", botId: "aria-bot" },
+        { id: "mina", name: "Mina", botId: "mina-bot" }
+      ]
+    });
+    w.cast.marks.advance(`dm_${KEVIN}_aria`, "900000000000000001");
+    w.cast.marks.advance(`dm_${KEVIN}_mina`, "900000000000000002");
+    w.cast.marks.advance(ROOM_KEY, "900000000000000003");
+    await w.cast.marks.flush();
+    await mkdirLife(w, "aria");
+    await mkdirLife(w, "mina");
+    // A DM /forget conversation (also rate-limited ones): her DM's mark, at once.
+    await w.cast.prepareForget({ waifuId: "aria", userId: KEVIN, source: "dm", scope: "conversation" });
+    expect(await marksFile(w)).not.toContain(`dm_${KEVIN}_aria`);
+    expect(await marksFile(w)).toContain(`dm_${KEVIN}_mina`);
+    // The owner's forget-user: every DM mark of the person.
+    await w.cast.prepareOwnerForget(KEVIN);
+    expect(await marksFile(w)).not.toContain(KEVIN);
+    expect(await marksFile(w)).toContain(ROOM_KEY);
+    // An owner forget queued while the host was down runs at boot and drops the mark too.
+    w.cast.marks.advance(`dm_${KEVIN}_mina`, "900000000000000004");
+    await w.cast.marks.flush();
+    await w.cast.stop();
+    const restarted = w.restart();
+    await restarted.start();
+    await restarted.settle();
+    expect(await marksFile(w)).not.toContain(KEVIN);
+  });
+});
+
+/** A life folder, so the forget paths treat her as a waifu with a life. */
+async function mkdirLife(w: LifeWorld, waifuId: string): Promise<void> {
+  await updateLifeState(w.storage, waifuId, (state) => state);
+}
 
 describe("boot catch-up (§5.7)", () => {
   it("takes what arrived during downtime within the window, newer than her read cursor; queued wakes restart her", async () => {

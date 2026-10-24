@@ -37,24 +37,82 @@ async function untilCalls(w: LifeWorld, count: number): Promise<void> {
 }
 
 describe("turn endings", () => {
-  it("a wake arriving in a capped round is never folded in: it stays queued for the next turn (I1)", async () => {
+  it("a wake arriving in a capped round is never folded in: it stays queued and starts the next turn (I1)", async () => {
     let w!: LifeWorld;
+    let queuedAfterCap: string[] | undefined;
+    let cappedTail: string | undefined;
     w = await lifeWorld(roots, {
       config: (config) => ({ ...config, life: { ...config.life, maxToolRounds: 1 } }),
       scripts: [
+        // The first turn's only round: the late wake arrives while it runs (once).
         () => {
           void mentionWake(w, "w-late");
           return toolTurn([{ name: "list_places", input: {} }]);
-        }
+        },
+        // The next turn's first call: the capped turn ended with the late wake still queued.
+        (request) =>
+          (async function* () {
+            const state = await readLifeState(w.storage, "aria");
+            const log = await readLifeLog(w.storage, "aria", state.epoch);
+            cappedTail = JSON.stringify(log.filter((line) => line.turnId !== state.currentTurn?.id).at(-1)?.message);
+            queuedAfterCap = state.currentTurn?.wakeIds;
+            expect(JSON.stringify(request.messages.at(-1))).toContain("from Kevin");
+            yield* textTurn("(nothing to send)");
+          })(),
+        () => textTurn("(still nothing)")
       ]
     });
     vi.spyOn(w.cast.life("aria"), "poke").mockImplementation(() => undefined);
     await reminder(w, "first");
     await w.cast.life("aria").runNow();
-    const last = await lastLine(w);
-    expect(JSON.stringify(last.message)).toContain("[system] turn ended: max tool rounds");
-    expect(JSON.stringify(last.message)).not.toContain("<notifications>");
-    expect(await queuedIds(w)).toEqual(["w-late"]);
+    expect(cappedTail).toContain("[system] turn ended: max tool rounds");
+    expect(cappedTail).not.toContain("<notifications>");
+    expect(queuedAfterCap).toEqual(["w-late"]);
+    // Exactly the capped turn, the next turn and its unsent-reply check: no turn re-queued it.
+    expect(w.anthropic.calls).toHaveLength(3);
+    expect(await queuedIds(w)).toEqual([]);
+  });
+
+  it("a first DM folded into a running turn is a place she can read and answer at once (N2)", async () => {
+    const NOVA = "300000000000000099";
+    const novaKey = `dm_${NOVA}_aria`;
+    let w!: LifeWorld;
+    w = await lifeWorld(roots, {
+      scripts: [
+        // While her first round runs, someone DMs her for the first time.
+        () =>
+          (async function* () {
+            await w.cast.onDirectMessage({ waifuId: "aria", botId: "aria-bot", userId: NOVA, userDisplayName: "Nova", channelId: "500000000000000001", messageId: "900000000000000123", createdAt: w.clock.now().toISOString() });
+            w.cast.intake.flushDms();
+            await w.cast.intake.settle();
+            yield* toolTurn([{ name: "list_places", input: {} }]);
+          })(),
+        () => toolTurn([{ name: "read_messages", input: { place: "dm/nova" }, id: "call_read" }, { name: "send_message", input: { place: "dm/nova", text: "hi Nova!" }, id: "call_send" }, { name: "list_places", input: {}, id: "call_list" }]),
+        () => textTurn("done")
+      ]
+    });
+    vi.spyOn(w.cast.life("aria"), "poke").mockImplementation(() => undefined);
+    await reminder(w, "water the plants");
+    await w.cast.life("aria").runNow();
+    const state = await readLifeState(w.storage, "aria");
+    const log = JSON.stringify(await readLifeLog(w.storage, "aria", state.epoch));
+    // The notification names her handle for the DM, never the raw key with his id.
+    expect(log).toContain("- dm · dm/nova · from Nova");
+    expect(log).not.toContain(novaKey);
+    expect(log).not.toContain("unknown place");
+    expect(w.discord.sent).toMatchObject([{ placeKey: novaKey, content: "hi Nova!" }]);
+    const results = (await readLifeLog(w.storage, "aria", state.epoch)).flatMap((line) => ((line.message?.content as Array<{ type: string; tool_use_id?: string; content?: unknown }>) ?? []));
+    expect(JSON.stringify(results.find((block) => block.tool_use_id === "call_list")?.content)).toContain("dm/nova");
+  });
+
+  it("a notification never shows a raw place key for a place that is not hers", async () => {
+    const w = await lifeWorld(roots, { scripts: script(textTurn("hm")) });
+    vi.spyOn(w.cast.life("aria"), "poke").mockImplementation(() => undefined);
+    await enqueueWake(w.storage, "aria", { id: "w-x", reason: "dm", placeKey: "dm_300000000000000098_aria", fromUserId: "300000000000000098", fromName: "Ghost", at: w.clock.now().toISOString() });
+    await w.cast.life("aria").runNow();
+    const first = JSON.stringify(w.anthropic.calls[0]!.request.messages);
+    expect(first).toContain("dm/someone");
+    expect(first).not.toContain("dm_300000000000000098_aria");
   });
 
   it("a direct wake folded in mid-turn makes the turn direct: the unsent-reply check runs (I1)", async () => {
@@ -191,8 +249,12 @@ describe("turn endings", () => {
     const aria = w.cast.life("aria").runNow();
     await new Promise((resolve) => setTimeout(resolve, 20));
     w.cast.life("aria").abort("forget");
+    // The wait ends at once (N6): Aria is done while Mina's turn still runs, and her lock is free.
+    const ariaDone = await Promise.race([aria.then(() => "done"), new Promise((resolve) => setTimeout(() => resolve("still waiting"), 200))]);
+    expect(ariaDone).toBe("done");
+    expect(await w.cast.mutex.run(lifeLocks.life("aria"), async () => "free")).toBe("free");
     w.cast.life("mina").abort("pause");
-    await Promise.all([mina, aria]);
+    await mina;
     expect(w.anthropic.calls).toHaveLength(1);
     expect(await queuedIds(w)).toEqual(["w-aria"]);
   });

@@ -41,13 +41,30 @@ export class Semaphore {
     return this.active;
   }
 
-  async acquire(): Promise<() => void> {
+  /**
+   * A slot, or a rejection with the signal's reason when `signal` aborts first (a waiter that gave
+   * up leaves the queue; a slot handed to it after the abort is passed on).
+   */
+  async acquire(signal?: AbortSignal): Promise<() => void> {
+    if (signal?.aborted) throw signal.reason ?? new Error("aborted");
     if (this.active < Math.max(1, this.limit())) {
       this.active += 1;
       return this.releaser();
     }
     // The releasing holder hands its slot over directly (active stays counted).
-    await new Promise<void>((resolve) => this.waiting.push(resolve));
+    await new Promise<void>((resolve, reject) => {
+      const waiter = () => {
+        signal?.removeEventListener("abort", onAbort);
+        resolve();
+      };
+      const onAbort = () => {
+        const index = this.waiting.indexOf(waiter);
+        if (index >= 0) this.waiting.splice(index, 1);
+        reject(signal?.reason ?? new Error("aborted"));
+      };
+      this.waiting.push(waiter);
+      signal?.addEventListener("abort", onAbort, { once: true });
+    });
     return this.releaser();
   }
 

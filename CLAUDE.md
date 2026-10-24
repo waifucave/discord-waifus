@@ -61,8 +61,11 @@ each turn cycle, maintenance run and forget scrub holds an `UpdateActivity` leas
 [A, B] snapshotted per epoch, the epoch's log with permanent time lines, and compaction
 (`compaction.ts`) keeps the last three complete turns (fewer when they alone would be over half
 the trigger; images frozen with their cached OCR text; an aborted summary changes nothing).
-Intake keeps per-place high-water marks (`app/intake-marks.json`, `intakeMarks.ts`) so catch-up
-never re-wakes a message it already handled. Tools live in `tools/` (messages, notes, planning, web), web search/fetch in
+Intake keeps per-place high-water marks (`app/intake-marks.json`, `intakeMarks.ts`, plus the
+pause start) so catch-up never re-wakes a message it already handled; a mark never passes a message
+still held (a staggered wake, a debouncing burst, a running detector call), and every forget path
+drops the person's DM marks at once. `stop()` aborts lives and maintenance before awaiting them.
+Tools live in `tools/` (messages, notes, planning, web), web search/fetch in
 `search.ts` over `web/` (a thin adapter over `@yanlinglabs/winter-web`: Exa's hosted MCP, keyless
 by default with the `exa` provider credential as fallback, and the SSRF-checked page fetcher, always
 `privateAddressPolicy: "deny"`, with a digest call, purpose `web`). Per-waifu data: `user/waifus/<id>/life/` (`state.json`,

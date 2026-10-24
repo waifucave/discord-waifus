@@ -99,11 +99,15 @@ export class Scheduler {
 
   /** Stops the timer, aborts running maintenance and waits for it to end. */
   async stop(): Promise<void> {
+    this.stopped = true;
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
     this.abortMaintenance();
     await this.settle();
   }
+
+  /** After stop() no maintenance starts (a tick already under way may still reach it). */
+  private stopped = false;
 
   /** Pause: running maintenance is aborted (it runs again at its next window). */
   abortMaintenance(): void {
@@ -241,13 +245,16 @@ export class Scheduler {
     if (this.maintenanceRuns.has(waifu.id) || RUNNING_MAINTENANCE.has(key)) return;
     const state = await readLifeState(deps.storage, waifu.id);
     const due = maintenanceDue(waifu, deps.now(), deps.timeZone, deps.config().life.maintenanceHourLocal, state.lastMaintenanceAt);
-    if (!due || this.maintenanceRuns.has(waifu.id) || RUNNING_MAINTENANCE.has(key)) return;
+    if (!due || this.stopped || this.maintenanceRuns.has(waifu.id) || RUNNING_MAINTENANCE.has(key)) return;
     const lease = this.o.hooks.begin?.();
     if (this.o.hooks.begin && !lease) return;
     const controller = new AbortController();
     const done = (async () => {
       try {
-        await this.o.mutex.run(lifeLocks.life(waifu.id), () => this.o.hooks.maintain(waifu, controller.signal));
+        // Aborted while it waited for her life lock (stop, pause, reload): it never starts (N1).
+        await this.o.mutex.run(lifeLocks.life(waifu.id), async () => {
+          if (!controller.signal.aborted) await this.o.hooks.maintain(waifu, controller.signal);
+        });
         // An aborted run (pause, shutdown, reload) runs again at its next chance.
         if (!controller.signal.aborted) await updateLifeState(deps.storage, waifu.id, (current) => ({ ...current, lastMaintenanceAt: deps.now().toISOString() }));
       } catch (error) {

@@ -75,6 +75,28 @@ describe("maintenance in the background (M3)", () => {
   });
 });
 
+describe("stop (N1)", () => {
+  it("a running turn is aborted at once although maintenance waits for her lock; stop resolves promptly", async () => {
+    const w = await lifeWorld(roots, { scripts: [hangingTurn()] });
+    const life = w.cast.life("aria");
+    vi.spyOn(life, "poke").mockImplementation(() => undefined);
+    await reminder(w, "hi");
+    const running = life.runNow();
+    for (let tries = 0; w.anthropic.calls.length === 0 && tries < 400; tries += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+    // Maintenance is due (14:00, past 05:00) and starts in the background: it waits for her lock.
+    await w.cast.scheduler.tick({ waitForMaintenance: false });
+    const started = Date.now();
+    const stopped = await Promise.race([w.cast.stop().then(() => "stopped"), new Promise((resolve) => setTimeout(() => resolve("still waiting"), 2_000))]);
+    expect(stopped).toBe("stopped");
+    expect(Date.now() - started).toBeLessThan(2_000);
+    await running;
+    // The interrupted turn's wake waits for the next start; maintenance never ran (no second model call).
+    expect(w.anthropic.calls).toHaveLength(1);
+    expect((await readLifeState(w.storage, "aria")).lastMaintenanceAt).toBeUndefined();
+    expect((await readLifeFile(w.storage, "aria", "wakes")).immediate).toHaveLength(1);
+  });
+});
+
 describe("reminders (M4) and quiet writes (M5)", () => {
   it("a reminder is routed before it is removed, under one wake id per occurrence", async () => {
     const w = await lifeWorld(roots);

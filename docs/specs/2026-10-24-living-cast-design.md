@@ -285,7 +285,15 @@ idle ──wake──► coalesce 2 s ──► turn:
 - One turn at a time per waifu; different waifus run in parallel, bounded by
   `life.maxConcurrentTurns` (default from the old `discord.dm.maxConcurrentRuns`, 4). A turn takes
   her life lock first and only then a turn slot, so a life waiting for her own maintenance or a
-  forget scrub never holds one of the host's slots.
+  forget scrub never holds one of the host's slots. The wait for a slot is abortable: a forget, a
+  pause or a shutdown ends it at once, before any wake is taken, and her lock is free again.
+- **Stop.** Shutdown and a reload abort every life's turn and every maintenance run first, then
+  wait for them, so a maintenance run waiting for her lock behind a turn never holds the stop up.
+  A maintenance run aborted while it waited never starts (queued scrubs stay queued).
+- **Places during a turn.** Her place list is read once per turn, and again when a folded wake or a
+  tool names a place it lacks (someone DMed her for the first time), so the notification, the
+  tools and `list_places` all see the new place. A notification never shows a raw place key: a
+  place that is not hers reads `dm/someone` or `a channel you are not in`.
 - **Activity.** Each turn cycle, maintenance run and forget scrub holds an idle-updater lease and
   counts in `/api/runtime` `queues.active`, so an idle update never restarts the host mid-turn.
   While the app is sealed for an update restart no turn starts: her wakes stay queued and she
@@ -446,8 +454,14 @@ calibration). It does not reuse the conversation planner, which works on ledger 
   about, flushed within a second), and catch-up only takes messages newer than the higher of her
   read cursor, that mark and the DM forget floor, skipping messages whose wake is already queued.
   So a message intake already handled (even one it decided to ignore) never wakes anyone again
-  after a restart, a config reload or a reconnect. After an explicit pause, the resume catch-up
-  starts at the pause start; messages that arrive while paused are not routed live.
+  after a restart, a config reload or a reconnect. The mark moves only once a message's routing has
+  resolved and never past a message intake still holds: a staggered `@everyone`/role wake on its
+  timer, a burst still debouncing or a detector call still running. A reload in that window drops
+  them, so the next catch-up takes those messages again (a waifu message after them may be taken
+  again too). After an explicit pause, the resume catch-up starts at the pause start; messages
+  that arrive while paused are not routed live. The pause start is kept in `intake-marks.json`
+  (`pausedAt`), so a reload or a restart while paused still catches up from it; booting paused
+  without one records the boot window's start instead.
 - **Late reminders**: due reminders fire once on boot (deferred if she is asleep). Recurring ones
   then continue from the next future occurrence.
 

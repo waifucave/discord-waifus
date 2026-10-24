@@ -14,6 +14,8 @@ const SAVE_DELAY_MS = 1_000;
 
 export class IntakeMarks {
   private marks = new Map<string, string>();
+  /** When an explicit pause began (N4): kept here so a reload or restart while paused keeps it. */
+  private pause: string | undefined;
   private timer: ReturnType<typeof setTimeout> | undefined;
   private saving: Promise<void> = Promise.resolve();
   private loaded = false;
@@ -29,10 +31,11 @@ export class IntakeMarks {
     if (this.loaded) return;
     this.loaded = true;
     try {
-      const parsed = JSON.parse(await readFile(this.file, "utf8")) as { marks?: Record<string, unknown> };
+      const parsed = JSON.parse(await readFile(this.file, "utf8")) as { marks?: Record<string, unknown>; pausedAt?: unknown };
       for (const [key, id] of Object.entries(parsed.marks ?? {})) {
         if (typeof id === "string" && /^\d{1,25}$/u.test(id)) this.advance(key, id, { save: false });
       }
+      if (typeof parsed.pausedAt === "string" && Number.isFinite(Date.parse(parsed.pausedAt))) this.pause = parsed.pausedAt;
     } catch {
       // nothing saved yet
     }
@@ -50,15 +53,36 @@ export class IntakeMarks {
     if (o.save !== false) this.scheduleSave();
   }
 
-  /** Forget: the marks of places `drop` matches (the person's DM keys). */
-  drop(drop: (placeKey: string) => boolean): void {
+  /** Forget: the marks of places `drop` matches (the person's DM keys), written at once. */
+  async drop(drop: (placeKey: string) => boolean): Promise<void> {
     let changed = false;
     for (const key of [...this.marks.keys()]) {
       if (!drop(key)) continue;
       this.marks.delete(key);
       changed = true;
     }
-    if (changed) this.scheduleSave();
+    if (!changed) return;
+    this.dirty = true;
+    await this.flush();
+  }
+
+  /** Forget: every DM mark of this user (`dm_<userId>_<waifuId>`), written at once (F10). */
+  dropUser(userId: string): Promise<void> {
+    return this.drop((key) => key.startsWith(`dm_${userId}_`));
+  }
+
+  /** The start of the current explicit pause, if any (survives a reload or restart). */
+  get pausedAt(): Date | undefined {
+    return this.pause ? new Date(this.pause) : undefined;
+  }
+
+  /** Records (or clears) the pause start; written at once. */
+  async setPausedAt(at: Date | undefined): Promise<void> {
+    const next = at?.toISOString();
+    if (next === this.pause) return;
+    this.pause = next;
+    this.dirty = true;
+    await this.flush();
   }
 
   private dirty = false;
@@ -82,9 +106,10 @@ export class IntakeMarks {
     if (!this.dirty) return this.saving.catch(() => undefined);
     this.dirty = false;
     const snapshot = Object.fromEntries([...this.marks.entries()].sort(([a], [b]) => a.localeCompare(b)));
+    const pausedAt = this.pause;
     this.saving = this.saving
       .catch(() => undefined)
-      .then(() => atomicWriteJson(this.file, { marks: snapshot }));
+      .then(() => atomicWriteJson(this.file, { marks: snapshot, ...(pausedAt ? { pausedAt } : {}) }));
     await this.saving.catch(() => undefined);
   }
 }
