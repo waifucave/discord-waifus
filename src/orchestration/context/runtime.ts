@@ -250,7 +250,7 @@ export class ContextRuntime {
       // waitTimeoutMs (spec 6.6: a reply never waits longer); on timeout, failure or nothing to
       // compact, retry once with a hard-truncated rebuild instead.
       if (current.epoch === internal.builtEpoch && current.cursorSeq === internal.builtCursorSeq) {
-        if (!i.summarize) {
+        if (!i.summarize || !settings.enabled) {
           truncate = true;
         } else {
           this.d.logger.warn("Context overflow; compacting and retrying once", { conversationKey: internal.key });
@@ -558,9 +558,15 @@ export class ContextRuntime {
       // 8. compaction check
       const settings = this.d.settings(i.server);
       const budget = resolveTokenBudget(i.model, i.params ?? {}, settings);
-      const trigger: CompactionTrigger | undefined = settings.enabled
-        ? this.d.compaction.check({ state: withNotes, prompt, budget, settings })
-        : undefined;
+      // `compaction.enabled: false` turns off summaries, not the limits: the same triggers still
+      // fire and truncate durably (no summary) below, so the prompt stays bounded.
+      const trigger: CompactionTrigger | undefined = this.d.compaction.check({
+        state: withNotes,
+        prompt,
+        budget,
+        settings: { ...settings, enabled: true }
+      });
+      const canSummarize = Boolean(i.summarize) && settings.enabled;
       // One-off hard truncation (timeout, or an overflow retry): the newest effective-keepRecent
       // entries, halved while still over budget; the stored cursor is unchanged.
       const truncate = async (reason: string) => {
@@ -575,8 +581,8 @@ export class ContextRuntime {
         this.d.logger.warn(reason, { conversationKey: key, kept: rendered.length });
       };
       // The compaction service decides WHEN (limits, backoff); without a summarizer the "how" is a
-      // durable truncation instead of a summary.
-      const durableTrigger: CompactionTrigger | undefined = !i.summarize ? trigger : undefined;
+      // durable truncation instead of a summary (also when summaries are turned off).
+      const durableTrigger: CompactionTrigger | undefined = !canSummarize ? trigger : undefined;
       if (durableTrigger && allowCompaction && !truncatedDurably && !forceTruncate && transcript.length > 1) {
         // No summarizer (deterministic / one-shot director, or a model that cannot summarize):
         // compaction would never run, the cursor would never advance and this context would pin
@@ -607,7 +613,7 @@ export class ContextRuntime {
         isFresh = false;
         continue; // rebuild on the truncated epoch; this prepare's commitPrepare persists it
       }
-      if (trigger && allowCompaction && !compacted && i.summarize) {
+      if (trigger && allowCompaction && !compacted && canSummarize && i.summarize) {
         compacted = true;
         const outcome = await this.awaitCompaction(key, i, prompt, trigger, settings, working, budget);
         // An abort while waiting must not seal or persist anything.

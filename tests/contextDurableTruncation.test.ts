@@ -19,7 +19,7 @@ afterEach(async () => {
 
 const GUILD: ConversationRef = { kind: "guild", guildId: "100", channelId: "200" };
 
-async function harness() {
+async function harness(settings: Partial<typeof DEFAULT_COMPACTION_SETTINGS> = {}) {
   const root = await makeTempRoot();
   roots.push(root);
   const clock = { now: BASE_TIME };
@@ -33,7 +33,7 @@ async function harness() {
     compaction: createCompactionService({ store, logger, now: () => new Date(clock.now) }),
     messages: channel,
     images: new FakeImageFetcher(),
-    settings: () => ({ ...DEFAULT_COMPACTION_SETTINGS }),
+    settings: () => ({ ...DEFAULT_COMPACTION_SETTINGS, ...settings }),
     logger,
     now: () => new Date(clock.now),
     timeZone: () => "UTC"
@@ -118,5 +118,37 @@ describe("durable truncation without a summarizer", () => {
       summarize: async () => "the room so far"
     });
     expect(p.state.summary).toBe("the room so far");
+  });
+
+  // Acceptance M4: compaction.enabled: false used to skip the check entirely, so prompts grew
+  // without bound. It now only turns off summaries; the limits still truncate durably.
+  it("compaction.enabled: false truncates durably instead of growing (and never summarizes)", async () => {
+    const h = await harness({ enabled: false });
+    for (let i = 0; i < 160; i += 1) h.channel.post({ content: `message ${i}` }, BASE_TIME + i * 60_000);
+    h.clock.now = BASE_TIME + 160 * 60_000;
+    let summarized = 0;
+    const input = {
+      conversation: GUILD,
+      agent: { kind: "waifu", waifuId: "aria" } as const,
+      model: fakeModel({ images: false }),
+      backfillCap: 200,
+      selfAuthorIds: [],
+      render: fakeRoleRenderer("Aria", []),
+      summarize: async () => {
+        summarized += 1;
+        return "should not run";
+      }
+    };
+    const p = await h.runtime.prepare(input);
+    expect(p.prompt.transcriptCount).toBe(DEFAULT_COMPACTION_SETTINGS.keepRecent);
+    expect(p.transcript[0]!.body).toBe(`message ${160 - DEFAULT_COMPACTION_SETTINGS.keepRecent}`);
+    expect(p.state.summary).toBeNull();
+    expect(p.state.epoch).toBe(1);
+    expect(summarized).toBe(0);
+    await h.runtime.commit(p, { modelKey: p.modelKey });
+    const again = await h.runtime.prepare(input);
+    expect(again.state.cursorSeq).toBe(p.state.cursorSeq);
+    expect(again.prompt.transcriptCount).toBe(DEFAULT_COMPACTION_SETTINGS.keepRecent);
+    expect(summarized).toBe(0);
   });
 });
