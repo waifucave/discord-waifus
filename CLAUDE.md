@@ -58,9 +58,9 @@ staggered) → the persistent **wake queue** (`wakeQueue.ts`, `wakes.json`) → 
 `ModelClient`. The prompt (`lifeHarness.ts`, `request.ts`) is system blocks [A, B] snapshotted per
 epoch, the epoch's log with permanent time lines, and compaction (`compaction.ts`) keeps the last
 three complete turns. Tools live in `tools/` (messages, notes, planning, web), web search/fetch in
-`search.ts` over `web/` (a temporary attributed port of winter's web tools: Exa's hosted MCP,
-keyless by default with the `exa` provider credential as fallback, and an SSRF-checked page fetcher
-with a digest call, purpose `web`). Per-waifu data: `user/waifus/<id>/life/` (`state.json`,
+`search.ts` over `web/` (a thin adapter over `@yanlinglabs/winter-web`: Exa's hosted MCP, keyless
+by default with the `exa` provider credential as fallback, and the SSRF-checked page fetcher, always
+`privateAddressPolicy: "deny"`, with a digest call, purpose `web`). Per-waifu data: `user/waifus/<id>/life/` (`state.json`,
 `log/<epoch>.jsonl`, `intents.jsonl`, `reads.json`, `handles.json`, `wakes.json`, `watches.json`,
 `schedule.json`, `maintenance.jsonl`, `pending-scrubs.json`, `usage.json`) and her notes in
 `user/waifus/<id>/notes/` (`MEMORY.md` index). Boot repairs every life (`repair.ts`), runs queued

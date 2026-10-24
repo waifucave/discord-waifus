@@ -37,7 +37,7 @@ import { repairLife } from "./repair.js";
 import { Scheduler } from "./scheduler.js";
 import { WebTools } from "./search.js";
 import { abortableSleep, KeyedMutex, Semaphore } from "./sync.js";
-import { createWebBackend, WebFetchCache, type WebBackend } from "./web/index.js";
+import { createWebBackend, LifeWebFetchCache, type WebBackend } from "./web/index.js";
 import { newWakeId, pendingWakeCount } from "./wakeQueue.js";
 import { WakeRouter, type RouteOutcome } from "./wakeRouter.js";
 import type { OcrTextLookup } from "../orchestration/context/images.js";
@@ -79,6 +79,7 @@ export class LivingCast {
   readonly cost: DailyCost;
   readonly botRoles: BotRoles;
   readonly web: WebTools;
+  private readonly webBackend: WebBackend;
   private readonly lives = new Map<string, Life>();
   private readonly background = new Set<Promise<unknown>>();
   private readonly detector: AddresseeDetector;
@@ -92,10 +93,8 @@ export class LivingCast {
     const now = o.now ?? (() => new Date());
     const backend =
       o.webBackend ??
-      createWebBackend({
-        resolveExaKey: () => credentials("exa"),
-        exaMinIntervalMs: () => Math.ceil(1_000 / Math.max(1, config().search.maxPerSecond))
-      });
+      createWebBackend({ resolveExaKey: () => credentials("exa") });
+    this.webBackend = backend;
     const deps: LifeDeps = {
       storage: o.storage,
       logger: o.logger,
@@ -120,7 +119,7 @@ export class LivingCast {
       models: o.models,
       catalog,
       credentials,
-      cache: new WebFetchCache({ ttlMs: () => config().life.webFetch.cacheMinutes * 60_000 }),
+      cache: new LifeWebFetchCache({ ttlMs: () => config().life.webFetch.cacheMinutes * 60_000 }),
       now,
       timeZone,
       logger: o.logger
@@ -233,6 +232,7 @@ export class LivingCast {
     while (this.background.size > 0) await Promise.allSettled([...this.background]);
     await this.intake.settle();
     this.detector.close();
+    await this.webBackend.close().catch(() => undefined);
   }
 
   /** Explicit pause: abort in-flight calls; queues stay. */

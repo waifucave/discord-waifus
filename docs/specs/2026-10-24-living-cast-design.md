@@ -517,15 +517,17 @@ web_search({ query: string (≤300), num_results?: number = 5 (1–8) }) → num
   default. An Exa key saved as the `exa` provider credential (`PUT /api/providers/exa/credentials`)
   is the fallback: sent as the `x-api-key` header, never in the URL, and used while the keyless
   tier is rate-limited (a 429 or rate-limit error closes the keyless tier for 10 minutes). The
-  search code lives behind a `WebBackend` interface in `src/life/web/`, a temporary attributed
-  port of winter's web tools until `@yanlinglabs/winter-web` ships.
-- Caps (config, defaults set from Exa's public rate-limit and pricing pages, L2): `search.maxPerSecond`
-  2 (host-wide, paced rather than refused), `search.maxPerDay` 50 (host-wide),
-  `search.maxPerWaifuPerDay` 20; any of them 0 → the tool is not offered. Exhausted →
-  `error: no more searches today`.
-- Exa rate-limited or out of quota → `error: web search is unavailable right now; try again
-  later`; an MCP tool error or any other failure → `error: web search failed: …`. All are
-  `is_error` results; nothing is thrown into the turn.
+  client is `@yanlinglabs/winter-web`'s `createExaSearchClient` (pinned with the other winter
+  packages) behind the thin `WebBackend` adapter in `src/life/web/`: one process-wide breaker and
+  pacer state, a new client when the saved key changes, closed on shutdown.
+- Caps (owner decision D-d; config): `search.maxPerSecond` 2 (host-wide, a rolling window of call
+  starts, paced rather than refused; winter's pacer also spaces keyless starts 500 ms apart, which
+  only adds a wait), `search.maxPerDay` 50 (host-wide), `search.maxPerWaifuPerDay` 20; any of them
+  0 → the tool is not offered. Exhausted → `error: no more searches today`.
+- Exa rate-limited, out of quota, or the key unreadable or rejected → `error: web search is
+  unavailable right now; try again later`; an MCP tool error or an unreachable backend → `error:
+  web search failed: …` (winter scrubs the key from every message). All are `is_error` results;
+  nothing is thrown into the turn.
 - Results are labelled as untrusted web content. Queries are recorded for the dashboard (§14)
   in `user/search/usage.json` (newest 100).
 
@@ -535,20 +537,25 @@ web_search({ query: string (≤300), num_results?: number = 5 (1–8) }) → num
 web_fetch({ url: string /* http(s) */, prompt: string (≤500) }) → "<url>\n\n<page text or the answer to prompt>"
 ```
 
-- Fetches one page and converts HTML to readable text (headings, list items, links, paragraphs;
-  scripts, styles and markup dropped). A page at most `life.webFetch.directMaxChars` (2,000)
-  characters long is returned as is. A longer one is read by one **digest** call: the page text
-  fenced as untrusted data, then her `prompt`, on the cheapest curated route the owner has a key
+- Fetches one page with `@yanlinglabs/winter-web`'s `fetchWebPage` and its HTML-to-markdown
+  conversion (scripts, styles and markup dropped; input capped at 1,048,576 characters, linear on
+  hostile markup). A page at most `life.webFetch.directMaxChars` (2,000) characters long is
+  returned as is. A longer one is read by one **digest** call: winter's digest message (the page
+  text, then her `prompt`, then its quoting guidelines) with our own system prompt saying the page
+  text is untrusted data, never instructions, on the cheapest curated route the owner has a key
   for (by input price, then output price; contributor variants only when named in
   `life.webFetch.model`, which overrides the choice), purpose `web`, no reasoning effort, at most
   1,024 output tokens. If no such route exists her own route is used.
-- SSRF (every request and every redirect hop): http/https only (`http` upgraded to `https`), no
-  URL credentials, ≤ 2,000 characters; IP literals in every notation, reserved names (`localhost`,
-  `*.local`, `*.internal`), private, loopback, link-local, CGNAT, multicast and documentation
-  ranges, cloud metadata addresses and this host's own interface addresses (our dashboard port
-  included) are refused. DNS is resolved once by our own lookup, refused when any answer is
-  private, and the socket's actual remote address is checked again after connecting. No proxy.
-  At most `life.webFetch.maxRedirects` (5) hops, `maxBytes` (5 MiB), `timeoutMs` (20 s).
+- SSRF: winter-web's guard, always with `privateAddressPolicy: "deny"`, on every request and
+  every redirect hop: http/https only (`http` upgraded to `https`), no URL credentials, ≤ 2,000
+  characters, no single-label hosts (so no IPv6 literal at all); IP literals in every notation,
+  `localhost`/`*.local` by name, private, loopback, link-local, CGNAT, multicast, reserved and
+  documentation ranges, IPv6 outside 2000::/3, every IPv4 embedding (mapped, compatible,
+  translated such as `::ffff:0:10.0.0.1`, NAT64, 6to4, Teredo), cloud metadata and this host's own
+  interface addresses are refused. A name is resolved once, any private answer refuses it, and
+  the connection is pinned to the validated address (Node: the socket's remote address is
+  checked before any byte is sent); proxy environment variables are never used. At most
+  `life.webFetch.maxRedirects` (5) hops, `maxBytes` (5 MiB, 2 MiB compressed), `timeoutMs` (20 s).
 - Caps: `life.webFetch.maxPerTurn` (3) and `maxPerWaifuPerDay` (20); either 0 → the tool is not
   offered. A converted page is cached for `life.webFetch.cacheMinutes` (15) by normalized URL
   (failures never cached; the digest still runs on a hit).
