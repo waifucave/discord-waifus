@@ -23,6 +23,7 @@ import { remoteStatePaths } from "../remote/paths.js";
 import { migrateDreamCursorGlobal } from "./migrationSteps/dreamCursorGlobal.js";
 import { migrateMemoriesCrossGuildDedupe } from "./migrationSteps/memoriesCrossGuildDedupe.js";
 import { migrateMemoriesGlobalOriginSubjects } from "./migrationSteps/memoriesGlobalOriginSubjects.js";
+import { migrateOcrCacheTtlDefault168 } from "./migrationSteps/ocrCacheTtlDefault168.js";
 import { migrateOcrCacheUrlKeysCleanup } from "./migrationSteps/ocrCacheUrlKeysCleanup.js";
 import { migratePendingObservationsGlobal } from "./migrationSteps/pendingObservationsGlobal.js";
 import { migrateServerContextWindowsExplicit } from "./migrationSteps/serverContextWindowsExplicit.js";
@@ -147,6 +148,7 @@ export const MIGRATION_STEPS: readonly MigrationStep[] = [
   { id: "pending-observations-global-v1", frequency: "once", run: migratePendingObservationsGlobal }, // T6
   { id: "dream-cursor-global-v1", frequency: "once", run: migrateDreamCursorGlobal }, // T6
   { id: "ocr-cache-url-keys-cleanup-v1", frequency: "once", run: migrateOcrCacheUrlKeysCleanup }, // T2
+  { id: "ocr-cache-ttl-168-v1", frequency: "once", run: migrateOcrCacheTtlDefault168 }, // acceptance M5
   {
     // Runs LAST: every step above may still leave a file's schemaVersion at 1 even once its shape
     // is current. Stamping here — after all shape conversions — is what lets the next boot's

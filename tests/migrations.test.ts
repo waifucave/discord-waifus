@@ -1068,7 +1068,8 @@ describe("migration ledger", () => {
       "memories-cross-guild-dedupe-v1",
       "pending-observations-global-v1",
       "dream-cursor-global-v1",
-      "ocr-cache-url-keys-cleanup-v1"
+      "ocr-cache-url-keys-cleanup-v1",
+      "ocr-cache-ttl-168-v1"
     ];
     // Steps whose owning task has landed (flag removed, real body).
     const LANDED_STEP_IDS = new Set([
@@ -1078,7 +1079,8 @@ describe("migration ledger", () => {
       "memories-cross-guild-dedupe-v1",
       "pending-observations-global-v1",
       "dream-cursor-global-v1",
-      "ocr-cache-url-keys-cleanup-v1"
+      "ocr-cache-url-keys-cleanup-v1",
+      "ocr-cache-ttl-168-v1"
     ]);
     const STILL_PENDING_IDS = PHASE4_STEP_IDS.filter((id) => !LANDED_STEP_IDS.has(id));
 
@@ -1219,6 +1221,61 @@ describe("migration ledger", () => {
     expect(await exists(root, "app/cache/ocr/results-v2/def.json")).toBe(true);
     // Idempotent: nothing left to remove.
     expect(await step.run(root)).toBeUndefined();
+  });
+
+  // Acceptance M5: saved configs spell out the old 24h OCR cache TTL, so the new 168h default never
+  // applied to them.
+  describe("ocr-cache-ttl-168-v1", () => {
+    const step = () => MIGRATION_STEPS.find((candidate) => candidate.id === "ocr-cache-ttl-168-v1")!;
+    const writeConfig = (root: string, ttl: number) =>
+      writeFile(
+        path.join(root, "config.toml"),
+        `schemaVersion = 2\n\n[http]\nhost = "127.0.0.1"\nport = 3999\n\n[ocr]\nenabled = true\ncacheTtlHours = ${ttl}\ntimeoutMs = 2000\n`,
+        "utf8"
+      );
+
+    it("is a once step registered before the schema-version stamp", () => {
+      const ids = MIGRATION_STEPS.map((candidate) => candidate.id);
+      expect(step().frequency).toBe("once");
+      expect(ids.indexOf("ocr-cache-ttl-168-v1")).toBeLessThan(ids.indexOf(`stamp-schema-version-${CURRENT_SCHEMA_VERSION}`));
+    });
+
+    it("rewrites exactly 24 to 168, keeps the rest of the config, and is idempotent", async () => {
+      const root = await freshRoot();
+      await writeConfig(root, 24);
+      expect(await step().run(root)).toBe("ocr-cache-ttl-168-v1");
+      const config = await loadAppConfig(root);
+      expect(config.ocr).toMatchObject({ cacheTtlHours: 168, timeoutMs: 2000, enabled: true });
+      expect(config.http.port).toBe(3999);
+      const once = await readFile(path.join(root, "config.toml"), "utf8");
+      expect(await step().run(root)).toBeUndefined();
+      expect(await readFile(path.join(root, "config.toml"), "utf8")).toBe(once);
+    });
+
+    it.each([12, 48, 168])("leaves an owner-chosen %ih alone", async (ttl) => {
+      const root = await freshRoot();
+      await writeConfig(root, ttl);
+      const before = await readFile(path.join(root, "config.toml"), "utf8");
+      expect(await step().run(root)).toBeUndefined();
+      expect(await readFile(path.join(root, "config.toml"), "utf8")).toBe(before);
+    });
+
+    it("tolerates a missing config, a config without [ocr] and an unparsable config", async () => {
+      const root = await freshRoot();
+      await rm(path.join(root, "config.toml"));
+      expect(await step().run(root)).toBeUndefined();
+      await writeFile(path.join(root, "config.toml"), "schemaVersion = 2\n", "utf8");
+      expect(await step().run(root)).toBeUndefined();
+      await writeFile(path.join(root, "config.toml"), "[ocr\ncacheTtlHours = 24", "utf8");
+      expect(await step().run(root)).toBeUndefined();
+    });
+
+    it("runs on boot", async () => {
+      const root = await freshRoot();
+      await writeConfig(root, 24);
+      expect((await runMigrations(root, { appVersion: "2.200.0" })).applied).toContain("ocr-cache-ttl-168-v1");
+      expect((await loadAppConfig(root)).ocr.cacheTtlHours).toBe(168);
+    });
   });
 
   it("runs a step missing from the ledger and records it, leaving recorded steps skipped", async () => {
