@@ -686,6 +686,67 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
     }
   },
   {
+    name: "list_dms",
+    description:
+      "Read-only: private DM conversations between waifus and Discord users (newest first): last inbound/reply times, " +
+      "the per-user rate limit (used/max, freesAt), the latest run outcome (sent, rate_limited, undeliverable, ...) and the " +
+      "context epoch. Never returns message text. THE tool for 'why didn't she answer my DM'. Optional waifuId/userId filters.",
+    parameters: {
+      type: "object",
+      properties: {
+        waifuId: { type: "string" },
+        userId: { type: "string", description: "Discord user id (snowflake)." },
+        limit: { type: "number", description: "Max conversations (default 20, max 200)." }
+      },
+      additionalProperties: false
+    },
+    execute: async (ctx, args) => {
+      const query = new URLSearchParams();
+      if (args.waifuId) query.set("waifuId", String(args.waifuId));
+      if (args.userId) query.set("userId", String(args.userId));
+      query.set("limit", String(Math.min(Number(args.limit) || 20, 200)));
+      const result = await inject(ctx, { method: "GET", url: `/api/dms?${query.toString()}` });
+      return result.body;
+    }
+  },
+  {
+    name: "forget_dm",
+    description:
+      "Propose forgetting one waifu's DMs with one Discord user. scope 'conversation' deletes the DM transcript and run " +
+      "records; 'all' also deletes the DM state, her memories about that user and cached images. Never resets the rate " +
+      "limit. Destructive: it runs only if the user accepts the separate secure dashboard confirmation card.",
+    parameters: {
+      type: "object",
+      properties: {
+        waifuId: { type: "string" },
+        userId: { type: "string", description: "The Discord user id (snowflake)." },
+        scope: { type: "string", enum: ["conversation", "all"] }
+      },
+      required: ["waifuId", "userId", "scope"],
+      additionalProperties: false
+    },
+    execute: async (ctx, args) => {
+      const waifuId = String(args.waifuId);
+      const userId = String(args.userId);
+      const scope = args.scope === "all" ? "all" : "conversation";
+      const target = `/api/dms/${encodeURIComponent(waifuId)}/${encodeURIComponent(userId)}/forget`;
+      const preview = await inject(ctx, { method: "POST", url: target, payload: { confirm: true, scope, dryRun: true } });
+      if (preview.status !== 200) return preview.body;
+      const counts = (JSON.parse(preview.body) as { deleted: Record<string, number> }).deleted;
+      const memories = counts.memories ?? 0;
+      const action = await actionController(ctx).propose({
+        category: "dm_forget",
+        summary:
+          `Forget ${waifuId}'s DMs with Discord user ${userId} (${scope}): delete ${counts.dmContexts ?? 0} conversation(s)` +
+          (scope === "all" ? `, ${memories} memor${memories === 1 ? "y" : "ies"} and ${counts.cachedImages ?? 0} cached image(s)` : "") +
+          ". The rate limit is kept.",
+        resource: { type: "dm_conversation", identifier: `${waifuId}:${userId}` },
+        operation: { kind: "exact_http", method: "POST", canonicalTarget: target, payload: { confirm: true, scope } }
+      });
+      return JSON.stringify({ ...JSON.parse(confirmationResult(action)), preview: counts });
+    }
+  },
+  {
     name: "trigger_orchestrator",
     description: "Run an orchestrator decision pass on a channel right now.",
     parameters: {

@@ -77,6 +77,9 @@ import { OperationStore } from "../storage/operationStore.js";
 import { recentQueries, recentReplies, subscribeQueries, subscribeReplies } from "../shared/queryLog.js";
 import { listDocs, readDoc } from "./docsKb.js";
 import { registerAssistantRoutes } from "./assistant/routes.js";
+import { registerDmRoutes } from "./dms.js";
+import { computeDmEligibility } from "../orchestration/dm/dmStore.js";
+import { assertSafeId, assertSnowflakeId } from "./ids.js";
 import {
   ApiError,
   apiErrorResponse,
@@ -626,6 +629,17 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     statusResponse(options.runtime, request.principal, options.dataRoot)
   );
 
+  const reconcileDmIntents = async () => {
+    const orchestrator = options.runtimeControl?.getOrchestrator?.() ?? options.runtimeOrchestrator;
+    if (!orchestrator) return;
+    try {
+      const { relogged } = await orchestrator.reconcileDmIntents();
+      if (relogged.length > 0) logger.info("Re-logged waifu bots for DM intent changes", { botIds: relogged });
+    } catch (error) {
+      logger.warn("DM intent reconcile failed", { message: error instanceof Error ? error.message : String(error) });
+    }
+  };
+
   app.get("/api/runtime", async (request) => {
     const orchestrator = options.runtimeControl?.getOrchestrator?.() ?? options.runtimeOrchestrator;
     const live = orchestrator?.permissionWarnings.list() ?? [];
@@ -635,12 +649,17 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
       lastRefreshAt: null,
       warnings: []
     };
+    // DM eligibility and intent state (spec 9.6); without a live runtime nothing has DM intents.
+    const dmStatus = orchestrator
+      ? await orchestrator.dmStatus().catch(() => ({ eligibleWaifus: [], warnings: [] }))
+      : await offlineDmStatus(storage);
     const runtime = {
       ...options.runtime,
       discord: {
         ...options.runtime.discord,
         warnings: [...options.runtime.discord.warnings, ...live],
-        directory: directoryStatus
+        directory: directoryStatus,
+        dm: dmStatus
       }
     };
     // Active quota/billing cooldowns (spec 8.10); empty when every provider is available.
@@ -892,6 +911,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
       waifu.modelId = target.modelId;
     }
     const saved = await storage.writeJson(`waifu:${id}`, relativePath, WaifuConfigSchema, waifu);
+    await reconcileDmIntents();
     return reply.status(201).send(saved);
   });
 
@@ -941,6 +961,8 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
         return next;
       }
     });
+    // Intents are fixed at login (spec 9.1): re-log only bots whose DM intents changed.
+    await reconcileDmIntents();
     // Fire-and-forget: regenerate persona digest when persona text changed.
     void generatePersonaDigestIfStale(storage, saved, logger, options).catch(() => {
       // Errors are handled inside generatePersonaDigestIfStale with logger.warn.
@@ -987,6 +1009,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
       transform: (current) => ({ ...current, botId: id })
     });
     const entry = bots.waifus.find((bot) => bot.id === id);
+    await reconcileDmIntents();
     return {
       linked: savedWaifu.botId === id,
       botId: id,
@@ -1042,6 +1065,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
         force: true
       })
     );
+    await reconcileDmIntents();
     return reply.status(204).send();
   });
 
@@ -1133,6 +1157,11 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   });
 
   // Spec 9.5: the threads and forum posts the bot has seen under this server (guild id: snowflake).
+  registerDmRoutes(app, {
+    storage,
+    orchestrator: () => options.runtimeControl?.getOrchestrator?.() ?? options.runtimeOrchestrator
+  });
+
   app.get("/api/servers/:guildId/threads", async (request) => {
     const { guildId } = parseIdParam(request.params, "guildId");
     return readThreads(storage, guildId);
@@ -1301,7 +1330,10 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   app.post("/api/memories/forget-user", async (request) => {
     const body = ForgetUserBodySchema.parse(request.body);
     assertSnowflakeId(body.discordUserId);
-    return forgetUser(storage, { discordUserId: body.discordUserId, dryRun: body.dryRun === true });
+    const input = { discordUserId: body.discordUserId, dryRun: body.dryRun === true };
+    // The live runtime also aborts DM runs and drops cached DM messages/images (spec 9.1.4).
+    const orchestrator = options.runtimeControl?.getOrchestrator?.() ?? options.runtimeOrchestrator;
+    return orchestrator ? orchestrator.forgetUser(input) : forgetUser(storage, input);
   });
 
   // B2: pause used to live only in memory, so the next config save/reload (which re-reads
@@ -1837,23 +1869,6 @@ function parseIdParam(params: unknown, key: string): Record<string, string> {
   return parsed;
 }
 
-// Ids become path segments under the data root. The character class alone admitted "." and
-// "..", so `DELETE /api/servers/%2E%2E` (Fastify decodes it to "..") resolved to `user/` and
-// removed every user file. Dot-only ids are rejected here; resolveDataPath also refuses any
-// path that escapes the data root as a second line of defence.
-function assertSafeId(id: string): void {
-  if (typeof id !== "string" || !/^[A-Za-z0-9._:-]+$/.test(id) || /^\.+$/.test(id)) {
-    throw badRequest(`Invalid id: ${id}`);
-  }
-}
-
-// Guild and channel ids always come from Discord, so anything but a snowflake is malformed.
-function assertSnowflakeId(id: string): void {
-  if (typeof id !== "string" || !/^\d{17,20}$/.test(id)) {
-    throw badRequest(`Invalid Discord id: ${id}`);
-  }
-}
-
 function slugId(name: string): string {
   const slug = name
     .trim()
@@ -2262,5 +2277,18 @@ async function generatePersonaDigestIfStale(
       modelId: resolvedModelId,
       error: error instanceof Error ? error.message : String(error)
     });
+  }
+}
+
+async function offlineDmStatus(storage: StorageService) {
+  try {
+    const [waifus, bots] = await Promise.all([listWaifus(storage), readDiscordBots(storage)]);
+    const eligibility = computeDmEligibility(waifus, bots);
+    return {
+      eligibleWaifus: eligibility.eligible.map((entry) => ({ ...entry, intentActive: false })),
+      warnings: eligibility.warnings
+    };
+  } catch {
+    return { eligibleWaifus: [], warnings: [] };
   }
 }

@@ -383,6 +383,7 @@ function actionReceiptMessage(category: string): string {
   if (category === "remote_invitation_cancel") return "The pairing invitation was cancelled.";
   if (category === "remote_device_revoke") return "The trusted remote device was revoked.";
   if (category === "memory_forget_user") return "The user was forgotten.";
+  if (category === "dm_forget") return "The DM conversation was forgotten.";
   return "The confirmed assistant action completed.";
 }
 
