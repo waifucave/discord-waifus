@@ -30,6 +30,9 @@ async function sleepyWorld(o: Parameters<typeof lifeWorld>[1] = {}): Promise<Lif
 async function say(w: LifeWorld, text: string, o: Parameters<LifeWorld["discord"]["post"]>[2] = {}) {
   const message = w.discord.post(ROOM, text, o);
   await w.cast.onGuildMessage({ guildId: GUILD, channelId: CHANNEL, messageId: message.id, castWaifuIds: ["aria"], authorIsWaifu: false, raw: message });
+  // A burst nobody was addressed in goes to the detector at this (fake) time, not when the real
+  // debounce timer happens to fire after the test has moved the clock.
+  w.cast.intake.flushDetector();
   await w.cast.settle();
 }
 

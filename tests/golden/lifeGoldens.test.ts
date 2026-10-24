@@ -99,6 +99,9 @@ describe("Living cast goldens", () => {
       await w.cast.onDirectMessage({ waifuId: "aria", botId: "aria-bot", userId: KEVIN, userDisplayName: "Kevin", channelId: "dm", messageId: message.id, createdAt: message.createdAt });
     }
     w.cast.intake.flushDms();
+    // The brownie burst goes to the detector now, while she is asleep (the fallback's `anyone` draw
+    // has nobody awake), not whenever the real debounce timer fires.
+    w.cast.intake.flushDetector();
     await w.cast.settle();
     w.clock.advance(30 * 60_000);
     await w.cast.scheduler.tick();
