@@ -56,6 +56,7 @@ export function mergeAppConfigPatch(
     memory: { ...current.memory, ...patch.memory },
     discord: {
       ...current.discord,
+      ...patch.discord,
       images: { ...current.discord.images, ...patch.discord?.images },
       deletedMessages: { ...current.discord.deletedMessages, ...patch.discord?.deletedMessages }
     },

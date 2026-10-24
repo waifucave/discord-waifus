@@ -2,6 +2,7 @@
 // Typed structurally (the subset of discord.js we read) so tests can pass plain objects.
 
 import type { RawDiscordMessage } from "../shared/schemas/discordMessage.js";
+import type { DiscordMessagePatch } from "./gatewayEvents.js";
 
 const IS_VOICE_MESSAGE_FLAG = 1 << 13; // MessageFlags.IsVoiceMessage
 const FORWARD_REFERENCE_TYPE = 1; // MessageReferenceType.Forward
@@ -147,7 +148,25 @@ export function toRawDiscordMessage(m: DiscordMessageLike, fallbackGuildId?: str
   };
 }
 
-function compareIds(a: string, b: string): number {
+/** A gateway message carries enough to build a RawDiscordMessage (partial updates do not). */
+export function isCompleteDiscordMessage(m: Partial<DiscordMessageLike> | null | undefined): m is DiscordMessageLike {
+  return Boolean(m && typeof m.id === "string" && typeof m.channelId === "string" && typeof m.content === "string" && m.author);
+}
+
+/** The fields a partial `messageUpdate` can change on a message we already hold. */
+export function rawMessagePatch(
+  m: Partial<Pick<DiscordMessageLike, "content" | "embeds" | "editedTimestamp" | "attachments" | "flags">>
+): DiscordMessagePatch {
+  const voice = hasFlag(m.flags, IS_VOICE_MESSAGE_FLAG);
+  return {
+    ...(typeof m.content === "string" ? { content: m.content } : {}),
+    ...(m.embeds ? { embeds: m.embeds.map(embed) } : {}),
+    ...(m.attachments ? { attachments: [...m.attachments.values()].map((a) => attachment(a, voice)) } : {}),
+    ...(m.editedTimestamp ? { editedAt: new Date(m.editedTimestamp).toISOString() } : {})
+  };
+}
+
+export function compareIds(a: string, b: string): number {
   if (/^\d+$/.test(a) && /^\d+$/.test(b)) {
     const x = BigInt(a);
     const y = BigInt(b);

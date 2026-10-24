@@ -1,8 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   DiscordGatewayFacade,
-  DiscordMessageDeleteEvent,
-  DiscordMessageEditEvent,
   DiscordThreadEvent,
   DiscordThreadInfo
 } from "../src/discord/client.js";
@@ -141,7 +139,32 @@ async function setup(
   return { runtime, storage, calls, joined, fetches };
 }
 
-const editEvent = (message: RawDiscordMessage, o: Partial<DiscordMessageEditEvent> = {}): DiscordMessageEditEvent => ({
+type EditEvent = {
+  guildId: string;
+  channelId: string;
+  messageId: string;
+  authorId: string;
+  authorBot: boolean;
+  message: RawDiscordMessage;
+  previousMentionIds?: string[];
+  thread?: DiscordThreadInfo;
+};
+type DeleteEvent = { guildId: string; channelId: string; messageIds: string[]; bulk: boolean };
+
+/** What the conversation cache's `update` / `deleteBulk` events hand `applyMessageEvent`. */
+const sendEdit = (runtime: RuntimeOrchestrator, event: EditEvent) =>
+  runtime.applyMessageEvent(
+    { type: "update", conversation: { kind: "guild", guildId: event.guildId, channelId: event.channelId }, message: event.message, source: "gateway" },
+    { ...(event.thread ? { thread: event.thread } : {}), ...(event.previousMentionIds ? { previousMentionIds: event.previousMentionIds } : {}) }
+  );
+const sendDelete = (runtime: RuntimeOrchestrator, event: DeleteEvent) =>
+  runtime.applyMessageEvent({
+    type: "deleteBulk",
+    conversation: { kind: "guild", guildId: event.guildId, channelId: event.channelId },
+    messageIds: event.messageIds
+  });
+
+const editEvent = (message: RawDiscordMessage, o: Partial<EditEvent> = {}): EditEvent => ({
   guildId: GUILD,
   channelId: PARENT,
   messageId: message.id,
@@ -169,7 +192,7 @@ describe("RuntimeOrchestrator edits (spec 9.5)", () => {
     const { runtime, calls } = await setup();
     const spy = vi.spyOn(runtime, "handleDiscordMessage");
     const message = raw({ id: "900000000000000001", channelId: PARENT, guildId: GUILD, content: "fixed typo", editedAt: new Date().toISOString() });
-    await runtime.handleDiscordMessageEdit(editEvent(message));
+    await sendEdit(runtime, editEvent(message));
     expect(calls.edits).toHaveLength(1);
     expect(calls.edits[0]!.conversation).toEqual({ kind: "guild", guildId: GUILD, channelId: PARENT });
     expect(spy).not.toHaveBeenCalled();
@@ -189,7 +212,7 @@ describe("RuntimeOrchestrator edits (spec 9.5)", () => {
       editedAt: new Date(now).toISOString(),
       mentions: { users: { [WAIFU_BOT]: "Aria" }, roles: {}, channels: {} }
     });
-    await runtime.handleDiscordMessageEdit(editEvent(message, { previousMentionIds: [] }));
+    await sendEdit(runtime, editEvent(message, { previousMentionIds: [] }));
     expect(spy).toHaveBeenCalledTimes(1);
     expect(spy.mock.calls[0]![0]).toMatchObject({ guildId: GUILD, channelId: PARENT, messageId: id, authorBot: false });
   });
@@ -207,19 +230,19 @@ describe("RuntimeOrchestrator edits (spec 9.5)", () => {
       mentions: { users: { [WAIFU_BOT]: "Aria" }, roles: {}, channels: {} }
     };
     // Already mentioned before the edit.
-    await runtime.handleDiscordMessageEdit(
+    await sendEdit(runtime, 
       editEvent(raw({ ...base, createdAt: new Date(now - 10_000).toISOString(), editedAt: new Date(now).toISOString() }), { previousMentionIds: [WAIFU_BOT] })
     );
     // Edited more than 2 minutes after posting.
-    await runtime.handleDiscordMessageEdit(
+    await sendEdit(runtime, 
       editEvent(raw({ ...base, createdAt: new Date(now - 5 * 60_000).toISOString(), editedAt: new Date(now).toISOString() }), { previousMentionIds: [] })
     );
     // Not the newest human message in the ledger.
-    await runtime.handleDiscordMessageEdit(
+    await sendEdit(runtime, 
       editEvent(raw({ ...base, id: "900000000000000099", createdAt: new Date(now - 10_000).toISOString(), editedAt: new Date(now).toISOString() }), { previousMentionIds: [] })
     );
     // A bot's own edit.
-    await runtime.handleDiscordMessageEdit(
+    await sendEdit(runtime, 
       editEvent(raw({ ...base, authorIsBot: true, createdAt: new Date(now - 10_000).toISOString(), editedAt: new Date(now).toISOString() }), { previousMentionIds: [], authorBot: true })
     );
     expect(spy).not.toHaveBeenCalled();
@@ -230,8 +253,8 @@ describe("RuntimeOrchestrator deletes (spec 9.5)", () => {
   it("records deletes with the configured redactRecent and never starts a run", async () => {
     const { runtime, calls } = await setup();
     const spy = vi.spyOn(runtime, "handleDiscordMessage");
-    const event: DiscordMessageDeleteEvent = { guildId: GUILD, channelId: PARENT, messageIds: ["1", "2"], bulk: true };
-    await runtime.handleDiscordMessageDelete(event);
+    const event: DeleteEvent = { guildId: GUILD, channelId: PARENT, messageIds: ["1", "2"], bulk: true };
+    await sendDelete(runtime, event);
     expect(calls.deletes).toEqual([{ conversation: { kind: "guild", guildId: GUILD, channelId: PARENT }, ids: ["1", "2"], redactRecent: 7 }]);
     expect(spy).not.toHaveBeenCalled();
   });
@@ -249,9 +272,9 @@ describe("RuntimeOrchestrator deletes (spec 9.5)", () => {
       startedAt: Date.now() - 1_000
     });
     // Another message: untouched.
-    await runtime.handleDiscordMessageDelete({ guildId: GUILD, channelId: PARENT, messageIds: ["900000000000000011"], bulk: false });
+    await sendDelete(runtime, { guildId: GUILD, channelId: PARENT, messageIds: ["900000000000000011"], bulk: false });
     expect(controller.signal.aborted).toBe(false);
-    await runtime.handleDiscordMessageDelete({ guildId: GUILD, channelId: PARENT, messageIds: ["900000000000000010"], bulk: false });
+    await sendDelete(runtime, { guildId: GUILD, channelId: PARENT, messageIds: ["900000000000000010"], bulk: false });
     expect(controller.signal.aborted).toBe(true);
     expect((controller.signal.reason as Error).message).toBe("trigger_deleted");
     // The abort marks the session idle in the background: let that write land before teardown.
@@ -274,7 +297,7 @@ describe("RuntimeOrchestrator deletes (spec 9.5)", () => {
       triggerMessageId: "900000000000000010",
       startedAt: Date.now() - 1_000
     });
-    await runtime.handleDiscordMessageDelete({ guildId: GUILD, channelId: PARENT, messageIds: ["900000000000000010"], bulk: false });
+    await sendDelete(runtime, { guildId: GUILD, channelId: PARENT, messageIds: ["900000000000000010"], bulk: false });
     expect(controller.signal.aborted).toBe(false);
   });
 });
@@ -455,7 +478,7 @@ describe("review fixes: duplicate edits, thread facts, thread cleanup, resume", 
       editedAt: new Date(now).toISOString(),
       mentions: { users: { [WAIFU_BOT]: "Aria" }, roles: {}, channels: {} }
     });
-    await runtime.handleDiscordMessageEdit(editEvent(message, { previousMentionIds: [] }));
+    await sendEdit(runtime, editEvent(message, { previousMentionIds: [] }));
     expect(spy).not.toHaveBeenCalled();
   });
 

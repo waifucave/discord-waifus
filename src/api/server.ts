@@ -85,9 +85,8 @@ import {
   notFound,
   preconditionRequired
 } from "./errors.js";
-import { DiscordAPIError, HTTPError } from "discord.js";
 import { mergeConfiguredBotsIntoMembers } from "../discord/memberCache.js";
-import { discordRestForToken, discordRestGet } from "../discord/rest.js";
+import { DirectoryTransportError, GuildDirectory, type DirectoryKind } from "../discord/guildDirectory.js";
 import { assertKnownProvider, assertModelWriteValid } from "./writeValidation.js";
 import { BrowserSecurity, type BrowserSecurityOptions } from "./browserSecurity.js";
 import { installRoutePolicy } from "./routePolicy.js";
@@ -114,6 +113,8 @@ export type ApiServerOptions = {
   storage?: StorageService;
   runtime: RuntimeState;
   runtimeOrchestrator?: RuntimeOrchestrator;
+  /** The host's guild directory (spec 9.4); the refresh routes go through it. Built over the storage when omitted. */
+  directory?: GuildDirectory;
   runtimeControl?: {
     getOrchestrator: () => RuntimeOrchestrator | undefined;
     pause: () => Promise<void>;
@@ -434,6 +435,25 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     ...(options.administration?.now ? { now: options.administration.now } : {})
   });
   const logger = options.logger ?? createLogger({ dataRoot: options.dataRoot });
+  // The dashboard's refresh buttons and the runtime share one GuildDirectory (spec 9.4); a bare API
+  // (tests, no runtime) refreshes through its own, which writes the same files.
+  const standaloneDirectory = new GuildDirectory({ storage, logger, bots: () => readDiscordBots(storage) });
+  const directoryFor = () =>
+    options.directory ?? (options.runtimeControl?.getOrchestrator?.() ?? options.runtimeOrchestrator)?.directory ?? standaloneDirectory;
+  const refreshDirectory = async <T extends Record<string, unknown>>(
+    guildId: string,
+    kind: DirectoryKind,
+    read: () => Promise<T>
+  ) => {
+    let result;
+    try {
+      result = await directoryFor().refresh(guildId, kind);
+    } catch (error) {
+      if (error instanceof DirectoryTransportError) throw badRequest(error.message);
+      throw error;
+    }
+    return { accepted: result.accepted, guildId, message: result.message, ...(await read()) };
+  };
   const app = fastify({ logger: false });
   // Spec 8.6: waifu bodies may still carry the removed `promptLayout`; it is ignored. Log it once
   // per process so a stale client is findable without flooding the log on every save.
@@ -609,12 +629,20 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   app.get("/api/runtime", async (request) => {
     const orchestrator = options.runtimeControl?.getOrchestrator?.() ?? options.runtimeOrchestrator;
     const live = orchestrator?.permissionWarnings.list() ?? [];
-    const runtime = live.length === 0
-      ? options.runtime
-      : {
-          ...options.runtime,
-          discord: { ...options.runtime.discord, warnings: [...options.runtime.discord.warnings, ...live] }
-        };
+    // Guild directory status (spec 9.6): is the member list endpoint usable, when did it last refresh.
+    const directoryStatus = (options.directory ?? orchestrator?.directory)?.status() ?? {
+      memberListAvailable: null,
+      lastRefreshAt: null,
+      warnings: []
+    };
+    const runtime = {
+      ...options.runtime,
+      discord: {
+        ...options.runtime.discord,
+        warnings: [...options.runtime.discord.warnings, ...live],
+        directory: directoryStatus
+      }
+    };
     // Active quota/billing cooldowns (spec 8.10); empty when every provider is available.
     const providerAlerts = (orchestrator?.providerAlerts ?? sharedProviderAlerts(options.dataRoot)).snapshot();
     return { ...runtimeResponse(runtime, request.principal, options.dataRoot), providerAlerts };
@@ -1116,7 +1144,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   });
   app.post("/api/servers/:guildId/members/refresh", async (request, reply) => {
     const { guildId } = parseIdParam(request.params, "guildId");
-    const refreshed = await refreshDiscordMembers(storage, guildId);
+    const refreshed = await refreshDirectory(guildId, "members", async () => ({ members: await readMembers(storage, guildId) }));
     return reply.status(200).send(refreshed);
   });
 
@@ -1126,7 +1154,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   });
   app.post("/api/servers/:guildId/emojis/refresh", async (request, reply) => {
     const { guildId } = parseIdParam(request.params, "guildId");
-    const refreshed = await refreshDiscordEmojis(storage, guildId);
+    const refreshed = await refreshDirectory(guildId, "emojis", async () => ({ emojis: await readEmojis(storage, guildId) }));
     return reply.status(200).send(refreshed);
   });
 
@@ -1136,7 +1164,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   });
   app.post("/api/servers/:guildId/roles/refresh", async (request, reply) => {
     const { guildId } = parseIdParam(request.params, "guildId");
-    const refreshed = await refreshDiscordRoles(storage, guildId);
+    const refreshed = await refreshDirectory(guildId, "roles", async () => ({ roles: await readRoles(storage, guildId) }));
     return reply.status(200).send(refreshed);
   });
 
@@ -1872,209 +1900,6 @@ async function saveWaifuAsset(
     bytes: body.byteLength,
     relativePath
   });
-}
-
-async function refreshDiscordMembers(storage: StorageService, guildId: string) {
-  const token = await readDiscordBotToken(storage);
-  if (!token) {
-    return {
-      accepted: false,
-      guildId,
-      message: "Discord bot token is not configured. Save the orchestrator bot first.",
-      members: await readMembers(storage, guildId)
-    };
-  }
-  const rawMembers = await fetchAllDiscordGuildMembers(token, guildId);
-  const now = nowIso();
-  const bots = await readDiscordBots(storage);
-  const members: GuildMemberCacheEntry[] = mergeConfiguredBotsIntoMembers(
-    rawMembers.map((member) => ({
-      userId: member.user.id,
-      username: member.user.username,
-      globalDisplayName: member.user.global_name ?? undefined,
-      guildDisplayName: member.nick ?? member.user.global_name ?? member.user.username,
-      bot: member.user.bot ?? false,
-      lastSeenAt: now,
-      perChannelLastSeenAt: {}
-    })),
-    bots
-  );
-  const file = await storage.updateRevisionedJson({
-    resourceKey: `members:${guildId}`,
-    relativePath: path.join("user", "servers", guildId, "members.json"),
-    schema: GuildMembersFileSchema,
-    fallback: GuildMembersFileSchema.parse(createEmptyRevisionedFile({ guildId, members: [] })),
-    transform: (current) => ({
-      ...current,
-      guildId,
-      members
-    })
-  });
-  return {
-    accepted: true,
-    guildId,
-    message: `Fetched ${members.length} members from Discord.`,
-    members: file
-  };
-}
-
-async function fetchAllDiscordGuildMembers(token: string, guildId: string) {
-  const MemberSchema = z.object({
-    nick: z.string().nullable().optional(),
-    user: z.object({
-      id: z.string(),
-      username: z.string().optional(),
-      global_name: z.string().nullable().optional(),
-      bot: z.boolean().optional()
-    })
-  });
-  const members: Array<z.infer<typeof MemberSchema>> = [];
-  let after = "0";
-  for (;;) {
-    const response = await discordApiFetch(
-      token,
-      `/guilds/${guildId}/members?limit=1000&after=${encodeURIComponent(after)}`
-    );
-    const page = z.array(MemberSchema).parse(response);
-    members.push(...page);
-    if (page.length < 1000) {
-      return members;
-    }
-    after = page[page.length - 1]?.user.id ?? after;
-  }
-}
-
-async function refreshDiscordEmojis(storage: StorageService, guildId: string) {
-  const token = await readDiscordBotToken(storage);
-  if (!token) {
-    return {
-      accepted: false,
-      guildId,
-      message: "Discord bot token is not configured. Save the orchestrator bot first.",
-      emojis: await readEmojis(storage, guildId)
-    };
-  }
-  const response = await discordApiFetch(token, `/guilds/${guildId}/emojis`);
-  const rawEmojis = z
-    .array(
-      z.object({
-        id: z.string(),
-        name: z.string().nullable(),
-        animated: z.boolean().optional(),
-        available: z.boolean().optional(),
-        roles: z.array(z.string()).optional()
-      })
-    )
-    .parse(response);
-  const now = nowIso();
-  const emojis: GuildEmojiCacheEntry[] = rawEmojis
-    .filter((emoji) => emoji.name)
-    .map((emoji) => ({
-      id: emoji.id,
-      name: emoji.name ?? "emoji",
-      animated: emoji.animated ?? false,
-      available: emoji.available ?? true,
-      roles: emoji.roles ?? [],
-      fetchedAt: now
-    }));
-  const file = await storage.updateRevisionedJson({
-    resourceKey: `emojis:${guildId}`,
-    relativePath: path.join("user", "servers", guildId, "emojis.json"),
-    schema: GuildEmojisFileSchema,
-    fallback: GuildEmojisFileSchema.parse(createEmptyRevisionedFile({ guildId, emojis: [] })),
-    transform: (current) => ({
-      ...current,
-      guildId,
-      emojis
-    })
-  });
-  return {
-    accepted: true,
-    guildId,
-    message: `Fetched ${emojis.length} server emojis from Discord.`,
-    emojis: file
-  };
-}
-
-async function refreshDiscordRoles(storage: StorageService, guildId: string) {
-  const token = await readDiscordBotToken(storage);
-  if (!token) {
-    return {
-      accepted: false,
-      guildId,
-      message: "Discord bot token is not configured. Save the orchestrator bot first.",
-      roles: await readRoles(storage, guildId)
-    };
-  }
-  const rawRoles = await fetchAllDiscordGuildRoles(token, guildId);
-  const roles = mapDiscordRoles(rawRoles);
-  const file = await storage.updateRevisionedJson({
-    resourceKey: `roles:${guildId}`,
-    relativePath: path.join("user", "servers", guildId, "roles.json"),
-    schema: GuildRolesFileSchema,
-    fallback: GuildRolesFileSchema.parse(createEmptyRevisionedFile({ guildId, roles: [] })),
-    transform: (current) => ({
-      ...current,
-      guildId,
-      roles
-    })
-  });
-  return {
-    accepted: true,
-    guildId,
-    message: `Fetched ${roles.length} server roles from Discord.`,
-    roles: file
-  };
-}
-
-async function fetchAllDiscordGuildRoles(token: string, guildId: string) {
-  const response = await discordApiFetch(token, `/guilds/${guildId}/roles`);
-  return z
-    .array(
-      z.object({
-        id: z.string(),
-        name: z.string(),
-        color: z.number().int().nonnegative().optional(),
-        hoist: z.boolean().optional(),
-        mentionable: z.boolean().optional(),
-        managed: z.boolean().optional()
-      })
-    )
-    .parse(response);
-}
-
-function mapDiscordRoles(rawRoles: Awaited<ReturnType<typeof fetchAllDiscordGuildRoles>>): GuildRoleCacheEntry[] {
-  const now = nowIso();
-  return rawRoles
-    .filter((role) => role.name !== "@everyone")
-    .map((role) => ({
-      id: role.id,
-      name: role.name,
-      color: role.color ?? 0,
-      hoist: role.hoist ?? false,
-      mentionable: role.mentionable ?? false,
-      managed: role.managed ?? false,
-      fetchedAt: now
-    }));
-}
-
-async function readDiscordBotToken(storage: StorageService): Promise<string | undefined> {
-  const bots = await readDiscordBots(storage);
-  return bots.orchestrator?.enabled === false
-    ? bots.waifus.find((bot) => bot.enabled && bot.token)?.token
-    : bots.orchestrator?.token ?? bots.waifus.find((bot) => bot.enabled && bot.token)?.token;
-}
-
-// discord.js REST client: per-bucket queueing, 429 backoff and a compliant User-Agent.
-async function discordApiFetch(token: string, pathAndQuery: string): Promise<unknown> {
-  try {
-    return await discordRestGet(discordRestForToken(token), pathAndQuery);
-  } catch (error) {
-    if (error instanceof DiscordAPIError || error instanceof HTTPError) {
-      throw badRequest(`Discord API request failed (${error.status}): ${error.message || "unknown error"}`);
-    }
-    throw error;
-  }
 }
 
 async function diagnosticBundle(

@@ -1,12 +1,11 @@
 import type {
-  DiscordMessageDeleteEvent,
-  DiscordMessageEditEvent,
   DiscordMessageEvent,
   DiscordThreadEvent,
   DiscordThreadInfo
 } from "../discord/client.js";
 import path from "node:path";
-import { loadGuildDirectoryView } from "../discord/directoryView.js";
+import { ConversationMessageCache } from "../discord/conversationCache.js";
+import { GuildDirectory } from "../discord/guildDirectory.js";
 import { ServerConfigSchema, type ServerConfig } from "../shared/schemas/domain.js";
 import { createGatewayModelPipeline } from "./pipeline/gatewayPipeline.js";
 import { sharedProviderAlerts, type ProviderAlerts } from "./providerAlerts.js";
@@ -34,7 +33,7 @@ import {
   runKey,
   timerKey
 } from "./runtimeShared.js";
-import { channelHasWaifus, ensureChannelConfig, ensureServer, isKnownWaifuAuthor, syncGuilds } from "./stores/config.js";
+import { channelHasWaifus, ensureChannelConfig, ensureServer, isKnownWaifuAuthor, readDiscordBotsFile, syncGuilds } from "./stores/config.js";
 import { healPendingOrchestratorDecisions } from "./stores/decisionHistory.js";
 import { noteActiveChatParticipant } from "./stores/participants.js";
 import { clearScheduledRetrigger, ensureChannelSession, persistShutdownWake, removeChannelSession } from "./stores/sessions.js";
@@ -87,15 +86,34 @@ export class RuntimeOrchestrator {
   private readonly commands: RuntimeCommands;
   /** The one context engine for this runtime (spec 8.3); collaborators get it as `options.contexts`. */
   readonly contexts: ContextRuntime;
+  /** Event-maintained names for mentions, roles, channels, emojis (spec 9.4); `/api/runtime` reads its status. */
+  readonly directory: GuildDirectory;
+  /**
+   * The message source behind `contexts` (spec 9.4). Subscribe with `conversations.onEvent` for
+   * message update/delete/reaction events (edits and deletes, DM traffic).
+   */
+  readonly conversations: ConversationMessageCache;
 
   constructor(private readonly options: RuntimeOrchestratorOptions) {
     const ocr = options.ocr;
+    this.directory =
+      options.directory ??
+      new GuildDirectory({
+        storage: options.storage,
+        logger: options.logger,
+        settings: () => ({ memberListRefreshHours: options.memberListRefreshHours ?? 24 }),
+        bots: () => readDiscordBotsFile(options.storage)
+      });
+    this.conversations =
+      options.conversationCache ??
+      new ConversationMessageCache({ discord: () => this.options.discord, logger: options.logger, directory: this.directory });
     this.contexts =
       options.contexts ??
       createAppContextRuntime({
         storage: options.storage,
         discord: () => this.options.discord,
         logger: options.logger,
+        cache: this.conversations,
         ...(options.images ? { images: options.images } : {}),
         ...(options.imageConfig ? { imageConfig: options.imageConfig } : {}),
         ...(options.compaction ? { compactionSettings: options.compaction } : {}),
@@ -120,7 +138,12 @@ export class RuntimeOrchestrator {
           });
         }
       });
-    const services: RuntimeCollaboratorOptions = { ...options, contexts: this.contexts };
+    const services: RuntimeCollaboratorOptions = {
+      ...options,
+      contexts: this.contexts,
+      directory: this.directory,
+      conversationCache: this.conversations
+    };
     const hooks: RuntimeHooks = {
       runBackground: (label, context, task) => this.runBackground(label, context, task),
       isStopping: () => this.stopping
@@ -180,33 +203,40 @@ export class RuntimeOrchestrator {
   }
 
   /**
-   * The raw discord.js edit / delete subscriptions, kept in one place: once the conversation cache
-   * is the source of these events (`conversations.onEvent` into `applyMessageEvent`) this is the
-   * only function to drop.
+   * Edits and deletes come from the conversation cache (spec 9.5): the gateway feed publishes
+   * them once, the cache applies them, and this is the only consumer that feeds the ledger.
    */
-  private subscribeRawEditDeleteEvents(): Array<(() => void) | undefined> {
-    return [
-      this.options.discord.onMessageEdit?.((event) => {
-        this.runBackground("Discord message edit handler failed", discordEditLogContext(event), () =>
-          this.handleDiscordMessageEdit(event)
+  private subscribeConversationChanges(): () => void {
+    return this.conversations.onEvent((event) => {
+      if (event.type === "update") {
+        this.runBackground("Discord message edit handler failed", { guildId: guildOf(event.conversation), messageId: event.message.id }, () =>
+          this.applyMessageEvent({ type: "update", conversation: event.conversation, message: event.message, previous: event.previous, source: event.source })
         );
-      }),
-      this.options.discord.onMessageDelete?.((event) => {
-        this.runBackground("Discord message delete handler failed", discordDeleteLogContext(event), () =>
-          this.handleDiscordMessageDelete(event)
+      } else if (event.type === "delete") {
+        this.runBackground("Discord message delete handler failed", { guildId: guildOf(event.conversation), messageId: event.messageId }, () =>
+          this.applyMessageEvent({ type: "delete", conversation: event.conversation, messageId: event.messageId, previous: event.previous, source: event.source })
         );
-      })
-    ];
+      } else if (event.type === "deleteBulk") {
+        this.runBackground("Discord message delete handler failed", { guildId: guildOf(event.conversation), count: event.messageIds.length }, () =>
+          this.applyMessageEvent({ type: "deleteBulk", conversation: event.conversation, messageIds: event.messageIds })
+        );
+      }
+    });
   }
 
   async start(): Promise<void> {
+    // Before any handler can read a conversation: the feed marks conversations untrusted until
+    // their first REST sync, and keeps names fresh from then on.
+    const discord = this.options.discord;
+    this.directory.start(discord.onDirectoryEvent ? (listener) => discord.onDirectoryEvent!(listener) : undefined);
     this.unsubscribes = [
+      this.conversations.attach(),
       this.options.discord.onMessage?.((event) => {
         this.runBackground("Discord message handler failed", discordMessageLogContext(event), () =>
           this.handleDiscordMessage(event)
         );
       }),
-      ...this.subscribeRawEditDeleteEvents(),
+      this.subscribeConversationChanges(),
       this.options.discord.onThreadChange?.((event) => {
         this.runBackground("Discord thread handler failed", { guildId: event.guildId, threadId: event.threadId, change: event.change }, () =>
           this.handleDiscordThreadChange(event)
@@ -308,6 +338,7 @@ export class RuntimeOrchestrator {
     // Calls aborted by the halt above queue their `aborted` ledger lines fire-and-forget; wait for
     // them so a following process exit cannot lose them.
     await this.usageLedger.flush();
+    await this.directory.close();
   }
 
   /** Explicit user pause: interrupted replies are never resumed later (see restartResume.ts). */
@@ -468,6 +499,12 @@ export class RuntimeOrchestrator {
     }
     // A channel with a stored entry of its own (not a thread overlay) is a plain channel.
     if (server.channels[event.channelId]) return {};
+    // The gateway-fed directory knows channels and threads (A seeds it at boot).
+    const known = this.directory.channel(event.guildId, event.channelId);
+    if (known?.kind === "thread" && known.parentId) {
+      return { thread: { parentId: known.parentId, name: known.name, kind: "public_thread", archived: false, locked: false } };
+    }
+    if (known) return {};
     try {
       const metadata = await this.options.discord.fetchChannelMetadata?.({ guildId: event.guildId, channelId: event.channelId });
       return metadata ? { ...(metadata.thread ? { thread: metadata.thread } : {}), metadata } : {};
@@ -539,28 +576,6 @@ export class RuntimeOrchestrator {
     return ensureServer(this.options.storage, event.guildId);
   }
 
-  /** Raw discord.js edit event: translated to the shared adapter shape. */
-  async handleDiscordMessageEdit(event: DiscordMessageEditEvent): Promise<void> {
-    await this.applyMessageEvent(
-      {
-        type: "update",
-        conversation: { kind: "guild", guildId: event.guildId, channelId: event.channelId },
-        message: event.message,
-        source: "gateway"
-      },
-      {
-        ...(event.thread ? { thread: event.thread } : {}),
-        ...(event.previousMentionIds ? { previousMentionIds: event.previousMentionIds } : {})
-      }
-    );
-  }
-
-  /** Raw discord.js delete / bulk delete event: translated to the shared adapter shape. */
-  async handleDiscordMessageDelete(event: DiscordMessageDeleteEvent): Promise<void> {
-    const conversation = { kind: "guild" as const, guildId: event.guildId, channelId: event.channelId };
-    await this.applyMessageEvent({ type: "deleteBulk", conversation, messageIds: event.messageIds });
-  }
-
   /**
    * The single entry point for message edits and deletes (spec 9.5), whatever the source.
    *
@@ -589,9 +604,7 @@ export class RuntimeOrchestrator {
       // newly recorded this edit: a second delivery of the same edit is ignored by the ledger.
       const wouldRetrigger = event.source !== "catchup" && (await this.editAddsWaifuMention(conversation, event, extra.previousMentionIds));
       const server = await ensureServer(this.options.storage, guildId);
-      const directory = await loadGuildDirectoryView(this.options.storage, guildId, {
-        channelName: (id) => server.channels[id]?.name
-      });
+      const directory = await this.directory.view(guildId, (id) => server.channels[id]?.name);
       const outcome = await this.contexts.recordMessageEdit(conversation, message, { directory });
       const newlyRecorded = outcome === "replaced" || outcome === "event" || outcome === "coalesced";
       if (!wouldRetrigger || !newlyRecorded) return;
@@ -785,12 +798,8 @@ function discordMessageLogContext(event: DiscordMessageEvent): Record<string, un
   };
 }
 
-function discordEditLogContext(event: DiscordMessageEditEvent): Record<string, unknown> {
-  return { guildId: event.guildId, channelId: event.channelId, messageId: event.messageId };
-}
-
-function discordDeleteLogContext(event: DiscordMessageDeleteEvent): Record<string, unknown> {
-  return { guildId: event.guildId, channelId: event.channelId, count: event.messageIds.length };
+function guildOf(conversation: ConversationRef): string | undefined {
+  return conversation.kind === "guild" ? conversation.guildId : undefined;
 }
 
 function slashCommandLogContext(event: {
