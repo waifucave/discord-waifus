@@ -149,7 +149,7 @@ The detector answers one question about the newest human burst in a channel: who
 - **Daily budget** (new, per waifu, `life.dailyBudgetUsd`, default `null` = unlimited): once her
   usage-ledger cost for the local day reaches it, wakes are deferred to the next local day exactly
   like sleep, except `owner` wakes.
-- **Room loop guard** (new, `life.maxWaifuOnlyRun`, default 12, 0 = off): after that many
+- **Room loop guard** (new, `life.maxWaifuOnlyRun`, default 0 = off, owner decision): when set, after that many
   consecutive messages in one place written only by waifus, waifu-authored messages stop producing
   `mention`/`watch` wakes in that place until a human writes there again. This is a cost backstop,
   not a turn-taking rule.
@@ -360,8 +360,8 @@ send_message({ place: string, text: string (1–2000 chars), reply_to?: string /
   only people present in that place. `@everyone`, `@here` and role pings are neutralised.
 - Outbound filter (deterministic, from `outputValidator.ts`): strips a leading `[HH:MM #ref] Name:`
   header she may have copied and rejects text that is only tool syntax. No LLM reviewer.
-- Room loop guard (§4.4) and DM rate limit apply; a blocked send returns a short error she can
-  read.
+- Room loop guard (§4.4, when enabled) and DM rate limit apply; a blocked send returns a short
+  error she can read.
 - 50007 marks the DM undeliverable (existing behaviour).
 - Records the own send in the conversation cache and advances her read cursor.
 
@@ -692,7 +692,7 @@ All registered before the schema stamp, idempotent, re-run safe.
 | `life.maxToolRounds` | 12 |
 | `life.maxTurnMs` | 180000 |
 | `life.maxLogMessages` | 400 |
-| `life.maxWaifuOnlyRun` | 12 (0 = off) |
+| `life.maxWaifuOnlyRun` | 0 (off) |
 | `life.maintenanceHourLocal` | 5 |
 | `life.dailyBudgetUsd` (per waifu, in the waifu config) | null |
 | `search.exaApiKey` | "" |
@@ -806,11 +806,11 @@ pass, then a local merge.
 L1 and L2 are separate because L1 is a mechanical swap that L2 builds on; the app is not expected
 to be usable between them (the branch `living-cast` is merged to `main` only after L3).
 
-## 15. Open points for the owner
+## 15. Owner answers to the open points (2026-10-24)
 
-1. **Room loop guard** default of 12 consecutive waifu-only messages, or off?
-2. **Daily budget** per waifu: default none, or a number?
-3. **Release** as 3.0.0 together with Phases 4–5?
-4. **DM content in the dashboard Life timeline**: hidden by default with a reveal toggle (as
-   specified), or always shown to the owner?
-5. **Exa**: an API key from you, or try the anonymous endpoint first?
+1. Room loop guard: **off** by default (`life.maxWaifuOnlyRun` 0); the owner can enable it.
+2. Daily budget: **none** by default; set per waifu when wanted.
+3. Release: **3.0.0** together with Phases 4–5, once Living cast is done.
+4. DM content in the dashboard Life timeline: **hidden with a reveal toggle** (local only).
+5. Exa: use `search.exaApiKey` when set, otherwise the anonymous endpoint if Exa's terms allow it
+   (checked during L2); with neither, `web_search` is not offered to the model.
