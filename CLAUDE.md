@@ -13,7 +13,8 @@ specs and plans describe earlier checkpoints and do not establish present releas
 - `npm run typecheck` — type-checks backend and frontend configs separately, no emit.
 - `npm run test` / `npm run test:watch` — Vitest, Node environment, `tests/**/*.test.ts`. Run one file with `npx vitest run tests/<name>.test.ts`; one test with `npx vitest run -t "<name pattern>"`.
 - `npm run benchmark:decisions` — preview bounded decision judgments without inference; `-- --live` runs the benchmark through `ModelClient` using saved provider settings. Local Laya uses a separate Python environment. See `docs/decision-api-benchmark.md`; this tooling does not enable anything in production.
-- `npm run waifus -- <cmd>` — invoke the CLI through the local bin (`start`, `dev`, `stop`, `restart`, `status`, `remote`, `doctor`, `clean`, `update`). `remote status` and `remote stop` target only the remote gateway daemon.
+- `npm run waifus -- <cmd>` — invoke the CLI through the local bin (`start`, `dev`, `stop`, `restart`, `status`, `remote`, `doctor`, `clean`, `update`, and the settings and life commands `help`, `list`, `get`, `set`, `unset`, `wake`, `life`, `forget`, `usage`). `remote status` and `remote stop` target only the remote gateway daemon.
+- `npm run docs:settings:generate` / `:check` — regenerate or verify `docs/assistant-kb/settings.md` and the generated endpoint table of `docs/assistant-kb/api.md` (`tests/settingsDocs.test.ts` fails when they are stale).
 - `npm run dev:frontend` — Vite dashboard on `:5173`, proxies `/api` to `127.0.0.1:3888`. Pair with `npm run waifus -- dev` for end-to-end iteration.
 - `npm run release:beta -- <version> --yes --message "..."` — full release from a clean `main`: validates (tests, build, `check-no-file-deps`), packs, pushes the `v<version>` tag, and the GitHub workflow publishes the tarball to npm (`npm publish <tarball>` runs no lifecycle scripts, so `prepublishOnly` never fires on that path). Deploying to a machine is a separate manual `npm install -g @waifucave/discord-waifus@<version>` + `waifus restart`.
 
@@ -43,8 +44,8 @@ Discord runtime and supervises its own remote-role helper child.
 
 **Startup pipeline** (`src/backend/server.ts:startBackend`): acquire the exclusive host lock `app/host.lock` (`src/storage/instanceLock.ts`: pid + OS process start time + nonce; a second host on the same data root fails fast, stale locks are broken; the remote gateway role does not take it) → `runMigrations` (`src/backend/migrations.ts`; legacy shape steps run once and are recorded in the `app/migrations.json` ledger, the frozen legacy model-id remap re-runs per app version, and invariant checks such as remote-state hardening and the stored-effort check run every boot — a missing/corrupt ledger, or an `app/runtime.json` written by a different version than the ledger's, re-runs every idempotent step; new steps get a new id) → `loadAppConfig` → instantiate `StorageService` (per-resource locking JSON store rooted at the data root) → optional Discord connect (`maybeConnectDiscord`, gated by `runtime.autoConnectDiscord`) → build `CastRuntime` (which starts the `LivingCast`) → mount API via `createApiServer`. Runtime state is persisted to `~/.dc-waifus/runtime.json` so `waifus status`/`stop` can find the live process; they verify the pid against the lock's start time (or pid.json `startedAt`) before reporting or signalling it, so a pid reused after a crash is treated as stale. Start times come from `ps` on macOS/Linux; Windows falls back to pid liveness.
 
-**Living cast (spec `docs/specs/2026-10-24-living-cast-design.md`; L1 and L2 done, L3 = API,
-settings registry, CLI and dashboard)**: each waifu is an autonomous agent with one continuous
+**Living cast (spec `docs/specs/2026-10-24-living-cast-design.md`; L1, L2 and L3 done; L3's own
+choices are listed in spec §14.4)**: each waifu is an autonomous agent with one continuous
 life; there is no director. `CastRuntime` (`src/orchestration/runtime.ts`) keeps the Discord
 lifecycle, guild/channel sync, threads, DM eligibility, forget and pause/resume, and owns one
 `LivingCast` (`src/life/livingCast.ts`): House bot → **intake** (`intake.ts`: guild bursts coalesce
@@ -77,7 +78,8 @@ fires reminders (routed under a deterministic wake id before removal), drops exp
 sends the `morning` batch when sleep ends and starts nightly maintenance with any pending scrubs
 (`maintenance.ts`) as a tracked background task (abortable; one process-wide run per waifu). The
 storage service skips writes whose content did not change. The House bot owns
-`/wake` and `/print`: only the Discord application's owner or its team members may run them
+`/wake` and `/print` (`/print life|system_prompt` leave DM content out unless `private:true`, by the
+same rule as the dashboard, `src/life/lifeView.ts`): only the Discord application's owner or its team members may run them
 (`src/discord/applicationOwners.ts`, refreshed every 6 hours and checked again at run time;
 Administrator is only the commands' default visibility); `/wake` reaches only waifus cast in that
 server. DM bots keep `/forget`.
@@ -217,13 +219,34 @@ PUT shim in `src/api/server.ts`.
   writes and the directory's removal share one per-conversation queue
   (`forgetConversationImageIndex`), and a write never recreates a missing conversation directory.
 
+**Living cast API, settings registry and CLI (L3, spec §14)**: life routes in `src/api/lifeRoutes.ts`
+(status, log, wake, compact, reset, needs-review); cast-wide routes in `src/api/castRoutes.ts` (usage
+from the ledger by local day via `src/orchestration/usageReport.ts`, search usage, detector config and
+history, forget jobs, owner notices from `src/backend/castHealth.ts`); request and response schemas in
+`src/shared/schemas/api.ts`. **DM content (D14)** is left out of every life view unless a local
+request says `includePrivate=1` (403 `PrivateContentLocalOnly` over Remote Access and for the
+assistant): `src/life/lifeView.ts` finds DM calls generically (any string argument that is a `dm/…`
+or `dm_…` place, whatever the tool is called), hides their calls and results, her text in a DM turn,
+quoted DM notification parts and her summary. The settings registry (`src/shared/settings/`:
+`registry.ts` groups and keys with help, `introspect.ts` walks the zod schemas, `topics.ts`,
+`render.ts`, `commands.ts` the CLI table) feeds `GET /api/help[/:topic]` (`src/api/help.ts`, every
+route's summary in `src/api/routeHelp.ts`, kept equal to the policy manifest by a test), `waifus help`,
+the dashboard's Settings forms and the generated KB (`src/api/settingsDocs.ts`). Every key has an
+HTTP path, a CLI path and help: `tests/settingsRegistry.test.ts` walks the schemas and
+`tests/cliSettings.test.ts` round-trips every writable key through the CLI and the real API. The
+CLI (`src/cli/ownerCommands.ts` dispatch, `settingsCommands.ts` per-group adapters,
+`lifeCommands.ts`, `hostClient.ts` with the identity handshake, `cliContext.ts` exit codes 0–5) never
+takes secrets from argv (`--from-env`, stdin or a hidden prompt) and never imports the host
+statically. Incomplete migration steps are also kept in `app/migrations-incomplete.json` for
+`waifus doctor`/`status` and the owner notices.
+
 **Storage** (`src/storage/storageService.ts`, `src/shared/schemas/domain.ts`): everything user-owned is a revisioned JSON file under `~/.dc-waifus/user/` (providers, discord-bots, waifus, the assistant config, servers incl. `threads.json`, `dms/<userId>/` DM state and rate-limit counters), except `user/usage/YYYY-MM-DD.jsonl`, the append-only usage ledger. Writes use atomic temp-file swap with per-resource locks. Zod schemas in `src/shared/schemas/` are the authority for both on-disk format and API I/O — change them and the migrations together. `resolveDataPath` throws if the joined path escapes the data root, but that is a backstop — any route that builds a path from a request id must still validate it first (`src/api/ids.ts`: `assertSafeId` rejects dot-only ids; guild/channel/user ids must be Discord snowflakes via `assertSnowflakeId`).
 
 **API conventions** (`src/api/server.ts`, `src/api/errors.ts`): errors carry a machine-readable `code` (`BadRequest`/`NotFound`/`Conflict`/`PreconditionRequired`) via `ApiError`. Revision enforcement is deliberately split: waifu writes require `expectedRevision` (missing → 428, mismatch → 409); other resources accept it optionally and are last-writer-wins otherwise. A waifu's or the assistant's `model` is replaced whole when sent (`null` unsets it, omission keeps it) and must be a route `GET /api/models` offers with an effort that route lists (400 `model_not_available` / `unsupported_effort`). `waifu.botId` uses the same null-to-unset pattern.
 
-**Frontend** (`src/frontend/`): React 19 SPA. `screens/` mirrors top-level navigation (`nav.ts`); shared client state lives in `state/` (`runtimeStore.ts` exists but is not wired into any screen yet — Phase 7 uses it for live status). API types are mirrored in `src/frontend/api/types.ts` — these must stay in sync with `src/shared/schemas/domain.ts` manually (no codegen). Every model choice (Cast, Onboarding, Settings → Assistant) uses `components/ModelPicker.tsx` over `GET /api/models` (route + effort); the Direction and Memory screens are gone.
+**Frontend** (`src/frontend/`): React 19 SPA. `screens/` mirrors top-level navigation (`nav.ts`: Home, Cast, Life, Rooms, Activity, Settings); shared client state lives in `state/` (`runtimeStore.ts` exists but is not wired into any screen; screens poll). API types in `src/frontend/api/types.ts` are derived from the shared zod schemas with type-only imports (I17: `z.output`/`z.input`, the runtime state's non-remote part in `src/shared/schemas/runtime.ts`); only server-built shapes (curated models, provider status, assistant events, help payloads) and Remote Access (D5) are hand-mirrored. `tests/frontendSharedImports.test.ts` fails on a value import from `src/shared/` other than the zod-free `src/shared/constants/`. The Life screen (`LifeScreen.tsx`, helpers in `lifeView.ts`) renders the life log generically over tool names; its DM reveal is local only. Settings forms come from the registry over `GET /api/help/<topic>` (`components/RegistryForm.tsx`) and every write sends only the changed keys (`castEdit.ts` for waifus). Every model choice (Cast, Onboarding, Settings → Assistant) uses `components/ModelPicker.tsx` over `GET /api/models` (route + effort); the Direction and Memory screens are gone.
 
-**Dashboard assistant** (`src/api/assistant/`): a built-in agent reachable from the dashboard chat. `routes.ts` exposes conversations under `/api/assistant/*` with SSE streaming; `service.ts` runs the tool loop over `ModelClient.stream` (model from `PUT /api/assistant/config`, else an enabled waifu's model that is offered, keyed and not a contributor variant; text deltas stream as `text_delta` events); `tools.ts` defines self-REST tools that mutate app state by dispatching to the app's own HTTP routes via `app.inject` (with revision-conflict retry). Its knowledge base is `docs/assistant-kb/*.md`, served read-only at `/api/docs` — update those docs when endpoint semantics change.
+**Dashboard assistant** (`src/api/assistant/`): a built-in agent reachable from the dashboard chat. `routes.ts` exposes conversations under `/api/assistant/*` with SSE streaming; `service.ts` runs the tool loop over `ModelClient.stream` (model from `PUT /api/assistant/config`, else an enabled waifu's model that is offered, keyed and not a contributor variant; text deltas stream as `text_delta` events); `tools.ts` defines self-REST tools that mutate app state by dispatching to the app's own HTTP routes via `app.inject` (with revision-conflict retry); Living cast tools are `get_life` (never DM content), `wake_waifu`, `get_usage`, `get_setting_help`, `update_app_config` and `forget_person` (secure confirmation card with the scrub limits). Its knowledge base is `docs/assistant-kb/*.md`, served read-only at `/api/docs` — update those docs when endpoint semantics change; `settings.md` and the endpoint table in `api.md` are generated (`npm run docs:settings:generate`).
 
 **Remote management** (`src/remote/`, `src/backend/remoteAccess/`): the host and remote gateway both
 use the same signed `ts-connect` helper package resolver and authenticated WIPC supervisor. The

@@ -18,6 +18,8 @@ Remote management lives in `src/remote/` (local gateway, helper verification, tr
 - `npm run benchmark:decisions`: preview the isolated decision benchmark; `-- --live` makes inference calls using saved provider keys. See `docs/decision-api-benchmark.md` for targets, costs, local Laya setup, and measurement limits.
 - `npm run waifus -- remote`: start the separate local remote gateway and open its connection window. `remote status` and `remote stop` affect only that gateway.
 - `npm run waifus -- start` / `restart`: launch or restart the ordinary local Discord host. It can coexist with `waifus remote`.
+- `npm run waifus -- help [topic]`, `get|set|unset|list`, `wake`, `life`, `forget`, `usage`: every setting and each waifu's life from the terminal (over the running host's loopback API; `app` settings and `usage` also work with it stopped).
+- `npm run docs:settings:generate` / `docs:settings:check`: regenerate or verify `docs/assistant-kb/settings.md` and the endpoint table in `docs/assistant-kb/api.md` from the settings registry and route help (a test fails when they are stale).
 
 `DC_WAIFUS_HOME=PATH` selects an isolated data root. Pairings and installation identities belong to that root; use isolated roots for tests and preserve normal user data.
 

@@ -2,7 +2,7 @@
 
 # 💬 Discord Waifus
 
-### A cast of AI characters that *live* in your Discord server — each with their own personality, picking fights, cracking jokes, and replying on their own.
+### A cast of AI characters that *live* in your Discord server — each with her own personality and her own life, picking fights, cracking jokes, and deciding for herself when to talk.
 
 [![npm version](https://img.shields.io/npm/v/@waifucave/discord-waifus?color=ff6ad5&label=npm&logo=npm)](https://www.npmjs.com/package/@waifucave/discord-waifus)
 [![downloads](https://img.shields.io/npm/dm/@waifucave/discord-waifus?color=8a2be2&logo=npm)](https://www.npmjs.com/package/@waifucave/discord-waifus)
@@ -10,7 +10,7 @@
 [![license](https://img.shields.io/github/license/waifucave/discord-waifus?color=ff8fab)](LICENSE)
 [![stars](https://img.shields.io/github/stars/waifucave/discord-waifus?style=social)](https://github.com/waifucave/discord-waifus)
 
-**[Install](#-quick-start) · [Features](#-features) · [Setup](#-setup) · [Providers](#-supported-ai-providers) · [Dev](#-for-developers)**
+**[Install](#-quick-start) · [Features](#-features) · [Setup](#-setup) · [Models](#-models-and-keys) · [CLI](#%EF%B8%8F-cli) · [Dev](#-for-developers)**
 
 </div>
 
@@ -36,25 +36,33 @@
 
 **Discord Waifus** turns your server into a living group chat full of AI personalities.
 
-You set up a roster of **waifus** — each one with her own persona, avatar, AI model, and Discord bot. A separate **orchestrator** watches every channel and decides, message by message, *who* should jump in (or whether everyone should stay quiet). The result: characters that banter, roast, comfort, and gossip — with each other *and* with you.
+You set up a cast of **waifus** — each one with her own persona, AI model and (optionally) her own
+Discord bot. Since **3.0.0, the Living cast**, every waifu is an autonomous agent with **one
+continuous life**: a mention, a reply, her name, a DM, one of her own reminders or watches wakes
+her; she reads the room, decides whether to answer (or to stay quiet), keeps notes as her memory and
+tidies them every night. There is no director picking speakers: each waifu decides for herself.
 
-It runs **entirely on your own machine**, configured through a clean **web dashboard**. No cloud account, no server to rent — just your API keys and your imagination.
+It runs **entirely on your own machine**, configured through a **web dashboard** or the `waifus`
+command. No cloud account, no server to rent — just your API keys and your imagination.
 
 ---
 
 ## ✨ Features
 
-- 🎭 **Multiple waifus** — each with a unique persona, avatar, Discord bot, and AI model.
-- 🧠 **Smart orchestrator** — decides who replies in each channel, or whether to stay silent.
-- 🎯 **Three orchestrator modes** — LLM, free deterministic, or native decision APIs with One shot.
-- 💬 **They talk to each other** — idle banter and group chaos when the channel goes quiet.
-- ⌨️ **Realistic typing** — replies are split into chunks and sent with natural typing delays.
-- 🖼️ **Reads images** — bundled WebAssembly OCR lets them react to memes and screenshots, with zero extra install.
-- 🧩 **Mix & match providers** — x.ai, OpenAI, Anthropic, DeepSeek, Z.AI, and Google AI Studio models, side by side.
-- 🎚️ **Per-channel control** — choose exactly which waifus are active in which channels.
-- 🧷 **Persistent memory** — they remember things across conversations.
-- 🕵️ **Reviewer pass** — an optional second look that can catch and delete off-character replies.
-- 🖥️ **Web dashboard** — set everything up in your browser. No hand-edited config files.
+- 🎭 **A cast that lives** — every waifu has her own persona, model, life log and notes, and acts on her own.
+- 🔔 **Woken by what concerns her** — mentions, replies, her name, DMs, her reminders and watches, and an
+  addressee detector for messages nobody addressed.
+- 😴 **Sleep, schedules and budgets** — a nightly sleep window with a morning summary, busy blocks, and an
+  optional daily budget per waifu.
+- 💌 **DMs** — each waifu can answer DMs to her own bot, with a per-person rate limit.
+- 🔎 **Web search** — Exa search and page reading, capped per day (works without a key).
+- 🖼️ **Reads images** — bundled WebAssembly OCR for memes and screenshots, with zero extra install.
+- 🧩 **Curated models** — Anthropic, OpenAI, DeepSeek, Meta and OpenRouter routes, each with its reasoning
+  efforts and price, at most $10 per million output tokens.
+- 🖥️ **Web dashboard** — a live Life timeline per waifu, usage and cost, and every setting.
+- ⌨️ **CLI and help** — every setting is readable and writable with `waifus get|set`, and documented by
+  `waifus help`.
+- 🧽 **Forget a person** — remove someone from DMs and every waifu's life and notes (best effort, see below).
 - 🌐 **Direct remote dashboard** — pair another device and manage the same host UI without
   installing Tailscale or exposing the local API to the Internet.
 - 🔒 **Local-first & private** — runs on your machine; all your data stays in `~/.dc-waifus`.
@@ -78,30 +86,17 @@ http://127.0.0.1:3888
 
 That's it. 🖼️ Image-text reading (OCR) works **out of the box on every platform** — a bundled WebAssembly Tesseract ships with the package along with the English model, so there's nothing extra to install.
 
-### Orchestrator modes
+### The addressee detector
 
-Open **Rooms → your server → Orchestration for this server**:
+A message that mentions, replies to or names a waifu wakes her directly. A message nobody addressed
+goes to the **addressee detector**, a native-choice decision model that picks who it is for (or
+nobody). Choose it in **Settings → Detector** (or `waifus set app detector.target …`); a server can
+override it in **Rooms**. With the detector off, a first message after 10 minutes of quiet, or a
+question, wakes one waifu at random.
 
-- **LLM** uses the global director model and prompt from Direction, with generated reasoning and goals.
-- **Deterministic** picks speakers structurally without an orchestration API call.
-- **One shot** uses one native-choice decision request per turn to choose one speaker or a pause,
-  identify repetition/scene stagnation, and select steering. The characters still generate their
-  replies with their own LLMs. The global LLM settings remain saved and unchanged.
-
-In One shot, pick a model from the additional **One shot model** selector. Save the corresponding
-OpenRouter or OpenAI key in **Settings → Providers** on the host. The live OpenRouter decision
-catalog includes Jev, Clef/Flash/Omni, Mercury Decide, Perplexity Decider, Microsoft Decision,
-Liquid d1, Drex, Tev, Kev, Solar Decide/Flash, and routed OpenAI Decisions, including available
-aliases/free variants. Direct OpenAI Decisions is also available. Yes/no-only models are excluded;
-these models are not offered as character text-generation models.
-
-One shot is experimental: detecting a loop does not guarantee breaking it. It has fixed pause
-buckets (100, 600, 3600 seconds, with timer-wake backoff), short template steering goals, and no
-generated wake-plan prose. At most 17 eligible characters are offered per pass; larger casts use
-addressing plus rotation to shortlist candidates. Automatic provider/validation failures use the
-existing deterministic fallback and record a safe error code. Required manual passes use the
-existing runtime error path instead. Existing pacing, pause, cancellation and directive guards
-remain active. Switching modes does not alter your waifu, stage-manager or reviewer models.
+The OpenRouter decision catalog and direct OpenAI Decisions need that provider's key in
+**Settings → Providers**. These models are only ever used for this choice, never as a character's
+model.
 
 **Optional local Laya:** English, multilingual and typed-decisions checkpoints are included as
 experimental choices, but Python and weights are not bundled. On the host, create a separate
@@ -115,15 +110,8 @@ DC_WAIFUS_LAYA_PYTHON=/absolute/path/to/waifus-laya-env/bin/python waifus restar
 
 On Windows, use the environment's `Scripts/python.exe` and set `DC_WAIFUS_LAYA_PYTHON` before
 starting Waifus. This is host-local environment configuration; it cannot be changed through
-remote settings. The first local call downloads public weights at a pinned revision; subsequent
-calls reuse supervised workers. A slow first download can time out and retry on a later call.
-Local calls serialize per checkpoint with bounded queues; shutdown cancels them. Laya offers
-at most seven candidates per pass. English/specialist contexts are short, and detected context
-clipping fails safely rather than producing a decision from incomplete input. The benchmark
+remote settings. The first local call downloads public weights at a pinned revision. The benchmark
 found substantial Laya false positives; don't mistake local/free operation for reliable routing.
-
-The same settings and model catalog work from the paired remote dashboard and assistant. The
-assistant can use `list_one_shot_models` and `update_server` without accessing provider secrets.
 
 ### Remote management
 
@@ -275,13 +263,18 @@ waifus update --github
 
 ## 🎮 Setup
 
-You'll create **one Discord application for the orchestrator** and **one application for each waifu bot**. Then, in the web dashboard:
+You'll create **one Discord application for the House bot** (it reads the rooms and hosts the owner's
+`/wake` and `/print` commands) and, if you like, **one application per waifu** so each has her own
+name and avatar. A waifu without her own bot speaks through the House bot. Then, in the dashboard:
 
-1. 🤖 Add the orchestrator bot token and Application ID in **Orchestrator**.
-2. 🔑 Add your provider API keys in **Providers**.
-3. 🎭 Create each waifu — model, persona, and bot token — in **Waifus**.
-4. 📨 Invite the bots to your server from **Servers**.
-5. ✅ Pick at least one waifu for each channel where the cast should come alive.
+1. 🔑 **Settings → Providers**: add at least one model provider key.
+2. 🤖 **Settings → App → Discord bots**: add the House bot's Application ID and token (and each waifu bot's).
+3. 🎭 **Cast**: create each waifu — persona, model and effort, her bot, schedule, budget and DMs.
+4. 📨 Invite the bots to your server, then in **Rooms** pick the waifus for each channel.
+5. 👀 **Life** shows what each waifu is doing; **Home** shows who is awake and anything that needs you.
+
+The setup wizard walks you through the first steps; the dashboard assistant (Norma) can do any of
+this for you.
 
 ### Required gateway intents
 
@@ -296,46 +289,114 @@ MESSAGE_CONTENT
 
 > ⚠️ **`MESSAGE_CONTENT`** must be enabled in the Developer Portal so the waifus can read full channel context.
 
+DMs need no privileged intent: turn on **Cast → Direct messages** for a waifu with her own bot.
+
 ---
 
-## 🧩 Supported AI providers
+## 🧩 Models and keys
 
-Mix providers freely — give each waifu the brain that fits her personality.
+Models come from a **curated list** on top of the installed model catalog: each route lists its
+reasoning efforts and its price, and nothing above **$10 per million output tokens** is offered
+(**Settings → Models** or `waifus set app models.allowed …`). Pick a model and an effort per waifu in
+**Cast**.
 
-| Provider                  | Models                                  |
-| ------------------------- | --------------------------------------- |
-| ⚫ **x.ai**               | Grok 4.x                                |
-| 🟢 **OpenAI**            | GPT-5.x & GPT-4o                        |
-| 🟠 **Anthropic**         | Claude 4.x (Opus / Sonnet / Haiku)     |
-| 🔵 **DeepSeek**          | DeepSeek V4                             |
-| 🟡 **Z.AI**              | GLM 5 & GLM 4.x                         |
-| 🔴 **Google AI Studio**  | Gemini 3.x & 2.5                        |
+| Provider        | Curated models (by default)                     |
+| --------------- | ----------------------------------------------- |
+| 🟠 **Anthropic** | Claude Haiku 5.5, Claude Sonnet 5.5            |
+| 🟢 **OpenAI**    | GPT-6 Luna, GPT-6.1 Sol                         |
+| 🔵 **DeepSeek**  | DeepSeek Flash                                  |
+| 🟣 **Meta**      | Muse Spark 1.3 (contributor variant)            |
+| ⚪ **OpenRouter** | the same models through one OpenRouter key    |
 
-Each model has its own dedicated request pipeline, so provider-specific options (like reasoning/thinking controls) are exposed properly instead of being flattened into one generic shape.
+Contributor variants share your prompts for model training and are only ever an explicit choice.
+Keys are stored locally in `~/.dc-waifus/user/providers.json`, sent only to their provider, and never
+shown again (`waifus set provider:anthropic apiKey --from-env ANTHROPIC_API_KEY`, never on the
+command line itself).
+
+**Web search (Exa):** waifus search the web through Exa's hosted service, which works without a key;
+an `exa` key (**Settings → Search**) is used when the keyless service is busy or limited. Searches
+and page reads are capped per day (`search.*`, `life.webFetch.*`).
+
+---
+
+## 🧽 Forgetting someone
+
+**Life → Forget a person**, `waifus forget <userId>`, or `POST /api/people/:userId/forget` removes a
+Discord user from every DM, the member lists and the archive, and scrubs every waifu's life log,
+summary, queue and notes. A DM user can also use `/forget` in their DM with a waifu. Forget is a
+**best-effort scrub**:
+
+- Discord history itself is not deleted, and whatever a waifu already said in rooms stays there.
+- Usage-ledger lines and app logs stay (they hold ids only, never text).
+- Cached guild images, and any DM image no image index recorded, stay until the disk cache expires
+  them (`discord.images.diskCacheTtlHours`, 168 hours by default).
+- Anything outside this host, and the 15-minute web page cache, are not touched.
+- Name matching is best effort: a name someone else also has is only listed for review
+  (**Life → Needs review**).
+
+---
+
+## 🖥️ Dashboard
+
+- **Home** — who is awake, asleep or mid-turn, recent sends and wakes, today's cost, and anything
+  that needs you (owner notices, unfinished forgets, upgrade steps waiting).
+- **Cast** — persona, style, model and effort, her bot, wake-on-name, schedule, daily budget, DMs.
+- **Life** — each waifu's live timeline (tool calls with their arguments; private chats hidden unless
+  you reveal them on the host itself), Wake / Compact / Reset, review lines, today's web searches,
+  and the forget form.
+- **Rooms** — servers and channels, who may speak where, threads, and the detector override.
+- **Activity** — logs, model calls (a life's calls show metadata only) and usage by day, waifu,
+  purpose or model.
+- **Settings** — providers, models, search, the detector, life limits, the assistant, app settings
+  and Remote Access.
 
 ---
 
 ## ⌨️ CLI
 
-Everything is also drivable from the terminal via the global `waifus` command:
+Everything is also drivable from the terminal via the global `waifus` command (`waifus help` lists
+it all, offline):
 
-| Command            | What it does                                            |
-| ------------------ | ------------------------------------------------------- |
-| `waifus start`     | Boot the backend + dashboard.                           |
-| `waifus stop`      | Stop the running app.                                   |
-| `waifus restart`   | Restart it.                                             |
-| `waifus status`    | Show whether it's running and where.                    |
-| `waifus remote`    | Open the local remote-management gateway and dashboard. |
-| `waifus remote status` | Show only the remote gateway daemon.               |
-| `waifus remote stop` | Stop only the remote gateway daemon.                 |
-| `waifus remote --setup` | Open activation, pairing and remembered-host settings. |
-| `waifus doctor`    | Health check (incl. whether bundled OCR is usable).     |
-| `waifus clean`     | Delete saved user data (use intentionally!).            |
-| `waifus update`    | Update the installed package.                           |
+| Command | What it does |
+| --- | --- |
+| `waifus start` / `stop` / `restart` | Run the host (backend, dashboard and Discord) in the background. |
+| `waifus status` | Whether it runs, plus the Living cast's state that needs attention. |
+| `waifus doctor` | Health check (bundled OCR, the data root, unfinished upgrades and forgets). |
+| `waifus help [topic]` | Help for a command, a settings group, a key or a topic. |
+| `waifus list [group]` | The settings groups, or one group's keys with type, default and help. |
+| `waifus get TARGET [KEY]` | Read settings (`app`, `waifu:aria`, `server:<id>`, `channel:<g>/<c>`, `bot:house`, `provider:<id>`, `assistant`, `remote-access`). |
+| `waifus set TARGET KEY VALUE` | Change a setting (several `KEY=VALUE` pairs in one write); secrets only via `--from-env` or stdin. |
+| `waifus unset TARGET KEY` | Clear a key or restore its default. |
+| `waifus wake WAIFU [note]` | Wake a waifu now, with a note she sees. |
+| `waifus life WAIFU [--log]` | Her status, queue and today's cost; `--log` adds her recent life (`--private` on the host shows DMs). |
+| `waifus forget USER_ID` | Forget a person (asks for confirmation; `--yes` for scripts). |
+| `waifus usage [--by waifu]` | Model calls and cost by local day, waifu, purpose or model. |
+| `waifus remote` / `remote status` / `remote stop` | The remote-management gateway on another device. |
+| `waifus clean` | Delete saved user data (use intentionally!). |
+| `waifus update` | Update the installed package. |
 
-Common flags: `--host 127.0.0.1`, `--port 3888`, `--data-root PATH`.
+Examples:
+
+```sh
+waifus set app life.maxSendsPerTurn 6
+waifus set waifu:aria life.dailyBudgetUsd=2.5 wakeOnName=false
+waifus get app.search
+waifus help app.life
+```
+
+Common flags: `--data-root PATH`, `--json`, and for the host `--host 127.0.0.1`, `--port 3888`.
+Exit codes: 0 ok, 1 failure, 2 usage, 3 host not running, 4 rejected, 5 conflict.
 
 `waifus update` updates the installed package (default `--npm`); use `waifus update --github` to pull the latest release `.tgz`. Set `DC_WAIFUS_HOME=PATH` to override the default `~/.dc-waifus` data root.
+
+### Upgrading to 3.0.0
+
+3.0.0 is a major release: idle updates never install it. Install it by hand
+(`npm install -g @waifucave/discord-waifus@3.0.0`, then `waifus restart`). The first start migrates
+each waifu's memories to her notes, maps old model settings to the curated list (anything without an
+equivalent shows as a notice to pick again) and archives the director's data under
+`~/.dc-waifus/user/.archive/living-cast/`. Downgrading is not supported. `waifus doctor` reports any
+step that left unreadable data alone.
 
 ### Version numbering
 
@@ -405,15 +466,17 @@ npm run dev:frontend
 ~/.dc-waifus/config.toml
 ~/.dc-waifus/user/providers.json
 ~/.dc-waifus/user/discord-bots.json
-~/.dc-waifus/user/waifus/
+~/.dc-waifus/user/waifus/<id>/life/    # her life: state, log, wakes, plans
+~/.dc-waifus/user/waifus/<id>/notes/   # her notes (MEMORY.md is the index)
 ~/.dc-waifus/user/servers/
-~/.dc-waifus/user/memories.json
+~/.dc-waifus/user/dms/
+~/.dc-waifus/user/usage/               # the usage ledger, one file per UTC day
 ~/.dc-waifus/app/logs/
 ~/.dc-waifus/app/cache/ocr/
 ~/.dc-waifus/app/tmp/ocr/
 ```
 
-**Architecture & contributor notes:** see [`CLAUDE.md`](CLAUDE.md) and [`AGENTS.md`](AGENTS.md). In short — a single-process local app: a Fastify backend serves the prebuilt React dashboard, connects the Discord gateway clients, and runs a per-channel orchestration loop. User data is revisioned JSON under `~/.dc-waifus/user/`.
+**Architecture & contributor notes:** see [`CLAUDE.md`](CLAUDE.md) and [`AGENTS.md`](AGENTS.md). In short — a single-process local app: a Fastify backend serves the prebuilt React dashboard, connects the Discord gateway clients, and runs one life per waifu (spec `docs/specs/2026-10-24-living-cast-design.md`). User data is revisioned JSON under `~/.dc-waifus/user/`. The HTTP API is documented in [`docs/api.md`](docs/api.md) and by `GET /api/help`.
 
 </details>
 
