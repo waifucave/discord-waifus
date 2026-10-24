@@ -221,7 +221,7 @@ describe("compaction settings and helpers", () => {
   });
 
   it("instructions name the keep-from ref, deleted refs and the per-role focus", () => {
-    const waifu = compactionInstruction({ agent: ARIA, keepFromRef: "k9", keepCount: 30, deletedRefs: ["k3", "k7"], hasPreviousSummary: true });
+    const waifu = compactionInstruction({ agent: ARIA, keepFromRef: "k9", keepCount: 30, deletedRefs: ["#k3", "#k7"], hasPreviousSummary: true });
     expect(waifu).toContain("Messages from #k9 on stay verbatim");
     expect(waifu).toContain("Leave out messages #k3, #k7 — their authors deleted them.");
     expect(waifu).toContain("replaces the earlier <conversation_summary>");
@@ -354,7 +354,7 @@ describe("gatewayPipeline.summarizeContext", () => {
       params: replyParams,
       attribution: { waifuId: "aria", agentId: "waifu-aria", conversationKey: KEY, guildId: "100", channelId: "200" }
     });
-    const instruction = compactionInstruction({ agent: ARIA, keepFromRef: "a3", keepCount: 1, deletedRefs: ["a1"], hasPreviousSummary: false });
+    const instruction = compactionInstruction({ agent: ARIA, keepFromRef: "a3", keepCount: 1, deletedRefs: ["#a1"], hasPreviousSummary: false });
     const result = await summarize(p.prompt, instruction);
     expect(result).toEqual({ text: "Riko bakes tarts.", finishReason: "stop" }); // tool calls ignored
 
@@ -752,6 +752,22 @@ describe("ContextCompactionService outcomes", () => {
     const m8 = refOf(p, "m8", p.transcript);
     expect(s.calls[0]!.instruction).toContain(`Leave out messages #${m2} — their authors deleted them.`);
     expect(s.calls[0]!.instruction).not.toContain(`#${m8} —`);
+  });
+
+  it("names the waifu's own deleted message by author and time when it has no visible ref (M6)", async () => {
+    const h = await harness();
+    post(h, 3);
+    h.channel.post({ authorId: "aria-bot", authorName: "Aria", authorIsBot: true, content: "oops, wrong chat" });
+    post(h, 4, 3);
+    const p0 = await prepare(h);
+    await h.engine.runtime.commit(p0, { modelKey: p0.modelKey });
+    await editLedger(h, (entries) => {
+      for (const entry of Object.values(entries)) if (entry.body === "oops, wrong chat") entry.state = "deleted";
+    });
+    const p = await prepare(h);
+    const s = summarizer();
+    await h.engine.compaction.compact({ conversation: GUILD, agent: ARIA, prompt: p.prompt, trigger: "manual", selfAuthorIds: SELF, summarize: s.fn, settings: { ...DEFAULT_COMPACTION_SETTINGS } });
+    expect(s.calls[0]!.instruction).toMatch(/Leave out messages Aria's message at \d\d:\d\d — their authors deleted them\./);
   });
 
   it("never compacts from a hard-truncated prompt", async () => {

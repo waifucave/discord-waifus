@@ -90,6 +90,10 @@ export const ContextStateSchema = RevisionedRecordSchema.extend({
   // arrivals by id against it. Additive (T3 review).
   epochParticipantIds: z.array(z.string()).default([]),
   memoryNoteCount: z.number().int().nonnegative().default(0),
+  // Spec 9.5 (hybrid delete): ledger entries marked `deleted` that were OLD when this epoch
+  // started. They render as "(message deleted)" in this epoch (the ledger text is left alone for
+  // the other agents' still-cached epochs); frozen with the epoch, reset when the next one starts.
+  redactedIds: z.array(z.string()).default([]),
   imageModes: z.record(z.string(), ImageModeSchema).default({}),
   inlineImageCount: z.number().int().nonnegative().default(0), // imageModes/inlineImageCount reset each epoch
   notes: z.array(ContextNoteSchema).default([]),

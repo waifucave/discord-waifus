@@ -19,21 +19,24 @@ import type { Logger } from "../../backend/logger.js";
 import type { ImageFetcher } from "../../discord/attachments.js";
 import type { MemoryConfig } from "../../shared/schemas/config.js";
 import { DEFAULT_APP_CONFIG } from "../../shared/schemas/config.js";
-import type { ContextNote, ContextState, LedgerEntry } from "../../shared/schemas/context.js";
-import type { ImageRef } from "../../shared/schemas/discordMessage.js";
+import type { ContextNote, ContextState, ConversationEvent, ConversationLedger, LedgerEntry } from "../../shared/schemas/context.js";
+import type { ImageRef, RawDiscordMessage } from "../../shared/schemas/discordMessage.js";
 import type { ServerConfig } from "../../shared/schemas/domain.js";
 import { buildContext, modelKeyFor } from "./builder.js";
-import type { ContextEngineStore } from "./contextStore.js";
+import type { ContextEngineStore, DeleteSummary, WindowReconcileSummary } from "./contextStore.js";
 import { FrozenImageRenderer, type OcrTextLookup } from "./images.js";
 import { effectiveKeepRecent, entryTokens, isContextOverflowError, nextEpochState } from "./compaction.js";
 import { contextAgentId, conversationKey, type ContextAgent, type ConversationKey, type ConversationRef } from "./keys.js";
 import {
   ACTIVE_CONTEXT_MS,
+  deletedEntryIdsAfter,
   entryRenderHash,
   isGapEntry,
+  isRedactedEntry,
   newestMessageEntry,
   newestSeq,
-  orderedEntries
+  orderedEntries,
+  type EditOutcome
 } from "./ledger.js";
 import { discordMessageRenderer, EMPTY_GUILD_DIRECTORY } from "./messageRender.js";
 import { hostTimeZone } from "./timeFormat.js";
@@ -351,6 +354,97 @@ export class ContextRuntime {
     this.backgroundCheck(p, committed, o.usage);
   }
 
+  /**
+   * A Discord message was edited (spec 9.5): replace in place while no model has seen it, else
+   * remember the new text as an `edit` event that the next prepare of each context turns into a
+   * note. Detection is by Discord's `editedTimestamp` only. Never creates a ledger.
+   */
+  async recordMessageEdit(
+    conversation: ConversationRef,
+    message: RawDiscordMessage,
+    o: { directory?: GuildDirectoryView } = {}
+  ): Promise<EditOutcome> {
+    const outcome = await this.d.store.applyMessageEdit(conversationKey(conversation), message, this.renderer, {
+      dir: o.directory ?? EMPTY_GUILD_DIRECTORY,
+      timeZone: this.timeZone()
+    });
+    if (outcome === "event" || outcome === "coalesced" || outcome === "replaced") {
+      this.d.logger.info("Discord message edit recorded", {
+        conversationKey: conversationKey(conversation),
+        messageId: message.id,
+        outcome
+      });
+    }
+    return outcome;
+  }
+
+  /**
+   * Discord messages were deleted (event, bulk delete or a gap in a page; spec 9.5 hybrid rule):
+   * recent or unsealed ones are redacted in place (and their cached images purged), older ones are
+   * only marked. Never starts a run.
+   */
+  async recordMessageDeletes(conversation: ConversationRef, ids: string[], o: { redactRecent?: number } = {}): Promise<DeleteSummary> {
+    const key = conversationKey(conversation);
+    const summary = await this.d.store.applyMessageDeletes(key, ids, o);
+    await this.purgeImages(summary.purgedImages);
+    if (summary.redacted.length + summary.marked.length > 0) {
+      this.d.logger.info("Discord message delete recorded", {
+        conversationKey: key,
+        redacted: summary.redacted.length,
+        marked: summary.marked.length
+      });
+    }
+    return summary;
+  }
+
+  /**
+   * Catch-up over a contiguous page of recent messages after downtime or a reconnect: edits become
+   * events, entries missing from the page's id range are deleted (spec 9.5). The caller must pass
+   * a page fetched without holes (newest N messages of the channel, no `before` cut in the middle).
+   */
+  async reconcileRecent(
+    conversation: ConversationRef,
+    page: RawDiscordMessage[],
+    o: { directory?: GuildDirectoryView; redactRecent?: number } = {}
+  ): Promise<WindowReconcileSummary> {
+    const key = conversationKey(conversation);
+    const summary = await this.d.store.reconcileWindow(key, page, this.renderer, {
+      dir: o.directory ?? EMPTY_GUILD_DIRECTORY,
+      timeZone: this.timeZone(),
+      ...(o.redactRecent !== undefined ? { redactRecent: o.redactRecent } : {})
+    });
+    await this.purgeImages(summary.deletes.purgedImages);
+    return summary;
+  }
+
+  /** Read-only view of the conversation ledger (never creates it). */
+  async peekLedger(conversation: ConversationRef): Promise<ConversationLedger> {
+    return this.d.store.loadLedger(conversationKey(conversation));
+  }
+
+  /** `/clear everything`: the conversation's ledger, refs and every agent context (spec 9.5). */
+  async deleteConversation(conversation: ConversationRef): Promise<void> {
+    await this.d.store.deleteConversation(conversationKey(conversation));
+  }
+
+  private async purgeImages(images: ReadonlyArray<ImageRef>): Promise<void> {
+    if (images.length === 0) return;
+    const keys = images.map((image) => image.key);
+    const purges: Array<[string, Promise<void> | undefined]> = [
+      ["images", this.d.images.purge?.(keys)],
+      ["OCR text", this.d.ocr?.purge?.(keys)]
+    ];
+    for (const [what, promise] of purges) {
+      try {
+        await promise;
+      } catch (error) {
+        this.d.logger.warn(`Purging a deleted message's cached ${what} failed`, {
+          message: error instanceof Error ? error.message : String(error)
+        });
+      }
+    }
+  }
+
   /** Stable per-conversation refs for message ids (assigned on first use; spec 8.1). */
   async assignRefs(conversation: ConversationRef, messageIds: string[]): Promise<Map<string, string>> {
     if (messageIds.length === 0) return new Map();
@@ -498,7 +592,7 @@ export class ContextRuntime {
     let conflicts = 0;
     for (;;) {
       // 5. epoch start
-      const epoch = await this.startEpochIfNeeded(state, { i, fresh: isFresh, all: view.all, timeZone, now: startedAt });
+      const epoch = await this.startEpochIfNeeded(state, { i, fresh: isFresh, all: view.all, events: view.events, timeZone, now: startedAt });
       const working = epoch.state;
       const transcript = view.all.filter((entry) => working.cursorSeq === null || entry.seq > working.cursorSeq);
 
@@ -510,6 +604,8 @@ export class ContextRuntime {
       const edits: NewContextNote[] = [];
       for (const event of view.events) {
         if (event.kind !== "edit" || event.anchorSeq <= cursor || seenEvents.has(event.seq)) continue;
+        // The edited message was deleted: never carry its new text into a context.
+        if (view.lookup(event.messageId)?.state === "deleted") continue;
         edits.push({
           kind: "edit",
           eventSeq: event.seq,
@@ -520,9 +616,16 @@ export class ContextRuntime {
       }
       const memoryNotes = epoch.started ? [] : await this.proposeMemoryNotes(working, transcript, i, startedAt);
       const newNotes = materializeNotes(working, [...edits, ...memoryNotes], view.anchorSeq);
+      // Rendering already masks an edit note whose target shows as deleted; blank its text on disk too
+      // (byte-neutral: the rendered note says "(message deleted)" either way).
+      const scrubbed = working.notes.map((note) => {
+        if (note.kind !== "edit" || note.text === "") return note;
+        const target = view.lookup(note.messageId);
+        return target && isRedactedEntry(target, working.redactedIds) ? { ...note, text: "" } : note;
+      });
       const withNotes: ContextState = {
         ...working,
-        notes: [...working.notes, ...newNotes],
+        notes: [...scrubbed, ...newNotes],
         noteSeq: working.noteSeq + newNotes.length,
         memoryNoteCount: working.memoryNoteCount + memoryNotes.length
       };
@@ -613,7 +716,8 @@ export class ContextRuntime {
           null,
           durableTrigger,
           startedAt,
-          view.all
+          view.all,
+          view.events
         );
         isFresh = false;
         continue; // rebuild on the truncated epoch; this prepare's commitPrepare persists it
@@ -717,7 +821,7 @@ export class ContextRuntime {
 
   private async startEpochIfNeeded(
     state: ContextState,
-    o: { i: PrepareInput; fresh: boolean; all: LedgerEntry[]; timeZone: string; now: Date }
+    o: { i: PrepareInput; fresh: boolean; all: LedgerEntry[]; events: readonly ConversationEvent[]; timeZone: string; now: Date }
   ): Promise<{ state: ContextState; started: boolean }> {
     if (!o.fresh && state.headerText !== null) return { state, started: false };
     const next: ContextState = structuredClone(state);
@@ -738,6 +842,8 @@ export class ContextRuntime {
     next.memoryNoteCount = 0;
     next.inlineImageCount = 0;
     const transcript = o.all.filter((entry) => next.cursorSeq === null || entry.seq > next.cursorSeq);
+    // Spec 9.5: messages deleted before this epoch starts render as "(message deleted)" in it.
+    next.redactedIds = deletedEntryIdsAfter(o.all, next.cursorSeq, { notes: next.notes, events: o.events });
     const keptKeys = new Set(transcript.flatMap((entry) => entry.images.map((image) => image.key)));
     next.imageModes = Object.fromEntries(Object.entries(next.imageModes).filter(([imageKey]) => keptKeys.has(imageKey)));
 

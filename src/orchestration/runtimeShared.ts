@@ -37,6 +37,8 @@ export type RuntimeOrchestratorOptions = {
     cachedText?(ref: ImageRef): Promise<string | undefined>;
     /** Bounded OCR (ImageOcrService.textFor): text-only contexts wait for it before an image freezes. */
     textFor?(ref: ImageRef, o: { timeoutMs: number; signal?: AbortSignal }): Promise<string | undefined>;
+    /** Drop cached OCR text for deleted images (ImageOcrService.purge). */
+    purge?(keys: readonly string[]): Promise<void>;
     dispose?(): Promise<void>;
   };
   /** Shared Discord image fetcher (the OCR service's, spec 8.4); built over the data root when omitted. */
@@ -45,6 +47,8 @@ export type RuntimeOrchestratorOptions = {
   imageConfig?: Partial<ImageCacheConfig>;
   /** `AppConfig.compaction`; `ServerConfig.compaction` overrides per key. */
   compaction?: CompactionSettings;
+  /** `AppConfig.discord.deletedMessages` (spec 9.5): how many newest messages a delete redacts. */
+  deletedMessages?: { redactRecent: number };
   /** Context compaction service (T7b); NoopCompaction when omitted. */
   contextCompaction?: CompactionService;
   /** Prebuilt context runtime (tests); otherwise createAppContextRuntime builds one. */

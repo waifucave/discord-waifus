@@ -17,6 +17,7 @@ import {
 import { createRevisionedBase } from "../../shared/schemas/common.js";
 import { StorageService } from "../../storage/storageService.js";
 import type { RuntimeServices } from "../runtimeShared.js";
+import { withThreadChannels } from "./threads.js";
 
 export async function readAgentConfig(storage: StorageService, agent: "orchestrator" | "stage-manager" | "reviewer", defaultWindow: number): Promise<AgentConfig> {
   return storage.readJson(
@@ -82,16 +83,24 @@ export async function listAvailableWaifusForGuild(storage: StorageService, serve
 }
 
 export async function ensureServer(storage: StorageService, guildId: string): Promise<ServerConfig> {
-  return storage.updateRevisionedJson({
+  const server = await storage.updateRevisionedJson({
     resourceKey: `server:${guildId}`,
     relativePath: path.join("user", "servers", guildId, "server.json"),
     schema: ServerConfigSchema,
     fallback: ServerConfigSchema.parse({ ...createRevisionedBase(), guildId }),
     transform: (current) => current
   });
+  // Spec 9.5: live threads that inherit a parent's cast appear as virtual channel entries.
+  return withThreadChannels(storage, server);
 }
 
-export async function ensureChannelConfig(services: RuntimeServices, server: ServerConfig, channelId: string): Promise<ServerConfig> {
+export async function ensureChannelConfig(
+  services: RuntimeServices,
+  server: ServerConfig,
+  channelId: string,
+  /** Metadata the caller already fetched for this channel (avoids a second Discord lookup). */
+  prefetched?: { guildName?: string; channelName?: string }
+): Promise<ServerConfig> {
   if (server.channels[channelId]) {
     return server;
   }
@@ -102,10 +111,12 @@ export async function ensureChannelConfig(services: RuntimeServices, server: Ser
       }
     | undefined;
   try {
-    metadata = await services.discord.fetchChannelMetadata?.({
-      guildId: server.guildId,
-      channelId
-    });
+    metadata =
+      prefetched ??
+      (await services.discord.fetchChannelMetadata?.({
+        guildId: server.guildId,
+        channelId
+      }));
   } catch (error) {
     services.logger.warn("Failed to fetch Discord names for newly detected channel", {
       guildId: server.guildId,
@@ -144,7 +155,7 @@ export async function ensureChannelConfig(services: RuntimeServices, server: Ser
 export function channelHasWaifus(
   channel: ServerConfig["channels"][string] | undefined
 ): channel is ServerConfig["channels"][string] {
-  return Boolean(channel && (channel.enabledWaifuIds?.length ?? 0) > 0);
+  return Boolean(channel && !channel.thread?.silenced && (channel.enabledWaifuIds?.length ?? 0) > 0);
 }
 
 export async function readDiscordBotsFile(storage: StorageService): Promise<DiscordBotsFile> {

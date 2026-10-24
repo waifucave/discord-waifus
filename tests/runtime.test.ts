@@ -94,6 +94,10 @@ class FakeDiscord implements DiscordGatewayFacade {
     failedCount: 0,
     failedMessageIds: [] as Array<{ messageId: string; message: string }>
   };
+  /** When set, sendWaifuMessage rejects with it (a Discord API error such as { code: 50083 }). */
+  sendError: unknown;
+  /** sendWaifuMessage succeeds `count` times, then rejects with `error` (a reply cut off mid-way). */
+  failAfterSends: { count: number; error: unknown } | undefined;
   debugMessages: Array<{ channelId: string; content: string }> = [];
   debugChannelInfo = new Map<string, { channelId: string; guildId?: string; name?: string }>();
   guilds: Array<{ guildId: string; name: string }> = [];
@@ -302,6 +306,8 @@ class FakeDiscord implements DiscordGatewayFacade {
     senderBotId?: string;
     replyToMessageId?: string;
   }): Promise<{ messageId: string }> {
+    if (this.sendError) throw this.sendError;
+    if (this.failAfterSends && this.sent.length >= this.failAfterSends.count) throw this.failAfterSends.error;
     this.sent.push(input);
     return { messageId: `sent-${this.sent.length}` };
   }
@@ -601,6 +607,89 @@ describe("RuntimeOrchestrator", () => {
       (await import("../src/orchestration/session.js")).ChannelSessionStateSchema
     );
     expect(session.guildId).toBe("guild-1");
+  });
+
+  it.each([
+    { code: 50083, status: "unavailable", reason: "thread_archived" },
+    { code: 200000, status: "blocked", reason: "automod" },
+    { code: 200001, status: "blocked", reason: "automod" }
+  ])("records a Discord send error $code as $status/$reason instead of crashing the decision", async ({ code, status, reason }) => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.sendError = Object.assign(new Error(`Discord error ${code}`), { code });
+    await seedRuntimeConfig(storage);
+    const now = new Date().toISOString();
+    await storage.writeJson(
+      "memories:global",
+      "user/memories.json",
+      MemoryStoreSchema,
+      MemoryStoreSchema.parse(
+        createEmptyRevisionedFile({
+          memories: [
+            {
+              id: "memory-1",
+              waifuId: "yuki",
+              guildId: "guild-1",
+              content: "Yuki remembers Kevin likes tea.",
+              strength: 3,
+              createdAt: now,
+              updatedAt: now,
+              status: "active"
+            }
+          ]
+        })
+      )
+    );
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 3,
+      createPipeline: () => new FakePipeline(),
+      logger: quietLogger()
+    });
+
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    expect(discord.sent).toEqual([]);
+    const history = await readTestHistory(storage);
+    const reply = history.decisions.find((entry) => entry.action === "reply");
+    expect(reply?.responderOutcomes[0]).toMatchObject({ waifuId: "yuki", status, reason });
+  });
+
+  it("a reply cut off after its first chunk keeps the delivered ids and is recorded as sent with a note (M3)", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const storage = new StorageService(root);
+    const discord = new FakeDiscord();
+    discord.failAfterSends = { count: 1, error: Object.assign(new Error("Unknown Message"), { code: 50083 }) };
+    await seedRuntimeConfig(storage);
+    class TwoPartPipeline extends FakePipeline {
+      override async generateWaifu() {
+        return { content: "first part\n\nsecond part\n\nthird part" };
+      }
+    }
+    const runtime = new RuntimeOrchestrator({
+      sleep: async () => undefined,
+      storage,
+      discord,
+      maxAutomaticTurns: 3,
+      createPipeline: () => new TwoPartPipeline(),
+      logger: quietLogger()
+    });
+    await runtime.triggerChannel("guild-1", "channel-1");
+    await runtime.stop();
+
+    expect(discord.sent.map((entry) => entry.content)).toEqual(["first part"]);
+    const history = await readTestHistory(storage);
+    const sent = history.decisions.flatMap((entry) => entry.responderOutcomes).find((outcome) => outcome.status === "sent");
+    expect(sent).toMatchObject({ waifuId: "yuki", messageIds: ["sent-1"] });
+    expect(sent?.reason).toMatch(/^partial_send: 1 of \d parts delivered \(thread_archived\)$/);
   });
 
   it("adds OCR text before non-vision model calls", async () => {

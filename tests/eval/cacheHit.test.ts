@@ -857,6 +857,40 @@ describe("cache-hit simulation (default settings, real context engine + gateway 
     expect(room.ratio("orchestrator")).toBeGreaterThanOrEqual(0.8);
   });
 
+  it("edits and old deletions mixed into a quiet room keep the cached prefix and the >= 0.8 ratio (spec 9.5)", { timeout: 60_000 }, async () => {
+    const room = await Room.create();
+    for (let i = 0; i < 24; i += 1) {
+      room.humans(i % 3 === 0 ? 2 : 1, 20_000);
+      if (i >= 4) {
+        // An edit of an already-sealed human message and the deletion of an old one (beyond redactRecent 5).
+        const humans = room.channel.messages.filter((m) => !m.authorIsBot);
+        const editTarget = humans[humans.length - 3]!;
+        const edited = { ...editTarget, content: `${editTarget.content} (edit ${i})`, editedAt: new Date(room.clock.now).toISOString() };
+        room.channel.messages[room.channel.messages.indexOf(editTarget)] = edited;
+        await room.runtime.recordMessageEdit(GUILD, edited);
+        if (i % 2 === 0) {
+          const victim = room.channel.messages[0]!;
+          room.channel.messages.splice(0, 1);
+          await room.runtime.recordMessageDeletes(GUILD, [victim.id], { redactRecent: 5 });
+        }
+      }
+      await room.cycle({ direction: i % 2 === 0 ? "(spotlight) answer Kevin" : undefined });
+      room.clock.now += 100_000;
+    }
+    report("edits + old deletes", room, ["waifu", "orchestrator"]);
+    expect(room.warnings.filter((w) => w.includes("cache_ignored"))).toEqual([]);
+    expect(room.calls.some((call) => call.kind === "compaction")).toBe(false);
+    expectWirePrefixStable(room, "waifu");
+    expectWirePrefixStable(room, "orchestrator");
+    expectFullPrefixReuse(room, "waifu");
+    expectFullPrefixReuse(room, "orchestrator");
+    expectBreakpointsHit(room, "waifu");
+    expect(room.ratio("waifu")).toBeGreaterThanOrEqual(0.8);
+    expect(room.ratio("orchestrator")).toBeGreaterThanOrEqual(0.8);
+    const state = await room.store.load(GUILD_KEY, ARIA_AGENT);
+    expect(state.notes.some((note) => note.kind === "edit")).toBe(true);
+  });
+
   it("a gap longer than the TTL is one full miss for each agent, then hits resume", { timeout: 60_000 }, async () => {
     const room = await Room.create();
     for (let i = 0; i < 4; i += 1) {

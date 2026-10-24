@@ -219,6 +219,7 @@ async function startLockedBackend(options: StartBackendOptions): Promise<Running
         directory,
         memberListRefreshHours: currentConfig.discord.memberListRefreshHours,
         compaction: currentConfig.compaction,
+        deletedMessages: { ...currentConfig.discord.deletedMessages },
         updateActivity,
         memory: { ...currentConfig.memory },
         isPaused: () => runtime.paused || closing,

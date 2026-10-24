@@ -44,6 +44,16 @@ and a waifu missing from that list never speaks there, whatever the orchestrator
 separate channel or server `enabled` flag: empty the list to silence a channel, or pause the
 server with `PUT /api/servers/:guildId {"paused": true}` (Rooms → the server switch).
 
+## Threads and forum posts
+
+A thread (or forum post) under a channel that has waifus enabled inherits that channel's cast and
+has its own conversation. Set the parent channel's `threads` to `"off"` (same PUT as above) to keep
+waifus out of its threads, or give a thread its own `enabledWaifuIds` to override the parent. An
+archived or locked thread stays silent until it is unarchived; a restart only resumes threads that
+were active in the last 24 hours. The bot needs "Send Messages in Threads" (and View Channel on the
+parent) to reply in a thread; the dashboard shows a permission warning naming it when it is
+missing. `GET /api/servers/:guildId/threads` lists the threads the bot has seen.
+
 ## Connection
 
 The app connects on start when `runtime.autoConnectDiscord` is on (default `true`). There is no

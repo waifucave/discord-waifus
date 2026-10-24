@@ -60,7 +60,8 @@ does goes through these endpoints, so any agent can drive the app with plain HTT
 | GET | /api/servers/:guildId | One guild. |
 | PUT | /api/servers/:guildId | Partial server settings: `paused`, `orchestratorMode`, `oneShot`, `stageManagerEnabled`, `contextWindows`, `compaction`, `memoryInjectionLimit`, `tools`, `channels` (wholesale). |
 | DELETE | /api/servers/:guildId | Remove the guild config incl. sessions, rosters and the guild's decision history. |
-| PUT | /api/servers/:guildId/channels/:channelId | `{enabledWaifuIds?, name?}` — one channel; omitted fields keep their value. |
+| PUT | /api/servers/:guildId/channels/:channelId | `{enabledWaifuIds?, name?, threads?}` — one channel; omitted fields keep their value. `threads` is `"inherit"` (default: threads and forum posts under it share its cast) or `"off"`. |
+| GET | /api/servers/:guildId/threads | The threads and forum posts the bot has seen (`threadId`, `parentId`, `name`, `kind`, `archived`, `locked`, `lastActivityAt`); guild id must be a snowflake. |
 | DELETE | /api/servers/:guildId/channels/:channelId | Remove one channel entry. |
 | GET/POST | /api/servers/:guildId/members·roles·emojis(/refresh) | Guild caches. |
 | GET | /api/discord-bots | Bot entries (tokens redacted). |
@@ -144,6 +145,13 @@ curl -s -X PUT http://127.0.0.1:3888/api/waifus/riko \
   starts (restart to be sure). Whatever `maxBytes` allows, an image is only sent inline when it is
   at most 3.75 MiB (3,932,160 bytes, the most that stays under Anthropic's 5 MB per-image limit
   once base64-encoded); a larger one is shown as its OCR text or `[image]`.
+- **Deleted messages (app config `discord.deletedMessages`)**: `redactRecent` (default 20, 0-200)
+  is how many of the newest messages in a conversation are rewritten to "(message deleted)" when
+  they are deleted on Discord. Older deleted messages keep their cached text until the next
+  compaction or context restart, so prompt caching survives. Set with
+  `PUT /api/config {"discord": {"deletedMessages": {"redactRecent": 20}}}`; it applies when the
+  Discord runtime next starts. Edits never start a reply (except an edit that adds a waifu mention
+  to the newest human message within two minutes); the waifus learn about them from a note.
 - **Deprecated OCR keys**: `ocr.maxImageBytes` and `ocr.timeoutMs` no longer control fetching. A
   value left at its default (8 MiB / 1500 ms) is ignored; a changed value still raises the fetch
   limit to the larger of it and `discord.images` (a deprecation warning is logged). Move such

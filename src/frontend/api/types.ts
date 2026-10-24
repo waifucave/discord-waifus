@@ -515,6 +515,23 @@ export type ChannelConfig = {
   channelId: string;
   name?: string;
   enabledWaifuIds: string[];
+  /** Threads and forum posts under this channel: inherit its cast (default) or stay silent. */
+  threads?: "inherit" | "off";
+};
+
+export type ThreadRecord = {
+  threadId: string;
+  parentId: string;
+  name: string;
+  kind: "public_thread" | "private_thread" | "announcement_thread" | "forum_post";
+  archived: boolean;
+  locked: boolean;
+  lastActivityAt: string;
+};
+
+export type ThreadsFile = Revisioned & {
+  guildId: string;
+  threads: Record<string, ThreadRecord>;
 };
 
 export type ServerConfig = Revisioned & {

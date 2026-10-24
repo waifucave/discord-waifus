@@ -23,7 +23,7 @@ import type { ChatMessage, ImageBlock, TextBlock, ToolCallBlock } from "@waifuca
 import type { ContextNote, ContextState, LedgerEntry } from "../../shared/schemas/context.js";
 import { formatDecisionCallText } from "../pipeline/timeline.js";
 import { IMAGE_PLACEHOLDER } from "./images.js";
-import { isGapEntry } from "./ledger.js";
+import { DELETED_MESSAGE_BODY, isGapEntry, isRedactedEntry } from "./ledger.js";
 import { formatClock, transitionMarker } from "./timeFormat.js";
 import type { FrozenImages } from "./types.js";
 
@@ -108,7 +108,11 @@ function noteText(note: ContextNote, i: TranscriptInput, anchor: LedgerEntry | u
     case "edit": {
       const who = note.authorName || "Someone";
       const ref = i.refs.get(note.messageId);
-      return ref ? `<edit>${who} edited #${ref}: ${note.text}</edit>` : `<edit>${who} edited an earlier message: ${note.text}</edit>`;
+      // The edited message was deleted (and shows as deleted here): its new text goes too. Bytes
+      // already differ from the message onward, and this note sits after it.
+      const target = i.lookup(note.messageId);
+      const text = target && isRedactedEntry(target, i.state.redactedIds) ? DELETED_MESSAGE_BODY : note.text;
+      return ref ? `<edit>${who} edited #${ref}: ${text}</edit>` : `<edit>${who} edited an earlier message: ${text}</edit>`;
     }
     case "tool":
       return i.renderToolTurnsAsText ? `[tool ${note.name}] ${note.arguments} → ${note.result}` : undefined;
@@ -174,7 +178,12 @@ export async function renderTranscript(i: TranscriptInput): Promise<RenderedTran
 
   renderAttached(-1);
   let previous: LedgerEntry | undefined;
-  for (const [index, entry] of i.entries.entries()) {
+  for (const [index, source] of i.entries.entries()) {
+    // Spec 9.5: a deleted message shows as "(message deleted)" when it was redacted in the ledger
+    // or was already old when this epoch started; an older deletion mid-epoch changes nothing.
+    const entry = isRedactedEntry(source, i.state.redactedIds)
+      ? { ...source, body: DELETED_MESSAGE_BODY, images: [] }
+      : source;
     const marker = transitionMarker(previous?.at, entry.at, i.timeZone);
     if (marker) {
       parts.push({ role: "user", block: textBlock(marker), address: null });

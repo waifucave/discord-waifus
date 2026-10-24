@@ -19,6 +19,8 @@ import { clearOcrArtifacts } from "../orchestration/ocr.js";
 import { forgetUser } from "../orchestration/memoryForget.js";
 import { loadSubjectDirectory, resolveSubjectsInText } from "../orchestration/memorySubjects.js";
 import { readMergedOrchestratorHistory, readOrchestratorHistoryForGuild } from "../orchestration/stores/decisionHistory.js";
+import { readThreads } from "../orchestration/stores/threads.js";
+import { ChannelThreadsModeSchema } from "../shared/schemas/threads.js";
 import { applyMemoryCandidate, bumpMemoryRecord, emptyMemoryStore, readMemoryStore, updateMemoryStore } from "../orchestration/stores/memories.js";
 import { providerStatuses, keyHint } from "./providerStatus.js";
 import type { ModelPipeline } from "../providers/types.js";
@@ -281,7 +283,8 @@ const ServerConfigBodySchema = ServerConfigSchema.partial().extend({
   memoryInjectionLimit: z.number().int().min(1).max(50).optional(),
   tools: partialWithoutDefaults(ServerToolSettingsSchema).optional(),
   // channels is a documented wholesale replace; per-channel edits use the channel route.
-  channels: ServerConfigSchema.shape.channels.unwrap().optional()
+  // `thread` marks the runtime-only overlay entries and is never accepted from a client.
+  channels: z.record(z.string(), ServerConfigSchema.shape.channels.unwrap().valueType.omit({ thread: true })).optional()
 });
 
 const ChannelConfigBodySchema = z.object({
@@ -289,7 +292,10 @@ const ChannelConfigBodySchema = z.object({
   name: z.string().optional(),
   // Spec 9.7: the channel `enabled` flag was removed. Accepted and ignored for one release (logged).
   enabled: z.boolean().optional(),
-  enabledWaifuIds: z.array(z.string()).optional()
+  enabledWaifuIds: z.array(z.string()).optional(),
+  // Spec 9.5 / O2: "inherit" (default) lets threads and forum posts under this channel share its
+  // cast; "off" silences them. Omitted keeps the stored value.
+  threads: ChannelThreadsModeSchema.optional()
 });
 
 // Memories are global per waifu (spec 8.8): guildId/channelId are optional provenance only.
@@ -1126,6 +1132,12 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     });
   });
 
+  // Spec 9.5: the threads and forum posts the bot has seen under this server (guild id: snowflake).
+  app.get("/api/servers/:guildId/threads", async (request) => {
+    const { guildId } = parseIdParam(request.params, "guildId");
+    return readThreads(storage, guildId);
+  });
+
   app.get("/api/servers/:guildId/members", async (request) => {
     const { guildId } = parseIdParam(request.params, "guildId");
     return readMembers(storage, guildId);
@@ -1177,7 +1189,10 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
           [channelId]: {
             channelId,
             name: body.name ?? current.channels[channelId]?.name,
-            enabledWaifuIds: body.enabledWaifuIds ?? current.channels[channelId]?.enabledWaifuIds ?? []
+            enabledWaifuIds: body.enabledWaifuIds ?? current.channels[channelId]?.enabledWaifuIds ?? [],
+            ...((body.threads ?? current.channels[channelId]?.threads)
+              ? { threads: body.threads ?? current.channels[channelId]!.threads }
+              : {})
           }
         }
       })

@@ -22,7 +22,7 @@ import { formatPrintDebugBlock, formatWaifuPromptDebugMessages } from "./debugFo
 import { conversationKey } from "./context/keys.js";
 import { ResponderExecutor, waifuPromptCaptureKey } from "./responderExecutor.js";
 import { ReviewerRunner } from "./reviewerRunner.js";
-import { type ChannelRunOptions, type RuntimeServices, type StageManagerRunResult, isHumanUserMessage } from "./runtimeShared.js";
+import { type ChannelRunOptions, type RuntimeContextServices, type StageManagerRunResult, isHumanUserMessage } from "./runtimeShared.js";
 import {
   channelHasWaifus,
   ensureServer,
@@ -51,7 +51,7 @@ export type CommandHost = {
 
 export class RuntimeCommands {
   constructor(
-    private readonly options: RuntimeServices,
+    private readonly options: RuntimeContextServices,
     private readonly host: CommandHost
   ) {}
 
@@ -101,6 +101,17 @@ export class RuntimeCommands {
         } else {
           await event.respond(`Cleared ${result.deletedCount} ${clearMessageLabel("everything", result.deletedCount)}.`);
         }
+        // Spec 9.5: `/clear everything` also forgets the conversation (ledger, refs, every context).
+        // After the reply, so the moderator is never kept waiting on file cleanup.
+        await this.options.contexts
+          .deleteConversation({ kind: "guild", guildId: event.guildId, channelId: event.channelId })
+          .catch((error: unknown) => {
+            this.options.logger.warn("Failed to delete the cleared conversation's context", {
+              guildId: event.guildId,
+              channelId: event.channelId,
+              message: error instanceof Error ? error.message : String(error)
+            });
+          });
         return;
       }
       if (event.count === undefined) {

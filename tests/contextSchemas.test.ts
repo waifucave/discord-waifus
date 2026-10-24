@@ -148,6 +148,7 @@ describe("ContextStateSchema", () => {
       memorySnapshotIds: ["m1"],
       epochParticipantIds: ["kevin"],
       memoryNoteCount: 1,
+      redactedIds: ["88"],
       imageModes: { "att:1": { mode: "inline" }, "att:2": { mode: "text", text: "[image: a cat]" } },
       inlineImageCount: 1,
       notes: [{ kind: "direction", id: "n1", anchorSeq: 10, seq: 1, text: "go" }],

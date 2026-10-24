@@ -131,6 +131,11 @@ export class ImageOcrService {
     }
   }
 
+  /** Remove the cached OCR text of these image keys (the image's message was deleted). */
+  async purge(keys: readonly string[]): Promise<void> {
+    await Promise.all(keys.map((key) => rm(this.cachePath(ocrCacheKey(key)), { force: true })));
+  }
+
   /** Terminate the reused tesseract.js worker (if any). Call on shutdown. */
   async dispose(): Promise<void> {
     await this.disposeTesseractWorker();

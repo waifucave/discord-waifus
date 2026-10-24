@@ -39,6 +39,8 @@ export interface ImageFetcher {
     ref: ImageRef,
     o: { signal?: AbortSignal; purpose: ImageFetchPurpose; refreshUrl?: ImageUrlRefresher }
   ): Promise<ImageFetchResult>;
+  /** Drop cached bytes for these image keys (a deleted message's images, spec 9.5). */
+  purge?(keys: readonly string[]): Promise<void>;
 }
 
 export const ALLOWED_IMAGE_HOSTS: ReadonlySet<string> = new Set(["cdn.discordapp.com", "media.discordapp.net"]);
@@ -239,6 +241,17 @@ export class DiscordImageFetcher implements ImageFetcher {
       this.flights.set(ref.key, flight);
     }
     return this.wait(ref.key, flight, o.signal);
+  }
+
+  async purge(keys: readonly string[]): Promise<void> {
+    for (const key of new Set(keys)) {
+      const cached = this.memory.get(key);
+      if (cached) {
+        this.memory.delete(key);
+        this.memoryBytes -= cached.data.byteLength;
+      }
+      await this.removeDisk(this.diskBase(key));
+    }
   }
 
   /** Byte total of the disk cache after enforcing TTL and the size cap. */

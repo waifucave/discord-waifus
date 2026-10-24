@@ -34,13 +34,18 @@ import {
 } from "./keys.js";
 import {
   ACTIVE_CONTEXT_MS,
+  DEFAULT_REDACT_RECENT,
+  applyDeletes,
+  applyEdit,
+  detectGapDeletes,
   entryRenderHash,
   newestSeq,
   observerPruneCursor,
   orderedEntries,
   pruneLedgerEntries,
   reconcileEntries,
-  sealEntries
+  sealEntries,
+  type EditOutcome
 } from "./ledger.js";
 import { EMPTY_GUILD_DIRECTORY } from "./messageRender.js";
 import { assignRefsTo, pruneRefs } from "./refs.js";
@@ -57,6 +62,24 @@ export type ReconcileLedgerOptions = {
   dir?: GuildDirectoryView;
   timeZone?: string;
   gapBeforeNew?: boolean;
+};
+
+export type MessageChangeOptions = ReconcileLedgerOptions & {
+  /** Spec 9.5: a deleted message among the newest N entries (or unsealed) is redacted in place. */
+  redactRecent?: number;
+};
+
+export type DeleteSummary = {
+  redacted: string[];
+  marked: string[];
+  unknown: string[];
+  /** Images of redacted entries: the caller purges them from the image cache. */
+  purgedImages: LedgerEntry["images"];
+};
+
+export type WindowReconcileSummary = {
+  edits: Record<string, EditOutcome>;
+  deletes: DeleteSummary;
 };
 
 export type CommitPrepareInput = {
@@ -87,6 +110,27 @@ export interface ContextEngineStore extends ContextStore {
   ): Promise<LedgerEntry[]>;
   loadLedger(k: ConversationKey): Promise<ConversationLedger>;
   loadRefs(k: ConversationKey): Promise<ConversationRefs>;
+  /** Spec 9.5: one Discord message was edited. Never creates a ledger for a conversation without one. */
+  applyMessageEdit(
+    k: ConversationKey,
+    message: RawDiscordMessage,
+    render: MessageRenderer,
+    o?: MessageChangeOptions
+  ): Promise<EditOutcome>;
+  /** Spec 9.5 hybrid delete for one or more messages (event, bulk delete or a gap in a page). */
+  applyMessageDeletes(k: ConversationKey, ids: string[], o?: MessageChangeOptions): Promise<DeleteSummary>;
+  /**
+   * Catch-up over a CONTIGUOUS page of recent messages (after downtime or a reconnect): edits to
+   * entries the ledger holds become events, ledger entries missing from the page's id range are
+   * deleted. Messages the ledger does not hold are left for the next prepare (so its "earlier
+   * messages not loaded" rule still applies).
+   */
+  reconcileWindow(
+    k: ConversationKey,
+    page: RawDiscordMessage[],
+    render: MessageRenderer,
+    o?: MessageChangeOptions
+  ): Promise<WindowReconcileSummary>;
   /** Seal + state update + pruning under one set of locks (spec 8.3 "in ONE write"). */
   commitPrepare(k: ConversationKey, a: ContextAgent, i: CommitPrepareInput): Promise<CommitPrepareResult>;
   /** Prune ledger entries and refs below the minimum cursor of active contexts (spec 8.1). */
@@ -144,7 +188,13 @@ function defaultLedger(k: ConversationKey, now: Date): ConversationLedger {
   });
 }
 
+const DELETED_BEFORE_SEEN_TTL_MS = 10 * 60_000;
+const DELETED_BEFORE_SEEN_MAX = 500;
+
 export class FileContextStore implements ContextEngineStore {
+  // Per conversation: ids deleted before the ledger held them (id → expiry), so a fetch that raced
+  // the delete event cannot insert them afterwards. In memory: the race is seconds wide.
+  private readonly deletedBeforeSeen = new Map<string, Map<string, number>>();
   private readonly now: () => Date;
   private readonly timeZone: () => string;
   private readonly protectNewest: number | undefined;
@@ -211,16 +261,121 @@ export class FileContextStore implements ContextEngineStore {
   ): Promise<LedgerEntry[]> {
     return this.storage.locks.withLock(ledgerResourceKey(k), async () => {
       let ledger = await this.loadLedger(k);
-      const result = reconcileEntries(ledger, fetched, render, {
-        dir: o.dir ?? EMPTY_GUILD_DIRECTORY,
-        timeZone: o.timeZone ?? this.timeZone(),
-        gapBeforeNew: o.gapBeforeNew
-      });
+      const result = reconcileEntries(ledger, fetched, render, this.reconcileOptions(k, o));
       if (result.changed) {
         ledger = await this.writeRecord(conversationLedgerPath(k), ConversationLedgerSchema, result.ledger);
       }
       return orderedEntries(ledger);
     });
+  }
+
+  async applyMessageEdit(
+    k: ConversationKey,
+    message: RawDiscordMessage,
+    render: MessageRenderer,
+    o: MessageChangeOptions = {}
+  ): Promise<EditOutcome> {
+    return this.storage.locks.withLock(ledgerResourceKey(k), async () => {
+      const ledger = await this.loadLedger(k);
+      const result = applyEdit(ledger, message, render, this.reconcileOptions(k, o));
+      if (result.ledger !== ledger) await this.writeRecord(conversationLedgerPath(k), ConversationLedgerSchema, result.ledger);
+      return result.outcome;
+    });
+  }
+
+  async applyMessageDeletes(k: ConversationKey, ids: string[], o: MessageChangeOptions = {}): Promise<DeleteSummary> {
+    return this.storage.locks.withLock(ledgerResourceKey(k), async () => {
+      const ledger = await this.loadLedger(k);
+      return this.deleteLocked(k, ledger, ids, o);
+    });
+  }
+
+  async reconcileWindow(
+    k: ConversationKey,
+    page: RawDiscordMessage[],
+    render: MessageRenderer,
+    o: MessageChangeOptions = {}
+  ): Promise<WindowReconcileSummary> {
+    return this.storage.locks.withLock(ledgerResourceKey(k), async () => {
+      let ledger = await this.loadLedger(k);
+      const summary: WindowReconcileSummary = {
+        edits: {},
+        deletes: { redacted: [], marked: [], unknown: [], purgedImages: [] }
+      };
+      if (Object.keys(ledger.entries).length === 0) return summary;
+      const options = this.reconcileOptions(k, o);
+      let changed = false;
+      for (const message of page) {
+        if (!ledger.entries[message.id]) continue;
+        const result = applyEdit(ledger, message, render, options);
+        summary.edits[message.id] = result.outcome;
+        if (result.ledger !== ledger) {
+          ledger = result.ledger;
+          changed = true;
+        }
+      }
+      if (changed) ledger = await this.writeRecord(conversationLedgerPath(k), ConversationLedgerSchema, ledger);
+      const missing = detectGapDeletes(ledger, page);
+      if (missing.length > 0) summary.deletes = await this.deleteLocked(k, ledger, missing, o);
+      return summary;
+    });
+  }
+
+  // Caller holds the ledger lock.
+  private async deleteLocked(
+    k: ConversationKey,
+    ledger: ConversationLedger,
+    ids: string[],
+    o: MessageChangeOptions
+  ): Promise<DeleteSummary> {
+    const result = applyDeletes(ledger, ids, { redactRecent: o.redactRecent ?? DEFAULT_REDACT_RECENT, now: this.now() });
+    // A delete that beats its message into the ledger (the fetch raced the event) must not be
+    // resurrected by that fetch: remember the id for a while.
+    // Only for a conversation that has a ledger: a channel nobody has talked in yet needs no memory.
+    if (ledger.revision > 0 || Object.keys(ledger.entries).length > 0) {
+      for (const id of result.unknown) this.rememberDeleted(k, id);
+    }
+    if (result.ledger !== ledger) await this.writeRecord(conversationLedgerPath(k), ConversationLedgerSchema, result.ledger);
+    return { redacted: result.redacted, marked: result.marked, unknown: result.unknown, purgedImages: result.purgedImages };
+  }
+
+  private reconcileOptions(k: ConversationKey, o: ReconcileLedgerOptions) {
+    const skipIds = this.recentlyDeleted(k);
+    return {
+      dir: o.dir ?? EMPTY_GUILD_DIRECTORY,
+      timeZone: o.timeZone ?? this.timeZone(),
+      gapBeforeNew: o.gapBeforeNew,
+      now: this.now(),
+      ...(skipIds ? { skipIds } : {})
+    };
+  }
+
+  private rememberDeleted(k: ConversationKey, id: string): void {
+    // Sweep every conversation's expired ids, so a bucket nobody reads again cannot linger.
+    const nowMs = this.now().getTime();
+    for (const [key, other] of this.deletedBeforeSeen) {
+      for (const [otherId, expiresAt] of other) if (expiresAt <= nowMs) other.delete(otherId);
+      if (other.size === 0) this.deletedBeforeSeen.delete(key);
+    }
+    const bucket = this.deletedBeforeSeen.get(k) ?? new Map<string, number>();
+    bucket.set(id, this.now().getTime() + DELETED_BEFORE_SEEN_TTL_MS);
+    if (bucket.size > DELETED_BEFORE_SEEN_MAX) {
+      const oldest = bucket.keys().next().value;
+      if (oldest !== undefined) bucket.delete(oldest);
+    }
+    this.deletedBeforeSeen.set(k, bucket);
+  }
+
+  private recentlyDeleted(k: ConversationKey): ReadonlySet<string> | undefined {
+    const bucket = this.deletedBeforeSeen.get(k);
+    if (!bucket) return undefined;
+    const now = this.now().getTime();
+    for (const [id, expiresAt] of bucket) if (expiresAt <= now) bucket.delete(id);
+    if (bucket.size === 0) {
+      this.deletedBeforeSeen.delete(k);
+      return undefined;
+    }
+    return new Set(bucket.keys());
   }
 
   async sealLedger(k: ConversationKey, ids: string[], eventSeqs: number[]): Promise<void> {
