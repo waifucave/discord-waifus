@@ -241,8 +241,49 @@ export async function runMigrations(
     throw error;
   }
   await persistLedger();
+  await recordIncompleteMigrations(dataRoot, incomplete).catch(() => undefined);
 
   return { applied, incomplete };
+}
+
+/**
+ * Steps that left unreadable data alone at the last start (`app/migrations-incomplete.json`), for
+ * `waifus doctor`, `waifus status` and the dashboard's owner notices. Written only while there are
+ * any (a clean run removes it), so it never shows up in an ordinary data root.
+ */
+export const INCOMPLETE_MIGRATIONS_RELATIVE_PATH = path.join("app", "migrations-incomplete.json");
+
+export type IncompleteMigration = { step: string; detail: string; at: string };
+
+async function recordIncompleteMigrations(dataRoot: string, incomplete: readonly string[]): Promise<void> {
+  const file = path.join(dataRoot, INCOMPLETE_MIGRATIONS_RELATIVE_PATH);
+  if (incomplete.length === 0) {
+    await rm(file, { force: true });
+    return;
+  }
+  const at = new Date().toISOString();
+  const steps: IncompleteMigration[] = incomplete.map((entry) => {
+    const index = entry.indexOf(": ");
+    return index > 0 ? { step: entry.slice(0, index), detail: entry.slice(index + 2), at } : { step: entry, detail: "", at };
+  });
+  await atomicWriteJson(file, { updatedAt: at, steps }, { mode: 0o600 });
+}
+
+/** The incomplete steps recorded by the last start (none when the file is missing or unreadable). */
+export async function readIncompleteMigrations(dataRoot: string): Promise<IncompleteMigration[]> {
+  try {
+    const parsed = JSON.parse(await readFile(path.join(dataRoot, INCOMPLETE_MIGRATIONS_RELATIVE_PATH), "utf8")) as { steps?: unknown };
+    if (!Array.isArray(parsed.steps)) return [];
+    return parsed.steps.flatMap((entry): IncompleteMigration[] => {
+      if (!entry || typeof entry !== "object") return [];
+      const record = entry as Record<string, unknown>;
+      return typeof record.step === "string"
+        ? [{ step: record.step, detail: typeof record.detail === "string" ? record.detail : "", at: typeof record.at === "string" ? record.at : "" }]
+        : [];
+    });
+  } catch {
+    return [];
+  }
 }
 
 // The runtime used to log in every bot with a token and ignore `enabled`, which earlier writes

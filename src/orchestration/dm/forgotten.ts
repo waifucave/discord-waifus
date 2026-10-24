@@ -275,6 +275,11 @@ async function pruneCopies(copies: ReadonlyArray<{ file: string; madeAt: number 
   return removed;
 }
 
+/** How many kept copies of unreadable forget records exist (doctor, owner notices). */
+export async function countForgetRecordCopies(dataRoot: string): Promise<number> {
+  return (await forgetRecordCopies(dataRoot)).length;
+}
+
 /** Deletes kept copies older than 7 days (boot, and every forget). Returns how many went. */
 export async function pruneForgetRecordCopies(storage: Pick<StorageService, "dataRoot">, now: Date): Promise<number> {
   return withArchiveLock(storage.dataRoot, async () => pruneCopies(await forgetRecordCopies(storage.dataRoot), now));

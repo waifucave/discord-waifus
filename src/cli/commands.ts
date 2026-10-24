@@ -25,6 +25,7 @@ import { remoteStatePaths } from "../remote/paths.js";
 import { inspectRememberedHostState } from "../remote/rememberedHosts.js";
 import { diagnoseBundledOcr } from "../orchestration/ocrPackages.js";
 import { StorageService } from "../storage/storageService.js";
+import { castHealth } from "../backend/castHealth.js";
 import { DEFAULT_APP_CONFIG } from "../shared/schemas/config.js";
 import { DiscordBotsFileSchema, ProviderCredentialsFileSchema, createEmptyRevisionedFile } from "../shared/schemas/domain.js";
 import { ParsedCli, flagBoolean, flagNumber, flagString } from "./parser.js";
@@ -400,6 +401,8 @@ async function statusCommand(
     readRemoteDaemonStatus(dataRoot, isAlive)
   ]);
   const hostRunning = pidState ? await hostPidIsGenuine(dataRoot, pidState, probe) : false;
+  const paused = await loadAppConfig(dataRoot).then((config) => config.runtime.paused, () => runtime?.paused ?? false);
+  const cast = await castHealth(new StorageService(dataRoot), { paused });
   console.log(
     JSON.stringify(
       {
@@ -410,7 +413,8 @@ async function statusCommand(
           url: runtime ? `http://127.0.0.1:${runtime.port}` : undefined,
           runtime
         },
-        remote
+        remote,
+        cast
       },
       null,
       2
@@ -476,6 +480,12 @@ async function doctorCommand(dataRoot: string, options: CliRuntimeOptions): Prom
     findUnresolvedModels(dataRoot),
     remoteManagementDoctorSummary(dataRoot, options)
   ]);
+  // The Living cast's own state (L2 hand-offs): incomplete migration steps, unfinished or given-up
+  // owner forgets, kept copies of unreadable forget records, queued scrubs, intake marks and pause.
+  const cast = await castHealth(storage, { paused: config.runtime.paused });
+  if (cast.incompleteMigrations.length > 0) warnings.push(`${cast.incompleteMigrations.length} migration step(s) left unreadable data alone; repair the file(s) and restart`);
+  if (cast.forgetJobs.some((job) => job.pending.some((part) => !part.retried))) warnings.push("an owner forget has a part that was given up after 3 tries; fix the cause, then forget the person again");
+  if (cast.corruptForgetCopies > 0) warnings.push(`${cast.corruptForgetCopies} kept copy/copies of an unreadable forget record (deleted after 7 days)`);
   const result = {
     node: {
       version: process.versions.node,
@@ -505,7 +515,8 @@ async function doctorCommand(dataRoot: string, options: CliRuntimeOptions): Prom
         "GUILD_MEMBERS intent is optional unless full member refreshes are required."
       ]
     },
-    remoteAccess
+    remoteAccess,
+    cast
   };
   console.log(JSON.stringify(result, null, 2));
   // models.unresolved is informational only (§7.3 doctor-warning intent) — it never flips the

@@ -356,6 +356,40 @@ describe("waifus doctor: v1 providers.json / discord-bots.json report real data,
   });
 });
 
+describe("waifus doctor and status: the Living cast's own state", () => {
+  it("report incomplete migrations, unfinished and given-up forgets, kept record copies, queued scrubs and the pause start", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    await writeJson(root, "app/migrations-incomplete.json", { updatedAt: "2026-10-24T10:00:00.000Z", steps: [{ step: "living-cast-dm-state-v1", detail: "1 DM state or wake queue file(s) could not be parsed", at: "2026-10-24T10:00:00.000Z" }] });
+    await writeJson(root, "user/people/forget-jobs.json", { jobs: [{ userId: "300000000000000003", at: "2026-10-24T10:00:00.000Z", done: ["record"], failures: { archive: { count: 3, error: "EACCES", at: "2026-10-24T10:00:00.000Z" } } }] });
+    await writeJson(root, "user/waifus/aria/life/pending-scrubs.json", { scrubs: [{ userId: "300000000000000003", at: "2026-10-24T10:00:00.000Z", source: "owner_forget" }] });
+    await writeJson(root, "app/intake-marks.json", { marks: { g_1_2: "123" }, pausedAt: "2026-10-24T09:00:00.000Z" });
+    await writeFile(path.join(root, "user", "people", "forgotten.json.corrupt-2026-10-24T10-00-00-000Z"), "{torn");
+
+    const { code, result } = await runDoctor(root);
+    expect(code).toBe(0);
+    const cast = (result as unknown as { cast: Record<string, unknown> }).cast;
+    expect(cast).toMatchObject({
+      incompleteMigrations: [{ step: "living-cast-dm-state-v1" }],
+      forgetJobs: [{ userId: "300000000000000003", pending: expect.arrayContaining([{ part: "archive", error: "EACCES", failures: 3, retried: false }]) }],
+      corruptForgetCopies: 1,
+      pendingScrubs: [{ waifuId: "aria", count: 1 }],
+      intake: { paused: false, pausedAt: "2026-10-24T09:00:00.000Z", marks: 1 }
+    });
+    expect(result.warnings.join("\n")).toMatch(/migration step/u);
+    expect(result.warnings.join("\n")).toMatch(/given up after 3 tries/u);
+
+    const logs: string[] = [];
+    const logSpy = vi.spyOn(console, "log").mockImplementation((message?: unknown) => {
+      if (typeof message === "string") logs.push(message);
+    });
+    await runCommand(parseCliArgs(["status", "--data-root", root]));
+    logSpy.mockRestore();
+    expect(JSON.parse(logs.join("\n")).cast).toMatchObject({ corruptForgetCopies: 1, incompleteMigrations: [{ step: "living-cast-dm-state-v1" }] });
+  });
+});
+
 describe("waifus status/stop: tolerate unmigrated runtime files", () => {
   it("status reads a stale schemaVersion runtime.json/pid.json without crashing", async () => {
     const root = await makeTempRoot();
